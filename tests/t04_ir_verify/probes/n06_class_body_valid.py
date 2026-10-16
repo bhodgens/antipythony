@@ -6,3 +6,4 @@ class C:
 
 c = C()
 print(c.m(), C.y)
+# cites: S-02-5 class-body local + self attr -> verify silent | expectation pinned in fixtures/expected_t04.json (pinned python3.14 run; see gen_expectations.py)

@@ -1,5 +1,6 @@
 # T-03 corpus program (lowering semantics, gates leaf 01.03).
 # Cites: S-02-7
+# Cites: S-02-12
 # def-statement execution order: default-value expressions first, decorators innermost-first, then the name binding — observed ['d1', 'deco:g']
 calls = []
 def deco(fn):
