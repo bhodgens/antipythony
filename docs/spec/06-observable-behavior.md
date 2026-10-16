@@ -24,7 +24,7 @@ governed by the compat contract's version-pin clause, not here).
 
 **S-06-2** stdout and stderr MUST be captured as separate streams by the runner
 (`subprocess` with separate pipes). The runner MUST NOT use `2>&1` merging.
-Cross-stream interleaving is therefore never diffed (see S-06-12).
+Cross-stream interleaving is therefore never diffed (see S-06-13).
 
 ## 6.2 stdout rules
 
@@ -42,7 +42,7 @@ formatter, f-string, or repr that produces trailing spaces MUST emit them.
 **S-06-5** Encoding: stdout MUST be UTF-8 (8-bit superset, `errors='strict'`)
 when not a TTY. Verified on 3.14.7 pipe: `sys.stdout.encoding == 'utf-8'`, and
 `print('héllo→✓')` emitted bytes `68 c3 a9 6c 6c 6f e2 86 92 e2 9c 93 0a`.
-`PYTHONIOENCODING` is OUT-of-v1 scope (S-06-16): corpus scripts run with a clean
+`PYTHONIOENCODING` is OUT-of-v1 scope (S-06-15): corpus scripts run with a clean
 env; v1 MUST NOT read it. Unicode chars beyond the source encoding are gated only
 through UTF-8 bytes.
 
@@ -154,7 +154,7 @@ per payload type):
 - `atexit` callbacks MUST still run on every SystemExit path, after main-body
   output flush and BEFORE the exit code is handed to the OS; LIFO order (verified:
   two registered `print`s → `B` then `A`, rc 0; and with `sys.exit(3)`: `bye`
-  printed, rc stayed 3 — anchor #6).
+  printed, rc stayed 3 — corpus anchor #5).
 - int subclass semantics: `int` and `bool` take the code channel; `enum.IntEnum`
   members follow CPython's `__index__` conversion (corpus-prohibited beyond
   builtins).
@@ -169,7 +169,7 @@ per payload type):
 | uncaught non-SystemExit exception (incl. `RecursionError`, `assert False`, `StopIteration`/`GeneratorExit` raised manually to top) | 1 |
 | `SystemExit(n)` int | `n & 0xFF` |
 | `SystemExit(<non-int>)` | 1 |
-| `KeyboardInterrupt` reaching top level (real SIGINT verified via self-`os.kill`: `time.sleep` interrupted → `KeyboardInterrupt` traceback tail + **rc 130** = 128+SIGINT) | 130 |
+| `KeyboardInterrupt` reaching top level — including a plain `raise KeyboardInterrupt` (verified rc **130** both ways) and real SIGINT (CPython rc 130 = 128+SIGINT via self-`os.kill`; OS-signal delivery itself is gated outside the corpus — `signal` is OUT-of-v1) | 130 |
 | CLI-level "file not found" (`python script` where script missing → rc 2, message `can't open file '<abs path>': [Errno 2] No such file or directory` prefixed by argv[0]-style runner name) | 2 |
 
 v1 runner (`antipythany run/build` verbs, ap-conform `--impl`) MUST mirror row for
@@ -318,8 +318,11 @@ stream). All outputs produced by live runs on python3.14 3.14.7 during authoring
 7. **S-06-7** `1/0` (`-c`) → stderr tail `    1/0\n    ~^~\nZeroDivisionError: division by zero\n` (3.14 anchor line), rc 1. And `x = int('nonexistent')` (line 1) → tail `    x = int('nonexistent')\nValueError: invalid literal for int() with base 10: 'nonexistent'\n` — NO anchor line for a plain assignment; rc 1.
 8. **S-06-8** `try: 1/0\nexcept ZeroDivisionError as e: raise RuntimeError('outer') from e` → two traceback blocks joined by `\nThe above exception was the direct cause of the following exception:\n\n`, ending `RuntimeError: outer`; rc 1. `from None` variant → single block only (context suppressed).
 9. **S-06-9** sx.py = `x = (` → stderr `  File "<abs>/sx.py", line 1\n    x = (\n        ^\nSyntaxError: '(' was never closed\n` (no `Traceback` header), rc 1.
-10. **S-06-12** script self-`os.kill(os.getpid(), signal.SIGINT)` during
-    `time.sleep(2)` → stderr tail `KeyboardInterrupt\n`, rc 130.
+10. **S-06-12** `raise KeyboardInterrupt` (plain builtin raise — no `signal`
+    module needed, so it IS corpus-anchorable) on CPython 3.14.7 → stderr
+    `Traceback (most recent call last):\n  File "<abs>/ki.py", line 1, in <module>\n    raise KeyboardInterrupt\nKeyboardInterrupt\n`, rc **130** (verified for both `-c` and file form).
+    Real OS-SIGINT delivery (rc 130 = 128+SIGINT, verified via self-`os.kill`) is
+    gated outside the corpus: v1 has no `signal` module (spec 05).
 11. **S-06-6/S-06-14** `print('OUT1'); raise ValueError('E1')` → stdout `OUT1\n`
     AND stderr full traceback, rc 1 (separate-stream capture; interleaving not
     diffed). `sys.stdout.write('A'); sys.stdout.flush(); sys.stderr.write('B\n');

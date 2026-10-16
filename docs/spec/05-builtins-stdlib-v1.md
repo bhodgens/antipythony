@@ -256,17 +256,16 @@ produced by running the snippet on `/opt/homebrew/bin/python3.14` (3.14.7).
 
 1. **S-05-1/S-05-16** `print(exit)` → stdout ``; stderr
    `Traceback (most recent call last):\n  File "<string>", line 1, in <module>\n    print(exit)\n          ^^^^\nNameError: name 'exit' is not defined` ; exit 1 (site names absent, -S parity).
-2. **S-05-9** `print(abs(-3), max([1,2,3]), min(4,5), sorted([3,1,2]))` → `3 3 4 [1, 2, 3]` ; exit 0.
-3. **S-05-9/S-05-10** `print(isinstance(True, int), issubclass(bool, int), divmod(17,5), pow(2,10), len({1,2}))` → `True True (3, 2) 1024 2` ; exit 0.
-4. **S-05-11** `compile`/`eval` path: `eval('1+')` → last stderr lines
+2. **S-05-9/S-05-10** `print(abs(-3), sorted([3,1,2]), isinstance(True, int), issubclass(bool, int), divmod(17,5), pow(2,10), len({1,2}))` → `3 [1, 2, 3] True True (3, 2) 1024 2` ; exit 0. (`map`/`filter` render verified too: `print(list(map(str, range(3))), list(filter(None, [0,1,'',2])))` → `['0', '1', '2'] [1, 2]`.)
+3. **S-05-11** `compile`/`eval` path: `eval('1+')` → last stderr lines
    `  File "<string>", line 1\n    1+\nSyntaxError: invalid syntax` (under a
    `<string>` traceback frame) ; exit 1.
-5. **math IN** `import math; print(math.isqrt(10**20), math.gcd(12,18), math.pi, math.floor(2.7))` → `10000000000 6 3.141592653589793 2` ; exit 0.
-6. **json IN** `import json; print(json.dumps({'b':1,'a':[1,2.5,True,None]}, sort_keys=True))` → `{"a": [1, 2.5, true, null], "b": 1}` ; exit 0. (`json.loads('{"x": [1, 2.0]}')` → `{'x': [1, 2.0]}` ; exit 0.)
-7. **re IN** `import re; print(re.findall(r'\d+', 'a1b22'), re.sub(r'\s+', '-', 'x  y'))` → `['1', '22'] x-y` ; exit 0.
-8. **itertools IN** `import itertools; print(list(itertools.islice(itertools.count(2), 3)), list(itertools.chain([1],[2])), list(itertools.batched('abc', 2)))` → `[2, 3, 4] [1, 2] [('a', 'b'), ('c',)]` ; exit 0.
-9. **functools+collections IN** `import functools, collections; print(functools.reduce(lambda a,b: a+b, [1,2,3]), collections.Counter('aab')['a'])` → `6 2` ; exit 0.
-10. **contextlib IN (T1)** `with contextlib.suppress(ZeroDivisionError): 1/0` then `print('ok')` → `ok` ; exit 0.
-11. **inspect basics IN (T2)** `def f(a, b=2, *args, **kw): pass` → `print(inspect.signature(f), inspect.isfunction(f))` → `(a, b=2, *args, **kw) True` ; exit 0. (`getfullargspec(f)` → `FullArgSpec(args=['a', 'b'], varargs='args', varkw='kw', defaults=(2,), kwonlyargs=[], kwonlydefaults=None, annotations={})`.)
-12. **dataclasses/enum IN** `@dataclasses.dataclass class P: x: int` → `print(P(1))` → `P(x=1)` ; exit 0; and `class C(enum.IntEnum): A = 1` → `print(C.A, int(C.A)+1, C.A == 1)` → `1 2 True` ; exit 0.
-13. **S-05-2 OUT fail-loud** `import socket` → compile-time diagnostic naming `socket` (native/wasm) ; NOT byte-gated vs CPython (per S-05-22).
+4. **math IN** `import math; print(math.isqrt(10**20), math.gcd(12,18), math.pi, math.floor(2.7))` → `10000000000 6 3.141592653589793 2` ; exit 0.
+5. **json IN** `import json; print(json.dumps({'b':1,'a':[1,2.5,True,None]}, sort_keys=True))` → `{"a": [1, 2.5, true, null], "b": 1}` ; exit 0. (`json.loads('{"x": [1, 2.0]}')` → `{'x': [1, 2.0]}` ; exit 0.)
+6. **re IN** `import re; print(re.findall(r'\d+', 'a1b22'), re.sub(r'\s+', '-', 'x  y'))` → `['1', '22'] x-y` ; exit 0.
+7. **itertools IN** `import itertools; print(list(itertools.islice(itertools.count(2), 3)), list(itertools.chain([1],[2])), list(itertools.batched('abc', 2)))` → `[2, 3, 4] [1, 2] [('a', 'b'), ('c',)]` ; exit 0.
+8. **functools+collections IN** `import functools, collections; print(functools.reduce(lambda a,b: a+b, [1,2,3]), collections.Counter('aab')['a'])` → `6 2` ; exit 0.
+9. **contextlib IN (T1)** `with contextlib.suppress(ZeroDivisionError): 1/0` then `print('ok')` → `ok` ; exit 0.
+10. **inspect basics IN (T2)** `def f(a, b=2, *args, **kw): pass` → `print(inspect.signature(f), inspect.isfunction(f))` → `(a, b=2, *args, **kw) True` ; exit 0. (`getfullargspec(f)` → `FullArgSpec(args=['a', 'b'], varargs='args', varkw='kw', defaults=(2,), kwonlyargs=[], kwonlydefaults=None, annotations={})`.)
+11. **dataclasses/enum IN** `@dataclasses.dataclass class P: x: int` → `print(P(1))` → `P(x=1)` ; exit 0; and `class C(enum.IntEnum): A = 1` → `print(C.A, int(C.A)+1, C.A == 1)` → `1 2 True` ; exit 0.
+12. **S-05-2 OUT fail-loud** `import socket` → compile-time diagnostic naming `socket` (native/wasm) ; NOT byte-gated vs CPython (per S-05-22).
