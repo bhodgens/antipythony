@@ -1,0 +1,9 @@
+[package]
+name = "ap-conform"
+description = "differential conformance runner (spawns CPython)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"

@@ -1,0 +1,9 @@
+[package]
+name = "ap-run"
+description = "tier-0 baseline executor over ap-ir using ap-obj"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"

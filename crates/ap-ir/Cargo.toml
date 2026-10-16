@@ -1,0 +1,9 @@
+[package]
+name = "ap-ir"
+description = "compiler IR shared by all backends (no backend deps)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"

@@ -1,0 +1,9 @@
+[package]
+name = "ap-codegen-native"
+description = "ap-ir to Cranelift CLIF, JIT + AoT object files"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"

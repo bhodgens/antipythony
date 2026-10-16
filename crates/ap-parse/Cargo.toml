@@ -1,0 +1,9 @@
+[package]
+name = "ap-parse"
+description = "ruff wrapper producing typed AST + source maps"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"

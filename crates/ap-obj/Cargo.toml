@@ -1,0 +1,9 @@
+[package]
+name = "ap-obj"
+description = "Python object model (values, types, dispatch, exceptions)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"

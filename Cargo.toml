@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ap-parse",
+    "crates/ap-ir",
+    "crates/ap-obj",
+    "crates/ap-gc",
+    "crates/ap-run",
+    "crates/ap-codegen-native",
+    "crates/ap-codegen-wasm",
+    "crates/ap-host",
+    "crates/ap-cli",
+    "crates/ap-conform",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 WITH LLVM-exception"
+
+[profile.release]
+lto = "thin"
