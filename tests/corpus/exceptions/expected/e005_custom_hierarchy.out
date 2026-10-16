@@ -1,0 +1,4 @@
+['Level3', 'Level2', 'Level1', 'Exception', 'BaseException', 'object']
+Level3 ('a', 2) Level3('a', 2) ('a', 2)
+WithInit E42 WithInit('E42') ('E42',)
+bare-class: Level1() () True

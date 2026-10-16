@@ -1,0 +1,4 @@
+TypeError: __slots__ items must be strings, not 'int'
+ValueError: 'x' in __slots__ conflicts with class variable
+3 False
+AttributeError: 'StrSlots' object has no attribute 'x' and no __dict__ for setting new attributes

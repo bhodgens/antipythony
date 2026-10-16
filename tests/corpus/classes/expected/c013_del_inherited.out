@@ -1,0 +1,2 @@
+AttributeError: 'C' object has no attribute 'x'
+after instance del, class value: 1 False

@@ -1,0 +1,4 @@
+['d2', 'd1']
+NameError: name 'x' is not defined
+TypeError: 'mappingproxy' object does not support item assignment
+False Outer.Inner

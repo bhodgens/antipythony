@@ -1,0 +1,6 @@
+True True
+SubError () True
+TypeError: exceptions must derive from BaseException
+TypeError: exceptions must derive from BaseException
+TypeError: exceptions must derive from BaseException
+('a', 2) ValueError('a', 2) ('a', 2)

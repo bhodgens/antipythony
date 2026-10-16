@@ -1,0 +1,5 @@
+UserErr UserErr __main__ (<class 'Exception'>,)
+builtins OSError StopIteration
+True True True
+UserErr u
+KeyError 'k' KeyError('k')

@@ -1,0 +1,6 @@
+7 ['Sub']
+TypeError: Bad.__init_subclass__() takes no keyword arguments
+call Widget (3,) {}
+init 3
+True
+g

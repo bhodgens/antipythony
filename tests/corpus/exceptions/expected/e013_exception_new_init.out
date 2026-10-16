@@ -1,0 +1,6 @@
+new E
+init boom
+caught: E('boom')
+new SubE
+init sub
+SubE SubE('sub')

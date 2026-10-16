@@ -1,0 +1,6 @@
+True
+['BytesWarning', 'DeprecationWarning', 'EncodingWarning', 'FutureWarning', 'ImportWarning', 'PendingDeprecationWarning', 'ResourceWarning', 'RuntimeWarning', 'SyntaxWarning', 'UnicodeWarning', 'UserWarning']
+True True True
+['SyntaxWarning', 'Warning', 'Exception', 'BaseException', 'object']
+True True bad syntax-ish SyntaxWarning('bad syntax-ish')
+caught by Warning: SyntaxWarning

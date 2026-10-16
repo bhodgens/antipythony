@@ -1,0 +1,5 @@
+AttributeError: 'A' object has no attribute 'z' and no __dict__ for setting new attributes
+False 1
+AttributeError: 'A' object has no attribute 'z'
+member_descriptor type
+['A', 'object']

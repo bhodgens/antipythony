@@ -1,9 +1,9 @@
 # Cites: S-03-26, S-03-27, S-03-28
 # Unary slots and __contains__-then-iteration; metaclass creation pipeline
 # trace and __call__ wrapping every instantiation. NOTE (CONTRACT-GAP: T-06-
-# GAP-1): reference 3.14.7 runs __set_name__ INSIDE type.__new__ (before
-# M.__init__), not "then ... and B.__init_subclass__ run" afterwards as
-# S-03-27 phrases it; order pinned here is the observed one.
+# GAP-2): reference 3.14.7 runs __set_name__ INSIDE type.__new__ (before
+# M.__init__), not "then ... run" after M.__init__ as S-03-27 phrases it;
+# order pinned here is the observed one.
 class Un:
     def __neg__(self): return "neg"
     def __pos__(self): return "pos"

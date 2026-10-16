@@ -1,0 +1,2 @@
+TypeError: NeedsArgs.__init__() missing 1 required positional argument: 'code'
+ok: 7 E7

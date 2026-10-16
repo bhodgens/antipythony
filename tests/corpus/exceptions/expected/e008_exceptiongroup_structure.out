@@ -1,0 +1,5 @@
+True True False
+['ExceptionGroup', 'BaseExceptionGroup', 'Exception', 'BaseException', 'object']
+boom 2 ['ValueError', 'KeyError'] ('boom', [ValueError('v'), KeyError('k')])
+caught outer: outer ExceptionGroup
+caught by BaseException: ExceptionGroup b

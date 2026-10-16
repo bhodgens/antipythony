@@ -1,0 +1,7 @@
+ValueError ValueError builtins
+['BaseException', 'object']
+True True
+('x', 'y') ('x', 'y') TypeError('x', 'y')
+('only one',)
+Exception() True
+('kk',)

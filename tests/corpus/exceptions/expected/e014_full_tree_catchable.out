@@ -1,0 +1,3 @@
+22
+True 22
+['ArithmeticError', 'AssertionError', 'AttributeError', 'BufferError', 'EOFError', 'ExceptionGroup', 'ImportError', 'InterpreterError', 'LookupError', 'MemoryError', 'NameError', 'OSError', 'PatternError', 'ReferenceError', 'RuntimeError', 'StopAsyncIteration', 'StopIteration', 'SyntaxError', 'SystemError', 'TypeError', 'ValueError', 'Warning']

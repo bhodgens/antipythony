@@ -1,0 +1,11 @@
+neg pos inv abs
+True False
+True False
+prepare Traced tag= 3
+new Traced tag= 3
+set_name Traced d
+init Traced tag= 3
+call Traced () {}
+d
+call Traced () {}
+True

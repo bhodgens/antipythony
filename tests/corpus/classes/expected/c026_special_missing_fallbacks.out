@@ -1,0 +1,5 @@
+[0, 1, 2]
+TypeError: object of type 'A' has no len()
+TypeError: 'A' object is not iterable
+TypeError: __str__ returned non-string (type int)
+S True

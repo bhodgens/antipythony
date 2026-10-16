@@ -1,0 +1,4 @@
+MB
+TypeError: metaclass conflict: the metaclass of a derived class must be a (non-strict) subclass of the metaclasses of all its bases
+TypeError: NotAMeta() takes no arguments
+MA (<class 'object'>,)

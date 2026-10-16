@@ -1,0 +1,2 @@
+TypeError: __init__() should return None, not 'int'
+TypeError: __init__() should return None, not 'R8b'

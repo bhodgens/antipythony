@@ -1,5 +1,5 @@
 # Cites: S-03-32, S-03-34
-# NOTE CONTRACT-GAP T-06-GAP-3: S-03-34 claims "nested tuples allowed", but
+# NOTE CONTRACT-GAP T-06-GAP-5: S-03-34 claims "nested tuples allowed", but
 # CPython 3.14.7 raises the same TypeError for ANY nested tuple target whose
 # elements are valid exception classes. Pinned here: nested tuple is REJECTED.
 # (Recorded from 3.14.7 per the spec-pack pin; C-01 drift governs.)

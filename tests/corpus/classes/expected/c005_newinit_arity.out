@@ -1,0 +1,3 @@
+TypeError: B() takes no arguments
+TypeError: A7.__new__() takes 1 positional argument but 2 were given
+TypeError: A7.__init__() missing 1 required positional argument: 'x'

@@ -1,0 +1,4 @@
+TypeError: super(type, obj): obj (instance of int) is not an instance or subtype of type (SA).
+TypeError: super(type, obj): obj (instance of SA) is not an instance or subtype of type (SB).
+False super
+RuntimeError: super(): no arguments

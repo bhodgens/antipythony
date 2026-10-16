@@ -1,0 +1,4 @@
+7
+M-got:whatever
+AttributeError: 'C' object has no attribute 'mattr'
+7 True M2

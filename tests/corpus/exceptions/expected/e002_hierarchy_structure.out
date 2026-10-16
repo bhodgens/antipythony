@@ -1,0 +1,8 @@
+(<class 'object'>,)
+['BaseExceptionGroup', 'Exception', 'GeneratorExit', 'KeyboardInterrupt', 'SystemExit']
+['ArithmeticError', 'AssertionError', 'AttributeError', 'BufferError', 'EOFError', 'ExceptionGroup', 'ImportError', 'InterpreterError', 'LookupError', 'MemoryError', 'NameError', 'OSError', 'PatternError', 'ReferenceError', 'RuntimeError', 'StopAsyncIteration', 'StopIteration', 'SyntaxError', 'SystemError', 'TypeError', 'ValueError', 'Warning']
+['ValueError', 'Exception', 'BaseException', 'object']
+['ZeroDivisionError', 'ArithmeticError', 'Exception', 'BaseException', 'object']
+EG by Exception: ExceptionGroup
+BEG by BaseException: BaseExceptionGroup
+(True, True, False, False, False)

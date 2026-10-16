@@ -1,0 +1,4 @@
+dd-delete
+delattr zzz
+AttributeError: property 'x' of 'RO' object has no deleter
+{'_b': 3}

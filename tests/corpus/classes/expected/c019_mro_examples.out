@@ -1,0 +1,5 @@
+['D1', 'B1', 'C1', 'O', 'object']
+['E2', 'D2', 'B2', 'C2', 'A2', 'object']
+['X3', 'B3', 'C3', 'D3', 'A3', 'object']
+['Redundant', 'B2', 'C2', 'A2', 'object']
+True

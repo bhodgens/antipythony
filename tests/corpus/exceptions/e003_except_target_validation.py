@@ -21,8 +21,9 @@ except (KeyError, ValueError):
 except TypeError:
     print("later clause ok")
 try:
-    raise ValueError()
-except (KeyError, 5):
-    pass
-except Exception:
-    print("unreached")
+    try:
+        raise ValueError()
+    except (KeyError, 5):
+        pass
+except TypeError as e:
+    print("tuple-with-int:", e)

@@ -1,0 +1,6 @@
+True True
+caught MyKLookup mk
+BaseException catches SystemExit: SystemExit
+['E-first']
+True True
+True True False

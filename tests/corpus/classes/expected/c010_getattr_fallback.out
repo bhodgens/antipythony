@@ -1,0 +1,3 @@
+gen:missing2 1 True
+AttributeError: 'D' object has no attribute 'nope'
+True False

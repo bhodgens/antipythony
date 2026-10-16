@@ -1,0 +1,4 @@
+TypeError: catching classes that do not inherit from BaseException is not allowed
+tuple any-element ok
+later clause ok
+tuple-with-int: catching classes that do not inherit from BaseException is not allowed
