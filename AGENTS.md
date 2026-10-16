@@ -34,7 +34,14 @@ GIL, uv-backed deps at build time. Byte-exact differential conformance vs CPytho
 - Specs before code: nothing dispatches from Plans 01+ until 00.05 spec pack lands.
 
 ## Current status (update this block when it changes)
-- Plan tree written. Nothing implemented yet.
+- Plan 00 COMPLETE (2026-10-16). Commits d01d477..80b3d88: workspace scaffold,
+  attribution gate, 33-clause compat contract, ap-conform differential harness
+  (self-comparison green), spec pack (6 docs, 187 S-xx clauses), corpus
+  traceability gate.
+- OPEN: compat-contract review items in plans/.../00-foundation-contract/
+  PROGRESS.md (3.14.0 re-verification, C-01 env var, C-25/C-29/C-33).
+- Next: Plan 01 (frontend/IR) - implementation leaves 01.01-01.04 plus test
+  leaves T-01..T-04 dispatched in parallel from spec pack (tests/README.md).
 - Ecosystem targets locked (master.md tier table): scrapy T1, pytest T2,
   hermes-agent T3, fastapi T4, comfyui T5 (gates on Plan 10). TEST DATA ONLY -
   never published, no license constraints apply, comfyui included without
