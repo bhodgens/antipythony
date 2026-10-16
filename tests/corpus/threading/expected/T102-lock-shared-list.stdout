@@ -1,0 +1,3 @@
+total: 75
+per-tag: [('a', 25), ('b', 25), ('c', 25)]
+each-tag-complete: True

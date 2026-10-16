@@ -1,0 +1,12 @@
+module
+  assign counter = 0
+  fn bump():
+    global counter
+    augassign counter += 1
+  fn make_accumulator():
+    assign total = 0
+    fn add(n):
+      nonlocal total
+      augassign total += n
+      return total
+    return add

@@ -1,0 +1,9 @@
+module
+  fn inner() gen:
+    expr (yield 1)
+    expr (yield 2)
+    return 'done'
+  fn outer() gen:
+    assign result = (yield from inner())
+    expr (yield result)
+    expr (yield from (3, 4))

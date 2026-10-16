@@ -1,0 +1,7 @@
+alive before: True
+after collect: ['bye'] alive: False
+reinvoke returns: None
+detach fields: 4 True False
+detached invoke: None ['bye', 'never']
+detached no callback: ['bye', 'never']
+pending at exit: ['bye', 'never']

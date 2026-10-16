@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "<PATH>", line 2, in <module>
+    raise ValueError("x")
+ValueError: x

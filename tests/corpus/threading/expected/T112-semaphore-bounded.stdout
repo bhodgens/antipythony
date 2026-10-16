@@ -1,0 +1,5 @@
+two acquired: True True
+third blocked acquire fails: True
+after release one free: True
+bounded over-release: ValueError: Semaphore released too many times
+plain semaphore over-release allowed: True True

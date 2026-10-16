@@ -1,0 +1,7 @@
+module
+  assign a = 42
+  assign b = (-17)
+  assign c = 131071
+  assign d = 493
+  assign e = 170
+  assign f = (10 ** 100)

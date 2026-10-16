@@ -1,0 +1,6 @@
+module
+  assign a = b'bytes'
+  assign b = b'raw\\bytes'
+  assign c = b'\x00\xff'
+  assign d = bytearray(b'mutable')
+  assign e = b'concatenation'

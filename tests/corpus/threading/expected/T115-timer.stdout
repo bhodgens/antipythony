@@ -1,0 +1,5 @@
+Timer is Thread subclass: True
+zero-delay fired: True alive: False
+cancelled not started alive: False
+join unstarted: RuntimeError: cannot join thread before it is started
+final hits: ['zero']

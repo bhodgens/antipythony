@@ -1,0 +1,5 @@
+all crossed: [0, 1, 2, 3] [0, 1, 2, 3]
+broken after success: False
+parties: 4 waiting: 0
+timeout: BrokenBarrierError: ''
+broken after timeout: True

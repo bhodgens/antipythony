@@ -1,0 +1,9 @@
+line_count: 5
+line0: Exception ignored while calling deallocator <function Bad.__del__ at 0xADDR>:
+line1: Traceback (most recent call last):
+frame slot: FRAME, line 27, in __del__
+source echo: '    raise ValueError("shape-check")'
+last: ValueError: shape-check
+starts-with-form: True
+hook records: [('RuntimeError', 'boom-del', True, 'NoneType')]
+rc stays 0 through unraisable finalizers

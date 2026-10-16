@@ -1,0 +1,13 @@
+tracked int-1 False
+tracked str-x False
+tracked float False
+tracked none False
+tracked empty-list True
+tracked list True
+tracked dict True
+tracked empty-dict True
+tracked set True
+tracked tuple-int-after-collect False
+tracked tuple-list True
+tracked fresh tuple after collect False
+pre-collect was boolean True

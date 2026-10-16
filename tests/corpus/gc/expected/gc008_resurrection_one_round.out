@@ -1,0 +1,5 @@
+round1 events: ['finalize']
+resurrected alive: True True
+round2 events: ['finalize', 'weakref-cb']
+dead now: True
+still once only: 1

@@ -1,0 +1,5 @@
+module
+  assign rows = [['a', 1], ['b', 2]]
+  assign a = f"{rows!r}"
+  assign b = f"{[str(cell) for cell in row]!s}"
+  assign c = f"{format(deep, '>4')}"

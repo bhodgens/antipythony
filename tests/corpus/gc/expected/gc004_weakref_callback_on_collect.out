@@ -1,0 +1,3 @@
+while reachable: True True
+after drop+collect: True ['cb']
+exactly once: 1

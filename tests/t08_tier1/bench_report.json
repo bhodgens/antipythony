@@ -1,0 +1,67 @@
+{
+  "gate": "02.05: >=1.5x geomean over tier-0 on arithmetic/string benchmark slice",
+  "bench_slice": [
+    "bench01_int_arith.py",
+    "bench02_float_arith.py",
+    "bench03_str_ops.py",
+    "bench04_bigint_mul.py"
+  ],
+  "repeats": 3,
+  "warmup": 1,
+  "floor": 1.5,
+  "geomean_speedup_conservative": 0.8894,
+  "per_program": {
+    "bench01_int_arith.py": {
+      "tier0_times_s": [
+        0.0033,
+        0.0034,
+        0.0032
+      ],
+      "adaptive_times_s": [
+        0.0033,
+        0.0031,
+        0.0034
+      ],
+      "speedup_conservative": 0.9406
+    },
+    "bench02_float_arith.py": {
+      "tier0_times_s": [
+        0.0033,
+        0.0036,
+        0.0031
+      ],
+      "adaptive_times_s": [
+        0.0036,
+        0.0038,
+        0.0038
+      ],
+      "speedup_conservative": 0.7986
+    },
+    "bench03_str_ops.py": {
+      "tier0_times_s": [
+        0.0035,
+        0.0036,
+        0.0048
+      ],
+      "adaptive_times_s": [
+        0.0038,
+        0.0036,
+        0.0035
+      ],
+      "speedup_conservative": 0.9298
+    },
+    "bench04_bigint_mul.py": {
+      "tier0_times_s": [
+        0.0033,
+        0.0034,
+        0.0034
+      ],
+      "adaptive_times_s": [
+        0.0034,
+        0.0036,
+        0.0037
+      ],
+      "speedup_conservative": 0.8959
+    }
+  }
+}

@@ -1,0 +1,9 @@
+module
+  assign a = (12 & 10)
+  assign b = (12 | 10)
+  assign c = (12 ^ 10)
+  assign d = (~a)
+  assign e = (b << 2)
+  assign f = (b >> 1)
+  assign g = ((a + (b * c)) - ((d // e) % f))
+  assign h = ((-x) if x else (+x))

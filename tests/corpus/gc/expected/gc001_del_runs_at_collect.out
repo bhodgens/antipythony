@@ -1,0 +1,3 @@
+fired_after_collect 3
+loop done
+fired_at_exit 3

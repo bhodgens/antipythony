@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "<PATH>", line 1, in <module>
+    raise KeyboardInterrupt
+KeyboardInterrupt

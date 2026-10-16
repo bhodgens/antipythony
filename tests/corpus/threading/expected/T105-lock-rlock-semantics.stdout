@@ -1,0 +1,6 @@
+lock initial free: True
+lock held inside with: True
+lock free after with: True
+reentrant depth 3: True
+free after balanced nested release: True
+lock still balanced: True

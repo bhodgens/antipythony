@@ -1,0 +1,11 @@
+module
+  annassign count : int@int = 0
+  augassign count += 5
+  augassign count -= 2
+  augassign count *= 3
+  augassign count //= 2
+  augassign count %= 4
+  augassign count **= 2
+  annassign ratio : float@float
+  assign ratio = (count / 8)
+  annassign flag : (bool | None) = None

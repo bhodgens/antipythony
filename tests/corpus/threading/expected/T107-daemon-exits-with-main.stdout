@@ -1,0 +1,4 @@
+daemon flag before start: True
+daemon-started
+daemon flag after start: True
+main: continuing to exit

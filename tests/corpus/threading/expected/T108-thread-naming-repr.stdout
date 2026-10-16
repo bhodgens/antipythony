@@ -1,0 +1,11 @@
+default names: ['Thread-1 (noop)', 'Thread-2 (noop)', 'Thread-3 (noop)']
+before start active: 1
+during active: 4
+enumerate names: ['K0', 'K1', 'K2', 'MainThread']
+main is current: True
+current type/name/daemon: _MainThread MainThread False
+main repr head: <_MainThread(MainThread>
+held repr head: <Thread(K0>
+ident positive: True True
+after join active: 1
+joined alive flags: [False, False, False]

@@ -1,0 +1,4 @@
+module
+  assign grade = ('pass' if (score >= 60) else 'fail')
+  assign nested = ('hi' if a else ('mid' if b else 'lo'))
+  assign in_call = print(('yes' if flag else 'no'))

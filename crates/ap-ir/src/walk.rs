@@ -53,6 +53,9 @@ pub fn stmt_yields(s: &Stmt) -> bool {
                 })
         }
         Stmt::Assert(t, m) => expr_yields(t) || m.as_ref().is_some_and(expr_yields),
+        // Nested defs are scope-fenced: a yield inside them makes *that*
+        // function the generator, not this one (S-02-20).
+        Stmt::LocalDef(_) | Stmt::LocalClass(_) => false,
         Stmt::Del(targets) => targets.iter().any(target_yields),
         Stmt::ExprStmt(e) => expr_yields(e),
         Stmt::Global(_) | Stmt::Nonlocal(_) | Stmt::Import(_) | Stmt::ImportFrom(..) => false,

@@ -1,0 +1,10 @@
+threshold len: 3
+set_threshold returns: None
+round trip: True
+restored: True
+get_count shape: 3 True
+after collect gen0 is 0: True
+freeze returns: None
+unfreeze returns: None
+finalized exactly once by end: True
+gone after unfreeze+collect: True

@@ -1,0 +1,6 @@
+module
+  assign a = (1 < 2 < 3)
+  assign b = (1 <= x < y != z)
+  assign c = (('a' in 'abc') and ('b' not in 'bcd'))
+  assign d = (obj is other is not None)
+  assign e = (1 == 1 == 1)

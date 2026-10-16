@@ -1,0 +1,9 @@
+module
+  fn layered():
+    try
+      try
+        raise KeyError('inner')
+      finally
+        assign log = true
+    except KeyError
+      raise

@@ -1,0 +1,11 @@
+module
+  fn full_shape():
+    try
+      assign value = int('10')
+    except ValueError
+      assign value = 0
+    elsetry
+      augassign value += 1
+    finally
+      assign cleanup = true
+    return value

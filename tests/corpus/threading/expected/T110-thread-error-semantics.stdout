@@ -1,0 +1,7 @@
+release unlocked lock: RuntimeError: release unlocked lock
+foreign rlock release: RuntimeError: cannot release un-acquired lock
+join before start: RuntimeError: cannot join thread before it is started
+double start: RuntimeError: threads can only be started once
+daemon set before start ok: True
+daemon set after start: RuntimeError: cannot set daemon status of active thread
+ThreadError subclass of RuntimeError: True

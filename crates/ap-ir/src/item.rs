@@ -181,6 +181,14 @@ pub enum Stmt {
     Break,
     /// `continue`. Clause: S-02-18.
     Continue,
+    /// A `def` nested inside a function/class body, kept at its source
+    /// position (def-time binding is an observable effect — S-02-7).
+    /// Module-level defs are [`Item::FnDef`] instead.
+    LocalDef(Box<FnDef>),
+    /// A `class` nested inside a function/class body, at source position
+    /// (S-03-1 creation order). Module-level classes are
+    /// [`Item::ClassDef`].
+    LocalClass(Box<ClassDef>),
 }
 
 /// An assignment/del target the frontend accepts: a name, subscript, attribute,

@@ -1,0 +1,11 @@
+weakref int -> cannot create weak reference to 'int' object
+weakref str -> cannot create weak reference to 'str' object
+weakref float -> cannot create weak reference to 'float' object
+weakref bytes -> cannot create weak reference to 'bytes' object
+weakref tuple -> cannot create weak reference to 'tuple' object
+weakref list -> cannot create weak reference to 'list' object
+weakref dict -> cannot create weak reference to 'dict' object
+weakref set -> OK: True
+set weakref cleared: True
+plain instance ref: True ['collected']
+cycle instance ref: True ['collected', 'collected']

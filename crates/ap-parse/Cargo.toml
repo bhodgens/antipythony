@@ -9,6 +9,7 @@ license.workspace = true
 path = "src/lib.rs"
 
 [dependencies]
+ap-ir = { path = "../ap-ir" }
 ruff_python_ast = "0.0.4"
 ruff_python_parser = "0.0.4"
 ruff_text_size = "0.0.4"
@@ -17,5 +18,6 @@ ruff_text_size = "0.0.4"
 # 0.10.1 (pre-bump) still uses compact_str 0.9.
 get-size2 = "=0.10.1"
 
-[dev-dependencies]
-ap-ir = { path = "../ap-ir" }
+[[bin]]
+name = "ap-ir-dump"
+path = "src/bin/ap_ir_dump.rs"

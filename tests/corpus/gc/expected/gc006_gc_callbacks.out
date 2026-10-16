@@ -1,0 +1,7 @@
+start/stop only: True
+paired: True
+stable across runs: True
+first: [('start', 2), ('stop', 2)]
+collect0 gen: [0, 0]
+collect1 gen: [1]
+info keys: [['collected', 'generation', 'uncollectable'], ['collected', 'generation', 'uncollectable']]

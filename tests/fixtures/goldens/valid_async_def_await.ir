@@ -1,0 +1,9 @@
+module
+  fn fetch() async:
+    return 42
+  fn main() async:
+    assign value = (await fetch())
+    assign inner = (await fetch_inner())
+    return (value + inner)
+  fn fetch_inner() async:
+    return 8

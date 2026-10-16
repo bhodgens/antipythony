@@ -1,0 +1,5 @@
+isenabled: False
+finalized despite disable: ['d']
+still disabled: False
+re-enabled: True
+once only: 1

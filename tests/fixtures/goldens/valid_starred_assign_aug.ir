@@ -1,0 +1,5 @@
+module
+  assign (a, *b, c) = range(10)
+  assign (first, second) = (second, first)
+  assign (*x) = [1]
+  del x
