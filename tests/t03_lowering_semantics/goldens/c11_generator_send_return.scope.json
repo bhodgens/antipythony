@@ -1,0 +1,29 @@
+{
+ "cites": [
+  "S-02-20",
+  "S-02-21",
+  "S-02-22"
+ ],
+ "cpython_3147_rc": 0,
+ "cpython_3147_stdout": "1\nstop 11\n",
+ "note": "scopes derived from spec rules S-02-1/2/3/5/12/13 (see plans/antipythany/tests/T-03-lowering-semantics.md table); stdout/rc observed from /opt/homebrew/bin/python3.14 3.14.7 running the corpus program",
+ "program": "c11_generator_send_return",
+ "scopes": [
+  {
+   "cell": [],
+   "free": [],
+   "global": [
+    "StopIteration",
+    "next",
+    "print"
+   ],
+   "name": "module"
+  },
+  {
+   "cell": [],
+   "free": [],
+   "global": [],
+   "name": "g"
+  }
+ ]
+}

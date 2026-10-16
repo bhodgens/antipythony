@@ -1,0 +1,54 @@
+{
+ "cites": [
+  "S-02-7"
+ ],
+ "cpython_3147_rc": 0,
+ "cpython_3147_stdout": "1\n['d1', 'deco:g', 'deco:wrapper', 'call:wrapper', 'call:g']\n",
+ "note": "scopes derived from spec rules S-02-1/2/3/5/12/13 (see plans/antipythany/tests/T-03-lowering-semantics.md table); stdout/rc observed from /opt/homebrew/bin/python3.14 3.14.7 running the corpus program",
+ "program": "c19_decorator_order",
+ "scopes": [
+  {
+   "cell": [],
+   "free": [],
+   "global": [
+    "print"
+   ],
+   "name": "module"
+  },
+  {
+   "cell": [
+    "fn"
+   ],
+   "free": [],
+   "global": [
+    "calls"
+   ],
+   "name": "deco"
+  },
+  {
+   "cell": [],
+   "free": [
+    "fn"
+   ],
+   "global": [
+    "calls"
+   ],
+   "name": "deco.wrapper"
+  },
+  {
+   "cell": [],
+   "free": [],
+   "global": [
+    "calls",
+    "str"
+   ],
+   "name": "mark"
+  },
+  {
+   "cell": [],
+   "free": [],
+   "global": [],
+   "name": "g"
+  }
+ ]
+}

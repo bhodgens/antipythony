@@ -1,0 +1,41 @@
+{
+ "cites": [
+  "S-02-15",
+  "S-02-19",
+  "S-01-34"
+ ],
+ "cpython_3147_rc": 0,
+ "cpython_3147_stdout": "zero ('seq', 1, [2, 3]) ('map', 9) ('point-pos', 1, 2) ('other', 's')\n",
+ "note": "scopes derived from spec rules S-02-1/2/3/5/12/13 (see plans/antipythany/tests/T-03-lowering-semantics.md table); stdout/rc observed from /opt/homebrew/bin/python3.14 3.14.7 running the corpus program",
+ "program": "c17_match_statements",
+ "scopes": [
+  {
+   "cell": [],
+   "free": [],
+   "global": [
+    "print"
+   ],
+   "name": "module"
+  },
+  {
+   "cell": [],
+   "free": [],
+   "global": [
+    "Point"
+   ],
+   "name": "classify"
+  },
+  {
+   "cell": [],
+   "free": [],
+   "global": [],
+   "name": "Point"
+  },
+  {
+   "cell": [],
+   "free": [],
+   "global": [],
+   "name": "Point.__init__"
+  }
+ ]
+}

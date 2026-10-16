@@ -1,0 +1,4 @@
+bcd fgh hgfedcba '' 'abcdefgh'
+[] (3, 2, 1) b'bd' ac
+  h
+ValueError: slice step cannot be zero

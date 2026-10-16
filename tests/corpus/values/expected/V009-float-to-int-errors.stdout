@@ -1,0 +1,5 @@
+3 -3 0 0
+ValueError: cannot convert float NaN to integer
+OverflowError: cannot convert float infinity to integer
+OverflowError: int too large to convert to float
+3011 09376

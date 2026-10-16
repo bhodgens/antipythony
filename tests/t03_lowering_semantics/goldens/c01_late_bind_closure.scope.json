@@ -1,0 +1,44 @@
+{
+ "cites": [
+  "S-02-12",
+  "S-02-5",
+  "S-02-1"
+ ],
+ "cpython_3147_rc": 0,
+ "cpython_3147_stdout": "[2, 2, 2]\n",
+ "note": "scopes derived from spec rules S-02-1/2/3/5/12/13 (see plans/antipythany/tests/T-03-lowering-semantics.md table); stdout/rc observed from /opt/homebrew/bin/python3.14 3.14.7 running the corpus program",
+ "program": "c01_late_bind_closure",
+ "scopes": [
+  {
+   "cell": [],
+   "free": [],
+   "global": [
+    "print",
+    "range"
+   ],
+   "name": "module"
+  },
+  {
+   "cell": [
+    "i"
+   ],
+   "free": [],
+   "global": [],
+   "name": "listcomp#1"
+  },
+  {
+   "cell": [],
+   "free": [
+    "i"
+   ],
+   "global": [],
+   "name": "lambda#1"
+  },
+  {
+   "cell": [],
+   "free": [],
+   "global": [],
+   "name": "listcomp#2"
+  }
+ ]
+}

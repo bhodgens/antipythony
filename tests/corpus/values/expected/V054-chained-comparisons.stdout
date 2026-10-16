@@ -1,0 +1,4 @@
+TypeError: '<' not supported between instances of 'int' and 'str'
+False [1, 2, 0]
+False [1, 0]
+True True True False

@@ -1,0 +1,19 @@
+{
+ "cites": [
+  "S-01-16"
+ ],
+ "cpython_3147_rc": 0,
+ "cpython_3147_stdout": "world, 3.26, 5, 3.256\n    42|000042|1,234,567\nnested 2 ascii 'world'\n",
+ "note": "scopes derived from spec rules S-02-1/2/3/5/12/13 (see plans/antipythany/tests/T-03-lowering-semantics.md table); stdout/rc observed from /opt/homebrew/bin/python3.14 3.14.7 running the corpus program",
+ "program": "c18_fstrings",
+ "scopes": [
+  {
+   "cell": [],
+   "free": [],
+   "global": [
+    "print"
+   ],
+   "name": "module"
+  }
+ ]
+}

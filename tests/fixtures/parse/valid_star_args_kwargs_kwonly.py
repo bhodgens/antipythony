@@ -1,0 +1,5 @@
+def full(a, b=1, /, c=2, *args, d, e=4, **kwargs):
+    return (a, b, c, args, d, e, kwargs)
+
+def call():
+    return full(0, 1, 2, 3, 4, d=5, extra=6)

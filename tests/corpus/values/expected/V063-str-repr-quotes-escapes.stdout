@@ -1,0 +1,8 @@
+"it's" 'say "hi"' 'both \' and "'
+'\t\n\x00\x07\r' '\\'
+'café 中' '😀'
+True
+a
+b
+'a\nb'
+'\x7f' '\x1f'

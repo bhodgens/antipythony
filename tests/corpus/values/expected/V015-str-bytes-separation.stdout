@@ -1,0 +1,4 @@
+TypeError: can only concatenate str (not "bytes") to str
+TypeError: can't concat str to bytes
+TypeError: can't multiply sequence by non-int of type 'float'
+xxx b'yy' True True

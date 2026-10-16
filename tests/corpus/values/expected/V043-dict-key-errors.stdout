@@ -1,0 +1,4 @@
+TypeError: cannot use 'list' as a dict key (unhashable type: 'list')
+TypeError: cannot use 'list' as a dict key (unhashable type: 'list')
+KeyError: 'zz' KeyError('zz')
+TypeError: cannot use 'tuple' as a dict key (unhashable type: 'list')

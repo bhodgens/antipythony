@@ -1,0 +1,4 @@
+b'caf\xc3\xa9' café b'caf\xc3\xa9' 72 5 4
+UnicodeDecodeError: 'ascii' codec can't decode byte 0xff in position 0: ordinal not in range(128)
+UnicodeEncodeError: 'utf-8' codec can't encode character '\ud800' in position 0: surrogates not allowed
+LookupError: unknown encoding: bogus-codec

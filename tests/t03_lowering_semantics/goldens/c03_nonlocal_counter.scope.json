@@ -1,0 +1,37 @@
+{
+ "cites": [
+  "S-02-3",
+  "S-02-12",
+  "S-02-14"
+ ],
+ "cpython_3147_rc": 0,
+ "cpython_3147_stdout": "1 2 3\n",
+ "note": "scopes derived from spec rules S-02-1/2/3/5/12/13 (see plans/antipythany/tests/T-03-lowering-semantics.md table); stdout/rc observed from /opt/homebrew/bin/python3.14 3.14.7 running the corpus program",
+ "program": "c03_nonlocal_counter",
+ "scopes": [
+  {
+   "cell": [],
+   "free": [],
+   "global": [
+    "print"
+   ],
+   "name": "module"
+  },
+  {
+   "cell": [
+    "count"
+   ],
+   "free": [],
+   "global": [],
+   "name": "make_counter"
+  },
+  {
+   "cell": [],
+   "free": [
+    "count"
+   ],
+   "global": [],
+   "name": "make_counter.counter"
+  }
+ ]
+}

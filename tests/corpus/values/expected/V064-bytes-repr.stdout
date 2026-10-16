@@ -1,0 +1,4 @@
+b'caf\xc3\xa9'
+b'\x00abc\'"\\\\'
+b"it's" b'say "hi"' b'both \' and "'
+b'' b'\xff\xfe' b'printable-0123 ~!@#$%^&*()'

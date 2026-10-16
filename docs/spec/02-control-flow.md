@@ -33,7 +33,8 @@ byte-comparable. Exit codes for uncaught non-SystemExit exceptions are 1.
 - **S-02-3 (MUST)** `global name` makes all uses of `name` in the function refer to
   the module global; `nonlocal name` binds to the nearest ENCLOSING function scope
   (never module scope). `global x` and `nonlocal x` for the same x in one function is
-  a `SyntaxError`. A read-only closure reference needs no declaration (S-02-6).
+  a compile-time `SyntaxError: name 'x' is nonlocal and global`. A read-only closure
+  reference needs no declaration (S-02-6).
   Observed: `nonlocal n` counter increments across calls → `1 2 3`.
 - **S-02-4 (MUST)** `nonlocal` without an existing binding in an enclosing function
   scope fails at COMPILE time: `SyntaxError: no binding for nonlocal 'x' found`
@@ -218,10 +219,12 @@ byte-comparable. Exit codes for uncaught non-SystemExit exceptions are 1.
   **Return-in-finally overrides an earlier return**: `try: return 1 / finally:
   return 2` → function returns 2; likewise a `return` in finally swallows a pending
   exception (the exception does NOT propagate). CPython 3.14 emits a
-  SyntaxWarning at compile time for this pattern:
-  `<path>:L: SyntaxWarning: 'return' in a 'finally' block` + source line + caret
-  under `2`; antipythany MUST implement the override semantics and SHOULD emit the
-  identical warning (warning text itself is NOT gated for byte-exactness in v1).
+  SyntaxWarning at compile time for this pattern (observed stderr, two lines, no
+  marker line):
+  `<path>:<line>: SyntaxWarning: 'return' in a 'finally' block` then the source
+  line indented 2 spaces (`  return 2`); antipythany MUST implement the override
+  semantics and SHOULD emit the identical warning (warning text itself is NOT gated
+  for byte-exactness in v1).
   A return/raise/break inside `try` defers until finally completes (observed: `F`
   printed before `zd`).
 - **S-02-34 (MUST)** Implicit chaining: when a new exception is raised while another
@@ -261,10 +264,10 @@ byte-comparable. Exit codes for uncaught non-SystemExit exceptions are 1.
   Observed canonical single-link report (file `/p/x.py`, line 3 in `<module>`):
   ```
   Traceback (most recent call last):
-    File "/tmp/speccheck/anchors/A02-13.py", line 3, in <module>
+    File "/tmp/speccheck/anchors/A02-12.py", line 3, in <module>
       f(1, "x")
       ~^^^^^^^^
-    File "/tmp/speccheck/anchors/A02-13.py", line 2, in f
+    File "/tmp/speccheck/anchors/A02-12.py", line 2, in f
       return a + b
              ~~^~~
   TypeError: unsupported operand type(s) for +: 'int' and 'str'
@@ -329,10 +332,10 @@ byte-comparable. Exit codes for uncaught non-SystemExit exceptions are 1.
 - **S-02-42 (MUST)** Exceptions raised inside `__exit__` REPLACE a pending body
   exception and chain it as `__context__` (implicit chaining). An object without
   `__enter__` raises `TypeError: 'int' object does not support the context manager protocol (missed
- __exit__ method)` when neither dunder exists (CPython names `__exit__` first in
- the both-missing case); when only `__enter__` is missing:
- `TypeError: 'NoEnter' object does not support the context manager protocol (missed
- __enter__ method)` (observed both forms).
+  __exit__ method)` when neither dunder exists (CPython names `__exit__` first in
+  the both-missing case); when only `__enter__` is missing:
+  `TypeError: 'NoEnter' object does not support the context manager protocol (missed
+  __enter__ method)` (observed both forms).
   `with EXPR:` without `as` ignores the enter value.
 
 ---
@@ -350,46 +353,44 @@ between the two implementations.
    `x = "g"` / `def f():` / `    x = "l"` / `    def i():` / `        return x` /
    `    return i()` / `print(f(), x)` →
    stdout `l g⏎`, exit 0.
-2. `A02-02-default-eval-at-def.py` (S-02-7) —
-   `def mk(seq=[]):` / `    seq.append(1)` / `    return seq` / `print(mk(), mk())` →
-   stdout `[1, 1] [1, 1]⏎`, exit 0.
-3. `A02-03-args-full-form.py` (S-02-8) —
+2. `A02-02-def-defaults-and-params.py` (S-02-7/8) —
+   `def mk(seq=[]):` / `    seq.append(1)` / `    return seq` /
    `def f(a, b=2, *args, c, d=4, **kw):` / `    return (a, b, args, c, d, sorted(kw))` /
-   `print(f(1, 3, 5, c=7, e=8))` →
-   stdout `(1, 3, (5,), 7, 4, ['e'])⏎`, exit 0.
-4. `A02-04-missing-kwonly.py` (S-02-10, 35, 36, 37) —
+   `print(mk(), mk())` / `print(f(1, 3, 5, c=7, e=8))` →
+   stdout `[1, 1] [1, 1]⏎(1, 3, (5,), 7, 4, ['e'])⏎`, exit 0.
+3. `A02-03-missing-kwonly.py` (S-02-10, 35, 36, 37) —
    `def f(a, *, c):` / `    return c` / `f(1)` →
    stdout `` (empty), exit 1, stderr:
    ```
    Traceback (most recent call last):
-     File "/tmp/speccheck/anchors/A02-04.py", line 3, in <module>
+     File "/tmp/speccheck/anchors/A02-03.py", line 3, in <module>
        f(1)
        ~^^^
    TypeError: f() missing 1 required keyword-only argument: 'c'
    ```
    (path text = invocation path)
-5. `A02-05-loop-else.py` (S-02-16/18) —
+4. `A02-04-loop-else.py` (S-02-16/18) —
    `for i in range(3):` / `    if i == 1:` / `        break` / `else:` /
    `    print("no")` / `n = 0` / `while n < 2:` / `    n += 1` / `else:` /
    `    print("while-else", n)` →
    stdout `while-else 2⏎`, exit 0.
-6. `A02-06-yield-send-return.py` (S-02-21/22) —
+5. `A02-05-yield-send-return.py` (S-02-21/22) —
    `def g():` / `    x = yield 1` / `    return x + 1` / `gg = g()` /
    `print(next(gg))` / `try:` / `    gg.send(10)` / `except StopIteration as e:` /
    `    print("stop", e.value)` →
    stdout `1⏎stop 11⏎`, exit 0.
-7. `A02-07-pep479.py` (S-02-23) —
+6. `A02-06-pep479.py` (S-02-23) —
    `def g():` / `    yield next(iter([]))` / `try:` / `    list(g())` /
    `except RuntimeError as e:` /
    `    print(type(e).__name__, ":", e, "| cause:", type(e.__cause__).__name__)` →
    stdout `RuntimeError : generator raised StopIteration | cause: StopIteration⏎`,
    exit 0.
-8. `A02-08-implicit-chaining.py` (S-02-34/35/37) —
+7. `A02-07-implicit-chaining.py` (S-02-34/35/37) —
    `try:` / `    1 / 0` / `except ZeroDivisionError:` / `    int("nope")` →
    stdout ``, exit 1, stderr (byte-exact):
    ```
    Traceback (most recent call last):
-     File "/tmp/speccheck/anchors/A02-08.py", line 2, in <module>
+     File "/tmp/speccheck/anchors/A02-07.py", line 2, in <module>
        1 / 0
        ~~^~~
    ZeroDivisionError: division by zero
@@ -397,12 +398,12 @@ between the two implementations.
    During handling of the above exception, another exception occurred:
 
    Traceback (most recent call last):
-     File "/tmp/speccheck/anchors/A02-08.py", line 4, in <module>
+     File "/tmp/speccheck/anchors/A02-07.py", line 4, in <module>
        int("nope")
        ~~~^^^^^^^^
    ValueError: invalid literal for int() with base 10: 'nope'
    ```
-9. `A02-09-explicit-chaining.py` (S-02-34/35) —
+8. `A02-08-explicit-chaining.py` (S-02-34/35) —
    `raise ValueError("bad") from TypeError("cause")` →
    stdout ``, exit 1, stderr (byte-exact — note the cause has no Traceback header
    because it was never raised):
@@ -412,37 +413,37 @@ between the two implementations.
    The above exception was the direct cause of the following exception:
 
    Traceback (most recent call last):
-     File "/tmp/speccheck/anchors/A02-09.py", line 1, in <module>
+     File "/tmp/speccheck/anchors/A02-08.py", line 1, in <module>
        raise ValueError("bad") from TypeError("cause")
    ValueError: bad
    ```
-10. `A02-10-return-in-finally.py` (S-02-33) —
+9. `A02-09-return-in-finally.py` (S-02-33) —
     `def f():` / `    try:` / `        return 1` / `    finally:` / `        return 2` /
     `print(f())` →
     stdout `2⏎`, exit 0, stderr:
     ```
-    /tmp/speccheck/anchors/A02-10.py:5: SyntaxWarning: 'return' in a 'finally' block
+    /tmp/speccheck/anchors/A02-09.py:5: SyntaxWarning: 'return' in a 'finally' block
       return 2
     ```
-11. `A02-11-assert-message.py` (S-02-39/29) —
+10. `A02-10-assert-message.py` (S-02-39/29) —
     `try:` / `    assert False, "custom message"` / `except AssertionError as e:` /
     `    print("AssertionError:", e)` →
     stdout `AssertionError: custom message⏎`, exit 0.
-12. `A02-12-with-suppress.py` (S-02-40/41) —
+11. `A02-11-with-suppress.py` (S-02-40/41) —
     `class C:` / `    def __enter__(self):` / `        return "v"` /
     `    def __exit__(self, t, v, tb):` / `        print("exit:", t.__name__)` /
     `        return True` / `with C() as v:` / `    print("body", v)` /
     `    raise ValueError("x")` / `print("after")` →
     stdout `body v⏎exit: ValueError⏎after⏎`, exit 0.
-13. `A02-13-binary-op-tb-markers.py` (S-02-35/36/37/38) —
+12. `A02-12-binary-op-tb-markers.py` (S-02-35/36/37/38) —
     `def f(a, b):` / `    return a + b` / `f(1, "x")` →
     stdout ``, exit 1, stderr (byte-exact):
     ```
     Traceback (most recent call last):
-      File "/tmp/speccheck/anchors/A02-13.py", line 3, in <module>
+      File "/tmp/speccheck/anchors/A02-12.py", line 3, in <module>
         f(1, "x")
         ~^^^^^^^^
-      File "/tmp/speccheck/anchors/A02-13.py", line 2, in f
+      File "/tmp/speccheck/anchors/A02-12.py", line 2, in f
         return a + b
                ~~^~~
     TypeError: unsupported operand type(s) for +: 'int' and 'str'

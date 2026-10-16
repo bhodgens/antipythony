@@ -1,0 +1,28 @@
+{
+ "cites": [
+  "S-02-5",
+  "S-02-17"
+ ],
+ "cpython_3147_rc": 0,
+ "cpython_3147_stdout": "2\n",
+ "note": "scopes derived from spec rules S-02-1/2/3/5/12/13 (see plans/antipythany/tests/T-03-lowering-semantics.md table); stdout/rc observed from /opt/homebrew/bin/python3.14 3.14.7 running the corpus program",
+ "program": "c07_for_var_leaks",
+ "scopes": [
+  {
+   "cell": [],
+   "free": [],
+   "global": [
+    "print"
+   ],
+   "name": "module"
+  },
+  {
+   "cell": [],
+   "free": [],
+   "global": [
+    "range"
+   ],
+   "name": "f"
+  }
+ ]
+}

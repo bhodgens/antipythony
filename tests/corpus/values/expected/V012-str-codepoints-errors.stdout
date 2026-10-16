@@ -1,0 +1,4 @@
+4 5 False
+TypeError: 'str' object does not support item assignment
+IndexError: string index out of range
+TypeError: string indices must be integers, not 'float'

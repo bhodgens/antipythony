@@ -104,6 +104,7 @@ version = "0.1.0"
 name = "ap-parse"
 version = "0.1.0"
 dependencies = [
+ "ap-ir",
  "get-size2",
  "ruff_python_ast",
  "ruff_python_parser",

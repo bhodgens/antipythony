@@ -1,0 +1,31 @@
+{
+ "cites": [
+  "S-02-23"
+ ],
+ "cpython_3147_rc": 0,
+ "cpython_3147_stdout": "RuntimeError : generator raised StopIteration | cause: StopIteration\n",
+ "note": "scopes derived from spec rules S-02-1/2/3/5/12/13 (see plans/antipythany/tests/T-03-lowering-semantics.md table); stdout/rc observed from /opt/homebrew/bin/python3.14 3.14.7 running the corpus program",
+ "program": "c12_pep479",
+ "scopes": [
+  {
+   "cell": [],
+   "free": [],
+   "global": [
+    "RuntimeError",
+    "list",
+    "print",
+    "type"
+   ],
+   "name": "module"
+  },
+  {
+   "cell": [],
+   "free": [],
+   "global": [
+    "iter",
+    "next"
+   ],
+   "name": "g"
+  }
+ ]
+}

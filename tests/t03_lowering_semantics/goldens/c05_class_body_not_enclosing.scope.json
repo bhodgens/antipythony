@@ -1,0 +1,35 @@
+{
+ "cites": [
+  "S-02-5",
+  "S-02-1"
+ ],
+ "cpython_3147_rc": 0,
+ "cpython_3147_stdout": "NameError: name 'x' is not defined\n",
+ "note": "scopes derived from spec rules S-02-1/2/3/5/12/13 (see plans/antipythany/tests/T-03-lowering-semantics.md table); stdout/rc observed from /opt/homebrew/bin/python3.14 3.14.7 running the corpus program",
+ "program": "c05_class_body_not_enclosing",
+ "scopes": [
+  {
+   "cell": [],
+   "free": [],
+   "global": [
+    "NameError",
+    "print"
+   ],
+   "name": "module"
+  },
+  {
+   "cell": [],
+   "free": [],
+   "global": [],
+   "name": "C"
+  },
+  {
+   "cell": [],
+   "free": [],
+   "global": [
+    "x"
+   ],
+   "name": "C.m"
+  }
+ ]
+}

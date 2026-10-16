@@ -161,13 +161,16 @@ byte-diff of stdout, stderr, and exit code.
   `1 in {1.0}` is True; `{True} == {1}` is True. `{}` is an empty dict; the empty set
   is ONLY `set()`. Set iteration/repr element order is **UNSPECIFIED** (§7.4): tests
   MUST sort before comparing multi-element sets; single-element set repr is stable.
-  `{1: "x"}` dict-display cannot mix with set display. A set literal element that is
-  unhashable raises `TypeError: unhashable type: 'list'` (see S-01-39).
+  `{1: "x"}` dict-display cannot mix with set display. A set-display element that is
+  unhashable raises the set-element form (see S-01-26).
 - **S-01-26 (MUST)** `frozenset` is the immutable, hashable set:
   `frozenset` with elements `frozenset([1,2]) == frozenset([2,1])` and
   `hash(frozenset([1,2])) == hash(frozenset([2,1]))` in-process; a frozenset can be a
   dict key/set element. `frozenset()` reprs as `frozenset()`; empty `set()` reprs as
-  `set()`.
+  `set()`; non-empty frozenset reprs as `frozenset({1, 2})`.
+  Unhashable set DISPLAY elements raise
+  `TypeError: cannot use 'list' as a set element (unhashable type: 'list')` (the
+  set-element phrasing, distinct from the dict-key phrasing of S-01-24).
 
 ## 4. Truthiness
 

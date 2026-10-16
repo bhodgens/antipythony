@@ -1,0 +1,32 @@
+{
+ "cites": [
+  "S-02-30",
+  "S-02-32",
+  "S-02-33",
+  "S-02-28"
+ ],
+ "cpython_3147_rc": 1,
+ "cpython_3147_stdout": "fin\n",
+ "note": "scopes derived from spec rules S-02-1/2/3/5/12/13 (see plans/antipythany/tests/T-03-lowering-semantics.md table); stdout/rc observed from /opt/homebrew/bin/python3.14 3.14.7 running the corpus program",
+ "program": "c14_try_except_else_finally",
+ "scopes": [
+  {
+   "cell": [],
+   "free": [],
+   "global": [
+    "print"
+   ],
+   "name": "module"
+  },
+  {
+   "cell": [],
+   "free": [],
+   "global": [
+    "TypeError",
+    "ValueError",
+    "str"
+   ],
+   "name": "h"
+  }
+ ]
+}

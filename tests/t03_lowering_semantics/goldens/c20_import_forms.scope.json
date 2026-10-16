@@ -1,0 +1,23 @@
+{
+ "cites": [
+  "S-04-06",
+  "S-04-07",
+  "S-04-08"
+ ],
+ "cpython_3147_rc": 0,
+ "cpython_3147_stdout": "<class 'str'>\nFalse\n['a', 'b']\n",
+ "note": "scopes derived from spec rules S-02-1/2/3/5/12/13 (see plans/antipythany/tests/T-03-lowering-semantics.md table); stdout/rc observed from /opt/homebrew/bin/python3.14 3.14.7 running the corpus program",
+ "program": "c20_import_forms",
+ "scopes": [
+  {
+   "cell": [],
+   "free": [],
+   "global": [
+    "print",
+    "sorted",
+    "type"
+   ],
+   "name": "module"
+  }
+ ]
+}

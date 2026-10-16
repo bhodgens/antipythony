@@ -1,0 +1,4 @@
+42 7 -7 2 255 255 -43 35
+ValueError: invalid literal for int() with base 10: '12.5'
+ValueError: could not convert string to float: 'abc'
+1500.0 -inf 10.0

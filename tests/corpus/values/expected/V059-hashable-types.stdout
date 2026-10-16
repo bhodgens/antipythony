@@ -1,0 +1,6 @@
+[True, True, True, True, True, True, True, True, True]
+True
+list TypeError: unhashable type: 'list'
+dict TypeError: unhashable type: 'dict'
+set TypeError: unhashable type: 'set'
+nested TypeError: unhashable type: 'list'

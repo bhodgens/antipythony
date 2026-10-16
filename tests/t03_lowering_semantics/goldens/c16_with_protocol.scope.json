@@ -1,0 +1,50 @@
+{
+ "cites": [
+  "S-02-40",
+  "S-02-41"
+ ],
+ "cpython_3147_rc": 0,
+ "cpython_3147_stdout": "a swallow\n['enter:a', 'enter:swallow', 'exit:swallow:ValueError', 'exit:a:None']\n",
+ "note": "scopes derived from spec rules S-02-1/2/3/5/12/13 (see plans/antipythany/tests/T-03-lowering-semantics.md table); stdout/rc observed from /opt/homebrew/bin/python3.14 3.14.7 running the corpus program",
+ "program": "c16_with_protocol",
+ "scopes": [
+  {
+   "cell": [],
+   "free": [],
+   "global": [
+    "ValueError",
+    "print"
+   ],
+   "name": "module"
+  },
+  {
+   "cell": [],
+   "free": [],
+   "global": [],
+   "name": "CM"
+  },
+  {
+   "cell": [],
+   "free": [],
+   "global": [],
+   "name": "CM.__init__"
+  },
+  {
+   "cell": [],
+   "free": [],
+   "global": [
+    "log"
+   ],
+   "name": "CM.__enter__"
+  },
+  {
+   "cell": [],
+   "free": [],
+   "global": [
+    "log",
+    "str"
+   ],
+   "name": "CM.__exit__"
+  }
+ ]
+}

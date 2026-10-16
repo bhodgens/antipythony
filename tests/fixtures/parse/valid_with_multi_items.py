@@ -1,0 +1,2 @@
+with open("a") as a, open("b") as b, lock():
+    pass

@@ -1,0 +1,27 @@
+{
+ "cites": [
+  "S-02-8"
+ ],
+ "cpython_3147_rc": 0,
+ "cpython_3147_stdout": "(1, 3, (5,), 7, 4, ['e'])\n",
+ "note": "scopes derived from spec rules S-02-1/2/3/5/12/13 (see plans/antipythany/tests/T-03-lowering-semantics.md table); stdout/rc observed from /opt/homebrew/bin/python3.14 3.14.7 running the corpus program",
+ "program": "c09_args_kwargs_binding",
+ "scopes": [
+  {
+   "cell": [],
+   "free": [],
+   "global": [
+    "print"
+   ],
+   "name": "module"
+  },
+  {
+   "cell": [],
+   "free": [],
+   "global": [
+    "sorted"
+   ],
+   "name": "f"
+  }
+ ]
+}

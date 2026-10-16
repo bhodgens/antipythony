@@ -1,0 +1,3 @@
+TypeError: cannot use 'list' as a set element (unhashable type: 'list')
+TypeError: cannot use 'list' as a set element (unhashable type: 'list')
+TypeError: cannot use 'list' as a set element (unhashable type: 'list')

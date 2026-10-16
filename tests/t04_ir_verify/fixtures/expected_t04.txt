@@ -1,0 +1,36 @@
+# T-04 CPython-pinned expectations (generated, do not hand-edit)
+# reference: 3.14.7 (main, Aug  5 2026, 10:29:49) [Clang 21.0.0 (clang-2100.1.1.101)]  /opt/homebrew/opt/python@3.14/bin/python3.14
+# regenerate: /opt/homebrew/bin/python3.14 tests/t04_ir_verify/gen_expectations.py
+
+n01_closure_after_return.py	kind=clean	rc=0	class=None	line=None	col=None	msg=None
+n02_closure_cell_set_after_def.py	kind=clean	rc=0	class=None	line=None	col=None	msg=None
+n03_for_loop_var.py	kind=clean	rc=0	class=None	line=None	col=None	msg=None
+n04_try_except_assign.py	kind=clean	rc=0	class=None	line=None	col=None	msg=None
+n05_module_global_read.py	kind=clean	rc=0	class=None	line=None	col=None	msg=None
+n06_class_body_valid.py	kind=clean	rc=0	class=None	line=None	col=None	msg=None
+n07_lambda_late_binding.py	kind=clean	rc=0	class=None	line=None	col=None	msg=None
+n08_comprehension_first_iterable.py	kind=clean	rc=0	class=None	line=None	col=None	msg=None
+n09_identity_no_local_error.py	kind=clean-with-warning	rc=0	class=None	line=None	col=None	msg=None
+p01_unbound_basic.py	kind=runtime-traceback	rc=1	class=UnboundLocalError	line=2	col=11	msg="cannot access local variable 'z' where it is not associated with a value"
+p02_unbound_branch.py	kind=runtime-traceback	rc=1	class=UnboundLocalError	line=4	col=12	msg="cannot access local variable 'y' where it is not associated with a value"
+p03_unbound_while_body.py	kind=runtime-traceback	rc=1	class=UnboundLocalError	line=4	col=12	msg="cannot access local variable 'w' where it is not associated with a value"
+p04_aug_unbound.py	kind=runtime-traceback	rc=1	class=UnboundLocalError	line=2	col=5	msg="cannot access local variable 'x' where it is not associated with a value"
+p05_for_empty_iter.py	kind=runtime-traceback	rc=1	class=UnboundLocalError	line=4	col=12	msg="cannot access local variable 'k' where it is not associated with a value"
+p06_comprehension_scope_unbound.py	kind=runtime-traceback	rc=1	class=UnboundLocalError	line=2	col=22	msg="cannot access local variable 'src' where it is not associated with a value"
+p07_del_unbound_local.py	kind=runtime-traceback	rc=1	class=UnboundLocalError	line=2	col=9	msg="cannot access local variable 'q' where it is not associated with a value"
+p08_try_read_before_caught.py	kind=clean	rc=0	class=None	line=None	col=None	msg=None
+p08t_try_read_before_uncaught.py	kind=runtime-traceback	rc=1	class=UnboundLocalError	line=3	col=11	msg="cannot access local variable 'x' where it is not associated with a value"
+p09_global_nonlocal.py	kind=compile-syntaxerror	rc=1	class=SyntaxError	line=4	col=5	msg="name 'x' is nonlocal and global"
+p10_nonlocal_no_binding.py	kind=compile-syntaxerror	rc=1	class=SyntaxError	line=2	col=5	msg="no binding for nonlocal 'x' found"
+p11_nonlocal_at_module.py	kind=compile-syntaxerror	rc=1	class=SyntaxError	line=1	col=5	msg='nonlocal declaration not allowed at module level'
+p12_break_outside.py	kind=compile-syntaxerror	rc=1	class=SyntaxError	line=2	col=5	msg="'break' outside loop"
+p13_continue_outside.py	kind=compile-syntaxerror	rc=1	class=SyntaxError	line=2	col=5	msg="'continue' not properly in loop"
+p14_return_outside.py	kind=compile-syntaxerror	rc=1	class=SyntaxError	line=4	col=5	msg="'return' outside function"
+p15_import_star_in_fn.py	kind=compile-syntaxerror	rc=1	class=SyntaxError	line=2	col=20	msg='import * only allowed at module level'
+p16_star_in_class.py	kind=compile-syntaxerror	rc=1	class=SyntaxError	line=3	col=20	msg='import * only allowed at module level'
+p17_invalid_default.py	kind=compile-syntaxerror	rc=1	class=SyntaxError	line=1	col=12	msg='expected default value expression'
+p18_dup_param.py	kind=compile-syntaxerror	rc=1	class=SyntaxError	line=1	col=16	msg="duplicate argument 'x' in function definition"
+p19_del_then_read_module.py	kind=runtime-traceback	rc=1	class=NameError	line=3	col=11	msg="name 'x' is not defined"
+p20_closure_read_after_return.py	kind=runtime-traceback	rc=1	class=NameError	line=3	col=12	msg="cannot access free variable 'v' where it is not associated with a value in enclosing scope"
+p21_comprehension_no_leak.py	kind=runtime-traceback	rc=1	class=NameError	line=2	col=11	msg="name 'i' is not defined. Did you mean: 'id'?"
+p22_class_shadowing.py	kind=runtime-traceback	rc=1	class=NameError	line=4	col=12	msg="name 'x' is not defined. Did you mean: 'self.x'?"

@@ -16,3 +16,6 @@ ruff_text_size = "0.0.4"
 # Temporary: get-size2 0.10.3 expects compact_str 0.10 but ruff 0.0.4 pins 0.9;
 # 0.10.1 (pre-bump) still uses compact_str 0.9.
 get-size2 = "=0.10.1"
+
+[dev-dependencies]
+ap-ir = { path = "../ap-ir" }

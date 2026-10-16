@@ -1,0 +1,328 @@
+{
+  "generator": "tests/t04_ir_verify/gen_expectations.py",
+  "path_normalization": "absolute probe path replaced with <PROBE>",
+  "probes": {
+    "n01_closure_after_return.py": {
+      "error_class": null,
+      "expected_col": null,
+      "expected_line": null,
+      "kind": "clean",
+      "message": null,
+      "rc": 0,
+      "stderr": "",
+      "stdout": "1\n"
+    },
+    "n02_closure_cell_set_after_def.py": {
+      "error_class": null,
+      "expected_col": null,
+      "expected_line": null,
+      "kind": "clean",
+      "message": null,
+      "rc": 0,
+      "stderr": "",
+      "stdout": "1\n"
+    },
+    "n03_for_loop_var.py": {
+      "error_class": null,
+      "expected_col": null,
+      "expected_line": null,
+      "kind": "clean",
+      "message": null,
+      "rc": 0,
+      "stderr": "",
+      "stdout": "2\n"
+    },
+    "n04_try_except_assign.py": {
+      "error_class": null,
+      "expected_col": null,
+      "expected_line": null,
+      "kind": "clean",
+      "message": null,
+      "rc": 0,
+      "stderr": "",
+      "stdout": "0\n"
+    },
+    "n05_module_global_read.py": {
+      "error_class": null,
+      "expected_col": null,
+      "expected_line": null,
+      "kind": "clean",
+      "message": null,
+      "rc": 0,
+      "stderr": "",
+      "stdout": "7\n"
+    },
+    "n06_class_body_valid.py": {
+      "error_class": null,
+      "expected_col": null,
+      "expected_line": null,
+      "kind": "clean",
+      "message": null,
+      "rc": 0,
+      "stderr": "",
+      "stdout": "10 11\n"
+    },
+    "n07_lambda_late_binding.py": {
+      "error_class": null,
+      "expected_col": null,
+      "expected_line": null,
+      "kind": "clean",
+      "message": null,
+      "rc": 0,
+      "stderr": "",
+      "stdout": "2\n"
+    },
+    "n08_comprehension_first_iterable.py": {
+      "error_class": null,
+      "expected_col": null,
+      "expected_line": null,
+      "kind": "clean",
+      "message": null,
+      "rc": 0,
+      "stderr": "",
+      "stdout": "[0, 1, 2, 3, 4]\n"
+    },
+    "n09_identity_no_local_error.py": {
+      "error_class": null,
+      "expected_col": null,
+      "expected_line": null,
+      "kind": "clean-with-warning",
+      "message": null,
+      "rc": 0,
+      "stderr": "<PROBE>:3: SyntaxWarning: \"is\" with 'int' literal. Did you mean \"==\"?\n  if 1 is True:\n",
+      "stdout": "True\n"
+    },
+    "p01_unbound_basic.py": {
+      "error_class": "UnboundLocalError",
+      "expected_col": 11,
+      "expected_line": 2,
+      "kind": "runtime-traceback",
+      "message": "cannot access local variable 'z' where it is not associated with a value",
+      "rc": 1,
+      "stderr": "Traceback (most recent call last):\n  File \"<PROBE>\", line 5, in <module>\n    f()\n    ~^^\n  File \"<PROBE>\", line 2, in f\n    print(z)\n          ^\nUnboundLocalError: cannot access local variable 'z' where it is not associated with a value\n",
+      "stdout": ""
+    },
+    "p02_unbound_branch.py": {
+      "error_class": "UnboundLocalError",
+      "expected_col": 12,
+      "expected_line": 4,
+      "kind": "runtime-traceback",
+      "message": "cannot access local variable 'y' where it is not associated with a value",
+      "rc": 1,
+      "stderr": "Traceback (most recent call last):\n  File \"<PROBE>\", line 6, in <module>\n    f(False)\n    ~^^^^^^^\n  File \"<PROBE>\", line 4, in f\n    return y\n           ^\nUnboundLocalError: cannot access local variable 'y' where it is not associated with a value\n",
+      "stdout": ""
+    },
+    "p03_unbound_while_body.py": {
+      "error_class": "UnboundLocalError",
+      "expected_col": 12,
+      "expected_line": 4,
+      "kind": "runtime-traceback",
+      "message": "cannot access local variable 'w' where it is not associated with a value",
+      "rc": 1,
+      "stderr": "Traceback (most recent call last):\n  File \"<PROBE>\", line 6, in <module>\n    f(False)\n    ~^^^^^^^\n  File \"<PROBE>\", line 4, in f\n    return w\n           ^\nUnboundLocalError: cannot access local variable 'w' where it is not associated with a value\n",
+      "stdout": ""
+    },
+    "p04_aug_unbound.py": {
+      "error_class": "UnboundLocalError",
+      "expected_col": 5,
+      "expected_line": 2,
+      "kind": "runtime-traceback",
+      "message": "cannot access local variable 'x' where it is not associated with a value",
+      "rc": 1,
+      "stderr": "Traceback (most recent call last):\n  File \"<PROBE>\", line 4, in <module>\n    f()\n    ~^^\n  File \"<PROBE>\", line 2, in f\n    x += 1\n    ^\nUnboundLocalError: cannot access local variable 'x' where it is not associated with a value\n",
+      "stdout": ""
+    },
+    "p05_for_empty_iter.py": {
+      "error_class": "UnboundLocalError",
+      "expected_col": 12,
+      "expected_line": 4,
+      "kind": "runtime-traceback",
+      "message": "cannot access local variable 'k' where it is not associated with a value",
+      "rc": 1,
+      "stderr": "Traceback (most recent call last):\n  File \"<PROBE>\", line 6, in <module>\n    f()\n    ~^^\n  File \"<PROBE>\", line 4, in f\n    return k\n           ^\nUnboundLocalError: cannot access local variable 'k' where it is not associated with a value\n",
+      "stdout": ""
+    },
+    "p06_comprehension_scope_unbound.py": {
+      "error_class": "UnboundLocalError",
+      "expected_col": 22,
+      "expected_line": 2,
+      "kind": "runtime-traceback",
+      "message": "cannot access local variable 'src' where it is not associated with a value",
+      "rc": 1,
+      "stderr": "Traceback (most recent call last):\n  File \"<PROBE>\", line 6, in <module>\n    f()\n    ~^^\n  File \"<PROBE>\", line 2, in f\n    ys = [v for v in src]\n                     ^^^\nUnboundLocalError: cannot access local variable 'src' where it is not associated with a value\n",
+      "stdout": ""
+    },
+    "p07_del_unbound_local.py": {
+      "error_class": "UnboundLocalError",
+      "expected_col": 9,
+      "expected_line": 2,
+      "kind": "runtime-traceback",
+      "message": "cannot access local variable 'q' where it is not associated with a value",
+      "rc": 1,
+      "stderr": "Traceback (most recent call last):\n  File \"<PROBE>\", line 4, in <module>\n    f()\n    ~^^\n  File \"<PROBE>\", line 2, in f\n    del q\n        ^\nUnboundLocalError: cannot access local variable 'q' where it is not associated with a value\n",
+      "stdout": ""
+    },
+    "p08_try_read_before_caught.py": {
+      "error_class": null,
+      "expected_col": null,
+      "expected_line": null,
+      "kind": "clean",
+      "message": null,
+      "rc": 0,
+      "stderr": "",
+      "stdout": ""
+    },
+    "p08t_try_read_before_uncaught.py": {
+      "error_class": "UnboundLocalError",
+      "expected_col": 11,
+      "expected_line": 3,
+      "kind": "runtime-traceback",
+      "message": "cannot access local variable 'x' where it is not associated with a value",
+      "rc": 1,
+      "stderr": "Traceback (most recent call last):\n  File \"<PROBE>\", line 8, in <module>\n    f()\n    ~^^\n  File \"<PROBE>\", line 3, in f\n    print(x)\n          ^\nUnboundLocalError: cannot access local variable 'x' where it is not associated with a value\n",
+      "stdout": ""
+    },
+    "p09_global_nonlocal.py": {
+      "error_class": "SyntaxError",
+      "expected_col": 5,
+      "expected_line": 4,
+      "kind": "compile-syntaxerror",
+      "message": "name 'x' is nonlocal and global",
+      "rc": 1,
+      "stderr": "  File \"<PROBE>\", line 4\n    global x\n    ^^^^^^^^\nSyntaxError: name 'x' is nonlocal and global\n",
+      "stdout": ""
+    },
+    "p10_nonlocal_no_binding.py": {
+      "error_class": "SyntaxError",
+      "expected_col": 5,
+      "expected_line": 2,
+      "kind": "compile-syntaxerror",
+      "message": "no binding for nonlocal 'x' found",
+      "rc": 1,
+      "stderr": "  File \"<PROBE>\", line 2\n    nonlocal x\n    ^^^^^^^^^^\nSyntaxError: no binding for nonlocal 'x' found\n",
+      "stdout": ""
+    },
+    "p11_nonlocal_at_module.py": {
+      "error_class": "SyntaxError",
+      "expected_col": 5,
+      "expected_line": 1,
+      "kind": "compile-syntaxerror",
+      "message": "nonlocal declaration not allowed at module level",
+      "rc": 1,
+      "stderr": "  File \"<PROBE>\", line 1\n    nonlocal x\n    ^^^^^^^^^^\nSyntaxError: nonlocal declaration not allowed at module level\n",
+      "stdout": ""
+    },
+    "p12_break_outside.py": {
+      "error_class": "SyntaxError",
+      "expected_col": 5,
+      "expected_line": 2,
+      "kind": "compile-syntaxerror",
+      "message": "'break' outside loop",
+      "rc": 1,
+      "stderr": "  File \"<PROBE>\", line 2\n    break\n    ^^^^^\nSyntaxError: 'break' outside loop\n",
+      "stdout": ""
+    },
+    "p13_continue_outside.py": {
+      "error_class": "SyntaxError",
+      "expected_col": 5,
+      "expected_line": 2,
+      "kind": "compile-syntaxerror",
+      "message": "'continue' not properly in loop",
+      "rc": 1,
+      "stderr": "  File \"<PROBE>\", line 2\n    continue\n    ^^^^^^^^\nSyntaxError: 'continue' not properly in loop\n",
+      "stdout": ""
+    },
+    "p14_return_outside.py": {
+      "error_class": "SyntaxError",
+      "expected_col": 5,
+      "expected_line": 4,
+      "kind": "compile-syntaxerror",
+      "message": "'return' outside function",
+      "rc": 1,
+      "stderr": "  File \"<PROBE>\", line 4\n    return 1\n    ^^^^^^^^\nSyntaxError: 'return' outside function\n",
+      "stdout": ""
+    },
+    "p15_import_star_in_fn.py": {
+      "error_class": "SyntaxError",
+      "expected_col": 20,
+      "expected_line": 2,
+      "kind": "compile-syntaxerror",
+      "message": "import * only allowed at module level",
+      "rc": 1,
+      "stderr": "  File \"<PROBE>\", line 2\n    from os import *\n                   ^\nSyntaxError: import * only allowed at module level\n",
+      "stdout": ""
+    },
+    "p16_star_in_class.py": {
+      "error_class": "SyntaxError",
+      "expected_col": 20,
+      "expected_line": 3,
+      "kind": "compile-syntaxerror",
+      "message": "import * only allowed at module level",
+      "rc": 1,
+      "stderr": "  File \"<PROBE>\", line 3\n    from os import *\n                   ^\nSyntaxError: import * only allowed at module level\n",
+      "stdout": ""
+    },
+    "p17_invalid_default.py": {
+      "error_class": "SyntaxError",
+      "expected_col": 12,
+      "expected_line": 1,
+      "kind": "compile-syntaxerror",
+      "message": "expected default value expression",
+      "rc": 1,
+      "stderr": "  File \"<PROBE>\", line 1\n    def f(x=):\n           ^\nSyntaxError: expected default value expression\n",
+      "stdout": ""
+    },
+    "p18_dup_param.py": {
+      "error_class": "SyntaxError",
+      "expected_col": 16,
+      "expected_line": 1,
+      "kind": "compile-syntaxerror",
+      "message": "duplicate argument 'x' in function definition",
+      "rc": 1,
+      "stderr": "  File \"<PROBE>\", line 1\n    def f(x=1, x=2):\n               ^\nSyntaxError: duplicate argument 'x' in function definition\n",
+      "stdout": ""
+    },
+    "p19_del_then_read_module.py": {
+      "error_class": "NameError",
+      "expected_col": 11,
+      "expected_line": 3,
+      "kind": "runtime-traceback",
+      "message": "name 'x' is not defined",
+      "rc": 1,
+      "stderr": "Traceback (most recent call last):\n  File \"<PROBE>\", line 3, in <module>\n    print(x)\n          ^\nNameError: name 'x' is not defined\n",
+      "stdout": ""
+    },
+    "p20_closure_read_after_return.py": {
+      "error_class": "NameError",
+      "expected_col": 12,
+      "expected_line": 3,
+      "kind": "runtime-traceback",
+      "message": "cannot access free variable 'v' where it is not associated with a value in enclosing scope",
+      "rc": 1,
+      "stderr": "Traceback (most recent call last):\n  File \"<PROBE>\", line 9, in <module>\n    print(g())\n          ~^^\n  File \"<PROBE>\", line 3, in get\n    return v\n           ^\nNameError: cannot access free variable 'v' where it is not associated with a value in enclosing scope\n",
+      "stdout": ""
+    },
+    "p21_comprehension_no_leak.py": {
+      "error_class": "NameError",
+      "expected_col": 11,
+      "expected_line": 2,
+      "kind": "runtime-traceback",
+      "message": "name 'i' is not defined. Did you mean: 'id'?",
+      "rc": 1,
+      "stderr": "Traceback (most recent call last):\n  File \"<PROBE>\", line 2, in <module>\n    print(i)\n          ^\nNameError: name 'i' is not defined. Did you mean: 'id'?\n",
+      "stdout": "[0, 1, 2]\n"
+    },
+    "p22_class_shadowing.py": {
+      "error_class": "NameError",
+      "expected_col": 12,
+      "expected_line": 4,
+      "kind": "runtime-traceback",
+      "message": "name 'x' is not defined. Did you mean: 'self.x'?",
+      "rc": 1,
+      "stderr": "Traceback (most recent call last):\n  File \"<PROBE>\", line 6, in <module>\n    C().m()\n    ~~~~~^^\n  File \"<PROBE>\", line 4, in m\n    return x\n           ^\nNameError: name 'x' is not defined. Did you mean: 'self.x'?\n",
+      "stdout": ""
+    }
+  },
+  "python_executable": "/opt/homebrew/opt/python@3.14/bin/python3.14",
+  "python_version": "3.14.7 (main, Aug  5 2026, 10:29:49) [Clang 21.0.0 (clang-2100.1.1.101)]"
+}
