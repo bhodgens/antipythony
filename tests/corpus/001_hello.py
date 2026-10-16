@@ -1,3 +1,4 @@
+# Cites: S-01-1 (arbitrary-precision int), S-06-* (stdout byte gate)
 print("hello world")
 print(2**100)
 print(6 * 7)

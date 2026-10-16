@@ -1,3 +1,4 @@
+# Cites: S-01-* (repr of int/float/str/containers), S-06-* (stdout byte gate)
 print(repr(42))
 print(repr(3.14))
 print(repr("hello"))
