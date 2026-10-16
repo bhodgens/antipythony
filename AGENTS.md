@@ -1,0 +1,45 @@
+# ANTIPYTHANY - Project Context (auto-loaded by Hermes from this repo)
+
+## What this project is
+Python 3.14-compatible runtime and compiler, written in Rust. Compiles Python to
+(1) single static native binaries and (2) WasmGC modules. Tracing GC (MMTk), no
+GIL, uv-backed deps at build time. Byte-exact differential conformance vs CPython
+3.14.0 is the exit gate for every phase. Working name: antipythany (repo dir:
+~/git/anticoagulant).
+
+## Where the truth lives
+- Plan tree: `plans/antipythany/` - master.md is the contract; one orchestrator per
+  plan (00 foundation, 01 frontend/IR, 02 native, 03 wasm, 04 packaging,
+  10 C-extensions hail mary); tests/README.md is the separate-authorship test track.
+- Locked decisions are in master.md. Do not re-litigate them in leaves.
+- This file: operational state + durable conventions only.
+
+## License state
+- Project: Apache-2.0 WITH LLVM-exception.
+- pon (can1357/Can Bölük, me@can.ac): LICENSE GRANTED via email, 2026-10.
+  BEFORE first pon-derived commit: (1) record exact granted terms in LICENSES/,
+  (2) cargo-deny allowlist entry if bespoke, (3) attribution headers on adapted
+  files. If the grant is private/use-only, isolate in contrib/pon-derived/.
+  Levers 01.03 (study pon-ir lowering) and 02.05 (study pon tier-1 inline-cache/
+  OSR/deopt) - both leaves carry PON LICENSE GRANTED pre-tasks.
+- Nuitka: AGPL - subprocess tool only, never vendor/link.
+- p2w: design reference only (wrong language).
+
+## Execution protocol (binding)
+- Leaves fit one 256K-context agent. Test leaves are written from the spec pack
+  (docs/spec/), by different agents, in a separate pass - never from impl code.
+- Corpus only grows. Never weaken a test to pass a gate.
+- Orchestrator (main model) reviews in-session; parents determine completion.
+- "Commit then implement" / "fix all" = pre-authorized per user convention.
+- Specs before code: nothing dispatches from Plans 01+ until 00.05 spec pack lands.
+
+## Current status (update this block when it changes)
+- Plan tree written. Nothing implemented yet.
+- Ecosystem targets locked (master.md tier table): scrapy T1, pytest T2,
+  hermes-agent T3, fastapi T4, comfyui T5 (gates on Plan 10). TEST DATA ONLY -
+  never published, no license constraints apply, comfyui included without
+  restriction.
+- pydantic-core (Rust extension) is the recurring blocker for T3/T4 - strongest
+  single case for Plan 10 after basic C-API viability.
+- Next: Plan 00 (scaffold, attribution gate, compat contract, conformance harness,
+  spec pack). Spec pack unblocks all parallel test agents.
