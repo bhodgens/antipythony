@@ -11,6 +11,7 @@ members = [
     "crates/ap-host",
     "crates/ap-cli",
     "crates/ap-conform",
+    "crates/xtask",
 ]
 
 [workspace.package]

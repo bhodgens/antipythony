@@ -1,0 +1,63 @@
+# cargo-deny configuration for antipythany.
+#
+# Run: `cargo deny check licenses` (or `cargo deny check` for everything).
+# The xtask notices gate (`cargo run -p xtask -- notices --check`) covers the
+# THIRD_PARTY_NOTICES freshness; this file covers license policy.
+#
+# Policy: permissive licenses only in the dependency graph. Project license is
+# Apache-2.0 WITH LLVM-exception.
+#
+# NOTE: Nuitka (AGPL-3.0) is a subprocess tool ONLY in this project - it is
+# never a Cargo dependency and must never appear in Cargo.lock. If a package
+# named `nuitka` ever shows up here, that is a bug: stop and investigate.
+#
+# Documented dev-only exceptions (build/test tooling only, never linked into
+# shipped artifacts) go in the `exceptions` table below with a comment naming
+# the leaf that documented them.
+
+[graph]
+all-features = true
+
+[licenses]
+version = 2
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "BSD-2-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0",
+]
+deny = [
+    "GPL-1.0",
+    "GPL-2.0",
+    "GPL-3.0",
+    "AGPL-1.0",
+    "AGPL-3.0",
+    "LGPL-2.0",
+    "LGPL-2.1",
+    "LGPL-3.0",
+    "MPL-1.1",
+    "MPL-2.0",
+    "CC-BY-SA-1.0",
+    "CC-BY-SA-2.0",
+    "CC-BY-SA-2.5",
+    "CC-BY-SA-3.0",
+    "CC-BY-SA-4.0",
+    "SSPL-1.0",
+    "EUPL-1.1",
+    "EUPL-1.2",
+]
+# MPL-2.0 is file-level copyleft and normally compatible, but it is denied here
+# on purpose: any MPL file pulled into this tree must be a deliberate, reviewed
+# decision, not something a transitive dep drags in silently. If a needed crate
+# is MPL-2.0, add an explicit exception entry with justification.
+confidence-threshold = 0.93
+
+[[licenses.exceptions]]
+# Documented dev-only exceptions go here. Empty for now.
+allow = []
+crate = ""
