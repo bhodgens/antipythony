@@ -87,6 +87,25 @@ Parent-verified dispositions:
   intentional scaffolding ("Empty for now" comment) - same class the
   auditor itself marked clean elsewhere.
 
+## Addendum: auditor 10 recovery (post-report)
+
+Auditor 10 (02.03/02.08-lite/license commits + sibling WIP review) failed
+the output schema; findings survived at /tmp/ap-audit-10/bughunt-audit-findings.json.
+Parent-verified dispositions:
+- HIGH REFUTED: `parent_of()` catch-all `_ => Some("Exception")` in
+  exc_hier.rs. Probes at HEAD match CPython: `class MyError(BaseException)`
+  is NOT caught by `except Exception`, and isinstance/issubclass give
+  False. The except path routes user classes through the real MRO
+  (legacy_exc_is_subclass is LEGACY_KNOWN-guarded, interp.rs:1017); the
+  table path only sees builtin names.
+- LOW CONFIRMED + upgraded: LICENSES/README-vendored-stdlib.md promised a
+  PSF entry in THIRD_PARTY_NOTICES "via the xtask static-notices list" -
+  the mechanism never existed. Implemented: xtask static_entries() adds
+  'CPython vendored stdlib v3.14 / PSF-2.0' when vendored_stdlib/ exists
+  (commit 1936698). Verified both states green (150/151 entries).
+- INFO/clean: MRO C3 linearization correct; MRO error messages match
+  CPython wording; sibling-WIP disclosures match this report's ledger.
+
 ## Post-wave git state (disclosure)
 
 A sibling agent kept working in the main checkout during and after this
@@ -100,7 +119,11 @@ construction. The sibling's stack is preserved on branch `wip-02.04a`
 detached sibling line with further uncommitted WIP (importer.rs,
 vendored_stdlib/collections.py, functools.py) - left untouched.
 Reconcile: merge wip-02.04a into main (or rebase) once the sibling's
-WIP lands; then re-run the three gates on the merged tree.
+WIP lands; then re-run the three gates on the merged tree. NOTE: after
+the merge, `notices --check` will report drift on purpose - the new
+xtask static_entries() adds the PSF entry once vendored_stdlib/ exists;
+run `cargo run -p xtask -- notices` and commit the result as part of
+the merge.
 
 ## Disclosure ledger (what was NOT verified / NOT touched)
 
