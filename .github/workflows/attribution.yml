@@ -1,0 +1,17 @@
+name: attribution-gate
+# master.md:45 promises: "CI gate: cargo-deny + cargo-about generate
+# THIRD_PARTY_NOTICES; release build fails if the file is stale."
+# This workflow is that gate (leaf 00.04). Auditor 1 (bughunt 2026-10-17)
+# found the gate declared in xtask + commit messages but never invoked.
+on:
+  push:
+  pull_request:
+
+jobs:
+  notices-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: THIRD_PARTY_NOTICES drift check
+        run: cargo run -p xtask -- notices --check
