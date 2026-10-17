@@ -1,0 +1,18 @@
+# tiny-pure: fixture package for T-14 (gates 04.01). A minimal PURE-Python
+# distribution used to exercise `antipythany add file:<this dir>` (or an
+# equivalent local path form) without any network fetch. If the CLI's `add`
+# cannot install from a local path, that is recorded as CONTRACT-GAP G-6 —
+# the spec's `add <name>` example is registry-only.
+#
+# Zero runtime dependencies by design; single module; no native components
+# (spec 05 S-05-2 purity: nothing here may import a C extension).
+
+[project]
+name = "tiny-pure"
+version = "0.1.0"
+description = "T-14 fixture: pure-Python local dep, no network needed"
+requires-python = ">=3.14"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"

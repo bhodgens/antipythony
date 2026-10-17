@@ -1,0 +1,27 @@
+# T-14 EXPECTATION FILE — the shape antipythany.lock must have after
+# `antipythany add rich` (Plan 04 §Design: "antipythany.toml (project deps) +
+# antipythany.lock"; leaf 04.01: "uv subprocess wrapper ... resolve+lock").
+# Oracle file: parsed with tomllib by the schema test, compared key-path-wise
+# against the real lock once the CLI exists.
+#
+# CONTRACT-GAP G-1: lock field names unpinned by the leaf. The MUST-have
+# semantics taken from the orchestrator text: (1) resolution came from uv, so
+# a provenance/uv marker is assertable; (2) the lock's hash feeds the build
+# cache key (04.02 "lockfile hash"), so the lock must be content-identical
+# across re-resolutions of the same input (determinism, checked by the xfail
+# re-add test); (3) pins exact versions — "resolve+lock" means no floating
+# ranges in the lock.
+#
+# NOTE: no integrity-hash *field names* are asserted (G-1: unpinned). The test
+# asserts *presence of pins* structurally: every recorded package carries a
+# non-empty version string and the package name matches a requested dep.
+
+[metadata]
+lock_version = 1        # versioning field for a lock that later evolves (G-1)
+created_by = "uv"       # resolution+fetching shells out to uv (Plan 04 §Design)
+
+[[package]]
+name = "rich"
+version = "0.0.0"       # pin required; concrete value is environment-derived,
+                        # so tests assert non-empty + exact-match across runs,
+                        # not this placeholder value
