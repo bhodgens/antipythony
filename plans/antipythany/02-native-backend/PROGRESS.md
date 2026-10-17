@@ -27,3 +27,24 @@
 
 ## Test leaf T-05 - DISPATCHED (running, separate authorship)
 - Probing reference CPython for pinned bytes is allowed (reference, not impl).
+
+## F-string bug hunt (parallel track) - COMPLETE (committed 0992ee9)
+- BUG-1 CONFIRMED (medium): `{x=}` debug forms - debug_text dropped at
+  lowering (f"{x=}" -> IR f"{x}"); implied-!r rule also lost. Fix: add
+  debug_text to FStrPart::Interp + read it in lower_interp_element + pon's
+  implied-r rule. Repros f17-f21.
+- pon parts-not-elements: NOT a bug in us (verified).
+- DUMP-1 cosmetic: multiline Lit renders raw newlines (dump-only).
+- FINDING-3 (bigger than f-strings): verify.rs walrus binds are indefinite
+  (scope.bind, not bind_definite) - every walrus-then-read false-flags
+  NameError. One-line fix queued with BUG-1.
+- Battery: 35 cases, zero panics; corpus slice 35+105 files pinned from live
+  3.14.7; gate suite 107/107 green.
+- NOTE: agent believed s005 open - stale (corrected in f0a4c22); AGENTS.md
+  wording misled it.
+
+## QUEUE (sequenced)
+1. Fix leaf: BUG-1 (debug_text) + FINDING-3 (walrus bind_definite) - touches
+   lowering.rs + verify.rs + ap-ir expr.rs; zero overlap with 02.01's
+   ap-obj files; dispatch now in parallel.
+2. 02.02 tier-0 executor + T-06 after 02.01 lands.
