@@ -70,6 +70,23 @@ fixed in wip-02.04a commit 7238cc5: docs/pon-study-lowering.md still
 flagged the ruff "parts-not-elements" gotcha as a possible live bug;
 0992ee9 resolved it as not-a-bug.
 
+## Addendum: auditor 1 recovery (post-report)
+
+Auditor 1 (scaffold commits 4f3d033/d01d477/24c97ed) also failed the
+output schema; findings survived on disk (/tmp/ap-audit-1/audit_results.json).
+Parent-verified dispositions:
+- HIGH CONFIRMED: `notices --check` was declared a "CI gate" (xtask
+  docstring, master.md:45, commit messages) but NO CI config existed -
+  the gate only ran when someone remembered. This wave proved the
+  failure mode (notices stale at HEAD). Fixed: .github/workflows/
+  attribution.yml (commit 4f99399).
+- MEDIUM CONFIRMED: LICENSES/ lacked the MIT/Apache pon entries AGENTS.md
+  requires before the first pon-derived commit. Pre-staged from the
+  license-pinned clone (commit 630acea).
+- LOW REFUTED: empty `[[licenses.exceptions]]` in deny.toml is
+  intentional scaffolding ("Empty for now" comment) - same class the
+  auditor itself marked clean elsewhere.
+
 ## Post-wave git state (disclosure)
 
 A sibling agent kept working in the main checkout during and after this
