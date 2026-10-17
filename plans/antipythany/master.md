@@ -33,14 +33,14 @@ phase.
   - RustPython (MIT, Rust) - notice; fallback donor only
   - abilian/p2w (MIT, Python) - DESIGN REFERENCE ONLY (wrong language, own IR); no code
   - kohebi spec docs (Apache-2.0) - design reference
-  - pon (LICENSE GRANTED by Can Bölük, me@can.ac - email correspondence, received
-    2026-10). pon code MAY be studied and adapted per the granted terms. TODO before
-    first pon-derived commit: (1) record the exact license text/terms in
-    LICENSES/pon-License (or confirm it is MIT/Apache so THIRD_PARTY_NOTICES covers
-    it), (2) cargo-deny allowlist entry if it is a bespoke grant, (3) attribution
-    header on any adapted file. If the grant is private/use-only rather than an OSS
-    license, pon-derived code must be isolated in contrib/pon-derived/ and kept out
-    of redistributable artifacts until terms allow.
+  - pon (DUAL LICENSE MIT / Apache-2.0 - granted by Can Bölük, me@can.ac, email
+    correspondence 2026-10; confirmed by user as "MIT/Apache 2.0, do with it as
+    we please"). pon code MAY be read, studied, adapted, and vendored with
+    attribution. Obligations before first pon-derived commit: (1) record both
+    license texts in LICENSES/ (or confirm THIRD_PARTY_NOTICES covers via
+    standard MIT/Apache entries), (2) attribution header on adapted files
+    ("adapted from pon, Copyright Can Bölük, MIT/Apache-2.0"), (3) cargo-deny
+    entry not needed (standard licenses already allow-listed).
   - Nuitka (AGPL-3.0) - external subprocess tool only, never vendored or linked
 - CI gate: `cargo-deny` + `cargo-about` generate `THIRD_PARTY_NOTICES`; release build
   fails if the file is stale. Leaf 00.04.

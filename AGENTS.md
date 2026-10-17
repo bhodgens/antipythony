@@ -16,12 +16,13 @@ GIL, uv-backed deps at build time. Byte-exact differential conformance vs CPytho
 
 ## License state
 - Project: Apache-2.0 WITH LLVM-exception.
-- pon (can1357/Can Bölük, me@can.ac): LICENSE GRANTED via email, 2026-10.
-  BEFORE first pon-derived commit: (1) record exact granted terms in LICENSES/,
-  (2) cargo-deny allowlist entry if bespoke, (3) attribution headers on adapted
-  files. If the grant is private/use-only, isolate in contrib/pon-derived/.
-  Levers 01.03 (study pon-ir lowering) and 02.05 (study pon tier-1 inline-cache/
-  OSR/deopt) - both leaves carry PON LICENSE GRANTED pre-tasks.
+- pon (can1357/Can Bölük, me@can.ac): DUAL LICENSE MIT/Apache-2.0 GRANTED via
+  email, 2026-10; confirmed by user - full code donor, adapt/vendor freely with
+  attribution. BEFORE first pon-derived commit: (1) LICENSES/ entries (standard
+  MIT + Apache texts), (2) attribution headers on adapted files. Levers
+  01.03 (pon-ir lowering study) and 02.05 (pon tier-1 inline-cache/OSR/deopt
+  study) - the 01.03 pre-task was skipped when no pon clone existed; dispatch a
+  standalone pon-study task before Plan 02 dispatch.
 - Nuitka: AGPL - subprocess tool only, never vendor/link.
 - p2w: design reference only (wrong language).
 
