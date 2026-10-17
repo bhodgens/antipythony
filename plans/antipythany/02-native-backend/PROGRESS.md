@@ -46,10 +46,21 @@
   BUG-C yield from (implement delegation; document return-value choice).
 - Baseline for fix comparison: fstrings 33/35, values 43/47, hello 2/2.
 
+## Leaf 02.02 - tier-0 executor - COMPLETE (committed e532638)
+- All fixes verified firsthand: 24/24 differential tests green, 5/5 fresh
+  smoke probes byte-match CPython (recursion, mutual, curried closure,
+  shared-cell nonlocal factory, yield from). Rust 146/0, pytest 1223/0
+  (s005 known), corpus baseline held: fstrings 33/35, values 43/47, hello 2/2.
+- Notable root causes for the record: module-fn defs bound via store_local
+  (module frames keep locals empty -> invisible); cell-classified params
+  never re-seated into cells; frees not propagated through intermediate
+  scopes (CPython symtable rule); nonlocal cell wiring omitted.
+- KNOWN/QUEUED: debug-build stack overflow ~93 chained calls (02.05 item -
+  run interpreter on worker thread or bump stack); V016 surrogate escapes
+  (str-model follow-up); match class-patterns (02.03).
+
 ## QUEUE
-1. 02.02 fix pass (running) -> commit 02.02 after green.
-2. 02.03 classes/protocols + T-06 (unblocks V048/V050/V066, f12).
-3. 02.04 GC (MMTk) + 02.08 stdlib (unblocks stdlib slice).
-4. 02.05 tier-1 (SPLIT per risks).
-5. V016 surrogates: needs surrogate-escape str handling decision - queue with
-   02.08 or str-model follow-up.
+1. 02.03 classes/protocols + T-06 - DISPATCH NEXT (unblocks V048/V050/V066,
+   f12, match class-patterns).
+2. 02.04 GC (MMTk) + 02.08 stdlib (unblocks stdlib slice).
+3. 02.05 tier-1 (SPLIT per risks; + stack-depth item).
