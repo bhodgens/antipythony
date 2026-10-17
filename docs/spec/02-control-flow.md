@@ -7,6 +7,12 @@ never from implementation code. The lowering rule from Plan 01 binds this doc: n
 compilation/lowering strategy may reorder or drop operations with observable effects;
 every construct below defines the observable order tests may rely on.
 
+## Amendment register
+
+| A-id | Date | Clause | What changed | Evidence (live probe, CPython 3.14.7) |
+| --- | --- | --- | --- | --- |
+| A-5 | 2026-10-16 | S-02-6 | Split the `del` coverage by scope: module-level `del` of an unbound name raises `NameError: name 'y' is not defined` (the only form previously quoted), but a FUNCTION-LOCAL `del` of a never-bound (or already-deleted) local raises `UnboundLocalError: cannot access local variable 'x' where it is not associated with a value`. Both forms pinned; class split is S-02-2's `UnboundLocalError ⊂ NameError`. | `def f():\n del x` inside try → UnboundLocalError text above; module `del y` → `NameError: name 'y' is not defined`; local bound-then-`del`-then-use → same UnboundLocalError |
+
 Convention for tracebacks: `ap-conform` runs each corpus case as a FILE; the
 `File "..."` string in an uncaught-exception traceback is the path as passed on the
 command line. Both implementations receive the identical argv, so path text is
@@ -47,9 +53,14 @@ byte-comparable. Exit codes for uncaught non-SystemExit exceptions are 1.
   untouched; `j` is not in module namespace afterwards). Exception: a comprehension's
   FIRST iterable is evaluated in the enclosing scope. `for` loop variables DO leak
   into the enclosing function scope (`for k in range(3)` leaves `k == 2`).
-- **S-02-6 (MUST)** `del x` unbinds a name: later use raises
-  `NameError: name 'x' is not defined`; `del` of an unbound name raises
-  `NameError: name 'y' is not defined`.
+- **S-02-6 (MUST)** `del x` unbinds a name, and the failure mode is SCOPE-DEPENDENT
+  (Amendment A-5): at MODULE scope, later use of a deleted name and `del` of a never-
+  bound name both raise `NameError: name 'y' is not defined`. Inside a FUNCTION, the
+  name is local for the whole body (S-02-2's static rule applies to `del` too), so
+  later use after `del` — and `del` of a never-bound (or already-deleted) local —
+  raises `UnboundLocalError: cannot access local variable 'x' where it is not
+  associated with a value` (subclass of `NameError`, so `except NameError` still
+  catches it). The frontend verifier (01.04) MUST predict both forms.
 
 ## 2. Functions and argument passing
 

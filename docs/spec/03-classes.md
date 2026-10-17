@@ -7,6 +7,13 @@ observed by running the pinned snippets on `/opt/homebrew/bin/python3.14`
 (3.14.7) and are part of the byte-exact conformance gate (compat-contract).
 Clause ids `S-03-nn` are what corpus cases cite in their header comments.
 
+## Amendment register
+
+| A-id | Date | Clause | What changed | Evidence (live probe, CPython 3.14.7) |
+| --- | --- | --- | --- | --- |
+| A-3 | 2026-10-16 | S-03-27 | Hook-order correction: `__set_name__` and `B.__init_subclass__` run INSIDE `type.__new__` (before `M.__new__` returns), in that order, and `M.__init__` runs last; the old "then … run after init" order is wrong. | `class M(type)` tracing `__new__` start/end vs descriptor `__set_name__` and base `__init_subclass__` prints → `new-start / set_name / init_subclass / new-end / init` |
+| A-4 | 2026-10-16 | S-03-34 | "(nested tuples allowed)" deleted: on 3.14.7 every nested-tuple except target raises the catching-classes `TypeError` at catch time. Flat tuples of exception classes still match any element. | `except ((KeyError, ValueError),):` while a `KeyError` is in flight → `TypeError: catching classes that do not inherit from BaseException is not allowed` (all nesting variants); `except (KeyError, ValueError):` catches normally |
+
 Scope: user-visible semantics of class definition, instantiation, attribute lookup,
 MRO, descriptors, special-method dispatch, operator protocol, metaclass hooks,
 inheritance, `isinstance`/`issubclass`, and the exception class hierarchy. Value
@@ -290,9 +297,15 @@ the target name (so `a` may point to a new object). Unary: `-a`→`__neg__`,
 
 **S-03-27 (MUST)** Creation pipeline for `class C(B, ..., metaclass=M)`:
 `M.__prepare__(M, name, bases)` → namespace mapping; body executes into it;
-`M.__new__(M, name, bases, ns)` → class object; `M.__init__(cls, name, bases, ns)`;
-then `__set_name__` hooks on ns entries and `B.__init_subclass__(cls, **kw)` run.
-Observed order with a tracing metaclass: `prepare C []`, `new C`, `init C`.
+`M.__new__(M, name, bases, ns)` → class object — and INSIDE the default
+`type.__new__`, before it returns, first the `__set_name__` hooks on ns
+entries run, then `B.__init_subclass__(cls, **kw)` runs; only after `M.__new__`
+returns does `M.__init__(cls, name, bases, ns)` run (Amendment A-3 — the
+previously recorded "init first, hooks after" order is contradicted by the
+live reference). Observed order with a tracing metaclass + tracing
+`__set_name__` descriptor + tracing `__init_subclass__` base:
+`M.__new__(start) → set_name → __init_subclass__ → M.__new__(end) →
+M.__init__`.
 
 **S-03-28 (MUST)** Instantiation path: `C(...)` → `type(C).__call__(C, ...)` →
 `C.__new__` → `__init__` (S-03-05/06). A metaclass `__call__` override wraps every
@@ -358,12 +371,15 @@ BaseException` at the raise site. Observed `str(e)`/`repr(e)`/`e.args` for
 tuple semantics are spec 01/02 territory; the hierarchy and catch rules are here.
 
 **S-03-34 (MUST)** An `except` clause target must be a class deriving from
-`BaseException`, or a tuple whose *every* element is such a class (nested tuples
-allowed); anything else is checked at catch time and raises `TypeError: catching
-classes that do not inherit from BaseException is not allowed`. Observed: with
-`class NotExc: pass`, `except NotExc:` while a `KeyError` is in flight → that
-`TypeError` (it does NOT silently skip the clause). A tuple target matches any
-element (`except (KeyError, ValueError):` catches `ValueError`).
+`BaseException`, or a FLAT tuple whose *every* element is such a class — nested
+tuples are REJECTED (Amendment A-4: the previously claimed "nested tuples
+allowed" is false on 3.14.7); anything else is checked at catch time and raises
+`TypeError: catching classes that do not inherit from BaseException is not
+allowed`. Observed: with `class NotExc: pass`, `except NotExc:` while a
+`KeyError` is in flight → that `TypeError` (it does NOT silently skip the
+clause); `except ((KeyError, ValueError),):` and every nesting variant raise
+the same `TypeError` at catch time. A flat tuple target matches any element
+(`except (KeyError, ValueError):` catches `ValueError`).
 
 ---
 

@@ -12,6 +12,12 @@ Normative language: MUST / MUST NOT / SHOULD. Clause ids `S-05-NN` are citable b
 corpus headers. This doc scopes **v1 only**; tier targets (T3/T4/T5) extend stdlib
 only by PR against this file plus the compat contract.
 
+## Amendment register
+
+| A-id | Date | Clause | What changed | Evidence (live probe, CPython 3.14.7) |
+| --- | --- | --- | --- | --- |
+| A-6 | 2026-10-16 | S-05-4 (weakref row) | Pinned the measured weakref-TARGET matrix, which the row previously left open: `set`/`frozenset` ARE weakref-able on 3.14.7 (surprise vs the non-weakref-able mutable builtins); `list`, `dict`, `int`, `str`, `float`, `bytes`, `tuple`, plain `object()` instances are NOT (raise `TypeError: cannot create weak reference to 'X' object`); types and user class instances are. | `python3.14 -c "import weakref; weakref.ref(set())"` succeeds; same for `list()`/`dict()`/`1`/`'a'`/`1.0`/`b'a'`/`(1,)`/`object()` → TypeError |
+
 ---
 
 ## 5.1 Global rules
@@ -167,7 +173,7 @@ IN = in v1 (native impl or PSF-source port). OUT = fail-loud import diagnostic
 | `abc` | IN | `ABC`, `ABCMeta`, `abstractmethod`, `abstractclassmethod`, `abstractstaticmethod`, `abstractproperty`, `get_cache_token`, `update_abstractmethods` | `_abc`/`_py_abc` dual fallback verified. |
 | `atexit` | IN | `register`, `unregister` | LIFO order + runs on SystemExit path: verified (`bye` printed, `rc=3`; B then A LIFO). `sys.exitfunc` absent since 3.14 — N/A. |
 | `warnings` | IN | `warn`, `warn_explicit`, `filterwarnings`, `simplefilter`, `resetwarnings`, `catch_warnings`, `formatwarning`, `showwarning`, `deprecated`, `filters`, `WarningMessage`, `defaultaction`, `onceregistry` | warning-line format `<file>:<lineno>: <Category>: <message>\n  <source>` byte-pinned in spec 06. |
-| `weakref` | IN | `ref`, `proxy`, `ProxyType`, `CallableProxyType`, `ProxyTypes`, `ReferenceType`, `KeyedRef`, `WeakMethod`, `finalize`, `WeakKeyDictionary`, `WeakSet`, `WeakValueDictionary`, `getweakrefcount`/`getweakrefs` (corpus-prohibited results) | finalizer timing = documented divergence (compat contract; spec 06 §6.7). |
+| `weakref` | IN | `ref`, `proxy`, `ProxyType`, `CallableProxyType`, `ProxyTypes`, `ReferenceType`, `KeyedRef`, `WeakMethod`, `finalize`, `WeakKeyDictionary`, `WeakSet`, `WeakValueDictionary`, `getweakrefcount`/`getweakrefs` (corpus-prohibited results) | finalizer timing = documented divergence (compat contract; spec 06 §6.7). Weakref-TARGET matrix pinned live on 3.14.7 (Amendment A-6): `set` and `frozenset` ARE weakref-able; `list`, `dict`, `int`, `str`, `float`, `bytes`, `tuple`, and plain `object()` are NOT (`TypeError: cannot create weak reference to 'X' object`); types and user class instances are. |
 | `traceback` | IN | `print_exc`, `format_exc`, `format_exception`, `format_exception_only`, `print_exception`, `format_tb`, `print_tb`, `format_list`, `print_list`, `format_stack`, `print_stack`, `extract_tb`, `extract_stack`, `walk_tb`, `walk_stack`, `TracebackException`, `StackSummary`, `FrameSummary`, `clear_frames`, `suppress` | MUST produce byte-identical text to the default excepthook rendering (spec 06 §6.3); `StackSummary.format_exception_only` includes 3.14's `^^^^` anchor rules. |
 | `struct` | IN | `pack`, `unpack`, `pack_into`, `unpack_from`, `calcsize`, `iter_unpack`, `Struct`, `error` | pure-Python `struct.py` verified to re-export `_struct` (`from _struct import *`) → S-05-2 trap: v1 MUST implement natively; native-endianness formats (`@`, `=`) only, platform formats `!<>` per spec 01. |
 | `heapq` | IN | `heappush`, `heappop`, `heapify`, `heapreplace`, `heappushpop`, `merge`, `nlargest`, `nsmallest`, `*_max` variants | verified `_heapq` fallback pattern. |

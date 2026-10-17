@@ -11,6 +11,13 @@ Relaxation rule (locked): Plan 10 / v2 research leaves may relax a clause marked
 `v1-locked` ONLY by a PR that amends this file, with clause-id reasoning. No code
 may relax a clause silently.
 
+## Amendment register
+
+| A-id | Date | Clause | What changed | Evidence (live probe, CPython 3.14.7) |
+| --- | --- | --- | --- | --- |
+| A-1 | 2026-10-16 | C-16 | Quoted ZeroDivisionError messages corrected: `1.0/0.0` and `1.0%0.0` raise `division by zero` (identical to the int text), not `float division` / `float modulo`. Rule (IEEE-754, message must equal reference) unchanged. | `python3.14 -c "1.0/0.0"` / `-c "1.0%0.0"` → `ZeroDivisionError: division by zero` |
+| A-2 | 2026-10-16 | C-14 | Digit-limit text split into the two measured forms: str(int) form has no digit count; int(str) form adds `: value has N digits`. Both now quoted in full. | `python3.14 -c "str(10**5000)"` vs `-c "int('1'*5000)"` — see clause body for exact bytes |
+
 ## 0. How to read this document
 
 - **MUST / MUST NOT / SHOULD / MAY** carry RFC-2119 force. A `MUST` violated in
@@ -254,9 +261,17 @@ Any mismatch is a bug, not a divergence (no §9 id covers it).
 The integer operations that raise are exactly those where the reference raises,
 with matching type and message. On CPython 3.14 (verified live):
 `float(10**400)` → `OverflowError: int too large to convert to float`; str-
-converting an int that exceeds the int→str digit limit raises
-`ValueError: Exceeds the limit (4300 digits) for integer string conversion`
-unless the limit is raised via `sys.set_int_max_str_digits`; `print(1 <<
+converting an int that exceeds the int→str digit limit raises (unless the limit
+is raised via `sys.set_int_max_str_digits`) — measured on 3.14.7, the two
+conversion directions have **distinct message forms**, both normative
+byte-exact (Amendment A-2):
+- str(int) form (no digit count): `ValueError: Exceeds the limit (4300 digits)
+  for integer string conversion; use sys.set_int_max_str_digits() to increase
+  the limit`
+- int(str) form (with digit count): `ValueError: Exceeds the limit (4300
+  digits) for integer string conversion: value has 5000 digits; use
+  sys.set_int_max_str_digits() to increase the limit` (N is the actual digit
+  count of the input string); `print(1 <<
 (2**62))` → `MemoryError` (allocation for the shift result), NOT
 `OverflowError`. `2**64`, `2**10000`, and chained arithmetic on those values
 MUST NOT raise.
@@ -291,15 +306,18 @@ bytes equal reference bytes. ap-conform case:
 All `float` arithmetic (`+ - * / // % **`, `math` functions over floats) is
 IEEE-754 binary64 with the reference's rounding and special-value behavior.
 `repr`/`str` of `inf`, `-inf`, `nan` are exactly `inf`, `-inf`, `nan`.
-`1.0 / 0.0` raises `ZeroDivisionError: float division` (message per reference);
-`float('inf') - float('inf')` → `nan`; `float('1e999')` → `inf`; `-0.0 + 0.0`
-→ `0.0` and `-0.0 * -1` → `0.0` per IEEE rules as the reference implements
-them. `sys.float_repr_style` MUST be `'short'`.
+`1.0 / 0.0` raises `ZeroDivisionError: division by zero` — verified live on
+3.14.7; `1.0 % 0.0` likewise (Amendment A-1: earlier text quoted the pre-3.14
+messages `float division` / `float modulo`, which are NOT what the reference
+produces — the float and int operand forms share the identical message,
+matching spec 01 S-01-8). `float('inf') - float('inf')` → `nan`; `float('1e999')`
+→ `inf`; `-0.0 + 0.0` → `0.0` and `-0.0 * -1` → `0.0` per IEEE rules as the
+reference implements them. `sys.float_repr_style` MUST be `'short'`.
 
 **Verify:** assert the strings for `float('inf'), float('-inf'), float('nan'),
-float('1e999')` and the `ZeroDivisionError: float division` / `float modulo`
-message texts match the reference byte-for-byte via corpus case; assert
-`math.copysign(1, -0.0) == -1.0` to pin sign-of-zero fidelity.
+float('1e999')` and the `ZeroDivisionError: division by zero` message text
+(both `1.0/0.0` and `1.0%0.0`) match the reference byte-for-byte via corpus
+case; assert `math.copysign(1, -0.0) == -1.0` to pin sign-of-zero fidelity.
 
 ### C-17 — Round-trip exactness and repr idempotence
 For every float value `v` (except nan), `float(repr(v)) == v` (exact bit

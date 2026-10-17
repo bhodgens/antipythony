@@ -6,7 +6,8 @@ writes that leaf's tests.
 
 ## Inputs test agents receive
 
-1. `docs/spec/00..07` (spec pack, incl. 07-wasm-repr for 03 leaves)
+1. `docs/spec/01..06` (spec pack; a future `07-wasm-repr` doc lands with leaf
+   03.01 and does not exist yet)
 2. `docs/compat-contract.md`
 3. `plans/antipythany/master.md` (contracts section)
 4. The corresponding leaf document's "Expose" and "Gate" sections.
