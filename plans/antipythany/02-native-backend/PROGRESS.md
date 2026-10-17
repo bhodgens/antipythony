@@ -84,7 +84,26 @@
   walrus->del->read still flags. +8 tests (72 total), fstrings gate 107/107.
 - Verified firsthand: f17/f19 dumps correct; suites green.
 
+## Leaf 02.01 - ap-obj core values - COMPLETE (committed a5d6ab9)
+- enum-of-16B Value repr (NaN-boxing rejected: MMTk handle indirection + unsafe);
+  Gc<T> = Rc placeholder until 02.04 MMTk swap; smi i61 + num-bigint limbs with
+  explicit floor-normalized divmod (trunc-vs-floor documented).
+- Byte-exact vs live 3.14.7: int hash (2^61-1), frexp float hash, siphash13
+  seed-0 w/ latin1-byte small-str hash discovery, tuple xxHash, frozenset
+  shuffle; compact dict w/ perturb probing + tombstone order + key collapse.
+- 48 tests (23 unit + 25 live-differential). Verified firsthand: suites green,
+  notices fresh (140 deps).
+- FLAGGED for 02.03: frozenset distinct type (element_hashes ready); ap-ir
+  py_float_repr dedupe cleanup.
+
+## Test leaf T-05 - COMPLETE (pre-staged earlier; verified this session)
+- 199 suite tests, 45 corpus cases (V-series) w/ pinned triples; 192 pass /
+  7 xfail (awaiting ap-obj-eval bin - queue as 02.02 addendum).
+- G-0 provenance: pins are 3.14.7-provisional per C-01 (no 3.14.0 build local).
+- 8 contract gaps filed incl. C-16 stale float-div-zero text, C-14 incomplete.
+
 ## QUEUE (updated)
-1. 02.02 tier-0 executor + T-06 after 02.01 + T-05 land (running).
+1. 02.02 tier-0 executor + T-06 - DISPATCH NEXT (needs ap-obj-eval bin too).
 2. 02.03 classes/protocols + 02.04 GC after 02.02.
 3. 02.05 tier-1 (SPLIT CANDIDATE - top-5 risks in pon study note).
+4. ap-obj-eval bin: fold into 02.02 dispatch (flips T-05 xfails).
