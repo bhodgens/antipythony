@@ -124,6 +124,29 @@ regen 5552cf9) failed the output schema; findings survived at
 - INFO x2 clean: notices determinism (BTreeMap + --check) confirmed;
   attribution headers correctly pending first pon-derived commit.
 
+## Addendum: auditor 5 recovery (post-report)
+
+Auditor 5 (T-07/T-09/T-11 corpora, spec amendments A-1..A-6, T-14/T-15/T-16
+suites, commits 2057bf8/3f1bb33/71193a6/ebf5956) failed the output schema;
+findings survived at /tmp/ap-audit-5/audit_results.json. All 10 findings are
+INFO/clean — no fixes needed. Parent spot-verified three against live
+CPython 3.14.7:
+- A-1 CONFIRMED: `1.0/0.0` → `ZeroDivisionError: division by zero` (not
+  "float division"). Amendment correct.
+- A-4 CONFIRMED: `except ((KeyError, ValueError),):` → `TypeError: catching
+  classes that do not inherit from BaseException is not allowed`. Amendment
+  correct (nested tuples rejected).
+- A-6 CONFIRMED: `weakref.ref(set())` succeeds; `weakref.ref(list())` →
+  `TypeError: cannot create weak reference to 'list' object`. Amendment
+  correct (set/frozenset are weakref-able).
+- T-07 gc corpus: 3-run byte-identical, no flake (auditor verified; matches
+  this wave's pytest green run).
+- T-14/T-15/T-16 xfail envelopes: GREEN NOW assertions present, not empty
+  placeholders. Matches the 91-xpass count in this wave's gate run.
+- The recovered JSON's 10 findings are all INFO/clean. This auditor's one
+  HIGH finding (--tier gate seam, report row N1) was delivered and fixed
+  earlier in the wave (commit 06a086f).
+
 ## Post-wave git state (disclosure)
 
 A sibling agent kept working in the main checkout during and after this
