@@ -83,12 +83,31 @@
   builtin values first - values 46->45), BUG-C _warnings shim.
 - stdlib slice 8/48 held; import machinery verified firsthand.
 
-## QUEUE
-1. Fix pass running (MRO cycle, method routing, _warnings).
-2. 02.04 GC (MMTk swap).
-3. 02.05 tier-1 (SPLIT per risks; + debug stack-depth).
-4. 02.08-full: re engine, complex, class-method surface, metaclass hooks.
-5. Plan 04 packaging (uv) -> T1 scrapy attempt.
+## 02.04a COMPLETION MESSAGE ADDENDUM (agent worked past my snapshot commit)
+- Final state IS committed (worktree clean, 200 rust tests green at HEAD).
+- Its final pass added: metaclass __new__ dispatch + type.__new__ builtin,
+  metaclass-method binding (ABCMeta.register), object virtuals, exception
+  __traceback__, star-imports, globals/locals/reversed/bytearray builtins,
+  zip() id-collision fix, 19 interp bugs fixed total (documented in
+  PROGRESS-02-04a.md).
+- Vendored: 34 targets / 58 files (dropped encodings/ + importlib/metadata
+  as C-backed). NOTE: my earlier "202 entries" count = files+dirs; 58 .py.
+- VERIFIED: rust 200/0 at HEAD.
+- STILL RED (new leaf 02.03b needed - metaclass __new__ w/ dict-derived
+  instances): pathlib USE (MRO cycle false-positive - in running fix pass),
+  enum member machinery (_member_names on dict), dataclasses, unittest
+  (blocked: _py_warnings shim - in running fix pass).
+- Harness note: t09/t10/t11 self-comparison fails under `uv run pytest`
+  (venv python 3.14.4 shadows pinned 3.14.7) - pre-existing, use
+  /opt/homebrew/bin/python3.14 -m pytest.
+
+## QUEUE (updated)
+1. Fix pass running (MRO cycle, method routing, _warnings) - deleg_a82e46f4.
+2. NEW 02.03b: metaclass __new__ dict-instances (enum/dataclasses gates).
+3. 02.04 GC (MMTk swap).
+4. 02.05 tier-1 (SPLIT per risks; + debug stack-depth).
+5. 02.08-full: re engine, complex, class-method surface, metaclass hooks.
+6. Plan 04 packaging (uv) -> T1 scrapy attempt.
 
 
 ## Leaf 02.03 - classes/protocols - LANDED (in review)
