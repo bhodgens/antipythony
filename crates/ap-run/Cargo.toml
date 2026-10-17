@@ -16,3 +16,10 @@ ap-parse = { path = "../ap-parse" }
 num-bigint = "0.4"
 num-integer = "0.1"
 num-traits = "0.2"
+
+# hashlib (02.08-lite; task brief overrides the S-05-19 OUT marking — see
+# builtins_modules.rs head note for the spec-divergence flag)
+libm = "0.2"
+md-5 = "0.10"
+sha1 = "0.10"
+sha2 = "0.10"

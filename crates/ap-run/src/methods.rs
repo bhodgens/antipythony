@@ -502,7 +502,12 @@ pub fn call_method(
             )
         }
         (Value::Obj(o), _) if o.kind == ap_obj::ObjKind::UserInstance => {
-            Some(super_user_method(interp, o, name, args))
+            // 02.03: instances dispatch through the class MRO; the v0
+            // attrs-only path stays as fallback for legacy shapes.
+            match super_user_method(interp, o, name, args) {
+                Err(Flow::Raise(e)) if e.class == "AttributeError" => None,
+                other => Some(other),
+            }
         }
         _ => None,
     };

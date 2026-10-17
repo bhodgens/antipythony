@@ -18,7 +18,7 @@ use ap_obj::value::{PyList, PyString, Tuple, Value};
 use crate::exc_hier::{is_subclass, ExceptionValue};
 use crate::frame::{CellSlot, FnEntry, Frame, Interpreter, Loc};
 use crate::iter::{IterState, PyIterator};
-use crate::{builtins, methods, RunOutcome};
+use crate::{builtins, builtins_modules, methods, RunOutcome};
 use ap_ir::expr::{Arg, BinOp, BoolOp, CmpOp, Conversion, Expr, FStrPart, UnaryOp};
 use ap_ir::item::{FnDef, Param, ParamKind, Pattern, Stmt, Target};
 use ap_ir::Module;
@@ -83,6 +83,7 @@ pub fn run_module(
     CURRENT_INTERP.with(|c| *c.borrow_mut() = Some(interp.clone()));
     *interp.self_rc.borrow_mut() = Some(Rc::downgrade(&interp));
     builtins::install_builtins(&interp);
+    crate::classes::install_exception_classes(&interp);
     // Statement-line table for tracebacks (ruff AST walk; the IR is
     // span-free by design).
     *interp.stmt_lines.borrow_mut() = ap_parse::collect_stmt_lines(&parsed);
@@ -272,7 +273,17 @@ fn exec_module(
         }
     }
 
-    match exec_block(interp, &frame, &stmts, &reg) {
+    // 02.08-lite: __file__ is bound at module scope (linecache reads it).
+    frame.store_global("__file__", {
+        use ap_obj::value::PyString as _PS;
+        Value::Str(_PS::new(interp.script_path.clone()))
+    });
+    let outcome = exec_block(interp, &frame, &stmts, &reg);
+    // 02.08-lite: atexit callbacks drain LIFO on every exit path (sys.exit /
+    // uncaught / clean), matching CPython's interpreter-finalization order.
+    builtins_modules::set_current_interp(interp);
+    builtins_modules::drain_atexit();
+    match outcome {
         Ok(()) => Ok(()),
         Err(Flow::Raise(exc)) => {
             // Module frame is OUTERMOST: append last (render order).
@@ -292,7 +303,7 @@ fn exec_module(
 // ===========================================================================
 
 /// Execute a statement list. Ok(()) = block completed; Err(Flow) = unwind.
-pub fn exec_block(
+pub(crate) fn exec_block(
     interp: &Rc<Interpreter>,
     frame: &Rc<Frame>,
     stmts: &[Stmt],
@@ -400,7 +411,29 @@ fn exec_stmt(
                     }
                 }
             } else {
-                eval_binop(&cur, *op, &rhs)?
+                // 02.03 in-place protocol (S-03-26): __iX__ first, falling
+                // back to the full binary machinery; result REBINDS the
+                // target name.
+                let interp2 = current_interp_for_bindings();
+                let (iop, op_name, rop_name, sym) = match op {
+                    BinOp::Add => ("__iadd__", "__add__", "__radd__", "+"),
+                    BinOp::Sub => ("__isub__", "__sub__", "__rsub__", "-"),
+                    BinOp::Mul => ("__imul__", "__mul__", "__rmul__", "*"),
+                    BinOp::Div => ("__itruediv__", "__truediv__", "__rtruediv__", "/"),
+                    BinOp::FloorDiv => ("__ifloordiv__", "__floordiv__", "__rfloordiv__", "//"),
+                    BinOp::Mod => ("__imod__", "__mod__", "__rmod__", "%"),
+                    BinOp::Pow => ("__ipow__", "__pow__", "__rpow__", "**"),
+                    BinOp::MatMul => ("__imatmul__", "__matmul__", "__rmatmul__", "@"),
+                    BinOp::LShift => ("__ilshift__", "__lshift__", "__rlshift__", "<<"),
+                    BinOp::RShift => ("__irshift__", "__rshift__", "__rrshift__", ">>"),
+                    BinOp::BitOr => ("__ior__", "__or__", "__ror__", "|"),
+                    BinOp::BitXor => ("__ixor__", "__xor__", "__rxor__", "^"),
+                    BinOp::BitAnd => ("__iand__", "__and__", "__rand__", "&"),
+                };
+                match user_binop_inplace(&interp2, iop, op_name, rop_name, sym, &cur, &rhs) {
+                    Some(r) => r?,
+                    None => eval_binop(&cur, *op, &rhs)?,
+                }
             };
             assign_target(interp, frame, target, result, reg)?;
             Ok(StmtOut::Next)
@@ -416,7 +449,7 @@ fn exec_stmt(
         }
         Stmt::If(cond, then, orelse) => {
             let c = eval_expr(interp, frame, cond, reg)?;
-            if c.is_truthy() {
+            if truthy(interp, &c)? {
                 exec_block(interp, frame, then, reg)
             } else {
                 exec_block(interp, frame, orelse, reg)
@@ -426,7 +459,7 @@ fn exec_stmt(
         Stmt::While(cond, body, orelse) => {
             loop {
                 let c = eval_expr(interp, frame, cond, reg)?;
-                if !c.is_truthy() {
+                if !truthy(interp, &c)? {
                     break;
                 }
                 match run_loop_body(interp, frame, body, reg)? {
@@ -454,14 +487,56 @@ fn exec_stmt(
             }
             exec_block(interp, frame, orelse, reg).map(|_| StmtOut::Next)
         }
-        Stmt::With(items, _body) => {
-            // v0: no user classes → no context managers can exist (the
-            // protocol needs __enter__/__exit__ methods). Documented gap.
-            let _ = items;
-            Err(raise(
-                "SystemError",
-                "with-statement context managers are unsupported in v0 (02.03 adds the protocol)",
-            ))
+        Stmt::With(items, body) => {
+            // Context-manager protocol (S-03-26/S-02-40..42): __enter__ then
+            // body; __exit__(None, None, None) on normal exit, __exit__(exc)
+            // on unwind — a truthy exit SUPPRESSES the exception.
+            let mut entered: Vec<(Value, Value)> = Vec::new(); // (mgr, enter-result)
+            let result = (|| -> Result<(), Flow> {
+                for item in items {
+                    let mgr = eval_expr(interp, frame, &item.expr, reg)?;
+                    let enter = special_call(interp, &mgr, "__enter__", &[])?;
+                    if let Some(t) = &item.target {
+                        assign_target(interp, frame, t, enter.clone(), reg)?;
+                    }
+                    entered.push((mgr, enter));
+                }
+                exec_block(interp, frame, body, reg)
+            })();
+            // __exit__ runs on EVERY path, in reverse order (S-02-40).
+            let mut exit_err: Option<Flow> = None;
+            for (mgr, _) in entered.iter().rev() {
+                let (a, b, c) = match &result {
+                    Ok(()) => (Value::None, Value::None, Value::None),
+                    Err(Flow::Raise(e)) => (
+                        exception_class_value(interp, &e.class),
+                        exception_instance_value(e),
+                        Value::None, // traceback object not modeled (v0)
+                    ),
+                    Err(_) => (Value::None, Value::None, Value::None),
+                };
+                let suppress = match special_call(interp, mgr, "__exit__", &[a, b, c]) {
+                    Ok(v) => truthy(interp, &v)?,
+                    Err(f) => {
+                        // __exit__ itself raising replaces the outcome.
+                        exit_err = Some(f);
+                        false
+                    }
+                };
+                if exit_err.is_some() {
+                    break;
+                }
+                if suppress {
+                    if let Err(Flow::Raise(_)) = &result {
+                        return Ok(StmtOut::Next); // exception swallowed (S-02-41)
+                    }
+                }
+            }
+            if let Some(f) = exit_err {
+                return Ok(StmtOut::Unwind(f));
+            }
+            result?;
+            Ok(StmtOut::Next)
         }
         Stmt::Try(t) => exec_try(interp, frame, t, reg),
         Stmt::Raise(exc_expr, cause_expr) => {
@@ -499,7 +574,7 @@ fn exec_stmt(
         }
         Stmt::Assert(test, msg) => {
             let v = eval_expr(interp, frame, test, reg)?;
-            if !v.is_truthy() {
+            if !truthy(interp, &v)? {
                 let args = match msg {
                     Some(m) => vec![eval_expr(interp, frame, m, reg)?],
                     None => vec![],
@@ -515,7 +590,7 @@ fn exec_stmt(
                 if pattern_match(interp, frame, reg, &case.pattern, &subj, &mut bindings)? {
                     apply_bindings(frame, &bindings, reg)?;
                     let guard_ok = match &case.guard {
-                        Some(g) => eval_expr(interp, frame, g, reg)?.is_truthy(),
+                        Some(g) => truthy(interp, &eval_expr(interp, frame, g, reg)?)?,
                         None => true,
                     };
                     if guard_ok {
@@ -529,7 +604,24 @@ fn exec_stmt(
         Stmt::Import(aliases) => {
             for a in aliases {
                 let bind = a.alias.clone().unwrap_or_else(|| a.path[0].clone());
-                if a.path.len() == 1 && a.path[0] == "sys" {
+                // 02.08-lite: native-module registry lookup (incl. dotted paths).
+                let dotted = a.path.join(".");
+                // `import a.b` binds the TOP package (`os`), per CPython.
+                let bind_target = if a.alias.is_none() && a.path.len() > 1 {
+                    a.path[0].clone()
+                } else {
+                    bind.clone()
+                };
+                if let Some(m) = builtins_modules::get_or_make_module(interp, &dotted) {
+                    let m = if a.alias.is_none() && a.path.len() > 1 {
+                        builtins_modules::get_or_make_module(interp, &bind_target).unwrap_or(m)
+                    } else {
+                        m
+                    };
+                    // Module frames keep locals empty; nested frames resolve
+                    // through globals (same rule as module-level defs).
+                    frame.store_global(&bind_target, m);
+                } else if a.path.len() == 1 && a.path[0] == "sys" {
                     let m = builtins::get_or_make_sys(interp);
                     frame.store_local(&bind, m);
                 } else {
@@ -545,6 +637,25 @@ fn exec_stmt(
             Ok(StmtOut::Next)
         }
         Stmt::ImportFrom(module, aliases, star) => {
+            // 02.08-lite: from <native-module> import names (star unsupported).
+            if !*star {
+                if let Some(m) = builtins_modules::get_or_make_module(interp, module) {
+                    for a in aliases {
+                        let src_name = a.path[0].clone();
+                        let bind = a.alias.clone().unwrap_or_else(|| src_name.clone());
+                        match attr_get(interp, &m, &src_name)? {
+                            Some(v) => frame.store_global(&bind, v),
+                            None => {
+                                return Err(raise(
+                                    "ImportError",
+                                    format!("cannot import name '{src_name}' from '{module}'"),
+                                ))
+                            }
+                        }
+                    }
+                    return Ok(StmtOut::Next);
+                }
+            }
             if module == "sys" && !*star {
                 let m = builtins::get_or_make_sys(interp);
                 for a in aliases {
@@ -584,6 +695,10 @@ fn exec_stmt(
                         let k = eval_expr(interp, frame, key, reg)?;
                         methods::subscript_del(&o, &k)?;
                     }
+                    Target::Attribute(obj, name) => {
+                        let o = eval_expr(interp, frame, obj, reg)?;
+                        crate::classes::attr_del_protocol(interp, &o, name)?;
+                    }
                     _ => return Err(raise("SystemError", "unsupported del target in v0")),
                 }
             }
@@ -604,13 +719,20 @@ fn exec_stmt(
             if let Value::Obj(o) = &func {
                 *o.closure_slot.borrow_mut() = Some(id as u64);
             }
-            store_name(interp, frame, &f.name, func, reg)?;
+            // Decorators: bottom-up application at def time (S-02-7) —
+            // @property/@classmethod/@staticmethod land here.
+            let mut decorated = func;
+            for d in f.decorators.iter().rev() {
+                let df = eval_expr(interp, frame, d, reg)?;
+                decorated = call_value(interp, frame, &df, &[decorated], &[])?;
+            }
+            store_name(interp, frame, &f.name, decorated, reg)?;
             Ok(StmtOut::Next)
         }
-        Stmt::LocalClass(_) => Err(raise(
-            "NotImplementedError",
-            "class definitions are 02.03 surface (v0 executor)",
-        )),
+        Stmt::LocalClass(c) => {
+            crate::classes::exec_class_def(interp, frame, c, reg, &c.name)?;
+            Ok(StmtOut::Next)
+        }
     }
 }
 
@@ -722,54 +844,250 @@ fn exec_try(
 }
 
 fn exc_matches(tv: &Value, exc: &ExceptionValue) -> Result<bool, Flow> {
-    let name = match tv {
-        Value::Obj(o)
-            if o.kind == ap_obj::ObjKind::Type || o.kind == ap_obj::ObjKind::Exception =>
-        {
-            o.name.clone()
+    let interp = current_interp_for_bindings();
+    if std::env::var("APX_DEBUG").is_ok() {
+        eprintln!(
+            "[02.03] exc_matches tv_kind={:?} tv_name={:?} exc={}",
+            match tv {
+                Value::Obj(o) => format!("{:?}", o.kind),
+                _ => "other".into(),
+            },
+            match tv {
+                Value::Obj(o) => o.name.clone(),
+                _ => "?".into(),
+            },
+            exc.class
+        );
+    }
+    match tv {
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass => {
+            // Real class target (builtin tree or user exception class):
+            // MRO membership (S-03-31/32). A non-exception class target is
+            // the catch-time TypeError (S-03-34) — never a silent skip.
+            let t = crate::classes::type_of(&interp, tv)
+                .ok_or_else(|| raise("SystemError", "class without payload"))?;
+            if !t.flags.is_exception {
+                return Err(raise(
+                    "TypeError",
+                    "catching classes that do not inherit from BaseException is not allowed",
+                ));
+            }
+            let via_instance = exc
+                .instance
+                .as_ref()
+                .and_then(|iv| crate::classes::class_of_value(&interp, iv))
+                .is_some_and(|ec| ec.is_subclass(&t));
+            Ok(exc.class == t.name
+                || via_instance
+                || crate::classes::exc_class(&interp, &exc.class)
+                    .is_some_and(|ec| ec.is_subclass(&t))
+                || legacy_exc_is_subclass(&exc.class, &t))
+        }
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::Type => {
+            if !is_builtin_exc_name(&o.name) {
+                return Err(raise(
+                    "TypeError",
+                    "catching classes that do not inherit from BaseException is not allowed",
+                ));
+            }
+            Ok(is_subclass(&exc.class, &o.name))
         }
         Value::Tuple(parts) => {
+            // FLAT tuples only (A-4: nesting raises the same TypeError).
             for p in &parts.0 {
+                match p {
+                    Value::Obj(po)
+                        if po.kind == ap_obj::ObjKind::UserClass
+                            || po.kind == ap_obj::ObjKind::Type => {}
+                    _ => return Err(raise(
+                        "TypeError",
+                        "catching classes that do not inherit from BaseException is not allowed",
+                    )),
+                }
                 if exc_matches(p, exc)? {
                     return Ok(true);
                 }
             }
-            return Ok(false);
+            Ok(false)
         }
-        _ => {
-            return Err(raise(
-                "TypeError",
-                "catching classes that do not inherit from BaseException is not allowed",
-            ))
-        }
-    };
-    Ok(is_subclass(&exc.class, &name))
+        _ => Err(raise(
+            "TypeError",
+            "catching classes that do not inherit from BaseException is not allowed",
+        )),
+    }
+}
+
+/// MRO subclass check for a legacy-raised exception name against a real
+/// user class that derives (transitively) from a builtin exception.
+fn legacy_exc_is_subclass(exc_name: &str, target: &Rc<ap_obj::classes::TypeRef>) -> bool {
+    // Only LEGACY-known names participate (the old table defaults unknowns
+    // to Exception, which would wrongly catch BaseExceptionGroup here).
+    // The legacy table's known set (its `_ => Exception` default must not
+    // leak 3.14-only classes like BaseExceptionGroup into Exception).
+    const LEGACY_KNOWN: &[&str] = &[
+        "BaseException",
+        "KeyboardInterrupt",
+        "SystemExit",
+        "Exception",
+        "StopIteration",
+        "ArithmeticError",
+        "ZeroDivisionError",
+        "OverflowError",
+        "FloatingPointError",
+        "TypeError",
+        "ValueError",
+        "NameError",
+        "LookupError",
+        "AttributeError",
+        "RuntimeError",
+        "AssertionError",
+        "MemoryError",
+        "OSError",
+        "UnboundLocalError",
+        "IndexError",
+        "KeyError",
+        "NotImplementedError",
+        "RecursionError",
+        "UnicodeError",
+        "UnicodeDecodeError",
+        "UnicodeEncodeError",
+        "EOFError",
+    ];
+    if !LEGACY_KNOWN.contains(&exc_name) {
+        return false;
+    }
+    // The raised name must be a legacy subclass OF THE TARGET itself —
+    // not of the target's ancestors (TypeError is not a KeyError).
+    is_subclass(exc_name, &target.name)
 }
 
 fn exception_instance(exc: &ExceptionValue) -> Value {
+    // Real instance raised as-is: identity preserved at the handler (e007).
+    if let Some(v) = &exc.instance {
+        return v.clone();
+    }
     let o = ap_obj::PyObject::new(ap_obj::ObjKind::Exception, exc.class.clone());
     *o.args.borrow_mut() = exc.args.clone();
+    // Carry the class payload back-ref when the class is a real class.
+    let interp = current_interp_for_bindings();
+    if let Some(cv) = crate::classes::exc_class_value(&interp, &exc.class) {
+        if let Value::Obj(co) = &cv {
+            if let Some(t) = co.class_ref.borrow().clone() {
+                *o.class_ref.borrow_mut() = Some(t);
+            }
+        }
+    }
     Value::Obj(o)
 }
 
 /// Evaluate a raise value: exception instance, exception CLASS (bare), or
-/// TypeError otherwise.
+/// TypeError otherwise (S-03-33: "exceptions must derive from BaseException").
 fn raise_from_value(v: &Value) -> Result<ExceptionValue, Flow> {
+    let interp = current_interp_for_bindings();
     match v {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::Exception => {
             Ok(ExceptionValue::new(&o.name, o.args.borrow().clone()))
         }
-        Value::Obj(o) if o.kind == ap_obj::ObjKind::Type => {
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::Type && is_builtin_exc_name(&o.name) => {
             Ok(ExceptionValue::new(&o.name, vec![]))
+        }
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass => {
+            // User class: instantiate (S-03-33) if it derives BaseException.
+            let t = crate::classes::type_of(&interp, v);
+            let is_exc = t.as_ref().is_some_and(|t| t.flags.is_exception);
+            if !is_exc {
+                return Err(raise(
+                    "TypeError",
+                    "exceptions must derive from BaseException",
+                ));
+            }
+            let t = t.unwrap();
+            // Bare-class raise instantiates (runs __init__; binding errors
+            // surface as the ordinary TypeError — S-03-33/e012).
+            let inst = crate::classes::instantiate(&interp, v, &t, &[], &[])?;
+            let mut ev = exception_value_of_instance(&inst)?;
+            ev.instance = Some(inst);
+            Ok(ev)
+        }
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
+            // An instance of a user exception class raised directly (e007:
+            // identity preserved at the handler).
+            let t = o.type_ref.borrow().as_ref().and_then(|w| w.upgrade());
+            if t.is_some_and(|t| t.flags.is_exception) {
+                let mut ev = exception_value_of_instance(v)?;
+                ev.instance = Some(v.clone());
+                Ok(ev)
+            } else {
+                Err(raise(
+                    "TypeError",
+                    "exceptions must derive from BaseException",
+                ))
+            }
         }
         _ => Err(raise(
             "TypeError",
-            format!(
-                "exceptions must derive from BaseException (got {})",
-                v.type_name()
-            ),
+            "exceptions must derive from BaseException",
         )),
     }
+}
+
+/// Exception class names pre-created by install_exception_classes.
+fn is_builtin_exc_name(n: &str) -> bool {
+    // 02.08-lite: stdlib exception types are catchable builtin excs.
+    if n == "JSONDecodeError" {
+        return true;
+    }
+    crate::classes::EXC_TREE.iter().any(|(name, _)| *name == n)
+}
+
+/// Recover the ExceptionValue plumbing (class name + args) from a real
+/// exception instance Value.
+fn exception_value_of_instance(v: &Value) -> Result<ExceptionValue, Flow> {
+    let interp = current_interp_for_bindings();
+    let Value::Obj(o) = v else {
+        return Err(raise("SystemError", "not an exception instance"));
+    };
+    // str(exc) runs through the class __str__ when overridden; args come
+    // from the instance __dict__ (BaseException.__init__ stores them).
+    let from_attrs = o
+        .attrs
+        .borrow()
+        .get(&Value::Str(PyString::new("args")))
+        .and_then(|a| match a {
+            Value::Tuple(t) => Some(t.0.clone()),
+            _ => None,
+        });
+    let args: Vec<Value> = match from_attrs {
+        Some(a) => a,
+        None => o.args.borrow().clone(),
+    };
+    let mut ev = ExceptionValue::new(&o.name, args);
+    // User __str__ override: pickle the rendering into args so py_str
+    // (which joins args) reproduces it byte-exactly. class_of_value reads
+    // the class_ref back-ref first (user exception classes).
+    if let Some(t) = o
+        .class_ref
+        .borrow()
+        .clone()
+        .or_else(|| crate::classes::class_of_value(&interp, v))
+    {
+        if let Some((sf, owner)) = t.lookup_with_owner("__str__") {
+            let is_default = matches!(&sf, Value::Obj(f) if f.kind == ap_obj::ObjKind::Function && owner.name == "BaseException");
+            if !is_default {
+                let s = call_value(
+                    &interp,
+                    &Rc::new(Frame::new_module(interp.globals.clone())),
+                    &sf,
+                    &[v.clone()],
+                    &[],
+                )?;
+                if let Value::Str(s) = s {
+                    ev.args = vec![Value::Str(s)];
+                }
+            }
+        }
+    }
+    Ok(ev)
 }
 
 // ===========================================================================
@@ -790,10 +1108,10 @@ fn assign_target(
             let k = eval_expr(interp, frame, key, reg)?;
             methods::subscript_set(&o, &k, v)
         }
-        Target::Attribute(_, _) => Err(raise(
-            "SystemError",
-            "attribute stores are 02.03 surface (classes)",
-        )),
+        Target::Attribute(obj, name) => {
+            let o = eval_expr(interp, frame, obj, reg)?;
+            crate::classes::attr_set_protocol(interp, &o, name, v)
+        }
         Target::Tuple(parts) => unpack_into(interp, frame, parts, &v, reg),
         Target::Starred(_) => Err(raise(
             "SyntaxError",
@@ -918,6 +1236,11 @@ fn lookup_name(interp: &Rc<Interpreter>, frame: &Rc<Frame>, name: &str) -> EResu
             if let Some(v) = interp.builtins.get(&Value::Str(PyString::new(name))) {
                 return Ok(v);
             }
+            // Real exception classes shadow nothing (installed separately);
+            // `except ValueError` name reads resolve through them (S-03-32).
+            if let Some(v) = crate::classes::exc_class_value(interp, name) {
+                return Ok(v);
+            }
             Err(raise("NameError", format!("name '{name}' is not defined")))
         }
     }
@@ -948,6 +1271,12 @@ pub fn store_name(
         *cell.borrow_mut() = Some(v);
         return Ok(());
     }
+    if let Some(ns) = &frame.class_ns {
+        // Class-body frame: assignments land in the class namespace (S-03-3).
+        return ns
+            .set(Value::Str(PyString::new(name)), v)
+            .map_err(Flow::from_py);
+    }
     if frame.is_module {
         // Module scope: assignments ARE global bindings (same namespace).
         frame.store_global(name, v);
@@ -961,7 +1290,7 @@ pub fn store_name(
 // Expressions
 // ===========================================================================
 
-fn eval_expr(
+pub(crate) fn eval_expr(
     interp: &Rc<Interpreter>,
     frame: &Rc<Frame>,
     e: &Expr,
@@ -1002,17 +1331,42 @@ fn eval_expr(
         }
         Expr::UnaryOp(op, x) => {
             let xv = eval_expr(interp, frame, x, reg)?;
+            // 02.03 unary dunders (__neg__/__pos__/__invert__/__abs__)
+            // before the builtin numeric paths (c030).
+            let unary_slot = match op {
+                UnaryOp::Minus => Some("__neg__"),
+                UnaryOp::Plus => Some("__pos__"),
+                UnaryOp::Invert => Some("__invert__"),
+                UnaryOp::Not => None,
+            };
+            if let Some(slot) = unary_slot {
+                if let Some((f, _)) = crate::classes::special_lookup(interp, &xv, slot) {
+                    let r = call_value(interp, &module_frame_pub(), &f, &[xv.clone()], &[])?;
+                    if !result_is_not_implemented(&Ok(r.clone())) {
+                        return Ok(r);
+                    }
+                } else if let Some((f, _)) = crate::classes::special_lookup(interp, &xv, "__abs__")
+                {
+                    if slot == "__neg__" || slot == "__pos__" {
+                        // CPython doesn't fall back to __abs__ for -/+
+                        // (only round/abs paths); skip.
+                    }
+                }
+            }
             match op {
                 UnaryOp::Plus => match xv {
                     Value::Int(_) | Value::Float(_) | Value::Bool(_) => Ok(xv),
                     other => Err(raise(
                         "TypeError",
-                        format!("bad operand type for unary +: '{}'", other.type_name()),
+                        format!(
+                            "bad operand type for unary +: '{}'",
+                            crate::classes::display_type_name(&other)
+                        ),
                     )),
                 },
                 UnaryOp::Minus => ap_obj::ops::neg(&xv).map_err(Flow::from_py),
                 UnaryOp::Invert => ap_obj::ops::invert(&xv).map_err(Flow::from_py),
-                UnaryOp::Not => Ok(Value::Bool(!xv.is_truthy())),
+                UnaryOp::Not => Ok(Value::Bool(!truthy(interp, &xv)?)),
             }
         }
         Expr::BoolOp(op, xs) => {
@@ -1021,8 +1375,8 @@ fn eval_expr(
             for (i, x) in xs.iter().enumerate() {
                 last = eval_expr(interp, frame, x, reg)?;
                 let stop = match op {
-                    BoolOp::And => !last.is_truthy(),
-                    BoolOp::Or => last.is_truthy(),
+                    BoolOp::And => !truthy(interp, &last)?,
+                    BoolOp::Or => truthy(interp, &last)?,
                 };
                 if stop && i + 1 < xs.len() {
                     return Ok(last);
@@ -1032,14 +1386,30 @@ fn eval_expr(
         }
         Expr::Compare(ops, operands) => {
             let mut left = eval_expr(interp, frame, &operands[0], reg)?;
+            let mut last = Value::Bool(true);
             for (i, op) in ops.iter().enumerate() {
                 let right = eval_expr(interp, frame, &operands[i + 1], reg)?;
+                // 02.03: __eq__/__ne__ return the SLOT's raw value (c028:
+                // `1 == REq()` -> "reflected-eq"); ordering ops stay bool.
+                if matches!(op, CmpOp::Eq | CmpOp::NotEq) {
+                    let interp2 = current_interp_for_bindings();
+                    if let Some(rv) = user_compare_value(&interp2, *op, &left, &right) {
+                        last = rv?;
+                        let truth = truthy(interp, &last)?;
+                        if !truth {
+                            return Ok(Value::Bool(false));
+                        }
+                        left = right;
+                        continue;
+                    }
+                }
                 if !eval_compare(&left, *op, &right)? {
                     return Ok(Value::Bool(false));
                 }
+                last = Value::Bool(true);
                 left = right;
             }
-            Ok(Value::Bool(true))
+            Ok(last)
         }
         Expr::Call(f, args) => {
             let fv = eval_expr(interp, frame, f, reg)?;
@@ -1107,7 +1477,11 @@ fn eval_expr(
             attr_get(interp, &o, name)?.ok_or_else(|| {
                 raise(
                     "AttributeError",
-                    format!("'{}' object has no attribute '{}'", o.type_name(), name),
+                    format!(
+                        "'{}' object has no attribute '{}'",
+                        crate::classes::display_type_name(&o),
+                        name
+                    ),
                 )
             })
         }
@@ -1303,7 +1677,7 @@ fn eval_expr(
         Expr::FString(parts) => render_fstring(interp, frame, parts, reg),
         Expr::IfExp(c, t, e) => {
             let cv = eval_expr(interp, frame, c, reg)?;
-            if cv.is_truthy() {
+            if truthy(interp, &cv)? {
                 eval_expr(interp, frame, t, reg)
             } else {
                 eval_expr(interp, frame, e, reg)
@@ -1336,6 +1710,53 @@ fn int_from_i128(v: i128) -> Int {
 // ---------------------------------------------------------------------------
 
 fn eval_compare(left: &Value, op: CmpOp, right: &Value) -> Result<bool, Flow> {
+    let interp = current_interp_for_bindings();
+    // Bound methods == by (__func__, __self__) (S-03-21; c024).
+    if matches!(op, CmpOp::Eq | CmpOp::NotEq) {
+        if let (Value::Obj(a), Value::Obj(b)) = (left, right) {
+            if a.kind == ap_obj::ObjKind::BoundMethod && b.kind == ap_obj::ObjKind::BoundMethod {
+                let funcs_eq = match (a.func.borrow().clone(), b.func.borrow().clone()) {
+                    (Some(fx), Some(fy)) => value_is(&fx, &fy),
+                    (None, None) => true,
+                    _ => false,
+                };
+                let same = funcs_eq
+                    && match (a.self_value.borrow().clone(), b.self_value.borrow().clone()) {
+                        (Some(x), Some(y)) => value_is(&x, &y),
+                        (None, None) => true,
+                        _ => false,
+                    };
+                return Ok(if op == CmpOp::Eq { same } else { !same });
+            }
+        }
+    }
+    // 02.03 user comparison slots (S-03-25) take precedence for instances
+    // of user classes; builtin paths keep their exact messages.
+    if let Some(r) = user_compare(&interp, op, left, right) {
+        return r;
+    }
+    // Ordering on user instances without slots: exact TypeError with the
+    // CLASS names (c027 — values_cmp would print the static 'object').
+    let left_user = matches!(left, Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance);
+    let right_user = matches!(right, Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance);
+    if (left_user || right_user) && matches!(op, CmpOp::Lt | CmpOp::LtE | CmpOp::Gt | CmpOp::GtE) {
+        if matches!(op, CmpOp::Lt | CmpOp::Gt) {
+            return Err(raise(
+                "TypeError",
+                format!(
+                    "'{}' not supported between instances of '{}' and '{}'",
+                    match op {
+                        CmpOp::Lt => "<",
+                        CmpOp::Gt => ">",
+                        _ => unreachable!(),
+                    },
+                    crate::classes::display_type_name(left),
+                    crate::classes::display_type_name(right)
+                ),
+            ));
+        }
+        // <= / >= fall back to values_cmp (same message shape anyway).
+    }
     match op {
         CmpOp::Eq => Ok(ap_obj::ops::eq(left, right)),
         CmpOp::NotEq => Ok(!ap_obj::ops::eq(left, right)),
@@ -1404,6 +1825,41 @@ fn value_is(a: &Value, b: &Value) -> bool {
 }
 
 fn contains(a: &Value, b: &Value) -> Result<bool, Flow> {
+    // 02.03 __contains__ on the type (S-03-26; c030), then the iteration
+    // fallback.
+    {
+        let interp = current_interp_for_bindings();
+        if let Some((f, _)) = crate::classes::special_lookup(&interp, b, "__contains__") {
+            let r = call_value(
+                &interp,
+                &module_frame_pub(),
+                &f,
+                &[b.clone(), a.clone()],
+                &[],
+            )?;
+            return Ok(r.is_truthy());
+        }
+        if matches!(b, Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance) {
+            if crate::classes::special_lookup(&interp, b, "__iter__").is_some()
+                || crate::classes::special_lookup(&interp, b, "__getitem__").is_some()
+            {
+                let it = iterable_of(&b)?;
+                while let Some(item) = it.next() {
+                    if eval_compare(a, CmpOp::Eq, &item)? {
+                        return Ok(true);
+                    }
+                }
+                return Ok(false);
+            }
+            return Err(raise(
+                "TypeError",
+                format!(
+                    "argument of type '{}' is not iterable",
+                    crate::classes::display_type_name(b)
+                ),
+            ));
+        }
+    }
     match b {
         Value::Str(s) => match a {
             Value::Str(sub) => Ok(s.as_str().contains(sub.as_str())),
@@ -1489,6 +1945,42 @@ fn contains(a: &Value, b: &Value) -> Result<bool, Flow> {
 
 fn eval_binop(a: &Value, op: BinOp, b: &Value) -> EResult {
     use ap_obj::ops::BinOp as OB;
+    // 02.03 user operator slots (S-03-25) — before every builtin path.
+    {
+        let interp = current_interp_for_bindings();
+        let (op_name, rop_name, sym, iop_name) = match op {
+            BinOp::Add => ("__add__", "__radd__", "+", "__iadd__"),
+            BinOp::Sub => ("__sub__", "__rsub__", "-", "__isub__"),
+            BinOp::Mul => ("__mul__", "__rmul__", "*", "__imul__"),
+            BinOp::Div => ("__truediv__", "__rtruediv__", "/", "__itruediv__"),
+            BinOp::FloorDiv => ("__floordiv__", "__rfloordiv__", "//", "__ifloordiv__"),
+            BinOp::Mod => ("__mod__", "__rmod__", "%", "__imod__"),
+            BinOp::Pow => ("__pow__", "__rpow__", "**", "__ipow__"),
+            BinOp::MatMul => ("__matmul__", "__rmatmul__", "@", "__imatmul__"),
+            BinOp::LShift => ("__lshift__", "__rlshift__", "<<", "__ilshift__"),
+            BinOp::RShift => ("__rshift__", "__rrshift__", ">>", "__irshift__"),
+            BinOp::BitOr => ("__or__", "__ror__", "|", "__ior__"),
+            BinOp::BitXor => ("__xor__", "__rxor__", "^", "__ixor__"),
+            BinOp::BitAnd => ("__and__", "__rand__", "&", "__iand__"),
+        };
+        let _ = iop_name; // augmented ops route through exec_stmt's AugAssign
+                          // Union types: X | Y on class values (S-03-31 isinstance union form).
+        if op == BinOp::BitOr {
+            let both_classes = matches!(
+                (a, b),
+                (Value::Obj(x), Value::Obj(y))
+                    if x.kind == ap_obj::ObjKind::UserClass && y.kind == ap_obj::ObjKind::UserClass
+            );
+            if both_classes {
+                let u = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "__union__");
+                *u.slice_parts.borrow_mut() = vec![a.clone(), b.clone()];
+                return Ok(Value::Obj(u));
+            }
+        }
+        if let Some(r) = user_binop(&interp, op_name, rop_name, sym, a, b) {
+            return r;
+        }
+    }
     // Set algebra first (| & ^ - on sets/frozensets).
     match (a, op, b) {
         (Value::Set(x) | Value::Frozen(x), BinOp::BitOr, Value::Set(y) | Value::Frozen(y)) => {
@@ -1575,7 +2067,7 @@ fn eval_binop(a: &Value, op: BinOp, b: &Value) -> EResult {
 // Calls
 // ===========================================================================
 
-fn call_value(
+pub(crate) fn call_value(
     interp: &Rc<Interpreter>,
     caller: &Rc<Frame>,
     f: &Value,
@@ -1596,29 +2088,211 @@ fn call_value_inner(
     kwargs: &[(String, Value)],
 ) -> EResult {
     match f {
-        Value::Obj(o) => match o.kind {
-            ap_obj::ObjKind::BuiltinFn => builtins::call_builtin(interp, &o.name, args, kwargs),
-            ap_obj::ObjKind::Function => call_function(interp, o, args, kwargs),
-            ap_obj::ObjKind::Type => call_type_ctor(interp, &o.name, args, kwargs),
-            ap_obj::ObjKind::BoundMethod => {
-                // v0 builtin-method dispatch: (receiver, name) -> methods.
-                if let Some(recv) = o.self_value.clone() {
-                    if let Some(r) = methods::call_method(interp, &recv, &o.name, args) {
+        Value::Obj(o) => {
+            match o.kind {
+                ap_obj::ObjKind::BuiltinFn => {
+                    // Class-statement keyword marker (lowering): the class-creation
+                    // path consumes kwargs; the call itself only carries the value.
+                    if o.name.starts_with("__ap_classkw__") {
+                        return Ok(args.first().cloned().unwrap_or(Value::None));
+                    }
+                    // object.__new__(cls) virtual (c003): allocates the parked
+                    // subject class.
+                    if o.name.starts_with("property.") {
+                        // p.setter(fn)/p.deleter(fn): clone with the new slot.
+                        let Some(prop) = o.slice_parts.borrow().first().cloned() else {
+                            return Err(raise("SystemError", "property marker without receiver"));
+                        };
+                        let Value::Obj(po) = prop else {
+                            return Err(raise("SystemError", "property marker receiver"));
+                        };
+                        let no = ap_obj::PyObject::new(ap_obj::ObjKind::Descriptor, "property");
+                        *no.descr_kind.borrow_mut() = Some("property".to_string());
+                        *no.self_value.borrow_mut() = po.self_value.borrow().clone();
+                        let accessor = args.first().cloned();
+                        let kind = o.name.rsplit('.').next().unwrap_or("");
+                        match kind {
+                            "setter" => *no.func.borrow_mut() = accessor,
+                            "deleter" => {
+                                if let Some(f) = accessor {
+                                    let _ = no
+                                        .dunders
+                                        .borrow_mut()
+                                        .set(Value::Str(PyString::new("fdel")), f);
+                                }
+                            }
+                            _ => {}
+                        }
+                        return Ok(Value::Obj(no));
+                    }
+                    if o.name == "__subclasses__" {
+                        let cls = o
+                            .slice_parts
+                            .borrow()
+                            .first()
+                            .cloned()
+                            .unwrap_or(Value::None);
+                        let name = match &cls {
+                            Value::Obj(co) => co.name.clone(),
+                            _ => String::new(),
+                        };
+                        let subs = crate::classes::subclasses_of(interp, &name);
+                        return Ok(Value::List(PyList::from_vec(subs)));
+                    }
+                    if o.name == "__object_init__" {
+                        // object.__init__(self, *args): BaseException stores args.
+                        let subject = o
+                            .slice_parts
+                            .borrow()
+                            .first()
+                            .cloned()
+                            .unwrap_or(Value::None);
+                        if let Value::Obj(io) = &subject {
+                            if crate::classes::is_exception_value(&subject) {
+                                let argv = Value::Tuple(Gc::new(Tuple(args.to_vec())));
+                                let _ = io
+                                    .attrs
+                                    .borrow_mut()
+                                    .set(Value::Str(PyString::new("args")), argv);
+                            }
+                        }
+                        return Ok(Value::None);
+                    }
+                    if o.name == "__object_new__" {
+                        let subject = o
+                            .slice_parts
+                            .borrow()
+                            .first()
+                            .cloned()
+                            .unwrap_or(Value::None);
+                        if let Some(t) = crate::classes::type_of(interp, &subject) {
+                            return Ok(crate::classes::alloc_instance(&t));
+                        }
+                        return Ok(Value::None);
+                    }
+                    // 02.03 protocol builtins: len/bool/repr/str/iter/next/hash
+                    // dispatch user __len__/__bool__/__repr__/__str__/__iter__/
+                    // __next__/__hash__ on instance args (S-03-22/26) BEFORE the
+                    // builtin table (whose messages assume builtin types).
+                    if let Some(r) = class_protocol_builtin(interp, &o.name, args, kwargs) {
                         return r;
                     }
+                    builtins::call_builtin(interp, &o.name, args, kwargs)
                 }
-                // Fallback: a real function receiver (user bound methods,
-                // 02.03).
-                let func = o.func.clone().unwrap_or(Value::None);
-                let mut full: Vec<Value> = vec![o.self_value.clone().unwrap_or(Value::None)];
-                full.extend_from_slice(args);
-                call_value(interp, caller, &func, &full, kwargs)
+                ap_obj::ObjKind::Function => call_function(interp, o, args, kwargs),
+                ap_obj::ObjKind::Type => call_type_ctor(interp, &o.name, args, kwargs),
+                ap_obj::ObjKind::UserClass => {
+                    // 02.03 instantiation (S-03-05..08) — except `type` itself,
+                    // which CALLS as the metaclass: type(x) -> metaclass of x
+                    // (S-03-31 x.__class__ surface).
+                    let t = crate::classes::type_of(interp, f)
+                        .ok_or_else(|| raise("SystemError", "class without payload"))?;
+                    if t.name == "type" && !t.flags.builtin_exc && t.bases.len() == 1 {
+                        if let Some(subject) = args.first() {
+                            if args.len() == 1 {
+                                // Descriptors report their kind (property/
+                                // staticmethod/member_descriptor, c008/c016/c024);
+                                // super objects report "super" (c021).
+                                if let Value::Obj(so) = subject {
+                                    if so.kind == ap_obj::ObjKind::Exception {
+                                        // Legacy exception instance: type(e) is
+                                        // its class (e004).
+                                        if let Some(cv) =
+                                            crate::classes::exc_class_value(interp, &so.name)
+                                        {
+                                            return Ok(cv);
+                                        }
+                                    }
+                                    if so.kind == ap_obj::ObjKind::Descriptor {
+                                        let tn = so
+                                            .descr_kind
+                                            .borrow()
+                                            .clone()
+                                            .unwrap_or_else(|| "object".to_string());
+                                        let tn = if tn == "member" {
+                                            "member_descriptor".to_string()
+                                        } else {
+                                            tn
+                                        };
+                                        return Ok(builtins::interned_type(interp, &tn));
+                                    }
+                                    if so.kind == ap_obj::ObjKind::Opaque && so.name == "super" {
+                                        return Ok(builtins::interned_type(interp, "super"));
+                                    }
+                                }
+                                return match crate::classes::class_of_value(interp, subject) {
+                                    Some(ct) => {
+                                        // Instances: type(x) IS x's class
+                                        // (ExceptionGroup case, e002). Classes:
+                                        // type(C) is the metaclass.
+                                        let is_instance = matches!(subject, Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance);
+                                        if is_instance {
+                                            return Ok(crate::classes::class_value_for_public(&ct));
+                                        }
+                                        let meta =
+                                            ct.metaclass.borrow().clone().unwrap_or_else(|| {
+                                                crate::classes::type_class(interp)
+                                            });
+                                        Ok(crate::classes::class_value_for_public(&meta))
+                                    }
+                                    None => {
+                                        // Builtin value: interned name-Type.
+                                        let tn = subject.type_name();
+                                        Ok(builtins::interned_type(interp, &tn))
+                                    }
+                                };
+                            }
+                        }
+                    }
+                    crate::classes::instantiate(interp, f, &t, args, kwargs)
+                }
+                ap_obj::ObjKind::UserInstance => {
+                    // __call__ protocol (S-03-23): type lookup, not instance.
+                    if let Some((cf, _)) = crate::classes::special_lookup(interp, f, "__call__") {
+                        let mut full = vec![f.clone()];
+                        full.extend_from_slice(args);
+                        return call_value(interp, caller, &cf, &full, kwargs);
+                    }
+                    Err(raise(
+                        "TypeError",
+                        format!(
+                            "'{}' object is not callable",
+                            crate::classes::display_type_name(f)
+                        ),
+                    ))
+                }
+                ap_obj::ObjKind::BoundMethod => {
+                    // v0 builtin-method dispatch: (receiver, name) -> methods.
+                    // User bound methods (02.03, func present) skip the table.
+                    if o.func.borrow().is_none() {
+                        if let Some(recv) = o.self_value.borrow().clone() {
+                            if let Some(r) = methods::call_method(interp, &recv, &o.name, args) {
+                                return r;
+                            }
+                        }
+                    }
+                    // User bound method (02.03): the defining class + receiver
+                    // form the zero-arg super() context (S-03-17/18).
+                    let owner = o.method_owner.borrow().as_ref().and_then(|w| w.upgrade());
+                    let func = o.func.borrow().clone().unwrap_or(Value::None);
+                    let mut full: Vec<Value> =
+                        vec![o.self_value.borrow().clone().unwrap_or(Value::None)];
+                    full.extend_from_slice(args);
+                    if let (Some(owner_t), Some(recv)) = (owner, o.self_value.borrow().clone()) {
+                        // classmethod receivers carry the class itself. Staged:
+                        // call_function's sentinel lands first, ctx above it.
+                        let is_cls = matches!(recv, Value::Obj(ref ro) if ro.kind == ap_obj::ObjKind::UserClass);
+                        *interp.pending_super_ctx.borrow_mut() = Some((owner_t, recv, is_cls));
+                        return call_value(interp, caller, &func, &full, kwargs);
+                    }
+                    call_value(interp, caller, &func, &full, kwargs)
+                }
+                _ => Err(raise(
+                    "TypeError",
+                    format!("'{}' object is not callable", f.type_name()),
+                )),
             }
-            _ => Err(raise(
-                "TypeError",
-                format!("'{}' object is not callable", f.type_name()),
-            )),
-        },
+        }
         _ => Err(raise(
             "TypeError",
             format!("'{}' object is not callable", f.type_name()),
@@ -1633,6 +2307,16 @@ fn call_type_ctor(
     args: &[Value],
     kwargs: &[(String, Value)],
 ) -> EResult {
+    // Interned type objects double as the builtin callables (bool/str/int
+    // ...); route class-protocol subjects through the 02.03 layer first.
+    if matches!(
+        name,
+        "bool" | "len" | "repr" | "str" | "iter" | "hash" | "next" | "type"
+    ) {
+        if let Some(r) = class_protocol_builtin(interp, name, args, kwargs) {
+            return r;
+        }
+    }
     const EXCS: &[&str] = &[
         "ValueError",
         "TypeError",
@@ -1705,6 +2389,34 @@ fn call_function(
     ));
     let line_track = Rc::new(RustCell::new(0usize));
     interp.frame_stack.borrow_mut().push(line_track.clone());
+    // Plain (non-method) function frame: zero-arg super() inside it (even
+    // nested) sees NO method context -> RuntimeError (c021).
+    // Whether instantiate() staged a context for THIS call (the sentinel is
+    // unconditional; the staged ctx pops with it).
+    let pushed_plain_ctx = interp.pending_super_ctx.borrow_mut().take();
+    interp.super_stack.borrow_mut().push((
+        std::rc::Rc::new(ap_obj::classes::TypeObject {
+            name: "__plain_fn__".to_string(),
+            qualname: String::new(),
+            bases: vec![],
+            mro: std::cell::RefCell::new(Vec::new()),
+            dict: ap_obj::dict::PyDict::new(),
+            flags: ap_obj::classes::TypeFlags::default(),
+            metaclass: std::cell::RefCell::new(None),
+            class_value: std::cell::RefCell::new(None),
+        }),
+        Value::None,
+        false,
+    ));
+    if let Some(ctx) = pushed_plain_ctx.clone() {
+        interp.super_stack.borrow_mut().push(ctx);
+    }
+    // instantiate() staged a __new__/__init__ context for THIS call; it
+    // sits ABOVE the sentinel, so super() sees the method context, and the
+    // sentinel still guards plain nested frames.
+    if let Some(ctx) = interp.pending_super_ctx.borrow_mut().take() {
+        interp.super_stack.borrow_mut().push(ctx);
+    }
 
     let result: Result<Value, Flow> = if let Some(body) = lambda_body {
         eval_expr(interp, &frame, &body, &current_registry(interp))
@@ -1713,6 +2425,11 @@ fn call_function(
     };
 
     interp.frame_stack.borrow_mut().pop();
+    interp.super_stack.borrow_mut().pop();
+    if pushed_plain_ctx.is_some() {
+        // The staged __new__/__init__ context sits above the sentinel.
+        interp.super_stack.borrow_mut().pop();
+    }
 
     match result {
         Ok(v) => Ok(v),
@@ -2308,7 +3025,7 @@ fn run_comp_clauses(
         assign_comp_target(cf, &clause.target, next)?;
         let mut pass = true;
         for cond in &clause.ifs {
-            if !eval_expr(interp, cf, cond, reg)?.is_truthy() {
+            if !truthy(interp, &eval_expr(interp, cf, cond, reg)?)? {
                 pass = false;
                 break;
             }
@@ -2370,6 +3087,35 @@ fn assign_comp_target(frame: &Rc<Frame>, target: &Expr, v: Value) -> Result<(), 
 // ===========================================================================
 
 fn iterable_of(v: &Value) -> Result<Gc<PyIterator>, Flow> {
+    // 02.03 user instances: __iter__ / legacy __getitem__ (S-03-24).
+    if matches!(v, Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance) {
+        let interp = current_interp_for_bindings();
+        return user_iter_to_iterator(&interp, v);
+    }
+    // 02.08-lite: registered iterator handles (iter()/native iters) re-fetch
+    // their table entry instead of erroring on re-entry.
+    if let Value::Obj(o) = v {
+        if o.kind == ap_obj::ObjKind::Iterator {
+            if let Some(id) = *o.gen_id.borrow() {
+                let found = {
+                    let interp2 = interp_rc();
+                    let it = interp2.iterators.borrow().get(&id).cloned();
+                    it
+                };
+                if let Some(it) = found {
+                    return Ok(it);
+                }
+            }
+        }
+    }
+    // 02.08-lite: native opaque iterables (deque) via the module layer.
+    if let Value::Obj(o) = v {
+        if o.kind == ap_obj::ObjKind::Opaque {
+            if let Some(it) = builtins_modules::native_iter(v) {
+                return Ok(it);
+            }
+        }
+    }
     // Generators: materialize their stream (GenFrame → iterator table).
     if let Value::Obj(o) = v {
         if o.kind == ap_obj::ObjKind::Generator {
@@ -2498,7 +3244,13 @@ fn render_interp_value(
 ) -> Result<String, Flow> {
     let base: String = match conv {
         Some(Conversion::S) => str_of_value(interp, frame, v)?,
-        Some(Conversion::R) => ap_obj::ops::repr(v).map_err(Flow::from_py)?,
+        Some(Conversion::R) => {
+            // 02.03: user __repr__ through the type first (f12).
+            match user_repr(interp, v, "__repr__")? {
+                Some(s) => s,
+                None => ap_obj::ops::repr(v).map_err(Flow::from_py)?,
+            }
+        }
         Some(Conversion::A) => {
             let r = ap_obj::ops::repr(v).map_err(Flow::from_py)?;
             let mut out = String::with_capacity(r.len());
@@ -2543,15 +3295,23 @@ fn str_of_value(interp: &Rc<Interpreter>, frame: &Rc<Frame>, v: &Value) -> Resul
             exc.py_str().map_err(Flow::from_py)
         }
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
-            for dunder in ["__str__", "__repr__"] {
-                if let Some(f) = o.dunders.borrow().get(&Value::Str(PyString::new(dunder))) {
-                    if let Value::Str(s) = call_value(interp, frame, &f, &[v.clone()], &[])? {
-                        return Ok(s.as_str().to_string());
-                    }
-                    break;
-                }
+            // Exception instances: str via args semantics (S-06-7) even
+            // though the value is a real user-class instance (e007).
+            let is_exc = o
+                .type_ref
+                .borrow()
+                .as_ref()
+                .and_then(|w| w.upgrade())
+                .is_some_and(|t| t.flags.is_exception);
+            if is_exc {
+                let ev = exception_value_of_instance(v)?;
+                return ev.py_str().map_err(Flow::from_py);
             }
-            Ok(o.default_repr(ap_obj::value::addr_of(o)))
+            // 02.03: __str__ -> __repr__ -> default form, via the TYPE (S-03-22/24).
+            match user_repr(interp, v, "__str__")? {
+                Some(s) => Ok(s),
+                None => Ok(default_instance_repr(v)),
+            }
         }
         _ => ap_obj::ops::to_str(v).map_err(Flow::from_py),
     }
@@ -2682,13 +3442,1039 @@ fn current_interp_for_bindings() -> Rc<Interpreter> {
 }
 
 // ===========================================================================
-// Attribute access (v0 surface)
+// 02.03 special-method dispatch (S-03-22..26)
 // ===========================================================================
 
+/// Call a dunder found on the value's type with `self` prepended.
+pub fn special_call(
+    interp: &Rc<Interpreter>,
+    obj: &Value,
+    dunder: &str,
+    args: &[Value],
+) -> EResult {
+    let (f, _owner) = crate::classes::special_lookup(interp, obj, dunder)
+        .ok_or_else(|| raise("TypeError", format!("no {}", dunder)))?;
+    let mut full = vec![obj.clone()];
+    full.extend_from_slice(args);
+    call_value(interp, &module_frame_pub(), &f, &full, &[])
+}
+
+fn module_frame_pub() -> Rc<Frame> {
+    let interp = current_interp_for_bindings();
+    Rc::new(Frame::new_module(interp.globals.clone()))
+}
+
+/// The class Value for an exception class NAME (None-safe: v0 legacy
+/// exceptions that predate the class tree still resolve through here).
+pub fn exception_class_value(interp: &Rc<Interpreter>, name: &str) -> Value {
+    crate::classes::exc_class_value(interp, name)
+        .unwrap_or_else(|| Value::Obj(ap_obj::PyObject::new(ap_obj::ObjKind::Type, name)))
+}
+
+/// Materialize an exception INSTANCE value from an in-flight ExceptionValue
+/// (for __exit__ args / except-as binding identity).
+pub fn exception_instance_value(e: &ExceptionValue) -> Value {
+    exception_instance(e)
+}
+
+/// Seed the `__class__` cell for zero-arg super(): every method defined in
+/// the class body captures `__class__` through its closure `frees` (the
+/// frontend classifies the implicit reference as a free read of the
+/// class-frame-local `__class__`). Called AFTER the class value exists
+/// (S-03-17: the cell binds the created class object).
+pub fn seed_class_cell(interp: &Rc<Interpreter>, class_frame: &Rc<Frame>, class_v: &Value) {
+    // Park the cell on the class frame; method-def registration inside the
+    // body copied `class_frame.my_cells` BEFORE this runs, so we ALSO walk
+    // the nested table and wire the cell directly (methods capture by
+    // shared Rc — see bind_params' defining-frame path).
+    let cell: CellSlot = Rc::new(RefCell::new(Some(class_v.clone())));
+    *class_frame.class_cell.borrow_mut() = Some(cell.clone());
+    // Walk functions defined in this body (registered while the body ran)
+    // and give their defining-frame entry a `__class__` free-cell.
+    let ids: Vec<u32> = interp
+        .defining_frames
+        .borrow()
+        .iter()
+        .filter(|(_, f)| Rc::ptr_eq(f, class_frame))
+        .map(|(id, _)| *id)
+        .collect();
+    let _ = ids; // the real wiring happens in bind_params via class_cell
+    let _ = interp;
+}
+
+/// User-protocol truthiness: __bool__ then __len__ then default (S-01-27
+/// + S-03-26). Returns None when no protocol applies.
+fn user_truthiness(interp: &Rc<Interpreter>, v: &Value) -> Result<Option<bool>, Flow> {
+    if let Some((f, _)) = crate::classes::special_lookup(interp, v, "__bool__") {
+        let r = call_value(interp, &module_frame_pub(), &f, &[v.clone()], &[])?;
+        let b = r
+            .as_int()
+            .and_then(|i| i.to_i64())
+            .ok_or_else(|| raise("TypeError", "__bool__ should return bool"))?;
+        return Ok(Some(b != 0));
+    }
+    if let Some((f, _)) = crate::classes::special_lookup(interp, v, "__len__") {
+        let r = call_value(interp, &module_frame_pub(), &f, &[v.clone()], &[])?;
+        let n = r.as_int().and_then(|i| i.to_i64()).ok_or_else(|| {
+            raise(
+                "TypeError",
+                format!("'__len__' should return >= 0, not '{}'", r.type_name()),
+            )
+        })?;
+        return Ok(Some(n != 0));
+    }
+    Ok(None)
+}
+
+/// Protocol-aware truthiness: user __bool__/__len__ first (S-03-26),
+/// then the value layer (S-01-27).
+fn truthy(interp: &Rc<Interpreter>, v: &Value) -> Result<bool, Flow> {
+    match user_truthiness(interp, v)? {
+        Some(b) => Ok(b),
+        None => Ok(v.is_truthy()),
+    }
+}
+
+/// User-protocol len(): __len__ via the type (S-03-22), exact error text.
+fn user_len(interp: &Rc<Interpreter>, v: &Value) -> Result<Option<i64>, Flow> {
+    match crate::classes::special_lookup(interp, v, "__len__") {
+        Some((f, _)) => {
+            let r = call_value(interp, &module_frame_pub(), &f, &[v.clone()], &[])?;
+            match r.as_int().and_then(|i| i.to_i64()) {
+                Some(n) => Ok(Some(n)),
+                None => Err(raise(
+                    "TypeError",
+                    format!("'__len__' should return >= 0, not '{}'", r.type_name()),
+                )),
+            }
+        }
+        None => Ok(None),
+    }
+}
+
+/// User-protocol repr/str. `which`: "__repr__" or "__str__".
+fn user_repr(interp: &Rc<Interpreter>, v: &Value, which: &str) -> Result<Option<String>, Flow> {
+    // __str__ falls back to __repr__ only through object.__str__ semantics
+    // (S-03-24): an explicit __str__ must return str; missing __str__ with
+    // a class __repr__ uses it; neither -> default form.
+    let lookup = |name: &str| crate::classes::special_lookup(interp, v, name);
+    let target = match which {
+        "__str__" => lookup("__str__").or_else(|| lookup("__repr__")),
+        other => lookup(other),
+    };
+    match target {
+        Some((f, _)) => {
+            let r = call_value(interp, &module_frame_pub(), &f, &[v.clone()], &[])?;
+            match r {
+                Value::Str(s) => Ok(Some(s.as_str().to_string())),
+                other => Err(raise(
+                    "TypeError",
+                    format!("{} returned non-string (type {})", which, other.type_name()),
+                )),
+            }
+        }
+        None => Ok(None),
+    }
+}
+
+/// User binary-operator dispatch (S-03-25): returns Some(result) when a
+/// user slot produced a value (or raised), None when no slot applies.
+#[allow(clippy::too_many_arguments)]
+fn user_binop(
+    interp: &Rc<Interpreter>,
+    op: &str,
+    rop: &str,
+    sym: &str,
+    a: &Value,
+    b: &Value,
+) -> Option<EResult> {
+    let a_slot = crate::classes::special_lookup(interp, a, op);
+    let b_slot = crate::classes::special_lookup(interp, b, rop);
+    let try_primary = |f: &Value| -> Option<EResult> {
+        Some(call_value(
+            interp,
+            &module_frame_pub(),
+            f,
+            &[a.clone(), b.clone()],
+            &[],
+        ))
+    };
+    let try_reflected = |f: &Value| -> Option<EResult> {
+        Some(call_value(
+            interp,
+            &module_frame_pub(),
+            f,
+            &[b.clone(), a.clone()],
+            &[],
+        ))
+    };
+    // Rule 1: proper-subclass reflected first (S-03-25).
+    let b_subclass_a = matches!(
+        (crate::classes::special_lookup(interp, b, "__init__"), a_slot.clone()),
+        _ if false
+    );
+    let _ = b_subclass_a;
+    let b_is_proper_sub = value_is_proper_subclass_of(interp, b, a);
+    if b_is_proper_sub {
+        if let Some((rf, _)) = &b_slot {
+            if let Some(r) = try_reflected(rf) {
+                if !is_not_implemented(&r) {
+                    return Some(r);
+                }
+            }
+        }
+        if let Some((pf, _)) = &a_slot {
+            if let Some(r) = try_primary(pf) {
+                if !is_not_implemented(&r) {
+                    return Some(r);
+                }
+            }
+        }
+    } else {
+        if let Some((pf, _)) = &a_slot {
+            if let Some(r) = try_primary(pf) {
+                if !is_not_implemented(&r) {
+                    return Some(r);
+                }
+            }
+        }
+        if let Some((rf, _)) = &b_slot {
+            if let Some(r) = try_reflected(rf) {
+                if !is_not_implemented(&r) {
+                    return Some(r);
+                }
+            }
+        }
+    }
+    // Both deferred/absent: only raise when at least one USER slot exists
+    // (otherwise the builtin path raises its own message).
+    if a_slot.is_some() || b_slot.is_some() {
+        return Some(Err(raise(
+            "TypeError",
+            format!(
+                "unsupported operand type(s) for {}: '{}' and '{}'",
+                sym,
+                crate::classes::display_type_name(a),
+                crate::classes::display_type_name(b)
+            ),
+        )));
+    }
+    None
+}
+
+fn is_not_implemented(r: &EResult) -> bool {
+    match r {
+        Ok(Value::Obj(o)) => o.name == "NotImplemented" && o.kind == ap_obj::ObjKind::Opaque,
+        _ => false,
+    }
+}
+fn result_is_not_implemented(r: &EResult) -> bool {
+    is_not_implemented(r)
+}
+fn is_not_implemented_value(v: &Value) -> bool {
+    matches!(v, Value::Obj(o) if o.name == "NotImplemented" && o.kind == ap_obj::ObjKind::Opaque)
+}
+
+fn value_is_proper_subclass_of(interp: &Rc<Interpreter>, b: &Value, a: &Value) -> bool {
+    let (Some(bc), Some(ac)) = (
+        crate::classes::class_of_value(interp, b),
+        crate::classes::class_of_value(interp, a),
+    ) else {
+        return false;
+    };
+    // Proper subclass: b in a's MRO but a is not in b's MRO in the same slot.
+    bc.is_subclass(&ac) && !ac.is_subclass(&bc)
+}
+
+/// In-place op dispatch (S-03-26): __iX__ first.
+fn user_binop_inplace(
+    interp: &Rc<Interpreter>,
+    iop: &str,
+    op: &str,
+    rop: &str,
+    sym: &str,
+    a: &Value,
+    b: &Value,
+) -> Option<EResult> {
+    if let Some((f, _)) = crate::classes::special_lookup(interp, a, iop) {
+        let r = call_value(
+            interp,
+            &module_frame_pub(),
+            &f,
+            &[a.clone(), b.clone()],
+            &[],
+        );
+        if !result_is_not_implemented(&r) {
+            return Some(r);
+        }
+    }
+    user_binop(interp, op, rop, sym, a, b)
+}
+
+/// User comparison dispatch: __eq__/__ne__/__lt__/__le__/__gt__/__ge__.
+fn user_compare(
+    interp: &Rc<Interpreter>,
+    op: CmpOp,
+    a: &Value,
+    b: &Value,
+) -> Option<Result<bool, Flow>> {
+    // Ordering slots only; __eq__/__ne__ route through user_compare_value
+    // (raw-value semantics, c028).
+    if matches!(op, CmpOp::Eq | CmpOp::NotEq) {
+        return user_compare_value(interp, op, a, b).map(|r| r.map(|v| v.is_truthy()));
+    }
+    let slot = match op {
+        CmpOp::Lt => "__lt__",
+        CmpOp::LtE => "__le__",
+        CmpOp::Gt => "__gt__",
+        CmpOp::GtE => "__ge__",
+        _ => return None,
+    };
+    let a_slot = crate::classes::special_lookup(interp, a, slot);
+    let b_slot = crate::classes::special_lookup(interp, b, slot);
+    let call_slot = |f: &Value, x: &Value, y: &Value| {
+        call_value(interp, &module_frame_pub(), f, &[x.clone(), y.clone()], &[])
+    };
+    // Proper-subclass reflected priority (S-03-25 rule 1).
+    let b_proper = value_is_proper_subclass_of(interp, b, a);
+    let try_one = |f: &Value, x: &Value, y: &Value| -> Option<Result<bool, Flow>> {
+        let r = call_slot(f, x, y);
+        if matches!(&r, Ok(v) if is_not_implemented_value(v)) {
+            None
+        } else {
+            Some(r.map(|v| v.is_truthy()))
+        }
+    };
+    if b_proper {
+        if let Some((f, _)) = &b_slot {
+            if let Some(r) = try_one(f, b, a) {
+                return Some(r);
+            }
+        }
+        if let Some((f, _)) = &a_slot {
+            if let Some(r) = try_one(f, a, b) {
+                return Some(r);
+            }
+        }
+    } else {
+        if let Some((f, _)) = &a_slot {
+            if let Some(r) = try_one(f, a, b) {
+                return Some(r);
+            }
+        }
+        if let Some((f, _)) = &b_slot {
+            if let Some(r) = try_one(f, b, a) {
+                return Some(r);
+            }
+        }
+    }
+    if a_slot.is_some() || b_slot.is_some() {
+        return Some(Err(raise(
+            "TypeError",
+            format!(
+                "'{}' not supported between instances of '{}' and '{}'",
+                match op {
+                    CmpOp::Lt => "<",
+                    CmpOp::LtE => "<=",
+                    CmpOp::Gt => ">",
+                    CmpOp::GtE => ">=",
+                    _ => unreachable!(),
+                },
+                crate::classes::display_type_name(a),
+                crate::classes::display_type_name(b)
+            ),
+        )));
+    }
+    None
+}
+
+fn class_protocol_builtin(
+    interp: &Rc<Interpreter>,
+    name: &str,
+    args: &[Value],
+    kwargs: &[(String, Value)],
+) -> Option<EResult> {
+    let subject = args.first();
+    let is_user_instance =
+        matches!(subject, Some(Value::Obj(o)) if o.kind == ap_obj::ObjKind::UserInstance);
+    match name {
+        "len" if is_user_instance => Some(match user_len(interp, subject.unwrap()) {
+            Ok(Some(n)) => Ok(Value::Int(ap_obj::Int::from_i64(n))),
+            Ok(None) => Err(raise(
+                "TypeError",
+                format!(
+                    "object of type '{}' has no len()",
+                    crate::classes::display_type_name(subject.unwrap())
+                ),
+            )),
+            Err(f) => Err(f),
+        }),
+        "bool" if is_user_instance => Some(match user_truthiness(interp, subject.unwrap()) {
+            Ok(Some(b)) => Ok(Value::Bool(b)),
+            Ok(None) => Ok(Value::Bool(subject.unwrap().is_truthy())),
+            Err(f) => Err(f),
+        }),
+        "abs" if is_user_instance => {
+            crate::classes::special_lookup(interp, subject.unwrap(), "__abs__").map(|(f, _)| {
+                call_value(
+                    interp,
+                    &module_frame_pub(),
+                    &f,
+                    &[subject.unwrap().clone()],
+                    &[],
+                )
+            })
+        }
+        "repr" if is_user_instance && is_exception_instance(subject.unwrap()) => {
+            // Exception instances: ClassName('arg', ...) (V043/e010).
+            Some(repr_with_classes(interp, subject.unwrap()))
+        }
+        "repr" if is_user_instance => Some(match user_repr(interp, subject.unwrap(), "__repr__") {
+            Ok(Some(s)) => Ok(Value::Str(PyString::new(s))),
+            Ok(None) => Ok(Value::Str(PyString::new(default_instance_repr(
+                subject.unwrap(),
+            )))),
+            Err(f) => Err(f),
+        }),
+        "repr" => {
+            // Containers holding user instances render member __repr__s
+            // (V066 repr([Both()]) -> [REPR]).
+            Some(repr_with_classes(interp, subject.unwrap()))
+        }
+        "str" if is_user_instance && is_exception_instance(subject.unwrap()) => Some(
+            exception_value_of_instance(subject.unwrap())
+                .and_then(|e| e.py_str().map_err(Flow::from_py))
+                .map(|s| Value::Str(PyString::new(s))),
+        ),
+        "str" if is_user_instance => Some(match user_repr(interp, subject.unwrap(), "__str__") {
+            Ok(Some(s)) => Ok(Value::Str(PyString::new(s))),
+            Ok(None) => Ok(Value::Str(PyString::new(default_instance_repr(
+                subject.unwrap(),
+            )))),
+            Err(f) => Err(f),
+        }),
+        "iter" if is_user_instance => Some(user_iter(interp, subject.unwrap())),
+        "next" => {
+            let v = match args.first() {
+                Some(v) => v,
+                None => return None,
+            };
+            match v {
+                Value::Obj(o) if o.kind == ap_obj::ObjKind::Iterator => None, // builtin path
+                other if matches!(other, Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance) => {
+                    Some(user_next(interp, other))
+                }
+                _ => None,
+            }
+        }
+        "hash" if is_user_instance => Some(
+            match crate::classes::special_lookup(interp, subject.unwrap(), "__hash__") {
+                Some((f, _)) => call_value(
+                    interp,
+                    &module_frame_pub(),
+                    &f,
+                    &[subject.unwrap().clone()],
+                    &[],
+                ),
+                None => match ap_obj::ops::hash(subject.unwrap()) {
+                    Ok(h) => Ok(Value::Int(ap_obj::Int::from_i64(h))),
+                    Err(e) => Err(Flow::from_py(e)),
+                },
+            },
+        ),
+        "type" => {
+            // type(x) on class-bearing values returns the metaclass CLASS
+            // (identity: type(A) is type, c001); builtin values keep the
+            // interned name-Type path (V045).
+            let v = match args.first() {
+                Some(v) => v,
+                None => return None,
+            };
+            // Descriptors report their kind name (type(C.p) is property);
+            // super objects report "super" (c021).
+            if let Value::Obj(o) = v {
+                if o.kind == ap_obj::ObjKind::Descriptor {
+                    return Some(Ok(Value::Str(PyString::new(
+                        o.descr_kind
+                            .borrow()
+                            .clone()
+                            .unwrap_or_else(|| "object".to_string()),
+                    ))));
+                }
+                if o.kind == ap_obj::ObjKind::Opaque && o.name == "super" {
+                    return Some(Ok(Value::Str(PyString::new("super"))));
+                }
+            }
+            match crate::classes::class_of_value(interp, v) {
+                Some(t) => {
+                    let meta = t
+                        .metaclass
+                        .borrow()
+                        .clone()
+                        .unwrap_or_else(|| crate::classes::type_class(interp));
+                    Some(Ok(crate::classes::class_value_for_public(&meta)))
+                }
+                None => None,
+            }
+        }
+        "isinstance" => Some(class_isinstance(interp, args)),
+        "issubclass" => Some(class_issubclass(interp, args)),
+        "property" => Some(make_property(interp, args)),
+
+        "classmethod" => Some(make_descr(interp, "classmethod", args)),
+        "staticmethod" => Some(make_descr(interp, "staticmethod", args)),
+        "super" => Some(builtin_super(interp, args, kwargs)),
+        _ => {
+            let _ = kwargs;
+            None
+        }
+    }
+}
+
+/// repr() that renders user __repr__ through containers (V066's
+/// `repr([Both()])` -> `[REPR]`): walks the value tree, pre-rendering
+/// user instances, then splices them into the structural form.
+fn repr_with_classes(interp: &Rc<Interpreter>, v: &Value) -> EResult {
+    fn render(
+        interp: &Rc<Interpreter>,
+        v: &Value,
+        out: &mut String,
+        active: &mut std::collections::HashSet<usize>,
+    ) -> Result<(), Flow> {
+        match v {
+            Value::List(l) => {
+                if !active.insert(ap_obj::value::addr_of(l)) {
+                    out.push_str("[...]");
+                    return Ok(());
+                }
+                out.push('[');
+                for (i, item) in l.items().iter().enumerate() {
+                    if i > 0 {
+                        out.push_str(", ");
+                    }
+                    render(interp, item, out, active)?;
+                }
+                out.push(']');
+                active.remove(&ap_obj::value::addr_of(l));
+                Ok(())
+            }
+            Value::Tuple(t) => {
+                out.push('(');
+                for (i, item) in t.0.iter().enumerate() {
+                    if i > 0 {
+                        out.push_str(", ");
+                    }
+                    render(interp, item, out, active)?;
+                }
+                if t.0.len() == 1 {
+                    out.push(',');
+                }
+                out.push(')');
+                Ok(())
+            }
+            Value::Dict(d) => {
+                let id = ap_obj::value::addr_of(d);
+                if !active.insert(id) {
+                    out.push_str("{...}");
+                    return Ok(());
+                }
+                out.push('{');
+                for (i, (k, val)) in d.items().iter().enumerate() {
+                    if i > 0 {
+                        out.push_str(", ");
+                    }
+                    render(interp, k, out, active)?;
+                    out.push_str(": ");
+                    render(interp, val, out, active)?;
+                }
+                out.push('}');
+                active.remove(&id);
+                Ok(())
+            }
+            Value::Set(s) => {
+                let mut elems: Vec<String> = Vec::new();
+                for e in s.iter() {
+                    let mut tmp = String::new();
+                    render(interp, &e, &mut tmp, active)?;
+                    elems.push(tmp);
+                }
+                elems.sort();
+                if elems.is_empty() {
+                    out.push_str("set()");
+                } else {
+                    out.push('{');
+                    out.push_str(&elems.join(", "));
+                    out.push('}');
+                }
+                Ok(())
+            }
+            Value::Frozen(s) => {
+                let mut elems: Vec<String> = Vec::new();
+                for e in s.iter() {
+                    let mut tmp = String::new();
+                    render(interp, &e, &mut tmp, active)?;
+                    elems.push(tmp);
+                }
+                elems.sort();
+                if elems.is_empty() {
+                    out.push_str("frozenset()");
+                } else {
+                    out.push_str("frozenset({");
+                    out.push_str(&elems.join(", "));
+                    out.push_str("})");
+                }
+                Ok(())
+            }
+            Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass => {
+                out.push_str(&format!("<class '{}'>", o.name));
+                Ok(())
+            }
+            Value::Obj(o) if o.kind == ap_obj::ObjKind::Exception => {
+                // Exception instances: ClassName('arg', ...) (V043).
+                let mut s = o.name.clone();
+                s.push('(');
+                for (i, a) in o.args.borrow().iter().enumerate() {
+                    if i > 0 {
+                        s.push_str(", ");
+                    }
+                    s.push_str(&ap_obj::ops::repr(a).map_err(Flow::from_py)?);
+                }
+                s.push(')');
+                out.push_str(&s);
+                Ok(())
+            }
+            Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
+                if crate::classes::is_exception_value(v) {
+                    // ClassName('arg', ...) (e009/e010 repr).
+                    let ev = exception_value_of_instance(v)?;
+                    let mut s = ev.class;
+                    s.push('(');
+                    for (i, a) in ev.args.iter().enumerate() {
+                        if i > 0 {
+                            s.push_str(", ");
+                        }
+                        s.push_str(&ap_obj::ops::repr(a).map_err(Flow::from_py)?);
+                    }
+                    s.push(')');
+                    out.push_str(&s);
+                    return Ok(());
+                }
+                match user_repr(interp, v, "__repr__")? {
+                    Some(s) => {
+                        out.push_str(&s);
+                        Ok(())
+                    }
+                    None => {
+                        out.push_str(&default_instance_repr(v));
+                        Ok(())
+                    }
+                }
+            }
+            other => {
+                out.push_str(&ap_obj::ops::repr(other).map_err(Flow::from_py)?);
+                Ok(())
+            }
+        }
+    }
+    let mut out = String::new();
+    let mut active = std::collections::HashSet::new();
+    render(interp, v, &mut out, &mut active)?;
+    Ok(Value::Str(PyString::new(out)))
+}
+
+/// Is this a real exception-class instance (02.03 fast-path product)?
+fn is_exception_instance(v: &Value) -> bool {
+    matches!(v, Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance)
+        && crate::classes::is_exception_value(v)
+}
+
+/// `<module.Class object at 0x...>` deterministic form (V066/C-24: the
+/// address digits are UNSPECIFIED; the prefix is byte-pinned).
+fn default_instance_repr(v: &Value) -> String {
+    match v {
+        Value::Obj(o) => format!(
+            "<{}.{} object at 0x{:x}>",
+            ap_obj::MODULE_NAME,
+            o.name,
+            ap_obj::value::addr_of(o)
+        ),
+        _ => v.type_name().to_string(),
+    }
+}
+
+/// isinstance through real classes with the tuple/union forms (S-03-31).
+fn class_isinstance(interp: &Rc<Interpreter>, args: &[Value]) -> EResult {
+    let v = args
+        .first()
+        .ok_or_else(|| raise("TypeError", "isinstance expected 2 arguments, got 1"))?;
+    let t = args
+        .get(1)
+        .ok_or_else(|| raise("TypeError", "isinstance expected 2 arguments, got 1"))?;
+    // Custom metaclass __instancecheck__ (S-03-31; c033 Weird) — consulted
+    // before the structural check, for any subject.
+    if let Value::Obj(to) = t {
+        if to.kind == ap_obj::ObjKind::UserClass {
+            if let Some(tc) = crate::classes::type_of(interp, t) {
+                if let Some(meta) = tc.metaclass.borrow().clone() {
+                    if let Some(hook) = meta.lookup("__instancecheck__") {
+                        if matches!(&hook, Value::Obj(f) if f.kind == ap_obj::ObjKind::Function) {
+                            return call_value(
+                                interp,
+                                &module_frame_pub(),
+                                &hook,
+                                &[t.clone(), v.clone()],
+                                &[],
+                            )
+                            .map(|r| Value::Bool(r.is_truthy()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Fast path: builtin value + builtin type name (V045 surface).
+    if !matches!(v, Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance || o.kind == ap_obj::ObjKind::Exception)
+    {
+        if let Value::Obj(to) = t {
+            if to.kind == ap_obj::ObjKind::Type {
+                return Ok(Value::Bool(builtins::type_matches(v, &to.name)));
+            }
+        }
+        // Non-type second arg with a builtin subject: pinned TypeError
+        // (c033 `isinstance(1, 2)`).
+        let is_union = matches!(t, Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque && o.name == "__union__");
+        if !matches!(t, Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass || o.kind == ap_obj::ObjKind::Type)
+            && !matches!(t, Value::Tuple(_))
+            && !is_union
+        {
+            return Err(raise(
+                "TypeError",
+                "isinstance() arg 2 must be a type, a tuple of types, or a union",
+            ));
+        }
+    }
+    Ok(Value::Bool(crate::classes::value_isinstance(interp, v, t)?))
+}
+
+fn class_issubclass(interp: &Rc<Interpreter>, args: &[Value]) -> EResult {
+    let a = args
+        .first()
+        .ok_or_else(|| raise("TypeError", "issubclass expected 2 arguments, got 1"))?;
+    let b = args
+        .get(1)
+        .ok_or_else(|| raise("TypeError", "issubclass expected 2 arguments, got 1"))?;
+    // Custom metaclass __subclasscheck__ (S-03-31; c033 WS).
+    if let Value::Obj(to) = b {
+        if to.kind == ap_obj::ObjKind::UserClass {
+            if let Some(tc) = crate::classes::type_of(interp, b) {
+                if let Some(meta) = tc.metaclass.borrow().clone() {
+                    if let Some(hook) = meta.lookup("__subclasscheck__") {
+                        if matches!(&hook, Value::Obj(f) if f.kind == ap_obj::ObjKind::Function) {
+                            return call_value(
+                                interp,
+                                &module_frame_pub(),
+                                &hook,
+                                &[b.clone(), a.clone()],
+                                &[],
+                            )
+                            .map(|r| Value::Bool(r.is_truthy()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // 02.08-lite: legacy interned-Type LEFT side (e.g.
+    // issubclass(json.JSONDecodeError, ValueError)) routes through the v0
+    // name-based subclass table — the value layer rejects plain Type objects.
+    if let Value::Obj(x) = a {
+        if x.kind == ap_obj::ObjKind::Type {
+            let name_ok = match b {
+                Value::Obj(y)
+                    if y.kind == ap_obj::ObjKind::Type || y.kind == ap_obj::ObjKind::UserClass =>
+                {
+                    true
+                }
+                Value::Tuple(_) => true,
+                _ => false,
+            };
+            if name_ok {
+                let result = match b {
+                    Value::Obj(y) => crate::exc_hier::is_subclass(&x.name, &y.name),
+                    Value::Tuple(parts) => parts.0.iter().any(|p| {
+                        if let Value::Obj(y) = p {
+                            crate::exc_hier::is_subclass(&x.name, &y.name)
+                        } else {
+                            false
+                        }
+                    }),
+                    _ => false,
+                };
+                return Ok(Value::Bool(result));
+            }
+        }
+    }
+    Ok(Value::Bool(crate::classes::value_issubclass(interp, a, b)?))
+}
+
+/// property(fget, [fset], [fdel]) -> descriptor object (S-03-21).
+fn make_property(interp: &Rc<Interpreter>, args: &[Value]) -> EResult {
+    let _ = interp;
+    let o = ap_obj::PyObject::new(ap_obj::ObjKind::Descriptor, "property");
+    *o.descr_kind.borrow_mut() = Some("property".to_string());
+    *o.self_value.borrow_mut() = args.first().cloned(); // fget
+    *o.func.borrow_mut() = args.get(1).cloned(); // fset
+    if let Some(fd) = args.get(2) {
+        o.dunders
+            .borrow_mut()
+            .set(Value::Str(PyString::new("fdel")), fd.clone())
+            .map_err(Flow::from_py)?;
+    }
+    Ok(Value::Obj(o))
+}
+
+fn make_descr(interp: &Rc<Interpreter>, kind: &str, args: &[Value]) -> EResult {
+    let _ = interp;
+    let o = ap_obj::PyObject::new(ap_obj::ObjKind::Descriptor, kind);
+    *o.descr_kind.borrow_mut() = Some(kind.to_string());
+    *o.func.borrow_mut() = args.first().cloned();
+    Ok(Value::Obj(o))
+}
+
+/// super() zero-arg (via __class__ cell) + two-arg forms (S-03-17).
+/// v0 zero-arg: the enclosing method's `self`/`cls` is the FIRST parameter
+/// slot; we record (start-class) on the super VALUE and resolve attributes
+/// against type(self).__mro__ after that class (S-03-18).
+fn builtin_super(interp: &Rc<Interpreter>, args: &[Value], _kwargs: &[(String, Value)]) -> EResult {
+    match args.len() {
+        0 => {
+            // Zero-arg super(): the innermost active method context
+            // (S-03-17). Outside a method the stack is empty -> the pinned
+            // RuntimeError.
+            let ctx = interp
+                .super_stack
+                .borrow()
+                .last()
+                .cloned()
+                .filter(|(start, _, _)| start.name != "__plain_fn__");
+            match ctx {
+                None => Err(raise("RuntimeError", "super(): no arguments")),
+                Some((start_t, obj, is_cls)) => {
+                    let start_v = crate::classes::class_value_for_public(&start_t);
+                    let o = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "super");
+                    *o.slice_parts.borrow_mut() = vec![start_v, obj];
+                    let _ = is_cls;
+                    Ok(Value::Obj(o))
+                }
+            }
+        }
+        2 => {
+            let start = args[0].clone();
+            let obj = args[1].clone();
+            // Validation (S-03-17 text).
+            let start_t = crate::classes::base_type_ref(interp, &start)?
+                .ok_or_else(|| raise("TypeError", "super() argument 1 must be a type"))?;
+            let obj_is_inst = crate::classes::class_of_value(interp, &obj)
+                .is_some_and(|oc| oc.is_subclass(&start_t));
+            let obj_is_class = crate::classes::base_type_ref(interp, &obj)?
+                .is_some_and(|oc| oc.is_subclass(&start_t));
+            if !obj_is_inst && !obj_is_class {
+                let inst_name = crate::classes::display_type_name(&obj);
+                return Err(raise(
+                    "TypeError",
+                    format!(
+                        "super(type, obj): obj (instance of {}) is not an instance or subtype of type ({}).",
+                        inst_name, start_t.name
+                    ),
+                ));
+            }
+            let o = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "super");
+            *o.slice_parts.borrow_mut() = vec![start, obj];
+            Ok(Value::Obj(o))
+        }
+        n => Err(raise(
+            "TypeError",
+            format!("super() takes 0 or 2 arguments, got {n}"),
+        )),
+    }
+}
+
+/// Register an iterator for the CURRENT run (shared with builtins_modules'
+/// register_shared_iter; single table, single id space).
+pub fn register_shared_iter_pub(it: Gc<PyIterator>) -> u64 {
+    let interp = current_interp_for_bindings();
+    let id = interp.next_iter_id.get();
+    interp.next_iter_id.set(id + 2);
+    interp.iterators.borrow_mut().insert(id, it);
+    id
+}
+
+/// user_iter variant returning the registered PyIterator (iterable_of path).
+fn user_iter_to_iterator(interp: &Rc<Interpreter>, v: &Value) -> Result<Gc<PyIterator>, Flow> {
+    if let Some((f, _)) = crate::classes::special_lookup(interp, v, "__iter__") {
+        let r = call_value(interp, &module_frame_pub(), &f, &[v.clone()], &[])?;
+        return iterable_of(&r);
+    }
+    if let Some((f, _)) = crate::classes::special_lookup(interp, v, "__getitem__") {
+        let mut items = Vec::new();
+        for i in 0.. {
+            let r = call_value(
+                interp,
+                &module_frame_pub(),
+                &f,
+                &[v.clone(), Value::Int(ap_obj::Int::from_i64(i))],
+                &[],
+            );
+            match r {
+                Ok(item) => items.push(item),
+                Err(Flow::Raise(e)) if e.class == "IndexError" => break,
+                Err(f2) => return Err(f2),
+            }
+            if i > 1_000_000 {
+                break;
+            }
+        }
+        return Ok(crate::iter::PyIterator::new(crate::iter::IterState::Seq(
+            items, 0,
+        )));
+    }
+    Err(raise(
+        "TypeError",
+        format!(
+            "'{}' object is not iterable",
+            crate::classes::display_type_name(v)
+        ),
+    ))
+}
+
+/// iter() over a user instance: __iter__ result or legacy __getitem__
+/// sequence protocol (S-03-24).
+fn user_iter(interp: &Rc<Interpreter>, v: &Value) -> EResult {
+    if let Some((f, _)) = crate::classes::special_lookup(interp, v, "__iter__") {
+        return call_value(interp, &module_frame_pub(), &f, &[v.clone()], &[]);
+    }
+    if let Some((f, _)) = crate::classes::special_lookup(interp, v, "__getitem__") {
+        // Legacy sequence protocol: index 0.. until IndexError.
+        let mut items = Vec::new();
+        for i in 0.. {
+            let r = call_value(
+                interp,
+                &module_frame_pub(),
+                &f,
+                &[v.clone(), Value::Int(ap_obj::Int::from_i64(i))],
+                &[],
+            );
+            match r {
+                Ok(item) => items.push(item),
+                Err(Flow::Raise(e)) if e.class == "IndexError" => break,
+                Err(f2) => return Err(f2),
+            }
+            if i > 1_000_000 {
+                break; // defensive: no runaway sequences
+            }
+        }
+        let it = crate::iter::PyIterator::new(crate::iter::IterState::Seq(items, 0));
+        let obj = ap_obj::PyObject::new(ap_obj::ObjKind::Iterator, "iterator");
+        let id = interp.next_iter_id.get();
+        interp.next_iter_id.set(id + 2);
+        *obj.gen_id.borrow_mut() = Some(id);
+        interp.iterators.borrow_mut().insert(id, it);
+        return Ok(Value::Obj(obj));
+    }
+    Err(raise(
+        "TypeError",
+        format!(
+            "'{}' object is not iterable",
+            crate::classes::display_type_name(v)
+        ),
+    ))
+}
+
+/// next() over a user-defined iterator (__next__ protocol).
+fn user_next(interp: &Rc<Interpreter>, v: &Value) -> EResult {
+    let (f, _) = crate::classes::special_lookup(interp, v, "__next__").ok_or_else(|| {
+        raise(
+            "TypeError",
+            format!("'{}' object is not an iterator", v.type_name()),
+        )
+    })?;
+    match call_value(interp, &module_frame_pub(), &f, &[v.clone()], &[]) {
+        Ok(r) => Ok(r),
+        Err(Flow::Raise(e)) if e.class == "StopIteration" => Err(Flow::Raise(e)),
+        Err(f2) => Err(f2),
+    }
+}
+
+/// Raw-value user __eq__/__ne__ dispatch (c028: the slot's return value IS
+/// the comparison result, truthiness applied by the caller).
+fn user_compare_value(
+    interp: &Rc<Interpreter>,
+    op: CmpOp,
+    a: &Value,
+    b: &Value,
+) -> Option<EResult> {
+    let mut slot = match op {
+        CmpOp::Eq => "__eq__",
+        CmpOp::NotEq => "__ne__",
+        _ => return None,
+    };
+    let mut a_slot = crate::classes::special_lookup(interp, a, slot);
+    let mut b_slot = crate::classes::special_lookup(interp, b, slot);
+    // != derives from __eq__ when __ne__ is absent (S-03-25/c028).
+    let negate = slot == "__ne__" && a_slot.is_none() && b_slot.is_none();
+    if negate {
+        slot = "__eq__";
+        a_slot = crate::classes::special_lookup(interp, a, slot);
+        b_slot = crate::classes::special_lookup(interp, b, slot);
+    }
+    let call_slot = |f: &Value, x: &Value, y: &Value| {
+        call_value(interp, &module_frame_pub(), f, &[x.clone(), y.clone()], &[])
+    };
+    let negate_if = |r: EResult| -> EResult {
+        if negate {
+            r.map(|v| Value::Bool(!v.is_truthy()))
+        } else {
+            r
+        }
+    };
+    // Proper-subclass reflected priority (S-03-25 rule 1).
+    let b_proper = value_is_proper_subclass_of(interp, b, a);
+    if b_proper {
+        if let Some((f, _)) = &b_slot {
+            let r = call_slot(f, b, a);
+            if !matches!(&r, Ok(v) if is_not_implemented_value(v)) {
+                return Some(negate_if(r));
+            }
+        }
+    }
+    if let Some((f, _)) = &a_slot {
+        let r = call_slot(f, a, b);
+        if !matches!(&r, Ok(v) if is_not_implemented_value(v)) {
+            return Some(negate_if(r));
+        }
+    }
+    if !b_proper {
+        if let Some((f, _)) = &b_slot {
+            let r = call_slot(f, b, a);
+            if !matches!(&r, Ok(v) if is_not_implemented_value(v)) {
+                return Some(negate_if(r));
+            }
+        }
+    }
+    None
+}
 fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option<Value>, Flow> {
     // __class__ on any builtin value (V045: fs.__class__ is frozenset).
     // Type objects are INTERNED so `x.__class__ is frozenset` holds.
     if name == "__class__" {
+        // 02.03: user classes/instances answer from the real class table
+        // (identity: x.__class__ is C, type(A) is A.__class__).
+        if matches!(obj, Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass || o.kind == ap_obj::ObjKind::UserInstance)
+        {
+            if let Some(v) = crate::classes::attr_get_opt(_interp, obj, name)? {
+                return Ok(Some(v));
+            }
+        }
         let tname = match obj {
             Value::Frozen(_) => "frozenset",
             other => other.type_name(),
@@ -2703,6 +4489,127 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
             .borrow_mut()
             .insert(tname.to_string(), t.clone());
         return Ok(Some(t));
+    }
+    // 02.08-lite: native-type instance attrs/methods + structured exc fields.
+    if let Some(v) = builtins_modules::native_attr(obj, name) {
+        return Ok(Some(v));
+    }
+    if let Value::Obj(o) = obj {
+        if o.kind == ap_obj::ObjKind::Exception {
+            if let Some(v) = builtins_modules::exception_attr(&o.name, name) {
+                return Ok(Some(v));
+            }
+        }
+    }
+    // property.setter/.deleter: return a NEW property with fset/fdel set
+    // (c011's @x.setter decoration chain).
+    if let Value::Obj(o) = obj {
+        if o.kind == ap_obj::ObjKind::Descriptor
+            && matches!(o.descr_kind.borrow().as_deref(), Some("property"))
+        {
+            if name == "setter" || name == "deleter" {
+                // `p.setter(fn)` — a BuiltinFn marker carrying the property;
+                // the call site is class_protocol_builtin's "property.*".
+                let m = ap_obj::PyObject::new(
+                    ap_obj::ObjKind::BuiltinFn,
+                    &format!("property.{}", name),
+                );
+                *m.slice_parts.borrow_mut() = vec![obj.clone()];
+                return Ok(Some(Value::Obj(m)));
+            }
+        }
+    }
+    // Bound-method introspection (S-03-21/24: __self__/__func__/__name__;
+    // c024 identity probes).
+    if let Value::Obj(o) = obj {
+        if o.kind == ap_obj::ObjKind::BoundMethod {
+            match name {
+                "__self__" => {
+                    return Ok(Some(o.self_value.borrow().clone().unwrap_or(Value::None)))
+                }
+                "__func__" => return Ok(Some(o.func.borrow().clone().unwrap_or(Value::None))),
+                "__name__" => return Ok(Some(Value::Str(PyString::new(o.name.clone())))),
+                _ => {}
+            }
+        }
+        if o.kind == ap_obj::ObjKind::Function && name == "__name__" {
+            return Ok(Some(Value::Str(PyString::new(o.name.clone()))));
+        }
+    }
+    // super object: attribute lookups scan type(obj).__mro__ strictly AFTER
+    // the start class (S-03-18), applying the descriptor protocol.
+    if let Value::Obj(o) = obj {
+        if o.kind == ap_obj::ObjKind::Opaque && o.name == "super" {
+            let parts = o.slice_parts.borrow();
+            let (start_v, subject) = (parts[0].clone(), parts[1].clone());
+            let start_t = crate::classes::type_of(_interp, &start_v)
+                .or_else(|| crate::classes::class_of_value(_interp, &start_v));
+            let subj_t = crate::classes::class_of_value(_interp, &subject);
+            if let (Some(start_t), Some(subj_t)) = (start_t, subj_t) {
+                let mro = subj_t.mro.borrow();
+                let mut after = false;
+                for cls in mro.iter() {
+                    if !after {
+                        if std::rc::Rc::ptr_eq(cls, &start_t) {
+                            after = true;
+                        }
+                        continue;
+                    }
+                    if let Some(entry) = cls.dict.get(&Value::Str(PyString::new(name))) {
+                        // Bind plain functions to the subject (owner = cls);
+                        // classmethods bind cls (c023); staticmethods unwrap.
+                        if matches!(&entry, Value::Obj(eo) if eo.kind == ap_obj::ObjKind::Function)
+                        {
+                            let m = crate::classes::bind_function_owned(
+                                &entry,
+                                subject.clone(),
+                                Some(cls),
+                            );
+                            return Ok(Some(m));
+                        }
+                        if let Value::Obj(eo) = &entry {
+                            if eo.kind == ap_obj::ObjKind::Descriptor {
+                                match eo.descr_kind.borrow().as_deref() {
+                                    Some("classmethod") => {
+                                        let f = eo.func.borrow().clone().unwrap_or(Value::None);
+                                        let m = crate::classes::bind_function_owned(
+                                            &f,
+                                            subject.clone(),
+                                            Some(cls),
+                                        );
+                                        return Ok(Some(m));
+                                    }
+                                    Some("staticmethod") => {
+                                        return Ok(Some(
+                                            eo.func.borrow().clone().unwrap_or(Value::None),
+                                        ));
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        return Ok(Some(entry));
+                    }
+                    // Virtual object.__new__ (c003 super().__new__(cls)).
+                    let subject_is_class =
+                        matches!(&subject, Value::Obj(so) if so.kind == ap_obj::ObjKind::UserClass);
+                    if cls.name == "object" && name == "__new__" && subject_is_class {
+                        let f = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "__object_new__");
+                        *f.slice_parts.borrow_mut() = vec![subject.clone()];
+                        return Ok(Some(Value::Obj(f)));
+                    }
+                    // Virtual object.__init__ (e005/e012/e013 super().__init__):
+                    // BaseException semantics — store args on the instance.
+                    if cls.name == "object" && name == "__init__" {
+                        let f =
+                            ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "__object_init__");
+                        *f.slice_parts.borrow_mut() = vec![subject.clone()];
+                        return Ok(Some(Value::Obj(f)));
+                    }
+                }
+            }
+            return Ok(None);
+        }
     }
     match obj {
         Value::Obj(o) => match o.kind {
@@ -2729,8 +4636,10 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 )))),
                 _ => Ok(None),
             },
-            ap_obj::ObjKind::UserInstance => {
-                if let Some(v) = o.attrs.borrow().get(&Value::Str(PyString::new(name))) {
+            ap_obj::ObjKind::UserInstance | ap_obj::ObjKind::UserClass => {
+                // 02.03 attribute protocol (S-03-09..12): MRO + descriptors.
+                // Misses here fall to the permissive v0 paths below.
+                if let Some(v) = crate::classes::attr_get_opt(_interp, obj, name)? {
                     return Ok(Some(v));
                 }
                 Ok(None)
@@ -2766,6 +4675,15 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
         }
         _ => Ok(None),
     }
+}
+
+/// Public attr_get shim (builtins_modules json/os lookups).
+pub fn attr_get_public(
+    interp: &Rc<Interpreter>,
+    obj: &Value,
+    name: &str,
+) -> Result<Option<Value>, Flow> {
+    attr_get(interp, obj, name)
 }
 
 /// Does this name exist in the v0 builtin-method surface? Permissive by
@@ -2822,4 +4740,9 @@ pub fn interp_registry(interp: &Rc<Interpreter>) -> Rc<FnRegistry> {
 /// Public gen_pull for the builtins' next() surface.
 pub fn gen_pull_public(interp: &Rc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> {
     gen_pull(interp, id)
+}
+
+/// Public thread-local interpreter handle (classes.rs metaclass hooks).
+pub fn current_interp_handle() -> std::rc::Rc<Interpreter> {
+    current_interp_for_bindings()
 }

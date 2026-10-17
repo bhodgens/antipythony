@@ -34,6 +34,15 @@ pub struct Frame {
     /// Qualname for traceback rendering.
     pub qualname: String,
     pub is_module: bool,
+    /// Class-body frames: the dotted qualname prefix nested classes extend
+    /// (S-03-04 `Outer.Inner`); empty elsewhere.
+    pub class_qual_prefix: String,
+    /// Class-body frames: the `__class__` cell (zero-arg super, S-03-17).
+    /// Seeded AFTER the class object exists; methods defined in the body
+    /// capture it through their closure `frees` (name `__class__`).
+    pub class_cell: std::cell::RefCell<Option<CellSlot>>,
+    /// Class-body frames: the class namespace (Some only on class frames).
+    pub class_ns: Option<Gc<PyDict>>,
 }
 
 /// Where a local name lives.
@@ -57,6 +66,9 @@ impl Frame {
             declared_nonlocals: std::collections::HashSet::new(),
             qualname: "<module>".to_string(),
             is_module: true,
+            class_qual_prefix: String::new(),
+            class_cell: std::cell::RefCell::new(None),
+            class_ns: None,
         }
     }
 
@@ -81,6 +93,9 @@ impl Frame {
             declared_nonlocals,
             qualname: qualname.to_string(),
             is_module: false,
+            class_qual_prefix: String::new(),
+            class_cell: std::cell::RefCell::new(None),
+            class_ns: None,
         }
     }
 
@@ -97,6 +112,30 @@ impl Frame {
             declared_nonlocals: std::collections::HashSet::new(),
             qualname: parent.qualname.clone(),
             is_module: false,
+            class_qual_prefix: String::new(),
+            class_cell: std::cell::RefCell::new(None),
+            class_ns: None,
+        }
+    }
+
+    /// A class-body frame: stores land in the class namespace `ns`
+    /// (S-03-3); the namespace is NOT consulted for name LOOKUPS (class
+    /// scope reads go straight to globals — S-03-3's "not an enclosing
+    /// scope" rule, and CPython class-body semantics).
+    pub fn new_class(parent: &Rc<Frame>, ns: Gc<PyDict>) -> Frame {
+        Frame {
+            locals: RefCell::new(HashMap::new()),
+            globals: parent.globals.clone(),
+            scope_path: parent.scope_path.clone(),
+            my_cells: HashMap::new(),
+            free_cells: HashMap::new(),
+            declared_globals: std::collections::HashSet::new(),
+            declared_nonlocals: std::collections::HashSet::new(),
+            qualname: parent.qualname.clone(),
+            is_module: false,
+            class_qual_prefix: String::new(),
+            class_cell: std::cell::RefCell::new(None),
+            class_ns: Some(ns),
         }
     }
 
@@ -139,6 +178,14 @@ impl Frame {
         }
         if let Some(v) = self.globals.get(&Value::Str(ap_obj::PyString::new(name))) {
             return Lookup::Found(v);
+        }
+        // Class-body frame: the class namespace IS readable from the body
+        // itself (S-03-3: not an ENCLOSING scope for nested functions — that
+        // rule is frontend-side; the body reads its own names, c011 @x.setter).
+        if let Some(ns) = &self.class_ns {
+            if let Some(v) = ns.get(&Value::Str(ap_obj::PyString::new(name))) {
+                return Lookup::Found(v);
+            }
         }
         Lookup::Miss
     }
@@ -231,6 +278,23 @@ pub struct Interpreter {
     /// line mapping; the IR is span-free).
     pub stmt_lines: RefCell<Vec<usize>>,
     pub stmt_ordinal: Cell<usize>,
+    /// Real exception CLASSES by name (02.03: the BaseException tree as
+    /// TypeObject-backed class values; populated at entry).
+    pub exc_classes: RefCell<HashMap<String, Value>>,
+    /// User-subclass edges (child name -> parent name) for __subclasses__.
+    pub user_subclasses: RefCell<Vec<(String, String)>>,
+    /// User class values by name (identity for __subclasses__ returns).
+    pub user_class_values: RefCell<HashMap<String, Value>>,
+    /// The `object` root class payload (lazy intern).
+    pub object_class: RefCell<Option<std::rc::Rc<ap_obj::classes::TypeObject>>>,
+    /// The `type` metaclass payload (lazy intern).
+    pub type_class: RefCell<Option<std::rc::Rc<ap_obj::classes::TypeObject>>>,
+    /// Active super() context per frame depth: (start-class, self/cls)
+    /// stacked so zero-arg super() inside a method resolves (S-03-17/18).
+    pub super_stack: RefCell<Vec<(std::rc::Rc<ap_obj::classes::TypeObject>, Value, bool)>>,
+    /// Context staged by instantiate() for the __new__/__init__ call it is
+    /// about to make (picked up by call_function after its sentinel push).
+    pub pending_super_ctx: RefCell<Option<(std::rc::Rc<ap_obj::classes::TypeObject>, Value, bool)>>,
     pub source: String,
     pub script_path: String,
     /// Self handle (set at run_module entry) so &Interpreter surfaces can
@@ -282,6 +346,13 @@ impl Interpreter {
             type_objects: RefCell::new(HashMap::new()),
             stmt_lines: RefCell::new(Vec::new()),
             stmt_ordinal: Cell::new(0),
+            exc_classes: RefCell::new(HashMap::new()),
+            user_subclasses: RefCell::new(Vec::new()),
+            user_class_values: RefCell::new(HashMap::new()),
+            object_class: RefCell::new(None),
+            type_class: RefCell::new(None),
+            super_stack: RefCell::new(Vec::new()),
+            pending_super_ctx: RefCell::new(None),
             source,
             script_path,
             self_rc: RefCell::new(None),

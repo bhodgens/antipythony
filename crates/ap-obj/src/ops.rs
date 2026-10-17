@@ -407,7 +407,21 @@ pub fn int_to_f64_exact(i: &Int) -> Result<f64, PyException> {
 }
 
 fn unsupported_binop(a: &Value, op: BinOp, b: &Value) -> PyException {
+    let is_sequence = matches!(
+        a,
+        Value::Str(_) | Value::Bytes(_) | Value::List(_) | Value::Tuple(_)
+    );
     let msg = match op {
+        BinOp::Add if !is_sequence => {
+            // Numeric left operand: CPython's generic message (c027 probe
+            // `1 + "x"`); sequence text only applies to sequences.
+            format!(
+                "unsupported operand type(s) for {}: '{}' and '{}'",
+                "+",
+                a.type_name(),
+                b.type_name()
+            )
+        }
         BinOp::Add => {
             if a.type_name() == "bytes" {
                 // bytes.__add__ text differs from str's (probed V015).

@@ -31,6 +31,10 @@ pub enum IterState {
     Enumerate { inner: u64, counter: i64 },
     /// zip over several inner iterators.
     Zip(Vec<u64>),
+    /// 02.08 stdlib iterators (itertools.count/cycle/repeat/..., enumerate/
+    /// zip re-landing, str/keys views). State is self-contained; `next`
+    /// delegates to builtins_modules (own file, no interp access needed).
+    Native(Box<crate::builtins_modules::NativeIterState>),
 }
 
 /// A materialized iterator.
@@ -151,6 +155,7 @@ impl PyIterator {
                 // access); handled in interp.rs, never via this method.
                 None
             }
+            IterState::Native(n) => n.next(),
         }
     }
 }

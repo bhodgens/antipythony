@@ -37,6 +37,8 @@ fn parent_of(class: &str) -> Option<&'static str> {
         "StopIteration" => Some("Exception"),
         "ArithmeticError" => Some("Exception"),
         "ZeroDivisionError" | "OverflowError" | "FloatingPointError" => Some("ArithmeticError"),
+        // 02.08-lite stdlib exception types (json).
+        "JSONDecodeError" => Some("ValueError"),
         "TypeError" | "ValueError" | "NameError" | "LookupError" | "AttributeError"
         | "RuntimeError" | "AssertionError" | "MemoryError" | "OSError" => Some("Exception"),
         "UnboundLocalError" => Some("NameError"),
@@ -97,6 +99,9 @@ pub struct ExceptionValue {
     pub cause: Option<Box<ExceptionValue>>,
     /// Implicit context: the exception being handled when this one raised.
     pub context: Option<Box<ExceptionValue>>,
+    /// The real instance Value when the raise came from one (e007: `e is
+    /// inst` identity preserved through the handler binding).
+    pub instance: Option<ap_obj::value::Value>,
 }
 
 impl ExceptionValue {
@@ -106,6 +111,7 @@ impl ExceptionValue {
             args,
             cause: None,
             context: None,
+            instance: None,
         }
     }
 
@@ -147,11 +153,10 @@ impl ExceptionValue {
                 }
             }
             _ => {
-                let mut parts = Vec::with_capacity(self.args.len());
-                for a in &self.args {
-                    parts.push(ap_obj::ops::to_str(a)?);
-                }
-                Ok(parts.join(", "))
+                // CPython: BaseException.__str__ for multi-arg is str(args)
+                // == the tuple repr (e001/e005 observed "('a', 2)").
+                let t = ap_obj::value::Tuple(self.args.clone());
+                ap_obj::ops::repr(&ap_obj::value::Value::Tuple(std::rc::Rc::new(t)))
             }
         }
     }

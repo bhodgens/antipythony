@@ -88,6 +88,7 @@
 //! the extension points `Value::py_eq` documents (02.03), no GC (02.04 —
 //! `Gc<T>` is a `Box` until then), no complex numbers (out of v1 corpus).
 
+pub mod classes;
 pub mod dict;
 pub mod exc;
 pub mod float_repr;

@@ -23,6 +23,7 @@
 use crate::int::Gc;
 use crate::value::Value;
 use std::cell::RefCell;
+use std::rc::{Rc, Weak};
 
 /// What kind of object this is. The executor matches on this to dispatch
 /// calls/methods; the tag also names the type (`type(v).__name__`).
@@ -77,16 +78,16 @@ pub struct PyObject {
     /// For Function: index into the executor's function table.
     pub fn_id: Option<u32>,
     /// For BoundMethod: the receiver.
-    pub self_value: Option<Value>,
+    pub self_value: RefCell<Option<Value>>,
     /// For BoundMethod/BuiltinFn: the underlying callable.
-    pub func: Option<Value>,
+    pub func: RefCell<Option<Value>>,
     /// For Range: (start, stop, step) ints. For NamedTuple: field names.
     pub ints: RefCell<Vec<i64>>,
     /// For SliceObj: (lower, upper, step) as Values.
     pub slice_parts: RefCell<Vec<Value>>,
     /// Attribute namespace (UserInstance, Module, Namespace, UserClass
     /// method tables). Identity map by string key; last write wins.
-    pub attrs: RefCell<crate::dict::PyDict>,
+    pub attrs: RefCell<Gc<crate::dict::PyDict>>,
     /// For Exception: the args tuple (str(exc) renders per S-06-7).
     pub args: RefCell<Vec<Value>>,
     /// For Exception: `__cause__` / `__context__` handles (chaining).
@@ -103,6 +104,19 @@ pub struct PyObject {
     /// For Function: executor-side closure state slot (defining-frame id
     /// in the interpreter's frame table; the executor owns the typing).
     pub closure_slot: RefCell<Option<u64>>,
+    /// For UserClass: the class payload (TypeObject: MRO, dict, flags).
+    /// Strong handle — the TypeObject never points back at the PyObject.
+    pub class_ref: RefCell<Option<Rc<crate::classes::TypeObject>>>,
+    /// For UserInstance: a WEAK back-pointer to the instance's class
+    /// payload (the strong handle lives on the class PyObject; instances
+    /// must not keep their class's payload alive solo — no cycles).
+    pub type_ref: RefCell<Option<Weak<crate::classes::TypeObject>>>,
+    /// For Descriptor: which descriptor kind ("property"/"classmethod"/
+    /// "staticmethod"/"member").
+    pub descr_kind: RefCell<Option<String>>,
+    /// For BoundMethod: the class whose dict the function was found in
+    /// (zero-arg super() start-class, S-03-17/18).
+    pub method_owner: RefCell<Option<std::rc::Weak<crate::classes::TypeObject>>>,
 }
 
 impl PyObject {
@@ -111,11 +125,11 @@ impl PyObject {
             kind,
             name: name.into(),
             fn_id: None,
-            self_value: None,
-            func: None,
+            self_value: RefCell::new(None),
+            func: RefCell::new(None),
             ints: RefCell::new(Vec::new()),
             slice_parts: RefCell::new(Vec::new()),
-            attrs: RefCell::new((*crate::dict::PyDict::new()).clone()),
+            attrs: RefCell::new(crate::dict::PyDict::new()),
             args: RefCell::new(Vec::new()),
             cause: RefCell::new(None),
             context: RefCell::new(None),
@@ -124,14 +138,17 @@ impl PyObject {
             repr_text: RefCell::new(None),
             module_ns: RefCell::new(None),
             closure_slot: RefCell::new(None),
+            class_ref: RefCell::new(None),
+            type_ref: RefCell::new(None),
+            descr_kind: RefCell::new(None),
+            method_owner: RefCell::new(None),
         })
     }
 
     /// Constructor with the receiver preset (bound methods).
     pub fn with_self(kind: ObjKind, name: impl Into<String>, self_value: Value) -> Gc<PyObject> {
         let o = PyObject::new(kind, name);
-        let mut o = o;
-        Gc::get_mut(&mut o).expect("fresh object").self_value = Some(self_value);
+        *o.self_value.borrow_mut() = Some(self_value);
         o
     }
 
@@ -141,11 +158,11 @@ impl PyObject {
             kind,
             name: name.into(),
             fn_id: Some(fn_id),
-            self_value: None,
-            func: None,
+            self_value: RefCell::new(None),
+            func: RefCell::new(None),
             ints: RefCell::new(Vec::new()),
             slice_parts: RefCell::new(Vec::new()),
-            attrs: RefCell::new((*crate::dict::PyDict::new()).clone()),
+            attrs: RefCell::new(crate::dict::PyDict::new()),
             args: RefCell::new(Vec::new()),
             cause: RefCell::new(None),
             context: RefCell::new(None),
@@ -154,6 +171,10 @@ impl PyObject {
             repr_text: RefCell::new(None),
             module_ns: RefCell::new(None),
             closure_slot: RefCell::new(None),
+            class_ref: RefCell::new(None),
+            type_ref: RefCell::new(None),
+            descr_kind: RefCell::new(None),
+            method_owner: RefCell::new(None),
         })
     }
 
@@ -190,6 +211,8 @@ impl PyObject {
                     ptr
                 )
             }
+            // Class objects: <class 'name'> (S-03-04; c001 __bases__ repr).
+            ObjKind::UserClass => format!("<class '{}'>", self.name),
             ObjKind::Function => format!("<function {0} at 0x{1:x}>", self.name, ptr),
             _ => format!("<{} object at 0x{:x}>", self.name, ptr),
         }

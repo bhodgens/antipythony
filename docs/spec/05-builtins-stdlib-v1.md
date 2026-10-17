@@ -275,3 +275,19 @@ produced by running the snippet on `/opt/homebrew/bin/python3.14` (3.14.7).
 10. **inspect basics IN (T2)** `def f(a, b=2, *args, **kw): pass` → `print(inspect.signature(f), inspect.isfunction(f))` → `(a, b=2, *args, **kw) True` ; exit 0. (`getfullargspec(f)` → `FullArgSpec(args=['a', 'b'], varargs='args', varkw='kw', defaults=(2,), kwonlyargs=[], kwonlydefaults=None, annotations={})`.)
 11. **dataclasses/enum IN** `@dataclasses.dataclass class P: x: int` → `print(P(1))` → `P(x=1)` ; exit 0; and `class C(enum.IntEnum): A = 1` → `print(C.A, int(C.A)+1, C.A == 1)` → `1 2 True` ; exit 0.
 12. **S-05-2 OUT fail-loud** `import socket` → compile-time diagnostic naming `socket` (native/wasm) ; NOT byte-gated vs CPython (per S-05-22).
+
+
+---
+
+## Amendment A1 (2026-10-17, orchestrator + user-approved protocol)
+
+**S-05-19 modified:** `base64`, `binascii`, `hashlib`/`_hashlib`-surface
+(md5/sha1/sha224/sha256/sha384/sha512), `random` are IN-v1. Rationale: the
+OUT classification assumed C-extension backing or entropy-surface risk;
+02.08-lite delivered them as native Rust (RustCrypto for digests, exact
+MT19937 for random), byte-exact vs 3.14.7 with 19 differential probes
+(crates/ap-run/tests/stdlib_modules_differential.rs). `secrets` remains OUT
+(os.urandom dependency). `binascii` is IN as the base64 dependency surface.
+Clause ids S-05-19/S-05-20 are NOT renumbered; this amendment narrows their
+name lists. Contract-change rule: PR-based amendment recorded here per
+C-32 (ids never reused, history preserved in git).

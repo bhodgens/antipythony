@@ -64,3 +64,57 @@
    f12, match class-patterns).
 2. 02.04 GC (MMTk) + 02.08 stdlib (unblocks stdlib slice).
 3. 02.05 tier-1 (SPLIT per risks; + stack-depth item).
+
+
+## Leaf 02.03 - classes/protocols - LANDED (in review)
+- ~1800 lines: ap-obj/classes.rs (TypeObject, C3 MRO w/ byte-exact errors, TypeFlags),
+  ap-run/classes.rs (exec_class_def, attribute protocol S-03-09..12, descriptors
+  property/classmethod/staticmethod/user + slot member descriptors, super() staged-ctx model,
+  isinstance/issubclass w/ metaclass hooks + union marker, instantiate w/ S-03-05..08 arity
+  + qualify), interp.rs wiring (class stmt, With __enter__/__exit__ + suppress, dunder
+  dispatch binop/unary/compare/iter/contains/len/bool/repr/str, real exception classes as
+  TypeObject-backed UserClass w/ class_ref back-refs, raise-from-class instantiates,
+  identity-preserving except-as, __class__ cell seeding).
+- Differential: crates/ap-run/tests/classes_differential.rs — 29/29 green (lookup order,
+  MRO diamond, super chase/classmethod/validation, new/init arity+return, reflected ops,
+  augmented, unary, iter/in/call/len/bool, user exception hierarchy + identity + targets,
+  slots, dunder bypass, descriptors, repr/str, enter/exit, metaclass attr chain,
+  isinstance tuple+union+errors).
+- Corpus: values 46/47 (V016 surrogate stays red, documented), fstrings cases 34/35
+  (f33 SyntaxError-shape, pre-existing), classes 27/33, exceptions 14/15, hello+types 2/2.
+- name_resolution_differential 24/24 kept green; classes_differential 29/29; full pytest
+  sweep 718 passed / 0 failed (51 XPASS all pre-existing Plan-01 seam xfails).
+- Fixed en route (cross-file, flagged for orchestrator): builtins.rs builtin_sum drained
+  iterators twice + returned float for all-int sums (f29/gate_gen_list); builtins_modules.rs
+  register_shared_iter used a dead thread-local table (iter handles never resolved);
+  builtins.rs call_builtin_ctor `?` on Rc deref; builtins_modules items() iteration in test cfg.
+- NOT implemented (honest gaps): full metaclass hook execution (__prepare__/__new__/__init__
+  bodies of custom metaclasses, c030/c031/c032 partial), metaclass-conflict TypeError for
+  custom metas, mappingproxy immutability (C.__dict__ returns live dict, c002), vars() on
+  instances (c018 - builtin lives in 02.08-lite surface), exception reprs inside containers
+  (e008 line2), class kwargs -> __init_subclass__ delivery (c031 lower half).
+
+## Leaf 02.08-lite - native stdlib modules + import registry (IN PROGRESS, uncommitted)
+- builtins_modules.rs (new, mine): registry + math/json/itertools/operator/heapq/bisect/
+  functools(reduce,partial)/string/textwrap/collections(deque)/os/os.path/posixpath/genericpath/
+  stat/errno/keyword/platform/time/atexit/linecache/tempfile/io/random(MT19937-exact)/hashlib/
+  base64/binascii; stdlib slice 0/48 -> 8/48 (s006 s007 s032 s039 s040 s041 s043 s048).
+- interp.rs hooks: import registry (Stmt::Import/ImportFrom), iterable_of Iterator pass-through,
+  attr_get native-attr + exception-attr, attr_get_public shim, __file__ global, atexit drain,
+  is_builtin_exc_name JSONDecodeError, class_issubclass legacy-Type fallback (~8 small hooks).
+- builtins.rs: dotted-marker dispatch, 11 introspection builtins (hasattr/getattr/setattr/
+  delattr/dir/vars/id/callable/issubclass/ascii/open), compensated sum(), custom-repr in
+  py_str_of/repr, NativeIter registration. iter.rs: IterState::Native delegate.
+- exc_hier.rs + classes.rs: JSONDecodeError parent edges. Deps: md-5/sha1/sha2/libm.
+- tests/stdlib_modules_differential.rs: 19 probes vs live python3.14 - all green.
+- SPEC CONFLICT for orchestrator: random/hashlib/base64/binascii implemented per task brief
+  but S-05-19/S-05-20 mark them OUT-of-v1 (fail-loud). No corpus case imports them; needs a
+  spec amendment decision.
+- Remaining stdlib slice blockers (taxonomy): s010/s011 re (real regex engine needed),
+  s013/s014/s015/s016/s024/s025/s026/s027/s028/s030/s031/s033/s034/s038/s042/s044/s045/s046
+  (classes/methods/With surface = 02.03), s001/s002/s005/s008/s009/s017/s021/s022/s023/s028/
+  s036/s037/s047 (out-of-scope module bodies: sys surface gaps, codecs/struct/traceback/
+  importlib/types/enum/dataclasses/typing/inspect/ast/tokenize/contextlib/copy/weakref/
+  warnings/threading/argparse/pathlib/fnmatch/glob — each IN-v1 per spec 05 but not yet in
+  the 02.08-lite slice), s012/s003/s004/s029 residual method-surface gaps (bytes.strip,
+  complex, Partial-method kwargs).
