@@ -31,6 +31,7 @@ pub mod module;
 #[cfg(test)]
 mod tests;
 pub mod types;
+pub mod verify;
 pub mod walk;
 
 pub use builder::{Builder, NumberLit};
@@ -42,3 +43,4 @@ pub use item::{
 };
 pub use module::Module;
 pub use types::{DefId, TypeLattice};
+pub use verify::{fold, verify, DiagKind, Diagnostic};

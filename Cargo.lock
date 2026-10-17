@@ -95,6 +95,9 @@ version = "0.1.0"
 [[package]]
 name = "ap-ir"
 version = "0.1.0"
+dependencies = [
+ "ap-parse",
+]
 
 [[package]]
 name = "ap-obj"

@@ -1,6 +1,6 @@
 True
 131072 0 1 2
-locale utf-8
+utf-8 utf-8
 b'hello' 5 b' world' 11 11 11
 line1 line2
 ['line1', 'line2']

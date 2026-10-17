@@ -156,8 +156,12 @@ impl std::error::Error for ParseError {}
 mod ir_matrix_check;
 
 pub mod lowering;
+pub mod verify_bridge;
 
 pub use lowering::{lower, lower_source, LowerError, LoweringBug, ScopeInfo, ScopeInfoModule};
+pub use verify_bridge::{
+    verify_ir_with_positions, verify_source, VerifyPositionMap, VerifyPositionMiss,
+};
 
 #[cfg(test)]
 mod tests {

@@ -49,8 +49,38 @@
 - Suite: 169 xfail (bin-dependent, pre-bin) + 31 xpass; after 01.03's bin:
   41 xfail / 1 xpass / 0 hard fails. 5 new gaps filed (T3-G1..G5).
 
-## NEXT: 01.04 (IR verify pass) - last impl leaf of Plan 01
-- UnboundLocalError prediction vs CPython (matching message text), name
-  resolution completeness, conservative constant folding.
-- T-04 spec exists (authored early by test track). Dispatch 01.04 impl, then
-  Plan 01 integration review -> Plan 02.
+## Leaf 01.04 - IR verify pass - COMPLETE (uncommitted)
+- ap_ir::verify(module) -> Vec<Diagnostic>: must-analysis (definite-assignment
+  with del-marks) unbound-local prediction with byte-exact 3.14 message
+  `cannot access local variable 'x' where it is not associated with a value`
+  (byte-verified vs CPython 3.14.7, incl. the G-7 function-scope del form and
+  module-scope NameError form); name-resolution completeness with a
+  conservative G-5 suggestion guard (edit distance <= 1 silences); module/
+  class/function enclosing-chain legs (S-02-5 class = suggestion-only).
+- ap_ir::fold: conservative constant folding (int/float/str/boolop) with
+  C-12..C-18 semantics via string big-int math; never folds raising ops
+  (/0 %0 //0 neg-shift matmul), calls, names, comparisons; py_float_repr
+  public for byte-exact float rendering.
+- Compile-stage static checks in ap-parse::verify_bridge (G-4 territory):
+  p09 global+nonlocal, p10 nonlocal-no-binding, p11 nonlocal@module,
+  p12/p13 break/continue outside loop, p14 return outside fn, p15/p16
+  import * (caret at stmt end - 1), p18 dup param, p17 parse-stage remap.
+- Position convention (fixture-verified): display col = file col - indent + 4
+  (reproduces all 32 pinned caret columns); load_ordinal on Diagnostic maps
+  diagnostics to the right read site (del-then-read flags the post-del read).
+- Wire-in: ap-parse::verify_source / verify_ir_with_positions;
+  ap-verify-dump bin (T-04 G-1 seam: `<path>:<line>:<col> <class>: <msg>`,
+  exit 0/1); ap-ir-dump --verify (stderr, exit 3 distinct from parse errors).
+- Tests: crates/ap-ir/tests/verify.rs 31/31 (CPython-differential: 13
+  verify-shape + message byte-match, 11 static checks w/ pinned line:col,
+  80 fold cases byte-exact incl. big-int/float repr, negative-division,
+  never-fold raising ops). T-04 suite: 15 passed + 29 xpassed, 0 failed,
+  0 xfailed (was 32 xfail). Full pytest corpus: 1164 passed, 0 failed.
+  Full workspace cargo test green; cargo fmt clean.
+- DESIGN NOTES (T-04 doc deltas): S-02-2 static rule + fixtures forced a
+  must-analysis refinement beyond the leaf summary's "never assigned
+  anywhere" reading (p02/p03 flag reads after branch-only binds; n03 silent
+  via range(3)-definite for-targets); del-then-read flags via del_marks
+  killing prior definite binds (CPython-probed); module-scope del-then-read
+  is NameError not UnboundLocal (p19).
+
