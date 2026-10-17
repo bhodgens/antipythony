@@ -24,6 +24,23 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _mask_root(data: bytes) -> bytes:
+    """Normalize absolute corpus paths in stderr self-check pins.
+
+    CPython 3.14 resolves the script path to an ABSOLUTE path in tracebacks
+    and warning locations, so pins recorded the original checkout's absolute
+    path and failed in every other worktree/CI. The mask collapses any
+    absolute prefix that precedes a tests/corpus/ path to <ROOT>/... .
+    Line numbers, caret columns, and message text are untouched, so the pin
+    still diffs everything semantic (C-33: mask, never weaken). Follows the
+    in-tree precedent tests/t09_binary (_norm_stderr, S-06-7 caveat). The
+    differential gate (ap-conform, reference vs implementation) stays
+    byte-exact with NO masking; this applies only to reference self-checks.
+    """
+    return re.sub(rb"/[^\s\"',;()]*?(tests/corpus/[^\s\"',;()]*)",
+                  rb"<ROOT>/\1", data)
 CORPUS_DIR = REPO_ROOT / "tests" / "corpus" / "fstrings"
 CASES_DIR = CORPUS_DIR / "cases"
 EXPECTED_DIR = CORPUS_DIR / "expected"
@@ -54,13 +71,22 @@ def test_expected_bytes_stable(case):
     # Re-run the reference and byte-compare stdout/rc against the pinned
     # triple (S-06-1 no-normalization). A failure here means nondeterminism —
     # fix by masking, never weaken (C-33).
+    #
+    # Pinned env (S-06-15 + C-27): PATH/HOME only + LANG=C, so the locale is
+    # checkout-independent. LC_* is excluded (CPython rewrites LC_CTYPE in
+    # its own env block, leaking it to children). Case path is RELATIVE to
+    # REPO_ROOT so any traceback embeds a stable path, not the checkout dir.
     stem = case.stem
     exp_out = (EXPECTED_DIR / (stem + ".out")).read_bytes()
     exp_rc = int((EXPECTED_DIR / (stem + ".rc")).read_text())
+    env = {k: os.environ[k] for k in ("PATH", "HOME") if k in os.environ}
+    env["LANG"] = "C"
     proc = subprocess.run(
-        [_ref_python(), "-I", str(case)],
-        capture_output=True, timeout=30)
+        [_ref_python(), "-I", os.path.relpath(case, REPO_ROOT)],
+        capture_output=True, timeout=30, cwd=str(REPO_ROOT), env=env)
     assert proc.stdout == exp_out, stem
+    assert _mask_root(proc.stderr) == _mask_root(
+        (EXPECTED_DIR / (stem + ".err")).read_bytes()), f"{stem}: stderr drift"
     assert proc.returncode == exp_rc, stem
 
 

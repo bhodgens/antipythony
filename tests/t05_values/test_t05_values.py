@@ -27,6 +27,7 @@
 
 import glob
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -34,9 +35,42 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _mask_root(data: bytes) -> bytes:
+    """Normalize absolute corpus paths in stderr self-check pins.
+
+    CPython 3.14 resolves the script path to an ABSOLUTE path in tracebacks
+    and warning locations, so pins recorded the original checkout's absolute
+    path and failed in every other worktree/CI. The mask collapses any
+    absolute prefix that precedes a tests/corpus/ path to <ROOT>/... .
+    Line numbers, caret columns, and message text are untouched, so the pin
+    still diffs everything semantic (C-33: mask, never weaken). Follows the
+    in-tree precedent tests/t09_binary (_norm_stderr, S-06-7 caveat). The
+    differential gate (ap-conform, reference vs implementation) stays
+    byte-exact with NO masking; this applies only to reference self-checks.
+    """
+    return re.sub(rb"/[^\s\"',;()]*?(tests/corpus/[^\s\"',;()]*)",
+                  rb"<ROOT>/\1", data)
 CORPUS_DIR = REPO_ROOT / "tests" / "corpus" / "values"
 EXPECTED_DIR = CORPUS_DIR / "expected"
 REF_PY = "/opt/homebrew/bin/python3.14"
+
+
+def _pinned_env() -> dict:
+    """S-06-15 scrubbed environment + pinned locale (C-27).
+
+    Only PATH/HOME pass through, with LANG=C. LC_* is deliberately excluded:
+    CPython's UTF-8-mode auto-detection rewrites LC_CTYPE in its own
+    environment block, so a Python parent leaks it to child processes and
+    silently changes their locale. LANG=C is the locale the corpus triples
+    were pinned under (PEP 540 auto-enables UTF-8 mode for the C locale).
+    """
+    env = {k: os.environ[k] for k in ("PATH", "HOME") if k in os.environ}
+    env["LANG"] = "C"
+    return env
+
+
 AP_CONFORM = os.environ.get(
     "AP_CONFORM", str(REPO_ROOT / "target" / "debug" / "ap-conform")
 )
@@ -93,8 +127,20 @@ def test_expected_bytes_stable(case):
     # normalization, no trimming). A failure here means the case is
     # nondeterministic (unmasked UNSPECIFIED behavior leaked into output) and
     # must be FIXED BY MASKING, never by weakening the case (C-33).
+    #
+    # Pinned environment (S-06-15 + C-27 "pinned locale environment"): only
+    # PATH/HOME plus LANG=C. LC_* must NOT be inherited: CPython's UTF-8-mode
+    # auto-detection rewrites LC_CTYPE in its own environment block, so a
+    # Python parent leaks it to children and silently flips their locale
+    # (io.text_encoding(None) -> 'locale' instead of 'utf-8'). The corpus
+    # triples were pinned under this scrub.
+    #
+    # The case path is passed RELATIVE to REPO_ROOT (cwd is REPO_ROOT) so
+    # tracebacks embed a checkout-independent path; an absolute path made the
+    # pins fail in every worktree/CI checkout other than the original.
     proc = subprocess.run(
-        [REF_PY, str(case)], capture_output=True, timeout=120, cwd=str(REPO_ROOT)
+        [REF_PY, os.path.relpath(case, REPO_ROOT)],
+        capture_output=True, timeout=120, cwd=str(REPO_ROOT), env=_pinned_env(),
     )
     stem = case.stem
     exp_out = (EXPECTED_DIR / (stem + ".stdout")).read_bytes()
@@ -103,8 +149,8 @@ def test_expected_bytes_stable(case):
     assert proc.stdout == exp_out, (
         f"{stem}: stdout drift\n got={proc.stdout!r}\nwant={exp_out!r}"
     )
-    assert proc.stderr == exp_err, (
-        f"{stem}: stderr drift\n got={proc.stderr!r}\nwant={exp_err!r}"
+    assert _mask_root(proc.stderr) == _mask_root(exp_err), (
+        f"{stem}: stderr drift\n got={_mask_root(proc.stderr)!r}\nwant={_mask_root(exp_err)!r}"
     )
     assert proc.returncode == exp_rc, (
         f"{stem}: exit drift got {proc.returncode} want {exp_rc}"

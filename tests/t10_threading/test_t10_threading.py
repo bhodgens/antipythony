@@ -41,6 +41,7 @@
 
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -50,6 +51,23 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _mask_root(data: bytes) -> bytes:
+    """Normalize absolute corpus paths in stderr self-check pins.
+
+    CPython 3.14 resolves the script path to an ABSOLUTE path in tracebacks
+    and warning locations, so pins recorded the original checkout's absolute
+    path and failed in every other worktree/CI. The mask collapses any
+    absolute prefix that precedes a tests/corpus/ path to <ROOT>/... .
+    Line numbers, caret columns, and message text are untouched, so the pin
+    still diffs everything semantic (C-33: mask, never weaken). Follows the
+    in-tree precedent tests/t09_binary (_norm_stderr, S-06-7 caveat). The
+    differential gate (ap-conform, reference vs implementation) stays
+    byte-exact with NO masking; this applies only to reference self-checks.
+    """
+    return re.sub(rb"/[^\s\"',;()]*?(tests/corpus/[^\s\"',;()]*)",
+                  rb"<ROOT>/\1", data)
 CORPUS_DIR = REPO_ROOT / "tests" / "corpus" / "threading"
 EXPECTED_DIR = CORPUS_DIR / "expected"
 REF_PY = "/opt/homebrew/bin/python3.14"
@@ -74,12 +92,29 @@ def case_ids():
     return [p.stem for p in ALL_CASES]
 
 
+def _pinned_env() -> dict:
+    """S-06-15 scrubbed environment + pinned locale (C-27).
+
+    Only PATH/HOME pass through, with LANG=C. LC_* is deliberately excluded:
+    CPython's UTF-8-mode auto-detection rewrites LC_CTYPE in its own
+    environment block, so a Python parent leaks it to child processes and
+    silently changes their locale. The corpus triples were pinned under
+    this scrub (LANG=C enables UTF-8 mode per PEP 540).
+    """
+    env = {k: os.environ[k] for k in ("PATH", "HOME") if k in os.environ}
+    env["LANG"] = "C"
+    return env
+
+
 def run_ref(case, env_extra=None, timeout=180):
-    env = dict(os.environ)
+    # Pinned env (S-06-15) + case path RELATIVE to REPO_ROOT so tracebacks
+    # embed a checkout-independent path (absolute paths broke the pins in
+    # every worktree/CI other than the original checkout).
+    env = _pinned_env()
     if env_extra:
         env.update(env_extra)
     return subprocess.run(
-        [REF_PY, str(case)], capture_output=True, timeout=timeout,
+        [REF_PY, os.path.relpath(case, REPO_ROOT)], capture_output=True, timeout=timeout,
         cwd=str(REPO_ROOT), env=env,
     )
 
@@ -128,8 +163,8 @@ def test_expected_bytes_stable(case):
     assert proc.stdout == exp_out, (
         f"{stem}: stdout drift\n got={proc.stdout!r}\nwant={exp_out!r}"
     )
-    assert proc.stderr == exp_err, (
-        f"{stem}: stderr drift\n got={proc.stderr!r}\nwant={exp_err!r}"
+    assert _mask_root(proc.stderr) == _mask_root(exp_err), (
+        f"{stem}: stderr drift\n got={_mask_root(proc.stderr)!r}\nwant={_mask_root(exp_err)!r}"
     )
     assert proc.returncode == exp_rc, (
         f"{stem}: exit drift got {proc.returncode} want {exp_rc}"

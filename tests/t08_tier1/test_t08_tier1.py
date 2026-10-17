@@ -58,6 +58,23 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _mask_root(data: bytes) -> bytes:
+    """Normalize absolute corpus paths in stderr self-check pins.
+
+    CPython 3.14 resolves the script path to an ABSOLUTE path in tracebacks
+    and warning locations, so pins recorded the original checkout's absolute
+    path and failed in every other worktree/CI. The mask collapses any
+    absolute prefix that precedes a tests/corpus/ path to <ROOT>/... .
+    Line numbers, caret columns, and message text are untouched, so the pin
+    still diffs everything semantic (C-33: mask, never weaken). Follows the
+    in-tree precedent tests/t09_binary (_norm_stderr, S-06-7 caveat). The
+    differential gate (ap-conform, reference vs implementation) stays
+    byte-exact with NO masking; this applies only to reference self-checks.
+    """
+    return re.sub(rb"/[^\s\"',;()]*?(tests/corpus/[^\s\"',;()]*)",
+                  rb"<ROOT>/\1", data)
 CORPUS_ROOT = REPO_ROOT / "tests" / "corpus"
 PROBE_DIR = CORPUS_ROOT / "tier1-transparency"
 BENCH_DIR = PROBE_DIR / "bench"
@@ -218,7 +235,9 @@ def test_reference_reproduces_expected_bytes(script):
     assert proc.stdout == out_f.read_bytes(), (
         f"{script.name}: stdout drift\n got={proc.stdout!r}\nwant={out_f.read_bytes()!r}"
     )
-    assert proc.stderr == err_f.read_bytes(), f"{script.name}: stderr drift: {proc.stderr!r}"
+    assert _mask_root(proc.stderr) == _mask_root(err_f.read_bytes()), (
+        f"{script.name}: stderr drift: {proc.stderr!r}"
+    )
     assert str(proc.returncode) == rc_f.read_text().strip(), (
         f"{script.name}: rc {proc.returncode} != {rc_f.read_text().strip()}"
     )
