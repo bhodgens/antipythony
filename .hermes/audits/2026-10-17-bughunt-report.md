@@ -1,0 +1,81 @@
+# Bughunt 2026-10-17 - consolidated report
+
+Wave anchor: `4f3d033..4bf9f77` (all 38 commits, first to HEAD).
+Method: 10 read-only auditors (one per commit batch, each in its own detached
+git worktree) + parent pre-reads + parent source-verification of every HIGH.
+Fixes applied parent-direct this session (the request authorized "fix issues
+as you find them").
+
+## Baseline at clean HEAD (before fixes)
+
+- `cargo test --workspace`: RED. 24 suites ok, 1 suite red:
+  `ap-run/tests/stdlib_modules_differential.rs` -> 19/19 panic
+  `spawn ap-run-eval: Os { code: 2, kind: NotFound }`.
+- `pytest tests/`: 4 failed, 1265 passed, 165 skipped, 594 xfailed, 90 xpassed.
+- `cargo run -p xtask -- notices --check`: RED (NOTICES DRIFT).
+
+## Baseline at clean HEAD (after this wave's fixes)
+
+- `cargo test --workspace`: green (see gate log).
+- `pytest tests/`: 1271 passed, 5 skipped, 751 xfailed, 91 xpassed, 0 failed.
+- `notices --check`: OK (150 deps).
+
+## FIXED (parent-verified, committed this wave)
+
+| # | Sev | Finding | Fix | Verified |
+|---|-----|---------|-----|----------|
+| P1 | HIGH | `stdlib_modules_differential.rs` hardcoded `target/release/ap-run-eval`. `cargo test` builds debug, so all 19 tests panic NotFound on a tree without a manual release build; when a stale release binary exists they silently diff against NON-HEAD code. | Moved test to `crates/ap-cli/tests/` (owns the bin) + `env!("CARGO_BIN_EXE_ap-run-eval")`. | 19 panic -> 16 pass / 3 real fails |
+| P2 | HIGH | 4 corpus stderr pins embed the absolute checkout path (`/Users/caimlas/...`). CPython 3.14 resolves script paths to absolute in tracebacks/warnings, so the pins fail in every worktree/CI other than the original. | `_mask_root()` regex normalizes any absolute prefix before `tests/corpus/...` to `<ROOT>/...`; line numbers, caret columns, message text untouched (C-33 mask-not-weaken). Applied to all 7 stderr-diffing suites. | 4 pytest fails -> 0; mask validated vs 4 pins + negative control |
+| P3 | HIGH | `s005_io_streams` golden is locale-dependent. Commit f0a4c22 claimed the reference prints `utf-8 utf-8` "under all local locales" - FALSE: `io.text_encoding(None)` returns `'locale'` outside UTF-8 mode. Root cause: CPython's UTF-8-mode auto-detection rewrites `LC_CTYPE` in its own env block, so a Python parent leaks it to children and flips their locale. The runners passed the ambient env, not the S-06-15 scrub. | `_pinned_env()` in every corpus runner: PATH/HOME only + `LANG=C` (PEP 540 enables UTF-8 mode for the C locale). ap-conform `run_with_timeout` now `env_clear()` + PATH/HOME/LANG=C for BOTH sides (S-06-15 harness contract). | golden matches under scrub; 113 pin tests green under `PYTHONUTF8`/scrub |
+| P4 | MEDIUM | `find_reference_interpreter` fell back to any `python3` with only a spawn check, no version check. A host without python3.14 silently used e.g. 3.12 as the "3.14 reference" and still printed green. | `is_python_314()` parses `--version` (stdout+stderr) and requires `Python 3.14`. Same guard added to the 3 Rust differential test files. | probe with python3.14 hidden now fails closed |
+| P5 | LOW | `ap-conform` declared unused dep `shell-words`. | Removed from Cargo.toml. | grep: zero uses |
+| N1 | HIGH | `ap-conform` rejected `--tier` (`error: unexpected argument`), but the 02.03 gate + T-06/T-07/T-08 all invoke `--tier 0`. The tier-0 conformance gate could not run as specified. | Added `--tier <0|adaptive>` to ap-conform (forwarded to impl only, never the reference; bad value -> exit 2). `ap-run-eval` now parses `--tier` and rejects non-0 loudly instead of silently running tier-0. | `--tier 0` PASS; `--tier 7` exit 2; `--tier adaptive` fails loudly |
+| N2 | HIGH | `notices --check` gate was RED at HEAD: `THIRD_PARTY_NOTICES` stale vs Cargo.lock (162 lock packages vs 151 entries). The attribution gate AGENTS.md treats as a compliance requirement was not green. | Regenerated notices (150 deps after shell-words removal). | `notices --check: OK` |
+
+## REFUTED auditor claims (parent source-verification)
+
+- Auditor-2 F1 "corpus glob misses 100 of 148 cases": FALSE. values/classes/
+  exceptions have no subdirectories, so `*.py` matches all (47/33/15).
+- Auditor-4 F5 "nondeterministic HashMap iteration in the byte-compared IR
+  dump": FALSE. ap-ir uses only BTreeMap/BTreeSet (verify.rs:535, tests.rs:219).
+- Auditor-5 F3 "x012_keyboard_interrupt pin has wrong exit code": FALSE. Pin
+  says 130, real CPython run gives 130.
+- Auditor-5 F6 "t16_hybrid collects zero tests": FALSE. 33 tests collected.
+- Auditor-8 "int.bit_length / to_bytes missing": OUT OF SCOPE. Not in the v1
+  spec (grep of spec 01/05 finds no bit_length/to_bytes). Feature gap, not a bug.
+- Auditor-9 "`is` interning divergences (257 is 257, "abc" is "abc")": REFUTED
+  by spec S-01-31 - object caching/interning is UNSPECIFIED, corpus MUST NOT
+  assert `is` except on None/sentinels.
+- Auditor-3 "--verify never wired into ap-ir-dump": FALSE. `ap-ir-dump
+  [--tree|--golden|--verify]` exists and `ap-verify-dump` runs (rc 0).
+
+## REAL defects found but NOT fixed this wave (deferred, with reason)
+
+| Sev | Finding | Why deferred |
+|-----|---------|--------------|
+| HIGH | Traceback frame leak: a CAUGHT exception's frames reappear in the NEXT traceback. Repro: `try: f() except: pass` then a later error shows `line 2, in f` + `line 7, in <module>` instead of just the real frame. `tb_frames` (frame.rs:257) accumulates on the interpreter and is never cleared when an exception is handled. | File is in the sibling's uncommitted 02.04a WIP (interp.rs/frame.rs). Contested zone - defer, don't force. |
+| MED | 3 stdlib differential failures (stat/os_path/linecache) at the working tree. | Caused by the sibling's uncommitted importer WIP; pass at clean HEAD. Their build failure, their fix. |
+| MED | `"%d" % (t,)` (percent-format) and complex-number arithmetic unimplemented. | Tracked feature gaps (02.08-full: "re engine, complex numbers, class-method surface"). Not regressions. |
+| LOW | Traceback caret line (`~~^~~~~~~`) missing in impl output. | Known Plan-02 gap; line NUMBERS are correct (verified). |
+
+## Disclosure ledger (what was NOT verified / NOT touched)
+
+1. SIBLING WIP: the working tree carried another agent's uncommitted 02.04a
+   work (importer.rs, vendored_stdlib/, edits to builtins/classes/exc_hier/
+   frame/interp/lib/methods.rs) written 11:04-11:06, minutes before this
+   session. Auditor 10 reviewed it read-only. This wave did NOT edit or commit
+   any of those files. The 3 stdlib differential failures and the traceback
+   frame leak live in that WIP.
+2. 91 xpassed (was 90): stale `xfail(strict=False)` markers not flipped to
+   pass. Pre-existing (same count at baseline). Not a correctness bug, but the
+   markers understate what now works. Not triaged this wave.
+3. 5 skipped tests not investigated (bin-not-found skips).
+4. Auditor findings on ap-parse ruff-wrapper fidelity and ap-obj repr/hash
+   exactness (auditors 3, 7, 8) were reviewed but not all independently
+   re-probed by the parent; the ones the parent did probe (f-string debug
+   forms, bigint exactness, int->float conversion) MATCHED CPython at HEAD.
+5. Gate runs: cargo + pytest + notices were run on a clean detached worktree
+   (/tmp/ap-fixcheck) with only this wave's fixes applied, to separate my
+   fixes from the sibling WIP. The working-tree cargo run shows the 3 sibling
+   failures; the clean-HEAD run is the authoritative verdict for this wave.
+6. No push performed (user decides push timing).
