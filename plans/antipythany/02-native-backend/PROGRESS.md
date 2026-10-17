@@ -59,11 +59,23 @@
   run interpreter on worker thread or bump stack); V016 surrogate escapes
   (str-model follow-up); match class-patterns (02.03).
 
+## STATUS UPDATE (orchestrator, 02.03 + 02.08-lite REVIEWED + committed 152a556)
+- Both leaves verified firsthand (corpus rates reproduced) and committed.
+- Spec Amendment A1 applied to docs/spec/05: base64/binascii/hashlib/random
+  moved INTO v1 (native impls void the C-extension rationale of S-05-19);
+  secrets stays OUT. Ids preserved per C-32.
+- 02.04a (import machinery + vendored pure-stdlib) DISPATCHED per
+  docs/02-04a-import-machinery-design.md. Vendor set = non-native modules
+  only (native registry wins); metaclass/descriptor stress expected and
+  wanted - fixing interp bugs it surfaces is the gate.
+
 ## QUEUE
-1. 02.03 classes/protocols + T-06 - DISPATCH NEXT (unblocks V048/V050/V066,
-   f12, match class-patterns).
-2. 02.04 GC (MMTk) + 02.08 stdlib (unblocks stdlib slice).
-3. 02.05 tier-1 (SPLIT per risks; + stack-depth item).
+1. 02.04a import machinery + vendoring (RUNNING deleg_e6e08e61)
+2. 02.04 GC (MMTk swap) - after 02.04a
+3. 02.05 tier-1 (SPLIT per risks; + debug stack-depth item)
+4. 02.08-full: re engine, complex numbers, class-method surface (str.strip/
+   .get), metaclass hooks completion, mappingproxy, vars() instances
+5. Plan 04 packaging (uv pure-wheel fetch) -> T1 scrapy attempt
 
 
 ## Leaf 02.03 - classes/protocols - LANDED (in review)
