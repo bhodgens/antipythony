@@ -147,6 +147,47 @@ CPython 3.14.7:
   HIGH finding (--tier gate seam, report row N1) was delivered and fixed
   earlier in the wave (commit 06a086f).
 
+## Addendum: consolidated batch dispositions (final)
+
+The 10-auditor batch closed at 4h19m. All findings processed; two new
+fixes landed from the consolidated payloads:
+- CRITICAL CONFIRMED + FIXED (auditor 9): deep recursion SIGABRTs the
+  process at ~150 Python frames (stack overflow) before the
+  recursion_limit=1000 guard (frame.rs:387) can fire. Repro: depth-300
+  script rc=134 at clean HEAD. Fix: ap-run-eval runs the module on a
+  256MB-stack thread so RecursionError raises as a Python exception
+  like CPython (commit 5fafcf0). Root fix (smaller interpreter frames)
+  is an executor follow-up.
+- HIGH CONFIRMED + FIXED (auditor 2): C-02's promised traceability CI
+  check ("every cited divergence id exists", compat-contract.md:72)
+  was never implemented - per-suite lints only checked header
+  PRESENCE. New tests/corpus_traceability/ resolves every cited id
+  against contract + spec-pack ids; negative control (bogus S-99-42)
+  flips it red (commit 885b526).
+Other consolidated findings dispositioned without code change:
+- Timeout-vs-FAIL (auditor 2 CRITICAL): REFUTED - CaseOutcome::Timeout
+  fails the gate (passed()==false, exit 1); the label is diagnostic.
+- Negative-control claim (auditor 2 HIGH): fixed earlier (26822c6).
+- e012 .exit missing (auditor 3 CRITICAL): REFUTED - the expected-file
+  convention is .rc; e012 has .out/.err/.rc.
+- "Corpus has no pinned triples" (auditor 2 INFO): REFUTED -
+  tests/corpus/*/expected/ holds pinned .out/.err/.rc triples.
+- xfail strict=False (auditor 3 HIGH): real; same item as the 91-xpass
+  ledger entry - user triage.
+- Float-repr exponent boundaries (auditor 8 MEDIUM): verified clean at
+  HEAD - probe matched CPython on 1e16/1e17/1e-4/1.2e-5/1e23/1.5e-323.
+  The probe's only diffs were complex-number results ((-2)**0.5 ->
+  complex in CPython, nan in impl) - the tracked 02.08-full complex gap.
+- powf boundaries (auditor 9 MEDIUM): float cases matched CPython;
+  negative-base fractional exponent is the same complex gap.
+- Traceback line numbers (auditor 9 MEDIUM): verified correct earlier
+  (caret line missing is the known LOW gap).
+- ruff 0.0.4 pin (auditor 3 MEDIUM): MSRV-pinned by design (commit
+  24c97ed message); documented, not a defect.
+
+Final gate state (main @ 885b526, clean worktree): cargo exit 0;
+pytest 1272 passed / 0 failed / 91 xpassed; notices OK (150 deps).
+
 ## Post-wave git state (disclosure)
 
 A sibling agent kept working in the main checkout during and after this
