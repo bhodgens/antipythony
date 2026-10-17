@@ -44,6 +44,11 @@ GIL, uv-backed deps at build time. Byte-exact differential conformance vs CPytho
 - OPEN: pon study task (01.03 pre-task skipped; dispatch before/with Plan 02);
   contract gap ledger (14 items, plans/antipythany/01-frontend-ir/PROGRESS.md
   + tests/*.md) needs user triage eventually; s005 golden corrected (locale).
+- BUGHUNT 2026-10-17 (4f3d033..4bf9f77, 10 auditors): 7 fixes landed
+  (harness version-gate + env scrub, differential bin path, --tier seam,
+  corpus env pins + path masking, notices regen). Report + disclosure ledger:
+  .hermes/audits/2026-10-17-bughunt-report.md. Deferred: traceback frame-leak
+  on caught exceptions (tb_frames never cleared) - lives in 02.04a WIP zone.
 - Next: Plan 02 (native backend) - ap-obj core values first, with pon study
   dispatched in parallel. Spec pack sections 01-06 already feed T-05+ suites
   (test track is ahead: T-05..T-11 specs + fixtures exist).
