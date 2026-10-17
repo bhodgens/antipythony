@@ -69,13 +69,26 @@
   only (native registry wins); metaclass/descriptor stress expected and
   wanted - fixing interp bugs it surfaces is the gate.
 
+## Leaf 02.04a - import machinery + vendored stdlib - COMPLETE (committed 06df71b)
+- importer.rs ~700 lines: full resolution order, circular visibility,
+  packages/__path__, relative imports, byte-exact ImportError texts.
+- vendored_stdlib/: 202 files (PSF-2.0).
+- Gates: circular PASS, package+relative PASS, ImportError texts PASS.
+- PATHLIB/DATACLASSES/ENUM: import OK, crash ON USE - "Refusing to create
+  an inheritance cycle" from 02.03 MRO builder (pathlib PurePosixPath
+  chain false-positive); unittest blocked on missing _py_warnings native
+  module. -> fix pass dispatched (deleg_a82e46f4): BUG-A MRO cycle,
+  BUG-B set.discard method routing (V044 regression: methods.rs arm
+  exists but 02.03 attr protocol intercepts method-call attr lookups on
+  builtin values first - values 46->45), BUG-C _warnings shim.
+- stdlib slice 8/48 held; import machinery verified firsthand.
+
 ## QUEUE
-1. 02.04a import machinery + vendoring (RUNNING deleg_e6e08e61)
-2. 02.04 GC (MMTk swap) - after 02.04a
-3. 02.05 tier-1 (SPLIT per risks; + debug stack-depth item)
-4. 02.08-full: re engine, complex numbers, class-method surface (str.strip/
-   .get), metaclass hooks completion, mappingproxy, vars() instances
-5. Plan 04 packaging (uv pure-wheel fetch) -> T1 scrapy attempt
+1. Fix pass running (MRO cycle, method routing, _warnings).
+2. 02.04 GC (MMTk swap).
+3. 02.05 tier-1 (SPLIT per risks; + debug stack-depth).
+4. 02.08-full: re engine, complex, class-method surface, metaclass hooks.
+5. Plan 04 packaging (uv) -> T1 scrapy attempt.
 
 
 ## Leaf 02.03 - classes/protocols - LANDED (in review)
