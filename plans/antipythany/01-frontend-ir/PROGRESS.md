@@ -49,7 +49,7 @@
 - Suite: 169 xfail (bin-dependent, pre-bin) + 31 xpass; after 01.03's bin:
   41 xfail / 1 xpass / 0 hard fails. 5 new gaps filed (T3-G1..G5).
 
-## Leaf 01.04 - IR verify pass - COMPLETE (uncommitted)
+## Leaf 01.04 - IR verify pass - COMPLETE (committed f0a4c22)
 - ap_ir::verify(module) -> Vec<Diagnostic>: must-analysis (definite-assignment
   with del-marks) unbound-local prediction with byte-exact 3.14 message
   `cannot access local variable 'x' where it is not associated with a value`
