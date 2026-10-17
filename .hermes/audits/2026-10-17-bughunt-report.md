@@ -106,6 +106,24 @@ Parent-verified dispositions:
 - INFO/clean: MRO C3 linearization correct; MRO error messages match
   CPython wording; sibling-WIP disclosures match this report's ledger.
 
+## Addendum: auditor 6 recovery (post-report)
+
+Auditor 6 (pon license grant 0122e90, IR verify pass f0a4c22, notices
+regen 5552cf9) failed the output schema; findings survived at
+/tmp/ap-audit-6/audit_result.json. Parent-verified dispositions:
+- HIGH DUPLICATE (already fixed): LICENSES/ lacked MIT/Apache pon texts.
+  Same finding as auditor 1; fixed pre-emptively in commit 630acea.
+- HIGH REFUTED: "'CPython byte-matched' claim rests on a single test."
+  False: tests/t04_ir_verify/ is a 32-probe systematic suite whose
+  fixtures (expected_t04.json/.txt) are GENERATED from live CPython
+  3.14.7 (gen_expectations.py) and the suite compares class+message
+  fields for every flagged probe. Suite green: 15 passed, 29 xpassed.
+- MEDIUM x2 clean (auditor's own verdicts): div/floor-div/mod folding
+  correctly refuses zero divisors (runtime ZeroDivisionError preserved);
+  1MB string-repetition fold cap is intentional conservatism.
+- INFO x2 clean: notices determinism (BTreeMap + --check) confirmed;
+  attribution headers correctly pending first pon-derived commit.
+
 ## Post-wave git state (disclosure)
 
 A sibling agent kept working in the main checkout during and after this
