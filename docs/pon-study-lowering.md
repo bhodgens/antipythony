@@ -136,8 +136,9 @@ tested by 244-module byte-exact conformance (`conformance-floor.json`).
 - us: `lower_fstring_value`/`lower_interp_element` (`lowering.rs:1044-1114`) already
   produce `FStrPart` with conversions; ap-ir's `Conversion` enum should be checked
   against pon's u8 wire form (0/`r` default/`u8::MAX` sentinel) when we pick a
-  runtime repr. **Adopt:** the parts-not-elements ruff gotcha — we may have the same
-  bug; worth a differential test with `'"#define X {" f"{cname};" "%s"'` style mixes.
+  runtime repr. **Adopt:** the parts-not-elements ruff gotcha — RESOLVED
+  0992ee9: NOT a bug in us (lowering walks parts correctly); the 35-case
+  f-string battery in tests/corpus/fstrings/ is the differential test.
 
 ## Decorators / defs / PEP 649
 
