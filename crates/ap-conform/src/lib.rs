@@ -81,25 +81,50 @@ pub fn expand_corpus(pattern: &str) -> std::io::Result<Vec<String>> {
 }
 
 /// Locate the reference interpreter: `python3.14` first, then `python3`.
+///
+/// A candidate is accepted ONLY if its `--version` output reports Python
+/// 3.14.x. Without the version check, a host lacking `python3.14` would
+/// silently use any `python3` (3.9, 3.12, ...) as the "CPython 3.14
+/// reference", making every differential verdict meaningless while still
+/// printing green.
 pub fn find_reference_interpreter() -> Option<String> {
     for candidate in ["python3.14", "python3"] {
-        if which_exists(candidate) {
+        if is_python_314(candidate) {
             return Some(candidate.to_string());
         }
     }
     None
 }
 
-fn which_exists(program: &str) -> bool {
-    std::process::Command::new(program)
+/// True when `program --version` succeeds and reports Python 3.14.
+/// Pre-3.8 interpreters print `--version` to stderr, so check both streams.
+fn is_python_314(program: &str) -> bool {
+    let out = match std::process::Command::new(program)
         .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+    {
+        Ok(out) if out.status.success() => out,
+        _ => return false,
+    };
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    text.contains("Python 3.14")
 }
 
 /// Run `program args[script]` capturing stdout/stderr/exit code, with timeout.
+///
+/// S-06-15 (harness contract): BOTH sides launch with a scrubbed environment
+/// - only PATH/HOME pass through, plus the pinned locale LANG=C. LC_* is
+/// excluded on purpose: CPython's UTF-8-mode auto-detection rewrites
+/// LC_CTYPE in its own environment block, so a Python parent leaks it to
+/// children and silently changes their locale. Without the scrub, the
+/// reference and the implementation can run under different effective
+/// locales, and the byte-exact verdict depends on the developer's shell.
 pub fn run_with_timeout(
     program: &str,
     args: &[String],
@@ -112,6 +137,10 @@ pub fn run_with_timeout(
     let mut child = std::process::Command::new(program)
         .args(args)
         .arg(script)
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", std::env::var("HOME").unwrap_or_default())
+        .env("LANG", "C")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
