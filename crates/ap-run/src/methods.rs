@@ -260,6 +260,24 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
                 }
             }
         }
+        // 02.04a (interp bug #7, vendored-stdlib stress): PEP 585 generic
+        // alias `list[int]` — types.py reads type(list[int]) at import.
+        // v0: a stub GenericAlias value (no runtime generic semantics).
+        (Value::Obj(o), _k) if o.kind == ap_obj::ObjKind::Type => {
+            let ga = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "_GenericAlias");
+            {
+                let mut attrs = ga.attrs.borrow_mut();
+                let _ = attrs.set(
+                    Value::Str(PyString::new("__origin__")),
+                    Value::Obj(o.clone()),
+                );
+                let _ = attrs.set(
+                    Value::Str(PyString::new("__args__")),
+                    Value::Tuple(Gc::new(Tuple(vec![key.clone()]))),
+                );
+            }
+            Ok(Value::Obj(ga))
+        }
         _ => Err(raise(
             "TypeError",
             format!("'{}' object is not subscriptable", obj.type_name()),
@@ -488,6 +506,23 @@ pub fn call_method(
         (Value::Set(s), "add") => {
             let r = s.add(one_arg(args)?.clone()).map_err(Flow::from_py);
             Some(r.map(|_| Value::None))
+        }
+        // 02.04a (interp bug #19): set.copy() (abc cache bookkeeping).
+        (Value::Set(s), "copy") => {
+            let items: Vec<Value> = s.iter().collect();
+            let set = ap_obj::dict::PySet::new();
+            for it in items {
+                let _ = set.add(it);
+            }
+            Some(Ok(Value::Set(set)))
+        }
+        (Value::Frozen(s), "copy") => {
+            let items: Vec<Value> = s.iter().collect();
+            let set = ap_obj::dict::PySet::new();
+            for it in items {
+                let _ = set.add(it);
+            }
+            Some(Ok(Value::Set(set)))
         }
         (Value::Set(s), "discard") => {
             let _ = s.pop_discard(one_arg(args)?);

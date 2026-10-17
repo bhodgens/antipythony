@@ -1,0 +1,123 @@
+{
+  "scope": "READ-ONLY bughunt audit of commits 2057bf8, 3f1bb33, 71193a6, ebf5956 in the antipythany repo",
+  "commits_reviewed": ["2057bf8", "3f1bb33", "71193a6", "ebf5956"],
+  "findings": [
+    {
+      "severity": "INFO",
+      "title": "A-1 spec amendment verified: float division error message",
+      "file": "docs/compat-contract.md",
+      "line": "11-13 (amendment register)",
+      "evidence": "Amendment A-1 states: '1.0/0.0' and '1.0%0.0' raise `ZeroDivisionError: division by zero` (identical to the int text), not `float division` / `float modulo`.' Verified: `/opt/homebrew/bin/python3.14 -c \"1.0/0.0\"` produces `ZeroDivisionError: division by zero`.",
+      "verified": true,
+      "why_it_matters": "Confirms the spec amendment correctly captures CPython 3.14.7 behavior. If this were wrong, all downstream tests citing C-16 would be mis-aligned.",
+      "suggested_fix": "None — amendment is correct."
+    },
+    {
+      "severity": "INFO",
+      "title": "A-2 spec amendment verified: int string conversion limit messages",
+      "file": "docs/compat-contract.md",
+      "line": "254-261 (amendment register + clause body)",
+      "evidence": "Amendment A-2 splits the digit-limit text into two forms: `str(int)` form has no digit count; `int(str)` form adds `: value has N digits`. Verified: `str(10**5000)` → `ValueError: Exceeds the limit (4300 digits) for integer string conversion; use sys.set_int_max_str_digits() to increase the limit` and `int('1'*5000)` → `ValueError: Exceeds the limit (4300 digits) for integer string conversion: value has 5000 digits; use sys.set_int_max_str_digits() to increase the limit`.",
+      "verified": true,
+      "why_it_matters": "The two distinct message forms are byte-exact conformance targets. A wrong expectation here would force the implementation to produce incorrect error messages.",
+      "suggested_fix": "None — amendment is correct."
+    },
+    {
+      "severity": "INFO",
+      "title": "A-5 spec amendment verified: del scope-dependent error types",
+      "file": "docs/spec/02-control-flow.md",
+      "line": "7-12 (amendment register) + S-02-6",
+      "evidence": "Amendment A-5: module-level `del` of unbound name raises `NameError: name 'y' is not defined`; function-local `del` of never-bound local raises `UnboundLocalError: cannot access local variable 'x' where it is not associated with a value`. Verified: `del y` (module scope) → `NameError`; `def f(): del x; f()` → `UnboundLocalError`.",
+      "verified": true,
+      "why_it_matters": "The frontend verifier (01.04) MUST predict both forms. A wrong expectation would cause the verifier to mis-predict error types.",
+      "suggested_fix": "None — amendment is correct."
+    },
+    {
+      "severity": "INFO",
+      "title": "A-3 spec amendment verified: metaclass hook ordering",
+      "file": "docs/spec/03-classes.md",
+      "line": "7-13 (amendment register) + S-03-27",
+      "evidence": "Amendment A-3: `__set_name__` and `B.__init_subclass__` run INSIDE `type.__new__` (before `M.__new__` returns), in that order, and `M.__init__` runs last. Verified tracing output: `M.__new__ start → B.__init_subclass__ → M.__new__ end → M.__init__`.",
+      "verified": true,
+      "why_it_matters": "The creation pipeline order is a byte-exact observable. Wrong ordering in the spec would mis-author all class-related test cases.",
+      "suggested_fix": "None — amendment is correct."
+    },
+    {
+      "severity": "INFO",
+      "title": "A-4 spec amendment verified: nested tuples in except clauses rejected",
+      "file": "docs/spec/03-classes.md",
+      "line": "7-13 (amendment register) + S-03-34",
+      "evidence": "Amendment A-4: nested tuples in except targets are REJECTED on 3.14.7. Verified: `except ((KeyError, ValueError),):` while a `KeyError` is in flight → `TypeError: catching classes that do not inherit from BaseException is not allowed`.",
+      "verified": true,
+      "why_it_matters": "The 'nested tuples allowed' claim was false. This correction ensures test cases for exception catching behavior are accurate.",
+      "suggested_fix": "None — amendment is correct."
+    },
+    {
+      "severity": "INFO",
+      "title": "A-6 spec amendment verified: weakref target matrix",
+      "file": "docs/spec/05-builtins-stdlib-v1.md",
+      "line": "12-18 (amendment register) + weakref row",
+      "evidence": "Amendment A-6: `set`/`frozenset` ARE weakref-able on 3.14.7; `list`, `dict`, `int`, `str`, `float`, `bytes`, `tuple`, plain `object()` are NOT. Verified: `weakref.ref(set())` succeeds; `weakref.ref(list())` → `TypeError: cannot create weak reference to 'list' object`.",
+      "verified": true,
+      "why_it_matters": "The weakref target matrix is a conformance target. Wrong expectations would cause stdlib-v1 corpus cases to fail or mis-align.",
+      "suggested_fix": "None — amendment is correct."
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "GC corpus cases depend on collect-anchored observations — D1 timing-safety discipline required",
+      "file": "plans/antipythany/tests/T-07-gc-finalizer.md",
+      "line": "37-35, 106-122 (case table)",
+      "evidence": "The T-07 gc/finalizer corpus (17 cases) explicitly follows D1 timing-safety discipline: all observations are sampled AFTER explicit `gc.collect()` calls. Case gc007 (is_tracked) notes CPython's temporary tuple tracking window is UNSPECIFIED for antipythany. Case gc011 (collect return) notes the raw count is a 'patch-level/build-level coincidence, not a contract value.'",
+      "verified": true,
+      "why_it_matters": "These cases are intentionally designed to avoid timing-sensitive assertions. If any case were to accidentally observe timing-sensitive state (e.g., pre-collect), it would flake. The suite's linting and 3-run determinism check mitigate this risk.",
+      "suggested_fix": "Continue the existing D1 discipline; ensure the C-19 corpus lint (refcount-API ban) and C-23 (no print in __del__) are enforced."
+    },
+    {
+      "severity": "INFO",
+      "title": "Binary conformance exit-code cases verified against CPython 3.14.7",
+      "file": "tests/t09_binary/cases/x009_uncaught_valueerror.py",
+      "line": "1-2 (case file) + expected/x009_uncaught_valueerror.rc (exit code 1)",
+      "evidence": "Case x009_uncaught_valueerror.py raises `ValueError(\"x\")` and expects exit code 1. Verified: `/opt/homebrew/bin/python3.14 x009_uncaught_valueerror.py` exits with rc=1.",
+      "verified": true,
+      "why_it_matters": "Exit codes for uncaught exceptions are part of the byte-exact conformance gate. Wrong exit codes would cause false failures.",
+      "suggested_fix": "None — exit code is correct."
+    },
+    {
+      "severity": "INFO",
+      "title": "stdlib-v1 corpus s001_builtins_namespace.py verified against CPython 3.14.7",
+      "file": "tests/corpus/stdlib/s001_builtins_namespace.py",
+      "line": "entire file (17-line output)",
+      "evidence": "Running the corpus case against python3.14 produces byte-identical output to the expected/s001_builtins_namespace.out file. Verified by direct execution.",
+      "verified": true,
+      "why_it_matters": "This is one of 48 stdlib-v1 corpus cases. Byte-identical output confirms the expectation is correct for CPython 3.14.7.",
+      "suggested_fix": "None — output matches."
+    },
+    {
+      "severity": "INFO",
+      "title": "T-14/T-15/T-16 xfail envelopes are substantive, not placeholders",
+      "file": "tests/t14_cli/test_t14_cli.py",
+      "line": "1-615 (615 lines of test code)",
+      "evidence": "T-14 has 22 collected tests (8 green, 14 xfail). T-15 has 19 tests. T-16 has 33 tests. Each xfail test has real assertions (byte checks, exit codes, diagnostic regexes) — they cannot XPASS vacuously. T-14's authoring note explicitly says 'three invariance-only assertions XPASSed vacuously until real-execution byte checks were added.'",
+      "verified": true,
+      "why_it_matters": "These suites can fail. They are not fake gates. The xfail status reflects missing implementation, not weak testing.",
+      "suggested_fix": "None — gates are integrity-preserving."
+    },
+    {
+      "severity": "INFO",
+      "title": "Tracking table (ebf5956) confirms 14 of 16 test leaves authored",
+      "file": "plans/antipythany/tests/TRACKING.md",
+      "line": "1-40 (tracking table)",
+      "evidence": "TRACKING.md lists T-01..T-16 with states: T-01..T-11 AUTHORED, T-12..T-13 BLOCKED, T-14..T-16 AUTHORED. 14 of 16 leaves authored as of commit ebf5956.",
+      "verified": true,
+      "why_it_matters": "Provides orchestrator-level visibility into test-track progress. No issues found.",
+      "suggested_fix": "None."
+    }
+  ],
+  "refuted_or_clean": [
+    "GC finalizer timing flake risk: mitigated by D1 discipline (collect-anchored observations only) and 3-run determinism check",
+    "Stdlib-v1 48-case corpus: spot-verified s001_builtins_namespace.py matches CPython 3.14.7; no evidence of wrong expectations",
+    "T-14/T-15/T-16 xfail envelopes: substantive tests with real assertions, not placeholders",
+    "Commit-message-vs-diff: all commits' diff contents match their messages (spec amendments, corpus additions, tracking table)"
+  ],
+  "summary": "All six spec amendments (A-1..A-6) were verified against CPython 3.14.7 and are correct. The GC corpus (T-07) follows proper D1 timing-safety discipline with collect-anchored observations. Binary conformance exit codes and stdlib-v1 corpus cases match CPython behavior. T-14/T-15/T-16 xfail envelopes are substantive test suites, not placeholders. No CRITICAL or HIGH findings — all amendments are accurate, and the test infrastructure is integrity-preserving."
+}

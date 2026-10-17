@@ -104,6 +104,7 @@ pub const EXC_TREE: &[(&str, Option<&str>)] = &[
     ("BufferError", Some("Exception")),
     ("ExceptionGroup", Some("BaseExceptionGroup")),
     ("ImportError", Some("Exception")),
+    ("ModuleNotFoundError", Some("ImportError")),
     ("InterpreterError", Some("Exception")),
     ("LookupError", Some("Exception")),
     ("MemoryError", Some("Exception")),
@@ -412,18 +413,79 @@ pub fn exec_class_def(
         is_exception: base_types.iter().any(|t| t.flags.is_exception),
         builtin_exc: false,
     };
-    let t = TypeObject::create(
-        c.name.clone(),
-        qualname,
-        base_types.clone(),
-        ns,
-        flags,
-        None,
-    )
-    .map_err(|e| raise("TypeError", ap_obj::classes::mro_error_message(&e)))?;
-    // The RESOLVED metaclass rides the payload (type(C), meta hook lookup).
-    *t.metaclass.borrow_mut() = _resolved_meta.clone();
-
+    // 6b. 02.04a (interp bug #17): a USER metaclass __new__ drives creation
+    // (ABCMeta.__new__ seeds _abc_cache/_abc_registry; EnumType.__new__
+    // converts members). Call it as meta.__new__(meta, name, bases, ns);
+    // its super().__new__ lands in builtin type.__new__ (bug #17 impl).
+    let meta_new_f: Option<Value> = _resolved_meta
+        .as_ref()
+        .and_then(|meta| meta.lookup_with_owner("__new__"))
+        .map(|(f, _)| f)
+        .filter(|f| is_user_function(f));
+    let t = if let Some(f) = meta_new_f {
+        let ns_v = Value::Dict(ns.clone());
+        let name_v = Value::Str(PyString::new(c.name.clone()));
+        let bases_v = Value::Tuple(Gc::new(Tuple(
+            base_types.iter().map(class_value_for).collect(),
+        )));
+        let meta_v = _resolved_meta
+            .as_ref()
+            .map(|m| ap_obj::classes::make_class_value(m.clone()))
+            .unwrap_or_else(|| Value::None);
+        // Zero-arg super() inside the metaclass __new__ body needs the
+        // method context. call_function stages `pending_super_ctx` ABOVE
+        // its plain-fn sentinel — the same channel instantiate() uses.
+        *interp.pending_super_ctx.borrow_mut() = Some((
+            _resolved_meta.clone().unwrap(),
+            // subject = the metaclass itself (mcls arrives as arg 0 of __new__).
+            ap_obj::classes::make_class_value(_resolved_meta.clone().unwrap()),
+            false,
+        ));
+        let created = call_value(
+            interp,
+            &module_frame(interp),
+            &f,
+            &[meta_v, name_v, bases_v, ns_v],
+            &[],
+        );
+        let created = created?;
+        match created {
+            Value::Obj(ref o) if o.kind == ap_obj::ObjKind::UserClass => {
+                let t = o
+                    .class_ref
+                    .borrow()
+                    .clone()
+                    .ok_or_else(|| raise("SystemError", "created class without payload"))?;
+                t
+            }
+            other => {
+                return Err(raise(
+                    "TypeError",
+                    format!(
+                        "{}.__new__ should create an instance, not '{}'",
+                        _resolved_meta
+                            .as_ref()
+                            .map(|m| m.name.clone())
+                            .unwrap_or_default(),
+                        other.type_name()
+                    ),
+                ))
+            }
+        }
+    } else {
+        let t = TypeObject::create(
+            c.name.clone(),
+            qualname,
+            base_types.clone(),
+            ns,
+            flags,
+            None,
+        )
+        .map_err(|e| raise("TypeError", ap_obj::classes::mro_error_message(&e)))?;
+        // The RESOLVED metaclass rides the payload (type(C), meta hook lookup).
+        *t.metaclass.borrow_mut() = _resolved_meta.clone();
+        t
+    };
     let class_v = ap_obj::classes::make_class_value(t.clone());
 
     // Module marker: builtin exceptions report "builtins" (e010); user
@@ -543,6 +605,53 @@ pub fn base_type_ref(interp: &Interpreter, v: &Value) -> Result<Option<Rc<TypeRe
         Value::Obj(o) if o.kind == ap_obj::ObjKind::Type && o.name == "type" => {
             Ok(Some(type_class(interp)))
         }
+        // 02.04a (interp bug #11, vendored-stdlib stress): builtin-type bases
+        // (enum.py: `class IntEnum(int, Enum)`) — synthesize an object-derived
+        // TypeObject carrying the builtin's name (isinstance/issubclass
+        // against it stays a documented v0 gap).
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::Type => {
+            let flags = TypeFlags {
+                slots: None,
+                is_exception: false,
+                builtin_exc: false,
+            };
+            let t = TypeObject::create(
+                o.name.clone(),
+                o.name.clone(),
+                vec![object_class(interp)],
+                PyDict::new(),
+                flags,
+                None,
+            )
+            .map_err(|_| raise("TypeError", "cannot synthesize builtin base class"))?;
+            Ok(Some(t))
+        }
+        // 02.04a (interp bug #2, vendored-stdlib stress): abc.py defines
+        // `class abstractclassmethod(classmethod)` — the decorator builtins
+        // are BuiltinFn markers, not types. Synthesize an object-derived
+        // class so the subclass CREATES; descriptor behavior still rides
+        // the decorator path (documented v0 gap: inheriting descriptor
+        // semantics from these bases is unsupported).
+        Value::Obj(o)
+            if o.kind == ap_obj::ObjKind::BuiltinFn
+                && matches!(o.name.as_str(), "classmethod" | "staticmethod" | "property") =>
+        {
+            let flags = TypeFlags {
+                slots: None,
+                is_exception: false,
+                builtin_exc: false,
+            };
+            let t = TypeObject::create(
+                o.name.clone(),
+                o.name.clone(),
+                vec![object_class(interp)],
+                PyDict::new(),
+                flags,
+                None,
+            )
+            .map_err(|_| raise("TypeError", "cannot synthesize decorator base class"))?;
+            Ok(Some(t))
+        }
         _ => Ok(None),
     }
 }
@@ -572,11 +681,21 @@ pub fn type_class(interp: &Interpreter) -> Rc<TypeRef> {
         return t;
     }
     let obj = object_class(interp);
+    let dict = PyDict::new();
+    // 02.04a (interp bug #17): type.__new__ reachable via super().__new__
+    // inside user metaclass bodies (ABCMeta/EnumType).
+    let _ = dict.set(
+        Value::Str(PyString::new("__new__")),
+        Value::Obj(ap_obj::PyObject::new(
+            ap_obj::ObjKind::BuiltinFn,
+            "type.__new__",
+        )),
+    );
     let t = TypeObject::create(
         "type".to_string(),
         "type".to_string(),
         vec![obj],
-        PyDict::new(),
+        dict,
         TypeFlags::default(),
         None,
     )
@@ -1128,6 +1247,22 @@ fn instance_attr(
             }
         }
     }
+    // 02.04a (interp bug #6): exceptions carry __traceback__ (types.py
+    // probes it at import: TracebackType = type(exc.__traceback__)).
+    if t.flags.is_exception && name == "__traceback__" {
+        let frame = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<frame>");
+        let tb = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<traceback>");
+        {
+            let mut attrs = tb.attrs.borrow_mut();
+            let _ = attrs.set(Value::Str(PyString::new("tb_frame")), Value::Obj(frame));
+            let _ = attrs.set(Value::Str(PyString::new("tb_next")), Value::None);
+            let _ = attrs.set(
+                Value::Str(PyString::new("tb_lineno")),
+                Value::Int(ap_obj::Int::from_i64(0)),
+            );
+        }
+        return Ok(Value::Obj(tb));
+    }
     // 4. __getattr__ fallback (S-03-09).
     if let Some((ga, _)) = t.lookup_with_owner("__getattr__") {
         return call_value(
@@ -1137,6 +1272,20 @@ fn instance_attr(
             &[obj.clone(), Value::Str(PyString::new(name))],
             &[],
         );
+    }
+    // 02.04a (interp bug #4b): object's virtual methods answer on plain
+    // instances too (types.py: MethodWrapperType = type(object().__str__)).
+    if t.name == "object"
+        && matches!(
+            name,
+            "__init__" | "__new__" | "__str__" | "__repr__" | "__eq__" | "__hash__"
+        )
+    {
+        let f = ap_obj::PyObject::new(
+            ap_obj::ObjKind::BuiltinFn,
+            &format!("__object_virtual_{name}__"),
+        );
+        return Ok(Value::Obj(f));
     }
     Err(raise(
         "AttributeError",
@@ -1234,7 +1383,13 @@ fn class_attr_get(interp: &Rc<Interpreter>, cls_v: &Value, t: &Rc<TypeRef>, name
         .clone()
         .or_else(|| Some(type_class(interp)))
     {
-        if let Some((mv, _)) = meta.lookup_with_owner(name) {
+        if let Some((mv, owner)) = meta.lookup_with_owner(name) {
+            // 02.04a (interp bug #16): metaclass-level plain methods read on
+            // the class (ABCMeta.register via Hashable.register) bind the
+            // CLASS as the receiver, like CPython method descriptors.
+            if is_user_function(&mv) {
+                return Ok(bind_function_owned(&mv, cls_v.clone(), Some(&owner)));
+            }
             return Ok(mv);
         }
         if let Some(ga) = meta.lookup("__getattr__") {
@@ -1246,6 +1401,30 @@ fn class_attr_get(interp: &Rc<Interpreter>, cls_v: &Value, t: &Rc<TypeRef>, name
                 &[],
             );
         }
+    }
+    // 02.04a (interp bug #4, vendored-stdlib stress): object's virtual
+    // methods answer at class level (types.py reads object.__init__ and
+    // object().__str__ for WrapperDescriptorType etc).
+    if matches!(
+        name,
+        "__init__" | "__new__" | "__str__" | "__repr__" | "__eq__" | "__hash__" | "__doc__"
+    ) {
+        if t.mro.borrow().iter().any(|m| m.name == "object") {
+            if name == "__doc__" {
+                return Ok(Value::None);
+            }
+            let f = ap_obj::PyObject::new(
+                ap_obj::ObjKind::BuiltinFn,
+                &format!("__object_virtual_{name}__"),
+            );
+            return Ok(Value::Obj(f));
+        }
+    }
+    // 02.04a (interp bug #4c): types.py reads FunctionType.__code__ and
+    // FunctionType.__globals__ at import (GetSet/MemberDescriptorType).
+    if t.name == "function" && matches!(name, "__code__" | "__globals__") {
+        let stub = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<stub>");
+        return Ok(Value::Obj(stub));
     }
     Err(raise(
         "AttributeError",
@@ -1331,6 +1510,14 @@ pub fn attr_set_protocol(
                 .set(Value::Str(PyString::new(name)), v)
                 .map_err(Flow::from_py)
         }
+        // 02.04a (interp bug #1b): functions accept arbitrary attribute
+        // writes (CPython function.__dict__) — vendored stdlib does
+        // `splitext.__doc__ = genericpath._splitext.__doc__` at import.
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::Function => o
+            .attrs
+            .borrow_mut()
+            .set(Value::Str(PyString::new(name)), v)
+            .map_err(Flow::from_py),
         other => Err(raise(
             "AttributeError",
             format!("'{}' object has no attribute '{}'", other.type_name(), name),

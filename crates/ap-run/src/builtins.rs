@@ -683,6 +683,12 @@ pub fn builtin_type(args: &[Value]) -> BResult {
             let v = &args[0];
             let name = match v {
                 Value::Obj(o) if o.kind == ap_obj::ObjKind::Exception => o.name.clone(),
+                // 02.04a: coroutine stubs report their own name (types.py
+                // CoroutineType must be DISTINCT from object — the ABC
+                // registration in _collections_abc depends on it).
+                Value::Obj(o) if o.kind == ap_obj::ObjKind::Namespace && o.name == "coroutine" => {
+                    "coroutine".to_string()
+                }
                 Value::Obj(o) => o.type_name(),
                 other => other.type_name().to_string(),
             };
@@ -1149,13 +1155,26 @@ pub fn builtin_enumerate(interp: &Interpreter, args: &[Value]) -> BResult {
     Ok(Value::Obj(obj))
 }
 
+use crate::iter::{IterState, PyIterator};
+
 pub fn builtin_zip(interp: &Interpreter, args: &[Value]) -> BResult {
     let mut ids = Vec::with_capacity(args.len());
     for a in args {
         ids.push(register_iter(interp, a)?);
     }
     let obj = ap_obj::PyObject::new(ap_obj::ObjKind::Iterator, "zip");
-    *obj.gen_id.borrow_mut() = Some(ids.first().copied().unwrap_or(0));
+    match ids.first().copied() {
+        Some(id) => *obj.gen_id.borrow_mut() = Some(id),
+        None => {
+            // zip() with no args: an EXHAUSTED iterator of its own (interp
+            // bug #15 — gen_id 0 collided with the re-entry guard).
+            let it = crate::iter::PyIterator::new(crate::iter::IterState::Seq(Vec::new(), 0));
+            let id = interp.next_iter_id.get();
+            interp.next_iter_id.set(id + 2);
+            interp.iterators.borrow_mut().insert(id, it);
+            *obj.gen_id.borrow_mut() = Some(id);
+        }
+    }
     Ok(Value::Obj(obj))
 }
 
@@ -1355,6 +1374,41 @@ pub fn make_sys_module(interp: &Interpreter) -> Value {
     let _ = ns.set(Value::Str(PyString::new("stdout")), Value::Obj(so));
     let se = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "stderr");
     let _ = ns.set(Value::Str(PyString::new("stderr")), Value::Obj(se));
+    // sys.implementation (02.04a: enum.py reads it at import).
+    let impl_ns = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "implementation");
+    {
+        let attrs = impl_ns.attrs.borrow_mut();
+        let _ = attrs.set(
+            Value::Str(PyString::new("name")),
+            Value::Str(PyString::new("cpython")),
+        );
+        let _ = attrs.set(
+            Value::Str(PyString::new("cache_tag")),
+            Value::Str(PyString::new("cpython-314")),
+        );
+        let _ = attrs.set(
+            Value::Str(PyString::new("version")),
+            Value::Str(PyString::new("3.14.0")),
+        );
+        let _ = attrs.set(
+            Value::Str(PyString::new("hexversion")),
+            Value::Int(Int::from_i64(0x30e00f0)),
+        );
+    }
+    let _ = ns.set(
+        Value::Str(PyString::new("implementation")),
+        Value::Obj(impl_ns),
+    );
+    // sys._getframe (02.04a: _collections_abc calls it at import; v0
+    // returns a stub frame whose f_locals is a fresh dict).
+    let _ = ns.set(
+        Value::Str(PyString::new("_getframe")),
+        builtin_marker("sys._getframe"),
+    );
+    let _ = ns.set(
+        Value::Str(PyString::new("_getframemodulename")),
+        builtin_marker("sys._getframemodulename"),
+    );
     let _ = ns.set(
         Value::Str(PyString::new("getdefaultencoding")),
         builtin_marker("sys.getdefaultencoding"),
@@ -1397,6 +1451,23 @@ fn builtin_marker(name: &str) -> Value {
 /// Dispatch a sys-module attribute access that is a function marker.
 pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<BResult> {
     match name {
+        // 02.04a: stub frame objects (f_locals readable, everything else None).
+        "_getframe" | "_getframemodulename" => {
+            let frame = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<frame>");
+            {
+                let mut attrs = frame.attrs.borrow_mut();
+                let _ = attrs.set(
+                    Value::Str(PyString::new("f_locals")),
+                    Value::Dict(PyDict::new()),
+                );
+                let _ = attrs.set(
+                    Value::Str(PyString::new("f_globals")),
+                    Value::Dict(interp.globals.clone()),
+                );
+                let _ = attrs.set(Value::Str(PyString::new("f_back")), Value::None);
+            }
+            Some(Ok(Value::Obj(frame)))
+        }
         "exit" => {
             let code = args
                 .first()
@@ -1471,6 +1542,10 @@ pub fn install_builtins(interp: &Interpreter) {
         "issubclass",
         "setattr",
         "vars",
+        "globals",
+        "locals",
+        "reversed",
+        "bytearray",
         "open",
         "any",
         "bin",
@@ -1511,6 +1586,13 @@ pub fn install_builtins(interp: &Interpreter) {
     for n in names {
         let o = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, *n);
         let _ = b.set(Value::Str(PyString::new(*n)), Value::Obj(o));
+    }
+    // 02.04a (interp bug #8): Ellipsis/NotImplemented builtins — types.py
+    // reads them at import (EllipsisType/NotImplementedType).
+    let _ = b.set(Value::Str(PyString::new("Ellipsis")), Value::Ellipsis);
+    {
+        let ni = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "NotImplemented");
+        let _ = b.set(Value::Str(PyString::new("NotImplemented")), Value::Obj(ni));
     }
     // Exception classes are Type objects so `except ValueError` name reads
     // resolve; call_value dispatches them as constructors.
@@ -1956,6 +2038,24 @@ pub fn call_builtin(
     args: &[Value],
     kwargs: &[(String, Value)],
 ) -> crate::EvalResult {
+    // 02.04a (interp bug #17): type.__new__(mcls, name, bases, ns) — the
+    // super().__new__ call inside user metaclass __new__ bodies (ABCMeta,
+    // EnumType). Creates the class payload the metaclass machinery needs.
+    if name == "type.__new__" {
+        return builtin_type_new(args);
+    }
+    // 02.04a: _weakref.ref token (weakrefset stores these opaquely; nothing
+    // dereferences them in the import gates).
+    if name == "_weakref.ref" || name == "_weakref.proxy" {
+        let token = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "_weakref_token");
+        if let Some(target) = args.first() {
+            let _ = token
+                .attrs
+                .borrow_mut()
+                .set(Value::Str(PyString::new("_ap_wrapped")), target.clone());
+        }
+        return Ok(Value::Obj(token));
+    }
     // 02.08-lite: dotted native-module markers (math.sqrt, itertools.count, ...).
     if (name.contains('.') && !name.starts_with("sys.")) || name.starts_with('<') {
         // attrgetter/itemgetter/hashlib-digest call markers
@@ -1998,6 +2098,34 @@ pub fn call_builtin(
         "set" => builtin_set(args),
         "frozenset" => builtin_frozenset(args),
         "abs" => builtin_abs(args),
+        // 02.04a (interp bug #9): globals()/locals() — vendored stdlib calls
+        // globals() at module scope (types.py __all__ comprehension).
+        "globals" => Ok(Value::Dict(interp.globals.clone())),
+        "locals" => Ok(Value::Dict(interp.globals.clone())),
+        // 02.04a (interp bug #12): bytearray — mutable in CPython; v0 returns
+        // our immutable Bytes payload (mutation methods unexercised by the
+        // import gates; documented divergence).
+        // 02.04a (interp bug #12b): reversed() — pathlib/contextlib call it.
+        "reversed" => {
+            let v = one(args, "reversed")?;
+            let it = iterable_of(v)?;
+            let mut items = crate::iter::collect(&it);
+            items.reverse();
+            Ok(Value::List(PyList::from_vec(items)))
+        }
+        "bytearray" => match args.first() {
+            Some(Value::Int(n)) => {
+                let len = n.to_i64().unwrap_or(0).max(0) as usize;
+                Ok(Value::Bytes(Gc::new(vec![0u8; len])))
+            }
+            Some(Value::Bytes(b)) => Ok(Value::Bytes(Gc::new(b.as_ref().clone()))),
+            Some(Value::Str(sv)) => Ok(Value::Bytes(Gc::new(sv.as_str().as_bytes().to_vec()))),
+            None => Ok(Value::Bytes(Gc::new(Vec::new()))),
+            Some(other) => Err(crate::Flow::Raise(crate::exc_hier::ExceptionValue::msg(
+                "TypeError",
+                format!("cannot convert '{}' to bytearray", other.type_name()),
+            ))),
+        },
         "min" => builtin_min(args, kwargs),
         "max" => builtin_max(args, kwargs),
         "sum" => builtin_sum(args),
@@ -2069,17 +2197,34 @@ pub fn call_builtin(
 
 /// range(start, stop[, step]) -> Range object.
 pub fn builtin_range(args: &[Value]) -> crate::EvalResult {
+    // 02.04a (interp bug #14): bigint range bounds (1 << 1000) clamp to
+    // i64 extremes for the v0 Range object (documented divergence; CPython
+    // materializes true bigint ranges). Non-int args still raise the exact
+    // CPython TypeError.
     let ints: Vec<i64> = args
         .iter()
         .map(|v| {
-            v.as_int().and_then(|i| i.to_i64()).ok_or_else(|| {
-                raise(
+            let is_int = matches!(v, Value::Int(_) | Value::Bool(_));
+            if !is_int {
+                return Err(raise(
                     "TypeError",
-                    "'str' object cannot be interpreted as an integer",
-                )
-            })
+                    format!(
+                        "'{}' object cannot be interpreted as an integer",
+                        v.type_name()
+                    ),
+                ));
+            }
+            Ok(v.as_int().and_then(|i| i.to_i64()).unwrap_or_else(|| {
+                // clamp by sign of the bigint
+                let neg = v.as_int().map(|i| i.is_negative()).unwrap_or(false);
+                if neg {
+                    i64::MIN
+                } else {
+                    i64::MAX
+                }
+            }))
         })
-        .collect::<Result<_, _>>()?;
+        .collect::<Result<Vec<_>, _>>()?;
     let (start, stop, step) = match ints.len() {
         1 => (0, ints[0], 1),
         2 => (ints[0], ints[1], 1),
@@ -2223,4 +2368,89 @@ pub fn call_builtin_ctor(name: &str, args: &[Value]) -> Option<BResult> {
         "repr" => Some(builtin_repr(args)),
         _ => None,
     }
+}
+
+/// `type.__new__(mcls, name, bases, ns)` (02.04a): create the class payload.
+/// Bases must be class values; ns must be a dict. MRO comes from TypeObject::create.
+fn builtin_type_new(args: &[Value]) -> BResult {
+    use crate::classes::{class_of_value, object_class};
+    if args.len() != 4 {
+        return Err(raise(
+            "TypeError",
+            format!("type.__new__ expected 4 arguments, got {}", args.len()),
+        ));
+    }
+    let name = match &args[1] {
+        Value::Str(s) => s.as_str().to_string(),
+        other => {
+            return Err(raise(
+                "TypeError",
+                format!(
+                    "type.__new__ argument 2 must be str, not {}",
+                    other.type_name()
+                ),
+            ))
+        }
+    };
+    let bases_v: Vec<Value> = match &args[2] {
+        Value::Tuple(t) => t.0.clone(),
+        Value::List(l) => l.items().to_vec(),
+        other => {
+            return Err(raise(
+                "TypeError",
+                format!(
+                    "type.__new__ argument 3 must be tuple, not {}",
+                    other.type_name()
+                ),
+            ))
+        }
+    };
+    let ns = match &args[3] {
+        Value::Dict(d) => d.clone(),
+        other => {
+            return Err(raise(
+                "TypeError",
+                format!(
+                    "type.__new__ argument 4 must be dict, not {}",
+                    other.type_name()
+                ),
+            ))
+        }
+    };
+    let interp = crate::builtins_modules::current_interp()
+        .ok_or_else(|| raise("SystemError", "no interpreter"))?;
+    let mut base_types: Vec<std::rc::Rc<crate::classes::TypeRef>> = Vec::new();
+    for b in &bases_v {
+        match class_of_value(&interp, b) {
+            Some(t) => base_types.push(t),
+            None => {
+                return Err(raise(
+                    "TypeError",
+                    format!("bases must be types, not '{}'", b.type_name()),
+                ))
+            }
+        }
+    }
+    if base_types.is_empty() {
+        base_types.push(object_class(&interp));
+    }
+    let flags = ap_obj::classes::TypeFlags {
+        slots: None,
+        is_exception: false,
+        builtin_exc: false,
+    };
+    let t = ap_obj::classes::TypeObject::create(
+        name.clone(),
+        name.clone(),
+        base_types,
+        ns,
+        flags,
+        None,
+    )
+    .map_err(|_| raise("TypeError", "failed to create type (MRO error)"))?;
+    // The creating metaclass rides the payload.
+    if let Some(m) = class_of_value(&interp, &args[0]) {
+        *t.metaclass.borrow_mut() = Some(m);
+    }
+    Ok(ap_obj::classes::make_class_value(t))
 }

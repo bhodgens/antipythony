@@ -18,7 +18,7 @@ use ap_obj::value::{PyList, PyString, Tuple, Value};
 use crate::exc_hier::{is_subclass, ExceptionValue};
 use crate::frame::{CellSlot, FnEntry, Frame, Interpreter, Loc};
 use crate::iter::{IterState, PyIterator};
-use crate::{builtins, builtins_modules, methods, RunOutcome};
+use crate::{builtins, builtins_modules, importer, methods, RunOutcome};
 use ap_ir::expr::{Arg, BinOp, BoolOp, CmpOp, Conversion, Expr, FStrPart, UnaryOp};
 use ap_ir::item::{FnDef, Param, ParamKind, Pattern, Stmt, Target};
 use ap_ir::Module;
@@ -88,6 +88,15 @@ pub fn run_module(
     // span-free by design).
     *interp.stmt_lines.borrow_mut() = ap_parse::collect_stmt_lines(&parsed);
     interp.stmt_ordinal.set(0);
+
+    // 02.04a: sys.path bootstrap ([script_dir] + vendored_stdlib +
+    // ANTPYTHANY_PATH) and a clean sys.modules for this run.
+    importer::reset_import_state();
+    let script_dir = std::path::Path::new(script_path)
+        .parent()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| ".".to_string());
+    importer::bootstrap_sys_path(&script_dir, &[]);
 
     let outcome = exec_module(&interp, &module, &scopes);
 
@@ -179,7 +188,7 @@ fn render_traceback(interp: &Rc<Interpreter>, exc: &ExceptionValue) -> String {
 /// process).
 pub struct FnRegistry {
     scopes: &'static ScopeInfoModule,
-    entries: Vec<FnEntry>,
+    pub(crate) entries: Vec<FnEntry>,
     by_path: HashMap<String, u32>,
 }
 
@@ -197,6 +206,7 @@ impl FnRegistry {
     fn build<'a>(
         items: impl Iterator<Item = &'a ap_ir::Item>,
         scopes: &'static ScopeInfoModule,
+        module_globals: Gc<PyDict>,
     ) -> FnRegistry {
         let mut entries = Vec::new();
         let mut by_path = HashMap::new();
@@ -208,6 +218,7 @@ impl FnRegistry {
                     def: f.clone(),
                     scope_path: f.name.clone(),
                     qualname: f.name.clone(),
+                    globals: module_globals.clone(),
                 });
             }
         }
@@ -227,6 +238,67 @@ impl FnRegistry {
                 std::mem::transmute::<&ap_parse::ScopeInfo, &'static ap_parse::ScopeInfo>(s)
             })
     }
+
+    /// 02.04a: module-level fn-id lookup for an IMPORTED module's defs
+    /// (mirror of the `by_path` map the builder maintains).
+    pub(crate) fn by_path_lookup(&self, name: &str) -> Option<u32> {
+        self.by_path.get(name).copied()
+    }
+
+    /// 02.04a: append an imported module's defs to the CURRENT registry,
+    /// merging its scope table. Module-level function ids stay stable across
+    /// imports because entries only ever APPEND (ids are indices).
+    pub(crate) fn extend_current(
+        interp: &Rc<Interpreter>,
+        items: &[ap_ir::Item],
+        scopes: ap_parse::ScopeInfoModule,
+        module_globals: Gc<PyDict>,
+    ) -> Rc<FnRegistry> {
+        let cur = interp
+            .registry
+            .borrow()
+            .clone()
+            .unwrap_or_else(|| Rc::new(FnRegistry::empty()));
+        let leaked: &'static ap_parse::ScopeInfoModule = Box::leak(Box::new(scopes));
+        // FnRegistry is not Clone (holds &'static scopes); rebuild it from
+        // the current pieces. Entries only append, so existing fn ids stay
+        // valid (ids are indices).
+        let mut entries = cur.entries.clone();
+        let mut by_path = cur.by_path.clone();
+        for item in items {
+            if let ap_ir::Item::FnDef(f) = item {
+                let id = entries.len() as u32;
+                by_path.insert(f.name.clone(), id);
+                entries.push(FnEntry {
+                    def: f.clone(),
+                    scope_path: f.name.clone(),
+                    qualname: f.name.clone(),
+                    globals: module_globals.clone(),
+                });
+            }
+        }
+        let reg = Rc::new(FnRegistry {
+            scopes: merge_scopes_static(cur.scopes, leaked),
+            entries,
+            by_path,
+        });
+        // Publish: fn_entry resolves through interp.registry, so imported
+        // modules' defs must LIVE there (not just on the local handle).
+        *interp.registry.borrow_mut() = Some(reg.clone());
+        reg
+    }
+}
+
+/// Union two leaked scope tables (extend_current helper).
+fn merge_scopes_static(
+    a: &'static ap_parse::ScopeInfoModule,
+    b: &'static ap_parse::ScopeInfoModule,
+) -> &'static ap_parse::ScopeInfoModule {
+    // Leak a fresh table = a.scopes ++ b.scopes. The inputs are themselves
+    // leaked (process-lifetime), so the concatenation can live the same way.
+    let mut scopes = a.scopes.clone();
+    scopes.extend(b.scopes.iter().cloned());
+    Box::leak(Box::new(ap_parse::ScopeInfoModule { scopes }))
 }
 
 // ===========================================================================
@@ -240,7 +312,11 @@ fn exec_module(
 ) -> Result<(), ExceptionValue> {
     // Leak the scope table for the run's lifetime (process-shaped program).
     let scopes: &'static ScopeInfoModule = Box::leak(Box::new(scopes.clone()));
-    let reg = Rc::new(FnRegistry::build(module.items.iter(), scopes));
+    let reg = Rc::new(FnRegistry::build(
+        module.items.iter(),
+        scopes,
+        interp.globals.clone(),
+    ));
     *interp.registry.borrow_mut() = Some(reg.clone());
     interp.functions.replace(reg.entries.clone());
 
@@ -602,85 +678,103 @@ fn exec_stmt(
         }
         Stmt::Global(_) | Stmt::Nonlocal(_) => Ok(StmtOut::Next),
         Stmt::Import(aliases) => {
+            // 02.04a: sys.modules -> native registry -> file finder (design
+            // doc resolution order). `import a.b` binds the TOP package.
             for a in aliases {
-                let bind = a.alias.clone().unwrap_or_else(|| a.path[0].clone());
-                // 02.08-lite: native-module registry lookup (incl. dotted paths).
                 let dotted = a.path.join(".");
-                // `import a.b` binds the TOP package (`os`), per CPython.
                 let bind_target = if a.alias.is_none() && a.path.len() > 1 {
                     a.path[0].clone()
                 } else {
-                    bind.clone()
+                    a.alias.clone().unwrap_or_else(|| a.path[0].clone())
                 };
-                if let Some(m) = builtins_modules::get_or_make_module(interp, &dotted) {
-                    let m = if a.alias.is_none() && a.path.len() > 1 {
-                        builtins_modules::get_or_make_module(interp, &bind_target).unwrap_or(m)
-                    } else {
-                        m
-                    };
-                    // Module frames keep locals empty; nested frames resolve
-                    // through globals (same rule as module-level defs).
-                    frame.store_global(&bind_target, m);
-                } else if a.path.len() == 1 && a.path[0] == "sys" {
-                    let m = builtins::get_or_make_sys(interp);
-                    frame.store_local(&bind, m);
+                let m = importer::import_module(interp, &dotted)?;
+                // `import a.b` binds the TOP package: fetch it back through
+                // sys.modules (the walker guarantees every prefix is there).
+                let m = if a.path.len() > 1 {
+                    importer::sys_modules_get_pub(&a.path[0]).unwrap_or(m)
                 } else {
-                    return Err(raise(
-                        "ImportError",
-                        format!(
-                            "import of {} is unsupported in v0 (builtin-module imports only)",
-                            a.path.join(".")
-                        ),
-                    ));
-                }
+                    m
+                };
+                frame.store_global(&bind_target, m);
             }
             Ok(StmtOut::Next)
         }
         Stmt::ImportFrom(module, aliases, star) => {
-            // 02.08-lite: from <native-module> import names (star unsupported).
-            if !*star {
-                if let Some(m) = builtins_modules::get_or_make_module(interp, module) {
-                    for a in aliases {
-                        let src_name = a.path[0].clone();
-                        let bind = a.alias.clone().unwrap_or_else(|| src_name.clone());
-                        match attr_get(interp, &m, &src_name)? {
-                            Some(v) => frame.store_global(&bind, v),
-                            None => {
-                                return Err(raise(
-                                    "ImportError",
-                                    format!("cannot import name '{src_name}' from '{module}'"),
-                                ))
-                            }
-                        }
-                    }
+            // 02.04a: relative (leading dots) resolve against __package__;
+            // absolute names go through the same resolution order.
+            let mut level = 0usize;
+            let mut mod_name = module.as_str();
+            while let Some(rest) = mod_name.strip_prefix('.') {
+                level += 1;
+                mod_name = rest;
+            }
+            let names: Vec<(String, String)> = aliases
+                .iter()
+                .map(|a| {
+                    let src_name = a.path[0].clone();
+                    let bind = a.alias.clone().unwrap_or_else(|| src_name.clone());
+                    (src_name, bind)
+                })
+                .collect();
+            if *star {
+                // 02.04a: `from M import *` — all public names (no leading
+                // underscore; __all__ unsupported v0) into frame globals.
+                if level > 0 {
+                    let base = importer::resolve_relative_base(interp, frame, level, mod_name)?;
+                    let mv = importer::import_module(interp, &base)?;
+                    importer::import_star(interp, frame, &mv)?;
                     return Ok(StmtOut::Next);
                 }
+                if let Some(m) = builtins_modules::get_or_make_module(interp, module) {
+                    importer::import_star(interp, frame, &m)?;
+                    return Ok(StmtOut::Next);
+                }
+                let mv = importer::import_module(interp, module)?;
+                importer::import_star(interp, frame, &mv)?;
+                return Ok(StmtOut::Next);
             }
-            if module == "sys" && !*star {
-                let m = builtins::get_or_make_sys(interp);
-                for a in aliases {
-                    let src = a.path[0].clone();
-                    let name = a.alias.clone().unwrap_or_else(|| src.clone());
-                    match attr_get(interp, &m, &src)? {
-                        Some(v) => frame.store_local(&name, v),
+            if level > 0 {
+                let base = importer::resolve_relative_base(interp, frame, level, mod_name)?;
+                let mv = importer::import_module(interp, &base)?;
+                importer::import_from_module(interp, frame, &base, &mv, &names)?;
+                return Ok(StmtOut::Next);
+            }
+            // Absolute: native registry first (byte-exact legacy texts), then
+            // the file machinery with CPython's "cannot import name ... (file)"
+            // shape.
+            if let Some(m) = builtins_modules::get_or_make_module(interp, module) {
+                for (src_name, bind) in &names {
+                    match attr_get(interp, &m, src_name)? {
+                        Some(v) => frame.store_global(bind, v),
                         None => {
                             return Err(raise(
                                 "ImportError",
-                                format!("cannot import name '{src}' from 'sys'"),
+                                format!("cannot import name '{src_name}' from '{module}'"),
                             ))
                         }
                     }
                 }
                 return Ok(StmtOut::Next);
             }
-            Err(raise(
-                "ImportError",
-                if *star {
-                    format!("import of {module}.* is unsupported in v0")
-                } else {
-                    format!("import of {module} is unsupported in v0 (builtin-module imports only)")
-                },
-            ))
+            if module == "sys" {
+                let m = builtins::get_or_make_sys(interp);
+                importer::attach_sys_extras(interp, &m);
+                for (src_name, bind) in &names {
+                    match attr_get(interp, &m, src_name)? {
+                        Some(v) => frame.store_global(bind, v),
+                        None => {
+                            return Err(raise(
+                                "ImportError",
+                                format!("cannot import name '{src_name}' from 'sys'"),
+                            ))
+                        }
+                    }
+                }
+                return Ok(StmtOut::Next);
+            }
+            let mv = importer::import_module(interp, module)?;
+            importer::import_from_module(interp, frame, module, &mv, &names)?;
+            Ok(StmtOut::Next)
         }
         Stmt::Del(targets) => {
             for t in targets {
@@ -709,6 +803,7 @@ fn exec_stmt(
                 def: (**f).clone(),
                 scope_path: format!("{}.<locals>.{}", frame.scope_path, f.name),
                 qualname: f.name.clone(),
+                globals: frame.globals.clone(),
             });
             let func = builtins::make_function(id, &f.name);
             // Defaults + closures evaluate in the DEFINING frame (S-02-7).
@@ -1136,10 +1231,19 @@ fn unpack_into(
             .map(|c| Value::Str(PyString::new(c.to_string())))
             .collect(),
         other => {
-            return Err(raise(
-                "TypeError",
-                format!("cannot unpack non-iterable {} object", other.type_name()),
-            ))
+            // 02.04a (interp bug #13b): generic iterables (classes with
+            // metaclass __iter__, __getitem__-iterables) unpack via the
+            // iterator protocol.
+            let ok = iterable_of(other).ok().map(|it| crate::iter::collect(&it));
+            match ok {
+                Some(items) => items,
+                None => {
+                    return Err(raise(
+                        "TypeError",
+                        format!("cannot unpack non-iterable {} object", other.type_name()),
+                    ))
+                }
+            }
         }
     };
     let star_pos = parts.iter().position(|p| matches!(p, Target::Starred(_)));
@@ -1602,6 +1706,7 @@ pub(crate) fn eval_expr(
                 },
                 scope_path: format!("{}.<locals>.<lambda>", frame.scope_path),
                 qualname: "<lambda>".to_string(),
+                globals: frame.globals.clone(),
             });
             // Lambdas evaluate their body expression directly; stash it.
             interp
@@ -1945,6 +2050,15 @@ fn contains(a: &Value, b: &Value) -> Result<bool, Flow> {
 
 fn eval_binop(a: &Value, op: BinOp, b: &Value) -> EResult {
     use ap_obj::ops::BinOp as OB;
+    // 02.04a (interp bug #7b): PEP 604 union `int | str` — types.py reads
+    // type(int | str) at import. v0: stub _Union value.
+    if matches!(op, BinOp::BitOr) {
+        let is_type = |v: &Value| matches!(v, Value::Obj(o) if o.kind == ap_obj::ObjKind::Type);
+        if is_type(a) && is_type(b) {
+            let u = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "_Union");
+            return Ok(Value::Obj(u));
+        }
+    }
     // 02.03 user operator slots (S-03-25) — before every builtin path.
     {
         let interp = current_interp_for_bindings();
@@ -2095,6 +2209,10 @@ fn call_value_inner(
                     // path consumes kwargs; the call itself only carries the value.
                     if o.name.starts_with("__ap_classkw__") {
                         return Ok(args.first().cloned().unwrap_or(Value::None));
+                    }
+                    // 02.04a coroutine-stub methods (close/send/throw): no-ops.
+                    if o.name == "__ap_coroutine_noop__" {
+                        return Ok(Value::None);
                     }
                     // object.__new__(cls) virtual (c003): allocates the parked
                     // subject class.
@@ -2370,6 +2488,31 @@ fn call_function(
     if def.is_generator {
         return start_generator(interp, entry, o, args, kwargs);
     }
+    // 02.04a (interp bug #3, vendored-stdlib stress): types.py does
+    // `async def _c(): pass; _c = _c(); _c.close()` at import. Coroutines
+    // are unsupported v0 — return a stub object with no-op close()/send()/
+    // throw() via the generic no-method path; the close() call itself is
+    // what types.py needs to NOT raise.
+    if def.is_async {
+        let co = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "coroutine");
+        {
+            let attrs = co.attrs.borrow_mut();
+            let _ = attrs.set(
+                Value::Str(PyString::new("__ap_coroutine__")),
+                Value::Bool(true),
+            );
+            for m in ["close", "send", "throw"] {
+                let _ = attrs.set(
+                    Value::Str(PyString::new(m)),
+                    Value::Obj(ap_obj::PyObject::new(
+                        ap_obj::ObjKind::BuiltinFn,
+                        "__ap_coroutine_noop__",
+                    )),
+                );
+            }
+        }
+        return Ok(Value::Obj(co));
+    }
 
     // Lambda: body expression lives in lambda_bodies.
     let lambda_body = interp.lambda_bodies.borrow().get(&fn_id).cloned();
@@ -2378,7 +2521,7 @@ fn call_function(
         bind_params(interp, &entry, &def, o, lambda_body.is_some(), args, kwargs)?;
 
     let frame = Rc::new(Frame::new_function(
-        interp.globals.clone(),
+        entry.globals.clone(),
         &entry.scope_path,
         &entry.qualname,
         scope_globals(interp, &entry),
@@ -2777,7 +2920,7 @@ fn gen_pull(interp: &Rc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> {
                 &kwargs,
             )?;
             let frame = Rc::new(Frame::new_function(
-                interp.globals.clone(),
+                entry.globals.clone(),
                 &entry.scope_path,
                 &entry.qualname,
                 scope_globals(interp, &entry),
@@ -2859,7 +3002,7 @@ fn gen_materialize(interp: &Rc<Interpreter>, id: u64) -> Result<(), Flow> {
                 return Ok(());
             };
             let frame = Rc::new(Frame::new_function(
-                interp.globals.clone(),
+                entry.globals.clone(),
                 &entry.scope_path,
                 &entry.qualname,
                 scope_globals(interp, &entry),
@@ -3091,6 +3234,29 @@ fn iterable_of(v: &Value) -> Result<Gc<PyIterator>, Flow> {
     if matches!(v, Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance) {
         let interp = current_interp_for_bindings();
         return user_iter_to_iterator(&interp, v);
+    }
+    // 02.04a (interp bug #13): iterating a CLASS drives the metaclass
+    // __iter__ (enum.py: STRICT, CONFORM, EJECT, KEEP = FlagBoundary).
+    if let Value::Obj(o) = v {
+        if o.kind == ap_obj::ObjKind::UserClass {
+            if let Some(t) = o.class_ref.borrow().clone() {
+                let meta = t.metaclass.borrow().clone();
+                if let Some(meta) = meta {
+                    let it_fn = meta.lookup_with_owner("__iter__").map(|(f, _)| f);
+                    if let Some(it_fn) = it_fn {
+                        let interp = current_interp_for_bindings();
+                        let iter_v = call_value(
+                            &interp,
+                            &Rc::new(Frame::new_module(interp.globals.clone())),
+                            &it_fn,
+                            &[v.clone()],
+                            &[],
+                        )?;
+                        return iterable_of(&iter_v);
+                    }
+                }
+            }
+        }
     }
     // 02.08-lite: registered iterator handles (iter()/native iters) re-fetch
     // their table entry instead of erroring on re-entry.
@@ -4535,6 +4701,59 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
         if o.kind == ap_obj::ObjKind::Function && name == "__name__" {
             return Ok(Some(Value::Str(PyString::new(o.name.clone()))));
         }
+        // 02.04a (interp bug #1, vendored-stdlib stress): CPython functions
+        // carry __doc__/__module__/__qualname__ — posixpath.py does
+        // `splitext.__doc__ = genericpath._splitext.__doc__` at import.
+        // Function-attribute WRITES land in o.attrs (bug #1b, classes.rs);
+        // reads check that dict first, then fall back to defaults.
+        if o.kind == ap_obj::ObjKind::Function {
+            if let Some(v) = o.attrs.borrow().get(&Value::Str(PyString::new(name))) {
+                return Ok(Some(v));
+            }
+            match name {
+                "__doc__" | "__module__" => return Ok(Some(Value::None)),
+                "__qualname__" => return Ok(Some(Value::Str(PyString::new(o.name.clone())))),
+                // types.py/_cell_factory probes __closure__ (tuple of cells)
+                // and reads [0]. A one-cell stub satisfies CellType = type(...)
+                // (cell_contents reads return None — documented v0 gap).
+                "__closure__" => {
+                    let cell = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "cell");
+                    let _ = cell
+                        .attrs
+                        .borrow_mut()
+                        .set(Value::Str(PyString::new("cell_contents")), Value::None);
+                    return Ok(Some(Value::Tuple(Gc::new(Tuple(vec![Value::Obj(cell)])))));
+                }
+                // 02.04a: a stub code object (types.py/inspect.py/dataclasses
+                // probe __code__ at import). Only the attributes those probes
+                // read exist; no bytecode.
+                "__code__" => {
+                    let code = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<code>");
+                    let _ = code.attrs.borrow_mut().set(
+                        Value::Str(PyString::new("co_flags")),
+                        Value::Int(ap_obj::Int::from_i64(67)),
+                    );
+                    let _ = code.attrs.borrow_mut().set(
+                        Value::Str(PyString::new("co_name")),
+                        Value::Str(PyString::new(o.name.clone())),
+                    );
+                    let _ = code.attrs.borrow_mut().set(
+                        Value::Str(PyString::new("co_freevars")),
+                        Value::Tuple(Gc::new(Tuple(Vec::new()))),
+                    );
+                    let _ = code.attrs.borrow_mut().set(
+                        Value::Str(PyString::new("co_firstlineno")),
+                        Value::Int(ap_obj::Int::from_i64(1)),
+                    );
+                    let _ = code.attrs.borrow_mut().set(
+                        Value::Str(PyString::new("co_varnames")),
+                        Value::Tuple(Gc::new(Tuple(Vec::new()))),
+                    );
+                    return Ok(Some(Value::Obj(code)));
+                }
+                _ => {}
+            }
+        }
     }
     // super object: attribute lookups scan type(obj).__mro__ strictly AFTER
     // the start class (S-03-18), applying the descriptor protocol.
@@ -4634,6 +4853,26 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                     ap_obj::ObjKind::Type,
                     o.name.clone(),
                 )))),
+                // 02.04a (interp bug #6): exceptions carry __traceback__ —
+                // types.py probes it at import (TracebackType/FrameType).
+                // Stub chain: one tb object + tb_frame namespace.
+                "__traceback__" => {
+                    let frame = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<frame>");
+                    let tb = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<traceback>");
+                    let _ = tb
+                        .attrs
+                        .borrow_mut()
+                        .set(Value::Str(PyString::new("tb_frame")), Value::Obj(frame));
+                    let _ = tb
+                        .attrs
+                        .borrow_mut()
+                        .set(Value::Str(PyString::new("tb_next")), Value::None);
+                    let _ = tb.attrs.borrow_mut().set(
+                        Value::Str(PyString::new("tb_lineno")),
+                        Value::Int(Int::from_i64(0)),
+                    );
+                    Ok(Some(Value::Obj(tb)))
+                }
                 _ => Ok(None),
             },
             ap_obj::ObjKind::UserInstance | ap_obj::ObjKind::UserClass => {
@@ -4646,9 +4885,75 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
             }
             ap_obj::ObjKind::Type | ap_obj::ObjKind::UserClass => match name {
                 "__name__" => Ok(Some(Value::Str(PyString::new(o.name.clone())))),
+                // 02.04a (interp bug #18): __mro__ reads on Type objects
+                // (ABCMeta.__subclasscheck__ on a non-class 'type' value) —
+                // a singleton MRO keeps the ABC probes non-fatal.
+                "__mro__" if o.kind == ap_obj::ObjKind::Type => Ok(Some(Value::Tuple(Gc::new(
+                    Tuple(vec![Value::Obj(o.clone())]),
+                )))),
+                // 02.04a (interp bug #5b): builtin-type __dict__ reads
+                // (types.py: MappingProxyType = type(type.__dict__),
+                // ClassMethodDescriptorType = type(dict.__dict__['fromkeys'])).
+                // The façade lists the type's method-surface names as markers.
+                "__dict__" if o.kind == ap_obj::ObjKind::Type => {
+                    let d = PyDict::new();
+                    for m in [
+                        "__init__",
+                        "__new__",
+                        "__str__",
+                        "__repr__",
+                        "__eq__",
+                        "__hash__",
+                        "__len__",
+                        "__iter__",
+                        "__contains__",
+                        "__getitem__",
+                        "__setitem__",
+                        "__call__",
+                        "__next__",
+                        "join",
+                        "split",
+                        "fromkeys",
+                        "append",
+                        "get",
+                        "keys",
+                        "values",
+                        "items",
+                        "copy",
+                        "upper",
+                        "lower",
+                        "strip",
+                        "read",
+                        "write",
+                        "close",
+                    ] {
+                        let marker = ap_obj::PyObject::new(
+                            ap_obj::ObjKind::BuiltinFn,
+                            &format!("{}.{}", o.name, m),
+                        );
+                        let _ = d.set(Value::Str(PyString::new(m)), Value::Obj(marker));
+                    }
+                    Ok(Some(Value::Dict(d)))
+                }
                 // float.fromhex (V068): builtin marker dispatched by name.
                 "fromhex" if o.name == "float" => {
                     let m = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "float.fromhex");
+                    Ok(Some(Value::Obj(m)))
+                }
+                // 02.04a (interp bug #5c): types.py reads
+                // FunctionType.__code__ / FunctionType.__globals__ at import.
+                "__code__" | "__globals__" if o.name == "function" => Ok(Some(Value::Obj(
+                    ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<stub>"),
+                ))),
+                // 02.04a (interp bug #5): method-surface reads on builtin
+                // types (types.py: MethodDescriptorType = type(str.join)).
+                // A named marker keeps type(x) meaningful without wiring the
+                // full unbound-method machinery.
+                _ if builtin_method_exists(name) => {
+                    let m = ap_obj::PyObject::new(
+                        ap_obj::ObjKind::BuiltinFn,
+                        &format!("{}.{}", o.name, name),
+                    );
                     Ok(Some(Value::Obj(m)))
                 }
                 _ => Ok(None),
@@ -4703,7 +5008,26 @@ fn builtin_method_exists(name: &str) -> bool {
             | "values"
             | "items"
             | "add"
-            | "discard"
+            | "copy"
+            | "remove"
+            | "update"
+            | "difference"
+            | "difference_update"
+            | "intersection"
+            | "union"
+            | "issubset"
+            | "issuperset"
+            | "symmetric_difference"
+            | "symmetric_difference_update"
+            | "pop"
+            | "get"
+            | "setdefault"
+            | "startswith"
+            | "endswith"
+            | "replace"
+            | "split"
+            | "strip"
+            | "format"
             | "set_int_max_str_digits"
             | "getrecursionlimit"
             | "setrecursionlimit"
