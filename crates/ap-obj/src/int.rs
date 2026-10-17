@@ -16,7 +16,6 @@
 //!   limit for `str(int)` (default 4300, matching `sys.get_int_max_str_digits`).
 
 use num_bigint::BigInt as Big;
-use num_integer::Integer;
 use num_traits::{Signed, ToPrimitive, Zero};
 use std::cmp::Ordering;
 
@@ -32,9 +31,26 @@ pub const SMI_MAX: i64 = (1i64 << (SMI_BITS - 1)) - 1;
 pub const SMI_MIN: i64 = -(1i64 << (SMI_BITS - 1));
 
 /// Default int↔str conversion digit limit (C-14 / A-2, `sys`
-/// `get_int_max_str_digits` default). Adjustment via `sys.set_int_max_str_digits`
-/// is 02.08 surface; the limit *value* lives here as the single constant.
+/// `get_int_max_str_digits` default). The RUNTIME value is adjustable via
+/// `sys.set_int_max_str_digits` (02.02: the executor calls
+/// [`set_int_str_digit_limit`]); this constant is the default/reset value.
 pub const INT_STR_DIGIT_LIMIT: usize = 4300;
+
+/// The live limit (process-global; v0 Python is single-threaded). Started at
+/// the default, mutable only through the `sys` stub surface.
+static INT_STR_DIGIT_LIMIT_LIVE: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(INT_STR_DIGIT_LIMIT);
+
+/// Read the live int↔str digit limit (sys.get_int_max_str_digits surface).
+pub fn get_int_str_digit_limit() -> usize {
+    INT_STR_DIGIT_LIMIT_LIVE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Set the live limit. `sys.set_int_max_str_digits(n)` validates `n >= 640`
+/// at the sys surface; this setter takes the already-validated value.
+pub fn set_int_str_digit_limit(n: usize) {
+    INT_STR_DIGIT_LIMIT_LIVE.store(n, std::sync::atomic::Ordering::Relaxed);
+}
 
 /// A Python `int`: either the inline small-int fast path or a heap bigint.
 ///
@@ -391,8 +407,9 @@ impl Int {
     pub fn to_py_string(&self) -> Result<String, crate::exc::PyException> {
         let s = self.to_string_raw();
         let digits = s.strip_prefix('-').unwrap_or(&s).len();
-        if digits > INT_STR_DIGIT_LIMIT {
-            return Err(crate::exc::PyException::int_str_limit(INT_STR_DIGIT_LIMIT));
+        let limit = get_int_str_digit_limit();
+        if digits > limit {
+            return Err(crate::exc::PyException::int_str_limit(limit));
         }
         Ok(s)
     }

@@ -91,6 +91,76 @@ fn line_col_of(source: &str, offset: usize) -> (usize, usize) {
     (line, col)
 }
 
+/// Statement start-lines in execution order (pre-order walk of the ruff
+/// AST: a compound statement contributes its own line, then descends into
+/// its bodies). Consumed by the executor's traceback line mapping (the IR
+/// is span-free; this table maps statement ordinals to lines).
+pub fn collect_stmt_lines(ast: &ModuleAst) -> Vec<usize> {
+    use ruff_python_ast as rast;
+    use ruff_text_size::Ranged;
+
+    fn offset_to_line(source: &str, off: usize) -> usize {
+        source[..off.min(source.len())]
+            .bytes()
+            .filter(|&b| b == b'\n')
+            .count()
+            + 1
+    }
+    fn walk_body(body: &[rast::Stmt], source: &str, out: &mut Vec<usize>) {
+        for s in body {
+            out.push(offset_to_line(source, s.start().to_u32() as usize));
+            match s {
+                rast::Stmt::If(i) => {
+                    walk_body(&i.body, source, out);
+                    for c in &i.elif_else_clauses {
+                        out.push(offset_to_line(source, c.start().to_u32() as usize));
+                        walk_body(&c.body, source, out);
+                    }
+                }
+                rast::Stmt::While(w) => {
+                    walk_body(&w.body, source, out);
+                    walk_body(&w.orelse, source, out);
+                }
+                rast::Stmt::For(f) => {
+                    walk_body(&f.body, source, out);
+                    walk_body(&f.orelse, source, out);
+                }
+                rast::Stmt::With(w) => walk_body(&w.body, source, out),
+                rast::Stmt::Try(t) => {
+                    walk_body(&t.body, source, out);
+                    for h in &t.handlers {
+                        out.push(offset_to_line(source, h.start().to_u32() as usize));
+                        let rast::ExceptHandler::ExceptHandler(hi) = h;
+                        walk_body(&hi.body, source, out);
+                    }
+                    walk_body(&t.orelse, source, out);
+                    walk_body(&t.finalbody, source, out);
+                }
+                rast::Stmt::Match(m) => {
+                    for c in &m.cases {
+                        out.push(offset_to_line(source, c.start().to_u32() as usize));
+                        walk_body(&c.body, source, out);
+                    }
+                }
+                rast::Stmt::FunctionDef(f) => {
+                    let body_line = f
+                        .body
+                        .first()
+                        .map(|s| offset_to_line(source, s.start().to_u32() as usize))
+                        .unwrap_or(1);
+                    out.push(body_line);
+                    walk_body(&f.body, source, out);
+                }
+                rast::Stmt::ClassDef(c) => walk_body(&c.body, source, out),
+                _ => {}
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk_body(&ast.module().body, ast.source(), &mut out);
+    out
+}
+
 /// A parsed Python module plus the source text it came from.
 ///
 /// Owning the source keeps [`ModuleAst::line_col`] total: every ruff byte

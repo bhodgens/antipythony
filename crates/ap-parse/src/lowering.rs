@@ -316,6 +316,35 @@ impl<'s> Lowerer<'s> {
             }
         }
 
+        // Propagate frees through intermediate scopes (CPython symtable
+        // semantics): if this scope's free variable cannot be bound in an
+        // IMMEDIATELY enclosing function scope, that enclosing scope itself
+        // gains the name as a free so the cell chain passes through it.
+        // (Matches CPython: co_cellvars/co_freevars form a transitive chain.)
+        if !frees.is_empty() {
+            for idx in (0..self.scopes.len()).rev() {
+                match self.scopes[idx].0 {
+                    ScopeKind::Module => break,
+                    ScopeKind::Class => continue,
+                    ScopeKind::Function => {
+                        let edata = &mut self.scopes[idx].1;
+                        let bound_here = |n: &str| {
+                            edata.bound.iter().any(|b| b == n)
+                                || edata.declared_global.iter().any(|g| g == n)
+                                || edata.cells.iter().any(|c| c == n)
+                                || edata.declared_nonlocal.iter().any(|c| c == n)
+                        };
+                        for f in &frees {
+                            if !bound_here(f) {
+                                edata.loads.push(f.clone()); // re-classified at this scope's close
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
         let sorted = |mut v: Vec<String>| {
             v.sort();
             v.dedup();

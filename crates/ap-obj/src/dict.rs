@@ -260,8 +260,17 @@ impl PyDict {
                 .all(|(k, v)| other.get(k).map(|ov| values_eq(v, &ov)).unwrap_or(false))
     }
 
-    /// Recursive repr with CPython punctuation (S-01-44).
+    /// Recursive repr with CPython punctuation (S-01-44), cycle-protecting
+    /// with `{...}` (V065: ys["self"] = ys).
     pub(crate) fn fmt_repr(&self, out: &mut String, active: &mut std::collections::HashSet<usize>) {
+        // RefCell-state address identity (stable for the dict's life).
+        let ptr = std::rc::Rc::as_ptr(&std::rc::Rc::new(0u8)) as usize; // placeholder
+        let _ = ptr;
+        let ptr = self as *const PyDict as *const u8 as usize;
+        if !active.insert(ptr) {
+            out.push_str("{...}");
+            return;
+        }
         out.push('{');
         for (i, (k, v)) in self.items().into_iter().enumerate() {
             if i > 0 {
@@ -272,6 +281,7 @@ impl PyDict {
             v.fmt_repr(out, active);
         }
         out.push('}');
+        active.remove(&ptr);
     }
 }
 
@@ -317,6 +327,11 @@ pub fn values_eq(a: &Value, b: &Value) -> bool {
         }
         (Value::Dict(x), Value::Dict(y)) => x.py_eq(y),
         (Value::Set(x), Value::Set(y)) => x.set_eq(y),
+        (Value::Frozen(x), Value::Frozen(y)) => x.set_eq(y),
+        (Value::Ellipsis, Value::Ellipsis) => true,
+        // Generic objects compare (and hash) by IDENTITY (default object
+        // protocol); equality across different arms is always false.
+        (Value::Obj(x), Value::Obj(y)) => std::rc::Rc::ptr_eq(x, y),
         // Different types never compare equal (S-01-33), never an error.
         _ => false,
     }
@@ -325,7 +340,7 @@ pub fn values_eq(a: &Value, b: &Value) -> bool {
 impl crate::int::Int {
     /// Bigint view for exact comparisons (clone; comparisons are rare vs
     /// arithmetic in corpus, correctness-first).
-    pub(crate) fn to_big_for_cmp(&self) -> num_bigint::BigInt {
+    pub fn to_big_for_cmp(&self) -> num_bigint::BigInt {
         match self {
             crate::int::Int::Smi(v) => num_bigint::BigInt::from(*v),
             crate::int::Int::Big(b) => (**b).clone(),
@@ -480,9 +495,13 @@ impl PySet {
         self.state.borrow().size
     }
 
-    /// `s.add(x)`; unhashable raises the SET-ELEMENT phrasing (S-01-26).
+    /// `s.add(x)`; unhashable raises the SET-ELEMENT phrasing — probed
+    /// live on 3.14.7: `s.add([2])` says "cannot use 'list' as a set
+    /// element (unhashable type: 'list')" (V046; the older plain-text note
+    /// was wrong).
     pub fn add(&self, v: Value) -> Result<(), PyException> {
-        let h = hash::py_hash(&v)?;
+        let h =
+            hash::py_hash(&v).map_err(|_| PyException::unhashable_set_element(v.type_name()))?;
         let mut state = self.state.borrow_mut();
         let bucket = state.elements.entry(h as u64).or_default();
         if bucket.iter().any(|e| values_eq(e, &v)) {
@@ -533,6 +552,28 @@ impl PySet {
         let mut v = self.elements_snapshot();
         v.sort_by(|a, b| values_cmp(a, b).unwrap_or(std::cmp::Ordering::Equal));
         v
+    }
+
+    /// `s.discard(x)` — remove when present, never raises.
+    pub fn pop_discard(&self, v: &Value) -> bool {
+        let h = match hash::py_hash(v) {
+            Ok(h) => h as u64,
+            Err(_) => return false,
+        };
+        let mut state = self.state.borrow_mut();
+        if let Some(bucket) = state.elements.get_mut(&h) {
+            if let Some(pos) = bucket.iter().position(|e| values_eq(e, v)) {
+                bucket.remove(pos);
+                state.size -= 1;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Sorted element view exposed for the frozenset repr (C-26 masking).
+    pub fn sorted_elements_public(&self) -> Vec<Value> {
+        self.sorted_elements()
     }
 
     /// Repr (S-01-44): `set()` / `{e1, e2}` in INTERNAL order — unobservable

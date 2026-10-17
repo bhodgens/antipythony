@@ -1,0 +1,331 @@
+//! Frames + name resolution (task brief §1): a global dict, per-frame
+//! locals, cells/frees through shared `RefCell` slots (02.04 revisits the
+//! representation), builtin fallback chain, and the interpreter state
+//! (function table, iterator table, generator registry, output buffer).
+
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::rc::Rc;
+
+use crate::exc_hier::ExceptionValue;
+use ap_obj::dict::PyDict;
+use ap_obj::int::Gc;
+use ap_obj::value::Value;
+
+/// One shared cell: closure variable storage (S-02-12/13).
+pub type CellSlot = Rc<RefCell<Option<Value>>>;
+
+/// A single execution frame.
+pub struct Frame {
+    /// Locals (module frames keep this empty and use `globals` directly).
+    pub locals: RefCell<HashMap<String, Loc>>,
+    /// The module-level dict this frame reads globals from.
+    pub globals: Gc<PyDict>,
+    /// Scope path for classification lookup ("" for module).
+    pub scope_path: String,
+    /// Cells THIS function owns (its `cells` classification).
+    pub my_cells: HashMap<String, CellSlot>,
+    /// Cells captured from enclosing scopes (its `frees`).
+    pub free_cells: HashMap<String, CellSlot>,
+    /// Names declared `global` in this scope (S-02-3): stores go to globals.
+    pub declared_globals: std::collections::HashSet<String>,
+    /// Names declared `nonlocal` (S-02-4).
+    pub declared_nonlocals: std::collections::HashSet<String>,
+    /// Qualname for traceback rendering.
+    pub qualname: String,
+    pub is_module: bool,
+}
+
+/// Where a local name lives.
+#[derive(Clone)]
+pub enum Loc {
+    /// Direct value slot (None = unbound → UnboundLocalError on read).
+    Slot(Rc<RefCell<Option<Value>>>),
+    /// A shared cell (closure traffic).
+    CellSlot(CellSlot),
+}
+
+impl Frame {
+    pub fn new_module(globals: Gc<PyDict>) -> Frame {
+        Frame {
+            locals: RefCell::new(HashMap::new()),
+            globals,
+            scope_path: String::new(),
+            my_cells: HashMap::new(),
+            free_cells: HashMap::new(),
+            declared_globals: std::collections::HashSet::new(),
+            declared_nonlocals: std::collections::HashSet::new(),
+            qualname: "<module>".to_string(),
+            is_module: true,
+        }
+    }
+
+    /// A function frame with pre-bound locals and closure cell sets.
+    pub fn new_function(
+        globals: Gc<PyDict>,
+        scope_path: &str,
+        qualname: &str,
+        declared_globals: std::collections::HashSet<String>,
+        declared_nonlocals: std::collections::HashSet<String>,
+        my_cells: HashMap<String, CellSlot>,
+        free_cells: HashMap<String, CellSlot>,
+        locals: HashMap<String, Loc>,
+    ) -> Frame {
+        Frame {
+            locals: RefCell::new(locals),
+            globals,
+            scope_path: scope_path.to_string(),
+            my_cells,
+            free_cells,
+            declared_globals,
+            declared_nonlocals,
+            qualname: qualname.to_string(),
+            is_module: false,
+        }
+    }
+
+    /// A comprehension/child scope that falls back to `parent` (v0: the
+    /// child shares the parent's globals; comp locals are isolated here).
+    pub fn new_child(parent: &Rc<Frame>) -> Frame {
+        Frame {
+            locals: RefCell::new(HashMap::new()),
+            globals: parent.globals.clone(),
+            scope_path: parent.scope_path.clone(),
+            my_cells: HashMap::new(),
+            free_cells: parent.my_cells.clone(),
+            declared_globals: std::collections::HashSet::new(),
+            declared_nonlocals: std::collections::HashSet::new(),
+            qualname: parent.qualname.clone(),
+            is_module: false,
+        }
+    }
+
+    pub fn store_local(&self, name: &str, v: Value) {
+        let mut locals = self.locals.borrow_mut();
+        match locals.get(name) {
+            Some(Loc::Slot(slot)) => *slot.borrow_mut() = Some(v),
+            Some(Loc::CellSlot(cell)) => *cell.borrow_mut() = Some(v),
+            None => {
+                locals.insert(name.to_string(), Loc::Slot(Rc::new(RefCell::new(Some(v)))));
+            }
+        }
+    }
+
+    pub fn store_global(&self, name: &str, v: Value) {
+        let _ = self.globals.set(Value::Str(ap_obj::PyString::new(name)), v);
+    }
+
+    pub fn lookup(&self, name: &str) -> Lookup {
+        {
+            let locals = self.locals.borrow();
+            if let Some(loc) = locals.get(name) {
+                return match loc {
+                    Loc::Slot(cell) => match &*cell.borrow() {
+                        Some(v) => Lookup::Found(v.clone()),
+                        None => Lookup::UnboundLocal,
+                    },
+                    Loc::CellSlot(cell) => match &*cell.borrow() {
+                        Some(v) => Lookup::Found(v.clone()),
+                        None => Lookup::UnboundLocal,
+                    },
+                };
+            }
+        }
+        if let Some(cell) = self.free_cells.get(name) {
+            return match &*cell.borrow() {
+                Some(v) => Lookup::Found(v.clone()),
+                None => Lookup::UnboundLocal,
+            };
+        }
+        if let Some(v) = self.globals.get(&Value::Str(ap_obj::PyString::new(name))) {
+            return Lookup::Found(v);
+        }
+        Lookup::Miss
+    }
+
+    /// `del x` — unbind. Returns false when the name was never bound.
+    pub fn delete_name(&self, name: &str) -> bool {
+        {
+            let mut locals = self.locals.borrow_mut();
+            if let Some(loc) = locals.remove(name) {
+                match loc {
+                    Loc::Slot(_) => return true,
+                    Loc::CellSlot(cell) => {
+                        *cell.borrow_mut() = None;
+                        // The cell survives del (other closures may read it);
+                        // rebind as cleared.
+                        locals.insert(name.to_string(), Loc::CellSlot(cell));
+                        return true;
+                    }
+                }
+            }
+        }
+        self.globals
+            .pop(&Value::Str(ap_obj::PyString::new(name)))
+            .is_some()
+    }
+}
+
+pub enum Lookup {
+    Found(Value),
+    /// Local slot exists but is unbound (UnboundLocalError, S-02-2).
+    UnboundLocal,
+    /// Not local/cell/global — caller checks builtins then raises NameError.
+    Miss,
+}
+
+/// A registered function (function-table entry).
+#[derive(Clone)]
+pub struct FnEntry {
+    pub def: ap_ir::item::FnDef,
+    /// Dotted scope path matching ScopeInfoModule.
+    pub scope_path: String,
+    /// Qualname for tracebacks.
+    pub qualname: String,
+}
+
+/// The interpreter: owns module state, function table, iterator table,
+/// generator registry, output buffer, traceback accumulation.
+pub struct Interpreter {
+    pub globals: Gc<PyDict>,
+    pub builtins: Gc<PyDict>,
+    /// Module-level function table (index == fn_id).
+    pub functions: RefCell<Vec<FnEntry>>,
+    /// Nested/lambda functions (ids offset by NESTED_BASE).
+    pub nested_functions: RefCell<Vec<FnEntry>>,
+    pub iterators: RefCell<HashMap<u64, Gc<crate::iter::PyIterator>>>,
+    pub generators: RefCell<HashMap<u64, crate::interp::GenFrame>>,
+    /// Iterator ids are EVEN, generator ids ODD (both share the iterators
+    /// table; disjoint namespaces prevent key collisions).
+    pub next_iter_id: Cell<u64>,
+    pub next_gen_id: Cell<u64>,
+    /// stdout accumulation (S-06-2 byte gate).
+    pub stdout: RefCell<Vec<u8>>,
+    /// Traceback frames of the propagating exception, OUTERMOST-FIRST
+    /// (built by insert(0) at each frame exit; module frame pushes last).
+    pub tb_frames: RefCell<Vec<(String, usize)>>,
+    /// Per-frame current-line trackers (top = innermost frame).
+    pub frame_stack: RefCell<Vec<Rc<Cell<usize>>>>,
+    /// Recursion depth + limit (RecursionError at ~1000, task brief §5).
+    pub depth: Cell<usize>,
+    pub recursion_limit: Cell<usize>,
+    /// sys.exit code (SystemExit(n)) — captured at raise site.
+    pub exit_code: Cell<Option<i32>>,
+    /// The in-flight exception for bare `raise` / implicit chaining.
+    pub current_exception: RefCell<Option<Rc<ExceptionValue>>>,
+    /// The module function registry (set once at entry).
+    pub registry: RefCell<Option<Rc<crate::interp::FnRegistry>>>,
+    /// Lambda bodies by fn id (lambdas eval an expression, not a block).
+    pub lambda_bodies: RefCell<HashMap<u32, ap_ir::Expr>>,
+    /// Defining frames by fn id (closure/defaults scope wiring).
+    pub defining_frames: RefCell<HashMap<u32, std::rc::Rc<Frame>>>,
+    /// Generator yield sink (v0 stream materialization).
+    pub gen_sink: RefCell<Vec<Vec<ap_obj::value::Value>>>,
+    pub active_gen_sink: RefCell<Option<Rc<RefCell<Vec<ap_obj::value::Value>>>>>,
+    /// The sys module object (lazy singleton for `import sys`).
+    pub sys_module: RefCell<Option<Value>>,
+    /// Interned builtin type objects (__class__ returns the SAME object
+    /// every call so `x.__class__ is T` holds; V045).
+    pub type_objects: RefCell<HashMap<String, Value>>,
+    /// Statement start-lines in source order + running ordinal (traceback
+    /// line mapping; the IR is span-free).
+    pub stmt_lines: RefCell<Vec<usize>>,
+    pub stmt_ordinal: Cell<usize>,
+    pub source: String,
+    pub script_path: String,
+    /// Self handle (set at run_module entry) so &Interpreter surfaces can
+    /// reach the Rc'd interpreter for re-entrant calls.
+    pub self_rc: RefCell<Option<std::rc::Weak<Interpreter>>>,
+}
+
+impl Interpreter {
+    /// The Rc'd handle (panics when called before run_module sets it).
+    pub fn rc(&self) -> std::rc::Rc<Interpreter> {
+        self.self_rc
+            .borrow()
+            .as_ref()
+            .and_then(|w| w.upgrade())
+            .expect("interpreter self handle set at entry")
+    }
+}
+
+/// Nested function ids start above the module-level count (module tables
+/// are small; the offset avoids id collisions between the two tables).
+pub const NESTED_BASE: u32 = 1_000_000;
+
+impl Interpreter {
+    pub fn new(source: String, script_path: String) -> Interpreter {
+        let globals = PyDict::new();
+        let builtins_d = PyDict::new();
+        Interpreter {
+            globals,
+            builtins: builtins_d,
+            functions: RefCell::new(Vec::new()),
+            nested_functions: RefCell::new(Vec::new()),
+            iterators: RefCell::new(HashMap::new()),
+            generators: RefCell::new(HashMap::new()),
+            next_iter_id: Cell::new(2),
+            next_gen_id: Cell::new(1),
+            stdout: RefCell::new(Vec::new()),
+            tb_frames: RefCell::new(Vec::new()),
+            frame_stack: RefCell::new(Vec::new()),
+            depth: Cell::new(0),
+            recursion_limit: Cell::new(1000),
+            exit_code: Cell::new(None),
+            current_exception: RefCell::new(None),
+            registry: RefCell::new(None),
+            lambda_bodies: RefCell::new(HashMap::new()),
+            defining_frames: RefCell::new(HashMap::new()),
+            gen_sink: RefCell::new(Vec::new()),
+            active_gen_sink: RefCell::new(None),
+            sys_module: RefCell::new(None),
+            type_objects: RefCell::new(HashMap::new()),
+            stmt_lines: RefCell::new(Vec::new()),
+            stmt_ordinal: Cell::new(0),
+            source,
+            script_path,
+            self_rc: RefCell::new(None),
+        }
+    }
+
+    pub fn write_out(&self, s: &str) {
+        self.stdout.borrow_mut().extend_from_slice(s.as_bytes());
+    }
+
+    /// Function entry lookup (module table or nested table by id offset).
+    pub fn fn_entry(&self, fn_id: u32) -> Option<FnEntry> {
+        if fn_id >= NESTED_BASE {
+            self.nested_functions
+                .borrow()
+                .get((fn_id - NESTED_BASE) as usize)
+                .cloned()
+        } else {
+            self.functions.borrow().get(fn_id as usize).cloned()
+        }
+    }
+
+    /// Register a nested def/lambda; returns its id (NESTED_BASE-offset).
+    pub fn register_nested(&self, entry: FnEntry) -> u32 {
+        let mut t = self.nested_functions.borrow_mut();
+        let id = NESTED_BASE + t.len() as u32;
+        t.push(entry);
+        id
+    }
+
+    /// Advance depth for a call; Err when over the recursion limit.
+    pub fn enter_call(&self) -> Result<(), crate::Flow> {
+        let d = self.depth.get() + 1;
+        if d > self.recursion_limit.get() {
+            return Err(crate::Flow::Raise(ExceptionValue::msg(
+                "RecursionError",
+                "maximum recursion depth exceeded",
+            )));
+        }
+        self.depth.set(d);
+        Ok(())
+    }
+
+    pub fn exit_call(&self) {
+        self.depth.set(self.depth.get().saturating_sub(1));
+    }
+}

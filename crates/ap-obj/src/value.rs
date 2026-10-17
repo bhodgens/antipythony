@@ -3,6 +3,29 @@
 
 use crate::dict::PyDict;
 use crate::int::{Gc, Int};
+use crate::object::ObjKind;
+
+/// Static type name for a dynamic object (the `type_name()` fallback).
+/// Exception instances and UserInstances report their CLASS name, which is
+/// dynamic — those go through `PyObject::type_name()` at the surfaces that
+/// render it; this returns the container-neutral names for error messages.
+pub(crate) fn obj_static_type_name(kind: ObjKind) -> &'static str {
+    match kind {
+        ObjKind::Function | ObjKind::BuiltinFn => "function",
+        ObjKind::BoundMethod => "method",
+        ObjKind::Type | ObjKind::UserClass => "type",
+        ObjKind::Module => "module",
+        ObjKind::Range => "range",
+        ObjKind::SliceObj => "slice",
+        ObjKind::Iterator => "iterator",
+        ObjKind::Generator => "generator",
+        ObjKind::Exception => "BaseException",
+        ObjKind::Namespace | ObjKind::NamedTuple => "object",
+        ObjKind::UserInstance => "object",
+        ObjKind::Descriptor => "object",
+        ObjKind::Opaque => "object",
+    }
+}
 
 /// A Python value (v1 core object model; classes/user types are 02.03).
 ///
@@ -23,6 +46,18 @@ pub enum Value {
     Tuple(Gc<Tuple>),
     Dict(Gc<PyDict>),
     Set(Gc<PySet>),
+    /// `frozenset` — a distinct type from 02.02 (S-01-26: hashable, order-
+    /// independent equality/hash; non-empty repr order UNSPECIFIED per C-26).
+    /// The storage is the same hash-bucketed set; the wrapper only changes
+    /// the type name, hash, and repr.
+    Frozen(Gc<PySet>),
+    /// `...` (Ellipsis singleton; truthy, identity-compared, repr `Ellipsis`).
+    Ellipsis,
+    /// Everything the executor allocates that is not a plain builtin value:
+    /// type objects, modules, functions, bound methods, ranges, slices,
+    /// iterators, generators, exception instances. Identity semantics
+    /// (eq/hash by object identity, like CPython's default object protocol).
+    Obj(Gc<crate::object::PyObject>),
 }
 
 use crate::dict::PySet;
@@ -50,6 +85,12 @@ impl Value {
             Value::Tuple(_) => "tuple",
             Value::Dict(_) => "dict",
             Value::Set(_) => "set",
+            Value::Frozen(_) => "frozenset",
+            Value::Ellipsis => "ellipsis",
+            // Dynamic objects report through PyObject (function, module,
+            // range, generator, the exception CLASS NAME, ...). Static
+            // callers that need a static string use the fallback.
+            Value::Obj(o) => obj_static_type_name(o.kind),
         }
     }
 
@@ -68,6 +109,13 @@ impl Value {
             Value::Tuple(t) => !t.0.is_empty(),
             Value::Dict(d) => d.len() != 0,
             Value::Set(s) => s.len() != 0,
+            // frozenset truthiness follows len (S-01-27; __bool__ absent).
+            Value::Frozen(s) => s.len() != 0,
+            // `...` is truthy; generic objects default truthy (object
+            // protocol: no __bool__/__len__ → True). UserInstance truthiness
+            // is dispatched by the executor BEFORE falling back here.
+            Value::Ellipsis => true,
+            Value::Obj(_) => true,
         }
     }
 }
@@ -280,6 +328,22 @@ impl PyList {
         self.items.borrow().get(i).cloned()
     }
 
+    /// Overwrite `items[i]` (in-bounds assignment; caller validated).
+    pub fn set_at(&self, i: usize, v: Value) {
+        self.items.borrow_mut()[i] = v;
+    }
+
+    /// Remove `items[i]` (del xs[i]; caller validated the index).
+    pub fn remove_at(&self, i: usize) {
+        self.items.borrow_mut().remove(i);
+    }
+
+    /// `xs.clear()`.
+    pub fn clear(&self) {
+        self.items.borrow_mut().clear();
+        self.allocated.set(0);
+    }
+
     /// Shared `repr` recursion helper: format with CPython punctuation
     /// (`[a, b]`), cycle-protecting self-references with `[...]` (S-01-44).
     pub(crate) fn fmt_repr(
@@ -338,6 +402,28 @@ impl Value {
             }
             Value::Dict(d) => d.fmt_repr(out, active),
             Value::Set(s) => s.fmt_repr(out, active),
+            Value::Frozen(s) => {
+                // frozenset repr (S-01-26): `frozenset()` empty,
+                // `frozenset({e1, e2})` otherwise, internal order (C-26).
+                let elems = s.sorted_elements_public();
+                if elems.is_empty() {
+                    out.push_str("frozenset()");
+                } else {
+                    out.push_str("frozenset({");
+                    for (i, e) in elems.iter().enumerate() {
+                        if i > 0 {
+                            out.push_str(", ");
+                        }
+                        e.fmt_repr(out, active);
+                    }
+                    out.push_str("})");
+                }
+            }
+            Value::Ellipsis => out.push_str("Ellipsis"),
+            // Generic objects: repr is rendered by the executor (functions,
+            // modules, exception str() need executor context). The value
+            // layer renders the default object-protocol form.
+            Value::Obj(o) => out.push_str(&o.default_repr(crate::value::addr_of(o))),
         }
     }
 }
@@ -346,6 +432,6 @@ impl Value {
 /// the Rc payload pointer is heap-stable and shared across clones, so the
 /// recursion guard compares equal for the same object. When `Gc` becomes the
 /// MMTk handle (02.04) this becomes the handle id.
-pub(crate) fn addr_of<T>(r: &Gc<T>) -> usize {
+pub fn addr_of<T>(r: &Gc<T>) -> usize {
     std::rc::Rc::as_ptr(r).addr()
 }

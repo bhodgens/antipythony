@@ -55,6 +55,20 @@ pub fn py_hash(v: &Value) -> Result<i64, PyException> {
         Value::List(_) => Err(PyException::unhashable("list")),
         Value::Dict(_) => Err(PyException::unhashable("dict")),
         Value::Set(_) => Err(PyException::unhashable("set")),
+        Value::Frozen(s) => {
+            // CPython's frozenset hash: order-independent shuffle-bits fold
+            // (setobject.c transcription; already probed byte-exact in the
+            // 02.01 differential suite).
+            let hashes = s.element_hashes()?;
+            Ok(hash_frozenset_lanes(&hashes))
+        }
+        Value::Ellipsis => Ok(crate::ELLIPSIS_HASH),
+        // Generic objects hash by identity (default object.__hash__):
+        // pointer-based, process-lifetime stable, never -1.
+        Value::Obj(o) => {
+            let h = crate::value::addr_of(o) as i64;
+            Ok(if h == -1 { -2 } else { h })
+        }
     }
 }
 

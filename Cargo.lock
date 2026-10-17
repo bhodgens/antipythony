@@ -64,6 +64,9 @@ dependencies = [
 [[package]]
 name = "ap-cli"
 version = "0.1.0"
+dependencies = [
+ "ap-run",
+]
 
 [[package]]
 name = "ap-codegen-native"
@@ -122,6 +125,14 @@ dependencies = [
 [[package]]
 name = "ap-run"
 version = "0.1.0"
+dependencies = [
+ "ap-ir",
+ "ap-obj",
+ "ap-parse",
+ "num-bigint",
+ "num-integer",
+ "num-traits",
+]
 
 [[package]]
 name = "arrayvec"

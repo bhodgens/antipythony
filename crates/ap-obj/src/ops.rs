@@ -20,7 +20,6 @@
 
 use crate::dict::PyDict;
 use crate::exc::PyException;
-use crate::float_repr::py_float_repr;
 use crate::hash;
 use crate::int::{Gc, Int};
 use crate::value::{PyString, Tuple, Value};
@@ -209,7 +208,16 @@ fn numeric_binop(a: &Value, op: BinOp, b: &Value) -> Result<Value, PyException> 
 /// Negative shift count → ValueError (probed text), huge count → memory.
 fn shift_amount(y: &Int) -> Result<u64, PyException> {
     match y.to_i64() {
-        Some(n) if n >= 0 => u64::try_from(n).map_err(|_| memory_error()),
+        // CPython raises MemoryError once the RESULT cannot be allocated
+        // (probed V002: 1 << (2**62) -> MemoryError, not an allocation
+        // abort). Any shift beyond i32 bits cannot fit a heap-constrained
+        // bigint in v0; raise the exact text before allocating.
+        Some(n) if n >= 0 => {
+            if n > (1 << 31) {
+                return Err(memory_error());
+            }
+            Ok(n as u64)
+        }
         Some(_) => Err(PyException::new("ValueError", "negative shift count")),
         None => Err(memory_error()),
     }
@@ -303,15 +311,6 @@ fn scientific_quotient(num: &str, den: &str) -> Result<String, PyException> {
     // 0.333… × 10^30 ✓).
     let total_exp = num.len() as i64 - den.len() as i64 + 1;
     Ok(format!("0.{qdigits}e{total_exp}"))
-}
-
-fn strip_zeros(s: &str) -> &str {
-    let t = s.trim_start_matches('0');
-    if t.is_empty() {
-        "0"
-    } else {
-        t
-    }
 }
 
 /// One quotient digit of rem/den (both magnitude digit strings), plus the
@@ -409,12 +408,19 @@ pub fn int_to_f64_exact(i: &Int) -> Result<f64, PyException> {
 
 fn unsupported_binop(a: &Value, op: BinOp, b: &Value) -> PyException {
     let msg = match op {
-        BinOp::Add => format!(
-            "can only concatenate {} (not \"{}\") to {}",
-            a.type_name(),
-            b.type_name(),
-            a.type_name()
-        ),
+        BinOp::Add => {
+            if a.type_name() == "bytes" {
+                // bytes.__add__ text differs from str's (probed V015).
+                format!("can't concat {} to bytes", b.type_name())
+            } else {
+                format!(
+                    "can only concatenate {} (not \"{}\") to {}",
+                    a.type_name(),
+                    b.type_name(),
+                    a.type_name()
+                )
+            }
+        }
         BinOp::Mul => format!(
             "can't multiply sequence by non-int of type '{}'",
             b.type_name()
@@ -474,8 +480,10 @@ fn check_int_limits(v: &Value) -> Result<(), PyException> {
     fn walk(v: &Value, active: &mut std::collections::HashSet<usize>) -> Result<(), PyException> {
         match v {
             Value::Int(i) => {
-                if i.decimal_digits() > crate::int::INT_STR_DIGIT_LIMIT {
-                    return Err(PyException::int_str_limit(crate::int::INT_STR_DIGIT_LIMIT));
+                if i.decimal_digits() > crate::int::get_int_str_digit_limit() {
+                    return Err(PyException::int_str_limit(
+                        crate::int::get_int_str_digit_limit(),
+                    ));
                 }
                 Ok(())
             }
@@ -492,11 +500,23 @@ fn check_int_limits(v: &Value) -> Result<(), PyException> {
                 r
             }
             Value::Tuple(t) => t.0.iter().try_for_each(|e| walk(e, active)),
-            Value::Dict(d) => d
-                .items()
-                .into_iter()
-                .try_for_each(|(k, val)| walk(&k, active).and_then(|()| walk(&val, active))),
+            Value::Dict(d) => {
+                // Cycle guard keyed on the dict payload address (same key
+                // as fmt_repr; V065: ys["self"] = ys).
+                let ptr = std::rc::Rc::as_ptr(d) as *const u8 as usize;
+                if !active.insert(ptr) {
+                    return Ok(()); // cycle
+                }
+                let r = d
+                    .items()
+                    .into_iter()
+                    .try_for_each(|(k, val)| walk(&k, active).and_then(|()| walk(&val, active)));
+                active.remove(&ptr);
+                r
+            }
             Value::Set(s) => s.iter().try_for_each(|e| walk(&e, active)),
+            Value::Frozen(s) => s.iter().try_for_each(|e| walk(&e, active)),
+            Value::Ellipsis | Value::Obj(_) => Ok(()),
         }
     }
     let mut active = std::collections::HashSet::new();

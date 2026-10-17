@@ -94,6 +94,7 @@ pub mod float_repr;
 pub mod hash;
 pub mod int;
 pub mod list_repr;
+pub mod object;
 pub mod ops;
 pub mod str_repr;
 pub mod value;
@@ -103,7 +104,12 @@ pub use exc::PyException;
 pub use float_repr::py_float_repr;
 pub use int::{Gc, Int, SMI_BITS, SMI_MAX, SMI_MIN};
 pub use list_repr::List;
+pub use object::{ObjKind, PyObject};
 pub use value::{PyString, Tuple, Value};
+
+/// The module name user instances report in default reprs (V066:
+/// `<__main__.Plain object at 0x...>` — a script run as `__main__`).
+pub const MODULE_NAME: &str = "__main__";
 
 /// Python `hash(None)`: the identity of the singleton is pinned per process in
 /// CPython (pointer-derived). Ours is a fixed constant — `None` never crosses
@@ -111,3 +117,7 @@ pub use value::{PyString, Tuple, Value};
 /// pins the exact value; C-26 lists what is byte-anchored and `hash(None)`
 /// is not in it). Documented divergence-free choice: we return 5740353901.
 pub const NONE_HASH: i64 = 5740353901;
+
+/// `hash(Ellipsis)` — identity-derived in CPython (pointer); UNSPECIFIED per
+/// S-01-38/C-26 (never corpus-asserted). Fixed constant like NONE_HASH.
+pub const ELLIPSIS_HASH: i64 = 5740353902;
