@@ -35,6 +35,13 @@ enum Commands {
         /// Per-process timeout in seconds.
         #[arg(long, default_value_t = 10)]
         timeout: u64,
+        /// Execution tier to run the implementation under: `0` or `adaptive`
+        /// (C-31 / 02.03 gate: "ap-conform green on FULL v1 corpus under
+        /// tier-0 (`--tier 0`)"). Forwarded verbatim to the impl command as
+        /// `--tier <mode>`, per the T-06/T-07/T-08 seam contract
+        /// `<prefix> --tier 0`. The reference side never receives it.
+        #[arg(long, value_name = "MODE")]
+        tier: Option<String>,
     },
 }
 
@@ -74,16 +81,33 @@ fn main() -> std::process::ExitCode {
             filter,
             json,
             timeout,
-        } => run(corpus, impl_, filter, json, Duration::from_secs(timeout)),
+            tier,
+        } => {
+            if let Some(mode) = &tier {
+                if mode != "0" && mode != "adaptive" {
+                    eprintln!("ap-conform: error: --tier must be '0' or 'adaptive', got '{mode}'");
+                    return std::process::ExitCode::from(2);
+                }
+            }
+            run(
+                corpus,
+                impl_,
+                filter,
+                json,
+                Duration::from_secs(timeout),
+                tier,
+            )
+        }
     }
 }
 
 fn run(
     corpus: String,
-    impl_: Vec<String>,
+    mut impl_: Vec<String>,
     filter: Option<String>,
     json: bool,
     timeout: Duration,
+    tier: Option<String>,
 ) -> std::process::ExitCode {
     let files = match ap_conform::expand_corpus(&corpus) {
         Ok(files) => files,
@@ -104,6 +128,14 @@ fn run(
     if files.is_empty() {
         eprintln!("ap-conform: error: corpus glob matched no files: '{corpus}'");
         return std::process::ExitCode::from(2);
+    }
+
+    // C-31 / 02.03 gate seam: forward the tier to the implementation only.
+    // The reference side (CPython) has no tiers, so it must not receive the
+    // flag. Appending to impl_ yields `<impl> ... --tier <mode> <file>`,
+    // matching the documented seam `<prefix> --tier 0` (T-06/T-07/T-08).
+    if let Some(mode) = tier {
+        impl_.extend(["--tier".to_string(), mode]);
     }
 
     let results = match ap_conform::run_corpus(&files, &impl_, timeout) {
