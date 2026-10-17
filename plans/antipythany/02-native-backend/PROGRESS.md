@@ -43,8 +43,15 @@
 - NOTE: agent believed s005 open - stale (corrected in f0a4c22); AGENTS.md
   wording misled it.
 
-## QUEUE (sequenced)
-1. Fix leaf: BUG-1 (debug_text) + FINDING-3 (walrus bind_definite) - touches
-   lowering.rs + verify.rs + ap-ir expr.rs; zero overlap with 02.01's
-   ap-obj files; dispatch now in parallel.
-2. 02.02 tier-0 executor + T-06 after 02.01 lands.
+## Fix leaf (BUG-1 + FINDING-3) - COMPLETE (committed 075b453)
+- debug_text: Option<String> on FStrPart::Interp; lowering reads ruff
+  DebugText::as_str() (text() doesn't exist in 0.0.4); pon implied-r rule
+  implemented; dump renders debug verbatim (f"{x=!r}" / f"{x=:>10}").
+- Walrus: bind_definite; comp-IF walrus leaks (iteration targets don't);
+  walrus->del->read still flags. +8 tests (72 total), fstrings gate 107/107.
+- Verified firsthand: f17/f19 dumps correct; suites green.
+
+## QUEUE (updated)
+1. 02.02 tier-0 executor + T-06 after 02.01 + T-05 land (running).
+2. 02.03 classes/protocols + 02.04 GC after 02.02.
+3. 02.05 tier-1 (SPLIT CANDIDATE - top-5 risks in pon study note).
