@@ -1152,8 +1152,28 @@ fn dump_clauses(clauses: &[crate::expr::CompClause]) -> String {
 fn dump_fstr_part(p: &FStrPart) -> String {
     match p {
         FStrPart::Lit(s) => s.replace('{', "{{").replace('}', "}}"),
-        FStrPart::Interp { expr, conv, spec } => {
-            let mut s = format!("{{{}}}", dump_expr_inline(expr));
+        FStrPart::Interp {
+            expr,
+            conv,
+            spec,
+            debug_text,
+        } => {
+            let mut s = String::new();
+            if let Some(dt) = debug_text {
+                // Debug form: emit the literal source text (e.g. `x = `, which
+                // includes the trailing `=` and any spacing — ruff's DebugText
+                // spans `{`..conversion/spec/`}`) verbatim inside the braces,
+                // then the optional conversion / spec — the dump round-trips
+                // the source spelling (f17..f21). The expr itself is NOT
+                // re-rendered: `debug_text` already contains its source, and
+                // rendering both would duplicate it. The `}` is closed below
+                // by the shared conv/spec pop-and-append logic.
+                s.push('{');
+                s.push_str(dt);
+                s.push('}');
+            } else {
+                s = format!("{{{}}}", dump_expr_inline(expr));
+            }
             if let Some(c) = conv {
                 let flag = match c {
                     Conversion::S => 's',

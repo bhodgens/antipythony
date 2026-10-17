@@ -1045,8 +1045,9 @@ impl<'s> Lowerer<'s> {
         // S-01-16/C-18: literal chunks (post-escape) + interpolations with
         // optional conversion and (possibly nested) format spec. Implicitly
         // concatenated f-string parts flatten in order. Debug forms (`{x=}`)
-        // lower to the plain interpolation; the debug rendering is a C-18
-        // display concern, not IR structure.
+        // keep their literal source text on the Interp part (PEP 701: the
+        // debug text is real emitted output); the implied-`!r` conversion is
+        // applied in `lower_interp_element` per CPython rules.
         let mut parts = Vec::new();
         for part in v.iter() {
             match part {
@@ -1080,7 +1081,8 @@ impl<'s> Lowerer<'s> {
             }
             ast::InterpolatedStringElement::Interpolation(interp) => {
                 let expr = self.lower_expr(&interp.expression)?;
-                let conv = match interp.conversion.to_char() {
+                let debug_text = interp.debug_text.as_ref().map(|d| d.as_str().to_string());
+                let mut conv = match interp.conversion.to_char() {
                     Some('s') => Some(Conversion::S),
                     Some('r') => Some(Conversion::R),
                     Some('a') => Some(Conversion::A),
@@ -1104,7 +1106,21 @@ impl<'s> Lowerer<'s> {
                     }
                     None => None,
                 };
-                parts.push(FStrPart::Interp { expr, conv, spec });
+                // Debug-form implied conversion (PEP 701 / CPython): a bare
+                // debug form renders with repr(); ruff leaves the conversion
+                // flag at None, so derive it here. An explicit conversion
+                // (f20 `{x=!r}`) or a format spec (f19 `{x=:>10}`) suppresses
+                // the implication — CPython emits neither an implicit `!r`
+                // when a spec is present.
+                if debug_text.is_some() && conv.is_none() && spec.is_none() {
+                    conv = Some(Conversion::R);
+                }
+                parts.push(FStrPart::Interp {
+                    expr,
+                    conv,
+                    spec,
+                    debug_text,
+                });
             }
         }
         Ok(())

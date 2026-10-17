@@ -365,6 +365,9 @@ struct ScopeData {
     loads: Vec<(String, usize)>,
     /// (name, index) of every DEFINITE binding in source order.
     definite_binds: Vec<(String, usize)>,
+    /// Names bound by walrus (`:=`) in this scope's walk — comp-scope walrus
+    /// binds leak to the enclosing scope (S-02-2), unlike comp targets.
+    walrus_binds: Vec<String>,
     /// (name, index) of every `del NAME` — kills prior definite binds
     /// (del-then-read is CPython-verified UnboundLocalError).
     del_marks: Vec<(String, usize)>,
@@ -1585,6 +1588,9 @@ fn collect_expr_loads(e: &Expr, scope: &mut ScopeData) {
             let mut inner = ScopeData::default();
             collect_comp_inner(elt, None, clauses, &mut inner);
             hoist_free_candidates(&inner, scope);
+            // Walrus targets bind in the enclosing scope, not the comp scope
+            // (S-02-2 walrus rule; FINDING-3 companion).
+            leak_comp_walrus_binds(&inner, scope);
         }
         Expr::DictComp(key, val, clauses) => {
             if let Some(first) = clauses.first() {
@@ -1593,6 +1599,7 @@ fn collect_expr_loads(e: &Expr, scope: &mut ScopeData) {
             let mut inner = ScopeData::default();
             collect_comp_inner(val, Some(key), clauses, &mut inner);
             hoist_free_candidates(&inner, scope);
+            leak_comp_walrus_binds(&inner, scope);
         }
         Expr::FString(parts) => {
             for p in parts {
@@ -1607,8 +1614,15 @@ fn collect_expr_loads(e: &Expr, scope: &mut ScopeData) {
         Expr::Named(target, value) => {
             collect_expr_loads(value, scope);
             // `t := v` binds t in the enclosing scope (walrus rule, S-02-2).
+            // DEFINITE bind: the value is evaluated and stored before any
+            // later read at this walk position, so the bind protects them
+            // (FINDING-3: the previous indefinite bind left walrus-bound
+            // names unprotecting, flagging clean code as NameError).
             if let Expr::Name(n) = &**target {
-                scope.bind(n);
+                scope.bind_definite(n);
+                if !scope.walrus_binds.iter().any(|b| b == n) {
+                    scope.walrus_binds.push(n.to_string());
+                }
             }
         }
         Expr::Yield(Some(x)) | Expr::YieldFrom(x) => collect_expr_loads(x, scope),
@@ -1708,6 +1722,18 @@ fn hoist_free_candidates(inner: &ScopeData, outer: &mut ScopeData) {
     for (load, _) in &inner.loads {
         if !inner.is_bound(load) {
             outer.load(load);
+        }
+    }
+}
+
+/// Walrus binds inside a comprehension leak to the ENCLOSING scope
+/// (S-02-2: the walrus rule binds in the nearest real enclosing scope;
+/// CPython's symtable registers the name there). Only the tracked
+/// `walrus_binds` leak — comp iteration targets must NOT.
+fn leak_comp_walrus_binds(inner: &ScopeData, outer: &mut ScopeData) {
+    for name in &inner.walrus_binds {
+        if !outer.bound.iter().any(|b| b == name) {
+            outer.bind_definite(name);
         }
     }
 }

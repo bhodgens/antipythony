@@ -258,14 +258,36 @@ impl Builder {
         FStrPart::Lit(s.into())
     }
 
-    /// `{expr}` chunk with optional conversion and spec.
+    /// `{expr}` chunk with optional conversion and spec (non-debug form).
     pub fn fstr_interp(
         &self,
         expr: Expr,
         conv: Option<Conversion>,
         spec: Option<Vec<FStrPart>>,
     ) -> FStrPart {
-        FStrPart::Interp { expr, conv, spec }
+        FStrPart::Interp {
+            expr,
+            conv,
+            spec,
+            debug_text: None,
+        }
+    }
+
+    /// `{expr=}` debug-form chunk: the literal source text `debug_text` (e.g.
+    /// `"x = "`) is emitted before the converted value at render time.
+    pub fn fstr_interp_debug(
+        &self,
+        expr: Expr,
+        conv: Option<Conversion>,
+        spec: Option<Vec<FStrPart>>,
+        debug_text: impl Into<String>,
+    ) -> FStrPart {
+        FStrPart::Interp {
+            expr,
+            conv,
+            spec,
+            debug_text: Some(debug_text.into()),
+        }
     }
 
     /// `c if t else e`. Clause: S-01-27 (truthiness; lazy branches).

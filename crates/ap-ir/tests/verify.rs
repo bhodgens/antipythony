@@ -116,6 +116,44 @@ fn dead_branch_assignment_after_read_flags() {
 }
 
 #[test]
+fn walrus_bind_then_read_no_diag() {
+    // FINDING-3 differential: CPython runs all of these clean (3.14.7 probed;
+    // corpus f26 shape). The walrus bind must be DEFINITE so later reads are
+    // protected — the previous indefinite bind flagged them as NameError.
+    let clean = [
+        // f26: walrus inside an f-string replacement field, read after.
+        "print(f\"[{(w := 42)}]|[{w}]\")\n",
+        // call-argument walrus, read after (finder probe shape).
+        "print(abs((v := -42)))\nprint(v)\n",
+        // plain assignment RHS walrus.
+        "z = (q := 7)\nprint(q)\n",
+        // walrus in an `if` condition.
+        "xs = [1, 2]\nif (n := len(xs)) > 0:\n    print(n)\n",
+        // walrus inside a comprehension IF clause; leaking bind read after
+        // (CPython: comprehension walrus binds in the enclosing scope).
+        "ks = [1, 2, 3]\nout = [k for k in ks if (m := k) > 1]\nprint(out, m)\n",
+    ];
+    for src in clean {
+        let diags = verify_source(src).unwrap();
+        assert!(diags.is_empty(), "false positive for {src:?}: {diags:?}");
+    }
+}
+
+#[test]
+fn walrus_then_del_then_read_still_flags() {
+    // FINDING-3 del_marks interaction: a walrus bind is protecting only until
+    // a del unbinds it — CPython 3.14.7 raises UnboundLocalError here, and
+    // verify must keep flagging (probed byte-identical message).
+    let diags = verify_source("def f():\n    (v := 5)\n    del v\n    print(v)\n\nf()\n").unwrap();
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message == ubl("v") && d.kind.class() == "UnboundLocalError"),
+        "{diags:?}"
+    );
+}
+
+#[test]
 fn del_then_read_flags_local_form() {
     // CPython 3.14.7: `x = 1; del x; return x` inside a function raises
     // UnboundLocalError with the standard local template (probed directly).

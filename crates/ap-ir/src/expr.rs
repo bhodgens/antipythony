@@ -161,15 +161,25 @@ pub struct CompClause {
 pub enum FStrPart {
     /// Literal text (post-escape-processing).
     Lit(String),
-    /// `{expr}` / `{expr!r}` / `{expr:spec}`.
+    /// `{expr}` / `{expr!r}` / `{expr:spec}` / `{expr=}` (debug form).
     /// Clause: S-01-16 (conversion, format-spec semantics, C-18 rendering).
+    /// Debug-form dump convention: an Interp with `debug_text: Some(t)` is
+    /// rendered as `{t!flag:spec}` (e.g. `f"{x = !r:>4}"` dumps verbatim), so
+    /// the dump round-trips the source spelling including whitespace; the
+    /// runtime renders `t` as literal text before the value (Plan 02 choice).
     Interp {
         /// The interpolated expression.
         expr: Expr,
-        /// `!s`/`!r`/`!a` conversion, if written.
+        /// `!s`/`!r`/`!a` conversion, if written OR implied by the debug form
+        /// (debug text present with no explicit conversion and no format spec
+        /// implies `!r`, per CPython PEP 701 debug-form semantics).
         conv: Option<Conversion>,
         /// Format spec (itself possibly nested f-string parts).
         spec: Option<Vec<FStrPart>>,
+        /// Debug-form literal source text: everything between `{` and the
+        /// conversion/spec/`}` (e.g. `"x = "` for `f"{x = }"`). `None` when
+        /// the field is not a debug form.
+        debug_text: Option<String>,
     },
 }
 
