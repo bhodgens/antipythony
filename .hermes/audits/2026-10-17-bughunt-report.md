@@ -58,6 +58,33 @@ as you find them").
 | MED | `"%d" % (t,)` (percent-format) and complex-number arithmetic unimplemented. | Tracked feature gaps (02.08-full: "re engine, complex numbers, class-method surface"). Not regressions. |
 | LOW | Traceback caret line (`~~^~~~~~~`) missing in impl output. | Known Plan-02 gap; line NUMBERS are correct (verified). |
 
+## Addendum: auditor 7 recovery (post-report)
+
+Auditor 7 (f-string battery + BUG-1/walrus fix review) failed the output
+schema after 1 retry, but its findings survived on disk
+(/tmp/ap-audit-7/audit_results.json). Verdict: both fixes CORRECT
+(f-string debug_text lowering in ap-ir/expr.rs, walrus bind_definite +
+comprehension leak in ap-ir/verify.rs); 35-case battery pins verified;
+no conformance issues. Its one actionable finding (MEDIUM doc drift) is
+fixed in wip-02.04a commit 7238cc5: docs/pon-study-lowering.md still
+flagged the ruff "parts-not-elements" gotcha as a possible live bug;
+0992ee9 resolved it as not-a-bug.
+
+## Post-wave git state (disclosure)
+
+A sibling agent kept working in the main checkout during and after this
+wave. It committed its 02.04a stack (06df71b, 83a7125, f4c409f) on a
+detached HEAD branched from 4bf9f77 - WITHOUT this wave's 6 commits,
+which sit on `main` (d43e734, ahead 10). The two stacks touch ZERO
+common files (verified: git diff --name-only 4bf9f77..main vs
+..f4c409f, empty intersection), so a merge is conflict-free by
+construction. The sibling's stack is preserved on branch `wip-02.04a`
+(+ my doc fix 7238cc5 on top). The main checkout is currently on that
+detached sibling line with further uncommitted WIP (importer.rs,
+vendored_stdlib/collections.py, functools.py) - left untouched.
+Reconcile: merge wip-02.04a into main (or rebase) once the sibling's
+WIP lands; then re-run the three gates on the merged tree.
+
 ## Disclosure ledger (what was NOT verified / NOT touched)
 
 1. SIBLING WIP: the working tree carried another agent's uncommitted 02.04a
