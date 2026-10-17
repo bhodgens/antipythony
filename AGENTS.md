@@ -35,14 +35,18 @@ GIL, uv-backed deps at build time. Byte-exact differential conformance vs CPytho
 - Specs before code: nothing dispatches from Plans 01+ until 00.05 spec pack lands.
 
 ## Current status (update this block when it changes)
-- Plan 00 COMPLETE (2026-10-16). Commits d01d477..80b3d88: workspace scaffold,
-  attribution gate, 33-clause compat contract, ap-conform differential harness
-  (self-comparison green), spec pack (6 docs, 187 S-xx clauses), corpus
-  traceability gate.
-- OPEN: compat-contract review items in plans/.../00-foundation-contract/
-  PROGRESS.md (3.14.0 re-verification, C-01 env var, C-25/C-29/C-33).
-- Next: Plan 01 (frontend/IR) - implementation leaves 01.01-01.04 plus test
-  leaves T-01..T-04 dispatched in parallel from spec pack (tests/README.md).
+- Plan 00 COMPLETE + Plan 01 COMPLETE (2026-10-16, integration-reviewed 5552cf9).
+  Working: parse -> IR -> verify (unbound-local prediction byte-matched to
+  CPython), 20 goldens, scope classification matching CPython symtable,
+  test bins ap-ir-dump/ap-verify-dump. 1163 pytest + 64 Rust tests green.
+  T-01..T-04 all flipped from xfail to xpass. pon license now MIT/Apache dual
+  (full code donor).
+- OPEN: pon study task (01.03 pre-task skipped; dispatch before/with Plan 02);
+  contract gap ledger (14 items, plans/antipythany/01-frontend-ir/PROGRESS.md
+  + tests/*.md) needs user triage eventually; s005 golden corrected (locale).
+- Next: Plan 02 (native backend) - ap-obj core values first, with pon study
+  dispatched in parallel. Spec pack sections 01-06 already feed T-05+ suites
+  (test track is ahead: T-05..T-11 specs + fixtures exist).
 - Ecosystem targets locked (master.md tier table): scrapy T1, pytest T2,
   hermes-agent T3, fastapi T4, comfyui T5 (gates on Plan 10). TEST DATA ONLY -
   never published, no license constraints apply, comfyui included without
