@@ -10,9 +10,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static PROBE_SEQ: AtomicU64 = AtomicU64::new(0);
 
 fn ref_python() -> &'static str {
-    for cand in ["/opt/homebrew/bin/python3.14", "python3"] {
-        if Command::new(cand).arg("--version").output().is_ok() {
-            return cand;
+    // Accept ONLY a real CPython 3.14: a bare `python3` fallback would
+    // silently diff against the wrong reference version.
+    for cand in ["/opt/homebrew/bin/python3.14", "python3.14", "python3"] {
+        if let Ok(out) = Command::new(cand).arg("--version").output() {
+            let text = format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            if out.status.success() && text.contains("Python 3.14") {
+                return cand;
+            }
         }
     }
     panic!("no reference python3.14 on this host");

@@ -12,9 +12,18 @@
 use std::process::Command;
 
 fn python314() -> Option<&'static str> {
+    // Accept ONLY a real CPython 3.14 (version string checked, not just
+    // spawnability) so a misnamed interpreter can never become the reference.
     for cand in ["/opt/homebrew/bin/python3.14", "python3.14"] {
-        if Command::new(cand).arg("-c").arg("pass").output().is_ok() {
-            return Some(cand);
+        if let Ok(out) = Command::new(cand).arg("--version").output() {
+            let text = format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            if out.status.success() && text.contains("Python 3.14") {
+                return Some(cand);
+            }
         }
     }
     None
@@ -29,14 +38,13 @@ fn assert_differential(src: &str) {
         .arg(src)
         .output()
         .expect("spawn python3.14");
-    // ap-run-eval lives in the ap-cli package; resolve from the workspace
-    // target dir (env!("CARGO_BIN_EXE_..") only covers same-package bins).
-    let bin = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../target/release/ap-run-eval"
-    )
-    .to_string();
-    let bin = bin.as_str();
+    // This test lives in the ap-cli package (which owns the ap-run-eval
+    // bin), so CARGO_BIN_EXE_ap-run-eval resolves to a freshly built binary
+    // in the SAME profile as the test. (It previously pointed at a hardcoded
+    // target/release/ path, which made `cargo test` panic NotFound on trees
+    // without a manual release build and silently diff against a STALE
+    // release binary when one existed.)
+    let bin = env!("CARGO_BIN_EXE_ap-run-eval");
     // Unique per test (tests run in parallel threads of one process).
     use std::sync::atomic::{AtomicUsize, Ordering};
     static CASE_SEQ: AtomicUsize = AtomicUsize::new(0);
