@@ -1,0 +1,11 @@
+True
+a/b/c /b c.txt /a/b ('/a/b', 'c.txt')
+('a.tar', '.gz') ('noext', '') ('/dir/.bashrc', '')
+('', '/a/b') /a/c a A/B
+True False False
+/a/b/ /a
+~no_such_user_t11 True
+False False False False False
+c x
+('', '.bashrc')  
+True True False

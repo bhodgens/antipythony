@@ -1,0 +1,19 @@
+19 True
+Module(body=[Assign(targets=[Name(id='x', ctx=Store())], value=BinOp(left=Constant(value=1), op=Add(), right=Constant(value=2)))])
+a.b[c]
+def f(a, b=2, *args, **kw):
+    return [a, b]
+{1: [2, 'three'], 'x': None}
+literal-eval: malformed node or string on line 1: Call(func=Name(id='__import__', ctx=Load()), args=[Constant(value='os', kind=None)], keywords=[])
+doc string here
+['Module', 'Expr', 'Subscript', 'Name']
+[('targets', [Name(id='x', ctx=Store())]), ('value', BinOp(left=Constant(value=1, kind=None), op=Add(), right=Constant(value=2, kind=None))), ('type_comment', None)]
+Expression()
+1024
+[1, 2, 3]
+FOO + BAR
+hello
+def g(): |     return 1
+True (1, 'a')
+class K(Base, metaclass=M):
+    pass

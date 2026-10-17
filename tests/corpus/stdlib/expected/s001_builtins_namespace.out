@@ -1,0 +1,12 @@
+True 62
+conditional-builtins-present
+True True
+3 [1, 2, 3] True True (3, 2) 1024 2
+['0', '1', '2'] [1, 2]
+[(10, 'a'), (11, 'b')] [3, 2, 1] 7 True True
+SyntaxError invalid syntax
+[0, 1, 4, 9]
+True
+'\xe9' 0b101 0o5 0x5 A 97 2.5 1j 9 1 2 -1.5
+True True 10 True
+True True

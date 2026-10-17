@@ -1,0 +1,20 @@
+42 True
+int | str int | None True
+True (<class 'int'>, <class 'NoneType'>)
+True ('a', 1)
+typing.List[int] typing.Any typing.NoReturn
+typing.Annotated[int, 'meta'] (<class 'int'>, 'meta')
+False True
+NT(n=1, s='a') ('n', 's') True
+True ['k']
+True ['foo']
+True
+True UserId
+True (<class 'int'>,)
+TA True
+{'a': <class 'int'>, 'return': <class 'str'>}
+([<class 'int'>], <class 'str'>) True
+typing.Final[int] False
+True
+assert_never runtime: AssertionError
+True <class 'str'> True

@@ -1,0 +1,15 @@
+True
+True False True True 35
+True ['False', 'None', 'True', 'and']
+19 True
+utf-8 utf-8 iso8859-1 ascii utf-16
+b'\xc3\xa9' é
+b'\xef\xbb\xbf' b'\xfe\xff' b'\xff\xfe' b'\xff\xfe\x00\x00'
+e9 e9
+8
+True True
+'é'
+b'\xc3\xa9'
+latin_1 ? None
+codec LookupError: unknown encoding: quixotic-codec-t11
+True

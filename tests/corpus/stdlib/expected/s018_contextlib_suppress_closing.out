@@ -1,0 +1,19 @@
+12 True
+ok
+not-suppressed: v
+multi-suppress
+True closing-ok
+'x'
+null-none None
+enter
+got 42
+no-exc
+exit
+enter
+caught-in-cm boom
+exit
+escaped
+err-captured
+cap: 'captured\n' err-cap: ''
+nested nested
+True

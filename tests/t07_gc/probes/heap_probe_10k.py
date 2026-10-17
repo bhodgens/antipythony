@@ -9,6 +9,7 @@
 import gc
 
 count = 0
+next_tok = 0
 tokens = []
 
 class S:
@@ -18,10 +19,12 @@ class S:
         tokens.append(self.tok)
 
 def spam(n):
-    for i in range(n):
+    global next_tok
+    for _ in range(n):
         s = S()
-        s.tok = i
-        s.link = [i, i + 1]
+        s.tok = next_tok
+        next_tok += 1
+        s.link = [next_tok, next_tok + 1]
     for j in range(200):
         x = {"junk": [j]}
         x["me"] = x

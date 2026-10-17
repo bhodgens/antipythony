@@ -1,0 +1,8 @@
+5 True
+True
+True True True True True True True
+True True
+abc: Can't instantiate abstract class A without an implementation for abstract method 'foo'
+made True
+False True
+True False

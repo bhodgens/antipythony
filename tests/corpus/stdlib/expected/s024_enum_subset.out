@@ -1,0 +1,15 @@
+14 True
+1 2 True <C.A: 1> 1 A 1
+<Col.RED: 1> ['RED', 'BLUE'] True True 2
+<SC.A: 'a'> a True
+<IF.A|C: 5> <IF: 0> True True <IF.B|C: 6>
+<F.X: 1> <F.X|Y: 3> 2
+unique: duplicate values found in <enum 'Dup'>: B -> A
+[1, 2]
+<ReprMix.X: 1> 1
+assign: cannot reassign member 'A'
+True True
+1 __main__
+3 ['A', 'B', 'C']
+True False
+v

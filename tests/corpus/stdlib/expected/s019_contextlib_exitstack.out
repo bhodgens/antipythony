@@ -1,0 +1,13 @@
+stack-body
+cb-first
+cb-second
+closed
+open 1
+open 2
+3
+close 2
+close 1
+callback-runs-during-unwind
+stack propagated: out
+True
+True True

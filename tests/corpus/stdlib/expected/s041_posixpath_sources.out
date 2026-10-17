@@ -1,0 +1,7 @@
+True
+a/b ('/x', 'y.zip') y.zip /x
+/x/z False True / ':'
+False False
+('/a/b.tar', '.gz')
+True True
+True

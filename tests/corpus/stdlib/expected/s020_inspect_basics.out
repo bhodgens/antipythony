@@ -1,0 +1,28 @@
+52 True
+(a, b=2, *args, **kw) True
+FullArgSpec(args=['a', 'b'], varargs='args', varkw='kw', defaults=(2,), kwonlyargs=[], kwonlydefaults=None, annotations={})
+['a', 'b=2', '*args', '**kw']
+['POSITIONAL_OR_KEYWORD', 'POSITIONAL_OR_KEYWORD', 'VAR_POSITIONAL', 'VAR_KEYWORD']
+(x, /) True
+(a: int, b: 'str' = 'x', *, c=3) -> bool
+(a: int, b: str = 'x', *, c=3) -> bool
+['a', 'b', 'c'] True True
+True wrapped
+line1
+  line2
+
+line3
+True True True
+True 2
+['m', 'sm']
+True
+True ClosureVars
+int 'str'
+True True
+False False False True True
+True
+<module>
+c None
+True
+<module>
+True

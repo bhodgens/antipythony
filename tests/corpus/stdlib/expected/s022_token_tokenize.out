@@ -1,0 +1,9 @@
+True LPAR 14 COMMENT NEWLINE
+True False True
+True 8 65 66 68
+[('NAME', 'def'), ('NAME', 'f'), ('OP', '('), ('NAME', 'x'), ('OP', ')'), ('OP', ':'), ('INDENT', '    '), ('NAME', 'return'), ('NAME', 'x'), ('OP', '+'), ('NUMBER', '1'), ('DEDENT', '')]
+('type', 'string', 'start', 'end', 'line')
+'abc \n'
+('utf-8', [b'# coding: utf-8\n'])
+untokenize-bad: ValueError False
+True

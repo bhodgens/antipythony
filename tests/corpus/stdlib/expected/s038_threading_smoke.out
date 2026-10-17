@@ -1,0 +1,20 @@
+21 True
+True True
+True True
+True True
+w0 True
+w1 True
+w2 True
+w3 True
+[0, 2, 4, 6]
+True True
+True
+True
+True
+bounded: Semaphore released too many times
+rlock-reentrant
+1
+True True
+True True
+True True True True
+True

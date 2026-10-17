@@ -1,0 +1,17 @@
+sqrt ValueError: expected a nonnegative input, got -1.0
+exp OverflowError: math range error
+log ValueError: expected a positive input
+isqrt ValueError: isqrt() argument must be nonnegative
+factorial ValueError: factorial() not defined for negative values
+comb ValueError: n must be a non-negative integer
+perm ValueError: k must be a non-negative integer
+log ValueError: expected a positive input
+lgamma ValueError: expected a noninteger or positive integer, got 0.0
+acos ValueError: expected a number in range from -1 up to 1, got 2.0
+fma ValueError: invalid operation in fma
+1 0 5 2 0.0
+sin-str TypeError: must be real number, not str
+nextafter-value nan
+OverflowError: math range error
+True 8.98846567431158e+307
+factorial TypeError: 'float' object cannot be interpreted as an integer isqrt TypeError: 'float' object cannot be interpreted as an integer gcd TypeError: 'float' object cannot be interpreted as an integer

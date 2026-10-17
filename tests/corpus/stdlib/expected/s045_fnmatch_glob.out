@@ -1,0 +1,10 @@
+True True
+True True
+False False
+['a.py', 'c.py']
+'(?s:.*\\.py.)\\z'
+'(?s:a[bc]d)\\z'
+a[[]b[*] '[[]a' True
+True 27
+['y2', 'z3']
+['a.py']

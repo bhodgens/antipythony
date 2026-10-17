@@ -1,0 +1,17 @@
+12 True
+0123456789 0123456789abcdefABCDEF 01234567 ABC 52 32 ' \t\n\r\x0b\x0c'
+A B C
+x likes y
+x likes $what
+template KeyError: 'what'
+$esc
+9-8-7
+100 'abcdef'
+6 True
+['the quick', 'brown fox', 'jumps']
+the quick|brown fox|jumps
+'a [...]'
+  a|  b END
+'a\n  b\n'
+['aaaa', 'bbbbccccdddd']
+['shared', 'indent']

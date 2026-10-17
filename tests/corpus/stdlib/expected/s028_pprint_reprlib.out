@@ -1,0 +1,17 @@
+True True
+{'a': ['x', None, True], 'b': [1, {'deep': (1, 2)}]}
+{'b': [1, {'deep': (1, 2)}], 'a': ['x', None, True]}
+[[0, 0],
+ [1, 1],
+ [2, 4],
+ [3, 9],
+ [4, 16],
+ [5, 25]]
+{1: 2}
+True True
+'[0, 1, 2, 3, 4, 5, ...]'
+{'k0': 0, 'k1': 1, 'k2': 2, 'k3': 3, ...}
+'xxxxxxxxxxxx...xxxxxxxxxxxxx'
+6 4 6 6 6 40
+CIRCLE
+['maxarray', 'maxdeque', 'maxdict', 'maxfrozenset', 'maxlevel', 'maxlist', 'maxlong', 'maxother', 'maxset', 'maxstring', 'maxtuple']

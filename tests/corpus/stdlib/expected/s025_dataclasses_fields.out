@@ -1,0 +1,17 @@
+13 True
+P(x=1)
+DC(a=2, b='x', c=[1]) True {'a': 3, 'b': 'x', 'c': [1], '_d': 9} (3, 'x', [1], 9)
+['a', 'b', 'c', '_d']
+arity: DC.__init__() takes from 2 to 4 positional
+FrozenInstanceError: cannot assign to field 'x'
+True
+KWO(x=1, y=2)
+kwonly: True
+P2(x=5, y=1) True True
+post 4
+IC(x=1)
+True
+True True
+True a
+True
+True True

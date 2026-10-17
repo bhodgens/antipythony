@@ -1,0 +1,2 @@
+/Users/caimlas/git/antipythany/tests/corpus/stdlib/s016_collections_abc_isinstance.py:21: DeprecationWarning: 'collections.abc.ByteString' is deprecated and slated for removal in Python 3.17
+  isinstance("s", ca.Sized), isinstance(b"s", ca.ByteString),

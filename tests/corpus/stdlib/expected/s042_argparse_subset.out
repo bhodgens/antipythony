@@ -1,0 +1,10 @@
+5 True
+Namespace(pos='hello', n=7, nm='x', v=2, mode='slow')
+hello 8 x 2 slow
+exit-code: 2
+ArgumentError: argument --n: invalid int value: 'x'
+a ['--unknown-flag']
+add ['1', '2']
+True True
+True True True
+sub-required-exit: 2

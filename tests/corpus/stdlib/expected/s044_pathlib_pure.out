@@ -1,0 +1,16 @@
+6 True
+PurePosixPath('/a/b.tar.gz') b.tar.gz b.tar .gz
+/a ('/', 'a', 'b.tar.gz') /a/b.tar.gz /a/b.tar.gz True
+PurePosixPath('/a/b.tar.gz/sub/c.txt') /a/b.tar.gz/sub/d.py /a/b.tar.gz/sub/c.zip
+b.tar.gz [PurePosixPath('/a'), PurePosixPath('/')]
+y C: \
+a/b/c /x/../y
+True True
+True True True
+False False False
+True t11 /definitely/not/here
+True True
+a/../b PurePosixPath
+True True True True True True True True True True True True True
+True True
+PurePosixPath('x.md') []

@@ -1,0 +1,4 @@
+usage: apx [-h] [--n N] [--name NM] [-v] [--mode {fast,slow}] pos
+apx: error: argument --n: invalid int value: 'x'
+usage: apx3 [-h] {add} ...
+apx3: error: argument cmd: invalid choice: 'rm' (choose from 'add')

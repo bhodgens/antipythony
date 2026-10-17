@@ -1,0 +1,12 @@
+20 True
+['ValueError: boom\n']
+["TypeError: ('bad', 'args')\n"]
+['ZeroDivisionError: division by zero']
+True
+True False
+True True
+True True
+True True True
+1
+True True
+True True

@@ -1,0 +1,17 @@
+False 52
+3 4 12 3.5 3 1 1024 matmul-present
+True True True True True True
+5 3 6 16 4
+3 3 3
+True 2
+False True True True True
+1000000 3
+('b', 'a') itemgetter
+3.0
+AAA
+1 2
+[2, 3]
+[1, 2]
+7 [3, 2, 1]
+True True
+False True

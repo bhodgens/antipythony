@@ -242,7 +242,12 @@ string names `04.02` so gate runners can filter it.
 /opt/homebrew/bin/python3.14 -m pytest tests/t09_binary -q
 ```
 
-From the repo root. Today: **60 passed, 51 xfailed, 0 errors.** Overrides:
+From the repo root. Today: **89 passed, 50 xfailed, 0 errors** (139 total.
+Green 89 = 13 triple re-verification + 13 citation checks + 30 slice-manifest
++ 1 composition + 1 recorded-streams-clean + 1 harness-resolvable + 30 slice
+self-comparison. XFAIL 50 = 4 build/run/isolation + 11 exit-code + 30
+ap-conform-vs-binary + 1 aggregate + 1 size + 1 reproducible (04.02) + 1 argv
++ 1 cwd). Overrides:
 `APX_CLI=<cmdline>`, `AP_CONFORM=<cmdline>`,
 `AP_CONFORM_REFERENCE_PYTHON=<path>`, `APX_TARGET=linux-musl`.
 

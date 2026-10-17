@@ -1,0 +1,10 @@
+PatternError: missing ), unterminated subpattern at position 0
+PatternError: unterminated character set at position 0
+PatternError: nothing to repeat at position 0
+PatternError: multiple repeat at position 2
+PatternError: redefinition of group name 'n' as group 2; was group 1 at position 12
+PatternError: invalid group reference 2 at position 4
+TypeError: expected string or bytes-like object, got 'NoneType'
+True
+None a 1 (-1, -1)
+re True

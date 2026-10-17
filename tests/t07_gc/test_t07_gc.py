@@ -313,10 +313,10 @@ def test_10k_projection_reference_calibration():
     assert proc.returncode == 0
     assert "fired: 10000" in proc.stdout.decode()
     assert "complete: True" in proc.stdout.decode()
-    m = re.search(r"maximum resident set size:\s*([0-9]+)", proc.stderr.decode(errors="replace"))
-    assert m and int(m.group(1)) < 1024 * 1024 * 1024, (
-        f"reference itself exceeds the bound: RSS {m.group(1) if m else '?'} B"
-    )
+    m = re.search(r"maximum resident set size:\s*([0-9]+)|([0-9]+)\s+peak memory footprint", proc.stderr.decode(errors="replace"))
+    rss = int(m.group(1) or m.group(2)) if m else None
+    assert rss is not None, f"no RSS line from /usr/bin/time -l:\n{proc.stderr.decode(errors='replace')}"
+    assert rss < 1024 * 1024 * 1024, f"reference itself exceeds the bound: RSS {rss} B"
 
 
 @xfail_ap
@@ -337,7 +337,7 @@ def test_10k_iteration_bounded_heap():
     assert proc.returncode == 0, f"impl heap probe run failed: {proc.stderr.decode(errors='replace')[-2000:]}"
     assert "fired: 10000" in proc.stdout.decode(), "C-21 eventually-run guarantee violated"
     assert "complete: True" in proc.stdout.decode(), "double/lost finalization detected"
-    m = re.search(r"maximum resident set size:\s*([0-9]+)", proc.stderr.decode(errors="replace"))
+    m = re.search(r"maximum resident set size:\s*([0-9]+)|([0-9]+)\s+peak memory footprint", proc.stderr.decode(errors="replace"))
     assert m, "no RSS line from /usr/bin/time -l"
-    rss_bytes = int(m.group(1))
+    rss_bytes = int(m.group(1) or m.group(2))
     assert rss_bytes < 1024 * 1024 * 1024, f"heap NOT bounded across 10k iterations: RSS {rss_bytes} B"

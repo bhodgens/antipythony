@@ -1,0 +1,12 @@
+JSONDecodeError: Expecting property name enclosed in double quotes: line 1 column 2 (char 1) | msg=Expecting property name enclosed in double quotes L1 C2 P1 doc='{'
+JSONDecodeError: Illegal trailing comma before end of object: line 1 column 7 (char 6) | msg=Illegal trailing comma before end of object L1 C7 P6 doc='{"a":1,}'
+JSONDecodeError: Expecting value: line 1 column 4 (char 3) | msg=Expecting value L1 C4 P3 doc='[1,'
+JSONDecodeError: Expecting value: line 1 column 1 (char 0) | msg=Expecting value L1 C1 P0 doc='tru'
+JSONDecodeError: Expecting value: line 1 column 1 (char 0) | msg=Expecting value L1 C1 P0 doc='nope'
+TypeError: Object of type set is not JSON serializable
+ValueError: Out of range float values are not JSON compliant: inf
+single-quote: Expecting property name enclosed in double quotes 2
+True True
+load-stream: Expecting property name enclosed in double quotes 1 2
+{"emoji": "\ud83d\ude00"}
+{"emoji": "😀"}

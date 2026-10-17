@@ -1,0 +1,7 @@
+13 True
+'fake_file.py:42: UserWarning: msg\n  x = 1\n'
+'f.py:1: DeprecationWarning: m2\n'
+default True True True
+2 ['one', 'two'] ['UserWarning', 'DeprecationWarning']
+0
+reset-ok True

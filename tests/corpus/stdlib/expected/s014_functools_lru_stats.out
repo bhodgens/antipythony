@@ -1,0 +1,7 @@
+8
+CacheInfo(hits=3, misses=16, maxsize=2, currsize=2)
+{'maxsize': 2, 'typed': False}
+CacheInfo(hits=6, misses=17, maxsize=2, currsize=2)
+CacheInfo(hits=0, misses=0, maxsize=2, currsize=0)
+CacheInfo(hits=0, misses=2, maxsize=None, currsize=2) 3 True
+True True ('hits', 'misses', 'maxsize', 'currsize')
