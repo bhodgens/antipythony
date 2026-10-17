@@ -130,7 +130,12 @@ Updated by orchestrator after each leaf review.
 
 | Leaf | Status |
 | --- | --- |
-| (none yet) | |
+| 00.01 | COMPLETE (d01d477) |
+| 00.02 | COMPLETE (24c97ed) |
+| 00.03 | COMPLETE (0f18715) |
+| 00.04 | COMPLETE (0f18715) |
+| 00.05 | COMPLETE (e703623/80b3d88); amendments A-1..A-6 applied (3f1bb33) |
+| T-track | T-01..T-11, T-14..T-16 AUTHORED; T-12/T-13 BLOCKED on spec 07. See tests/TRACKING.md |
 
 ## Integration review plan
 
