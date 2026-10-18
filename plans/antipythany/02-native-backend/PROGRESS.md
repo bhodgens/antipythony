@@ -265,3 +265,10 @@
 3. 02.05 tier-1 (SPLIT per risks; + debug stack-depth).
 4. 02.08-full: re engine, complex, class-method surface, metaclass hooks.
 5. Plan 04 packaging (uv) -> T1 scrapy attempt.
+
+## Post-02.03b cleanup (commits 43b7e4c, dc16788)
+- Duplicate delivery of 02.03b confirmed no loss (worktree clean at HEAD).
+- gen_cases.py (corpus GENERATOR, not a case) moved to tools/ - it was
+  polluting the fstrings glob count (34/36 vs 34/35 confusion resolved:
+  cases/ glob = 35 cases, 34 pass, f33 pre-existing).
+- Running: arity fix (deleg_296459a7) - flips unittest+pathlib.
