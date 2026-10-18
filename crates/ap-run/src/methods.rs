@@ -263,6 +263,35 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
         // 02.04a (interp bug #7, vendored-stdlib stress): PEP 585 generic
         // alias `list[int]` — types.py reads type(list[int]) at import.
         // v0: a stub GenericAlias value (no runtime generic semantics).
+        // 02.08-full part 1: NamedTuple subscript (sys.version_info[:2]).
+        (Value::Obj(o), _) if o.kind == ap_obj::ObjKind::NamedTuple => {
+            let vals = o
+                .attrs
+                .borrow()
+                .get(&Value::Str(PyString::new("<values>")))
+                .map(|v| match v {
+                    Value::List(l) => l.items().to_vec(),
+                    _ => Vec::new(),
+                })
+                .unwrap_or_default();
+            match &k {
+                Key::Index(idx) => {
+                    let i = normalize_index(*idx, vals.len() as i64)
+                        .ok_or_else(|| raise("IndexError", "tuple index out of range"))?;
+                    Ok(vals[i as usize].clone())
+                }
+                Key::Slice { lo, hi, step } => Ok(Value::Tuple(Gc::new(Tuple(slice_seq(
+                    &vals, *lo, *hi, *step,
+                ))))),
+                _ => Err(raise(
+                    "TypeError",
+                    format!(
+                        "tuple indices must be integers or slices, not {}",
+                        key.type_name()
+                    ),
+                )),
+            }
+        }
         (Value::Obj(o), _k) if o.kind == ap_obj::ObjKind::Type => {
             let ga = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "_GenericAlias");
             {

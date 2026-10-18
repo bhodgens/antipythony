@@ -345,3 +345,57 @@
 ## Leaf 02.08-full part 1 - method surfaces - DISPATCHED (deleg_5fadfe7b)
 - str/bytes/dict/list/set/tuple method completion + int/float extras.
 - Target: stdlib slice 8/48 -> 20+/48 (method-surface failures = ~24 of 40).
+
+## Leaf 02.08-full part 1 - method surfaces - COMPLETE (uncommitted, agent run)
+- stdlib slice 8/48 -> 16/48. Flips: s001 s002 s003 s004 s012 s046 s047
+  (plus baseline s006 s007 s009 s032 s039-s041 s043 s048 held; s009 newly
+  green, s032 held).
+- METHOD SURFACE (methods.rs + builtins_modules call_builtin_values, kwargs
+  now flow): str rsplit ordering fix (was reversed), split(None,maxsplit)
+  remainder fix, splitlines universal-newline rewrite, casefold/swapcase/
+  center/zfill/ljust/rjust/rpartition/expandtabs/translate/str.maketrans/
+  isascii/isidentifier/isprintable/isnumeric/isdecimal/rindex/format (full
+  PEP 3101: auto/manual/named fields, !r/!s/!a conv, format-spec via
+  format::format_value), startswith/endswith [start,end]; bytes
+  strip/lstrip/rstrip/split/rsplit/join/replace/find/rfind/index/rindex/
+  count/startswith(tuple)/center/zfill/title/upper/lower + bytes() ctor
+  (int zero-fill/iterable/str+encoding); dict update(dict/iterable/kwargs),
+  fromkeys (type+instance), real dict_keys/Items/Values view objects
+  (repr, iteration, LIVE back-pointer so v=d.items(); d[3]=4 sees inserts);
+  set/frozenset union/update/intersection(+_update)/difference(+_update)/
+  symmetric_difference(+_update)/issubset/issuperset/isdisjoint/copy w/
+  multi-arg; tuple count/index(+start/end); int.from_bytes (unbound
+  classmethod data-slot handling) + bit_count; float
+  as_integer_ratio(bit-exact)/hex/is_integer; complex as Opaque pair
+  (repr/real/imag/arith/truthiness - V047 bool(0j)=False preserved).
+- UNBOUND builtin-type methods: list.copy(x)/dict.get(d,k)/str.upper(s)/
+  set.union - Type-attr markers route through call_native tags
+  (str/list/dict/set/tuple/bytes/int/float); copy.py unblocked.
+- EN ROUTE flips: compile()/__import__ builtins, enumerate(start=kwarg),
+  eval SyntaxError msg pin ("invalid syntax"), ascii \xNN short form,
+  dir(int)/dir(list) surfaces for interned Types, IOError/EnvironmentError
+  is-OSError identity (real exc classes re-aliased post-shadow),
+  sys.version_info subscript/<values>, sys 15 name attrs
+  (orig_argv/meta_path/hexversion/...), os 13 name attrs + os.path 5,
+  io 3 class names + DEFAULT_BUFFER_SIZE=131072 + text-mode StringIO
+  (str payloads, line iteration, write-mode read raises
+  UnsupportedOperation) + TextIOWrapper.encoding, json JSONEncoder/
+  JSONDecoder classes + cls=default() hook + view objects, itertools
+  count type name, tempfile.TemporaryDirectory as real class
+  (with-block, cleanup), importlib native import_module/reload/find_spec
+  + _abc/_bootstrap/_util/machinery shims, SyntaxError .msg attr.
+- VENDORED (documented divergences, PSF headers in place): _collections_abc
+  builtin-type register() calls wrapped try/except RuntimeError (the
+  legacy name-Type model mis-fires the cycle probe - CPython does these in
+  C); that un-breaks weakref/contextlib/traceback/unittest imports.
+- DIFFERENTIAL: crates/ap-run/tests/method_surface_differential.rs - 34
+  probes vs live python3.14, all green.
+- NOT IMPLEMENTED (honest gaps): bytearray mutation (bytes/bytearray
+  conflation in the v0 value model; needs a distinct mutable repr),
+  dict-view set operators (&|^-) and view dynamism beyond iteration,
+  numbers/struct/threading/locale/encodings modules (whole-module work,
+  part 2), inspect/ast/tokenize/typing/dataclasses/pprint surfaces.
+- GATES: stdlib 16/48 (8->16), values 46/47 (held, V016 pre-existing),
+  fstrings 34/35 (held), classes 27/33 (held), exceptions 15/15 (held).
+  rust workspace 246/0 across 42 suites (was 212; +34 differential),
+  pytest 1272 passed/0 failed. cargo fmt clean. NOT COMMITTED per protocol.

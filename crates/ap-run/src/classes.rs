@@ -334,6 +334,20 @@ pub fn install_exception_classes(interp: &Rc<Interpreter>) {
     let _ = interp
         .builtins
         .set(Value::Str(PyString::new("NotImplemented")), Value::Obj(ni));
+    // 02.08-full part 1: IOError/EnvironmentError are ALIASES of OSError
+    // (identity: IOError is OSError — s001 pin). Re-bind after the real
+    // exception classes shadowed the interned name-Types above.
+    drop(table);
+    if let Some(os_v) = interp.builtins.get(&Value::Str(PyString::new("OSError"))) {
+        for alias in ["IOError", "EnvironmentError"] {
+            let _ = interp
+                .builtins
+                .set(Value::Str(PyString::new(alias)), os_v.clone());
+        }
+        // Registering IOError/EnvironmentError as REAL classes in the exc
+        // registry broke unittest's ABC register path (issubclass false-
+        // positives) — the builtins alias alone carries the identity pin.
+    }
 }
 
 /// Direct subclasses recorded for `__subclasses__` (exception tree only in
@@ -1438,8 +1452,18 @@ pub fn value_issubclass(interp: &Interpreter, a: &Value, b: &Value) -> Result<bo
                     "issubclass() arg 2 must be a class, a tuple of classes, or a union",
                 ));
             };
+            // 02.08-full part 1: a USER class is never a subclass of an
+            // unrelated LEGACY type via the metaclass hook walk (the ABC
+            // register path, e.g. Mapping.register(mappingproxy), probes
+            // issubclass(Mapping, dict) and must see FALSE, or the cycle
+            // check mis-fires and aborts the _collections_abc import).
             if ac.is_subclass(&bc) {
                 return Ok(true);
+            }
+            if matches!(b, Value::Obj(o) if o.kind == ap_obj::ObjKind::Type)
+                && matches!(a, Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass)
+            {
+                return Ok(false);
             }
             // Custom metaclass __subclasscheck__ (S-03-31; c033 WS).
             // 02.04a fix pass (BUG-A): the hook lives on type(b) — CPython
@@ -1451,6 +1475,13 @@ pub fn value_issubclass(interp: &Interpreter, a: &Value, b: &Value) -> Result<bo
             // cycle" on `import pathlib`.
             if let Some(bct) = base_type_ref(interp, b)? {
                 let meta = bct.metaclass.borrow().clone();
+                if std::env::var("APX_DBG_HOOK").is_ok() {
+                    let hn = match &meta {
+                        Some(mt) => format!("meta={}", mt.name),
+                        None => "no-meta".to_string(),
+                    };
+                    eprintln!("DBG hook b={} {hn}", bct.name);
+                }
                 if let Some(meta) = meta {
                     if let Some(hook) = meta.lookup("__subclasscheck__") {
                         if matches!(&hook, Value::Obj(f) if f.kind == ap_obj::ObjKind::Function) {
@@ -1461,6 +1492,17 @@ pub fn value_issubclass(interp: &Interpreter, a: &Value, b: &Value) -> Result<bo
                                 &[class_value_for(&bct), a.clone()],
                                 &[],
                             )?;
+                            if std::env::var("APX_DBG_HOOK").is_ok() {
+                                eprintln!(
+                                    "DBG hook res {} <= {}: {}",
+                                    bct.name,
+                                    match a {
+                                        Value::Obj(o) => o.name.clone(),
+                                        other => other.type_name().to_string(),
+                                    },
+                                    r.is_truthy()
+                                );
+                            }
                             return Ok(r.is_truthy());
                         }
                     }

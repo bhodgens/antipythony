@@ -117,7 +117,7 @@ pub fn sys_modules_get_pub(name: &str) -> Option<Value> {
     sys_modules_get(name)
 }
 
-fn sys_modules_get(name: &str) -> Option<Value> {
+pub fn sys_modules_get(name: &str) -> Option<Value> {
     SYS_MODULES.with(|m| m.borrow().get(name).cloned())
 }
 

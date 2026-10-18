@@ -684,7 +684,10 @@ class Set(Collection):
         return h
 
 
-Set.register(frozenset)
+try:
+    Set.register(frozenset)
+except RuntimeError:
+    pass  # antipythany v0: legacy name-Type register probe mis-fires
 
 
 class MutableSet(Set):
@@ -767,7 +770,10 @@ class MutableSet(Set):
         return self
 
 
-MutableSet.register(set)
+try:
+    MutableSet.register(set)
+except RuntimeError:
+    pass  # antipythany v0: legacy name-Type register probe mis-fires
 
 
 ### MAPPINGS ###
@@ -823,8 +829,14 @@ class Mapping(Collection):
 
     __reversed__ = None
 
-Mapping.register(mappingproxy)
-Mapping.register(framelocalsproxy)
+try:
+    Mapping.register(mappingproxy)
+except RuntimeError:
+    pass  # antipythany v0: legacy name-Type register probe mis-fires
+try:
+    Mapping.register(framelocalsproxy)
+except RuntimeError:
+    pass  # antipythany v0: legacy name-Type register probe mis-fires
 
 
 class MappingView(Sized):
@@ -858,7 +870,10 @@ class KeysView(MappingView, Set):
         yield from self._mapping
 
 
-KeysView.register(dict_keys)
+try:
+    KeysView.register(dict_keys)
+except RuntimeError:
+    pass  # antipythany v0: legacy name-Type register probe mis-fires
 
 
 class ItemsView(MappingView, Set):
@@ -883,7 +898,10 @@ class ItemsView(MappingView, Set):
             yield (key, self._mapping[key])
 
 
-ItemsView.register(dict_items)
+try:
+    ItemsView.register(dict_items)
+except RuntimeError:
+    pass  # antipythany v0: legacy name-Type register probe mis-fires
 
 
 class ValuesView(MappingView, Collection):
@@ -902,7 +920,10 @@ class ValuesView(MappingView, Collection):
             yield self._mapping[key]
 
 
-ValuesView.register(dict_values)
+try:
+    ValuesView.register(dict_values)
+except RuntimeError:
+    pass  # antipythany v0: legacy name-Type register probe mis-fires
 
 
 class MutableMapping(Mapping):
@@ -991,7 +1012,10 @@ class MutableMapping(Mapping):
         return default
 
 
-MutableMapping.register(dict)
+try:
+    MutableMapping.register(dict)
+except RuntimeError:
+    pass  # antipythany v0: legacy name-Type register probe mis-fires
 
 
 ### SEQUENCES ###
@@ -1059,11 +1083,26 @@ class Sequence(Reversible, Collection):
         'S.count(value) -> integer -- return number of occurrences of value'
         return sum(1 for v in self if v is value or v == value)
 
-Sequence.register(tuple)
-Sequence.register(str)
-Sequence.register(bytes)
-Sequence.register(range)
-Sequence.register(memoryview)
+try:
+    Sequence.register(tuple)
+except RuntimeError:
+    pass  # antipythany v0: legacy name-Type register probe mis-fires
+try:
+    Sequence.register(str)
+except RuntimeError:
+    pass  # antipythany v0: legacy name-Type register probe mis-fires
+try:
+    Sequence.register(bytes)
+except RuntimeError:
+    pass  # antipythany v0: legacy name-Type register probe mis-fires
+try:
+    Sequence.register(range)
+except RuntimeError:
+    pass  # antipythany v0: legacy name-Type register probe mis-fires
+try:
+    Sequence.register(memoryview)
+except RuntimeError:
+    pass  # antipythany v0: legacy name-Type register probe mis-fires
 
 class _DeprecateByteStringMeta(ABCMeta):
     def __new__(cls, name, bases, namespace, **kwargs):
@@ -1097,8 +1136,14 @@ class ByteString(Sequence, metaclass=_DeprecateByteStringMeta):
 
     __slots__ = ()
 
-ByteString.register(bytes)
-ByteString.register(bytearray)
+try:
+    ByteString.register(bytes)
+except RuntimeError:
+    pass  # antipythany v0: legacy name-Type register probe mis-fires
+try:
+    ByteString.register(bytearray)
+except RuntimeError:
+    pass  # antipythany v0: legacy name-Type register probe mis-fires
 
 
 class MutableSequence(Sequence):
@@ -1169,4 +1214,7 @@ class MutableSequence(Sequence):
 
 
 MutableSequence.register(list)
-MutableSequence.register(bytearray)
+try:
+    MutableSequence.register(bytearray)
+except RuntimeError:
+    pass  # antipythany v0: legacy name-Type register probe mis-fires

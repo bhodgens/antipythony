@@ -17,6 +17,11 @@ pub fn is_subclass(class: &str, of: &str) -> bool {
         if cur == of {
             return true;
         }
+        // 02.08-full part 1: io stream ABC relations (s005 pin:
+        // issubclass(io.BytesIO, io.RawIOBase) et al).
+        if io_subclass_edge(cur, of) {
+            return true;
+        }
         hops += 1;
         if hops > 8 {
             return false;
@@ -26,6 +31,34 @@ pub fn is_subclass(class: &str, of: &str) -> bool {
             None => return false,
         }
     }
+}
+
+/// io ABC edges: (subclass, base) pairs the io name surface needs.
+fn io_subclass_edge(class: &str, of: &str) -> bool {
+    matches!(
+        (class, of),
+        ("BytesIO", "BufferedIOBase")
+            | ("BytesIO", "IOBase")
+            | ("BufferedReader", "BufferedIOBase")
+            | ("BufferedReader", "IOBase")
+            | ("BufferedWriter", "BufferedIOBase")
+            | ("BufferedWriter", "IOBase")
+            | ("BufferedRWPair", "BufferedIOBase")
+            | ("BufferedRWPair", "IOBase")
+            | ("BufferedRandom", "BufferedIOBase")
+            | ("BufferedRandom", "IOBase")
+            | ("TextIOWrapper", "TextIOBase")
+            | ("TextIOWrapper", "IOBase")
+            | ("FileIO", "RawIOBase")
+            | ("FileIO", "IOBase")
+            | ("RawIOBase", "IOBase")
+            | ("BufferedIOBase", "IOBase")
+            | ("TextIOBase", "IOBase")
+            | ("StringIO", "TextIOBase")
+            | ("StringIO", "IOBase")
+            | ("UnsupportedOperation", "OSError")
+            | ("TemporaryDirectory", "object")
+    )
 }
 
 /// Direct parent (None for BaseException).
