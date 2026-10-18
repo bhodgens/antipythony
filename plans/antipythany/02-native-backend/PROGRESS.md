@@ -244,3 +244,24 @@
 - Gates: enum member machinery, unittest run w/ byte-exact output, pathlib
   Path('.') + PurePosixPath repr.
 - This is the last blocker before GC/tier-1/packaging on the critical path.
+
+## Leaf 02.03b - COMPLETE (committed e4864de)
+- enum gate GREEN byte-exact: EnumType.__new__ dict-return becomes the class;
+  member tracking; Color.RED.name/.value/list(Color) + Color(1) lookup.
+- warnings gate GREEN: vendored _py_warnings chain runs; CPython-format
+  UserWarning emitted.
+- VERIFIED firsthand: enum probe byte-identical vs python3.14; warning text
+  format matches.
+- PARTIAL (queued): unittest + pathlib both fail on the SAME remaining bug:
+  metaclass __new__ arity (TypeError: takes 4 positional args but 5 given)
+  on subclass chains. -> fix leaf dispatched (deleg_296459a7).
+- KNOWN GAP: Color(1) / Color["GREEN"] return address-repr (masking gap).
+- rust 211/0 at commit.
+
+## QUEUE
+1. Metaclass __new__ arity fix (RUNNING deleg_296459a7) - flips
+   unittest+pathlib gates.
+2. 02.04 GC (MMTk swap).
+3. 02.05 tier-1 (SPLIT per risks; + debug stack-depth).
+4. 02.08-full: re engine, complex, class-method surface, metaclass hooks.
+5. Plan 04 packaging (uv) -> T1 scrapy attempt.
