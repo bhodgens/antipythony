@@ -315,6 +315,41 @@ fn run_loaded(
 /// `interp` is needed for registry extension + builtins dispatch.
 pub fn import_module(interp: &Rc<Interpreter>, name: &str) -> EResult {
     builtins_modules::set_current_interp(interp);
+    // 02.03b-fix: seed the bootstrap builtins ONCE — importlib/_bootstrap's
+    // _setup skips _builtin_from_name for names already in sys.modules
+    // (CPython: real builtins are always present there).
+    BOOTSTRAP_SEEDED.with(|c| {
+        if !c.borrow().get() {
+            c.borrow_mut().set(true);
+            for n in ["_thread", "_warnings", "_weakref", "_imp"] {
+                if sys_modules_get(n).is_none() {
+                    if let Ok(m) = import_module_inner(interp, n) {
+                        sys_modules_insert(n, &m);
+                    }
+                }
+            }
+            // 02.03b-fix: __main__ in sys.modules (CPython always has it;
+            // importlib/_bootstrap and globals-echo paths read it).
+            if sys_modules_get("__main__").is_none() {
+                let m = ap_obj::PyObject::new(ap_obj::ObjKind::Module, "__main__");
+                *m.module_ns.borrow_mut() = Some(interp.globals.clone());
+                let _ = interp.globals.set(
+                    Value::Str(PyString::new("__name__")),
+                    Value::Str(PyString::new("__main__")),
+                );
+                sys_modules_insert("__main__", &Value::Obj(m));
+            }
+        }
+    });
+    import_module_inner(interp, name)
+}
+
+thread_local! {
+    static BOOTSTRAP_SEEDED: std::cell::RefCell<std::cell::Cell<bool>> =
+        std::cell::RefCell::new(std::cell::Cell::new(false));
+}
+
+fn import_module_inner(interp: &Rc<Interpreter>, name: &str) -> EResult {
     // 1. sys.modules cache.
     if let Some(m) = sys_modules_get(name) {
         link_parent_attr(name, &m);
@@ -826,9 +861,14 @@ fn weakref_stub_module() -> Value {
     ] {
         let _ = ns.set(s(n), marker_fn(&format!("_weakref.{n}")));
     }
-    // ref(obj[, cb]): v0 returns an opaque token; nothing dereferences it in
-    // the import gates (weakrefset stores it opaquely).
-    let _ = ns.set(s("ref"), marker_fn("_weakref.ref"));
+    // 02.03b-fix: ref must be a TYPE (importlib._bootstrap does
+    // `class KeyedRef(_weakref.ref)` — a function base broke class
+    // creation). Calls route through call_type_ctor's "ref" arm, which
+    // returns the opaque token (v0: nothing dereferences it).
+    let _ = ns.set(
+        s("ref"),
+        Value::Obj(PyObject::new(ap_obj::ObjKind::Type, "ref")),
+    );
     for t in ["CallableProxyType", "ProxyType", "ReferenceType"] {
         let _ = ns.set(s(t), s(t));
     }

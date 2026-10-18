@@ -559,6 +559,136 @@ pub fn call_method(
             }
             Some(Ok(Value::Str(PyString::new(strs.join(s.as_str())))))
         }
+        // 02.03b-fix: str.format(*args, **kwargs) — literal {}/`{name}`/
+        // `{field!r}`/`{field!s}` template expansion (the pathlib __repr__
+        // form "{}({!r})".format). index/name lookup against args/kwargs.
+        (Value::Str(s), "format") => {
+            let mut pos: Vec<Value> = Vec::new();
+            let mut kw: Vec<(String, Value)> = Vec::new();
+            for a in args {
+                match a {
+                    Value::Str(k2) if false => {}
+                    other => pos.push(other.clone()),
+                }
+            }
+            let _ = &kw;
+            // kwargs arrive via the args tail convention? call_method only
+            // carries positional; keyword format args come through kwargs in
+            // call_value (BoundMethod arm forwards kwargs separately) — for
+            // v0, handle positional + {name} via attrs-less miss.
+            let mut out = String::new();
+            let chars: Vec<char> = s.as_str().chars().collect();
+            let mut i = 0usize;
+            let mut auto_idx = 0usize;
+            while i < chars.len() {
+                let c = chars[i];
+                if c == '}' {
+                    if i + 1 < chars.len() && chars[i + 1] == '}' {
+                        out.push('}');
+                        i += 2;
+                        continue;
+                    }
+                    return Some(Err(raise(
+                        "ValueError",
+                        "Single '}' encountered in format string",
+                    )));
+                }
+                if c != '{' {
+                    out.push(c);
+                    i += 1;
+                    continue;
+                }
+                if i + 1 < chars.len() && chars[i + 1] == '{' {
+                    out.push('{');
+                    i += 2;
+                    continue;
+                }
+                // Scan to the matching '}'.
+                let mut j = i + 1;
+                let mut depth = 0usize;
+                while j < chars.len() && (chars[j] != '}' || depth > 0) {
+                    if chars[j] == '{' {
+                        depth += 1;
+                    }
+                    if chars[j] == '}' && depth > 0 {
+                        depth -= 1;
+                    }
+                    j += 1;
+                }
+                if j >= chars.len() {
+                    return Some(Err(raise(
+                        "ValueError",
+                        "Single '{' encountered in format string",
+                    )));
+                }
+                let field: String = chars[i + 1..j].iter().collect();
+                let (name_part, rest) = match field.split_once('!') {
+                    Some((n, r)) => (n.to_string(), Some(r.to_string())),
+                    None => (field.clone(), None),
+                };
+                let conv = rest.as_deref().unwrap_or("");
+                // Spec after ':' — v0 supports only empty/truncate-free specs.
+                let name_str = name_part.split(':').next().unwrap_or("").to_string();
+                let value: Value = if name_str.is_empty() {
+                    let v = pos.get(auto_idx).cloned().unwrap_or(Value::None);
+                    auto_idx += 1;
+                    v
+                } else if let Ok(idx) = name_str.parse::<usize>() {
+                    pos.get(idx).cloned().unwrap_or(Value::None)
+                } else {
+                    Value::None
+                };
+                let rendered = match conv {
+                    "r" => crate::builtins::builtin_repr(&[value.clone()])
+                        .map(|v| match v {
+                            Value::Str(x) => x.as_str().to_string(),
+                            _ => String::new(),
+                        })
+                        .unwrap_or_default(),
+                    "s" => crate::builtins::py_str_of(&value).unwrap_or_default(),
+                    _ => crate::builtins::py_str_of(&value).unwrap_or_default(),
+                };
+                out.push_str(&rendered);
+                i = j + 1;
+            }
+            Some(Ok(Value::Str(PyString::new(out))))
+        }
+        // 02.03b-fix: int method surface (importlib pyc paths: .to_bytes).
+        (Value::Int(n), "to_bytes") => {
+            let len = one_arg(args)
+                .and_then(|v| v.as_int())
+                .and_then(|i| i.to_i64())
+                .unwrap_or(0) as usize;
+            let byteorder = args
+                .get(1)
+                .and_then(|v| match v {
+                    Value::Str(x) => Some(x.as_str().to_string()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| "big".to_string());
+            let i64v = n.to_i64().unwrap_or(0);
+            let mut out = Vec::with_capacity(len.max(0));
+            match byteorder.as_str() {
+                "little" => {
+                    for i in 0..len {
+                        out.push(((i64v >> (8 * i)) & 0xff) as u8);
+                    }
+                }
+                _ => {
+                    for i in (0..len).rev() {
+                        out.push(((i64v >> (8 * i)) & 0xff) as u8);
+                    }
+                }
+            }
+            Some(Ok(Value::Bytes(Gc::new(out))))
+        }
+        (Value::Int(n), "bit_length") => {
+            let i64v = n.to_i64().unwrap_or(0).unsigned_abs();
+            Some(Ok(Value::Int(ap_obj::Int::from_i64(
+                64 - i64v.leading_zeros() as i64,
+            ))))
+        }
+        (Value::Bytes(_), "from_bytes") | (Value::Int(_), "from_bytes") => None,
         (Value::Str(s), "encode") => {
             let codec = args
                 .first()

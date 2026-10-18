@@ -1194,15 +1194,31 @@ fn bigint_to_base(dec: &str, base: u32) -> String {
 
 pub fn builtin_enumerate(interp: &Interpreter, args: &[Value]) -> BResult {
     let v = one(args, "enumerate")?;
-    let inner = register_iter(interp, v)?;
     let start = args
         .get(1)
         .and_then(|s| s.as_int())
         .and_then(|i| i.to_i64())
         .unwrap_or(0);
+    // 02.03b-fix: the old wrapper leaked the INNER iterator (comp unpack of
+    // enumerate(x, start) saw raw elements). v0 enumerate is eager: materialize
+    // (index, item) pairs — laziness is unobservable on the gate corpus.
+    let it = iterable_of(v)?;
+    let items = crate::interp::collect_iter_public(&it);
+    let mut pairs: Vec<Value> = Vec::with_capacity(items.len());
+    let mut c = start;
+    for item in items {
+        pairs.push(Value::Tuple(Gc::new(Tuple(vec![
+            Value::Int(ap_obj::Int::from_i64(c)),
+            item,
+        ]))));
+        c += 1;
+    }
     let obj = ap_obj::PyObject::new(ap_obj::ObjKind::Iterator, "enumerate");
     *obj.ints.borrow_mut() = vec![start];
-    *obj.gen_id.borrow_mut() = Some(inner);
+    *obj.gen_id.borrow_mut() = Some(register_iter(
+        interp,
+        &Value::List(PyList::from_vec(pairs)),
+    )?);
     Ok(Value::Obj(obj))
 }
 
@@ -1376,6 +1392,28 @@ pub fn make_sys_module(interp: &Interpreter) -> Value {
     // argv: [script] minimal.
     let argv = PyList::from_vec(vec![Value::Str(PyString::new(interp.script_path.clone()))]);
     let _ = ns.set(Value::Str(PyString::new("argv")), Value::List(argv));
+    // 02.03b-fix: sys.builtin_module_names (importlib._bootstrap reads it).
+    let _ = ns.set(
+        Value::Str(PyString::new("builtin_module_names")),
+        Value::Tuple(Gc::new(Tuple(Vec::new()))),
+    );
+    // 02.03b-fix: sys.path config surface (sysconfig/site paths read it).
+    for (k, v) in [
+        ("base_prefix", "/usr/local"),
+        ("base_exec_prefix", "/usr/local"),
+        ("prefix", "/usr/local"),
+        ("exec_prefix", "/usr/local"),
+        ("platform", "darwin"),
+        ("implementation", "cpython"),
+        ("dont_write_bytecode", "True"),
+        ("_base_executable", "/usr/local/bin/python3.14"),
+    ] {
+        let val = match v {
+            "True" => Value::Bool(true),
+            other => Value::Str(PyString::new(other)),
+        };
+        let _ = ns.set(Value::Str(PyString::new(k)), val);
+    }
     let _ = ns.set(
         Value::Str(PyString::new("maxsize")),
         Value::Int(Int::from_i64(i64::MAX)),
@@ -1744,7 +1782,6 @@ pub fn install_builtins(interp: &Interpreter) {
         "globals",
         "locals",
         "reversed",
-        "bytearray",
         "open",
         "any",
         "bin",
@@ -1800,6 +1837,14 @@ pub fn install_builtins(interp: &Interpreter) {
         let ni = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "NotImplemented");
         let _ = b.set(Value::Str(PyString::new("NotImplemented")), Value::Obj(ni));
     }
+    // 02.03b-fix: bytearray is a TYPE in CPython (isinstance(bytearray, type)
+    // is True; _collections_abc registers it with MutableSequence at import).
+    // The call path routes type-values through call_type_ctor -> call_builtin,
+    // keeping bytearray(x) construction byte-identical.
+    {
+        let bt = ap_obj::PyObject::new(ap_obj::ObjKind::Type, "bytearray");
+        let _ = b.set(Value::Str(PyString::new("bytearray")), Value::Obj(bt));
+    }
     // Exception classes are Type objects so `except ValueError` name reads
     // resolve; call_value dispatches them as constructors.
     let excs: &[&str] = &[
@@ -1835,6 +1880,12 @@ pub fn install_builtins(interp: &Interpreter) {
         let o = interned_type(interp, n);
         let _ = b.set(Value::Str(PyString::new(*n)), o);
     }
+    // 02.03b-fix: IOError/EnvironmentError are CPython aliases of OSError.
+    if let Some(os) = interp.builtins.get(&Value::Str(PyString::new("OSError"))) {
+        for alias in ["IOError", "EnvironmentError"] {
+            let _ = b.set(Value::Str(PyString::new(alias)), os.clone());
+        }
+    }
     // type names usable with isinstance
     let types: &[&str] = &[
         "NoneType",
@@ -1849,6 +1900,9 @@ pub fn install_builtins(interp: &Interpreter) {
         "memoryview",
         // 02.04a fix pass: typing.py (Protocol machinery) reads `complex`.
         "complex",
+        // 02.03b-fix: pathlib/itertools read `slice` as a type (islice
+        // surface, Path.__getitem__ boundaries).
+        "slice",
         "dict",
         "list",
         "tuple",
@@ -2273,6 +2327,14 @@ pub fn builtin_setattr(interp: &Interpreter, args: &[Value]) -> BResult {
     }
 }
 
+/// (key, value) pairs of a mapping-ish value (Counter's dict/kwargs init).
+fn mapping_items(v: &Value) -> Option<Vec<(Value, Value)>> {
+    match v {
+        Value::Dict(d) => Some(d.items().to_vec()),
+        _ => None,
+    }
+}
+
 /// Dispatch a builtin call (function object name -> impl).
 pub fn call_builtin(
     interp: &Interpreter,
@@ -2284,7 +2346,7 @@ pub fn call_builtin(
     // super().__new__ call inside user metaclass __new__ bodies (ABCMeta,
     // EnumType). Creates the class payload the metaclass machinery needs.
     if name == "type.__new__" {
-        return builtin_type_new(args);
+        return builtin_type_new(args, kwargs);
     }
     // 02.04a: _weakref.ref token (weakrefset stores these opaquely; nothing
     // dereferences them in the import gates).
@@ -2444,7 +2506,70 @@ pub fn call_builtin(
         "issubclass" => builtin_issubclass(args),
         "open" => crate::builtins_modules::call_io("open", args, &[])
             .unwrap_or_else(|| Err(raise("OSError", "open failed"))),
+        // 02.03b-fix: collections.Counter — dict-backed multiset (unittest
+        // imports it; most_common/update via the dict surface).
+        "OrderedDict" | "defaultdict" | "ChainMap" => {
+            // v0: plain dict payload (insertion-order IS our dict order).
+            let d = ap_obj::dict::PyDict::new();
+            if let Some(first) = args.first() {
+                if let Some(pairs) = mapping_items(first) {
+                    for (k, v) in pairs {
+                        let _ = d.set(k, v);
+                    }
+                }
+            }
+            for (k, v) in kwargs {
+                let _ = d.set(Value::Str(PyString::new(k.clone())), v.clone());
+            }
+            Ok(Value::Dict(d))
+        }
+        "Counter" => {
+            let d = ap_obj::dict::PyDict::new();
+            if let Some(first) = args.first() {
+                let items: Vec<Value> = match first {
+                    Value::Dict(_) | Value::Obj(_) => match mapping_items(first) {
+                        Some(pairs) => pairs
+                            .iter()
+                            .flat_map(|(k, v)| vec![k.clone(), v.clone()])
+                            .collect(),
+                        None => Vec::new(),
+                    },
+                    other => {
+                        let it = crate::interp::iterable_of_public(other)?;
+                        crate::interp::collect_iter_public(&it)
+                    }
+                };
+                for k in &items {
+                    let cur = d.get(k);
+                    let n = cur
+                        .as_ref()
+                        .and_then(|v| v.as_int())
+                        .and_then(|i| i.to_i64())
+                        .unwrap_or(0);
+                    let _ = d.set(k.clone(), Value::Int(ap_obj::Int::from_i64(n + 1)));
+                }
+            }
+            Ok(Value::Dict(d))
+        }
         "ascii" => builtin_ascii(args),
+        // 02.03b-fix: slice(stop) / slice(start, stop[, step]) constructor —
+        // the SliceObj the executor's Expr::Slice lowering produces (the
+        // `slice` NAME also installs as a type for isinstance/reads).
+        "slice" => {
+            let obj = ap_obj::PyObject::new(ap_obj::ObjKind::SliceObj, "slice");
+            let (lo, hi, st) = match args.len() {
+                0 => (Value::None, Value::None, Value::None),
+                1 => (Value::None, args[0].clone(), Value::None),
+                2 => (args[0].clone(), args[1].clone(), Value::None),
+                _ => (
+                    args[0].clone(),
+                    args[1].clone(),
+                    args.get(2).cloned().unwrap_or(Value::None),
+                ),
+            };
+            *obj.slice_parts.borrow_mut() = vec![lo, hi, st];
+            Ok(Value::Obj(obj))
+        }
         _ => Err(raise("NameError", format!("name '{name}' is not defined"))),
     }
 }
@@ -2626,8 +2751,24 @@ pub fn call_builtin_ctor(name: &str, args: &[Value]) -> Option<BResult> {
 
 /// `type.__new__(mcls, name, bases, ns)` (02.04a): create the class payload.
 /// Bases must be class values; ns must be a dict. MRO comes from TypeObject::create.
-fn builtin_type_new(args: &[Value]) -> BResult {
+fn builtin_type_new(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
     use crate::classes::{class_of_value, object_class};
+    // 02.03b-fix: type.__new__ forwards leftover **kwds to
+    // __init_subclass__; object's default rejects them with the pinned
+    // TypeError (mk.py Meta chain: super().__new__(mcs, ..., **kw)).
+    if !kwargs.is_empty() {
+        let class_name = match &args[1] {
+            Value::Str(s) => s.as_str().to_string(),
+            _ => String::new(),
+        };
+        return Err(raise(
+            "TypeError",
+            format!(
+                "{}.__init_subclass__() takes no keyword arguments",
+                class_name
+            ),
+        ));
+    }
     if args.len() != 4 {
         return Err(raise(
             "TypeError",

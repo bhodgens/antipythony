@@ -272,3 +272,52 @@
   polluting the fstrings glob count (34/36 vs 34/35 confusion resolved:
   cases/ glob = 35 cases, 34 pass, f33 pre-existing).
 - Running: arity fix (deleg_296459a7) - flips unittest+pathlib.
+
+## Metaclass __new__ arity fix (fix leaf, 2026-10-18) — 4 GATES GREEN
+- ROOT CAUSE: CPython treats user `__new__` as an IMPLICIT STATICMETHOD
+  (type.__new__ wraps it) — `super().__new__` resolves UNBOUND and callers
+  pass mcs/cls explicitly (ABCMeta: super().__new__(mcls, ...)). Our super()
+  scan arms BOUND it like a normal method, then the caller passed cls again
+  → "takes 4 positional arguments but 5 were given". Same class of bug at
+  class-attr level (M.__new__ bound on read) and instance __new__ chains.
+- FIXES (interp/classes): (1) zero-arg super() marks the super VALUE
+  (__ap_unbound_new__) and attr_get returns the bare function for __new__;
+  (2) comp frames now seed enclosing-function plain locals (enum._convert_'s
+  `filter` param was invisible inside the members comprehension);
+  (3) metaclass-level PROPERTIES now invoke on the class read
+  (EnumType.__members__ → len(cls.__members__) fix); (4) unset-slot reads
+  raise AttributeError instead of calling the None fget (pathlib lazy-init
+  try/except AttributeError); (5) int.__new__-style arity: type.__new__
+  (builtin) rejects leftover **kwds per CPython __init_subclass__ forwarding.
+- SUPPORT (needed by unittest/pathlib import chains): new native module
+  shims _io/_imp/_signal/_warnings/marshal/_opcode/_ast/_collections +
+  posix/OrderedDict/defaultdict/ChainMap/Counter/UserDict surfaces;
+  vendored_stdlib additions (PSF): difflib pprint signal ast dis opcode
+  _opcode_metadata annotationlib(SHIM, t-strings out of grammar — documented)
+  importlib/_bootstrap{,_external}; inspect.py two-line documented correction
+  (_static_getmro/_get_dunder_dict_of_class expressed directly — no
+  descriptor objects for type.__dict__ reads in v0).
+- MORE FLIPPED EN ROUTE: str.format (+{!r}/{!s}), str.startswith/endswith
+  tuple prefixes, str.isupper/islower/isalpha/isdigit/isalnum/isspace/istitle,
+  int.to_bytes/bit_length, int.from_bytes classmethod, slice() constructor,
+  bytearray as TYPE, re.sub + Pattern.sub (literal engine), os.PathLike.
+  register, itemgetter(slice(...)), function/property __doc__/__dict__,
+  module.__dict__, sys.builtin_module_names/base_prefix/prefix,
+  sys.modules['__main__'] seed, enumerate(x, start) eager fix (was leaking
+  the raw inner iterator), object.__subclasshook__ → NotImplemented,
+  NotImplemented `is` identity, dict-comp nested-clause iter eval in the
+  comp frame, isinstance subclasshook chain, itemgetter multi-idx marker
+  fix (was yielding ('a','a') for itemgetter(1,0)).
+- GATES (all byte-exact vs python3.14): import unittest=ok;
+  pathlib.Path('.')→'.'; PurePosixPath('/a/b')→'/a/b';
+  repr(PurePosixPath('/a/b'))→"PurePosixPath('/a/b')".
+- DIFFERENTIAL: crates/ap-run/tests/metaclass_arity_differential.rs — 10
+  probes (0/2/3-base chains, **kw, super() chains, type.__new__ direct,
+  unittest+pathlib gates) all byte-exact green.
+- CORPUS (flat vs pre-fix baseline, no regressions): values 46/47 (V016
+  pre-existing), fstrings 34/35 (f33 pre-existing), classes 27/33,
+  stdlib 8/48 (queued: json/os-full/io surface — 02.04a territory).
+  IOError/EnvironmentError aliases added (stdlib s001 progresses past
+  them; next blockers are inspect/attr surfaces, not class machinery).
+- rust workspace: 212/0 green (41 suites); fmt clean. NOT COMMITTED
+  (per protocol — orchestrator reviews + commits).

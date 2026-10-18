@@ -1675,8 +1675,20 @@ def trace(context=1):
 # ------------------------------------------------ static version of getattr
 
 _sentinel = object()
-_static_getmro = type.__dict__['__mro__'].__get__
-_get_dunder_dict_of_class = type.__dict__["__dict__"].__get__
+# antipythany correction (v0 value model): type.__dict__['__mro__'] is not a
+# materialized descriptor here; the mro read is expressed directly.
+def _static_getmro(klass):
+    try:
+        return klass.__mro__
+    except AttributeError:
+        return None
+# antipythany correction (v0 value model): type.__dict__['__dict__'] is not a
+# materialized descriptor here; the class-dict read is expressed directly.
+def _get_dunder_dict_of_class(klass):
+    try:
+        return klass.__dict__
+    except AttributeError:
+        return {}
 
 
 def _check_instance(obj, attr):

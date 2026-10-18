@@ -149,7 +149,7 @@ pub fn dynamic_type(
 }
 
 fn raise(class: &str, msg: impl Into<String>) -> Flow {
-    Flow::Raise(ExceptionValue::msg(class, msg))
+    Flow::Raise(ExceptionValue::msg(class, msg.into()))
 }
 
 // ===========================================================================
@@ -664,6 +664,7 @@ pub fn exec_class_def(
                 None
             }
         });
+    CLASS_KWARGS.with(|c| *c.borrow_mut() = class_kwargs.clone());
     let t = if let Some(f) = meta_new_f {
         // 02.03b: when __prepare__ returned a dict-subclass instance
         // (EnumDict), the metaclass __new__ receives THE INSTANCE — its
@@ -697,6 +698,12 @@ pub fn exec_class_def(
                 .collect::<Vec<_>>(),
         );
         let created = created?;
+        // 02.03b-fix: the metaclass __new__ CONSUMED the class kwargs
+        // (boundary=... etc are its named params; CPython EnumType pops
+        // them before super().__new__ — __init_subclass__ sees the EMPTY
+        // remainder). type.__new__-level rejections (mk.py's Meta
+        // forwarding **kw) surface through builtin_type_new's kwargs arm.
+        CLASS_KWARGS.with(|c| c.borrow_mut().clear());
         match created {
             Value::Obj(ref o) if o.kind == ap_obj::ObjKind::UserClass => {
                 let t = o
@@ -776,17 +783,46 @@ pub fn exec_class_def(
     //    __init_subclass__ with the class kwargs (S-03-27/29 order).
     run_set_name_hooks(interp, &class_v, &t)?;
     if let Some(parent) = base_types.first() {
+        let kwargs: Vec<(String, Value)> = CLASS_KWARGS.with(|c| c.borrow().clone());
+        let has_user_hook = parent
+            .lookup_with_owner("__init_subclass__")
+            .map(|(f, owner)| {
+                matches!(&f, Value::Obj(o) if o.kind == ap_obj::ObjKind::Function)
+                    && owner.name != "object"
+            })
+            .unwrap_or(false);
+        if !kwargs.is_empty() && !has_user_hook {
+            // CPython (probed 3.14): object.__init_subclass__ rejects
+            // class kwargs with the pinned TypeError.
+            return Err(raise(
+                "TypeError",
+                format!("{}.__init_subclass__() takes no keyword arguments", c.name),
+            ));
+        }
         if parent.lookup("__init_subclass__").is_some() {
             // Bind the parent's hook as an implicit classmethod of cls.
             let hook = attr_on_class_raw(parent, "__init_subclass__");
             let f = unwrap_classmethod(&hook, class_v.clone());
             // The DEFAULT hook (object.__init_subclass__) rejects kwargs
             // with the pinned text (S-03-29); user overrides consume them.
-            if !class_kwargs_present(interp) {
-                let _ = f;
+            let kwargs = CLASS_KWARGS.with(|c| c.borrow().clone());
+            if !kwargs.is_empty() {
+                // A user override (defined on a non-object owner) consumes
+                // the kwargs.
+                call_value(
+                    interp,
+                    &module_frame(interp),
+                    &f,
+                    &[],
+                    &kwargs
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect::<Vec<_>>(),
+                )?;
             }
         }
     }
+    CLASS_KWARGS.with(|c| c.borrow_mut().clear());
 
     // 8. Register user-subclass edges (for __subclasses__).
     for b in &base_types {
@@ -818,11 +854,16 @@ pub fn exec_class_def(
     Ok(class_v)
 }
 
-/// Always-false stub: v1 class kwargs reach __init_subclass__ only through
-/// the explicit metaclass-forwarding form (c031) — the no-kwargs default
-/// path raises the pinned TypeError there. See S-03-29 CONTRACT-GAP note.
-fn class_kwargs_present(_interp: &Interpreter) -> bool {
-    false
+/// 02.03b-fix: class kwargs are present when the class statement carried
+/// keyword arguments (class A(metaclass=M, foo=1)).
+fn class_kwargs_present(interp: &Interpreter) -> bool {
+    let _ = interp;
+    CLASS_KWARGS.with(|c| !c.borrow().is_empty())
+}
+
+thread_local! {
+    static CLASS_KWARGS: std::cell::RefCell<Vec<(String, Value)>> =
+        std::cell::RefCell::new(Vec::new());
 }
 
 fn qualname_for(frame: &Frame, name: &str) -> String {
@@ -1553,6 +1594,23 @@ fn instance_attr(
             }
             Some(kind) => {
                 let _ = kind;
+                // 02.03b-fix: property.__doc__ (dis.py decorates the
+                // namedtuple class fields' docstrings).
+                if name == "__doc__"
+                    && matches!(&entry, Value::Obj(d) if d.kind == ap_obj::ObjKind::Descriptor)
+                {
+                    return Ok(Value::None);
+                }
+                // 02.03b-fix: slot members on an UNSET slot must raise
+                // AttributeError (try/except AttributeError lazy-init in
+                // pathlib relies on it); the member descriptor has no real
+                // fget and descr_get would call None.
+                if t.is_slot(name) {
+                    return Err(raise(
+                        "AttributeError",
+                        format!("'{}' object has no attribute '{}'", t.name, name),
+                    ));
+                }
                 return descr_get(interp, &entry, obj, &class_value_for(t));
             }
             None => {
@@ -1706,6 +1764,17 @@ fn class_attr_get(interp: &Rc<Interpreter>, cls_v: &Value, t: &Rc<TypeRef>, name
             if is_user_function(&mv) {
                 return Ok(bind_function_owned(&mv, cls_v.clone(), Some(&owner)));
             }
+            // 02.03b-fix: metaclass-level PROPERTIES invoke on the class
+            // (EnumType.__members__: cls.__members__ returns the member
+            // mapping; returning the raw descriptor made len(cls.__members__)
+            // die with "object of type 'object' has no len()").
+            let is_prop = matches!(&mv, Value::Obj(d)
+                if d.kind == ap_obj::ObjKind::Descriptor
+                    && d.descr_kind.borrow().as_deref() == Some("property"));
+            if is_prop {
+                let meta_cls_v = class_value_for(&meta);
+                return descr_get(interp, &mv, cls_v, &meta_cls_v);
+            }
             // 02.03b: C.__new__ on a user class (enum member creation:
             // enum_class._new_member_(enum_class, ...)) must ALLOCATE an
             // instance of C — the metaclass type.__new__ marker would try
@@ -1754,10 +1823,24 @@ fn class_attr_get(interp: &Rc<Interpreter>, cls_v: &Value, t: &Rc<TypeRef>, name
             | "__setattr__"
             | "__delattr__"
             | "__reduce__"
+            // 02.03b-fix: _py_abc.__subclasscheck__ probes
+            // cls.__subclasshook__ (object's classmethod default: None).
+            | "__subclasshook__"
     ) {
         if t.mro.borrow().iter().any(|m| m.name == "object") {
             if name == "__doc__" {
                 return Ok(Value::None);
+            }
+            if name == "__subclasshook__" {
+                // object.__subclasshook__ is a classmethod returning
+                // NotImplemented (the _py_abc.__subclasscheck__ probe
+                // compares `ok is not NotImplemented`). Marker: the call
+                // site ignores its args and yields the singleton.
+                let f = ap_obj::PyObject::new(
+                    ap_obj::ObjKind::BuiltinFn,
+                    "__object_virtual___subclasshook____",
+                );
+                return Ok(Value::Obj(f));
             }
             let f = ap_obj::PyObject::new(
                 ap_obj::ObjKind::BuiltinFn,
@@ -1802,6 +1885,17 @@ pub fn attr_set_protocol(
         Value::Str(_) | Value::Int(_) | Value::Bool(_) | Value::Bytes(_)
     ) {
         return Ok(());
+    }
+    // 02.03b-fix: interned-type attr writes (ast.py: Tuple.dims = property)
+    // park on the PyObject; attr_get's Type arm reads them back.
+    if let Value::Obj(o) = obj {
+        if o.kind == ap_obj::ObjKind::Type {
+            let _ = o
+                .attrs
+                .borrow_mut()
+                .set(Value::Str(PyString::new(name.to_string())), v);
+            return Ok(());
+        }
     }
     match obj {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
@@ -1884,6 +1978,14 @@ pub fn attr_set_protocol(
         // writes (CPython function.__dict__) — vendored stdlib does
         // `splitext.__doc__ = genericpath._splitext.__doc__` at import.
         Value::Obj(o) if o.kind == ap_obj::ObjKind::Function => o
+            .attrs
+            .borrow_mut()
+            .set(Value::Str(PyString::new(name)), v)
+            .map_err(Flow::from_py),
+        // 02.03b-fix: descriptor attr writes (dis.py decorates the namedtuple
+        // fields: _Instruction.opname.__doc__ = "...") park on the object;
+        // the descriptor __doc__ read arm already prefers o.attrs.
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::Descriptor => o
             .attrs
             .borrow_mut()
             .set(Value::Str(PyString::new(name)), v)

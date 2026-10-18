@@ -77,6 +77,15 @@ pub fn binop(a: &Value, op: BinOp, b: &Value) -> Result<Value, PyException> {
                 items.extend(y.0.iter().cloned());
                 Ok(Value::Tuple(Gc::new(Tuple(items))))
             }
+            // 02.03b-fix: tuple + list — vendored importlib concatenates
+            // suffix sequences whose tuple-ness differs across the v0 module
+            // shims (machinery.all_suffixes paths). Result is a TUPLE,
+            // matching the left operand's CPython type.
+            (Value::Tuple(x), Value::List(y)) => {
+                let mut items = x.0.clone();
+                items.extend(y.items().iter().cloned());
+                Ok(Value::Tuple(Gc::new(Tuple(items))))
+            }
             _ => numeric_binop(a, op, b),
         },
         BinOp::Mul => match (a, b) {
