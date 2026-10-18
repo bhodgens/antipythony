@@ -428,3 +428,11 @@
   a RefCell reentrancy panic in scan_obj Obj-arm).
 - CONTINUATION DISPATCHED (deleg_f5fd79fd): fix root-scoping, all gates,
   + MMTk design doc (stage 2). My interim RefCell patches kept.
+
+## 02.04 continuation agent ALSO stalled/died (~50min quiet, no procs)
+- Its salvage was real: enum gate now PASSES (reverted a wrong scope_path
+  fix; the NameError was scope misclassification, NOT the collector).
+- weakref bridge dep-graph wired. Committed salvage a9a43e6.
+- REMAINING: weakref.WeakKeyDictionary surface (blocks unittest),
+  gc.collect() count semantics (67 vs 114 - objects vs cycles), MMTk doc.
+- COMPLETION LEAF DISPATCHED (deleg_8252f8c2) with all four remaining items.
