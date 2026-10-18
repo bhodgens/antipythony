@@ -413,3 +413,9 @@
 2. 02.08-full part 2: re engine (biggest single unlock), complex numbers
 3. 02.05 tier-1 (SPLIT per risks; + debug stack-depth)
 4. Plan 04 packaging (uv) -> T1 scrapy attempt
+
+## Leaf 02.04 - GC - DISPATCHED (deleg_4f025323)
+- RESCOPED (orchestrator decision): Stage 1 = Rc-cycle collector + gc module
+  (Python gc semantics NOW, unblocks gc/weakref corpus cases). Stage 2 = MMTk
+  swap DESIGN DOC + compile spike only (no migration this leaf). MMTk swap is
+  the tier-1 perf story and pairs with 02.05's root-map work.
