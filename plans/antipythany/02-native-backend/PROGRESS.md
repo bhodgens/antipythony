@@ -341,3 +341,7 @@
 3. 02.05 tier-1 (SPLIT per risks; + debug stack-depth).
 4. 02.08-full: re engine, complex, class-method surface, metaclass hooks.
 5. Plan 04 packaging (uv) -> T1 scrapy attempt.
+
+## Leaf 02.08-full part 1 - method surfaces - DISPATCHED (deleg_5fadfe7b)
+- str/bytes/dict/list/set/tuple method completion + int/float extras.
+- Target: stdlib slice 8/48 -> 20+/48 (method-surface failures = ~24 of 40).
