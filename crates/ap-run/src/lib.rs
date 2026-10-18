@@ -6,6 +6,7 @@ pub mod classes;
 pub mod exc_hier;
 pub mod format;
 pub mod frame;
+pub mod gcsupport;
 pub mod importer;
 pub mod interp;
 pub mod iter;

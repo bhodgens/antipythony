@@ -9,6 +9,7 @@ license.workspace = true
 path = "src/lib.rs"
 
 [dependencies]
+ap-gc = { path = "../ap-gc" }
 ap-ir = { path = "../ap-ir" }
 ap-obj = { path = "../ap-obj" }
 ap-parse = { path = "../ap-parse" }

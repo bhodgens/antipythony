@@ -582,7 +582,8 @@ pub fn set_current_interp(interp: &Rc<crate::frame::Interpreter>) {
     CURRENT.with(|c| *c.borrow_mut() = Some(interp.clone()));
 }
 
-fn make_iter(state: NativeIterState) -> Value {
+/// Build an iterator object over a native state (public: builtin_zip).
+pub(crate) fn make_iter(state: NativeIterState) -> Value {
     let obj = PyObject::new(ap_obj::ObjKind::Iterator, "iterator");
     let it = crate::iter::PyIterator::new(crate::iter::IterState::Native(Box::new(state)));
     let id = NEXT_ITER.with(|c| {
@@ -714,6 +715,8 @@ fn registry() -> &'static [(&'static str, ModuleBuilder)] {
         ("posix", build_os),
         ("codeop", build_codeop),
         ("tempfile", build_tempfile),
+        ("gc", build_gc),
+        ("weakref", build_weakref),
         ("string2", build_string), // dedup guard, never matched
     ]
 }
@@ -6394,6 +6397,15 @@ fn build_atexit(_i: &crate::frame::Interpreter) -> Value {
     finish(m, ns)
 }
 
+// gc + weakref (02.04 stage 1): builders delegate to gcsupport.
+fn build_gc(_i: &crate::frame::Interpreter) -> Value {
+    crate::gcsupport::build_gc_module_pub()
+}
+
+fn build_weakref(_i: &crate::frame::Interpreter) -> Value {
+    crate::gcsupport::build_weakref_module_pub()
+}
+
 pub fn call_atexit(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Option<BResult> {
     let r: BResult = (|| -> BResult {
         match name {
@@ -7789,6 +7801,9 @@ pub fn call_native(
         "importlib" => call_importlib(fname, args, kwargs),
         "importlib.util" => call_importlib_util(fname, args, kwargs),
         "tempfile" => call_tempfile(fname, args, kwargs),
+        "gc" => crate::gcsupport::call_gc(fname, args, kwargs),
+        "weakref" => crate::gcsupport::call_weakref(fname, args, kwargs),
+        "weakref.finalize" => crate::gcsupport::call_weakref_finalize(args, kwargs),
         _ => None,
     }
 }
@@ -7918,6 +7933,22 @@ pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
                 "TextIOWrapper" if name == "encoding" => {
                     o.attrs.borrow().get(&s("<encoding>")).map(|v2| v2.clone())
                 }
+                // 02.04: weakref/finalize token surfaces (alive, detach,
+                // __call__ handling rides the call path in interp.rs).
+                "_weakref_token" | "_finalize_token" => match name {
+                    "alive" => Some(Value::Bool(crate::gcsupport::finalize_alive(o))),
+                    "detach" | "__call__" => {
+                        let mname = format!("weakref.{name}");
+                        let bm = PyObject::with_self(
+                            ap_obj::ObjKind::BoundMethod,
+                            mname.clone(),
+                            obj.clone(),
+                        );
+                        *bm.func.borrow_mut() = Some(marker(&mname));
+                        Some(Value::Obj(bm))
+                    }
+                    _ => None,
+                },
                 "TemporaryDirectory" => match name {
                     "__enter__" | "cleanup" | "__exit__" => {
                         let mname = format!("tempfile.{name}");
@@ -10618,7 +10649,7 @@ fn call_importlib_util(name: &str, args: &[Value], _kwargs: &[(String, Value)]) 
                 )?;
                 // Imported modules get a name-only spec marker; unknown ones
                 // are None (s047 pin: find_spec("quixotic_mod_t11") is None).
-                let imported = crate::importer::sys_modules_get_pub(&mod_name).is_some();
+                let imported = crate::importer::sys_modules_get(&mod_name).is_some();
                 if !imported {
                     let native = is_native_module(&mod_name);
                     let vendored =

@@ -530,6 +530,13 @@ pub fn exec_class_def(
         }
     }
     let mut class_frame_val = Frame::new_class(frame, ns.clone());
+    // 02.04 fix: the class frame's scope_path must be the CLASS NAME so
+    // method defs register as "T.<locals>.method" — the parser's symtable
+    // path (open_scope: parent path "T" + <locals> + name). The old
+    // parent-cloned path ("" at module level) made every method's scope
+    // lookup miss, so `global x; x = ...` inside methods wrote frame-LOCALS
+    // (lost at frame exit) instead of module globals.
+    class_frame_val.scope_path = c.name.clone();
     class_frame_val.class_ns_inst = prepared_inst.clone();
     let class_frame = Rc::new(class_frame_val);
     exec_block(interp, &class_frame, &c.body, reg)?;
@@ -1256,16 +1263,34 @@ pub fn bind_function(f: &Value, receiver: Value) -> Value {
 pub fn bind_function_owned(f: &Value, receiver: Value, owner: Option<&Rc<TypeRef>>) -> Value {
     if let Value::Obj(o) = f {
         if o.kind == ap_obj::ObjKind::Function {
-            let mo =
-                ap_obj::PyObject::with_self(ap_obj::ObjKind::BoundMethod, o.name.clone(), receiver);
-            if let Some(mut m) = std::rc::Rc::try_unwrap(mo).ok() {
-                *m.func.borrow_mut() = Some(f.clone());
-                if let Some(owner) = owner {
-                    *m.method_owner.borrow_mut() = Some(std::rc::Rc::downgrade(owner));
-                }
-                return Value::Obj(ap_obj::int::Gc::new(m));
-            }
-            unreachable!("fresh bound method has one owner");
+            // 02.04: build the PyObject payload FIRST, mutate while owned,
+            // then hand it to Gc::new (which registers it with the cycle
+            // collector). The old try_unwrap-after-Gc::new shape broke once
+            // the registry held a second strong count on fresh objects.
+            let m = ap_obj::PyObject {
+                kind: ap_obj::ObjKind::BoundMethod,
+                name: o.name.clone(),
+                fn_id: None,
+                self_value: std::cell::RefCell::new(Some(receiver)),
+                func: std::cell::RefCell::new(Some(f.clone())),
+                ints: std::cell::RefCell::new(Vec::new()),
+                slice_parts: std::cell::RefCell::new(Vec::new()),
+                attrs: std::cell::RefCell::new(ap_obj::dict::PyDict::new()),
+                args: std::cell::RefCell::new(Vec::new()),
+                cause: std::cell::RefCell::new(None),
+                context: std::cell::RefCell::new(None),
+                dunders: std::cell::RefCell::new((*ap_obj::dict::PyDict::new()).clone()),
+                gen_id: std::cell::RefCell::new(None),
+                repr_text: std::cell::RefCell::new(None),
+                module_ns: std::cell::RefCell::new(None),
+                closure_slot: std::cell::RefCell::new(None),
+                class_ref: std::cell::RefCell::new(None),
+                type_ref: std::cell::RefCell::new(None),
+                descr_kind: std::cell::RefCell::new(None),
+                method_owner: std::cell::RefCell::new(owner.map(std::rc::Rc::downgrade)),
+            };
+            let mo = ap_obj::int::Gc::new(m);
+            return Value::Obj(mo);
         }
     }
     f.clone()

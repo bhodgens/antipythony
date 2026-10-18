@@ -92,6 +92,7 @@ pub mod classes;
 pub mod dict;
 pub mod exc;
 pub mod float_repr;
+pub mod gc_gate;
 pub mod hash;
 pub mod int;
 pub mod list_repr;

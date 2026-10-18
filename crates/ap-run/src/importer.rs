@@ -112,9 +112,10 @@ pub fn reset_import_state() {
     SYS_MODULES.with(|m| m.borrow_mut().clear());
 }
 
-/// Public read for the Import binding (top-package fetch).
-pub fn sys_modules_get_pub(name: &str) -> Option<Value> {
-    sys_modules_get(name)
+/// Public read for the Import binding (top-package fetch) and the ap-gc
+/// root scanner (sys.modules VALUES are collection roots).
+pub fn sys_modules_values_pub() -> Vec<Value> {
+    SYS_MODULES.with(|m| m.borrow().values().cloned().collect())
 }
 
 pub fn sys_modules_get(name: &str) -> Option<Value> {

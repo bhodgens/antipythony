@@ -83,7 +83,7 @@ struct DictState {
 
 impl PyDict {
     pub fn new() -> Gc<PyDict> {
-        Gc::new(PyDict {
+        let d = Gc::new(PyDict {
             state: std::cell::RefCell::new(DictState {
                 entries: Vec::new(),
                 indices: vec![DKIX_EMPTY; 8],
@@ -91,7 +91,9 @@ impl PyDict {
                 used: 0,
                 dummies: 0,
             }),
-        })
+        });
+        crate::gc_gate::gc_register_pub(&Value::Dict(d.clone()));
+        d
     }
 
     pub fn len(&self) -> usize {
@@ -486,9 +488,11 @@ struct SetState {
 
 impl PySet {
     pub fn new() -> Gc<PySet> {
-        Gc::new(PySet {
+        let s = Gc::new(PySet {
             state: std::cell::RefCell::new(SetState::default()),
-        })
+        });
+        crate::gc_gate::gc_register_pub(&Value::Set(s.clone()));
+        s
     }
 
     pub fn len(&self) -> usize {

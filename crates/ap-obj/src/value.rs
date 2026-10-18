@@ -286,17 +286,21 @@ impl std::fmt::Debug for PyList {
 
 impl PyList {
     pub fn new() -> Gc<PyList> {
-        Gc::new(PyList {
+        let l = Gc::new(PyList {
             items: std::cell::RefCell::new(Vec::new()),
             allocated: std::cell::Cell::new(0),
-        })
+        });
+        crate::gc_gate::gc_register_pub(&Value::List(l.clone()));
+        l
     }
 
     pub fn from_vec(items: Vec<Value>) -> Gc<PyList> {
-        Gc::new(PyList {
+        let l = Gc::new(PyList {
             items: std::cell::RefCell::new(items),
             allocated: std::cell::Cell::new(0),
-        })
+        });
+        crate::gc_gate::gc_register_pub(&Value::List(l.clone()));
+        l
     }
 
     pub fn len(&self) -> usize {

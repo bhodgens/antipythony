@@ -84,6 +84,9 @@ pub fn run_module(
     *interp.self_rc.borrow_mut() = Some(Rc::downgrade(&interp));
     builtins::install_builtins(&interp);
     crate::classes::install_exception_classes(&interp);
+    // 02.04 stage 1: wire the cycle collector (roots + bridges) BEFORE any
+    // module body allocates.
+    crate::gcsupport::install(&interp);
     // Statement-line table for tracebacks (ruff AST walk; the IR is
     // span-free by design).
     *interp.stmt_lines.borrow_mut() = ap_parse::collect_stmt_lines(&parsed);
@@ -102,6 +105,16 @@ pub fn run_module(
 
     let _ = stdout.write_all(&interp.stdout.borrow());
     let out_bytes = interp.stdout.borrow().clone();
+    // 02.04: weakref.finalize atexit path (C-22) drains before GCSTATS.
+    crate::gcsupport::finalize_atexit_drain();
+    // 02.04: GCSTATS instrumentation at exit.
+    if std::env::var("GCSTATS").is_ok() {
+        let st = ap_gc::stats();
+        eprintln!(
+            "GCSTATS collections={} objects_reclaimed={} cycles_collected={}",
+            st.collections, st.objects_reclaimed, st.cycles_collected
+        );
+    }
     match outcome {
         Ok(()) => RunOutcome {
             stdout: out_bytes,
@@ -700,7 +713,7 @@ fn exec_stmt(
                 // `import a.b` binds the TOP package: fetch it back through
                 // sys.modules (the walker guarantees every prefix is there).
                 let m = if a.path.len() > 1 {
-                    importer::sys_modules_get_pub(&a.path[0]).unwrap_or(m)
+                    importer::sys_modules_get(&a.path[0]).unwrap_or(m)
                 } else {
                     m
                 };
@@ -2864,16 +2877,17 @@ fn call_value_inner(
                     }
                     call_value(interp, caller, &func, &full, kwargs)
                 }
-                // 02.04a fix pass (BUG-A follow-on): _weakref.ref tokens
-                // stored in WeakSets are CALLED to dereference
-                // (_weakrefset.__iter__/__contains__ -> itemref()). Return
-                // the parked target; a dead ref is v0-impossible (Rc), so
-                // always Some.
-                ap_obj::ObjKind::Opaque if o.name == "_weakref_token" => Ok(o
-                    .attrs
-                    .borrow()
-                    .get(&Value::Str(PyString::new("_ap_wrapped")))
-                    .unwrap_or(Value::None)),
+                // 02.04 fix pass: _weakref.ref tokens stored in WeakSets are
+                // CALLED to dereference (_weakrefset.__iter__/__contains__
+                // -> itemref()). Route through gcsupport: alive -> target,
+                // dead -> None (C-22).
+                ap_obj::ObjKind::Opaque if o.name == "_weakref_token" => {
+                    Ok(crate::gcsupport::weakref_call(o))
+                }
+                // 02.04: weakref.finalize token called -> invoke once.
+                ap_obj::ObjKind::Opaque if o.name == "_finalize_token" => {
+                    Ok(crate::gcsupport::finalize_call(o))
+                }
                 // 02.04a fix pass: functools pass-through decorator token —
                 // applying it to a callable attaches inert cache surfaces
                 // (cache/cache_clear) and returns the callable: typing reads

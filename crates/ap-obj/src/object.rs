@@ -121,7 +121,7 @@ pub struct PyObject {
 
 impl PyObject {
     pub fn new(kind: ObjKind, name: impl Into<String>) -> Gc<PyObject> {
-        Gc::new(PyObject {
+        let o = Gc::new(PyObject {
             kind,
             name: name.into(),
             fn_id: None,
@@ -142,7 +142,9 @@ impl PyObject {
             type_ref: RefCell::new(None),
             descr_kind: RefCell::new(None),
             method_owner: RefCell::new(None),
-        })
+        });
+        crate::gc_gate::gc_register_pub(&Value::Obj(o.clone()));
+        o
     }
 
     /// Constructor with the receiver preset (bound methods).
@@ -154,7 +156,7 @@ impl PyObject {
 
     /// Constructor with a fn id preset (function objects).
     pub fn with_fn_id(kind: ObjKind, name: impl Into<String>, fn_id: u32) -> Gc<PyObject> {
-        Gc::new(PyObject {
+        let o = Gc::new(PyObject {
             kind,
             name: name.into(),
             fn_id: Some(fn_id),
@@ -175,7 +177,9 @@ impl PyObject {
             type_ref: RefCell::new(None),
             descr_kind: RefCell::new(None),
             method_owner: RefCell::new(None),
-        })
+        });
+        crate::gc_gate::gc_register_pub(&Value::Obj(o.clone()));
+        o
     }
 
     /// The Python type name this object reports (`type(v).__name__`).

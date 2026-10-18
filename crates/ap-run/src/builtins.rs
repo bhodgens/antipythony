@@ -1295,24 +1295,30 @@ pub fn builtin_filter(interp: &Interpreter, args: &[Value]) -> BResult {
 }
 
 pub fn builtin_zip(interp: &Interpreter, args: &[Value]) -> BResult {
-    let mut ids = Vec::with_capacity(args.len());
+    // 02.04 fix (gc002 needs 2-arg zip): build a real ZipMulti iterator that
+    // yields tuples — the old shape parked the FIRST iterable's id on the
+    // zip object, so `zip(xs, ys)` iterated only xs and for-target unpacking
+    // of the plain items died with "cannot unpack non-iterable".
+    // zip() with no args: exhausted.
+    if args.is_empty() {
+        let it = crate::iter::PyIterator::new(crate::iter::IterState::Seq(Vec::new(), 0));
+        let id = interp.next_iter_id.get();
+        interp.next_iter_id.set(id + 2);
+        interp.iterators.borrow_mut().insert(id, it);
+        let obj = ap_obj::PyObject::new(ap_obj::ObjKind::Iterator, "zip");
+        *obj.gen_id.borrow_mut() = Some(id);
+        return Ok(Value::Obj(obj));
+    }
+    let mut parts: Vec<std::vec::IntoIter<Value>> = Vec::with_capacity(args.len());
     for a in args {
-        ids.push(register_iter(interp, a)?);
+        let it = iterable_of(a)?;
+        let items = crate::iter::collect(&it);
+        parts.push(items.into_iter());
     }
-    let obj = ap_obj::PyObject::new(ap_obj::ObjKind::Iterator, "zip");
-    match ids.first().copied() {
-        Some(id) => *obj.gen_id.borrow_mut() = Some(id),
-        None => {
-            // zip() with no args: an EXHAUSTED iterator of its own (interp
-            // bug #15 — gen_id 0 collided with the re-entry guard).
-            let it = crate::iter::PyIterator::new(crate::iter::IterState::Seq(Vec::new(), 0));
-            let id = interp.next_iter_id.get();
-            interp.next_iter_id.set(id + 2);
-            interp.iterators.borrow_mut().insert(id, it);
-            *obj.gen_id.borrow_mut() = Some(id);
-        }
-    }
-    Ok(Value::Obj(obj))
+    let obj = crate::builtins_modules::make_iter(
+        crate::builtins_modules::NativeIterState::ZipMulti(parts),
+    );
+    Ok(obj)
 }
 
 /// Register an iterable with the interpreter, returning its id.

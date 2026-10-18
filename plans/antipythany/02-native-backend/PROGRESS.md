@@ -419,3 +419,12 @@
   (Python gc semantics NOW, unblocks gc/weakref corpus cases). Stage 2 = MMTk
   swap DESIGN DOC + compile spike only (no migration this leaf). MMTk swap is
   the tier-1 perf story and pairs with 02.05's root-map work.
+
+## Leaf 02.04 GC - FIRST AGENT DIED (provider network failure at ~90min)
+- Worktree salvage: compiles clean, gc.collect() returns counts, but
+  SEMANTICALLY BROKEN: live enum/unittest classes get swept (NameError:
+  enum_class) - root-scoping bug in mark_reachable/count_internal_refs.
+- My interim patches: try_borrow + SCAN_CONTENDED abort in collect() (fixes
+  a RefCell reentrancy panic in scan_obj Obj-arm).
+- CONTINUATION DISPATCHED (deleg_f5fd79fd): fix root-scoping, all gates,
+  + MMTk design doc (stage 2). My interim RefCell patches kept.
