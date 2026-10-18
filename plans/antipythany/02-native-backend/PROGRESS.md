@@ -321,3 +321,23 @@
   them; next blockers are inspect/attr surfaces, not class machinery).
 - rust workspace: 212/0 green (41 suites); fmt clean. NOT COMMITTED
   (per protocol — orchestrator reviews + commits).
+
+## Arity fix leaf - COMPLETE (committed 1ba8aa6)
+- ROOT CAUSE (subtle, important): CPython wraps user __new__ as an IMPLICIT
+  STATICMETHOD (type.__new__ wraps it) - super().__new__ resolves UNBOUND and
+  callers pass cls/mcs explicitly. Our runtime bound it like a normal method,
+  then the caller passed cls again -> 4-vs-5 arity TypeError. Three sites:
+  super() scan arms, class-attr metaclass reads, instance chains.
+- VERIFIED firsthand: unittest imports+prints, str(pathlib.Path('.'))=='.',
+  repr(PurePosixPath('/a/b')) byte-exact. rust 212/0. Corpus held
+  (values 46/47, fstrings 34/35, stdlib 8/48).
+- RECORD for future leaves: __new__ is implicitly static in our runtime now;
+  any new metaclass dispatch must preserve this.
+
+## QUEUE
+1. 02.03c (optional): re-run stdlib slice to count pathlib/enum-unlocked
+   flips; Color(1) member repr masking.
+2. 02.04 GC (MMTk swap).
+3. 02.05 tier-1 (SPLIT per risks; + debug stack-depth).
+4. 02.08-full: re engine, complex, class-method surface, metaclass hooks.
+5. Plan 04 packaging (uv) -> T1 scrapy attempt.
