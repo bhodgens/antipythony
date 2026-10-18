@@ -354,6 +354,11 @@ fn exec_module(
         use ap_obj::value::PyString as _PS;
         Value::Str(_PS::new(interp.script_path.clone()))
     });
+    // 02.04a fix pass: the keyed-builtin paths (call_method_pub,
+    // attr_get_public) resolve the interpreter through builtins_modules'
+    // thread-local — it must be set BEFORE the module body runs, not only
+    // for the atexit drain.
+    builtins_modules::set_current_interp(interp);
     let outcome = exec_block(interp, &frame, &stmts, &reg);
     // 02.08-lite: atexit callbacks drain LIFO on every exit path (sys.exit /
     // uncaught / clean), matching CPython's interpreter-finalization order.
@@ -1319,6 +1324,13 @@ fn read_target(
             let k = eval_expr(interp, frame, key, reg)?;
             methods::subscript_get(&o, &k)
         }
+        // 02.04a fix pass (BUG-A follow-on): `obj.attr += x` — pathlib does
+        // `self._str += ...`-style augassigns. The read half mirrors
+        // assign_target's Attribute arm (attr protocol, not raw getattr).
+        Target::Attribute(obj, name) => {
+            let o = eval_expr(interp, frame, obj, reg)?;
+            crate::classes::attr_get_protocol(interp, &o, name)
+        }
         _ => Err(raise("SystemError", "unsupported augassign target in v0")),
     }
 }
@@ -1579,12 +1591,19 @@ pub(crate) fn eval_expr(
         Expr::Attribute(obj, name) => {
             let o = eval_expr(interp, frame, obj, reg)?;
             attr_get(interp, &o, name)?.ok_or_else(|| {
+                let extra = match &o {
+                    Value::Obj(mo) if mo.kind == ap_obj::ObjKind::Module => {
+                        format!(" (module '{}')", mo.name)
+                    }
+                    _ => String::new(),
+                };
                 raise(
                     "AttributeError",
                     format!(
-                        "'{}' object has no attribute '{}'",
+                        "'{}' object has no attribute '{}'{}",
                         crate::classes::display_type_name(&o),
-                        name
+                        name,
+                        extra
                     ),
                 )
             })
@@ -2207,12 +2226,31 @@ fn call_value_inner(
                 ap_obj::ObjKind::BuiltinFn => {
                     // Class-statement keyword marker (lowering): the class-creation
                     // path consumes kwargs; the call itself only carries the value.
+                    // 02.04a fix pass: park the value on the marker and return
+                    // the MARKER so exec_class_def's base filter recognizes,
+                    // skips it, and recovers (name, value) for the metaclass
+                    // call kwargs (enum._simple_enum's boundary=/_simple=).
                     if o.name.starts_with("__ap_classkw__") {
-                        return Ok(args.first().cloned().unwrap_or(Value::None));
+                        let kwname = o.name.trim_start_matches("__ap_classkw__.").to_string();
+                        *o.slice_parts.borrow_mut() = vec![
+                            Value::Str(PyString::new(kwname)),
+                            args.first().cloned().unwrap_or(Value::None),
+                        ];
+                        return Ok(f.clone());
                     }
                     // 02.04a coroutine-stub methods (close/send/throw): no-ops.
                     if o.name == "__ap_coroutine_noop__" {
                         return Ok(Value::None);
+                    }
+                    if o.name == "__ap_functools_nop__" {
+                        return Ok(Value::None);
+                    }
+                    // 02.04a fix pass (BUG-C): no-op RLock context protocol.
+                    if o.name == "__ap_rlock_enter__" {
+                        return Ok(args.first().cloned().unwrap_or(Value::None));
+                    }
+                    if o.name == "__ap_rlock_exit__" {
+                        return Ok(Value::Bool(false));
                     }
                     // object.__new__(cls) virtual (c003): allocates the parked
                     // subject class.
@@ -2355,7 +2393,21 @@ fn call_value_inner(
                                     }
                                     None => {
                                         // Builtin value: interned name-Type.
-                                        let tn = subject.type_name();
+                                        // 02.04a fix pass (BUG-A): use the
+                                        // PyObject's own type name (Exception
+                                        // arm already handled above); the old
+                                        // Value::type_name() collapsed every
+                                        // Namespace/Opaque to "object", so
+                                        // type(<coroutine stub>) interned an
+                                        // "object" Type and ABCMeta.register's
+                                        // cycle check (issubclass(Coroutine,
+                                        // <coroutine>)) saw the "object" name
+                                        // and returned True -> the pathlib
+                                        // import RuntimeError.
+                                        let tn = match subject {
+                                            Value::Obj(o) => o.type_name(),
+                                            other => other.type_name().to_string(),
+                                        };
                                         Ok(builtins::interned_type(interp, &tn))
                                     }
                                 };
@@ -2404,6 +2456,40 @@ fn call_value_inner(
                         return call_value(interp, caller, &func, &full, kwargs);
                     }
                     call_value(interp, caller, &func, &full, kwargs)
+                }
+                // 02.04a fix pass (BUG-A follow-on): _weakref.ref tokens
+                // stored in WeakSets are CALLED to dereference
+                // (_weakrefset.__iter__/__contains__ -> itemref()). Return
+                // the parked target; a dead ref is v0-impossible (Rc), so
+                // always Some.
+                ap_obj::ObjKind::Opaque if o.name == "_weakref_token" => Ok(o
+                    .attrs
+                    .borrow()
+                    .get(&Value::Str(PyString::new("_ap_wrapped")))
+                    .unwrap_or(Value::None)),
+                // 02.04a fix pass: functools pass-through decorator token —
+                // applying it to a callable attaches inert cache surfaces
+                // (cache/cache_clear) and returns the callable: typing reads
+                // `_lazy_load_getattr_static.cache_clear` at module scope.
+                ap_obj::ObjKind::Opaque if o.name == "functools._ap_deco" => {
+                    let f = args.first().cloned().unwrap_or(Value::None);
+                    if let Value::Obj(fo) = &f {
+                        if fo.kind == ap_obj::ObjKind::Function {
+                            let nop = ap_obj::PyObject::new(
+                                ap_obj::ObjKind::BuiltinFn,
+                                "__ap_functools_nop__",
+                            );
+                            let _ = fo
+                                .attrs
+                                .borrow_mut()
+                                .set(Value::Str(PyString::new("cache_clear")), Value::Obj(nop));
+                            let _ = fo.attrs.borrow_mut().set(
+                                Value::Str(PyString::new("cache")),
+                                Value::Dict(ap_obj::dict::PyDict::new()),
+                            );
+                        }
+                    }
+                    Ok(f)
                 }
                 _ => Err(raise(
                     "TypeError",
@@ -2561,6 +2647,16 @@ fn call_function(
         interp.super_stack.borrow_mut().push(ctx);
     }
 
+    // 02.04a fix pass (BUG-A follow-on): `lambda: (yield)` is a GENERATOR
+    // function in CPython (_collections_abc: generator = type((lambda:
+    // (yield))())). Route yield-bodied lambdas through the generator
+    // machinery instead of evaluating the body inline.
+    if let Some(body) = &lambda_body {
+        if matches!(body, Expr::Yield(_) | Expr::YieldFrom(_)) {
+            interp.frame_stack.borrow_mut().pop();
+            return start_generator(interp, entry, o, args, kwargs);
+        }
+    }
     let result: Result<Value, Flow> = if let Some(body) = lambda_body {
         eval_expr(interp, &frame, &body, &current_registry(interp))
     } else {
@@ -4656,6 +4752,50 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
             .insert(tname.to_string(), t.clone());
         return Ok(Some(t));
     }
+    // 02.04a fix pass: None.__new__ (enum._find_new_ compares None.__new__
+    // inside a set to detect user overrides).
+    if matches!(obj, Value::None) && name == "__new__" {
+        return Ok(Some(Value::Obj(ap_obj::PyObject::new(
+            ap_obj::ObjKind::BuiltinFn,
+            "NoneType.__new__",
+        ))));
+    }
+    // 02.04a fix pass: dict ITEM fallback for underscore attribute reads —
+    // EnumDict's _member_names/_ignore land as ns items (class __prepare__
+    // bridge); CPython dicts don't expose attrs, but our EnumDict shim needs
+    // the read to resolve.
+    if let Value::Dict(d) = obj {
+        if name.starts_with('_') {
+            if let Some(v) = d.get(&Value::Str(PyString::new(name))) {
+                return Ok(Some(v));
+            }
+        }
+    }
+    // 02.04a fix pass: function attribute reads (functools.wraps sets
+    // __wrapped__/cache etc on the wrapper; vendored stdlib reads them back).
+    if let Value::Obj(o) = obj {
+        if o.kind == ap_obj::ObjKind::Function {
+            if let Some(v) = o.attrs.borrow().get(&Value::Str(PyString::new(name))) {
+                return Ok(Some(v));
+            }
+            if name == "__module__" {
+                return Ok(Some(Value::Str(PyString::new("builtins"))));
+            }
+            if name == "__name__" || name == "__qualname__" {
+                return Ok(Some(Value::Str(PyString::new(o.name.clone()))));
+            }
+        }
+    }
+    // 02.04a fix pass: class-statement keyword marker — the lowering emits
+    // `__ap_classkw__.<name>(value)` base expressions; reads on the marker
+    // return callable no-ops the call path consumes (interp call_value).
+    if matches!(obj, Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque && o.name == "__ap_classkw__")
+    {
+        return Ok(Some(Value::Obj(ap_obj::PyObject::new(
+            ap_obj::ObjKind::BuiltinFn,
+            &format!("__ap_classkw__.{name}"),
+        ))));
+    }
     // 02.08-lite: native-type instance attrs/methods + structured exc fields.
     if let Some(v) = builtins_modules::native_attr(obj, name) {
         return Ok(Some(v));
@@ -4765,6 +4905,60 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 .or_else(|| crate::classes::class_of_value(_interp, &start_v));
             let subj_t = crate::classes::class_of_value(_interp, &subject);
             if let (Some(start_t), Some(subj_t)) = (start_t, subj_t) {
+                // 02.04a fix pass: when the enclosing method belongs to the
+                // SUBJECT'S METACLASS (EnumType.__new__ during class
+                // creation), the MRO to scan is the metaclass chain
+                // (type(subject).__mro__), not the subject's own class MRO —
+                // otherwise super().__new__ in EnumType.__new__ scans
+                // ReprEnum→Enum→object and misses ABCMeta/type entirely.
+                let scan_mro: Vec<std::rc::Rc<ap_obj::classes::TypeRef>>;
+                let borrowed;
+                let subject_is_class =
+                    matches!(&subject, Value::Obj(so) if so.kind == ap_obj::ObjKind::UserClass);
+                let meta_of_subject = if subject_is_class {
+                    crate::classes::type_of(_interp, &subject)
+                        .and_then(|st| st.metaclass.borrow().clone())
+                } else {
+                    None
+                };
+                if let Some(meta) = &meta_of_subject {
+                    if meta.is_subclass(&start_t) || std::rc::Rc::ptr_eq(meta, &start_t) {
+                        scan_mro = meta.mro.borrow().clone();
+                        borrowed = scan_mro;
+                        // fall through to the shared scan below using `borrowed`
+                        let mro = &borrowed;
+                        let mut after = false;
+                        for cls in mro.iter() {
+                            if !after {
+                                if std::rc::Rc::ptr_eq(cls, &start_t) {
+                                    after = true;
+                                }
+                                continue;
+                            }
+                            if let Some(entry) = cls.dict.get(&Value::Str(PyString::new(name))) {
+                                if matches!(&entry, Value::Obj(eo) if eo.kind == ap_obj::ObjKind::Function)
+                                {
+                                    let m = crate::classes::bind_function_owned(
+                                        &entry,
+                                        subject.clone(),
+                                        Some(cls),
+                                    );
+                                    return Ok(Some(m));
+                                }
+                                return Ok(Some(entry.clone()));
+                            }
+                            if cls.name == "object" && name == "__new__" {
+                                let f = ap_obj::PyObject::new(
+                                    ap_obj::ObjKind::BuiltinFn,
+                                    "__object_new__",
+                                );
+                                *f.slice_parts.borrow_mut() = vec![subject.clone()];
+                                return Ok(Some(Value::Obj(f)));
+                            }
+                        }
+                        return Ok(None);
+                    }
+                }
                 let mro = subj_t.mro.borrow();
                 let mut after = false;
                 for cls in mro.iter() {
@@ -4840,6 +5034,13 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                     }
                 }
                 Ok(None)
+            }
+            ap_obj::ObjKind::Opaque if o.name == "NoneType" || o.name == "none" => {
+                // None.__new__ (enum._find_new_ compares it in a set).
+                Ok(Some(Value::Obj(ap_obj::PyObject::new(
+                    ap_obj::ObjKind::BuiltinFn,
+                    "NoneType.__new__",
+                ))))
             }
             ap_obj::ObjKind::Namespace | ap_obj::ObjKind::NamedTuple => {
                 if let Some(v) = o.attrs.borrow().get(&Value::Str(PyString::new(name))) {
@@ -4935,6 +5136,13 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                     }
                     Ok(Some(Value::Dict(d)))
                 }
+                // 02.04a fix pass: __new__ reads on interned name-Types
+                // (typing.py machinery: type.__new__(Meta, ...), and the
+                // int.__new__ probe during Protocol class creation).
+                "__new__" => Ok(Some(Value::Obj(ap_obj::PyObject::new(
+                    ap_obj::ObjKind::BuiltinFn,
+                    "type.__new__",
+                )))),
                 // float.fromhex (V068): builtin marker dispatched by name.
                 "fromhex" if o.name == "float" => {
                     let m = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "float.fromhex");
@@ -4970,7 +5178,12 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
         | Value::Tuple(_)
         | Value::Set(_)
         | Value::Frozen(_) => {
-            if builtin_method_exists(name) {
+            // 02.04a fix pass (BUG-B): bind ANY method-name read on a builtin
+            // value — the methods.rs dispatch table owns arity/shape errors
+            // at call time. The old hand-written allowlist dropped names the
+            // table handles (set.discard: methods.rs:527), turning method
+            // calls into AttributeError.
+            if builtin_method_exists(name) || crate::methods::builtin_method_routed(name) {
                 let m =
                     ap_obj::PyObject::with_self(ap_obj::ObjKind::BoundMethod, name, obj.clone());
                 Ok(Some(Value::Obj(m)))

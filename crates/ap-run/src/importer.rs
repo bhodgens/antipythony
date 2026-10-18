@@ -123,6 +123,21 @@ fn sys_modules_get(name: &str) -> Option<Value> {
 
 fn sys_modules_insert(name: &str, v: &Value) {
     SYS_MODULES.with(|m| m.borrow_mut().insert(name.to_string(), v.clone()));
+    // 02.04a fix pass (BUG-C): keep the PYTHON-VISIBLE sys.modules dict in
+    // sync — it was a snapshot taken when sys was built, so
+    // `sys.modules[__name__]` inside a freshly-imported module (warnings.py
+    // line 96) raised KeyError for every module imported after sys.
+    SYS_MODULES_VIEW.with(|m| {
+        if let Some(d) = m.borrow().as_ref() {
+            let _ = d.set(s(name.to_string()), v.clone());
+        }
+    });
+}
+
+thread_local! {
+    /// The PyDict exposed as `sys.modules` (attached by attach_sys_extras);
+    /// kept live by sys_modules_insert / the exec_compiled removal path.
+    static SYS_MODULES_VIEW: RefCell<Option<std::rc::Rc<PyDict>>> = const { RefCell::new(None) };
 }
 
 // ---------------------------------------------------------------------------
@@ -313,7 +328,7 @@ pub fn import_module(interp: &Rc<Interpreter>, name: &str) -> EResult {
     // module object.
     if matches!(
         name,
-        "posixpath" | "genericpath" | "stat" | "keyword" | "linecache"
+        "posixpath" | "genericpath" | "stat" | "keyword" | "linecache" | "collections"
     ) {
         if let Some(m) = builtins_modules::get_or_make_module(interp, name) {
             augment_with_vendored(interp, name, &m);
@@ -339,13 +354,18 @@ pub fn import_module(interp: &Rc<Interpreter>, name: &str) -> EResult {
         return Ok(m);
     }
     if name == "_thread" {
-        let m = thread_stub_module();
+        let m = thread_stub_module(interp);
         sys_modules_insert("_thread", &m);
         return Ok(m);
     }
     if name == "_weakref" {
         let m = weakref_stub_module();
         sys_modules_insert("_weakref", &m);
+        return Ok(m);
+    }
+    if name == "_typing" {
+        let m = typing_stub_module(interp);
+        sys_modules_insert("_typing", &m);
         return Ok(m);
     }
     // 3. File finder, descending packages ("a.b.c" resolves through a, a.b).
@@ -458,7 +478,7 @@ fn exec_found(interp: &Rc<Interpreter>, name: &str, found: &Found) -> Result<(),
             );
             let _ = ns.set(s("__doc__"), Value::None);
             let v = Value::Obj(m.clone());
-            *m.module_ns.borrow_mut() = Some((*ns).clone());
+            *m.module_ns.borrow_mut() = Some(std::rc::Rc::new((*ns).clone()));
             sys_modules_insert(name, &v);
             Ok(())
         }
@@ -480,20 +500,30 @@ fn exec_compiled(
     // SHARE the ns dict (not a snapshot): the module object must observe
     // body-execution writes (interp bug #10 — the pre-execution clone made
     // every module attr invisible after import).
-    *m.module_ns.borrow_mut() = Some((*loaded.ns).clone());
+    // 02.04a fix pass (BUG-C): both the pre-body and post-body assignments
+    // must SHARE loaded.ns — the pre-body `.clone()` gave circular-import /
+    // self-referential reads (warnings.py: `_wm = sys.modules[__name__]`,
+    // then `_wm.filterwarnings`) an EMPTY snapshot; sys is a PyDict clone so
+    // the clone never sees body writes.
+    *m.module_ns.borrow_mut() = Some(loaded.ns.clone());
     // BEFORE body execution (design: CPython circular-import semantics).
     sys_modules_insert(name, &v);
     let stmts = module_stmts(compiled, &loaded.reg, &loaded.frame);
     let outcome = run_loaded(interp, &loaded, &stmts);
     // Refresh the module's namespace view after body execution (the module
     // stores a by-value PyDict; body writes landed in `loaded.ns`).
-    *m.module_ns.borrow_mut() = Some((*loaded.ns).clone());
+    *m.module_ns.borrow_mut() = Some(loaded.ns.clone());
     match outcome {
         Ok(()) => Ok(()),
         Err(f) => {
             // Failed body: CPython REMOVES the module from sys.modules.
             SYS_MODULES.with(|s| {
                 s.borrow_mut().remove(name);
+            });
+            SYS_MODULES_VIEW.with(|v| {
+                if let Some(d) = v.borrow().as_ref() {
+                    let _ = d.pop(&s(name.to_string()));
+                }
             });
             Err(f)
         }
@@ -524,7 +554,23 @@ pub fn attach_sys_extras(_interp: &Rc<Interpreter>, sys_m: &Value) {
         let mut ns_ref = o.module_ns.borrow_mut();
         if let Some(ns) = &mut *ns_ref {
             let _ = ns.set(s("path"), sys_path_value());
-            let _ = ns.set(s("modules"), sys_modules_value());
+            let view = match ns.get(&s("modules")) {
+                Some(Value::Dict(d)) => d,
+                _ => {
+                    let d = PyDict::new();
+                    let _ = ns.set(s("modules"), Value::Dict(d.clone()));
+                    d
+                }
+            };
+            // Pre-seed with the current registry, then keep the view live.
+            SYS_MODULES.with(|m| {
+                for (k, v) in m.borrow().iter() {
+                    let _ = view.set(s(k.clone()), v.clone());
+                }
+            });
+            SYS_MODULES_VIEW.with(|slot| {
+                *slot.borrow_mut() = Some(view);
+            });
         }
     }
 }
@@ -719,13 +765,13 @@ fn builtins_module(interp: &Rc<Interpreter>) -> Value {
     }
     let _ = ns.set(s("__name__"), s("builtins"));
     let _ = ns.set(s("__doc__"), Value::None);
-    *m.module_ns.borrow_mut() = Some((*ns).clone());
+    *m.module_ns.borrow_mut() = Some(std::rc::Rc::new((*ns).clone()));
     Value::Obj(m)
 }
 
 /// `_thread` stub: reprlib (and traceback filtering) call `_thread.get_ident()`.
 /// Single-threaded v0: a monotonic counter keyed per call site is enough.
-fn thread_stub_module() -> Value {
+fn thread_stub_module(interp: &crate::frame::Interpreter) -> Value {
     static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let m = PyObject::new(ap_obj::ObjKind::Module, "_thread");
     let ns = PyDict::new();
@@ -741,7 +787,26 @@ fn thread_stub_module() -> Value {
         Value::Int(ap_obj::Int::from_i64(ident as i64)),
     );
     let _ = ns.set(s("allocate_lock"), Value::None);
-    *m.module_ns.borrow_mut() = Some((*ns).clone());
+    // 02.04a fix pass (BUG-C): RLock — _py_warnings does `with _lock:`.
+    // v0: a no-op context manager (single-threaded runtime; real locking is
+    // a Plan-04 surface).
+    let lock_type = ap_obj::classes::TypeObject::create(
+        "RLock".to_string(),
+        "RLock".to_string(),
+        vec![crate::classes::object_class(interp)],
+        PyDict::new(),
+        ap_obj::classes::TypeFlags::default(),
+        None,
+    )
+    .expect("RLock mro");
+    let enter_fn = PyObject::new(ap_obj::ObjKind::BuiltinFn, "__ap_rlock_enter__");
+    let exit_fn = PyObject::new(ap_obj::ObjKind::BuiltinFn, "__ap_rlock_exit__");
+    let _ = lock_type.dict.set(s("__enter__"), Value::Obj(enter_fn));
+    let _ = lock_type.dict.set(s("__exit__"), Value::Obj(exit_fn));
+    let lock_class_value = ap_obj::classes::make_class_value(lock_type);
+    let _ = ns.set(s("RLock"), lock_class_value.clone());
+    let _ = ns.set(s("allocate_lock"), lock_class_value);
+    *m.module_ns.borrow_mut() = Some(std::rc::Rc::new((*ns).clone()));
     Value::Obj(m)
 }
 
@@ -767,7 +832,42 @@ fn weakref_stub_module() -> Value {
     for t in ["CallableProxyType", "ProxyType", "ReferenceType"] {
         let _ = ns.set(s(t), s(t));
     }
-    *m.module_ns.borrow_mut() = Some((*ns).clone());
+    *m.module_ns.borrow_mut() = Some(std::rc::Rc::new((*ns).clone()));
+    Value::Obj(m)
+}
+
+/// `_typing` stub: typing.py hard-imports the Caccelerators at module scope.
+/// v0: callable markers + interned types; the runtime gates never exercise
+/// real TypeVar substitution (documented gap).
+fn typing_stub_module(interp: &crate::frame::Interpreter) -> Value {
+    let m = PyObject::new(ap_obj::ObjKind::Module, "_typing");
+    let ns = PyDict::new();
+    let _ = ns.set(s("__name__"), s("_typing"));
+    let _ = ns.set(s("__doc__"), Value::None);
+    for n in ["_idfunc", "TypeVar", "ParamSpec", "TypeVarTuple", "Union"] {
+        let _ = ns.set(s(n), marker_fn(&format!("_typing.{n}")));
+    }
+    for t in [
+        "ParamSpecArgs",
+        "ParamSpecKwargs",
+        "TypeAliasType",
+        "NoDefault",
+    ] {
+        let _ = ns.set(s(t), crate::builtins::interned_type(interp, t));
+    }
+    // Generic must be a class-derivable base: a real (object-derived)
+    // TypeObject so `class Protocol(Generic)` and subclasses synthesize MROs.
+    let generic = ap_obj::classes::TypeObject::create(
+        "Generic".to_string(),
+        "Generic".to_string(),
+        vec![crate::classes::object_class(interp)],
+        PyDict::new(),
+        ap_obj::classes::TypeFlags::default(),
+        None,
+    )
+    .expect("Generic mro");
+    let _ = ns.set(s("Generic"), ap_obj::classes::make_class_value(generic));
+    *m.module_ns.borrow_mut() = Some(std::rc::Rc::new((*ns).clone()));
     Value::Obj(m)
 }
 
@@ -793,7 +893,7 @@ fn link_parent_attr(full: &str, m: &Value) {
 /// Copy names the native module lacks from the vendored CPython file's
 /// executed namespace into it (02.04a augmentation — keeps native identity,
 /// adds private helpers like posixpath._splitext).
-fn augment_with_vendored(interp: &Rc<Interpreter>, name: &str, m: &Value) {
+pub(crate) fn augment_with_vendored(interp: &Rc<Interpreter>, name: &str, m: &Value) {
     // Already augmented?
     if let Value::Obj(o) = m {
         if let Some(ns) = &*o.module_ns.borrow() {

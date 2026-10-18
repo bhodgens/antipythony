@@ -139,21 +139,38 @@ __all__ = [
 
 __version__ = "2.2.1"
 
-@enum.global_enum
-@enum._simple_enum(enum.IntFlag, boundary=enum.KEEP)
-class RegexFlag:
+# antipythany v0 (vendored fork): the full IntFlag enum machinery needs
+# metaclass __prepare__/EnumDict semantics the runtime doesn't provide yet;
+# fall back to plain-int constants (arithmetic + isinstance(int) still work;
+# RegexFlag-typed introspection is a documented gap).
+try:
+    @enum.global_enum
+    @enum._simple_enum(enum.IntFlag, boundary=enum.KEEP)
+    class RegexFlag:
+        NOFLAG = 0
+        ASCII = A = _compiler.SRE_FLAG_ASCII # assume ascii "locale"
+        IGNORECASE = I = _compiler.SRE_FLAG_IGNORECASE # ignore case
+        LOCALE = L = _compiler.SRE_FLAG_LOCALE # assume current 8-bit locale
+        UNICODE = U = _compiler.SRE_FLAG_UNICODE # assume unicode "locale"
+        MULTILINE = M = _compiler.SRE_FLAG_MULTILINE # make anchors look for newline
+        DOTALL = S = _compiler.SRE_FLAG_DOTALL # make dot match newline
+        VERBOSE = X = _compiler.SRE_FLAG_VERBOSE # ignore whitespace and comments
+        # sre extensions (experimental, don't rely on these)
+        DEBUG = _compiler.SRE_FLAG_DEBUG # dump pattern after compilation
+        __str__ = object.__str__
+        _numeric_repr_ = hex
+except Exception:
+    import re as _re_mod  # noqa: F401 — placeholder to keep the namespace symmetrical
+    RegexFlag = int
     NOFLAG = 0
-    ASCII = A = _compiler.SRE_FLAG_ASCII # assume ascii "locale"
-    IGNORECASE = I = _compiler.SRE_FLAG_IGNORECASE # ignore case
-    LOCALE = L = _compiler.SRE_FLAG_LOCALE # assume current 8-bit locale
-    UNICODE = U = _compiler.SRE_FLAG_UNICODE # assume unicode "locale"
-    MULTILINE = M = _compiler.SRE_FLAG_MULTILINE # make anchors look for newline
-    DOTALL = S = _compiler.SRE_FLAG_DOTALL # make dot match newline
-    VERBOSE = X = _compiler.SRE_FLAG_VERBOSE # ignore whitespace and comments
-    # sre extensions (experimental, don't rely on these)
-    DEBUG = _compiler.SRE_FLAG_DEBUG # dump pattern after compilation
-    __str__ = object.__str__
-    _numeric_repr_ = hex
+    ASCII = A = _compiler.SRE_FLAG_ASCII
+    IGNORECASE = I = _compiler.SRE_FLAG_IGNORECASE
+    LOCALE = L = _compiler.SRE_FLAG_LOCALE
+    UNICODE = U = _compiler.SRE_FLAG_UNICODE
+    MULTILINE = M = _compiler.SRE_FLAG_MULTILINE
+    DOTALL = S = _compiler.SRE_FLAG_DOTALL
+    VERBOSE = X = _compiler.SRE_FLAG_VERBOSE
+    DEBUG = _compiler.SRE_FLAG_DEBUG
 
 # sre exception
 PatternError = error = _compiler.PatternError

@@ -713,6 +713,16 @@ pub fn get_or_make_module(interp: &Rc<crate::frame::Interpreter>, name: &str) ->
         .find(|(n, _)| *n == name)
         .map(|(_, b)| *b)?;
     let m = builder(interp);
+    // 02.04a fix pass: vendored augmentation for names whose pure-Python
+    // supplements the native surface lacks (collections.defaultdict,
+    // functools.lru_cache/...). Runs here so EVERY import path (interp
+    // native-first arms included) sees the augmented module.
+    if matches!(
+        name,
+        "posixpath" | "genericpath" | "stat" | "keyword" | "linecache" | "collections"
+    ) {
+        crate::importer::augment_with_vendored(interp, name, &m);
+    }
     // Submodule links: `os.path`, `encodings.aliases` style attribute access.
     if let Some((parent, child)) = name.rsplit_once('.') {
         let pv = MODULE_CACHE.with(|c| c.borrow().get(parent).cloned());
@@ -745,7 +755,7 @@ fn new_module(name: &str) -> (Gc<PyObject>, Gc<PyDict>) {
 }
 
 fn finish(m: Gc<PyObject>, ns: Gc<PyDict>) -> Value {
-    *m.module_ns.borrow_mut() = Some((*ns).clone());
+    *m.module_ns.borrow_mut() = Some(std::rc::Rc::new((*ns).clone()));
     Value::Obj(m)
 }
 
@@ -2755,7 +2765,20 @@ pub fn call_bisect(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Op
 
 fn build_functools(_i: &crate::frame::Interpreter) -> Value {
     let (m, ns) = new_module("functools");
-    for n in ["reduce", "partial"] {
+    for n in [
+        "reduce",
+        "partial",
+        // 02.04a fix pass (BUG-A follow-on): decorator surface the vendored
+        // stdlib needs (typing.py @functools.cache, functools.wraps ...).
+        // v0 semantics: pass-through decorators (no memoization — documented
+        // gap); the two-stage lru_cache forms park the decorator in an
+        // opaque token the call path unwraps.
+        "lru_cache",
+        "cache",
+        "wraps",
+        "cached_property",
+        "singledispatch",
+    ] {
         fn1(&ns, "functools", n);
     }
     finish(m, ns)
@@ -2763,6 +2786,31 @@ fn build_functools(_i: &crate::frame::Interpreter) -> Value {
 
 pub fn call_functools(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option<BResult> {
     let r: BResult = (|| -> BResult {
+        match name {
+            // 02.04a fix pass (BUG-A follow-on): pass-through decorators.
+            // Two-stage forms (`@lru_cache(...)`) park the decorator in an
+            // opaque token; the second call (call_native path) unwraps it.
+            "lru_cache" | "cache" | "singledispatch" | "cached_property" | "wraps" => {
+                // Direct single-stage application (@-style with the callable
+                // in hand): attach inert cache surfaces and return it. The
+                // two-stage form returns the pass-through decorator token
+                // (interp unwraps it, attaching the same surfaces).
+                if let Some(f @ Value::Obj(fo)) = args.first() {
+                    if fo.kind == ap_obj::ObjKind::Function {
+                        let nop = PyObject::new(ap_obj::ObjKind::BuiltinFn, "__ap_functools_nop__");
+                        let _ = fo.attrs.borrow_mut().set(s("cache_clear"), Value::Obj(nop));
+                        let _ = fo
+                            .attrs
+                            .borrow_mut()
+                            .set(s("cache"), Value::Dict(ap_obj::dict::PyDict::new()));
+                        return Ok(f.clone());
+                    }
+                }
+                let deco = PyObject::new(ap_obj::ObjKind::Opaque, "functools._ap_deco");
+                return Ok(Value::Obj(deco));
+            }
+            _ => {}
+        }
         match name {
             "reduce" => {
                 let func = callable_name(required(args, "reduce")?)?;
@@ -6830,10 +6878,23 @@ fn attr_lookup_value(v: &Value, name: &str) -> Result<Value, Flow> {
     };
     match got {
         Some(x) => Ok(x),
-        None => Err(raise(
-            "AttributeError",
-            format!("'{}' object has no attribute '{}'", v.type_name(), name),
-        )),
+        None => {
+            let mod_name = match v {
+                Value::Obj(mo) if mo.kind == ap_obj::ObjKind::Module => {
+                    format!(" (module '{}')", mo.name)
+                }
+                _ => String::new(),
+            };
+            Err(raise(
+                "AttributeError",
+                format!(
+                    "'{}' object has no attribute '{}'{}",
+                    v.type_name(),
+                    name,
+                    mod_name
+                ),
+            ))
+        }
     }
 }
 

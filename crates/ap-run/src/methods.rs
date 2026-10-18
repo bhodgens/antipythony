@@ -394,6 +394,32 @@ pub fn subscript_del(obj: &Value, key: &Value) -> Result<(), Flow> {
 
 /// Method call on a builtin receiver. Returns None when the method name is
 /// unknown (caller raises AttributeError).
+/// 02.04a fix pass (BUG-B): does `methods::call_method` (or the builtins
+/// fallback) route `name` on a builtin receiver? Used by the attribute layer
+/// to decide whether `obj.name` binds a BoundMethod. Superset is fine —
+/// receiver-shape errors surface at dispatch.
+pub fn builtin_method_routed(name: &str) -> bool {
+    // Exactly the names with (Value::X, name) arms in call_method.
+    matches!(
+        name,
+        "upper"
+            | "lower"
+            | "join"
+            | "partition"
+            | "encode"
+            | "decode"
+            | "append"
+            | "clear"
+            | "keys"
+            | "values"
+            | "items"
+            | "add"
+            | "copy"
+            | "discard"
+            | "set_int_max_str_digits"
+    )
+}
+
 pub fn call_method(
     interp: &Interpreter,
     obj: &Value,

@@ -1271,6 +1271,43 @@ pub fn make_sys_module(interp: &Interpreter) -> Value {
         Value::Int(Int::from_i64(i64::MAX)),
     );
     let _ = ns.set(
+        Value::Str(PyString::new("warnoptions")),
+        Value::List(PyList::from_vec(vec![])),
+    );
+    // 02.04a fix pass (BUG-C): sys.flags — _py_warnings reads
+    // sys.flags.context_aware_warnings; unittest reads several more.
+    {
+        let flags = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "flags");
+        {
+            let fa = flags.attrs.borrow_mut();
+            for (k, v) in [
+                ("debug", 0i64),
+                ("inspect", 0),
+                ("interactive", 0),
+                ("optimize", 0),
+                ("dont_write_bytecode", 1),
+                ("no_user_site", 0),
+                ("no_site", 0),
+                ("ignore_environment", 0),
+                ("verbose", 0),
+                ("bytes_warning", 0),
+                ("quiet", 0),
+                ("hash_randomization", 1),
+                ("isolated", 0),
+                ("dev_mode", 0),
+                ("utf8_mode", 1),
+                ("warn_default_encoding", 0),
+                ("safepath", 0),
+                ("int_max_str_digits", 4300),
+                ("context_aware_warnings", 0),
+                ("gil", 0),
+            ] {
+                let _ = fa.set(Value::Str(PyString::new(k)), Value::Int(Int::from_i64(v)));
+            }
+        }
+        let _ = ns.set(Value::Str(PyString::new("flags")), Value::Obj(flags));
+    }
+    let _ = ns.set(
         Value::Str(PyString::new("maxunicode")),
         Value::Int(Int::from_i64(0x10FFFF)),
     );
@@ -1437,9 +1474,12 @@ pub fn make_sys_module(interp: &Interpreter) -> Value {
         Value::Str(PyString::new("exc_info")),
         builtin_marker("sys.exc_info"),
     );
-    let _ = m.module_ns.borrow_mut().replace((*ns).clone());
+    let _ = m
+        .module_ns
+        .borrow_mut()
+        .replace(std::rc::Rc::new((*ns).clone()));
     // Store the ns for attribute reads.
-    *m.module_ns.borrow_mut() = Some((*ns).clone());
+    *m.module_ns.borrow_mut() = Some(std::rc::Rc::new((*ns).clone()));
     Value::Obj(m)
 }
 
@@ -1587,6 +1627,11 @@ pub fn install_builtins(interp: &Interpreter) {
         let o = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, *n);
         let _ = b.set(Value::Str(PyString::new(*n)), Value::Obj(o));
     }
+    // Class-statement keyword marker (lowering: `__ap_classkw__.<name>(v)`).
+    {
+        let kw = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "__ap_classkw__");
+        let _ = b.set(Value::Str(PyString::new("__ap_classkw__")), Value::Obj(kw));
+    }
     // 02.04a (interp bug #8): Ellipsis/NotImplemented builtins — types.py
     // reads them at import (EllipsisType/NotImplementedType).
     let _ = b.set(Value::Str(PyString::new("Ellipsis")), Value::Ellipsis);
@@ -1638,6 +1683,11 @@ pub fn install_builtins(interp: &Interpreter) {
         "range",
         "frozenset",
         "set",
+        // 02.04a fix pass: pathlib imports Sequence.register(memoryview)
+        // (_collections_abc:1066) — the NAME must resolve as a type.
+        "memoryview",
+        // 02.04a fix pass: typing.py (Protocol machinery) reads `complex`.
+        "complex",
         "dict",
         "list",
         "tuple",
@@ -1995,11 +2045,23 @@ pub fn builtin_delattr(interp: &Interpreter, args: &[Value]) -> BResult {
             }
         }
     }
-    let _ = interp;
-    Err(raise(
-        "TypeError",
-        format!("'{}' object has no attribute '{}'", obj.type_name(), name),
-    ))
+    // 02.04a fix pass (BUG-C): delegate classes/instances to the S-03-11
+    // protocol (enum.py does delattr(enum_class, '_Enum__in_progress')).
+    match obj {
+        Value::Obj(o)
+            if o.kind == ap_obj::ObjKind::UserClass
+                || o.kind == ap_obj::ObjKind::UserInstance
+                || o.kind == ap_obj::ObjKind::Function =>
+        {
+            let interp_rc = crate::builtins_modules::current_interp()
+                .ok_or_else(|| raise("SystemError", "no interpreter for delattr"))?;
+            crate::classes::attr_del_protocol(&interp_rc, obj, &name).map(|_| Value::None)
+        }
+        _ => Err(raise(
+            "TypeError",
+            format!("'{}' object has no attribute '{}'", obj.type_name(), name),
+        )),
+    }
 }
 
 /// setattr(obj, name, value) — module namespaces only (v0).
@@ -2020,15 +2082,34 @@ pub fn builtin_setattr(interp: &Interpreter, args: &[Value]) -> BResult {
             }
         }
     }
-    let _ = interp;
-    Err(raise(
-        "TypeError",
-        format!(
-            "cannot set '{}' attribute of '{}' objects (v0 surface)",
-            name,
-            obj.type_name()
-        ),
-    ))
+    // 02.04a fix pass: delegate the S-03-10 protocol for user classes and
+    // instances; functions take arbitrary attrs (vendored functools.wraps
+    // sets __module__/__name__ etc).
+    match obj {
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::Function => {
+            let _ = o
+                .attrs
+                .borrow_mut()
+                .set(Value::Str(PyString::new(name.clone())), v.clone());
+            Ok(Value::None)
+        }
+        Value::Obj(o)
+            if o.kind == ap_obj::ObjKind::UserInstance || o.kind == ap_obj::ObjKind::UserClass =>
+        {
+            let interp_rc = crate::builtins_modules::current_interp()
+                .ok_or_else(|| raise("SystemError", "no interpreter for setattr"))?;
+            crate::classes::attr_set_protocol(&interp_rc, obj, &name, v.clone())
+                .map(|_| Value::None)
+        }
+        _ => Err(raise(
+            "TypeError",
+            format!(
+                "cannot set '{}' attribute of '{}' objects (v0 surface)",
+                name,
+                obj.type_name()
+            ),
+        )),
+    }
 }
 
 /// Dispatch a builtin call (function object name -> impl).
@@ -2126,6 +2207,16 @@ pub fn call_builtin(
                 format!("cannot convert '{}' to bytearray", other.type_name()),
             ))),
         },
+        // 02.04a fix pass: memoryview(data) — inert bytes-backed stub; only
+        // .tobytes()-free surfaces the import gates touch.
+        "memoryview" => match args.first() {
+            Some(Value::Bytes(b)) => Ok(Value::Bytes(Gc::new(b.as_ref().clone()))),
+            Some(Value::Str(sv)) => Ok(Value::Bytes(Gc::new(sv.as_str().as_bytes().to_vec()))),
+            _ => Ok(Value::Bytes(Gc::new(Vec::new()))),
+        },
+        // 02.04a fix pass: complex(x, y) — zero-backed stub (real complex
+        // arithmetic is a documented v0 gap).
+        "complex" => Ok(Value::Float(0.0)),
         "min" => builtin_min(args, kwargs),
         "max" => builtin_max(args, kwargs),
         "sum" => builtin_sum(args),

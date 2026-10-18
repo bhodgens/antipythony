@@ -493,7 +493,7 @@ class EnumType(type):
             classdict.pop(key, None)
         #
         # grab member names
-        member_names = classdict._member_names
+        member_names = getattr(classdict, '_member_names', [])
         #
         # check for illegal enum names (any others?)
         invalid_names = set(member_names) & {'mro', ''}

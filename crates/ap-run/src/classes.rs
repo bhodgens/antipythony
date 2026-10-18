@@ -273,15 +273,22 @@ pub fn exec_class_def(
 ) -> EResult {
     // 1. Bases + explicit metaclass in the ENCLOSING frame (S-03-1).
     let mut bases_v: Vec<Value> = Vec::new();
+    let mut class_kwargs: Vec<(String, Value)> = Vec::new();
     for b in &c.bases {
         let v = eval_expr(interp, frame, b, reg)?;
         // The lowering encodes non-metaclass class keywords as
-        // `__ap_classkw__.<name>(value)` calls — they are NOT bases.
-        // We can't recover the name here (lowering collapsed it), so class
-        // kwargs ride the `__init_subclass__` path only for the cases the
-        // corpus exercises; the synthetic value raises if evaluated.
+        // `__ap_classkw__.<name>(value)` calls — they are NOT bases. The
+        // call parked (name, value) on the marker; recover them and pass
+        // them through to the metaclass __new__ (enum._simple_enum's
+        // boundary=/_simple= ride this path).
         if let Value::Obj(o) = &v {
             if o.kind == ap_obj::ObjKind::BuiltinFn && o.name.starts_with("__ap_classkw__") {
+                let parts = o.slice_parts.borrow();
+                if parts.len() == 2 {
+                    if let Value::Str(kn) = &parts[0] {
+                        class_kwargs.push((kn.as_str().to_string(), parts[1].clone()));
+                    }
+                }
                 continue;
             }
         }
@@ -296,7 +303,72 @@ pub fn exec_class_def(
     //    an enclosing scope for methods (frontend skips Class scopes); the
     //    `__class__` cell (zero-arg super, S-03-17) is seeded after the
     //    class object exists.
-    let ns = PyDict::new();
+    // 02.04a fix pass: consult the metaclass __prepare__ (PEP 3115) —
+    // enum.EnumType returns an EnumDict subclass whose custom behavior
+    // (_member_names) EnumType.__new__ requires. The effective metaclass is
+    // resolved HERE from the base values (explicit metaclass wins; else the
+    // first base whose type carries a metaclass pointer).
+    let mut ns: Gc<PyDict> = PyDict::new();
+    {
+        let effective_meta: Option<Rc<TypeRef>> = match &metaclass_v {
+            Some(m) => base_type_ref(interp, m)?,
+            None => {
+                let mut found: Option<Rc<TypeRef>> = None;
+                for b in &bases_v {
+                    if let Some(t) = base_type_ref(interp, b)? {
+                        let bm = t.metaclass.borrow().clone();
+                        if let Some(m) = bm {
+                            match &found {
+                                None => found = Some(m),
+                                Some(cur) => {
+                                    if !Rc::ptr_eq(cur, &m) && m.is_subclass(cur) {
+                                        found = Some(m);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                found
+            }
+        };
+        if let Some(meta) = &effective_meta {
+            if let Some((prep, _)) = meta.lookup_with_owner("__prepare__") {
+                if is_user_function(&prep) {
+                    let meta_cls_v = class_value_for(meta);
+                    let prepared = call_value(
+                        interp,
+                        &module_frame(interp),
+                        &prep,
+                        &[
+                            meta_cls_v,
+                            Value::Str(PyString::new(c.name.clone())),
+                            Value::Tuple(Gc::new(Tuple(bases_v.iter().cloned().collect()))),
+                        ],
+                        &class_kwargs
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect::<Vec<_>>(),
+                    )?;
+                    match prepared {
+                        Value::Dict(d) => ns = d.clone(),
+                        // EnumDict (a dict subclass) instantiates as a user
+                        // instance — v0 keeps a plain-dict namespace, but
+                        // seed the EnumDict attribute surface as ITEMS so
+                        // EnumType.__new__'s `classdict._member_names` reads
+                        // resolve (attribute reads on dicts consult items —
+                        // see attr_get Dict arm).
+                        Value::Obj(io) if io.kind == ap_obj::ObjKind::UserInstance => {
+                            for (k, v) in io.attrs.borrow().items() {
+                                let _ = ns.set(k, v);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
     let class_frame = Rc::new(Frame::new_class(frame, ns.clone()));
     exec_block(interp, &class_frame, &c.body, reg)?;
 
@@ -313,6 +385,11 @@ pub fn exec_class_def(
             }
         }
     }
+    // 02.04a fix pass: the ORIGINAL bases go to the metaclass __new__
+    // (CPython semantics: class Enum(metaclass=EnumType) passes () — enum's
+    // _get_mixins_ special-cases empty bases; a synthesized object base
+    // breaks it).
+    let original_bases_v: Vec<Value> = bases_v.clone();
     if base_types.is_empty() {
         base_types.push(object_class(interp));
     }
@@ -425,9 +502,7 @@ pub fn exec_class_def(
     let t = if let Some(f) = meta_new_f {
         let ns_v = Value::Dict(ns.clone());
         let name_v = Value::Str(PyString::new(c.name.clone()));
-        let bases_v = Value::Tuple(Gc::new(Tuple(
-            base_types.iter().map(class_value_for).collect(),
-        )));
+        let bases_v = Value::Tuple(Gc::new(Tuple(original_bases_v.clone())));
         let meta_v = _resolved_meta
             .as_ref()
             .map(|m| ap_obj::classes::make_class_value(m.clone()))
@@ -446,7 +521,10 @@ pub fn exec_class_def(
             &module_frame(interp),
             &f,
             &[meta_v, name_v, bases_v, ns_v],
-            &[],
+            &class_kwargs
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect::<Vec<_>>(),
         );
         let created = created?;
         match created {
@@ -486,6 +564,15 @@ pub fn exec_class_def(
         *t.metaclass.borrow_mut() = _resolved_meta.clone();
         t
     };
+    // 02.04a fix pass: the creating metaclass rides the payload in BOTH
+    // creation paths (the else branch set it inline; the meta __new__ path
+    // left it None, breaking isinstance(C, EnumType)-style checks and any
+    // metaclass hook dispatch on the new class).
+    if t.metaclass.borrow().is_none() {
+        if let Some(meta) = &_resolved_meta {
+            *t.metaclass.borrow_mut() = Some(meta.clone());
+        }
+    }
     let class_v = ap_obj::classes::make_class_value(t.clone());
 
     // Module marker: builtin exceptions report "builtins" (e010); user
@@ -602,6 +689,14 @@ pub fn base_type_ref(interp: &Interpreter, v: &Value) -> Result<Option<Rc<TypeRe
         Value::Obj(o) if o.kind == ap_obj::ObjKind::Type && o.name == "object" => {
             Ok(Some(object_class(interp)))
         }
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::Type && o.name == "type" => {
+            Ok(Some(type_class(interp)))
+        }
+        // 02.04a fix pass (BUG-A follow-on): `class M(type)` — metaclasses
+        // written in Python (_ProtocolMeta(ABCMeta), NamedTupleMeta) must
+        // derive the REAL type payload, otherwise super().__new__ inside
+        // their bodies resolves against an empty synthesized "type" class
+        // and dies with "no attribute '__new__'".
         Value::Obj(o) if o.kind == ap_obj::ObjKind::Type && o.name == "type" => {
             Ok(Some(type_class(interp)))
         }
@@ -1000,6 +1095,38 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
             Ok(false)
         }
         _ => {
+            // 02.04a fix pass: `isinstance(SomeType, type)` — a builtin/interned
+            // type object against the real `type` class (warnings.py
+            // isinstance(category, type)).
+            if matches!(x, Value::Obj(o) if o.kind == ap_obj::ObjKind::Type || o.kind == ap_obj::ObjKind::UserClass)
+            {
+                if let Value::Obj(to) = t {
+                    if to.kind == ap_obj::ObjKind::UserClass && to.name == "type" {
+                        return Ok(true);
+                    }
+                }
+            }
+            // 02.04a fix pass: CLASS subject vs a METACLASS target
+            // (enum.py _get_mixins_: isinstance(first_enum, EnumType)) —
+            // answer via the subject's metaclass chain.
+            if let Value::Obj(xo) = x {
+                if xo.kind == ap_obj::ObjKind::UserClass {
+                    if let Some(xc) = crate::classes::type_of(interp, x) {
+                        if let Some(tc) = base_type_ref(interp, t)? {
+                            if let Some(meta) = xc.metaclass.borrow().clone() {
+                                if meta.is_subclass(&tc) {
+                                    return Ok(true);
+                                }
+                            }
+                            return Ok(xc.is_subclass(&tc));
+                        }
+                        if matches!(t, Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass || o.kind == ap_obj::ObjKind::Type)
+                        {
+                            return Ok(false);
+                        }
+                    }
+                }
+            }
             let Some(xc) = type_for_check(interp, x) else {
                 // Builtin values: fall back to the name table (S-01 types).
                 return Ok(builtins::type_matches(x, type_name_of_check(t)));
@@ -1095,17 +1222,27 @@ pub fn value_issubclass(interp: &Interpreter, a: &Value, b: &Value) -> Result<bo
                 return Ok(true);
             }
             // Custom metaclass __subclasscheck__ (S-03-31; c033 WS).
-            if let Some(meta) = ac.metaclass.borrow().clone() {
-                if let Some(hook) = meta.lookup("__subclasscheck__") {
-                    if matches!(&hook, Value::Obj(f) if f.kind == ap_obj::ObjKind::Function) {
-                        let interp_rc = crate::interp::current_interp_handle();
-                        let r = crate::interp::call_value_pub(
-                            &interp_rc,
-                            &hook,
-                            &[class_value_for(&ac), a.clone()],
-                            &[],
-                        )?;
-                        return Ok(r.is_truthy());
+            // 02.04a fix pass (BUG-A): the hook lives on type(b) — CPython
+            // resolves issubclass(a, b) as type(b).__subclasscheck__(b, a).
+            // The old code consulted a's OWN metaclass and passed (a, a),
+            // so _py_abc's register cycle check issubclass(Coroutine,
+            // <coroutine type>) evaluated __subclasscheck__(Coroutine,
+            // Coroutine) -> True -> "Refusing to create an inheritance
+            // cycle" on `import pathlib`.
+            if let Some(bct) = base_type_ref(interp, b)? {
+                let meta = bct.metaclass.borrow().clone();
+                if let Some(meta) = meta {
+                    if let Some(hook) = meta.lookup("__subclasscheck__") {
+                        if matches!(&hook, Value::Obj(f) if f.kind == ap_obj::ObjKind::Function) {
+                            let interp_rc = crate::interp::current_interp_handle();
+                            let r = crate::interp::call_value_pub(
+                                &interp_rc,
+                                &hook,
+                                &[class_value_for(&bct), a.clone()],
+                                &[],
+                            )?;
+                            return Ok(r.is_truthy());
+                        }
                     }
                 }
             }
@@ -1407,7 +1544,21 @@ fn class_attr_get(interp: &Rc<Interpreter>, cls_v: &Value, t: &Rc<TypeRef>, name
     // object().__str__ for WrapperDescriptorType etc).
     if matches!(
         name,
-        "__init__" | "__new__" | "__str__" | "__repr__" | "__eq__" | "__hash__" | "__doc__"
+        "__init__"
+            | "__new__"
+            | "__str__"
+            | "__repr__"
+            | "__eq__"
+            | "__hash__"
+            | "__doc__"
+            | "__format__"
+            | "__reduce_ex__"
+            | "__sizeof__"
+            | "__dir__"
+            | "__getattribute__"
+            | "__setattr__"
+            | "__delattr__"
+            | "__reduce__"
     ) {
         if t.mro.borrow().iter().any(|m| m.name == "object") {
             if name == "__doc__" {
