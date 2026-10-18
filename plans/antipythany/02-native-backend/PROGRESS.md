@@ -399,3 +399,17 @@
   fstrings 34/35 (held), classes 27/33 (held), exceptions 15/15 (held).
   rust workspace 246/0 across 42 suites (was 212; +34 differential),
   pytest 1272 passed/0 failed. cargo fmt clean. NOT COMMITTED per protocol.
+
+## Leaf 02.08-full part 1 - COMPLETE (committed c298962)
+- stdlib 8/48 -> 16/48 (below the 20 target - remaining 32 need whole modules:
+  re engine, complex, importlib file machinery flips, io surfaces).
+- str rsplit ordering BUG fixed (was reversed). kwargs flow through
+  call_builtin_values. +34 differential (246 rust total). All gates held.
+- Taxonomy of remaining 32: re-dependent, complex-number, importlib-file
+  cases (pathlib-adjacent), deeper io.
+
+## QUEUE
+1. 02.04 GC (MMTk swap) - NEXT
+2. 02.08-full part 2: re engine (biggest single unlock), complex numbers
+3. 02.05 tier-1 (SPLIT per risks; + debug stack-depth)
+4. Plan 04 packaging (uv) -> T1 scrapy attempt
