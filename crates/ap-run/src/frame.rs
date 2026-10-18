@@ -43,6 +43,11 @@ pub struct Frame {
     pub class_cell: std::cell::RefCell<Option<CellSlot>>,
     /// Class-body frames: the class namespace (Some only on class frames).
     pub class_ns: Option<Gc<PyDict>>,
+    /// 02.03b: when `__prepare__` returned a dict-subclass INSTANCE
+    /// (enum.EnumDict), class-body stores route through its `__setitem__`
+    /// (the instance carries the member-tracking side effects) while reads
+    /// still hit the shared backing `class_ns` dict.
+    pub class_ns_inst: Option<Value>,
 }
 
 /// Where a local name lives.
@@ -69,6 +74,7 @@ impl Frame {
             class_qual_prefix: String::new(),
             class_cell: std::cell::RefCell::new(None),
             class_ns: None,
+            class_ns_inst: None,
         }
     }
 
@@ -96,6 +102,7 @@ impl Frame {
             class_qual_prefix: String::new(),
             class_cell: std::cell::RefCell::new(None),
             class_ns: None,
+            class_ns_inst: None,
         }
     }
 
@@ -115,6 +122,7 @@ impl Frame {
             class_qual_prefix: String::new(),
             class_cell: std::cell::RefCell::new(None),
             class_ns: None,
+            class_ns_inst: None,
         }
     }
 
@@ -136,6 +144,7 @@ impl Frame {
             class_qual_prefix: String::new(),
             class_cell: std::cell::RefCell::new(None),
             class_ns: Some(ns),
+            class_ns_inst: None,
         }
     }
 

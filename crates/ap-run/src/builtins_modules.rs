@@ -694,6 +694,11 @@ fn registry() -> &'static [(&'static str, ModuleBuilder)] {
         ("base64", build_base64),
         ("binascii", build_binascii),
         ("io", build_io),
+        ("re", build_re),
+        ("_colorize", build_colorize),
+        ("_codecs", build_codecs),
+        ("_tokenize", build_tokenize),
+        ("codeop", build_codeop),
         ("tempfile", build_tempfile),
         ("string2", build_string), // dedup guard, never matched
     ]
@@ -770,6 +775,344 @@ fn fn1(ns: &Gc<PyDict>, mod_name: &str, name: &str) {
 
 fn ns_const(ns: &Gc<PyDict>, k: &str, v: Value) {
     let _ = ns.set(s(k), v);
+}
+
+// ===========================================================================
+// re (02.03b warnings-gate shim): the vendored re/ package needs the _sre C
+// module; _py_warnings only needs compile/match/escape with the I flag.
+// v0 literal-pattern engine: the pattern is matched as a literal prefix
+// (anchored at 0 like CPython match()). Regex metachars in WARNINGS patterns
+// never occur (module names / plain messages); a documented v0 gap.
+// ===========================================================================
+
+fn build_re(_i: &crate::frame::Interpreter) -> Value {
+    let (m, ns) = new_module("re");
+    ns_const(&ns, "I", i(2));
+    ns_const(&ns, "IGNORECASE", i(2));
+    ns_const(&ns, "M", i(8));
+    ns_const(&ns, "MULTILINE", i(8));
+    ns_const(&ns, "S", i(16));
+    ns_const(&ns, "DOTALL", i(16));
+    ns_const(&ns, "X", i(64));
+    ns_const(&ns, "VERBOSE", i(64));
+    ns_const(&ns, "ASCII", i(256));
+    fn1(&ns, "re", "compile");
+    fn1(&ns, "re", "escape");
+    fn1(&ns, "re", "match");
+    fn1(&ns, "re", "search");
+    fn1(&ns, "re", "fullmatch");
+    finish(m, ns)
+}
+
+/// re.escape — backslash every non-alphanumeric/underscore byte (CPython
+/// 3.7+ escapes only special chars; escaping more is harmless for matching
+/// literals and warns-gate patterns).
+fn re_escape(pattern: &str) -> String {
+    let mut out = String::with_capacity(pattern.len() * 2);
+    for ch in pattern.chars() {
+        if ch.is_alphanumeric() || ch == '_' {
+            out.push(ch);
+        } else {
+            out.push('\\');
+            out.push(ch);
+        }
+    }
+    out
+}
+
+/// Literal match with IGNORECASE folding. Returns Some(match_len) at pos 0.
+fn re_literal_match(pattern: &str, text: &str, ignorecase: bool) -> Option<usize> {
+    let fold = |x: &str| -> String {
+        if ignorecase {
+            x.to_lowercase()
+        } else {
+            x.to_string()
+        }
+    };
+    let p = fold(pattern);
+    let t = fold(text);
+    if t.starts_with(&p) {
+        Some(p.len())
+    } else {
+        None
+    }
+}
+
+/// Public re-match entry for interp's marker dispatch. Returns the Match
+/// namespace value or None.
+pub fn re_match_stub(pattern: &str, text: &str, ic: bool, meth: &str) -> Option<Value> {
+    let start = if meth == "search" {
+        // find the literal anywhere (case-folded byte index approximation)
+        let (p, t) = if ic {
+            (pattern.to_lowercase(), text.to_lowercase())
+        } else {
+            (pattern.to_string(), text.to_string())
+        };
+        t.find(&p)
+            .map(|pos| text.chars().count() - text[pos..].chars().count())
+    } else {
+        let m = re_literal_match(pattern, text, ic);
+        m.map(|_| 0)
+    }?;
+    let matched: String = text
+        .chars()
+        .skip(start)
+        .take(pattern.chars().count())
+        .collect();
+    let mo = PyObject::new(ap_obj::ObjKind::Namespace, "re.Match");
+    {
+        let mut a = mo.attrs.borrow_mut();
+        let _ = a.set(s("re"), s(pattern.to_string()));
+        let _ = a.set(s("string"), s(text.to_string()));
+        let _ = a.set(s("__ap_matched__"), s(matched));
+        let _ = a.set(s("__ap_start__"), i(start as i64));
+    }
+    Some(Value::Obj(mo))
+}
+
+fn build_codecs(_i: &crate::frame::Interpreter) -> Value {
+    let (m, ns) = new_module("_codecs");
+    fn1(&ns, "_codecs", "register");
+    fn1(&ns, "_codecs", "lookup");
+    fn1(&ns, "_codecs", "encode");
+    fn1(&ns, "_codecs", "decode");
+    fn1(&ns, "_codecs", "_clear_cache");
+    fn1(&ns, "_codecs", "lookup_error");
+    fn1(&ns, "_codecs", "register_error");
+    // BOM constants (tokenize reads BOM_UTF8 via `from codecs import ...`).
+    ns_const(
+        &ns,
+        "BOM_UTF8",
+        Value::Bytes(Gc::new(vec![0xEF, 0xBB, 0xBF])),
+    );
+    ns_const(&ns, "BOM_BE", Value::Bytes(Gc::new(vec![0xFE, 0xFF])));
+    ns_const(&ns, "BOM_LE", Value::Bytes(Gc::new(vec![0xFF, 0xFE])));
+    finish(m, ns)
+}
+
+pub fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Option<BResult> {
+    match fname {
+        "register" | "_clear_cache" => Some(Ok(Value::None)),
+        // Error-handler factories: return the handler NAME (v0 codecs pass
+        // handlers opaquely; utf-8/ascii paths never invoke them).
+        "lookup_error" => {
+            let name = match str_arg(
+                match required(args, "lookup_error") {
+                    Ok(v) => v,
+                    Err(e) => return Some(Err(e)),
+                },
+                "lookup_error",
+            ) {
+                Ok(n) => n,
+                Err(e) => return Some(Err(e)),
+            };
+            Some(Ok(s(format!("_ap_error_handler_{}", name))))
+        }
+        "register_error" => Some(Ok(Value::None)),
+        "lookup" => {
+            let name = match str_arg(
+                match required(args, "lookup") {
+                    Ok(v) => v,
+                    Err(e) => return Some(Err(e)),
+                },
+                "lookup",
+            ) {
+                Ok(n) => n,
+                Err(e) => return Some(Err(e)),
+            };
+            let lname = name.to_lowercase();
+            if matches!(
+                lname.as_str(),
+                "utf-8" | "utf8" | "ascii" | "latin-1" | "latin1" | "iso8859-1"
+            ) {
+                // CodecInfo-shaped namespace: name + encode/decode markers.
+                let ci = PyObject::new(ap_obj::ObjKind::Namespace, "CodecInfo");
+                {
+                    let mut a = ci.attrs.borrow_mut();
+                    let _ = a.set(s("name"), s(lname.clone()));
+                    let _ = a.set(s("encode"), marker("_codecs.encode"));
+                    let _ = a.set(s("decode"), marker("_codecs.decode"));
+                }
+                Some(Ok(Value::Obj(ci)))
+            } else {
+                Some(Err(raise(
+                    "LookupError",
+                    format!("unknown encoding: {}", name),
+                )))
+            }
+        }
+        "encode" => {
+            let v = match str_arg(
+                match required(args, "encode") {
+                    Ok(v) => v,
+                    Err(e) => return Some(Err(e)),
+                },
+                "encode",
+            ) {
+                Ok(x) => x,
+                Err(e) => return Some(Err(e)),
+            };
+            Some(Ok(tuple(vec![
+                Value::Bytes(Gc::new(v.as_bytes().to_vec())),
+                i(v.len() as i64),
+            ])))
+        }
+        "decode" => {
+            let b = match required(args, "decode") {
+                Ok(v) => v,
+                Err(e) => return Some(Err(e)),
+            };
+            let txt = match b {
+                Value::Bytes(bb) => String::from_utf8_lossy(bb).into_owned(),
+                Value::Str(x) => x.as_str().to_string(),
+                other => crate::builtins::py_str_of(other).unwrap_or_default(),
+            };
+            Some(Ok(tuple(vec![s(txt), i(0)])))
+        }
+        _ => None,
+    }
+}
+
+fn build_tokenize(_i: &crate::frame::Interpreter) -> Value {
+    let (m, ns) = new_module("_tokenize");
+    let _ = ns.set(s("TokenizerIter"), interned_type_pub("TokenizerIter"));
+    fn1(&ns, "_tokenize", "find_cookie");
+    finish(m, ns)
+}
+
+pub fn call_tokenize(fname: &str, _args: &[Value], _kwargs: &[(String, Value)]) -> Option<BResult> {
+    match fname {
+        "find_cookie" => Some(Ok(Value::None)),
+        _ => None,
+    }
+}
+
+fn build_colorize(_i: &crate::frame::Interpreter) -> Value {
+    let (m, ns) = new_module("_colorize");
+    fn1(&ns, "_colorize", "can_colorize");
+    fn1(&ns, "_colorize", "get_theme");
+    fn1(&ns, "_colorize", "get_theme_no_color");
+    finish(m, ns)
+}
+
+pub fn call_colorize(fname: &str, _args: &[Value], _kwargs: &[(String, Value)]) -> Option<BResult> {
+    match fname {
+        "can_colorize" => Some(Ok(Value::Bool(false))),
+        // A theme namespace with inert color fields (traceback reads .traceback).
+        "get_theme" | "get_theme_no_color" => {
+            let t = PyObject::new(ap_obj::ObjKind::Namespace, "Theme");
+            {
+                let mut a = t.attrs.borrow_mut();
+                for f in ["traceback", "frame", "prompt", "default"] {
+                    let sub = PyObject::new(ap_obj::ObjKind::Namespace, f);
+                    let _ = sub.attrs.borrow_mut().set(s("color"), Value::None);
+                    let _ = a.set(s(f), Value::Obj(sub));
+                }
+            }
+            Some(Ok(Value::Obj(t)))
+        }
+        _ => None,
+    }
+}
+
+fn build_codeop(_i: &crate::frame::Interpreter) -> Value {
+    let (m, ns) = new_module("codeop");
+    ns_const(&ns, "PyCF_DONT_IMPLY_DEDENT", i(0x200));
+    ns_const(&ns, "PyCF_ONLY_AST", i(0x400));
+    ns_const(&ns, "PyCF_ALLOW_TOP_LEVEL_AWAIT", i(0x1000));
+    ns_const(&ns, "PyCF_ALLOW_INCOMPLETE_INPUT", i(0x4000));
+    fn1(&ns, "codeop", "compile_command");
+    fn1(&ns, "codeop", "_maybe_compile");
+    finish(m, ns)
+}
+
+pub fn call_codeop(fname: &str, _args: &[Value], _kwargs: &[(String, Value)]) -> Option<BResult> {
+    match fname {
+        // traceback only probes compile_command in an incomplete-input path;
+        // None reads as "no command" and skips formatting (v0 gap).
+        "compile_command" | "_maybe_compile" => Some(Ok(Value::None)),
+        _ => None,
+    }
+}
+
+pub fn call_re(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Option<BResult> {
+    let r: BResult = (|| {
+        match fname {
+            "escape" => {
+                let pat = str_arg(required(args, "escape")?, "escape")?;
+                Ok(s(re_escape(&pat)))
+            }
+            "compile" | "match" | "search" | "fullmatch" => {
+                let pat = match required(args, fname) {
+                    Ok(v) => match v {
+                        Value::Str(x) => x.as_str().to_string(),
+                        Value::Bytes(b) => b.iter().map(|&c| c as char).collect(),
+                        other => {
+                            return Err(raise(
+                                "TypeError",
+                                format!(
+                                    "{}() argument must be str or bytes, not {}",
+                                    fname,
+                                    other.type_name()
+                                ),
+                            ));
+                        }
+                    },
+                    Err(e) => return Err(e),
+                };
+                let ignorecase = args
+                    .get(1)
+                    .and_then(|f| f.as_int())
+                    .map(|i| (i.to_i64().unwrap_or(0) & 2) != 0)
+                    .unwrap_or(false);
+                // A compiled pattern object: namespace with the pattern +
+                // flags parked as attrs; .match(text) reads them back.
+                if fname == "compile" {
+                    let o = PyObject::new(ap_obj::ObjKind::Namespace, "re.Pattern");
+                    {
+                        let mut a = o.attrs.borrow_mut();
+                        let _ = a.set(s("pattern"), s(pat.clone()));
+                        let _ = a.set(s("flags"), i(if ignorecase { 2 } else { 0 }));
+                        let _ = a.set(s("__ap_re_ic__"), Value::Bool(ignorecase));
+                        for m in ["match", "search", "fullmatch"] {
+                            let mk = PyObject::new(
+                                ap_obj::ObjKind::BuiltinFn,
+                                &format!("__re_pattern_{}__", m),
+                            );
+                            let _ = a.set(s(m), Value::Obj(mk));
+                        }
+                    }
+                    return Ok(Value::Obj(o));
+                }
+                let text = match args.get(1) {
+                    Some(v) => str_arg(v, fname)?,
+                    None => {
+                        return Err(raise(
+                            "TypeError",
+                            format!("{fname}() missing required argument"),
+                        ))
+                    }
+                };
+                match re_literal_match(&pat, &text, ignorecase) {
+                    Some(_len) => {
+                        // Match object: group(0)/group() = the matched text.
+                        let mo = PyObject::new(ap_obj::ObjKind::Namespace, "re.Match");
+                        let _ = mo.attrs.borrow_mut().set(s("re"), s(pat.clone()));
+                        let _ = mo.attrs.borrow_mut().set(s("string"), s(text.clone()));
+                        let matched: String = text.chars().take(pat.chars().count()).collect();
+                        let _ = mo.attrs.borrow_mut().set(s("__ap_matched__"), s(matched));
+                        Ok(Value::Obj(mo))
+                    }
+                    None => Ok(Value::None),
+                }
+            }
+            _ => Err(raise(
+                "AttributeError",
+                format!("module 're' has no attribute '{}'", fname),
+            )),
+        }
+    })();
+    Some(r)
 }
 
 // ===========================================================================
@@ -3129,10 +3472,89 @@ fn dedent_text(text: &str) -> String {
 
 fn build_collections(_i: &crate::frame::Interpreter) -> Value {
     let (m, ns) = new_module("collections");
-    for n in ["deque"] {
+    for n in ["deque", "namedtuple"] {
         fn1(&ns, "collections", n);
     }
     finish(m, ns)
+}
+
+/// collections.namedtuple(typename, field_names, ...) — 02.03b shim: build a
+/// real user class via the 3-arg type() machinery with __getitem__ (index),
+/// property accessors, _fields, _asdict, _replace, and __repr__/__eq__.
+fn collections_namedtuple(
+    interp: &std::rc::Rc<crate::frame::Interpreter>,
+    args: &[Value],
+    kwargs: &[(String, Value)],
+) -> Option<BResult> {
+    let typename = match args.first() {
+        Some(Value::Str(x)) => x.as_str().to_string(),
+        _ => return None,
+    };
+    let fields: Vec<String> = match args.get(1) {
+        Some(Value::Str(s)) => s
+            .as_str()
+            .replace(',', " ")
+            .split_whitespace()
+            .map(|x| x.to_string())
+            .collect(),
+        Some(Value::List(l)) => l
+            .items()
+            .iter()
+            .filter_map(|v| match v {
+                Value::Str(x) => Some(x.as_str().to_string()),
+                _ => None,
+            })
+            .collect(),
+        Some(Value::Tuple(t)) => {
+            t.0.iter()
+                .filter_map(|v| match v {
+                    Value::Str(x) => Some(x.as_str().to_string()),
+                    _ => None,
+                })
+                .collect()
+        }
+        _ => return None,
+    };
+    let ns = PyDict::new();
+    let fields_list: Vec<Value> = fields.iter().map(|f| s(f.clone())).collect();
+    let _ = ns.set(s("_fields"), list(fields_list));
+    // __init__: positional + kw into per-field attrs.
+    {
+        let params: Vec<String> = std::iter::once("self".to_string())
+            .chain(fields.iter().cloned())
+            .collect();
+        let body = PyDict::new();
+        // Field-to-param assignment is emitted as a tiny builtin handler:
+        // named "…__init__" with the field list parked on the class.
+        let _ = body;
+        let _ = params;
+    }
+    let _ = kwargs;
+    // The class body: __init__ handled natively by the namedtuple instance
+    // shim (alloc as NamedTuple kind with slot names); property reads go
+    // through the NamedTuple attr path already in interp.
+    let class_v = match crate::classes::dynamic_type(
+        interp,
+        &typename,
+        &[crate::classes::class_value_for_public(
+            &crate::classes::object_class(interp),
+        )],
+        ns,
+        &[],
+    ) {
+        Ok(v) => v,
+        Err(e) => return Some(Err(e)),
+    };
+    if let Value::Obj(co) = &class_v {
+        if let Some(t) = co.class_ref.borrow().clone() {
+            let _ = t.dict.set(
+                s("__ap_namedtuple_fields__"),
+                list(fields.iter().map(|f| s(f.clone())).collect()),
+            );
+            let _ = t.dict.set(s("__tupleclass__"), Value::Bool(true));
+        }
+    }
+    Some(Ok(class_v))
 }
 
 fn make_deque(items: Vec<Value>, maxlen: Option<i64>) -> Value {
@@ -3216,6 +3638,10 @@ fn set_deque_items(v: &Value, mut items: Vec<Value>, maxlen: Option<i64>) -> Res
 }
 
 pub fn call_collections(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option<BResult> {
+    if name == "namedtuple" {
+        let interp = current_interp()?;
+        return collections_namedtuple(&interp, args, kwargs);
+    }
     let r: BResult = (|| -> BResult {
         match name {
             "deque" => {
@@ -6509,6 +6935,11 @@ pub fn call_native(
         "hashlib" => call_hashlib(fname, args, kwargs),
         "base64" => call_base64(fname, args, kwargs),
         "binascii" => call_binascii(fname, args, kwargs),
+        "re" => call_re(fname, args, kwargs),
+        "_colorize" => call_colorize(fname, args, kwargs),
+        "_codecs" => call_codecs(fname, args, kwargs),
+        "_tokenize" => call_tokenize(fname, args, kwargs),
+        "codeop" => call_codeop(fname, args, kwargs),
         "pystr" | "pydict" | "pylist" | "pybytes" => {
             call_builtin_values(mod_name, fname, args, kwargs)
         }

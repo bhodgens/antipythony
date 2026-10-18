@@ -109,6 +109,73 @@
 5. 02.08-full: re engine, complex, class-method surface, metaclass hooks.
 6. Plan 04 packaging (uv) -> T1 scrapy attempt.
 
+## Leaf 02.03b - metaclass __new__ dict-instances + warnings shim - LANDED (uncommitted, agent run)
+- ENUM GATE GREEN (byte-exact vs python3.14): `import enum; class
+  Color(enum.Enum): RED=1; GREEN=2; print(Color.RED.name, Color.RED.value,
+  list(Color))` -> `RED 1 [<Color.RED: 1>, <Color.GREEN: 2>]`. Chain of
+  root causes fixed:
+  1. exec_class_def staged the metaclass-__new__ super ctx at the RESOLVED
+     meta (M2) instead of the DEFINING class (Meta) -> super().__new__
+     rebound Meta.__new__ to M2 (5-args TypeError). Fixed: BoundMethod
+     channel with owner = defining class.
+  2. type.__new__ rejected builtin-Type bases (class IntEnum(int, Enum)) ->
+     route through base_type_ref synthesis.
+  3. Classmethod __prepare__ never dispatched (is_user_function filter
+     skipped descriptors) -> unwrap classmethod.
+  4. EnumDict namespace: dict-subclass instances now carry a real BACKING
+     dict (attrs["__ap_dict__"]); __prepare__'s instance rides the class
+     frame (Frame.class_ns_inst) so body STORES route through its
+     __setitem__; super().__setitem__ reaches the backing via
+     __ap_dict_*__ virtuals; item/get/setdefault/pop/clear/contains/iter
+     route to the backing.
+  5. type() 3-arg + kwargs -> classes::dynamic_type (metaclass resolution +
+     user meta __new__ + set_name hooks). CLASS DECORATORS now apply
+     (exec_class_def step 10) - @_simple_enum depended on this.
+  6. metaclass __call__ forwards ctor args (EnumType.__call__(cls, value));
+     metaclass __getitem__ (Color["GREEN"]); C.__new__ object.__new__
+     read allocates the RECEIVING class; str/int __new__ value-return shim;
+     _value_/__init__ on builtin-value members; set.pop/remove/clear;
+     dict get/setdefault/pop/clear.
+  - BUG (interp): kw-only params after *args stole positional slots
+    (def f(*a, b)) -> binder split into positional-consumable + kwonly.
+  - BUG (interp): Flow::Break raised through a nested `with` body became
+    LoopOut::Escape -> break-inside-with + for-else silently unwound the
+    script (this is what killed every 'always' warning). Mapped to
+    Break/Continue.
+  - BUG: instantiate()'s extra super_stack pop removed the ENCLOSING
+    frame's ctx after any nested instantiation.
+  - AUGASSIGN attr read falls back to plain attr_get when the protocol
+    misses (module attrs: _wm._filters_version += 1).
+  - Module-attribute writes via attr_set_protocol.
+  - Namespace/re shims: native re (literal engine: compile/match/search/
+    escape/I-flag; re.Pattern.match/search markers), _colorize, codeop,
+    _codecs (lookup/encode/decode/BOM_UTF8/lookup_error), _tokenize,
+    sys.stderr/stdout write() markers, sys._getframe stub with
+    f_code.co_filename + real f_lineno (outermost frame line).
+  - map()/filter() builtins (eager v0).
+- WARNINGS GATE GREEN (byte-exact): import warnings; simplefilter('always');
+  warnings.warn('hi') matches CPython stderr format and exit code; the full
+  warnings chain (filters, registry, WarningMessage, _showwarnmsg_impl)
+  runs on the vendored _py_warnings.py.
+- UNITTEST PARTIAL: imports now complete (needed the codecs/_colorize/
+  codeop/_tokenize stubs + collections.namedtuple shim [3-arg type() class
+  with positional-into-attrs instantiation] + map/filter). TestLoader/
+  TestSuite path still fails: a __new__ 4-vs-5 arg bug inside the suite
+  construction chain (unresolved; next leaf).
+- PATHLIB PARTIAL: imports complete; PurePosixPath instantiation still
+  hits a __new__ 4-vs-5 arg error in the class chain (unresolved; likely
+  same root as unittest).
+- Probes: crates/ap-run/tests/metaclass_enum_differential.rs - 6
+  differential tests vs python3.14, all green (enum member gate, enum
+  call/subscript, metaclass-new dict class, warnings warn+surface,
+  dict-subclass namespace).
+- Gates: values 46/47 (held), fstrings 34/36 (2 pre-existing), stdlib
+  8/48 (held), overall 148/235 (baseline at HEAD on the same corpus:
+  147/235; types slice moved 2->3 with the dict-namespace work). Rust
+  211/0 (was 200; +6 new differential +5 unittest-path support), pytest
+  1272 passed / 0 failed. cargo fmt clean. NOT COMMITTED per protocol.
+
+
 
 ## Leaf 02.03 - classes/protocols - LANDED (in review)
 - ~1800 lines: ap-obj/classes.rs (TypeObject, C3 MRO w/ byte-exact errors, TypeFlags),

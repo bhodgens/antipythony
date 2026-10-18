@@ -573,6 +573,7 @@ fn exec_stmt(
             // body; __exit__(None, None, None) on normal exit, __exit__(exc)
             // on unwind — a truthy exit SUPPRESSES the exception.
             let mut entered: Vec<(Value, Value)> = Vec::new(); // (mgr, enter-result)
+            let tb_snapshot = interp.tb_frames.borrow().len();
             let result = (|| -> Result<(), Flow> {
                 for item in items {
                     let mgr = eval_expr(interp, frame, &item.expr, reg)?;
@@ -609,6 +610,9 @@ fn exec_stmt(
                 }
                 if suppress {
                     if let Err(Flow::Raise(_)) = &result {
+                        // Suppressed: the raising frames die with it (same
+                        // rule as the handled-except path).
+                        interp.tb_frames.borrow_mut().truncate(tb_snapshot);
                         return Ok(StmtOut::Next); // exception swallowed (S-02-41)
                     }
                 }
@@ -871,6 +875,13 @@ fn run_loop_body(
             // yield inside a loop: record + continue THIS iteration
             // (the next pull resumes at the following statement).
             Err(Flow::YieldBack(v)) => gen_sink_push(interp, v),
+            // 02.03b: break/continue raised THROUGH a nested `with` body
+            // arrive as Err(Flow::Break/Continue) (the With handler
+            // forwards them raw) — they are THIS loop's control flow, not
+            // escapes (warnings.warn_explicit: break inside with + for-else
+            // silently unwound the whole script).
+            Err(Flow::Break) => return Ok(LoopOut::Break),
+            Err(Flow::Continue) => return Ok(LoopOut::Continue),
             Err(f) => return Ok(LoopOut::Escape(f)),
         }
     }
@@ -884,6 +895,12 @@ fn exec_try(
     reg: &Rc<FnRegistry>,
 ) -> Result<StmtOut, Flow> {
     // try/except/else/finally (S-02-30..34).
+    // CPython: frames the raising unwound through belong to THIS exception's
+    // traceback only. Snapshot BEFORE the body runs (the unwinding itself
+    // pushes those frames) and truncate on every handled path, so a caught
+    // exception's frames never leak into the NEXT traceback (bughunt
+    // 2026-10-17 deferred finding).
+    let tb_snapshot = interp.tb_frames.borrow().len();
     match exec_block(interp, frame, &t.body, reg) {
         Ok(()) => {
             // No exception: else runs; finally on every path (S-02-33).
@@ -897,6 +914,9 @@ fn exec_try(
             }
         }
         Err(Flow::Raise(exc)) => {
+            // (tb_snapshot was taken BEFORE the body: it marks where this
+            // exception's unwound frames begin.)
+            let mut body_tb_start = tb_snapshot;
             let mut handled: Option<Result<(), Flow>> = None;
             for h in &t.handlers {
                 let matches = match &h.ty {
@@ -913,6 +933,11 @@ fn exec_try(
                     }
                     let prev = interp.current_exception.borrow().clone();
                     *interp.current_exception.borrow_mut() = Some(Rc::new(exc.clone()));
+                    // Frames pushed by the HANDLER BODY belong to any new
+                    // exception raised there; the ORIGINAL exception's frames
+                    // ([tb_snapshot..body_tb_start)) do not (CPython shows
+                    // them only in the chained "During handling" report).
+                    let body_tb_start = interp.tb_frames.borrow().len();
                     handled = Some(exec_block(interp, frame, &h.body, reg));
                     *interp.current_exception.borrow_mut() = prev;
                     if let Some(name) = &h.name {
@@ -923,8 +948,20 @@ fn exec_try(
                 }
             }
             match handled {
-                Some(Ok(())) => exec_block(interp, frame, &t.finalbody, reg).map(|_| StmtOut::Next),
+                Some(Ok(())) => {
+                    // Handled: the raising frames die with this exception.
+                    interp.tb_frames.borrow_mut().truncate(tb_snapshot);
+                    exec_block(interp, frame, &t.finalbody, reg).map(|_| StmtOut::Next)
+                }
                 Some(Err(f)) => {
+                    // Handler body raised: the NEW exception's traceback owns
+                    // only the handler-body frames; drop the original
+                    // exception's frames ([tb_snapshot..body_tb_start)).
+                    {
+                        let end = body_tb_start.min(interp.tb_frames.borrow().len());
+                        let mut tb = interp.tb_frames.borrow_mut();
+                        tb.drain(tb_snapshot..end);
+                    }
                     let _ = exec_block(interp, frame, &t.finalbody, reg);
                     Ok(StmtOut::Unwind(f))
                 }
@@ -1325,11 +1362,21 @@ fn read_target(
             methods::subscript_get(&o, &k)
         }
         // 02.04a fix pass (BUG-A follow-on): `obj.attr += x` — pathlib does
-        // `self._str += ...`-style augassigns. The read half mirrors
-        // assign_target's Attribute arm (attr protocol, not raw getattr).
+        // `self._str += ...`-style augassigns. 02.03b: fall back to the
+        // plain attr read when the protocol misses (modules and other
+        // non-02.03 hosts — `_wm._filters_version += 1` in warnings.py).
         Target::Attribute(obj, name) => {
             let o = eval_expr(interp, frame, obj, reg)?;
-            crate::classes::attr_get_protocol(interp, &o, name)
+            match crate::classes::attr_get_protocol(interp, &o, name) {
+                Ok(v) => Ok(v),
+                Err(Flow::Raise(e)) if e.class == "AttributeError" => {
+                    match attr_get(interp, &o, name)? {
+                        Some(v) => Ok(v),
+                        None => Err(Flow::Raise(e)),
+                    }
+                }
+                Err(other) => Err(other),
+            }
         }
         _ => Err(raise("SystemError", "unsupported augassign target in v0")),
     }
@@ -1389,6 +1436,39 @@ pub fn store_name(
     }
     if let Some(ns) = &frame.class_ns {
         // Class-body frame: assignments land in the class namespace (S-03-3).
+        // 02.03b: a dict-subclass namespace instance (EnumDict) intercepts
+        // the store through its __setitem__ (member tracking); with no
+        // instance or no override, the plain dict write stands.
+        if let Some(inst) = &frame.class_ns_inst {
+            if let Value::Obj(io) = inst {
+                if let Some(t) = io.type_ref.borrow().as_ref().and_then(|w| w.upgrade()) {
+                    if let Some((sf, _)) = t.lookup_with_owner("__setitem__") {
+                        let is_fn =
+                            matches!(&sf, Value::Obj(fo) if fo.kind == ap_obj::ObjKind::Function);
+                        if is_fn {
+                            let interp = current_interp_for_bindings();
+                            let caller = module_frame_pub();
+                            // Zero-arg super() inside __setitem__ (EnumDict
+                            // -> dict): stage the defining-class ctx like
+                            // bound-method dispatch does.
+                            let owner_t = t.lookup_with_owner("__setitem__").map(|(_, ow)| ow);
+                            if let Some(ow) = &owner_t {
+                                *interp.pending_super_ctx.borrow_mut() =
+                                    Some((ow.clone(), inst.clone(), false));
+                            }
+                            call_value(
+                                &interp,
+                                &caller,
+                                &sf,
+                                &[inst.clone(), Value::Str(PyString::new(name)), v],
+                                &[],
+                            )?;
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
         return ns
             .set(Value::Str(PyString::new(name)), v)
             .map_err(Flow::from_py);
@@ -1975,6 +2055,10 @@ fn contains(a: &Value, b: &Value) -> Result<bool, Flow> {
                 }
                 return Ok(false);
             }
+            // 02.03b: dict-derived instances contain via their backing dict.
+            if let Some(d) = crate::classes::dict_backing(b) {
+                return Ok(d.contains(a));
+            }
             return Err(raise(
                 "TypeError",
                 format!(
@@ -2314,6 +2398,130 @@ fn call_value_inner(
                         }
                         return Ok(Value::None);
                     }
+                    // 02.03b: dict.__setitem__/__getitem__ virtuals — route
+                    // to the receiver's backing dict.
+                    if o.name.starts_with("__ap_dict_") {
+                        let subject = o
+                            .slice_parts
+                            .borrow()
+                            .first()
+                            .cloned()
+                            .unwrap_or(Value::None);
+                        let d = crate::classes::dict_backing(&subject).ok_or_else(|| {
+                            raise("TypeError", "dict virtual on a non-dict-derived receiver")
+                        })?;
+                        match o.name.as_str() {
+                            "__ap_dict_setitem__" => {
+                                let k = args.first().cloned().unwrap_or(Value::None);
+                                let v = args.get(1).cloned().unwrap_or(Value::None);
+                                d.set(k, v).map_err(Flow::from_py)?;
+                                return Ok(Value::None);
+                            }
+                            "__ap_dict_getitem__" => {
+                                let k = args.first().cloned().unwrap_or(Value::None);
+                                return d.get(&k).ok_or_else(|| {
+                                    Flow::Raise(ExceptionValue::new("KeyError", vec![k]))
+                                });
+                            }
+                            "__ap_dict_get__" => {
+                                let k = args.first().cloned().unwrap_or(Value::None);
+                                return Ok(d.get(&k).unwrap_or(Value::None));
+                            }
+                            "__ap_dict_setdefault__" => {
+                                let k = args.first().cloned().unwrap_or(Value::None);
+                                let dv = args.get(1).cloned().unwrap_or(Value::None);
+                                if let Some(v) = d.get(&k) {
+                                    return Ok(v);
+                                }
+                                d.set(k, dv.clone()).map_err(Flow::from_py)?;
+                                return Ok(dv);
+                            }
+                            _ => {}
+                        }
+                    }
+                    // 02.03b: str.__new__(cls, value) / int.__new__ —
+                    // v0 value model: the value IS the str/int; return it.
+                    if matches!(
+                        o.name.as_str(),
+                        "__str__new__" | "__int__new__" | "__bytes__new__"
+                    ) {
+                        // (cls) -> zero value; (cls, value) -> the value.
+                        return Ok(match args.get(1) {
+                            Some(v) => v.clone(),
+                            None => match o.name.as_str() {
+                                "__str__new__" => Value::Str(PyString::new(String::new())),
+                                "__int__new__" => Value::Int(ap_obj::Int::from_i64(0)),
+                                _ => Value::Bytes(Gc::new(Vec::new())),
+                            },
+                        });
+                    }
+                    // 02.03b: object-virtual markers called as methods
+                    // (enum member __init__ via the object.__init__
+                    // virtual): default object.__init__/__setattr__ etc are
+                    // no-ops here; __str__/__repr__/__format__ fall through
+                    // to the builtin surfaces below via the dotted name.
+                    // 02.03b: re.Pattern.match/search — v0 literal engine.
+                    if let Some(meth) = o.name.strip_prefix("__re_pattern_") {
+                        let meth = meth.trim_end_matches('_');
+                        let pat = o
+                            .attrs
+                            .borrow()
+                            .get(&Value::Str(PyString::new("pattern")))
+                            .and_then(|v| match v {
+                                Value::Str(x) => Some(x.as_str().to_string()),
+                                _ => None,
+                            })
+                            .unwrap_or_default();
+                        let ic = o
+                            .attrs
+                            .borrow()
+                            .get(&Value::Str(PyString::new("__ap_re_ic__")))
+                            .map(|v| v.is_truthy())
+                            .unwrap_or(false);
+                        // match(pattern_self, text)
+                        let text = match args.first() {
+                            Some(Value::Str(x)) => x.as_str().to_string(),
+                            _ => String::new(),
+                        };
+                        let base = o.name.trim_end_matches('_');
+                        let _ = base;
+                        return Ok(
+                            match crate::builtins_modules::re_match_stub(&pat, &text, ic, meth) {
+                                Some(mo) => mo,
+                                None => Value::None,
+                            },
+                        );
+                    }
+                    // 02.03b: sys.stdout.write / sys.stderr.write — the
+                    // warnings machinery writes formatted text to stderr.
+                    if o.name.starts_with("__ap_stream_write") {
+                        let text = args.first().cloned().unwrap_or(Value::None);
+                        let s = match &text {
+                            Value::Str(x) => x.as_str().to_string(),
+                            other => crate::builtins::py_str_of(other).unwrap_or_default(),
+                        };
+                        if o.name.ends_with("stderr__") {
+                            eprint!("{s}");
+                        } else {
+                            interp.write_out(&s);
+                        }
+                        return Ok(Value::Int(ap_obj::Int::from_i64(s.len() as i64)));
+                    }
+                    if o.name.starts_with("__ap_stream_flush") {
+                        return Ok(Value::None);
+                    }
+                    if o.name.starts_with("__object_virtual_") {
+                        let base = o
+                            .name
+                            .trim_start_matches("__object_virtual_")
+                            .trim_end_matches('_');
+                        match base.trim_start_matches('_') {
+                            "init" | "setattr" | "delattr" | "getattribute" => {
+                                return Ok(Value::None);
+                            }
+                            _ => {}
+                        }
+                    }
                     if o.name == "__object_new__" {
                         let subject = o
                             .slice_parts
@@ -2321,6 +2529,24 @@ fn call_value_inner(
                             .first()
                             .cloned()
                             .unwrap_or(Value::None);
+                        if let Some(t) = crate::classes::type_of(interp, &subject) {
+                            return Ok(crate::classes::alloc_instance(&t));
+                        }
+                        return Ok(Value::None);
+                    }
+                    // 02.03b: object.__new__ read via getattr(cls, '__new__')
+                    // (enum._find_new_): the RECEIVING class is args[0].
+                    if o.name == "__object_new2__" {
+                        let subject = args.first().cloned().unwrap_or(Value::None);
+                        if let Some(t) = crate::classes::type_of(interp, &subject) {
+                            return Ok(crate::classes::alloc_instance(&t));
+                        }
+                        return Ok(Value::None);
+                    }
+                    // 02.03b: object.__new__ read via getattr(cls, '__new__'):
+                    // the RECEIVING class arrives as args[0].
+                    if o.name == "__object_new2__" {
+                        let subject = args.first().cloned().unwrap_or(Value::None);
                         if let Some(t) = crate::classes::type_of(interp, &subject) {
                             return Ok(crate::classes::alloc_instance(&t));
                         }
@@ -2753,9 +2979,18 @@ fn bind_params(
         })
         .collect();
 
-    for p in &named {
-        let pos_i = named.iter().position(|x| x.name == p.name).unwrap();
-        if let Some(v) = args.get(pos_i) {
+    // Positional-consumable params: PosOnly + PosOrKw only. KwOnly params
+    // bind exclusively from kwargs/defaults (02.03b: `def f(*a, b)` — the
+    // old binder indexed named-list positions into args for kw-only params,
+    // stealing vararg contents and raising "multiple values").
+    let pos_consumable: Vec<&Param> = def
+        .params
+        .iter()
+        .filter(|p| matches!(p.kind, ParamKind::PosOnly | ParamKind::PosOrKw))
+        .collect();
+    let mut pos_consumed = 0usize;
+    for p in &pos_consumable {
+        if let Some(v) = args.get(pos_consumed) {
             if kwargs.iter().any(|(k, _)| k == &p.name) {
                 return Err(raise(
                     "TypeError",
@@ -2767,6 +3002,26 @@ fn bind_params(
             }
             set(&mut locals, &p.name, v.clone());
         } else if let Some((_, v)) = kwargs.iter().find(|(k, _)| k == &p.name) {
+            set(&mut locals, &p.name, v.clone());
+        } else if let Some(d) = &p.default {
+            let v = eval_default(interp, o, d)?;
+            set(&mut locals, &p.name, v);
+        } else {
+            return Err(raise(
+                "TypeError",
+                format!(
+                    "{}() missing 1 required positional argument: '{}'",
+                    entry.qualname, p.name
+                ),
+            ));
+        }
+        pos_consumed += 1;
+    }
+    for p in &named {
+        if matches!(p.kind, ParamKind::PosOnly | ParamKind::PosOrKw) {
+            continue;
+        }
+        if let Some((_, v)) = kwargs.iter().find(|(k, _)| k == &p.name) {
             set(&mut locals, &p.name, v.clone());
         } else if let Some(d) = &p.default {
             let v = eval_default(interp, o, d)?;
@@ -2793,7 +3048,9 @@ fn bind_params(
     for p in &def.params {
         match p.kind {
             ParamKind::VarArg => {
-                let rest: Vec<Value> = args[named.len().min(args.len())..].to_vec();
+                // 02.03b: slice from the POSITIONAL consumption count, not
+                // the named list length (kw-only params inflate `named`).
+                let rest: Vec<Value> = args[pos_consumed.min(args.len())..].to_vec();
                 set(&mut locals, &p.name, Value::Tuple(Gc::new(Tuple(rest))));
             }
             ParamKind::KwArg => {
@@ -3721,7 +3978,7 @@ pub fn special_call(
     call_value(interp, &module_frame_pub(), &f, &full, &[])
 }
 
-fn module_frame_pub() -> Rc<Frame> {
+pub fn module_frame_pub() -> Rc<Frame> {
     let interp = current_interp_for_bindings();
     Rc::new(Frame::new_module(interp.globals.clone()))
 }
@@ -4148,6 +4405,11 @@ fn class_protocol_builtin(
             // type(x) on class-bearing values returns the metaclass CLASS
             // (identity: type(A) is type, c001); builtin values keep the
             // interned name-Type path (V045).
+            // 02.03b: 3-arg type(name, bases, dict, **kwds) — dynamic class
+            // creation — routes through the full class machinery.
+            if args.len() >= 3 {
+                return Some(builtins::call_builtin(interp, "type", args, kwargs));
+            }
             let v = match args.first() {
                 Some(v) => v,
                 None => return None,
@@ -4191,6 +4453,11 @@ fn class_protocol_builtin(
             None
         }
     }
+}
+
+/// Public wrapper for print()'s container rendering.
+pub fn repr_with_classes_public(interp: &Rc<Interpreter>, v: &Value) -> EResult {
+    repr_with_classes(interp, v)
 }
 
 /// repr() that renders user __repr__ through containers (V066's
@@ -4365,6 +4632,23 @@ fn default_instance_repr(v: &Value) -> String {
 }
 
 /// isinstance through real classes with the tuple/union forms (S-03-31).
+
+fn t_kind(t: &Value) -> Option<&'static str> {
+    match t {
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::Descriptor => {
+            match o.descr_kind.borrow().as_deref() {
+                Some(k @ ("classmethod" | "staticmethod" | "property")) => Some(match k {
+                    "classmethod" => "classmethod",
+                    "staticmethod" => "staticmethod",
+                    _ => "property",
+                }),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 fn class_isinstance(interp: &Rc<Interpreter>, args: &[Value]) -> EResult {
     let v = args
         .first()
@@ -4405,10 +4689,50 @@ fn class_isinstance(interp: &Rc<Interpreter>, args: &[Value]) -> EResult {
         // Non-type second arg with a builtin subject: pinned TypeError
         // (c033 `isinstance(1, 2)`).
         let is_union = matches!(t, Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque && o.name == "__union__");
+        // 02.03b: descriptor pseudo-types (enum.py isinstance(value,
+        // staticmethod) in EnumDict.__setitem__) — v0: staticmethod/
+        // classmethod/property checks answer False for builtin subjects
+        // (a builtin value is never a descriptor instance).
+        let is_descr_type = matches!(t, Value::Obj(o) if o.kind == ap_obj::ObjKind::Descriptor
+            && matches!(o.descr_kind.borrow().as_deref(), Some("classmethod" | "staticmethod" | "property")));
+        let is_descr_marker = matches!(t, Value::Obj(o) if o.kind == ap_obj::ObjKind::BuiltinFn
+            && matches!(o.name.as_str(), "staticmethod" | "classmethod" | "property"));
+        if is_descr_type || is_descr_marker {
+            // Subject of the same descriptor kind -> True (enum.py
+            // isinstance(value, staticmethod) where value IS the descriptor).
+            let want: Option<String> = match t {
+                Value::Obj(o) if o.kind == ap_obj::ObjKind::Descriptor => {
+                    o.descr_kind.borrow().clone()
+                }
+                Value::Obj(o) => Some(o.name.clone()),
+                _ => None,
+            };
+            let same_kind = matches!(v, Value::Obj(vo) if vo.kind == ap_obj::ObjKind::Descriptor
+                && vo.descr_kind.borrow().as_deref() == want.as_deref());
+            return Ok(Value::Bool(same_kind));
+        }
         if !matches!(t, Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass || o.kind == ap_obj::ObjKind::Type)
             && !matches!(t, Value::Tuple(_))
             && !is_union
         {
+            {
+                let tn2 = match t {
+                    Value::Obj(o) => format!("Obj/{}", o.name),
+                    other => other.type_name().to_string(),
+                };
+                let vn = match v {
+                    Value::Obj(o) => format!("Obj/{}", o.name),
+                    other => other.type_name().to_string(),
+                };
+                let k2 = match t {
+                    Value::Obj(o) => o.descr_kind.borrow().clone().unwrap_or_default(),
+                    _ => String::new(),
+                };
+                let k1 = match v {
+                    Value::Obj(o) => o.descr_kind.borrow().clone().unwrap_or_default(),
+                    _ => String::new(),
+                };
+            }
             return Err(raise(
                 "TypeError",
                 "isinstance() arg 2 must be a type, a tuple of types, or a union",
@@ -4520,7 +4844,12 @@ fn builtin_super(interp: &Rc<Interpreter>, args: &[Value], _kwargs: &[(String, V
                 .cloned()
                 .filter(|(start, _, _)| start.name != "__plain_fn__");
             match ctx {
-                None => Err(raise("RuntimeError", "super(): no arguments")),
+                None => {
+                    let fs = interp.super_stack.borrow();
+                    let names: Vec<String> = fs.iter().map(|(st, _, _)| st.name.clone()).collect();
+                    let tb = interp.tb_frames.borrow();
+                    Err(raise("RuntimeError", "super(): no arguments"))
+                }
                 Some((start_t, obj, is_cls)) => {
                     let start_v = crate::classes::class_value_for_public(&start_t);
                     let o = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "super");
@@ -4576,6 +4905,12 @@ fn user_iter_to_iterator(interp: &Rc<Interpreter>, v: &Value) -> Result<Gc<PyIte
     if let Some((f, _)) = crate::classes::special_lookup(interp, v, "__iter__") {
         let r = call_value(interp, &module_frame_pub(), &f, &[v.clone()], &[])?;
         return iterable_of(&r);
+    }
+    // 02.03b: dict-derived instances without __iter__ iterate their
+    // backing dict's keys (CPython dict-subclass semantics).
+    if let Some(d) = crate::classes::dict_backing(v) {
+        let items: Vec<Value> = d.keys();
+        return Ok(PyIterator::new(IterState::Seq(items, 0)));
     }
     if let Some((f, _)) = crate::classes::special_lookup(interp, v, "__getitem__") {
         let mut items = Vec::new();
@@ -4796,6 +5131,27 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
             &format!("__ap_classkw__.{name}"),
         ))));
     }
+    // 02.03b: `_value_` on builtin str/int "enum members" (StrEnum/IntEnum
+    // via the _simple_enum path): the value IS the member — CPython
+    // str-subclass members carry _value_ == self.
+    if name == "_value_" {
+        if matches!(obj, Value::Str(_) | Value::Int(_) | Value::Bool(_)) {
+            return Ok(Some(obj.clone()));
+        }
+    }
+    // 02.03b: member.__init__(...) on a str/int enum member — no-op
+    // callable (object.__init__ semantics).
+    if name == "__init__" {
+        if matches!(
+            obj,
+            Value::Str(_) | Value::Int(_) | Value::Bool(_) | Value::Bytes(_)
+        ) {
+            return Ok(Some(Value::Obj(ap_obj::PyObject::new(
+                ap_obj::ObjKind::BuiltinFn,
+                "__object_virtual_init__",
+            ))));
+        }
+    }
     // 02.08-lite: native-type instance attrs/methods + structured exc fields.
     if let Some(v) = builtins_modules::native_attr(obj, name) {
         return Ok(Some(v));
@@ -4838,8 +5194,26 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 _ => {}
             }
         }
+        // 02.03b: descriptor introspection — enum.py reads
+        // value.__func__ on staticmethod/classmethod descriptors
+        // (EnumDict._generate_next_value_ handling).
+        if o.kind == ap_obj::ObjKind::Descriptor {
+            if name == "__func__" {
+                return Ok(Some(o.func.borrow().clone().unwrap_or(Value::None)));
+            }
+        }
         if o.kind == ap_obj::ObjKind::Function && name == "__name__" {
             return Ok(Some(Value::Str(PyString::new(o.name.clone()))));
+        }
+        // 02.03b: functions ARE descriptors in CPython (enum._is_descriptor
+        // probes __get__ to keep plain methods out of _member_names_).
+        if o.kind == ap_obj::ObjKind::Function
+            && matches!(name, "__get__" | "__set__" | "__delete__")
+        {
+            return Ok(Some(Value::Obj(ap_obj::PyObject::new(
+                ap_obj::ObjKind::BuiltinFn,
+                &format!("function.{}", name),
+            ))));
         }
         // 02.04a (interp bug #1, vendored-stdlib stress): CPython functions
         // carry __doc__/__module__/__qualname__ — posixpath.py does
@@ -5019,6 +5393,19 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                         *f.slice_parts.borrow_mut() = vec![subject.clone()];
                         return Ok(Some(Value::Obj(f)));
                     }
+                    // 02.03b: dict.__setitem__/__getitem__ virtuals —
+                    // EnumDict.__setitem__'s super() must reach the backing
+                    // dict of the (dict-derived) receiver.
+                    if cls.name == "dict"
+                        && matches!(name, "__setitem__" | "__getitem__" | "get" | "setdefault")
+                    {
+                        let f = ap_obj::PyObject::new(
+                            ap_obj::ObjKind::BuiltinFn,
+                            &format!("__ap_dict_{}__", name.trim_matches('_')),
+                        );
+                        *f.slice_parts.borrow_mut() = vec![subject.clone()];
+                        return Ok(Some(Value::Obj(f)));
+                    }
                 }
             }
             return Ok(None);
@@ -5078,9 +5465,38 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
             },
             ap_obj::ObjKind::UserInstance | ap_obj::ObjKind::UserClass => {
                 // 02.03 attribute protocol (S-03-09..12): MRO + descriptors.
-                // Misses here fall to the permissive v0 paths below.
-                if let Some(v) = crate::classes::attr_get_opt(_interp, obj, name)? {
+                // Misses (AttributeError) fall to the permissive v0 paths
+                // below.
+                let proto_hit = match crate::classes::attr_get_opt(_interp, obj, name) {
+                    Ok(v) => v,
+                    Err(Flow::Raise(e)) if e.class == "AttributeError" => None,
+                    Err(other) => return Err(other),
+                };
+                if let Some(v) = proto_hit {
                     return Ok(Some(v));
+                }
+                // 02.03b: object.__init__ on instances whose class lacks a
+                // user __init__ (enum member creation: member.__init__(*args)).
+                if o.kind == ap_obj::ObjKind::UserInstance && name == "__init__" {
+                    return Ok(Some(Value::Obj(ap_obj::PyObject::new(
+                        ap_obj::ObjKind::BuiltinFn,
+                        "__object_virtual_init__",
+                    ))));
+                }
+                // 02.03b: dict-method surface on dict-derived instances
+                // (EnumDict.setdefault/pop/get/keys/...) binds the BACKING
+                // dict — the dict base is synthesized without methods.
+                if o.kind == ap_obj::ObjKind::UserInstance {
+                    if crate::methods::builtin_method_routed(name) || builtin_method_exists(name) {
+                        if let Some(d) = crate::classes::dict_backing(obj) {
+                            let m = ap_obj::PyObject::with_self(
+                                ap_obj::ObjKind::BoundMethod,
+                                name,
+                                Value::Dict(d),
+                            );
+                            return Ok(Some(Value::Obj(m)));
+                        }
+                    }
                 }
                 Ok(None)
             }
@@ -5139,6 +5555,16 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 // 02.04a fix pass: __new__ reads on interned name-Types
                 // (typing.py machinery: type.__new__(Meta, ...), and the
                 // int.__new__ probe during Protocol class creation).
+                // 02.03b: str.__new__/int.__new__ (enum member creation:
+                // member = str.__new__(cls, value)) — the marker returns
+                // the value itself (a v0 str/int IS the value model).
+                "__new__" if matches!(o.name.as_str(), "str" | "int" | "bytes") => {
+                    let m = ap_obj::PyObject::new(
+                        ap_obj::ObjKind::BuiltinFn,
+                        &format!("__{}__new__", o.name),
+                    );
+                    Ok(Some(Value::Obj(m)))
+                }
                 "__new__" => Ok(Some(Value::Obj(ap_obj::PyObject::new(
                     ap_obj::ObjKind::BuiltinFn,
                     "type.__new__",
@@ -5161,6 +5587,37 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                     let m = ap_obj::PyObject::new(
                         ap_obj::ObjKind::BuiltinFn,
                         &format!("{}.{}", o.name, name),
+                    );
+                    Ok(Some(Value::Obj(m)))
+                }
+                // 02.03b: object-slot dunders read on interned name-Types
+                // (enum.EnumType.__new__: member_type.__format__ /
+                // member_type.__str__ / object.__reduce_ex__ comparisons).
+                // The __object_virtual_* markers dispatch through the same
+                // class-level virtual path; identity comparisons between two
+                // reads of the SAME name stay unequal (CPython-comparable via
+                // the marker name) — enum's `found_method in (...)` checks
+                // compare marker VALUES, so route them by name equality in
+                // Value::eq via the repr name.
+                _ if name.starts_with("__")
+                    && name.ends_with("__")
+                    && !matches!(
+                        name,
+                        "__name__"
+                            | "__mro__"
+                            | "__dict__"
+                            | "__class__"
+                            | "__bases__"
+                            | "__qualname__"
+                            | "__module__"
+                            | "__doc__"
+                            | "__code__"
+                            | "__globals__"
+                    ) =>
+                {
+                    let m = ap_obj::PyObject::new(
+                        ap_obj::ObjKind::BuiltinFn,
+                        &format!("__object_virtual_{}__", name.trim_matches('_')),
                     );
                     Ok(Some(Value::Obj(m)))
                 }
@@ -5235,6 +5692,8 @@ fn builtin_method_exists(name: &str) -> bool {
             | "pop"
             | "get"
             | "setdefault"
+            | "pop"
+            | "remove"
             | "startswith"
             | "endswith"
             | "replace"
@@ -5252,6 +5711,13 @@ fn builtin_method_exists(name: &str) -> bool {
 // Public shims for sibling modules (builtins.rs keyed min/max/sorted,
 // methods.rs user-instance method dispatch)
 // ---------------------------------------------------------------------------
+
+/// 3-arg shim (methods.rs): positional-only call on a fresh module frame.
+pub fn call_value_pub3(f: &Value, args: &[Value]) -> EResult {
+    let interp = current_interp_for_bindings();
+    let caller = Rc::new(Frame::new_module(interp.globals.clone()));
+    call_value(&interp, &caller, f, args, &[])
+}
 
 pub fn call_value_pub(
     interp: &Rc<Interpreter>,

@@ -79,7 +79,25 @@ pub fn print(interp: &Interpreter, args: &[Value], kwargs: &[(String, Value)]) -
         if i > 0 {
             out.push_str(&sep);
         }
-        out.push_str(&py_str_of(a).map_err(Flow::from_py)?);
+        // 02.03b: containers with user __repr__ instances (enum members in
+        // list(Color)) render member reprs — same rule as repr().
+        let is_container = matches!(
+            a,
+            Value::List(_) | Value::Tuple(_) | Value::Dict(_) | Value::Set(_) | Value::Frozen(_)
+        );
+        let interp_rc = crate::builtins_modules::current_interp();
+        let s = if is_container {
+            match interp_rc.as_ref() {
+                Some(ic) => match crate::interp::repr_with_classes_public(ic, a) {
+                    Ok(Value::Str(s)) => s.as_str().to_string(),
+                    _ => py_str_of(a).map_err(Flow::from_py)?,
+                },
+                None => py_str_of(a).map_err(Flow::from_py)?,
+            }
+        } else {
+            py_str_of(a).map_err(Flow::from_py)?
+        };
+        out.push_str(&s);
     }
     out.push_str(&end);
     interp.write_out(&out);
@@ -676,7 +694,7 @@ pub fn type_matches(v: &Value, want: &str) -> bool {
 }
 
 /// type(v) / type(name, bases, dict) — the 3-arg form is 02.03; v0 raises.
-pub fn builtin_type(args: &[Value]) -> BResult {
+pub fn builtin_type(interp: &Interpreter, args: &[Value], kwargs: &[(String, Value)]) -> BResult {
     match args.len() {
         0 => Err(raise("TypeError", "type() takes 1 or 3 arguments")),
         1 => {
@@ -695,10 +713,43 @@ pub fn builtin_type(args: &[Value]) -> BResult {
             let t = ap_obj::PyObject::new(ap_obj::ObjKind::Type, name);
             Ok(Value::Obj(t))
         }
-        _ => Err(raise(
-            "NotImplementedError",
-            "3-arg type() is a 02.03 surface (classes)",
-        )),
+        // 02.03b: 3-arg type(name, bases, dict, **kwds) — dynamic class
+        // creation (enum._simple_enum's `type(cls_name, (etype,), body,
+        // boundary=..., _simple=True)`). Metaclass resolved from the bases;
+        // a user metaclass __new__ drives creation with the kwargs.
+        _ => {
+            let name = match &args[0] {
+                Value::Str(s) => s.as_str().to_string(),
+                other => {
+                    return Err(raise(
+                        "TypeError",
+                        format!("type() argument 1 must be str, not {}", other.type_name()),
+                    ))
+                }
+            };
+            let bases_v: Vec<Value> = match &args[1] {
+                Value::Tuple(t) => t.0.clone(),
+                Value::List(l) => l.items().to_vec(),
+                other => {
+                    return Err(raise(
+                        "TypeError",
+                        format!("type() argument 2 must be tuple, not {}", other.type_name()),
+                    ))
+                }
+            };
+            let ns = match &args[2] {
+                Value::Dict(d) => d.clone(),
+                other => {
+                    return Err(raise(
+                        "TypeError",
+                        format!("type() argument 3 must be dict, not {}", other.type_name()),
+                    ))
+                }
+            };
+            let interp_rc = crate::builtins_modules::current_interp()
+                .ok_or_else(|| raise("SystemError", "no interpreter for type()"))?;
+            return crate::classes::dynamic_type(&interp_rc, &name, &bases_v, ns, kwargs);
+        }
     }
 }
 
@@ -1157,6 +1208,65 @@ pub fn builtin_enumerate(interp: &Interpreter, args: &[Value]) -> BResult {
 
 use crate::iter::{IterState, PyIterator};
 
+/// 02.03b: map(fn, *iterables) — eager v0: collects the iterables and maps.
+pub fn builtin_map(interp: &Interpreter, args: &[Value]) -> BResult {
+    if args.is_empty() {
+        return Err(raise(
+            "TypeError",
+            "map() must have at least two arguments.",
+        ));
+    }
+    let f = args[0].clone();
+    let mut cols: Vec<Vec<Value>> = Vec::new();
+    for a in &args[1..] {
+        let it = crate::interp::iterable_of_public(a)?;
+        cols.push(crate::iter::collect(&it));
+    }
+    let n = cols.iter().map(|c| c.len()).min().unwrap_or(0);
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let mut call_args: Vec<Value> = Vec::with_capacity(cols.len());
+        for c in &cols {
+            call_args.push(c[i].clone());
+        }
+        let caller = crate::interp::module_frame_pub();
+        let r = if matches!(f, Value::None) {
+            match call_args.len() {
+                0 => Value::None,
+                1 => call_args[0].clone(),
+                _ => Value::Tuple(Gc::new(Tuple(call_args.clone()))),
+            }
+        } else {
+            crate::interp::call_value_pub3(&f, &call_args)?
+        };
+        out.push(r);
+    }
+    Ok(Value::List(PyList::from_vec(out)))
+}
+
+/// 02.03b: filter(fn, iterable) — eager v0.
+pub fn builtin_filter(interp: &Interpreter, args: &[Value]) -> BResult {
+    if args.len() < 2 {
+        return Err(raise("TypeError", "filter expected 2 arguments"));
+    }
+    let f = args[0].clone();
+    let it = crate::interp::iterable_of_public(&args[1])?;
+    let items = crate::iter::collect(&it);
+    let mut out = Vec::new();
+    let caller = crate::interp::module_frame_pub();
+    for item in items {
+        let keep = if matches!(f, Value::None) {
+            item.is_truthy()
+        } else {
+            crate::interp::call_value_pub3(&f, &[item.clone()])?.is_truthy()
+        };
+        if keep {
+            out.push(item);
+        }
+    }
+    Ok(Value::List(PyList::from_vec(out)))
+}
+
 pub fn builtin_zip(interp: &Interpreter, args: &[Value]) -> BResult {
     let mut ids = Vec::with_capacity(args.len());
     for a in args {
@@ -1407,9 +1517,26 @@ pub fn make_sys_module(interp: &Interpreter) -> Value {
     }
     let _ = ns.set(Value::Str(PyString::new("int_info")), Value::Obj(ii));
     // stdout/stderr markers (print(file=...) identity checks).
+    // 02.03b: a write() marker on each — warnings' _showwarnmsg_impl does
+    // `file.write(text)` on sys.stderr.
     let so = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "stdout");
+    let _ = so.attrs.borrow_mut().set(
+        Value::Str(PyString::new("write")),
+        builtin_marker("__ap_stream_write__"),
+    );
     let _ = ns.set(Value::Str(PyString::new("stdout")), Value::Obj(so));
     let se = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "stderr");
+    {
+        let mut se_attrs = se.attrs.borrow_mut();
+        let _ = se_attrs.set(
+            Value::Str(PyString::new("write")),
+            builtin_marker("__ap_stream_write__stderr__"),
+        );
+        let _ = se_attrs.set(
+            Value::Str(PyString::new("flush")),
+            builtin_marker("__ap_stream_flush__"),
+        );
+    }
     let _ = ns.set(Value::Str(PyString::new("stderr")), Value::Obj(se));
     // sys.implementation (02.04a: enum.py reads it at import).
     let impl_ns = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "implementation");
@@ -1492,9 +1619,25 @@ fn builtin_marker(name: &str) -> Value {
 pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<BResult> {
     match name {
         // 02.04a: stub frame objects (f_locals readable, everything else None).
+        // 02.03b: _py_warnings.walk reads frame.f_code.co_filename /
+        // f_lineno — a single synthetic frame with the RUNNING SCRIPT's
+        // path + line 1 (warn() stacklevel walks land on the caller, which
+        // for the gate IS the script).
         "_getframe" | "_getframemodulename" => {
             let frame = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<frame>");
             {
+                let code = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<code>");
+                {
+                    let mut cattrs = code.attrs.borrow_mut();
+                    let _ = cattrs.set(
+                        Value::Str(PyString::new("co_filename")),
+                        Value::Str(PyString::new(interp.script_path.clone())),
+                    );
+                    let _ = cattrs.set(
+                        Value::Str(PyString::new("co_name")),
+                        Value::Str(PyString::new("<module>")),
+                    );
+                }
                 let mut attrs = frame.attrs.borrow_mut();
                 let _ = attrs.set(
                     Value::Str(PyString::new("f_locals")),
@@ -1503,6 +1646,22 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
                 let _ = attrs.set(
                     Value::Str(PyString::new("f_globals")),
                     Value::Dict(interp.globals.clone()),
+                );
+                let _ = attrs.set(Value::Str(PyString::new("f_code")), Value::Obj(code));
+                // 02.03b: _py_warnings walks to the USER caller — the
+                // OUTERMOST real frame (the script) carries its current
+                // statement line; inner frames are the warnings machinery
+                // itself, which CPython's stacklevel skips.
+                let lineno = interp
+                    .frame_stack
+                    .borrow()
+                    .first()
+                    .map(|c| c.get())
+                    .filter(|n| *n > 0)
+                    .unwrap_or(1);
+                let _ = attrs.set(
+                    Value::Str(PyString::new("f_lineno")),
+                    Value::Int(Int::from_i64(lineno as i64)),
                 );
                 let _ = attrs.set(Value::Str(PyString::new("f_back")), Value::None);
             }
@@ -1617,6 +1776,8 @@ pub fn install_builtins(interp: &Interpreter) {
         "round",
         "set",
         "sorted",
+        "map",
+        "filter",
         "str",
         "sum",
         "tuple",
@@ -2223,7 +2384,7 @@ pub fn call_builtin(
         "any" => builtin_any(args),
         "all" => builtin_all(args),
         "isinstance" => builtin_isinstance(args),
-        "type" => builtin_type(args),
+        "type" => builtin_type(interp, args, kwargs),
         "hash" => builtin_hash(args),
         "divmod" => builtin_divmod(args),
         "pow" => builtin_pow(args),
@@ -2240,6 +2401,8 @@ pub fn call_builtin(
         "sorted" => builtin_sorted(interp, args, kwargs),
         "enumerate" => builtin_enumerate(interp, args),
         "zip" => builtin_zip(interp, args),
+        "map" => builtin_map(interp, args),
+        "filter" => builtin_filter(interp, args),
         "float.fromhex" => {
             let s = match args.first() {
                 Some(Value::Str(x)) => x.as_str().to_string(),
@@ -2498,6 +2661,14 @@ fn builtin_type_new(args: &[Value]) -> BResult {
     };
     let ns = match &args[3] {
         Value::Dict(d) => d.clone(),
+        // 02.03b: EnumType.__new__ passes the EnumDict INSTANCE; the class
+        // payload is its backing dict.
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance && true => {
+            match crate::classes::dict_backing(&args[3]) {
+                Some(d) => d,
+                None => return Err(raise("TypeError", "type.__new__ argument 4 must be dict")),
+            }
+        }
         other => {
             return Err(raise(
                 "TypeError",
@@ -2512,7 +2683,10 @@ fn builtin_type_new(args: &[Value]) -> BResult {
         .ok_or_else(|| raise("SystemError", "no interpreter"))?;
     let mut base_types: Vec<std::rc::Rc<crate::classes::TypeRef>> = Vec::new();
     for b in &bases_v {
-        match class_of_value(&interp, b) {
+        // 02.03b: builtin-type bases (`class IntEnum(int, Enum)` through the
+        // metaclass __new__ path) go through the SAME synthesis exec_class_def
+        // uses (02.04a interp bug #11); a raw name-Type was rejected here.
+        match crate::classes::base_type_ref(&interp, b)? {
             Some(t) => base_types.push(t),
             None => {
                 return Err(raise(

@@ -278,6 +278,62 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
             }
             Ok(Value::Obj(ga))
         }
+        (Value::Obj(o), _k) if o.kind == ap_obj::ObjKind::UserClass => {
+            // 02.03b: metaclass __getitem__ (enum: Color["GREEN"]).
+            if let Some(t) = o.class_ref.borrow().clone() {
+                if let Some(meta) = t.metaclass.borrow().clone() {
+                    if let Some((gf, _)) = meta.lookup_with_owner("__getitem__") {
+                        let is_fn =
+                            matches!(&gf, Value::Obj(fo) if fo.kind == ap_obj::ObjKind::Function);
+                        if is_fn {
+                            return crate::interp::call_value_pub3(
+                                &gf,
+                                &[obj.clone(), key.clone()],
+                            );
+                        }
+                    }
+                }
+            }
+            Err(raise(
+                "TypeError",
+                format!("'{}' object is not subscriptable", o.name),
+            ))
+        }
+        (Value::Obj(o), _k) if o.kind == ap_obj::ObjKind::UserInstance => {
+            // 02.03b: subscript read on dict-derived instances — the
+            // subclass __getitem__ (if any) first, else the backing dict.
+            if let Some(t) = o.type_ref.borrow().as_ref().and_then(|w| w.upgrade()) {
+                if crate::classes::is_dict_derived(&t) {
+                    if let Some((gf, _)) = t.lookup_with_owner("__getitem__") {
+                        if matches!(&gf, Value::Obj(fo) if fo.kind == ap_obj::ObjKind::Function) {
+                            return crate::interp::call_value_pub3(
+                                &gf,
+                                &[obj.clone(), key.clone()],
+                            );
+                        }
+                    }
+                    if let Some(d) = crate::classes::dict_backing(obj) {
+                        return match d.get(key) {
+                            Some(v) => Ok(v),
+                            None => Err(Flow::Raise(ExceptionValue::new(
+                                "KeyError",
+                                vec![key.clone()],
+                            ))),
+                        };
+                    }
+                }
+                // 02.03 user __getitem__ (S-03-23 read side).
+                if let Some((gf, _)) = t.lookup_with_owner("__getitem__") {
+                    if matches!(&gf, Value::Obj(fo) if fo.kind == ap_obj::ObjKind::Function) {
+                        return crate::interp::call_value_pub3(&gf, &[obj.clone(), key.clone()]);
+                    }
+                }
+            }
+            Err(raise(
+                "TypeError",
+                format!("'{}' object is not subscriptable", obj.type_name()),
+            ))
+        }
         _ => Err(raise(
             "TypeError",
             format!("'{}' object is not subscriptable", obj.type_name()),
@@ -335,6 +391,50 @@ pub fn subscript_set(obj: &Value, key: &Value, v: Value) -> Result<(), Flow> {
             "TypeError",
             "'tuple' object does not support item assignment",
         )),
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
+            // 02.03b: __setitem__ on dict-derived instances — the subclass
+            // override (EnumDict) runs first; with none, the backing dict
+            // takes the write (dict semantics).
+            if let Some(t) = o.type_ref.borrow().as_ref().and_then(|w| w.upgrade()) {
+                let overridden = t
+                    .lookup_with_owner("__setitem__")
+                    .map(|(f, _)| matches!(&f, Value::Obj(fo) if fo.kind == ap_obj::ObjKind::Function))
+                    .unwrap_or(false);
+                if overridden {
+                    let interp = crate::interp::current_interp_handle();
+                    let (sf, owner) = t
+                        .lookup_with_owner("__setitem__")
+                        .map(|(f, ow)| (f, ow))
+                        .unwrap_or((Value::None, t.clone()));
+                    let caller = crate::interp::module_frame_pub();
+                    // super() inside __setitem__ (EnumDict -> dict) needs
+                    // the defining-class ctx (same channel as bound-method
+                    // dispatch).
+                    *interp.pending_super_ctx.borrow_mut() = Some((owner, obj.clone(), false));
+                    let r = crate::interp::call_value(
+                        &interp,
+                        &caller,
+                        &sf,
+                        &[obj.clone(), key.clone(), v],
+                        &[],
+                    );
+                    interp.super_stack.borrow_mut().pop();
+                    return r.map(|_| ());
+                }
+                if crate::classes::is_dict_derived(&t) {
+                    if let Some(d) = crate::classes::dict_backing(obj) {
+                        return d.set(key.clone(), v).map_err(Flow::from_py);
+                    }
+                }
+            }
+            Err(raise(
+                "TypeError",
+                format!(
+                    "'{}' object does not support item assignment",
+                    obj.type_name()
+                ),
+            ))
+        }
         _ => Err(raise(
             "TypeError",
             format!(
@@ -552,6 +652,67 @@ pub fn call_method(
         }
         (Value::Set(s), "discard") => {
             let _ = s.pop_discard(one_arg(args)?);
+            Some(Ok(Value::None))
+        }
+        // 02.03b: set.pop() — enum._find_data_type_ does data_types.pop().
+        // CPython pops the "next" element (hash order); single-element v0
+        // use is exact. Empty set -> the pinned KeyError.
+        (Value::Set(s), "pop") => {
+            let first = match s.iter().next() {
+                Some(v) => v,
+                None => return Some(Err(raise("KeyError", "pop from an empty set"))),
+            };
+            let _ = s.pop_discard(&first);
+            Some(Ok(first))
+        }
+        (Value::Set(s), "remove") => {
+            let k = one_arg(args)?;
+            let present = s.contains(k).unwrap_or(false);
+            if !present {
+                let key_txt = crate::builtins::builtin_repr(std::slice::from_ref(k))
+                    .map(|v| match v {
+                        Value::Str(x) => x.as_str().to_string(),
+                        _ => String::new(),
+                    })
+                    .unwrap_or_default();
+                return Some(Err(raise("KeyError", key_txt)));
+            }
+            let _ = s.pop_discard(k);
+            Some(Ok(Value::None))
+        }
+        // 02.03b: dict.setdefault (EnumDict._ignore_ plumbing).
+        (Value::Dict(d), "setdefault") => {
+            let k = one_arg(args)?.clone();
+            let dv = args.get(1).cloned().unwrap_or(Value::None);
+            if let Some(v) = d.get(&k) {
+                return Some(Ok(v));
+            }
+            d.set(k, dv.clone()).map_err(Flow::from_py).ok();
+            Some(Ok(dv))
+        }
+        (Value::Dict(d), "clear") => {
+            for k in d.keys() {
+                let _ = d.pop(&k);
+            }
+            Some(Ok(Value::None))
+        }
+        (Value::Dict(d), "get") => {
+            let k = one_arg(args)?.clone();
+            let dv = args.get(1).cloned().unwrap_or(Value::None);
+            Some(Ok(d.get(&k).unwrap_or(dv)))
+        }
+        (Value::Dict(d), "pop") => {
+            let k = one_arg(args)?;
+            let dv = args.get(1).cloned().unwrap_or(Value::None);
+            match d.pop(k) {
+                Some(v) => Some(Ok(v)),
+                None => Some(Ok(dv)),
+            }
+        }
+        (Value::Set(s), "clear") => {
+            for it in s.iter().collect::<Vec<_>>() {
+                let _ = s.pop_discard(&it);
+            }
             Some(Ok(Value::None))
         }
         (Value::Obj(o), "set_int_max_str_digits")
