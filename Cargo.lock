@@ -89,6 +89,9 @@ dependencies = [
 [[package]]
 name = "ap-gc"
 version = "0.1.0"
+dependencies = [
+ "ap-obj",
+]
 
 [[package]]
 name = "ap-host"
@@ -125,6 +128,7 @@ dependencies = [
 name = "ap-run"
 version = "0.1.0"
 dependencies = [
+ "ap-gc",
  "ap-ir",
  "ap-obj",
  "ap-parse",

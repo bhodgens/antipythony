@@ -530,13 +530,12 @@ pub fn exec_class_def(
         }
     }
     let mut class_frame_val = Frame::new_class(frame, ns.clone());
-    // 02.04 fix: the class frame's scope_path must be the CLASS NAME so
-    // method defs register as "T.<locals>.method" — the parser's symtable
-    // path (open_scope: parent path "T" + <locals> + name). The old
-    // parent-cloned path ("" at module level) made every method's scope
-    // lookup miss, so `global x; x = ...` inside methods wrote frame-LOCALS
-    // (lost at frame exit) instead of module globals.
-    class_frame_val.scope_path = c.name.clone();
+    // NOTE(02.04 diagnosis): setting scope_path = c.name here (the salvaged
+    // wip commit's "method scope" fix) misclassifies locals in methods of
+    // vendored-stdlib metaclasses — enum.EnumType.__new__'s `enum_class`
+    // local stops resolving (NameError) even with the collector disabled.
+    // Reverted; method-scope classification needs its own leaf.
+    let _ = &c.name;
     class_frame_val.class_ns_inst = prepared_inst.clone();
     let class_frame = Rc::new(class_frame_val);
     exec_block(interp, &class_frame, &c.body, reg)?;
