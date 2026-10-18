@@ -69,13 +69,45 @@
   only (native registry wins); metaclass/descriptor stress expected and
   wanted - fixing interp bugs it surfaces is the gate.
 
-## QUEUE
-1. 02.04a import machinery + vendoring (RUNNING deleg_e6e08e61)
-2. 02.04 GC (MMTk swap) - after 02.04a
-3. 02.05 tier-1 (SPLIT per risks; + debug stack-depth item)
-4. 02.08-full: re engine, complex numbers, class-method surface (str.strip/
-   .get), metaclass hooks completion, mappingproxy, vars() instances
-5. Plan 04 packaging (uv pure-wheel fetch) -> T1 scrapy attempt
+## Leaf 02.04a - import machinery + vendored stdlib - COMPLETE (committed 06df71b)
+- importer.rs ~700 lines: full resolution order, circular visibility,
+  packages/__path__, relative imports, byte-exact ImportError texts.
+- vendored_stdlib/: 202 files (PSF-2.0).
+- Gates: circular PASS, package+relative PASS, ImportError texts PASS.
+- PATHLIB/DATACLASSES/ENUM: import OK, crash ON USE - "Refusing to create
+  an inheritance cycle" from 02.03 MRO builder (pathlib PurePosixPath
+  chain false-positive); unittest blocked on missing _py_warnings native
+  module. -> fix pass dispatched (deleg_a82e46f4): BUG-A MRO cycle,
+  BUG-B set.discard method routing (V044 regression: methods.rs arm
+  exists but 02.03 attr protocol intercepts method-call attr lookups on
+  builtin values first - values 46->45), BUG-C _warnings shim.
+- stdlib slice 8/48 held; import machinery verified firsthand.
+
+## 02.04a COMPLETION MESSAGE ADDENDUM (agent worked past my snapshot commit)
+- Final state IS committed (worktree clean, 200 rust tests green at HEAD).
+- Its final pass added: metaclass __new__ dispatch + type.__new__ builtin,
+  metaclass-method binding (ABCMeta.register), object virtuals, exception
+  __traceback__, star-imports, globals/locals/reversed/bytearray builtins,
+  zip() id-collision fix, 19 interp bugs fixed total (documented in
+  PROGRESS-02-04a.md).
+- Vendored: 34 targets / 58 files (dropped encodings/ + importlib/metadata
+  as C-backed). NOTE: my earlier "202 entries" count = files+dirs; 58 .py.
+- VERIFIED: rust 200/0 at HEAD.
+- STILL RED (new leaf 02.03b needed - metaclass __new__ w/ dict-derived
+  instances): pathlib USE (MRO cycle false-positive - in running fix pass),
+  enum member machinery (_member_names on dict), dataclasses, unittest
+  (blocked: _py_warnings shim - in running fix pass).
+- Harness note: t09/t10/t11 self-comparison fails under `uv run pytest`
+  (venv python 3.14.4 shadows pinned 3.14.7) - pre-existing, use
+  /opt/homebrew/bin/python3.14 -m pytest.
+
+## QUEUE (updated)
+1. Fix pass running (MRO cycle, method routing, _warnings) - deleg_a82e46f4.
+2. NEW 02.03b: metaclass __new__ dict-instances (enum/dataclasses gates).
+3. 02.04 GC (MMTk swap).
+4. 02.05 tier-1 (SPLIT per risks; + debug stack-depth).
+5. 02.08-full: re engine, complex, class-method surface, metaclass hooks.
+6. Plan 04 packaging (uv) -> T1 scrapy attempt.
 
 
 ## Leaf 02.03 - classes/protocols - LANDED (in review)
@@ -130,3 +162,18 @@
   warnings/threading/argparse/pathlib/fnmatch/glob — each IN-v1 per spec 05 but not yet in
   the 02.08-lite slice), s012/s003/s004/s029 residual method-surface gaps (bytes.strip,
   complex, Partial-method kwargs).
+
+## Fix pass (BUG-A/B/C) - COMPLETE (committed b1c3d67)
+- BUG-A root cause NOT MRO: value_issubclass queried wrong metaclass w/ (a,a)
+  instead of (type(b), a) - ABC register cycle-check false-fired. Fixed per
+  CPython semantics. Plus coroutine type-name fastpath fix, str %-formatting
+  implemented, set method routing fixed.
+- values 46/47 restored (V044 green). pathlib progressed past cycle to a real
+  metaclass-__new__ arity gap. unittest import still red (shim incomplete).
+- Agent hit attempt-scope limit; report partially in Chinese (model artifact)
+  - content decipherable, root causes verified by my own probes.
+
+## Leaf 02.03b - metaclass __new__ dict-instances + _warnings + pathlib - DISPATCHED
+- Gates: enum member machinery, unittest run w/ byte-exact output, pathlib
+  Path('.') + PurePosixPath repr.
+- This is the last blocker before GC/tier-1/packaging on the critical path.

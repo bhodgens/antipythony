@@ -260,6 +260,24 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
                 }
             }
         }
+        // 02.04a (interp bug #7, vendored-stdlib stress): PEP 585 generic
+        // alias `list[int]` — types.py reads type(list[int]) at import.
+        // v0: a stub GenericAlias value (no runtime generic semantics).
+        (Value::Obj(o), _k) if o.kind == ap_obj::ObjKind::Type => {
+            let ga = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "_GenericAlias");
+            {
+                let mut attrs = ga.attrs.borrow_mut();
+                let _ = attrs.set(
+                    Value::Str(PyString::new("__origin__")),
+                    Value::Obj(o.clone()),
+                );
+                let _ = attrs.set(
+                    Value::Str(PyString::new("__args__")),
+                    Value::Tuple(Gc::new(Tuple(vec![key.clone()]))),
+                );
+            }
+            Ok(Value::Obj(ga))
+        }
         _ => Err(raise(
             "TypeError",
             format!("'{}' object is not subscriptable", obj.type_name()),
@@ -376,6 +394,32 @@ pub fn subscript_del(obj: &Value, key: &Value) -> Result<(), Flow> {
 
 /// Method call on a builtin receiver. Returns None when the method name is
 /// unknown (caller raises AttributeError).
+/// 02.04a fix pass (BUG-B): does `methods::call_method` (or the builtins
+/// fallback) route `name` on a builtin receiver? Used by the attribute layer
+/// to decide whether `obj.name` binds a BoundMethod. Superset is fine —
+/// receiver-shape errors surface at dispatch.
+pub fn builtin_method_routed(name: &str) -> bool {
+    // Exactly the names with (Value::X, name) arms in call_method.
+    matches!(
+        name,
+        "upper"
+            | "lower"
+            | "join"
+            | "partition"
+            | "encode"
+            | "decode"
+            | "append"
+            | "clear"
+            | "keys"
+            | "values"
+            | "items"
+            | "add"
+            | "copy"
+            | "discard"
+            | "set_int_max_str_digits"
+    )
+}
+
 pub fn call_method(
     interp: &Interpreter,
     obj: &Value,
@@ -488,6 +532,23 @@ pub fn call_method(
         (Value::Set(s), "add") => {
             let r = s.add(one_arg(args)?.clone()).map_err(Flow::from_py);
             Some(r.map(|_| Value::None))
+        }
+        // 02.04a (interp bug #19): set.copy() (abc cache bookkeeping).
+        (Value::Set(s), "copy") => {
+            let items: Vec<Value> = s.iter().collect();
+            let set = ap_obj::dict::PySet::new();
+            for it in items {
+                let _ = set.add(it);
+            }
+            Some(Ok(Value::Set(set)))
+        }
+        (Value::Frozen(s), "copy") => {
+            let items: Vec<Value> = s.iter().collect();
+            let set = ap_obj::dict::PySet::new();
+            for it in items {
+                let _ = set.add(it);
+            }
+            Some(Ok(Value::Set(set)))
         }
         (Value::Set(s), "discard") => {
             let _ = s.pop_discard(one_arg(args)?);

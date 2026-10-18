@@ -43,6 +43,18 @@ pub enum BinOp {
 
 /// `a <op> b` for numeric (+ sequence-add/mul in the v1 value model).
 pub fn binop(a: &Value, op: BinOp, b: &Value) -> Result<Value, PyException> {
+    // 02.04a fix pass: str % args — printf-style formatting (_py_warnings
+    // and much of the stdlib depend on it).
+    if op == BinOp::Mod {
+        if let Value::Str(fmt) = a {
+            let args: Vec<Value> = match b {
+                Value::Tuple(t) => t.0.to_vec(),
+                Value::List(l) => l.items().to_vec(),
+                other => vec![other.clone()],
+            };
+            return crate::str_repr::percent_format(fmt.as_str(), &args);
+        }
+    }
     match op {
         BinOp::Add => match (a, b) {
             (Value::Str(x), Value::Str(y)) => Ok(Value::Str(PyString::new(format!(
@@ -359,6 +371,16 @@ fn float_binop(a: &Value, op: BinOp, b: &Value) -> Result<Value, PyException> {
             (af / bf).floor()
         }
         BinOp::Mod => {
+            // 02.04a fix pass: str % args — printf-style formatting
+            // (_py_warnings, and stdlib at large, rely on it).
+            if let Value::Str(fmt) = a {
+                let args: Vec<Value> = match b {
+                    Value::Tuple(t) => t.0.to_vec(),
+                    Value::List(l) => l.items().to_vec(),
+                    other => vec![other.clone()],
+                };
+                return crate::str_repr::percent_format(fmt.as_str(), &args);
+            }
             if bf == 0.0 {
                 return Err(PyException::zero_division());
             }

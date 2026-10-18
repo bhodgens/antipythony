@@ -44,6 +44,8 @@ fn parent_of(class: &str) -> Option<&'static str> {
         "UnboundLocalError" => Some("NameError"),
         "IndexError" | "KeyError" => Some("LookupError"),
         "NotImplementedError" | "RecursionError" => Some("RuntimeError"),
+        // 02.04a: ModuleNotFoundError ⊂ ImportError (file-import machinery).
+        "ModuleNotFoundError" => Some("ImportError"),
         "UnicodeError" => Some("ValueError"),
         "UnicodeDecodeError" | "UnicodeEncodeError" => Some("UnicodeError"),
         "EOFError" => Some("OSError"),

@@ -1,0 +1,937 @@
+//! File-based import machinery (leaf 02.04a).
+//!
+//! Resolution order per import statement (docs/02-04a-import-machinery-design.md):
+//! 1. sys.modules cache (module identity: re-import returns the SAME object)
+//! 2. native registry (02.08-lite `builtins_modules::get_or_make_module`)
+//! 3. file finder over sys.path: `p/<name>/__init__.py` (package), `p/<name>.py`
+//!    (module), `p/<name>/` without `__init__` (namespace package, `__path__` set)
+//! 4. ModuleNotFoundError "No module named 'x'" (byte-exact CPython 3.14)
+//!
+//! Execution model: compile (parse -> lower), execute in a fresh namespace
+//! dict with `__name__`/`__file__`/`__package__` set; sys.modules insertion
+//! happens BEFORE body execution (circular-import partial visibility).
+//! Packages get `__path__ = [pkg_dir]`; relative imports resolve against
+//! `__package__` per CPython.
+//!
+//! v0 scoping (documented): module-level defs of imported modules register
+//! into the extended FnRegistry; nested defs/lambdas go through the existing
+//! nested-function table. Traceback source echo for imported frames reuses
+//! the main module's source table (documented divergence).
+//!
+//! sys.path bootstrap: [script_dir, vendored_stdlib] + ANTPYTHANY_PATH env
+//! entries. `--path` on ap-run-eval appends extra entries.
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+
+use ap_obj::dict::PyDict;
+use ap_obj::int::Gc;
+use ap_obj::value::{PyString, Value};
+use ap_obj::PyObject;
+
+use crate::exc_hier::ExceptionValue;
+use crate::frame::{FnEntry, Frame, Interpreter};
+use crate::interp::{exec_block, FnRegistry};
+use crate::{builtins, builtins_modules, Flow};
+
+type EResult = Result<Value, Flow>;
+
+fn raise(class: &str, msg: impl Into<String>) -> Flow {
+    Flow::Raise(ExceptionValue::msg(class, msg.into()))
+}
+
+fn s(x: impl Into<String>) -> Value {
+    Value::Str(PyString::new(x.into()))
+}
+
+// ---------------------------------------------------------------------------
+// sys.modules / sys.path state (thread-local, per-run like MODULE_CACHE)
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    static SYS_MODULES: RefCell<HashMap<String, Value>> = RefCell::new(HashMap::new());
+    static SYS_PATH: RefCell<Vec<String>> = RefCell::new(Vec::new());
+}
+
+/// sys.path bootstrap: [script_dir] + vendored_stdlib + ANTPYTHANY_PATH.
+/// Idempotent (re-running clears and rebuilds — tests spawn fresh processes).
+pub fn bootstrap_sys_path(script_dir: &str, extra: &[String]) {
+    let mut path = vec![script_dir.to_string()];
+    if let Some(vd) = vendored_stdlib_dir() {
+        path.push(vd);
+    }
+    if let Ok(env) = std::env::var("ANTPYTHANY_PATH") {
+        for e in env.split(':') {
+            if !e.is_empty() {
+                path.push(e.to_string());
+            }
+        }
+    }
+    path.extend(extra.iter().cloned());
+    SYS_PATH.with(|p| {
+        *p.borrow_mut() = path;
+    });
+}
+
+/// The vendored_stdlib/ dir at the repo root (resolved relative to this
+/// crate's manifest; also overridable via ANTPYTHANY_STDLIB for installs).
+fn vendored_stdlib_dir() -> Option<String> {
+    if let Ok(v) = std::env::var("ANTPYTHANY_STDLIB") {
+        if std::path::Path::new(&v).is_dir() {
+            return Some(v);
+        }
+    }
+    // CARGO_MANIFEST_DIR points at crates/ap-run; the vendored tree sits at
+    // the workspace root. Static binaries keep the build-machine path — v0
+    // accepts this (Plan 04 wheel/packaging replaces the discovery).
+    let cand = concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib");
+    let p = std::path::Path::new(cand).canonicalize().ok()?;
+    p.to_str().map(|s| s.to_string())
+}
+
+/// Read access for the sys module surface (`sys.path` list value).
+pub fn sys_path_value() -> Value {
+    let items: Vec<Value> = SYS_PATH.with(|p| p.borrow().iter().map(|e| s(e.clone())).collect());
+    Value::List(ap_obj::value::PyList::from_vec(items))
+}
+
+/// `sys.modules` dict snapshot (fresh dict each read — v0).
+pub fn sys_modules_value() -> Value {
+    let d = PyDict::new();
+    SYS_MODULES.with(|m| {
+        for (k, v) in m.borrow().iter() {
+            let _ = d.set(s(k.clone()), v.clone());
+        }
+    });
+    Value::Dict(d)
+}
+
+/// Test seam: clear the cache (one Interpreter per process normally).
+pub fn reset_import_state() {
+    SYS_MODULES.with(|m| m.borrow_mut().clear());
+}
+
+/// Public read for the Import binding (top-package fetch).
+pub fn sys_modules_get_pub(name: &str) -> Option<Value> {
+    sys_modules_get(name)
+}
+
+fn sys_modules_get(name: &str) -> Option<Value> {
+    SYS_MODULES.with(|m| m.borrow().get(name).cloned())
+}
+
+fn sys_modules_insert(name: &str, v: &Value) {
+    SYS_MODULES.with(|m| m.borrow_mut().insert(name.to_string(), v.clone()));
+    // 02.04a fix pass (BUG-C): keep the PYTHON-VISIBLE sys.modules dict in
+    // sync — it was a snapshot taken when sys was built, so
+    // `sys.modules[__name__]` inside a freshly-imported module (warnings.py
+    // line 96) raised KeyError for every module imported after sys.
+    SYS_MODULES_VIEW.with(|m| {
+        if let Some(d) = m.borrow().as_ref() {
+            let _ = d.set(s(name.to_string()), v.clone());
+        }
+    });
+}
+
+thread_local! {
+    /// The PyDict exposed as `sys.modules` (attached by attach_sys_extras);
+    /// kept live by sys_modules_insert / the exec_compiled removal path.
+    static SYS_MODULES_VIEW: RefCell<Option<std::rc::Rc<PyDict>>> = const { RefCell::new(None) };
+}
+
+// ---------------------------------------------------------------------------
+// File finder
+// ---------------------------------------------------------------------------
+
+/// What the file finder found on sys.path.
+enum Found {
+    /// Directory package with __init__.py.
+    Package { dir: String, init: String },
+    /// Directory WITHOUT __init__.py (namespace package, design v1).
+    Namespace { dir: String },
+    /// Single-file module.
+    Module { file: String },
+}
+
+fn find_on_path(name: &str) -> Option<Found> {
+    let entries = SYS_PATH.with(|p| p.borrow().clone());
+    for base in entries {
+        let bp = std::path::Path::new(&base);
+        let dir = bp.join(name);
+        if dir.is_dir() {
+            let init = dir.join("__init__.py");
+            if init.is_file() {
+                return Some(Found::Package {
+                    dir: dir.to_string_lossy().into_owned(),
+                    init: init.to_string_lossy().into_owned(),
+                });
+            }
+            return Some(Found::Namespace {
+                dir: dir.to_string_lossy().into_owned(),
+            });
+        }
+        let file = bp.join(format!("{name}.py"));
+        if file.is_file() {
+            return Some(Found::Module {
+                file: file.to_string_lossy().into_owned(),
+            });
+        }
+    }
+    None
+}
+
+fn find_submodule(parent_dir: &str, name: &str) -> Option<Found> {
+    let bp = std::path::Path::new(parent_dir);
+    let dir = bp.join(name);
+    if dir.is_dir() {
+        let init = dir.join("__init__.py");
+        if init.is_file() {
+            return Some(Found::Package {
+                dir: dir.to_string_lossy().into_owned(),
+                init: init.to_string_lossy().into_owned(),
+            });
+        }
+        return Some(Found::Namespace {
+            dir: dir.to_string_lossy().into_owned(),
+        });
+    }
+    let file = bp.join(format!("{name}.py"));
+    if file.is_file() {
+        return Some(Found::Module {
+            file: file.to_string_lossy().into_owned(),
+        });
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Module execution
+// ---------------------------------------------------------------------------
+
+/// Per-import compile result: the lowered module + scopes for registry extend.
+struct Compiled {
+    module: ap_ir::Module,
+    scopes: ap_parse::ScopeInfoModule,
+    is_package: bool,
+    dir: String,
+}
+
+fn compile_file(path: &str, is_package: bool, dir: String) -> Result<Compiled, Flow> {
+    let source = std::fs::read_to_string(path)
+        .map_err(|e| raise("ImportError", format!("cannot read {path}: {e}")))?;
+    let parsed = ap_parse::parse(&source).map_err(|e| {
+        // SyntaxError inside an imported module: CPython surfaces the
+        // SyntaxError directly (no wrapping ImportError).
+        raise(
+            "SyntaxError",
+            format!("{} (line {}): {}", path, e.line, e.message),
+        )
+    })?;
+    let (module, scopes) =
+        ap_parse::lower(&parsed).map_err(|e| raise("SyntaxError", format!("{e}")))?;
+    Ok(Compiled {
+        module,
+        scopes,
+        is_package,
+        dir,
+    })
+}
+
+/// A namespace created for an in-flight module execution: dict + frame +
+/// registry share the module's globals dict; the dict IS the module ns.
+struct Loaded {
+    ns: Gc<PyDict>,
+    frame: Rc<Frame>,
+    reg: Rc<FnRegistry>,
+}
+
+fn load_into(
+    interp: &Rc<Interpreter>,
+    compiled: &Compiled,
+    name: &str,
+    file: &str,
+    package: &str,
+) -> Result<Loaded, Flow> {
+    let ns = PyDict::new();
+    let _ = ns.set(s("__name__"), s(name));
+    let _ = ns.set(s("__file__"), s(file));
+    let _ = ns.set(s("__package__"), s(package));
+    let _ = ns.set(s("__doc__"), Value::None);
+    if compiled.is_package {
+        // __path__ = [pkg_dir] (CPython: a list of str).
+        let _ = ns.set(
+            s("__path__"),
+            Value::List(ap_obj::value::PyList::from_vec(vec![s(compiled
+                .dir
+                .clone())])),
+        );
+    }
+    // Extend the FnRegistry with this module's defs, bound to THIS module's
+    // namespace as their globals.
+    let reg = FnRegistry::extend_current(
+        interp,
+        &compiled.module.items,
+        compiled.scopes.clone(),
+        ns.clone(),
+    );
+    // Module frames keep locals empty; stores land in the globals dict (= ns).
+    let frame = Rc::new(Frame::new_module(ns.clone()));
+    // Bind module-level defs through the EXTENDED registry so their fn ids
+    // resolve (mirror of interp::exec_module's FnDef arm).
+    let mut stmts: Vec<ap_ir::Stmt> = Vec::new();
+    for item in &compiled.module.items {
+        match item {
+            ap_ir::Item::Stmt(st) => stmts.push(st.clone()),
+            ap_ir::Item::FnDef(f) => {
+                let id = reg.by_path_lookup(&f.name).unwrap_or(0);
+                let func = builtins::make_function(id, &f.name);
+                frame.store_global(&f.name, func);
+            }
+            ap_ir::Item::ClassDef(c) => {
+                stmts.push(ap_ir::Stmt::LocalClass(Box::new(c.clone())));
+            }
+        }
+    }
+    Ok(Loaded { ns, frame, reg })
+}
+
+/// Execute an already-inserted module namespace (sys.modules holds the
+/// partial module for circular imports).
+fn run_loaded(
+    interp: &Rc<Interpreter>,
+    loaded: &Loaded,
+    stmts: &[ap_ir::Stmt],
+) -> Result<(), Flow> {
+    exec_block(interp, &loaded.frame, stmts, &loaded.reg)
+}
+
+// ---------------------------------------------------------------------------
+// The import entry points (called from interp.rs Import/ImportFrom arms)
+// ---------------------------------------------------------------------------
+
+/// Import a module by absolute dotted name; returns the module object (the
+/// TOP package for dotted names — the caller binds per CPython rules).
+/// `interp` is needed for registry extension + builtins dispatch.
+pub fn import_module(interp: &Rc<Interpreter>, name: &str) -> EResult {
+    builtins_modules::set_current_interp(interp);
+    // 1. sys.modules cache.
+    if let Some(m) = sys_modules_get(name) {
+        link_parent_attr(name, &m);
+        return Ok(m);
+    }
+    // 2. Native registry (02.08-lite; verified quality wins per decision).
+    // For the five names whose vendored CPython sources are also present,
+    // AUGMENT the native module with any names only the file defines
+    // (private helpers like posixpath._splitext that the vendored import
+    // chain calls). Identity is preserved — user code still sees the native
+    // module object.
+    if matches!(
+        name,
+        "posixpath" | "genericpath" | "stat" | "keyword" | "linecache" | "collections"
+    ) {
+        if let Some(m) = builtins_modules::get_or_make_module(interp, name) {
+            augment_with_vendored(interp, name, &m);
+            sys_modules_insert(name, &m);
+            return Ok(m);
+        }
+    }
+    // 3. Native registry (02.08-lite continued).
+    if let Some(m) = builtins_modules::get_or_make_module(interp, name) {
+        sys_modules_insert(name, &m);
+        return Ok(m);
+    }
+    if name == "sys" {
+        let m = builtins::get_or_make_sys(interp);
+        // sys.path/sys.modules visible on the module surface.
+        attach_sys_extras(interp, &m);
+        sys_modules_insert("sys", &m);
+        return Ok(m);
+    }
+    if name == "builtins" {
+        let m = builtins_module(interp);
+        sys_modules_insert("builtins", &m);
+        return Ok(m);
+    }
+    if name == "_thread" {
+        let m = thread_stub_module(interp);
+        sys_modules_insert("_thread", &m);
+        return Ok(m);
+    }
+    if name == "_weakref" {
+        let m = weakref_stub_module();
+        sys_modules_insert("_weakref", &m);
+        return Ok(m);
+    }
+    if name == "_typing" {
+        let m = typing_stub_module(interp);
+        sys_modules_insert("_typing", &m);
+        return Ok(m);
+    }
+    // 3. File finder, descending packages ("a.b.c" resolves through a, a.b).
+    import_file_module(interp, name)
+}
+
+fn import_file_module(interp: &Rc<Interpreter>, name: &str) -> EResult {
+    let parts: Vec<&str> = name.split('.').collect();
+    // Walk the dotted path, importing each parent package first.
+    let mut prefix: Vec<&str> = Vec::new();
+    let mut parent_dir: Option<String> = None;
+    for part in &parts {
+        prefix.push(part);
+        let full = prefix.join(".");
+        if let Some(m) = sys_modules_get(&full) {
+            // Already loaded (or partial from a circular import): continue
+            // descent using its __path__ when present. Ensure the parent
+            // link exists (the cached module may have loaded through
+            // import_from without the attribute ever being set).
+            if let (Some((parent_name, child_name)), Value::Obj(po)) = (full.rsplit_once('.'), &m) {
+                if let Some(pv) = sys_modules_get(parent_name) {
+                    if let Value::Obj(pp) = pv {
+                        if let Some(pns) = &*pp.module_ns.borrow_mut() {
+                            let _ = pns.set(s(child_name), m.clone());
+                        }
+                    }
+                }
+            }
+            parent_dir = module_path_dir(&m);
+            continue;
+        }
+        // Native registry dotted names (os.path under native os): the parent
+        // resolved natively (no __path__) — delegate the whole remainder.
+        if parent_dir.is_none() && !prefix.is_empty() {
+            if let Some(m) = builtins_modules::get_or_make_module(interp, &full) {
+                sys_modules_insert(&full, &m);
+                continue;
+            }
+        }
+        let found = match &parent_dir {
+            Some(dir) => find_submodule(dir, part),
+            None => find_on_path(part),
+        };
+        let found = match found {
+            Some(f) => f,
+            None => {
+                return Err(raise(
+                    "ModuleNotFoundError",
+                    format!("No module named '{full}'"),
+                ))
+            }
+        };
+        exec_found(interp, &full, &found)?;
+        let m = sys_modules_get(&full).expect("exec_found inserted");
+        // CPython: the submodule becomes an attribute of the parent package
+        // (import a.b makes a.b reachable as a.b after `import a.b`).
+        if let (Some((parent_name, child_name)), Value::Obj(po)) = (full.rsplit_once('.'), &m) {
+            if let Some(pv) = sys_modules_get(parent_name) {
+                if let Value::Obj(pp) = pv {
+                    if let Some(pns) = &*pp.module_ns.borrow_mut() {
+                        let _ = pns.set(s(child_name), m.clone());
+                    }
+                }
+            }
+        }
+        parent_dir = module_path_dir(&m);
+    }
+    sys_modules_get(name)
+        .ok_or_else(|| raise("ModuleNotFoundError", format!("No module named '{name}'")))
+}
+
+/// Extract `[pkg_dir]` from a module value's `__path__` (packages only).
+fn module_path_dir(m: &Value) -> Option<String> {
+    if let Value::Obj(o) = m {
+        let ns = o.module_ns.borrow();
+        if let Some(ns) = &*ns {
+            let pv = ns.get(&s("__path__"))?;
+            if let Value::List(l) = pv {
+                let items = l.items();
+                if let Some(Value::Str(sp)) = items.first() {
+                    return Some(sp.as_str().to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn exec_found(interp: &Rc<Interpreter>, name: &str, found: &Found) -> Result<(), Flow> {
+    match found {
+        Found::Module { file } => {
+            let compiled = compile_file(file, false, String::new())?;
+            // A module inside a package gets the parent name as __package__.
+            let package = name.rsplit_once('.').map(|(p, _)| p).unwrap_or("");
+            exec_compiled(interp, name, file, package, &compiled)
+        }
+        Found::Package { dir, init } => {
+            let compiled = compile_file(init, true, dir.clone())?;
+            exec_compiled(interp, name, init, name, &compiled)
+        }
+        Found::Namespace { dir } => {
+            // Namespace package: empty namespace + __path__, no body to run.
+            let m = PyObject::new(ap_obj::ObjKind::Module, name);
+            let ns = PyDict::new();
+            let _ = ns.set(s("__name__"), s(name));
+            let _ = ns.set(s("__package__"), s(name));
+            let _ = ns.set(
+                s("__path__"),
+                Value::List(ap_obj::value::PyList::from_vec(vec![s(dir.clone())])),
+            );
+            let _ = ns.set(s("__doc__"), Value::None);
+            let v = Value::Obj(m.clone());
+            *m.module_ns.borrow_mut() = Some(std::rc::Rc::new((*ns).clone()));
+            sys_modules_insert(name, &v);
+            Ok(())
+        }
+    }
+}
+
+/// Create the module object, insert into sys.modules (PARTIAL visibility —
+/// circular imports observe the half-built namespace), run the body.
+fn exec_compiled(
+    interp: &Rc<Interpreter>,
+    name: &str,
+    file: &str,
+    package: &str,
+    compiled: &Compiled,
+) -> Result<(), Flow> {
+    let loaded = load_into(interp, compiled, name, file, package)?;
+    let m = PyObject::new(ap_obj::ObjKind::Module, name);
+    let v = Value::Obj(m.clone());
+    // SHARE the ns dict (not a snapshot): the module object must observe
+    // body-execution writes (interp bug #10 — the pre-execution clone made
+    // every module attr invisible after import).
+    // 02.04a fix pass (BUG-C): both the pre-body and post-body assignments
+    // must SHARE loaded.ns — the pre-body `.clone()` gave circular-import /
+    // self-referential reads (warnings.py: `_wm = sys.modules[__name__]`,
+    // then `_wm.filterwarnings`) an EMPTY snapshot; sys is a PyDict clone so
+    // the clone never sees body writes.
+    *m.module_ns.borrow_mut() = Some(loaded.ns.clone());
+    // BEFORE body execution (design: CPython circular-import semantics).
+    sys_modules_insert(name, &v);
+    let stmts = module_stmts(compiled, &loaded.reg, &loaded.frame);
+    let outcome = run_loaded(interp, &loaded, &stmts);
+    // Refresh the module's namespace view after body execution (the module
+    // stores a by-value PyDict; body writes landed in `loaded.ns`).
+    *m.module_ns.borrow_mut() = Some(loaded.ns.clone());
+    match outcome {
+        Ok(()) => Ok(()),
+        Err(f) => {
+            // Failed body: CPython REMOVES the module from sys.modules.
+            SYS_MODULES.with(|s| {
+                s.borrow_mut().remove(name);
+            });
+            SYS_MODULES_VIEW.with(|v| {
+                if let Some(d) = v.borrow().as_ref() {
+                    let _ = d.pop(&s(name.to_string()));
+                }
+            });
+            Err(f)
+        }
+    }
+}
+
+fn module_stmts(compiled: &Compiled, reg: &Rc<FnRegistry>, frame: &Rc<Frame>) -> Vec<ap_ir::Stmt> {
+    let mut stmts: Vec<ap_ir::Stmt> = Vec::new();
+    for item in &compiled.module.items {
+        match item {
+            ap_ir::Item::Stmt(st) => stmts.push(st.clone()),
+            ap_ir::Item::FnDef(f) => {
+                let id = reg.by_path_lookup(&f.name).unwrap_or(0);
+                let func = builtins::make_function(id, &f.name);
+                frame.store_global(&f.name, func);
+            }
+            ap_ir::Item::ClassDef(c) => {
+                stmts.push(ap_ir::Stmt::LocalClass(Box::new(c.clone())));
+            }
+        }
+    }
+    stmts
+}
+
+/// Attach `sys.path` / `sys.modules` onto the sys module namespace.
+pub fn attach_sys_extras(_interp: &Rc<Interpreter>, sys_m: &Value) {
+    if let Value::Obj(o) = sys_m {
+        let mut ns_ref = o.module_ns.borrow_mut();
+        if let Some(ns) = &mut *ns_ref {
+            let _ = ns.set(s("path"), sys_path_value());
+            let view = match ns.get(&s("modules")) {
+                Some(Value::Dict(d)) => d,
+                _ => {
+                    let d = PyDict::new();
+                    let _ = ns.set(s("modules"), Value::Dict(d.clone()));
+                    d
+                }
+            };
+            // Pre-seed with the current registry, then keep the view live.
+            SYS_MODULES.with(|m| {
+                for (k, v) in m.borrow().iter() {
+                    let _ = view.set(s(k.clone()), v.clone());
+                }
+            });
+            SYS_MODULES_VIEW.with(|slot| {
+                *slot.borrow_mut() = Some(view);
+            });
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Relative-import support (from . import x / from .mod import y)
+// ---------------------------------------------------------------------------
+
+/// Resolve a relative ImportFrom's target package. `level` = number of dots
+/// (1 = current package). Mirrors CPython's _calc___package__:
+/// - level 1, no module: `__package__`
+/// - level >1 or with module: strip (level-1) trailing components from the
+///   package, then join `module`.
+/// Returns Err for "attempted relative import with no known parent package"
+/// (byte-exact) when no parent package is known.
+pub fn resolve_relative_base(
+    interp: &Rc<Interpreter>,
+    frame: &Rc<Frame>,
+    level: usize,
+    module: &str,
+) -> Result<String, Flow> {
+    builtins_modules::set_current_interp(interp);
+    // The __package__ of the frame's module: read the module global the
+    // frame chain lives in (module frames keep globals = module ns).
+    let pkg = frame
+        .globals
+        .get(&s("__package__"))
+        .or_else(|| frame.globals.get(&s("__name__")));
+    let pkg = match pkg {
+        Some(Value::Str(sp)) => sp.as_str().to_string(),
+        _ => String::new(),
+    };
+    if pkg.is_empty() {
+        return Err(raise(
+            "ImportError",
+            "attempted relative import with no known parent package",
+        ));
+    }
+    // CPython: for `from .. import x` in module a.b.c, base = a.b
+    // (strip level-1 trailing parts from the module name).
+    let mut parts: Vec<&str> = pkg.split('.').collect();
+    let strip = level.saturating_sub(1);
+    if strip > 0 {
+        if strip >= parts.len() {
+            return Err(raise(
+                "ImportError",
+                "attempted relative import beyond top-level package",
+            ));
+        }
+        parts.truncate(parts.len() - strip);
+    }
+    let mut base = parts.join(".");
+    if !module.is_empty() {
+        base = if base.is_empty() {
+            module.to_string()
+        } else {
+            format!("{base}.{module}")
+        };
+    }
+    Ok(base)
+}
+
+/// `from <module> import names` where <module> resolved to a file/native
+/// module Value: bind each name (with submodule fallback for packages).
+pub fn import_from_module(
+    interp: &Rc<Interpreter>,
+    frame: &Rc<Frame>,
+    module: &str,
+    mv: &Value,
+    names: &[(String, String)], // (source, bind)
+) -> Result<(), Flow> {
+    for (src, bind) in names {
+        let got = attr_on_module(interp, mv, src);
+        let got = match got {
+            Some(v) => Some(v),
+            None => {
+                // Package submodule fallback: `from pkg import sub` where
+                // sub is not an attr of __init__ but a module on pkg.__path__.
+                let dir = module_path_dir(mv);
+                if let Some(dir) = dir {
+                    if let Some(found) = find_submodule(&dir, src) {
+                        let full = format!("{module}.{src}");
+                        exec_found(interp, &full, &found)?;
+                        // Re-read the (possibly refreshed) module attr.
+                        if let Some(fresh) = sys_modules_get(&full) {
+                            // Bind the submodule itself.
+                            frame.store_global(bind, fresh);
+                            continue;
+                        }
+                    }
+                }
+                None
+            }
+        };
+        match got {
+            Some(v) => frame.store_global(bind, v),
+            None => {
+                let file = module_file_repr(mv).unwrap_or_else(|| module.to_string());
+                return Err(raise(
+                    "ImportError",
+                    format!("cannot import name '{src}' from '{module}' ({file})"),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Attribute read on a module value (module_ns dict), native modules included.
+fn attr_on_module(_interp: &Rc<Interpreter>, mv: &Value, name: &str) -> Option<Value> {
+    if let Value::Obj(o) = mv {
+        let ns = o.module_ns.borrow();
+        if let Some(ns) = &*ns {
+            return ns.get(&s(name));
+        }
+    }
+    None
+}
+
+/// `__file__` of a module value (CPython error messages include the file).
+fn module_file_repr(mv: &Value) -> Option<String> {
+    if let Value::Obj(o) = mv {
+        let ns = o.module_ns.borrow();
+        if let Some(ns) = &*ns {
+            if let Some(Value::Str(f)) = ns.get(&s("__file__")) {
+                return Some(f.as_str().to_string());
+            }
+            return None;
+        }
+    }
+    None
+}
+
+/// `from <abs-or-rel-module> import names` resolving through the machinery.
+/// `base` is the already-qualified absolute module name (relative part
+/// resolved by the caller via resolve_relative_base).
+pub fn import_from(
+    interp: &Rc<Interpreter>,
+    frame: &Rc<Frame>,
+    base: &str,
+    names: &[(String, String)],
+) -> Result<(), Flow> {
+    let mv = import_module(interp, base)?;
+    import_from_module(interp, frame, base, &mv, names)
+}
+
+// Silence the unused-import lint for FnEntry (kept for parity with the
+// interp-side def binding if this module grows it).
+#[allow(unused)]
+fn _fn_entry_parity(_e: FnEntry) {}
+
+/// `from M import *` (02.04a): bind every public name of the module's
+/// namespace into the frame's globals. v0: no `__all__` support, no
+/// module-level `_` filtering for native marker names.
+pub fn import_star(_interp: &Rc<Interpreter>, frame: &Rc<Frame>, mv: &Value) -> Result<(), Flow> {
+    let names: Vec<String> = match mv {
+        Value::Obj(o) => {
+            let ns = o.module_ns.borrow();
+            match &*ns {
+                Some(ns) => ns
+                    .keys()
+                    .into_iter()
+                    .filter_map(|k| match k {
+                        Value::Str(sp) => Some(sp.as_str().to_string()),
+                        _ => None,
+                    })
+                    .collect::<Vec<String>>(),
+                None => Vec::new(),
+            }
+        }
+        _ => Vec::new(),
+    };
+    for name in names {
+        if name.starts_with('_') {
+            continue;
+        }
+        if let Some(v) = attr_on_module(_interp, mv, &name) {
+            frame.store_global(&name, v);
+        }
+    }
+    Ok(())
+}
+
+/// The `builtins` module: namespace snapshots interp.builtins (reprlib etc
+/// do `import builtins` then read names lazily — a COPY is fine for v0
+/// because interpreter builtins don't change after install).
+fn builtins_module(interp: &Rc<Interpreter>) -> Value {
+    let m = PyObject::new(ap_obj::ObjKind::Module, "builtins");
+    let ns = PyDict::new();
+    for (k, v) in interp.builtins.items() {
+        let _ = ns.set(k, v);
+    }
+    let _ = ns.set(s("__name__"), s("builtins"));
+    let _ = ns.set(s("__doc__"), Value::None);
+    *m.module_ns.borrow_mut() = Some(std::rc::Rc::new((*ns).clone()));
+    Value::Obj(m)
+}
+
+/// `_thread` stub: reprlib (and traceback filtering) call `_thread.get_ident()`.
+/// Single-threaded v0: a monotonic counter keyed per call site is enough.
+fn thread_stub_module(interp: &crate::frame::Interpreter) -> Value {
+    static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let m = PyObject::new(ap_obj::ObjKind::Module, "_thread");
+    let ns = PyDict::new();
+    let _ = ns.set(s("__name__"), s("_thread"));
+    let _ = ns.set(s("__doc__"), Value::None);
+    // get_ident: marker fn dispatched by call_named/builtins route — use a
+    // BuiltinFn whose call path is the generic "call the ctor" miss... v0:
+    // bind a plain int per import (ident stability within one thread is all
+    // reprlib's per-thread cache needs; identity comparisons only).
+    let ident = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let _ = ns.set(
+        s("get_ident"),
+        Value::Int(ap_obj::Int::from_i64(ident as i64)),
+    );
+    let _ = ns.set(s("allocate_lock"), Value::None);
+    // 02.04a fix pass (BUG-C): RLock — _py_warnings does `with _lock:`.
+    // v0: a no-op context manager (single-threaded runtime; real locking is
+    // a Plan-04 surface).
+    let lock_type = ap_obj::classes::TypeObject::create(
+        "RLock".to_string(),
+        "RLock".to_string(),
+        vec![crate::classes::object_class(interp)],
+        PyDict::new(),
+        ap_obj::classes::TypeFlags::default(),
+        None,
+    )
+    .expect("RLock mro");
+    let enter_fn = PyObject::new(ap_obj::ObjKind::BuiltinFn, "__ap_rlock_enter__");
+    let exit_fn = PyObject::new(ap_obj::ObjKind::BuiltinFn, "__ap_rlock_exit__");
+    let _ = lock_type.dict.set(s("__enter__"), Value::Obj(enter_fn));
+    let _ = lock_type.dict.set(s("__exit__"), Value::Obj(exit_fn));
+    let lock_class_value = ap_obj::classes::make_class_value(lock_type);
+    let _ = ns.set(s("RLock"), lock_class_value.clone());
+    let _ = ns.set(s("allocate_lock"), lock_class_value);
+    *m.module_ns.borrow_mut() = Some(std::rc::Rc::new((*ns).clone()));
+    Value::Obj(m)
+}
+
+/// `_weakref` stub: weakref.py hard-imports ref/proxy/type names. v0: markers
+/// only (no GC-hook semantics; documented gap — corpus cases that call ref()
+/// will surface a fail-loud marker error rather than import failure).
+fn weakref_stub_module() -> Value {
+    let m = PyObject::new(ap_obj::ObjKind::Module, "_weakref");
+    let ns = PyDict::new();
+    let _ = ns.set(s("__name__"), s("_weakref"));
+    let _ = ns.set(s("__doc__"), Value::None);
+    for n in [
+        "getweakrefcount",
+        "getweakrefs",
+        "proxy",
+        "_remove_dead_weakref",
+    ] {
+        let _ = ns.set(s(n), marker_fn(&format!("_weakref.{n}")));
+    }
+    // ref(obj[, cb]): v0 returns an opaque token; nothing dereferences it in
+    // the import gates (weakrefset stores it opaquely).
+    let _ = ns.set(s("ref"), marker_fn("_weakref.ref"));
+    for t in ["CallableProxyType", "ProxyType", "ReferenceType"] {
+        let _ = ns.set(s(t), s(t));
+    }
+    *m.module_ns.borrow_mut() = Some(std::rc::Rc::new((*ns).clone()));
+    Value::Obj(m)
+}
+
+/// `_typing` stub: typing.py hard-imports the Caccelerators at module scope.
+/// v0: callable markers + interned types; the runtime gates never exercise
+/// real TypeVar substitution (documented gap).
+fn typing_stub_module(interp: &crate::frame::Interpreter) -> Value {
+    let m = PyObject::new(ap_obj::ObjKind::Module, "_typing");
+    let ns = PyDict::new();
+    let _ = ns.set(s("__name__"), s("_typing"));
+    let _ = ns.set(s("__doc__"), Value::None);
+    for n in ["_idfunc", "TypeVar", "ParamSpec", "TypeVarTuple", "Union"] {
+        let _ = ns.set(s(n), marker_fn(&format!("_typing.{n}")));
+    }
+    for t in [
+        "ParamSpecArgs",
+        "ParamSpecKwargs",
+        "TypeAliasType",
+        "NoDefault",
+    ] {
+        let _ = ns.set(s(t), crate::builtins::interned_type(interp, t));
+    }
+    // Generic must be a class-derivable base: a real (object-derived)
+    // TypeObject so `class Protocol(Generic)` and subclasses synthesize MROs.
+    let generic = ap_obj::classes::TypeObject::create(
+        "Generic".to_string(),
+        "Generic".to_string(),
+        vec![crate::classes::object_class(interp)],
+        PyDict::new(),
+        ap_obj::classes::TypeFlags::default(),
+        None,
+    )
+    .expect("Generic mro");
+    let _ = ns.set(s("Generic"), ap_obj::classes::make_class_value(generic));
+    *m.module_ns.borrow_mut() = Some(std::rc::Rc::new((*ns).clone()));
+    Value::Obj(m)
+}
+
+fn marker_fn(name: &str) -> Value {
+    Value::Obj(PyObject::new(ap_obj::ObjKind::BuiltinFn, name))
+}
+
+/// Ensure `parent.<child>` is an attribute of the parent package (CPython
+/// sets it on submodule import).
+fn link_parent_attr(full: &str, m: &Value) {
+    let Some((parent_name, child_name)) = full.rsplit_once('.') else {
+        return;
+    };
+    if let Some(pv) = sys_modules_get(parent_name) {
+        if let Value::Obj(pp) = pv {
+            if let Some(pns) = &*pp.module_ns.borrow_mut() {
+                let _ = pns.set(s(child_name), m.clone());
+            }
+        }
+    }
+}
+
+/// Copy names the native module lacks from the vendored CPython file's
+/// executed namespace into it (02.04a augmentation — keeps native identity,
+/// adds private helpers like posixpath._splitext).
+pub(crate) fn augment_with_vendored(interp: &Rc<Interpreter>, name: &str, m: &Value) {
+    // Already augmented?
+    if let Value::Obj(o) = m {
+        if let Some(ns) = &*o.module_ns.borrow() {
+            if ns.get(&s("_ap_vendored_augmented")).is_some() {
+                return;
+            }
+        }
+    }
+    // Locate the vendored file.
+    let entries = SYS_PATH.with(|p| p.borrow().clone());
+    for base in entries {
+        let file = std::path::Path::new(&base).join(format!("{name}.py"));
+        if !file.is_file() {
+            continue;
+        }
+        let path = file.to_string_lossy().into_owned();
+        let Ok(compiled) = compile_file(&path, false, String::new()) else {
+            return;
+        };
+        let loaded = match load_into(interp, &compiled, name, &path, name) {
+            Ok(l) => l,
+            Err(_) => return,
+        };
+        let stmts = module_stmts(&compiled, &loaded.reg, &loaded.frame);
+        // Best-effort body run (vendored namesakes may pull imports we
+        // don't serve — ignore failures and copy what landed).
+        let _ = run_loaded(interp, &loaded, &stmts);
+        // Copy names the native namespace lacks.
+        if let Value::Obj(mo) = m {
+            if let Some(cns) = &*mo.module_ns.borrow_mut() {
+                for (k, v) in loaded.ns.items() {
+                    if cns.get(&k).is_none() {
+                        let _ = cns.set(k, v);
+                    }
+                }
+                let _ = cns.set(s("_ap_vendored_augmented"), Value::Bool(true));
+            }
+        }
+        return;
+    }
+}

@@ -229,6 +229,10 @@ pub struct FnEntry {
     pub scope_path: String,
     /// Qualname for tracebacks.
     pub qualname: String,
+    /// 02.04a: the DEFINING module's globals (functions from imported
+    /// modules must resolve names in THEIR module, not the runner's).
+    /// Construction sites default this to interp.globals.
+    pub globals: Gc<PyDict>,
 }
 
 /// The interpreter: owns module state, function table, iterator table,
@@ -364,12 +368,17 @@ impl Interpreter {
     }
 
     /// Function entry lookup (module table or nested table by id offset).
+    /// 02.04a: module-level ids resolve through the CURRENT registry (the
+    /// importer appends imported modules' defs there — the snapshot in
+    /// `functions` only knows the main module).
     pub fn fn_entry(&self, fn_id: u32) -> Option<FnEntry> {
         if fn_id >= NESTED_BASE {
             self.nested_functions
                 .borrow()
                 .get((fn_id - NESTED_BASE) as usize)
                 .cloned()
+        } else if let Some(reg) = self.registry.borrow().as_ref() {
+            reg.entries.get(fn_id as usize).cloned()
         } else {
             self.functions.borrow().get(fn_id as usize).cloned()
         }

@@ -104,6 +104,7 @@ pub const EXC_TREE: &[(&str, Option<&str>)] = &[
     ("BufferError", Some("Exception")),
     ("ExceptionGroup", Some("BaseExceptionGroup")),
     ("ImportError", Some("Exception")),
+    ("ModuleNotFoundError", Some("ImportError")),
     ("InterpreterError", Some("Exception")),
     ("LookupError", Some("Exception")),
     ("MemoryError", Some("Exception")),
@@ -272,15 +273,22 @@ pub fn exec_class_def(
 ) -> EResult {
     // 1. Bases + explicit metaclass in the ENCLOSING frame (S-03-1).
     let mut bases_v: Vec<Value> = Vec::new();
+    let mut class_kwargs: Vec<(String, Value)> = Vec::new();
     for b in &c.bases {
         let v = eval_expr(interp, frame, b, reg)?;
         // The lowering encodes non-metaclass class keywords as
-        // `__ap_classkw__.<name>(value)` calls — they are NOT bases.
-        // We can't recover the name here (lowering collapsed it), so class
-        // kwargs ride the `__init_subclass__` path only for the cases the
-        // corpus exercises; the synthetic value raises if evaluated.
+        // `__ap_classkw__.<name>(value)` calls — they are NOT bases. The
+        // call parked (name, value) on the marker; recover them and pass
+        // them through to the metaclass __new__ (enum._simple_enum's
+        // boundary=/_simple= ride this path).
         if let Value::Obj(o) = &v {
             if o.kind == ap_obj::ObjKind::BuiltinFn && o.name.starts_with("__ap_classkw__") {
+                let parts = o.slice_parts.borrow();
+                if parts.len() == 2 {
+                    if let Value::Str(kn) = &parts[0] {
+                        class_kwargs.push((kn.as_str().to_string(), parts[1].clone()));
+                    }
+                }
                 continue;
             }
         }
@@ -295,7 +303,72 @@ pub fn exec_class_def(
     //    an enclosing scope for methods (frontend skips Class scopes); the
     //    `__class__` cell (zero-arg super, S-03-17) is seeded after the
     //    class object exists.
-    let ns = PyDict::new();
+    // 02.04a fix pass: consult the metaclass __prepare__ (PEP 3115) —
+    // enum.EnumType returns an EnumDict subclass whose custom behavior
+    // (_member_names) EnumType.__new__ requires. The effective metaclass is
+    // resolved HERE from the base values (explicit metaclass wins; else the
+    // first base whose type carries a metaclass pointer).
+    let mut ns: Gc<PyDict> = PyDict::new();
+    {
+        let effective_meta: Option<Rc<TypeRef>> = match &metaclass_v {
+            Some(m) => base_type_ref(interp, m)?,
+            None => {
+                let mut found: Option<Rc<TypeRef>> = None;
+                for b in &bases_v {
+                    if let Some(t) = base_type_ref(interp, b)? {
+                        let bm = t.metaclass.borrow().clone();
+                        if let Some(m) = bm {
+                            match &found {
+                                None => found = Some(m),
+                                Some(cur) => {
+                                    if !Rc::ptr_eq(cur, &m) && m.is_subclass(cur) {
+                                        found = Some(m);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                found
+            }
+        };
+        if let Some(meta) = &effective_meta {
+            if let Some((prep, _)) = meta.lookup_with_owner("__prepare__") {
+                if is_user_function(&prep) {
+                    let meta_cls_v = class_value_for(meta);
+                    let prepared = call_value(
+                        interp,
+                        &module_frame(interp),
+                        &prep,
+                        &[
+                            meta_cls_v,
+                            Value::Str(PyString::new(c.name.clone())),
+                            Value::Tuple(Gc::new(Tuple(bases_v.iter().cloned().collect()))),
+                        ],
+                        &class_kwargs
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect::<Vec<_>>(),
+                    )?;
+                    match prepared {
+                        Value::Dict(d) => ns = d.clone(),
+                        // EnumDict (a dict subclass) instantiates as a user
+                        // instance — v0 keeps a plain-dict namespace, but
+                        // seed the EnumDict attribute surface as ITEMS so
+                        // EnumType.__new__'s `classdict._member_names` reads
+                        // resolve (attribute reads on dicts consult items —
+                        // see attr_get Dict arm).
+                        Value::Obj(io) if io.kind == ap_obj::ObjKind::UserInstance => {
+                            for (k, v) in io.attrs.borrow().items() {
+                                let _ = ns.set(k, v);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
     let class_frame = Rc::new(Frame::new_class(frame, ns.clone()));
     exec_block(interp, &class_frame, &c.body, reg)?;
 
@@ -312,6 +385,11 @@ pub fn exec_class_def(
             }
         }
     }
+    // 02.04a fix pass: the ORIGINAL bases go to the metaclass __new__
+    // (CPython semantics: class Enum(metaclass=EnumType) passes () — enum's
+    // _get_mixins_ special-cases empty bases; a synthesized object base
+    // breaks it).
+    let original_bases_v: Vec<Value> = bases_v.clone();
     if base_types.is_empty() {
         base_types.push(object_class(interp));
     }
@@ -412,18 +490,89 @@ pub fn exec_class_def(
         is_exception: base_types.iter().any(|t| t.flags.is_exception),
         builtin_exc: false,
     };
-    let t = TypeObject::create(
-        c.name.clone(),
-        qualname,
-        base_types.clone(),
-        ns,
-        flags,
-        None,
-    )
-    .map_err(|e| raise("TypeError", ap_obj::classes::mro_error_message(&e)))?;
-    // The RESOLVED metaclass rides the payload (type(C), meta hook lookup).
-    *t.metaclass.borrow_mut() = _resolved_meta.clone();
-
+    // 6b. 02.04a (interp bug #17): a USER metaclass __new__ drives creation
+    // (ABCMeta.__new__ seeds _abc_cache/_abc_registry; EnumType.__new__
+    // converts members). Call it as meta.__new__(meta, name, bases, ns);
+    // its super().__new__ lands in builtin type.__new__ (bug #17 impl).
+    let meta_new_f: Option<Value> = _resolved_meta
+        .as_ref()
+        .and_then(|meta| meta.lookup_with_owner("__new__"))
+        .map(|(f, _)| f)
+        .filter(|f| is_user_function(f));
+    let t = if let Some(f) = meta_new_f {
+        let ns_v = Value::Dict(ns.clone());
+        let name_v = Value::Str(PyString::new(c.name.clone()));
+        let bases_v = Value::Tuple(Gc::new(Tuple(original_bases_v.clone())));
+        let meta_v = _resolved_meta
+            .as_ref()
+            .map(|m| ap_obj::classes::make_class_value(m.clone()))
+            .unwrap_or_else(|| Value::None);
+        // Zero-arg super() inside the metaclass __new__ body needs the
+        // method context. call_function stages `pending_super_ctx` ABOVE
+        // its plain-fn sentinel — the same channel instantiate() uses.
+        *interp.pending_super_ctx.borrow_mut() = Some((
+            _resolved_meta.clone().unwrap(),
+            // subject = the metaclass itself (mcls arrives as arg 0 of __new__).
+            ap_obj::classes::make_class_value(_resolved_meta.clone().unwrap()),
+            false,
+        ));
+        let created = call_value(
+            interp,
+            &module_frame(interp),
+            &f,
+            &[meta_v, name_v, bases_v, ns_v],
+            &class_kwargs
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect::<Vec<_>>(),
+        );
+        let created = created?;
+        match created {
+            Value::Obj(ref o) if o.kind == ap_obj::ObjKind::UserClass => {
+                let t = o
+                    .class_ref
+                    .borrow()
+                    .clone()
+                    .ok_or_else(|| raise("SystemError", "created class without payload"))?;
+                t
+            }
+            other => {
+                return Err(raise(
+                    "TypeError",
+                    format!(
+                        "{}.__new__ should create an instance, not '{}'",
+                        _resolved_meta
+                            .as_ref()
+                            .map(|m| m.name.clone())
+                            .unwrap_or_default(),
+                        other.type_name()
+                    ),
+                ))
+            }
+        }
+    } else {
+        let t = TypeObject::create(
+            c.name.clone(),
+            qualname,
+            base_types.clone(),
+            ns,
+            flags,
+            None,
+        )
+        .map_err(|e| raise("TypeError", ap_obj::classes::mro_error_message(&e)))?;
+        // The RESOLVED metaclass rides the payload (type(C), meta hook lookup).
+        *t.metaclass.borrow_mut() = _resolved_meta.clone();
+        t
+    };
+    // 02.04a fix pass: the creating metaclass rides the payload in BOTH
+    // creation paths (the else branch set it inline; the meta __new__ path
+    // left it None, breaking isinstance(C, EnumType)-style checks and any
+    // metaclass hook dispatch on the new class).
+    if t.metaclass.borrow().is_none() {
+        if let Some(meta) = &_resolved_meta {
+            *t.metaclass.borrow_mut() = Some(meta.clone());
+        }
+    }
     let class_v = ap_obj::classes::make_class_value(t.clone());
 
     // Module marker: builtin exceptions report "builtins" (e010); user
@@ -543,6 +692,61 @@ pub fn base_type_ref(interp: &Interpreter, v: &Value) -> Result<Option<Rc<TypeRe
         Value::Obj(o) if o.kind == ap_obj::ObjKind::Type && o.name == "type" => {
             Ok(Some(type_class(interp)))
         }
+        // 02.04a fix pass (BUG-A follow-on): `class M(type)` — metaclasses
+        // written in Python (_ProtocolMeta(ABCMeta), NamedTupleMeta) must
+        // derive the REAL type payload, otherwise super().__new__ inside
+        // their bodies resolves against an empty synthesized "type" class
+        // and dies with "no attribute '__new__'".
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::Type && o.name == "type" => {
+            Ok(Some(type_class(interp)))
+        }
+        // 02.04a (interp bug #11, vendored-stdlib stress): builtin-type bases
+        // (enum.py: `class IntEnum(int, Enum)`) — synthesize an object-derived
+        // TypeObject carrying the builtin's name (isinstance/issubclass
+        // against it stays a documented v0 gap).
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::Type => {
+            let flags = TypeFlags {
+                slots: None,
+                is_exception: false,
+                builtin_exc: false,
+            };
+            let t = TypeObject::create(
+                o.name.clone(),
+                o.name.clone(),
+                vec![object_class(interp)],
+                PyDict::new(),
+                flags,
+                None,
+            )
+            .map_err(|_| raise("TypeError", "cannot synthesize builtin base class"))?;
+            Ok(Some(t))
+        }
+        // 02.04a (interp bug #2, vendored-stdlib stress): abc.py defines
+        // `class abstractclassmethod(classmethod)` — the decorator builtins
+        // are BuiltinFn markers, not types. Synthesize an object-derived
+        // class so the subclass CREATES; descriptor behavior still rides
+        // the decorator path (documented v0 gap: inheriting descriptor
+        // semantics from these bases is unsupported).
+        Value::Obj(o)
+            if o.kind == ap_obj::ObjKind::BuiltinFn
+                && matches!(o.name.as_str(), "classmethod" | "staticmethod" | "property") =>
+        {
+            let flags = TypeFlags {
+                slots: None,
+                is_exception: false,
+                builtin_exc: false,
+            };
+            let t = TypeObject::create(
+                o.name.clone(),
+                o.name.clone(),
+                vec![object_class(interp)],
+                PyDict::new(),
+                flags,
+                None,
+            )
+            .map_err(|_| raise("TypeError", "cannot synthesize decorator base class"))?;
+            Ok(Some(t))
+        }
         _ => Ok(None),
     }
 }
@@ -572,11 +776,21 @@ pub fn type_class(interp: &Interpreter) -> Rc<TypeRef> {
         return t;
     }
     let obj = object_class(interp);
+    let dict = PyDict::new();
+    // 02.04a (interp bug #17): type.__new__ reachable via super().__new__
+    // inside user metaclass bodies (ABCMeta/EnumType).
+    let _ = dict.set(
+        Value::Str(PyString::new("__new__")),
+        Value::Obj(ap_obj::PyObject::new(
+            ap_obj::ObjKind::BuiltinFn,
+            "type.__new__",
+        )),
+    );
     let t = TypeObject::create(
         "type".to_string(),
         "type".to_string(),
         vec![obj],
-        PyDict::new(),
+        dict,
         TypeFlags::default(),
         None,
     )
@@ -881,6 +1095,38 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
             Ok(false)
         }
         _ => {
+            // 02.04a fix pass: `isinstance(SomeType, type)` — a builtin/interned
+            // type object against the real `type` class (warnings.py
+            // isinstance(category, type)).
+            if matches!(x, Value::Obj(o) if o.kind == ap_obj::ObjKind::Type || o.kind == ap_obj::ObjKind::UserClass)
+            {
+                if let Value::Obj(to) = t {
+                    if to.kind == ap_obj::ObjKind::UserClass && to.name == "type" {
+                        return Ok(true);
+                    }
+                }
+            }
+            // 02.04a fix pass: CLASS subject vs a METACLASS target
+            // (enum.py _get_mixins_: isinstance(first_enum, EnumType)) —
+            // answer via the subject's metaclass chain.
+            if let Value::Obj(xo) = x {
+                if xo.kind == ap_obj::ObjKind::UserClass {
+                    if let Some(xc) = crate::classes::type_of(interp, x) {
+                        if let Some(tc) = base_type_ref(interp, t)? {
+                            if let Some(meta) = xc.metaclass.borrow().clone() {
+                                if meta.is_subclass(&tc) {
+                                    return Ok(true);
+                                }
+                            }
+                            return Ok(xc.is_subclass(&tc));
+                        }
+                        if matches!(t, Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass || o.kind == ap_obj::ObjKind::Type)
+                        {
+                            return Ok(false);
+                        }
+                    }
+                }
+            }
             let Some(xc) = type_for_check(interp, x) else {
                 // Builtin values: fall back to the name table (S-01 types).
                 return Ok(builtins::type_matches(x, type_name_of_check(t)));
@@ -976,17 +1222,27 @@ pub fn value_issubclass(interp: &Interpreter, a: &Value, b: &Value) -> Result<bo
                 return Ok(true);
             }
             // Custom metaclass __subclasscheck__ (S-03-31; c033 WS).
-            if let Some(meta) = ac.metaclass.borrow().clone() {
-                if let Some(hook) = meta.lookup("__subclasscheck__") {
-                    if matches!(&hook, Value::Obj(f) if f.kind == ap_obj::ObjKind::Function) {
-                        let interp_rc = crate::interp::current_interp_handle();
-                        let r = crate::interp::call_value_pub(
-                            &interp_rc,
-                            &hook,
-                            &[class_value_for(&ac), a.clone()],
-                            &[],
-                        )?;
-                        return Ok(r.is_truthy());
+            // 02.04a fix pass (BUG-A): the hook lives on type(b) — CPython
+            // resolves issubclass(a, b) as type(b).__subclasscheck__(b, a).
+            // The old code consulted a's OWN metaclass and passed (a, a),
+            // so _py_abc's register cycle check issubclass(Coroutine,
+            // <coroutine type>) evaluated __subclasscheck__(Coroutine,
+            // Coroutine) -> True -> "Refusing to create an inheritance
+            // cycle" on `import pathlib`.
+            if let Some(bct) = base_type_ref(interp, b)? {
+                let meta = bct.metaclass.borrow().clone();
+                if let Some(meta) = meta {
+                    if let Some(hook) = meta.lookup("__subclasscheck__") {
+                        if matches!(&hook, Value::Obj(f) if f.kind == ap_obj::ObjKind::Function) {
+                            let interp_rc = crate::interp::current_interp_handle();
+                            let r = crate::interp::call_value_pub(
+                                &interp_rc,
+                                &hook,
+                                &[class_value_for(&bct), a.clone()],
+                                &[],
+                            )?;
+                            return Ok(r.is_truthy());
+                        }
                     }
                 }
             }
@@ -1128,6 +1384,22 @@ fn instance_attr(
             }
         }
     }
+    // 02.04a (interp bug #6): exceptions carry __traceback__ (types.py
+    // probes it at import: TracebackType = type(exc.__traceback__)).
+    if t.flags.is_exception && name == "__traceback__" {
+        let frame = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<frame>");
+        let tb = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<traceback>");
+        {
+            let mut attrs = tb.attrs.borrow_mut();
+            let _ = attrs.set(Value::Str(PyString::new("tb_frame")), Value::Obj(frame));
+            let _ = attrs.set(Value::Str(PyString::new("tb_next")), Value::None);
+            let _ = attrs.set(
+                Value::Str(PyString::new("tb_lineno")),
+                Value::Int(ap_obj::Int::from_i64(0)),
+            );
+        }
+        return Ok(Value::Obj(tb));
+    }
     // 4. __getattr__ fallback (S-03-09).
     if let Some((ga, _)) = t.lookup_with_owner("__getattr__") {
         return call_value(
@@ -1137,6 +1409,20 @@ fn instance_attr(
             &[obj.clone(), Value::Str(PyString::new(name))],
             &[],
         );
+    }
+    // 02.04a (interp bug #4b): object's virtual methods answer on plain
+    // instances too (types.py: MethodWrapperType = type(object().__str__)).
+    if t.name == "object"
+        && matches!(
+            name,
+            "__init__" | "__new__" | "__str__" | "__repr__" | "__eq__" | "__hash__"
+        )
+    {
+        let f = ap_obj::PyObject::new(
+            ap_obj::ObjKind::BuiltinFn,
+            &format!("__object_virtual_{name}__"),
+        );
+        return Ok(Value::Obj(f));
     }
     Err(raise(
         "AttributeError",
@@ -1234,7 +1520,13 @@ fn class_attr_get(interp: &Rc<Interpreter>, cls_v: &Value, t: &Rc<TypeRef>, name
         .clone()
         .or_else(|| Some(type_class(interp)))
     {
-        if let Some((mv, _)) = meta.lookup_with_owner(name) {
+        if let Some((mv, owner)) = meta.lookup_with_owner(name) {
+            // 02.04a (interp bug #16): metaclass-level plain methods read on
+            // the class (ABCMeta.register via Hashable.register) bind the
+            // CLASS as the receiver, like CPython method descriptors.
+            if is_user_function(&mv) {
+                return Ok(bind_function_owned(&mv, cls_v.clone(), Some(&owner)));
+            }
             return Ok(mv);
         }
         if let Some(ga) = meta.lookup("__getattr__") {
@@ -1246,6 +1538,44 @@ fn class_attr_get(interp: &Rc<Interpreter>, cls_v: &Value, t: &Rc<TypeRef>, name
                 &[],
             );
         }
+    }
+    // 02.04a (interp bug #4, vendored-stdlib stress): object's virtual
+    // methods answer at class level (types.py reads object.__init__ and
+    // object().__str__ for WrapperDescriptorType etc).
+    if matches!(
+        name,
+        "__init__"
+            | "__new__"
+            | "__str__"
+            | "__repr__"
+            | "__eq__"
+            | "__hash__"
+            | "__doc__"
+            | "__format__"
+            | "__reduce_ex__"
+            | "__sizeof__"
+            | "__dir__"
+            | "__getattribute__"
+            | "__setattr__"
+            | "__delattr__"
+            | "__reduce__"
+    ) {
+        if t.mro.borrow().iter().any(|m| m.name == "object") {
+            if name == "__doc__" {
+                return Ok(Value::None);
+            }
+            let f = ap_obj::PyObject::new(
+                ap_obj::ObjKind::BuiltinFn,
+                &format!("__object_virtual_{name}__"),
+            );
+            return Ok(Value::Obj(f));
+        }
+    }
+    // 02.04a (interp bug #4c): types.py reads FunctionType.__code__ and
+    // FunctionType.__globals__ at import (GetSet/MemberDescriptorType).
+    if t.name == "function" && matches!(name, "__code__" | "__globals__") {
+        let stub = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<stub>");
+        return Ok(Value::Obj(stub));
     }
     Err(raise(
         "AttributeError",
@@ -1331,6 +1661,14 @@ pub fn attr_set_protocol(
                 .set(Value::Str(PyString::new(name)), v)
                 .map_err(Flow::from_py)
         }
+        // 02.04a (interp bug #1b): functions accept arbitrary attribute
+        // writes (CPython function.__dict__) — vendored stdlib does
+        // `splitext.__doc__ = genericpath._splitext.__doc__` at import.
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::Function => o
+            .attrs
+            .borrow_mut()
+            .set(Value::Str(PyString::new(name)), v)
+            .map_err(Flow::from_py),
         other => Err(raise(
             "AttributeError",
             format!("'{}' object has no attribute '{}'", other.type_name(), name),

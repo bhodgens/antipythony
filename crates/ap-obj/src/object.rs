@@ -100,7 +100,7 @@ pub struct PyObject {
     /// For Namespace (sys.float_info etc.): printable repr override.
     pub repr_text: RefCell<Option<String>>,
     /// For Module: exported names dict (lazy attribute reads).
-    pub module_ns: RefCell<Option<crate::dict::PyDict>>,
+    pub module_ns: RefCell<Option<std::rc::Rc<crate::dict::PyDict>>>,
     /// For Function: executor-side closure state slot (defining-frame id
     /// in the interpreter's frame table; the executor owns the typing).
     pub closure_slot: RefCell<Option<u64>>,
