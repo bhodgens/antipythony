@@ -162,3 +162,18 @@
   warnings/threading/argparse/pathlib/fnmatch/glob — each IN-v1 per spec 05 but not yet in
   the 02.08-lite slice), s012/s003/s004/s029 residual method-surface gaps (bytes.strip,
   complex, Partial-method kwargs).
+
+## Fix pass (BUG-A/B/C) - COMPLETE (committed b1c3d67)
+- BUG-A root cause NOT MRO: value_issubclass queried wrong metaclass w/ (a,a)
+  instead of (type(b), a) - ABC register cycle-check false-fired. Fixed per
+  CPython semantics. Plus coroutine type-name fastpath fix, str %-formatting
+  implemented, set method routing fixed.
+- values 46/47 restored (V044 green). pathlib progressed past cycle to a real
+  metaclass-__new__ arity gap. unittest import still red (shim incomplete).
+- Agent hit attempt-scope limit; report partially in Chinese (model artifact)
+  - content decipherable, root causes verified by my own probes.
+
+## Leaf 02.03b - metaclass __new__ dict-instances + _warnings + pathlib - DISPATCHED
+- Gates: enum member machinery, unittest run w/ byte-exact output, pathlib
+  Path('.') + PurePosixPath repr.
+- This is the last blocker before GC/tier-1/packaging on the critical path.
