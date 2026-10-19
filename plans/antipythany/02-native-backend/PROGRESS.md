@@ -686,3 +686,12 @@
   groups, lookarounds, flags, match objects, error texts; 42 differential
   probes (289 rust total); stdlib 17/48 -> 20/48 (s010/s011 flipped).
 - fmt clean; corpus held elsewhere.
+
+## SEQUENCE CHANGE (orchestrator, toward "compile target projects")
+- 02.07 threading DISPATCHED BEFORE tier-1: T1 scrapy needs correct
+  threading (twisted imports it), NOT tier-1 performance. Tier-1/AoT move
+  AFTER T1 validation (they are perf/distribution, not correctness).
+- GIL decision documented: v1 ships a GIL (blocking-op release pattern),
+  diverging from the no-GIL vision; T120-T122 no-GIL probes expected
+  red/masked and documented. no-GIL swap pairs with tier-1 root-maps later.
+- Threading corpus pre-staged by test track: T101-T122 + s038 (19 cases).
