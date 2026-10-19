@@ -113,10 +113,6 @@ def lines_matching(lines: list[str], kind: str) -> list[str]:
     return [ln for ln in lines if ln.lstrip().startswith(kind)]
 
 
-xfail_ap_ir_dump = pytest.mark.xfail(strict=False, reason=XFAIL_REASON)
-
-
-@xfail_ap_ir_dump
 @pytest.mark.parametrize(
     "name,src,kind",
     CONSTRUCT_CASES,
@@ -137,7 +133,6 @@ def test_construct_single_node(name, src, kind):
     )
 
 
-@xfail_ap_ir_dump
 def test_binop_chain_count():
     # `x + y + z` is left-associative: two BinOp nodes. Associativity is pinned
     # observable semantics (S-01-2: `**` right-assoc, `3 ** 3 ** 2` == 19683), so
@@ -148,7 +143,6 @@ def test_binop_chain_count():
     )
 
 
-@xfail_ap_ir_dump
 @pytest.mark.parametrize("src", [["x = a + b"], ["x = a + b + c"]], ids=["one", "chain"])
 def test_dump_deterministic(src):
     # master plan 01: "stability matters more than completeness"; 01.02 exposes
@@ -159,7 +153,6 @@ def test_dump_deterministic(src):
     assert first == second and first != ""
 
 
-@xfail_ap_ir_dump
 def test_all_constructs_no_crash():
     # plan-01 01.02 gate: "builder constructs all corpus constructs". One program
     # touching every Expr/Stmt kind spec 01+02 require; parse+dump must exit 0.

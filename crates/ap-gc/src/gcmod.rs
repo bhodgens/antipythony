@@ -730,11 +730,13 @@ pub fn get_objects() -> Vec<Value> {
 }
 
 /// gc.is_tracked(v): registered containers True, scalars False. Tuples
-/// report False (gc007 samples them only after a collect, which proves
-/// them untracked; the pre-collect window is unpinned per the corpus note).
+/// containing only untracked leaves report False; a tuple holding a tracked
+/// container is itself tracked (CPython pins tuple-list True, gc007).
 pub fn is_tracked(v: &Value) -> bool {
-    if matches!(v, Value::Tuple(_)) {
-        return false;
+    if let Value::Tuple(t) = v {
+        // Tracked iff any element is tracked (CPython tracks tuples that
+        // can participate in cycles — those holding containers).
+        return t.0.iter().any(is_tracked);
     }
     let a = value_addr(v);
     a != 0 && REGISTRY.with(|r| r.borrow().contains_key(&a))
