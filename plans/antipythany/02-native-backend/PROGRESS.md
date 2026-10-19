@@ -552,3 +552,23 @@
   s034 weakref flips), exceptions 15/15 (held), classes 27/33 (held),
   hello+types 2/2 (held), gc 9/17 (was 6).
 - NOT COMMITTED per protocol.
+
+## Leaf 02.04 - GC - COMPLETE (committed 81e2e79)
+- weakref native surface (WKD/WVD/WeakSet/WeakMethod/proxy, token hash by
+  target address); unittest gate GREEN (TestLoader/TextTestRunner,
+  CPython-shaped output); arity battery green; gc.collect swept-entry
+  semantics documented; MMTk design docs/gc-mmtk-swap.md (6 gated steps).
+- rust 247/0; pytest 1272/0; corpus: values 46/47, fstrings 34/35,
+  stdlib 17/48 (+1 s034), gc 9/17 (+3), classes 27/33, exceptions 15/15.
+- Honest gaps: unittest failure bodies lack traceback frame lines (needs
+  live tb chain); unittest.main() argparse leg needs real re engine;
+  10 gc corpus failures need lazy generators (02.05); bytearray mutation
+  needs mutable repr.
+- PLAN 02 REMAINING: 02.05 tier-1 (SPLIT per risks) + 02.06 AoT + 02.07
+  threading + 02.08-full p2 (re engine, complex, class-method deep).
+
+## QUEUE
+1. 02.08-full p2: re engine + complex + remaining method surface
+2. 02.05 tier-1 (SPLIT per risks) + 02.06 AoT + 02.07 threading
+3. Plan 04 packaging (uv) -> T1 scrapy attempt
+4. Plan 03 WASM backend (after native is at T1 level)
