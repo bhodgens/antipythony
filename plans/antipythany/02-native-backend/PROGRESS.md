@@ -695,3 +695,11 @@
   diverging from the no-GIL vision; T120-T122 no-GIL probes expected
   red/masked and documented. no-GIL swap pairs with tier-1 root-maps later.
 - Threading corpus pre-staged by test track: T101-T122 + s038 (19 cases).
+
+## Post-re-engine corpus state (verified, 380f28e + dc16788)
+- TOTAL 158/215 (73%): values 46/47, fstrings 34/35, stdlib 20/48,
+  gc 16/17 (tuple-tracking fix +3), classes 27/33, exceptions 13/15
+  (e002/e014 NEW regressions - exception-hierarchy repr diffs, queued for
+  fix pass with threading), threading 0/18 (02.07 in flight).
+- 02.07 threading RUNNING (deleg_3862ee37).
+- Exception repr regressions -> fix pass after 02.07 lands.
