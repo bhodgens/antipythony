@@ -132,6 +132,25 @@ pub fn percent_format(fmt: &str, args: &[Value]) -> Result<Value, PyException> {
         let mut space = false;
         let mut zero_pad = false;
         let mut alt = false;
+        // Mapping-key form: CPython's grammar puts `%(name)` FIRST, before
+        // flags/width/precision (`%(k)-8.2f` is legal). Parse the key here,
+        // then fall through to the shared spec machinery; the keyed value
+        // becomes the conversion argument.
+        let mut mapping_key: Option<String> = None;
+        if chars.peek() == Some(&'(') {
+            chars.next();
+            let mut key = String::new();
+            for ch in chars.by_ref() {
+                if ch == ')' {
+                    break;
+                }
+                key.push(ch);
+            }
+            if mapping.is_none() {
+                return Err(PyException::new("TypeError", "format requires a mapping"));
+            }
+            mapping_key = Some(key);
+        }
         loop {
             match chars.peek() {
                 Some('-') => {
@@ -157,11 +176,44 @@ pub fn percent_format(fmt: &str, args: &[Value]) -> Result<Value, PyException> {
                 _ => break,
             }
         }
-        // width
+        // width — literal digits or `*` (next arg / keyed value; negative
+        // flips to left-align per CPython).
         let mut width: Option<usize> = None;
-        while let Some(d) = chars.peek().and_then(|c| c.to_digit(10)) {
-            width = Some(width.unwrap_or(0) * 10 + d as usize);
+        if chars.peek() == Some(&'*') {
             chars.next();
+            let wv = if let Some(key) = &mapping_key {
+                let d = mapping.as_ref().expect("mapping checked at key parse");
+                match d.get(&Value::Str(crate::PyString::new(key.clone()))) {
+                    Some(v) => v,
+                    None => return Err(PyException::new("KeyError", key.clone())),
+                }
+            } else {
+                let a = args.get(arg_i).cloned().unwrap_or(Value::None);
+                arg_i += 1;
+                a
+            };
+            // CPython checks the * argument's type before the conversion.
+            let w = match &wv {
+                Value::Bool(b) => i64::from(*b),
+                Value::Int(n) => match n.to_i64() {
+                    Some(x) => x,
+                    None => {
+                        return Err(PyException::new("TypeError", "* wants int"));
+                    }
+                },
+                _ => return Err(PyException::new("TypeError", "* wants int")),
+            };
+            if w < 0 {
+                left_align = true;
+                width = Some((-w) as usize);
+            } else {
+                width = Some(w as usize);
+            }
+        } else {
+            while let Some(d) = chars.peek().and_then(|c| c.to_digit(10)) {
+                width = Some(width.unwrap_or(0) * 10 + d as usize);
+                chars.next();
+            }
         }
         // precision
         let mut precision: Option<usize> = None;
@@ -178,50 +230,18 @@ pub fn percent_format(fmt: &str, args: &[Value]) -> Result<Value, PyException> {
         while matches!(chars.peek(), Some('h') | Some('l') | Some('L')) {
             chars.next();
         }
-        // Mapping-key form: `%(name)s` — pull the value from the dict arg.
-        // The dict stays the sole argument (arg_i not advanced).
-        if chars.peek() == Some(&'(') {
-            chars.next();
-            let mut key = String::new();
-            for ch in chars.by_ref() {
-                if ch == ')' {
-                    break;
-                }
-                key.push(ch);
-            }
-            let conv = chars.next().unwrap_or('s');
-            let Some(d) = &mapping else {
-                return Err(PyException::new("TypeError", "format requires a mapping"));
-            };
-            let arg = d
-                .get(&Value::Str(crate::PyString::new(key.clone())))
-                .unwrap_or(Value::None);
-            let rendered = match conv {
-                's' => match &arg {
-                    Value::Str(x) => x.as_str().to_string(),
-                    other => crate::ops::to_str(other)?,
-                },
-                'r' => crate::ops::repr(&arg)?,
-                'd' | 'i' | 'u' => {
-                    let n = int_of(&arg)?;
-                    n.to_string()
-                }
-                other => {
-                    return Err(PyException::new(
-                        "ValueError",
-                        format!(
-                            "unsupported format character '{}' (0x{:x})",
-                            other, other as u32
-                        ),
-                    ))
-                }
-            };
-            out.push_str(&rendered);
-            continue;
-        }
         let conv = chars.next().unwrap_or('%');
-        let arg = args.get(arg_i).cloned().unwrap_or(Value::None);
-        arg_i += 1;
+        let arg = if let Some(key) = &mapping_key {
+            let d = mapping.as_ref().expect("mapping checked at key parse");
+            match d.get(&Value::Str(crate::PyString::new(key.clone()))) {
+                Some(v) => v,
+                None => return Err(PyException::new("KeyError", key.clone())),
+            }
+        } else {
+            let a = args.get(arg_i).cloned().unwrap_or(Value::None);
+            arg_i += 1;
+            a
+        };
         let rendered = match conv {
             's' => {
                 let s = match &arg {
@@ -390,13 +410,14 @@ pub fn percent_format(fmt: &str, args: &[Value]) -> Result<Value, PyException> {
             },
             '%' => "%".to_string(),
             other => {
+                let idx = fmt.chars().count() - 1 - chars.clone().count();
                 return Err(PyException::new(
                     "ValueError",
                     format!(
-                        "unsupported format character '{}' (0x{:x})",
-                        other, other as u32
+                        "unsupported format character '{}' (0x{:x}) at index {}",
+                        other, other as u32, idx
                     ),
-                ))
+                ));
             }
         };
         // width padding
@@ -468,6 +489,17 @@ fn trim_g_trailing(f: f64, s: &str, precision: usize) -> String {
         exp < -4 || exp >= precision as i32
     };
     if keep_exp {
+        // CPython %g in exponent form: strip trailing zeros from the
+        // mantissa (keep at least one digit), keep the exponent as-is.
+        if let Some((mant, exp)) = s.split_once(['e', 'E']) {
+            let t = if mant.contains('.') {
+                mant.trim_end_matches('0').trim_end_matches('.')
+            } else {
+                mant
+            };
+            let t = if t.is_empty() { "0" } else { t };
+            return format!("{}e{}", t, exp);
+        }
         return s.to_string();
     }
     if s.contains(['e', 'E']) {
@@ -493,7 +525,7 @@ fn int_of(v: &Value) -> Result<i64, PyException> {
         other => Err(PyException::new(
             "TypeError",
             format!(
-                "%d format: a number is required, not '{}'",
+                "%d format: a real number is required, not {}",
                 other.type_name()
             ),
         )),
@@ -518,7 +550,7 @@ fn float_of(v: &Value) -> Result<f64, PyException> {
         Value::Bool(b) => Ok(if *b { 1.0 } else { 0.0 }),
         other => Err(PyException::new(
             "TypeError",
-            format!("must be real number, not '{}'", other.type_name()),
+            format!("must be real number, not {}", other.type_name()),
         )),
     }
 }
