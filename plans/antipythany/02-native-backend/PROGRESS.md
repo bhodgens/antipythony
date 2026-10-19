@@ -572,3 +572,10 @@
 2. 02.05 tier-1 (SPLIT per risks) + 02.06 AoT + 02.07 threading
 3. Plan 04 packaging (uv) -> T1 scrapy attempt
 4. Plan 03 WASM backend (after native is at T1 level)
+
+## Leaf 02.08-full p2 - re engine - DISPATCHED (deleg_51dcd1ab)
+- Full backtracking regex engine (byte-exact vs CPython: leftmost-first,
+  backrefs, lookarounds; Rust regex crate REJECTED - its DFA semantics differ
+  deliberately). ~50 differential probes; s010/s011 expected to flip.
+- Post-02.04: unittest chain works (weakref/_warnings landed), so warnings.py
+  filter patterns are now testable end to end.
