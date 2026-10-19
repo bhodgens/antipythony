@@ -245,6 +245,25 @@ pub fn fire_dead_weakrefs() {
     let dead = ap_gc::weakref_take_dead();
     for (target_addr, callback) in dead {
         let Some(cb) = callback else { continue };
+        // weakref.finalize entries carry a native dispatch marker as the
+        // callback; their tokens live in FINALIZERS, not WEAK_TOKENS, so
+        // resolve the token from the finalize table first (else the
+        // WEAK_TOKENS miss below silently skips the finalize — observed:
+        // gc015 "after collect: [] alive: True").
+        if let Value::Obj(m) = &cb {
+            if m.kind == ap_obj::ObjKind::BuiltinFn && m.name == "__ap_finalize_dispatch__" {
+                let tok = FINALIZERS.with(|f| {
+                    f.borrow()
+                        .iter()
+                        .find(|e| e.target_addr == target_addr)
+                        .map(|e| Value::Obj(e.token.clone()))
+                });
+                if let Some(Value::Obj(tok)) = tok {
+                    finalize_call(&tok);
+                }
+                continue;
+            }
+        }
         // The callback receives the ref token (CPython passes the ref).
         let token_val = WEAK_TOKENS.with(|w| {
             w.borrow()

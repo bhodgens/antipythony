@@ -315,9 +315,15 @@ pub fn install_exception_classes(interp: &Rc<Interpreter>) {
             None,
         )
         .expect("builtin exc MRO is acyclic");
+        // 02.08-full p2: stdlib-exception classes report their home module.
+        let exc_module = match *name {
+            "PatternError" => "re",
+            "JSONDecodeError" => "json",
+            _ => "builtins",
+        };
         let _ = t.dict.set(
             Value::Str(PyString::new("__module__")),
-            Value::Str(PyString::new("builtins")),
+            Value::Str(PyString::new(exc_module)),
         );
         let v = ap_obj::classes::make_class_value(t);
         table.insert(name.to_string(), v.clone());
@@ -379,6 +385,10 @@ pub fn subclasses_of(interp: &Interpreter, name: &str) -> Vec<Value> {
     let mut out: Vec<Value> = EXC_TREE
         .iter()
         .filter(|(_, p)| *p == Some(name))
+        // PatternError (re.error) is defined IN the re module in CPython —
+        // invisible to the builtin Exception.__subclasses__ pin (e002) even
+        // though issubclass(re.error, Exception) holds (s011).
+        .filter(|(n, _)| *n != "PatternError")
         .filter_map(|(n, _)| table.get(*n).cloned())
         .collect();
     // ExceptionGroup ALSO derives Exception (dual bases).
@@ -800,9 +810,14 @@ pub fn exec_class_def(
     let class_v = ap_obj::classes::make_class_value(t.clone());
 
     // Module marker: builtin exceptions report "builtins" (e010); user
-    // classes "__main__" (S-03-04).
+    // classes "__main__" (S-03-04). 02.08-full p2: stdlib-exception classes
+    // report their home module (re.error.__module__ == 're').
     let module_name = if t.flags.builtin_exc {
-        "builtins"
+        match t.name.as_str() {
+            "PatternError" => "re",
+            "JSONDecodeError" => "json",
+            _ => "builtins",
+        }
     } else {
         ap_obj::MODULE_NAME
     };
@@ -1783,10 +1798,21 @@ fn class_attr_get(interp: &Rc<Interpreter>, cls_v: &Value, t: &Rc<TypeRef>, name
         "__name__" => return Ok(Value::Str(PyString::new(t.name.clone()))),
         "__qualname__" => return Ok(Value::Str(PyString::new(t.qualname.clone()))),
         "__module__" => {
+            // 02.08-full p2: stdlib-exception classes report their home
+            // module (re.error.__module__ == 're', json.JSONDecodeError 'json').
+            const STDLIB_EXC_MODULES: &[(&str, &str)] = &[("PatternError", "re")];
             return Ok(t
                 .dict
                 .get(&Value::Str(PyString::new("__module__")))
-                .unwrap_or(Value::Str(PyString::new(ap_obj::MODULE_NAME))));
+                .unwrap_or_else(|| {
+                    Value::Str(PyString::new(
+                        STDLIB_EXC_MODULES
+                            .iter()
+                            .find(|(n, _)| *n == t.name)
+                            .map(|(_, m)| m.to_string())
+                            .unwrap_or_else(|| ap_obj::MODULE_NAME.to_string()),
+                    ))
+                }));
         }
         "__bases__" => {
             let mut items: Vec<Value> = t.bases.iter().map(class_value_for).collect();

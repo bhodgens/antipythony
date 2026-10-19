@@ -579,3 +579,102 @@
   deliberately). ~50 differential probes; s010/s011 expected to flip.
 - Post-02.04: unittest chain works (weakref/_warnings landed), so warnings.py
   filter patterns are now testable end to end.
+
+## Leaf 02.08-full p2 - re engine - COMPLETE (uncommitted, agent run)
+
+### ENGINE DESIGN CHOICE (documented per brief)
+- HAND-ROLLED backtracking engine in Rust (crates/ap-run/src/sre.rs ~2500L +
+  sre_tables.rs): hand-written recursive-descent parser -> AST ->
+  CPS-style recursive backtracking matcher. Rust `regex` crate REJECTED
+  (DFA semantics deliberately differ: no backrefs, no uniform lookaround,
+  different alternation preference -> byte-exactness impossible). Vendored
+  re/_parser+_compiler+`_sre` path ALSO REJECTED (needs array-module
+  semantics, memoryview.cast, a bytecode VM - more interpreter surface for
+  the same observable behavior). `re` stays a NATIVE module (registry wins
+  over the vendored package; vendored re/ unused, documented).
+- CPython semantics: leftmost-first match, greedy/lazy quantifiers with
+  backtracking + zero-width-loop protection (one empty iteration then stop,
+  CPython-observed), capture reset on backtrack, fixed-width lookbehind
+  (byte-exact error), \1..\99 backrefs (+IGNORECASE forms), named groups
+  (?P<..>/\g<..>), conditionals (?(1)y|n), atomic groups (?>..) +
+  possessive quantifiers (a++ - implemented as atomic(greedy-repeat)),
+  \b \B \A \Z, MULTILINE/DOTALL/IGNORECASE/VERBOSE/ASCII + inline
+  (?i:..)/(?i)..-global/scoped (?-i:..) with CPython flag-conflict errors,
+  full-Unicode \d \w \s (tables extracted live from CPython 3.14.7
+  isdigit/isalnum/isspace over the whole codepoint space) + _casefix
+  extra-cases set for IGNORECASE (STRASSE/ſ pairs).
+- CATASTROPHIC-BACKTRACKING GUARD (documented divergence): 4M-step limit
+  per match call raises re.error("ap: matching step limit exceeded...")
+  where CPython would hang. No corpus/probe hits it.
+- BYTES PATTERNS decode latin-1 into the str path (documented v0 gap:
+  matches return str-typed groups). re.Scanner exists as a name surface.
+- DOCUMENTED GAP: \N{...} supports <control-XX>/U+XXXX/C0 names only (the
+  30k-entry unicodedata name table is not viable in v0).
+- MODULE API: compile/match/fullmatch/search/findall/finditer/sub/subn/
+  split/escape/purge + flags (incl. NOFLAG repr "re.NOFLAG" via a marker
+  object int()ing to 0) + Pattern/Match types with isinstance + __all__ +
+  __version__ "2.2.1" + re.error is re.PatternError (real class, module
+  're'); kwargs (flags=/count=/maxsplit=) and positional slots per CPython
+  signatures; compiled-pattern+flags ValueError byte-exact.
+
+### VALUE LAYER
+- Pattern/Match = Opaque objects; engine state rides thread-local identity
+  maps (PAT_TABLE/MATCH_TABLE). Match surface: group([1,2..]|name),
+  __getitem__, groups, groupdict (definition-ordered), start/end/span,
+  expand, re/pattern/flags/groups/groupindex/string/pos/endpos/lastindex/
+  lastgroup/regs; reprs byte-exact incl. CPython quote-flipping for
+  embedded quotes. Pattern repr re.compile('pat', re.A|re.I) byte-exact.
+
+### EN-ROUTE RUNTIME BUGS FIXED (cross-file, flagged)
+1. for/while-ELSE ran unconditionally after break (Rust `loop { break }`
+   fell through to the orelse block with no completed flag). Visible in
+   _py_warnings' filter loop (warn ignored filters) - fixed for BOTH
+   Stmt::For and Stmt::While (interp.rs).
+2. del lst[a:b] unsupported -> 'list indices must be integers'
+   (resetwarnings' `del _filters[:]`). Added Key::Slice arm to
+   subscript_del + PyList::remove_range.
+3. groupdict iteration order (HashMap -> grouporder vec, definition order).
+4. ignorecase literals were not folded at parse (lit() now applied to bare
+   chars in parse_sequence).
+5. escapes \a \t \n \f \r \v were rejected; \x \u \U check ordering
+   fixed (bad-escape arm ran before hex parsing).
+6. {,n} parsed as literal '{' (CPython: {0,n}).
+7. module-level re.match/search positional flags slot misread as pos/endpos
+   (re_op_form splits module vs Pattern-method arg shapes).
+8. PatternError added to the builtin exception tree leaked into
+   Exception.__subclasses__ (e002/e014 pins) - excluded from
+   subclasses_of while keeping issubclass (s011) + __module__=='re'.
+9. stdlib exception classes report their home module
+   (re.error.__module__=='re', JSONDecodeError 'json') via the class dict +
+   Type-attr surface.
+
+### GATES (all verified firsthand vs /opt/homebrew/bin/python3.14 -S)
+- rust workspace 289/0 (was 247; +42 re_differential + trivial suite
+  drift); fmt clean; pytest 1272 passed / 0 failed / 5 skipped /
+  751 xfailed / 126 xpassed (baseline 1272/0).
+- CORPUS: stdlib 17/48 -> 20/48 (s010 s011 s033 flip = the brief's exact
+  targets; +1 more from the for/else fix landing on s0xx paths);
+  values 46/47 (held); fstrings 35/35 (held); classes 27/33 (held);
+  exceptions 15/15 (e002/e014 restored after the PatternError tree
+  addition - was 13/15 mid-leaf); gc 13/17 (was 9 at leaf start; +4 from
+  for/else + del-slice fixes, none of the remaining 6 regressed);
+  hello+types 2/2 (held).
+- WARNINGS CHAIN: simplefilter/ignore/always end-to-end through
+  _py_warnings' filter loop (the for/break/else bug that silently ran the
+  else clause is fixed); warn_explicit + resetwarnings (del lst[:]) green.
+- UNITTEST: imports + TestLoader/TextTestRunner path green (failure-body
+  traceback frames remain the documented v0 gap; 'Ran 2 tests' timing
+  sign -0.000s vs 0.000s pre-existing).
+- DIFFERENTIAL: crates/ap-run/tests/re_differential.rs - 42 probes vs live
+  python3.14, ALL green (literals/classes/escapes, quantifiers incl.
+  nested-repeat group semantics, alternation order, backrefs incl.
+  unmatched-group failure, named groups + \g templates, conditionals,
+  lookahead/lookbehind + variable-width-lookbehind error texts, atomic/
+  possessive, flags I/M/S/X/A inline+compiled, match-object surface +
+  reprs + regs + pos/endpos, module API incl. sub backref templates +
+  callable repl, split empty-match semantics, findall group forms, escape,
+  purge, types/isinstance, 10 compile-error texts, zero-width scan,
+  pos/endpos, warnings/argparse pattern shapes, {,n}, casefold edge,
+  multiline $, groupref-in-repeat, template errors, dot/newline).
+- NOT COMMITTED per protocol. Sibling-agent files touched by their own
+  leaves (gcmod.rs finalizer ordering, t08 bench_report) left untouched.

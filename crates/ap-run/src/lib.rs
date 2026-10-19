@@ -11,6 +11,8 @@ pub mod importer;
 pub mod interp;
 pub mod iter;
 pub mod methods;
+pub mod sre;
+pub mod sre_tables;
 
 use ap_obj::exc::PyException;
 pub use exc_hier::ExceptionValue;

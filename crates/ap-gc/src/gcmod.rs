@@ -73,6 +73,11 @@ thread_local! {
     /// ones stay tracked and die silently at a later sweep.)
     static FINALIZED_ADDRS: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
 
+    /// Addresses judged unreachable in the CURRENT collection (swept at the
+    /// retain below). sweep_weakrefs needs this because it runs before the
+    /// retain: registry membership alone can't see this cycle's deaths.
+    static GARBAGE_NOW: RefCell<Vec<usize>> = RefCell::new(Vec::new());
+
     /// Instrumentation totals (GCSTATS env / stress report).
     static STATS: std::cell::Cell<GcStats> = const { std::cell::Cell::new(GcStats::EMPTY) };
 
@@ -498,16 +503,27 @@ pub fn collect_gen(generation: usize) -> usize {
     //    clone (the registry's) drops in the retain below; cycles break
     //    because all member clones drop together. We collect the garbage
     //    Values first so finalizers can still see their objects.
-    let mut garbage: Vec<(usize, Value)> = Vec::new();
     let frozen = FROZEN.with(|f| f.borrow().clone());
+    // gc002 pins CPython's creation-order finalizer firing: sort garbage by
+    // registration sequence (the plain registry HashMap iteration order is
+    // randomly seeded per process and does NOT correlate with creation).
+    let mut garbage: Vec<(usize, u64, Value)> = Vec::new();
     REGISTRY.with(|r| {
         let r = r.borrow();
+        let seqs = SEQ_OF.with(|s| s.borrow().clone());
         for (addr, t) in r.iter() {
             if reachable.contains(addr) || frozen.contains(addr) {
                 continue;
             }
-            garbage.push((*addr, t.value.clone()));
+            garbage.push((*addr, seqs.get(addr).copied().unwrap_or(0), t.value.clone()));
         }
+    });
+    garbage.sort_by_key(|(_, seq, _)| *seq);
+    let garbage: Vec<(usize, Value)> = garbage.into_iter().map(|(addr, _, v)| (addr, v)).collect();
+    GARBAGE_NOW.with(|g| {
+        let mut g = g.borrow_mut();
+        g.clear();
+        g.extend(garbage.iter().map(|(addr, _)| *addr));
     });
     if std::env::var("APX_GC_DUMP").is_ok() {
         REGISTRY.with(|r| {
@@ -553,7 +569,7 @@ pub fn collect_gen(generation: usize) -> usize {
     run_callbacks_gen("stop", garbage.len(), generation);
 
     // 4. Weakrefs: flip dead targets, notify ap-run (callbacks fire there).
-    REGISTRY.with(|r| sweep_weakrefs(&r.borrow()));
+    REGISTRY.with(|r| sweep_weakrefs(&r.borrow(), &truly_resurrected));
 
     // 5. Stats.
     let reclaimed = garbage.len() as u64;
@@ -576,6 +592,16 @@ pub fn collect_gen(generation: usize) -> usize {
     SEQ_OF.with(|s| {
         s.borrow_mut()
             .retain(|a, _| reachable.contains(a) || truly_resurrected.contains(a))
+    });
+    // C-21 once-only is per-OBJECT, not per-address: swept addresses return
+    // to the allocator and get reused by new objects (Rc allocs recycle
+    // slots). Leaving a dead addr in FINALIZED_ADDRS poisons the successor
+    // object — its __del__ would be skipped forever (observed: with
+    // threshold 50, blocks of instances created after each auto-collect
+    // never fired). Purge entries whose addr is no longer tracked.
+    FINALIZED_ADDRS.with(|r| {
+        r.borrow_mut()
+            .retain(|a| reachable.contains(a) || truly_resurrected.contains(a))
     });
 
     // gc016: get_count()[0] reads 0 right after a collection.
@@ -625,11 +651,22 @@ fn run_callbacks_gen(phase: &str, collected: usize, generation: usize) {
     }
 }
 
-fn sweep_weakrefs(registry: &HashMap<usize, Tracked>) {
+fn sweep_weakrefs(registry: &HashMap<usize, Tracked>, truly_resurrected: &HashSet<usize>) {
+    // The garbage list is authoritative for "died this cycle": sweep_weakrefs
+    // runs BEFORE the registry retain (step 6), so membership alone can't see
+    // this cycle's deaths — a ref dropped right before collect() would only
+    // flip dead on the NEXT collect (observed: weakref callbacks landed one
+    // collect late, gc004/gc005/gc008/gc015 red).
+    let died_now: Vec<usize> = GARBAGE_NOW.with(|g| g.borrow().clone());
     WEAKREFS.with(|w| {
         let mut w = w.borrow_mut();
         for e in w.iter_mut() {
-            if !e.dead && !registry.contains_key(&e.target) {
+            if !e.dead
+                && (died_now.contains(&e.target) || !registry.contains_key(&e.target))
+                // C-22/gc008: a __del__ that resurrected its object put it
+                // back in the reachable set — the weakref must NOT fire.
+                && !truly_resurrected.contains(&e.target)
+            {
                 e.dead = true;
             }
         }

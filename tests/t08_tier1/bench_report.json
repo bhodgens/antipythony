@@ -9,22 +9,48 @@
   "repeats": 3,
   "warmup": 1,
   "floor": 1.5,
-  "geomean_speedup_conservative": 0.8705,
+  "geomean_speedup_conservative": 0.9418,
   "per_program": {
     "bench01_int_arith.py": {
       "tier0_times_s": [
-        0.0039,
-        0.0036,
-        0.0041
+        0.0043,
+        0.0038,
+        0.0038
       ],
       "adaptive_times_s": [
-        0.0034,
-        0.0031,
-        0.0034
+        0.0039,
+        0.0037,
+        0.0033
       ],
-      "speedup_conservative": 1.049
+      "speedup_conservative": 0.9644
     },
     "bench02_float_arith.py": {
+      "tier0_times_s": [
+        0.0032,
+        0.0034,
+        0.0035
+      ],
+      "adaptive_times_s": [
+        0.0032,
+        0.0032,
+        0.003
+      ],
+      "speedup_conservative": 0.9846
+    },
+    "bench03_str_ops.py": {
+      "tier0_times_s": [
+        0.0036,
+        0.0036,
+        0.0037
+      ],
+      "adaptive_times_s": [
+        0.0036,
+        0.0031,
+        0.004
+      ],
+      "speedup_conservative": 0.9035
+    },
+    "bench04_bigint_mul.py": {
       "tier0_times_s": [
         0.0038,
         0.0038,
@@ -32,36 +58,10 @@
       ],
       "adaptive_times_s": [
         0.0039,
-        0.0052,
-        0.0047
+        0.0038,
+        0.0032
       ],
-      "speedup_conservative": 0.6857
-    },
-    "bench03_str_ops.py": {
-      "tier0_times_s": [
-        0.0034,
-        0.0041,
-        0.0043
-      ],
-      "adaptive_times_s": [
-        0.004,
-        0.0035,
-        0.0036
-      ],
-      "speedup_conservative": 0.8406
-    },
-    "bench04_bigint_mul.py": {
-      "tier0_times_s": [
-        0.0033,
-        0.0032,
-        0.003
-      ],
-      "adaptive_times_s": [
-        0.003,
-        0.0032,
-        0.003
-      ],
-      "speedup_conservative": 0.9496
+      "speedup_conservative": 0.917
     }
   }
 }

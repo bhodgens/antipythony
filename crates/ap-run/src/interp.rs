@@ -551,6 +551,8 @@ fn exec_stmt(
             .map(|_| StmtOut::Next)
         }
         Stmt::While(cond, body, orelse) => {
+            // while-else: else only on cond-false exhaustion (no break).
+            let mut completed = true;
             loop {
                 let c = eval_expr(interp, frame, cond, reg)?;
                 if !truthy(interp, &c)? {
@@ -558,15 +560,27 @@ fn exec_stmt(
                 }
                 match run_loop_body(interp, frame, body, reg)? {
                     LoopOut::Normal | LoopOut::Continue => continue,
-                    LoopOut::Break => break,
+                    LoopOut::Break => {
+                        completed = false;
+                        break;
+                    }
                     LoopOut::Escape(f) => return Ok(StmtOut::Unwind(f)),
                 }
             }
-            exec_block(interp, frame, orelse, reg).map(|_| StmtOut::Next)
+            if completed {
+                exec_block(interp, frame, orelse, reg).map(|_| StmtOut::Next)
+            } else {
+                Ok(StmtOut::Next)
+            }
         }
         Stmt::For(target, iter, body, orelse) => {
             let iterable = eval_expr(interp, frame, iter, reg)?;
             let id = register_iter(interp, &iterable)?;
+            // for-else: the else clause runs ONLY when the iterator exhausts
+            // (no break). CPython S-02 semantics; the `loop` break paths are
+            // distinguished here (02.08-full p2 found this via _py_warnings'
+            // filter loop — for/break/else silently ran the else).
+            let mut completed = true;
             loop {
                 let next = match pull_iter(interp, id)? {
                     Some(v) => v,
@@ -575,11 +589,18 @@ fn exec_stmt(
                 assign_target(interp, frame, target, next, reg)?;
                 match run_loop_body(interp, frame, body, reg)? {
                     LoopOut::Normal | LoopOut::Continue => continue,
-                    LoopOut::Break => break,
+                    LoopOut::Break => {
+                        completed = false;
+                        break;
+                    }
                     LoopOut::Escape(f) => return Ok(StmtOut::Unwind(f)),
                 }
             }
-            exec_block(interp, frame, orelse, reg).map(|_| StmtOut::Next)
+            if completed {
+                exec_block(interp, frame, orelse, reg).map(|_| StmtOut::Next)
+            } else {
+                Ok(StmtOut::Next)
+            }
         }
         Stmt::With(items, body) => {
             // Context-manager protocol (S-03-26/S-02-40..42): __enter__ then
@@ -2787,6 +2808,15 @@ fn call_value_inner(
                                     if so.kind == ap_obj::ObjKind::Opaque && so.name == "super" {
                                         return Ok(builtins::interned_type(interp, "super"));
                                     }
+                                    // 02.08-full p2: type(re.Pattern-obj) etc.
+                                    if so.kind == ap_obj::ObjKind::Opaque
+                                        && (so.name == "re.Pattern" || so.name == "re.Match")
+                                    {
+                                        return Ok(builtins::interned_type(
+                                            interp,
+                                            so.name.trim_start_matches("re."),
+                                        ));
+                                    }
                                 }
                                 return match crate::classes::class_of_value(interp, subject) {
                                     Some(ct) => {
@@ -4825,6 +4855,15 @@ fn class_protocol_builtin(
                 if o.kind == ap_obj::ObjKind::Opaque && o.name == "super" {
                     return Some(Ok(Value::Str(PyString::new("super"))));
                 }
+                // 02.08-full p2: re.Pattern / re.Match report their Python
+                // type names (type(p).__name__ == "Pattern", isinstance gates).
+                if o.kind == ap_obj::ObjKind::Opaque
+                    && (o.name == "re.Pattern" || o.name == "re.Match")
+                {
+                    return Some(Ok(Value::Str(PyString::new(
+                        o.name.trim_start_matches("re.").to_string(),
+                    ))));
+                }
                 // 02.08-full part 1: named native iterators report their
                 // function name as the type (type(itertools.count(1)).__name__
                 // == "count", s012 pin) — same mapping __class__ uses.
@@ -6191,176 +6230,214 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 }
                 Ok(None)
             }
-            ap_obj::ObjKind::Type | ap_obj::ObjKind::UserClass => match name {
-                "__name__" => Ok(Some(Value::Str(PyString::new(o.name.clone())))),
-                // 02.04a (interp bug #18): __mro__ reads on Type objects
-                // (ABCMeta.__subclasscheck__ on a non-class 'type' value) —
-                // a singleton MRO keeps the ABC probes non-fatal.
-                "__mro__" if o.kind == ap_obj::ObjKind::Type => Ok(Some(Value::Tuple(Gc::new(
-                    Tuple(vec![Value::Obj(o.clone())]),
-                )))),
-                // 02.04a (interp bug #5b): builtin-type __dict__ reads
-                // (types.py: MappingProxyType = type(type.__dict__),
-                // ClassMethodDescriptorType = type(dict.__dict__['fromkeys'])).
-                // The façade lists the type's method-surface names as markers.
-                "__dict__" if o.kind == ap_obj::ObjKind::Type => {
-                    let d = PyDict::new();
-                    for m in [
-                        "__init__",
-                        "__new__",
-                        "__str__",
-                        "__repr__",
-                        "__eq__",
-                        "__hash__",
-                        "__len__",
-                        "__iter__",
-                        "__contains__",
-                        "__getitem__",
-                        "__setitem__",
-                        "__call__",
-                        "__next__",
-                        "join",
-                        "split",
-                        "fromkeys",
-                        "append",
-                        "get",
-                        "keys",
-                        "values",
-                        "items",
-                        "copy",
-                        "upper",
-                        "lower",
-                        "strip",
-                        "read",
-                        "write",
-                        "close",
-                    ] {
-                        let marker = ap_obj::PyObject::new(
-                            ap_obj::ObjKind::BuiltinFn,
-                            &format!("{}.{}", o.name, m),
-                        );
-                        let _ = d.set(Value::Str(PyString::new(m)), Value::Obj(marker));
-                    }
-                    Ok(Some(Value::Dict(d)))
-                }
-                // 02.04a fix pass: __new__ reads on interned name-Types
-                // (typing.py machinery: type.__new__(Meta, ...), and the
-                // int.__new__ probe during Protocol class creation).
-                // 02.03b: str.__new__/int.__new__ (enum member creation:
-                // member = str.__new__(cls, value)) — the marker returns
-                // the value itself (a v0 str/int IS the value model).
-                "__new__" if matches!(o.name.as_str(), "str" | "int" | "bytes") => {
-                    let m = ap_obj::PyObject::new(
-                        ap_obj::ObjKind::BuiltinFn,
-                        &format!("__{}__new__", o.name),
-                    );
-                    Ok(Some(Value::Obj(m)))
-                }
-                "__new__" => Ok(Some(Value::Obj(ap_obj::PyObject::new(
-                    ap_obj::ObjKind::BuiltinFn,
-                    "type.__new__",
-                )))),
-                // 02.04: inspect.isabstract probes type.__flags__ (int bit
-                // mask); 0 = no TPFLAGS — every v1 type is concrete.
-                "__flags__" => Ok(Some(Value::Int(ap_obj::Int::from_i64(0)))),
-                // 02.03b-fix: os.PathLike ABC surface (CPython's os.py builds
-                // it from _collections_abc.ABC): register(subclass) ->
-                // subclass; isinstance(x, PathLike) checks __fspath__.
-                "register" if o.name == "PathLike" => Ok(Some(Value::Obj(ap_obj::PyObject::new(
-                    ap_obj::ObjKind::BuiltinFn,
-                    "__ap_pathlike_register__",
-                )))),
-                // 02.08-full part 1: json.JSONEncoder.default base impl
-                // (super().default(o) raises the CPython TypeError).
-                "default" if o.name == "JSONEncoder" => {
-                    let m = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "json.base_default");
-                    Ok(Some(Value::Obj(m)))
-                }
-                // 02.08-full part 1: str.maketrans (classmethod).
-                "maketrans" if o.name == "str" => {
-                    let m = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "str.maketrans");
-                    Ok(Some(Value::Obj(m)))
-                }
-                // float.fromhex (V068): builtin marker dispatched by name.
-                "fromhex" if o.name == "float" => {
-                    let m = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "float.fromhex");
-                    Ok(Some(Value::Obj(m)))
-                }
-                // 02.04a (interp bug #5c): types.py reads
-                // FunctionType.__code__ / FunctionType.__globals__ at import.
-                "__code__" | "__globals__" if o.name == "function" => Ok(Some(Value::Obj(
-                    ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<stub>"),
-                ))),
-                // 02.04a (interp bug #5): method-surface reads on builtin
-                // types (types.py: MethodDescriptorType = type(str.join)).
-                // A named marker keeps type(x) meaningful without wiring the
-                // full unbound-method machinery.
-                _ => {
-                    // 02.03b-fix: dynamic attr writes on interned types
-                    // (ast.py: Tuple.dims = property(...)) store on the
-                    // PyObject; reads must see them.
-                    if let Some(v) = o.attrs.borrow().get(&Value::Str(PyString::new(name))) {
+            ap_obj::ObjKind::Type | ap_obj::ObjKind::UserClass => {
+                // Real exception classes (re.error etc) answer via the class
+                // protocol first (__dict__-seeded __module__).
+                if o.kind == ap_obj::ObjKind::Type {
+                    if let Some(v) = crate::classes::attr_get_opt(_interp, obj, name)? {
                         return Ok(Some(v));
                     }
-                    if builtin_method_exists(name) {
+                }
+                match name {
+                    "__name__" => Ok(Some(Value::Str(PyString::new(o.name.clone())))),
+                    // 02.08-full p2: stdlib exception types report their home
+                    // module (re.error.__module__ == 're').
+                    "__module__" if o.kind == ap_obj::ObjKind::Type => {
+                        const STDLIB_EXC_MODULES: &[(&str, &str)] =
+                            &[("PatternError", "re"), ("JSONDecodeError", "json")];
+                        Ok(Some(Value::Str(PyString::new(
+                            STDLIB_EXC_MODULES
+                                .iter()
+                                .find(|(n, _)| *n == o.name)
+                                .map(|(_, m)| m.to_string())
+                                .unwrap_or_else(|| "builtins".to_string()),
+                        ))))
+                    }
+                    // 02.04a (interp bug #18): __mro__ reads on Type objects
+                    // (ABCMeta.__subclasscheck__ on a non-class 'type' value) —
+                    // a singleton MRO keeps the ABC probes non-fatal.
+                    "__mro__" if o.kind == ap_obj::ObjKind::Type => Ok(Some(Value::Tuple(
+                        Gc::new(Tuple(vec![Value::Obj(o.clone())])),
+                    ))),
+                    // 02.04a (interp bug #5b): builtin-type __dict__ reads
+                    // (types.py: MappingProxyType = type(type.__dict__),
+                    // ClassMethodDescriptorType = type(dict.__dict__['fromkeys'])).
+                    // The façade lists the type's method-surface names as markers.
+                    "__dict__" if o.kind == ap_obj::ObjKind::Type => {
+                        let d = PyDict::new();
+                        for m in [
+                            "__init__",
+                            "__new__",
+                            "__str__",
+                            "__repr__",
+                            "__eq__",
+                            "__hash__",
+                            "__len__",
+                            "__iter__",
+                            "__contains__",
+                            "__getitem__",
+                            "__setitem__",
+                            "__call__",
+                            "__next__",
+                            "join",
+                            "split",
+                            "fromkeys",
+                            "append",
+                            "get",
+                            "keys",
+                            "values",
+                            "items",
+                            "copy",
+                            "upper",
+                            "lower",
+                            "strip",
+                            "read",
+                            "write",
+                            "close",
+                        ] {
+                            let marker = ap_obj::PyObject::new(
+                                ap_obj::ObjKind::BuiltinFn,
+                                &format!("{}.{}", o.name, m),
+                            );
+                            let _ = d.set(Value::Str(PyString::new(m)), Value::Obj(marker));
+                        }
+                        // 02.08-full p2: __module__ in the synthetic class dict
+                        // (re.error.__dict__['__module__'] == 're').
+                        const STDLIB_EXC_MODULES: &[(&str, &str)] =
+                            &[("PatternError", "re"), ("JSONDecodeError", "json")];
+                        let mod_name = STDLIB_EXC_MODULES
+                            .iter()
+                            .find(|(n, _)| *n == o.name)
+                            .map(|(_, m)| m.to_string())
+                            .unwrap_or_else(|| "builtins".to_string());
+                        let _ = d.set(
+                            Value::Str(PyString::new("__module__")),
+                            Value::Str(PyString::new(mod_name)),
+                        );
+                        Ok(Some(Value::Dict(d)))
+                    }
+                    // 02.04a fix pass: __new__ reads on interned name-Types
+                    // (typing.py machinery: type.__new__(Meta, ...), and the
+                    // int.__new__ probe during Protocol class creation).
+                    // 02.03b: str.__new__/int.__new__ (enum member creation:
+                    // member = str.__new__(cls, value)) — the marker returns
+                    // the value itself (a v0 str/int IS the value model).
+                    "__new__" if matches!(o.name.as_str(), "str" | "int" | "bytes") => {
                         let m = ap_obj::PyObject::new(
                             ap_obj::ObjKind::BuiltinFn,
-                            &format!("{}.{}", o.name, name),
+                            &format!("__{}__new__", o.name),
                         );
-                        return Ok(Some(Value::Obj(m)));
+                        Ok(Some(Value::Obj(m)))
                     }
-                    if matches!(
-                        name,
-                        "__repr__" | "__str__" | "__format__" | "__reduce_ex__"
+                    "__new__" => Ok(Some(Value::Obj(ap_obj::PyObject::new(
+                        ap_obj::ObjKind::BuiltinFn,
+                        "type.__new__",
+                    )))),
+                    // 02.04: inspect.isabstract probes type.__flags__ (int bit
+                    // mask); 0 = no TPFLAGS — every v1 type is concrete.
+                    "__flags__" => Ok(Some(Value::Int(ap_obj::Int::from_i64(0)))),
+                    // 02.03b-fix: os.PathLike ABC surface (CPython's os.py builds
+                    // it from _collections_abc.ABC): register(subclass) ->
+                    // subclass; isinstance(x, PathLike) checks __fspath__.
+                    "register" if o.name == "PathLike" => {
+                        Ok(Some(Value::Obj(ap_obj::PyObject::new(
+                            ap_obj::ObjKind::BuiltinFn,
+                            "__ap_pathlike_register__",
+                        ))))
+                    }
+                    // 02.08-full part 1: json.JSONEncoder.default base impl
+                    // (super().default(o) raises the CPython TypeError).
+                    "default" if o.name == "JSONEncoder" => {
+                        let m =
+                            ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "json.base_default");
+                        Ok(Some(Value::Obj(m)))
+                    }
+                    // 02.08-full part 1: str.maketrans (classmethod).
+                    "maketrans" if o.name == "str" => {
+                        let m = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "str.maketrans");
+                        Ok(Some(Value::Obj(m)))
+                    }
+                    // float.fromhex (V068): builtin marker dispatched by name.
+                    "fromhex" if o.name == "float" => {
+                        let m = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "float.fromhex");
+                        Ok(Some(Value::Obj(m)))
+                    }
+                    // 02.04a (interp bug #5c): types.py reads
+                    // FunctionType.__code__ / FunctionType.__globals__ at import.
+                    "__code__" | "__globals__" if o.name == "function" => Ok(Some(Value::Obj(
+                        ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<stub>"),
+                    ))),
+                    // 02.04a (interp bug #5): method-surface reads on builtin
+                    // types (types.py: MethodDescriptorType = type(str.join)).
+                    // A named marker keeps type(x) meaningful without wiring the
+                    // full unbound-method machinery.
+                    _ => {
+                        // 02.03b-fix: dynamic attr writes on interned types
+                        // (ast.py: Tuple.dims = property(...)) store on the
+                        // PyObject; reads must see them.
+                        if let Some(v) = o.attrs.borrow().get(&Value::Str(PyString::new(name))) {
+                            return Ok(Some(v));
+                        }
+                        if builtin_method_exists(name) {
+                            let m = ap_obj::PyObject::new(
+                                ap_obj::ObjKind::BuiltinFn,
+                                &format!("{}.{}", o.name, name),
+                            );
+                            return Ok(Some(Value::Obj(m)));
+                        }
+                        if matches!(
+                            name,
+                            "__repr__" | "__str__" | "__format__" | "__reduce_ex__"
                             | "__reduce__" | "__copy__" | "__deepcopy__"
                             // 02.03b-fix: weakref.ref as a dict key class
                             // (importlib _WeakValueDictionary paths).
                             | "__hash__" | "__eq__" | "__ne__" | "__call__"
-                    ) {
-                        // 02.03b-fix: type.__repr__ surface (pprint dispatch
-                        // registration reads dict.__repr__ etc).
+                        ) {
+                            // 02.03b-fix: type.__repr__ surface (pprint dispatch
+                            // registration reads dict.__repr__ etc).
+                            let m = ap_obj::PyObject::new(
+                                ap_obj::ObjKind::BuiltinFn,
+                                "__ap_function_repr__",
+                            );
+                            *m.slice_parts.borrow_mut() = vec![obj.clone()];
+                            return Ok(Some(Value::Obj(m)));
+                        }
+                        Ok(None)
+                    }
+                    // 02.03b: object-slot dunders read on interned name-Types
+                    // (enum.EnumType.__new__: member_type.__format__ /
+                    // member_type.__str__ / object.__reduce_ex__ comparisons).
+                    // The __object_virtual_* markers dispatch through the same
+                    // class-level virtual path; identity comparisons between two
+                    // reads of the SAME name stay unequal (CPython-comparable via
+                    // the marker name) — enum's `found_method in (...)` checks
+                    // compare marker VALUES, so route them by name equality in
+                    // Value::eq via the repr name.
+                    _ if name.starts_with("__")
+                        && name.ends_with("__")
+                        && !matches!(
+                            name,
+                            "__name__"
+                                | "__mro__"
+                                | "__dict__"
+                                | "__class__"
+                                | "__bases__"
+                                | "__qualname__"
+                                | "__module__"
+                                | "__doc__"
+                                | "__code__"
+                                | "__globals__"
+                        ) =>
+                    {
                         let m = ap_obj::PyObject::new(
                             ap_obj::ObjKind::BuiltinFn,
-                            "__ap_function_repr__",
+                            &format!("__object_virtual_{}__", name.trim_matches('_')),
                         );
-                        *m.slice_parts.borrow_mut() = vec![obj.clone()];
-                        return Ok(Some(Value::Obj(m)));
+                        Ok(Some(Value::Obj(m)))
                     }
-                    Ok(None)
+                    _ => Ok(None),
                 }
-                // 02.03b: object-slot dunders read on interned name-Types
-                // (enum.EnumType.__new__: member_type.__format__ /
-                // member_type.__str__ / object.__reduce_ex__ comparisons).
-                // The __object_virtual_* markers dispatch through the same
-                // class-level virtual path; identity comparisons between two
-                // reads of the SAME name stay unequal (CPython-comparable via
-                // the marker name) — enum's `found_method in (...)` checks
-                // compare marker VALUES, so route them by name equality in
-                // Value::eq via the repr name.
-                _ if name.starts_with("__")
-                    && name.ends_with("__")
-                    && !matches!(
-                        name,
-                        "__name__"
-                            | "__mro__"
-                            | "__dict__"
-                            | "__class__"
-                            | "__bases__"
-                            | "__qualname__"
-                            | "__module__"
-                            | "__doc__"
-                            | "__code__"
-                            | "__globals__"
-                    ) =>
-                {
-                    let m = ap_obj::PyObject::new(
-                        ap_obj::ObjKind::BuiltinFn,
-                        &format!("__object_virtual_{}__", name.trim_matches('_')),
-                    );
-                    Ok(Some(Value::Obj(m)))
-                }
-                _ => Ok(None),
-            },
+            }
             _ => Ok(None),
         },
         // Builtin method surfaces (str/bytes/list/dict/tuple/set): produce

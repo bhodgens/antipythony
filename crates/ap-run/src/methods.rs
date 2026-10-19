@@ -292,6 +292,26 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
                 )),
             }
         }
+        // 02.08-full p2: re.Match[m] / re.Pattern[...] subscripts.
+        (Value::Obj(o), k) if o.kind == ap_obj::ObjKind::Opaque && o.name == "re.Match" => {
+            let kv = match k {
+                Key::Index(i) => Value::Int(Int::from_i64(*i)),
+                Key::Other(v) => v.clone(),
+                Key::Float => {
+                    return Err(raise(
+                        "TypeError",
+                        "group() argument must be str or int, not float",
+                    ))
+                }
+                Key::Slice { .. } => {
+                    return Err(raise(
+                        "TypeError",
+                        "group() argument must be str or int, not slice",
+                    ))
+                }
+            };
+            crate::builtins_modules::re_dispatch("Match.__getitem__", &[obj.clone(), kv], &[])
+        }
         (Value::Obj(o), _k) if o.kind == ap_obj::ObjKind::Type => {
             let ga = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "_GenericAlias");
             {
@@ -522,6 +542,17 @@ pub fn subscript_del(obj: &Value, key: &Value) -> Result<(), Flow> {
             let k = subscript_key(key)?;
             let i = match k {
                 Key::Index(i) => i,
+                // del lst[a:b] (resetwarnings: del _filters[:]) — clear the
+                // slice range (02.08-full p2, _py_warnings).
+                Key::Slice { lo, hi, step } if step == 1 => {
+                    let n = l.len() as i64;
+                    let lo_n = lo.unwrap_or(0).max(0).min(n) as usize;
+                    let hi_n = hi.unwrap_or(n).max(0).min(n) as usize;
+                    if lo_n < hi_n {
+                        l.remove_range(lo_n, hi_n);
+                    }
+                    return Ok(());
+                }
                 _ => return Err(raise("TypeError", "list indices must be integers")),
             };
             let idx = normalize_index(i, l.len() as i64)

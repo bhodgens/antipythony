@@ -37,7 +37,7 @@ use ap_obj::PyObject;
 
 pub type BResult = Result<Value, Flow>;
 
-fn raise(class: &str, msg: impl Into<String>) -> Flow {
+pub(crate) fn raise(class: &str, msg: impl Into<String>) -> Flow {
     Flow::Raise(ExceptionValue::msg(class, msg.into()))
 }
 
@@ -806,28 +806,98 @@ fn ns_const(ns: &Gc<PyDict>, k: &str, v: Value) {
 
 fn build_re(_i: &crate::frame::Interpreter) -> Value {
     let (m, ns) = new_module("re");
+    // 02.08-full p2: the real engine lives in crate::sre; this module surface
+    // exposes the full re API (compile/finditer/findall/search/match/
+    // fullmatch/sub/subn/split/escape/purge + flags + Pattern/Match types).
     ns_const(&ns, "I", i(2));
     ns_const(&ns, "IGNORECASE", i(2));
+    ns_const(&ns, "L", i(4));
+    ns_const(&ns, "LOCALE", i(4));
     ns_const(&ns, "M", i(8));
     ns_const(&ns, "MULTILINE", i(8));
     ns_const(&ns, "S", i(16));
     ns_const(&ns, "DOTALL", i(16));
+    ns_const(&ns, "U", i(32));
+    ns_const(&ns, "UNICODE", i(32));
     ns_const(&ns, "X", i(64));
     ns_const(&ns, "VERBOSE", i(64));
+    ns_const(&ns, "A", i(256));
     ns_const(&ns, "ASCII", i(256));
-    fn1(&ns, "re", "compile");
-    fn1(&ns, "re", "escape");
-    fn1(&ns, "re", "match");
-    fn1(&ns, "re", "search");
-    fn1(&ns, "re", "fullmatch");
-    // 02.03b-fix: re.sub (pathlib uses RE substitutions in its lexical
-    // variants — `re.sub(...)` on the posix path surface). Literal-engine
-    // substitution: pattern matched literally (IGNORECASE honored), count
-    // semantics 0 = replace all.
+    // NOFLAG reprs as "re.NOFLAG" (CPython IntFlag _numeric_repr_): an
+    // Opaque marker whose repr carries the name and whose int() is 0.
     {
-        let sub = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "re.sub");
-        let _ = ns.set(Value::Str(PyString::new("sub")), Value::Obj(sub));
+        let nf = PyObject::new(ap_obj::ObjKind::Opaque, "re.NOFLAG");
+        *nf.repr_text.borrow_mut() = Some("re.NOFLAG".to_string());
+        let _ = nf.attrs.borrow_mut().set(s("<int_value>"), i(0));
+        let _ = ns.set(s("NOFLAG"), Value::Obj(nf));
     }
+    ns_const(&ns, "DEBUG", i(128));
+    for n in [
+        "compile",
+        "escape",
+        "match",
+        "search",
+        "fullmatch",
+        "sub",
+        "subn",
+        "split",
+        "findall",
+        "finditer",
+        "purge",
+    ] {
+        let f = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, &format!("re.{n}"));
+        let _ = ns.set(Value::Str(PyString::new(n)), Value::Obj(f));
+    }
+    // error/PatternError exception class + Pattern/Match type objects.
+    let err_v = if let Some(interp) = CURRENT.with(|c| c.borrow().clone()) {
+        crate::classes::exc_class_value(&interp, "PatternError")
+            .unwrap_or_else(|| Value::Obj(PyObject::new(ap_obj::ObjKind::Type, "PatternError")))
+    } else {
+        Value::Obj(PyObject::new(ap_obj::ObjKind::Type, "PatternError"))
+    };
+    let _ = ns.set(s("error"), err_v.clone());
+    let _ = ns.set(s("PatternError"), err_v);
+    let _ = ns.set(s("Pattern"), interned_type_pub("Pattern"));
+    let _ = ns.set(s("Match"), interned_type_pub("Match"));
+    // re.Scanner (stdlib class; the corpus only probes its existence).
+    let _ = ns.set(s("Scanner"), interned_type_pub("Scanner"));
+    let _ = ns.set(
+        s("__all__"),
+        list(vec![
+            s("match"),
+            s("fullmatch"),
+            s("search"),
+            s("sub"),
+            s("subn"),
+            s("split"),
+            s("findall"),
+            s("finditer"),
+            s("compile"),
+            s("purge"),
+            s("escape"),
+            s("error"),
+            s("Pattern"),
+            s("Match"),
+            s("A"),
+            s("I"),
+            s("L"),
+            s("M"),
+            s("S"),
+            s("X"),
+            s("U"),
+            s("ASCII"),
+            s("IGNORECASE"),
+            s("LOCALE"),
+            s("MULTILINE"),
+            s("DOTALL"),
+            s("VERBOSE"),
+            s("UNICODE"),
+            s("NOFLAG"),
+            s("PatternError"),
+        ]),
+    );
+    // __version__ (CPython 3.14 pins 2.2.1)
+    ns_const(&ns, "__version__", s("2.2.1"));
     finish(m, ns)
 }
 
@@ -1466,107 +1536,439 @@ pub fn call_codeop(fname: &str, _args: &[Value], _kwargs: &[(String, Value)]) ->
     }
 }
 
-pub fn call_re(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Option<BResult> {
-    let r: BResult = (|| {
-        match fname {
-            "escape" => {
-                let pat = str_arg(required(args, "escape")?, "escape")?;
-                Ok(s(re_escape(&pat)))
-            }
-            "compile" | "match" | "search" | "fullmatch" => {
-                let pat = match required(args, fname) {
-                    Ok(v) => match v {
-                        Value::Str(x) => x.as_str().to_string(),
-                        Value::Bytes(b) => b.iter().map(|&c| c as char).collect(),
-                        other => {
-                            return Err(raise(
-                                "TypeError",
-                                format!(
-                                    "{}() argument must be str or bytes, not {}",
-                                    fname,
-                                    other.type_name()
-                                ),
-                            ));
-                        }
-                    },
-                    Err(e) => return Err(e),
-                };
-                let ignorecase = args
-                    .get(1)
-                    .and_then(|f| f.as_int())
-                    .map(|i| (i.to_i64().unwrap_or(0) & 2) != 0)
-                    .unwrap_or(false);
-                // A compiled pattern object: namespace with the pattern +
-                // flags parked as attrs; .match(text) reads them back.
-                if fname == "compile" {
-                    let o = PyObject::new(ap_obj::ObjKind::Namespace, "re.Pattern");
-                    {
-                        let mut a = o.attrs.borrow_mut();
-                        let _ = a.set(s("pattern"), s(pat.clone()));
-                        let _ = a.set(s("flags"), i(if ignorecase { 2 } else { 0 }));
-                        let _ = a.set(s("__ap_re_ic__"), Value::Bool(ignorecase));
-                        for m in ["match", "search", "fullmatch"] {
-                            let mk = PyObject::new(
-                                ap_obj::ObjKind::BuiltinFn,
-                                &format!("__re_pattern_{}__", m),
-                            );
-                            let _ = a.set(s(m), Value::Obj(mk));
-                        }
-                        // Pattern.sub(repl, string, count=0): literal-engine
-                        // substitution (posixpath.expandvars and friends).
-                        let mk = PyObject::new(ap_obj::ObjKind::BuiltinFn, "__re_pattern_sub__");
-                        let _ = a.set(s("sub"), Value::Obj(mk));
-                    }
-                    return Ok(Value::Obj(o));
+/// The REAL re module dispatch (02.08-full p2). Module-level functions and
+/// Pattern/Match methods all land here via the dotted-marker paths.
+pub fn call_re(fname: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option<BResult> {
+    Some(re_dispatch(fname, args, kwargs))
+}
+
+/// Shared re dispatch used by module fns and Pattern methods.
+pub fn re_dispatch(fname: &str, args: &[Value], kwargs: &[(String, Value)]) -> BResult {
+    // --- module-level ops: (pattern, ...) ---
+    match fname {
+        "match" | "fullmatch" | "search" | "findall" | "finditer" | "sub" | "subn" | "split"
+        | "compile" => {
+            let pat_v = required(args, fname)?;
+            // flags: positional slot is 2nd for match/fullmatch/search/
+            // findall/finditer/compile, 4th for sub/subn/split; kwargs
+            // override either.
+            // CPython signatures: compile(pattern, flags); match/search/
+            // findall/finditer(pattern, string, flags); sub/subn(pattern,
+            // repl, string[, count[, flags]]); split(pattern, string[,
+            // maxsplit[, flags]]).
+            let flag_slot = match fname {
+                "compile" => 1,
+                "match" | "fullmatch" | "search" | "findall" | "finditer" => 2,
+                "sub" | "subn" | "split" => 3,
+                _ => 1,
+            };
+            // Bytes patterns decode as latin-1 (CPython Tokenizer) and
+            // compile through the str path; results are str (documented v0
+            // gap: bytes-pattern matches return str-typed groups).
+            let pat_v = match pat_v {
+                Value::Bytes(b) => {
+                    let decoded: String = b.iter().map(|&c| c as char).collect();
+                    Value::Str(PyString::new(decoded))
                 }
-                let text = match args.get(1) {
-                    Some(v) => str_arg(v, fname)?,
-                    None => {
+                other => other.clone(),
+            };
+            let args_owned;
+            let args: &[Value] = match args.first() {
+                Some(Value::Bytes(_)) => {
+                    args_owned = {
+                        let mut a = args.to_vec();
+                        a[0] = pat_v.clone();
+                        a
+                    };
+                    &args_owned
+                }
+                _ => args,
+            };
+            let flags: u32 = match pat_v {
+                Value::Str(_) => args
+                    .get(flag_slot)
+                    .and_then(flag_bits)
+                    .or_else(|| {
+                        kwargs
+                            .iter()
+                            .find(|(k, _)| k == "flags")
+                            .and_then(|(_, v)| flag_bits(v))
+                    })
+                    .unwrap_or(0),
+                _ => {
+                    let pos_flag = args.get(flag_slot).and_then(flag_bits).unwrap_or(0);
+                    let kw_flag = kwargs
+                        .iter()
+                        .find(|(k, _)| k == "flags")
+                        .and_then(|(_, v)| flag_bits(v))
+                        .unwrap_or(0);
+                    if pos_flag != 0 || kw_flag != 0 {
                         return Err(raise(
-                            "TypeError",
-                            format!("{fname}() missing required argument"),
-                        ))
+                            "ValueError",
+                            "cannot process flags argument with a compiled pattern",
+                        ));
                     }
-                };
-                match re_literal_match(&pat, &text, ignorecase) {
-                    Some(_len) => {
-                        // Match object: group(0)/group() = the matched text.
-                        let mo = PyObject::new(ap_obj::ObjKind::Namespace, "re.Match");
-                        let _ = mo.attrs.borrow_mut().set(s("re"), s(pat.clone()));
-                        let _ = mo.attrs.borrow_mut().set(s("string"), s(text.clone()));
-                        let matched: String = text.chars().take(pat.chars().count()).collect();
-                        let _ = mo.attrs.borrow_mut().set(s("__ap_matched__"), s(matched));
-                        Ok(Value::Obj(mo))
-                    }
-                    None => Ok(Value::None),
+                    0
                 }
+            };
+            // count/maxsplit kwargs splice into the positional slots re_op reads.
+            let args2: Vec<Value>;
+            let rest_args: &[Value] = if (fname == "sub" || fname == "subn") && args.len() < 3 {
+                if let Some(cv) = kwargs.iter().find(|(k, _)| k == "count").map(|(_, v)| v) {
+                    let mut a2 = args.to_vec();
+                    while a2.len() < 3 {
+                        a2.push(Value::None);
+                    }
+                    a2[2] = cv.clone();
+                    args2 = a2;
+                    &args2
+                } else {
+                    args
+                }
+            } else if fname == "split" && args.len() < 2 {
+                if let Some(mv) = kwargs.iter().find(|(k, _)| k == "maxsplit").map(|(_, v)| v) {
+                    let mut a2 = args.to_vec();
+                    while a2.len() < 2 {
+                        a2.push(Value::None);
+                    }
+                    a2[1] = mv.clone();
+                    args2 = a2;
+                    &args2
+                } else {
+                    args
+                }
+            } else {
+                args
+            };
+            let (pat, _) = compile_arg_flags(&pat_v, flags, fname)?;
+            match fname {
+                "compile" => Ok(crate::sre::pattern_object_patbox(pat)),
+                _ => re_op_form(&pat, fname, &rest_args[1..], flags, false),
             }
-            "sub" => {
-                // re.sub(pattern, repl, string, count=0): literal-engine
-                // substitution — replace literal pattern occurrences.
-                let pat = str_arg(required(args, "sub")?, "sub")?;
-                let repl = match args.get(1) {
-                    Some(v) => str_arg(v, "repl")?,
-                    None => return Err(raise("TypeError", "re.sub missing repl")),
-                };
-                let text = match args.get(2) {
-                    Some(v) => str_arg(v, "string")?,
-                    None => return Err(raise("TypeError", "re.sub missing string")),
-                };
-                let count = args
-                    .get(3)
-                    .and_then(|f| f.as_int())
-                    .and_then(|i| i.to_i64())
-                    .unwrap_or(0);
-                Ok(s(re_sub_literal(&pat, &repl, &text, count)))
-            }
-            _ => Err(raise(
-                "AttributeError",
-                format!("module 're' has no attribute '{}'", fname),
-            )),
         }
-    })();
-    Some(r)
+        "escape" => {
+            let pat = str_arg(required(args, "escape")?, "escape")?;
+            Ok(s(crate::sre::re_escape(&pat)))
+        }
+        "purge" => Ok(Value::None),
+        // --- Pattern methods (self is args[0]) ---
+        "Pattern.match" | "Pattern.fullmatch" | "Pattern.search" | "Pattern.findall"
+        | "Pattern.finditer" | "Pattern.sub" | "Pattern.subn" | "Pattern.split"
+        | "Pattern.scanner" => {
+            let pat = crate::sre::pattern_of(&args[0])
+                .ok_or_else(|| raise("TypeError", format!("bad receiver for {}", fname)))?;
+            let short = fname.split('.').nth(1).unwrap();
+            re_op(&pat, short, &args[1..], pat.compiled.flags)
+        }
+        // --- Match methods (self is args[0]) ---
+        "Match.group" | "Match.groups" | "Match.groupdict" | "Match.start" | "Match.end"
+        | "Match.span" | "Match.expand" | "Match.__getitem__" => {
+            let mb = crate::sre::match_of(&args[0])
+                .ok_or_else(|| raise("TypeError", format!("bad receiver for {}", fname)))?;
+            match_op(&mb, fname.split('.').nth(1).unwrap(), &args[1..])
+        }
+        _ => Err(raise(
+            "AttributeError",
+            format!("module 're' has no attribute '{}'", fname),
+        )),
+    }
+}
+
+/// Accept a pattern string OR a compiled Pattern; returns (compiled, flags).
+/// Compiled patterns reject a flags arg (CPython ValueError).
+/// re's string-arg expectations raise CPython's "expected string or
+/// bytes-like object" TypeError (not the generic str_arg message).
+fn re_str_arg(v: &Value, fname: &str) -> Result<String, Flow> {
+    match v {
+        Value::Str(x) => Ok(x.as_str().to_string()),
+        other => {
+            let _ = fname;
+            Err(raise(
+                "TypeError",
+                format!(
+                    "expected string or bytes-like object, got '{}'",
+                    other.type_name()
+                ),
+            ))
+        }
+    }
+}
+
+fn flag_bits(v: &Value) -> Option<u32> {
+    v.as_int().and_then(|i| i.to_i64()).map(|n| n as u32)
+}
+
+fn compile_arg_flags(v: &Value, flags: u32, fname: &str) -> Result<(crate::sre::PatRc, u32), Flow> {
+    match v {
+        Value::Str(sv) => {
+            let pat = sv.as_str().to_string();
+            let compiled = crate::sre::compile_pattern(&pat, flags)?;
+            Ok((Rc::new(crate::sre::PatBox { compiled }), flags))
+        }
+        _ => compile_arg(v, fname),
+    }
+}
+
+fn compile_arg(v: &Value, fname: &str) -> Result<(crate::sre::PatRc, u32), Flow> {
+    match v {
+        Value::Str(sv) => {
+            let pat = sv.as_str().to_string();
+            let compiled = crate::sre::compile_pattern(&pat, 0)?;
+            Ok((Rc::new(crate::sre::PatBox { compiled }), 0))
+        }
+        other => {
+            if let Some(p) = crate::sre::pattern_of(other) {
+                Ok((p, 0))
+            } else {
+                Err(raise(
+                    "TypeError",
+                    format!(
+                        "{}() argument must be string or compiled pattern, not {}",
+                        fname,
+                        other.type_name()
+                    ),
+                ))
+            }
+        }
+    }
+}
+
+/// Shared op bodies: match/fullmatch/search/findall/finditer/sub/subn/split.
+/// `method_form=true` when called as a Pattern method (rest holds ONLY the
+/// op args: text, pos, endpos / repl, string, count). Module-level calls
+/// pass method_form=false and drop the trailing flags slot first.
+fn re_op(pat: &crate::sre::PatRc, op: &str, rest: &[Value], _flags: u32) -> BResult {
+    re_op_form(pat, op, rest, _flags, true)
+}
+
+fn re_op_form(
+    pat: &crate::sre::PatRc,
+    op: &str,
+    rest_all: &[Value],
+    flags: u32,
+    method_form: bool,
+) -> BResult {
+    // Module-level match/search/findall carry a trailing flags positional
+    // that re_op's arg parsing must not read as pos/endpos/count.
+    let rest: &[Value] = if !method_form {
+        // Module-level signature minus the pattern: how many args the op
+        // itself takes (the trailing slot is flags when present).
+        let keep = match op {
+            "match" | "fullmatch" | "search" | "findall" | "finditer" => 1,
+            "sub" | "subn" => 3,
+            "split" => 2,
+            _ => rest_all.len(),
+        };
+        if rest_all.len() > keep {
+            &rest_all[..keep]
+        } else {
+            rest_all
+        }
+    } else {
+        rest_all
+    };
+    let _ = flags;
+    match op {
+        "match" | "fullmatch" | "search" => {
+            let text = re_str_arg(required(rest, op)?, op)?;
+            let pos = rest
+                .get(1)
+                .and_then(|v| v.as_int())
+                .and_then(|i| i.to_i64())
+                .unwrap_or(0);
+            let endpos = rest
+                .get(2)
+                .and_then(|v| v.as_int())
+                .and_then(|i| i.to_i64())
+                .unwrap_or(text.chars().count() as i64);
+            let mv =
+                crate::sre::pat_exec(pat, op, &text, pos.max(0) as usize, endpos.max(0) as usize)?;
+            Ok(mv.unwrap_or(Value::None))
+        }
+        "findall" => {
+            let text = re_str_arg(required(rest, op)?, op)?;
+            let items = crate::sre::pat_findall(pat, &text)?;
+            Ok(list(items))
+        }
+        "finditer" => {
+            // eager list-backed iterator of Match objects
+            let text = re_str_arg(required(rest, op)?, op)?;
+            let chars: Vec<char> = text.chars().collect();
+            let c = &pat.compiled;
+            let mut m = crate::sre::engine_for(pat, &chars);
+            let mut out: Vec<Value> = Vec::new();
+            let mut pos = 0usize;
+            while pos <= chars.len() {
+                let r = crate::sre::run_from(&mut m, pat, pos)?;
+                let res = match r {
+                    Some(r) => r,
+                    None => break,
+                };
+                let mb = Rc::new(crate::sre::MatchBox {
+                    pattern: pat.clone(),
+                    text: text.clone(),
+                    pos: 0,
+                    endpos: chars.len(),
+                    result: res.clone(),
+                });
+                out.push(crate::sre::match_object(mb));
+                pos = if res.end == res.start {
+                    res.end + 1
+                } else {
+                    res.end
+                };
+            }
+            Ok(list(out))
+        }
+        "sub" | "subn" => {
+            let repl_v = required(rest, op)?;
+            let text = re_str_arg(
+                rest.get(1)
+                    .ok_or_else(|| raise("TypeError", "missing string"))?,
+                op,
+            )?;
+            let count = rest
+                .get(2)
+                .and_then(|v| v.as_int())
+                .and_then(|i| i.to_i64())
+                .unwrap_or(0);
+            let (out, n) = match repl_v {
+                Value::Str(sv) => {
+                    let parts = crate::sre::parse_repl(
+                        sv.as_str(),
+                        pat.compiled.groups,
+                        &pat.compiled.groupindex,
+                        Some(&pat.compiled.pattern),
+                    )?;
+                    crate::sre::pat_sub(pat, Some(parts), None, &text, count)?
+                }
+                other if callable_value(other) => {
+                    crate::sre::pat_sub(pat, None, Some(other), &text, count)?
+                }
+                other => {
+                    return Err(raise(
+                        "TypeError",
+                        format!(
+                            "repl must be a string or callable, not {}",
+                            other.type_name()
+                        ),
+                    ))
+                }
+            };
+            if op == "sub" {
+                Ok(s(out))
+            } else {
+                Ok(tuple(vec![s(out), i(n)]))
+            }
+        }
+        "split" => {
+            let text = re_str_arg(required(rest, op)?, op)?;
+            let maxsplit = rest
+                .get(1)
+                .and_then(|v| v.as_int())
+                .and_then(|i| i.to_i64())
+                .unwrap_or(0);
+            let items = crate::sre::pat_split(pat, &text, maxsplit)?;
+            Ok(list(items))
+        }
+        "scanner" => Err(raise(
+            "NotImplementedError",
+            "scanner() is a documented v0 gap (re.Scanner unused by corpus)",
+        )),
+        _ => Err(raise(
+            "AttributeError",
+            format!("module 're' has no attribute '{}'", op),
+        )),
+    }
+}
+
+fn callable_value(v: &Value) -> bool {
+    match v {
+        Value::Obj(o) => {
+            matches!(
+                o.kind,
+                ap_obj::ObjKind::Function
+                    | ap_obj::ObjKind::BuiltinFn
+                    | ap_obj::ObjKind::BoundMethod
+            )
+        }
+        _ => false,
+    }
+}
+
+/// Match-method bodies.
+fn match_op(mb: &Rc<crate::sre::MatchBox>, op: &str, rest: &[Value]) -> BResult {
+    match op {
+        "group" | "__getitem__" => {
+            if rest.is_empty() {
+                if op == "__getitem__" {
+                    return Err(raise("TypeError", "expected an index"));
+                }
+                return Ok(crate::sre::group_value(mb, &i(0))?);
+            }
+            if rest.len() == 1 && !(op == "__getitem__" && false) {
+                // single arg: return the group directly (not a tuple);
+                // __getitem__ with a tuple key is not supported.
+                return Ok(crate::sre::group_value(mb, &rest[0])?);
+            }
+            let mut out = Vec::new();
+            for k in rest {
+                out.push(crate::sre::group_value(mb, k)?);
+            }
+            Ok(tuple(out))
+        }
+        "groups" => {
+            let mut out = Vec::new();
+            for gi in 1..=mb.pattern.compiled.groups {
+                out.push(crate::sre::group_value(mb, &i(gi as i64))?);
+            }
+            Ok(tuple(out))
+        }
+        "groupdict" => {
+            let gd = ap_obj::dict::PyDict::new();
+            for (name, gi) in &mb.pattern.compiled.grouporder {
+                let _ = gd.set(
+                    s(name.clone()),
+                    crate::sre::group_value(mb, &i(*gi as i64))?,
+                );
+            }
+            Ok(Value::Dict(gd))
+        }
+        "start" | "end" | "span" => {
+            let gi: usize = match rest.first() {
+                None => 0,
+                Some(Value::Int(n)) => n.to_i64().unwrap_or(0) as usize,
+                Some(Value::Str(sv)) => match mb.pattern.compiled.groupindex.get(sv.as_str()) {
+                    Some(g) => *g,
+                    None => return Err(raise("IndexError", "no such group")),
+                },
+                Some(_) => 0,
+            };
+            if gi > mb.pattern.compiled.groups {
+                return Err(raise("IndexError", "no such group"));
+            }
+            let (a, b) = crate::sre::group_span(&mb, gi);
+            match op {
+                "start" => Ok(i(a)),
+                "end" => Ok(i(b)),
+                _ => Ok(tuple(vec![i(a), i(b)])),
+            }
+        }
+        "expand" => {
+            let repl = str_arg(required(rest, op)?, op)?;
+            let parts = crate::sre::parse_repl(
+                &repl,
+                mb.pattern.compiled.groups,
+                &mb.pattern.compiled.groupindex,
+                Some(&mb.pattern.compiled.pattern),
+            )?;
+            Ok(s(crate::sre::expand_repl(mb, &parts)?))
+        }
+        _ => Err(raise(
+            "AttributeError",
+            format!("'re.Match' object has no attribute '{}'", op),
+        )),
+    }
 }
 
 /// Literal re.sub: replace up to `count` (0 = all) occurrences of `pat`
@@ -8303,6 +8705,79 @@ pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
                     *bm.func.borrow_mut() = Some(marker(&mname));
                     Some(Value::Obj(bm))
                 }
+                // 02.08-full p2: real re engine surfaces.
+                "re.Pattern" => match name {
+                    "match" | "fullmatch" | "search" | "findall" | "finditer" | "sub" | "subn"
+                    | "split" | "scanner" => {
+                        let bm = PyObject::with_self(
+                            ap_obj::ObjKind::BoundMethod,
+                            format!("re.Pattern.{}", name),
+                            obj.clone(),
+                        );
+                        *bm.func.borrow_mut() = Some(marker(&format!("re.Pattern.{}", name)));
+                        Some(Value::Obj(bm))
+                    }
+                    "pattern" | "flags" | "groups" | "groupindex" => {
+                        o.attrs.borrow().get(&s(name)).map(|v| v.clone())
+                    }
+                    _ => None,
+                },
+                "re.Match" => match name {
+                    "group" | "groups" | "groupdict" | "start" | "end" | "span" | "expand"
+                    | "__getitem__" => {
+                        let bm = PyObject::with_self(
+                            ap_obj::ObjKind::BoundMethod,
+                            format!("re.Match.{}", name),
+                            obj.clone(),
+                        );
+                        *bm.func.borrow_mut() = Some(marker(&format!("re.Match.{}", name)));
+                        Some(Value::Obj(bm))
+                    }
+                    "string" => crate::sre::match_of(obj).map(|mb| s(mb.text.clone())),
+                    "re" => crate::sre::match_of(obj)
+                        .map(|mb| crate::sre::pattern_object_patbox(mb.pattern.clone())),
+                    "pos" => crate::sre::match_of(obj).map(|mb| i(mb.pos as i64)),
+                    "endpos" => crate::sre::match_of(obj).map(|mb| i(mb.endpos as i64)),
+                    "lastindex" => crate::sre::match_of(obj).map(|mb| {
+                        let mut last: i64 = 0;
+                        let mut any = false;
+                        for gi in 1..=mb.pattern.compiled.groups {
+                            if mb.result.spans[gi].0 != usize::MAX {
+                                last = gi as i64;
+                                any = true;
+                            }
+                        }
+                        if any {
+                            i(last)
+                        } else {
+                            Value::None
+                        }
+                    }),
+                    "lastgroup" => crate::sre::match_of(obj).map(|mb| {
+                        let mut last: Option<usize> = None;
+                        for gi in 1..=mb.pattern.compiled.groups {
+                            if mb.result.spans[gi].0 != usize::MAX {
+                                last = Some(gi);
+                            }
+                        }
+                        match last.and_then(|gi| {
+                            mb.pattern.compiled.indexgroup.get(gi).cloned().flatten()
+                        }) {
+                            Some(n) => s(n),
+                            None => Value::None,
+                        }
+                    }),
+                    "regs" => crate::sre::match_of(obj).map(|mb| {
+                        let spans: Vec<Value> = (0..=mb.pattern.compiled.groups)
+                            .map(|gi| {
+                                let (a, b) = crate::sre::group_span(&mb, gi);
+                                tuple(vec![i(a), i(b)])
+                            })
+                            .collect();
+                        tuple(spans)
+                    }),
+                    _ => None,
+                },
                 n if n.ends_with("_HASH") => {
                     let attrs = o.attrs.borrow();
                     match name {

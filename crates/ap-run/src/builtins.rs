@@ -273,6 +273,12 @@ pub fn builtin_int(interp: &Interpreter, args: &[Value]) -> BResult {
         1 => {
             let v = &args[0];
             match v {
+                // 02.08-full p2: re.NOFLAG marker int()s to 0.
+                Value::Obj(o)
+                    if o.kind == ap_obj::ObjKind::Opaque && o.name == "re.NOFLAG" =>
+                {
+                    Ok(Value::Int(Int::Smi(0)))
+                }
                 Value::Int(_) => Ok(v.clone()),
                 Value::Bool(b) => Ok(Value::Int(Int::Smi(i64::from(*b)))),
                 Value::Float(f) => Ok(Value::Int(
@@ -759,6 +765,15 @@ pub fn type_matches(v: &Value, want: &str) -> bool {
     }
     match (v, want) {
         (_, "object") => true,
+        // 02.08-full p2: isinstance(mm, re.Match) / isinstance(p, re.Pattern).
+        (Value::Obj(o), "Match") if o.kind == ap_obj::ObjKind::Opaque && o.name == "re.Match" => {
+            true
+        }
+        (Value::Obj(o), "Pattern")
+            if o.kind == ap_obj::ObjKind::Opaque && o.name == "re.Pattern" =>
+        {
+            true
+        }
         (Value::Int(_), "int") => true,
         (Value::Bool(_), "bool") => true,
         (Value::Bool(_), "int") => true, // bool is a subclass of int (S-01-9)
