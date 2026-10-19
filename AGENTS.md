@@ -35,28 +35,20 @@ GIL, uv-backed deps at build time. Byte-exact differential conformance vs CPytho
 - Specs before code: nothing dispatches from Plans 01+ until 00.05 spec pack lands.
 
 ## Current status (update this block when it changes)
-- Plan 00 COMPLETE + Plan 01 COMPLETE (2026-10-16, integration-reviewed 5552cf9).
-  Working: parse -> IR -> verify (unbound-local prediction byte-matched to
-  CPython), 20 goldens, scope classification matching CPython symtable,
-  test bins ap-ir-dump/ap-verify-dump. 1163 pytest + 64 Rust tests green.
-  T-01..T-04 all flipped from xfail to xpass. pon license now MIT/Apache dual
-  (full code donor).
-- OPEN: pon study task (01.03 pre-task skipped; dispatch before/with Plan 02);
-  contract gap ledger (14 items, plans/antipythany/01-frontend-ir/PROGRESS.md
-  + tests/*.md) needs user triage eventually; s005 golden corrected (locale).
-- BUGHUNT 2026-10-17 (4f3d033..4bf9f77, 10 auditors): 7 fixes landed
-  (harness version-gate + env scrub, differential bin path, --tier seam,
-  corpus env pins + path masking, notices regen). Report + disclosure ledger:
-  .hermes/audits/2026-10-17-bughunt-report.md. Deferred: traceback frame-leak
-  on caught exceptions (tb_frames never cleared) - lives in 02.04a WIP zone.
-- Next: Plan 02 (native backend) - ap-obj core values first, with pon study
-  dispatched in parallel. Spec pack sections 01-06 already feed T-05+ suites
-  (test track is ahead: T-05..T-11 specs + fixtures exist).
+- Plans 00+01 COMPLETE. Plan 02 nearly complete: 02.01 values, 02.02 executor,
+  02.03/02.03b classes+metaclass, 02.04 GC (weakref surfaces, unittest gate,
+  MMTk design doc docs/gc-mmtk-swap.md), 02.08-lite + 02.08-full p1 (25+
+  native modules, method surfaces) ALL COMMITTED.
+- 80 commits. rust 247/0, pytest 1272/0. Corpus 150/197 (76%): values 46/47,
+  fstrings 34/35, stdlib 17/48, classes 27/33, exceptions 15/15, gc 9/17.
+- unittest/pathlib/enum/weakref IMPORTS ALL WORK (vendored stdlib chain).
+- BUGHUNT 2026-10-17: 7 fixes landed; report in .hermes/audits/.
+- PLAN 02 REMAINING: 02.05 tier-1 (split per risks) + 02.06 AoT + 02.07
+  threading + 02.08-full p2 (re engine, complex, deep method surface).
+- AFTER: Plan 03 WASM, Plan 04 packaging (uv) -> T1 scrapy attempt.
 - Ecosystem targets locked (master.md tier table): scrapy T1, pytest T2,
   hermes-agent T3, fastapi T4, comfyui T5 (gates on Plan 10). TEST DATA ONLY -
   never published, no license constraints apply, comfyui included without
   restriction.
 - pydantic-core (Rust extension) is the recurring blocker for T3/T4 - strongest
   single case for Plan 10 after basic C-API viability.
-- Next: Plan 00 (scaffold, attribution gate, compat contract, conformance harness,
-  spec pack). Spec pack unblocks all parallel test agents.
