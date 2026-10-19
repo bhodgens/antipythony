@@ -246,14 +246,14 @@ def test_notices_carries_no_nuitka():
 # ---------------------------------------------------------------------------
 
 
-@XFAIL_0403
 def test_notices_check_gate_green():
     """04.03: THIRD_PARTY_NOTICES embedded in binaries must equal the
     committed file, so the committed file must be FRESH first. Documented
     gate (docs/attribution.md, 00.02): `cargo run -p xtask -- notices --check`
-    exits 0, fails with 'NOTICES DRIFT' otherwise. OBSERVED AT AUTHORING: it
-    currently exits 1 with NOTICES DRIFT — the committed file is stale
-    relative to Cargo.lock. Gate-time expectation: exit 0."""
+    exits 0, fails with 'NOTICES DRIFT' otherwise. The drift observed at
+    authoring was fixed 2026-10-17 (bughunt wave 1: xtask static_entries +
+    regen) and is now CI-enforced (.github/workflows/attribution.yml), so
+    this gate test is live — a stale notices file must fail it."""
     proc = subprocess.run(
         ["cargo", "run", "-p", "xtask", "--quiet", "--", "notices", "--check"],
         capture_output=True,

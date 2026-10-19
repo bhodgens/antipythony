@@ -214,7 +214,6 @@ def test_all_corpus_programs_lower_without_crash():
             assert proc.stdout.strip(), f"{program}: empty dump"
 
 
-@xfail_lower
 def test_lowering_preserves_observable_effect_order():
     """plan-01 design rule: 'lowering must not drop or reorder operations with
     observable effects' (spec-02 preamble: every construct defines the observable

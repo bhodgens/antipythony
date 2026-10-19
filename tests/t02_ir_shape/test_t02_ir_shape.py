@@ -6,7 +6,8 @@
 #
 # Contract under test: bin `ap-ir-dump <file>` parses the Python file and prints an
 # indented IR dump, one node per line, `node-kind` + optional ` detail`.
-# The bin does not exist yet; every test is xfail(strict=False).
+# Leaf 01.02 has landed; the bin exists and all tests are expected to pass
+# (the xfail envelope was removed 2026-10-19, stale-xfail ledger).
 
 import os
 import shutil
@@ -17,8 +18,6 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SUITES = REPO_ROOT / "tests" / "t02_ir_shape" / "fixtures"
-
-XFAIL_REASON = "awaits 01.02 ap-ir-dump bin"
 
 # Each entry: (test-stem, source lines, expected regex line kinds).
 # "exactly 1" = the dump contains exactly one line starting with that kind.

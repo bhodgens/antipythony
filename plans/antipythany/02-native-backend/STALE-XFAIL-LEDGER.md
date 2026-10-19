@@ -1,71 +1,26 @@
-# Stale xfail ledger - 126 tests now XPASS (2026-10-18)
+# Stale xfail ledger - 2026-10-18, updated 2026-10-19
 
-These tests carry `xfail(strict=False)` markers whose covered behavior now
-works (they report XPASS on every run). The markers use SHARED decorators
-(`xfail_ap_ir_dump`, `xfail_ap`, `xfail_lower`, `XFAIL_0403`), so flipping
-them safely means per-test decorator surgery on suites that leaves 01.02
-(ap-ir-dump bin), 01.03, 01.04 (CLI), and 02.05 (tier-1 Expose/Gate) still
-own - deferred to those leaves rather than churned from a bughunt wave.
+## FLIPPED 2026-10-19 (52 tests, leaves landed)
 
-Counts by file:
-- tests/t08_tier1/test_t08_tier1.py: 74
-- tests/t04_ir_verify/test_t04_ir_verify.py: 29
-- tests/t02_ir_shape/test_t02_ir_shape.py: 21
-- tests/t03_lowering_semantics/test_t03_lowering_semantics.py: 1
-- tests/t15_release/test_t15_release.py: 1
+- tests/t02_ir_shape (21 tests): leaf 01.02 ap-ir-dump bin landed - whole
+  xfail envelope removed, suite 21/21 green.
+- tests/t04_ir_verify (29 tests): leaf 01.04 ap-verify-dump seam landed -
+  xfail markers removed (require_seam keeps its 127-stub safety net),
+  suite green.
+- tests/t03_lowering_semantics (1 test: observable effect order): marker
+  removed, passes.
+- tests/t15_release (1 test: notices gate green): marker removed - the gate
+  it awaits (notices --check exit 0) has been true since the 2026-10-17
+  wave and is now CI-enforced.
 
-Full list (one test id per line):
-tests/t02_ir_shape/test_t02_ir_shape.py::test_construct_single_node[binop_single]
-tests/t02_ir_shape/test_t02_ir_shape.py::test_construct_single_node[compare_single]
-tests/t02_ir_shape/test_t02_ir_shape.py::test_construct_single_node[compare_chain]
-tests/t02_ir_shape/test_t02_ir_shape.py::test_construct_single_node[call_kwargs]
-tests/t02_ir_shape/test_t02_ir_shape.py::test_construct_single_node[lambda]
-tests/t02_ir_shape/test_t02_ir_shape.py::test_construct_single_node[comprehension]
-tests/t02_ir_shape/test_t02_ir_shape.py::test_construct_single_node[yield]
-tests/t02_ir_shape/test_t02_ir_shape.py::test_construct_single_node[await]
-tests/t02_ir_shape/test_t02_ir_shape.py::test_construct_single_node[fstring]
-tests/t02_ir_shape/test_t02_ir_shape.py::test_construct_single_node[if]
-tests/t02_ir_shape/test_t02_ir_shape.py::test_construct_single_node[while]
-tests/t02_ir_shape/test_t02_ir_shape.py::test_construct_single_node[for]
-tests/t02_ir_shape/test_t02_ir_shape.py::test_construct_single_node[try_except_finally]
-tests/t02_ir_shape/test_t02_ir_shape.py::test_construct_single_node[match]
-tests/t02_ir_shape/test_t02_ir_shape.py::test_construct_single_node[with]
-tests/t02_ir_shape/test_t02_ir_shape.py::test_construct_single_node[class_def]
-tests/t02_ir_shape/test_t02_ir_shape.py::test_construct_single_node[function_def]
-tests/t02_ir_shape/test_t02_ir_shape.py::test_binop_chain_count
-tests/t02_ir_shape/test_t02_ir_shape.py::test_dump_deterministic[one]
-tests/t02_ir_shape/test_t02_ir_shape.py::test_dump_deterministic[chain]
-tests/t02_ir_shape/test_t02_ir_shape.py::test_all_constructs_no_crash
-tests/t03_lowering_semantics/test_t03_lowering_semantics.py::test_lowering_preserves_observable_effect_order
-tests/t04_ir_verify/test_t04_ir_verify.py::test_diff_flagged_runtime[p01_unbound_basic.py]
-tests/t04_ir_verify/test_t04_ir_verify.py::test_diff_flagged_runtime[p02_unbound_branch.py]
-tests/t04_ir_verify/test_t04_ir_verify.py::test_diff_flagged_runtime[p03_unbound_while_body.py]
-tests/t04_ir_verify/test_t04_ir_verify.py::test_diff_flagged_runtime[p04_aug_unbound.py]
-tests/t04_ir_verify/test_t04_ir_verify.py::test_diff_flagged_runtime[p05_for_empty_iter.py]
-tests/t04_ir_verify/test_t04_ir_verify.py::test_diff_flagged_runtime[p06_comprehension_scope_unbound.py]
-tests/t04_ir_verify/test_t04_ir_verify.py::test_diff_flagged_runtime[p07_del_unbound_local.py]
-tests/t04_ir_verify/test_t04_ir_verify.py::test_diff_flagged_runtime[p08t_try_read_before_uncaught.py]
-tests/t04_ir_verify/test_t04_ir_verify.py::test_diff_flagged_compile[p09_global_nonlocal.py]
-tests/t04_ir_verify/test_t04_ir_verify.py::test_diff_flagged_compile[p10_nonlocal_no_binding.py]
-tests/t04_ir_verify/test_t04_ir_verify.py::test_diff_flagged_compile[p11_nonlocal_at_module.py]
-tests/t04_ir_verify/test_t04_ir_verify.py::test_diff_flagged_compile[p12_break_outside.py]
-tests/t04_ir_verify/test_t04_ir_verify.py::test_diff_flagged_compile[p13_continue_outside.py]
-tests/t04_ir_verify/test_t04_ir_verify.py::test_diff_flagged_compile[p14_return_outside.py]
-tests/t04_ir_verify/test_t04_ir_verify.py::test_diff_flagged_compile[p15_import_star_in_fn.py]
-tests/t04_ir_verify/test_t04_ir_verify.py::test_diff_flagged_compile[p16_star_in_class.py]
-tests/t04_ir_verify/test_t04_ir_verify.py::test_diff_flagged_compile[p17_invalid_default.py]
-tests/t04_ir_verify/test_t04_ir_verify.py::test_diff_flagged_compile[p18_dup_param.py]
-tests/t04_ir_verify/test_t04_ir_verify.py::test_diff_must_flag_caught_read
-tests/t04_ir_verify/test_t04_ir_verify.py::test_diff_boundary_optional[p19_del_then_read_module.py]
-tests/t04_ir_verify/test_t04_ir_verify.py::test_diff_silent[n01_closure_after_return.py]
-tests/t04_ir_verify/test_t04_ir_verify.py::test_diff_silent[n02_closure_cell_set_after_def.py]
-tests/t04_ir_verify/test_t04_ir_verify.py::test_diff_silent[n03_for_loop_var.py]
-tests/t04_ir_verify/test_t04_ir_verify.py::test_diff_silent[n04_try_except_assign.py]
-tests/t04_ir_verify/test_t04_ir_verify.py::test_diff_silent[n05_module_global_read.py]
-tests/t04_ir_verify/test_t04_ir_verify.py::test_diff_silent[n06_class_body_valid.py]
-tests/t04_ir_verify/test_t04_ir_verify.py::test_diff_silent[n07_lambda_late_binding.py]
-tests/t04_ir_verify/test_t04_ir_verify.py::test_diff_silent[n08_comprehension_first_iterable.py]
-tests/t04_ir_verify/test_t04_ir_verify.py::test_diff_silent[n09_identity_no_local_error.py]
+## STILL STALE (74 tests) - owned by leaf 02.05 tier-1
+
+- tests/t08_tier1/test_t08_tier1.py: 74 xpassed tests share the
+  `xfail_ap` decorator ("awaits 02.05 tier-1 CLIF/IC/OSR/deopt"). 245
+  sibling tests in the same file still genuinely xfail, so the decorator
+  cannot be removed wholesale - flip per-test when 02.05 lands.
+
+Full list of the 74 (one test id per line):
 tests/t08_tier1/test_t08_tier1.py::test_cross_mode_byte_identity[tests/corpus/001_hello.py]
 tests/t08_tier1/test_t08_tier1.py::test_cross_mode_byte_identity[tests/corpus/002_types.py]
 tests/t08_tier1/test_t08_tier1.py::test_cross_mode_byte_identity[tests/corpus/fstrings/cases/f01_nested_same_quotes.py]
@@ -140,4 +95,3 @@ tests/t08_tier1/test_t08_tier1.py::test_cross_mode_byte_identity[tests/corpus/fs
 tests/t08_tier1/test_t08_tier1.py::test_cross_mode_byte_identity[tests/corpus/fstrings/tools/cases/f35_empty_and_self.py]
 tests/t08_tier1/test_t08_tier1.py::test_cross_mode_byte_identity[tests/corpus/fstrings/tools/gen_cases.py]
 tests/t08_tier1/test_t08_tier1.py::test_cross_mode_suite_runs_over_grown_corpus
-tests/t15_release/test_t15_release.py::test_notices_check_gate_green

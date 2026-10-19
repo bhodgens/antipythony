@@ -16,13 +16,13 @@ Two halves:
    consistent, and carries the exact S-02-2 message template and S-02-37
    caret-marker format.
 
-2. SEAM SIDE (all xfail until 01.04's CLI lands): the proposed bin
-   `ap-verify-dump <file>` must print one line per diagnostic,
+2. SEAM SIDE (01.04's CLI has landed; formerly xfail): the bin
+   `ap-verify-dump <file>` prints one line per diagnostic,
    `<path>:<line>:<col> <class>: <message>` (C-10 machine-stable shape,
    T-04 doc G-1), matching the pinned CPython fields for every flagged probe,
-   and print NOTHING for every silence probe. Resolution order: env
+   and prints NOTHING for every silence probe. Resolution order: env
    AP_VERIFY_DUMP, PATH, target/debug, target/release; absent -> stub exit 127
-   -> pytest.xfail with the leaf-01.04 reason.
+   -> pytest.xfail with the leaf-01.04 reason (missing-bin safety net only).
 
 UnboundLocalError clause citation for every flagged probe lives in
 plans/antipythany/tests/T-04-ir-verify.md's per-test table; probes themselves
@@ -337,10 +337,9 @@ def test_fge_marker_format(probe_name):
 
 
 # ===========================================================================
-# 4. Seam side — flagged probes (xfail until ap-verify-dump exists)
+# 4. Seam side — flagged probes (01.04 landed; xfail envelope removed)
 # ===========================================================================
 
-@pytest.mark.xfail(strict=False, reason=XFAIL_REASON)
 @pytest.mark.parametrize("probe_name", RUNTIME_FLAGGED, ids=RUNTIME_FLAGGED)
 def test_diff_flagged_runtime(ap_verify_dump, probe_name):
     """S-02-2 differential: verify predicts the pinned UnboundLocalError
@@ -352,7 +351,6 @@ def test_diff_flagged_runtime(ap_verify_dump, probe_name):
     assert_matches(parse_diagnostics(proc.stdout), rec, probe_name)
 
 
-@pytest.mark.xfail(strict=False, reason=XFAIL_REASON)
 @pytest.mark.parametrize("probe_name", COMPILE_FLAGGED, ids=COMPILE_FLAGGED)
 def test_diff_flagged_compile(ap_verify_dump, probe_name):
     """Static-check differential: the pinned compile-time SyntaxError
@@ -365,7 +363,6 @@ def test_diff_flagged_compile(ap_verify_dump, probe_name):
     assert_matches(parse_diagnostics(proc.stdout), rec, probe_name)
 
 
-@pytest.mark.xfail(strict=False, reason=XFAIL_REASON)
 def test_diff_must_flag_caught_read(ap_verify_dump):
     """p08: the read is unbound per the STATIC rule; CPython swallows it at
     runtime only because UnboundLocalError subclasses NameError and the except
@@ -387,7 +384,6 @@ def test_diff_must_flag_caught_read(ap_verify_dump):
     )
 
 
-@pytest.mark.xfail(strict=False, reason=XFAIL_REASON)
 @pytest.mark.parametrize("probe_name", BOUNDARY_OPTIONAL, ids=BOUNDARY_OPTIONAL)
 def test_diff_boundary_optional(ap_verify_dump, probe_name):
     """G-3: beyond the required unbound-LOCAL set. If verify reports these
@@ -406,7 +402,6 @@ def test_diff_boundary_optional(ap_verify_dump, probe_name):
 # 5. Seam side — silence probes (verify MUST emit nothing)
 # ===========================================================================
 
-@pytest.mark.xfail(strict=False, reason=XFAIL_REASON)
 @pytest.mark.parametrize("probe_name", SILENCE, ids=SILENCE)
 def test_diff_silent(ap_verify_dump, probe_name):
     """Clean programs (pinned rc 0; n09 carries only a SyntaxWarning per
