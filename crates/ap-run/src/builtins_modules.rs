@@ -1611,32 +1611,46 @@ pub fn re_dispatch(fname: &str, args: &[Value], kwargs: &[(String, Value)]) -> B
                     0
                 }
             };
-            // count/maxsplit kwargs splice into the positional slots re_op reads.
+            // count/maxsplit kwargs splice into the positional slots re_op
+            // reads. CPython signatures (args[0] is the pattern):
+            //   sub/subn(pattern, repl, string, count)  -> count slot = args[3]
+            //   split(pattern, string, maxsplit)        -> maxsplit slot = args[2]
+            // The old guard (`args.len() < 3`) missed the common
+            // re.sub(pat, repl, string, count=N) call: 3 positional args are
+            // present, so the kwarg was silently dropped (bughunt wave 3).
             let args2: Vec<Value>;
-            let rest_args: &[Value] = if (fname == "sub" || fname == "subn") && args.len() < 3 {
-                if let Some(cv) = kwargs.iter().find(|(k, _)| k == "count").map(|(_, v)| v) {
-                    let mut a2 = args.to_vec();
-                    while a2.len() < 3 {
-                        a2.push(Value::None);
-                    }
-                    a2[2] = cv.clone();
-                    args2 = a2;
-                    &args2
-                } else {
-                    args
+            let rest_args: &[Value] = if (fname == "sub" || fname == "subn")
+                && kwargs.iter().any(|(k, _)| k == "count")
+                && args.len() <= 3
+            {
+                let cv = kwargs
+                    .iter()
+                    .find(|(k, _)| k == "count")
+                    .map(|(_, v)| v)
+                    .unwrap();
+                let mut a2 = args.to_vec();
+                while a2.len() < 4 {
+                    a2.push(Value::None);
                 }
-            } else if fname == "split" && args.len() < 2 {
-                if let Some(mv) = kwargs.iter().find(|(k, _)| k == "maxsplit").map(|(_, v)| v) {
-                    let mut a2 = args.to_vec();
-                    while a2.len() < 2 {
-                        a2.push(Value::None);
-                    }
-                    a2[1] = mv.clone();
-                    args2 = a2;
-                    &args2
-                } else {
-                    args
+                a2[3] = cv.clone();
+                args2 = a2;
+                &args2
+            } else if fname == "split"
+                && kwargs.iter().any(|(k, _)| k == "maxsplit")
+                && args.len() <= 2
+            {
+                let mv = kwargs
+                    .iter()
+                    .find(|(k, _)| k == "maxsplit")
+                    .map(|(_, v)| v)
+                    .unwrap();
+                let mut a2 = args.to_vec();
+                while a2.len() < 3 {
+                    a2.push(Value::None);
                 }
+                a2[2] = mv.clone();
+                args2 = a2;
+                &args2
             } else {
                 args
             };
