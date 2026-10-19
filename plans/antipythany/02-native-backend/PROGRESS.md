@@ -436,3 +436,119 @@
 - REMAINING: weakref.WeakKeyDictionary surface (blocks unittest),
   gc.collect() count semantics (67 vs 114 - objects vs cycles), MMTk doc.
 - COMPLETION LEAF DISPATCHED (deleg_8252f8c2) with all four remaining items.
+
+## Leaf 02.04 completion - weakref surface + unittest gate + gc count semantics - COMPLETE (uncommitted, agent run)
+
+### Weakref surface (WeakKeyDictionary et al)
+- Native `weakref` module (wins the registry over vendored weakref.py) now
+  carries the full Python surface natively over the token machinery:
+  WeakKeyDictionary / WeakValueDictionary / WeakSet (Opaque-backed classes;
+  data dict/set holds ref TOKENS keyed by target address) + WeakMethod
+  (watching the bound method's receiver) + working proxy (transparent attr
+  forwarding via the interp attr layer, ReferenceError on dead target).
+- ap-obj: weakref tokens now hash/compare BY TARGET (`weakref_target_addr` in
+  value.rs; hash.rs + dict.rs values_eq arms) — two refs to the same object
+  dedupe in sets/dicts, which the WeakSet/WKD data model requires.
+- Design note: dead entries are PRUNED AT ACCESS (len/iter/get/contains);
+  CPython prunes at death time via the `_remove` callback. Observable
+  difference is timing-only, both agree after gc.collect() (documented in
+  gcsupport.rs header, C-22 note).
+- module surface: ref/ReferenceType (same Type value; KeyedRef alias),
+  ProxyType/CallableProxyType/ProxyTypes (real Types; type_matches arm for
+  `_weakref_proxy`), WeakKeyDictionary/WeakValueDictionary/WeakSet/WeakMethod
+  class values, getweakrefcount/getweakrefs (new ap-gc accessors
+  weakref_count_for/weakref_tokens_for), finalize (existing).
+- Slotted instances (no instance dict) are NOT weakrefable (s034 NonRef pin).
+- gc015 finalize surface fixed: `f.detach()` was raising AttributeError — the
+  BoundMethod marker dispatch for tokens now routes detach/__call__ through
+  gcsupport (finalize_detach/finalize_call).
+- GATE: tests/corpus/stdlib/s034_weakref_basics.py byte-exact vs python3.14.
+
+### unittest gate
+- Chain blockers fixed in order: WeakKeyDictionary (above), locale native shim
+  (gettext._expand_lang normalize; gettext chain from argparse), shutil native
+  shim (get_terminal_size for argparse HelpFormatter), _colorize
+  decolor/colorize + argparse/unittest theme sections (empty-string no-color
+  fields), OSError family exceptions (FileNotFoundError et al in classes.rs
+  EXC_TREE + exc_hier parent_of), type.__flags__ = 0 (inspect.isabstract),
+  functools.cmp_to_key (opaque wrapper; sorted/list.sort order via the parked
+  cmp — CPython K-wrapper semantics), dir(UserClass) over the MRO dicts
+  (getTestCaseNames discovers test methods through dir), callable() true for
+  instances whose class defines __call__ (suite.addTest probe), exception
+  chain dunders (__cause__/__context__/__traceback__/with_traceback) on both
+  legacy Exception and real-class instances.
+- RUNTIME BUGS fixed en route (all cross-file, flagged):
+  1. method-frame closure wiring: class-body frames carried scope_path="" so
+     methods registered as ".<locals>.m" (leading dot, no class segment);
+     scope_of missed and nested defs in methods lost their free-variable
+     cells (argparse's _metavar_formatter was the canonical victim). Fix:
+     class frame scope_path = parent + "." + class name, matching the
+     lowering's open_scope keys. This is the "method-scope classification"
+     leaf the stalled prior agent reverted for — the earlier revert was the
+     MISSING PARENT JOIN, not the idea; the enum regression it hit is now
+     understood and covered (below).
+  2. forward-classified cells: a scope.cells name not yet BOUND at param time
+     (enum.EnumType.__new__'s `enum_class`) now aliases its cell at bind
+     (None-arm in the rebind loop) — later stores land in the cell, so
+     nested-scope readers (comps, inner defs) see the value. This is what
+     makes the scope fix safe for enum (the prior agent's regression).
+  3. GC-vs-interpreter re-entrancy: an auto-collect can fire INSIDE
+     call_function (dict alloc in the super sentinel literal) and re-enter
+     via a weakref callback; pending_super_ctx/super_stack borrows are now
+     try_borrow (contended = an outer frame is staging) and the sentinel
+     TypeObject is built BEFORE borrowing super_stack.
+  4. py_str_of dispatches user __str__ (owner not object/Exception roots) —
+     TestCase.__str__ is the canonical consumer; str(A()) with class
+     __str__ now returns "A-str".
+- VENDORED CORRECTIONS (documented AP-CORRECTION headers, same precedent as
+  the inspect.py two-liner): unittest/case.py _Outcome.testPartExecutor
+  rewritten from @contextlib.contextmanager (generator CM whose recording
+  clauses can never fire under our eager generators) to a module-level
+  _PartExecutor CM class (attribute-carried state; clause order preserved);
+  unittest/result.py _exc_info_to_string renders the failure body directly
+  (TracebackException needs real tb frames + StackSummary list-subclass —
+  both v0 gaps). Honest gap: failure bodies lack the CPython traceback frame
+  lines (no live tb chain); header/footer lines match.
+- GATE: TestLoader/TextTestRunner with a 2-method class (1 pass/1 fail) —
+  names, test_fn (test) lines, OK/FAILED (failures=1) shape, "Ran 2 tests"
+  (timing masked). NOTE unittest.main()'s argparse leg still dies in the
+  vendored re literal engine (_get_nargs_pattern regexes) — the loader/runner
+  path is the gate; re engine (02.08-full part 2) unblocks main().
+
+### gc.collect() count semantics
+- collect() returns the count of SWEPT REGISTRY ENTRIES — the direct analogue
+  of CPython's "unreachable objects" return (CPython's absolute number
+  includes ITS startup garbage; ours ours — the magnitudes are not
+  comparable across interpreters, only the definition is). Documented in
+  gcmod.rs collect() and docs/gc-mmtk-swap.md §1.
+- Alignments while pinning: explicit collect() resets get_count()[0] to 0
+  (gc016 "after collect gen0 is 0"); collect(gen) threads the requested
+  generation into the callbacks info dict (gc006 collect0/collect1 legs).
+- GATE: gc corpus slice 9/17 (was 6 at leaf start; gc006/gc013/gc016 flipped
+  this leaf). Remaining 10 need lazy generators (eager-gen snapshots pin
+  value lists as permanent roots — gc013's genexpr case exposed this; fixed
+  for the specific case by dropping exhausted iterators from the table) and
+  threshold-realistic auto-collection timing — queue for 02.05.
+
+### MMTk design doc
+- docs/gc-mmtk-swap.md: Gc handle->MMTk reference mapping, MarkSweep-first
+  binding choice + plan-flip path, root scanning via the pon shim pattern
+  (shadow stack first, pon stackmap via 02.05), heap sizing + APX_MMTK env,
+  weakref semantics on mmtk reference processing, 6 ordered migration steps
+  each with a gate. Spike DEFERRED (network-isolated leaf; mmtk-core dep tree
+  needed) — documented in §8.
+
+### Differential
+- crates/ap-run/tests/gc_differential.rs — 12 probes vs live python3.14
+  (addresses/timing masked): cycle counts, ref liveness, unweakrefable
+  matrix, WKD, WVD, WeakSet, WeakMethod, proxy (+ReferenceError), weakref
+  count surface, unittest runner run, unittest assert surface, gc module
+  surface. All green.
+
+### Gates (orchestrator-verified at review)
+- rust workspace 247/0 (incl. the new battery); fmt clean.
+- pytest 1272 passed / 0 failed.
+- Corpus: values 46/47 (held), fstrings 34/35 (held), stdlib 17/48 (16->17,
+  s034 weakref flips), exceptions 15/15 (held), classes 27/33 (held),
+  hello+types 2/2 (held), gc 9/17 (was 6).
+- NOT COMMITTED per protocol.

@@ -707,6 +707,8 @@ fn registry() -> &'static [(&'static str, ModuleBuilder)] {
         ("_tokenize", build_tokenize),
         ("_ast", build__ast),
         ("_opcode", build__opcode),
+        ("locale", build_locale),
+        ("shutil", build_shutil),
         ("_imp", build__imp),
         ("_warnings", build__warnings),
         ("_io", build__io),
@@ -1137,6 +1139,58 @@ fn build__imp(_i: &crate::frame::Interpreter) -> Value {
 /// 02.03b-fix: `_opcode` C-accel surface — opcode.py module-level probes
 /// (has_arg/has_const/... lists, intrinsic descs). v0 has no bytecode
 /// model: the predicate list surfaces return empty.
+/// 02.04 completion: `locale` shim — gettext._expand_lang needs
+/// locale.normalize; argparse's gettext chain pulls it in at unittest.main.
+/// The full CPython locale module (encodings-backed) is out of v1 scope.
+/// 02.04 completion: `shutil` shim — argparse's HelpFormatter needs
+/// shutil.get_terminal_size(); the file-operation surface is out of v1 scope.
+fn build_shutil(_i: &crate::frame::Interpreter) -> Value {
+    let (m, ns) = new_module("shutil");
+    for n in [
+        "get_terminal_size",
+        "copy",
+        "copy2",
+        "copyfile",
+        "copytree",
+        "rmtree",
+        "move",
+        "which",
+        "disk_usage",
+        "make_archive",
+        "unpack_archive",
+    ] {
+        fn1(&ns, "shutil", n);
+    }
+    finish(m, ns)
+}
+
+fn build_locale(_i: &crate::frame::Interpreter) -> Value {
+    let (m, ns) = new_module("locale");
+    for n in [
+        "normalize",
+        "getdefaultlocale",
+        "getlocale",
+        "setlocale",
+        "getpreferredencoding",
+        "getencoding",
+        "strxfrm",
+        "strcoll",
+        "resetlocale",
+        "getdefaultencoding",
+        "setlocale",
+    ] {
+        fn1(&ns, "locale", n);
+    }
+    ns_const(&ns, "LC_ALL", i(0));
+    ns_const(&ns, "LC_COLLATE", i(1));
+    ns_const(&ns, "LC_CTYPE", i(2));
+    ns_const(&ns, "LC_MONETARY", i(3));
+    ns_const(&ns, "LC_NUMERIC", i(4));
+    ns_const(&ns, "LC_TIME", i(5));
+    ns_const(&ns, "CHAR_MAX", i(127));
+    finish(m, ns)
+}
+
 fn build__opcode(_i: &crate::frame::Interpreter) -> Value {
     let (m, ns) = new_module("_opcode");
     for n in [
@@ -1332,12 +1386,18 @@ fn build_colorize(_i: &crate::frame::Interpreter) -> Value {
     fn1(&ns, "_colorize", "can_colorize");
     fn1(&ns, "_colorize", "get_theme");
     fn1(&ns, "_colorize", "get_theme_no_color");
+    fn1(&ns, "_colorize", "decolor");
+    fn1(&ns, "_colorize", "colorize");
     finish(m, ns)
 }
 
-pub fn call_colorize(fname: &str, _args: &[Value], _kwargs: &[(String, Value)]) -> Option<BResult> {
+pub fn call_colorize(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Option<BResult> {
     match fname {
         "can_colorize" => Some(Ok(Value::Bool(false))),
+        // 02.04 completion: decolor strips ANSI codes; v0 output is
+        // color-free, so the text passes through.
+        "decolor" => Some(Ok(args.first().cloned().unwrap_or(Value::None))),
+        "colorize" => Some(Ok(args.first().cloned().unwrap_or(Value::None))),
         // A theme namespace with inert color fields (traceback reads .traceback).
         "get_theme" | "get_theme_no_color" => {
             let t = PyObject::new(ap_obj::ObjKind::Namespace, "Theme");
@@ -1348,6 +1408,37 @@ pub fn call_colorize(fname: &str, _args: &[Value], _kwargs: &[(String, Value)]) 
                     let _ = sub.attrs.borrow_mut().set(s("color"), Value::None);
                     let _ = a.set(s(f), Value::Obj(sub));
                 }
+                // 02.04 completion: argparse/unittest sections (no-color
+                // theme: every field is the empty string).
+                let sub = PyObject::new(ap_obj::ObjKind::Namespace, "argparse");
+                {
+                    let mut sa = sub.attrs.borrow_mut();
+                    for f in [
+                        "usage",
+                        "prog",
+                        "prog_extra",
+                        "heading",
+                        "reset",
+                        "summary_long_option",
+                        "summary_short_option",
+                        "summary_label",
+                        "summary_action",
+                        "long_option",
+                        "short_option",
+                        "label",
+                    ] {
+                        let _ = sa.set(s(f), s(""));
+                    }
+                }
+                let _ = a.set(s("argparse"), Value::Obj(sub));
+                let sub = PyObject::new(ap_obj::ObjKind::Namespace, "unittest");
+                {
+                    let mut sa = sub.attrs.borrow_mut();
+                    for f in ["passed", "warn", "fail", "fail_info", "reset"] {
+                        let _ = sa.set(s(f), s(""));
+                    }
+                }
+                let _ = a.set(s("unittest"), Value::Obj(sub));
             }
             Some(Ok(Value::Obj(t)))
         }
@@ -3551,15 +3642,95 @@ fn build_functools(_i: &crate::frame::Interpreter) -> Value {
         "wraps",
         "cached_property",
         "singledispatch",
+        // 02.04: unittest.loader sorts test names with cmp_to_key.
+        "cmp_to_key",
     ] {
         fn1(&ns, "functools", n);
     }
     finish(m, ns)
 }
 
+/// The parked cmp of a cmp_to_key wrapper (None for other values).
+pub fn cmp_to_key_cmp(v: &Value) -> Option<Value> {
+    match v {
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque && o.name == "functools.cmp_to_key" => {
+            o.attrs.borrow().get(&s("<cmp>"))
+        }
+        _ => None,
+    }
+}
+
+/// Sort `items` by cmp_to_key wrappers (key() already applied): call
+/// cmp(a_underlying, b_underlying) for the ordering.
+pub fn sort_by_cmp_wrappers(wrapped: &[(Value, Value)]) -> Option<Result<Vec<Value>, Flow>> {
+    let mut out: Vec<(Value, Value)> = wrapped.to_vec();
+    let cmp_of = |w: &Value| match cmp_to_key_cmp(w) {
+        Some(c) => c,
+        None => Value::None,
+    };
+    // Any non-wrapper key -> not our path.
+    if !wrapped.iter().all(|(k, _)| cmp_to_key_cmp(k).is_some()) {
+        return None;
+    }
+    let interp = CURRENT.with(|c| c.borrow().clone())?;
+    let mut result: Result<(), Flow> = Ok(());
+    out.sort_by(|a, b| {
+        if result.is_err() {
+            return std::cmp::Ordering::Equal;
+        }
+        let ca = cmp_of(&a.0);
+        let cb = cmp_of(&b.0);
+        // The "key" IS the wrapper (calling it parked the item on itself);
+        // the underlying items ride <obj>.
+        let unwrap = |w: &Value| -> Value {
+            match w {
+                Value::Obj(o)
+                    if o.kind == ap_obj::ObjKind::Opaque && o.name == "functools.cmp_to_key" =>
+                {
+                    o.attrs.borrow().get(&s("<obj>")).unwrap_or(Value::None)
+                }
+                other => other.clone(),
+            }
+        };
+        let r = crate::interp::call_value_pub(&interp, &ca, &[unwrap(&b.0)], &[]);
+        let ra = crate::interp::call_value_pub(&interp, &cb, &[unwrap(&a.0)], &[]);
+        let (rv, rav) = match (r, ra) {
+            (Ok(x), Ok(y)) => (x, y),
+            (Err(f), _) | (_, Err(f)) => {
+                result = Err(f);
+                return std::cmp::Ordering::Equal;
+            }
+        };
+        if rv.is_truthy() {
+            std::cmp::Ordering::Less
+        } else if rav.is_truthy() {
+            std::cmp::Ordering::Greater
+        } else {
+            std::cmp::Ordering::Equal
+        }
+    });
+    Some(result.map(|_| out.into_iter().map(|(_, v)| v).collect()))
+}
+
 pub fn call_functools(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option<BResult> {
     let r: BResult = (|| -> BResult {
         match name {
+            // 02.04: cmp_to_key(cmp) — an opaque K wrapper; sorted()/list.sort
+            // recognize it and order via the parked cmp (CPython's K class).
+            "cmp_to_key" => {
+                let cmp = args
+                    .first()
+                    .cloned()
+                    .ok_or_else(|| raise("TypeError", "cmp_to_key() needs a callable"))?;
+                let o = PyObject::new(ap_obj::ObjKind::Opaque, "functools.cmp_to_key");
+                {
+                    let mut a = o.attrs.borrow_mut();
+                    let _ = a.set(s("<cmp>"), cmp);
+                    let _ = a.set(s("<obj>"), Value::None);
+                }
+                *o.repr_text.borrow_mut() = Some("<functools.cmp_to_key object>".to_string());
+                return Ok(Value::Obj(o));
+            }
             // 02.04a fix pass (BUG-A follow-on): pass-through decorators.
             // Two-stage forms (`@lru_cache(...)`) park the decorator in an
             // opaque token; the second call (call_native path) unwraps it.
@@ -7690,6 +7861,80 @@ pub fn call_native(
             Some(r)
         }
         // 02.03b-fix: _opcode predicates — v0 has no bytecode model.
+        "shutil" => {
+            let r: BResult = (|| match fname {
+                "get_terminal_size" => {
+                    // os.get_terminal_size with COLUMNS/LINES env override —
+                    // the argparse width computation only reads .columns.
+                    let cols = std::env::var("COLUMNS")
+                        .ok()
+                        .and_then(|v| v.parse::<i64>().ok())
+                        .unwrap_or(80);
+                    let lines = std::env::var("LINES")
+                        .ok()
+                        .and_then(|v| v.parse::<i64>().ok())
+                        .unwrap_or(24);
+                    let o = PyObject::new(ap_obj::ObjKind::Namespace, "terminal_size");
+                    {
+                        let mut attrs = o.attrs.borrow_mut();
+                        let _ = attrs.set(s("columns"), i(cols));
+                        let _ = attrs.set(s("lines"), i(lines));
+                    }
+                    let _ = o.repr_text.borrow_mut().take();
+                    *o.repr_text.borrow_mut() =
+                        Some(format!("os.terminal_size(columns={cols}, lines={lines})"));
+                    Ok(Value::Obj(o))
+                }
+                "which" => Ok(Value::None),
+                _ => Err(raise(
+                    "NotImplementedError",
+                    format!("shutil.{fname} is out of the v1 surface"),
+                )),
+            })();
+            Some(r)
+        }
+        "locale" => {
+            let r: BResult = (|| match fname {
+                "normalize" => {
+                    // v0: identity over common aliases ("C" stays "C").
+                    let loc = match args.first() {
+                        Some(v) => crate::builtins::py_str_of(v).unwrap_or_default(),
+                        None => String::new(),
+                    };
+                    let out = match loc.as_str() {
+                        "C" | "C.UTF-8" | "POSIX" | "en" | "en_US" => loc.clone(),
+                        "" => "C".to_string(),
+                        other => other.to_string(),
+                    };
+                    Ok(s(out))
+                }
+                "getdefaultlocale" => Ok(tuple(vec![Value::None, Value::None])),
+                "getlocale" => Ok(tuple(vec![Value::None, Value::None])),
+                "setlocale" => Ok(s("C")),
+                "getpreferredencoding" | "getencoding" => Ok(s("UTF-8")),
+                "getdefaultencoding" => Ok(s("utf-8")),
+                "strxfrm" => Ok(args.first().cloned().unwrap_or(Value::None)),
+                "strcoll" => {
+                    let a = args.first().cloned().unwrap_or(Value::None);
+                    let b = args.get(1).cloned().unwrap_or(Value::None);
+                    let (sa, sb) = (
+                        crate::builtins::py_str_of(&a).unwrap_or_default(),
+                        crate::builtins::py_str_of(&b).unwrap_or_default(),
+                    );
+                    Ok(i(match sa.cmp(&sb) {
+                        std::cmp::Ordering::Less => -1,
+                        std::cmp::Ordering::Equal => 0,
+                        std::cmp::Ordering::Greater => 1,
+                    }))
+                }
+                "resetlocale" => Ok(Value::None),
+                _ => Err(raise(
+                    "AttributeError",
+                    format!("module 'locale' has no attribute '{fname}'"),
+                )),
+            })();
+            Some(r)
+        }
         "_opcode" => {
             let r: BResult = (|| match fname {
                 "has_arg" | "has_const" | "has_name" | "has_jump" | "has_free" | "has_local"
@@ -7949,6 +8194,78 @@ pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
                     }
                     _ => None,
                 },
+                // 02.04 completion: weak-container method surfaces — bind
+                // the op as a BoundMethod over the container; dispatch lands
+                // in gcsupport::weakref_surface via the dotted marker.
+                n if crate::gcsupport::is_weak_container(n) => {
+                    const WKD_OPS: &[&str] = &[
+                        "__getitem__",
+                        "__setitem__",
+                        "__delitem__",
+                        "__contains__",
+                        "__len__",
+                        "__iter__",
+                        "__bool__",
+                        "get",
+                        "setdefault",
+                        "pop",
+                        "keys",
+                        "values",
+                        "items",
+                        "keyrefs",
+                        "update",
+                        "clear",
+                        "copy",
+                        "popitem",
+                    ];
+                    const WVD_OPS: &[&str] = &[
+                        "__getitem__",
+                        "__setitem__",
+                        "__delitem__",
+                        "__contains__",
+                        "__len__",
+                        "__iter__",
+                        "__bool__",
+                        "get",
+                        "setdefault",
+                        "pop",
+                        "keys",
+                        "values",
+                        "items",
+                        "update",
+                        "clear",
+                        "copy",
+                    ];
+                    const WS_OPS: &[&str] = &[
+                        "add",
+                        "__contains__",
+                        "__len__",
+                        "__iter__",
+                        "__bool__",
+                        "discard",
+                        "remove",
+                        "pop",
+                        "clear",
+                        "copy",
+                    ];
+                    let known: &[&str] = match n {
+                        crate::gcsupport::WKD => WKD_OPS,
+                        crate::gcsupport::WVD => WVD_OPS,
+                        _ => WS_OPS,
+                    };
+                    if known.contains(&name) {
+                        let mname = format!("weakref.{n}.{name}");
+                        let bm = PyObject::with_self(
+                            ap_obj::ObjKind::BoundMethod,
+                            mname.clone(),
+                            obj.clone(),
+                        );
+                        *bm.func.borrow_mut() = Some(marker(&mname));
+                        Some(Value::Obj(bm))
+                    } else {
+                        None
+                    }
+                }
                 "TemporaryDirectory" => match name {
                     "__enter__" | "cleanup" | "__exit__" => {
                         let mname = format!("tempfile.{name}");
@@ -8914,6 +9231,73 @@ pub fn call_builtin_values(
             ("pylist", "sort") => {
                 if let Value::List(l) = &recv {
                     let mut items = l.items().to_vec();
+                    // 02.04: functools.cmp_to_key key — order via the parked
+                    // cmp on the wrapper (the wrapper call parks the item).
+                    if let Some(kv) = kw(kwargs, "key") {
+                        if cmp_to_key_cmp(kv).is_some() {
+                            let cmp = cmp_to_key_cmp(kv).unwrap();
+                            let interp = CURRENT.with(|c| c.borrow().clone());
+                            let Some(interp) = interp else {
+                                return Err(raise("RuntimeError", "no interpreter on this thread"));
+                            };
+                            let mut wrapped: Vec<(Value, Value)> = Vec::with_capacity(items.len());
+                            for x in items {
+                                let k =
+                                    crate::interp::call_value_pub(&interp, kv, &[x.clone()], &[])?;
+                                wrapped.push((k, x));
+                            }
+                            let unwrap = |w: &Value| -> Value {
+                                match w {
+                                    Value::Obj(o)
+                                        if o.kind == ap_obj::ObjKind::Opaque
+                                            && o.name == "functools.cmp_to_key" =>
+                                    {
+                                        o.attrs.borrow().get(&s("<obj>")).unwrap_or(Value::None)
+                                    }
+                                    other => other.clone(),
+                                }
+                            };
+                            let reverse = kw(kwargs, "reverse").map(truthy).unwrap_or(false);
+                            wrapped.sort_by(|a, b| {
+                                let ua = unwrap(&a.0);
+                                let ub = unwrap(&b.0);
+                                let lt = crate::interp::call_value_pub(
+                                    &interp,
+                                    &cmp,
+                                    &[ub.clone()],
+                                    &[],
+                                )
+                                .map(|v| v.is_truthy())
+                                .unwrap_or(false);
+                                let gt = crate::interp::call_value_pub(
+                                    &interp,
+                                    &cmp,
+                                    &[ua.clone()],
+                                    &[],
+                                )
+                                .map(|v| v.is_truthy())
+                                .unwrap_or(false);
+                                let ord = if lt {
+                                    std::cmp::Ordering::Less
+                                } else if gt {
+                                    std::cmp::Ordering::Greater
+                                } else {
+                                    std::cmp::Ordering::Equal
+                                };
+                                if reverse {
+                                    ord.reverse()
+                                } else {
+                                    ord
+                                }
+                            });
+                            items = wrapped.into_iter().map(|(_, v)| v).collect();
+                            l.clear();
+                            for x in items {
+                                l.append(x);
+                            }
+                            return Ok(Value::None);
+                        }
+                    }
                     let keyf = match kw(kwargs, "key") {
                         Some(kv) => Some(callable_name(kv)?),
                         None => None,
@@ -10424,6 +10808,30 @@ pub fn native_iter(v: &Value) -> Option<Gc<crate::iter::PyIterator>> {
             let items = deque_state(v).ok()?.0;
             return Some(crate::iter::PyIterator::new(
                 crate::iter::IterState::Native(Box::new(NativeIterState::Seq(items.into_iter()))),
+            ));
+        }
+        // 02.04 completion: weak containers iterate their LIVE entries
+        // (WeakSet items / WKD keys / WVD keys — CPython yields the objects,
+        // never the tokens).
+        if crate::gcsupport::is_weak_container(&o.name) {
+            let op = match o.name.as_str() {
+                crate::gcsupport::WS => "__iter__",
+                _ => "keys",
+            };
+            if let Some(Ok(Value::List(l))) =
+                crate::gcsupport::call_weakref(&format!("{}.{}", o.name, op), &[v.clone()], &[])
+            {
+                let items: Vec<Value> = l.items().to_vec();
+                return Some(crate::iter::PyIterator::new(
+                    crate::iter::IterState::Native(Box::new(NativeIterState::Seq(
+                        items.into_iter(),
+                    ))),
+                ));
+            }
+            return Some(crate::iter::PyIterator::new(
+                crate::iter::IterState::Native(Box::new(NativeIterState::Seq(
+                    Vec::new().into_iter(),
+                ))),
             ));
         }
     }

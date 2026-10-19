@@ -229,6 +229,22 @@ pub const EXC_TREE: &[(&str, Option<&str>)] = &[
     ("MemoryError", Some("Exception")),
     ("NameError", Some("Exception")),
     ("OSError", Some("Exception")),
+    // 02.04 completion: the OSError family (unittest/gettext chain).
+    ("FileNotFoundError", Some("OSError")),
+    ("PermissionError", Some("OSError")),
+    ("FileExistsError", Some("OSError")),
+    ("NotADirectoryError", Some("OSError")),
+    ("IsADirectoryError", Some("OSError")),
+    ("InterruptedError", Some("OSError")),
+    ("ProcessLookupError", Some("OSError")),
+    ("TimeoutError", Some("OSError")),
+    ("BlockingIOError", Some("OSError")),
+    ("ChildProcessError", Some("OSError")),
+    ("BrokenPipeError", Some("OSError")),
+    ("ConnectionError", Some("OSError")),
+    ("ConnectionAbortedError", Some("ConnectionError")),
+    ("ConnectionRefusedError", Some("ConnectionError")),
+    ("ConnectionResetError", Some("ConnectionError")),
     ("PatternError", Some("Exception")),
     ("EOFError", Some("Exception")),
     ("ReferenceError", Some("Exception")),
@@ -530,12 +546,23 @@ pub fn exec_class_def(
         }
     }
     let mut class_frame_val = Frame::new_class(frame, ns.clone());
-    // NOTE(02.04 diagnosis): setting scope_path = c.name here (the salvaged
-    // wip commit's "method scope" fix) misclassifies locals in methods of
-    // vendored-stdlib metaclasses — enum.EnumType.__new__'s `enum_class`
-    // local stops resolving (NameError) even with the collector disabled.
-    // Reverted; method-scope classification needs its own leaf.
-    let _ = &c.name;
+    // 02.04 closure fix: the class-body frame must carry the compile-time
+    // scope prefix ("C") so methods register as "C.<locals>.m" — exactly the
+    // lowering's scope keys (open_scope pushes the class name, then
+    // <locals> for functions). Without it, method frames get ".<locals>.m"
+    // (leading dot, no class segment), scope_of misses, and nested defs in
+    // methods lose their free-variable cells (argparse's
+    // _metavar_formatter is the canonical victim).
+    // NOTE(02.04 diagnosis, prior agent): a bare scope_path = c.name broke
+    // enum.EnumType.__new__'s locals; that failure mode was the missing
+    // parent-path JOIN (module-level classes have an empty parent, so the
+    // bare name happened to match there) — the real delta is tested by the
+    // metaclass/enum differential suites below.
+    class_frame_val.scope_path = if frame.scope_path.is_empty() {
+        c.name.clone()
+    } else {
+        format!("{}.{}", frame.scope_path, c.name)
+    };
     class_frame_val.class_ns_inst = prepared_inst.clone();
     let class_frame = Rc::new(class_frame_val);
     exec_block(interp, &class_frame, &c.body, reg)?;
@@ -1868,6 +1895,11 @@ fn class_attr_get(interp: &Rc<Interpreter>, cls_v: &Value, t: &Rc<TypeRef>, name
                 &[],
             );
         }
+    }
+    // 02.04: inspect.isabstract probes type.__flags__ (int bit mask); 0 =
+    // no TPFLAGS — every v1 type is concrete.
+    if name == "__flags__" {
+        return Ok(Value::Int(ap_obj::Int::from_i64(0)));
     }
     // 02.04a (interp bug #4, vendored-stdlib stress): object's virtual
     // methods answer at class level (types.py reads object.__init__ and

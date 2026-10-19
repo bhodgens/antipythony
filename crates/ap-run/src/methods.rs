@@ -328,6 +328,24 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
                 format!("'{}' object is not subscriptable", o.name),
             ))
         }
+        // 02.04 completion: weak containers route subscripts through the
+        // gcsupport surface (dunder ops, self rides args[0]).
+        (Value::Obj(o), _k)
+            if o.kind == ap_obj::ObjKind::Opaque
+                && crate::gcsupport::is_weak_container(&o.name) =>
+        {
+            return match crate::gcsupport::call_weakref(
+                &format!("{}.__getitem__", o.name),
+                &[obj.clone(), key.clone()],
+                &[],
+            ) {
+                Some(r) => r,
+                None => Err(raise(
+                    "TypeError",
+                    format!("'{}' object is not subscriptable", obj.type_name()),
+                )),
+            };
+        }
         (Value::Obj(o), _k) if o.kind == ap_obj::ObjKind::UserInstance => {
             // 02.03b: subscript read on dict-derived instances — the
             // subclass __getitem__ (if any) first, else the backing dict.
@@ -420,6 +438,21 @@ pub fn subscript_set(obj: &Value, key: &Value, v: Value) -> Result<(), Flow> {
             "TypeError",
             "'tuple' object does not support item assignment",
         )),
+        // 02.04 completion: weak containers route item stores.
+        Value::Obj(o)
+            if o.kind == ap_obj::ObjKind::Opaque
+                && crate::gcsupport::is_weak_container(&o.name) =>
+        {
+            match crate::gcsupport::call_weakref(
+                &format!("{}.__setitem__", o.name),
+                &[obj.clone(), key.clone(), v],
+                &[],
+            ) {
+                Some(Ok(_)) => Ok(()),
+                Some(Err(f)) => Err(f),
+                None => Ok(()),
+            }
+        }
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
             // 02.03b: __setitem__ on dict-derived instances — the subclass
             // override (EnumDict) runs first; with none, the backing dict
@@ -505,6 +538,21 @@ pub fn subscript_del(obj: &Value, key: &Value) -> Result<(), Flow> {
                 )));
             }
             Ok(())
+        }
+        // 02.04 completion: weak containers route item deletion.
+        Value::Obj(o)
+            if o.kind == ap_obj::ObjKind::Opaque
+                && crate::gcsupport::is_weak_container(&o.name) =>
+        {
+            match crate::gcsupport::call_weakref(
+                &format!("{}.__delitem__", o.name),
+                &[obj.clone(), key.clone()],
+                &[],
+            ) {
+                Some(Ok(_)) => Ok(()),
+                Some(Err(f)) => Err(f),
+                None => Ok(()),
+            }
         }
         Value::Tuple(_) => Err(raise(
             "TypeError",

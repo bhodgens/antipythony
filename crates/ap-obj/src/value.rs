@@ -4,6 +4,26 @@
 use crate::dict::PyDict;
 use crate::int::{Gc, Int};
 use crate::object::ObjKind;
+use crate::object::PyObject;
+
+/// The weak target address of a weakref token object (`_weakref_token` /
+/// `_weakref_proxy` carry `<target_addr>`), or None for other objects.
+/// Tokens hash and compare BY TARGET (CPython: two refs to the same object
+/// are equal and hash alike — the WeakSet/WKD data model requires it).
+pub fn weakref_target_addr(o: &PyObject) -> Option<usize> {
+    if o.kind != ObjKind::Opaque {
+        return None;
+    }
+    if o.name != "_weakref_token" && o.name != "_weakref_proxy" {
+        return None;
+    }
+    o.attrs
+        .borrow()
+        .get(&Value::Str(PyString::new("<target_addr>")))
+        .and_then(|v| v.as_int())
+        .and_then(|i| i.to_i64())
+        .map(|n| n.max(0) as usize)
+}
 
 /// Static type name for a dynamic object (the `type_name()` fallback).
 /// Exception instances and UserInstances report their CLASS name, which is
@@ -438,4 +458,19 @@ impl Value {
 /// MMTk handle (02.04) this becomes the handle id.
 pub fn addr_of<T>(r: &Gc<T>) -> usize {
     std::rc::Rc::as_ptr(r).addr()
+}
+
+/// Address of any Obj value's payload (0 for immediates) — the weakref
+/// token key space.
+pub fn addr_of_value(v: &Value) -> usize {
+    match v {
+        Value::Str(x) => addr_of(x),
+        Value::Bytes(x) => addr_of(x),
+        Value::List(x) => addr_of(x),
+        Value::Tuple(x) => addr_of(x),
+        Value::Dict(x) => addr_of(x),
+        Value::Set(x) | Value::Frozen(x) => addr_of(x),
+        Value::Obj(x) => addr_of(x),
+        _ => 0,
+    }
 }

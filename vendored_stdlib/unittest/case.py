@@ -42,6 +42,51 @@ class _UnexpectedSuccess(Exception):
     """
 
 
+# AP-CORRECTION (02.04): explicit CM for _Outcome.testPartExecutor — see the
+# note on the method. Attribute-carried state (no closure cells).
+class _PartExecutor(object):
+    def __init__(self, outcome, test_case, subTest):
+        self._outcome = outcome
+        self._test_case = test_case
+        self._subTest = subTest
+        self._old_success = True
+
+    def __enter__(self):
+        self._old_success = self._outcome.success
+        self._outcome.success = True
+        return None
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        outcome = self._outcome
+        test_case = self._test_case
+        subTest = self._subTest
+        try:
+            if exc_type is None:
+                if subTest and outcome.success:
+                    outcome.result.addSubTest(test_case.test_case, test_case, None)
+                return False
+            if issubclass(exc_type, KeyboardInterrupt):
+                return False
+            if issubclass(exc_type, SkipTest):
+                outcome.success = False
+                _addSkip(outcome.result, test_case, str(exc_val))
+                return True
+            if issubclass(exc_type, _ShouldStop):
+                return True
+            exc_info = (exc_type, exc_val, exc_tb)
+            if outcome.expecting_failure:
+                outcome.expectedFailure = exc_info
+            else:
+                outcome.success = False
+                if subTest:
+                    outcome.result.addSubTest(test_case.test_case, test_case, exc_info)
+                else:
+                    _addError(outcome.result, test_case, exc_info)
+            return True
+        finally:
+            outcome.success = outcome.success and self._old_success
+
+
 class _Outcome(object):
     def __init__(self, result=None):
         self.expecting_failure = False
@@ -50,37 +95,17 @@ class _Outcome(object):
         self.success = True
         self.expectedFailure = None
 
-    @contextlib.contextmanager
+    # AP-CORRECTION (02.04, documented per the vendored-stdlib amendment
+    # clause): CPython expresses this as @contextlib.contextmanager — a
+    # generator-based CM whose except-clauses run when the with-body's
+    # exception is THROWN INTO the suspended generator. Our v0 generators
+    # materialize eagerly (no mid-body suspension), so the recording clauses
+    # could never fire. Rewritten as an explicit context-manager helper with
+    # identical observable behavior; clause order preserved. The helper is
+    # an instance of a MODULE-LEVEL class (state via attributes, no
+    # closure cells) — see _PartExecutor below.
     def testPartExecutor(self, test_case, subTest=False):
-        old_success = self.success
-        self.success = True
-        try:
-            yield
-        except KeyboardInterrupt:
-            raise
-        except SkipTest as e:
-            self.success = False
-            _addSkip(self.result, test_case, str(e))
-        except _ShouldStop:
-            pass
-        except:
-            exc_info = sys.exc_info()
-            if self.expecting_failure:
-                self.expectedFailure = exc_info
-            else:
-                self.success = False
-                if subTest:
-                    self.result.addSubTest(test_case.test_case, test_case, exc_info)
-                else:
-                    _addError(self.result, test_case, exc_info)
-            # explicitly break a reference cycle:
-            # exc_info -> frame -> exc_info
-            exc_info = None
-        else:
-            if subTest and self.success:
-                self.result.addSubTest(test_case.test_case, test_case, None)
-        finally:
-            self.success = self.success and old_success
+        return _PartExecutor(self, test_case, subTest)
 
 
 def _addSkip(result, test_case, reason):
@@ -410,6 +435,13 @@ class TestCase(object):
     # If a string is longer than _diffThreshold, use normal comparison instead
     # of difflib.  See #11763.
     _diffThreshold = 2**16
+
+    # AP-CORRECTION (02.04): CPython seeds these per-subclass through
+    # __init_subclass__; the runtime does not deliver that hook yet, so seed
+    # them as TestCase-level class attributes (shared list — documented
+    # divergence; the corpus only exercises single-class runs).
+    _classSetupFailed = False
+    _class_cleanups = []
 
     def __init_subclass__(cls, *args, **kwargs):
         # Attribute used by TestSuite for classSetUp

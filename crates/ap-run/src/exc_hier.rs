@@ -82,6 +82,23 @@ fn parent_of(class: &str) -> Option<&'static str> {
         "UnicodeError" => Some("ValueError"),
         "UnicodeDecodeError" | "UnicodeEncodeError" => Some("UnicodeError"),
         "EOFError" => Some("OSError"),
+        // 02.04 completion: the OSError family (gettext/os surfaces in the
+        // unittest chain probe them by name).
+        "FileNotFoundError"
+        | "PermissionError"
+        | "FileExistsError"
+        | "NotADirectoryError"
+        | "IsADirectoryError"
+        | "InterruptedError"
+        | "ProcessLookupError"
+        | "TimeoutError"
+        | "BlockingIOError"
+        | "ChildProcessError"
+        | "BrokenPipeError"
+        | "ConnectionAbortedError"
+        | "ConnectionRefusedError"
+        | "ConnectionResetError"
+        | "ConnectionError" => Some("OSError"),
         _ => Some("Exception"),
     }
 }

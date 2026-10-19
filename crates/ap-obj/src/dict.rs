@@ -333,7 +333,18 @@ pub fn values_eq(a: &Value, b: &Value) -> bool {
         (Value::Ellipsis, Value::Ellipsis) => true,
         // Generic objects compare (and hash) by IDENTITY (default object
         // protocol); equality across different arms is always false.
-        (Value::Obj(x), Value::Obj(y)) => std::rc::Rc::ptr_eq(x, y),
+        // Exception: weakref tokens compare BY TARGET (CPython: two refs to
+        // the same object are ==; the WeakSet/WKD data model relies on it).
+        (Value::Obj(x), Value::Obj(y)) => {
+            if let (Some(a), Some(b)) = (
+                crate::value::weakref_target_addr(x),
+                crate::value::weakref_target_addr(y),
+            ) {
+                a == b
+            } else {
+                std::rc::Rc::ptr_eq(x, y)
+            }
+        }
         // Different types never compare equal (S-01-33), never an error.
         _ => false,
     }

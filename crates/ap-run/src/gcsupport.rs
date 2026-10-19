@@ -78,11 +78,26 @@ fn next_finalizer_index() -> u64 {
 /// tuple/list/dict NO; set/frozenset + user instances + classes YES.)
 fn weakrefable(v: &Value) -> bool {
     match v {
-        Value::Int(_) | Value::Str(_) | Value::Float(_) | Value::Bytes(_) | Value::Bool(_)
-        | Value::None | Value::Tuple(_) | Value::List(_) | Value::Dict(_) | Value::Ellipsis => {
-            false
-        }
+        Value::Int(_)
+        | Value::Str(_)
+        | Value::Float(_)
+        | Value::Bytes(_)
+        | Value::Bool(_)
+        | Value::None
+        | Value::Tuple(_)
+        | Value::List(_)
+        | Value::Dict(_)
+        | Value::Ellipsis => false,
         Value::Set(_) | Value::Frozen(_) => true,
+        // Slotted instances (no __dict__, no __weakref__ slot) are NOT
+        // weakrefable in CPython — gc005/s034's NonRef probe.
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => o
+            .type_ref
+            .borrow()
+            .as_ref()
+            .and_then(|w| w.upgrade())
+            .map(|t| t.has_instance_dict())
+            .unwrap_or(true),
         Value::Obj(o) => !matches!(o.kind, ap_obj::ObjKind::Iterator),
     }
 }
@@ -97,15 +112,21 @@ pub fn weakref_ref(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
             "TypeError",
             format!(
                 "cannot create weak reference to '{}' object",
-                target.type_name()
+                crate::classes::display_type_name(target)
             ),
         ));
     }
-    let callback = args.get(1).cloned().or_else(|| {
-        kwarg_value(kwargs, "callback").cloned()
-    });
+    let callback = args
+        .get(1)
+        .cloned()
+        .or_else(|| kwarg_value(kwargs, "callback").cloned());
     let target_addr = target_addr_of(target);
-    let token = PyObject::new(ap_obj::ObjKind::Opaque, "_weakref_token");
+    // arg 2 (internal) names the token kind: "ref" or "_weakref_proxy".
+    let token_name = match args.get(2) {
+        Some(Value::Str(x)) if x.as_str() == "_weakref_proxy" => "_weakref_proxy",
+        _ => "_weakref_token",
+    };
+    let token = PyObject::new(ap_obj::ObjKind::Opaque, token_name);
     let entry_index = ap_gc::weakref_entry_count();
     {
         let mut tattrs = token.attrs.borrow_mut();
@@ -133,6 +154,50 @@ fn kwarg_value<'a>(kwargs: &'a [(String, Value)], name: &str) -> Option<&'a Valu
     kwargs.iter().find(|(k, _)| k == name).map(|(_, v)| v)
 }
 
+/// weakref.proxy(ob[, callback]) — a transparent stand-in. The token is an
+/// opaque carrying only `<target_addr>`; the interp attr/call layers forward
+/// to the live target (dead target -> ReferenceError, C-22).
+pub fn weakref_proxy(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
+    let target = args
+        .first()
+        .ok_or_else(|| raise("TypeError", "weakref.proxy() needs a target"))?;
+    if !weakrefable(target) {
+        return Err(raise(
+            "TypeError",
+            format!(
+                "cannot create weak reference to '{}' object",
+                crate::classes::display_type_name(target)
+            ),
+        ));
+    }
+    let callback = args
+        .get(1)
+        .cloned()
+        .or_else(|| kwarg_value(kwargs, "callback").cloned());
+    let target_addr = target_addr_of(target);
+    let token = PyObject::new(ap_obj::ObjKind::Opaque, "_weakref_proxy");
+    {
+        let mut tattrs = token.attrs.borrow_mut();
+        let _ = tattrs.set(s("<target_addr>"), i(target_addr as i64));
+    }
+    ap_gc::weakref_add(ap_gc::WeakEntry {
+        target: target_addr,
+        token: Value::Obj(token.clone()),
+        callback,
+        dead: false,
+        fired: false,
+    });
+    WEAK_TOKENS.with(|w| {
+        w.borrow_mut().push(WeakToken {
+            token: token.clone(),
+            target_addr,
+            callback: None,
+            entry_index: ap_gc::weakref_entry_count(),
+        });
+    });
+    Ok(Value::Obj(token))
+}
+
 fn target_addr_of(v: &Value) -> usize {
     match v {
         Value::Str(x) => Rc::as_ptr(x) as *const u8 as usize,
@@ -146,24 +211,33 @@ fn target_addr_of(v: &Value) -> usize {
     }
 }
 
+/// Look up the target VALUE for a weak address (registry projection; the
+/// registry clone keeps tracked objects alive, so membership == liveness).
+pub fn target_value_by_addr(addr: usize) -> Option<Value> {
+    ap_gc::get_objects()
+        .into_iter()
+        .find(|v| target_addr_of(v) == addr)
+}
+
 /// `ref()` — return the target while alive, None when dead (C-22).
 pub fn weakref_call(token: &Gc<PyObject>) -> Value {
-    let addr = token
+    let addr = target_addr_of_token(token);
+    if addr == 0 || !ap_gc::weakref_alive(addr) {
+        return Value::None;
+    }
+    target_value_by_addr(addr).unwrap_or(Value::None)
+}
+
+/// The `<target_addr>` recorded on a token object (0 when absent).
+fn target_addr_of_token(token: &Gc<PyObject>) -> usize {
+    token
         .attrs
         .borrow()
         .get(&s("<target_addr>"))
         .and_then(|v| v.as_int())
         .and_then(|iv| iv.to_i64())
-        .unwrap_or(0) as usize;
-    if addr == 0 || !ap_gc::weakref_alive(addr) {
-        return Value::None;
-    }
-    // Alive: find the target VALUE from the registry view (get_objects is
-    // the sanctioned projection; filter by address).
-    let target = ap_gc::get_objects()
-        .into_iter()
-        .find(|v| target_addr_of(v) == addr);
-    target.unwrap_or(Value::None)
+        .map(|n| n.max(0) as usize)
+        .unwrap_or(0)
 }
 
 /// Drain dead weakrefs: fire callbacks exactly once (ap-gc bridge).
@@ -237,11 +311,7 @@ fn report_unraisable(interp: &Rc<Interpreter>, del_f: &Value, exc: &ExceptionVal
             let t = ap_obj::PyObject::new(ap_obj::ObjKind::Type, exc.class.clone());
             Value::Obj(t)
         };
-        let exc_value = exc
-            .args
-            .first()
-            .cloned()
-            .unwrap_or(Value::None);
+        let exc_value = exc.args.first().cloned().unwrap_or(Value::None);
         {
             let mut a = args_obj.attrs.borrow_mut();
             let _ = a.set(s("exc_type"), exc_type);
@@ -249,12 +319,7 @@ fn report_unraisable(interp: &Rc<Interpreter>, del_f: &Value, exc: &ExceptionVal
             let _ = a.set(s("exc_traceback"), Value::None);
             let _ = a.set(s("object"), Value::None);
         }
-        let _ = crate::interp::call_value_pub(
-            interp,
-            &hook,
-            &[Value::Obj(args_obj)],
-            &[],
-        );
+        let _ = crate::interp::call_value_pub(interp, &hook, &[Value::Obj(args_obj)], &[]);
         return;
     }
 
@@ -270,9 +335,8 @@ fn report_unraisable(interp: &Rc<Interpreter>, del_f: &Value, exc: &ExceptionVal
         Value::Obj(o) => Rc::as_ptr(o) as *const u8 as usize,
         _ => 0,
     };
-    let mut text = format!(
-        "Exception ignored while calling deallocator <function {fname} at 0x{addr:x}>:\n"
-    );
+    let mut text =
+        format!("Exception ignored while calling deallocator <function {fname} at 0x{addr:x}>:\n");
     text.push_str("Traceback (most recent call last):\n");
     // Frame line: the __del__ def line is unavailable v0 — use the class
     // body line recorded in the script (traceback machinery renders the
@@ -309,9 +373,11 @@ fn report_unraisable(interp: &Rc<Interpreter>, del_f: &Value, exc: &ExceptionVal
 fn sys_attr(interp: &Rc<Interpreter>, name: &str) -> Option<Value> {
     let sys_v = interp.sys_module.borrow().clone()?;
     match sys_v {
-        Value::Obj(o) if o.kind == ap_obj::ObjKind::Module => {
-            o.module_ns.borrow().as_ref().and_then(|ns| ns.get(&Value::Str(PyString::new(name))))
-        }
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::Module => o
+            .module_ns
+            .borrow()
+            .as_ref()
+            .and_then(|ns| ns.get(&Value::Str(PyString::new(name)))),
         _ => None,
     }
 }
@@ -321,7 +387,12 @@ fn write_stderr(interp: &Rc<Interpreter>, text: &str) {
     if let Some(se) = sys_attr(interp, "stderr") {
         if let Value::Obj(so) = &se {
             if let Some(w) = so.attrs.borrow().get(&s("write")) {
-                let _ = crate::interp::call_value_pub(interp, &w, &[Value::Str(PyString::new(text.to_string()))], &[]);
+                let _ = crate::interp::call_value_pub(
+                    interp,
+                    &w,
+                    &[Value::Str(PyString::new(text.to_string()))],
+                    &[],
+                );
                 return;
             }
         }
@@ -392,16 +463,25 @@ pub fn call_gc(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option
             "collect" => {
                 // Optional generation arg (0/1/2) — stage 1 is generationless;
                 // the arg only pins the generation field gc006 observes.
-                let found = ap_gc::collect();
+                let gen = ap_gc_arg(args, 0, 2)?;
+                let found = ap_gc::collect_gen(gen);
                 Ok(i(found as i64))
             }
             "get_count" => {
                 let (a, b, c) = ap_gc::get_count();
-                Ok(Value::Tuple(Gc::new(Tuple(vec![i(a as i64), i(b as i64), i(c as i64)]))))
+                Ok(Value::Tuple(Gc::new(Tuple(vec![
+                    i(a as i64),
+                    i(b as i64),
+                    i(c as i64),
+                ]))))
             }
             "get_threshold" => {
                 let (a, b, c) = ap_gc::get_threshold();
-                Ok(Value::Tuple(Gc::new(Tuple(vec![i(a as i64), i(b as i64), i(c as i64)]))))
+                Ok(Value::Tuple(Gc::new(Tuple(vec![
+                    i(a as i64),
+                    i(b as i64),
+                    i(c as i64),
+                ]))))
             }
             "set_threshold" => {
                 let t0 = ap_gc_arg(args, 0, 700)?;
@@ -511,8 +591,34 @@ pub fn build_weakref_module_pub() -> Value {
     let ns = PyDict::new();
     let _ = ns.set(s("__name__"), s("weakref"));
     let _ = ns.set(s("__file__"), Value::None);
-    for n in ["ref", "proxy", "getweakrefcount", "getweakrefs", "finalize"] {
+    // ref IS a type (class KeyedRef(_weakref.ref) in importlib._bootstrap;
+    // WeakMethod subclasses it conceptually). ReferenceType is the same
+    // object (CPython: ReferenceType is type(ref())).
+    let ref_type = Value::Obj(PyObject::new(ap_obj::ObjKind::Type, "ref"));
+    let _ = ns.set(s("ref"), ref_type.clone());
+    let _ = ns.set(s("ReferenceType"), ref_type.clone());
+    // KeyedRef (importlib._bootstrap's ref subclass with a .key): v0 alias
+    // of the ref type — construction produces the same token.
+    let _ = ns.set(s("KeyedRef"), ref_type);
+    let _ = ns.set(s("proxy"), marker("weakref.proxy"));
+    for n in ["getweakrefcount", "getweakrefs", "finalize"] {
         let _ = ns.set(s(n), marker(&format!("weakref.{n}")));
+    }
+    let proxy_type = Value::Obj(PyObject::new(ap_obj::ObjKind::Type, "ProxyType"));
+    let cproxy_type = Value::Obj(PyObject::new(ap_obj::ObjKind::Type, "CallableProxyType"));
+    let _ = ns.set(s("ProxyType"), proxy_type.clone());
+    let _ = ns.set(s("CallableProxyType"), cproxy_type.clone());
+    let _ = ns.set(
+        s("ProxyTypes"),
+        Value::Tuple(Gc::new(Tuple(vec![proxy_type, cproxy_type]))),
+    );
+    // The mapping/set surfaces (02.04 completion): Opaque-backed native
+    // classes over the weakref token machinery (keys/values weakly held).
+    for cls in [WKD, WVD, WS, "WeakMethod"] {
+        let _ = ns.set(
+            s(cls),
+            Value::Obj(PyObject::new(ap_obj::ObjKind::Type, cls)),
+        );
     }
     let _ = m.module_ns.borrow_mut().replace(Rc::new((*ns).clone()));
     Value::Obj(m)
@@ -521,12 +627,66 @@ pub fn build_weakref_module_pub() -> Value {
 /// Dispatch a `weakref.<fn>` call.
 pub fn call_weakref(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option<BResult> {
     let r: BResult = (|| {
+        // Container/WeakMethod surfaces: the module-attr Types call as
+        // constructors; bound methods arrive as "WeakKeyDictionary.get"-style
+        // fnames with self at args[0].
+        if let Some(cls) = [WKD, WVD, WS, "WeakMethod"]
+            .iter()
+            .find(|c2| name == **c2 || name.starts_with(&format!("{c2}.")))
+        {
+            let cls = *cls;
+            if name == cls {
+                if cls == "WeakMethod" {
+                    return weakmethod_ctor(args);
+                }
+                return container_ctor(cls, args);
+            }
+            let op = &name[cls.len() + 1..];
+            return weakref_surface(cls, op, args);
+        }
         match name {
             "ref" => weakref_ref(args, kwargs),
-            "proxy" => weakref_ref(args, kwargs), // v0: proxy == ref (documented)
-            "getweakrefcount" | "getweakrefs" => Ok(i(0)),
-            "finalize" => call_weakref_finalize(args, kwargs)
-                .unwrap_or_else(|| Ok(Value::None)),
+            "proxy" => weakref_proxy(args, kwargs),
+            "getweakrefcount" => {
+                let t = args
+                    .first()
+                    .ok_or_else(|| raise("TypeError", "getweakrefcount() needs a target"))?;
+                Ok(i(ap_gc::weakref_count_for(target_addr_of(t)) as i64))
+            }
+            "getweakrefs" => {
+                let t = args
+                    .first()
+                    .ok_or_else(|| raise("TypeError", "getweakrefs() needs a target"))?;
+                Ok(Value::List(PyList::from_vec(ap_gc::weakref_tokens_for(
+                    target_addr_of(t),
+                ))))
+            }
+            "finalize" => call_weakref_finalize(args, kwargs).unwrap_or_else(|| Ok(Value::None)),
+            // finalize-token BoundMethod markers (native_attr "_weakref_token"):
+            // the token rides args[0].
+            "detach" => {
+                let tok = args
+                    .first()
+                    .cloned()
+                    .ok_or_else(|| raise("TypeError", "detach without token"))?;
+                match &tok {
+                    Value::Obj(o) => match crate::gcsupport::finalize_detach(o) {
+                        Some(v) => Ok(v),
+                        None => Ok(Value::None),
+                    },
+                    _ => Ok(Value::None),
+                }
+            }
+            "__call__" => {
+                let tok = args
+                    .first()
+                    .cloned()
+                    .ok_or_else(|| raise("TypeError", "call without token"))?;
+                match &tok {
+                    Value::Obj(o) => Ok(crate::gcsupport::finalize_call(o)),
+                    _ => Ok(Value::None),
+                }
+            }
             _ => Err(raise(
                 "AttributeError",
                 format!("module 'weakref' has no attribute '{name}'"),
@@ -539,10 +699,7 @@ pub fn call_weakref(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> O
 /// weakref.finalize surface (gc015). Lives on the finalize class VALUE that
 /// the vendored weakref.py builds; this dispatch handles the native fallback
 /// path where weakref.finalize is called directly.
-pub fn call_weakref_finalize(
-    args: &[Value],
-    kwargs: &[(String, Value)],
-) -> Option<BResult> {
+pub fn call_weakref_finalize(args: &[Value], kwargs: &[(String, Value)]) -> Option<BResult> {
     let obj = args.first()?.clone();
     let func = args.get(1)?.clone();
     if !weakrefable(&obj) {
@@ -678,6 +835,632 @@ pub fn finalize_atexit_drain() {
         let _ = invoke_callback(&func, &args);
         let _ = kwargs;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Weak containers (02.04 completion): WeakKeyDictionary / WeakValueDictionary
+// / WeakSet / WeakMethod — Opaque-backed native classes over the token
+// machinery.
+//
+// DESIGN: entries hold ref TOKENS (target address only, no strong ref), so a
+// key/value dies exactly when the collector sweeps it. Dead entries are
+// pruned AT ACCESS (len/iter/get/contains); CPython prunes at death time via
+// the _remove callback. Observable difference is timing-only: after a
+// gc.collect() both models agree. Documented divergence (C-22 note).
+// ---------------------------------------------------------------------------
+
+pub const WKD: &str = "WeakKeyDictionary";
+pub const WVD: &str = "WeakValueDictionary";
+pub const WS: &str = "WeakSet";
+
+/// Is this Opaque name one of our weak containers?
+pub fn is_weak_container(name: &str) -> bool {
+    matches!(name, WKD | WVD | WS)
+}
+
+fn container_new(cls: &str) -> Value {
+    let o = PyObject::new(ap_obj::ObjKind::Opaque, cls);
+    {
+        let mut attrs = o.attrs.borrow_mut();
+        if cls == WS {
+            let _ = attrs.set(s("<data>"), Value::Set(ap_obj::dict::PySet::new()));
+        } else {
+            let _ = attrs.set(s("<data>"), Value::Dict(PyDict::new()));
+        }
+    }
+    // CPython repr form (WeakKeyDictionary.__repr__): "<%s at %#x>".
+    let addr = Rc::as_ptr(&o) as *const u8 as usize;
+    *o.repr_text.borrow_mut() = Some(format!("<{cls} at 0x{addr:x}>"));
+    Value::Obj(o)
+}
+
+/// The backing dict of a weak container instance.
+fn container_data(v: &Value) -> Option<Gc<PyDict>> {
+    match v {
+        Value::Obj(o) => o.attrs.borrow().get(&s("<data>")).and_then(|d| match d {
+            Value::Dict(d) => Some(d.clone()),
+            _ => None,
+        }),
+        _ => None,
+    }
+}
+
+/// WeakSet storage: the `<data>` PySet of tokens.
+fn weakset_data(v: &Value) -> Option<Gc<ap_obj::dict::PySet>> {
+    match v {
+        Value::Obj(o) => o.attrs.borrow().get(&s("<data>")).and_then(|d| match d {
+            Value::Set(set) => Some(set.clone()),
+            _ => None,
+        }),
+        _ => None,
+    }
+}
+
+/// A ref token for `target` (no callback — pruning is at access).
+fn make_token(target: &Value) -> BResult {
+    weakref_ref(&[target.clone()], &[])
+}
+
+fn token_target(token: &Value) -> Option<usize> {
+    match token {
+        Value::Obj(o) => {
+            let a = o.attrs.borrow().get(&s("<target_addr>")).and_then(|v| {
+                v.as_int()
+                    .and_then(|iv| iv.to_i64())
+                    .map(|n| n.max(0) as usize)
+            });
+            a
+        }
+        _ => None,
+    }
+}
+
+fn token_alive(token: &Value) -> bool {
+    token_target(token)
+        .map(|a| ap_gc::weakref_alive(a))
+        .unwrap_or(false)
+}
+
+/// The live target object behind a token Value (Some for Obj tokens).
+fn deref_token(tok: &Value) -> Option<Value> {
+    match tok {
+        Value::Obj(t) => match crate::gcsupport::weakref_call(t) {
+            Value::None => None,
+            v => Some(v),
+        },
+        _ => None,
+    }
+}
+
+fn key_error(key: &Value) -> Flow {
+    Flow::Raise(crate::exc_hier::ExceptionValue::new(
+        "KeyError",
+        vec![key.clone()],
+    ))
+}
+
+/// Drop entries whose key (WKD) or value-token (WVD) is dead.
+fn prune_dict(d: &Gc<PyDict>, which: KeyPos) {
+    let dead: Vec<Value> = d
+        .items()
+        .iter()
+        .filter(|(k, v)| {
+            let tok = match which {
+                KeyPos::Key => k,
+                KeyPos::Value => v,
+            };
+            token_target(tok).is_some() && !token_alive(tok)
+        })
+        .map(|(k, _)| k.clone())
+        .collect();
+    for k in dead {
+        d.pop(&k);
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum KeyPos {
+    Key,
+    Value,
+}
+
+fn container_ctor(cls: &str, args: &[Value]) -> BResult {
+    let c = container_new(cls);
+    // WeakKeyDictionary(dict=None)/WeakValueDictionary(dict=None) seed form.
+    if let Some(init) = args.first() {
+        if !matches!(init, Value::None) {
+            let it = crate::builtins::iterable_of(init)?;
+            let items = crate::iter::collect(&it);
+            let d = container_data(&c).expect("container data");
+            for item in items {
+                match &item {
+                    Value::Tuple(t) if t.0.len() == 2 => {
+                        let (k, v) = (t.0[0].clone(), t.0[1].clone());
+                        if cls == WVD {
+                            let tok = make_token(&v)?;
+                            let _ = d.set(k, tok);
+                        } else {
+                            let tok = make_token(&k)?;
+                            let _ = d.set(tok, v);
+                        }
+                    }
+                    _ => {
+                        return Err(raise(
+                            "TypeError",
+                            format!(
+                            "cannot convert dictionary update sequence element to a {cls} entry"
+                        ),
+                        ))
+                    }
+                }
+            }
+        }
+    }
+    Ok(c)
+}
+
+/// The weak-container method surface: `self` rides args[0], `op` is the
+/// method name (bound via native_attr BoundMethod markers, subscript and
+/// contains paths call it directly).
+pub fn weakref_surface(cls: &str, op: &str, args: &[Value]) -> BResult {
+    let self_v = args
+        .first()
+        .cloned()
+        .ok_or_else(|| raise("SystemError", "weakref surface without self"))?;
+    let arg = |n: usize| args.get(n).cloned();
+
+    // --- WeakSet: storage is a PySet of tokens in <data> -------------------
+    if cls == WS {
+        return weakset_surface(&self_v, op, args);
+    }
+
+    let d = container_data(&self_v)
+        .ok_or_else(|| raise("SystemError", "weakref container without data"))?;
+
+    match (cls, op) {
+        // ---------------- WeakKeyDictionary ----------------
+        (WKD, "__getitem__") => {
+            prune_dict(&d, KeyPos::Key);
+            let tok = make_token(&arg(1).expect("key"))?;
+            match d.get(&tok) {
+                Some(v) => Ok(v),
+                None => Err(key_error(&arg(1).unwrap())),
+            }
+        }
+        (WKD, "__setitem__") => {
+            let k = arg(1).expect("key");
+            let v = arg(2).unwrap_or(Value::None);
+            let tok = make_token(&k)?;
+            let _ = d.set(tok, v);
+            Ok(Value::None)
+        }
+        (WKD, "__delitem__") => {
+            prune_dict(&d, KeyPos::Key);
+            let k = arg(1).expect("key");
+            let tok = make_token(&k)?;
+            match d.pop(&tok) {
+                Some(_) => Ok(Value::None),
+                None => Err(key_error(&k)),
+            }
+        }
+        (WKD, "__contains__") => {
+            prune_dict(&d, KeyPos::Key);
+            match arg(1) {
+                Some(k) => match make_token(&k) {
+                    Ok(tok) => Ok(Value::Bool(d.contains(&tok))),
+                    Err(_) => Ok(Value::Bool(false)), // unweakrefable -> not in
+                },
+                None => Ok(Value::Bool(false)),
+            }
+        }
+        (WKD, "__len__") => {
+            prune_dict(&d, KeyPos::Key);
+            Ok(i(d.len() as i64))
+        }
+        (WKD, "__bool__") => {
+            prune_dict(&d, KeyPos::Key);
+            Ok(Value::Bool(d.len() != 0))
+        }
+        (WKD, "__iter__") | (WKD, "keys") => {
+            prune_dict(&d, KeyPos::Key);
+            let keys: Vec<Value> = d
+                .items()
+                .iter()
+                .filter_map(|(k, _)| match k {
+                    Value::Obj(tok) => deref_token(&Value::Obj(tok.clone())),
+                    _ => None,
+                })
+                .collect();
+            Ok(Value::List(PyList::from_vec(keys)))
+        }
+        (WKD, "keyrefs") => {
+            prune_dict(&d, KeyPos::Key);
+            Ok(Value::List(PyList::from_vec(d.keys())))
+        }
+        (WKD, "values") => {
+            prune_dict(&d, KeyPos::Key);
+            let vals: Vec<Value> = d
+                .items()
+                .iter()
+                .filter(|(k, _)| token_alive(k))
+                .map(|(_, v)| v.clone())
+                .collect();
+            Ok(Value::List(PyList::from_vec(vals)))
+        }
+        (WKD, "items") => {
+            prune_dict(&d, KeyPos::Key);
+            let items: Vec<Value> = d
+                .items()
+                .iter()
+                .filter_map(|(k, v)| match k {
+                    Value::Obj(tok) => deref_token(&Value::Obj(tok.clone()))
+                        .map(|o| Value::Tuple(Gc::new(Tuple(vec![o, v.clone()])))),
+                    _ => None,
+                })
+                .collect();
+            Ok(Value::List(PyList::from_vec(items)))
+        }
+        (WKD, "get") => {
+            prune_dict(&d, KeyPos::Key);
+            let k = arg(1).expect("key");
+            let default = arg(2).unwrap_or(Value::None);
+            match make_token(&k) {
+                Ok(tok) => Ok(d.get(&tok).unwrap_or(default)),
+                Err(_) => Ok(default),
+            }
+        }
+        (WKD, "setdefault") => {
+            prune_dict(&d, KeyPos::Key);
+            let k = arg(1).expect("key");
+            let default = arg(2).unwrap_or(Value::None);
+            let tok = make_token(&k)?;
+            if let Some(v) = d.get(&tok) {
+                return Ok(v);
+            }
+            let _ = d.set(tok, default.clone());
+            Ok(default)
+        }
+        (WKD, "pop") => {
+            prune_dict(&d, KeyPos::Key);
+            let k = arg(1).expect("key");
+            let tok = make_token(&k)?;
+            match d.pop(&tok) {
+                Some(v) => Ok(v),
+                None => match arg(2) {
+                    Some(default) => Ok(default),
+                    None => Err(key_error(&k)),
+                },
+            }
+        }
+        (WKD, "update") => {
+            let src = arg(1).ok_or_else(|| raise("TypeError", "update needs an argument"))?;
+            let it = crate::builtins::iterable_of(&src)?;
+            for item in crate::iter::collect(&it) {
+                if let Value::Tuple(t) = item {
+                    if t.0.len() == 2 {
+                        let tok = make_token(&t.0[0])?;
+                        let _ = d.set(tok, t.0[1].clone());
+                    }
+                }
+            }
+            Ok(Value::None)
+        }
+        (WKD, "clear") => {
+            for (k, _) in d.items() {
+                d.pop(&k);
+            }
+            Ok(Value::None)
+        }
+        (WKD, "copy") => {
+            prune_dict(&d, KeyPos::Key);
+            let c = container_new(WKD);
+            let cd = container_data(&c).expect("data");
+            for (k, v) in d.items() {
+                let _ = cd.set(k.clone(), v.clone());
+            }
+            Ok(c)
+        }
+        // ---------------- WeakValueDictionary ----------------
+        (WVD, "__setitem__") => {
+            let k = arg(1).expect("key");
+            let v = arg(2).unwrap_or(Value::None);
+            let tok = make_token(&v)?;
+            let _ = d.set(k, tok);
+            Ok(Value::None)
+        }
+        (WVD, "__getitem__") => {
+            let k = arg(1).expect("key");
+            let Some(Value::Obj(tok)) = d.get(&k) else {
+                return Err(key_error(&k));
+            };
+            match crate::gcsupport::weakref_call(&tok) {
+                Value::None => Err(key_error(&k)),
+                v => Ok(v),
+            }
+        }
+        (WVD, "__delitem__") => {
+            let k = arg(1).expect("key");
+            let removed = match d.get(&k) {
+                Some(tok) => token_alive(&tok) || true, // entry exists -> removable
+                None => false,
+            };
+            if !removed {
+                return Err(key_error(&k));
+            }
+            d.pop(&k);
+            Ok(Value::None)
+        }
+        (WVD, "__contains__") => {
+            let k = arg(1).unwrap_or(Value::None);
+            Ok(Value::Bool(match d.get(&k) {
+                Some(tok) => token_alive(&tok),
+                None => false,
+            }))
+        }
+        (WVD, "__len__") => {
+            prune_dict(&d, KeyPos::Value);
+            Ok(i(d.len() as i64))
+        }
+        (WVD, "__bool__") => {
+            prune_dict(&d, KeyPos::Value);
+            Ok(Value::Bool(d.len() != 0))
+        }
+        (WVD, "__iter__") | (WVD, "keys") => Ok(Value::List(PyList::from_vec(d.keys()))),
+        (WVD, "values") => {
+            prune_dict(&d, KeyPos::Value);
+            let vals: Vec<Value> = d
+                .items()
+                .iter()
+                .filter_map(|(_, v)| match v {
+                    Value::Obj(tok) => deref_token(&Value::Obj(tok.clone())),
+                    _ => None,
+                })
+                .collect();
+            Ok(Value::List(PyList::from_vec(vals)))
+        }
+        (WVD, "items") => {
+            prune_dict(&d, KeyPos::Value);
+            let items: Vec<Value> = d
+                .items()
+                .iter()
+                .filter_map(|(k, v)| match v {
+                    Value::Obj(tok) => deref_token(&Value::Obj(tok.clone()))
+                        .map(|o| Value::Tuple(Gc::new(Tuple(vec![k.clone(), o])))),
+                    _ => None,
+                })
+                .collect();
+            Ok(Value::List(PyList::from_vec(items)))
+        }
+        (WVD, "get") => {
+            let k = arg(1).expect("key");
+            let default = arg(2).unwrap_or(Value::None);
+            match d.get(&k) {
+                Some(Value::Obj(tok)) => match crate::gcsupport::weakref_call(&tok) {
+                    Value::None => Ok(default),
+                    v => Ok(v),
+                },
+                _ => Ok(default),
+            }
+        }
+        (WVD, "setdefault") => {
+            let k = arg(1).expect("key");
+            let default = arg(2).unwrap_or(Value::None);
+            if let Some(Value::Obj(tok)) = d.get(&k) {
+                if let Value::None = crate::gcsupport::weakref_call(&tok) {
+                    // dead entry: CPython keeps it; we treat as present
+                    let _ = tok;
+                }
+                return Ok(crate::gcsupport::weakref_call(&tok));
+            }
+            let tok = make_token(&default)?;
+            let _ = d.set(k, tok);
+            Ok(default)
+        }
+        (WVD, "pop") => {
+            let k = arg(1).expect("key");
+            match d.pop(&k) {
+                Some(Value::Obj(tok)) => Ok(crate::gcsupport::weakref_call(&tok)),
+                Some(other) => Ok(other),
+                None => match arg(2) {
+                    Some(default) => Ok(default),
+                    None => Err(key_error(&k)),
+                },
+            }
+        }
+        (WVD, "update") => {
+            let src = arg(1).ok_or_else(|| raise("TypeError", "update needs an argument"))?;
+            let it = crate::builtins::iterable_of(&src)?;
+            for item in crate::iter::collect(&it) {
+                if let Value::Tuple(t) = item {
+                    if t.0.len() == 2 {
+                        let tok = make_token(&t.0[1])?;
+                        let _ = d.set(t.0[0].clone(), tok);
+                    }
+                }
+            }
+            Ok(Value::None)
+        }
+        (WVD, "clear") => {
+            for (k, _) in d.items() {
+                d.pop(&k);
+            }
+            Ok(Value::None)
+        }
+        (WVD, "copy") => {
+            let c = container_new(WVD);
+            let cd = container_data(&c).expect("data");
+            for (k, v) in d.items() {
+                let _ = cd.set(k.clone(), v.clone());
+            }
+            Ok(c)
+        }
+        (WVD, "prune") => {
+            prune_dict(&d, KeyPos::Value);
+            Ok(Value::None)
+        }
+        _ => Err(raise(
+            "AttributeError",
+            format!("'{cls}' object has no attribute '{op}'"),
+        )),
+    }
+}
+
+/// WeakSet surface: <data> is a real PySet of ref tokens.
+fn weakset_surface(self_v: &Value, op: &str, args: &[Value]) -> BResult {
+    let Some(set) = weakset_data(self_v) else {
+        return Err(raise("SystemError", "WeakSet without data"));
+    };
+    let arg = |n: usize| args.get(n).cloned();
+    // Prune dead tokens first (set ops hash+eq BY TARGET — see ap-obj).
+    let dead: Vec<Value> = set
+        .iter()
+        .filter(|t| token_target(t).is_some() && !token_alive(t))
+        .collect();
+    for t in dead {
+        set.pop_discard(&t);
+    }
+    match op {
+        "add" => {
+            let item = arg(1).ok_or_else(|| raise("TypeError", "add needs an item"))?;
+            let tok = make_token(&item)?;
+            set.add(tok).map_err(Flow::from_py)?;
+            Ok(Value::None)
+        }
+        "__contains__" => {
+            let item = arg(1).unwrap_or(Value::None);
+            match make_token(&item) {
+                Ok(tok) => Ok(Value::Bool(set.contains(&tok).unwrap_or(false))),
+                Err(_) => Ok(Value::Bool(false)), // unweakrefable -> not in
+            }
+        }
+        "__len__" => Ok(i(set.len() as i64)),
+        "__bool__" => Ok(Value::Bool(set.len() != 0)),
+        "__iter__" => {
+            let items: Vec<Value> = set.iter().filter_map(|t| deref_token(&t)).collect();
+            Ok(Value::List(PyList::from_vec(items)))
+        }
+        "discard" => {
+            if let Some(item) = arg(1) {
+                if let Ok(tok) = make_token(&item) {
+                    set.pop_discard(&tok);
+                }
+            }
+            Ok(Value::None)
+        }
+        "remove" => {
+            let item = arg(1).ok_or_else(|| raise("TypeError", "remove needs an item"))?;
+            let tok = make_token(&item)?;
+            if !set.contains(&tok).unwrap_or(false) {
+                return Err(key_error(&item));
+            }
+            set.pop_discard(&tok);
+            Ok(Value::None)
+        }
+        "pop" => {
+            let tok = set
+                .iter()
+                .next()
+                .ok_or_else(|| raise("KeyError", "'pop from empty WeakSet'"))?;
+            let out = deref_token(&tok).unwrap_or(tok.clone());
+            set.pop_discard(&tok);
+            Ok(out)
+        }
+        "clear" => {
+            for e in set.iter() {
+                set.pop_discard(&e);
+            }
+            Ok(Value::None)
+        }
+        "copy" => {
+            let c = container_new(WS);
+            if let Value::Obj(co) = &c {
+                let _ = co
+                    .attrs
+                    .borrow_mut()
+                    .set(s("<data>"), Value::Set(set.clone()));
+            }
+            Ok(c)
+        }
+        _ => Err(raise(
+            "AttributeError",
+            format!("'WeakSet' object has no attribute '{op}'"),
+        )),
+    }
+}
+
+/// WeakMethod(meth[, callback]): watches the BOUND METHOD's receiver. A call
+/// rebuilds the bound method while the receiver lives, None after (C-22).
+pub fn weakmethod_ctor(args: &[Value]) -> BResult {
+    let meth = args
+        .first()
+        .cloned()
+        .ok_or_else(|| raise("TypeError", "WeakMethod needs a method"))?;
+    let (recv, func, name) = match &meth {
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::BoundMethod => (
+            o.self_value.borrow().clone().unwrap_or(Value::None),
+            o.func.borrow().clone().unwrap_or(Value::None),
+            o.name.clone(),
+        ),
+        _ => {
+            return Err(raise(
+                "TypeError",
+                format!(
+                    "WeakMethod: expected a bound method, got {}",
+                    meth.type_name()
+                ),
+            ))
+        }
+    };
+    if matches!(recv, Value::None) {
+        return Err(raise("TypeError", "WeakMethod: unbound method"));
+    }
+    let target_addr = target_addr_of(&recv);
+    let token = PyObject::new(ap_obj::ObjKind::Opaque, "_weakmethod_token");
+    {
+        let mut tattrs = token.attrs.borrow_mut();
+        let _ = tattrs.set(s("<target_addr>"), i(target_addr as i64));
+        let _ = tattrs.set(s("<func>"), func);
+        let _ = tattrs.set(s("<name>"), s(name));
+    }
+    let callback = args.get(1).cloned();
+    ap_gc::weakref_add(ap_gc::WeakEntry {
+        target: target_addr,
+        token: Value::Obj(token.clone()),
+        callback,
+        dead: false,
+        fired: false,
+    });
+    Ok(Value::Obj(token))
+}
+
+/// WeakMethod token call: rebuild the bound method (receiver alive) or None.
+pub fn weakmethod_call(token: &Gc<PyObject>) -> Value {
+    let addr = token
+        .attrs
+        .borrow()
+        .get(&s("<target_addr>"))
+        .and_then(|v| v.as_int())
+        .and_then(|iv| iv.to_i64())
+        .map(|n| n.max(0) as usize)
+        .unwrap_or(0);
+    if addr == 0 || !ap_gc::weakref_alive(addr) {
+        return Value::None;
+    }
+    let Some(recv) = target_value_by_addr(addr) else {
+        return Value::None;
+    };
+    let func = token
+        .attrs
+        .borrow()
+        .get(&s("<func>"))
+        .unwrap_or(Value::None);
+    let name = match token.attrs.borrow().get(&s("<name>")) {
+        Some(Value::Str(x)) => x.as_str().to_string(),
+        _ => String::new(),
+    };
+    let m = PyObject::with_self(ap_obj::ObjKind::BoundMethod, name, recv);
+    *m.func.borrow_mut() = Some(func);
+    Value::Obj(m)
 }
 
 // ---------------------------------------------------------------------------

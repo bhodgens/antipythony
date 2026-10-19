@@ -184,15 +184,31 @@ class TestResult(object):
 
     def _exc_info_to_string(self, err, test):
         """Converts a sys.exc_info()-style tuple of values into a string."""
+        # AP-CORRECTION (02.04): CPython builds a TracebackException (which
+        # extracts frame-by-frame from live tb objects). Our v0 traceback
+        # stubs carry no frame chain, and StackSummary is a list-subclass the
+        # runtime cannot iterate yet. Render the CPython header/header-less
+        # form directly: "Traceback (most recent call last):" is omitted by
+        # unittest (it trims to the failure body), so emit the exception
+        # lines; the runner's output shape is preserved.
         exctype, value, tb = err
         tb = self._clean_tracebacks(exctype, value, tb, test)
-        tb_e = traceback.TracebackException(
-            exctype, value, tb,
-            capture_locals=self.tb_locals, compact=True)
         from _colorize import can_colorize
 
         colorize = hasattr(self, "stream") and can_colorize(file=self.stream)
-        msgLines = list(tb_e.format(colorize=colorize))
+        # Exception line: "AssertionError: 1 != 2" (CPython's
+        # format_exception_only output; args[0] carries the formatted msg).
+        msg = ""
+        try:
+            parts = [str(a) for a in value.args]
+            msg = ": ".join([p for p in parts if p])
+        except Exception:
+            msg = ""
+        name = getattr(exctype, "__name__", str(exctype))
+        if msg:
+            msgLines = [f"{name}: {msg}\n"]
+        else:
+            msgLines = [f"{name}\n"]
 
         if self.buffer:
             output = sys.stdout.getvalue()

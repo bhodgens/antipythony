@@ -103,10 +103,15 @@ use crate::value::Value;
 /// 02.04a fix pass: printf-style `%` formatting (`fmt % args`) — the surface
 /// _py_warnings and much of the stdlib rely on. Supports the common
 /// conversions (%s %r %d %i %u %f %F %e %E %g %G %x %X %o %c %%) with the
-/// `%-09.3f` flag/width/precision vocabulary. Mapping-key %(name)s is NOT
-/// supported (v0 gap).
+/// `%-09.3f` flag/width/precision vocabulary. Mapping-key %(name)s is
+/// supported when `args` is a single dict (02.04: argparse's action __str__).
 pub fn percent_format(fmt: &str, args: &[Value]) -> Result<Value, PyException> {
     use crate::value::Value;
+    // Mapping form: fmt % dict — %(key)s pulls named values.
+    let mapping: Option<crate::dict::PyDict> = match args {
+        [Value::Dict(d)] => Some((**d).clone()),
+        _ => None,
+    };
     let mut out = String::new();
     let mut arg_i = 0usize;
     let mut chars = fmt.chars().peekable();
@@ -172,6 +177,47 @@ pub fn percent_format(fmt: &str, args: &[Value]) -> Result<Value, PyException> {
         // length modifiers (h/l/L) — accepted and ignored
         while matches!(chars.peek(), Some('h') | Some('l') | Some('L')) {
             chars.next();
+        }
+        // Mapping-key form: `%(name)s` — pull the value from the dict arg.
+        // The dict stays the sole argument (arg_i not advanced).
+        if chars.peek() == Some(&'(') {
+            chars.next();
+            let mut key = String::new();
+            for ch in chars.by_ref() {
+                if ch == ')' {
+                    break;
+                }
+                key.push(ch);
+            }
+            let conv = chars.next().unwrap_or('s');
+            let Some(d) = &mapping else {
+                return Err(PyException::new("TypeError", "format requires a mapping"));
+            };
+            let arg = d
+                .get(&Value::Str(crate::PyString::new(key.clone())))
+                .unwrap_or(Value::None);
+            let rendered = match conv {
+                's' => match &arg {
+                    Value::Str(x) => x.as_str().to_string(),
+                    other => crate::ops::to_str(other)?,
+                },
+                'r' => crate::ops::repr(&arg)?,
+                'd' | 'i' | 'u' => {
+                    let n = int_of(&arg)?;
+                    n.to_string()
+                }
+                other => {
+                    return Err(PyException::new(
+                        "ValueError",
+                        format!(
+                            "unsupported format character '{}' (0x{:x})",
+                            other, other as u32
+                        ),
+                    ))
+                }
+            };
+            out.push_str(&rendered);
+            continue;
         }
         let conv = chars.next().unwrap_or('%');
         let arg = args.get(arg_i).cloned().unwrap_or(Value::None);
@@ -381,7 +427,8 @@ pub fn percent_format(fmt: &str, args: &[Value]) -> Result<Value, PyException> {
         };
         out.push_str(&padded);
     }
-    if arg_i < args.len() {
+    // Mapping form consumes the dict as a whole (arg_i stays 0).
+    if !mapping.is_some() && arg_i < args.len() {
         return Err(PyException::new(
             "TypeError",
             "not all arguments converted during string formatting",

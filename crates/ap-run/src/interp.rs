@@ -2182,6 +2182,22 @@ fn contains(a: &Value, b: &Value) -> Result<bool, Flow> {
                 Ok(v <= start && v > stop && (start - v) % (-step) == 0)
             }
         }
+        // 02.04 completion: weak containers answer `in` (prunes dead
+        // entries; unweakrefable probes are simply not members).
+        Value::Obj(o)
+            if o.kind == ap_obj::ObjKind::Opaque
+                && crate::gcsupport::is_weak_container(&o.name) =>
+        {
+            match crate::gcsupport::call_weakref(
+                &format!("{}.__contains__", o.name),
+                &[Value::Obj(o.clone()), a.clone()],
+                &[],
+            ) {
+                Some(Ok(v)) => Ok(v.is_truthy()),
+                Some(Err(f)) => Err(f),
+                None => Ok(false),
+            }
+        }
         other => Err(raise(
             "TypeError",
             format!("argument of type '{}' is not iterable", other.type_name()),
@@ -2412,6 +2428,17 @@ fn call_value_inner(
                     }
                     if o.name == "__ap_functools_nop__" {
                         return Ok(Value::None);
+                    }
+                    // 02.04: exc.with_traceback(tb) — v0 tracebacks are
+                    // stubs; the method returns the exception itself.
+                    if o.name == "__ap_with_traceback__" {
+                        let recv = o
+                            .slice_parts
+                            .borrow()
+                            .first()
+                            .cloned()
+                            .unwrap_or(Value::None);
+                        return Ok(recv);
                     }
                     // 02.04a fix pass (BUG-C): no-op RLock context protocol.
                     if o.name == "__ap_rlock_enter__" {
@@ -2884,6 +2911,21 @@ fn call_value_inner(
                 ap_obj::ObjKind::Opaque if o.name == "_weakref_token" => {
                     Ok(crate::gcsupport::weakref_call(o))
                 }
+                // 02.04 completion: WeakMethod token call -> the bound method
+                // while the receiver lives, None after (C-22).
+                ap_obj::ObjKind::Opaque if o.name == "_weakmethod_token" => {
+                    Ok(crate::gcsupport::weakmethod_call(o))
+                }
+                // 02.04: functools.cmp_to_key wrapper called on an item —
+                // park the item and return the SAME wrapper (CPython's K
+                // instances; the sort path unwraps via the parked cmp).
+                ap_obj::ObjKind::Opaque if o.name == "functools.cmp_to_key" => {
+                    let _ = o.attrs.borrow_mut().set(
+                        Value::Str(PyString::new("<obj>")),
+                        args.first().cloned().unwrap_or(Value::None),
+                    );
+                    Ok(f.clone())
+                }
                 // 02.04: weakref.finalize token called -> invoke once.
                 ap_obj::ObjKind::Opaque if o.name == "_finalize_token" => {
                     Ok(crate::gcsupport::finalize_call(o))
@@ -2966,28 +3008,18 @@ fn call_type_ctor(
             }
         }
     }
-    // 02.03b-fix: _weakref.ref(ob[, cb]) — the ref surface is a TYPE
-    // (importlib._bootstrap subclasses it: class KeyedRef(_weakref.ref));
-    // constructing one returns the opaque token (v0: never dereferenced).
-    if name == "ref" {
-        let token = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "_weakref_token");
-        if let Some(target) = args.first() {
-            let _ = token
-                .attrs
-                .borrow_mut()
-                .set(Value::Str(PyString::new("_ap_wrapped")), target.clone());
-        }
-        return Ok(Value::Obj(token));
+    // 02.04 completion: weak-container class calls construct the Opaque
+    // instances (the class VALUES live in the native weakref module ns).
+    if matches!(
+        name,
+        "WeakKeyDictionary" | "WeakValueDictionary" | "WeakSet"
+    ) {
+        return crate::gcsupport::call_weakref(name, args, kwargs)
+            .unwrap_or_else(|| Ok(Value::None));
     }
-    // 02.03b-fix: module(name) — importlib._bootstrap's _new_module does
-    // `type(sys)(name)`: a module TYPE call constructs a Module value.
-    if name == "module" {
-        let mname = match args.first() {
-            Some(n) => crate::builtins::py_str_of(n).unwrap_or_else(|_| "module".to_string()),
-            None => "module".to_string(),
-        };
-        let m = ap_obj::PyObject::new(ap_obj::ObjKind::Module, mname);
-        return Ok(Value::Obj(m));
+    if name == "WeakMethod" {
+        return crate::gcsupport::call_weakref(name, args, kwargs)
+            .unwrap_or_else(|| Ok(Value::None));
     }
     // Interned type objects double as the builtin callables (bool/str/int
     // ...); route class-protocol subjects through the 02.03 layer first.
@@ -2998,6 +3030,14 @@ fn call_type_ctor(
         if let Some(r) = class_protocol_builtin(interp, name, args, kwargs) {
             return r;
         }
+    }
+    // 02.03b-fix: _weakref.ref(ob[, cb]) — the ref surface is a TYPE
+    // (importlib._bootstrap subclasses it: class KeyedRef(_weakref.ref));
+    // constructing one returns the opaque token (v0: never dereferenced).
+    if name == "ref" {
+        // 02.04 completion: route through the gcsupport surface so weakref
+        // checking + WEAKREFS registration match the module-level ref().
+        return crate::gcsupport::call_weakref("ref", args, &[]).unwrap_or_else(|| Ok(Value::None));
     }
     const EXCS: &[&str] = &[
         "ValueError",
@@ -3100,29 +3140,42 @@ fn call_function(
     // nested) sees NO method context -> RuntimeError (c021).
     // Whether instantiate() staged a context for THIS call (the sentinel is
     // unconditional; the staged ctx pops with it).
-    let pushed_plain_ctx = interp.pending_super_ctx.borrow_mut().take();
-    interp.super_stack.borrow_mut().push((
-        std::rc::Rc::new(ap_obj::classes::TypeObject {
-            name: "__plain_fn__".to_string(),
-            qualname: String::new(),
-            bases: vec![],
-            mro: std::cell::RefCell::new(Vec::new()),
-            dict: ap_obj::dict::PyDict::new(),
-            flags: ap_obj::classes::TypeFlags::default(),
-            metaclass: std::cell::RefCell::new(None),
-            class_value: std::cell::RefCell::new(None),
-        }),
-        Value::None,
-        false,
-    ));
+    // 02.04: a GC auto-collect can fire INSIDE this window (dict alloc in
+    // the TypeObject literal below) and re-enter call_function through a
+    // weakref callback; a contended ctx borrow means an outer frame is
+    // staging — treat as no staged ctx (the outer frame consumes it).
+    let pushed_plain_ctx = interp
+        .pending_super_ctx
+        .try_borrow_mut()
+        .ok()
+        .and_then(|mut b| b.take());
+    // Build the sentinel BEFORE borrowing super_stack: the literal's dict
+    // alloc can trigger a GC auto-collect whose weakref callbacks re-enter
+    // call_function (which borrows super_stack).
+    let plain_sentinel = std::rc::Rc::new(ap_obj::classes::TypeObject {
+        name: "__plain_fn__".to_string(),
+        qualname: String::new(),
+        bases: vec![],
+        mro: std::cell::RefCell::new(Vec::new()),
+        dict: ap_obj::dict::PyDict::new(),
+        flags: ap_obj::classes::TypeFlags::default(),
+        metaclass: std::cell::RefCell::new(None),
+        class_value: std::cell::RefCell::new(None),
+    });
+    interp
+        .super_stack
+        .borrow_mut()
+        .push((plain_sentinel, Value::None, false));
     if let Some(ctx) = pushed_plain_ctx.clone() {
         interp.super_stack.borrow_mut().push(ctx);
     }
     // instantiate() staged a __new__/__init__ context for THIS call; it
     // sits ABOVE the sentinel, so super() sees the method context, and the
     // sentinel still guards plain nested frames.
-    if let Some(ctx) = interp.pending_super_ctx.borrow_mut().take() {
-        interp.super_stack.borrow_mut().push(ctx);
+    if let Some(mut b) = interp.pending_super_ctx.try_borrow_mut().ok() {
+        if let Some(ctx) = b.take() {
+            interp.super_stack.borrow_mut().push(ctx);
+        }
     }
 
     // 02.04a fix pass (BUG-A follow-on): `lambda: (yield)` is a GENERATOR
@@ -3360,6 +3413,13 @@ fn bind_params(
     let mut my_cells: HashMap<String, CellSlot> = HashMap::new();
     let mut free_cells: HashMap<String, CellSlot> = HashMap::new();
     let reg = current_registry(interp);
+    if std::env::var("APX_CLOSURE_DEBUG").is_ok() {
+        eprintln!(
+            "BIND scope={} known={}",
+            entry.scope_path,
+            reg.scope_of(&entry.scope_path).is_some()
+        );
+    }
     if let Some(scope) = reg.scope_of(&entry.scope_path) {
         for name in &scope.cells {
             my_cells.insert(name.clone(), Rc::new(RefCell::new(None)));
@@ -3370,16 +3430,37 @@ fn bind_params(
         // maker read an empty cell after the call returns. Rebind the param
         // slot into the cell, sharing storage.
         for name in &scope.cells {
-            if let Some(Loc::Slot(slot)) = locals.get(name) {
-                let cell = my_cells.get_mut(name).unwrap();
-                *cell.borrow_mut() = slot.borrow().clone();
-                locals.insert(name.clone(), Loc::CellSlot(cell.clone()));
+            match locals.get(name) {
+                Some(Loc::Slot(slot)) => {
+                    let cell = my_cells.get_mut(name).unwrap();
+                    *cell.borrow_mut() = slot.borrow().clone();
+                    locals.insert(name.clone(), Loc::CellSlot(cell.clone()));
+                }
+                // 02.04: forward-classified cells that are NOT bound yet
+                // (assigned later in the body — enum.EnumType.__new__'s
+                // `enum_class`) must still alias the cell, or later stores
+                // land in a fresh plain slot and nested-scope readers (comps,
+                // inner defs) see an empty cell.
+                None => {
+                    let cell = my_cells.get_mut(name).unwrap();
+                    locals.insert(name.clone(), Loc::CellSlot(cell.clone()));
+                }
+                Some(Loc::CellSlot(_)) => {}
             }
         }
         let defining_slot = o
             .closure_slot
             .borrow()
             .and_then(|id| interp.defining_frames.borrow().get(&(id as u32)).cloned());
+        if std::env::var("APX_CLOSURE_DEBUG").is_ok() {
+            eprintln!(
+                "CLOSURE scope={} frees={:?} closure_slot={:?} defining={}",
+                entry.scope_path,
+                scope.frees,
+                o.closure_slot.borrow(),
+                defining_slot.is_some()
+            );
+        }
         if let Some(defining) = defining_slot {
             // NOTE: `nonlocal`-declared names resolve as cells in this scope
             // too (CPython keeps them in co_freevars), but the frontend
@@ -3983,6 +4064,11 @@ fn pull_iter(interp: &Rc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> {
         let its = interp.iterators.borrow();
         its.get(&id).and_then(|it| it.next())
     };
+    if r.is_none() {
+        // 02.04: a finished iterator's Seq state pins every value it ever
+        // yielded (genexpr snapshots) — a permanent root set. Drop it.
+        interp.iterators.borrow_mut().remove(&id);
+    }
     match r {
         Some(v) => Ok(Some(v)),
         None => {
@@ -5575,6 +5661,40 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
         }
     }
     // 02.08-lite: native-type instance attrs/methods + structured exc fields.
+    // 02.04 completion: weakref.proxy — transparent attribute forwarding to
+    // the live target; a dead target raises ReferenceError (C-22). This arm
+    // runs BEFORE native_attr so the proxy object never answers directly.
+    if let Value::Obj(o) = obj {
+        if o.kind == ap_obj::ObjKind::Opaque && o.name == "_weakref_proxy" {
+            let addr = o
+                .attrs
+                .borrow()
+                .get(&Value::Str(PyString::new("<target_addr>")))
+                .and_then(|v| v.as_int())
+                .and_then(|iv| iv.to_i64())
+                .map(|n| n.max(0) as usize)
+                .unwrap_or(0);
+            if addr == 0 || !ap_gc::weakref_alive(addr) {
+                return Err(raise(
+                    "ReferenceError",
+                    "weakly-referenced object no longer exists",
+                ));
+            }
+            let Some(target) = crate::gcsupport::target_value_by_addr(addr) else {
+                return Err(raise(
+                    "ReferenceError",
+                    "weakly-referenced object no longer exists",
+                ));
+            };
+            // Dunders keep builtin semantics (repr/str/class handled by the
+            // generic paths); everything else forwards to the target.
+            if name.starts_with("__") && name.ends_with("__") {
+                // fall through to the generic surfaces below
+            } else {
+                return crate::classes::attr_get_protocol(_interp, &target, name).map(Some);
+            }
+        }
+    }
     if let Some(v) = builtins_modules::native_attr(obj, name) {
         return Ok(Some(v));
     }
@@ -5989,6 +6109,9 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                     ap_obj::ObjKind::Type,
                     o.name.clone(),
                 )))),
+                // 02.04: unittest.result._clean_tracebacks walks the
+                // exception chain (__cause__/__context__/__traceback__).
+                "__cause__" | "__context__" | "__suppress_context__" => Ok(Some(Value::None)),
                 // 02.04a (interp bug #6): exceptions carry __traceback__ —
                 // types.py probes it at import (TracebackType/FrameType).
                 // Stub chain: one tb object + tb_frame namespace.
@@ -6030,6 +6153,26 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                         ap_obj::ObjKind::BuiltinFn,
                         "__object_virtual_init__",
                     ))));
+                }
+                // 02.04: exception-chain dunders on real exception-class
+                // instances (unittest.result._clean_tracebacks walks
+                // __cause__/__context__; raise-from stores __cause__).
+                if o.kind == ap_obj::ObjKind::UserInstance
+                    && matches!(name, "__cause__" | "__context__" | "__suppress_context__")
+                {
+                    return Ok(Some(Value::None));
+                }
+                if o.kind == ap_obj::ObjKind::UserInstance && name == "__traceback__" {
+                    return Ok(Some(Value::None));
+                }
+                // 02.04: exc.with_traceback(None) (assertRaises stores the
+                // exception traceback-free) — v0 tracebacks are stubs, so
+                // the method returns the exception itself.
+                if o.kind == ap_obj::ObjKind::UserInstance && name == "with_traceback" {
+                    let m =
+                        ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "__ap_with_traceback__");
+                    *m.slice_parts.borrow_mut() = vec![obj.clone()];
+                    return Ok(Some(Value::Obj(m)));
                 }
                 // 02.03b: dict-method surface on dict-derived instances
                 // (EnumDict.setdefault/pop/get/keys/...) binds the BACKING
@@ -6117,6 +6260,9 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                     ap_obj::ObjKind::BuiltinFn,
                     "type.__new__",
                 )))),
+                // 02.04: inspect.isabstract probes type.__flags__ (int bit
+                // mask); 0 = no TPFLAGS — every v1 type is concrete.
+                "__flags__" => Ok(Some(Value::Int(ap_obj::Int::from_i64(0)))),
                 // 02.03b-fix: os.PathLike ABC surface (CPython's os.py builds
                 // it from _collections_abc.ABC): register(subclass) ->
                 // subclass; isinstance(x, PathLike) checks __fspath__.

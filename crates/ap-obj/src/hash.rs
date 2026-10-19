@@ -65,7 +65,12 @@ pub fn py_hash(v: &Value) -> Result<i64, PyException> {
         Value::Ellipsis => Ok(crate::ELLIPSIS_HASH),
         // Generic objects hash by identity (default object.__hash__):
         // pointer-based, process-lifetime stable, never -1.
+        // Exception: weakref tokens hash BY TARGET (CPython ref semantics —
+        // refs to the same object dedupe in sets/dicts; WeakSet/WKD keys).
         Value::Obj(o) => {
+            if let Some(t) = crate::value::weakref_target_addr(o) {
+                return Ok(hash_i64(t as i64));
+            }
             let h = crate::value::addr_of(o) as i64;
             Ok(if h == -1 { -2 } else { h })
         }

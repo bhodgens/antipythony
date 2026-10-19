@@ -31,6 +31,44 @@ fn one<'a, T>(args: &'a [T], name: &str) -> Result<&'a T, Flow> {
 /// rides the value layer. User-instance __str__ dispatches through
 /// methods (call sites that need it use the executor str path).
 pub fn py_str_of(v: &Value) -> Result<String, ap_obj::exc::PyException> {
+    // 02.04: user __str__ dispatches BEFORE the default (CPython: str(x)
+    // calls type(x).__str__; TestCase.__str__ is the canonical consumer).
+    if let Some(interp) = crate::builtins_modules::current_interp() {
+        if matches!(
+            v,
+            Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance
+        ) {
+            if let Some((f, owner)) = crate::classes::special_lookup(&interp, v, "__str__") {
+                // The object-root default renders the default repr — skip it
+                // so Exception instances keep their args-text str().
+                // object/Exception-chain __str__ is the C-level renderer
+                // (args text); our v0 special_lookup synthesizes a marker
+                // for it — skip so the legacy args-text path below answers.
+                let owner_is_object = matches!(
+                    owner.name.as_str(),
+                    "object" | "Exception" | "BaseException"
+                );
+                if !owner_is_object {
+                    if let Value::Obj(fo) = &f {
+                        if fo.kind == ap_obj::ObjKind::Function {
+                            let r = crate::interp::call_value_pub(&interp, &f, &[v.clone()], &[])
+                                .map_err(|f| match f {
+                                Flow::Raise(e) => ap_obj::exc::PyException::new(
+                                    Box::leak(e.class.clone().into_boxed_str()),
+                                    e.args
+                                        .first()
+                                        .map(|a| crate::builtins::py_str_of(a).unwrap_or_default())
+                                        .unwrap_or_default(),
+                                ),
+                                _ => ap_obj::exc::PyException::new("SystemError", ""),
+                            })?;
+                            return crate::builtins::py_str_of(&r);
+                        }
+                    }
+                }
+            }
+        }
+    }
     if let Value::Obj(o) = v {
         // 02.08-lite native types carry a precomputed repr (struct_time etc).
         if let Some(txt) = &*o.repr_text.borrow() {
@@ -119,6 +157,22 @@ pub fn builtin_len(args: &[Value]) -> BResult {
         Value::Dict(d) => d.len(),
         Value::Set(s) | Value::Frozen(s) => s.len(),
         Value::Obj(o) => match o.kind {
+            ap_obj::ObjKind::Opaque if crate::gcsupport::is_weak_container(&o.name) => {
+                // 02.04 completion: weak containers report the LIVE count.
+                match crate::gcsupport::call_weakref(
+                    &format!("{}.__len__", o.name),
+                    &[Value::Obj(o.clone())],
+                    &[],
+                ) {
+                    Some(Ok(v)) => v.as_int().and_then(|n| n.to_i64()).unwrap_or(0).max(0) as usize,
+                    _ => {
+                        return Err(raise(
+                            "TypeError",
+                            format!("object of type '{}' has no len()", v.type_name()),
+                        ))
+                    }
+                }
+            }
             ap_obj::ObjKind::Opaque => {
                 // 02.08-lite native types (struct_time, uname_result) expose
                 // their field tuple under the <values> key.
@@ -333,6 +387,17 @@ fn parse_float_str(text: &str) -> BResult {
 
 /// bool(v): truthiness; with no args False.
 pub fn builtin_bool(args: &[Value]) -> BResult {
+    if let Some(Value::Obj(o)) = args.first() {
+        // 02.04 completion: weak containers are falsy when empty.
+        if o.kind == ap_obj::ObjKind::Opaque && crate::gcsupport::is_weak_container(&o.name) {
+            return crate::gcsupport::call_weakref(
+                &format!("{}.__bool__", o.name),
+                &[Value::Obj(o.clone())],
+                &[],
+            )
+            .unwrap_or_else(|| Ok(Value::Bool(true)));
+        }
+    }
     Ok(Value::Bool(match args.first() {
         None => false,
         Some(v) => v.is_truthy(),
@@ -682,6 +747,16 @@ fn check_isinstance(v: &Value, t: &Value) -> Result<Value, Flow> {
 
 /// Name-based type match with the bool⊂int special case.
 pub fn type_matches(v: &Value, want: &str) -> bool {
+    // 02.04 completion: proxies are instances of ProxyType/CallableProxyType
+    // (s034: isinstance(proxy, weakref.ProxyTypes)).
+    if let Value::Obj(o) = v {
+        if o.kind == ap_obj::ObjKind::Opaque
+            && o.name == "_weakref_proxy"
+            && matches!(want, "ProxyType" | "CallableProxyType" | "object")
+        {
+            return true;
+        }
+    }
     match (v, want) {
         (_, "object") => true,
         (Value::Int(_), "int") => true,
@@ -1363,10 +1438,15 @@ pub fn builtin_sorted(interp: &Interpreter, args: &[Value], kwargs: &[(String, V
             let key = crate::interp::call_value_pub(&interp.rc(), &f, &[item.clone()], &[])?;
             decorated.push((key, item));
         }
-        decorated.sort_by(|a, b| {
-            ap_obj::dict::values_cmp(&a.0, &b.0).unwrap_or(std::cmp::Ordering::Equal)
-        });
-        items = decorated.into_iter().map(|(_, v)| v).collect();
+        // 02.04: functools.cmp_to_key wrappers order via the parked cmp.
+        if let Some(r) = crate::builtins_modules::sort_by_cmp_wrappers(&decorated) {
+            items = r?;
+        } else {
+            decorated.sort_by(|a, b| {
+                ap_obj::dict::values_cmp(&a.0, &b.0).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            items = decorated.into_iter().map(|(_, v)| v).collect();
+        }
     } else {
         items.sort_by(|a, b| ap_obj::dict::values_cmp(a, b).unwrap_or(std::cmp::Ordering::Equal));
     }
@@ -2156,6 +2236,29 @@ pub fn builtin_dir(interp: &Interpreter, args: &[Value]) -> BResult {
 /// Per-type dir() surface (v0 approximation: enough for the corpus's
 /// `len(dir(int)) > 10` / `"append" in dir(list)` shape checks).
 fn dir_surface(v: &Value) -> Vec<String> {
+    // 02.04: user classes list their MRO dicts (unittest.getTestCaseNames
+    // discovers test methods through dir()).
+    if let Value::Obj(o) = v {
+        if o.kind == ap_obj::ObjKind::UserClass {
+            let mut names: Vec<String> = Vec::new();
+            if let Some(t) = o.class_ref.borrow().clone() {
+                for m in t.mro.borrow().iter() {
+                    for (k, _) in m.dict.items() {
+                        if let Value::Str(x) = k {
+                            names.push(x.as_str().to_string());
+                        }
+                    }
+                }
+            }
+            let attrs = o.attrs.borrow();
+            for (k, _) in attrs.items() {
+                if let Value::Str(x) = k {
+                    names.push(x.as_str().to_string());
+                }
+            }
+            return names;
+        }
+    }
     match v {
         Value::Obj(o)
             if (o.kind == ap_obj::ObjKind::BuiltinFn || o.kind == ap_obj::ObjKind::Type)
@@ -2298,6 +2401,18 @@ pub fn builtin_id(args: &[Value]) -> BResult {
 pub fn builtin_callable(args: &[Value]) -> BResult {
     let v = one(args, "callable")?;
     let c = match v {
+        // 02.04: instances whose class defines __call__ are callable
+        // (unittest suite.addTest probes callable(test)).
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
+            let has_call = o
+                .type_ref
+                .borrow()
+                .as_ref()
+                .and_then(|w| w.upgrade())
+                .map(|t| t.lookup("__call__").is_some())
+                .unwrap_or(false);
+            has_call
+        }
         Value::Obj(o) => matches!(
             o.kind,
             ap_obj::ObjKind::BuiltinFn

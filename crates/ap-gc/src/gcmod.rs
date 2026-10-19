@@ -261,9 +261,12 @@ fn edges_of(v: &Value, registry: &HashMap<usize, Tracked>, out: &mut Vec<usize>)
             // attrs dict (identity per object) + payload values.
             // Contention pre-check: if ANY field is borrowed elsewhere
             // (heap mid-mutation), abort this scan cycle via the flag.
-            if o.attrs.try_borrow().is_err() || o.func.try_borrow().is_err()
-                || o.self_value.try_borrow().is_err() || o.cause.try_borrow().is_err()
-                || o.context.try_borrow().is_err() || o.dunders.try_borrow().is_err()
+            if o.attrs.try_borrow().is_err()
+                || o.func.try_borrow().is_err()
+                || o.self_value.try_borrow().is_err()
+                || o.cause.try_borrow().is_err()
+                || o.context.try_borrow().is_err()
+                || o.dunders.try_borrow().is_err()
             {
                 SCAN_CONTENDED.with(|c| c.set(true));
                 return;
@@ -419,7 +422,9 @@ fn mark_reachable(
             .count();
         eprintln!(
             "GC ROOTS: root_hits={root_src} sc_seeds={sc_seeds} sys_modules={}",
-            weakbridge::sys_modules_values().map(|v| v.len()).unwrap_or(0)
+            weakbridge::sys_modules_values()
+                .map(|v| v.len())
+                .unwrap_or(0)
         );
     }
     for v in &root_vals {
@@ -469,6 +474,12 @@ thread_local! {
 /// (CPython's gc.collect() return: OBJECTS, not cycles — gc011 pins
 /// `found >= 10` on a 10-node cycle).
 pub fn collect() -> usize {
+    collect_gen(2)
+}
+
+/// collect(generation): the generation rides the callbacks info dict
+/// (gc006: collect(0)/collect(1) report the REQUESTED generation).
+pub fn collect_gen(generation: usize) -> usize {
     let _guard = weakbridge::CollectGuard::new();
 
     // 1. Internal-edge counts + reachable set. The registry borrow is held
@@ -525,7 +536,7 @@ pub fn collect() -> usize {
     //    rose during the call — someone stored it). Objects whose count is
     //    unchanged drop normally; the once-only guard lives in
     //    FINALIZED_ADDRS so a later sweep never re-fires them.
-    run_callbacks("start", garbage.len());
+    run_callbacks_gen("start", garbage.len(), generation);
     let mut truly_resurrected: HashSet<usize> = HashSet::new();
     let already = FINALIZED_ADDRS.with(|r| r.borrow().clone());
     for (addr, v) in &garbage {
@@ -539,7 +550,7 @@ pub fn collect() -> usize {
             FINALIZED_ADDRS.with(|r| r.borrow_mut().insert(*addr));
         }
     }
-    run_callbacks("stop", garbage.len());
+    run_callbacks_gen("stop", garbage.len(), generation);
 
     // 4. Weakrefs: flip dead targets, notify ap-run (callbacks fire there).
     REGISTRY.with(|r| sweep_weakrefs(&r.borrow()));
@@ -567,6 +578,8 @@ pub fn collect() -> usize {
             .retain(|a, _| reachable.contains(a) || truly_resurrected.contains(a))
     });
 
+    // gc016: get_count()[0] reads 0 right after a collection.
+    ALLOC_SINCE.with(|c| c.set(0));
     garbage.len()
 }
 
@@ -584,6 +597,10 @@ fn has_del(v: &Value) -> bool {
 }
 
 fn run_callbacks(phase: &str, collected: usize) {
+    run_callbacks_gen(phase, collected, 2)
+}
+
+fn run_callbacks_gen(phase: &str, collected: usize, generation: usize) {
     let cbs = callbacks_snapshot();
     if cbs.is_empty() {
         return;
@@ -595,7 +612,7 @@ fn run_callbacks(phase: &str, collected: usize) {
     );
     let _ = info.set(
         Value::Str(ap_obj::value::PyString::new("generation")),
-        Value::Int(ap_obj::Int::from_i64(2)),
+        Value::Int(ap_obj::Int::from_i64(generation as i64)),
     );
     let _ = info.set(
         Value::Str(ap_obj::value::PyString::new("uncollectable")),
@@ -689,6 +706,29 @@ pub fn is_tracked(v: &Value) -> bool {
 /// Weakref liveness for the ap-run weakref surface.
 pub fn weakref_alive(target_addr: usize) -> bool {
     REGISTRY.with(|r| r.borrow().contains_key(&target_addr))
+}
+
+/// Number of weakref entries watching `target_addr` (dead ones included —
+/// CPython's getweakrefcount counts the object's weakref list, which keeps
+/// dead refs until their callbacks clear them).
+pub fn weakref_count_for(target_addr: usize) -> usize {
+    WEAKREFS.with(|w| {
+        w.borrow()
+            .iter()
+            .filter(|e| e.target == target_addr)
+            .count()
+    })
+}
+
+/// The ref tokens watching `target_addr` (weakref.getweakrefs projection).
+pub fn weakref_tokens_for(target_addr: usize) -> Vec<Value> {
+    WEAKREFS.with(|w| {
+        w.borrow()
+            .iter()
+            .filter(|e| e.target == target_addr)
+            .map(|e| e.token.clone())
+            .collect()
+    })
 }
 
 /// Register a weakref entry (ap-run owns token/callback semantics).
