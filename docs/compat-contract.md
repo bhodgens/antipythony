@@ -575,8 +575,9 @@ dropped side effects across an OSR/deopt boundary).
 | D2 | v1 refuses C-extension imports at compile time instead of loading them | C-06..C-11 | Positive test: refusal with stable diagnostic; no partial-module state observable |
 | D3 | Refcount-introspection APIs are corpus-prohibited (presence/absence not gated) | C-19 | Lint + harness rejection; no conformance case may call them |
 | D4 | wasm mode has no tier-1 in v1 (timing only) | C-31 | Excluded from corpus by construction (no perf assertions in conformance cases) |
+| D5 | `re` matching aborts with `re.error("ap: matching step limit exceeded")` after 4M atomic steps; CPython's backtracker instead runs unboundedly (catastrophic patterns like `(a+)+b` on `"a"*22` complete in CPython, raise here) | C-01, C-02 | No corpus case may rely on completing catastrophic-backtracking patterns; the abort is a stable diagnostic |
 
-No other divergence exists. Anything not in D1–D4 MUST be byte-identical to the
+No other divergence exists. Anything not in D1–D5 MUST be byte-identical to the
 reference on the three channels (C-01, C-02, C-24, C-27).
 
 ## 10. Contract versioning and evolution
