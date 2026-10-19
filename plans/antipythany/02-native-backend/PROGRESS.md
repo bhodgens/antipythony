@@ -678,3 +678,11 @@
   multiline $, groupref-in-repeat, template errors, dot/newline).
 - NOT COMMITTED per protocol. Sibling-agent files touched by their own
   leaves (gcmod.rs finalizer ordering, t08 bench_report) left untouched.
+
+## Leaf 02.08-full p2 - re engine - COMPLETE (committed 1ebdf45)
+- sre.rs ~2.6k lines: recursive-descent parser -> AST -> CPS backtracker.
+  Rust regex crate REJECTED (DFA semantics differ -> byte-exact impossible).
+- Full scope green: quantifiers incl. possessive/atomic, backrefs, named
+  groups, lookarounds, flags, match objects, error texts; 42 differential
+  probes (289 rust total); stdlib 17/48 -> 20/48 (s010/s011 flipped).
+- fmt clean; corpus held elsewhere.
