@@ -819,6 +819,11 @@ impl Parser {
                         if n == 0 {
                             return Err(self.err("bad group number", name.len() + 1));
                         }
+                        // CPython: a conditional group ref to a nonexistent
+                        // group is 'invalid group reference N at position P'
+                        // (P = the first digit). Deferred check against the
+                        // final group count (same machinery as \N refs).
+                        self.pending_backrefs.push((n, self.pos - name.len() - 1));
                         n
                     } else {
                         // Non-numeric: must be a valid identifier, else
@@ -1018,7 +1023,7 @@ impl Parser {
             match self.bump() {
                 None => {
                     if name.is_empty() {
-                        return Err(self.err(&format!("missing {}", term), 0));
+                        return Err(self.err("missing group name", 0));
                     }
                     return Err(
                         self.err(&format!("missing {}, unterminated name", term), name.len())
@@ -1026,7 +1031,7 @@ impl Parser {
                 }
                 Some(c) if c == term => {
                     if name.is_empty() {
-                        return Err(self.err(&format!("missing {}", term), 1));
+                        return Err(self.err("missing group name", 1));
                     }
                     // CPython: group names must be valid Python identifiers
                     // (sre_parse: "bad character in group name %a").
@@ -1130,7 +1135,7 @@ impl Parser {
                 let name = self.read_name('}', false)?;
                 let c = unicodedata_lookup(&name).ok_or_else(|| {
                     self.err(
-                        &format!("undefined character name {:?}", name),
+                        &format!("undefined character name '{}'", name),
                         name.len() + 4,
                     )
                 })?;

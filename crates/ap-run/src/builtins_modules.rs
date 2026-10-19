@@ -1559,7 +1559,12 @@ pub fn re_dispatch(fname: &str, args: &[Value], kwargs: &[(String, Value)]) -> B
             let flag_slot = match fname {
                 "compile" => 1,
                 "match" | "fullmatch" | "search" | "findall" | "finditer" => 2,
-                "sub" | "subn" | "split" => 3,
+                // CPython module-level signatures: sub/subn(pattern, repl,
+                // string, count=0, flags=0) — flags is the FIFTH positional
+                // (slot 4); split(pattern, string, maxsplit=0, flags=0) —
+                // flags is the FOURTH (slot 3).
+                "sub" | "subn" => 4,
+                "split" => 3,
                 _ => 1,
             };
             // Bytes patterns decode as latin-1 (CPython Tokenizer) and
