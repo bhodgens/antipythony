@@ -52,6 +52,25 @@ write to it (merge, never overwrite) after each leaf commits.
   (bench_report.json staged by sibling Plan 02 agent - untracking would
   collide), 04/* (await Wave A/B settle + re engine stable).
 
+- 2026-10-20 Wave C REVIEWED + COMMITTED: 1bd757d (05.01 clap), 0801ba5
+  (00.02 followup), 0137c64 (01.01 ceiling 74 + pytest discovery),
+  5de2caa (04.01+04.02 fuzz - FOUND 9 engine bugs, routed to Plan 02),
+  12fabd1 (shim removal + ceiling wiring by orchestrator).
+- 2026-10-20 Wave D dispatched (deleg_ce51264f) + REVIEWED + COMMITTED:
+  846f377 + 22e73e8 (05.02 seam bin + T-01 flip: 113 real runs / 25
+  known-fail; F-3 fixture bug fixed by orchestrator), 5b39f29 (03.02
+  stdlib-provenance + 05.04 cli-docs; 3 UNDECLARED vendored deviations
+  discovered), 6c899b1 (05.03 rustdoc gate), e899c9e (04.03 nightly
+  fuzz), a2da3a4 (orchestrator CI wiring: provenance + cargo-doc +
+  cli-docs gates; fast-lints python pinned 3.14.7).
+  Orchestrator notes: (1) first flip attempt used xfail(strict=True) on
+  passing tests - wrong direction (strict-xfail-on-green = XPASS fail);
+  corrected to marker-removal, matching ledger d79508d. (2) clippy -D
+  warnings measured 49 errors worktree-wide - strict flip stays a
+  burn-down item, NOT flipped. (3) 05.02 F-1/F-2 = Plan 02 product
+  surface (verify-stage placement rejection, ruff-vs-CPython column
+  drift, two suites' mutual py2_print pin disagreement) - relay.
+
 ## Open decisions
 
 1. setup-python@v5 "3.14" runner availability unverified (master.md

@@ -94,10 +94,9 @@ a code leaf); 00/04 writes the recommended settings doc for the human.
 - Mutation testing (cargo-mutants): review says revisit when 02.05 adds JIT
   paths goldens under-exercise. No leaf. Entry lives here.
 - mdBook deploy target: GitHub Pages; hold until docs settle post-Plan 03.
-- `setup-python@v5 python-version: "3.14"` availability on the account's
-  runner tier was NOT verified by the review; 00/01 step 0 verifies it and
-  falls back to a source-build or astral-sh/setup-uv + managed-python recipe
-  if absent (record which in PROGRESS.md).
+- RESOLVED (00.01 step 0, 2026-10-19): setup-python@v5 resolves "3.14" GA
+  natively (actions/python-versions manifest ships 3.14.6-3.14.8 linux).
+  fast-lints pins "3.14.7" for the 03.02 upstream-sha manifest (a2da3a4).
 
 ## Completion tracking
 
@@ -109,23 +108,23 @@ Updated by the orchestrator after each leaf review. All leaves NOT STARTED.
 | 00.02 reference discovery + AP_REQUIRE_REFERENCE | COMMITTED (7c8358d) |
 | 00.03 conformance matrix jobs | COMMITTED (a881906) - remote green pending push |
 | 00.04 branch-protection doc | NOT STARTED |
-| 01.01 XPASS ceiling gate | DISPATCHED (Wave C sa-1) |
-| 01.02 ledger burn-down (ongoing) | NOT STARTED |
+| 01.01 XPASS ceiling gate | COMMITTED (0137c64) - ceiling 74 |
+| 01.02 ledger burn-down (ongoing) | IN PROGRESS - T-01 seam flip 22e73e8 |
 | 01.03 ap-gc unit tests | COMMITTED (3635a6f) - 23 tests |
 | 01.04 xtask notices tests | COMMITTED (1c16009) - 8 tests |
 | 01.05 bench trend-only | NOT STARTED |
 | 02.01 workspace.lints + clippy gate | COMMITTED (4c8d08b) - CI -D warnings flip pending |
 | 02.02 importer segment guard | COMMITTED (6dae48c) |
 | 03.01 golden .meta provenance | COMMITTED (8db313c) - 232 metas |
-| 03.02 stdlib-provenance xtask | NOT STARTED |
+| 03.02 stdlib-provenance xtask | COMMITTED (5b39f29) + CI-wired a2da3a4 |
 | 03.03 AGENTS.md hygiene + hooks note | COMMITTED (6b67db0) |
-| 04.01 proptest re differential | DISPATCHED (Wave C sa-2) |
-| 04.02 proptest repr differential | DISPATCHED (Wave C sa-3) |
-| 04.03 nightly fuzz workflow | NOT STARTED |
-| 05.01 clap migration (4 bins) | DISPATCHED (Wave C sa-0) |
-| 05.02 ap-parse-check seam bin | NOT STARTED |
-| 05.03 rustdoc gate + missing_docs surfaces | NOT STARTED |
-| 05.04 generated CLI reference | NOT STARTED |
+| 04.01 proptest re differential | COMMITTED (5de2caa) - RF-1..7 routed to Plan 02 |
+| 04.02 proptest repr differential | COMMITTED (5de2caa) - F0402-1/2 routed |
+| 04.03 nightly fuzz workflow | COMMITTED (e899c9e) |
+| 05.01 clap migration (4 bins) | COMMITTED (1bd757d) |
+| 05.02 ap-parse-check seam bin | COMMITTED (846f377 bin + 22e73e8 T-01 flip) |
+| 05.03 rustdoc gate + missing_docs surfaces | COMMITTED (6c899b1) - ap-run via 05.03b |
+| 05.04 generated CLI reference | COMMITTED (5b39f29) + CI-wired a2da3a4 |
 | 05.05 mdBook site | NOT STARTED |
 | 06.01 builtins_modules.rs decomposition | NOT STARTED |
 | 06.02 interp.rs decomposition | NOT STARTED |
