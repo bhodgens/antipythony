@@ -107,3 +107,120 @@ pub(crate) fn fire_dead_weakrefs() {
         f();
     }
 }
+
+#[cfg(test)]
+mod unit_tests {
+    //! Leaf 01.03 (robustness-ci): pins the weakbridge global-state seam —
+    //! the stated risk of this module is the thread_local BRIDGE + the
+    //! re-entrancy guard. ap-gc has no ap-run dependency, so these are the
+    //! only tests that can observe bridge call ORDERING without the
+    //! interpreter.
+
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // Referenced directly (not captured) inside the bridge fn pointers.
+    static LOG_C: AtomicUsize = AtomicUsize::new(0);
+
+    #[test]
+    fn collect_guard_is_thread_local_and_restores_on_drop() {
+        // INVARIANT: the re-entrancy guard flips on construction and clears
+        // on drop, per-thread (a `__del__` that allocates must not re-enter
+        // collect()). suppress_registration() mirrors it — ap-obj's gate
+        // skips mid-sweep registration (weakbridge doc header).
+        assert!(!in_collect());
+        assert!(!suppress_registration());
+        {
+            let _g = CollectGuard::new();
+            assert!(in_collect());
+            assert!(suppress_registration());
+        }
+        assert!(!in_collect());
+        let g = CollectGuard::new();
+        assert!(in_collect());
+        drop(g);
+        assert!(!in_collect());
+    }
+
+    #[test]
+    fn nested_guards_clear_the_flag_at_inner_drop() {
+        // KNOWN FOOTGUN pinned (not asserted as desired behavior — gap
+        // list): Drop unconditionally CLEARS, so an inner guard exiting
+        // inside an outer collection window resets the flag early and
+        // re-enables registration mid-pass. Safe today because nothing
+        // nests guards; the MMTk swap must revisit this.
+        let outer = CollectGuard::new();
+        {
+            let inner = CollectGuard::new();
+            drop(inner);
+            assert!(
+                !in_collect(),
+                "documented footgun: inner guard drop clears the OUTER window"
+            );
+        }
+        drop(outer);
+    }
+
+    #[test]
+    fn bridge_install_and_dispatch_order() {
+        // INVARIANT: set_bridge installs all five seams at once; every
+        // accessor dispatches exactly the installed fn. The fire_dead_weakrefs
+        // ordering (collector step 4, AFTER finalizers, BEFORE the registry
+        // retain) is what makes weakref callbacks land in the SAME collect
+        // that killed the target (gc004/gc005/gc008/gc015 red before the
+        // GARBAGE_NOW fix) — asserted end-to-end in tests/gc_invariants.rs.
+        let c = &LOG_C;
+        c.store(0, Ordering::SeqCst);
+        // Non-capturing closures coerce to the fn-pointer seam types:
+        let sys: SysModulesFn = || {
+            LOG_C.fetch_add(1, Ordering::SeqCst);
+            Vec::new()
+        };
+        let frames: FrameValsFn = || {
+            LOG_C.fetch_add(10, Ordering::SeqCst);
+            Vec::new()
+        };
+        let del: DelFn = |_v| {
+            LOG_C.fetch_add(100, Ordering::SeqCst);
+        };
+        let cb: CallbackFn = |_c, _a| {
+            LOG_C.fetch_add(1000, Ordering::SeqCst);
+            Ok(Value::None)
+        };
+        let fired: WeakFiredFn = || {
+            LOG_C.fetch_add(10000, Ordering::SeqCst);
+        };
+        set_bridge(sys, frames, del, cb, fired);
+        assert_eq!(c.load(Ordering::SeqCst), 0);
+        assert!(sys_modules_values().map(|v| v.is_empty()) == Some(true));
+        assert_eq!(c.load(Ordering::SeqCst), 1);
+        assert!(frame_values_roots().map(|v| v.is_empty()) == Some(true));
+        assert_eq!(c.load(Ordering::SeqCst), 11);
+        call_del_finalizer(&Value::None);
+        assert_eq!(c.load(Ordering::SeqCst), 111);
+        assert!(call_callback(&Value::None, &[]).is_ok());
+        assert_eq!(c.load(Ordering::SeqCst), 1111);
+        fire_dead_weakrefs();
+        assert_eq!(c.load(Ordering::SeqCst), 11111);
+    }
+
+    #[test]
+    fn bridge_accessors_are_reentrant_safe_and_return_owned() {
+        // INVARIANT: the RefCell borrow of BRIDGE ends BEFORE the installed
+        // fn runs (accessors map over the copied fn pointer), so a finalizer
+        // that reads another bridge seam does not panic on a double borrow.
+        // This is the one global-state deadlock the seam could hide.
+        set_bridge(
+            || Vec::new(),
+            || Vec::new(),
+            |_v| {},
+            |_cb, _args| Ok(Value::None),
+            || {
+                // Re-enter OTHER accessors while running as a bridge callee:
+                assert!(sys_modules_values().is_some());
+                assert!(frame_values_roots().is_some());
+            },
+        );
+        fire_dead_weakrefs(); // must not panic
+    }
+}

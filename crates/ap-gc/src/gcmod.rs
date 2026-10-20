@@ -853,3 +853,361 @@ thread_local! {
 pub fn callbacks_set_list(l: &Gc<ap_obj::value::PyList>) {
     CALLBACKS_LIST.with(|c| *c.borrow_mut() = Some(l.clone()));
 }
+
+#[cfg(test)]
+mod unit_tests {
+    //! Leaf 01.03 (robustness-ci): in-crate unit tests of collector internals
+    //! not reachable from the public surface. Each test runs on its own
+    //! libtest thread, so the thread_local registry state is fresh.
+    //!
+    //! INVARIANT MAP (clause refs: docs/compat-contract.md C-20..C-23,
+    //! docs/spec/06-observable-behavior.md S-06-17 #1; timing divergence
+    //! D1 pinned only via EXPLICIT collect() per C-23's allowance):
+    //! - subtract-refs seeding: the registry clone is exactly +1, so
+    //!   `sc > internal + 1` <=> an external holder exists (C-22 "never a
+    //!   false collection").
+    //! - contention-abort: a scan that hits a contended borrow MUST abort
+    //!   the whole cycle and return 0 objects (project rule: NEVER sweep a
+    //!   partial view — historical incident: skipping contended objects
+    //!   let a partial sweep kill live objects).
+    //! - gc007 tuple rule, gc011 object-count return, gc016 post-collect
+    //!   counter reset (corpus case ids in tests/corpus/gc).
+
+    use super::*;
+    use ap_obj::dict::PySet;
+    use ap_obj::value::PyList;
+
+    fn list_val() -> Value {
+        Value::List(PyList::new())
+    }
+
+    #[test]
+    fn value_addr_zero_for_scalars_nonzero_for_containers() {
+        // INVARIANT: untracked scalars have no registry address (0 sentinel
+        // keeps them out of the graph entirely — gc_gate doc). NOT spec-
+        // pinned (internal identity detail; D1-sensitive id() values are
+        // corpus-prohibited per S-06-17 #4, so nothing may observe these).
+        assert_eq!(value_addr(&Value::None), 0);
+        assert_eq!(value_addr(&Value::Bool(true)), 0);
+        assert_eq!(value_addr(&Value::Int(ap_obj::Int::from_i64(42))), 0);
+        assert_eq!(value_addr(&Value::Float(1.0)), 0);
+        assert_eq!(value_addr(&Value::Ellipsis), 0);
+        assert_ne!(value_addr(&list_val()), 0);
+        assert_ne!(value_addr(&Value::Dict(PyDict::new())), 0);
+        assert_ne!(value_addr(&Value::Set(PySet::new())), 0);
+        // Distinct LIVE allocations get distinct addresses (registry keying).
+        // Both values must stay alive while their addresses are compared —
+        // freed Rc slots are recycled.
+        let keep_a = list_val();
+        let keep_b = list_val();
+        assert_ne!(value_addr(&keep_a), value_addr(&keep_b));
+    }
+
+    #[test]
+    fn strong_count_of_scalars_is_one() {
+        // INVARIANT: scalars report 1 so subtract-refs arithmetic never
+        // treats them as externally seeded (they are never in the
+        // registry anyway; this pins the defensive arm).
+        assert_eq!(strong_count_of(&Value::None), 1);
+        assert_eq!(strong_count_of(&Value::Int(ap_obj::Int::from_i64(1))), 1);
+    }
+
+    fn local_registry(vals: &[Value]) -> HashMap<usize, Tracked> {
+        let mut m = HashMap::new();
+        for v in vals {
+            m.insert(value_addr(v), Tracked { value: v.clone() });
+        }
+        m
+    }
+
+    #[test]
+    fn edges_of_filters_untracked_children_and_covers_all_arms() {
+        // INVARIANT: an edge exists only toward a REGISTRY member; scalars
+        // and unregistered containers contribute no fan-in (CPython's
+        // gc_visit only follows tracked children). gc007: tuple members
+        // contribute edges. Not spec-pinned beyond the corpus slices.
+        let tracked_child = list_val();
+        let untracked_child = list_val(); // deliberately NOT in the map
+        let registry = local_registry(&[tracked_child.clone()]);
+
+        let mut out = Vec::new();
+        let list = PyList::from_vec(vec![
+            tracked_child.clone(),
+            untracked_child.clone(),
+            Value::Int(ap_obj::Int::from_i64(7)),
+        ]);
+        edges_of(&Value::List(list), &registry, &mut out);
+        assert_eq!(out, vec![value_addr(&tracked_child)]);
+
+        // Dict arm: tracked VALUES are edges (the untracked Str key is not).
+        let d = PyDict::new();
+        let val = list_val();
+        let reg2 = local_registry(&[val.clone()]);
+        d.set(Value::Str(ap_obj::PyString::new("k")), val.clone())
+            .unwrap();
+        let mut out2 = Vec::new();
+        edges_of(&Value::Dict(d), &reg2, &mut out2);
+        assert_eq!(out2, vec![value_addr(&val)]);
+
+        // Tuple arm (gc007 fix 380f28e): members are edges.
+        let kid = list_val();
+        let reg3 = local_registry(&[kid.clone()]);
+        let tup = Value::Tuple(Gc::new(ap_obj::Tuple(vec![
+            Value::Int(ap_obj::Int::from_i64(1)),
+            kid.clone(),
+        ])));
+        let mut out3 = Vec::new();
+        edges_of(&tup, &reg3, &mut out3);
+        assert_eq!(out3, vec![value_addr(&kid)]);
+    }
+
+    #[test]
+    fn subtract_refs_seed_reachable_and_cycle_is_not() {
+        // INVARIANT (core C-22 "never a false collection"): an entry with
+        // an external holder (sc > internal + 1) seeds the reachable walk;
+        // a pure cycle with only registry + intra-graph refs does NOT, so
+        // it is collected. gc011-family behavior.
+        //
+        // Case A: registry clone + one external holder => sc = 2,
+        // internal = 0 => seeded reachable (false-collection guard).
+        let holder = list_val();
+        let registry = local_registry(&[holder.clone()]);
+        let mut counts = HashMap::new();
+        count_internal_refs(&registry, &mut counts);
+        let reach = mark_reachable(&registry, &counts);
+        assert!(reach.contains(&value_addr(&holder)));
+
+        // Case B: a true cycle, no external handle. Each list is held by
+        // the registry clone + its cycle partner => sc = 2, internal = 1:
+        // NOT seeded, and the walk reaches nothing. All test-thread handles
+        // MUST be dropped first — any surviving clone is an "external
+        // holder" by definition and would legitimately seed the walk.
+        let a = PyList::new();
+        let b = PyList::new();
+        a.append(Value::List(b.clone()));
+        b.append(Value::List(a.clone()));
+        let va = Value::List(a.clone());
+        let vb = Value::List(b.clone());
+        let addr_a = value_addr(&va);
+        let addr_b = value_addr(&vb);
+        let reg_b = local_registry(&[va.clone(), vb.clone()]);
+        drop((a, b, va, vb));
+        let mut counts2 = HashMap::new();
+        count_internal_refs(&reg_b, &mut counts2);
+        assert_eq!(*counts2.get(&addr_a).unwrap(), 1);
+        assert_eq!(*counts2.get(&addr_b).unwrap(), 1);
+        let reach2 = mark_reachable(&reg_b, &counts2);
+        assert!(reach2.is_empty(), "a pure cycle must be unreachable");
+
+        // Cycle PEERS are counted by the census (count_cycles: garbage
+        // entry with sc > 1): a cycle member is still held by its partner
+        // at sweep time, while acyclic garbage dying by the plain Rc
+        // cascade has ONLY its garbage-entry clone (sc == 1). Entries must
+        // be MOVED into the garbage vec, not cloned — an extra test-side
+        // clone inflates sc exactly the way a cycle partner does. gc011
+        // pins collect() returning member OBJECTS; the census distinguishes
+        // cycle-held from refcount-held garbage (GCSTATS instrumentation).
+        let lone = PyList::new();
+        let lone_v = Value::List(lone.clone());
+        drop(lone); // lone_v is the ONLY clone
+        assert_eq!(strong_count_of(&lone_v), 1);
+        let plain = vec![(value_addr(&lone_v), lone_v)];
+        assert_eq!(
+            count_cycles(&plain),
+            0,
+            "acyclic garbage held only by its dying entry clone is sc==1: not a cycle peer"
+        );
+        let x = PyList::new();
+        let y = PyList::new();
+        x.append(Value::List(y.clone()));
+        y.append(Value::List(x.clone()));
+        let xv = Value::List(x.clone());
+        let yv = Value::List(y.clone());
+        drop(x);
+        drop(y);
+        let garbage = vec![(value_addr(&xv), xv), (value_addr(&yv), yv)];
+        assert_eq!(
+            count_cycles(&garbage),
+            2,
+            "both peers still held by a cycle partner (sc > 1) count as cycle members"
+        );
+    }
+
+    #[test]
+    fn contention_abort_never_sweeps_and_clears_flag() {
+        // INVARIANT (PROJECT RULE, never weaken): a scan that hits a
+        // borrowed-mid-mutation object sets SCAN_CONTENDED and collect()
+        // ABORTS the entire cycle — returns 0, sweeps NOTHING, and clears
+        // the flag so the next collection runs normally. A partial view
+        // that skipped the contended object would let its (unseen) inbound
+        // edges go uncounted and sweep live objects — the historical
+        // incident this gate exists for. Not a spec clause (S-06-17 bans
+        // GC timing from corpus); this is the internal correctness rule
+        // behind D1's "never a false collection" (C-22).
+        set_threshold(0, 10, 10);
+        let obj = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "contended");
+        let ov = Value::Obj(obj.clone());
+        gc_register(&ov);
+        let victim = list_val();
+        gc_register(&victim.clone()); // registry clone only... plus victim!
+                                      // Keep ONLY the registry holding the victim so it would die if the
+                                      // pass ran: move our handle into a temp that we drop below.
+        let victim_addr = value_addr(&victim);
+        drop(victim);
+
+        // Mutate `obj` mid-scan: hold its attrs borrow across collect().
+        let held = obj.attrs.borrow_mut();
+        assert_eq!(collect(), 0, "contended scan must abort, not skip");
+        assert!(
+            REGISTRY.with(|r| r.borrow().contains_key(&victim_addr)),
+            "abort must NOT sweep: the victim stays tracked (no partial-view kill)"
+        );
+        assert_eq!(
+            SCAN_CONTENDED.with(|c| c.get()),
+            false,
+            "flag reset after abort"
+        );
+        drop(held);
+
+        // Release the contention: the same pass now runs and sweeps the
+        // victim (registry-only => sc 1, internal 0 => not seeded).
+        let swept = collect();
+        assert!(swept >= 1);
+        assert!(!REGISTRY.with(|r| r.borrow().contains_key(&victim_addr)));
+    }
+
+    #[test]
+    fn gc016_alloc_since_resets_after_collection() {
+        // INVARIANT (corpus gc016 / C-23-safe): gc.get_count()[0] reads 0
+        // right after a collection; registrations increment it monotonically
+        // between collections.
+        set_threshold(0, 10, 10);
+        collect();
+        assert_eq!(get_count().0, 0);
+        gc_register(&list_val());
+        gc_register(&list_val());
+        assert_eq!(get_count().0, 2);
+        collect();
+        assert_eq!(get_count().0, 0);
+    }
+
+    #[test]
+    fn auto_collect_fires_at_threshold_and_zero_disables() {
+        // INVARIANT (gc.set_threshold semantics, CPython parity): t0 > 0
+        // triggers a collection when ALLOC_SINCE reaches it; t0 == 0
+        // disables auto-collection; gc.disable() gates it regardless.
+        // Divergence-safe: only stats deltas observed, never timing (C-23).
+        // NOTE: registration must go through gc_register EXPLICITLY — the
+        // ap-obj allocation hook (gc_gate) is not installed in unit context.
+        let base_collections = stats().collections;
+        set_threshold(3, 10, 10);
+        enable();
+        // Hold refs so nothing dies; we observe the PASS happening, not
+        // what it collects.
+        let mut held = Vec::new();
+        for _ in 0..3 {
+            let v = list_val();
+            held.push(v.clone());
+            gc_register(&v);
+        }
+        assert_eq!(
+            stats().collections,
+            base_collections + 1,
+            "third registration at t0=3 must auto-collect exactly once"
+        );
+        assert_eq!(get_count().0, 0);
+        set_threshold(0, 10, 10);
+        let d = list_val();
+        gc_register(&d);
+        assert_eq!(
+            stats().collections,
+            base_collections + 1,
+            "t0=0 never auto-collects"
+        );
+        // gc.disable()/enable() gate the auto-collect even at t0 > 0.
+        set_threshold(1, 10, 10);
+        disable();
+        assert!(!is_enabled());
+        let e = list_val();
+        gc_register(&e);
+        assert_eq!(
+            stats().collections,
+            base_collections + 1,
+            "disabled => no auto-collect"
+        );
+        enable();
+        let f = list_val();
+        gc_register(&f);
+        assert_eq!(
+            stats().collections,
+            base_collections + 2,
+            "re-enabled => auto-collect resumes"
+        );
+    }
+
+    #[test]
+    fn frozen_objects_survive_collection_until_unfreeze() {
+        // INVARIANT (gc.freeze/unfreeze): frozen addresses are excluded from
+        // sweeping even when unreachable; unfreeze restores collection.
+        // Corpus: none (freeze is off the v1 diff surface); internal pin for
+        // the MMTk swap (docs/gc-mmtk-swap.md keeps the FROZEN seam).
+        set_threshold(0, 10, 10);
+        unfreeze();
+        let v = list_val();
+        let addr = value_addr(&v);
+        gc_register(&v.clone());
+        drop(v);
+        freeze();
+        assert_eq!(collect(), 0, "everything live is frozen => nothing swept");
+        assert!(REGISTRY.with(|r| r.borrow().contains_key(&addr)));
+        unfreeze();
+        assert!(collect() >= 1);
+        assert!(!REGISTRY.with(|r| r.borrow().contains_key(&addr)));
+    }
+
+    #[test]
+    fn registration_is_suppressed_while_collect_guard_is_up() {
+        // INVARIANT (weakbridge doc): objects born inside a finalizer are
+        // NOT registered mid-sweep ("would corrupt the pass"). The guard
+        // flips suppress_registration; gc_register honors it.
+        set_threshold(0, 10, 10);
+        let v = list_val();
+        let addr = value_addr(&v);
+        {
+            let _g = weakbridge::CollectGuard::new();
+            assert!(weakbridge::suppress_registration());
+            gc_register(&v.clone());
+            assert!(
+                !REGISTRY.with(|r| r.borrow().contains_key(&addr)),
+                "mid-collect registration must be dropped"
+            );
+        }
+        assert!(!weakbridge::suppress_registration());
+        gc_register(&v.clone());
+        assert!(REGISTRY.with(|r| r.borrow().contains_key(&addr)));
+    }
+
+    #[test]
+    fn stats_census_counts_objects_and_cycle_peers() {
+        // INVARIANT (gc011: collect returns OBJECTS; GCSTATS cycles counts
+        // garbage peers still held by cycle partners at sweep time — a
+        // census, not a cycle count; MMTk-swap-sensitive naming risk
+        // flagged in PROGRESS gap list).
+        set_threshold(0, 10, 10);
+        let before = stats();
+        let a = PyList::new();
+        let b = PyList::new();
+        a.append(Value::List(b.clone()));
+        b.append(Value::List(a.clone()));
+        gc_register(&Value::List(a.clone()));
+        gc_register(&Value::List(b.clone()));
+        drop(a);
+        drop(b);
+        let n = collect();
+        assert_eq!(n, 2, "10-node-style cycle returns member OBJECTS (gc011)");
+        let now = stats();
+        assert_eq!(now.collections - before.collections, 1);
+        assert_eq!(now.objects_reclaimed - before.objects_reclaimed, 2);
+        assert_eq!(now.cycles_collected - before.cycles_collected, 2);
+    }
+}
