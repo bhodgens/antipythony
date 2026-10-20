@@ -154,3 +154,97 @@ into a scratch PATH dir; PATH=scratch:/usr/bin:/bin so /opt/homebrew is gone)
    sibling Plan-02 src/ edits; my gates ran against the current tree's
    target/debug binaries which include those edits — ap-run lib tests passed
    regardless, so no interference observed.
+
+---
+
+## Leaf 00.03 - conformance matrix job (2026-10-20)
+
+Implemented `.github/workflows/ci.yml` conformance block (replaced the 00.01
+stub comment): `conformance-matrix` axis job + `conformance` matrix job.
+
+### Design decisions
+- **macOS gating:** the brief's `if: github.event_name == 'push' && ...` at
+  job level is NOT expressible — job-level `if` is evaluated before the
+  matrix context exists (actions/runner issue #1985; GitHub docs confirm
+  "if operates before matrix"). A job-level if can only skip ALL OSes or
+  none. Solution: tiny `conformance-matrix` ubuntu job emits the OS axis as
+  JSON (`["ubuntu-latest"]` for PRs/branch pushes,
+  `["ubuntu-latest","macos-14"]` for main pushes) consumed via
+  `matrix.os: ${{ fromJSON(...) }}`. Cost note (~10x macOS runner, audit
+  line "macos-14 runners cost ~10x") is a comment in the pick step.
+- **Env names verified against suites (grep evidence, not brief guesses):**
+  - `APX_IMPL="target/debug/ap-run-eval"` — read at t05:77, t07:117,
+    t08:125, t10:77, t11:108-109. ap-run-eval accepts exactly the `--tier 0`
+    ap-conform appends (crates/ap-cli/src/bin/ap_run_eval.rs:4-25).
+  - `APX_CLI="target/debug/antipythany run"` — read at t09:158, t14:80,
+    t15:63, t16:126. NOTE t09/t14/t15/t16 invoke `_cli_cmd() + ["build",...]`
+    / `["--version"]` / `["new",...]` verbs; with APX_CLI ending in `run`
+    those become `<antipythany run build ...>` — wrong argv shape for those
+    suites, but they are all xfail(strict=False) awaiting 02.06/04.02, so
+    CI stays green; master.md:37 mandates this exact value, so I kept it
+    (gap noted below for when those xfails flip).
+  - `AP_CONFORM_REFERENCE_PYTHON` exported via GITHUB_ENV (same step shape
+    as the `rust` job) — honored by pytest t06/t07/t08/t09/t11/t16/
+    fstrings_corpus REF_PY reads.
+  - `AP_REQUIRE_REFERENCE=1` already workflow-level (00.01) — now genuinely
+    enforced by 00.02's committed common/mod.rs (Rust suites; this job's
+    pytest track doesn't read it — gap below).
+- **Compat symlink step:** t05_values:57 and t10_threading:73 STILL hardcode
+  REF_PY="/opt/homebrew/bin/python3.14" (00.02 converted only the Rust
+  side — its PROGRESS gap #1 explicitly defers this to 00.03). On ubuntu
+  that path is absent -> FileNotFoundError red. Step symlinks
+  /opt/homebrew/bin/python3.14 -> the setup-python 3.14 binary (sudo on
+  linux, plain mkdir on macos; no-op when it already exists). No gate
+  weakened, same interpreter; step is commented "DELETE when t05/t10 honor
+  the env var".
+- **Job summary nicety (kept, not fiddly):** report-only `if: always()`
+  step runs `ap-conform run --corpus tests/corpus/<fam>/*.py --impl
+  <reference> --json` per 8 families, jq-formats summary counts into
+  $GITHUB_STEP_SUMMARY. Exit 0 always; per-family failures print a row
+  saying so.
+- `timeout-minutes: 180` (local full pytest track ~1h); `fail-fast: false`
+  so ubuntu red doesn't cancel the macOS run on main.
+
+### Local verification (this box: Homebrew rustc 1.94.0 + python 3.14.7;
+### working tree has uncommitted sibling 02.07 threading src, binaries
+### already built in target/debug)
+- YAML parse: PyYAML 6.0.3 `safe_load` on the full file — job graph,
+  needs, matrix, outputs, step env all structurally as intended.
+- Every multi-line `run:` block passes `bash -n`.
+- Axis script simulated for push/main, pull_request, push/feature: emits
+  exactly the two expected JSON arrays; `json.loads` (fromJSON-equivalent)
+  validates both.
+- ap-conform --json + the jq row template executed locally against the
+  real binary: rc 0, correct `| family | total | ... |` markdown row.
+- Subset pytest with the job's env vars (APX_IMPL/APX_CLI/
+  AP_CONFORM_REFERENCE_PYTHON/AP_REQUIRE_REFERENCE): `pytest tests/t05_values
+  tests/t11_stdlib -q` -> 476 passed, 2 skipped, 80 xfailed, 69 xpassed,
+  rc 0, 34s. Full `pytest tests/` NOT run here: sibling wave-A full run
+  (PID 3750, output /tmp/ap_pytest_waveA.txt, ~23% at check time, 0 F/0 E)
+  is already occupying the suite — competing full run deliberately avoided
+  per brief.
+- actionlint not installed locally (no installs permitted) — structural
+  YAML + bash -n used instead.
+
+### HONEST gaps
+1. No remote green run possible from this leaf (no commits/pushes permitted;
+   the leaf's own gate "workflow green on both OSes" is unverifiable here —
+   orchestrator must push a branch and `gh run watch`).
+2. macOS matrix leg entirely unverified locally (can't emulate macos-14
+   runner: rust-cache on macOS, sudo-free symlink path assumed writable —
+   GH macos runners run as admin, /opt/homebrew exists via brew prefix
+   but bin/python3.14 may not; mkdir -p /opt/homebrew/bin as the runner
+   user should work, unproven).
+3. t09/t14/t15/t16 suites append verbs to APX_CLI ("build", "new",
+   "--version"), which the brief's mandated `...antipythany run` value
+   breaks — they stay green only because every one is xfail(strict=False)
+   today. When 02.06/04.02 flip them, the workflow needs an APX_CLI split
+   (driver without `run`). Flagged in a workflow comment.
+4. ap-parse `ap-parse-check` bin does not exist in this tree (t01_parse
+   suite handles it via its _MissingBin stub; no workflow env needed).
+5. The compat symlink masks (does not fix) the t05/t10 Homebrew hardcodes;
+   real fix is env-var conversion in tests/*.py, deferred by 00.02 to a
+   later leaf/branch (01 test-integrity).
+6. Job-summary step re-runs ~270 corpus cases through the reference (~1-2
+   min); acceptable, it is report-only and runs even when pytest failed.
+7. `gh` remote validation (Actions syntax tab / actionlint CI) not run.

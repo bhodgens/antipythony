@@ -116,11 +116,121 @@ jobs:
       - name: cargo deny check
         run: cargo deny check
 
-  # conformance job is intentionally NOT wired here - it is leaf 00.03
-  # (needs 00.02's reference-discovery helper to be trustworthy: without it
-  # a runner lacking python3.14 reports green, finding #3). A half-wired
-  # matrix with silent skips is worse than an absent job. 00.03 reopens
-  # this block: build --workspace, export APX_IMPL=target/debug/ap-run-eval
-  # and APX_CLI="target/debug/antipythany run", pytest tests/ -q on
-  # ubuntu (PR+main) + macos-14 (main only). Tracked in
-  # plans/robustness-ci/00-ci-core/orchestrator.md leaf 00.03.
+  conformance-matrix:
+    # Leaf 00.03 helper: picks the OS axis for `conformance`. The brief's
+    # "guard macos with a job-level if" is not expressible - a job-level
+    # `if` is evaluated BEFORE the matrix context exists (actions/runner
+    # issue #1985), so it would skip every OS or none. The per-event axis
+    # therefore has to be computed here (seconds, ubuntu) and fed to the
+    # matrix via fromJSON.
+    name: conformance os-axis
+    runs-on: ubuntu-latest
+    outputs:
+      oses: ${{ steps.pick.outputs.oses }}
+    steps:
+      - name: Pick OSes for this event
+        id: pick
+        run: |
+          # macOS runner cost note (audit "Proposed CI pipeline"): macos-14
+          # hosted runners bill ~10x ubuntu-latest, so the differential
+          # track runs on macOS ONLY for main pushes; PRs verify on ubuntu.
+          if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$GITHUB_REF" = "refs/heads/main" ]; then
+            echo 'oses=["ubuntu-latest","macos-14"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'oses=["ubuntu-latest"]' >> "$GITHUB_OUTPUT"
+          fi
+
+  conformance:
+    # Leaf 00.03 - the pytest differential track (byte-exact corpus gate).
+    # Trustworthy post-00.02: the Rust suites consumed by this tree panic
+    # red on a missing reference under the workflow-level
+    # AP_REQUIRE_REFERENCE=1, and the env-honoring pytest suites get
+    # AP_CONFORM_REFERENCE_PYTHON from the export step below.
+    name: conformance pytest (${{ matrix.os }})
+    needs: [rust, conformance-matrix]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(needs.conformance-matrix.outputs.oses) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180  # full differential track measured ~1h locally
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pin toolchain (rust-toolchain.toml:6; finding #6)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94.0"
+      - name: Python 3.14 reference interpreter
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Export reference path
+        # Reads per master.md "reference python discovery" contract:
+        # 00.02's Rust helper checks this env var FIRST; pytest suites
+        # t06/t07/t08/t09/t11/t16/fstrings_corpus read it as REF_PY.
+        run: echo "AP_CONFORM_REFERENCE_PYTHON=$(command -v python3.14 || command -v python)" >> "$GITHUB_ENV"
+      - name: Compat shim for legacy hardcoded REF_PY
+        run: |
+          # tests/t05_values/test_t05_values.py:57 and
+          # tests/t10_threading/test_t10_threading.py:73 still hardcode
+          # REF_PY="/opt/homebrew/bin/python3.14" (leaf 00.02 converted the
+          # Rust side; the pytest-side env-var conversion is that leaf's
+          # noted out-of-scope gap). On ubuntu that path does not exist and
+          # subprocess.run would raise FileNotFoundError -> red for the
+          # wrong reason. Point the legacy path at the SAME setup-python
+          # 3.14 interpreter: no gate weakened, no extra download.
+          # DELETE this step when t05/t10 honor AP_CONFORM_REFERENCE_PYTHON.
+          if [ -x /opt/homebrew/bin/python3.14 ]; then exit 0; fi
+          ref="$(command -v python3.14 || command -v python)"
+          if [ "$(uname)" = "Darwin" ]; then
+            mkdir -p /opt/homebrew/bin && ln -sf "$ref" /opt/homebrew/bin/python3.14
+          else
+            sudo mkdir -p /opt/homebrew/bin && sudo ln -sf "$ref" /opt/homebrew/bin/python3.14
+          fi
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo build (pytest suites path-resolve target/debug bins)
+        # INTEGRATION/CONFORMANCE TESTS PATH-MATH INTO target/debug:
+        # t05/t07/t08/t11/_find_bin fall back to REPO_ROOT/target/{debug,
+        # release}/ap-conform, and APX_IMPL/APX_CLI below point into the
+        # same dir. The build MUST precede pytest (separate runner from the
+        # `rust` job, so nothing is shared).
+        run: cargo build --workspace
+      - name: Install pytest
+        run: pip install pytest
+      - name: pytest differential track
+        # Env names verified against the suites (not the brief's guesses):
+        #   APX_IMPL  - t05:77 t07:117 t08:125 t10:77 t11:108 t16 - the
+        #               ap-conform --impl seam; target/debug/ap-run-eval
+        #               accepts exactly the `--tier 0` ap-conform appends
+        #               (crates/ap-cli/src/bin/ap_run_eval.rs:4-7).
+        #   APX_CLI   - t09:158 t14:80 t15:63 t16:126 - the `antipythany`
+        #               driver (build/run verbs).
+        # Relative paths are safe: suites run subprocesses with
+        # cwd=REPO_ROOT and pytest itself runs from the checkout root.
+        env:
+          APX_IMPL: "target/debug/ap-run-eval"
+          APX_CLI: "target/debug/antipythany run"
+        run: python -m pytest tests/ -q --no-header
+      - name: ap-conform per-family corpus counts (job summary)
+        if: always()
+        # Optional nicety (leaf 00.03 brief): reference-vs-reference
+        # self-comparison per family, printed via ap-conform --json
+        # (`summary.{total,passed,failed,errors,timeouts}`, the same JSON
+        # shape t05 asserts at tests/t05_values/test_t05_values.py:202-215).
+        # Report-only; jq is preinstalled on GH-hosted runners. Runs even
+        # when pytest is red - the counts are most useful then.
+        run: |
+          echo "## ap-conform corpus inventory (reference self-check)" >> "$GITHUB_STEP_SUMMARY"
+          echo "| family | total | passed | failed | errors | timeouts |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|---|---|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          for fam in values classes exceptions gc fstrings stdlib threading tier1-transparency; do
+            if target/debug/ap-conform run --corpus "tests/corpus/${fam}/*.py" \
+                 --impl "${AP_CONFORM_REFERENCE_PYTHON:-python3.14}" --json \
+                 > "/tmp/conform-${fam}.json" 2>/dev/null; then
+              jq -r '.summary as $s | "| '"${fam}"' | \($s.total) | \($s.passed) | \($s.failed) | \($s.errors) | \($s.timeouts) |"' \
+                "/tmp/conform-${fam}.json" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "| ${fam} | - | - | - | - | ap-conform run failed |" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+          exit 0
