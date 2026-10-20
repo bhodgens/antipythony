@@ -20,8 +20,10 @@ write to it (merge, never overwrite) after each leaf commits.
   Fresh orchestrator probes on 02.02: 6 invalid/valid import shapes byte-
   exact vs live 3.14. Full pytest re-run launched (proc_4d7a28999525,
   /tmp/ap_pytest_waveA.txt) - 01.01 ceiling baseline awaits its tally.
-- 2026-10-20 Wave B dispatched (deleg TBD): 00.03, 02.01, 01.03, 01.04,
-  03.01. HELD for conflict/dependency: 03.02 (xtask main.rs vs 01.04),
+- 2026-10-19 Wave B dispatched (deleg_311e77fe): 00.03 (sa-0, conformance
+  matrix job), 02.01 (sa-1, workspace.lints + grandfather allowances),
+  01.03 (sa-2, ap-gc in-crate tests), 01.04 (sa-3, xtask tests), 03.01
+  (sa-4, golden .meta provenance + backfill). HELD for conflict/dependency: 03.02 (xtask main.rs vs 01.04),
   05.01 (Cargo.toml vs 02.01), 01.01 (needs pytest tally), 01.05
   (bench_report.json staged by sibling Plan 02 agent - untracking would
   collide), 04/* (await Wave A/B settle + re engine stable).

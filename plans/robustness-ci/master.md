@@ -107,16 +107,16 @@ Updated by the orchestrator after each leaf review. All leaves NOT STARTED.
 | --- | --- |
 | 00.01 ci.yml core jobs | COMMITTED (717bc9c) |
 | 00.02 reference discovery + AP_REQUIRE_REFERENCE | COMMITTED (7c8358d) |
-| 00.03 conformance matrix jobs | NOT STARTED |
+| 00.03 conformance matrix jobs | COMMITTED (a881906) - remote green pending push |
 | 00.04 branch-protection doc | NOT STARTED |
 | 01.01 XPASS ceiling gate | NOT STARTED |
 | 01.02 ledger burn-down (ongoing) | NOT STARTED |
-| 01.03 ap-gc unit tests | NOT STARTED |
-| 01.04 xtask notices tests | NOT STARTED |
+| 01.03 ap-gc unit tests | COMMITTED (3635a6f) - 23 tests |
+| 01.04 xtask notices tests | COMMITTED (1c16009) - 8 tests |
 | 01.05 bench trend-only | NOT STARTED |
-| 02.01 workspace.lints + clippy gate | NOT STARTED |
+| 02.01 workspace.lints + clippy gate | COMMITTED (4c8d08b) - CI -D warnings flip pending |
 | 02.02 importer segment guard | COMMITTED (6dae48c) |
-| 03.01 golden .meta provenance | NOT STARTED |
+| 03.01 golden .meta provenance | COMMITTED (8db313c) - 232 metas |
 | 03.02 stdlib-provenance xtask | NOT STARTED |
 | 03.03 AGENTS.md hygiene + hooks note | COMMITTED (6b67db0) |
 | 04.01 proptest re differential | NOT STARTED |
