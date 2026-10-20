@@ -112,7 +112,7 @@ Updated by the orchestrator after each leaf review. All leaves NOT STARTED.
 | 01.02 ledger burn-down (ongoing) | IN PROGRESS - T-01 flip 22e73e8; t15 first-flip blocked on Plan 04.03 (noted) |
 | 01.03 ap-gc unit tests | COMMITTED (3635a6f) - 23 tests |
 | 01.04 xtask notices tests | COMMITTED (1c16009) - 8 tests |
-| 01.05 bench trend-only | NOT STARTED |
+| 01.05 bench trend-only | COMMITTED (a729933) - untrack left as user call |
 | 02.01 workspace.lints + clippy gate | COMMITTED (4c8d08b) - CI -D warnings flip pending |
 | 02.02 importer segment guard | COMMITTED (6dae48c) |
 | 03.01 golden .meta provenance | COMMITTED (8db313c) - 232 metas |
