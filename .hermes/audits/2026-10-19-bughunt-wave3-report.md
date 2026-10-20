@@ -64,3 +64,46 @@ zero conflicts expected. Blocked only by the sibling's uncommitted
 builtins_modules.rs/classes.rs edits in the shared checkout. When its
 WIP lands: `git merge bughunt-wave3` (or rebase), re-run the three
 gates, push.
+
+## Fixer wave (2026-10-19, "fix all issues identified using subagents")
+
+3 fixer subagents dispatched; the re-polish one died on the provider
+timeout (15th consecutive subagent failure), so all three scopes ran
+parent-direct in dedicated worktrees off this branch.
+
+FIXED (commits eee410a + 5be215d):
+- re module-level positional FLAGS slot: sub/subn read flags from slot 3
+  (count's slot), split needs slot 3 and sub/subn slot 4. Positional
+  flags were previously misparsed as count. Byte-exact probes vs 3.14.7.
+- re.error text/position battery (24 malformed patterns): 'missing
+  group name' (was 'missing >'), \N{NOPE} single-quotes, (?(9)a) now
+  'invalid group reference 9 at position 3' via pending-backref
+  validation. Battery byte-exact.
+- 4 differential suites hardcoded target/debug/ap-run-eval (wave-1 P1
+  class): now honor CARGO_TARGET_DIR. This session's 2 cargo 'FAILED'
+  lines were this path bug, not behavior.
+- DeprecationWarning emitter for positional count/maxsplit: BUILT,
+  VERIFIED correct on straight-line code, then REVERTED - the coarse
+  stmt_ordinal line tracker reports wrong call-site lines once any
+  function call precedes the warning site. A wrong-line warning is
+  worse than none. Revisit with the IR-spans leaf.
+
+DEFERRED (contested-zone discipline):
+- gc009 unraisable report (qualname + sys.stderr swap): the sibling's
+  UNCOMMITTED gcsupport.rs WIP reworks report_unraisable right now
+  (Bad.__del__ qualname via e.qualname, hook None-filter, stderr
+  binding resolution - exactly this fix). Would collide; it owns the
+  leaf.
+- %-format non-dict mappings + mapping-mode positional budget: needs
+  eval_binop (interp.rs, dirty in sibling tree) and CPython's
+  order-dependent budget rule ('%(k)s %s' -> not-enough-arguments while
+  '%s %(k)s' works). Probed + documented here; no corpus pin or
+  stdlib caller exercises it (_py_warnings uses keyed-only forms).
+  Semantics for the future fixer, all probe-verified on 3.14.7:
+  mapping mode iff single non-tuple arg with keys() + __getitem__;
+  keyed conversions consume NO positional; positional conversions
+  draw from a ONE-element budget (the mapping itself) and error
+  'not enough arguments' when exhausted BEFORE rendering, except a
+  positional conversion BEFORE any keyed one renders with the mapping
+  as its arg (type errors then mention the mapping type).
+
