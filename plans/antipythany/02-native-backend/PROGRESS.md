@@ -804,3 +804,9 @@
 1. 04.01 uv subprocess wheel-fetch (pure-python wheels into build cache)
 2. import integration: fetched packages join sys.path at compile
 3. scrapy crawl file:// spider byte-compare vs CPython reference = T1 GATE
+
+## Leaves 04.01+04.02 - packaging/uv - DISPATCHED (deleg_643778e4)
+- antipythany add (uv subprocess, pure-wheel-only gate), site-packages
+  cache + sys.path wiring, toml/lockfile manifest, e2e tests with six/
+  packaging (byte-exact) + lxml fail-loud diagnostic.
+- This is the LAST structural piece before the scrapy T1 attempt.
