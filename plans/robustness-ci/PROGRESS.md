@@ -64,3 +64,13 @@ write to it (merge, never overwrite) after each leaf commits.
 4. Today's real pass counts (rust/pytest/XPASS ceiling baseline, corpus
    slice rates) were never re-run by the review agent - first leaf needing a
    baseline re-measures and records it here.
+
+## wave-A-gap followup (2026-10-20)
+00.02's two deferred gaps closed: ap-cli `stdlib_modules_differential.rs` +
+ap-obj `cpython_differential.rs` converted to the shared `tests/common`
+reference-discovery seam (copies of ap-run's helper; probes byte-unchanged),
+and `AP_CONFORM_REFERENCE_PYTHON` added as version-checked step 0 of
+ap-conform's `find_reference_interpreter` (python3 fallback kept per brief).
+All fail/skip/env-ladder gates green (details: 00-ci-core/PROGRESS.md
+"wave-A-gap followup"). Rust differential suites are now uniformly on the
+seam; pytest-track Homebrew-hardcode env conversion remains 01-branch work.
