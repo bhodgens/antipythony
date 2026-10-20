@@ -23,12 +23,16 @@ fn run_reference(src: &str) -> Vec<u8> {
 }
 
 fn run_aprun(src: &str) -> Vec<u8> {
-    let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("target/debug/ap-run-eval");
+    // Respect CARGO_TARGET_DIR (shared-target builds) - wave-1 P1 class.
+    let bin = match std::env::var("CARGO_TARGET_DIR") {
+        Ok(d) => std::path::Path::new(&d).join("debug/ap-run-eval"),
+        Err(_) => std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("target/debug/ap-run-eval"),
+    };
     let out = std::process::Command::new(&bin)
         .arg(src)
         .output()
