@@ -42,8 +42,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
+        # fast-lints pins the exact patch: the stdlib-provenance manifest
+        # records upstream sha256 from CPython 3.14.7; `python-version:
+        # "3.14"` would resolve to whatever GA patch is newest and red the
+        # gate on benign upstream churn (robustness-ci 03.02 gap note).
         with:
-          python-version: "3.14"
+          python-version: "3.14.7"
       - name: Show interpreter
         run: python --version
       - name: Install pytest
@@ -56,6 +60,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: THIRD_PARTY_NOTICES drift gate (moved from attribution.yml)
         run: cargo run -p xtask -- notices --check
+      - name: vendored_stdlib provenance drift gate (robustness-ci 03.02)
+        # Compares tracked vendored_stdlib files against the setup-python
+        # 3.14 Lib/ (sysconfig probe); undeclared drift exits 1.
+        run: cargo run -p xtask -- stdlib-provenance --check
 
   rust:
     name: rust 1.94.0 (fmt / clippy-info / build / test)
@@ -104,6 +112,19 @@ jobs:
         run: cargo build --workspace
       - name: cargo test
         run: cargo test --workspace
+      - name: cargo doc -D warnings (robustness-ci 05.03)
+        # Broken intra-doc links + missing_docs where opted in
+        # ([workspace.lints.rustdoc] + ap-conform/ap-ir crate warns).
+        # 4-crate scope: ap-run's 14 remaining doc warnings all sit in
+        # sibling-02.07 dirty files; it joins via 05.03b once that lands
+        # (fix recipe in plans/robustness-ci/05-cli-docs/PROGRESS.md).
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --no-deps -p ap-obj -p ap-ir -p ap-parse -p ap-conform
+      - name: cli-docs drift gate (robustness-ci 05.04)
+        # docs/testability-clis.md must equal the live --help of the
+        # built bins; drift exits 1.
+        run: cargo run -p xtask -- cli-docs --check
 
   deny:
     name: cargo deny (master.md:45; finding #2)
