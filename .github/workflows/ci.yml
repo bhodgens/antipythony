@@ -169,24 +169,6 @@ jobs:
         # 00.02's Rust helper checks this env var FIRST; pytest suites
         # t06/t07/t08/t09/t11/t16/fstrings_corpus read it as REF_PY.
         run: echo "AP_CONFORM_REFERENCE_PYTHON=$(command -v python3.14 || command -v python)" >> "$GITHUB_ENV"
-      - name: Compat shim for legacy hardcoded REF_PY
-        run: |
-          # tests/t05_values/test_t05_values.py:57 and
-          # tests/t10_threading/test_t10_threading.py:73 still hardcode
-          # REF_PY="/opt/homebrew/bin/python3.14" (leaf 00.02 converted the
-          # Rust side; the pytest-side env-var conversion is that leaf's
-          # noted out-of-scope gap). On ubuntu that path does not exist and
-          # subprocess.run would raise FileNotFoundError -> red for the
-          # wrong reason. Point the legacy path at the SAME setup-python
-          # 3.14 interpreter: no gate weakened, no extra download.
-          # DELETE this step when t05/t10 honor AP_CONFORM_REFERENCE_PYTHON.
-          if [ -x /opt/homebrew/bin/python3.14 ]; then exit 0; fi
-          ref="$(command -v python3.14 || command -v python)"
-          if [ "$(uname)" = "Darwin" ]; then
-            mkdir -p /opt/homebrew/bin && ln -sf "$ref" /opt/homebrew/bin/python3.14
-          else
-            sudo mkdir -p /opt/homebrew/bin && sudo ln -sf "$ref" /opt/homebrew/bin/python3.14
-          fi
       - uses: Swatinem/rust-cache@v2
       - name: cargo build (pytest suites path-resolve target/debug bins)
         # INTEGRATION/CONFORMANCE TESTS PATH-MATH INTO target/debug:
@@ -210,7 +192,15 @@ jobs:
         env:
           APX_IMPL: "target/debug/ap-run-eval"
           APX_CLI: "target/debug/antipythany run"
-        run: python -m pytest tests/ -q --no-header
+        run: |
+          set -o pipefail
+          python -m pytest tests/ -q --no-header -rX \
+            | tee "$RUNNER_TEMP/pytest_report.txt"
+      - name: XPASS ceiling gate (leaf 01.01)
+        # tests/XPASS_CEILING is monotone-decreasing; a run reporting
+        # MORE xpasses than the ceiling means a stale strict=False
+        # marker grew - fail, and 01.02 flips the owning tests.
+        run: python tests/tools/_xpass_gate.py "$RUNNER_TEMP/pytest_report.txt"
       - name: ap-conform per-family corpus counts (job summary)
         if: always()
         # Optional nicety (leaf 00.03 brief): reference-vs-reference
