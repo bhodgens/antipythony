@@ -136,3 +136,105 @@ committed number plus this caveat rather than a guessed final line.
   not this leaf.
 - Nothing committed (dispatch rule). Lint placement recorded above so the
   orchestrator can confirm ci.yml fast-lints covers it without edits.
+
+---
+
+## Leaf 03.02 - xtask stdlib-provenance (2026-10-20)
+
+### What landed
+- **crates/xtask/src/stdlib_provenance.rs** (new, ~1070 lines incl. tests):
+  `xtask stdlib-provenance [--check] [--fix]` subcommand (dispatch added in
+  main.rs, same `<verb> [flags]` shape as `notices`).
+  - Std-only SHA-256 (FIPS 180-4; round constants + 5 test vectors pinned:
+    empty, "abc", 1000xa, 55/56/64-byte padding boundaries) and a restricted
+    `[[file]]` TOML-subset parser/renderer for DEVIATIONS.toml — xtask stays
+    a single-dep crate (cargo_metadata), preserving ci.yml fast-lints'
+    "no workspace compile" property. No new deps, Cargo.toml untouched.
+  - Upstream Lib/ resolution order: `$ANTIPYTHANY_CPYTHON_LIB` (CI / custom
+    installs) -> `python3.14|python3|python -c "import sysconfig;
+    print(sysconfig.get_paths()['stdlib'])"` (leaf 03.01's documented
+    resolution) -> Homebrew Cellar glob `/opt/{homebrew,local}/Cellar/
+    python@3.14/*/Frameworks/Python.framework/Versions/3.14/lib/python3.14`
+    (AGENTS.md note), newest dir wins. Existence-validated via enum.py.
+  - Core is `pub fn stdlib_provenance_check(vendored_root, upstream_root,
+    manifest) -> (problems, total, deviated)` — fixture-testable on synthetic
+    tempdirs, no repo mutation anywhere in tests.
+  - Walk skips `__pycache__` dirs + root NOTICE.md + DEVIATIONS.toml.
+  - Failure modes (all reported deterministically, sorted; exit 1 on any,
+    exit 2 on missing manifest / unresolvable upstream):
+    (a) `UNDECLARED DRIFT` / `coverage:` — file on disk differs from upstream
+    (or absent) with no manifest entry; (b) `STALE DECLARATION` — declared
+    deviated file whose bytes match neither upstream nor deviated_sha256;
+    (c) `upstream missing` — pristine/deviated entry names an upstream file
+    not found; `undeclared-file` — manifest entry with no file on disk
+    (gate 5: manifest set == disk set, so count coverage is checked in-tool);
+    (d) `PRISTINE BROKEN` — declared-pristine file != upstream; (e) `stale
+    manifest` — live upstream bytes != recorded upstream_sha256 (interpreter
+    patch drift, finding #11 visibility).
+  - OK line: `stdlib-provenance: OK (71 files, 10 deviated declared)`.
+- **vendored_stdlib/DEVIATIONS.toml** (new): 71 entries (== git-tracked files
+  minus NOTICE.md). Built in two passes per the task design: `--fix` once
+  generated the 61 pristine entries + refused list; the 10 deviated entries
+  hand-declared with notes copied from LICENSES/README-vendored-stdlib.md
+  (commit 1cb6250): enum.py, _collections_abc.py, _py_warnings.py,
+  inspect.py, annotationlib.py (upstream_path set, replaced-shim note),
+  _contextvars.py + collections.py (upstream_path "" / collections/__init__.py
+  respectively — no single counterpart / package-dir counterpart), plus
+  **3 files the license doc does NOT list**: re/__init__.py, unittest/case.py,
+  unittest/result.py — byte-verified drift vs 3.14.7 at manifest build,
+  in-file notes are "antipythany v0 (vendored fork)" RegexFlag fallback and
+  "AP-CORRECTION (02.04)" _Outcome/_exc_info_to_string rewrites. Their notes
+  in DEVIATIONS.toml say "Undeclared in LICENSES/README-vendored-stdlib.md —
+  license doc needs an addendum".
+
+### Gates executed
+1. `cargo run -p xtask -- stdlib-provenance --check` → exit 0,
+   "OK (71 files, 71 tracked files == 71 manifest entries)". Bare invocation
+   (no flag) == read-only report, also exit 0.
+2. Drift proof (fixture unit tests in stdlib_provenance.rs — pristine ok,
+   undeclared-drift fail, declared-deviation ok, stale-deviation-sha fail,
+   manifest/disk mismatch fail, upstream-missing fail, no-counterpart ok,
+   pycache/NOTICE skip, manifest parse/render roundtrip fixpoint + structural
+   errors, --fix regenerates pristine & refuses undeclared drift).
+   Plus one-shot CLI proof against a /tmp copy (repo files untouched):
+   appended comment to a copy of ast.py → `PRISTINE BROKEN` exit 1; appended
+   comment to a copy of enum.py → `STALE DECLARATION` exit 1. Scratch dirs
+   removed.
+3. `cargo test -p xtask` → 18 bin tests + 4 integration tests, 0 failed
+   (xtask_gates.rs untouched, notices gate still green).
+4. `cargo fmt -p xtask --check` clean; `cargo clippy -p xtask --all-targets`
+   exit 0 with ZERO new warnings in stdlib_provenance.rs (pre-existing
+   cli_docs dead_code + xtask_gates test unwraps unchanged; my code uses no
+   unwrap()).
+5. Coverage count asserted in-tool (gate a/undeclared-file/coverage rules).
+
+### CI step text (for orchestrator wiring — ci.yml NOT edited here)
+Add to the `fast-lints` job (it already setup-python 3.14, which the tool's
+probe resolves), right after the notices gate:
+
+```yaml
+      - name: vendored_stdlib provenance drift gate (robustness-ci 03.02)
+        run: cargo run -p xtask -- stdlib-provenance --check
+```
+
+### Honest gaps / notes for the orchestrator
+- LICENSES/README-vendored-stdlib.md does NOT document re/__init__.py,
+  unittest/case.py, unittest/result.py (they drifted in during 02.04/02.08
+  work, after commit 1cb6250's audit). The manifest declares them with
+  observed-drift provenance notes rather than silently passing them — the
+  doc addendum is a license-train task, deliberately out of this leaf's
+  ownership. Recommend a docs follow-up leaf.
+- Upstream-version coupling: `--check` compares against whatever CPython 3.14
+  Lib/ resolves locally and flags `stale manifest` if its bytes move (patch
+  upgrade). On CI that means a setup-python bump 3.14.7→3.14.8 that touches
+  any of the 61 pristine upstream files turns the gate red until someone
+  runs `--fix` and commits. That is intended finding-#11-style visibility
+  (which interpreter the pins were recorded on must be explicit), but the
+  orchestrator may prefer `python-version: "3.14.7"` pinning in the job.
+- `_contextvars.py`/`collections.py` upstream_path: the former has none
+  ("" + no-upstream allowed only for deviated entries); the latter maps to
+  `collections/__init__.py` (it is an augmentation shim, still compared-by-
+  existence, declared deviated with the README's exact justification).
+- Nothing committed (dispatch rule). Ownership respected:
+  crates/xtask/{src/main.rs,src/stdlib_provenance.rs} + vendored_stdlib/
+  DEVIATIONS.toml + this file only.

@@ -2,6 +2,10 @@
 //!
 //! `cargo run -p xtask -- notices`         regenerate THIRD_PARTY_NOTICES
 //! `cargo run -p xtask -- notices --check` CI gate: fail on drift
+//! `cargo run -p xtask -- stdlib-provenance [--check|--fix]`
+//!                                         vendored_stdlib drift gate (03.02)
+//! `cargo run -p xtask -- cli-docs [--check]`
+//!                                         docs/testability-clis.md drift gate (05.04)
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -11,7 +15,9 @@ use std::process::exit;
 
 use cargo_metadata::{MetadataCommand, Package};
 
+mod cli_docs;
 mod license_fallbacks;
+mod stdlib_provenance;
 
 const NOTICES_PATH: &str = "THIRD_PARTY_NOTICES";
 const HEADER: &str = "\
@@ -38,7 +44,7 @@ struct Entry {
     license_text: String,
 }
 
-fn workspace_root() -> PathBuf {
+pub(crate) fn workspace_root() -> PathBuf {
     let manifest = std::env::var("CARGO_MANIFEST_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("."));
@@ -226,8 +232,19 @@ fn render(entries: &[Entry]) -> String {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let check = args.iter().any(|a| a == "--check");
     let root = workspace_root();
+
+    // Subcommand dispatch: first non-flag arg selects the task (leaf 01.04
+    // `notices` shape preserved: cargo run -p xtask -- <verb> [flags]).
+    let verb = args.iter().skip(1).find(|a| !a.starts_with('-'));
+    if verb.map(String::as_str) == Some("stdlib-provenance") {
+        stdlib_provenance::run(&args[1..], &root);
+    }
+    if verb.map(String::as_str) == Some("cli-docs") {
+        cli_docs::run(args.iter().any(|a| a == "--check"));
+    }
+
+    let check = args.iter().any(|a| a == "--check");
     let notices = root.join(NOTICES_PATH);
 
     let mut entries = collect_deps();
