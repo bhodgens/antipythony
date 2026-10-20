@@ -15,21 +15,25 @@
 //! diagnostic was printed. Parse/lowering failure: contract diagnostic to
 //! stderr, exit 1, nothing on stdout (distinguishable). Missing input file:
 //! exit 2.
+//!
+//! robustness-ci 05.01: arg parsing moved to clap. The diagnostic bytes for
+//! valid invocations are the pinned test seam and are unchanged; only
+//! unrecognized-arg / usage errors now render in clap's format (no suite
+//! pins those bytes — verified by grep over tests/ before migration).
 
+use clap::Parser;
 use std::process::ExitCode;
 
-fn usage() -> ! {
-    eprintln!("usage: ap-verify-dump <file.py>");
-    std::process::exit(2);
+/// Parse + lower + verify a Python file; one C-10 diagnostic per stdout line.
+#[derive(Parser)]
+#[command(name = "ap-verify-dump", version)]
+struct Args {
+    /// Python source file to verify.
+    file: String,
 }
 
 fn main() -> ExitCode {
-    let Some(path) = std::env::args().nth(1) else {
-        usage();
-    };
-    if path == "--help" || path == "-h" {
-        usage();
-    }
+    let Args { file: path } = Args::parse();
     let src = match std::fs::read_to_string(&path) {
         Ok(s) => s,
         Err(_) => {

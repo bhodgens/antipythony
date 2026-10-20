@@ -6,44 +6,31 @@
 //! the tier-0 executor, so `--tier 0` is the only mode it honors; any other
 //! mode is rejected loudly rather than silently running tier-0 (a silent
 //! accept would let an adaptive/binary gate report green on tier-0 output).
+//!
+//! robustness-ci 05.01: arg parsing moved to clap. The stdout/stderr/exit
+//! bytes this bin emits for VALID invocations (and for the semantic errors
+//! below) are the pinned test seam and are unchanged; only unrecognized-arg
+//! / usage errors now render in clap's format (no suite pins those bytes —
+//! verified by grep over tests/ before migration).
 
+use clap::Parser;
 use std::io::Write;
 
+/// Parse -> lower -> tier-0 execute a single .py file (T-05/T-06 testability seam).
+#[derive(Parser)]
+#[command(name = "ap-run-eval", version)]
+struct Args {
+    /// Execution tier mode; this bin is the tier-0 executor, so only `0` is honored.
+    #[arg(long, value_name = "MODE")]
+    tier: Option<String>,
+
+    /// Python source file to execute.
+    file: String,
+}
+
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
+    let Args { tier, file: path } = Args::parse();
 
-    let mut tier: Option<String> = None;
-    let mut path: Option<String> = None;
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--tier" => {
-                let Some(mode) = args.get(i + 1) else {
-                    eprintln!("ap-run-eval: --tier requires a mode (0 | adaptive)");
-                    std::process::exit(2);
-                };
-                tier = Some(mode.clone());
-                i += 2;
-            }
-            other if other.starts_with("--tier=") => {
-                tier = Some(other["--tier=".len()..].to_string());
-                i += 1;
-            }
-            other => {
-                if path.is_some() {
-                    eprintln!("ap-run-eval: unexpected argument '{other}'");
-                    std::process::exit(2);
-                }
-                path = Some(other.to_string());
-                i += 1;
-            }
-        }
-    }
-
-    let Some(path) = path else {
-        eprintln!("usage: ap-run-eval [--tier 0] <file.py>");
-        std::process::exit(2);
-    };
     if let Some(mode) = &tier {
         if mode != "0" {
             eprintln!(

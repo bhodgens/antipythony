@@ -23,24 +23,44 @@
 //! when any UnboundLocal/UnresolvedName diagnostic was found, 0 with no
 //! diagnostics, 1 on parse/lowering failure — 3 is distinct from the parse
 //! error exit so callers can tell a semantic refusal from a syntax failure.
+//!
+//! robustness-ci 05.01: arg parsing moved to clap. The dump/verify/`cannot
+//! read` output bytes for valid invocations are the pinned test seam and are
+//! unchanged; only unrecognized-arg / usage errors now render in clap's
+//! format (no suite pins those bytes — verified by grep over tests/).
 
+use clap::{ArgGroup, Parser};
 use std::process::ExitCode;
 
-fn usage() -> ! {
-    eprintln!("usage: ap-ir-dump [--tree|--golden|--verify] <file.py>");
-    std::process::exit(2);
+/// Parse + lower a Python file and dump its IR (T-02/T-03/T-04 seam).
+#[derive(Parser)]
+#[command(name = "ap-ir-dump", version)]
+#[command(group(ArgGroup::new("form").args(["tree", "golden", "verify"])))]
+struct Args {
+    /// T-02 tree form (one node-kind line per IR node). Default.
+    #[arg(long)]
+    tree: bool,
+    /// Golden formatter (dump_module) for checked-in *.ir byte-equality.
+    #[arg(long)]
+    golden: bool,
+    /// Verify mode: diagnostics to stderr, exit 3 on semantic refusals.
+    #[arg(long)]
+    verify: bool,
+
+    /// Python source file to dump.
+    file: String,
 }
 
 fn main() -> ExitCode {
-    let mut args: Vec<String> = std::env::args().skip(1).collect();
-    let form = match args.first().map(String::as_str) {
-        Some("--tree") | Some("--golden") | Some("--verify") => args.remove(0),
-        Some(f) if f.starts_with("--") => usage(),
-        _ => "--tree".to_string(),
+    let args = Args::parse();
+    let form = if args.verify {
+        "verify"
+    } else if args.golden {
+        "golden"
+    } else {
+        "tree"
     };
-    let Some(path) = args.first().cloned() else {
-        usage();
-    };
+    let path = args.file;
     let src = match std::fs::read_to_string(&path) {
         Ok(s) => s,
         Err(_) => {
@@ -48,8 +68,8 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    match form.as_str() {
-        "--verify" => match ap_parse::verify_source(&src) {
+    match form {
+        "verify" => match ap_parse::verify_source(&src) {
             Ok(diags) => {
                 if diags.is_empty() {
                     ExitCode::SUCCESS
@@ -80,8 +100,8 @@ fn main() -> ExitCode {
         },
         _ => match ap_parse::lower_source(&src) {
             Ok((module, _scopes)) => {
-                let text = match form.as_str() {
-                    "--golden" => ap_ir::dump_module(&module),
+                let text = match form {
+                    "golden" => ap_ir::dump_module(&module),
                     _ => ap_ir::dump_module_tree(&module),
                 };
                 print!("{text}");

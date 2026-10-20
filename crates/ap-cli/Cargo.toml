@@ -10,6 +10,7 @@ path = "src/lib.rs"
 
 [dependencies]
 ap-run = { path = "../ap-run" }
+clap = { version = "4", features = ["derive"] }
 
 [[bin]]
 name = "antipythany"
