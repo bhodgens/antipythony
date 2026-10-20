@@ -105,8 +105,8 @@ Updated by the orchestrator after each leaf review. All leaves NOT STARTED.
 
 | Leaf | Status |
 | --- | --- |
-| 00.01 ci.yml core jobs | NOT STARTED |
-| 00.02 reference discovery + AP_REQUIRE_REFERENCE | NOT STARTED |
+| 00.01 ci.yml core jobs | COMMITTED (717bc9c) |
+| 00.02 reference discovery + AP_REQUIRE_REFERENCE | COMMITTED (7c8358d) |
 | 00.03 conformance matrix jobs | NOT STARTED |
 | 00.04 branch-protection doc | NOT STARTED |
 | 01.01 XPASS ceiling gate | NOT STARTED |
@@ -115,10 +115,10 @@ Updated by the orchestrator after each leaf review. All leaves NOT STARTED.
 | 01.04 xtask notices tests | NOT STARTED |
 | 01.05 bench trend-only | NOT STARTED |
 | 02.01 workspace.lints + clippy gate | NOT STARTED |
-| 02.02 importer segment guard | NOT STARTED |
+| 02.02 importer segment guard | COMMITTED (6dae48c) |
 | 03.01 golden .meta provenance | NOT STARTED |
 | 03.02 stdlib-provenance xtask | NOT STARTED |
-| 03.03 AGENTS.md hygiene + hooks note | NOT STARTED |
+| 03.03 AGENTS.md hygiene + hooks note | COMMITTED (6b67db0) |
 | 04.01 proptest re differential | NOT STARTED |
 | 04.02 proptest repr differential | NOT STARTED |
 | 04.03 nightly fuzz workflow | NOT STARTED |
