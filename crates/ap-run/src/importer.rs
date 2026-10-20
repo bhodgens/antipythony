@@ -155,7 +155,66 @@ enum Found {
     Module { file: String },
 }
 
+/// Robustness-ci leaf 02.02 (review finding #16): a module-name segment is
+/// safe to join onto a sys.path directory only if it is neither empty, nor
+/// `.`/`..`, nor contains a path separator. Pre-guard, `find_on_path("")`
+/// joined the empty segment and returned the sys.path BASE DIRECTORY as a
+/// namespace package (`__import__('')` "succeeded" with `__path__ = [base]`)
+/// — a filesystem-traversal surface for computed names.
+///
+/// The parser cannot currently produce such names; this guard is the
+/// defense for the `__import__`-with-a-computed-string path (builtins.rs
+/// routes arbitrary str args straight into `import_module`).
+///
+/// The byte-exact CPython 3.14 error texts for the rejected shapes
+/// (`ValueError: Empty module name`, `ModuleNotFoundError: No module named
+/// '.'`, the `; 'os' is not a package` suffix form, etc.) are raised
+/// upstream in `import_file_module` where the dotted-prefix context is
+/// known; the find functions themselves simply refuse the join.
+/// Probes pinned in `tests/import_guard_differential.rs`.
+fn segment_is_safe(seg: &str) -> bool {
+    !seg.is_empty() && seg != "." && seg != ".." && !seg.contains('/') && !seg.contains('\\')
+}
+
+/// Python `repr()` for the module name embedded in CPython's
+/// ModuleNotFoundError text (leaf 02.02 probe-pinned: `__import__('a\\b')`
+/// prints `No module named 'a\\b'` — doubled backslash — and `__import__("a'q")`
+/// switches to double quotes). CPython's repr rules for short printable
+/// strings: single quotes unless the string contains `'` and no `"`; escape
+/// `\`, the active quote, and \\n \\r \\t. Names the parser can produce
+/// never hit an escape, so existing goldens are unaffected.
+fn py_name_repr(s: &str) -> String {
+    let has_sq = s.contains('\'');
+    let has_dq = s.contains('"');
+    let q = if has_sq && !has_dq { '"' } else { '\'' };
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push(q);
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c == q => {
+                out.push('\\');
+                out.push(c);
+            }
+            // CPython repr escapes remaining ASCII control chars as \xNN
+            // (probe: __import__('a\x08b') -> "No module named 'a\\x08b'").
+            c if (c < '\x20' || c == '\x7f') => {
+                out.push_str(&format!("\\x{:02x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out.push(q);
+    out
+}
+
 fn find_on_path(name: &str) -> Option<Found> {
+    if !segment_is_safe(name) {
+        return None;
+    }
     let entries = SYS_PATH.with(|p| p.borrow().clone());
     for base in entries {
         let bp = std::path::Path::new(&base);
@@ -183,6 +242,10 @@ fn find_on_path(name: &str) -> Option<Found> {
 }
 
 fn find_submodule(parent_dir: &str, name: &str) -> Option<Found> {
+    // Robustness-ci 02.02: same join guard as find_on_path (see there).
+    if !segment_is_safe(name) {
+        return None;
+    }
     let bp = std::path::Path::new(parent_dir);
     let dir = bp.join(name);
     if dir.is_dir() {
@@ -409,6 +472,57 @@ fn import_module_inner(interp: &Rc<Interpreter>, name: &str) -> EResult {
 }
 
 fn import_file_module(interp: &Rc<Interpreter>, name: &str) -> EResult {
+    // --- robustness-ci leaf 02.02: module-name path-segment guard ----------
+    // (review finding #16). No unsafe segment ('', '.', '..', or one
+    // containing '/' or '\') may reach a sys.path join in find_on_path /
+    // find_submodule. The error texts below are byte-pinned against live
+    // CPython 3.14 (`__import__(name)`, level=0); probes reproduced in
+    // crates/ap-run/tests/import_guard_differential.rs.
+    if name.is_empty() {
+        // CPython _sanity_check: ValueError('Empty module name') BEFORE any
+        // path lookup or finder join.
+        return Err(raise("ValueError", "Empty module name"));
+    }
+    if name.starts_with('.') {
+        // A leading-dot name is never absolute-importable. Fresh-process
+        // CPython behavior (pinned):
+        // - '..', '...', '..a', '../evil' -> ModuleNotFoundError: No module
+        //   named '.' (the rpartition parent of the leading '..' is '.').
+        // - '.x' where the first segment x resolves on the absolute path
+        //   ('.os', '.json', '.keyword', '.os.path') -> ValueError: Empty
+        //   module name (CPython loads x's source under the alias, then
+        //   __import__ re-imports name.partition('.')[0] == "").
+        // - '.x' where x does not resolve ('.a', '.a.b', '.nonexistentpkg',
+        //   '.os/', '.1') -> ModuleNotFoundError: No module named '.x' up to
+        //   the first dot (the failing parent-prefix report).
+        if name.starts_with("..") {
+            return Err(raise(
+                "ModuleNotFoundError",
+                "No module named '.'".to_string(),
+            ));
+        }
+        let head = name.strip_prefix('.').unwrap_or(name);
+        let first = head.split('.').next().unwrap_or("");
+        // CPython's '.x' quirk fires when the TAIL after the last dot (== x
+        // for a single leading dot) matches a finder spec (os.py on
+        // sys.path, native json, ...) — sys.modules CACHE membership does
+        // not count (probe: '.sys' -> No module named '.sys' even though
+        // sys is always cached).
+        let resolves = segment_is_safe(first)
+            && (find_on_path(first).is_some()
+                || builtins_modules::get_or_make_module(interp, first).is_some());
+        if resolves {
+            return Err(raise("ValueError", "Empty module name"));
+        }
+        let reported = match head.find('.') {
+            Some(i) => format!(".{}", &head[..i]),
+            None => name.to_string(),
+        };
+        return Err(raise(
+            "ModuleNotFoundError",
+            format!("No module named {}", py_name_repr(&reported)),
+        ));
+    }
     let parts: Vec<&str> = name.split('.').collect();
     // Walk the dotted path, importing each parent package first.
     let mut prefix: Vec<&str> = Vec::new();
@@ -443,15 +557,28 @@ fn import_file_module(interp: &Rc<Interpreter>, name: &str) -> EResult {
         }
         let found = match &parent_dir {
             Some(dir) => find_submodule(dir, part),
+            // Leaf 02.02 note: CPython raises "No module named '<name>';
+            // '<parent>' is not a package" when a loaded parent has no
+            // __path__ (probes: 'os.nope', 'keyword.nope', 'abc.x'). ap's
+            // pre-existing fallthrough to find_on_path (plain message) is a
+            // documented native-module fidelity gap (Plan-02 surface, noted
+            // in the leaf PROGRESS entry) — forcing the suffix here would
+            // regress native `json.decoder` / `os.path` (ap's json/os are
+            // native, CPython's json is a package with __path__). The child
+            // segment is guarded by find_on_path's own segment check
+            // regardless, so no unsafe join is possible on this arm.
             None => find_on_path(part),
         };
         let found = match found {
             Some(f) => f,
             None => {
+                // 02.02: CPython embeds repr(name) ("No module named
+                // 'a\\b'"), so segments the finder refused for containing
+                // backslashes print doubled, byte-exact.
                 return Err(raise(
                     "ModuleNotFoundError",
-                    format!("No module named '{full}'"),
-                ))
+                    format!("No module named {}", py_name_repr(&full)),
+                ));
             }
         };
         exec_found(interp, &full, &found)?;
@@ -469,8 +596,12 @@ fn import_file_module(interp: &Rc<Interpreter>, name: &str) -> EResult {
         }
         parent_dir = module_path_dir(&m);
     }
-    sys_modules_get(name)
-        .ok_or_else(|| raise("ModuleNotFoundError", format!("No module named '{name}'")))
+    sys_modules_get(name).ok_or_else(|| {
+        raise(
+            "ModuleNotFoundError",
+            format!("No module named {}", py_name_repr(name)),
+        )
+    })
 }
 
 /// Extract `[pkg_dir]` from a module value's `__path__` (packages only).
