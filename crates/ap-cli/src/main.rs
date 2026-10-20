@@ -115,9 +115,19 @@ fn cmd_new(rest: &[&str]) -> Result<i32, String> {
 // ---------------------------------------------------------------------------
 
 fn cmd_add(rest: &[&str]) -> Result<i32, String> {
+    // `--no-deps` form: `antipythany add --no-deps "<req> <req> ..."` installs
+    // exactly the named requirements (space-separated uv specs) without
+    // transitive resolution. Escape hatch for ecosystems whose uv closure
+    // contains platform wheels antipythany must refuse (e.g. scrapy ->
+    // lxml/brotli/cryptography): the caller pins the pure subset. The purity
+    // filter still runs — anything C-flavored still fails loud (C-11).
+    let (no_deps, rest) = match rest.first() {
+        Some(&"--no-deps") => (true, &rest[1..]),
+        _ => (false, rest),
+    };
     let spec = rest
         .first()
-        .ok_or("usage: antipythany add <package | file:<path | .whl>>")?;
+        .ok_or("usage: antipythany add [--no-deps] <package | req-list | file:<path | .whl>>")?;
     // File-path argument forms: a bare path to a wheel/dir, or `file:<path>`
     // (G-6: the offline form the test track assumes; uv's own convention).
     let uv_spec: String = normalize_spec(spec);
@@ -134,7 +144,11 @@ fn cmd_add(rest: &[&str]) -> Result<i32, String> {
     // Stage into a temp dir INSIDE the cache root (same volume => atomic
     // rename), inspect for native components, promote only if pure.
     let staging = staging_dir()?;
-    let staged = ap_pack::uv::install_staged(&uv_spec, &staging)?;
+    let staged = if no_deps {
+        ap_pack::uv::install_staged_no_deps(&uv_spec, &staging)?
+    } else {
+        ap_pack::uv::install_staged(&uv_spec, &staging)?
+    };
     if let Err(diag) = ap_pack::purity::check_pure(&staged.dir) {
         // C-11: total refusal — nothing enters the cache, lock, or manifest.
         let _ = std::fs::remove_dir_all(&staged.dir);

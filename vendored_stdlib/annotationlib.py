@@ -57,7 +57,10 @@ class ForwardRef:
 
 
 def get_annotations(obj, *, globals=None, locals=None, eval_str=False,
-                    annotation_format=Format.VALUE, owner=None):
+                    annotation_format=Format.VALUE, owner=None, format=None):
+    # T1 (scrapy fix pass): typing._get_protocol_attrs calls with the 3.14
+    # `format=` kwarg; the v0 vendored copy predates it (accept + ignore -
+    # format only selects FORWARDREF evaluation strategies we don't do).
     """Return obj.__annotations__ (v0: the raw dict, never evaluated)."""
     anns = getattr(obj, "__annotations__", None)
     if anns is None:

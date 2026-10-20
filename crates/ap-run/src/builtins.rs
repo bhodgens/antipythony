@@ -212,10 +212,16 @@ pub fn builtin_len(args: &[Value]) -> BResult {
                 }
             }
             _ => {
+                // T1 (scrapy fix pass): list-derived instances (StackSummary)
+                // size via their backing list.
+                if crate::classes::is_list_derived_instance(v) {
+                    let l = crate::classes::list_backing_or_new(v);
+                    return Ok(Value::Int(Int::from_i64(l.len() as i64)));
+                }
                 return Err(raise(
                     "TypeError",
                     format!("object of type '{}' has no len()", v.type_name()),
-                ))
+                ));
             }
         },
         _ => {
@@ -1850,6 +1856,10 @@ pub fn make_sys_module(interp: &Interpreter) -> Value {
         Value::Str(PyString::new("exc_info")),
         builtin_marker("sys.exc_info"),
     );
+    let _ = ns.set(
+        Value::Str(PyString::new("exception")),
+        builtin_marker("sys.exception"),
+    );
     let _ = m
         .module_ns
         .borrow_mut()
@@ -1996,6 +2006,9 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
             Value::None,
             Value::None,
         ]))))),
+        // T1 (scrapy fix pass): sys.exception() — the active handled exception
+        // in CPython; v0 returns None (matches the exc_info stub above).
+        "exception" => Some(Ok(Value::None)),
         _ => None,
     }
 }
@@ -2673,6 +2686,26 @@ pub fn call_builtin(
     args: &[Value],
     kwargs: &[(String, Value)],
 ) -> crate::EvalResult {
+    // T1 (scrapy fix pass): traceback.py 3.13+ calls code.co_positions()
+    // while walking tracebacks; our synthetic code objects answer with a
+    // position-less generator ((None, None, None, None) per instruction) so
+    // _get_code_position falls back to tb_lineno.
+    if name == "<code>.co_positions" {
+        let items: Vec<Value> = vec![
+            Value::Tuple(Gc::new(ap_obj::value::Tuple(vec![
+                Value::None,
+                Value::None,
+                Value::None,
+                Value::None,
+            ])));
+            256
+        ];
+        let l = ap_obj::value::PyList::new();
+        for it in items {
+            l.append(it);
+        }
+        return Ok(Value::List(l));
+    }
     // 02.04a (interp bug #17): type.__new__(mcls, name, bases, ns) — the
     // super().__new__ call inside user metaclass __new__ bodies (ABCMeta,
     // EnumType). Creates the class payload the metaclass machinery needs.
@@ -2690,6 +2723,29 @@ pub fn call_builtin(
                 .set(Value::Str(PyString::new("_ap_wrapped")), target.clone());
         }
         return Ok(Value::Obj(token));
+    }
+    // T1 (scrapy fix pass): ABCMeta.register inert - returns None.
+    if name == "__ap_abc_register__" {
+        return Ok(Value::None);
+    }
+    // T1 (scrapy fix pass): _typing marker calls — typing.py's
+    // `TypeVar("T")` etc. The stub module provides _typing.* marker fns;
+    // calling them yields opaque placeholder objects carrying the name
+    // (real substitution semantics are a documented Plan-02 gap).
+    if let Some(rest) = name.strip_prefix("_typing.") {
+        let o = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, &format!("_typing.{rest} instance"));
+        {
+            let mut a = o.attrs.borrow_mut();
+            let nm = args.first().and_then(|v| match v {
+                Value::Str(sv) => Some(Value::Str(PyString::new(sv.as_str().to_string()))),
+                _ => None,
+            });
+            let _ = a.set(
+                Value::Str(PyString::new("__name__")),
+                nm.unwrap_or(Value::None),
+            );
+        }
+        return Ok(Value::Obj(o));
     }
     // 02.08-lite: dotted native-module markers (math.sqrt, itertools.count, ...).
     if (name.contains('.') && !name.starts_with("sys.")) || name.starts_with('<') {

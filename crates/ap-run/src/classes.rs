@@ -33,6 +33,95 @@ type EResult = Result<Value, Flow>;
 /// call (enum._simple_enum drives it). Mirrors exec_class_def's creation tail:
 /// metaclass resolution from the bases, a user metaclass __new__ (with the
 /// kwargs), set_name hooks, and module-marker registration.
+/// T1 (scrapy fix pass): build a REAL traceback chain from interp.tb_frames —
+/// vendored traceback.print_exception walks tb.tb_frame.f_code
+/// (co_filename/co_name), f_lineno, f_globals and follows tb_next; the old
+/// single stub frame had no f_code and no chain. Shared by both exception
+/// attr paths (classes.rs class-instance arm + interp.rs Exception arm).
+pub fn traceback_value(interp: &crate::frame::Interpreter) -> Value {
+    let entries = interp.tb_frames.borrow().clone();
+    let script = interp.script_path.clone();
+    let mut next: Value = Value::None;
+    for (qualname, line) in entries.iter().rev() {
+        next = tb_node(interp, &script, qualname, *line, next);
+    }
+    if matches!(next, Value::None) {
+        next = tb_node(interp, &script, "<module>", 1, Value::None);
+    }
+    next
+}
+
+fn tb_node(
+    interp: &crate::frame::Interpreter,
+    script: &str,
+    qualname: &str,
+    line: usize,
+    next: Value,
+) -> Value {
+    let frame = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<frame>");
+    let code = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<code>");
+    {
+        let mut cattrs = code.attrs.borrow_mut();
+        let _ = cattrs.set(
+            Value::Str(PyString::new("co_filename")),
+            Value::Str(PyString::new(script.to_string())),
+        );
+        let _ = cattrs.set(
+            Value::Str(PyString::new("co_name")),
+            Value::Str(PyString::new(qualname.to_string())),
+        );
+        let _ = cattrs.set(
+            Value::Str(PyString::new("co_qualname")),
+            Value::Str(PyString::new(qualname.to_string())),
+        );
+        let _ = cattrs.set(
+            Value::Str(PyString::new("co_firstlineno")),
+            Value::Int(ap_obj::Int::from_i64(line.max(1) as i64)),
+        );
+        // co_positions(): a BuiltinFn marker call_builtin answers (see the
+        // "<code>.co_positions" arm in builtins::call_builtin).
+        let _ = cattrs.set(
+            Value::Str(PyString::new("co_positions")),
+            Value::Obj(ap_obj::PyObject::new(
+                ap_obj::ObjKind::BuiltinFn,
+                "<code>.co_positions",
+            )),
+        );
+    }
+    {
+        let mut attrs = frame.attrs.borrow_mut();
+        let _ = attrs.set(Value::Str(PyString::new("f_code")), Value::Obj(code));
+        let _ = attrs.set(
+            Value::Str(PyString::new("f_lineno")),
+            Value::Int(ap_obj::Int::from_i64(line.max(1) as i64)),
+        );
+        let _ = attrs.set(
+            Value::Str(PyString::new("f_globals")),
+            Value::Dict(interp.globals.clone()),
+        );
+        let _ = attrs.set(
+            Value::Str(PyString::new("f_locals")),
+            Value::Dict(PyDict::new()),
+        );
+        let _ = attrs.set(Value::Str(PyString::new("f_back")), Value::None);
+    }
+    let tb = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<traceback>");
+    {
+        let mut attrs = tb.attrs.borrow_mut();
+        let _ = attrs.set(Value::Str(PyString::new("tb_frame")), Value::Obj(frame));
+        let _ = attrs.set(Value::Str(PyString::new("tb_next")), next);
+        let _ = attrs.set(
+            Value::Str(PyString::new("tb_lineno")),
+            Value::Int(ap_obj::Int::from_i64(line.max(1) as i64)),
+        );
+        let _ = attrs.set(
+            Value::Str(PyString::new("tb_lasti")),
+            Value::Int(ap_obj::Int::from_i64(0)),
+        );
+    }
+    Value::Obj(tb)
+}
+
 pub fn dynamic_type(
     interp: &Rc<Interpreter>,
     name: &str,
@@ -883,26 +972,70 @@ pub fn exec_class_def(
                 hook
             };
             let f = unwrap_classmethod(&hook_bound, class_v.clone());
+            // T1 (scrapy fix pass): the user hook runs on EVERY subclass
+            // creation (CPython calls __init_subclass__ unconditionally);
+            // kwargs (if any) ride along. The old code only invoked it when
+            // class kwargs were present, so plain `class B(A)` never ran
+            // A.__init_subclass__ (typing's Protocol machinery needs it).
             // The DEFAULT hook (object.__init_subclass__) rejects kwargs
             // with the pinned text (S-03-29); user overrides consume them.
             let kwargs = CLASS_KWARGS.with(|c| c.borrow().clone());
-            if !kwargs.is_empty() {
-                // A user override (defined on a non-object owner) consumes
-                // the kwargs.
-                call_value(
-                    interp,
-                    &module_frame(interp),
-                    &f,
-                    &[],
-                    &kwargs
-                        .iter()
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect::<Vec<_>>(),
-                )?;
+            // T1 (scrapy fix pass): stage the classmethod super context so
+            // zero-arg super() inside the hook resolves (typing:
+            // super().__init_subclass__() in Protocol.__init_subclass__).
+            if let Some(parent_t) = base_types.first() {
+                *interp.pending_super_ctx.borrow_mut() =
+                    Some((parent_t.clone(), class_v.clone(), true));
             }
+            call_value(
+                interp,
+                &module_frame(interp),
+                &f,
+                &[],
+                &kwargs
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect::<Vec<_>>(),
+            )?;
         }
     }
     CLASS_KWARGS.with(|c| c.borrow_mut().clear());
+
+    // T1 (scrapy fix pass): invoke the user metaclass __init__ (CPython calls
+    // type.__new__ -> metaclass __init__(cls, name, bases, dict, **kwds)
+    // during class creation; typing's _ProtocolMeta.__init__ sets
+    // cls.__protocol_attrs__ here).
+    {
+        let meta = t.metaclass.borrow().clone();
+        if let Some(mt) = meta {
+            if mt.name != "type" {
+                if let Some((minit, minit_owner)) = mt.lookup_with_owner("__init__") {
+                    let kwargs: Vec<(String, Value)> = CLASS_KWARGS.with(|c| c.borrow().clone());
+                    // Stage the super context: zero-arg super() inside the
+                    // metaclass __init__ (typing: super().__init__()).
+                    *interp.pending_super_ctx.borrow_mut() =
+                        Some((minit_owner, class_v.clone(), true));
+                    let _ = call_value(
+                        interp,
+                        &module_frame(interp),
+                        &minit,
+                        &[
+                            class_v.clone(),
+                            Value::Str(PyString::new(c.name.clone())),
+                            Value::Tuple(Gc::new(Tuple(
+                                base_types
+                                    .iter()
+                                    .map(|b| class_value_for_public(b))
+                                    .collect(),
+                            ))),
+                            Value::Dict(t.dict.clone()),
+                        ],
+                        &kwargs,
+                    );
+                }
+            }
+        }
+    }
 
     // 8. Register user-subclass edges (for __subclasses__).
     for b in &base_types {
@@ -1020,6 +1153,20 @@ pub fn base_type_ref(interp: &Interpreter, v: &Value) -> Result<Option<Rc<TypeRe
             )
             .map_err(|_| raise("TypeError", "cannot synthesize builtin base class"))?;
             Ok(Some(t))
+        }
+        // T1 (scrapy fix pass): `class Foo(Generic[T])` - the Generic alias
+        // placeholder resolves to its ORIGIN (Generic) as the effective base.
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque && o.name == "typing._GenericAlias" => {
+            let origin = o
+                .slice_parts
+                .borrow()
+                .first()
+                .cloned()
+                .unwrap_or(Value::None);
+            match base_type_ref(interp, &origin)? {
+                Some(t) => Ok(Some(t)),
+                None => Ok(None),
+            }
         }
         // 02.04a (interp bug #2, vendored-stdlib stress): abc.py defines
         // `class abstractclassmethod(classmethod)` — the decorator builtins
@@ -1750,18 +1897,7 @@ fn instance_attr(
     // 02.04a (interp bug #6): exceptions carry __traceback__ (types.py
     // probes it at import: TracebackType = type(exc.__traceback__)).
     if t.flags.is_exception && name == "__traceback__" {
-        let frame = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<frame>");
-        let tb = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<traceback>");
-        {
-            let mut attrs = tb.attrs.borrow_mut();
-            let _ = attrs.set(Value::Str(PyString::new("tb_frame")), Value::Obj(frame));
-            let _ = attrs.set(Value::Str(PyString::new("tb_next")), Value::None);
-            let _ = attrs.set(
-                Value::Str(PyString::new("tb_lineno")),
-                Value::Int(ap_obj::Int::from_i64(0)),
-            );
-        }
-        return Ok(Value::Obj(tb));
+        return Ok(traceback_value(interp));
     }
     // 4. __getattr__ fallback (S-03-09).
     if let Some((ga, _)) = t.lookup_with_owner("__getattr__") {
@@ -2028,6 +2164,22 @@ pub fn attr_set_protocol(
     ) {
         return Ok(());
     }
+    // T1 (scrapy fix pass): class-attribute writes on UserClasses
+    // (typing: `cls.__protocol_attrs__ = ...` inside __init_subclass__).
+    // Land in the class dict so MRO lookups see them.
+    if let Value::Obj(o) = obj {
+        if o.kind == ap_obj::ObjKind::UserClass {
+            let t = o
+                .class_ref
+                .borrow()
+                .clone()
+                .or_else(|| o.type_ref.borrow().as_ref().and_then(|w| w.upgrade()));
+            if let Some(t) = t {
+                let _ = t.dict.set(Value::Str(PyString::new(name.to_string())), v);
+                return Ok(());
+            }
+        }
+    }
     // 02.03b-fix: interned-type attr writes (ast.py: Tuple.dims = property)
     // park on the PyObject; attr_get's Type arm reads them back.
     if let Value::Obj(o) = obj {
@@ -2048,11 +2200,15 @@ pub fn attr_set_protocol(
                 .and_then(|w| w.upgrade())
                 .ok_or_else(|| raise("SystemError", "instance without class"))?;
             // __setattr__ override wins (S-03-11 last clause).
-            if let Some((sa, _)) = t.lookup_with_owner("__setattr__") {
+            if let Some((sa, owner)) = t.lookup_with_owner("__setattr__") {
                 // The default object.__setattr__ is not materialized; only
                 // user overrides dispatch here.
                 if is_user_function(&sa) {
-                    return call_value(
+                    // T1 (scrapy fix pass): stage the method super context so
+                    // zero-arg super() inside __setattr__ works (typing.py's
+                    // _BaseGenericAlias.__setattr__ calls super().__setattr__).
+                    *interp.pending_super_ctx.borrow_mut() = Some((owner, obj.clone(), false));
+                    let r = call_value(
                         interp,
                         &module_frame(interp),
                         &sa,
@@ -2060,6 +2216,7 @@ pub fn attr_set_protocol(
                         &[],
                     )
                     .map(|_| ());
+                    return r;
                 }
             }
             // Slots with no dict: only declared names settable (S-03-13).
@@ -2540,6 +2697,56 @@ pub fn dict_backing(v: &Value) -> Option<Gc<PyDict>> {
             }),
         _ => None,
     }
+}
+
+/// T1 (scrapy fix pass): the seeded __module__ of a UserClass value (the
+/// class dict's __module__ if present).
+pub fn userclass_module(v: &Value) -> Option<Value> {
+    match v {
+        Value::Obj(o) => {
+            let t = o.type_ref.borrow().as_ref().and_then(|w| w.upgrade())?;
+            t.dict.get(&Value::Str(PyString::new("__module__")))
+        }
+        _ => None,
+    }
+}
+
+/// T1 (scrapy fix pass): is this a UserInstance whose class MRO carries a
+/// synthesized `list` base (e.g. traceback.StackSummary(list))? The dict
+/// twin is is_dict_derived keyed on the class TypeRef.
+pub fn is_list_derived_instance(v: &Value) -> bool {
+    match v {
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
+            match o.type_ref.borrow().as_ref().and_then(|w| w.upgrade()) {
+                Some(t) => t.mro.borrow().iter().any(|m| m.name == "list"),
+                None => false,
+            }
+        }
+        _ => false,
+    }
+}
+
+/// The backing list of a list-derived instance, creating it (empty) on first
+/// use. Stored under attrs["__ap_list__"].
+pub fn list_backing_or_new(v: &Value) -> Gc<PyList> {
+    if let Value::Obj(o) = v {
+        if let Some(l) = o
+            .attrs
+            .borrow()
+            .get(&Value::Str(PyString::new("__ap_list__")))
+        {
+            if let Value::List(l) = l {
+                return l.clone();
+            }
+        }
+        let l = PyList::new();
+        let _ = o.attrs.borrow_mut().set(
+            Value::Str(PyString::new("__ap_list__")),
+            Value::List(l.clone()),
+        );
+        return l;
+    }
+    PyList::new()
 }
 
 /// The display type name for error messages: instances/exceptions report

@@ -4167,8 +4167,13 @@ pub fn call_functools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
                 // (call dispatch: interp Opaque arm -> wrapped fn; v0: no
                 // memoization, documented in call_functools).
                 if matches!(name, "lru_cache" | "cache") {
-                    if let Some(f) = args.first() {
-                        return Ok(lru_wrapper_of(f));
+                    // T1 (scrapy fix pass): `@lru_cache(_MAXCACHE)` (vendored
+                    // re/__init__.py) passes a NON-callable maxsize — CPython
+                    // treats a callable first arg as the fn (single-stage)
+                    // and anything else as maxsize (two-stage). The old code
+                    // wrapped the int itself, so `.cache_clear` blew up.
+                    if args.first().map(|v| callable_value(v)).unwrap_or(false) {
+                        return Ok(lru_wrapper_of(args.first().unwrap()));
                     }
                 }
                 if name != "wraps" {
@@ -8625,9 +8630,26 @@ pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
                     }
                     return Some(s(full.clone()));
                 }
+                // T1 (scrapy fix pass): markers answer __module__/__qualname__
+                // (typing probes __module__ on decorated fns).
+                if name == "__module__" {
+                    return Some(s("builtins"));
+                }
+                if name == "__qualname__" {
+                    return Some(s(full.clone()));
+                }
+                if name == "__doc__" {
+                    return Some(Value::None);
+                }
                 // itertools.chain.from_iterable classmethod-style access
                 if full == "itertools.chain" && name == "from_iterable" {
                     return Some(marker("itertools.chain.from_iterable"));
+                }
+                // T1 (scrapy fix pass): ABCMeta.register on the ABCMeta
+                // marker (typing/attrs register classes with ABCs) - an
+                // inert marker that returns None when called.
+                if name == "register" {
+                    return Some(marker("__ap_abc_register__"));
                 }
                 None
             }
@@ -11611,6 +11633,24 @@ fn build_importlib(interp: &crate::frame::Interpreter) -> Value {
     let _ = ns.set(s("__import__"), marker("__import__"));
     if let Some(p) = get_or_make_module_cached("importlib._abc") {
         let _ = ns.set(s("_abc"), p);
+    }
+    // T1 (scrapy fix pass): expose __path__ = the vendored importlib package
+    // dir so `import importlib.resources` (scrapy.utils.misc) can resolve the
+    // vendored subpackage through the normal submodule search.
+    {
+        let entries: Vec<String> = crate::importer::sys_path_entries();
+        for base in entries {
+            let dir = std::path::Path::new(&base).join("importlib");
+            if dir.join("__init__.py").is_file() {
+                let _ = ns.set(
+                    s("__path__"),
+                    Value::List(ap_obj::value::PyList::from_vec(vec![s(dir
+                        .to_string_lossy()
+                        .into_owned())])),
+                );
+                break;
+            }
+        }
     }
     let _ = &interp;
     finish(m, ns)

@@ -139,6 +139,12 @@ pub fn sys_path_value() -> Value {
     Value::List(ap_obj::value::PyList::from_vec(items))
 }
 
+/// T1 (scrapy fix pass): raw sys.path entries for native package builders
+/// that need to point __path__ at their vendored subpackage dirs.
+pub fn sys_path_entries() -> Vec<String> {
+    SYS_PATH.with(|p| p.borrow().clone())
+}
+
 /// `sys.modules` dict snapshot (fresh dict each read — v0).
 pub fn sys_modules_value() -> Value {
     let d = PyDict::new();
@@ -391,8 +397,27 @@ fn load_into(
         match item {
             ap_ir::Item::Stmt(st) => stmts.push(st.clone()),
             ap_ir::Item::FnDef(f) => {
+                // T1 (scrapy fix pass): decorated module-level defs defer to
+                // source position (mirror of interp::exec_module).
+                if !f.decorators.is_empty() {
+                    stmts.push(ap_ir::Stmt::LocalDef(Box::new(f.clone())));
+                    continue;
+                }
                 let id = reg.by_path_lookup(&f.name).unwrap_or(0);
                 let func = builtins::make_function(id, &f.name);
+                // T1 (scrapy fix pass): module-level defs previously had NO
+                // defining-frame registration, so default-arg expressions
+                // referencing module globals (`def f(v=_sentinel)`, vendored
+                // traceback.py) evaluated against the MAIN script's globals
+                // and died with NameError. Register the module frame so
+                // eval_default finds it.
+                interp
+                    .defining_frames
+                    .borrow_mut()
+                    .insert(id, frame.clone());
+                if let Value::Obj(o) = &func {
+                    *o.closure_slot.borrow_mut() = Some(id as u64);
+                }
                 frame.store_global(&f.name, func);
             }
             ap_ir::Item::ClassDef(c) => {
@@ -479,6 +504,51 @@ fn import_module_inner(interp: &Rc<Interpreter>, name: &str) -> EResult {
         }
     }
     // 3. Native registry (02.08-lite continued).
+    // T1 (scrapy fix pass): collections.abc — exec the vendored
+    // _collections_abc.py INTO a "collections.abc" module (CPython's
+    // collections/abc.py is exactly `from _collections_abc import *`; the
+    // vendored tree has the flat _collections_abc.py). Without this the
+    // native-parent descent returns an empty module and typing's
+    // Hashable/Mapping probes die.
+    if name == "collections.abc" {
+        for base in sys_path_entries() {
+            let f = std::path::Path::new(&base).join("_collections_abc.py");
+            if f.is_file() {
+                if let Ok(compiled) = compile_file(&f.to_string_lossy(), false, String::new()) {
+                    if let Ok(loaded) =
+                        load_into(interp, &compiled, name, &f.to_string_lossy(), "collections")
+                    {
+                        let stmts = module_stmts(interp, &compiled, &loaded.reg, &loaded.frame);
+                        if run_loaded(interp, &loaded, &stmts).is_ok() {
+                            // Build the module object fresh from the loaded
+                            // ns (a stale empty entry may exist in
+                            // sys.modules - overwrite it).
+                            let (m, mns) = builtins_modules::new_module(name);
+                            let _ = mns.set(s("__name__"), s(name));
+                            for (k, v) in loaded.ns.items() {
+                                let _ = mns.set(k, v);
+                            }
+                            *m.module_ns.borrow_mut() = Some(std::rc::Rc::new((*mns).clone()));
+                            let mv = Value::Obj(m);
+                            link_parent_attr(name, &mv);
+                            sys_modules_insert(name, &mv);
+                            return Ok(mv);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // T1 (scrapy fix pass): DOTTED names try the file finder FIRST when the
+    // parent package exposes __path__ (native importlib now points at the
+    // vendored dir), so `import importlib.resources` resolves the vendored
+    // subpackage instead of the native-parent early return.
+    if name.contains('.') {
+        if let Ok(m) = import_file_module(interp, name) {
+            sys_modules_insert(name, &m);
+            return Ok(m);
+        }
+    }
     if let Some(m) = builtins_modules::get_or_make_module(interp, name) {
         sys_modules_insert(name, &m);
         return Ok(m);
@@ -761,7 +831,7 @@ fn exec_compiled(
     *m.module_ns.borrow_mut() = Some(loaded.ns.clone());
     // BEFORE body execution (design: CPython circular-import semantics).
     sys_modules_insert(name, &v);
-    let stmts = module_stmts(compiled, &loaded.reg, &loaded.frame);
+    let stmts = module_stmts(interp, compiled, &loaded.reg, &loaded.frame);
     let outcome = run_loaded(interp, &loaded, &stmts);
     // Refresh the module's namespace view after body execution (the module
     // stores a by-value PyDict; body writes landed in `loaded.ns`).
@@ -783,14 +853,36 @@ fn exec_compiled(
     }
 }
 
-fn module_stmts(compiled: &Compiled, reg: &Rc<FnRegistry>, frame: &Rc<Frame>) -> Vec<ap_ir::Stmt> {
+fn module_stmts(
+    interp: &Rc<Interpreter>,
+    compiled: &Compiled,
+    reg: &Rc<FnRegistry>,
+    frame: &Rc<Frame>,
+) -> Vec<ap_ir::Stmt> {
     let mut stmts: Vec<ap_ir::Stmt> = Vec::new();
     for item in &compiled.module.items {
         match item {
             ap_ir::Item::Stmt(st) => stmts.push(st.clone()),
             ap_ir::Item::FnDef(f) => {
+                // T1 (scrapy fix pass): decorated module-level defs defer to
+                // source position (mirror of interp::exec_module).
+                if !f.decorators.is_empty() {
+                    stmts.push(ap_ir::Stmt::LocalDef(Box::new(f.clone())));
+                    continue;
+                }
                 let id = reg.by_path_lookup(&f.name).unwrap_or(0);
                 let func = builtins::make_function(id, &f.name);
+                // T1 (scrapy fix pass): register the defining frame so
+                // default-arg expressions resolve against THIS module's
+                // globals (`def f(v=_sentinel)` — vendored traceback.py),
+                // not the main script's.
+                interp
+                    .defining_frames
+                    .borrow_mut()
+                    .insert(id, frame.clone());
+                if let Value::Obj(o) = &func {
+                    *o.closure_slot.borrow_mut() = Some(id as u64);
+                }
                 frame.store_global(&f.name, func);
             }
             ap_ir::Item::ClassDef(c) => {
@@ -1193,7 +1285,7 @@ pub(crate) fn augment_with_vendored(interp: &Rc<Interpreter>, name: &str, m: &Va
             Ok(l) => l,
             Err(_) => return,
         };
-        let stmts = module_stmts(&compiled, &loaded.reg, &loaded.frame);
+        let stmts = module_stmts(interp, &compiled, &loaded.reg, &loaded.frame);
         // Best-effort body run (vendored namesakes may pull imports we
         // don't serve — ignore failures and copy what landed).
         let _ = run_loaded(interp, &loaded, &stmts);

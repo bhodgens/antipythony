@@ -342,11 +342,44 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
                         }
                     }
                 }
+                // T1 (scrapy fix pass): __class_getitem__ (PEP 560) —
+                // `list[int]`-style and `Generic[T]` subscription on classes.
+                // v0: return an opaque _GenericAlias placeholder carrying
+                // origin + params (real alias semantics are a documented
+                // Plan-02 gap; scrapy's annotations only need the object to
+                // EXIST and be inert).
+                let is_generic = t.lookup("__class_getitem__").is_some()
+                    || t.mro.borrow().iter().any(|m| m.name == "Generic")
+                    || o.name == "Generic";
+                if is_generic {
+                    if let Some(gf) = t.lookup("__class_getitem__") {
+                        if matches!(&gf, Value::Obj(fo) if fo.kind == ap_obj::ObjKind::Function) {
+                            return crate::interp::call_value_pub3(
+                                &gf,
+                                &[obj.clone(), key.clone()],
+                            );
+                        }
+                    }
+                    // T1 (scrapy fix pass): Native/no-impl __class_getitem__
+                    // (e.g. the _typing Generic stub): opaque alias
+                    // placeholder. origin + params parked; real alias
+                    // semantics are a documented Plan-02 gap.
+                    let g = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "typing._GenericAlias");
+                    *g.slice_parts.borrow_mut() = vec![obj.clone(), key.clone()];
+                    return Ok(Value::Obj(g));
+                }
             }
             Err(raise(
                 "TypeError",
                 format!("'{}' object is not subscriptable", o.name),
             ))
+        }
+        (Value::Obj(o), _k) if o.kind == ap_obj::ObjKind::BuiltinFn => {
+            // T1 (scrapy fix pass): subscripting a builtin marker fn (PEP 560
+            // __class_getitem__-style usage) - opaque alias placeholder.
+            let g = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "typing._GenericAlias");
+            *g.slice_parts.borrow_mut() = vec![obj.clone(), key.clone()];
+            return Ok(Value::Obj(g));
         }
         // 02.04 completion: weak containers route subscripts through the
         // gcsupport surface (dunder ops, self rides args[0]).

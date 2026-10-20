@@ -368,6 +368,15 @@ fn exec_module(
                 stmts.push(s.clone());
             }
             ap_ir::Item::FnDef(f) => {
+                // T1 (scrapy fix pass): decorated module-level defs must run
+                // at SOURCE POSITION (their decorator expressions read
+                // module globals bound by earlier imports/statements), so
+                // they defer as Stmt::LocalDef; plain defs keep the eager
+                // by_path binding below.
+                if !f.decorators.is_empty() {
+                    stmts.push(Stmt::LocalDef(Box::new(f.clone())));
+                    continue;
+                }
                 let id = reg.by_path.get(&f.name).copied().unwrap_or(0);
                 let func = builtins::make_function(id, &f.name);
                 // Module bindings live in the GLOBALS dict (BUG-A fix): the
@@ -1794,6 +1803,20 @@ pub(crate) fn eval_expr(
                     }
                     _ => String::new(),
                 };
+                if std::env::var("APX_DEBUG").is_ok() {
+                    let last = interp
+                        .tb_frames
+                        .borrow()
+                        .last()
+                        .map(|(q, l)| format!("{}:{}", q, l))
+                        .unwrap_or_default();
+                    eprintln!(
+                        "APX_ATTRMISS: receiver={} name={} at {}",
+                        crate::classes::display_type_name(&o),
+                        name,
+                        last
+                    );
+                }
                 raise(
                     "AttributeError",
                     format!(
@@ -2695,6 +2718,32 @@ fn call_value_inner(
                                     .attrs
                                     .borrow_mut()
                                     .set(Value::Str(PyString::new("args")), argv);
+                            }
+                        }
+                        return Ok(Value::None);
+                    }
+                    if o.name == "__object_init_subclass__" {
+                        // T1 (scrapy fix pass): object.__init_subclass__(cls,
+                        // **kwds) - v0 no-op (CPython rejects unknown kwargs;
+                        // our class-kwargs plumbing still routes typing's
+                        // _root-style kwds here, so tolerance is required).
+                        return Ok(Value::None);
+                    }
+                    if o.name == "__object_setattr__" {
+                        // T1 (scrapy fix pass): object.__setattr__(self, name,
+                        // val) — the default: plain instance-dict write.
+                        let subject = o
+                            .slice_parts
+                            .borrow()
+                            .first()
+                            .cloned()
+                            .unwrap_or(Value::None);
+                        if let (Some(Value::Str(attr)), Some(val)) = (args.first(), args.get(1)) {
+                            if let Value::Obj(io) = &subject {
+                                let _ = io.attrs.borrow_mut().set(
+                                    Value::Str(PyString::new(attr.as_str().to_string())),
+                                    val.clone(),
+                                );
                             }
                         }
                         return Ok(Value::None);
@@ -4695,6 +4744,12 @@ pub(crate) fn truthy(interp: &Rc<Interpreter>, v: &Value) -> Result<bool, Flow> 
 
 /// User-protocol len(): __len__ via the type (S-03-22), exact error text.
 fn user_len(interp: &Rc<Interpreter>, v: &Value) -> Result<Option<i64>, Flow> {
+    // T1 (scrapy fix pass): list-derived instances (traceback.StackSummary)
+    // size via their backing list (synthesized `list` base has no __len__).
+    if crate::classes::is_list_derived_instance(v) {
+        let l = crate::classes::list_backing_or_new(v);
+        return Ok(Some(l.len() as i64));
+    }
     match crate::classes::special_lookup(interp, v, "__len__") {
         Some((f, _)) => {
             let r = call_value(interp, &module_frame_pub(), &f, &[v.clone()], &[])?;
@@ -5707,6 +5762,13 @@ fn user_iter_to_iterator(interp: &Rc<Interpreter>, v: &Value) -> Result<Gc<PyIte
         let items: Vec<Value> = d.keys();
         return Ok(PyIterator::new(IterState::Seq(items, 0)));
     }
+    // T1 (scrapy fix pass): list-derived instances (traceback.StackSummary)
+    // iterate their backing list.
+    if crate::classes::is_list_derived_instance(v) {
+        let l = crate::classes::list_backing_or_new(v);
+        let items: Vec<Value> = l.items().to_vec();
+        return Ok(PyIterator::new(IterState::Seq(items, 0)));
+    }
     if let Some((f, _)) = crate::classes::special_lookup(interp, v, "__getitem__") {
         let mut items = Vec::new();
         for i in 0.. {
@@ -6166,6 +6228,14 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
             match name {
                 "__doc__" | "__module__" => return Ok(Some(Value::None)),
                 "__qualname__" => return Ok(Some(Value::Str(PyString::new(o.name.clone())))),
+                // T1 (scrapy fix pass): ABCMeta.register accessed on a marker
+                // fn - inert callable returning None.
+                "register" => {
+                    return Ok(Some(Value::Obj(ap_obj::PyObject::new(
+                        ap_obj::ObjKind::BuiltinFn,
+                        "__ap_abc_register__",
+                    ))))
+                }
                 // types.py/_cell_factory probes __closure__ (tuple of cells)
                 // and reads [0]. A one-cell stub satisfies CellType = type(...)
                 // (cell_contents reads return None — documented v0 gap).
@@ -6292,6 +6362,17 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                                 *f.slice_parts.borrow_mut() = vec![subject.clone()];
                                 return Ok(Some(Value::Obj(f)));
                             }
+                            // T1 (scrapy fix pass): type.__init__ virtual in
+                            // the METACLASS chain scan (typing:
+                            // _ProtocolMeta.__init__ -> super().__init__()).
+                            if cls.name == "type" && name == "__init__" {
+                                let f = ap_obj::PyObject::new(
+                                    ap_obj::ObjKind::BuiltinFn,
+                                    "__object_init__",
+                                );
+                                *f.slice_parts.borrow_mut() = vec![subject.clone()];
+                                return Ok(Some(Value::Obj(f)));
+                            }
                         }
                         return Ok(None);
                     }
@@ -6389,6 +6470,36 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                         *f.slice_parts.borrow_mut() = vec![subject.clone()];
                         return Ok(Some(Value::Obj(f)));
                     }
+                    // T1 (scrapy fix pass): virtual object.__setattr__ —
+                    // typing.py's _BaseGenericAlias.__setattr__ calls
+                    // super().__setattr__(attr, val); the default is the
+                    // plain instance-dict write.
+                    // T1 (scrapy fix pass): virtual object.__init_subclass__
+                    // (typing: super().__init_subclass__() in hooks) — the
+                    // default accepts **kwds and returns None.
+                    if cls.name == "object" && name == "__init_subclass__" {
+                        let f = ap_obj::PyObject::new(
+                            ap_obj::ObjKind::BuiltinFn,
+                            "__object_init_subclass__",
+                        );
+                        *f.slice_parts.borrow_mut() = vec![subject.clone()];
+                        return Ok(Some(Value::Obj(f)));
+                    }
+                    // T1 (scrapy fix pass): type.__init__ virtual for the
+                    // metaclass chain (typing: super().__init__() inside
+                    // _ProtocolMeta.__init__ scans the metaclass MRO).
+                    if cls.name == "type" && name == "__init__" {
+                        let f =
+                            ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "__object_init__");
+                        *f.slice_parts.borrow_mut() = vec![subject.clone()];
+                        return Ok(Some(Value::Obj(f)));
+                    }
+                    if cls.name == "object" && name == "__setattr__" {
+                        let f =
+                            ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "__object_setattr__");
+                        *f.slice_parts.borrow_mut() = vec![subject.clone()];
+                        return Ok(Some(Value::Obj(f)));
+                    }
                 }
             }
             return Ok(None);
@@ -6434,23 +6545,11 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 "__cause__" | "__context__" | "__suppress_context__" => Ok(Some(Value::None)),
                 // 02.04a (interp bug #6): exceptions carry __traceback__ —
                 // types.py probes it at import (TracebackType/FrameType).
-                // Stub chain: one tb object + tb_frame namespace.
+                // T1 (scrapy fix pass): real tb chain via the shared helper
+                // (matches the classes.rs class-instance arm).
                 "__traceback__" => {
-                    let frame = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<frame>");
-                    let tb = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<traceback>");
-                    let _ = tb
-                        .attrs
-                        .borrow_mut()
-                        .set(Value::Str(PyString::new("tb_frame")), Value::Obj(frame));
-                    let _ = tb
-                        .attrs
-                        .borrow_mut()
-                        .set(Value::Str(PyString::new("tb_next")), Value::None);
-                    let _ = tb.attrs.borrow_mut().set(
-                        Value::Str(PyString::new("tb_lineno")),
-                        Value::Int(Int::from_i64(0)),
-                    );
-                    Ok(Some(Value::Obj(tb)))
+                    let interp = crate::interp::current_interp_handle();
+                    return Ok(Some(crate::classes::traceback_value(&interp)));
                 }
                 _ => Ok(None),
             },
@@ -6507,20 +6606,61 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                             );
                             return Ok(Some(Value::Obj(m)));
                         }
+                        // T1 (scrapy fix pass): list-method surface on
+                        // list-derived instances (traceback.StackSummary(list)):
+                        // the synthesized `list` base carries no methods; bind
+                        // onto a lazily-created per-instance backing list.
+                        if crate::classes::is_list_derived_instance(obj) {
+                            let backing = crate::classes::list_backing_or_new(obj);
+                            let m = ap_obj::PyObject::with_self(
+                                ap_obj::ObjKind::BoundMethod,
+                                name,
+                                Value::List(backing),
+                            );
+                            return Ok(Some(Value::Obj(m)));
+                        }
                     }
                 }
                 Ok(None)
             }
             ap_obj::ObjKind::Type | ap_obj::ObjKind::UserClass => {
+                // T1 (scrapy fix pass): regular attr reads on UserClasses scan
+                // the MRO dicts (typing: cls.__protocol_attrs__ set by the
+                // metaclass __init__ then read back later).
+                if o.kind == ap_obj::ObjKind::UserClass {
+                    if let Some(t) = o.class_ref.borrow().clone() {
+                        if let Some(v) = t.lookup(name) {
+                            return Ok(Some(v));
+                        }
+                    }
+                }
                 // Real exception classes (re.error etc) answer via the class
                 // protocol first (__dict__-seeded __module__).
                 if o.kind == ap_obj::ObjKind::Type {
                     if let Some(v) = crate::classes::attr_get_opt(_interp, obj, name)? {
                         return Ok(Some(v));
                     }
+                    // T1 (scrapy fix pass): attr writes parked on the Type
+                    // PyObject (classes.rs attr_set Type arm) read back here
+                    // (typing: _ProtocolMeta.__init__ writes
+                    // cls.__protocol_attrs__ on a Type-kind class).
+                    if let Some(v) = o.attrs.borrow().get(&Value::Str(PyString::new(name))) {
+                        return Ok(Some(v));
+                    }
                 }
                 match name {
                     "__name__" => Ok(Some(Value::Str(PyString::new(o.name.clone())))),
+                    // T1 (scrapy fix pass): traceback reads
+                    // exc_class.__qualname__ while formatting.
+                    "__qualname__" => Ok(Some(Value::Str(PyString::new(o.name.clone())))),
+                    // T1 (scrapy fix pass): typing's _SpecialGenericAlias
+                    // reads origin.__module__ on UserClasses
+                    // (collections.abc ABCs). Class dict first, then a
+                    // seeded default.
+                    "__module__" if o.kind == ap_obj::ObjKind::UserClass => Ok(Some(
+                        crate::classes::userclass_module(obj)
+                            .unwrap_or(Value::Str(PyString::new("builtins"))),
+                    )),
                     // 02.08-full p2: stdlib exception types report their home
                     // module (re.error.__module__ == 're').
                     "__module__" if o.kind == ap_obj::ObjKind::Type => {

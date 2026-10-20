@@ -107,6 +107,23 @@ pub struct Staged {
 /// promoting it into the live site-packages (add-time fail-loud, C-11:
 /// a refused add leaves nothing behind).
 pub fn install_staged(spec: &str, staging: &std::path::Path) -> Result<Staged, String> {
+    install_staged_opts(spec, staging, false)
+}
+
+/// `--no-deps` variant: install exactly `spec` (space-separated requirement
+/// specs) without resolving transitive dependencies. This is the escape hatch
+/// for closures uv would poison with platform wheels (e.g. `scrapy` pulls
+/// lxml/brotli/cryptography C builds, none of which import-time-block a
+/// file:// spider): add the pure subset pin-by-pin.
+pub fn install_staged_no_deps(specs: &str, staging: &std::path::Path) -> Result<Staged, String> {
+    install_staged_opts(specs, staging, true)
+}
+
+fn install_staged_opts(
+    spec: &str,
+    staging: &std::path::Path,
+    no_deps: bool,
+) -> Result<Staged, String> {
     let uv = find_uv()?;
     if staging.exists() {
         std::fs::remove_dir_all(staging)
@@ -114,15 +131,19 @@ pub fn install_staged(spec: &str, staging: &std::path::Path) -> Result<Staged, S
     }
     std::fs::create_dir_all(staging)
         .map_err(|e| format!("cannot create staging {}: {e}", staging.display()))?;
-    let out = Command::new(&uv)
-        .args([
-            "pip",
-            "install",
-            "--target",
-            &staging.to_string_lossy(),
-            "--no-compile", // no __pycache__ churn in our cache
-            spec,
-        ])
+    let mut cmd = Command::new(&uv);
+    cmd.args([
+        "pip",
+        "install",
+        "--target",
+        &staging.to_string_lossy(),
+        "--no-compile",
+    ]); // no __pycache__ churn in our cache
+    if no_deps {
+        cmd.arg("--no-deps");
+    }
+    cmd.arg(spec);
+    let out = cmd
         .output()
         .map_err(|e| format!("antipythany: cannot run {uv}: {e}"))?;
     if !out.status.success() {
