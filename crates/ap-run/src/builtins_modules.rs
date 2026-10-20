@@ -721,6 +721,9 @@ fn registry() -> &'static [(&'static str, ModuleBuilder)] {
         ("weakref", build_weakref),
         ("threading", build_threading),
         ("queue", build_queue),
+        // 04.01: minimal struct surface — six.py does
+        // `struct.Struct(">B").pack(n)` at module scope (byte-exact int2byte).
+        ("struct", crate::structmod::build_struct),
         ("string2", build_string), // dedup guard, never matched
     ]
 }
@@ -3620,6 +3623,10 @@ pub fn call_operator(name: &str, args: &[Value], _kwargs: &[(String, Value)]) ->
                 Ok(marker(&format!("<itemgetter:[{}]/>", idxs.join(", "))))
             }
             "methodcaller" => {
+                // CPython semantics: methodcaller(name, *args, **kw) returns a
+                // CALLABLE — `methodcaller("shout", 3)(thing)` (s029 line 36)
+                // AND six.py's `viewkeys = operator.methodcaller("keys")`
+                // (04.01) both need the factory, not an immediate call.
                 let mname = match required(args, "methodcaller")? {
                     Value::Str(x) => x.as_str().to_string(),
                     other => {
@@ -3629,10 +3636,14 @@ pub fn call_operator(name: &str, args: &[Value], _kwargs: &[(String, Value)]) ->
                         ))
                     }
                 };
-                let recv = args.get(1).ok_or_else(|| {
-                    raise("TypeError", "methodcaller() missing required argument")
-                })?;
-                crate::builtins::call_method_pub(recv, &mname, &args[2..])
+                // Extras serialize into the marker name (the `<partial:...>`
+                // pattern) — call_native_marker sees only the name.
+                let mut extras: Vec<String> = Vec::new();
+                for a in &args[1..] {
+                    extras.push(crate::builtins::py_str_of(a).map_err(Flow::from_py)?);
+                }
+                let mc = marker(&format!("<methodcaller:{mname}:{}>", extras.join("\u{1f}")));
+                Ok(mc)
             }
             "matmul" | "imatmul" => Err(raise(
                 "TypeError",
@@ -4148,6 +4159,18 @@ pub fn call_functools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
                 // argument). Returning `m` here made `inner = wraps(method)
                 // (inner)` CALL method(inner) — unittest's failfast died
                 // with "addError() missing 1 required positional argument".
+                // 04.01: lru_cache/cache ALWAYS produce the wrapper object
+                // (single- and two-stage): vendored typing._tp_cache reads
+                // `cache.cache_clear` right after decorating, and packaging
+                // 26 chains read cache_info. CPython returns an
+                // _lru_cache_wrapper; model it as an Opaque carrying <wrapped>
+                // (call dispatch: interp Opaque arm -> wrapped fn; v0: no
+                // memoization, documented in call_functools).
+                if matches!(name, "lru_cache" | "cache") {
+                    if let Some(f) = args.first() {
+                        return Ok(lru_wrapper_of(f));
+                    }
+                }
                 if name != "wraps" {
                     if let Some(f @ Value::Obj(fo)) = args.first() {
                         if fo.kind == ap_obj::ObjKind::Function {
@@ -8061,6 +8084,17 @@ fn build_tempfile(_i: &crate::frame::Interpreter) -> Value {
     finish(m, ns)
 }
 
+/// Opaque `_lru_cache_wrapper`-alike: carries the wrapped fn; attr surface
+/// (cache_clear/cache_info/cache_parameters/__wrapped__) via native_attr.
+pub(crate) fn lru_wrapper_of(f: &Value) -> Value {
+    let o = PyObject::new(ap_obj::ObjKind::Opaque, "functools._lru_wrapper");
+    {
+        let mut attrs = o.attrs.borrow_mut();
+        let _ = attrs.set(s("<wrapped>"), f.clone());
+    }
+    Value::Obj(o)
+}
+
 fn temp_dir() -> String {
     std::env::temp_dir().to_string_lossy().to_string()
 }
@@ -8477,6 +8511,7 @@ pub fn call_native(
         "importlib" => call_importlib(fname, args, kwargs),
         "importlib.util" => call_importlib_util(fname, args, kwargs),
         "tempfile" => call_tempfile(fname, args, kwargs),
+        "struct" => crate::structmod::call_struct(fname, args),
         "gc" => crate::gcsupport::call_gc(fname, args, kwargs),
         "weakref" => crate::gcsupport::call_weakref(fname, args, kwargs),
         "weakref.finalize" => crate::gcsupport::call_weakref_finalize(args, kwargs),
@@ -8495,6 +8530,16 @@ pub fn call_native_object(
     kwargs: &[(String, Value)],
 ) -> Option<BResult> {
     if let Value::Obj(o) = v {
+        if o.kind == ap_obj::ObjKind::Opaque && o.name == "functools._lru_wrapper" {
+            let inner = o.attrs.borrow().get(&s("<wrapped>")).map(|v| v.clone());
+            if let Some(fv) = inner {
+                return Some(crate::interp::call_value_pub2(&fv, args, kwargs));
+            }
+            return Some(Err(raise(
+                "RuntimeError",
+                "lru wrapper lost its wrapped callable",
+            )));
+        }
         if o.kind == ap_obj::ObjKind::Opaque && o.name == "functools.partial" {
             return Some(call_partial_obj(o, args, kwargs));
         }
@@ -8535,6 +8580,13 @@ pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
             ap_obj::ObjKind::BuiltinFn => {
                 let full = o.name.clone();
                 if let Some(v) = builtinfn_attr(&full, name) {
+                    return Some(v);
+                }
+                // 04.01: decorator-attached surfaces (functools lru wrappers
+                // set cache_clear/cache on marker-callable fns in the
+                // two-stage unwrap) — attrs are the fallback after the
+                // builtinfn table misses.
+                if let Some(v) = o.attrs.borrow().get(&s(name)).map(|v| v.clone()) {
                     return Some(v);
                 }
                 // partial markers: func/args/keywords decode from the name
@@ -8580,6 +8632,19 @@ pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
                 None
             }
             ap_obj::ObjKind::Opaque => match o.name.as_str() {
+                "functools._lru_wrapper" => match name {
+                    "cache_clear" | "cache_info" => {
+                        let bm = PyObject::with_self(
+                            ap_obj::ObjKind::BoundMethod,
+                            format!("functools._lru_wrapper.{name}"),
+                            obj.clone(),
+                        );
+                        Some(Value::Obj(bm))
+                    }
+                    "cache_parameters" => Some(Value::Dict(ap_obj::dict::PyDict::new())),
+                    "__wrapped__" => o.attrs.borrow().get(&s("<wrapped>")).map(|v| v.clone()),
+                    _ => None,
+                },
                 "functools.partial" => match name {
                     "func" => {
                         let attrs = o.attrs.borrow();
@@ -8611,6 +8676,9 @@ pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
                         *bm.func.borrow_mut() = Some(marker(&mname));
                         Some(Value::Obj(bm))
                     }
+                }
+                "struct.Struct" => {
+                    return crate::structmod::struct_attr(obj, name);
                 }
                 "JSONEncoder" | "JSONDecoder" => match name {
                     "decode" | "encode" | "default" | "iterencode" | "__enter__" | "__exit__" => {
@@ -9090,6 +9158,32 @@ pub fn call_native_marker(full: &str, args: &[Value]) -> Option<BResult> {
             out = attr_lookup_value(&out, attr).ok()?;
         }
         return Some(Ok(out));
+    }
+    // 04.01: operator.methodcaller factory — `<methodcaller:name:extras>`
+    // called on (receiver, ...) dispatches the named method with the
+    // factory's parked extras (serialized into the marker name, mirroring
+    // the `<partial:...>` pattern) + the call args.
+    if full == "struct.Struct" {
+        return crate::structmod::struct_ctor(args);
+    }
+    if full == "struct.Struct.calcsize" {
+        // Struct-instance calcsize(self) — fmt rides the Opaque in args[0].
+        return crate::structmod::call_struct("calcsize", args);
+    }
+    if let Some(rest) = full.strip_prefix("<methodcaller:") {
+        let (mname, extra_str) = rest.split_once(':')?;
+        let recv = args.first()?;
+        let extras: Vec<Value> = if extra_str.is_empty() {
+            vec![]
+        } else {
+            extra_str
+                .split('\u{1f}')
+                .map(|x| Value::Str(PyString::new(x.to_string())))
+                .collect()
+        };
+        let mut call_args: Vec<Value> = extras;
+        call_args.extend_from_slice(&args[1..]);
+        return Some(crate::builtins::call_method_pub(recv, mname, &call_args));
     }
     if let Some(rest) = full.strip_prefix("<itemgetter:") {
         let idxs_str = rest.strip_suffix("/>")?;
@@ -11529,6 +11623,10 @@ fn build_importlib_util(_i: &crate::frame::Interpreter) -> Value {
         "spec_from_file_location",
         "module_from_spec",
         "resolve_name",
+        // 04.01: six.py binds `from importlib.util import spec_from_loader`
+        // at module scope (vendored _bootstrap carries the real impl); the
+        // name must resolve for pure-python third-party imports to load.
+        "spec_from_loader",
     ] {
         fn1(&ns, "importlib.util", n);
     }

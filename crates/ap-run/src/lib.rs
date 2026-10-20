@@ -28,6 +28,7 @@ pub mod iter;
 pub mod methods;
 pub mod sre;
 pub mod sre_tables;
+pub mod structmod;
 pub mod threading;
 pub mod threading_call;
 

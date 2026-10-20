@@ -6,6 +6,7 @@ members = [
     "crates/ap-obj",
     "crates/ap-gc",
     "crates/ap-run",
+    "crates/ap-pack",
     "crates/ap-codegen-native",
     "crates/ap-codegen-wasm",
     "crates/ap-host",

@@ -2034,6 +2034,7 @@ pub fn install_builtins(interp: &Interpreter) {
         "__import__",
         "enumerate",
         "eval",
+        "exec",
         "float",
         "format",
         "frozenset",
@@ -2888,6 +2889,9 @@ pub fn call_builtin(
         "filter" => builtin_filter(interp, args),
         "float.fromhex" => builtin_float_fromhex(args),
         "eval" => builtin_eval(interp, args),
+        // 04.01: exec — six.py binds `getattr(moves.builtins, "exec")` and
+        // execs `def raise_from(...)` source at import.
+        "exec" => builtin_exec(interp, args),
         "hasattr" => builtin_hasattr(interp, args),
         "getattr" => builtin_getattr(interp, args),
         "setattr" => builtin_setattr(interp, args),
@@ -3196,6 +3200,62 @@ pub fn builtin_eval(interp: &Interpreter, args: &[Value]) -> crate::EvalResult {
     crate::interp::eval_expr_public(&interp.rc(), &expr)
 }
 
+/// `exec(source[, globals[, locals]])` (04.01): statement execution over the
+/// parse->lower->exec_block machinery. six.py needs it at import
+/// (`exec_("def raise_from(value, from_value): ...")`). Scope: string source
+/// executed in the CURRENT globals (explicit dicts v0-ignored with a
+/// documented note — same shape as builtin_eval's globals handling).
+pub fn builtin_exec(interp: &Interpreter, args: &[Value]) -> crate::EvalResult {
+    let src = match args.first() {
+        Some(Value::Str(s)) => s.as_str().to_string(),
+        Some(other) => {
+            return Err(raise(
+                "TypeError",
+                format!(
+                    "exec() arg 1 must be a string, bytes or code object (got {})",
+                    other.type_name()
+                ),
+            ))
+        }
+        None => return Err(raise("TypeError", "exec expected at least 1 argument")),
+    };
+    if args.len() > 1 {
+        // six passes None (current globals). An explicit globals dict is a
+        // documented v0 gap: fail loud rather than silently misplace defs.
+        if !matches!(args.get(1), Some(Value::None) | None) {
+            return Err(raise(
+                "NotImplementedError",
+                "ap: exec with explicit globals/locals unsupported (v0)",
+            ));
+        }
+    }
+    let parsed =
+        ap_parse::parse(&src).map_err(|e| raise("SyntaxError", format!("{}", e.message)))?;
+    let (module, _scopes) =
+        ap_parse::lower(&parsed).map_err(|e| raise("SyntaxError", format!("{e}")))?;
+    let stmts: Vec<ap_ir::Stmt> = module
+        .items
+        .into_iter()
+        .filter_map(|it| match it {
+            ap_ir::Item::Stmt(st) => Some(st),
+            ap_ir::Item::FnDef(f) => {
+                // Module-level defs register + bind like exec_module does.
+                let rc_interp = interp.rc();
+                let reg = crate::interp::interp_registry(&rc_interp);
+                let id = reg.by_path_lookup(&f.name).unwrap_or(0);
+                let func = make_function(id, &f.name);
+                let _ = interp
+                    .globals
+                    .set(Value::Str(PyString::new(f.name.clone())), func);
+                None
+            }
+            ap_ir::Item::ClassDef(c) => Some(ap_ir::Stmt::LocalClass(Box::new(c))),
+        })
+        .collect();
+    let rc_interp = interp.rc();
+    crate::interp::exec_stmts_public(&rc_interp, &stmts)
+}
+
 // ---------------------------------------------------------------------------
 // 02.08-lite native-module surface (shims + dotted dispatch)
 // ---------------------------------------------------------------------------
@@ -3324,17 +3384,50 @@ fn builtin_type_new(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
     // __init_subclass__; object's default rejects them with the pinned
     // TypeError (mk.py Meta chain: super().__new__(mcs, ..., **kw)).
     if !kwargs.is_empty() {
-        let class_name = match &args[1] {
-            Value::Str(s) => s.as_str().to_string(),
-            _ => String::new(),
+        // type.__new__ forwards leftover **kwds to the parent's
+        // __init_subclass__ (CPython); object's DEFAULT rejects them with
+        // the pinned TypeError. A user hook up the bases' MRO consumes them
+        // (typing.py: class _SpecialForm(_Final, _NotIterable, _root=True)
+        // via 3-arg type() — packaging 26's typing constructs need this).
+        let bases: Vec<Value> = match args.get(2) {
+            Some(Value::Tuple(tup)) => tup.0.clone(),
+            Some(Value::List(l)) => l.items().to_vec(),
+            _ => vec![],
         };
-        return Err(raise(
-            "TypeError",
-            format!(
-                "{}.__init_subclass__() takes no keyword arguments",
-                class_name
-            ),
-        ));
+        let mut hook_found = false;
+        'outer: for b in &bases {
+            if let Value::Obj(bo) = b {
+                if bo.kind == ap_obj::ObjKind::Type {
+                    if let Some(tr) = bo.type_ref.borrow().as_ref().and_then(|w| w.upgrade()) {
+                        for m in tr.mro.borrow().iter() {
+                            if let Some((_f, owner)) = m.lookup_with_owner("__init_subclass__") {
+                                if owner.name != "object" {
+                                    hook_found = true;
+                                    break 'outer;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !hook_found {
+            let class_name = match &args[1] {
+                Value::Str(s) => s.as_str().to_string(),
+                _ => String::new(),
+            };
+            return Err(raise(
+                "TypeError",
+                format!(
+                    "{}.__init_subclass__() takes no keyword arguments",
+                    class_name
+                ),
+            ));
+        }
+        // A consuming hook exists up the MRO: kwargs are delivered there in
+        // CPython after allocation. v0: consumed-and-dropped (the hook bodies
+        // typing.py defines for _root=True are registry-side effects we do
+        // not yet model); the class itself is created correctly.
     }
     if args.len() != 4 {
         return Err(raise(

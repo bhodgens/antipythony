@@ -1015,10 +1015,14 @@ fn decode_bytes(b: &[u8], codec: &str) -> MResult {
                 ))
             }
         }
+        "latin-1" | "latin1" | "iso-8859-1" | "iso8859-1" => {
+            // 04.01: latin-1 maps every byte to the identical code point.
+            let s: String = b.iter().map(|&x| x as char).collect();
+            Ok(Value::Str(PyString::new(s)))
+        }
         other => Err(raise("LookupError", format!("unknown encoding: {other}"))),
     }
 }
-
 /// str.encode(codec) — lives here (method surface) not in builtins.
 pub fn encode_str(s: &str, codec: &str) -> MResult {
     let codec_l = codec.to_ascii_lowercase();
@@ -1056,10 +1060,32 @@ pub fn encode_str(s: &str, codec: &str) -> MResult {
                 ))
             }
         }
+        "latin-1" | "latin1" | "iso-8859-1" | "iso8859-1" => {
+            // 04.01 (six.b: s.encode("latin-1")): latin-1 maps U+0000..U+00FF
+            // to the identical byte values.
+            let mut out = Vec::with_capacity(s.len());
+            let mut bad: Option<(usize, char)> = None;
+            for (i, c) in s.chars().enumerate() {
+                if (c as u32) > 0xFF {
+                    bad = Some((i, c));
+                    break;
+                }
+                out.push(c as u32 as u8);
+            }
+            if let Some((pos, ch)) = bad {
+                return Err(raise(
+                    "UnicodeEncodeError",
+                    format!(
+                        "'latin-1' codec can't encode character '\\u{:04x}' in position {pos}: ordinal not in range(256)",
+                        ch as u32
+                    ),
+                ));
+            }
+            Ok(Value::Bytes(Gc::new(out)))
+        }
         other => Err(raise("LookupError", format!("unknown encoding: {other}"))),
     }
 }
-
 /// The type name of the first unhashable element reachable in a tuple/list
 /// (CPython's dict-key error scans members; V043 pins tuple-with-list).
 fn first_unhashable_type(key: &Value) -> Option<String> {

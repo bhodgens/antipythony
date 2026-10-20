@@ -843,16 +843,23 @@ pub fn exec_class_def(
 
     // 7. Hooks: __set_name__ on ns descriptors, then the parent's
     //    __init_subclass__ with the class kwargs (S-03-27/29 order).
+    //    04.01: search the hook across ALL bases' MROs — typing.py's
+    //    _SpecialGenericAlias(_NotIterable, _BaseGenericAlias, _root=True)
+    //    carries the hook on _Final, reached only through the SECOND base.
     run_set_name_hooks(interp, &class_v, &t)?;
+    let hook_owner: Option<(Value, String)> = base_types.iter().find_map(|b| {
+        b.lookup_with_owner("__init_subclass__")
+            .filter(|(_f, owner)| owner.name != "object")
+            .map(|(_f, owner)| {
+                (
+                    attr_on_class_raw(b, "__init_subclass__"),
+                    owner.name.clone(),
+                )
+            })
+    });
     if let Some(parent) = base_types.first() {
         let kwargs: Vec<(String, Value)> = CLASS_KWARGS.with(|c| c.borrow().clone());
-        let has_user_hook = parent
-            .lookup_with_owner("__init_subclass__")
-            .map(|(f, owner)| {
-                matches!(&f, Value::Obj(o) if o.kind == ap_obj::ObjKind::Function)
-                    && owner.name != "object"
-            })
-            .unwrap_or(false);
+        let has_user_hook = hook_owner.is_some();
         if !kwargs.is_empty() && !has_user_hook {
             // CPython (probed 3.14): object.__init_subclass__ rejects
             // class kwargs with the pinned TypeError.
@@ -861,10 +868,21 @@ pub fn exec_class_def(
                 format!("{}.__init_subclass__() takes no keyword arguments", c.name),
             ));
         }
-        if parent.lookup("__init_subclass__").is_some() {
+        if hook_owner.is_some() {
             // Bind the parent's hook as an implicit classmethod of cls.
-            let hook = attr_on_class_raw(parent, "__init_subclass__");
-            let f = unwrap_classmethod(&hook, class_v.clone());
+            // A USER def __init_subclass__(cls, ...) is stored as a raw
+            // function (CPython wraps it implicitly) — bind cls here.
+            let hook = hook_owner
+                .as_ref()
+                .map(|(h, _)| h.clone())
+                .unwrap_or_else(|| attr_on_class_raw(parent, "__init_subclass__"));
+            let hook_bound = if matches!(&hook, Value::Obj(o) if o.kind == ap_obj::ObjKind::Function)
+            {
+                bind_function(&hook, class_v.clone())
+            } else {
+                hook
+            };
+            let f = unwrap_classmethod(&hook_bound, class_v.clone());
             // The DEFAULT hook (object.__init_subclass__) rejects kwargs
             // with the pinned text (S-03-29); user overrides consume them.
             let kwargs = CLASS_KWARGS.with(|c| c.borrow().clone());
@@ -2353,6 +2371,41 @@ pub fn instantiate(
 
     // S-03-07 fast path: object.__new__ + not-overridden __init__ with
     // args -> "C() takes no arguments".
+    // 04.01 (placed BEFORE the fast path): ModuleType-derived classes
+    // (types.ModuleType = type(sys)) take (name, doc=None) — six.py's
+    // Module_six_moves_urllib(types.ModuleType) is constructed at module
+    // scope. CPython's ModuleType.__new__ consumes the name; mirror that:
+    // allocate the instance, set __name__/__doc__.
+    if t.name != "module"
+        && t.mro.borrow().iter().any(|b| b.name == "module")
+        && new_f.is_none()
+        && init_f.is_none()
+    {
+        // Allocate a REAL module object (six.moves must pass ObjKind::Module
+        // checks in the importer's submodule adoption + attr protocol);
+        // __name__/__doc__ go into the module NAMESPACE (module attr reads
+        // resolve through module_ns, not attrs).
+        let io = ap_obj::PyObject::new(
+            ap_obj::ObjKind::Module,
+            match args.first() {
+                Some(Value::Str(name)) => name.as_str().to_string(),
+                _ => "module".to_string(),
+            },
+        );
+        let ns = ap_obj::dict::PyDict::new();
+        if let Some(Value::Str(name)) = args.first() {
+            let _ = ns.set(
+                Value::Str(PyString::new("__name__")),
+                Value::Str(name.clone()),
+            );
+        }
+        if let Some(doc) = args.get(1) {
+            let _ = ns.set(Value::Str(PyString::new("__doc__")), doc.clone());
+        }
+        *io.type_ref.borrow_mut() = Some(std::rc::Rc::downgrade(t));
+        *io.module_ns.borrow_mut() = Some(ns);
+        return Ok(Value::Obj(io));
+    }
     if new_f.is_none() && init_f.is_none() && (!args.is_empty() || !kwargs.is_empty()) {
         return Err(raise(
             "TypeError",
@@ -2396,7 +2449,6 @@ pub fn instantiate(
         }
         return Ok(obj);
     }
-    // Default __new__: allocate + __init__ (custom or inherited/user).
     let obj = alloc_instance(t);
     if let Some(inf) = &init_f {
         if is_user_function(inf) {

@@ -1,0 +1,12 @@
+[package]
+name = "ap-pack"
+description = "packaging: uv-backed dependency fetch + project manifest/lockfile (leaves 04.01/04.02)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sha2 = "0.10"
+
+[lints]
+workspace = true  # robustness-ci 02.01 - see root Cargo.toml [workspace.lints]

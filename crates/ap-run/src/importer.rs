@@ -54,12 +54,22 @@ thread_local! {
     static SYS_PATH: RefCell<Vec<String>> = RefCell::new(Vec::new());
 }
 
-/// sys.path bootstrap: [script_dir] + vendored_stdlib + ANTPYTHANY_PATH.
+/// sys.path bootstrap: [script_dir] + vendored_stdlib + **fetched
+/// site-packages** + ANTPYTHANY_PATH (04.01/04.02 integration: the uv fetch
+/// dir joins AFTER vendored_stdlib so a fetched package can never shadow a
+/// stdlib module, and BEFORE env/extra entries — env wins for dev overrides).
 /// Idempotent (re-running clears and rebuilds — tests spawn fresh processes).
 pub fn bootstrap_sys_path(script_dir: &str, extra: &[String]) {
     let mut path = vec![script_dir.to_string()];
     if let Some(vd) = vendored_stdlib_dir() {
         path.push(vd);
+    }
+    // 04.01: fetched pure-python packages (uv `--target` install). Discovered
+    // from the project lockfile walking up from the script dir (single source
+    // of truth with the CLI); falls back to the cache default when a lockfile
+    // records any dependency. See importer::site_packages_for_script.
+    if let Some(sp) = site_packages_for_script(script_dir) {
+        path.push(sp);
     }
     if let Ok(env) = std::env::var("ANTPYTHANY_PATH") {
         for e in env.split(':') {
@@ -72,6 +82,39 @@ pub fn bootstrap_sys_path(script_dir: &str, extra: &[String]) {
     SYS_PATH.with(|p| {
         *p.borrow_mut() = path;
     });
+}
+
+/// The site-packages dir to join sys.path for a script in `script_dir`
+/// (04.02 `run` integration; used by BOTH ap-cli `run` and ap-run-eval).
+///
+/// Resolution: walk up from script_dir for a project manifest. Found AND
+/// recording at least one dependency (antipythany.toml `[[dependency]]`, or
+/// a non-empty antipythany.lock) -> the fetched site-packages dir
+/// (`$ANTPYTHANY_CACHE/site-packages`, default
+/// `~/.cache/antipythany/site-packages`). No manifest / no deps -> None (a
+/// dep-free run must not put a random cache on sys.path — cache content is
+/// only meaningful when the project fetched something).
+pub fn site_packages_for_script(script_dir: &str) -> Option<String> {
+    let dir = ap_pack::manifest::find_project_dir(std::path::Path::new(script_dir))?;
+    let has_deps = match ap_pack::manifest::read_manifest(&dir) {
+        Ok(Some(m)) => !m.dependencies.is_empty(),
+        Ok(None) => false,
+        Err(_) => false, // a malformed manifest must not crash import bootstrap
+    };
+    if !has_deps {
+        // Lockfile fallback (manifest w/o deps recorded but lock written).
+        let Ok(Some(lock)) = ap_pack::manifest::read_lock(&dir) else {
+            return None;
+        };
+        if lock.packages.is_empty() {
+            return None;
+        }
+    }
+    let sp = ap_pack::cache::site_packages_dir()?;
+    if !sp.is_dir() {
+        return None;
+    }
+    Some(sp.to_string_lossy().into_owned())
 }
 
 /// The vendored_stdlib/ dir at the repo root (resolved relative to this
@@ -570,6 +613,49 @@ fn import_file_module(interp: &Rc<Interpreter>, name: &str) -> EResult {
             None => find_on_path(part),
         };
         let found = match found {
+            Some(f) => Some(f),
+            None => {
+                // 04.01 (CPython _handle_fromlist semantics): a submodule the
+                // file finder can't see may exist as a PRE-BUILT module
+                // ATTRIBUTE of the parent — six.py registers six.moves as a
+                // _LazyModule instance on the six module (its meta-path
+                // importer is out of our v0 scope). When the parent module
+                // object carries a module-ns attr named `part`, adopt it as
+                // the submodule (sys.modules identity from here on).
+                let mut adopted = false;
+                if let Some((pname, _)) = full.rsplit_once('.') {
+                    if let Some(Value::Obj(pp)) = sys_modules_get(pname) {
+                        let attr = pp
+                            .module_ns
+                            .borrow()
+                            .as_ref()
+                            .and_then(|ns| ns.get(&s(part.to_string())).map(|v| v.clone()));
+                        if let Some(Value::Obj(am)) = attr {
+                            let is_module = am.kind == ap_obj::ObjKind::Module
+                                || am
+                                    .type_ref
+                                    .borrow()
+                                    .as_ref()
+                                    .and_then(|tr| tr.upgrade())
+                                    .map(|tr| tr.mro.borrow().iter().any(|m| m.name == "module"))
+                                    .unwrap_or(false);
+                            if is_module {
+                                let mv = Value::Obj(am);
+                                sys_modules_insert(&full, &mv);
+                                parent_dir = module_path_dir(&mv);
+                                link_parent_attr(&full, &mv);
+                                adopted = true;
+                            }
+                        }
+                    }
+                }
+                if adopted {
+                    continue;
+                }
+                None
+            }
+        };
+        let found = match found {
             Some(f) => f,
             None => {
                 // 02.02: CPython embeds repr(name) ("No module named
@@ -811,6 +897,24 @@ pub fn import_from_module(
 ) -> Result<(), Flow> {
     for (src, bind) in names {
         let got = attr_on_module(interp, mv, src);
+        let got = match got {
+            Some(v) => Some(v),
+            // 04.01: module objects backed by a real class (six.moves is a
+            // _LazyModule instance) keep their moved-attribute DESCRIPTORS
+            // on the class — fall through the full attr protocol (which
+            // invokes __get__) before the submodule lookup.
+            None => {
+                let rc = crate::builtins_modules::current_interp();
+                if let Some(i) = rc {
+                    match crate::interp::attr_get_public(&i, mv, src) {
+                        Ok(Some(v)) => Some(v),
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            }
+        };
         let got = match got {
             Some(v) => Some(v),
             None => {

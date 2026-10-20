@@ -12,6 +12,7 @@ path = "src/lib.rs"
 ap-gc = { path = "../ap-gc" }
 ap-ir = { path = "../ap-ir" }
 ap-obj = { path = "../ap-obj" }
+ap-pack = { path = "../ap-pack" }
 ap-parse = { path = "../ap-parse" }
 # bigint base conversion fallbacks (hex/oct/bin beyond u128)
 num-bigint = "0.4"

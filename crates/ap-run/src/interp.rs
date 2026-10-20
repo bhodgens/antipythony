@@ -97,10 +97,19 @@ pub fn run_module(
     // 02.04a: sys.path bootstrap ([script_dir] + vendored_stdlib +
     // ANTPYTHANY_PATH) and a clean sys.modules for this run.
     importer::reset_import_state();
-    let script_dir = std::path::Path::new(script_path)
-        .parent()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|| ".".to_string());
+    // `app.py` (no dir component) parents to "" — treat as "." so upward
+    // project-manifest discovery (04.01 site-packages) walks real dirs.
+    let script_dir = {
+        let d = std::path::Path::new(script_path)
+            .parent()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| ".".to_string());
+        if d.is_empty() {
+            ".".to_string()
+        } else {
+            d
+        }
+    };
     importer::bootstrap_sys_path(&script_dir, &[]);
 
     let outcome = exec_module(&interp, &module, &scopes);
@@ -2097,6 +2106,28 @@ fn eval_compare(left: &Value, op: CmpOp, right: &Value) -> Result<bool, Flow> {
                     _ => unreachable!(),
                 });
             }
+            // 04.01: NamedTuple (sys.version_info) vs tuple ordering —
+            // six.py does `sys.version_info >= (3, 3)` at module scope.
+            // CPython: version_info IS a tuple; compare over the <values>.
+            if let Value::Obj(o) = left {
+                if o.kind == ap_obj::ObjKind::NamedTuple {
+                    if let Some(vals) = o.attrs.borrow().get(&Value::Str(PyString::new("<values>")))
+                    {
+                        let tup = Value::Tuple(Gc::new(Tuple(match vals {
+                            Value::List(l) => l.items().to_vec(),
+                            other => vec![other.clone()],
+                        })));
+                        let ord = ap_obj::dict::values_cmp(&tup, right).map_err(Flow::from_py)?;
+                        return Ok(match op {
+                            CmpOp::Lt => ord == Ordering::Less,
+                            CmpOp::LtE => ord != Ordering::Greater,
+                            CmpOp::Gt => ord == Ordering::Greater,
+                            CmpOp::GtE => ord != Ordering::Less,
+                            _ => unreachable!(),
+                        });
+                    }
+                }
+            }
             use std::cmp::Ordering;
             let ord = ap_obj::dict::values_cmp(left, right).map_err(Flow::from_py)?;
             Ok(match op {
@@ -3062,23 +3093,49 @@ fn call_value_inner(
                 // applying it to a callable attaches inert cache surfaces
                 // (cache/cache_clear) and returns the callable: typing reads
                 // `_lazy_load_getattr_static.cache_clear` at module scope.
+                // 04.01: functools lru wrapper — call through to the wrapped
+                // fn (v0: no memoization, documented in call_functools).
+                ap_obj::ObjKind::Opaque if o.name == "functools._lru_wrapper" => {
+                    let inner = o
+                        .attrs
+                        .borrow()
+                        .get(&Value::Str(PyString::new("<wrapped>")))
+                        .map(|v| v.clone());
+                    match inner {
+                        Some(fv) => call_value_pub2(&fv, args, kwargs),
+                        None => Err(raise(
+                            "RuntimeError",
+                            "lru wrapper lost its wrapped callable",
+                        )),
+                    }
+                }
                 ap_obj::ObjKind::Opaque if o.name == "functools._ap_deco" => {
                     let f = args.first().cloned().unwrap_or(Value::None);
                     if let Value::Obj(fo) = &f {
-                        if fo.kind == ap_obj::ObjKind::Function {
-                            let nop = ap_obj::PyObject::new(
-                                ap_obj::ObjKind::BuiltinFn,
-                                "__ap_functools_nop__",
-                            );
-                            let _ = fo
-                                .attrs
-                                .borrow_mut()
-                                .set(Value::Str(PyString::new("cache_clear")), Value::Obj(nop));
-                            let _ = fo.attrs.borrow_mut().set(
-                                Value::Str(PyString::new("cache")),
-                                Value::Dict(ap_obj::dict::PyDict::new()),
-                            );
-                        }
+                        // 04.01: attach the cache surfaces to ANY callable
+                        // kind, not just user Functions — vendored typing.py
+                        // + packaging._ranges read cache_clear/cache_info on
+                        // marker-decorated functions.
+                        let nop = ap_obj::PyObject::new(
+                            ap_obj::ObjKind::BuiltinFn,
+                            "__ap_functools_nop__",
+                        );
+                        let _ = fo.attrs.borrow_mut().set(
+                            Value::Str(PyString::new("cache_clear")),
+                            Value::Obj(nop.clone()),
+                        );
+                        let _ = fo.attrs.borrow_mut().set(
+                            Value::Str(PyString::new("cache")),
+                            Value::Dict(ap_obj::dict::PyDict::new()),
+                        );
+                        let _ = fo
+                            .attrs
+                            .borrow_mut()
+                            .set(Value::Str(PyString::new("cache_info")), Value::Obj(nop));
+                        let _ = fo.attrs.borrow_mut().set(
+                            Value::Str(PyString::new("cache_parameters")),
+                            Value::Dict(ap_obj::dict::PyDict::new()),
+                        );
                     }
                     Ok(f)
                 }
@@ -6778,10 +6835,25 @@ pub fn call_value_pub(
     call_value(interp, &caller, f, args, kwargs)
 }
 
+/// kwargs-free variant for native-object dispatch (functools._lru_wrapper).
+pub fn call_value_pub2(f: &Value, args: &[Value], kwargs: &[(String, Value)]) -> EResult {
+    let interp = current_interp_for_bindings();
+    call_value_pub(&interp, f, args, kwargs)
+}
+
 pub fn eval_expr_public(interp: &Rc<Interpreter>, e: &ap_ir::Expr) -> EResult {
     let frame = Rc::new(Frame::new_module(interp.globals.clone()));
     let reg = current_registry(interp);
     eval_expr(interp, &frame, e, &reg)
+}
+
+/// Public statement-execution shim (builtins.exec, 04.01): run pre-lowered
+/// statements in a module frame over the CURRENT globals.
+pub fn exec_stmts_public(interp: &Rc<Interpreter>, stmts: &[ap_ir::Stmt]) -> EResult {
+    let frame = Rc::new(Frame::new_module(interp.globals.clone()));
+    let reg = current_registry(interp);
+    exec_block(interp, &frame, stmts, &reg)?;
+    Ok(Value::None)
 }
 
 /// Interpreter getter for the keyed builtin paths.

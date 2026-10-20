@@ -1,0 +1,2 @@
+#!/bin/sh
+exec antipythany run "$0.py" "$@"

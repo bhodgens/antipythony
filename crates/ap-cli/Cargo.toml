@@ -9,8 +9,14 @@ license.workspace = true
 path = "src/lib.rs"
 
 [dependencies]
+ap-pack = { path = "../ap-pack" }
 ap-run = { path = "../ap-run" }
 clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+# packaging_differential: fixture wheel construction (native-component add
+# refusal probe). Built as a zip in-test, never committed.
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [[bin]]
 name = "antipythany"
