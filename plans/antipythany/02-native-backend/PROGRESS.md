@@ -834,3 +834,11 @@
 - Remaining risk: scrapy's deep deps (queuelib/w3lib/parsel/protego/
   itemloaders/jmespath/cssselect - all pure) + twisted (pure, large).
 - T1 gate: scrapy crawl file:// spider, items.jsonl byte-compare vs CPython.
+
+## T1 SCRAPY ATTEMPT - DISPATCHED (deleg_353c29f1)
+- The T1 gate: scrapy crawl on file:// spider, items.jsonl byte-compare vs
+  CPython reference.
+- Iterative structure: env setup -> dependency audit -> import-depth testing
+  (twisted first) -> interpreter fixes in ap-run/ap-obj as bugs surface ->
+  minimal spider run -> gap report docs/t1-attempt.md.
+- Expect interpreter conformance bugs; fixing them IS the point.
