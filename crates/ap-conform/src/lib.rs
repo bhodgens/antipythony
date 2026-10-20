@@ -80,14 +80,24 @@ pub fn expand_corpus(pattern: &str) -> std::io::Result<Vec<String>> {
     Ok(files)
 }
 
-/// Locate the reference interpreter: `python3.14` first, then `python3`.
+/// Locate the reference interpreter: `AP_CONFORM_REFERENCE_PYTHON` first,
+/// then `python3.14`, then `python3`.
 ///
 /// A candidate is accepted ONLY if its `--version` output reports Python
 /// 3.14.x. Without the version check, a host lacking `python3.14` would
 /// silently use any `python3` (3.9, 3.12, ...) as the "CPython 3.14
 /// reference", making every differential verdict meaningless while still
-/// printing green.
+/// printing green. The env override (step 0) is version-checked the same way.
 pub fn find_reference_interpreter() -> Option<String> {
+    if let Some(env) = std::env::var("AP_CONFORM_REFERENCE_PYTHON")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+    {
+        if is_python_314(&env) {
+            return Some(env);
+        }
+    }
     for candidate in ["python3.14", "python3"] {
         if is_python_314(candidate) {
             return Some(candidate.to_string());

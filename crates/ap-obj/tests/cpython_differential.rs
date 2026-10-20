@@ -1,11 +1,14 @@
 //! Leaf 02.01 CPython-differential tests (T-05 companion, implementer-side).
 //!
-//! Expected bytes are generated LIVE from `python3.14` by this test file at
+//! Expected bytes are generated LIVE from CPython 3.14 by this test file at
 //! run time (leaf-brief option "generated from live python3.14 by the test")
 //! — pinned fixtures belong to the separately-authored T-05 corpus; this file
-//! is the implementation's own differential harness. If `python3.14` is not
-//! on PATH the differential tests SKIP (unit tests above cover the pinned
-//! spot checks; recorded probe outputs live in the comments).
+//! is the implementation's own differential harness. The reference comes from
+//! the shared discovery seam (`tests/common/mod.rs`:
+//! `AP_CONFORM_REFERENCE_PYTHON`, then PATH `python3.14`, both version-
+//! checked). When no reference is found the differential tests SKIP (unit
+//! tests above cover the pinned spot checks) — unless
+//! `AP_REQUIRE_REFERENCE=1` turns a missing reference into a hard failure.
 //!
 //! Clauses exercised: S-01-1..14 (int semantics), S-01-19..26 (containers),
 //! S-01-35..39 (hashing), S-01-40..44 (reprs), C-12..C-14 (bigint), C-15..18
@@ -18,27 +21,14 @@ use ap_obj::ops::{binop, divmod, repr as py_repr, BinOp};
 use ap_obj::value::{PyString, Tuple, Value};
 
 use std::process::Command;
-use std::sync::OnceLock;
 
-/// `python3.14` availability; differential tests skip when absent.
-fn python314() -> Option<&'static str> {
-    static P: OnceLock<Option<String>> = OnceLock::new();
-    P.get_or_init(|| {
-        Command::new("python3.14")
-            .arg("-c")
-            .arg("print('ok')")
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|_| "python3.14".to_string())
-    })
-    .as_ref()
-    .map(|s| s.as_str())
-}
+mod common;
 
 /// Run `expr` under CPython with `PYTHONHASHSEED=0` and return printed stdout.
 fn cpython(expr: &str) -> String {
-    let py = python314().expect("python3.14 checked");
+    // Callers gate on reference_or_skip(); the seam panics under
+    // AP_REQUIRE_REFERENCE=1 when no reference exists.
+    let py = common::reference_or_skip().expect("reference interpreter resolved");
     let out = Command::new(py)
         .env("PYTHONHASHSEED", "0")
         .arg("-c")
@@ -98,9 +88,9 @@ macro_rules! diff {
     ($name:ident, $py:expr, $ours:expr) => {
         #[test]
         fn $name() {
-            if python314().is_none() {
-                eprintln!("skipping: python3.14 not on PATH");
-                return;
+            if common::reference_or_skip().is_none() {
+                return; // SKIP printed by the seam, or panic under
+                        // AP_REQUIRE_REFERENCE=1.
             }
             let expected = cpython($py);
             let ours: String = $ours;
@@ -440,8 +430,7 @@ diff!(
 
 #[test]
 fn diff_error_texts() {
-    if python314().is_none() {
-        eprintln!("skipping: python3.14 not on PATH");
+    if common::reference_or_skip().is_none() {
         return;
     }
     // Each case: python expr that raises, our closure that produces the
@@ -469,8 +458,7 @@ fn diff_error_texts() {
 
 #[test]
 fn diff_int_str_digit_limit() {
-    if python314().is_none() {
-        eprintln!("skipping: python3.14 not on PATH");
+    if common::reference_or_skip().is_none() {
         return;
     }
     // str(int) form (no digit count) — A-2
@@ -495,8 +483,7 @@ fn diff_int_str_digit_limit() {
 
 #[test]
 fn diff_big_shifts_signed() {
-    if python314().is_none() {
-        eprintln!("skipping: python3.14 not on PATH");
+    if common::reference_or_skip().is_none() {
         return;
     }
     // huge shifts bounded by memory, not overflow (C-14: MemoryError only

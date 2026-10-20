@@ -1,9 +1,13 @@
 //! stdlib_modules_differential — leaf 02.08-lite (T-11 companion).
 //!
 //! Per-module probes comparing our output byte-for-byte against a live
-//! `python3.14` (spec 05: reference is /opt/homebrew/bin/python3.14). Each
-//! test skips (not fails) when python3.14 is unavailable, and runs BOTH
-//! interpreters on the same source, comparing stdout bytes + exit code.
+//! CPython 3.14 resolved through the shared reference-discovery seam
+//! (`tests/common/mod.rs`: `AP_CONFORM_REFERENCE_PYTHON`, then PATH
+//! `python3.14`; no bare `python3`, no hardcoded Homebrew path). Each test
+//! skips (not fails) when python3.14 is unavailable — unless
+//! `AP_REQUIRE_REFERENCE=1`, which turns a missing reference into a hard
+//! failure (CI). Every test runs BOTH interpreters on the same source,
+//! comparing stdout bytes + exit code.
 //!
 //! Cites: S-05-4 (v1-subset rows), S-05-5 (observable-behavior gate), the
 //! spec 05 corpus anchors #4 (math), #5 (json), #7 (itertools), #8
@@ -11,27 +15,15 @@
 
 use std::process::Command;
 
-fn python314() -> Option<&'static str> {
-    // Accept ONLY a real CPython 3.14 (version string checked, not just
-    // spawnability) so a misnamed interpreter can never become the reference.
-    for cand in ["/opt/homebrew/bin/python3.14", "python3.14"] {
-        if let Ok(out) = Command::new(cand).arg("--version").output() {
-            let text = format!(
-                "{}{}",
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr)
-            );
-            if out.status.success() && text.contains("Python 3.14") {
-                return Some(cand);
-            }
-        }
-    }
-    None
-}
+mod common;
 
 /// Run `src` under both interpreters; assert identical stdout + exit 0.
 fn assert_differential(src: &str) {
-    let py = python314().expect("python3.14 required for differential probes");
+    let py = match common::reference_or_skip() {
+        Some(p) => p,
+        None => return, // SKIP printed by the seam, or panic under
+                        // AP_REQUIRE_REFERENCE=1.
+    };
     let expected = Command::new(py)
         .arg("-S")
         .arg("-c")

@@ -248,3 +248,66 @@ stub comment): `conformance-matrix` axis job + `conformance` matrix job.
 6. Job-summary step re-runs ~270 corpus cases through the reference (~1-2
    min); acceptable, it is report-only and runs even when pytest failed.
 7. `gh` remote validation (Actions syntax tab / actionlint CI) not run.
+
+---
+
+## wave-A-gap followup — ap-cli + ap-obj conversion (2026-10-20, subagent)
+
+Closes 00.02 HONEST gaps #2 and #3: the last two inconsistent Rust
+differential suites now use the shared reference-discovery seam, and
+ap-conform's finder honors `AP_CONFORM_REFERENCE_PYTHON`.
+
+### Files converted
+- `crates/ap-cli/tests/common/mod.rs` (NEW) + `crates/ap-obj/tests/common/mod.rs`
+  (NEW) — verbatim copies of `crates/ap-run/tests/common/mod.rs` (compiles
+  clean per-crate; `#![allow(dead_code)]` sufficient, no adjustment needed).
+- `crates/ap-cli/tests/stdlib_modules_differential.rs` — homebrew+PATH ladder
+  replaced by `mod common;` + `common::reference_or_skip()` in
+  `assert_differential` (early return on None; all 19 probe cases byte-for-byte
+  unchanged). No Cargo.toml changes.
+- `crates/ap-obj/tests/cpython_differential.rs` — spawn-only probe
+  (no version check) replaced by the version-checked seam: `diff!` macro
+  gate, the 3 standalone `#[test]` gates, and `cpython()` all go through
+  `common::reference_or_skip()`. All probe cases unchanged. No Cargo.toml
+  changes.
+- `crates/ap-conform/src/lib.rs` — `find_reference_interpreter()` gains
+  step 0: `AP_CONFORM_REFERENCE_PYTHON` (trim, non-empty, version-checked via
+  the existing `is_python_314`), then keeps its own `python3.14` -> `python3`
+  candidates unchanged. 14-line diff; behavior identical when the env is
+  unset. ap-conform was clean in git status (no sibling conflict). No unit
+  tests in ap-conform/src assert candidate lists; `tests/harness_selfcheck.rs`
+  only re-verifies the returned interpreter reports 3.14 — still green.
+
+### Gates executed (fresh target/debug binaries; PATH=scrub via env -i
+PATH=/usr/bin:/bin so /opt/homebrew is gone; /usr/bin/python3 = 3.9.6 present)
+1. `cargo test -p ap-cli` normal env: 19 passed / 0 failed.
+   `cargo test -p ap-obj` normal env: 25 passed / 0 failed (suite incl.
+   pinned unit tests). `cargo test -p ap-conform`: 3 passed / 0 failed.
+2. require mode: scrubbed PATH + `AP_REQUIRE_REFERENCE=1` ->
+   stdlib_modules_differential exit 101, 19x canonical "reference interpreter
+   not found (AP_REQUIRE_REFERENCE=1)"; cpython_differential exit 101,
+   25x same message.
+3. skip mode: scrubbed PATH, no flag -> rc 0; `--nocapture` shows 19 / 25
+   "SKIP: python3.14 not found" lines.
+4. ladder step 1: scrubbed PATH +
+   `AP_CONFORM_REFERENCE_PYTHON=/opt/homebrew/bin/python3.14` -> 19/19 + run
+   for real (0 SKIP lines).
+5. version rejection: env var -> /usr/bin/python3 (3.9.6) + REQUIRE=1 ->
+   warning "does not report Python 3.14" + hard fail (never diffs vs wrong
+   version). Same semantics in ap-conform: bad env value falls through to
+   `python3.14` candidate.
+6. ap-conform self-check CLI: `cargo run -p ap-conform -- run --corpus
+   'tests/corpus/values/V001*.py' --impl 'target/debug/ap-run-eval'` -> PASS
+   (values corpus uses V0NN caps, not v001 — globbed what exists). With the
+   env var set, the banner reports the override path.
+7. `rustfmt --edition 2021` on all 5 touched .rs files (already formatted;
+   --check clean). `cargo build --workspace` exit 0 (sibling ap-run src WIP
+   compiles with warnings only).
+
+### Notes / gaps
+- Probe case contents untouched byte-for-byte in both suites; only the
+  discovery mechanism changed, per brief.
+- Cargo.toml files NOT touched (ownership constraint; nothing needed).
+- Skipped-mode "green" stays honest-but-empty by design (00.02 gap #4); the
+  CI-enforcing mode is AP_REQUIRE_REFERENCE=1 as set by 00.01/00.03 jobs.
+- Nothing committed (per brief).
