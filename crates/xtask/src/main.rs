@@ -266,3 +266,106 @@ fn main() {
         entries.len()
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn synth_entry(name: &str, version: &str) -> Entry {
+        Entry {
+            name: name.to_string(),
+            version: version.to_string(),
+            license: "MIT".to_string(),
+            copyright: format!("The {name} crate authors"),
+            license_text: format!("MIT text for {name}"),
+        }
+    }
+
+    /// `render` is pure: same entries in, byte-identical string out. This is
+    /// the generator half of the determinism contract in HEADER.
+    #[test]
+    fn render_is_deterministic_and_structured() {
+        let entries = vec![
+            synth_entry("b-crate", "0.2.0"),
+            synth_entry("a-crate", "1.0.0"),
+        ];
+        let once = render(&entries);
+        let twice = render(&entries);
+        assert_eq!(once, twice, "render must be a pure function of entries");
+        assert!(
+            once.starts_with(HEADER),
+            "output must start with the header"
+        );
+        let pos_alpha = once
+            .find("a-crate v1.0.0")
+            .expect("entry name+version line rendered");
+        let pos_beta = once.find("b-crate v0.2.0").expect("entry rendered");
+        assert!(pos_alpha > pos_beta, "entries render in slice order");
+        for e in &entries {
+            assert!(once.contains(&format!("License: {}", e.license)));
+            assert!(once.contains(&format!("Copyright: {}", e.copyright)));
+            assert!(once.contains(&e.license_text));
+        }
+    }
+
+    /// The HEADER claims deterministic output. Two full in-process
+    /// collections over the real workspace graph must render byte-identical.
+    /// Read-only: collect_deps/render never touch THIRD_PARTY_NOTICES.
+    #[test]
+    fn collect_deps_render_is_byte_deterministic() {
+        let first = render(&collect_deps());
+        let second = render(&collect_deps());
+        assert_eq!(
+            first, second,
+            "notices output is not deterministic across two in-process runs"
+        );
+    }
+
+    /// The HEADER claims "entries sorted by (crate name, version)".
+    /// BTreeMap<(String, String)> iteration order is that claim; pin it.
+    #[test]
+    fn collect_deps_entries_sorted_by_name_version() {
+        let entries = collect_deps();
+        assert!(
+            entries.len() > 100,
+            "expected the full resolved dep graph, got {}",
+            entries.len()
+        );
+        let keys: Vec<(String, String)> = entries
+            .iter()
+            .map(|e| (e.name.clone(), e.version.clone()))
+            .collect();
+        let mut sorted = keys.clone();
+        sorted.sort();
+        assert_eq!(
+            keys, sorted,
+            "entries must be sorted by (crate name, version)"
+        );
+        // Field-identity guard: a key swap in collect_deps would keep the
+        // order self-consistent (sorted by (version, name) with fields
+        // swapped), so pin which field is which: crate names never start
+        // with a digit, semver versions always do.
+        for e in &entries {
+            assert!(
+                !e.name
+                    .as_bytes()
+                    .first()
+                    .is_some_and(|b| b.is_ascii_digit()),
+                "entry name looks like a version (fields swapped?): {:?}",
+                (&e.name, &e.version)
+            );
+            assert!(
+                e.version.starts_with(|c: char| c.is_ascii_digit()),
+                "entry version does not start with a digit: {:?}",
+                e.version
+            );
+        }
+    }
+
+    /// Static (vendored-tree) entries are gated on the tree existing, so the
+    /// notices file never claims files that are not in the tree.
+    #[test]
+    fn static_entries_absent_when_vendored_tree_missing() {
+        assert!(static_entries(Path::new("/nonexistent-xtask-fixture-root")).is_empty());
+    }
+}
