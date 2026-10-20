@@ -122,7 +122,7 @@ Testability CLIs (each suite drives one; see `tests/README.md`):
 
 | Binary | Purpose |
 | --- | --- |
-| `ap-parse-check` | parse diagnostics |
+| `ap-parse-check` | parse diagnostics (planned - T-01 seam gap, see tests/TRACKING.md) |
 | `ap-ir-dump` | parse + lower + print IR (`--verify` mode too) |
 | `ap-verify-dump` | print one verifier diagnostic per line |
 | `ap-run-eval` | execute a file at tier-0 (`[--tier 0] file.py`) |
