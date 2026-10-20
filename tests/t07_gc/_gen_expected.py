@@ -1,7 +1,10 @@
-# Generate expected/<stem>.{out,err,rc} for every gc corpus case,
-# only if 3 consecutive runs of /opt/homebrew/bin/python3.14 produce
-# byte-identical stdout+stderr+rc. Refuses to write if a case flaps.
-import os, subprocess, sys
+# Generate expected/<stem>.{out,err,rc} + expected/<stem>.meta for every gc
+# corpus case, only if 3 consecutive runs of /opt/homebrew/bin/python3.14
+# produce byte-identical stdout+stderr+rc. Refuses to write if a case flaps.
+# .meta records provenance (robustness-ci 03.01, finding #11): the reference
+# interpreter's actual sys.version, recording date, and this script's sha256.
+import hashlib, json, os, subprocess, sys
+from datetime import date
 from pathlib import Path
 
 GC = Path("/Users/caimlas/git/antipythany/tests/corpus/gc")
@@ -25,7 +28,20 @@ for script in sorted(GC.glob("gc*.py")):
     (exp / (script.stem + ".out")).write_bytes(out)
     (exp / (script.stem + ".err")).write_bytes(err)
     (exp / (script.stem + ".rc")).write_text(str(rc) + "\n")
-    print(f"PIN  {script.name} rc={rc} out={len(out)}B err={len(err)}B")
+    # Provenance sidecar, one per case, covering the whole triple (03.01).
+    sys_version = subprocess.run(
+        [PY, "-c", "import sys; print(sys.version)"],
+        capture_output=True, text=True, env=env, timeout=60).stdout.strip()
+    meta = {
+        "sys_version": sys_version,
+        "date": date.today().isoformat(),
+        "generator_sha256": hashlib.sha256(Path(__file__).resolve().read_bytes()).hexdigest(),
+        "family": "gc",
+        "generator": "tests/t07_gc/_gen_expected.py",
+    }
+    (exp / (script.stem + ".meta")).write_text(
+        json.dumps(meta, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(f"PIN  {script.name} rc={rc} out={len(out)}B err={len(err)}B (+meta)")
 
 print("FLAKY:", failed if failed else "none")
 sys.exit(1 if failed else 0)

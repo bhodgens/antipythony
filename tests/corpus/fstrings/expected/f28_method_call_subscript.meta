@@ -1,0 +1,7 @@
+{
+  "date": "2026-10-20",
+  "family": "fstrings",
+  "generator": "tests/tools/_gen_meta.py",
+  "generator_sha256": "28c06e1ca38618bb4bd6553fd83dfe20b506acefd070f68e70b87dea8576cdf3",
+  "sys_version": "3.14.7 (main, Aug  5 2026, 10:29:49) [Clang 21.0.0 (clang-2100.1.1.101)]"
+}
