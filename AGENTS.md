@@ -33,18 +33,38 @@ GIL, uv-backed deps at build time. Byte-exact differential conformance vs CPytho
 - Orchestrator (main model) reviews in-session; parents determine completion.
 - "Commit then implement" / "fix all" = pre-authorized per user convention.
 - Specs before code: nothing dispatches from Plans 01+ until 00.05 spec pack lands.
+- Repo gates run in CI, NOT git hooks. This machine's global
+  `core.hooksPath=~/.githooks` (LFS hooks only - verified: `git config
+  --get core.hooksPath`) silently disables repo-local hooks, so any future
+  repo hook is a no-op here. If hooks are ever wanted, onboarding must set
+  `git config core.hooksPath .githooks` per-repo. See docs/development.md.
 
 ## Current status (update this block when it changes)
 - Plans 00+01 COMPLETE. Plan 02 nearly complete: 02.01 values, 02.02 executor,
   02.03/02.03b classes+metaclass, 02.04 GC (weakref surfaces, unittest gate,
   MMTk design doc docs/gc-mmtk-swap.md), 02.08-lite + 02.08-full p1 (25+
   native modules, method surfaces) ALL COMMITTED.
-- 80 commits. rust 247/0, pytest 1272/0. Corpus 150/197 (76%): values 46/47,
-  fstrings 34/35, stdlib 17/48, classes 27/33, exceptions 15/15, gc 9/17.
 - unittest/pathlib/enum/weakref IMPORTS ALL WORK (vendored stdlib chain).
 - BUGHUNT 2026-10-17: 7 fixes landed; report in .hermes/audits/.
 - PLAN 02 REMAINING: 02.05 tier-1 (split per risks) + 02.06 AoT + 02.07
   threading + 02.08-full p2 (re engine, complex, deep method surface).
+- ROBUSTNESS-CI CAMPAIGN: plan tree at `plans/robustness-ci/` (master.md +
+  7 branches, 24 leaves) implements ALL findings of
+  .hermes/audits/robustness-review-2026-10-19.md (CI core, test integrity,
+  lint gates, provenance, fuzzing, CLI/docs, gated decomposition). Status:
+  WAVE A DISPATCHED 2026-10-19 (00.01, 00.02, 02.02, 03.03). Branch 06
+  hard-gated on Plan 02 waves.
+- Status block verified at 5f1e132 2026-10-19 by leaf 03.03 (fresh
+  re-measure): 94 commits; `cargo test --workspace` 289 passed / 0 failed
+  / 1 ignored; `xtask notices --check` exit 0 (151 deps, up to date);
+  corpus inventory 8 families / 270 .py cases / 696 expected files
+  (pass-rate counts: see plans/**/PROGRESS.md, source of truth). Previous
+  block (stale): "80 commits. rust 247/0, pytest 1272/0. Corpus 150/197".
+  CAVEAT: measured with sibling 02.07 threading work uncommitted in
+  crates/ap-run/src (threading.rs / threading_call.rs in flight); rust
+  gate green at that state, full `pytest tests/ -q` still running at
+  verify time (~50% done: 0 F/0 E, 3 skipped, 280 xfail, 0 xpass;
+  differential ap-conform suites are the long pole).
 - AFTER: Plan 03 WASM, Plan 04 packaging (uv) -> T1 scrapy attempt.
 - Ecosystem targets locked (master.md tier table): scrapy T1, pytest T2,
   hermes-agent T3, fastapi T4, comfyui T5 (gates on Plan 10). TEST DATA ONLY -
