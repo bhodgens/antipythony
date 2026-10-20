@@ -40,6 +40,17 @@ against live CPython 3.14 and the antipythany executor.
    must require a real Python 3.14 (`--version` string check), never a
    bare `python3` fallback.
 
+### Bench reports are trend artifacts (robustness-ci 01.05)
+
+`tests/t08_tier1/bench_report.json` is a machine-regenerated timing log,
+not a pin: wall-clock numbers are hardware-flaky across runners, so the
+report is kept trend-only and is **never** a CI pass/fail gate. It is
+listed in `.gitignore` going forward, but the file is already tracked and
+committed — untracking it (`git rm --cached`) is deliberately left as a
+user call. When the 02.05 tier-1 work lands and wants the >=1.5x
+speedup gate, that gate must run on fixed hardware only (self-hosted /
+ci-tagged job), comparing ratios rather than absolute times.
+
 ## Test tracks
 
 - `tests/corpus/` — byte-pin corpus (rule 1–5 above).
