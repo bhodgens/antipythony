@@ -1,0 +1,126 @@
+name: ci
+# ROBUSTNESS-CI leaf 00.01 - core pipeline mirroring the local gate stack
+# (plans/robustness-ci/master.md findings #1 #2 #3 #6 #19 #20; audit sketch
+# .hermes/audits/robustness-review-2026-10-19.md "Proposed CI pipeline").
+#
+# Jobs here: fast-lints (pytest lints + notices drift), rust (pinned fmt /
+# informational clippy / build / test), deny (cargo-deny, master.md:45
+# promise). attribution.yml stays alive until the orchestrator retires it
+# after this file lands - its notices gate is duplicated in fast-lints so
+# retirement is a pure delete.
+#
+# Toolchain contract (master.md interface table): rustc 1.94.0 pinned via
+# dtolnay/rust-toolchain@master, matching rust-toolchain.toml:6. Homebrew
+# cargo ignores rust-toolchain.toml locally, so the pin is asserted
+# explicitly with `rustc -vV` (finding #6: "pin is decorative").
+#
+# setup-python step-0 (verified 2026-10-19 from actions/python-versions
+# versions-manifest.json via gh api): Python 3.14 GA ships 3.14.6/3.14.7/
+# 3.14.8 for linux 22.04/24.04/26.04 x64+arm64; ubuntu-latest runners
+# pre-bake 3.14 in the tool cache. setup-python@v5 (latest v5.5.0) resolves
+# "3.14" natively - no pre-release flag, no setup-uv fallback needed.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  # Takes effect once leaf 00.02 lands the shared reference-discovery helper
+  # that converts "python3.14 missing" skips into hard failures. Harmless
+  # today (nothing reads it yet); setting it here so 00.02 activates without
+  # a workflow edit. master.md contract: every CI job running differential
+  # tests sets this.
+  AP_REQUIRE_REFERENCE: "1"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fast-lints:
+    # No workspace compile: pytest rule-lints + notices drift gate.
+    # The xtask build is a single small crate (dep: cargo_metadata only).
+    name: fast lints (traceability + notices)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Show interpreter
+        run: python --version
+      - name: Install pytest
+        run: pip install pytest
+      - name: C-02 corpus traceability lint (finding #19)
+        run: pytest tests/corpus_traceability -q --no-header
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94.0"
+      - uses: Swatinem/rust-cache@v2
+      - name: THIRD_PARTY_NOTICES drift gate (moved from attribution.yml)
+        run: cargo run -p xtask -- notices --check
+
+  rust:
+    name: rust 1.94.0 (fmt / clippy-info / build / test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pin toolchain (rust-toolchain.toml:6; finding #6)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94.0"
+          components: rustfmt, clippy
+      - name: Assert toolchain pin took effect
+        run: |
+          rustc -vV
+          rustc -vV | grep -q "rustc 1\.94\.0" \
+            || { echo "::error::expected rustc 1.94.0, got: $(rustc -vV | head -1)"; exit 1; }
+      - name: Python 3.14 reference interpreter (differential Rust tests)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Export reference path
+        # Belt-and-braces for the master.md "reference python discovery"
+        # contract; 00.02's helper reads this env var first.
+        run: echo "AP_CONFORM_REFERENCE_PYTHON=$(command -v python3.14 || command -v python)" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo fmt (blocking)
+        run: cargo fmt --all --check
+      - name: cargo clippy (INFORMATIONAL - see comment)
+        # Strict `-D warnings` is leaf 02.01's deliverable: it lands the
+        # [workspace.lints] policy (unwrap_used allow-lists, clippy.toml)
+        # first, then flips this step to blocking. The tree is not
+        # clippy-clean today (finding #7: 149 unwrap() panic surfaces in
+        # ap-obj/ap-run), so a hard gate here would be red-on-merge for
+        # every PR. This wrapper never fails the job but surfaces the
+        # warning count as a visible workflow warning - do not water the
+        # lint down by deleting lints to silence it (02.01 owns cleanup).
+        run: |
+          if cargo clippy --workspace --all-targets 2>&1 | tee clippy.log | grep -q "^warning"; then
+            n=$(grep -c "^warning:" clippy.log || true)
+            echo "::warning::cargo clippy reported ${n} warnings (informational; strict -D warnings gate lands with leaf 02.01)"
+          else
+            echo "cargo clippy: clean"
+          fi
+          exit 0
+      - name: cargo build (bins consumed by integration tests via target/debug path math)
+        run: cargo build --workspace
+      - name: cargo test
+        run: cargo test --workspace
+
+  deny:
+    name: cargo deny (master.md:45; finding #2)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - name: cargo deny check
+        run: cargo deny check
+
+  # conformance job is intentionally NOT wired here - it is leaf 00.03
+  # (needs 00.02's reference-discovery helper to be trustworthy: without it
+  # a runner lacking python3.14 reports green, finding #3). A half-wired
+  # matrix with silent skips is worse than an absent job. 00.03 reopens
+  # this block: build --workspace, export APX_IMPL=target/debug/ap-run-eval
+  # and APX_CLI="target/debug/antipythany run", pytest tests/ -q on
+  # ubuntu (PR+main) + macos-14 (main only). Tracked in
+  # plans/robustness-ci/00-ci-core/orchestrator.md leaf 00.03.
