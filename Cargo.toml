@@ -29,8 +29,13 @@ unwrap_used = "warn"
 dbg_macro = "deny"
 todo = "warn"
 
-# Reserved: doc-link lints (rustdoc::broken_intra_doc_links etc.) are owned by
-# leaf 05.03 (cargo-doc gate) - kept out to avoid cross-leaf churn.
+# Doc-link policy (robustness-ci 05.03): broken intra-doc links warn in every
+# crate that opts into workspace lints. The CI gate escalates ALL rustdoc
+# warnings to errors via RUSTDOCFLAGS='-D warnings' on the cargo-doc step
+# (rustdoc tool-lints cannot be escalated through the Cargo lints table).
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "warn"
+
 [workspace.lints.rust]
 
 [profile.release]

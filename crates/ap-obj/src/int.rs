@@ -3,7 +3,7 @@
 //! Semantics contract: S-01-1..S-01-14, C-12..C-14.
 //!
 //! - **No overflow anywhere** (C-13): smi arithmetic that leaves
-//!   `[-2^60, 2^60)` promotes to [`BigInt`]; bigint arithmetic is exact,
+//!   `[-2^60, 2^60)` promotes to `BigInt` (num-bigint); bigint arithmetic is exact,
 //!   bounded only by memory. The `2^SMI_BITS ± k` boundary is invisible.
 //! - **Floor division / modulo** (S-01-3/4): `//` truncates toward negative
 //!   infinity, `%` takes the divisor's sign. num-bigint's `/` and `%` are

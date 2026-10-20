@@ -1,3 +1,4 @@
+#![warn(missing_docs)] // robustness-ci 05.03: public surface is fully documented
 //! Differential conformance runner (spawns CPython).
 //!
 //! Runs each corpus script under a reference interpreter (`python3.14`, falling

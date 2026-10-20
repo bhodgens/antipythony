@@ -18,7 +18,6 @@
 //!   (no double rounding): convert via decimal parse (exact), matching
 //!   CPython's float(int) rounding.
 
-use crate::dict::PyDict;
 use crate::exc::PyException;
 use crate::hash;
 use crate::int::{Gc, Int};
@@ -718,6 +717,7 @@ fn float_mant_exp(f: f64) -> (i64, i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dict::PyDict;
 
     fn s(x: &str) -> Value {
         Value::Str(PyString::new(x))

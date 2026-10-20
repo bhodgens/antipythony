@@ -357,12 +357,12 @@ impl PyList {
         self.items.borrow_mut()[i] = v;
     }
 
-    /// Remove `items[i]` (del xs[i]; caller validated the index).
+    /// Remove `items[i]` (`del xs[i]`; caller validated the index).
     pub fn remove_at(&self, i: usize) {
         self.items.borrow_mut().remove(i);
     }
 
-    /// Remove `items[lo..hi]` (del xs[lo:hi]; caller validated the range).
+    /// Remove `items[lo..hi]` (`del xs[lo:hi]`; caller validated the range).
     pub fn remove_range(&self, lo: usize, hi: usize) {
         if lo < hi {
             self.items.borrow_mut().drain(lo..hi);

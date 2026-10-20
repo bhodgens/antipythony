@@ -44,7 +44,7 @@ pub struct TypeObject {
     pub name: String,
     /// Dotted qualname (S-03-04 `__qualname__`; slot, not a dict key).
     pub qualname: String,
-    /// Direct bases as type-object handles (empty => [object]).
+    /// Direct bases as type-object handles (empty => `[object]`).
     pub bases: Vec<Rc<TypeRef>>,
     /// C3 linearization, computed at creation: [self, ..., object].
     /// RefCell because the self-reference lands after construction.
