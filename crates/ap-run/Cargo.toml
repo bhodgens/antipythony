@@ -27,3 +27,10 @@ sha2 = "0.10"
 
 [lints]
 workspace = true  # robustness-ci 02.01 - see root Cargo.toml [workspace.lints]
+
+[dev-dependencies]
+# robustness-ci leaf 04.01: property-based differential fuzz for the re
+# engine. MIT (deny.toml allow-list covers it). default-features off: we
+# compare out-of-process binaries, so proptest's fork-based panic recovery
+# (rusty-fork) is dead weight and a macOS fork hazard; std is all we need.
+proptest = { version = "1", default-features = false, features = ["std"] }

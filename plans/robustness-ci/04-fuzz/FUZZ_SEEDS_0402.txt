@@ -1,0 +1,77 @@
+# FUZZ_SEEDS_0402 - routed finding seeds (leaf 04.02, repr fuzz)
+
+Minimal repros for the two divergences found by
+crates/ap-obj/tests/repr_fuzz.rs against live CPython 3.14.7
+(/opt/homebrew/bin/python3.14). Product code is owned by Plan 02 - these
+route there; DO NOT "fix" the fuzz suite to hide them. Re-validate with:
+
+  AP_FUZZ_STRICT=1 cargo test -p ap-obj --test repr_fuzz   # routes OFF -> red
+
+When Plan 02 fixes float_repr.rs, the strict lane goes green and
+`routed_findings_pins_currently_reproduce` flips red on purpose: delete the
+router + pins + this file's entries then.
+
+## F0402-1 - negative fixed-window values get exponential layout
+
+Root cause (read of crates/ap-obj/src/float_repr.rs:53-67): the decimal
+exponent for a fixed-format Rust `{v:?}` is computed as
+`int_len = mant.split('.').next().len() - 1` WITHOUT stripping the `-`
+sign. For negative values the sign adds 1, so every negative integral-
+shortest v with 1e15 <= |v| < 1e16 computes exp10 = 16 and the layout
+branch (`exp10 >= 16`) re-lays it out as exponential form. Positive values
+of the same magnitude are correct (16 digits - 1 = 15 -> fixed). Violates
+S-01-41 layout rule + C-15; C-17 round-trip also breaks (the bogus
+"...e+16" parses ~1e31 away from v).
+
+Minimal repros (bit -> impl bytes -> reference bytes):
+
+  c30c6bf526340000  (-1000000000000000.0)
+    impl:      "-1000000000000000e+16"
+    reference: "-1000000000000000.0"
+  c33cc5206bcf63b4  (-8098042386277300.0)   [proptest-shrunk, strict lane]
+    impl:      "-8098042386277300e+16"
+    reference: "-8098042386277300.0"
+  c30c6dea8fcd2ea0  (-1000269193782740.0)
+    impl:      "-1000269193782740e+16"
+    reference: "-1000269193782740.0"
+
+Counts (350k-value offline scan, /tmp scratch, real ap-obj formatter vs
+live 3.14.7 repr): 3084 divergences, ALL negative, ALL in
+(-1e16, -1e15], zero outside the predicted window -> signature complete.
+
+## F0402-2 - shortest-digit tie breaks UP instead of to EVEN
+
+When the exact binary value is the midpoint between two adjacent
+shortest-length decimal candidates, CPython's David Gay repr breaks the
+tie to the EVEN last digit; Rust's `{v:?}` digit selection (half-up) emits
+the ODD candidate. Both candidates round-trip to the same f64; bytes
+differ in exactly the final digit (odd vs even, delta 1). Violates
+S-01-41 "ties resolve to the digit string closest to the true value"
+even-tie rule + C-17 "prefer the same digit string the reference does".
+
+Minimal repro (scan-shrunk):
+
+  c2ac66e47a1fc8a0  (-15614122725348.3125)
+    impl:      "-15614122725348.313"
+    reference: "-15614122725348.312"
+
+Other scan examples (positive values too - sign is not the driver):
+  1590520222528360.25 -> impl 1590520222528360.3  ref 1590520222528360.2
+  1324046928941114.25 -> impl 1324046928941114.3  ref 1324046928941114.2
+  214457119126934.125 -> impl 214457119126934.13  ref 214457119126934.12
+
+Counts: 52 divergences in the same 350k scan (0.015%), every one
+verified equal-length/equal-prefix/odd-vs-even-last-digit.
+
+Compound: the F0402-1 window also contains tie values where BOTH bugs hit
+(e.g. impl "-2012202229215995.3e+16" vs ref "-2012202229215995.2"); the
+router recognizes the stripped-mantissa tie signature and counts those as
+F0402-1 occurrences. Fixing only the layout exposes them as F0402-2 - the
+strict lane will show it.
+
+## Int side: NO divergences
+
+350k float scan + 200-case quick + 1200-case release proptest runs:
+repr(int)/str(int) (S-01-40) matched byte-exactly for the entire corpus
+(i64 domain + 1..=800-digit random runs, +/-, leading zeros, Smi/Big box
+boundary, 10**25 named case). Int findings: none routed.

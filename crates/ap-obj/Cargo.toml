@@ -18,3 +18,11 @@ num-traits = "0.2"
 
 [lints]
 workspace = true  # robustness-ci 02.01 - see root Cargo.toml [workspace.lints]
+
+[dev-dependencies]
+# robustness-ci leaf 04.02: differential repr fuzz vs live CPython 3.14.
+# MIT (deny.toml allow-list covers it). Feature flags mirror leaf 04.01's
+# ap-run choice exactly (single resolved proptest in the graph): fork-based
+# panic recovery is dead weight for in-process compares and a macOS fork
+# hazard; std is all we need.
+proptest = { version = "1", default-features = false, features = ["std"] }
