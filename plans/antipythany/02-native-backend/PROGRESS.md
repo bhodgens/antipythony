@@ -842,3 +842,13 @@
   (twisted first) -> interpreter fixes in ap-run/ap-obj as bugs surface ->
   minimal spider run -> gap report docs/t1-attempt.md.
 - Expect interpreter conformance bugs; fixing them IS the point.
+
+## T1 completion leaf - DISPATCHED (deleg_1c33caaa)
+- The 5 precise blockers from the attempt doc: importlib.resources.files
+  (None-bind), chained-traceback frame attrs, 2-3-arg exec (twisted
+  reactor), typing/attrs None-callable tail, abc.register semantics.
+- Acceptance: the staged T1 gate - spider crawl w/ items.jsonl byte-equal
+  to the CPython golden at /tmp/t1/ref/.
+- 20 interpreter fixes already landed in the attempt (typing works,
+  twisted top-level imports, module-level decorated defs, lru_cache(N),
+  PEP 560 __class_getitem__, __init_subclass__ everywhere).
