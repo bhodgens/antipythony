@@ -107,9 +107,9 @@ Updated by the orchestrator after each leaf review. All leaves NOT STARTED.
 | 00.01 ci.yml core jobs | COMMITTED (717bc9c) |
 | 00.02 reference discovery + AP_REQUIRE_REFERENCE | COMMITTED (7c8358d) |
 | 00.03 conformance matrix jobs | COMMITTED (a881906) - remote green pending push |
-| 00.04 branch-protection doc | NOT STARTED |
+| 00.04 branch-protection doc | COMMITTED (docs/ci-branch-protection.md) |
 | 01.01 XPASS ceiling gate | COMMITTED (0137c64) - ceiling 74 |
-| 01.02 ledger burn-down (ongoing) | IN PROGRESS - T-01 seam flip 22e73e8 |
+| 01.02 ledger burn-down (ongoing) | IN PROGRESS - T-01 flip 22e73e8; t15 first-flip blocked on Plan 04.03 (noted) |
 | 01.03 ap-gc unit tests | COMMITTED (3635a6f) - 23 tests |
 | 01.04 xtask notices tests | COMMITTED (1c16009) - 8 tests |
 | 01.05 bench trend-only | NOT STARTED |
