@@ -23,7 +23,31 @@ write to it (merge, never overwrite) after each leaf commits.
 - 2026-10-19 Wave B dispatched (deleg_311e77fe): 00.03 (sa-0, conformance
   matrix job), 02.01 (sa-1, workspace.lints + grandfather allowances),
   01.03 (sa-2, ap-gc in-crate tests), 01.04 (sa-3, xtask tests), 03.01
-  (sa-4, golden .meta provenance + backfill). HELD for conflict/dependency: 03.02 (xtask main.rs vs 01.04),
+  (sa-4, golden .meta provenance + backfill).
+- 2026-10-20 Wave B REVIEWED + COMMITTED: 4c8d08b (02.01 lints), 3635a6f
+  (01.03 ap-gc 23 tests), 1c16009 (01.04 xtask 8 tests), 8db313c (03.01
+  232 metas + 475-check lint), a881906 (00.03 conformance matrix). All
+  verified by orchestrator: PyYAML parse ci.yml, cargo test -p ap-gc -p
+  xtask re-run green, corpus_traceability 475/0 re-run green, importer
+  guard 6-shape fresh probes byte-exact. SIBLING NOTE: 02.01's commit
+  briefly absorbed threading sibling's pub mod lines into ap-run/src/
+  lib.rs; stripped via hash-object staging (git show HEAD verified 0
+  threading refs; sibling's worktree diff intact).
+- 2026-10-20 Wave C dispatched (deleg_7982682d): 05.01 (sa-0, clap
+  migration 4 bins), 01.01 (sa-1, XPASS ceiling + pytest-side reference
+  discovery), 04.01 (sa-2, proptest re fuzz), 04.02 (sa-3, proptest
+  repr fuzz), wave-A-gap-followup (sa-4, ap-cli/ap-obj differential seam
+  + ap-conform env step-0). Conflict lines: sa-4 excluded from
+  ap-cli/src/bin/* + all Cargo.toml edits; 04.x must not fix sre.rs/
+  float_repr.rs (routed findings only); nobody touches .github/.
+- HELD queue: 04.03 nightly workflow (after 04.01/02 land), 05.02
+  ap-parse-check (awaiting sibling Plan-01-owned bin decision? no - own
+  it Wave D), 05.03-05.05, 03.02 stdlib-provenance (Wave D), 02.01 CI
+  -D warnings flip + attribution.yml retirement (after FIRST REMOTE
+  GREEN of ci.yml - requires user push), 01.05 bench untrack (sibling
+  staged bench_report.json), 01.02 flips ongoing, 06/* gated on Plan 02.
+- Push/remote: repo has origin/main; user has not asked to push - the
+  remote-green gate for ci.yml awaits a user push decision. HELD for conflict/dependency: 03.02 (xtask main.rs vs 01.04),
   05.01 (Cargo.toml vs 02.01), 01.01 (needs pytest tally), 01.05
   (bench_report.json staged by sibling Plan 02 agent - untracking would
   collide), 04/* (await Wave A/B settle + re engine stable).

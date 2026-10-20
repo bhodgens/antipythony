@@ -109,7 +109,7 @@ Updated by the orchestrator after each leaf review. All leaves NOT STARTED.
 | 00.02 reference discovery + AP_REQUIRE_REFERENCE | COMMITTED (7c8358d) |
 | 00.03 conformance matrix jobs | COMMITTED (a881906) - remote green pending push |
 | 00.04 branch-protection doc | NOT STARTED |
-| 01.01 XPASS ceiling gate | NOT STARTED |
+| 01.01 XPASS ceiling gate | DISPATCHED (Wave C sa-1) |
 | 01.02 ledger burn-down (ongoing) | NOT STARTED |
 | 01.03 ap-gc unit tests | COMMITTED (3635a6f) - 23 tests |
 | 01.04 xtask notices tests | COMMITTED (1c16009) - 8 tests |
@@ -119,10 +119,10 @@ Updated by the orchestrator after each leaf review. All leaves NOT STARTED.
 | 03.01 golden .meta provenance | COMMITTED (8db313c) - 232 metas |
 | 03.02 stdlib-provenance xtask | NOT STARTED |
 | 03.03 AGENTS.md hygiene + hooks note | COMMITTED (6b67db0) |
-| 04.01 proptest re differential | NOT STARTED |
-| 04.02 proptest repr differential | NOT STARTED |
+| 04.01 proptest re differential | DISPATCHED (Wave C sa-2) |
+| 04.02 proptest repr differential | DISPATCHED (Wave C sa-3) |
 | 04.03 nightly fuzz workflow | NOT STARTED |
-| 05.01 clap migration (4 bins) | NOT STARTED |
+| 05.01 clap migration (4 bins) | DISPATCHED (Wave C sa-0) |
 | 05.02 ap-parse-check seam bin | NOT STARTED |
 | 05.03 rustdoc gate + missing_docs surfaces | NOT STARTED |
 | 05.04 generated CLI reference | NOT STARTED |
