@@ -818,3 +818,19 @@
 - Root-cause confirmation: sweep bug was scope_path, not the collector
   (matches continuation agent's independent finding).
 - gc corpus at HEAD: 16/17 (gc009 line-map pinning offset - documented).
+
+## Leaves 04.01 + 04.02 - packaging - COMPLETE (committed 6f0b886)
+- ap-pack crate (manifest/lockfile, uv wrapper, pure-wheel filter,
+  content-addressed cache); CLI new/add/run end to end.
+- MILESTONE: FIRST THIRD-PARTY PACKAGE RUNS - six 1.17.0 resolved via uv,
+  imported, executed byte-exact under antipythany.
+- +16 rust tests (362 total). cext diagnostic: lxml add fails loud.
+- VERIFIED firsthand: new -> add six -> run main.py = "six works 1.17.0"
+  (CPython w/o venv cannot even import it - our cache is self-contained).
+
+## NEXT: T1 SCRAPY ATTEMPT
+- Prereqs all in place: classes/imports/threading/re/gc/weakref/stdlib/
+  vendored stdlib + packaging fetches pure-python deps (twisted et al).
+- Remaining risk: scrapy's deep deps (queuelib/w3lib/parsel/protego/
+  itemloaders/jmespath/cssselect - all pure) + twisted (pure, large).
+- T1 gate: scrapy crawl file:// spider, items.jsonl byte-compare vs CPython.
