@@ -19,27 +19,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// and wall-clock nanos can collide when tests start simultaneously).
 static PROBE_SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// CPython 3.14 reference (homebrew first, then PATH python3.14/python3).
-/// The version STRING is checked: a bare `python3` fallback would silently
-/// diff against the wrong reference version.
-fn ref_python() -> &'static str {
-    for cand in ["/opt/homebrew/bin/python3.14", "python3.14", "python3"] {
-        if let Ok(out) = Command::new(cand).arg("--version").output() {
-            let text = format!(
-                "{}{}",
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr)
-            );
-            if out.status.success() && text.contains("Python 3.14") {
-                return cand;
-            }
-        }
-    }
-    panic!("no reference python3.14 on this host");
-}
+// Reference discovery is shared (leaf 00.02): env AP_CONFORM_REFERENCE_PYTHON
+// -> PATH python3.14 (version-string checked, never a bare python3), and
+// AP_REQUIRE_REFERENCE=1 converts a missing reference into a hard failure.
+mod common;
 
 /// Run a probe under the reference interpreter; returns (stdout, exit).
-fn run_reference(src: &str) -> (Vec<u8>, i32) {
+fn run_reference(py: &str, src: &str) -> (Vec<u8>, i32) {
     let dir = std::env::temp_dir().join(format!(
         "aprun-diff-{}-{}",
         std::process::id(),
@@ -48,7 +34,7 @@ fn run_reference(src: &str) -> (Vec<u8>, i32) {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("probe.py");
     std::fs::write(&path, src).unwrap();
-    let out = Command::new(ref_python())
+    let out = Command::new(py)
         .arg(&path)
         .output()
         .expect("spawn reference python");
@@ -76,7 +62,11 @@ fn run_aprun(src: &str) -> (Vec<u8>, i32) {
 }
 
 fn assert_differential(name: &str, src: &str) {
-    let (ref_out, ref_exit) = run_reference(src);
+    let py = match common::reference_or_skip() {
+        Some(py) => py,
+        None => return, // no reference + AP_REQUIRE_REFERENCE unset: skip
+    };
+    let (ref_out, ref_exit) = run_reference(py, src);
     let (ap_out, ap_exit) = run_aprun(src);
     assert_eq!(
         String::from_utf8_lossy(&ap_out),

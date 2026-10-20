@@ -8,10 +8,13 @@
 // fullmatch/sub/subn/split/escape/purge), template repl semantics, error
 // texts, Pattern/Match reprs.
 
-const REF: &str = "/opt/homebrew/bin/python3.14";
+// Reference discovery is shared (leaf 00.02): env AP_CONFORM_REFERENCE_PYTHON
+// -> PATH python3.14, version-string checked; AP_REQUIRE_REFERENCE=1 turns a
+// missing reference into a hard failure instead of a silent green.
+mod common;
 
-fn run_reference(src: &str) -> Vec<u8> {
-    let out = std::process::Command::new(REF)
+fn run_reference(py: &str, src: &str) -> Vec<u8> {
+    let out = std::process::Command::new(py)
         .arg("-S")
         .arg("-c")
         .arg(src)
@@ -42,7 +45,11 @@ fn run_aprun(src: &str) -> Vec<u8> {
 }
 
 fn check(name: &str, src: &str) {
-    let reference = run_reference(src);
+    let py = match common::reference_or_skip() {
+        Some(py) => py,
+        None => return, // no reference + AP_REQUIRE_REFERENCE unset: skip
+    };
+    let reference = run_reference(py, src);
     let ours = run_aprun(src);
     assert_eq!(
         reference,

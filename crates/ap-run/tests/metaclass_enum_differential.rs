@@ -13,23 +13,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static PROBE_SEQ: AtomicU64 = AtomicU64::new(0);
 
-fn ref_python() -> &'static str {
-    for cand in ["/opt/homebrew/bin/python3.14", "python3.14", "python3"] {
-        if let Ok(out) = Command::new(cand).arg("--version").output() {
-            let text = format!(
-                "{}{}",
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr)
-            );
-            if out.status.success() && text.contains("Python 3.14") {
-                return cand;
-            }
-        }
-    }
-    panic!("no reference python3.14 on this host");
-}
+// Reference discovery is shared (leaf 00.02): env AP_CONFORM_REFERENCE_PYTHON
+// -> PATH python3.14 (version-string checked, never a bare python3), and
+// AP_REQUIRE_REFERENCE=1 converts a missing reference into a hard failure.
+mod common;
 
-fn run_reference(src: &str) -> (Vec<u8>, i32) {
+fn run_reference(py: &str, src: &str) -> (Vec<u8>, i32) {
     let dir = std::env::temp_dir().join(format!(
         "aprun-023b-{}-{}",
         std::process::id(),
@@ -38,7 +27,7 @@ fn run_reference(src: &str) -> (Vec<u8>, i32) {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("probe.py");
     std::fs::write(&path, src).unwrap();
-    let out = Command::new(ref_python())
+    let out = Command::new(py)
         .arg(&path)
         .output()
         .expect("spawn reference python");
@@ -62,7 +51,11 @@ fn run_aprun(src: &str) -> (Vec<u8>, i32) {
 }
 
 fn check(name: &str, src: &str) {
-    let (gold, gold_code) = run_reference(src);
+    let py = match common::reference_or_skip() {
+        Some(py) => py,
+        None => return, // no reference + AP_REQUIRE_REFERENCE unset: skip
+    };
+    let (gold, gold_code) = run_reference(py, src);
     let (ours, our_code) = run_aprun(src);
     assert_eq!(
         our_code,
@@ -148,7 +141,11 @@ warnings.simplefilter("always")
 warnings.warn("hi", UserWarning)
 print("warned")
 "#;
-    let (gold, gold_code) = run_reference(src);
+    let py = match common::reference_or_skip() {
+        Some(py) => py,
+        None => return, // no reference + AP_REQUIRE_REFERENCE unset: skip
+    };
+    let (gold, gold_code) = run_reference(py, src);
     let (ours, our_code) = run_aprun(src);
     assert_eq!(our_code, gold_code, "warnings_warn_runs: exit codes differ");
     let gold_stdout: Vec<u8> = gold.iter().cloned().collect();
@@ -160,7 +157,7 @@ print("warned")
         String::from_utf8_lossy(&gold_stdout)
     );
     let _ = gold;
-    let (gold, gold_code) = run_reference(src);
+    let (gold, gold_code) = run_reference(py, src);
     let (ours, our_code) = run_aprun(src);
     assert_eq!(our_code, gold_code, "warnings_warn_runs: exit codes differ");
     assert_eq!(

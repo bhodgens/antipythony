@@ -1,7 +1,8 @@
 //! import_differential — leaf 02.04a (file-based import machinery).
 //!
-//! Differential probes vs live `python3.14` (spec 05 reference:
-//! /opt/homebrew/bin/python3.14). Skips when python3.14 is unavailable.
+//! Differential probes vs live `python3.14` (reference resolved by
+//! tests/common: env AP_CONFORM_REFERENCE_PYTHON -> PATH python3.14; skips
+//! locally when absent, hard-fails under AP_REQUIRE_REFERENCE=1).
 //! Both interpreters run the SAME fixture tree under tests/fixtures/importpkg;
 //! stdout bytes + exit code must match.
 //!
@@ -16,14 +17,11 @@
 
 use std::process::Command;
 
-fn python314() -> Option<&'static str> {
-    for cand in ["/opt/homebrew/bin/python3.14", "python3.14"] {
-        if Command::new(cand).arg("-c").arg("pass").output().is_ok() {
-            return Some(cand);
-        }
-    }
-    None
-}
+// Reference discovery is shared (leaf 00.02): env AP_CONFORM_REFERENCE_PYTHON
+// -> PATH python3.14 (version-STRING checked; the old spawn-only probe could
+// accept a non-3.14 interpreter that merely happened to be named python3.14).
+// AP_REQUIRE_REFERENCE=1 converts a missing reference into a hard failure.
+mod common;
 
 fn ap_run_eval() -> &'static str {
     concat!(
@@ -36,7 +34,10 @@ fn ap_run_eval() -> &'static str {
 /// path (ANTPYTHANY_PATH for us, PYTHONPATH for the reference); assert
 /// identical stdout + exit code.
 fn assert_differential_with_path(src: &str, fixture: &std::path::Path) {
-    let py = python314().expect("python3.14 required for differential probes");
+    let py = match common::reference_or_skip() {
+        Some(py) => py,
+        None => return, // no reference + AP_REQUIRE_REFERENCE unset: skip
+    };
     let tmp = std::env::temp_dir().join(format!(
         "ap_import_diff_{}_{}.py",
         std::process::id(),
@@ -128,6 +129,10 @@ print(sys.modules["a"] is a, sys.modules["b"] is b)
 
 #[test]
 fn import_error_texts_byte_exact() {
+    let py = match common::reference_or_skip() {
+        Some(py) => py,
+        None => return, // no reference + AP_REQUIRE_REFERENCE unset: skip
+    };
     let root = fixture_root("err");
     std::fs::create_dir_all(root.join("pkg")).unwrap();
     std::fs::write(root.join("pkg/__init__.py"), "").unwrap();
@@ -140,7 +145,6 @@ fn import_error_texts_byte_exact() {
         "from . import x",
         "from .mod import y",
     ] {
-        let py = python314().expect("python3.14");
         let tmp = std::env::temp_dir().join(format!(
             "ap_import_err_{}_{}",
             std::process::id(),
@@ -194,7 +198,10 @@ fn vendored_types_and_abc_import() {
     // The vendored tree (vendored_stdlib/) is on sys.path by bootstrap.
     // types.py + _py_abc + _collections_abc are the deepest chains that work
     // without metaclass __new__.
-    let py = python314().expect("python3.14");
+    let py = match common::reference_or_skip() {
+        Some(py) => py,
+        None => return, // no reference + AP_REQUIRE_REFERENCE unset: skip
+    };
     let src = "import types\nimport _collections_abc\nprint('ok')\n";
     let tmp = std::env::temp_dir().join(format!("ap_vendored_{}", std::process::id()));
     std::fs::write(&tmp, src).unwrap();
@@ -225,7 +232,10 @@ fn script_dir_on_sys_path() {
     std::fs::write(root.join("neighbor.py"), "N = 5\n").unwrap();
     let main = root.join("main_script.py");
     std::fs::write(&main, "import neighbor\nprint(neighbor.N)\n").unwrap();
-    let py = python314().expect("python3.14");
+    let py = match common::reference_or_skip() {
+        Some(py) => py,
+        None => return, // no reference + AP_REQUIRE_REFERENCE unset: skip
+    };
     let expected = Command::new(py)
         .arg(&main)
         .output()

@@ -16,14 +16,11 @@
 
 use std::process::Command;
 
-fn python314() -> Option<&'static str> {
-    for cand in ["/opt/homebrew/bin/python3.14", "python3.14"] {
-        if Command::new(cand).arg("-c").arg("pass").output().is_ok() {
-            return Some(cand);
-        }
-    }
-    None
-}
+// Reference discovery is shared (leaf 00.02): env AP_CONFORM_REFERENCE_PYTHON
+// -> PATH python3.14 (version-STRING checked; the old spawn-only probe could
+// accept a non-3.14 interpreter that merely happened to be named python3.14).
+// AP_REQUIRE_REFERENCE=1 converts a missing reference into a hard failure.
+mod common;
 
 fn ap_run_eval() -> &'static str {
     concat!(
@@ -34,7 +31,10 @@ fn ap_run_eval() -> &'static str {
 
 /// Run `src` under both interpreters; assert identical stdout + exit code 0.
 fn assert_differential(src: &str) {
-    let py = python314().expect("python3.14 required for differential probes");
+    let py = match common::reference_or_skip() {
+        Some(py) => py,
+        None => return, // no reference + AP_REQUIRE_REFERENCE unset: skip
+    };
     let tmp = std::env::temp_dir().join(format!(
         "ap_fixpass_{}_{}.py",
         std::process::id(),
