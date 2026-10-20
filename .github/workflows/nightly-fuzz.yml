@@ -1,0 +1,175 @@
+name: nightly-fuzz
+# ROBUSTNESS-CI leaf 04.03 — nightly differential-fuzz workflow (review
+# finding #9: "zero fuzzing on the two highest-yield surfaces").
+#
+# Runs the 04.01 (re engine) + 04.02 (repr paths) proptest differential
+# suites at nightly scale (AP_FUZZ_CASES=5000) against live CPython 3.14
+# on ubuntu, and REPORTS routed findings in the job summary. Branch-04
+# contract (plans/robustness-ci/04-fuzz/orchestrator.md): "Nightly, not
+# PR-blocking" — so the DEFAULT lane is the job gate, and it is
+# informational-green BY DESIGN: it prints + seeds divergences without
+# failing while Plan 02 owns the unfixed engine bugs (RF-1..RF-7 re,
+# F0402-1/2 repr — see plans/robustness-ci/04-fuzz/PROGRESS.md).
+#
+# The STRICT lane (AP_FUZZ_STRICT=1) is attached as an informational step
+# with continue-on-error. It is RED BY DESIGN today, exactly while routed
+# findings reproduce. SELF-DESTRUCT CONDITION: when Plan 02 fixes sre.rs /
+# float_repr.rs, the routed findings stop reproducing — the pin test
+# `routed_findings_pins_currently_reproduce` (repr_fuzz.rs) flips red ON
+# PURPOSE — and at that point DELETE the router + pins + the two
+# continue-on-error steps below and make the strict step blocking. The
+# routing can never outlive the bug it hides.
+#
+# Step shapes / toolchain pins mirror .github/workflows/ci.yml (rust
+# 1.94.0 via dtolnay, setup-python 3.14 + AP_CONFORM_REFERENCE_PYTHON
+# export per the master.md reference-discovery contract, Swatinem
+# rust-cache). Single ubuntu runner — the conformance-matrix OS-axis
+# pattern is PR-track machinery and is NOT needed for a nightly job.
+#
+# AP_FUZZ_CASES / AP_FUZZ_STRICT / AP_FUZZ_EVAL_BIN names verified
+# against the suites (crates/ap-run/tests/re_fuzz.rs:77-92,176;
+# crates/ap-obj/tests/repr_fuzz.rs:77,125). re_fuzz.rs falls back to
+# target/debug/ap-run-eval; the release fallback is NOT used here because
+# the workflow builds the release bin explicitly and exports the path —
+# comment at re_fuzz.rs:172-175 calls this out ("Nightly 04.03 builds
+# release for throughput and can point this suite at it explicitly:
+# AP_FUZZ_EVAL_BIN=/path/to/ap-run-eval"). repr_fuzz is in-process (no
+# eval bin), but the env is harmless for it.
+
+on:
+  schedule:
+    - cron: '0 3 * * *'  # nightly 03:00 UTC
+  workflow_dispatch: {}   # manual trigger so the workflow can be proven without waiting
+
+env:
+  # master.md contract: every CI job running differential tests sets this.
+  # Without python3.14 the suites SKIP locally; here a missing reference
+  # must go red, not silently green (finding #3).
+  AP_REQUIRE_REFERENCE: "1"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fuzz:
+    name: nightly differential fuzz (re + repr)
+    runs-on: ubuntu-latest
+    # 5000 cases x 2 suites at release speed, plus workspace release
+    # builds. Sized from the reduced-scale local proof (leaf 04.03):
+    # see plans/robustness-ci/04-fuzz/PROGRESS.md timings.
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pin toolchain (rust-toolchain.toml:6; same contract as ci.yml)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94.0"
+      - name: Python 3.14 reference interpreter (the fuzz oracle)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Export reference path
+        # Mirrors ci.yml's 'Export reference path' step; the 00.02 shared
+        # discovery seam (crates/*/tests/common/mod.rs) reads this first.
+        # command -v python3.14 finds the setup-python shim.
+        run: echo "AP_CONFORM_REFERENCE_PYTHON=$(command -v python3.14 || command -v python)" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@v2
+      - name: Build release impl binary (fuzz throughput)
+        # re_fuzz spawns target/.../ap-run-eval per case; release matters
+        # at 5000-case scale. Path is repo-level target/release/.
+        run: cargo build --release -p ap-cli --bin ap-run-eval
+      - name: re engine differential fuzz (DEFAULT lane — job gate)
+        # Informational-green BY DESIGN (see header): prints DIVERGENCE
+        # lines + appends FUZZ_SEEDS.txt, exits 0 while Plan 02 owns the
+        # engine. The end-of-run "re_fuzz summary:" line carries the
+        # routed-finding tally the summary step greps.
+        env:
+          AP_FUZZ_CASES: "5000"
+          AP_FUZZ_EVAL_BIN: "${{ github.workspace }}/target/release/ap-run-eval"
+        run: |
+          set -o pipefail
+          cargo test -p ap-run --test re_fuzz --release -- --nocapture \
+            | tee "$RUNNER_TEMP/re_fuzz_default.log"
+      - name: repr paths differential fuzz (DEFAULT lane — job gate)
+        # In-process suite (ap-obj public API) — no AP_FUZZ_EVAL_BIN needed;
+        # it routes F0402-1/2 by EXACT structural signature and prints
+        # "ROUTED FINDINGS (...): F0402-1 layout=N F0402-2 tie=M".
+        env:
+          AP_FUZZ_CASES: "5000"
+        run: |
+          set -o pipefail
+          cargo test -p ap-obj --test repr_fuzz --release -- --nocapture \
+            | tee "$RUNNER_TEMP/repr_fuzz_default.log"
+      # ---- STRICT lane: informational steps. These are RED BY DESIGN
+      # while routed findings RF-1..RF-7 / F0402-1/2 reproduce (the
+      # suites' own docs say so). SELF-DESTRUCT: when Plan 02 fixes
+      # sre.rs / float_repr.rs, the findings stop reproducing, the pin
+      # test flips red on purpose, and the right move is to DELETE these
+      # two continue-on-error steps and fold strict into the gate above —
+      # NOT to keep them as permanent decoration. ----
+      - name: re engine differential fuzz (STRICT lane — informational, red-until-Plan-02-fixes-by-design)
+        continue-on-error: true
+        env:
+          AP_FUZZ_CASES: "5000"
+          AP_FUZZ_STRICT: "1"
+          AP_FUZZ_EVAL_BIN: "${{ github.workspace }}/target/release/ap-run-eval"
+        run: |
+          set -o pipefail
+          cargo test -p ap-run --test re_fuzz --release -- --nocapture \
+            | tee "$RUNNER_TEMP/re_fuzz_strict.log"
+      - name: repr paths differential fuzz (STRICT lane — informational, red-until-Plan-02-fixes-by-design)
+        continue-on-error: true
+        env:
+          AP_FUZZ_CASES: "5000"
+          AP_FUZZ_STRICT: "1"
+        run: |
+          set -o pipefail
+          cargo test -p ap-obj --test repr_fuzz --release -- --nocapture \
+            | tee "$RUNNER_TEMP/repr_fuzz_strict.log"
+      - name: Upload fuzz logs + current seed ledgers
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-fuzz-${{ github.run_number }}
+          path: |
+            ${{ runner.temp }}/re_fuzz_default.log
+            ${{ runner.temp }}/repr_fuzz_default.log
+            ${{ runner.temp }}/re_fuzz_strict.log
+            ${{ runner.temp }}/repr_fuzz_strict.log
+            plans/robustness-ci/04-fuzz/FUZZ_SEEDS.txt
+            plans/robustness-ci/04-fuzz/FUZZ_SEEDS_0402.txt
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Routed-findings tally (job summary)
+        if: always()
+        # Greps the tallies the suites themselves print — never a
+        # hand-maintained count. greps exit non-zero on no-match, hence
+        # `|| true` everywhere; this step never fails the job.
+        run: |
+          {
+            echo "## nightly fuzz — routed findings (default lane reports; strict lane informational)"
+            echo ""
+            echo '### re engine (re_fuzz default lane)'
+            grep -h "^re_fuzz summary:" "$RUNNER_TEMP/re_fuzz_default.log" 2>/dev/null || echo "no summary line (suite skipped or crashed)"
+            echo ""
+            echo "DIVERGENCE lines by family:"
+            echo '```'
+            fams=$( { grep -ho "DIVERGENCE \[[^]]*\]" "$RUNNER_TEMP/re_fuzz_default.log" 2>/dev/null || true; } | sort | uniq -c | sort -rn)
+            if [ -n "$fams" ]; then echo "$fams"; else echo "(none)"; fi
+            echo '```'
+            echo ""
+            echo '### repr paths (repr_fuzz default lane)'
+            # counters are cumulative atomics — the LAST print carries the final tally
+            tail_line=$( { grep -h "ROUTED FINDINGS" "$RUNNER_TEMP/repr_fuzz_default.log" 2>/dev/null || true; } | tail -1)
+            if [ -n "$tail_line" ]; then echo "$tail_line"; else echo "no routed findings"; fi
+            echo ""
+            echo '### strict lane (informational — red-until-Plan-02-fixes-by-design)'
+            for l in re_fuzz_strict repr_fuzz_strict; do
+              if grep -qE "^test result: ok" "$RUNNER_TEMP/${l}.log" 2>/dev/null; then
+                echo "- ${l}: GREEN (Plan 02 fixes landed? if pins still reproduce, revisit the delete-first comment)"
+              else
+                echo "- ${l}: red/absent (expected while routed findings reproduce)"
+              fi
+            done
+            echo ""
+            echo "Seeds: plans/robustness-ci/04-fuzz/FUZZ_SEEDS.txt + FUZZ_SEEDS_0402.txt (uploaded as artifact; in-tree ledger only grows via committed runs)."
+            exit 0
+          } >> "$GITHUB_STEP_SUMMARY"

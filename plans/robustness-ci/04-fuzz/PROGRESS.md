@@ -130,3 +130,80 @@ carries ref-vs-our bytes verbatim.
   this leaf to leave staged; the orchestrator's commit step should run
   `cargo run -p xtask -- notices` and squash, or accept the reflow).
   proptest license = "MIT OR Apache-2.0" — deny.toml allow-list covers it.
+
+## 04.03 IMPLEMENTED NOT COMMITTED (2026-10-20, leaf agent 04.03)
+
+### What landed
+- **`.github/workflows/nightly-fuzz.yml` (new)** — nightly differential-fuzz
+  workflow. `on: schedule cron '0 3 * * *'` + `workflow_dispatch` (manual
+  proof trigger). Single job `fuzz` (ubuntu-latest, timeout-minutes 120):
+  checkout → dtolnay 1.94.0 → setup-python 3.14 → `Export reference path`
+  (`AP_CONFORM_REFERENCE_PYTHON`, mirrors ci.yml:79-82) → rust-cache →
+  `cargo build --release -p ap-cli --bin ap-run-eval` →
+  DEFAULT-lane re_fuzz + repr_fuzz at `AP_FUZZ_CASES=5000` (job gate;
+  informational-green BY DESIGN while Plan 02 owns RF-1..7 / F0402-1/2) →
+  STRICT-lane steps (`AP_FUZZ_STRICT=1`) with `continue-on-error: true`,
+  each named/commented "red-until-Plan-02-fixes-by-design" with the
+  self-destruct condition in the header comment (when sre.rs/float_repr.rs
+  are fixed the pin test `routed_findings_pins_currently_reproduce` flips
+  red on purpose → delete router + pins + these two steps) →
+  upload-artifact (4 lane logs + FUZZ_SEEDS.txt + FUZZ_SEEDS_0402.txt) →
+  job-summary step greping the suites' own tallies into $GITHUB_STEP_SUMMARY.
+- Env names verified against source (not guesses):
+  `re_fuzz.rs:80 env_usize("AP_FUZZ_CASES", 200)`, `re_fuzz.rs:85
+  std::env::var("AP_FUZZ_STRICT")`, `re_fuzz.rs:176
+  std::env::var("AP_FUZZ_EVAL_BIN")` (fallback `target/debug/ap-run-eval`;
+  the workflow sets the release path explicitly — re_fuzz.rs:172-175
+  comment names this leaf), `repr_fuzz.rs:77/125` (AP_FUZZ_CASES /
+  AP_FUZZ_STRICT; in-process suite, no eval bin). Reference seam reads
+  `AP_CONFORM_REFERENCE_PYTHON` (tests/common/mod.rs:56) and
+  `AP_REQUIRE_REFERENCE=1` set workflow-level (finding #3).
+- Summary-step greps validated against REAL proof-log shapes:
+  `^re_fuzz summary:` line, `DIVERGENCE \[family\]` | sort | uniq -c
+  tally (simulated: 85 PANIC-rc134 / 23 subn1 / 23 search / 18
+  COMPILE_MISSED / 3 COMPILE_TEXT / 1 findall at 300 cases), and the
+  repr `ROUTED FINDINGS` print — which repeats per case with CUMULATIVE
+  counters, so the step takes `tail -1` for the final tally. `|| true`
+  wraps the greps inside `$( ... )` (pipeline status would otherwise
+  bypass `|| echo`).
+
+### Gates executed
+- YAML parses: `python3.14 -c "import yaml; ..."` OK (pyyaml 6.0.3);
+  cron/timeout/step list asserted programmatically.
+- `bash -n` on every `run:` block: all OK.
+- Local reduced-scale proof (cannot run a remote action; proved the exact
+  command sequence on this host, Apple Silicon, rust 1.94-era toolchain,
+  reference python3.14 = /opt/homebrew/bin/python3.14 3.14.7):
+  - `cargo build --release -p ap-cli --bin ap-run-eval` — 10.9s warm.
+  - `AP_FUZZ_CASES=300 AP_FUZZ_EVAL_BIN=target/release/ap-run-eval
+    cargo test -p ap-run --test re_fuzz --release -- --nocapture` —
+    GREEN 4/4, 12.65s, summary line `cases=301 ok=148 routed=153`,
+    153 DIVERGENCE prints + seed lines appended (working-as-designed
+    ledger churn, see gaps).
+  - same scale `-p ap-obj --test repr_fuzz` — GREEN 7/7, 6.87s, routed
+    F0402-1 layout=24 F0402-2 tie=9 (final tally).
+  - STRICT smoke (20 cases): re_fuzz FAILED with shrunk minimal input
+    `(?>\b)/a` [subn1]; repr_fuzz FAILED 4 tests (pins fire) — proving
+    the continue-on-error informational steps are genuinely red today,
+    exactly as designed.
+- Nightly estimate (honest scale-up): fuzz itself is subprocess-spawn
+  dominated and near-linear — 5000/300 ≈ 16.7× → re ~3.5 min + repr
+  ~2 min (host; assume GH runner ≈2× slower → ~10-12 min default lane);
+  strict lane short-circuits at first divergence + shrinks (~1-2 min).
+  The long pole is the release profile build of the test targets/crates
+  (rust-cache warm: full job ~15-25 min; cold cache: release build of
+  the dep graph adds ~15-30 min → worst case ~45-60 min). Comfortably
+  inside timeout-minutes: 120.
+
+### Gaps / notes for the orchestrator
+- Remote action run NOT executable from here (subagent, no repo push/gh
+  dispatch permission): proved the LOCAL equivalent of every step's
+  command; the action-level wiring (cron firing, artifact upload,
+  $GITHUB_STEP_SUMMARY) is standard actions already mirrored from ci.yml.
+  First real `workflow_dispatch` run should confirm.
+- `git status` shows the leaf's own proof runs appended 45 new lines to
+  `plans/robustness-ci/04-fuzz/FUZZ_SEEDS.txt` (deduped replay ledger —
+  the suite is designed to grow it; commit or `git checkout` per
+  orchestrator preference). repr_fuzz writes no ledger file.
+- Ownership held: touched ONLY `.github/workflows/nightly-fuzz.yml` (new)
+  + this PROGRESS.md append. ci.yml untouched. No commits.
