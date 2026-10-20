@@ -70,6 +70,25 @@ class _MissingBin:
         )
 
 
+class _BinRunner:
+    """The seam as shipped (robustness-ci 05.02): runs the real bin.
+
+    F-3: the fixture used to hand back a bare Path while every test body
+    calls runner.run(args), so this suite could never exercise the seam.
+    """
+
+    def __init__(self, binary: Path) -> None:
+        self._binary = binary
+
+    def run(self, args: list[str]) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.run(
+            [str(self._binary), *args],
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+
+
 class _Runner:
     """Protocol-ish marker for anything with .run()."""
 
@@ -86,7 +105,10 @@ def ap_parse_check(tmp_path_factory: pytest.TempPathFactory):
     """
     real = _find_ap_parse_check()
     if real is not None:
-        return real
+        # robustness-ci 05.02 F-3 fix: bodies call runner.run(args); a bare
+        # Path has no .run(), so the seam could never be exercised. Wrap it
+        # with the same subprocess shape _MissingBin uses.
+        return _BinRunner(real)
 
     stub = tmp_path_factory.mktemp("t01_stub") / "ap-parse-check-missing"
     stub.write_text("#!/bin/sh\nexit 127\n")
