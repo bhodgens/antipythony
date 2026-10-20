@@ -25,3 +25,6 @@ path = "src/bin/ap_ir_dump.rs"
 [[bin]]
 name = "ap-verify-dump"
 path = "src/bin/ap_verify_dump.rs"
+
+[lints]
+workspace = true  # robustness-ci 02.01 - see root Cargo.toml [workspace.lints]

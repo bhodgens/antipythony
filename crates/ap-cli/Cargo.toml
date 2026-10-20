@@ -22,3 +22,6 @@ path = "src/bin/ap_run_eval.rs"
 [[bin]]
 name = "ap-obj-eval"
 path = "src/bin/ap_obj_eval.rs"
+
+[lints]
+workspace = true  # robustness-ci 02.01 - see root Cargo.toml [workspace.lints]

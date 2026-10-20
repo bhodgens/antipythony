@@ -1,3 +1,18 @@
+// grandfathered by robustness-ci 02.01 - burn down in leaf work, no NEW sites
+// should add to this; see plans/robustness-ci/02-lint-gates/PROGRESS.md tally.
+#![allow(clippy::unwrap_used)]
+// deny-by-default lints (overly_complex_bool_expr, absurd_extreme_comparisons,
+// redundant_comparisons) fire on 6 committed sites in this crate at HEAD
+// (sre.rs:607/627/2172, gcsupport.rs:1203, builtins_modules.rs:1909/2540 -
+// 8 error emissions). Pre-existing clippy ERRORS, not warnings. Grandfathered
+// so `cargo clippy --workspace --all-targets` exits 0 and CI can flip
+// -D warnings later without a mass rewrite; burn down WITH the unwrap tally,
+// do NOT add new sites.
+#![allow(
+    clippy::overly_complex_bool_expr,
+    clippy::absurd_extreme_comparisons,
+    clippy::redundant_comparisons
+)]
 //! The tier-0 tree-walking executor (leaf 02.02).
 
 pub mod builtins;

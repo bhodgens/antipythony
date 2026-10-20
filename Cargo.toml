@@ -19,5 +19,19 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 WITH LLVM-exception"
 
+# Lint policy (robustness-ci 02.01, master contract row "Lint policy").
+# unwraps in grandfathered crates are crate-root #![allow]s (ap-obj, ap-run);
+# every clean crate gets the warn immediately so NO NEW unwrap sites land.
+# CI currently runs this informationally; the orchestrator flips the clippy
+# step to -D warnings separately (do not edit .github/workflows/ci.yml here).
+[workspace.lints.clippy]
+unwrap_used = "warn"
+dbg_macro = "deny"
+todo = "warn"
+
+# Reserved: doc-link lints (rustdoc::broken_intra_doc_links etc.) are owned by
+# leaf 05.03 (cargo-doc gate) - kept out to avoid cross-leaf churn.
+[workspace.lints.rust]
+
 [profile.release]
 lto = "thin"

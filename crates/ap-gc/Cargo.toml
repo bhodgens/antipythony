@@ -10,3 +10,6 @@ path = "src/lib.rs"
 
 [dependencies]
 ap-obj = { path = "../ap-obj" }
+
+[lints]
+workspace = true  # robustness-ci 02.01 - see root Cargo.toml [workspace.lints]

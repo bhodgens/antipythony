@@ -10,3 +10,6 @@ path = "src/lib.rs"
 
 [dev-dependencies]
 ap-parse = { path = "../ap-parse" }
+
+[lints]
+workspace = true  # robustness-ci 02.01 - see root Cargo.toml [workspace.lints]

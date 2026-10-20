@@ -1,0 +1,11 @@
+# Clippy configuration - robustness-ci 02.01 (lint policy).
+#
+# Currently no option overrides are needed. The workspace lint levels
+# (unwrap_used=warn, dbg_macro=deny, todo=warn) live in root Cargo.toml
+# [workspace.lints.clippy]; grandfathered allowances are inner-attribute
+# crate-root allow(clippy::unwrap_used) in ap-obj / ap-run lib crates
+# (see plans/robustness-ci/02-lint-gates/PROGRESS.md tally).
+#
+# Reference for available keys: https://doc.rust-lang.org/clippy/configuration.html
+# Deliberately minimal - add e.g. too-many-lines-threshold only when a leaf
+# actually needs it.

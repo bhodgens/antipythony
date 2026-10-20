@@ -8,3 +8,6 @@ publish = false
 
 [dependencies]
 cargo_metadata = "0.22"
+
+[lints]
+workspace = true  # robustness-ci 02.01 - see root Cargo.toml [workspace.lints]
