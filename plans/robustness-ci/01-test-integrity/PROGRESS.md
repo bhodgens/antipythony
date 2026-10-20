@@ -198,3 +198,56 @@ t04_ir_verify (constant was doc-only -> lazy discover_reference()).
 5. t15 notices-gate failure seen in the t10-t16 probe (rc=1) is sibling
    02.07's uncommitted Cargo.lock/manifest edits vs THIRD_PARTY_NOTICES -
    not this leaf, not reference-discovery related.
+
+## 01.05 DONE — Bench trend-only policy (2026-10-20)
+
+**What landed:**
+1. `tests/t08_tier1/bench_report.json` re-checked: git-CLEAN at leaf start
+   (the sibling's earlier staging is gone; empty `git diff --cached`, no
+   worktree diff vs HEAD). Still tracked (last touched by b94976c).
+2. `.gitignore`: added `tests/t08_tier1/bench_report.json` with a one-line
+   comment (robustness-ci 01.05: machine-regenerated timing artifact,
+   trend-only, never a gate). Pattern was absent before.
+3. `tests/README.md`: new subsection "Bench reports are trend artifacts"
+   under the corpus rules — wall-clock numbers are hardware-flaky; the
+   report is never a CI pass/fail; the >=1.5x 02.05 gate runs on fixed
+   hardware (self-hosted/ci-tagged) ratio-only, when it lands.
+
+**Deviation from orchestrator brief (intentional, per leaf dispatch):**
+the brief said `git rm --cached` + .gitignore if still tracked. NOT done:
+the file is tracked-and-committed, and untracking is the user's call.
+Consequence: the .gitignore entry is inert while tracked (git ignores
+gitignore for tracked files) — future regenerations WILL still show as
+modifications until someone runs `git rm --cached
+tests/t08_tier1/bench_report.json` + commits. Flagged for the
+orchestrator/user.
+
+**Gate check:** the orchestrator's gate ("bench_report.json no longer
+appears in git log --name-only diffs for post-leaf commits") cannot be
+proven from this leaf alone — no commits were made here (leaf convention)
+and regeneration commits by future agents will still touch the tracked
+file unless the untracking decision above is taken. README rule is in
+place; the gitignore line pre-arms the untracking step.
+
+**Honest gaps:**
+1. Untracking pending user decision (see deviation above).
+2. The 02.05 >=1.5x fixed-hardware CI job itself is branch-02/00 work;
+   this leaf only documents the policy.
+
+### 01.02 first-flip correction - orchestrator 2026-10-20
+
+- The planned first strict flip (tests/t15_release::test_ci_matrix_runner_
+  config_exists, finding #20) does NOT pass yet. Measured --runxfail: the
+  config-existence assert now passes (ci.yml + nightly-fuzz.yml exist), but
+  the test's SECOND assert requires a CI config referencing the Plan 04.03
+  release matrix target ids (linux-musl / linux-gnu / macos-arm64 /
+  macos-x86_64). Those jobs are unbuilt PRODUCT work (leaf 02.06 AoT +
+  Plan 04 packaging); adding fake target strings to ci.yml to satisfy the
+  test would be passing dishonestly (corpus rule: never fake, never
+  weaken). Test stays xfail; owner = Plan 04.03. Recorded so no later
+  agent re-derives it.
+- First flip DONE instead: T-01 seam suites (commit 22e73e8) - 113 cases
+  flipped from blanket xfail to real green runs, 25 measured known-fail
+  arms kept xfail (F-1 verify-surface placement gaps, F-2 ruff-vs-CPython
+  column drift; both routed to Plan 02). Ceiling unchanged (those suites
+  previously contributed 0 xpass; the flips became hard passes).
