@@ -810,3 +810,11 @@
   cache + sys.path wiring, toml/lockfile manifest, e2e tests with six/
   packaging (byte-exact) + lxml fail-loud diagnostic.
 - This is the LAST structural piece before the scrapy T1 attempt.
+
+## 02.04 FIRST agent (deleg_f5fd79fd) duplicate delivery - NO ACTION
+- Reported 28h after assumed-dead; its worktree got swept into later commits.
+- All claims verified in HEAD: GARBAGE_NOW deterministic finalizers,
+  finalize dispatch fix, address-reuse pollution fix, tb chain, MMTk doc.
+- Root-cause confirmation: sweep bug was scope_path, not the collector
+  (matches continuation agent's independent finding).
+- gc corpus at HEAD: 16/17 (gc009 line-map pinning offset - documented).
