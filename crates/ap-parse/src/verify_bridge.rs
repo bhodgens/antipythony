@@ -1,6 +1,6 @@
 //! IR verify bridge (leaf 01.04 wire-in).
 //!
-//! Runs [`ap_ir::verify`] on a lowered module and resolves each diagnostic's
+//! Runs [`ap_ir::verify()`] on a lowered module and resolves each diagnostic's
 //! position against the ruff AST, since ap-ir is vendor-clean and carries no
 //! spans. The position convention is pinned by the T-04 fixtures:
 //!
@@ -445,7 +445,7 @@ fn module_level_binds(body: &[ast::Stmt], idx: usize, name: &str) -> bool {
 }
 
 /// Convert each positioned diagnostic's byte-offset placeholder (stashed in
-/// `col` by [`attach_positions`]) into the CPython FGE display position:
+/// `col` by `attach_positions`) into the CPython FGE display position:
 /// 1-based line, and 1-based column under the
 /// `col_display = col_file - indent + 4` rule (see module docs), where
 /// `indent` is the leading whitespace of the read's line.

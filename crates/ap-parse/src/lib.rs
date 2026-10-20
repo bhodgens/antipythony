@@ -8,7 +8,7 @@
 //! # Diagnostic contract (T-01)
 //!
 //! Every failure — syntax errors *and* version-related
-//! `UnsupportedSyntaxError`s, fail-closed — becomes an [`ap_parse::ParseError`]
+//! `UnsupportedSyntaxError`s, fail-closed — becomes an [`ParseError`]
 //! whose `Display` is byte-exactly:
 //!
 //! ```text
