@@ -789,6 +789,14 @@ pub fn builtin_type(interp: &Interpreter, args: &[Value], kwargs: &[(String, Val
         0 => Err(raise("TypeError", "type() takes 1 or 3 arguments")),
         1 => {
             let v = &args[0];
+            if std::env::var("APX_TDEBUG").is_ok() {
+                if let Value::Obj(o) = v {
+                    eprintln!(
+                        "[TDEBUG] builtin_type obj kind={:?} name={}",
+                        o.kind, o.name
+                    );
+                }
+            }
             let name = match v {
                 Value::Obj(o) if o.kind == ap_obj::ObjKind::Exception => o.name.clone(),
                 // 02.04a: coroutine stubs report their own name (types.py
@@ -797,6 +805,17 @@ pub fn builtin_type(interp: &Interpreter, args: &[Value], kwargs: &[(String, Val
                 Value::Obj(o) if o.kind == ap_obj::ObjKind::Namespace && o.name == "coroutine" => {
                     "coroutine".to_string()
                 }
+                // 02.07: threading objects report their <class> attr
+                // (type(me).__name__ == "_MainThread" — T108).
+                Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque && o.name == "thread" => o
+                    .attrs
+                    .borrow()
+                    .get(&Value::Str(PyString::new("<class>")))
+                    .and_then(|v| match v {
+                        Value::Str(sv) => Some(sv.as_str().to_string()),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| "Thread".to_string()),
                 Value::Obj(o) => o.type_name(),
                 other => other.type_name().to_string(),
             };
@@ -1703,6 +1722,13 @@ pub fn make_sys_module(interp: &Interpreter) -> Value {
         );
     }
     let _ = ns.set(Value::Str(PyString::new("stderr")), Value::Obj(se));
+    // sys.unraisablehook / sys.__unraisablehook__ (gc009): seeded None =
+    // native default (report goes to the real stderr stream). The attribute
+    // must EXIST — reads raise AttributeError on a missing module attr, and
+    // gc009 fetches sys.unraisablehook before the script swaps it. The
+    // collector treats None as "no hook" and falls to the stderr renderer.
+    let _ = ns.set(Value::Str(PyString::new("unraisablehook")), Value::None);
+    let _ = ns.set(Value::Str(PyString::new("__unraisablehook__")), Value::None);
     // sys.implementation (02.04a: enum.py reads it at import).
     let impl_ns = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "implementation");
     {
@@ -2478,6 +2504,8 @@ fn issubclass_check(c: &Value, info: &Value) -> Result<Value, Flow> {
                 have == want
                     || want == "object"
                     || (have == "bool" && want == "int")
+                    // 02.07: Timer IS-A Thread (CPython class hierarchy).
+                    || (have == "Timer" && want == "Thread")
                     || crate::exc_hier::is_subclass(have, want),
             ))
         }
@@ -2665,6 +2693,17 @@ pub fn call_builtin(
     // 02.08-lite: dotted native-module markers (math.sqrt, itertools.count, ...).
     if (name.contains('.') && !name.starts_with("sys.")) || name.starts_with('<') {
         // attrgetter/itemgetter/hashlib-digest call markers
+        // 02.07: threading bound methods need kwargs (Event.wait(timeout=),
+        // Semaphore.acquire(blocking=False), ...).
+        if name.starts_with("__ap_threading__.") {
+            if let Some(r) = crate::threading_call::call_threading_bound(
+                &name["__ap_threading__.".len()..],
+                args,
+                kwargs,
+            ) {
+                return r;
+            }
+        }
         if let Some(r) = crate::builtins_modules::call_native_marker(name, args) {
             return r;
         }
@@ -3017,6 +3056,20 @@ pub fn call_builtin(
                 // must be in ("module", "SimpleNamespace")).
                 if o.kind == ap_obj::ObjKind::Namespace && o.name == "implementation" {
                     return Ok(crate::builtins::interned_type(&interp, "module"));
+                }
+                // 02.07: threading objects report their <class> attr
+                // (type(me).__name__ == "_MainThread" — T108).
+                if o.kind == ap_obj::ObjKind::Opaque && o.name == "thread" {
+                    let cls = o
+                        .attrs
+                        .borrow()
+                        .get(&Value::Str(PyString::new("<class>")))
+                        .and_then(|v| match v {
+                            Value::Str(sv) => Some(sv.as_str().to_string()),
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| "Thread".to_string());
+                    return Ok(crate::builtins::interned_type(&interp, &cls));
                 }
                 match crate::interp::attr_get_public(&interp, v, "__class__") {
                     Ok(Some(t)) => Ok(t),

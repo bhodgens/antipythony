@@ -2114,6 +2114,14 @@ pub fn attr_set_protocol(
             .borrow_mut()
             .set(Value::Str(PyString::new(name)), v)
             .map_err(Flow::from_py),
+        // 02.07: threading.local per-thread namespace writes; Thread
+        // name/daemon writes route through the native surface.
+        Value::Obj(o)
+            if o.kind == ap_obj::ObjKind::Opaque
+                && matches!(o.name.as_str(), "_local" | "thread") =>
+        {
+            crate::threading_call::native_thread_attr_set(obj, name, v)
+        }
         other => Err(raise(
             "AttributeError",
             format!("'{}' object has no attribute '{}'", other.type_name(), name),

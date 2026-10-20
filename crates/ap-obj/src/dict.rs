@@ -192,7 +192,15 @@ impl PyDict {
     /// key object and its insertion position (S-01-21/23).
     pub fn set(&self, key: Value, value: Value) -> Result<(), PyException> {
         let h = Self::hash_of(&key)?;
-        let mut state = self.state.borrow_mut();
+        // 02.07 GIL v1: cross-thread writers retry instead of panicking —
+        // a sibling thread's read borrow clears within a scheduler quantum
+        // (readers never block while holding the state borrow).
+        let mut state = loop {
+            match self.state.try_borrow_mut() {
+                Ok(s) => break s,
+                Err(_) => std::thread::sleep(std::time::Duration::from_micros(50)),
+            }
+        };
         let slot = Self::find_or_claim(&mut state, key, h);
         if let Some(Some(entry)) = state.entries.get_mut(slot) {
             entry.value = value;
@@ -206,6 +214,23 @@ impl PyDict {
     /// and a raw `d.get([1])` is a TypeError in CPython too; the executor
     /// raises BEFORE calling get. Documented: get-on-unhashable returns None
     /// here, the raise belongs to the operation surface in `ops`).
+    /// 02.07: contention-tolerant read — None while another thread holds the
+    /// state borrow (caller retries; a MISSING key and a contended borrow are
+    /// distinguishable only by the caller's retry policy, which is fine for
+    /// the GIL v1 lookup path).
+    pub fn try_get(&self, key: &Value) -> Option<Option<Value>> {
+        let h = Self::hash_of(key).ok()? as u64;
+        let state = self.state.try_borrow().ok()?;
+        let probe = Self::probe(&state, key, h);
+        Some(probe.slot.and_then(|slot| {
+            state
+                .entries
+                .get(slot)
+                .and_then(|e| e.as_ref())
+                .map(|e| e.value.clone())
+        }))
+    }
+
     pub fn get(&self, key: &Value) -> Option<Value> {
         let h = Self::hash_of(key).ok()? as u64;
         let state = self.state.borrow();

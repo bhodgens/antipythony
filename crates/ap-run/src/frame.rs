@@ -185,7 +185,19 @@ impl Frame {
                 None => Lookup::UnboundLocal,
             };
         }
-        if let Some(v) = self.globals.get(&Value::Str(ap_obj::PyString::new(name))) {
+        // 02.07: globals may be momentarily borrowed by the sibling thread
+        // (store in flight when the GIL rotated). Retry — writes are
+        // statement-atomic.
+        let v = loop {
+            match self
+                .globals
+                .try_get(&Value::Str(ap_obj::PyString::new(name)))
+            {
+                Some(v) => break v,
+                None => std::thread::sleep(std::time::Duration::from_micros(50)),
+            }
+        };
+        if let Some(v) = v {
             return Lookup::Found(v);
         }
         // Class-body frame: the class namespace IS readable from the body

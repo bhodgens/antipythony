@@ -719,6 +719,8 @@ fn registry() -> &'static [(&'static str, ModuleBuilder)] {
         ("tempfile", build_tempfile),
         ("gc", build_gc),
         ("weakref", build_weakref),
+        ("threading", build_threading),
+        ("queue", build_queue),
         ("string2", build_string), // dedup guard, never matched
     ]
 }
@@ -767,7 +769,7 @@ pub fn is_native_module(name: &str) -> bool {
     registry().iter().any(|(n, _)| *n == name)
 }
 
-fn new_module(name: &str) -> (Gc<PyObject>, Gc<PyDict>) {
+pub(crate) fn new_module(name: &str) -> (Gc<PyObject>, Gc<PyDict>) {
     let m = PyObject::new(ap_obj::ObjKind::Module, name);
     let ns = PyDict::new();
     let _ = ns.set(s("__name__"), s(name));
@@ -778,12 +780,12 @@ fn new_module(name: &str) -> (Gc<PyObject>, Gc<PyDict>) {
     (m, ns)
 }
 
-fn finish(m: Gc<PyObject>, ns: Gc<PyDict>) -> Value {
+pub(crate) fn finish(m: Gc<PyObject>, ns: Gc<PyDict>) -> Value {
     *m.module_ns.borrow_mut() = Some(std::rc::Rc::new((*ns).clone()));
     Value::Obj(m)
 }
 
-fn marker(name: &str) -> Value {
+pub(crate) fn marker(name: &str) -> Value {
     let o = PyObject::new(ap_obj::ObjKind::BuiltinFn, name);
     Value::Obj(o)
 }
@@ -2555,7 +2557,7 @@ pub fn call_math(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Opti
     }
 }
 
-fn required<'a>(args: &'a [Value], fname: &str) -> Result<&'a Value, Flow> {
+pub(crate) fn required<'a>(args: &'a [Value], fname: &str) -> Result<&'a Value, Flow> {
     args.first()
         .ok_or_else(|| raise("TypeError", format!("{fname}() missing required argument")))
 }
@@ -4415,7 +4417,7 @@ pub fn call_textwrap(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> 
     }
 }
 
-fn str_arg(v: &Value, fname: &str) -> Result<String, Flow> {
+pub(crate) fn str_arg(v: &Value, fname: &str) -> Result<String, Flow> {
     match v {
         Value::Str(x) => Ok(x.as_str().to_string()),
         other => Err(raise(
@@ -4861,7 +4863,7 @@ fn build_json(_i: &crate::frame::Interpreter) -> Value {
     finish(m, ns)
 }
 
-fn interned_type_pub(name: &str) -> Value {
+pub(crate) fn interned_type_pub(name: &str) -> Value {
     if let Some(interp) = CURRENT.with(|c| c.borrow().clone()) {
         return crate::builtins::interned_type(&interp, name);
     }
@@ -6979,6 +6981,18 @@ fn build_weakref(_i: &crate::frame::Interpreter) -> Value {
     crate::gcsupport::build_weakref_module_pub()
 }
 
+// ===========================================================================
+// 02.07: threading + queue (native OS threads, GIL v1)
+// ===========================================================================
+
+fn build_threading(_i: &crate::frame::Interpreter) -> Value {
+    crate::threading_call::build_threading_module(_i)
+}
+
+fn build_queue(_i: &crate::frame::Interpreter) -> Value {
+    crate::threading_call::build_queue_module(_i)
+}
+
 pub fn call_atexit(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Option<BResult> {
     let r: BResult = (|| -> BResult {
         match name {
@@ -8168,6 +8182,21 @@ pub fn call_native(
     kwargs: &[(String, Value)],
 ) -> Option<BResult> {
     match mod_name {
+        // 02.07: threading + queue take the CURRENT interpreter handle.
+        "threading" => {
+            let interp = CURRENT.with(|c| c.borrow().clone());
+            match interp {
+                Some(i) => crate::threading_call::call_threading(&i, fname, args, kwargs),
+                None => Some(Err(raise("RuntimeError", "no interpreter on this thread"))),
+            }
+        }
+        "queue" => {
+            let interp = CURRENT.with(|c| c.borrow().clone());
+            match interp {
+                Some(i) => crate::threading_call::call_queue(&i, fname, args, kwargs),
+                None => Some(Err(raise("RuntimeError", "no interpreter on this thread"))),
+            }
+        }
         "math" => call_math(fname, args, kwargs),
         "itertools" => call_itertools(fname, args, kwargs),
         "operator" => call_operator(fname, args, kwargs),
@@ -8478,6 +8507,25 @@ pub fn call_native_object(
 pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
     if let Value::Obj(o) = obj {
         match o.kind {
+            // 02.07: threading/queue native-object attribute surface. Runs
+            // FIRST so thread.name/daemon/ident and queue emptiness win over
+            // the generic paths (the corpus pins these exactly).
+            ap_obj::ObjKind::Opaque
+                if matches!(
+                    o.name.as_str(),
+                    "thread"
+                        | "lock"
+                        | "rlock"
+                        | "condition"
+                        | "event"
+                        | "semaphore"
+                        | "barrier"
+                        | "_local"
+                        | "queue"
+                ) =>
+            {
+                return crate::threading_call::native_thread_attr(obj, name);
+            }
             ap_obj::ObjKind::Function => match name {
                 "__name__" => Some(s(o.name.clone())),
                 "__qualname__" => Some(s(o.name.clone())),
@@ -9018,6 +9066,11 @@ fn builtinfn_attr(full: &str, name: &str) -> Option<Value> {
 
 /// Call an attrgetter/itemgetter marker (received as the function Value).
 pub fn call_native_marker(full: &str, args: &[Value]) -> Option<BResult> {
+    // 02.07: threading native-object bound methods
+    // ("__ap_threading__.start" over receiver args[0]).
+    if let Some(fname) = full.strip_prefix("__ap_threading__.") {
+        return None; // handled in builtins.rs with kwargs (02.07)
+    }
     if let Some(rest) = full.strip_prefix("<partial:") {
         let body = rest.strip_suffix('>')?;
         let (fname, argstr) = body.split_once(':')?;

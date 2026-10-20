@@ -703,3 +703,92 @@
   fix pass with threading), threading 0/18 (02.07 in flight).
 - 02.07 threading RUNNING (deleg_3862ee37).
 - Exception repr regressions -> fix pass after 02.07 lands.
+
+## 02.04 continuation (2026-10-19, GC-semantics pass on the 02.07 worktree)
+- Finalizer ordering now DETERMINISTIC (5/5 runs p0..p4; previously all
+  permutations run-to-run): fix = per-collection garbage list snapshot
+  (GARBAGE_NOW) in gcmod collect_gen; sweep_weakrefs keys off the current
+  cycle's deaths instead of registry membership (which retain mutates after).
+- weakref.finalize now FIRES: gcsupport fire_dead_weakrefs resolves the
+  finalize dispatch marker through the FINALIZERS table before the
+  WEAK_TOKENS lookup (gc015 was "after collect: [] alive: True").
+- Address-reuse poisoning fixed: FINALIZED_ADDRS purge keyed on the
+  reachable/resurrected sets each cycle (a swept addr reused by a new object
+  used to inherit the dead object's "already finalized" mark — observed:
+  whole blocks of instances created after an auto-collect never fired).
+- unraisable routing fixed: write_stderr resolves `write` through the attr
+  protocol (native StringIO keeps it in the methods table, attrs.get missed);
+  sys.unraisablehook/__unraisablehook__ seeded (None = native default) and a
+  None hook no longer diverts the report. Swapped-stderr capture 0 -> 197B
+  (CPython 222; extra frame line = v0 coarse line map, documented).
+- Unraisable report shape: qualified name via fn registry (__qualname__);
+  raise-site line captured on the exception (exc.raise_line, Raise arm) —
+  more accurate than the old caller-line cell, but the ordinal offsets
+  differ from the last green run, so gc009's pinned line-27/raise-echo bytes
+  still differ (16/17 held; the pin asserts engine-specific coarse-map
+  output — revisit with the SourceMap follow-up, NOT a pin edit).
+- Real __traceback__ chain on handler-bound exceptions (tb_frame.f_code.
+  co_name / tb_lineno / tb_next walk) — tb7 probe matches CPython's frame
+  list shape; unittest.result cleanup paths benefit.
+- Gates on the shared worktree (values 46/47, fstrings 35/35, gc 16/17,
+  classes 27/33, exceptions 13/15 — all at the documented envelope);
+  rust workspace 44/44 suites 0 failed; gc_differential + arity + enum
+  batteries green; heap_probe_10k fired 10000/10000 tokens complete.
+- Root-scoping: NOT the collector — confirmed by the 02.04 salvage commits
+  (a9a43e6: collector-disabled still reproduced; wrong scope_path assignment
+  in exec_class_def was the culprit and is already fixed at HEAD).
+
+## 02.07 threading (native OS threads, GIL v1) — LANDED (working tree, uncommitted)
+- New: `crates/ap-run/src/threading.rs` (GIL + registries + worker bootstrap +
+  exit protocol), `crates/ap-run/src/threading_call.rs` (Python-visible
+  threading/queue surfaces). Wired through builtins_modules (module registry +
+  call_native/native_attr routing), interp (Opaque repr/__class__/type(),
+  GIL-retry on shared RefCells), classes (attr_set protocol arm),
+  gcsupport (`GilSendPub` Send escape + worker GC-registration forwarding to
+  the main thread's collector view).
+- GIL v1 DESIGN (documented divergence from the no-GIL master vision): ONE
+  global interpreter lock (`std::sync::Mutex`) around bytecode execution.
+  Every blocking primitive (join/event-wait/cond-wait/barrier-wait/sem-
+  acquire/queue get-put/sleep/file-io) releases the GIL BEFORE parking and
+  reacquires on ALL exits — "GIL FIRST" invariant. RefCell state shared
+  across worker threads (frame_stack, stmt_lines, lambda_bodies, iterators,
+  the globals PyDict) is write-once or statement-atomic; contended borrows
+  RETRY with a 50us spin instead of panicking (holders always run under the
+  GIL, so a borrow clears within a scheduler quantum). gcmod REGISTRY stays
+  thread-local with worker registrations forwarded to the main thread
+  (global-lock-shares-the-heap option, matching the GIL; per-thread heaps +
+  Weak bridge deferred to the no-GIL swap, 02.05-tier1 era).
+- Surfaces: Thread (name/ident/is_daemon/native_id, start/join(timeout)/
+  is_alive/run, daemon semantics: main exits waits non-daemons only, T107),
+  Lock/RLock (reentrancy), Condition (wait/notify/notify_all/wait_for),
+  Event, Semaphore/BoundedSemaphore (over-release error text), Barrier
+  (parties/action/reset/BrokenBarrierError on timeout+abort), local (T106
+  per-thread isolation), Timer (interval pre-wait, cancel; Timer IS-A Thread
+  for issubclass), enumerate/active_count/current_thread/main_thread,
+  excepthook + ExceptHookArgs (T109/T110), settrace/suspend hooks minimal,
+  sys.setswitchinterval accepted+ignored (documented), TIMEOUT_MAX pin (G-3).
+- queue module: Queue/LifoQueue/PriorityQueue over the same prims —
+  empty/full/qsize/get/put/get_nowait/put_nowait/task_done/join; Empty/Full
+  str() == '' byte pins.
+- Default thread names `Thread-N (target)` CPython-3.14 form; MainThread
+  class name via _MainThread; repr heads byte-exact (addresses masked per
+  corpus convention).
+- Corpus: threading slice 17/18 PASS under ap-conform differential vs
+  python3.14 (T101-T108, T110-T115, T120-T122; s038_threading_smoke PASS
+  byte-exact). T109 FAILS BY DESIGN — G-1: the pinned stderr embeds the
+  reference's own threading.py bootstrap frames with absolute install paths
+  (contract gap, xfail in the test track; NOT re-pinned).
+  T120/T122 (no-GIL probes) PASS for correctness under the GIL — timing
+  differs (T121 scaling gate is the 02.05-era work; the no-GIL swap remains
+  the master vision).
+- Test track: tests/t10_threading 97 passed, 11 xfailed (contract xfails),
+  0 failed (44min wall — the suite runs the corpus differentially).
+- Fixed en route: genexpr-at-module-scope comp-target store leaked the loop
+  var into module globals (interp); contended-RefCell panics under real OS
+  threads (touch_line/current_frame_line/last_executed_line/frame_stack
+  push+pop/lambda_bodies/globals try_get+set retry); entry_for/registry
+  borrows; Barrier timeout kw routing; Timer kwargs args=/kwargs=/function;
+  double-start serial check under contention (try_borrow).
+- NOT done (deferred): sys.setswitchinterval actual switching (v1 ignores),
+  per-thread heaps (no-GIL swap), T121 >=3x scaling gate (needs tier-1),
+  T109 G-1 resolution (spec/impl decision pending).

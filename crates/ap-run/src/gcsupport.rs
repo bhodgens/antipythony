@@ -321,8 +321,10 @@ fn lookup_del(interp: &Rc<Interpreter>, v: &Value) -> Option<Value> {
 /// <function Bad.__del__ at 0xADDR>:` + traceback + `ExcType: msg`, to the
 /// script's sys.unraisablehook when one is set (gc009), else real stderr.
 fn report_unraisable(interp: &Rc<Interpreter>, del_f: &Value, exc: &ExceptionValue) {
-    // sys.unraisablehook override (gc009's structured path).
-    let hook = sys_attr(interp, "unraisablehook");
+    // sys.unraisablehook override (gc009's structured path). The attribute
+    // is seeded as None (native default); only a real callable swaps to the
+    // hook path — None must fall through to the stderr renderer.
+    let hook = sys_attr(interp, "unraisablehook").filter(|h| !matches!(h, Value::None));
     if let Some(hook) = hook {
         // args object: exc_type, exc_value, exc_traceback, object
         let args_obj = PyObject::new(ap_obj::ObjKind::Namespace, "unraisable_args");
@@ -335,7 +337,7 @@ fn report_unraisable(interp: &Rc<Interpreter>, del_f: &Value, exc: &ExceptionVal
             let mut a = args_obj.attrs.borrow_mut();
             let _ = a.set(s("exc_type"), exc_type);
             let _ = a.set(s("exc_value"), exc_value);
-            let _ = a.set(s("exc_traceback"), Value::None);
+            let _ = a.set(s("exc_traceback"), marker("__ap_traceback__"));
             let _ = a.set(s("object"), Value::None);
         }
         let _ = crate::interp::call_value_pub(interp, &hook, &[Value::Obj(args_obj)], &[]);
@@ -349,27 +351,37 @@ fn report_unraisable(interp: &Rc<Interpreter>, del_f: &Value, exc: &ExceptionVal
         Value::Obj(o) => o.name.clone(),
         _ => "__del__".to_string(),
     };
-    // Function repr with address: <function Bad.__del__ at 0x...>
+    // Function repr with address: <function Bad.__del__ at 0x...>. CPython
+    // prints the qualified name; look it up via the fn registry (fn_id).
     let addr = match del_f {
         Value::Obj(o) => Rc::as_ptr(o) as *const u8 as usize,
         _ => 0,
     };
+    let qual = match del_f {
+        Value::Obj(o) => o
+            .fn_id
+            .and_then(|id| interp.fn_entry(id))
+            .map(|e| e.qualname)
+            .unwrap_or_else(|| fname.clone()),
+        _ => fname.clone(),
+    };
     let mut text =
-        format!("Exception ignored while calling deallocator <function {fname} at 0x{addr:x}>:\n");
+        format!("Exception ignored while calling deallocator <function {qual} at 0x{addr:x}>:\n");
     text.push_str("Traceback (most recent call last):\n");
-    // Frame line: the __del__ def line is unavailable v0 — use the class
-    // body line recorded in the script (traceback machinery renders the
-    // last script line; CPython shows the raise site inside __del__). We
-    // render the frame with the CURRENT statement line of the outermost
-    // frame, then the source echo of the raise inside __del__ is masked by
-    // the corpus (gc009 replaces both).
-    let line = interp
-        .frame_stack
-        .borrow()
-        .first()
-        .map(|c| c.get())
-        .filter(|n| *n > 0)
-        .unwrap_or(1);
+    // Frame line: the raise site. exc.raise_line is captured at the Raise
+    // arm from the frame_stack top — which at raise time IS the finalizer's
+    // own cell (call_function pushed it before the body ran).
+    let line = if exc.raise_line > 0 {
+        exc.raise_line
+    } else {
+        interp
+            .frame_stack
+            .borrow()
+            .first()
+            .map(|c| c.get())
+            .filter(|n| *n > 0)
+            .unwrap_or(1)
+    };
     text.push_str(&format!(
         "  File \"{}\", line {}, in {}\n",
         interp.script_path, line, fname
@@ -402,18 +414,20 @@ fn sys_attr(interp: &Rc<Interpreter>, name: &str) -> Option<Value> {
 }
 
 fn write_stderr(interp: &Rc<Interpreter>, text: &str) {
-    // Route through sys.stderr's current binding (gc009 swaps it).
+    // Route through sys.stderr's current binding (gc009 swaps it). Resolve
+    // `write` through the interpreter's attribute protocol, not a raw attrs
+    // lookup: native streams (io.StringIO et al) keep `write` in the methods
+    // table, so attrs.get misses and the report silently falls through to
+    // eprint! — observed: the swapped StringIO captured nothing.
     if let Some(se) = sys_attr(interp, "stderr") {
-        if let Value::Obj(so) = &se {
-            if let Some(w) = so.attrs.borrow().get(&s("write")) {
-                let _ = crate::interp::call_value_pub(
-                    interp,
-                    &w,
-                    &[Value::Str(PyString::new(text.to_string()))],
-                    &[],
-                );
-                return;
-            }
+        if let Ok(Some(w)) = crate::interp::attr_get_public(interp, &se, "write") {
+            let _ = crate::interp::call_value_pub(
+                interp,
+                &w,
+                &[Value::Str(PyString::new(text.to_string()))],
+                &[],
+            );
+            return;
         }
     }
     eprint!("{text}");
@@ -1528,4 +1542,69 @@ fn weakbridge_callback(cb: &Value, args: &[Value]) -> Result<Value, String> {
         Ok(v) => Ok(v),
         Err(_) => Ok(Value::None),
     }
+}
+
+// ---------------------------------------------------------------------------
+// 02.07 threading: worker-thread GC view
+// ---------------------------------------------------------------------------
+
+// A worker allocates values that must join the MAIN thread's gc registry.
+// Value (Rc-based) is !Send by construction — but under GIL v1 all threads
+// touch the graph only while holding the lock, so the transfer is
+// GIL-serialized by protocol. The compiler cannot see the lock protocol;
+// this crate declares the GIL-protocol-validated Send wrapper (a documented,
+// audited unsafety, same class as CPython's own GIL-protected globals).
+pub struct GilSendPub<T>(pub T);
+unsafe impl<T> Send for GilSendPub<T> {}
+unsafe impl<T> Sync for GilSendPub<T> {}
+impl<T> Clone for GilSendPub<T>
+where
+    T: Clone,
+{
+    fn clone(&self) -> Self {
+        GilSendPub(self.0.clone())
+    }
+}
+
+static WORKER_REG_IN: std::sync::LazyLock<
+    GilSendPub<std::sync::Mutex<Option<std::sync::mpsc::Sender<GilSendPub<Value>>>>>,
+> = std::sync::LazyLock::new(|| GilSendPub(std::sync::Mutex::new(None)));
+static WORKER_REG_OUT: std::sync::LazyLock<
+    GilSendPub<std::sync::Mutex<Option<std::sync::mpsc::Receiver<GilSendPub<Value>>>>>,
+> = std::sync::LazyLock::new(|| GilSendPub(std::sync::Mutex::new(None)));
+
+fn gc_register_forward_worker(v: &Value) {
+    let guard = WORKER_REG_IN.0.lock().unwrap();
+    if let Some(tx) = guard.as_ref() {
+        let _ = tx.send(GilSendPub(v.clone()));
+        return;
+    }
+    drop(guard);
+    ap_gc::gc_register(v);
+}
+
+/// Drain worker registrations into the MAIN thread's registry (main-thread
+/// turns: every threading dispatch + collect).
+pub fn drain_worker_registrations() -> usize {
+    let rx_slot = WORKER_REG_OUT.0.lock().unwrap();
+    let Some(rx) = rx_slot.as_ref() else {
+        return 0;
+    };
+    let mut n = 0;
+    while let Ok(GilSendPub(v)) = rx.try_recv() {
+        ap_gc::gc_register(&v);
+        n += 1;
+    }
+    n
+}
+
+/// Worker-thread GC wiring (called from threading::worker_bootstrap before
+/// the GIL is ever taken on that thread).
+pub fn install_worker_thread() {
+    let (tx, rx) = std::sync::mpsc::channel::<GilSendPub<Value>>();
+    *WORKER_REG_IN.0.lock().unwrap() = Some(tx);
+    *WORKER_REG_OUT.0.lock().unwrap() = Some(rx);
+    // The hook fn pointer is process-global; from here on, allocations made
+    // BY ANY thread forward through the channel — the main thread drains.
+    ap_obj::gc_gate::set_hook(gc_register_forward_worker);
 }

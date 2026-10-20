@@ -154,6 +154,12 @@ pub struct ExceptionValue {
     /// The real instance Value when the raise came from one (e007: `e is
     /// inst` identity preserved through the handler binding).
     pub instance: Option<ap_obj::value::Value>,
+    /// Source line of the `raise` that created this exception (captured at
+    /// the Raise arm from the current frame's line cell). The unraisable
+    /// report uses it for the raise-site frame: by report time the
+    /// finalizer's frame has already popped, so the frame cells no longer
+    /// carry the raise site.
+    pub raise_line: usize,
 }
 
 impl ExceptionValue {
@@ -164,6 +170,7 @@ impl ExceptionValue {
             cause: None,
             context: None,
             instance: None,
+            raise_line: 0,
         }
     }
 

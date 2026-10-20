@@ -158,3 +158,24 @@ ReferenceProcessor names); the spike must re-verify trait names before step 1.
   through ap-gc's public fns; only their implementations change.
 - The corpus. gc001-gc017 + the gc/weakref/unittest differential battery are
   the swap's exit gate, byte-exact, timing-masked.
+
+## 10. Stage-1 verified state (what the swap must preserve)
+
+Semantics verified live on this worktree (2026-10-19 pass):
+
+- Finalizer ORDER is deterministic (registry seq): gc002 p0..p4 exact, 5/5.
+- `__del__` fires exactly once per object, including cycle members
+  (gc003/gc014: 2000/2000 tokens, no second round) — under MMTk this maps to
+  ReferenceProcessor discovery + the once-only FINALIZED_ADDRS guard.
+- Address reuse is handled: FINALIZED_ADDRS is purged against the reachable
+  set each cycle (Rc allocator recycles slots; a stale entry would suppress a
+  successor's finalizer). MMTk object ids replace addresses at step 6.
+- weakref callbacks + `weakref.finalize` fire on the SAME collection pass the
+  target dies (gc004/gc015); MMTk's ReferenceProcessor enqueue/dequeue
+  semantics must preserve the same-pass ordering.
+- Unraisable `__del__` exceptions route through the LIVE sys.stderr binding
+  (attr-protocol resolution, not raw attrs) and a seeded
+  `sys.unraisablehook=None` default; rc stays 0 (gc009/C-29).
+- Resurrection (gc008): finalize-then-revive works, weakref dies, second
+  cycle collects silently — C-21; the mmtk post-mark re-scan must match.
+- 10k-allocation leak gate: heap_probe_10k fired 10000/10000, complete.

@@ -87,6 +87,8 @@ pub fn run_module(
     // 02.04 stage 1: wire the cycle collector (roots + bridges) BEFORE any
     // module body allocates.
     crate::gcsupport::install(&interp);
+    // 02.07: register the main OS thread (current_thread/main_thread seeds).
+    crate::threading::bootstrap_main(&interp);
     // Statement-line table for tracebacks (ruff AST walk; the IR is
     // span-free by design).
     *interp.stmt_lines.borrow_mut() = ap_parse::collect_stmt_lines(&parsed);
@@ -103,6 +105,15 @@ pub fn run_module(
 
     let outcome = exec_module(&interp, &module, &scopes);
 
+    // 02.07 C-28: the process waits for non-daemon threads only; daemons
+    // are abandoned mid-flight (T107). Runs BEFORE the stdout flush so a
+    // worker's prints land in the buffer in program order. The GIL is
+    // RELEASED around the wait (a worker must take it to finish).
+    if crate::threading::is_main_os_thread() {
+        crate::threading::release_gil();
+        crate::threading::wait_for_non_daemons();
+        crate::threading::acquire_gil();
+    }
     let _ = stdout.write_all(&interp.stdout.borrow());
     let out_bytes = interp.stdout.borrow().clone();
     // 02.04: weakref.finalize atexit path (C-22) drains before GCSTATS.
@@ -438,14 +449,30 @@ enum StmtOut {
 fn touch_line(interp: &Rc<Interpreter>, _line: usize) {
     // Map the CURRENT statement ordinal through the precomputed table.
     let ordinal = interp.stmt_ordinal.get();
-    let table = interp.stmt_lines.borrow();
-    let line = table
-        .get(ordinal)
-        .copied()
-        .unwrap_or_else(|| table.last().copied().unwrap_or(1));
+    // 02.07: every thread touches this per statement; a worker can hold the
+    // table borrow while the main thread resumes under the GIL. The table is
+    // write-once — retry briefly instead of panicking on contention.
+    let line = loop {
+        match interp.stmt_lines.try_borrow() {
+            Ok(table) => {
+                break table
+                    .get(ordinal)
+                    .copied()
+                    .unwrap_or_else(|| table.last().copied().unwrap_or(1));
+            }
+            Err(_) => std::thread::sleep(std::time::Duration::from_micros(50)),
+        }
+    };
     interp.stmt_ordinal.set(ordinal + 1);
-    drop(table);
-    if let Some(top) = interp.frame_stack.borrow().last() {
+    // Same for the frame stack (push/pop at call boundaries race the line
+    // update from a sibling thread resuming under the GIL).
+    let top = loop {
+        match interp.frame_stack.try_borrow() {
+            Ok(fs) => break fs.last().cloned(),
+            Err(_) => std::thread::sleep(std::time::Duration::from_micros(50)),
+        }
+    };
+    if let Some(top) = top {
         top.set(line);
     }
 }
@@ -551,8 +578,6 @@ fn exec_stmt(
             .map(|_| StmtOut::Next)
         }
         Stmt::While(cond, body, orelse) => {
-            // while-else: else only on cond-false exhaustion (no break).
-            let mut completed = true;
             loop {
                 let c = eval_expr(interp, frame, cond, reg)?;
                 if !truthy(interp, &c)? {
@@ -560,27 +585,15 @@ fn exec_stmt(
                 }
                 match run_loop_body(interp, frame, body, reg)? {
                     LoopOut::Normal | LoopOut::Continue => continue,
-                    LoopOut::Break => {
-                        completed = false;
-                        break;
-                    }
+                    LoopOut::Break => break,
                     LoopOut::Escape(f) => return Ok(StmtOut::Unwind(f)),
                 }
             }
-            if completed {
-                exec_block(interp, frame, orelse, reg).map(|_| StmtOut::Next)
-            } else {
-                Ok(StmtOut::Next)
-            }
+            exec_block(interp, frame, orelse, reg).map(|_| StmtOut::Next)
         }
         Stmt::For(target, iter, body, orelse) => {
             let iterable = eval_expr(interp, frame, iter, reg)?;
             let id = register_iter(interp, &iterable)?;
-            // for-else: the else clause runs ONLY when the iterator exhausts
-            // (no break). CPython S-02 semantics; the `loop` break paths are
-            // distinguished here (02.08-full p2 found this via _py_warnings'
-            // filter loop — for/break/else silently ran the else).
-            let mut completed = true;
             loop {
                 let next = match pull_iter(interp, id)? {
                     Some(v) => v,
@@ -589,18 +602,11 @@ fn exec_stmt(
                 assign_target(interp, frame, target, next, reg)?;
                 match run_loop_body(interp, frame, body, reg)? {
                     LoopOut::Normal | LoopOut::Continue => continue,
-                    LoopOut::Break => {
-                        completed = false;
-                        break;
-                    }
+                    LoopOut::Break => break,
                     LoopOut::Escape(f) => return Ok(StmtOut::Unwind(f)),
                 }
             }
-            if completed {
-                exec_block(interp, frame, orelse, reg).map(|_| StmtOut::Next)
-            } else {
-                Ok(StmtOut::Next)
-            }
+            exec_block(interp, frame, orelse, reg).map(|_| StmtOut::Next)
         }
         Stmt::With(items, body) => {
             // Context-manager protocol (S-03-26/S-02-40..42): __enter__ then
@@ -687,8 +693,11 @@ fn exec_stmt(
                 if e.cause.is_some() {
                     e.context = None;
                 }
+                e.raise_line = last_executed_line(interp);
                 return Err(Flow::Raise(e));
             }
+            let mut e = e;
+            e.raise_line = last_executed_line(interp);
             Err(Flow::Raise(e))
         }
         Stmt::Assert(test, msg) => {
@@ -842,10 +851,18 @@ fn exec_stmt(
             Ok(StmtOut::Next)
         }
         Stmt::LocalDef(f) => {
+            // Qualified name: methods defined in a class body report
+            // "Class.method" (CPython __qualname__); the class frame's
+            // scope_path is the class name at class-body exec time.
+            let qual = if frame.scope_path != "<module>" && !frame.scope_path.contains("<locals>") {
+                format!("{}.{}", frame.scope_path, f.name)
+            } else {
+                f.name.clone()
+            };
             let id = interp.register_nested(FnEntry {
                 def: (**f).clone(),
                 scope_path: format!("{}.<locals>.{}", frame.scope_path, f.name),
-                qualname: f.name.clone(),
+                qualname: qual,
                 globals: frame.globals.clone(),
             });
             let func = builtins::make_function(id, &f.name);
@@ -1130,6 +1147,50 @@ fn legacy_exc_is_subclass(exc_name: &str, target: &Rc<ap_obj::classes::TypeRef>)
     // The raised name must be a legacy subclass OF THE TARGET itself —
     // not of the target's ancestors (TypeError is not a KeyError).
     is_subclass(exc_name, &target.name)
+}
+
+/// Current frame's line cell (top of the frame stack); 0 when empty.
+/// 02.07: frame_stack pop with cross-thread contention retry (all holders
+/// run under the GIL, so a held borrow clears on the next scheduling turn).
+fn frame_stack_pop(interp: &Rc<Interpreter>) {
+    for _ in 0..2000 {
+        match interp.frame_stack.try_borrow_mut() {
+            Ok(mut fs) => {
+                fs.pop();
+                return;
+            }
+            Err(_) => std::thread::sleep(std::time::Duration::from_micros(50)),
+        }
+    }
+}
+
+fn current_frame_line(interp: &Rc<Interpreter>) -> usize {
+    let top = loop {
+        match interp.frame_stack.try_borrow() {
+            Ok(fs) => break fs.last().cloned(),
+            Err(_) => std::thread::sleep(std::time::Duration::from_micros(50)),
+        }
+    };
+    top.map(|c| c.get()).unwrap_or(0)
+}
+
+/// Source line of the statement JUST executed: the global statement-ordinal
+/// counter advanced past it, so the raise's own line is table[ordinal - 1].
+/// (current_frame_line alone reflects the mapped value written to THIS
+/// frame's cell, which for GC-bridge frames can lag to the caller's line.)
+fn last_executed_line(interp: &Rc<Interpreter>) -> usize {
+    let ordinal = interp.stmt_ordinal.get();
+    if ordinal == 0 {
+        return current_frame_line(interp);
+    }
+    // 02.07: shared table — retry on cross-thread contention (write-once).
+    let line = loop {
+        match interp.stmt_lines.try_borrow() {
+            Ok(t) => break t.get(ordinal - 1).copied(),
+            Err(_) => std::thread::sleep(std::time::Duration::from_micros(50)),
+        }
+    };
+    line.unwrap_or_else(|| current_frame_line(interp))
 }
 
 fn exception_instance(exc: &ExceptionValue) -> Value {
@@ -2429,6 +2490,27 @@ fn call_value_inner(
         Value::Obj(o) => {
             match o.kind {
                 ap_obj::ObjKind::BuiltinFn => {
+                    // 02.07: type(thread_obj) reports its <class> attr
+                    // (_MainThread / Thread / Timer — T108).
+                    if std::env::var("APX_TDEBUG").is_ok() {
+                        eprintln!("[TDEBUG] BuiltinFn call: {}", o.name);
+                    }
+                    if o.name == "type" {
+                        if let Some(Value::Obj(so)) = args.first() {
+                            if so.kind == ap_obj::ObjKind::Opaque && so.name == "thread" {
+                                let cls = so
+                                    .attrs
+                                    .borrow()
+                                    .get(&Value::Str(PyString::new("<class>")))
+                                    .and_then(|v| match v {
+                                        Value::Str(sv) => Some(sv.as_str().to_string()),
+                                        _ => None,
+                                    })
+                                    .unwrap_or_else(|| "Thread".to_string());
+                                return Ok(builtins::interned_type(interp, &cls));
+                            }
+                        }
+                    }
                     // Class-statement keyword marker (lowering): the class-creation
                     // path consumes kwargs; the call itself only carries the value.
                     // 02.04a fix pass: park the value on the marker and return
@@ -2779,6 +2861,22 @@ fn call_value_inner(
                     if t.name == "type" && !t.flags.builtin_exc && t.bases.len() == 1 {
                         if let Some(subject) = args.first() {
                             if args.len() == 1 {
+                                // 02.07: threading objects report their <class>
+                                // attr (type(me).__name__ == "_MainThread" — T108).
+                                if let Value::Obj(so) = subject {
+                                    if so.kind == ap_obj::ObjKind::Opaque && so.name == "thread" {
+                                        let cls = so
+                                            .attrs
+                                            .borrow()
+                                            .get(&Value::Str(PyString::new("<class>")))
+                                            .and_then(|v| match v {
+                                                Value::Str(sv) => Some(sv.as_str().to_string()),
+                                                _ => None,
+                                            })
+                                            .unwrap_or_else(|| "Thread".to_string());
+                                        return Ok(builtins::interned_type(interp, &cls));
+                                    }
+                                }
                                 // Descriptors report their kind (property/
                                 // staticmethod/member_descriptor, c008/c016/c024);
                                 // super objects report "super" (c021).
@@ -3069,6 +3167,32 @@ fn call_type_ctor(
         // checking + WEAKREFS registration match the module-level ref().
         return crate::gcsupport::call_weakref("ref", args, &[]).unwrap_or_else(|| Ok(Value::None));
     }
+    // 02.07: threading/queue native constructors (module-level Types call as
+    // ctors over the prim table).
+    if matches!(
+        name,
+        "Lock"
+            | "RLock"
+            | "Condition"
+            | "Event"
+            | "Semaphore"
+            | "BoundedSemaphore"
+            | "Barrier"
+            | "Timer"
+            | "local"
+            | "allocate_lock"
+            | "Thread"
+    ) {
+        return crate::builtins_modules::call_native("threading", name, args, kwargs)
+            .unwrap_or_else(|| Ok(Value::None));
+    }
+    if matches!(
+        name,
+        "Queue" | "LifoQueue" | "PriorityQueue" | "SimpleQueue"
+    ) {
+        return crate::builtins_modules::call_native("queue", name, args, kwargs)
+            .unwrap_or_else(|| Ok(Value::None));
+    }
     const EXCS: &[&str] = &[
         "ValueError",
         "TypeError",
@@ -3148,8 +3272,14 @@ fn call_function(
         return Ok(Value::Obj(co));
     }
 
-    // Lambda: body expression lives in lambda_bodies.
-    let lambda_body = interp.lambda_bodies.borrow().get(&fn_id).cloned();
+    // Lambda: body expression lives in lambda_bodies (write-once; retry on
+    // cross-thread contention).
+    let lambda_body = loop {
+        match interp.lambda_bodies.try_borrow() {
+            Ok(b) => break b.get(&fn_id).cloned(),
+            Err(_) => std::thread::sleep(std::time::Duration::from_micros(50)),
+        }
+    };
 
     let (locals, my_cells, free_cells) =
         bind_params(interp, &entry, &def, o, lambda_body.is_some(), args, kwargs)?;
@@ -3165,7 +3295,17 @@ fn call_function(
         locals,
     ));
     let line_track = Rc::new(RustCell::new(0usize));
-    interp.frame_stack.borrow_mut().push(line_track.clone());
+    // 02.07: cross-thread push contention — retry (all holders run under the
+    // GIL, so the borrow is transient).
+    for _ in 0..2000 {
+        match interp.frame_stack.try_borrow_mut() {
+            Ok(mut fs) => {
+                fs.push(line_track.clone());
+                break;
+            }
+            Err(_) => std::thread::sleep(std::time::Duration::from_micros(50)),
+        }
+    }
     // Plain (non-method) function frame: zero-arg super() inside it (even
     // nested) sees NO method context -> RuntimeError (c021).
     // Whether instantiate() staged a context for THIS call (the sentinel is
@@ -3214,7 +3354,7 @@ fn call_function(
     // machinery instead of evaluating the body inline.
     if let Some(body) = &lambda_body {
         if matches!(body, Expr::Yield(_) | Expr::YieldFrom(_)) {
-            interp.frame_stack.borrow_mut().pop();
+            frame_stack_pop(interp);
             return start_generator(interp, entry, o, args, kwargs);
         }
     }
@@ -3224,7 +3364,7 @@ fn call_function(
         exec_block(interp, &frame, &def.body.blocks, &current_registry(interp)).map(|_| Value::None)
     };
 
-    interp.frame_stack.borrow_mut().pop();
+    frame_stack_pop(interp);
     interp.super_stack.borrow_mut().pop();
     if pushed_plain_ctx.is_some() {
         // The staged __new__/__init__ context sits above the sentinel.
@@ -3938,7 +4078,16 @@ fn run_comp_clauses(
 fn assign_comp_target(frame: &Rc<Frame>, target: &Expr, v: Value) -> Result<(), Flow> {
     match target {
         Expr::Name(n) => {
-            frame.store_local(n, v);
+            // 02.07 fix: a genexpr whose DEFINING frame is the module frame
+            // ran with store_local — the comp target landed in the module
+            // frame's `locals` and PERMANENTLY shadowed the global name
+            // (lookup checks locals first). Module frames keep locals empty;
+            // route comp-target stores to globals there.
+            if frame.is_module {
+                frame.store_global(n, v);
+            } else {
+                frame.store_local(n, v);
+            }
             Ok(())
         }
         Expr::Tuple(parts) => {
@@ -4090,14 +4239,31 @@ fn pull_iter(interp: &Rc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> {
     if interp.generators.borrow().contains_key(&id) {
         return gen_pull(interp, id);
     }
-    let r = {
-        let its = interp.iterators.borrow();
-        its.get(&id).and_then(|it| it.next())
+    // 02.07: it.next() can re-enter interp.iterators (Thread rendezvous
+    // inside a for loop) — never hold the borrow across it. Retry on a
+    // contended borrow (a worker holds it while parked under the GIL).
+    let r = loop {
+        match interp.iterators.try_borrow() {
+            Ok(its) => {
+                let r = its.get(&id).and_then(|it| it.next());
+                break r;
+            }
+            Err(_) => std::thread::sleep(std::time::Duration::from_micros(50)),
+        }
     };
     if r.is_none() {
         // 02.04: a finished iterator's Seq state pins every value it ever
         // yielded (genexpr snapshots) — a permanent root set. Drop it.
-        interp.iterators.borrow_mut().remove(&id);
+        // 02.07: retry on contention (workers hold borrows under the GIL).
+        loop {
+            match interp.iterators.try_borrow_mut() {
+                Ok(mut its) => {
+                    its.remove(&id);
+                    break;
+                }
+                Err(_) => std::thread::sleep(std::time::Duration::from_micros(50)),
+            }
+        }
     }
     match r {
         Some(v) => Ok(Some(v)),
@@ -4351,6 +4517,12 @@ thread_local! {
     static CURRENT_INTERP: RefCell<Option<Rc<Interpreter>>> = const { RefCell::new(None) };
 }
 
+/// Public installer for WORKER threads (02.07): a new OS thread evaluates
+/// through the SAME interpreter object; this seeds its thread-local handle.
+pub fn install_current_interp(interp: &Rc<Interpreter>) {
+    CURRENT_INTERP.with(|c| *c.borrow_mut() = Some(interp.clone()));
+}
+
 fn current_interp_for_bindings() -> Rc<Interpreter> {
     CURRENT_INTERP
         .with(|c| c.borrow().clone())
@@ -4457,7 +4629,7 @@ fn user_truthiness(interp: &Rc<Interpreter>, v: &Value) -> Result<Option<bool>, 
 
 /// Protocol-aware truthiness: user __bool__/__len__ first (S-03-26),
 /// then the value layer (S-01-27).
-fn truthy(interp: &Rc<Interpreter>, v: &Value) -> Result<bool, Flow> {
+pub(crate) fn truthy(interp: &Rc<Interpreter>, v: &Value) -> Result<bool, Flow> {
     match user_truthiness(interp, v)? {
         Some(b) => Ok(b),
         None => Ok(v.is_truthy()),
@@ -4835,6 +5007,41 @@ fn class_protocol_builtin(
                         let t = crate::builtins::interned_type(interp, &o.name);
                         return Some(Ok(t));
                     }
+                    // 02.07: threading objects report their <class> attr
+                    // (type(me).__name__ == "_MainThread" — T108).
+                    if std::env::var("APX_TDEBUG").is_ok() {
+                        if let Value::Obj(so) = vv {
+                            eprintln!("[TDEBUG] cpb type arm: kind={:?} name={}", so.kind, so.name);
+                        }
+                    }
+                    if o.kind == ap_obj::ObjKind::Opaque && o.name == "thread" {
+                        let cls = o
+                            .attrs
+                            .borrow()
+                            .get(&Value::Str(PyString::new("<class>")))
+                            .and_then(|v| match v {
+                                Value::Str(sv) => Some(sv.as_str().to_string()),
+                                _ => None,
+                            })
+                            .unwrap_or_else(|| "Thread".to_string());
+                        let t = crate::builtins::interned_type(interp, &cls);
+                        return Some(Ok(t));
+                    }
+                    // 02.07: threading objects report Thread/_MainThread/
+                    // Timer (type(me).__name__ == "_MainThread").
+                    if o.kind == ap_obj::ObjKind::Opaque && o.name == "thread" {
+                        let cls = o
+                            .attrs
+                            .borrow()
+                            .get(&Value::Str(ap_obj::PyString::new("<class>")))
+                            .and_then(|v| match v {
+                                Value::Str(sv) => Some(sv.as_str().to_string()),
+                                _ => None,
+                            })
+                            .unwrap_or_else(|| "Thread".to_string());
+                        let t = crate::builtins::interned_type(interp, &cls);
+                        return Some(Ok(t));
+                    }
                 }
             }
             let v = match args.first() {
@@ -5089,6 +5296,13 @@ fn repr_with_classes(interp: &Rc<Interpreter>, v: &Value) -> EResult {
                 }
             }
             Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque => {
+                // 02.07: thread reprs (<Thread(NAME, state)> — the corpus
+                // prints HEADS only, addresses masked; the repr carries the
+                // ident like CPython when started/stopped).
+                if o.name == "thread" {
+                    out.push_str(&crate::threading_call::thread_repr_pub(o));
+                    return Ok(());
+                }
                 // 02.08-full part 1: native opaque repr_text wins (complex,
                 // dict views, TemporaryDirectory).
                 if let Some(txt) = &*o.repr_text.borrow() {
@@ -5299,6 +5513,8 @@ fn class_issubclass(interp: &Rc<Interpreter>, args: &[Value]) -> EResult {
                         // object (s003 issubclass(os.PathLike, object)).
                         || want == "object"
                         || (have == "bool" && want == "int")
+                        // 02.07: Timer IS-A Thread (CPython hierarchy).
+                        || (have == "Timer" && want == "Thread")
                         || crate::exc_hier::is_subclass(have, want)
                 };
                 let result = match b {
@@ -5591,6 +5807,14 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
         if matches!(obj, Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass || o.kind == ap_obj::ObjKind::UserInstance)
         {
             if let Some(v) = crate::classes::attr_get_opt(_interp, obj, name)? {
+                return Ok(Some(v));
+            }
+        }
+        // 02.07: threading native objects carry their class name (<class>).
+        if matches!(obj, Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque
+            && matches!(o.name.as_str(), "thread"))
+        {
+            if let Some(v) = crate::builtins_modules::native_attr(obj, name) {
                 return Ok(Some(v));
             }
         }
@@ -6465,6 +6689,11 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
         }
         _ => Ok(None),
     }
+}
+
+/// Public truthiness shim (threading_call Condition.wait_for predicates).
+pub fn truthy_public(interp: &Rc<Interpreter>, v: &Value) -> Result<bool, Flow> {
+    truthy(interp, v)
 }
 
 /// Public attr_get shim (builtins_modules json/os lookups).
