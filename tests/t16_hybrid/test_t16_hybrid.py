@@ -64,7 +64,10 @@ CORPUS = REPO_ROOT / "tests" / "corpus"
 
 # Reference CPython (C-01: pinned 3.14.0; recorded/verified here on 3.14.7 —
 # provisional, same open item as T-09 GAP-4 / T-06 GAP-7).
-PYREF = os.environ.get("AP_CONFORM_REFERENCE_PYTHON", "/opt/homebrew/bin/python3.14")
+# Reference discovery: unified env+PATH ladder (robustness-ci 01.01); see
+# tests/tools/_ref_python.py for the AP_REQUIRE_REFERENCE=1 policy.
+sys.path.insert(0, str(REPO_ROOT / "tests" / "tools"))
+from _ref_python import reference_or_skip  # noqa: E402
 
 RUN_TIMEOUT = int(os.environ.get("APX_T16_TIMEOUT", "300"))
 
@@ -254,7 +257,7 @@ def test_reference_reproduces_expected_bytes(script):
     """The pinned triple is the semantics anchor (C-01/C-02/C-27): re-running
     the program under the reference build reproduces every channel byte-for-
     byte, so drift is loud HERE and never blamed on a 04.05 artifact."""
-    proc = _run([PYREF, str(script)], cwd=script.parent)
+    proc = _run([reference_or_skip(), str(script)], cwd=script.parent)
     exp_out, exp_err, exp_rc, _ = _pinned_triple(script)
     assert proc.stdout == exp_out, (
         f"{script.name}: stdout drift\n got={proc.stdout!r}\n exp={exp_out!r}"
@@ -317,7 +320,7 @@ def test_hybrid_binary_native_green(script):
     invisible; rc 0 per the C-30 anchor)."""
     app = _build_hybrid(script, "hyb_native")
     proc = _run([str(app)])
-    exp = _triple(_run([PYREF, str(script)], cwd=script.parent))
+    exp = _triple(_run([reference_or_skip(), str(script)], cwd=script.parent))
     assert proc.stdout == exp[0], f"{script.name}: hybrid native stdout drift"
     assert proc.stderr == exp[1], f"{script.name}: hybrid native stderr drift (C-25)"
     assert _triple(proc)[2] == exp[2], f"{script.name}: hybrid native rc != pinned (C-30)"

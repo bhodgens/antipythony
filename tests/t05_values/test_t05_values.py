@@ -54,7 +54,14 @@ def _mask_root(data: bytes) -> bytes:
                   rb"<ROOT>/\1", data)
 CORPUS_DIR = REPO_ROOT / "tests" / "corpus" / "values"
 EXPECTED_DIR = CORPUS_DIR / "expected"
-REF_PY = "/opt/homebrew/bin/python3.14"
+
+# Reference discovery: unified env+PATH ladder (robustness-ci 01.01, closes
+# 00.02's pytest-side gap). reference_or_skip() applies the version-string
+# check and the AP_REQUIRE_REFERENCE=1 skip->fail policy; see
+# tests/tools/_ref_python.py.
+import sys  # noqa: E402
+sys.path.insert(0, str(REPO_ROOT / "tests" / "tools"))
+from _ref_python import reference_or_skip  # noqa: E402
 
 
 def _pinned_env() -> dict:
@@ -138,8 +145,9 @@ def test_expected_bytes_stable(case):
     # The case path is passed RELATIVE to REPO_ROOT (cwd is REPO_ROOT) so
     # tracebacks embed a checkout-independent path; an absolute path made the
     # pins fail in every worktree/CI checkout other than the original.
+    ref = reference_or_skip()
     proc = subprocess.run(
-        [REF_PY, os.path.relpath(case, REPO_ROOT)],
+        [ref, os.path.relpath(case, REPO_ROOT)],
         capture_output=True, timeout=120, cwd=str(REPO_ROOT), env=_pinned_env(),
     )
     stem = case.stem
@@ -202,7 +210,7 @@ def test_apconform_self_comparison_green():
     # through ap-conform must pass byte-exactly on all three channels.
     proc = subprocess.run(
         [AP_CONFORM, "run", "--corpus", "tests/corpus/values/*.py",
-         "--impl", REF_PY, "--json"],
+         "--impl", reference_or_skip(), "--json"],
         capture_output=True, text=True, timeout=300, cwd=str(REPO_ROOT),
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr

@@ -16,7 +16,6 @@
 import ast
 import os
 import re
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -44,18 +43,19 @@ def _mask_root(data: bytes) -> bytes:
 CORPUS_DIR = REPO_ROOT / "tests" / "corpus" / "fstrings"
 CASES_DIR = CORPUS_DIR / "cases"
 EXPECTED_DIR = CORPUS_DIR / "expected"
-REF_PY = os.environ.get("AP_CONFORM_REFERENCE_PYTHON", "/opt/homebrew/bin/python3.14")
+# Reference discovery: unified env+PATH ladder (robustness-ci 01.01). The old
+# local helper allowed a bare `python3` fallback — tests/README rule 5 says NO
+# (the version-string check is mandatory). _ref_python.reference_or_skip()
+# enforces the check + the AP_REQUIRE_REFERENCE=1 skip->fail policy.
+sys.path.insert(0, str(REPO_ROOT / "tests" / "tools"))
+from _ref_python import reference_or_skip  # noqa: E402
 
 ALL_CASES = sorted(CASES_DIR.glob("*.py"))
 CASE_IDS = [c.stem for c in ALL_CASES]
 
 
 def _ref_python():
-    if Path(REF_PY).is_file():
-        return REF_PY
-    found = shutil.which("python3.14") or shutil.which("python3")
-    assert found, "no reference python found"
-    return found
+    return reference_or_skip()
 
 
 @pytest.mark.parametrize("case", ALL_CASES, ids=CASE_IDS)

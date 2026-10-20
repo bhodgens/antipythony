@@ -70,7 +70,11 @@ def _mask_root(data: bytes) -> bytes:
                   rb"<ROOT>/\1", data)
 CORPUS_DIR = REPO_ROOT / "tests" / "corpus" / "threading"
 EXPECTED_DIR = CORPUS_DIR / "expected"
-REF_PY = "/opt/homebrew/bin/python3.14"
+# Reference discovery: unified env+PATH ladder (robustness-ci 01.01).
+# reference_or_skip() version-checks the candidate and enforces the
+# AP_REQUIRE_REFERENCE=1 skip->fail policy; see tests/tools/_ref_python.py.
+sys.path.insert(0, str(REPO_ROOT / "tests" / "tools"))
+from _ref_python import reference_or_skip  # noqa: E402
 AP_CONFORM = os.environ.get(
     "AP_CONFORM", str(REPO_ROOT / "target" / "debug" / "ap-conform")
 )
@@ -114,7 +118,7 @@ def run_ref(case, env_extra=None, timeout=180):
     if env_extra:
         env.update(env_extra)
     return subprocess.run(
-        [REF_PY, os.path.relpath(case, REPO_ROOT)], capture_output=True, timeout=timeout,
+        [reference_or_skip(), os.path.relpath(case, REPO_ROOT)], capture_output=True, timeout=timeout,
         cwd=str(REPO_ROOT), env=env,
     )
 
@@ -269,7 +273,7 @@ def test_apconform_self_comparison_green():
     # including the exception-in-thread stderr report of T109.
     proc = subprocess.run(
         [AP_CONFORM, "run", "--corpus", "tests/corpus/threading/*.py",
-         "--impl", REF_PY, "--timeout", "60", "--json"],
+         "--impl", reference_or_skip(), "--timeout", "60", "--json"],
         capture_output=True, text=True, timeout=600, cwd=str(REPO_ROOT),
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
@@ -398,8 +402,9 @@ def test_scaling_harness_plumbing_records_reference_timings():
     # CPython 3.14 here is GIL-enabled (sys._is_gil_enabled() is True), so its
     # speedup is ~1.0x and pinning that would contradict "measured-not-
     # asserted". The >=3x gate is only over the GIL-free antipythany impl.
-    serial = _measure("serial", [REF_PY])
-    parallel = _measure("parallel", [REF_PY])
+    ref = reference_or_skip()
+    serial = _measure("serial", [ref])
+    parallel = _measure("parallel", [ref])
     assert serial > 0 and parallel > 0
     speedup = serial / parallel
     print(f"\nT-10 scaling harness: cores={CORES} serial={serial:.3f}s "

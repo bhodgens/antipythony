@@ -78,7 +78,10 @@ import scope_table  # noqa: E402  (tests/t11_stdlib/scope_table.py)
 CORPUS_DIR = REPO_ROOT / "tests" / "corpus" / "stdlib"
 EXPECTED_DIR = CORPUS_DIR / "expected"
 SPEC05 = REPO_ROOT / "docs" / "spec" / "05-builtins-stdlib-v1.md"
-REF_PY = os.environ.get("AP_CONFORM_REFERENCE_PYTHON", "/opt/homebrew/bin/python3.14")
+# Reference discovery: unified env+PATH ladder (robustness-ci 01.01); see
+# tests/tools/_ref_python.py for the AP_REQUIRE_REFERENCE=1 skip->fail policy.
+sys.path.insert(0, str(REPO_ROOT / "tests" / "tools"))
+from _ref_python import reference_or_skip  # noqa: E402
 
 
 def _find_bin(name):
@@ -184,7 +187,7 @@ missing = [n for n in {scope_table.IN_MODULES[mod]["subset"]!r}
            if not hasattr(m, n)]
 print(sorted(missing))
 '''
-    proc = subprocess.run([REF_PY, "-S", "-c", probe], capture_output=True,
+    proc = subprocess.run([reference_or_skip(), "-S", "-c", probe], capture_output=True,
                           timeout=60, cwd=str(REPO_ROOT))
     assert proc.returncode == 0, f"{mod}: reference import failed: {proc.stderr!r}"
     missing = eval(proc.stdout.decode().strip())
@@ -211,7 +214,7 @@ def test_out_modules_import_fine_on_reference(mod):
     # The divergence premise (S-05-22): the reference IMPORTS these; the
     # fail-loud refusal is an antipythany-only behavior, gated against the
     # diagnostic format, not against CPython bytes.
-    proc = subprocess.run([REF_PY, "-S", "-c", f"import {mod}"],
+    proc = subprocess.run([reference_or_skip(), "-S", "-c", f"import {mod}"],
                           capture_output=True, timeout=60, cwd=str(REPO_ROOT))
     assert proc.returncode == 0, f"{mod}: reference unexpectedly refuses: {proc.stderr!r}"
 
@@ -296,7 +299,7 @@ def test_expected_bytes_stable(case):
     exp_rc = int((EXPECTED_DIR / (stem + ".rc")).read_text())
     exp_err = (EXPECTED_DIR / (stem + ".err")).read_bytes()
     for flags in ([], ["-S"]):
-        proc = subprocess.run([REF_PY, *flags, os.path.relpath(case, REPO_ROOT)],
+        proc = subprocess.run([reference_or_skip(), *flags, os.path.relpath(case, REPO_ROOT)],
                               capture_output=True,
                               timeout=120, cwd=str(REPO_ROOT), env=_pinned_env())
         label = "+".join(flags) or "plain"
@@ -355,7 +358,7 @@ def test_apconform_self_comparison_green():
     # channels, separate streams): reference vs reference byte-exact.
     proc = subprocess.run(
         [*AP_CONFORM_CMD, "run", "--corpus", "tests/corpus/stdlib/*.py",
-         "--impl", REF_PY, "--json"],
+         "--impl", reference_or_skip(), "--json"],
         capture_output=True, text=True, timeout=600, cwd=str(REPO_ROOT))
     assert proc.returncode == 0, proc.stdout + proc.stderr
     data = json.loads(proc.stdout)

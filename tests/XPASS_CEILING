@@ -1,0 +1,17 @@
+74
+# measured 2026-10-20 (leaf 01.01). Sources (see plans/robustness-ci/
+# 01-test-integrity/PROGRESS.md 01.01 for the full evidence trail):
+#  - Last VALID complete `pytest tests/ -q` tally: /tmp/ap_b3_pytest.log,
+#    run 2026-10-19 14:08 on this box at the pre-Wave-B tree:
+#    "31 failed, 1261 passed, 95 skipped, 693 xfailed, 74 xpassed" —
+#    the 74 are exactly the STALE-XFAIL-LEDGER "STILL STALE (74 tests)"
+#    t08 envelope (owner: leaf 02.05).
+#  - 2026-10-20 live re-measurement at HEAD e960be0 (+uncommitted
+#    sibling 02.07 threading): 0 XPASS through ~63% of three full-suite runs
+#    and through 2018/2630 tests of four disjoint partition probes — the
+#    t08 impl tests now TIMEOUT under the in-flight threading changes and
+#    report as genuine xfails (x), not xpasses. 0 is an interference
+#    artifact (tests/README: never record a baseline from a broken stack);
+#    74 is the true stale-marker count on any tree where the impl runs.
+# Monotone-decreasing: 01.02 ledger flips lower this file per flip wave.
+# CI fails when a full-suite run reports MORE than 74 xpassed.

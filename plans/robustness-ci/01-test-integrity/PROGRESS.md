@@ -85,3 +85,116 @@ non-test code (diff is purely additive `#[cfg(test)]` mods + new test file).
     values returns empty by design, docs/gc-mmtk-swap.md §1); its
     keepalive path stays covered only via subtract-refs until tier-1.
 
+
+### 01.01 XPASS ceiling gate + pytest reference discovery - DONE 2026-10-20 (leaf 01.01)
+
+Two coupled deliverables (branch-01 orchestrator + master.md contracts
+"XPASS ceiling" and "Reference python discovery / Skip policy").
+
+**(A) XPASS ceiling.** `tests/XPASS_CEILING` = **74** (line-1 integer +
+`# measured` provenance comments). Measurement trail:
+
+- Last VALID complete `pytest tests/ -q` tally on a working tree:
+  `/tmp/ap_b3_pytest.log` (2026-10-19 14:08, pre-Wave-B commits but the
+  impl binaries ran fine): `31 failed, 1261 passed, 95 skipped,
+  693 xfailed, 74 xpassed`. The 74 xpasses are exactly the
+  STALE-XFAIL-LEDGER "STILL STALE (74 tests)" t08 envelope (owner 02.05).
+  The review's quoted 126 predates the 52-test Wave-A flips - not re-used.
+- 2026-10-20 live re-measurement (HEAD 15e7480 -> e960be0 during the run,
+  + sibling 02.07 threading uncommitted): **0 xpass** across every
+  measurable test:
+  four disjoint partition probes = 2157 tests (t01-t03 22p/179xf;
+  corpus_traceability+t05+t07 781p/1sk/27xf; t04+t06+t11+fstrings
+  629p/5sk/192xf; t10+t14+t15+t16 123p/58xf; t09 89p/50xf) plus three
+  full-suite runs (mine /tmp/ap_pytest_0101.txt to ~63%, sibling waveA
+  ~63%, sibling 00.03 ~60%) with ZERO 'X' chars through ~60-63% marks.
+  The 74 t08 markers read as timeout-xfails TODAY because sibling 02.07
+  threading work hangs `antipythany run` (001_hello times out at 60s;
+  t08 cross-mode legs burn their 120s APX_T08_TIMEOUT each). That is a
+  broken-stack measurement, not a behavior improvement - tests/README
+  forbids recording baselines from it. 74 stays the contract number;
+  once 02.07/02.05 land and t08 runs again, the 74 sit AT the ceiling
+  (green) and 01.02 flips lower it per wave. Orchestrator may re-measure
+  at a green full run and lower the file in one commit per flip wave.
+- `tests/tools/_xpass_gate.py` (new): post-suite gate; parses the -q
+  summary line ("N xpassed") + -rX per-test XPASS lines (max of both),
+  compares to the ceiling. Exit 0 at/below, 1 above (CEILING BREACH msg),
+  2 on bad input (missing/non-integer ceiling; truncated report with no
+  summary line - refuses to infer 0 from a half report). Tested against
+  the real b3 report (0), a doctored +1 report (1), ceiling-lowered
+  variants, stdin mode, -rX extras, truncated (2).
+- `tests/corpus_traceability/test_xpass_ceiling.py` (new): does NOT
+  re-run the suite (~1h). Test 1 lints the ceiling FILE shape (bare int +
+  '# measured' provenance) - runs in fast-lints' existing
+  `pytest tests/corpus_traceability -q` step (476 passed, 1 skipped).
+  Test 2 gates a CACHED report when `XPASS_REPORT=<file>` is set, else
+  skips with the wiring pointer. Verified: skip / pass / breach modes.
+- CI wiring for the orchestrator (ci.yml NOT edited here, per rules):
+  in the `conformance` job change the pytest step to
+  `python -m pytest tests/ -q --no-header | tee /tmp/pytest-report.txt`
+  (needs `set -o pipefail` if kept red-faithful) and append a step
+  `- name: XPASS ceiling gate (01.01)` / `if: always()` /
+  `run: python tests/tools/_xpass_gate.py /tmp/pytest-report.txt`.
+  Also: the conformance job's "Compat shim for legacy hardcoded REF_PY"
+  step (~line 172) carries its own comment "DELETE this step when
+  t05/t10 honor AP_CONFORM_REFERENCE_PYTHON" - they do now; orchestrator
+  should delete it (on Linux CI the shim would satisfy the non-strict
+  host-fallback rung; with AP_REQUIRE_REFERENCE=1 CI is strict anyway).
+
+**(B) pytest-side reference discovery (closes 00.02's honest gap #1).**
+`tests/tools/_ref_python.py` (new) - Python twin of the Rust helper
+(crates/ap-run/tests/common/mod.rs): ladder `AP_CONFORM_REFERENCE_PYTHON`
+(version-string-checked, warn+fall-through on non-3.14) -> PATH
+`python3.14` (checked) -> `/opt/homebrew/bin/python3.14` host fallback
+ONLY when AP_REQUIRE_REFERENCE is off (CI strict = env->PATH only, no
+hardcoded paths, same as the Rust helper). AP_REQUIRE_REFERENCE=1 +
+nothing resolves -> pytest.fail(canonical
+"reference interpreter not found (AP_REQUIRE_REFERENCE=1)"); else
+pytest.skip. Cached per process; `pytest` imported lazily so generators
+could reuse `discover_reference()`.
+
+Converted suites (module REF_PY/PYREF constants -> in-test
+reference_or_skip()): t05_values, t06_classes, t07_gc, t08_tier1,
+t09_binary, t10_threading, t11_stdlib, t16_hybrid, fstrings_corpus (its
+old local helper's bare-`python3` fallback - a rule-5 violation - is
+gone), corpus_traceability/test_golden_provenance (skipif module gate
+replaced by the shared policy; non-strict behavior unchanged: skip),
+t04_ir_verify (constant was doc-only -> lazy discover_reference()).
+
+**Gates:**
+1. post-conversion green: `pytest tests/corpus_traceability tests/t05_values
+   tests/t07_gc -q` -> 781 passed, 1 skipped, 27 xfailed, 0 failed; plus
+   t04+t06+t11+fstrings 629p/5sk/192xf/0X and t09 89p/50xf green;
+   --collect-only clean across all 10 converted files (1579 tests).
+2. `env -i PATH=/usr/bin:/bin AP_REQUIRE_REFERENCE=1 pytest tests/t05_values`
+   -> 47 loud failures w/ the canonical message; t07 same (17); bad-env
+   override + strict + scrubbed PATH -> canonical fail (fall-through then
+   nothing resolves).
+3. same scrub WITHOUT the flag -> 47 passed (t05) / 17 passed (t07):
+   host-fallback keeps local behavior identical to before (previously
+   hardcoded to the same binary). golden_provenance non-strict still SKIPS
+   (verified by the 1 skip in gate 1).
+4. ceiling script real/doctored/+1/lowered/stdin - all exits correct (above).
+5. py_compile clean on all 14 touched/created .py files.
+
+**Honest gaps:**
+1. t09/t16 xfail(strict=False)-marked tests that hit reference_or_skip()
+   report a missing-reference FAIL as "xfail" in a strict CI run (the
+   marker swallows it). The strict-FAIL proof holds for the unmarked
+   differential tests. 01.02's flip-to-strict protocol removes the
+   swallow; until then the ceiling gate covers silent xpass drift.
+2. Prose/comment mentions of /opt/homebrew/bin/python3.14 remain in suite
+   HEADERS (t05:14, t10:14, t11:22, t04:11-14, fstrings:7, t01:40) and in
+   provenance re-record hints - not discovery logic. Deliberate: editing
+   `tests/t07_gc/_gen_expected.py`/`tests/tools/_gen_meta.py`/
+   `tests/t04_ir_verify/gen_expectations.py` changes their sha256, which
+   the 03.01 generator-sha lint pins in 228 .meta files - regenerating is
+   03-branch work (attempted, measured the breakage, reverted clean).
+3. No live CI proof (ci.yml orchestrator-owned); exact wiring + shim
+   deletion documented above.
+4. Ceiling is one integer for the matrix (ubuntu+macOS). If the 02.05-era
+   t08 flips land different counts per OS, the orchestrator may need
+   per-OS ceilings - not implemented (contract says one file, one int).
+5. t15 notices-gate failure seen in the t10-t16 probe (rc=1) is sibling
+   02.07's uncommitted Cargo.lock/manifest edits vs THIRD_PARTY_NOTICES -
+   not this leaf, not reference-discovery related.

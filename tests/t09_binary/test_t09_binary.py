@@ -36,7 +36,10 @@ CORPUS = REPO_ROOT / "tests" / "corpus"
 
 # Reference CPython (C-01: pinned 3.14.0; recorded/verified here on 3.14.7 —
 # provisional per GAP-4, same open item as T-06 GAP-7).
-PYREF = os.environ.get("AP_CONFORM_REFERENCE_PYTHON", "/opt/homebrew/bin/python3.14")
+# Reference discovery: unified env+PATH ladder (robustness-ci 01.01); see
+# tests/tools/_ref_python.py for the AP_REQUIRE_REFERENCE=1 policy.
+sys.path.insert(0, str(REPO_ROOT / "tests" / "tools"))
+from _ref_python import reference_or_skip  # noqa: E402
 
 XFAIL_0206 = pytest.mark.xfail(
     strict=False, reason="awaits 02.06 AoT static binary (build verb + artifact)"
@@ -124,7 +127,7 @@ def _posix_rc(returncode: int) -> int:
 
 def _run_ref_case(stem: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [PYREF, stem + ".py"] + REF_ARGS.get(stem, []),
+        [reference_or_skip(), stem + ".py"] + REF_ARGS.get(stem, []),
         capture_output=True,
         cwd=CASES,
         timeout=60,
@@ -317,7 +320,7 @@ def test_ap_conform_self_comparison_green_on_slice(rel):
         "--corpus",
         str(CORPUS / rel),
         "--impl",
-        PYREF,
+        reference_or_skip(),
     ]
     proc = subprocess.run(cmd, capture_output=True, cwd=REPO_ROOT, timeout=120)
     assert proc.returncode == 0, (
@@ -343,7 +346,7 @@ def test_binary_runs_hello_program():
     """02.06 Gate part 1: `./app` runs the hello-world program byte-identically
     to the reference on all three channels (C-27, C-31 AoT invisibility)."""
     script = CORPUS / "001_hello.py"
-    ref = subprocess.run([PYREF, str(script)], capture_output=True, cwd=REPO_ROOT, timeout=60)
+    ref = subprocess.run([reference_or_skip(), str(script)], capture_output=True, cwd=REPO_ROOT, timeout=60)
     app = build_binary(script, "hello_app")
     proc = run_binary(app)
     assert proc.stdout == ref.stdout, f"stdout {proc.stdout!r} != {ref.stdout!r}"
@@ -374,7 +377,7 @@ def test_binary_runs_under_path_isolation():
         "isolation dir unexpectedly contains python3.14"
     )
     script = CORPUS / "001_hello.py"
-    ref = subprocess.run([PYREF, str(script)], capture_output=True, cwd=REPO_ROOT, timeout=60)
+    ref = subprocess.run([reference_or_skip(), str(script)], capture_output=True, cwd=REPO_ROOT, timeout=60)
     app = build_binary(script, "iso_app")
     proc = run_binary(app, path_env=iso_path)
     assert proc.stdout == ref.stdout

@@ -27,7 +27,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -156,7 +155,10 @@ def test_meta_coverage_floor():
 # finding #4, a different leaf).
 # ---------------------------------------------------------------------------
 
-REF_PY = os.environ.get("AP_CONFORM_REFERENCE_PYTHON", "/opt/homebrew/bin/python3.14")
+# Reference discovery: unified env+PATH ladder (robustness-ci 01.01) — see
+# tests/tools/_ref_python.py for the AP_REQUIRE_REFERENCE=1 skip->fail policy.
+sys.path.insert(0, str(REPO / "tests" / "tools"))
+from _ref_python import reference_or_skip  # noqa: E402
 
 # (family, case path relative to repo, expected dir relative to repo,
 #  triple, extra flags, relative-path?)
@@ -192,10 +194,6 @@ def _pinned_env():
     return env
 
 
-@pytest.mark.skipif(
-    not (Path(REF_PY).is_file() or shutil.which("python3.14")),
-    reason="no reference python3.14 on this machine",
-)
 @pytest.mark.parametrize("family,rel,exp_rel,triple,flags,relpath", SAMPLES,
                          ids=[s[0] for s in SAMPLES])
 def test_sample_pins_byte_identical(family, rel, exp_rel, triple, flags, relpath):
@@ -204,7 +202,7 @@ def test_sample_pins_byte_identical(family, rel, exp_rel, triple, flags, relpath
     exp = REPO / exp_rel
     assert exp.is_dir(), f"sample expected dir {exp_rel} moved/renamed"
     stem = case.stem
-    py = REF_PY if Path(REF_PY).is_file() else shutil.which("python3.14")
+    py = reference_or_skip()
     argv = [py, *flags, os.path.relpath(case, REPO) if relpath else str(case)]
     env = _pinned_env() if relpath else _scrubbed_env()
     proc = subprocess.run(argv, capture_output=True, timeout=180,

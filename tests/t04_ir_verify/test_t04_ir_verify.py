@@ -48,7 +48,13 @@ FIXTURE_PATH = SUITE / "fixtures" / "expected_t04.json"
 
 XFAIL_REASON = "awaits 01.04 ap-verify-dump seam (ap_ir::verify is a lib fn; T-04 doc G-1)"
 
-PYTHON_REFERENCE = "/opt/homebrew/bin/python3.14"
+# Reference interpreter path (robustness-ci 01.01): unified env+PATH ladder
+# via tests/tools/_ref_python.py. Resolved lazily; None when absent (this
+# suite currently only records the constant for docs — no spawns).
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests" / "tools"))
+from _ref_python import discover_reference  # noqa: E402
+
+PYTHON_REFERENCE = discover_reference() or "/opt/homebrew/bin/python3.14"
 
 # The exact 3.14 message template pinned by S-02-2 (NOT the pre-3.11 wording).
 UNBOUND_LOCAL_TEMPLATE = (

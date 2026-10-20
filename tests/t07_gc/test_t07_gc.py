@@ -34,6 +34,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -62,7 +63,10 @@ PROBES = Path(__file__).resolve().parent / "probes"
 # Reference CPython (C-01 caveat G-7: expected bytes recorded from 3.14.7,
 # provisional until re-verified on pinned 3.14.0 — same open item as the
 # compat contract and the T-05/T-06 suites).
-PYREF = os.environ.get("AP_CONFORM_REFERENCE_PYTHON", "/opt/homebrew/bin/python3.14")
+# Reference discovery: unified env+PATH ladder (robustness-ci 01.01); see
+# tests/tools/_ref_python.py for the AP_REQUIRE_REFERENCE=1 policy.
+sys.path.insert(0, str(REPO_ROOT / "tests" / "tools"))
+from _ref_python import reference_or_skip  # noqa: E402
 
 XFAIL_REASON = "awaits 02.04 ap-gc (MMTk) + ap-conform --impl seam"
 
@@ -80,7 +84,7 @@ def _run_ref(script: Path) -> subprocess.CompletedProcess:
     ap-conform: identical argv to both impls, separate stream capture per
     S-06-2, scrubbed env)."""
     return subprocess.run(
-        [PYREF, str(script)],
+        [reference_or_skip(), str(script)],
         capture_output=True,
         env=_scrubbed_env(),
         cwd=REPO_ROOT,
@@ -326,7 +330,7 @@ def test_10k_projection_reference_calibration():
     # artifact. This test needs no implementation — it lives in Half 1's
     # spirit but runs the probe, so it sits here without the xfail mark.
     proc = subprocess.run(
-        ["/usr/bin/time", "-l", PYREF, str(PROBES / "heap_probe_10k.py")],
+        ["/usr/bin/time", "-l", reference_or_skip(), str(PROBES / "heap_probe_10k.py")],
         capture_output=True, env=_scrubbed_env(), cwd=REPO_ROOT, timeout=600,
     )
     assert proc.returncode == 0

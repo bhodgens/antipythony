@@ -52,6 +52,7 @@ import shlex
 import shutil
 import statistics
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -78,7 +79,10 @@ def _mask_root(data: bytes) -> bytes:
 CORPUS_ROOT = REPO_ROOT / "tests" / "corpus"
 PROBE_DIR = CORPUS_ROOT / "tier1-transparency"
 BENCH_DIR = PROBE_DIR / "bench"
-REF_PY = os.environ.get("AP_CONFORM_REFERENCE_PYTHON", "/opt/homebrew/bin/python3.14")
+# Reference discovery: unified env+PATH ladder (robustness-ci 01.01); see
+# tests/tools/_ref_python.py for the AP_REQUIRE_REFERENCE=1 skip->fail policy.
+sys.path.insert(0, str(REPO_ROOT / "tests" / "tools"))
+from _ref_python import reference_or_skip  # noqa: E402
 
 SPECS = {
     "S-01": REPO_ROOT / "docs" / "spec" / "01-values-and-objects.md",
@@ -111,7 +115,7 @@ def _scrubbed_env():
 
 
 def _run_ref(script: Path) -> subprocess.CompletedProcess:
-    return subprocess.run([REF_PY, str(script)], capture_output=True,
+    return subprocess.run([reference_or_skip(), str(script)], capture_output=True,
                           env=_scrubbed_env(), cwd=REPO_ROOT, timeout=60)
 
 
