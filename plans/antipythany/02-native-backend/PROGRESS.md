@@ -792,3 +792,15 @@
 - NOT done (deferred): sys.setswitchinterval actual switching (v1 ignores),
   per-thread heaps (no-GIL swap), T121 >=3x scaling gate (needs tier-1),
   T109 G-1 resolution (spec/impl decision pending).
+
+## Leaf 02.07 - threading - COMPLETE (committed faf7a87)
+- threading corpus 17/18 (T109 = G-1 gap: reference install paths in pinned
+  stderr - documented); s038 byte-exact green; T120-T122 pass correctness
+  under GIL v1.
+- PLAN 02 CORRECTNESS TRACK NOW COMPLETE. Remaining Plan 02: 02.05 tier-1
+  (perf), 02.06 AoT (distribution) - both deferred until after T1 validation.
+
+## NEXT: Plan 04 packaging - the LAST structural piece before scrapy T1
+1. 04.01 uv subprocess wheel-fetch (pure-python wheels into build cache)
+2. import integration: fetched packages join sys.path at compile
+3. scrapy crawl file:// spider byte-compare vs CPython reference = T1 GATE
