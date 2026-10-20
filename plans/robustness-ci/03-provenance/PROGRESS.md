@@ -8,7 +8,7 @@
 |---|---|---|
 | `git log --oneline \| wc -l` | **94** commits | audit said "80" in AGENTS.md (stale), "91+" since Oct 15 |
 | `cargo test --workspace` | **289 passed / 0 failed / 1 ignored** (44 result lines) | exit 0; 162 compiler warnings present (e.g. unused_parens in ap-run/src/sre.rs) |
-| `pytest tests/ -q` | full run **in flight at leaf end** (~50% after ~60 min; 2154 tests collected; so far 0 F / 0 E, 3 s skipped, 280 xfail, 0 xpass) | differential suites spawn `target/debug/antipythany run` with 60 s timeouts per corpus case - slow by design. Run handed off to the parent (proc_97ef8710f9f5, writes /tmp/ap_pytest.txt, appends PYTEST_EXIT=). Last committed known-good: 1272/0 (see plans/antipythany/02-native-backend/PROGRESS.md). |
+| `pytest tests/ -q` | **FINAL TALLY (2026-10-20, 03.03 handoff completed): 1799 passed / 6 skipped / 751 xfailed / 74 xpassed, 0 failed, 1:29:27, PYTEST_EXIT=0** | Run /tmp/ap_pytest_clean.txt on the post-Wave-B tree (+uncommitted sibling 02.07 threading). XPASS ceiling gate: 74 <= 74 OK (leaf 01.01). Collection grew 2154 -> 2630 via waves A-C additions. |
 | `cargo run -p xtask -- notices --check` | **exit 0** - "OK (151 third-party dependencies, up to date)" | |
 | `git config --get core.hooksPath` | `/Users/caimlas/.githooks` | finding #15 confirmed: global hooksPath (LFS only: commit-msg, post-checkout, post-commit, post-merge, pre-push) silently disables repo-local hooks |
 | corpus inventory | 8 families, **270** .py cases, **696** expected files (148 .out) | classes 33, exceptions 15, fstrings 71, gc 17, stdlib 48, threading 18, tier1-transparency 19, values 47 (+2 loose root cases) |
@@ -40,6 +40,9 @@ committed number plus this caveat rather than a guessed final line.
   matched my fresh measurement - left untouched.)
 
 ### Honest gaps
+- [RESOLVED 2026-10-20] Full pytest final summary line: captured post-leaf
+  (see baseline table; the original handoff process died with its parent,
+  a clean solo re-run produced the final tally).
 - Full pytest final summary line not captured in-session (run exceeds the
   leaf's wall-clock; 0 failures through ~50%). Whoever commits this wave
   should append the final `N passed` line to the table above once
