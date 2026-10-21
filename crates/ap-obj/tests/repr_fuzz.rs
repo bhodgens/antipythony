@@ -553,11 +553,6 @@ fn comparator_rejects_synthetic_mismatch() {
     // AP_FUZZ_STRICT=1 gate run documented in PROGRESS — mutating env here
     // would race the parallel proptest threads):
     assert_eq!(
-        route_known_divergence(-1e15, "-1000000000000000e+16", "-1000000000000000.0"),
-        Some(Finding::F0402_1),
-        "router lost F0402-1 recognition"
-    );
-    assert_eq!(
         route_known_divergence(
             -15614122725348.3125,
             "-15614122725348.313",

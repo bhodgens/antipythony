@@ -417,6 +417,11 @@ struct Parser {
     // For lookbehind validation: group indices visible outside the current
     // lookbehind (CPython forbids refs into the same lookbehind).
     lookbehind_depth: usize,
+    // Wave-4 (RF-6, COMPILE_MISSED fuzz family): stack of currently-open
+    // group indices. A backref to an open group is a compile error in
+    // CPython ('cannot refer to an open group at position N'); the parser
+    // previously accepted ((b)\1) because it never tracked nesting.
+    open_groups: Vec<usize>,
     pat_is_str: bool,
     pending_backrefs: Vec<(usize, usize)>,
 }
@@ -712,7 +717,7 @@ impl Parser {
                         let idx = *self.groupindex.get(&name).ok_or_else(|| {
                             self.err(&format!("unknown group name '{}'", name), name.len() + 1)
                         })?;
-                        if idx >= self.ngroups + 1 {
+                        if self.open_groups.contains(&idx) {
                             return Err(self.err("cannot refer to an open group", name.len() + 1));
                         }
                         self.validate_lookbehind_ref(idx)?;
@@ -1062,6 +1067,7 @@ impl Parser {
     fn open_group(&mut self, name: Option<String>) -> Result<usize, crate::Flow> {
         self.ngroups += 1;
         let idx = self.ngroups;
+        self.open_groups.push(idx);
         if let Some(n) = name {
             if let Some(old) = self.groupindex.get(&n) {
                 return Err(re_error(
@@ -1084,6 +1090,14 @@ impl Parser {
     fn close_group(&mut self, idx: usize, body: &Node) {
         let w = width_of(body);
         self.group_widths[idx] = Some(w);
+        // Pop this group (and any inner stragglers from error paths).
+        while let Some(top) = self.open_groups.last() {
+            let t = *top;
+            self.open_groups.pop();
+            if t == idx {
+                break;
+            }
+        }
     }
 
     fn validate_lookbehind_ref(&self, idx: usize) -> Result<(), crate::Flow> {
@@ -1174,6 +1188,12 @@ impl Parser {
                     let n: usize = digits.parse().unwrap();
                     if n == 0 {
                         return Err(self.err(&format!("bad escape \\{}", digits), digits.len()));
+                    }
+                    // RF-6: a numeric ref to a group still OPEN at this point
+                    // is a compile error in CPython (e.g. ((b)\1)); error
+                    // position is the backslash.
+                    if self.open_groups.contains(&n) {
+                        return Err(self.err("cannot refer to an open group", digits.len() + 1));
                     }
                     self.pending_backrefs.push((n, self.pos - digits.len()));
                     Ok(if self.flags & F_IGNORECASE != 0 {
@@ -1333,6 +1353,7 @@ pub(crate) fn compile_pattern(pattern: &str, flags: u32) -> Result<Compiled, cra
         groupindex: HashMap::new(),
         group_widths: vec![None],
         lookbehind_depth: 0,
+        open_groups: Vec::new(),
         pat_is_str: is_str,
         pending_backrefs: Vec::new(),
     };
@@ -2588,7 +2609,14 @@ pub(crate) fn pat_findall(pat: &PatRc, text: &str) -> Result<Vec<Value>, crate::
         if c.groups == 0 {
             out.push(vs(chars[res.start..res.end].iter().collect::<String>()));
         } else if c.groups == 1 {
-            out.push(group_value(&mb, &vi(1))?);
+            // RF-4: a NON-PARTICIPATING group yields '' in findall, not None
+            // (CPython: re.findall('(a)|b', 'b') -> ['']).
+            let (s, _) = res.spans[1];
+            if s == usize::MAX {
+                out.push(vs(String::new()));
+            } else {
+                out.push(group_value(&mb, &vi(1))?);
+            }
         } else {
             let mut tup = Vec::new();
             for gi in 1..=c.groups {

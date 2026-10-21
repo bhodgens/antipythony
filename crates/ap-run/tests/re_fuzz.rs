@@ -178,7 +178,10 @@ fn eval_binary() -> PathBuf {
             return PathBuf::from(p);
         }
     }
-    workspace_root().join("target/debug/ap-run-eval")
+    match std::env::var("CARGO_TARGET_DIR") {
+        Ok(d) => std::path::Path::new(&d).join("debug/ap-run-eval"),
+        Err(_) => workspace_root().join("target/debug/ap-run-eval"),
+    }
 }
 
 fn seeds_path() -> PathBuf {

@@ -46,11 +46,15 @@ use std::process::Command;
 
 mod common;
 
-fn ap_run_eval() -> &'static str {
-    concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../target/debug/ap-run-eval"
-    )
+fn ap_run_eval() -> String {
+    match std::env::var("CARGO_TARGET_DIR") {
+        Ok(d) => std::path::Path::new(&d).join("debug/ap-run-eval"),
+        Err(_) => {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/ap-run-eval")
+        }
+    }
+    .to_string_lossy()
+    .into_owned()
 }
 
 fn write_case(tag: &str, src: &str) -> std::path::PathBuf {
