@@ -163,6 +163,7 @@ pub(crate) enum Anchor {
     BeginningLine, // ^ with M
     End,           // $
     EndLine,       // $ with M
+    AbsoluteEnd,   // \Z (end of string ONLY; $ also allows a trailing \n)
     Boundary,      // \b
     NonBoundary,   // \B
 }
@@ -601,8 +602,10 @@ impl Parser {
                 let lo_n: u32 = if lo.is_empty() {
                     0 // {,n} == {0,n}
                 } else {
+                    // CPython raises OverflowError (not re.error) when the
+                    // repetition number does not fit.
                     lo.parse()
-                        .map_err(|_| self.err("the repetition number is too large", lo.len()))?
+                        .map_err(|_| raise("OverflowError", "the repetition number is too large"))?
                 };
                 if lo_n >= 4294967295 {
                     return Err(raise("OverflowError", "the repetition number is too large"));
@@ -621,8 +624,9 @@ impl Parser {
                     hi_n = if hi.is_empty() {
                         u32::MAX
                     } else {
+                        // CPython raises OverflowError (not re.error).
                         let h: u32 = hi.parse().map_err(|_| {
-                            self.err("the repetition number is too large", hi.len())
+                            raise("OverflowError", "the repetition number is too large")
                         })?;
                         if h >= 4294967295 {
                             return Err(raise(
@@ -720,7 +724,7 @@ impl Parser {
                                 "unknown extension ?P{}",
                                 c2.map(|x| x.to_string()).unwrap_or_default()
                             ),
-                            2,
+                            3,
                         ));
                     }
                 }
@@ -782,7 +786,7 @@ impl Parser {
                         .bump()
                         .ok_or_else(|| self.err("unexpected end of pattern", 0))?;
                     if c2 != '=' && c2 != '!' {
-                        return Err(self.err(&format!("unknown extension ?<{}", c2), 2));
+                        return Err(self.err(&format!("unknown extension ?<{}", c2), 3));
                     }
                     self.lookbehind_depth += 1;
                     let body = self.parse_alternation()?;
@@ -804,7 +808,10 @@ impl Parser {
                 }
                 '(' => {
                     // conditional backreference group (?(1)y|n) / (?(name)y|n)
-                    let name = self.read_group_name(')')?;
+                    // Numeric refs are legal here (unlike (?P<name>) group
+                    // NAMES), so read the raw name and let the digit branch
+                    // below handle numbering.
+                    let name = self.read_name(')', false)?;
                     let group: usize = if name.chars().all(|c| c.is_ascii_digit()) {
                         let n: usize = name
                             .parse()
@@ -812,8 +819,26 @@ impl Parser {
                         if n == 0 {
                             return Err(self.err("bad group number", name.len() + 1));
                         }
+                        // CPython: a conditional group ref to a nonexistent
+                        // group is 'invalid group reference N at position P'
+                        // (P = the first digit). Deferred check against the
+                        // final group count (same machinery as \N refs).
+                        self.pending_backrefs.push((n, self.pos - name.len() - 1));
                         n
                     } else {
+                        // Non-numeric: must be a valid identifier, else
+                        // CPython reports "bad character in group name".
+                        let valid = name
+                            .chars()
+                            .next()
+                            .is_some_and(|c| c.is_alphabetic() || c == '_')
+                            && name.chars().all(|c| c.is_alphanumeric() || c == '_');
+                        if !valid {
+                            return Err(self.err(
+                                &format!("bad character in group name '{}'", name),
+                                name.len() + 1,
+                            ));
+                        }
                         *self.groupindex.get(&name).ok_or_else(|| {
                             self.err(&format!("unknown group name '{}'", name), name.len() + 1)
                         })?
@@ -849,7 +874,7 @@ impl Parser {
                     Ok(Node::AtomicGroup(Box::new(body)))
                 }
                 '-' | 'i' | 'm' | 's' | 'x' | 'a' | 'u' | 'L' => self.parse_inline_flags(c, start),
-                _ => Err(self.err(&format!("unknown extension ?{}", c), 1)),
+                _ => Err(self.err(&format!("unknown extension ?{}", c), 2)),
             }
         } else {
             let idx = self.open_group(None)?;
@@ -986,12 +1011,19 @@ impl Parser {
     }
 
     fn read_group_name(&mut self, term: char) -> Result<String, crate::Flow> {
+        self.read_name(term, true)
+    }
+
+    /// Shared name reader. `ident`: enforce Python-identifier charset
+    /// (group names only — \N{...} unicode names may contain spaces).
+    fn read_name(&mut self, term: char, ident: bool) -> Result<String, crate::Flow> {
+        let start = self.pos;
         let mut name = String::new();
         loop {
             match self.bump() {
                 None => {
                     if name.is_empty() {
-                        return Err(self.err(&format!("missing {}", term), 0));
+                        return Err(self.err("missing group name", 0));
                     }
                     return Err(
                         self.err(&format!("missing {}, unterminated name", term), name.len())
@@ -999,7 +1031,26 @@ impl Parser {
                 }
                 Some(c) if c == term => {
                     if name.is_empty() {
-                        return Err(self.err(&format!("missing {}", term), 1));
+                        return Err(self.err("missing group name", 1));
+                    }
+                    // CPython: group names must be valid Python identifiers
+                    // (sre_parse: "bad character in group name %a").
+                    if ident {
+                        let mut ok = name
+                            .chars()
+                            .next()
+                            .is_some_and(|c| c.is_alphabetic() || c == '_');
+                        if ok {
+                            ok = name.chars().all(|c| c.is_alphanumeric() || c == '_');
+                        }
+                        if !ok {
+                            let bad = self.pos - name.len() - 1;
+                            return Err(re_error(
+                                &format!("bad character in group name '{}'", name),
+                                &self.pat,
+                                bad.max(start.saturating_sub(1)),
+                            ));
+                        }
                     }
                     return Ok(name);
                 }
@@ -1056,7 +1107,7 @@ impl Parser {
             'b' => Ok(Node::At(Anchor::Boundary)),
             'B' => Ok(Node::At(Anchor::NonBoundary)),
             'A' => Ok(Node::At(Anchor::Beginning)),
-            'Z' => Ok(Node::At(Anchor::End)),
+            'Z' => Ok(Node::At(Anchor::AbsoluteEnd)),
             'a' => Ok(lit(0x07, &self.flags)),
             't' => Ok(lit(0x09, &self.flags)),
             'n' => Ok(lit(0x0a, &self.flags)),
@@ -1081,10 +1132,10 @@ impl Parser {
                 if !self.eat('{') {
                     return Err(self.err("missing {", 0));
                 }
-                let name = self.read_group_name('}')?;
+                let name = self.read_name('}', false)?;
                 let c = unicodedata_lookup(&name).ok_or_else(|| {
                     self.err(
-                        &format!("undefined character name {:?}", name),
+                        &format!("undefined character name '{}'", name),
                         name.len() + 4,
                     )
                 })?;
@@ -1093,11 +1144,14 @@ impl Parser {
             'N' => Err(self.err(&format!("bad escape \\{}", e), 2)),
             _ if e.is_ascii_alphabetic() => Err(self.err(&format!("bad escape \\{}", e), 2)),
             '0'..='9' => {
-                // octal or backref
+                // octal or backref. CPython (sre_parse): leading '0' means
+                // octal (up to 3 digits); otherwise a group reference takes
+                // AT MOST 2 digits and errors at the first digit's position.
+                let max_digits = if e == '0' { 3 } else { 2 };
                 let mut digits = String::new();
                 digits.push(e);
                 while let Some(d) = self.peek() {
-                    if d.is_ascii_digit() && digits.len() < 3 {
+                    if d.is_ascii_digit() && digits.len() < max_digits {
                         digits.push(d);
                         self.pos += 1;
                     } else {
@@ -1116,12 +1170,12 @@ impl Parser {
                     }
                     Ok(lit(v, &self.flags))
                 } else {
-                    // backreference
+                    // backreference (1-2 digits, both fit usize trivially)
                     let n: usize = digits.parse().unwrap();
                     if n == 0 {
                         return Err(self.err(&format!("bad escape \\{}", digits), digits.len()));
                     }
-                    self.pending_backrefs.push((n, self.pos - digits.len() - 1));
+                    self.pending_backrefs.push((n, self.pos - digits.len()));
                     Ok(if self.flags & F_IGNORECASE != 0 {
                         Node::BackrefIgnore(n)
                     } else {
@@ -1831,6 +1885,9 @@ impl<'a> Matcher<'a> {
                         && self.text[pos] == '\n')
             }
             Anchor::EndLine => pos == self.text.len() || self.text[pos] == '\n',
+            // \Z: absolute end of string only (CPython: unlike $, a trailing
+            // newline does NOT satisfy \Z).
+            Anchor::AbsoluteEnd => pos == self.text.len(),
             Anchor::Boundary | Anchor::NonBoundary => {
                 let before = pos > 0 && self.is_word(self.text[pos - 1]);
                 let after = pos < self.text.len() && self.is_word(self.text[pos]);
@@ -2112,8 +2169,10 @@ pub(crate) fn pat_exec(
             // The engine returns leftmost-first; CPython fullmatch is
             // "the whole string must match", which the engine's first
             // match may not satisfy even though a later backtrack would.
-            // Re-run with an appended End anchor.
-            let wrapped = Node::Seq(vec![c.root.clone(), Node::At(Anchor::End)]);
+            // Re-run with an appended absolute-end anchor (\Z semantics:
+            // fullmatch must span the WHOLE string; $ would wrongly allow a
+            // trailing newline).
+            let wrapped = Node::Seq(vec![c.root.clone(), Node::At(Anchor::AbsoluteEnd)]);
             let mut m2 = Matcher {
                 text: &chars[..end],
                 flags: c.flags,

@@ -474,10 +474,11 @@ pub fn subclasses_of(interp: &Interpreter, name: &str) -> Vec<Value> {
     let mut out: Vec<Value> = EXC_TREE
         .iter()
         .filter(|(_, p)| *p == Some(name))
-        // PatternError (re.error) is defined IN the re module in CPython —
-        // invisible to the builtin Exception.__subclasses__ pin (e002) even
-        // though issubclass(re.error, Exception) holds (s011).
-        .filter(|(n, _)| *n != "PatternError")
+        // PatternError (re.error) IS visible in Exception.__subclasses__():
+        // CPython loads `re` (via enum) at startup, so the class exists by
+        // the time any user code runs; the e002/e014 pins (regenerated from
+        // live 3.14.7) include it. An earlier filter excluded it on the
+        // wrong premise that module-defined classes stay invisible.
         .filter_map(|(n, _)| table.get(*n).cloned())
         .collect();
     // ExceptionGroup ALSO derives Exception (dual bases).

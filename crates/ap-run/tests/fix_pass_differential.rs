@@ -23,10 +23,18 @@ use std::process::Command;
 mod common;
 
 fn ap_run_eval() -> &'static str {
-    concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../target/debug/ap-run-eval"
-    )
+    ap_run_eval_dyn().leak()
+}
+
+fn ap_run_eval_dyn() -> String {
+    match std::env::var("CARGO_TARGET_DIR") {
+        Ok(d) => std::path::Path::new(&d).join("debug/ap-run-eval"),
+        Err(_) => {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/ap-run-eval")
+        }
+    }
+    .to_string_lossy()
+    .into_owned()
 }
 
 /// Run `src` under both interpreters; assert identical stdout + exit code 0.
