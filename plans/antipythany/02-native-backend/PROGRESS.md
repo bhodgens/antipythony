@@ -852,3 +852,13 @@
 - 20 interpreter fixes already landed in the attempt (typing works,
   twisted top-level imports, module-level decorated defs, lru_cache(N),
   PEP 560 __class_getitem__, __init_subclass__ everywhere).
+
+## T1 FINAL FIX - DISPATCHED (deleg_3ecfae01)
+- Verified remaining blocker: dotted-submodule resolution under a NATIVE
+  parent. `import importlib` (native) OK, but importlib.resources ->
+  ModuleNotFoundError even though vendored_stdlib/importlib/resources/
+  exists. Native modules lack __path__ into their vendored dirs.
+- Fix: native modules with vendored_stdlib/<name>/ get __path__ pointing
+  there so the file finder resolves dotted children.
+- THEN the armed T1 gate: unittest/resources/exec probes, import scrapy,
+  spider crawl, items.jsonl cmp vs /tmp/t1/ref golden.
