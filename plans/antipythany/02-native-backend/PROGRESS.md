@@ -862,3 +862,10 @@
   there so the file finder resolves dotted children.
 - THEN the armed T1 gate: unittest/resources/exec probes, import scrapy,
   spider crawl, items.jsonl cmp vs /tmp/t1/ref golden.
+
+## T1 root cause PINNED (orchestrator probes): runtime sys.path mutations
+- sys.path.insert/append in user code is invisible to the importer
+  (bootstrap snapshot); scrapy staged in cache site-packages unreachable.
+- SURGICAL FIX DISPATCHED (deleg_12a4960d): importer reads the LIVE sys
+  module path list per import; bootstrap defaults seed it.
+- Note: importlib.resources.files already works via native __path__ fix.
