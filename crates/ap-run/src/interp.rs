@@ -4509,7 +4509,21 @@ fn register_iter(interp: &Rc<Interpreter>, v: &Value) -> Result<u64, Flow> {
     let it = iterable_of(v)?;
     let id = interp.next_iter_id.get();
     interp.next_iter_id.set(id + 2); // even ids only (gen ids are odd)
-    interp.iterators.borrow_mut().insert(id, it);
+    // 02.07 race fix (wave-4 audit): a worker parked inside pull_iter's
+    // it.next() holds a READ borrow of interp.iterators across the park
+    // (GIL released while parked). The main thread reaching register_iter
+    // then panics 'RefCell already borrowed' on the unconditional
+    // borrow_mut (T102-lock-shared-list aborts rc=134 ~1-in-8 runs).
+    // Mirror pull_iter's contended-borrow retry discipline.
+    loop {
+        match interp.iterators.try_borrow_mut() {
+            Ok(mut its) => {
+                its.insert(id, it);
+                break;
+            }
+            Err(_) => std::thread::sleep(std::time::Duration::from_micros(50)),
+        }
+    }
     Ok(id)
 }
 
