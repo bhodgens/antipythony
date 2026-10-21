@@ -6,6 +6,18 @@ Tracing GC instead of refcounting. No GIL. uv-based dependency resolution at bui
 time. Byte-exact differential conformance against CPython is the exit gate for every
 phase.
 
+## Design intent (owner statement, 2026-10-20)
+
+The intent is not merely to REMOVE the GIL but to replace it with something
+better, in the direction of Go's runtime: real parallel execution (multiple
+cores scaling for CPU-bound Python code), improved memory behavior over
+CPython's uniformly-boxed object model (inline unboxed scalars at tier-0 -
+shipped; typed/unboxed regions at tier-1), and performance above CPython.
+GIL v1 (02.07) is an INTERIM correctness stage, NOT the end state: the
+no-GIL swap is gated by leaf 02.09 (below) with the T121 >=3x scaling test
+as a GREEN gate, not an expected-red note. Do not treat "pairs with tier-1
+later" as license for the no-GIL goal to slip silently.
+
 ## Locked decisions (do not re-litigate in leaves)
 
 | Decision | Value |

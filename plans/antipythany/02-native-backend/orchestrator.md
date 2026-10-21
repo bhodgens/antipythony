@@ -85,6 +85,44 @@ module: port from CPython's pure-Python source where possible (PSF license - add
 notices) or native Rust impl citing clauses. Expose: module registry.
 Gate: ap-conform stdlib slice green in tier-0 AND adaptive AND binary modes.
 
+### 02.09 - No-GIL swap (GIL v1 removal) [GATED LEAF]
+THE gate for the master.md "Design intent" section: replace 02.07's interim
+global lock with real parallel execution.
+Design shape (from 02.07's own audit list + gc-mmtk-swap doc):
+- Object-state audit across ap-obj: every RefCell interior-mutable surface
+  (PyList.items, PyDict.state, class dicts, attribute stores) becomes either
+  (a) thread-confined by ownership analysis, or (b) an atomic/sync wrapper.
+  Send/Sync discipline documented per type (02.07 started this list).
+- GC: per-thread nursery/heap or shared heap with precise root maps +
+  safepoint protocol that does not serialize execution (pairs with 02.05
+  Cranelift user stack maps; the conservative-scan fallback keeps tier-0
+  parallel but slower - acceptable for the first flip).
+- GIL v1 (threading.rs) removed at the executor level; retained ONLY as an
+  opt-in compatibility mode flag until T121 is green, then deleted.
+- Memory intent rider: introduce unboxed/typed container storage where
+  observable behavior is unchanged (list-of-Smi as raw i64 array behind the
+  Value facade) - the tier-0 half of the compact-layout intent; tier-1 typed
+  regions (pon study) continue it.
+Expose: ap_run::run with no global execution lock; threading module unchanged
+Python-visible surface.
+Gate: corpus threading slice green (T120/T122 order-independent bytes still
+pass) AND **T121 scaling >= 3x on 4 cores GREEN (no longer expected-red)**
+AND full conformance corpus green with the lock removed AND gc slice green
+(parallel mutator + collector contention aborts preserved).
+Split note: if a 256K leaf overruns, split at (audit+wrappers) vs (GC roots)
+vs (unboxed storage) - three sub-leaves, same gate.
+
+### 02.10 - Go-style runtime scheduler (STRETCH)
+Not in v1 critical path; do not block 02.09 or Plan 03.
+Scope: work-stealing runtime scheduler multiplexing Python tasks (asyncio
+loop + threading bridge) onto N OS threads; cheap task primitive
+(GC-safe continuation or stackful green thread - implementer choice, cite
+tradeoff vs ap-run generator frame design); preemption at safepoints only.
+Gate: asyncio + threading corpus slices green under the scheduler; spawn
+10k tasks case completes with bounded memory; scaling case from 02.09 stays
+green. Research leaf first (design note in docs/), implementation only after
+02.09 lands.
+
 ## Dependencies
 01 complete (IR stable enough to execute). Spec pack sections cited throughout.
 
@@ -93,3 +131,10 @@ Gate: ap-conform stdlib slice green in tier-0 AND adaptive AND binary modes.
 02.05 -> 02.06, 02.07/02.08 parallel at the end. This is the largest plan; if a leaf
 overruns 256K context, split it along its named expose/gate boundary rather than
 widening the leaf.
+02.09 (no-GIL swap) is dispatchable INDEPENDENT of 02.05/02.06 - its tier-1
+root-map pairing is an optimization, not a precondition (conservative-scan
+fallback documented). Sequence it as soon as the T1 scrapy attempt settles
+file ownership in ap-run; do not let "after tier-1" prose re-gate it - the
+master.md Design intent section makes the >=3x scaling gate a v1-exit
+expectation. 02.10 research leaf may start any time; implementation only
+after 02.09.

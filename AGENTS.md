@@ -46,8 +46,10 @@ GIL, uv-backed deps at build time. Byte-exact differential conformance vs CPytho
   native modules, method surfaces) ALL COMMITTED.
 - unittest/pathlib/enum/weakref IMPORTS ALL WORK (vendored stdlib chain).
 - BUGHUNT 2026-10-17: 7 fixes landed; report in .hermes/audits/.
-- PLAN 02 REMAINING: 02.05 tier-1 (split per risks) + 02.06 AoT + 02.07
-  threading + 02.08-full p2 (re engine, complex, deep method surface).
+- PLAN 02 REMAINING: 02.05 tier-1 (split per risks) + 02.06 AoT + 02.08
+  method surfaces + 02.09 no-GIL swap (NEW gated leaf - T121 >=3x scaling
+  is its GREEN gate per master.md Design intent; dispatchable independent
+  of 02.05/06) + 02.10 Go-style scheduler (stretch, research-only for now).
 - ROBUSTNESS-CI CAMPAIGN: plan tree at `plans/robustness-ci/` (master.md +
   7 branches, 24 leaves) implements ALL findings of
   .hermes/audits/robustness-review-2026-10-19.md (CI core, test integrity,
