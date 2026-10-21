@@ -1181,6 +1181,25 @@ fn build__warnings(_i: &crate::frame::Interpreter) -> Value {
     }
     ns_const(&ns, "_defaultaction", s("default"));
     ns_const(&ns, "_filters_version", i(1));
+    // T1 (typing_extensions): warnings.py's `from _warnings import (...)`
+    // list includes _acquire_lock / _release_lock / _warnings_context —
+    // ImportError there sets _warnings_defaults=False and the _setup_defaults
+    // fallback then blows up on _wm=None during every later import.
+    for n in ["_acquire_lock", "_release_lock", "_warnings_context"] {
+        fn1(&ns, "_warnings", n);
+    }
+    fn1(&ns, "_warnings", "_filters_mutated_lock_held");
+    ns_const(
+        &ns,
+        "_filters",
+        Value::List(ap_obj::value::PyList::from_vec(vec![])),
+    );
+    // warnings.py imports `filters` (no underscore) from _warnings.
+    ns_const(
+        &ns,
+        "filters",
+        Value::List(ap_obj::value::PyList::from_vec(vec![])),
+    );
     finish(m, ns)
 }
 
@@ -4150,6 +4169,27 @@ pub fn call_functools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
             // Two-stage forms (`@lru_cache(...)`) park the decorator in an
             // opaque token; the second call (call_native path) unwraps it.
             "lru_cache" | "cache" | "singledispatch" | "cached_property" | "wraps" => {
+                // T1: singledispatch gets a REAL registry — `register(cls)`
+                // must return a working decorator and the dispatcher must
+                // route calls to the registered impl for exact type matches
+                // (importlib.resources._common as_file/register(pathlib.Path)).
+                if name == "singledispatch" {
+                    if let Some(f @ Value::Obj(fo)) = args.first() {
+                        if fo.kind == ap_obj::ObjKind::Function {
+                            let o =
+                                PyObject::new(ap_obj::ObjKind::Opaque, "functools._sd_registry");
+                            {
+                                let mut a = o.attrs.borrow_mut();
+                                let _ = a.set(s("<default>"), f.clone());
+                                let _ =
+                                    a.set(s("<impls>"), Value::Dict(ap_obj::dict::PyDict::new()));
+                            }
+                            *o.repr_text.borrow_mut() =
+                                Some("<functools.singledispatch object>".to_string());
+                            return Ok(Value::Obj(o));
+                        }
+                    }
+                }
                 // Direct single-stage application (@-style with the callable
                 // in hand): attach inert cache surfaces and return it. The
                 // two-stage form returns the pass-through decorator token
@@ -8301,6 +8341,12 @@ pub fn call_native(
                 "_defaultaction" | "_filters" | "_onceregistry" | "_filters_version" => {
                     Ok(Value::None)
                 }
+                // T1: the from-import list in warnings.py includes these —
+                // inert stubs keep _warnings_defaults=True.
+                "_acquire_lock"
+                | "_release_lock"
+                | "_warnings_context"
+                | "_filters_mutated_lock_held" => Ok(Value::None),
                 _ => Err(raise(
                     "AttributeError",
                     format!("module '_warnings' has no attribute '{}'", fname),

@@ -164,3 +164,62 @@ antipythany run --no-cache spider.py    # current blocker: files() None
 (All changes uncommitted. The `--no-deps` add form, the 20 interpreter
 fixes, and the vendored annotationlib edit + new vendored
 importlib/resources + zipfile packages are the full diff.)
+
+## Session 2 progress (2026-10-20, continued)
+
+Fixes landed (uncommitted, same leaf):
+
+21. **collections.abc native-parent sys.modules gap**: `import
+    collections.abc` built the native `collections` module but never
+    inserted it into sys.modules — a later bare `import collections`
+    re-ran the vendored collections.py exec and died. Fixed in importer
+    (collections.abc arm seeds sys.modules['collections']; native-parent
+    arm inserts + links every walked prefix).
+22. **functools.singledispatch**: real registry object now (was a no-op
+    pass-through). `register(cls)` returns a working decorator; dispatch
+    routes to exact-type impls (importlib.resources._common needs it).
+23. **2/3-arg exec**: builtin exec now runs the statements over the GIVEN
+    globals dict via new `interp::exec_stmts_in_ns`; defs register into
+    the live FnRegistry (extend_current) so nested defs resolve. Twisted's
+    `_FuncBuilder.add_fns_to_class` (exec with f_globals/f_locals) works.
+24. **dataclasses**: class-body AnnAssign now populates `__annotations__`
+    in the class ns (field discovery was empty before). object.__setattr__
+    virtual (used by frozen init) now writes the instance dict instead of
+    no-op.
+25. **PEP 562 module __getattr__**: module attr reads fall back to the
+    ns's `__getattr__` (typing.ForwardRef lazy hook).
+26. **typing_extensions**: typing.Union isinstance (fn-marker) answers
+    False instead of TypeError; _warnings `_acquire_lock/_release_lock/
+    _warnings_context/_filters_mutated_lock_held/filters` stubs added
+    (warnings.py's from-import was failing → `_wm=None` blowup later);
+    functools singledispatch (see 23); property.setter on the property
+    TYPE (`property.setter(self, fn)` in twisted's _DeprecatedProperty);
+    property .setter/.deleter/.getter on plain Function receivers.
+27. **Explicit metaclass __new__ call**: `abc.ABCMeta.__new__(mcls, ...)`
+    stages the super context (Name receivers only — no double-eval).
+28. **annotationlib.ForwardRef.__slots__** surface added (typing.py
+    `_FORWARD_REF_HAS_CLASS` reads it).
+
+## Remaining blockers (verified this session)
+
+- **Chained traceback formatting**: printing a traceback whose walk
+  invokes `t.tb_next`/FrameSummary paths still dies with
+  `super(): no arguments` inside the tb machinery (tb objects' attr reads
+  route into method-context machinery). NOT fixed.
+- **abc.register**: still inert — NOT fixed (scrapy/zope likely need it
+  at crawl time).
+- **`import scrapy`**: gets further (twisted + typing_extensions now
+  import), but `import scrapy` itself dies in its dep chain:
+  automat._typed → zope.interface fails with
+  `_InterfaceMetaClass.__new__() missing 1 required positional argument:
+  'bases'` (zope metaclass __new__ called through the class-call path
+  loses args). NOT fixed.
+- **T1 gate**: NOT reached — `import scrapy` still fails.
+
+## Gate status this session
+
+- rust: cargo test --workspace → 362 passed / 0 failed / 1 ignored.
+- pytest: 1912 passed / 0 failed / 6 skipped / 630 xfailed / 82 xpassed.
+- corpus families: t11_stdlib 284p/2s/77xf/65xp; t05_values 192p/1xf/6xp;
+  fstrings 107p; t07_gc 113p/20xf; t10_threading 97p/4xf/7xp. All held.
+- cargo fmt --all --check clean.

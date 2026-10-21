@@ -37,6 +37,13 @@ use crate::{builtins, builtins_modules, Flow};
 
 type EResult = Result<Value, Flow>;
 
+// T1 probe: temporary import-path tracing (set AP_IMPORT_TRACE=1).
+pub(crate) fn ap_trace(msg: impl std::fmt::Display) {
+    if std::env::var_os("AP_IMPORT_TRACE").is_some() {
+        eprintln!("[ap-import] {msg}");
+    }
+}
+
 fn raise(class: &str, msg: impl Into<String>) -> Flow {
     Flow::Raise(ExceptionValue::msg(class, msg.into()))
 }
@@ -481,7 +488,8 @@ thread_local! {
         std::cell::RefCell::new(std::cell::Cell::new(false));
 }
 
-fn import_module_inner(interp: &Rc<Interpreter>, name: &str) -> EResult {
+pub fn import_module_inner(interp: &Rc<Interpreter>, name: &str) -> EResult {
+    ap_trace(format!("import_module_inner({name})"));
     // 1. sys.modules cache.
     if let Some(m) = sys_modules_get(name) {
         link_parent_attr(name, &m);
@@ -511,6 +519,14 @@ fn import_module_inner(interp: &Rc<Interpreter>, name: &str) -> EResult {
     // native-parent descent returns an empty module and typing's
     // Hashable/Mapping probes die.
     if name == "collections.abc" {
+        // T1: the parent `collections` must be importable + bound first
+        // (CPython walks packages; `import collections.abc` makes a later
+        // bare `import collections` a sys.modules hit and binds the top pkg).
+        if sys_modules_get("collections").is_none() {
+            if let Some(m) = builtins_modules::get_or_make_module(interp, "collections") {
+                sys_modules_insert("collections", &m);
+            }
+        }
         for base in sys_path_entries() {
             let f = std::path::Path::new(&base).join("_collections_abc.py");
             if f.is_file() {
@@ -544,9 +560,16 @@ fn import_module_inner(interp: &Rc<Interpreter>, name: &str) -> EResult {
     // vendored dir), so `import importlib.resources` resolves the vendored
     // subpackage instead of the native-parent early return.
     if name.contains('.') {
-        if let Ok(m) = import_file_module(interp, name) {
-            sys_modules_insert(name, &m);
-            return Ok(m);
+        match import_file_module(interp, name) {
+            Ok(m) => {
+                ap_trace(format!("dotted {name}: file finder OK"));
+                sys_modules_insert(name, &m);
+                return Ok(m);
+            }
+            Err(f) => {
+                ap_trace(format!("dotted {name}: file finder FAILED (flow raised)"));
+                return Err(f);
+            }
         }
     }
     if let Some(m) = builtins_modules::get_or_make_module(interp, name) {
@@ -585,6 +608,7 @@ fn import_module_inner(interp: &Rc<Interpreter>, name: &str) -> EResult {
 }
 
 fn import_file_module(interp: &Rc<Interpreter>, name: &str) -> EResult {
+    ap_trace(format!("import_file_module({name})"));
     // --- robustness-ci leaf 02.02: module-name path-segment guard ----------
     // (review finding #16). No unsafe segment ('', '.', '..', or one
     // containing '/' or '\') may reach a sys.path join in find_on_path /
@@ -664,7 +688,13 @@ fn import_file_module(interp: &Rc<Interpreter>, name: &str) -> EResult {
         // resolved natively (no __path__) — delegate the whole remainder.
         if parent_dir.is_none() && !prefix.is_empty() {
             if let Some(m) = builtins_modules::get_or_make_module(interp, &full) {
+                // T1: CPython puts EVERY walked prefix in sys.modules
+                // (import collections.abc makes 'collections' importable and
+                // binds the top package). Without this a later bare
+                // `import collections` re-runs the vendored collections.py
+                // exec and dies on native-only surfaces.
                 sys_modules_insert(&full, &m);
+                link_parent_attr(&full, &m);
                 continue;
             }
         }
@@ -739,6 +769,7 @@ fn import_file_module(interp: &Rc<Interpreter>, name: &str) -> EResult {
         };
         exec_found(interp, &full, &found)?;
         let m = sys_modules_get(&full).expect("exec_found inserted");
+        ap_trace(format!("walk: exec {full} OK"));
         // CPython: the submodule becomes an attribute of the parent package
         // (import a.b makes a.b reachable as a.b after `import a.b`).
         if let (Some((parent_name, child_name)), Value::Obj(po)) = (full.rsplit_once('.'), &m) {

@@ -1602,6 +1602,23 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
                 if matches!(t, Value::Obj(o) if o.kind == ap_obj::ObjKind::Type) {
                     return Ok(false);
                 }
+                // T1 (dataclasses): typing.Union / special-form fn-MARKERS —
+                // isinstance is False (v0 tolerance; CPython answers via the
+                // metaclass __instancecheck__ the vendored typing lacks).
+                let sf_marker = match t {
+                    Value::Obj(o) => {
+                        matches!(
+                            o.kind,
+                            ap_obj::ObjKind::BuiltinFn | ap_obj::ObjKind::Function
+                        ) && (o.name == "Union"
+                            || o.name == "_typing.Union"
+                            || o.name.starts_with("__ap_typing_"))
+                    }
+                    _ => false,
+                };
+                if sf_marker {
+                    return Ok(false);
+                }
                 return Err(raise(
                     "TypeError",
                     "isinstance() arg 2 must be a type, a tuple of types, or a union",

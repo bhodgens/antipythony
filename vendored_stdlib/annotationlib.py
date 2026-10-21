@@ -24,6 +24,13 @@ class Format(enum.IntEnum):
 class ForwardRef:
     """Stub forward reference: v0 keeps the raw text only."""
 
+    # T1 (typing_extensions): `__forward_is_class__ in ForwardRef.__slots__`
+    # (typing.py line 161) reads this — the CPython class declares
+    # __slots__ with these names; v0 mirrors the surface.
+    __slots__ = ("__forward_arg__", "__forward_module__", "__forward_is_class__",
+                 "__forward_value__", "__forward_evaluated__", "__owner__",
+                 "__cell__")
+
     __forward__names__ = ()
 
     def __init__(self, arg, *, module=None, owner=None, is_class=False):

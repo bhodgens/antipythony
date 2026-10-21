@@ -748,6 +748,18 @@ fn check_isinstance(v: &Value, t: &Value) -> Result<Value, Flow> {
         // Constructor builtins (int/float/str/...) double as type objects in
         // the v0 namespace; isinstance accepts them.
         Value::Obj(o) if o.kind == ap_obj::ObjKind::BuiltinFn => {
+            // T1 (dataclasses): typing.Union is a fn-MARKER (v0) — isinstance
+            // against a special form is False, not a TypeError (CPython does
+            // a metaclass __instancecheck__; v0 tolerance, documented).
+            if matches!(
+                o.kind,
+                ap_obj::ObjKind::BuiltinFn | ap_obj::ObjKind::Function
+            ) && (o.name == "Union"
+                || o.name == "_typing.Union"
+                || o.name.starts_with("__ap_typing_"))
+            {
+                return Ok(Value::Bool(false));
+            }
             Ok(Value::Bool(type_matches(v, &o.name)))
         }
         _ => Err(raise(
@@ -3275,20 +3287,86 @@ pub fn builtin_exec(interp: &Interpreter, args: &[Value]) -> crate::EvalResult {
         }
         None => return Err(raise("TypeError", "exec expected at least 1 argument")),
     };
-    if args.len() > 1 {
-        // six passes None (current globals). An explicit globals dict is a
-        // documented v0 gap: fail loud rather than silently misplace defs.
-        if !matches!(args.get(1), Some(Value::None) | None) {
-            return Err(raise(
-                "NotImplementedError",
-                "ap: exec with explicit globals/locals unsupported (v0)",
-            ));
+    // T1: explicit globals/locals (twisted reactor: `exec(code, f_globals,
+    // f_locals)`). Run the statements in a frame over the GIVEN globals dict;
+    // when locals is given and is a dict, mirror the writes into it (v0
+    // approximation preserving twisted's def-binding reads). None = current
+    // globals (six.py form, unchanged).
+    let explicit: Option<(Gc<PyDict>, Option<Gc<PyDict>>)> = if args.len() > 1 {
+        match args.get(1) {
+            Some(Value::None) | None => None,
+            Some(Value::Dict(g)) => {
+                let loc = match args.get(2) {
+                    Some(Value::None) | None => None,
+                    Some(Value::Dict(l)) => Some(l.clone()),
+                    Some(other) => {
+                        return Err(raise(
+                            "TypeError",
+                            format!("exec() globals must be a dict, not {}", other.type_name()),
+                        ))
+                    }
+                };
+                Some((g.clone(), loc))
+            }
+            Some(other) => {
+                return Err(raise(
+                    "TypeError",
+                    format!("exec() globals must be a dict, not {}", other.type_name()),
+                ))
+            }
         }
-    }
+    } else {
+        None
+    };
     let parsed =
         ap_parse::parse(&src).map_err(|e| raise("SyntaxError", format!("{}", e.message)))?;
     let (module, _scopes) =
         ap_parse::lower(&parsed).map_err(|e| raise("SyntaxError", format!("{e}")))?;
+    if let Some((globals, locals)) = explicit {
+        // T1: register the exec'd defs into the LIVE registry (extend_current)
+        // so the fn objects resolve their bodies at call time, then bind the
+        // function objects into the GIVEN globals dict. Decorated defs defer
+        // to source position (module_stmts shape).
+        let items = &module.items;
+        let has_plain_defs = items
+            .iter()
+            .any(|it| matches!(it, ap_ir::Item::FnDef(f) if f.decorators.is_empty()));
+        let scope_src = src.clone();
+        let mut stmts: Vec<ap_ir::Stmt> = Vec::new();
+        for it in items.iter() {
+            match it {
+                ap_ir::Item::Stmt(st) => stmts.push(st.clone()),
+                ap_ir::Item::FnDef(f) if !f.decorators.is_empty() => {
+                    stmts.push(ap_ir::Stmt::LocalDef(Box::new(f.clone())));
+                }
+                ap_ir::Item::FnDef(_) => {} // registered via extend_current
+                ap_ir::Item::ClassDef(c) => {
+                    stmts.push(ap_ir::Stmt::LocalClass(Box::new(c.clone())))
+                }
+            }
+        }
+        let rc_interp = interp.rc();
+        if has_plain_defs {
+            // Re-lower a private copy for registration (lower consumes the
+            // parsed module in the first call; extend needs the FnDefs).
+            let parsed2 = ap_parse::parse(&scope_src)
+                .map_err(|e| raise("SyntaxError", format!("{}", e.message)))?;
+            let (module2, scopes2) =
+                ap_parse::lower(&parsed2).map_err(|e| raise("SyntaxError", format!("{e}")))?;
+            let _ = module2;
+            crate::interp::FnRegistry::extend_current(&rc_interp, items, scopes2, globals.clone());
+            // Bind the function objects into the exec globals dict.
+            let reg = crate::interp::interp_registry(&rc_interp);
+            for it in items.iter() {
+                if let ap_ir::Item::FnDef(f) = it {
+                    let id = reg.by_path_lookup(&f.name).unwrap_or(0);
+                    let func = make_function(id, &f.name);
+                    let _ = globals.set(Value::Str(PyString::new(f.name.clone())), func);
+                }
+            }
+        }
+        return crate::interp::exec_stmts_in_ns(&rc_interp, &stmts, globals, locals);
+    }
     let stmts: Vec<ap_ir::Stmt> = module
         .items
         .into_iter()

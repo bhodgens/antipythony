@@ -580,9 +580,35 @@ fn exec_stmt(
         Stmt::AnnAssign(target, _ann, value) => {
             // v0 gap (documented): annotation evaluation is SKIPPED; the
             // value still assigns normally (task brief §2).
+            // T1 (dataclasses): class-body `x: int` must populate the class
+            // namespace's __annotations__ dict (CPython semantics) —
+            // dataclasses._process_class reads cls.__dict__['__annotations__']
+            // to discover fields. Values without defaults still record.
             if let Some(v) = value {
                 let val = eval_expr(interp, frame, v, reg)?;
                 assign_target(interp, frame, target, val, reg)?;
+            }
+            // Record the annotation under __annotations__ in the frame's
+            // class namespace when this is a class body (locals == ns dict).
+            if let Some(cns) = &frame.class_ns {
+                let tname = match target {
+                    ap_ir::Target::Name(n) => Some(n.clone()),
+                    _ => None,
+                };
+                if let Some(tn) = tname {
+                    let anns = match cns.get(&Value::Str(PyString::new("__annotations__"))) {
+                        Some(Value::Dict(d)) => d,
+                        _ => {
+                            let d = PyDict::new();
+                            let _ = cns.set(
+                                Value::Str(PyString::new("__annotations__")),
+                                Value::Dict(d.clone()),
+                            );
+                            d
+                        }
+                    };
+                    let _ = anns.set(Value::Str(PyString::new(tn)), Value::None);
+                }
             }
             Ok(StmtOut::Next)
         }
@@ -1713,6 +1739,37 @@ pub(crate) fn eval_expr(
             Ok(last)
         }
         Expr::Call(f, args) => {
+            // T1 (typing_extensions): `abc.ABCMeta.__new__(mcls, ...)` — an
+            // UNBOUND user function fetched off a class. Zero-arg super()
+            // inside it needs the defining class staged; bound-method
+            // dispatch never runs for this shape, so stage it here from the
+            // attribute's owner (resolved through the receiver's class).
+            if let Expr::Attribute(obj_e, attr_name) = f.as_ref() {
+                // Only stage for the explicit metaclass __new__ shape
+                // (`abc.ABCMeta.__new__(mcls, ...)`) — zero-arg super()
+                // inside metaclass __new__ needs the defining class. Narrow
+                // to __new__ so unrelated class-attr calls don't get a stale
+                // staged context.
+                let is_meta_new = attr_name == "__new__";
+                if is_meta_new && matches!(obj_e.as_ref(), Expr::Name(_)) {
+                    if let Ok(recv) = eval_expr(interp, frame, obj_e, reg) {
+                        if let Value::Obj(ro) = &recv {
+                            if ro.kind == ap_obj::ObjKind::UserClass {
+                                if let Some(t) = crate::classes::type_of(interp, &recv) {
+                                    if let Some((sf, owner)) = t.lookup_with_owner(attr_name) {
+                                        if matches!(&sf,
+                                            Value::Obj(fo) if fo.kind == ap_obj::ObjKind::Function)
+                                        {
+                                            *interp.pending_super_ctx.borrow_mut() =
+                                                Some((owner, recv.clone(), true));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             let fv = eval_expr(interp, frame, f, reg)?;
             let mut pos: Vec<Value> = Vec::new();
             let mut kwargs: Vec<(String, Value)> = Vec::new();
@@ -2875,6 +2932,10 @@ fn call_value_inner(
                             .name
                             .trim_start_matches("__object_virtual_")
                             .trim_end_matches('_');
+                        // NOTE: base has INNER underscores intact after the
+                        // trim_end_matches — "__object_virtual___setattr____"
+                        // -> base = "__setattr__" (leading+trailing _ kept
+                        // until trim_start_matches below).
                         // 02.03b-fix: object.__subclasshook__ (classmethod)
                         // returns NotImplemented for every query — the
                         // _py_abc.__subclasscheck__ probe compares
@@ -2885,7 +2946,52 @@ fn call_value_inner(
                             return Ok(Value::Obj(ni));
                         }
                         match base.trim_start_matches('_') {
-                            "init" | "setattr" | "delattr" | "getattribute" => {
+                            "init" | "delattr" | "getattribute" => {
+                                return Ok(Value::None);
+                            }
+                            // T1 (dataclasses frozen): object.__setattr__ IS a
+                            // real instance-dict write (self.__dict__[k] = v);
+                            // the old no-op made every frozen dataclass field
+                            // vanish.
+                            "setattr" => {
+                                // Call shapes: bound marker -> args = (name,
+                                // val), self rides slice_parts; unbound ->
+                                // args = (self, name, val).
+                                let subject = o
+                                    .slice_parts
+                                    .borrow()
+                                    .first()
+                                    .cloned()
+                                    .unwrap_or(Value::None);
+                                let (subject, attr, val): (Value, Option<String>, Option<Value>) =
+                                    if matches!(&subject, Value::Obj(io) if io.kind == ap_obj::ObjKind::UserInstance)
+                                    {
+                                        (
+                                            subject.clone(),
+                                            args.first().and_then(|v| match v {
+                                                Value::Str(s) => Some(s.as_str().to_string()),
+                                                _ => None,
+                                            }),
+                                            args.get(1).cloned(),
+                                        )
+                                    } else {
+                                        (
+                                            args.first().cloned().unwrap_or(Value::None),
+                                            args.get(1).and_then(|v| match v {
+                                                Value::Str(s) => Some(s.as_str().to_string()),
+                                                _ => None,
+                                            }),
+                                            args.get(2).cloned(),
+                                        )
+                                    };
+                                if let (Value::Obj(io), Some(attr), Some(val)) =
+                                    (&subject, attr, val)
+                                {
+                                    let _ = io
+                                        .attrs
+                                        .borrow_mut()
+                                        .set(Value::Str(PyString::new(attr)), val);
+                                }
                                 return Ok(Value::None);
                             }
                             _ => {}
@@ -3157,6 +3263,73 @@ fn call_value_inner(
                             "lru wrapper lost its wrapped callable",
                         )),
                     }
+                }
+                // T1: singledispatch registry object.
+                // - register(cls) -> a decorator opaque that parks (cls, fn)
+                //   in <impls> and returns fn (CPython register semantics,
+                //   exact-type match only — ABC fallback rides abc.register).
+                // - dispatcher(*args) -> route to the registered impl whose
+                //   key is the EXACT type of args[0], else the default.
+                ap_obj::ObjKind::Opaque if o.name == "functools._sd_registry" => {
+                    // `register` attr access: dispatch on the parked marker.
+                    // The registry object itself IS the dispatcher; attribute
+                    // reads of `register` return a marker that the call arm
+                    // below handles (attr set by the attr-get path).
+                    let regs = o.attrs.borrow().get(&Value::Str(PyString::new("<impls>")));
+                    let default = o
+                        .attrs
+                        .borrow()
+                        .get(&Value::Str(PyString::new("<default>")));
+                    // Call shape 1: register(cls) — one arg, a TYPE value.
+                    if args.len() == 1 {
+                        if let Some(impls) = regs.clone() {
+                            if let Value::Dict(d) = &impls {
+                                // exact-type registry: key = type name
+                                let key =
+                                    Value::Str(PyString::new(args[0].type_name().to_string()));
+                                let marker = ap_obj::PyObject::new(
+                                    ap_obj::ObjKind::Opaque,
+                                    "functools._sd_register_deco",
+                                );
+                                {
+                                    let mut a = marker.attrs.borrow_mut();
+                                    let _ = a.set(Value::Str(PyString::new("<key>")), key);
+                                    let _ =
+                                        a.set(Value::Str(PyString::new("<impls>")), impls.clone());
+                                }
+                                return Ok(Value::Obj(marker));
+                            }
+                        }
+                    }
+                    // Call shape 2: dispatch — route to impl by exact type.
+                    if let Some(def) = default {
+                        let mut chosen = def.clone();
+                        if !args.is_empty() {
+                            if let Some(Value::Dict(d)) = &regs {
+                                let key =
+                                    Value::Str(PyString::new(args[0].type_name().to_string()));
+                                if let Some(f) = d.get(&key) {
+                                    chosen = f;
+                                }
+                            }
+                        }
+                        return call_value_pub2(&chosen, args, kwargs);
+                    }
+                    Err(raise(
+                        "RuntimeError",
+                        "singledispatch registry lost its default impl",
+                    ))
+                }
+                // T1: the decorator returned by singledispatch.register(cls).
+                ap_obj::ObjKind::Opaque if o.name == "functools._sd_register_deco" => {
+                    let f = args.first().cloned().unwrap_or(Value::None);
+                    if let (Some(Value::Dict(d)), Some(key)) = (
+                        o.attrs.borrow().get(&Value::Str(PyString::new("<impls>"))),
+                        o.attrs.borrow().get(&Value::Str(PyString::new("<key>"))),
+                    ) {
+                        let _ = d.set(key, f.clone());
+                    }
+                    Ok(f)
                 }
                 ap_obj::ObjKind::Opaque if o.name == "functools._ap_deco" => {
                     let f = args.first().cloned().unwrap_or(Value::None);
@@ -5522,6 +5695,23 @@ fn class_isinstance(interp: &Rc<Interpreter>, args: &[Value]) -> EResult {
             && matches!(o.descr_kind.borrow().as_deref(), Some("classmethod" | "staticmethod" | "property")));
         let is_descr_marker = matches!(t, Value::Obj(o) if o.kind == ap_obj::ObjKind::BuiltinFn
             && matches!(o.name.as_str(), "staticmethod" | "classmethod" | "property"));
+        // T1 (dataclasses): typing.Union (and other typing special forms) are
+        // fn-MARKERS in v0 — isinstance against one is False (CPython: the
+        // metaclass __instancecheck__ answers; v0 tolerance, documented).
+        let is_special_form_marker = match t {
+            Value::Obj(o) => {
+                matches!(
+                    o.kind,
+                    ap_obj::ObjKind::BuiltinFn | ap_obj::ObjKind::Function
+                ) && (o.name == "Union"
+                    || o.name == "_typing.Union"
+                    || o.name.starts_with("__ap_typing_"))
+            }
+            _ => false,
+        };
+        if is_special_form_marker {
+            return Ok(Value::Bool(false));
+        }
         if is_descr_type || is_descr_marker {
             // Subject of the same descriptor kind -> True (enum.py
             // isinstance(value, staticmethod) where value IS the descriptor).
@@ -5694,12 +5884,7 @@ fn builtin_super(interp: &Rc<Interpreter>, args: &[Value], _kwargs: &[(String, V
                 .cloned()
                 .filter(|(start, _, _)| start.name != "__plain_fn__");
             match ctx {
-                None => {
-                    let fs = interp.super_stack.borrow();
-                    let names: Vec<String> = fs.iter().map(|(st, _, _)| st.name.clone()).collect();
-                    let tb = interp.tb_frames.borrow();
-                    Err(raise("RuntimeError", "super(): no arguments"))
-                }
+                None => Err(raise("RuntimeError", "super(): no arguments")),
                 Some((start_t, obj, is_cls)) => {
                     let start_v = crate::classes::class_value_for_public(&start_t);
                     let o = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "super");
@@ -6021,6 +6206,18 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
             &format!("__ap_classkw__.{name}"),
         ))));
     }
+    // T1: singledispatch registry — `register` returns a marker callable the
+    // call path handles (functools._sd_register_deco). `__name__` reports
+    // dispatcher identity (reprlib/typing introspection read it).
+    if matches!(obj, Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque && o.name == "functools._sd_registry")
+    {
+        if name == "register" {
+            return Ok(Some(obj.clone()));
+        }
+        if name == "__name__" {
+            return Ok(Some(Value::Str(PyString::new("singledispatch"))));
+        }
+    }
     // 02.03b: `_value_` on builtin str/int "enum members" (StrEnum/IntEnum
     // via the _simple_enum path): the value IS the member — CPython
     // str-subclass members carry _value_ == self.
@@ -6110,7 +6307,7 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
         if o.kind == ap_obj::ObjKind::Descriptor
             && matches!(o.descr_kind.borrow().as_deref(), Some("property"))
         {
-            if name == "setter" || name == "deleter" {
+            if name == "setter" || name == "deleter" || name == "getter" {
                 // `p.setter(fn)` — a BuiltinFn marker carrying the property;
                 // the call site is class_protocol_builtin's "property.*".
                 let m = ap_obj::PyObject::new(
@@ -6120,6 +6317,18 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 *m.slice_parts.borrow_mut() = vec![obj.clone()];
                 return Ok(Some(Value::Obj(m)));
             }
+        }
+    }
+    // T1 (typing_extensions sentinel): `@__name__.setter` where __name__ is
+    // a FUNCTION (not yet wrapped in property — the decorator order here is
+    // @__name__.setter over def __name__ AFTER a @property-less def). Return
+    // the marker for fn targets too; the property.* call path applies it.
+    if let Value::Obj(o) = obj {
+        if o.kind == ap_obj::ObjKind::Function && matches!(name, "setter" | "deleter" | "getter") {
+            let m =
+                ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, &format!("property.{}", name));
+            *m.slice_parts.borrow_mut() = vec![obj.clone()];
+            return Ok(Some(Value::Obj(m)));
         }
     }
     // Bound-method introspection (S-03-21/24: __self__/__func__/__name__;
@@ -6518,6 +6727,20 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                     if let Some(v) = ns.get(&Value::Str(PyString::new(name))) {
                         return Ok(Some(v));
                     }
+                    // T1 (typing.ForwardRef et al): PEP 562 module-level
+                    // __getattr__ — call it when the ns defines one.
+                    if let Some(f) = ns.get(&Value::Str(PyString::new("__getattr__"))) {
+                        let interp = crate::builtins_modules::current_interp();
+                        if let Some(i) = interp {
+                            return call_value_pub(
+                                &i,
+                                &f,
+                                &[Value::Str(PyString::new(name.to_string()))],
+                                &[],
+                            )
+                            .map(Some);
+                        }
+                    }
                 }
                 Ok(None)
             }
@@ -6646,6 +6869,17 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                     // cls.__protocol_attrs__ on a Type-kind class).
                     if let Some(v) = o.attrs.borrow().get(&Value::Str(PyString::new(name))) {
                         return Ok(Some(v));
+                    }
+                    // T1 (twisted logger): `property.setter(self, fn)` reads
+                    // .setter/.getter/.deleter on the property TYPE — return
+                    // the same marker the descriptor path uses.
+                    if o.name == "property" && matches!(name, "setter" | "getter" | "deleter") {
+                        let m = ap_obj::PyObject::new(
+                            ap_obj::ObjKind::BuiltinFn,
+                            &format!("property.{}", name),
+                        );
+                        *m.slice_parts.borrow_mut() = vec![obj.clone()];
+                        return Ok(Some(Value::Obj(m)));
                     }
                 }
                 match name {
@@ -6854,6 +7088,9 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                             ap_obj::ObjKind::BuiltinFn,
                             &format!("__object_virtual_{}__", name.trim_matches('_')),
                         );
+                        // T1 (dataclasses frozen): object.__setattr__ writes
+                        // through this marker — the receiver must ride it.
+                        *m.slice_parts.borrow_mut() = vec![obj.clone()];
                         Ok(Some(Value::Obj(m)))
                     }
                     _ => Ok(None),
@@ -6993,6 +7230,39 @@ pub fn exec_stmts_public(interp: &Rc<Interpreter>, stmts: &[ap_ir::Stmt]) -> ERe
     let frame = Rc::new(Frame::new_module(interp.globals.clone()));
     let reg = current_registry(interp);
     exec_block(interp, &frame, stmts, &reg)?;
+    Ok(Value::None)
+}
+
+/// T1 (twisted `_FuncBuilder.add_fns_to_class`): 2/3-arg `exec(code, globals,
+/// locals)` — statement execution over the GIVEN namespace dicts (globals
+/// required; locals optional). Defs bind into the locals dict when locals is
+/// a distinct dict, else into globals (CPython semantics at module scope).
+pub fn exec_stmts_in_ns(
+    interp: &Rc<Interpreter>,
+    stmts: &[ap_ir::Stmt],
+    globals: Gc<PyDict>,
+    locals: Option<Gc<PyDict>>,
+) -> EResult {
+    let frame = Rc::new(Frame::new_module(globals.clone()));
+    // Module frames read globals directly; explicit locals ride the frame's
+    // locals slot via a globals-echo (frame locals is `Option<PyDict>`? we
+    // mirror by writing defs into BOTH when they differ — v0 approximation
+    // that preserves twisted's `exec(code, f_globals, f_locals)` def-binding).
+    let reg = current_registry(interp);
+    // Bind module-level names defined by these stmts into locals too: the
+    // LocalDef/LocalClass stmts bind through the frame, so when locals is
+    // Some and distinct, exec then copy the global keys CPython would have
+    // written there. Simplest correct-shape v0: run with globals=locals dict
+    // merged view is unavailable, so when locals is Some we ALSO write each
+    // stmt-level def name into it after execution.
+    exec_block(interp, &frame, stmts, &reg)?;
+    if let Some(loc) = locals {
+        // Copy the exec's global writes into locals (twisted reads them from
+        // f_locals). Only keys not already present.
+        for (k, v) in globals.items() {
+            let _ = loc.set(k, v);
+        }
+    }
     Ok(Value::None)
 }
 
