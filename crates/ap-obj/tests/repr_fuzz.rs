@@ -117,7 +117,6 @@ fn check_pair(label: &str, impl_bytes: &str, ref_bytes: &str) -> Option<String> 
 // never "close". Any other mismatch hard-fails.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Finding {
-    F0402_1,
     F0402_2,
 }
 
@@ -158,49 +157,26 @@ fn route_known_divergence(v: f64, impl_s: &str, ref_s: &str) -> Option<Finding> 
     if is_tie_signature(impl_s, ref_s, v) {
         return Some(Finding::F0402_2);
     }
-    // F0402-1: negative, |v| in the sign-included int_len window, impl =
-    // reference digits + "e+16" (pure layout), OR the reference's even-digit
-    // tie form + "e+16" on the odd candidate (compound: the layout window
-    // also contains tie values whose shortest selection diverges too — each
-    // byte delta still matches a finding signature exactly, never "close").
-    if v < 0.0 && -v >= 1e15 && -v < 1e16 {
-        if let Some(m) = impl_s.strip_suffix("e+16") {
-            if ref_s == m || ref_s == format!("{m}.0") {
-                return Some(Finding::F0402_1);
-            }
-            if is_tie_signature(m, ref_s, v) {
-                return Some(Finding::F0402_1);
-            }
-        }
-    }
+    // F0402-1 (negative 1e15..1e16 layout window) was FIXED 2026-10-21
+    // (float_repr.rs sign-stripping in the exp10 computation, wave-4
+    // bughunt); its router arm was deleted per the pin-flip protocol.
+    let _ = v;
     None
 }
 
-/// F0402-1 shape check WITHOUT a reference string (the C-17 round-trip test
-/// has none): impl = "-<16-int-digit mantissa>e+16" for a negative v with
-/// 1e15 <= |v| < 1e16 — the same window and output shape as the router.
-fn known_layout_window(v: f64, impl_s: &str) -> bool {
-    if strict_mode() {
-        return false;
-    }
-    v < 0.0
-        && -v >= 1e15
-        && -v < 1e16
-        && impl_s.ends_with("e+16")
-        && impl_s
-            .strip_suffix("e+16")
-            .map_or(false, |m| m.starts_with('-') && m.len() >= 17)
-}
+// F0402-1 shape check WITHOUT a reference string (the C-17 round-trip test
+// has none). FIXED 2026-10-21 (wave-4 bughunt): the window no longer
+// produces the layout bug, so the router arm and this shape check are
+// deleted per the pin-flip protocol; the round-trip test now covers these
+// values like any other.
 
-static ROUTED_1: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 static ROUTED_2: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 fn report_routed(test: &str) {
-    let a = ROUTED_1.load(std::sync::atomic::Ordering::Relaxed);
     let b = ROUTED_2.load(std::sync::atomic::Ordering::Relaxed);
-    if a + b > 0 {
+    if b > 0 {
         eprintln!(
-            "ROUTED FINDINGS ({test}): F0402-1 layout={a} F0402-2 tie={b} \u{2014} see \
+            "ROUTED FINDINGS ({test}): F0402-2 tie={b} \u{2014} see \
              plans/robustness-ci/04-fuzz/PROGRESS.md; AP_FUZZ_STRICT=1 runs these red"
         );
     }
@@ -213,10 +189,6 @@ fn compare_float_bytes(label: &str, v: f64, impl_s: &str, ref_s: &str) -> Result
         return Ok(());
     }
     match route_known_divergence(v, impl_s, ref_s) {
-        Some(Finding::F0402_1) => {
-            ROUTED_1.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            Ok(())
-        }
         Some(Finding::F0402_2) => {
             ROUTED_2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             Ok(())
@@ -437,8 +409,6 @@ proptest! {
             // C-16: all NaN patterns render exactly 'nan' (payload
             // canonicalization probed on 3.14.7 — module header).
             prop_assert_eq!(&r, "nan");
-        } else if known_layout_window(v, &r) {
-            // routed F0402-1
         } else {
             let back: f64 = r
                 .parse()
@@ -571,7 +541,14 @@ fn comparator_rejects_synthetic_mismatch() {
     );
     // the router must NOT swallow a mismatch that lacks both signatures:
     assert_eq!(route_known_divergence(1e15, "1e+15", "1e+16"), None);
-    // the router DOES recognize the two routed shapes (default lane;
+    // F0402-1's router arm was deleted when the bug was fixed (wave-4);
+    // the same shape must now route as NOTHING (hard-fail if it recurs):
+    assert_eq!(
+        route_known_divergence(-1e15, "-1000000000000000e+16", "-1000000000000000.0"),
+        None,
+        "F0402-1 layout bug recurred and would be silently routed"
+    );
+    // the router DOES recognize the remaining routed shape (default lane;
     // strict-lane disabling is env-gated and proven by the one-off
     // AP_FUZZ_STRICT=1 gate run documented in PROGRESS — mutating env here
     // would race the parallel proptest threads):
@@ -604,7 +581,7 @@ fn routed_findings_pins_currently_reproduce() {
         return;
     };
     let tokens = [
-        format!("{:016x}", (-1e15f64).to_bits()), // F0402-1 minimal window
+        format!("{:016x}", (-1e15f64).to_bits()), // F0402-1 minimal window (FIXED)
         format!("{:016x}", (-15614122725348.3125f64).to_bits()), // F0402-2 scan-shrunk
     ];
     let lines = ref_batch(py, FLOAT_SCRIPT, &tokens, 2);
@@ -612,15 +589,16 @@ fn routed_findings_pins_currently_reproduce() {
     // recorded finding; FUZZ_SEEDS_0402.txt carries the same pairs):
     assert_eq!(lines[0], "-1000000000000000.0");
     assert_eq!(lines[2], "-15614122725348.312");
-    // Impl currently diverges both times - the routed findings:
+    // F0402-1 FIXED (wave-4 2026-10-21): impl must now MATCH the reference
+    // exactly for the former divergent window value.
     let got1 = py_float_repr(-1e15);
     assert_eq!(
-        route_known_divergence(-1e15, &got1, &lines[0]),
-        Some(Finding::F0402_1),
-        "impl no longer produces F0402-1 bytes: {got1:?} vs {:?} \u{2014} Plan 02 fixed \
-         it: delete the router + this pin + the PROGRESS entry",
+        got1, lines[0],
+        "F0402-1 regressed: impl {got1:?} vs reference {:?}",
         lines[0]
     );
+    // Impl still diverges on the tie-break (F0402-2, unfixed - Gay's
+    // half-to-even vs Rust half-up):
     let got2 = py_float_repr(-15614122725348.3125);
     assert_eq!(
         route_known_divergence(-15614122725348.3125, &got2, &lines[2]),

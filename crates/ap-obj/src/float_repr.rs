@@ -51,17 +51,19 @@ pub fn py_float_repr(v: f64) -> String {
         Some(e) => e,
         None => {
             // Fixed form from Rust; compute the decimal exponent from the
-            // integer part's length.
-            let int_len = mant.split('.').next().map_or(1, |s| {
-                if s == "0" {
-                    // 0.00123 style: count leading zeros after "0."
-                    let frac = &mant[2..];
-                    frac.len() - frac.trim_start_matches('0').len()
-                } else {
-                    s.len()
-                }
-            });
-            (int_len as i32) - 1
+            // integer part's length. The leading '-' must NOT count toward
+            // the digit length (F0402-1: repr(-1e15) computed exp10=16 from
+            // "-1000000000000000".len()==17 and rendered '-1000000000000000e+16'
+            // instead of '-1000000000000000.0').
+            let int_part = mant.split('.').next().unwrap_or("0");
+            let digits = int_part.strip_prefix('-').unwrap_or(int_part);
+            if digits == "0" {
+                // 0.00123 / -0.00123 style: count leading zeros after "0."
+                let frac = mant.split('.').nth(1).unwrap_or("");
+                -((frac.len() - frac.trim_start_matches('0').len()) as i32) - 1
+            } else {
+                (digits.len() as i32) - 1
+            }
         }
     };
     if exp10 < -4 || exp10 >= 16 {

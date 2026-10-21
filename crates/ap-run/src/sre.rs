@@ -2127,7 +2127,16 @@ fn py_repr_str(s: &str) -> String {
 
 /// CPython Match repr: <re.Match object; span=(0, 2), match='ab'>
 fn match_repr(mb: &MatchBox) -> String {
-    let matched: String = mb.text[mb.result.start..mb.result.end].to_string();
+    // result.start/end are CHARACTER indices (the matcher runs over
+    // &[char]); mb.text is a byte String. Slice via chars, not bytes
+    // (RF-1: byte slicing panicked 'not a char boundary' on multibyte
+    // subjects, e.g. re.search('b', 'ääb')).
+    let matched: String = mb
+        .text
+        .chars()
+        .skip(mb.result.start)
+        .take(mb.result.end - mb.result.start)
+        .collect();
     format!(
         "<re.Match object; span=({}, {}), match={}>",
         mb.result.start,
