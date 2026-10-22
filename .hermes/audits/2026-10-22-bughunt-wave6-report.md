@@ -2,10 +2,11 @@
 
 Scope: commit a14fe0d (T1 feat: live-sys.path importer fix + ~30 vendored
 stdlib modules, 156 files / 91K lines, scrapy chain "reaches lxml") + 3
-doc/plan chores. Method: 2 auditors dispatched; both died on provider
-connection errors (23rd/24th consecutive subagent failure), both scopes
-executed parent-direct in worktree /tmp/ap-bughunt6. Findings in
-/tmp/ap-audit-w6-{runtime,vendored}/findings.json.
+doc/plan chores. Method: 2 auditors dispatched; the vendored auditor died
+on a provider connection error (23rd consecutive subagent failure) and was
+executed parent-direct; the runtime auditor COMPLETED (first survivor in 24
+dispatches) and its 11 findings were parent-verified one by one (see
+ADDENDUM 2). Findings in /tmp/ap-audit-w6-{runtime,vendored}/findings.json.
 
 This wave RECORDS rather than fixes: every finding lives in the sibling's
 ACTIVE T1-leaf zone (its working tree right now has live WIP in
@@ -128,3 +129,44 @@ NEW ACTIONABLE FINDING (supersedes part of the _pydecimal.py deviation):
   pristine CPython, eliminating one deviation entirely. Recommend the T1
   owner revert it rather than declare it.
 
+## ADDENDUM 2 - CORRECTION: runtime auditor completed; my CLEAN section was overstated
+
+The wave-6 runtime subagent (unlike its 23 predecessors) COMPLETED with a
+full 11-finding report. Parent re-verified every finding in isolation -
+ALL confirmed real. My earlier probe battery (w6_rt2.py) aborted at its
+first failure and masked everything after it, so the "CLEAN" list above
+was WRONG for several entries. Corrected verdicts:
+
+CONFIRMED BROKEN at HEAD (were listed clean or unlisted):
+- numbers.Integral/Real/Number isinstance -> ALL False (CPython True).
+  Root cause: runtime abc.register is inert (T1 blocker #5, now with a
+  concrete consumer).
+- shlex.split -> PROCESS STACK OVERFLOW (SIGABRT). Stdlib code, not user
+  recursion - higher priority than the wave-3 recursion item.
+- urllib.parse.urljoin -> AttributeError (_Quoter __getitem__ path).
+  quote/unquote/quote_plus/urlparse still verified byte-exact.
+- ipaddress IPv6 str() + ip_network -> RuntimeError 'super(): no
+  arguments' (zero-arg super() unbound in vendored-module class bodies).
+  IPv4 ip_address str works.
+- ET.tostring -> NotImplementedError (pyexpat shim, declared C-07 gap).
+  fromstring/find/get/text still verified working.
+- sys.path.append + import: module RESOLVES (live-path fix works) but
+  its body's defs never land on the module object ('module' object has
+  no attribute 'hello'). The headline importer fix is HALF-working.
+- socket.socket is a function, not a class (shim; isinstance checks
+  against it will diverge).
+- logging Formatter NameError (matches the decimal multi-import
+  'Formatter' NameError - same module-global leak).
+- datetime timedelta str/repr + date.today() float/int (as reported).
+- decimal getcontext()->None (as reported).
+
+STILL CLEAN (re-verified in isolation): datetime construction/isoformat/
+tz.utcoffset, urllib quote/unquote/quote_plus/urlparse, email.message,
+logging.getLogger().name, ipaddress IPv4 str, numbers module import,
+selectors.DefaultSelector, platform, ET.fromstring/find, parsel +
+defusedxml import (the scrapy chain's vendoring goal), CPython-identical
+files per the purity sweep.
+
+Full evidence + repro files: /tmp/ap-audit-w6-runtime/findings.json
+(probes /tmp/w6_num.py, w6_url.py, w6_ip.py, w6_sock.py, w6_et.py,
+w6_verify1.py, w6_verify2.py).
