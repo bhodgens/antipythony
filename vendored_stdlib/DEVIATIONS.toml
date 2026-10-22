@@ -35,8 +35,8 @@ path = "_contextvars.py"
 upstream_path = ""
 status = "deviated"
 upstream_sha256 = ""
-deviated_sha256 = "c341ece7797b5da74613c49df9ccfaee16de06a5b3c6c63e01b429a9703126a5"
-note = "Declared deviation (LICENSES/README-vendored-stdlib.md): runtime-binding shim with no single CPython counterpart file."
+deviated_sha256 = "8efb09caaf2aeab94c49e75e47fa9385d4cb1a7b3ba8ef52673fb56a499febad"
+note = "Declared deviation (LICENSES/README-vendored-stdlib.md): runtime-binding shim with no single CPython counterpart file. Re-declared 2026-10-22 (wave-5 audit): 2619a0f extended the shim (Token/Context/copy_context surface); diff reviewed, shim-only."
 
 [[file]]
 path = "_opcode_metadata.py"
@@ -83,8 +83,8 @@ path = "annotationlib.py"
 upstream_path = "annotationlib.py"
 status = "deviated"
 upstream_sha256 = "1cce29393714b91e3f71571ffbedacc7f73f11ad26be10701debeb86ec059a32"
-deviated_sha256 = "6af21c7576c484e166fd3989419f2bc5f6e2d559e87901ed236cbef95c3ef423"
-note = "Declared deviation (LICENSES/README-vendored-stdlib.md): REPLACED by a self-declared minimal shim (docstring says so); CPython's uses t-strings (PEP 750), outside the v1 grammar."
+deviated_sha256 = "e1accc6691f8ae5c7641be17add105338f38eb2296bd82605c32661b0b0611da"
+note = "Declared deviation (LICENSES/README-vendored-stdlib.md): REPLACED by a self-declared minimal shim (docstring says so); CPython's uses t-strings (PEP 750), outside the v1 grammar. Re-declared 2026-10-22 (wave-5 audit): 2619a0f added the callable-obj annotations branch; shim-only."
 
 [[file]]
 path = "argparse.py"
@@ -339,16 +339,8 @@ path = "inspect.py"
 upstream_path = "inspect.py"
 status = "deviated"
 upstream_sha256 = "7a2878507255eb568a6ecfa04e051009f197513aa052eebc9e7e60d667d78cb4"
-deviated_sha256 = "c7cdce2fa5789a0a26f26a75ba9c3b78779023f8e7598320ac6196b4f26559fe"
-note = "Declared deviation (LICENSES/README-vendored-stdlib.md): ~16 lines - annotation/FrameInfo shims."
-
-[[file]]
-path = "ipaddress.py"
-upstream_path = "ipaddress.py"
-status = "pristine"
-upstream_sha256 = "4cba28ab40dc34c685950535cf9adf6251bee5b63c82eed1f315d93853d4eaca"
-deviated_sha256 = "4cba28ab40dc34c685950535cf9adf6251bee5b63c82eed1f315d93853d4eaca"
-note = ""
+deviated_sha256 = "e75915195d63e8f6c9842076be2441b2806dd6bd84536774a99289a2fd670c77"
+note = "Declared deviation (LICENSES/README-vendored-stdlib.md): ~16 lines - annotation/FrameInfo shims. Re-declared 2026-10-22 (wave-5 audit): 2619a0f extended the shim (+15 lines, T1 get_annotations path); diff reviewed, shim-only."
 
 [[file]]
 path = "keyword.py"
@@ -636,54 +628,6 @@ upstream_path = "unittest/util.py"
 status = "pristine"
 upstream_sha256 = "fdcc640c3505d16deab9c32eae7c3f5f67c3b5e81c563dc6698fa7fcf403854d"
 deviated_sha256 = "fdcc640c3505d16deab9c32eae7c3f5f67c3b5e81c563dc6698fa7fcf403854d"
-note = ""
-
-[[file]]
-path = "urllib/__init__.py"
-upstream_path = "urllib/__init__.py"
-status = "pristine"
-upstream_sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-deviated_sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-note = ""
-
-[[file]]
-path = "urllib/error.py"
-upstream_path = "urllib/error.py"
-status = "pristine"
-upstream_sha256 = "d12b3cc66af3f42a8ebe63e1c91d24f92c6237b6a93a3702938dffabd812d77b"
-deviated_sha256 = "d12b3cc66af3f42a8ebe63e1c91d24f92c6237b6a93a3702938dffabd812d77b"
-note = ""
-
-[[file]]
-path = "urllib/parse.py"
-upstream_path = "urllib/parse.py"
-status = "pristine"
-upstream_sha256 = "484b633b81d024da52649c7ff775c81b338de9f60585c94e5adfe335a27d9509"
-deviated_sha256 = "484b633b81d024da52649c7ff775c81b338de9f60585c94e5adfe335a27d9509"
-note = ""
-
-[[file]]
-path = "urllib/request.py"
-upstream_path = "urllib/request.py"
-status = "pristine"
-upstream_sha256 = "f3464032de00c1fbc839f4657577065ea6efb30d99e5a86e204b1aefdcb77430"
-deviated_sha256 = "f3464032de00c1fbc839f4657577065ea6efb30d99e5a86e204b1aefdcb77430"
-note = ""
-
-[[file]]
-path = "urllib/response.py"
-upstream_path = "urllib/response.py"
-status = "pristine"
-upstream_sha256 = "7e6c3b6d7a95f0d74f5968f51a87adae8a51bf42390cdfec98c7a99203e7bb76"
-deviated_sha256 = "7e6c3b6d7a95f0d74f5968f51a87adae8a51bf42390cdfec98c7a99203e7bb76"
-note = ""
-
-[[file]]
-path = "urllib/robotparser.py"
-upstream_path = "urllib/robotparser.py"
-status = "pristine"
-upstream_sha256 = "621c586e66d917d99dad44ff698bf9492cf5afc82cf9b3794199a589d553c38f"
-deviated_sha256 = "621c586e66d917d99dad44ff698bf9492cf5afc82cf9b3794199a589d553c38f"
 note = ""
 
 [[file]]

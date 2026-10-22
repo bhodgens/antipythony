@@ -474,24 +474,7 @@ impl Parser {
             // comment skipping loops back to the TOP so a ')' or '|'
             // reached through skipped text is re-examined by the loop-top
             // break (CPython strips whitespace before token dispatch).
-            if self.flags & F_VERBOSE != 0 {
-                loop {
-                    match self.peek() {
-                        Some(ch) if ch.is_whitespace() => {
-                            self.pos += 1;
-                        }
-                        Some('#') => {
-                            self.pos += 1;
-                            while let Some(nc) = self.bump() {
-                                if nc == '\n' {
-                                    break;
-                                }
-                            }
-                        }
-                        _ => break,
-                    }
-                }
-            }
+            self.skip_verbose();
             match self.peek() {
                 None | Some('|') | Some(')') => break,
                 _ => {}
@@ -544,6 +527,10 @@ impl Parser {
                 }
                 _ => items.push(lit(c as u32, &self.flags)),
             }
+            // CPython strips VERBOSE whitespace/comments BEFORE reading the
+            // next token, and a quantifier is that next token — so `a + b`
+            // under re.X is `a+b`, not "multiple repeat". Skip here too.
+            self.skip_verbose();
             // quantifier?
             self.parse_quantifier(&mut items)?;
         }
@@ -551,6 +538,31 @@ impl Parser {
             Ok(items.pop().unwrap())
         } else {
             Ok(Node::Seq(items))
+        }
+    }
+
+    /// In VERBOSE mode, skip whitespace and `#`-to-EOL comments. No-op
+    /// otherwise. Shared by the sequence loop-top and the pre-quantifier
+    /// skip so both match CPython's sre_parse whitespace stripping.
+    fn skip_verbose(&mut self) {
+        if self.flags & F_VERBOSE == 0 {
+            return;
+        }
+        loop {
+            match self.peek() {
+                Some(ch) if ch.is_whitespace() => {
+                    self.pos += 1;
+                }
+                Some('#') => {
+                    self.pos += 1;
+                    while let Some(nc) = self.bump() {
+                        if nc == '\n' {
+                            break;
+                        }
+                    }
+                }
+                _ => break,
+            }
         }
     }
 
