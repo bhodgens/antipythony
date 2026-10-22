@@ -96,3 +96,35 @@ No fixes to merge this wave (all findings in the sibling's contested T1
 zone). This report + the two findings.json files are the deliverable. When
 the sibling's T1 leaf lands, re-audit: the license attribution + provenance
 declarations + decimal/datetime primitives are the acceptance bar.
+
+## ADDENDUM - full purity sweep (post-report, closes the auditor's >=10-file task)
+
+Diffed EVERY committed vendored_stdlib .py against installed CPython 3.14.7
+(not just a 10-file sample). Result:
+- CPython-origin files: 49 byte-IDENTICAL, 8 differ, 4 have no upstream.
+- Of the 8 that differ, 5 are already DECLARED deviated (_collections_abc,
+  _py_warnings, annotationlib, enum, inspect). The 5 UNDECLARED deviations:
+  _pydecimal.py, decimal.py, socket.py, pyexpat.py, select.py.
+- socket.py/pyexpat.py/select.py are honest self-declared shims (each opens
+  with an "antipythany deviation shim" comment citing C-07: they stand in
+  for C-extension modules; file://-only T1 gate never does real I/O) - they
+  just lack DEVIATIONS.toml entries. decimal.py is a deviation (ships full
+  _pydecimal content, not CPython's thin shim). _pydecimal.py rewrites the
+  VERBOSE numeric-parser regex to single-line.
+- The ~150 "undeclared" the raw gate counts are mostly the 49 pristine files
+  (auto-fixable by `stdlib-provenance --fix`) + the third-party dirs, NOT 150
+  semantic deviations. The real hand-work is: 5 undeclared deviation entries +
+  ~150 pristine `--fix` entries + the third-party attribution (findings 1-3).
+
+NEW ACTIONABLE FINDING (supersedes part of the _pydecimal.py deviation):
+- _pydecimal.py's rewrite comment says CPython's VERBOSE multi-line parser
+  regex "trips this runtime's sre parser (whitespace/group interaction)".
+  That justification is now OBSOLETE: the wave-5 VERBOSE fix (2a6e907,
+  skip_verbose before the quantifier token) resolved exactly that class.
+  VERIFIED this wave: the ORIGINAL CPython VERBOSE _parser regex (the
+  multi-line one _pydecimal.py replaced) now runs byte-exact under
+  ap-run-eval on an 8-case battery (signs, int/frac/exp groups, Infinity,
+  sNaN+diag, nan, +.5, 1., non-match). So _pydecimal.py can be reverted to
+  pristine CPython, eliminating one deviation entirely. Recommend the T1
+  owner revert it rather than declare it.
+
