@@ -93,3 +93,25 @@ ap-conform's `find_reference_interpreter` (python3 fallback kept per brief).
 All fail/skip/env-ladder gates green (details: 00-ci-core/PROGRESS.md
 "wave-A-gap followup"). Rust differential suites are now uniformly on the
 seam; pytest-track Homebrew-hardcode env conversion remains 01-branch work.
+
+## HELD state - orchestrator decision 2026-10-20 (user directive)
+
+- WAITING for the Plan 02 / T1 scrapy agent (other session) to FINISH
+  before dispatching anything further. No subagent dispatches pending on
+  this campaign's side.
+- Held queue (in order once T1 lands):
+  1. `xtask stdlib-provenance --fix` + declare any real deviations: the T1
+     wave dropped ~187 new vendored_stdlib files (datetime/decimal/email/
+     http/logging/charset_normalizer/parsel/...) with no DEVIATIONS.toml
+     entries; `--check` currently FAILS (237 files, 187 problems) and the
+     fast-lints CI job goes red on their first commit+push. Measured
+     2026-10-20 against their working tree.
+  2. 02.09 sub-leaf p1: object-state audit (findings-only, quarantined;
+     RefCell census 300+ sites across 17 files as of cb84991-era tree,
+     actively moved by 858f6bc threading-race fix - re-measure on land).
+  3. 02.10 scheduler research note (no ownership overlap; can also go in
+     the same wave).
+  4. Post-T1 CI items unchanged: push-gated remote green, attribution.yml
+     retirement, clippy -D warnings flip (49 errors tracked).
+- Evidence T1 burned my routed findings already: ae115be/97f8ef9 fix
+  RF-1/RF-4/RF-6/F0402-1; gc fence green against 858f6bc race fix.
