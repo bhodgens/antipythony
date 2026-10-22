@@ -18,18 +18,24 @@ mod common;
 
 use std::process::Command;
 
-fn antipythany() -> &'static str {
-    concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../target/debug/antipythany"
-    )
+fn antipythany() -> String {
+    bin_path("antipythany")
 }
 
-fn ap_run_eval() -> &'static str {
-    concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../target/debug/ap-run-eval"
-    )
+fn ap_run_eval() -> String {
+    bin_path("ap-run-eval")
+}
+
+/// Resolve a workspace bin honoring CARGO_TARGET_DIR (shared-target builds);
+/// wave-1 P1 class (hardcoded target/debug silently diffs a stale/missing bin).
+fn bin_path(name: &str) -> String {
+    let p = match std::env::var("CARGO_TARGET_DIR") {
+        Ok(d) => std::path::Path::new(&d).join("debug").join(name),
+        Err(_) => std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/debug")
+            .join(name),
+    };
+    p.to_string_lossy().into_owned()
 }
 
 fn reference_or_skip() -> Option<&'static str> {
