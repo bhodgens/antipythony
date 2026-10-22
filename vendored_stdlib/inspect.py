@@ -31,6 +31,21 @@ Here are some of the useful functions provided by this module:
 __author__ = ('Ka-Ping Yee <ping@lfw.org>',
               'Yury Selivanov <yselivanov@sprymix.com>')
 
+# antipythany deviation (DEVIATIONS.toml): CPython exposes these via the
+# _inspect C accelerator; this runtime provides the constants inline.
+CO_OPTIMIZED = 1
+CO_NEWLOCALS = 2
+CO_VARARGS = 4
+CO_VARKEYWORDS = 8
+CO_NESTED = 16
+CO_GENERATOR = 32
+CO_NOFREE = 64
+CO_COROUTINE = 128
+CO_ITERABLE_COROUTINE = 256
+CO_ASYNC_GENERATOR = 512
+CO_HAS_DOCSTRING = 1024
+CO_METHOD = 2048
+
 __all__ = [
     "AGEN_CLOSED",
     "AGEN_CREATED",

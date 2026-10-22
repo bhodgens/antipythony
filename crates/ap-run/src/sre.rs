@@ -444,6 +444,9 @@ impl Parser {
         }
     }
     fn err(&self, msg: &str, offset: usize) -> crate::Flow {
+        if std::env::var_os("AP_SRE_DEBUG").is_some() {
+            eprintln!("SRE-ERR msg={msg} pattern={:?} pos={}", self.pat, self.pos);
+        }
         re_error(msg, &self.pat, self.pos.saturating_sub(offset))
     }
 
@@ -462,59 +465,33 @@ impl Parser {
     fn parse_sequence(&mut self) -> Result<Node, crate::Flow> {
         let mut items: Vec<Node> = Vec::new();
         loop {
+            // T1 (_pydecimal/cookies/_attr_re VERBOSE): whitespace and
+            // comment skipping loops back to the TOP so a ')' or '|'
+            // reached through skipped text is re-examined by the loop-top
+            // break (CPython strips whitespace before token dispatch).
+            if self.flags & F_VERBOSE != 0 {
+                loop {
+                    match self.peek() {
+                        Some(ch) if ch.is_whitespace() => {
+                            self.pos += 1;
+                        }
+                        Some('#') => {
+                            self.pos += 1;
+                            while let Some(nc) = self.bump() {
+                                if nc == '\n' {
+                                    break;
+                                }
+                            }
+                        }
+                        _ => break,
+                    }
+                }
+            }
             match self.peek() {
                 None | Some('|') | Some(')') => break,
                 _ => {}
             }
-            let mut c = self.bump().unwrap();
-            if self.flags & F_VERBOSE != 0 {
-                // Outside character classes: whitespace and #-comments are
-                // ignored (CPython VERBOSE).
-                loop {
-                    if c.is_whitespace() {
-                        match self.bump() {
-                            Some(nc) => c = nc,
-                            None => {
-                                return Ok(if items.len() == 1 {
-                                    items.pop().unwrap()
-                                } else {
-                                    Node::Seq(items)
-                                })
-                            }
-                        }
-                        continue;
-                    }
-                    if c == '#' {
-                        match self.bump() {
-                            Some(nc) => c = nc,
-                            None => {
-                                return Ok(if items.len() == 1 {
-                                    items.pop().unwrap()
-                                } else {
-                                    Node::Seq(items)
-                                })
-                            }
-                        }
-                        while let Some(nc) = self.bump() {
-                            if nc == '\n' {
-                                break;
-                            }
-                        }
-                        match self.bump() {
-                            Some(nc) => c = nc,
-                            None => {
-                                return Ok(if items.len() == 1 {
-                                    items.pop().unwrap()
-                                } else {
-                                    Node::Seq(items)
-                                })
-                            }
-                        }
-                        continue;
-                    }
-                    break;
-                }
-            }
+            let c = self.bump().unwrap();
             match c {
                 '^' => {
                     items.push(Node::At(if self.flags & F_MULTILINE != 0 {
@@ -1108,6 +1085,10 @@ impl Parser {
             'B' => Ok(Node::At(Anchor::NonBoundary)),
             'A' => Ok(Node::At(Anchor::Beginning)),
             'Z' => Ok(Node::At(Anchor::AbsoluteEnd)),
+            // T1 (CPython 3.14 urllib.parse): \z — strict end-of-string
+            // anchor (3.14 addition). Same semantics as \Z in this engine
+            // (AbsoluteEnd never allows a trailing newline).
+            'z' => Ok(Node::At(Anchor::AbsoluteEnd)),
             'a' => Ok(lit(0x07, &self.flags)),
             't' => Ok(lit(0x09, &self.flags)),
             'n' => Ok(lit(0x0a, &self.flags)),
@@ -1147,7 +1128,12 @@ impl Parser {
                 // octal or backref. CPython (sre_parse): leading '0' means
                 // octal (up to 3 digits); otherwise a group reference takes
                 // AT MOST 2 digits and errors at the first digit's position.
-                let max_digits = if e == '0' { 3 } else { 2 };
+                // T1 (email fcre octal ranges like \\041-\\176): a 3-digit
+                // all-octal escape with a NONZERO first digit is still octal
+                // (CPython \\176 == '~'); 2-digit nonzero stays a backref.
+                // T1: 3-octal-digit escapes (e.g. \\176) are octal even with
+                // a nonzero first digit; group refs are at most 2 digits.
+                let max_digits = if matches!(e, '0'..='7') { 3 } else { 2 };
                 let mut digits = String::new();
                 digits.push(e);
                 while let Some(d) = self.peek() {
@@ -1158,8 +1144,9 @@ impl Parser {
                         break;
                     }
                 }
-                if e == '0' || (digits.len() == 3 && digits.starts_with('0')) {
-                    // octal
+                let all_octal = digits.bytes().all(|d| (b'0'..=b'7').contains(&d));
+                if e == '0' || (digits.len() == 3 && all_octal && e != '8' && e != '9') {
+                    // octal (3-digit all-octal form incl. nonzero first digit)
                     let v = u32::from_str_radix(digits.trim_start_matches('0').max("0"), 8)
                         .map_err(|_| self.err("bad escape", digits.len()))?;
                     if v > 0o377 {

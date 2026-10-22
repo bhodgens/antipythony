@@ -14,13 +14,12 @@
 # hand-declared from LICENSES/README-vendored-stdlib.md (commit 1cb6250).
 # Upstream: CPython 3.14.7 (PSF-2.0). Do not hand-edit pristine entries.
 
-
 [[file]]
 path = "__future__.py"
 upstream_path = "__future__.py"
 status = "pristine"
 upstream_sha256 = "981d4c398849f9ebcab72300d9c1fe288fd6d7f28957b3b3fa3a493a5836d95c"
-deviated_sha256 = ""
+deviated_sha256 = "981d4c398849f9ebcab72300d9c1fe288fd6d7f28957b3b3fa3a493a5836d95c"
 note = ""
 
 [[file]]
@@ -44,7 +43,7 @@ path = "_opcode_metadata.py"
 upstream_path = "_opcode_metadata.py"
 status = "pristine"
 upstream_sha256 = "d9badc5ab19a66415e230bf8f4299491b2207d584981a92b6e7c447cfa1aeac3"
-deviated_sha256 = ""
+deviated_sha256 = "d9badc5ab19a66415e230bf8f4299491b2207d584981a92b6e7c447cfa1aeac3"
 note = ""
 
 [[file]]
@@ -52,7 +51,7 @@ path = "_py_abc.py"
 upstream_path = "_py_abc.py"
 status = "pristine"
 upstream_sha256 = "f9c6fe3dd9b51bd7d93f867356e9d362600c924febfd903ee1c6e298860dca92"
-deviated_sha256 = ""
+deviated_sha256 = "f9c6fe3dd9b51bd7d93f867356e9d362600c924febfd903ee1c6e298860dca92"
 note = ""
 
 [[file]]
@@ -68,7 +67,7 @@ path = "_weakrefset.py"
 upstream_path = "_weakrefset.py"
 status = "pristine"
 upstream_sha256 = "2dd7cb459d654fe78b00c5c47ee8e786c037ee77763304603f5e976dd62cbf81"
-deviated_sha256 = ""
+deviated_sha256 = "2dd7cb459d654fe78b00c5c47ee8e786c037ee77763304603f5e976dd62cbf81"
 note = ""
 
 [[file]]
@@ -76,7 +75,7 @@ path = "abc.py"
 upstream_path = "abc.py"
 status = "pristine"
 upstream_sha256 = "e558702a95cdce3febd289da021715d2b92bc43995b8a1bc58dfa1c3d8010287"
-deviated_sha256 = ""
+deviated_sha256 = "e558702a95cdce3febd289da021715d2b92bc43995b8a1bc58dfa1c3d8010287"
 note = ""
 
 [[file]]
@@ -84,7 +83,7 @@ path = "annotationlib.py"
 upstream_path = "annotationlib.py"
 status = "deviated"
 upstream_sha256 = "1cce29393714b91e3f71571ffbedacc7f73f11ad26be10701debeb86ec059a32"
-deviated_sha256 = "6a7c2da4fe5764187f0aac58d6490ace86c124ab1bcf31f8e5547997c2367031"
+deviated_sha256 = "6af21c7576c484e166fd3989419f2bc5f6e2d559e87901ed236cbef95c3ef423"
 note = "Declared deviation (LICENSES/README-vendored-stdlib.md): REPLACED by a self-declared minimal shim (docstring says so); CPython's uses t-strings (PEP 750), outside the v1 grammar."
 
 [[file]]
@@ -92,7 +91,7 @@ path = "argparse.py"
 upstream_path = "argparse.py"
 status = "pristine"
 upstream_sha256 = "b9f0fa53be3d7c9c10a71a8eecc538a27c32fbe7abe337818d0d36e138bfc5c5"
-deviated_sha256 = ""
+deviated_sha256 = "b9f0fa53be3d7c9c10a71a8eecc538a27c32fbe7abe337818d0d36e138bfc5c5"
 note = ""
 
 [[file]]
@@ -100,7 +99,7 @@ path = "ast.py"
 upstream_path = "ast.py"
 status = "pristine"
 upstream_sha256 = "5ea9a796353544bea0d706153516f04ef3d92be305d15a73238403837d77e34c"
-deviated_sha256 = ""
+deviated_sha256 = "5ea9a796353544bea0d706153516f04ef3d92be305d15a73238403837d77e34c"
 note = ""
 
 [[file]]
@@ -108,7 +107,7 @@ path = "codecs.py"
 upstream_path = "codecs.py"
 status = "pristine"
 upstream_sha256 = "718f39b3ea68fe934214d789c5bce3005fa828040b03a72d2f715fc5e2647b7e"
-deviated_sha256 = ""
+deviated_sha256 = "718f39b3ea68fe934214d789c5bce3005fa828040b03a72d2f715fc5e2647b7e"
 note = ""
 
 [[file]]
@@ -124,7 +123,7 @@ path = "contextlib.py"
 upstream_path = "contextlib.py"
 status = "pristine"
 upstream_sha256 = "c1e0d67b2007de11ae93cd36cf6faf38d9ab32656a832d592a49325eec579f96"
-deviated_sha256 = ""
+deviated_sha256 = "c1e0d67b2007de11ae93cd36cf6faf38d9ab32656a832d592a49325eec579f96"
 note = ""
 
 [[file]]
@@ -132,7 +131,7 @@ path = "copy.py"
 upstream_path = "copy.py"
 status = "pristine"
 upstream_sha256 = "15154fde290d6e65b5007905689a47a9a5a724822c5e06eec35d9ffbb2a3aa69"
-deviated_sha256 = ""
+deviated_sha256 = "15154fde290d6e65b5007905689a47a9a5a724822c5e06eec35d9ffbb2a3aa69"
 note = ""
 
 [[file]]
@@ -140,7 +139,7 @@ path = "copyreg.py"
 upstream_path = "copyreg.py"
 status = "pristine"
 upstream_sha256 = "6376eb5722806396f5842997ac18add369ea9ac3ff4fcfe1460c41a088cac425"
-deviated_sha256 = ""
+deviated_sha256 = "6376eb5722806396f5842997ac18add369ea9ac3ff4fcfe1460c41a088cac425"
 note = ""
 
 [[file]]
@@ -148,7 +147,7 @@ path = "dataclasses.py"
 upstream_path = "dataclasses.py"
 status = "pristine"
 upstream_sha256 = "e8439c8b111856645a8b31e0dbbba532b494426399bad456079c0e5730ad322e"
-deviated_sha256 = ""
+deviated_sha256 = "e8439c8b111856645a8b31e0dbbba532b494426399bad456079c0e5730ad322e"
 note = ""
 
 [[file]]
@@ -156,7 +155,7 @@ path = "difflib.py"
 upstream_path = "difflib.py"
 status = "pristine"
 upstream_sha256 = "dcf149dea54bce852505d29a195a179402197cef77ac31b467027a2a56265af5"
-deviated_sha256 = ""
+deviated_sha256 = "dcf149dea54bce852505d29a195a179402197cef77ac31b467027a2a56265af5"
 note = ""
 
 [[file]]
@@ -164,7 +163,7 @@ path = "dis.py"
 upstream_path = "dis.py"
 status = "pristine"
 upstream_sha256 = "17d4d9a9195c9ee5aa27a96f3e0871f9363fd501e3a64ef20cb1cc876d7ad553"
-deviated_sha256 = ""
+deviated_sha256 = "17d4d9a9195c9ee5aa27a96f3e0871f9363fd501e3a64ef20cb1cc876d7ad553"
 note = ""
 
 [[file]]
@@ -180,7 +179,7 @@ path = "fnmatch.py"
 upstream_path = "fnmatch.py"
 status = "pristine"
 upstream_sha256 = "ce582bc266922e4c682e2a85d72095124430a6bf58716c6f2537103480eae742"
-deviated_sha256 = ""
+deviated_sha256 = "ce582bc266922e4c682e2a85d72095124430a6bf58716c6f2537103480eae742"
 note = ""
 
 [[file]]
@@ -188,7 +187,7 @@ path = "genericpath.py"
 upstream_path = "genericpath.py"
 status = "pristine"
 upstream_sha256 = "cdac5a68dd738051e0d66fc81d5947d6a1776248fc6fe862253477608d870ec4"
-deviated_sha256 = ""
+deviated_sha256 = "cdac5a68dd738051e0d66fc81d5947d6a1776248fc6fe862253477608d870ec4"
 note = ""
 
 [[file]]
@@ -196,7 +195,7 @@ path = "gettext.py"
 upstream_path = "gettext.py"
 status = "pristine"
 upstream_sha256 = "54c00df11915aafb017ed23860dcb5197ed063f7ee07e5612625ec86afadcaf5"
-deviated_sha256 = ""
+deviated_sha256 = "54c00df11915aafb017ed23860dcb5197ed063f7ee07e5612625ec86afadcaf5"
 note = ""
 
 [[file]]
@@ -204,7 +203,7 @@ path = "glob.py"
 upstream_path = "glob.py"
 status = "pristine"
 upstream_sha256 = "21d290be171e3d0643a444e4b58a2c4ee9bfe2c1474bb36ead043794bb769365"
-deviated_sha256 = ""
+deviated_sha256 = "21d290be171e3d0643a444e4b58a2c4ee9bfe2c1474bb36ead043794bb769365"
 note = ""
 
 [[file]]
@@ -212,7 +211,7 @@ path = "importlib/__init__.py"
 upstream_path = "importlib/__init__.py"
 status = "pristine"
 upstream_sha256 = "72b07de4133a7e39b2f6a7920465669aa04626f217e800779587bc0713fe002e"
-deviated_sha256 = ""
+deviated_sha256 = "72b07de4133a7e39b2f6a7920465669aa04626f217e800779587bc0713fe002e"
 note = ""
 
 [[file]]
@@ -220,7 +219,7 @@ path = "importlib/_bootstrap.py"
 upstream_path = "importlib/_bootstrap.py"
 status = "pristine"
 upstream_sha256 = "e50d35b1191ecbc5f7faecc73f54efd242bcf24c510e4ea5eb64bfba9458c0e3"
-deviated_sha256 = ""
+deviated_sha256 = "e50d35b1191ecbc5f7faecc73f54efd242bcf24c510e4ea5eb64bfba9458c0e3"
 note = ""
 
 [[file]]
@@ -228,7 +227,7 @@ path = "importlib/_bootstrap_external.py"
 upstream_path = "importlib/_bootstrap_external.py"
 status = "pristine"
 upstream_sha256 = "b9af1fb7b625030cf5ee06b39aeb7838c2a30c97ddee09410286b7afbd8b7098"
-deviated_sha256 = ""
+deviated_sha256 = "b9af1fb7b625030cf5ee06b39aeb7838c2a30c97ddee09410286b7afbd8b7098"
 note = ""
 
 [[file]]
@@ -236,7 +235,7 @@ path = "importlib/abc.py"
 upstream_path = "importlib/abc.py"
 status = "pristine"
 upstream_sha256 = "66da663909ac110b77d89d4402589574308aac2a5b524bba014fabd65f34cc99"
-deviated_sha256 = ""
+deviated_sha256 = "66da663909ac110b77d89d4402589574308aac2a5b524bba014fabd65f34cc99"
 note = ""
 
 [[file]]
@@ -244,7 +243,7 @@ path = "importlib/machinery.py"
 upstream_path = "importlib/machinery.py"
 status = "pristine"
 upstream_sha256 = "34b7583fd83ebb2629b7645c0dd293839ce16b19cf8742801e21a21fe08f5811"
-deviated_sha256 = ""
+deviated_sha256 = "34b7583fd83ebb2629b7645c0dd293839ce16b19cf8742801e21a21fe08f5811"
 note = ""
 
 [[file]]
@@ -252,7 +251,71 @@ path = "importlib/readers.py"
 upstream_path = "importlib/readers.py"
 status = "pristine"
 upstream_sha256 = "d0d57d118d64916f7e6edb04f8bd1a760a1abb879125899ef50a36d09ef54df4"
-deviated_sha256 = ""
+deviated_sha256 = "d0d57d118d64916f7e6edb04f8bd1a760a1abb879125899ef50a36d09ef54df4"
+note = ""
+
+[[file]]
+path = "importlib/resources/__init__.py"
+upstream_path = "importlib/resources/__init__.py"
+status = "pristine"
+upstream_sha256 = "dc9fb6eb542ace0fb59017a7315b0eb2f268d7d11b52662a8c792b6568851ce3"
+deviated_sha256 = "dc9fb6eb542ace0fb59017a7315b0eb2f268d7d11b52662a8c792b6568851ce3"
+note = ""
+
+[[file]]
+path = "importlib/resources/_adapters.py"
+upstream_path = "importlib/resources/_adapters.py"
+status = "pristine"
+upstream_sha256 = "be9ac919b51e1db6a35fa5c2b8c3fa27794caea0a2f8ffcc4e5ce225447b8df9"
+deviated_sha256 = "be9ac919b51e1db6a35fa5c2b8c3fa27794caea0a2f8ffcc4e5ce225447b8df9"
+note = ""
+
+[[file]]
+path = "importlib/resources/_common.py"
+upstream_path = "importlib/resources/_common.py"
+status = "pristine"
+upstream_sha256 = "fcfb97ce807c692b36ac1b224379b455d64937a210c48c5ae60369bcaabe6456"
+deviated_sha256 = "fcfb97ce807c692b36ac1b224379b455d64937a210c48c5ae60369bcaabe6456"
+note = ""
+
+[[file]]
+path = "importlib/resources/_functional.py"
+upstream_path = "importlib/resources/_functional.py"
+status = "pristine"
+upstream_sha256 = "98b5380f04a587cff62175aac0a39f3d5c7246a004a41dc1e174df471af75f73"
+deviated_sha256 = "98b5380f04a587cff62175aac0a39f3d5c7246a004a41dc1e174df471af75f73"
+note = ""
+
+[[file]]
+path = "importlib/resources/_itertools.py"
+upstream_path = "importlib/resources/_itertools.py"
+status = "pristine"
+upstream_sha256 = "7838ac57a46a88d64ea202d25dfe8b3861ce61cefd14680faca34bcc52e60ab5"
+deviated_sha256 = "7838ac57a46a88d64ea202d25dfe8b3861ce61cefd14680faca34bcc52e60ab5"
+note = ""
+
+[[file]]
+path = "importlib/resources/abc.py"
+upstream_path = "importlib/resources/abc.py"
+status = "pristine"
+upstream_sha256 = "a726c48590b21ba5532f0c654735991571bc0ecafe88145cb8891d82cd364e5e"
+deviated_sha256 = "a726c48590b21ba5532f0c654735991571bc0ecafe88145cb8891d82cd364e5e"
+note = ""
+
+[[file]]
+path = "importlib/resources/readers.py"
+upstream_path = "importlib/resources/readers.py"
+status = "pristine"
+upstream_sha256 = "f64855ffaa44f6c21ffc49e77b8cbfeeca37183bf7f7d3aecb30cb079ab45939"
+deviated_sha256 = "f64855ffaa44f6c21ffc49e77b8cbfeeca37183bf7f7d3aecb30cb079ab45939"
+note = ""
+
+[[file]]
+path = "importlib/resources/simple.py"
+upstream_path = "importlib/resources/simple.py"
+status = "pristine"
+upstream_sha256 = "c099b6a8667d10c3c58512e22416bd126e6d54a6c3ed0f226d6b6de193605815"
+deviated_sha256 = "c099b6a8667d10c3c58512e22416bd126e6d54a6c3ed0f226d6b6de193605815"
 note = ""
 
 [[file]]
@@ -260,7 +323,7 @@ path = "importlib/simple.py"
 upstream_path = "importlib/simple.py"
 status = "pristine"
 upstream_sha256 = "8e687aeeb1db537d2717cb0352c5f126ff7d4095c6de6dc7f00d5103f3009c40"
-deviated_sha256 = ""
+deviated_sha256 = "8e687aeeb1db537d2717cb0352c5f126ff7d4095c6de6dc7f00d5103f3009c40"
 note = ""
 
 [[file]]
@@ -268,7 +331,7 @@ path = "importlib/util.py"
 upstream_path = "importlib/util.py"
 status = "pristine"
 upstream_sha256 = "7bdfadad42664ba169ffac8160765673cd79937f74324f4664de8d820c35b863"
-deviated_sha256 = ""
+deviated_sha256 = "7bdfadad42664ba169ffac8160765673cd79937f74324f4664de8d820c35b863"
 note = ""
 
 [[file]]
@@ -280,11 +343,19 @@ deviated_sha256 = "c7cdce2fa5789a0a26f26a75ba9c3b78779023f8e7598320ac6196b4f2655
 note = "Declared deviation (LICENSES/README-vendored-stdlib.md): ~16 lines - annotation/FrameInfo shims."
 
 [[file]]
+path = "ipaddress.py"
+upstream_path = "ipaddress.py"
+status = "pristine"
+upstream_sha256 = "4cba28ab40dc34c685950535cf9adf6251bee5b63c82eed1f315d93853d4eaca"
+deviated_sha256 = "4cba28ab40dc34c685950535cf9adf6251bee5b63c82eed1f315d93853d4eaca"
+note = ""
+
+[[file]]
 path = "keyword.py"
 upstream_path = "keyword.py"
 status = "pristine"
 upstream_sha256 = "18c2be738c04ad20ad375f6a71db34b3823c7f40b0340f5294d0e89f3c9b093b"
-deviated_sha256 = ""
+deviated_sha256 = "18c2be738c04ad20ad375f6a71db34b3823c7f40b0340f5294d0e89f3c9b093b"
 note = ""
 
 [[file]]
@@ -292,7 +363,7 @@ path = "linecache.py"
 upstream_path = "linecache.py"
 status = "pristine"
 upstream_sha256 = "692daec68e2a419adf46bafc0eb2f8a2fb36c482183fa1ac47e00fec440f7d7e"
-deviated_sha256 = ""
+deviated_sha256 = "692daec68e2a419adf46bafc0eb2f8a2fb36c482183fa1ac47e00fec440f7d7e"
 note = ""
 
 [[file]]
@@ -300,7 +371,7 @@ path = "ntpath.py"
 upstream_path = "ntpath.py"
 status = "pristine"
 upstream_sha256 = "bf16566322f41f7052b7516fb684b2d64a437b39f5bbd21731b1bda1697d1a2e"
-deviated_sha256 = ""
+deviated_sha256 = "bf16566322f41f7052b7516fb684b2d64a437b39f5bbd21731b1bda1697d1a2e"
 note = ""
 
 [[file]]
@@ -308,7 +379,7 @@ path = "opcode.py"
 upstream_path = "opcode.py"
 status = "pristine"
 upstream_sha256 = "1036d90c917bb27c540ac3205d22896ee747214df1f2682458ab915758e4fdf2"
-deviated_sha256 = ""
+deviated_sha256 = "1036d90c917bb27c540ac3205d22896ee747214df1f2682458ab915758e4fdf2"
 note = ""
 
 [[file]]
@@ -316,7 +387,7 @@ path = "pathlib/__init__.py"
 upstream_path = "pathlib/__init__.py"
 status = "pristine"
 upstream_sha256 = "042a4d0a5e1ef66778daa86dc269af205bd42d06e793e53d8b99dff4c45928ca"
-deviated_sha256 = ""
+deviated_sha256 = "042a4d0a5e1ef66778daa86dc269af205bd42d06e793e53d8b99dff4c45928ca"
 note = ""
 
 [[file]]
@@ -324,7 +395,7 @@ path = "pathlib/_local.py"
 upstream_path = "pathlib/_local.py"
 status = "pristine"
 upstream_sha256 = "dd1067a4fc49212d10583e0a340cd87eb638a7d70725203d40834b70272fa675"
-deviated_sha256 = ""
+deviated_sha256 = "dd1067a4fc49212d10583e0a340cd87eb638a7d70725203d40834b70272fa675"
 note = ""
 
 [[file]]
@@ -332,7 +403,7 @@ path = "pathlib/_os.py"
 upstream_path = "pathlib/_os.py"
 status = "pristine"
 upstream_sha256 = "61e844988e54bdf47c0b11ad2b3fd961f058bb370793428f4c6868bd40cab6f2"
-deviated_sha256 = ""
+deviated_sha256 = "61e844988e54bdf47c0b11ad2b3fd961f058bb370793428f4c6868bd40cab6f2"
 note = ""
 
 [[file]]
@@ -340,7 +411,7 @@ path = "pathlib/types.py"
 upstream_path = "pathlib/types.py"
 status = "pristine"
 upstream_sha256 = "723afad22b9629a513c815240644e6312056144efd3f61f66d4f9ec320fdd124"
-deviated_sha256 = ""
+deviated_sha256 = "723afad22b9629a513c815240644e6312056144efd3f61f66d4f9ec320fdd124"
 note = ""
 
 [[file]]
@@ -348,7 +419,7 @@ path = "posixpath.py"
 upstream_path = "posixpath.py"
 status = "pristine"
 upstream_sha256 = "8a5bc2b6674e76efe0f507b873a41d746beba466a191153ed18a7580ef6e08e1"
-deviated_sha256 = ""
+deviated_sha256 = "8a5bc2b6674e76efe0f507b873a41d746beba466a191153ed18a7580ef6e08e1"
 note = ""
 
 [[file]]
@@ -356,7 +427,7 @@ path = "pprint.py"
 upstream_path = "pprint.py"
 status = "pristine"
 upstream_sha256 = "0b807d4a62c4292ead5b64e1b455f98b0ba225667ff3ee74bd7e0b873620402d"
-deviated_sha256 = ""
+deviated_sha256 = "0b807d4a62c4292ead5b64e1b455f98b0ba225667ff3ee74bd7e0b873620402d"
 note = ""
 
 [[file]]
@@ -372,7 +443,7 @@ path = "re/_casefix.py"
 upstream_path = "re/_casefix.py"
 status = "pristine"
 upstream_sha256 = "1b12d9136f23db6c3f6f26053fefc15ca964b886838c7b9c1fabf8d2efc1e5c8"
-deviated_sha256 = ""
+deviated_sha256 = "1b12d9136f23db6c3f6f26053fefc15ca964b886838c7b9c1fabf8d2efc1e5c8"
 note = ""
 
 [[file]]
@@ -380,7 +451,7 @@ path = "re/_compiler.py"
 upstream_path = "re/_compiler.py"
 status = "pristine"
 upstream_sha256 = "d49f30cf9a1dbae33b200ed8befd9d0ce3ac612783a10ac35196536f98923e91"
-deviated_sha256 = ""
+deviated_sha256 = "d49f30cf9a1dbae33b200ed8befd9d0ce3ac612783a10ac35196536f98923e91"
 note = ""
 
 [[file]]
@@ -388,7 +459,7 @@ path = "re/_constants.py"
 upstream_path = "re/_constants.py"
 status = "pristine"
 upstream_sha256 = "42253b3181b81aad6c46392f44a0ab26dcfa31feea411296f43ba16616a1ab0b"
-deviated_sha256 = ""
+deviated_sha256 = "42253b3181b81aad6c46392f44a0ab26dcfa31feea411296f43ba16616a1ab0b"
 note = ""
 
 [[file]]
@@ -396,7 +467,7 @@ path = "re/_parser.py"
 upstream_path = "re/_parser.py"
 status = "pristine"
 upstream_sha256 = "e57bd194a2d42398355ae7c1ccc2ddfb78421dd431eb81e3809dbe8ca9057dc4"
-deviated_sha256 = ""
+deviated_sha256 = "e57bd194a2d42398355ae7c1ccc2ddfb78421dd431eb81e3809dbe8ca9057dc4"
 note = ""
 
 [[file]]
@@ -404,7 +475,7 @@ path = "reprlib.py"
 upstream_path = "reprlib.py"
 status = "pristine"
 upstream_sha256 = "b04872e10d76252e44eae50cc785eb0fe478491afc4d7f0825a93f82b2eaba5f"
-deviated_sha256 = ""
+deviated_sha256 = "b04872e10d76252e44eae50cc785eb0fe478491afc4d7f0825a93f82b2eaba5f"
 note = ""
 
 [[file]]
@@ -412,7 +483,7 @@ path = "signal.py"
 upstream_path = "signal.py"
 status = "pristine"
 upstream_sha256 = "0363c964c90ac0b3e515de5749205e6e6454051a1211058375d84d91eab6071a"
-deviated_sha256 = ""
+deviated_sha256 = "0363c964c90ac0b3e515de5749205e6e6454051a1211058375d84d91eab6071a"
 note = ""
 
 [[file]]
@@ -420,7 +491,7 @@ path = "stat.py"
 upstream_path = "stat.py"
 status = "pristine"
 upstream_sha256 = "07217986d9b2172b509dab3578d18ac05ba768b418e1f1e8c90e38a8f7c2b3c6"
-deviated_sha256 = ""
+deviated_sha256 = "07217986d9b2172b509dab3578d18ac05ba768b418e1f1e8c90e38a8f7c2b3c6"
 note = ""
 
 [[file]]
@@ -428,7 +499,7 @@ path = "token.py"
 upstream_path = "token.py"
 status = "pristine"
 upstream_sha256 = "61d4270311099c8a0c0b2e45fb363fd1c4e347a720bcc25f682b63dc28c34234"
-deviated_sha256 = ""
+deviated_sha256 = "61d4270311099c8a0c0b2e45fb363fd1c4e347a720bcc25f682b63dc28c34234"
 note = ""
 
 [[file]]
@@ -436,7 +507,7 @@ path = "tokenize.py"
 upstream_path = "tokenize.py"
 status = "pristine"
 upstream_sha256 = "65ba1bacdc42e768382208ff27f3001ee77d9d61aafba686c67652d22b84b330"
-deviated_sha256 = ""
+deviated_sha256 = "65ba1bacdc42e768382208ff27f3001ee77d9d61aafba686c67652d22b84b330"
 note = ""
 
 [[file]]
@@ -444,7 +515,7 @@ path = "traceback.py"
 upstream_path = "traceback.py"
 status = "pristine"
 upstream_sha256 = "a8fbeea470aa4e29691560de889de136570bead76d9c8a2b6a891849c047a3b3"
-deviated_sha256 = ""
+deviated_sha256 = "a8fbeea470aa4e29691560de889de136570bead76d9c8a2b6a891849c047a3b3"
 note = ""
 
 [[file]]
@@ -452,7 +523,7 @@ path = "types.py"
 upstream_path = "types.py"
 status = "pristine"
 upstream_sha256 = "8c54d3d5ffc1d1204237e6c69b25c27c7b05b483128f185eeed9ba7ef2229ac2"
-deviated_sha256 = ""
+deviated_sha256 = "8c54d3d5ffc1d1204237e6c69b25c27c7b05b483128f185eeed9ba7ef2229ac2"
 note = ""
 
 [[file]]
@@ -460,7 +531,7 @@ path = "typing.py"
 upstream_path = "typing.py"
 status = "pristine"
 upstream_sha256 = "de569368c2c4958b7aaddbe755056860a89b1d313f69d437177864f37cb2503b"
-deviated_sha256 = ""
+deviated_sha256 = "de569368c2c4958b7aaddbe755056860a89b1d313f69d437177864f37cb2503b"
 note = ""
 
 [[file]]
@@ -468,7 +539,7 @@ path = "unittest/__init__.py"
 upstream_path = "unittest/__init__.py"
 status = "pristine"
 upstream_sha256 = "2698f2daf7a02609a6825b89cd459ebaa283dec2403c7b846315a0701bc74a0d"
-deviated_sha256 = ""
+deviated_sha256 = "2698f2daf7a02609a6825b89cd459ebaa283dec2403c7b846315a0701bc74a0d"
 note = ""
 
 [[file]]
@@ -476,7 +547,7 @@ path = "unittest/__main__.py"
 upstream_path = "unittest/__main__.py"
 status = "pristine"
 upstream_sha256 = "ff6b9a100d32001715b40d61bc4d613623b139edb1fdc3566427b83c331caae3"
-deviated_sha256 = ""
+deviated_sha256 = "ff6b9a100d32001715b40d61bc4d613623b139edb1fdc3566427b83c331caae3"
 note = ""
 
 [[file]]
@@ -484,7 +555,7 @@ path = "unittest/_log.py"
 upstream_path = "unittest/_log.py"
 status = "pristine"
 upstream_sha256 = "905672317ab26c656c600defce25d477728068f597f00a7f94e22e8128c323b9"
-deviated_sha256 = ""
+deviated_sha256 = "905672317ab26c656c600defce25d477728068f597f00a7f94e22e8128c323b9"
 note = ""
 
 [[file]]
@@ -492,7 +563,7 @@ path = "unittest/async_case.py"
 upstream_path = "unittest/async_case.py"
 status = "pristine"
 upstream_sha256 = "5e8265cb20ead3877aef870cda91f2462acf107513933f84b4f3419028e8746f"
-deviated_sha256 = ""
+deviated_sha256 = "5e8265cb20ead3877aef870cda91f2462acf107513933f84b4f3419028e8746f"
 note = ""
 
 [[file]]
@@ -508,7 +579,7 @@ path = "unittest/loader.py"
 upstream_path = "unittest/loader.py"
 status = "pristine"
 upstream_sha256 = "b993c1631e000d5f13256cdd71e40f6453974b90074eddec929f3685c59e0855"
-deviated_sha256 = ""
+deviated_sha256 = "b993c1631e000d5f13256cdd71e40f6453974b90074eddec929f3685c59e0855"
 note = ""
 
 [[file]]
@@ -516,7 +587,7 @@ path = "unittest/main.py"
 upstream_path = "unittest/main.py"
 status = "pristine"
 upstream_sha256 = "12de7da0fea92dbff8713ebe9904ada6dbd1e0a334d58861c6287ccfc0a261d2"
-deviated_sha256 = ""
+deviated_sha256 = "12de7da0fea92dbff8713ebe9904ada6dbd1e0a334d58861c6287ccfc0a261d2"
 note = ""
 
 [[file]]
@@ -524,7 +595,7 @@ path = "unittest/mock.py"
 upstream_path = "unittest/mock.py"
 status = "pristine"
 upstream_sha256 = "436ae88cd0fda534e2a9b86c4a47bd80438ec84a646af338df75e15b96ce1d0e"
-deviated_sha256 = ""
+deviated_sha256 = "436ae88cd0fda534e2a9b86c4a47bd80438ec84a646af338df75e15b96ce1d0e"
 note = ""
 
 [[file]]
@@ -540,7 +611,7 @@ path = "unittest/runner.py"
 upstream_path = "unittest/runner.py"
 status = "pristine"
 upstream_sha256 = "51780085229bd3547a2751e8d75ab1d8f391dd2c9c3ca1d011b54529348faeb4"
-deviated_sha256 = ""
+deviated_sha256 = "51780085229bd3547a2751e8d75ab1d8f391dd2c9c3ca1d011b54529348faeb4"
 note = ""
 
 [[file]]
@@ -548,7 +619,7 @@ path = "unittest/signals.py"
 upstream_path = "unittest/signals.py"
 status = "pristine"
 upstream_sha256 = "f8286e818ca56e10e03745bc056cdfd31147678f9a1dc8cb6b0fe96ef9a4362a"
-deviated_sha256 = ""
+deviated_sha256 = "f8286e818ca56e10e03745bc056cdfd31147678f9a1dc8cb6b0fe96ef9a4362a"
 note = ""
 
 [[file]]
@@ -556,7 +627,7 @@ path = "unittest/suite.py"
 upstream_path = "unittest/suite.py"
 status = "pristine"
 upstream_sha256 = "ed2da92bc9f97c53403ee2d3d12cc53b16a96e85d596ebc887b5a93458f3f6bc"
-deviated_sha256 = ""
+deviated_sha256 = "ed2da92bc9f97c53403ee2d3d12cc53b16a96e85d596ebc887b5a93458f3f6bc"
 note = ""
 
 [[file]]
@@ -564,7 +635,55 @@ path = "unittest/util.py"
 upstream_path = "unittest/util.py"
 status = "pristine"
 upstream_sha256 = "fdcc640c3505d16deab9c32eae7c3f5f67c3b5e81c563dc6698fa7fcf403854d"
-deviated_sha256 = ""
+deviated_sha256 = "fdcc640c3505d16deab9c32eae7c3f5f67c3b5e81c563dc6698fa7fcf403854d"
+note = ""
+
+[[file]]
+path = "urllib/__init__.py"
+upstream_path = "urllib/__init__.py"
+status = "pristine"
+upstream_sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+deviated_sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+note = ""
+
+[[file]]
+path = "urllib/error.py"
+upstream_path = "urllib/error.py"
+status = "pristine"
+upstream_sha256 = "d12b3cc66af3f42a8ebe63e1c91d24f92c6237b6a93a3702938dffabd812d77b"
+deviated_sha256 = "d12b3cc66af3f42a8ebe63e1c91d24f92c6237b6a93a3702938dffabd812d77b"
+note = ""
+
+[[file]]
+path = "urllib/parse.py"
+upstream_path = "urllib/parse.py"
+status = "pristine"
+upstream_sha256 = "484b633b81d024da52649c7ff775c81b338de9f60585c94e5adfe335a27d9509"
+deviated_sha256 = "484b633b81d024da52649c7ff775c81b338de9f60585c94e5adfe335a27d9509"
+note = ""
+
+[[file]]
+path = "urllib/request.py"
+upstream_path = "urllib/request.py"
+status = "pristine"
+upstream_sha256 = "f3464032de00c1fbc839f4657577065ea6efb30d99e5a86e204b1aefdcb77430"
+deviated_sha256 = "f3464032de00c1fbc839f4657577065ea6efb30d99e5a86e204b1aefdcb77430"
+note = ""
+
+[[file]]
+path = "urllib/response.py"
+upstream_path = "urllib/response.py"
+status = "pristine"
+upstream_sha256 = "7e6c3b6d7a95f0d74f5968f51a87adae8a51bf42390cdfec98c7a99203e7bb76"
+deviated_sha256 = "7e6c3b6d7a95f0d74f5968f51a87adae8a51bf42390cdfec98c7a99203e7bb76"
+note = ""
+
+[[file]]
+path = "urllib/robotparser.py"
+upstream_path = "urllib/robotparser.py"
+status = "pristine"
+upstream_sha256 = "621c586e66d917d99dad44ff698bf9492cf5afc82cf9b3794199a589d553c38f"
+deviated_sha256 = "621c586e66d917d99dad44ff698bf9492cf5afc82cf9b3794199a589d553c38f"
 note = ""
 
 [[file]]
@@ -572,7 +691,7 @@ path = "warnings.py"
 upstream_path = "warnings.py"
 status = "pristine"
 upstream_sha256 = "142225786de63c593f1c9abdacf5b4fc0b05dd847f6bed0ebb4b4aa2d4d93b02"
-deviated_sha256 = ""
+deviated_sha256 = "142225786de63c593f1c9abdacf5b4fc0b05dd847f6bed0ebb4b4aa2d4d93b02"
 note = ""
 
 [[file]]
@@ -580,5 +699,37 @@ path = "weakref.py"
 upstream_path = "weakref.py"
 status = "pristine"
 upstream_sha256 = "5e5f727a19a858cb4c56dbaf3e0a138ded02fb954a9a58a840a0764216ae9522"
-deviated_sha256 = ""
+deviated_sha256 = "5e5f727a19a858cb4c56dbaf3e0a138ded02fb954a9a58a840a0764216ae9522"
+note = ""
+
+[[file]]
+path = "zipfile/__init__.py"
+upstream_path = "zipfile/__init__.py"
+status = "pristine"
+upstream_sha256 = "adb6f48ee990b42cabfc665d910992c5a30cee31d5d50d846e18e0e45c6a3f31"
+deviated_sha256 = "adb6f48ee990b42cabfc665d910992c5a30cee31d5d50d846e18e0e45c6a3f31"
+note = ""
+
+[[file]]
+path = "zipfile/__main__.py"
+upstream_path = "zipfile/__main__.py"
+status = "pristine"
+upstream_sha256 = "e418cdbb27adf0063e3cec28179ac6b7bdb6ac743bb49d157f450551fcf38be2"
+deviated_sha256 = "e418cdbb27adf0063e3cec28179ac6b7bdb6ac743bb49d157f450551fcf38be2"
+note = ""
+
+[[file]]
+path = "zipfile/_path/__init__.py"
+upstream_path = "zipfile/_path/__init__.py"
+status = "pristine"
+upstream_sha256 = "319c002564b7deca9ca9dc913f5d06bc32a2f376d291094afa635558af6e17ff"
+deviated_sha256 = "319c002564b7deca9ca9dc913f5d06bc32a2f376d291094afa635558af6e17ff"
+note = ""
+
+[[file]]
+path = "zipfile/_path/glob.py"
+upstream_path = "zipfile/_path/glob.py"
+status = "pristine"
+upstream_sha256 = "d84da9b313d40544a87657a0ea2f9cf719416fd3c3450724c5d2dde5b475d2b5"
+deviated_sha256 = "d84da9b313d40544a87657a0ea2f9cf719416fd3c3450724c5d2dde5b475d2b5"
 note = ""

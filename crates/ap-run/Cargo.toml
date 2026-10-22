@@ -26,6 +26,10 @@ md-5 = "0.10"
 sha1 = "0.10"
 sha2 = "0.10"
 
+# T1 (w3lib.url): native unicodedata.normalize (NFC/NFD/NFKC/NFD) for the
+# vendored URL-cleanup path. Crate is in the offline registry cache.
+unicode-normalization = "0.1"
+
 [lints]
 workspace = true  # robustness-ci 02.01 - see root Cargo.toml [workspace.lints]
 

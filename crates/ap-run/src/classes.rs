@@ -1157,13 +1157,26 @@ pub fn base_type_ref(interp: &Interpreter, v: &Value) -> Result<Option<Rc<TypeRe
         }
         // T1 (scrapy fix pass): `class Foo(Generic[T])` - the Generic alias
         // placeholder resolves to its ORIGIN (Generic) as the effective base.
-        Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque && o.name == "typing._GenericAlias" => {
-            let origin = o
-                .slice_parts
-                .borrow()
-                .first()
-                .cloned()
-                .unwrap_or(Value::None);
+        // T1 (scrapy datatypes): the Namespace-shaped _GenericAlias produced
+        // by Type.__getitem__ (`UserDict[str, object]`) carries __origin__ in
+        // attrs — same treatment.
+        Value::Obj(o)
+            if (o.kind == ap_obj::ObjKind::Opaque && o.name == "typing._GenericAlias")
+                || (o.kind == ap_obj::ObjKind::Namespace && o.name == "_GenericAlias") =>
+        {
+            let origin = if o.kind == ap_obj::ObjKind::Opaque {
+                o.slice_parts
+                    .borrow()
+                    .first()
+                    .cloned()
+                    .unwrap_or(Value::None)
+            } else {
+                o.attrs
+                    .borrow()
+                    .get(&Value::Str(PyString::new("__origin__")))
+                    .unwrap_or(Value::None)
+            };
+
             match base_type_ref(interp, &origin)? {
                 Some(t) => Ok(Some(t)),
                 None => Ok(None),
@@ -1175,6 +1188,30 @@ pub fn base_type_ref(interp: &Interpreter, v: &Value) -> Result<Option<Rc<TypeRe
         // class so the subclass CREATES; descriptor behavior still rides
         // the decorator path (documented v0 gap: inheriting descriptor
         // semantics from these bases is unsupported).
+        // T1 (w3lib.url): `class ParseDataURIResult(NamedTuple)` — the vendored
+        // typing.NamedTuple is a FUNCTION; a function base synthesizes an
+        // object-derived class (annotation-driven fields are a documented
+        // v0 gap; w3lib only instantiates it and reads .data/.headers).
+        Value::Obj(o)
+            if (o.kind == ap_obj::ObjKind::BuiltinFn || o.kind == ap_obj::ObjKind::Function)
+                && matches!(o.name.as_str(), "NamedTuple" | "TypedDict") =>
+        {
+            let flags = TypeFlags {
+                slots: None,
+                is_exception: false,
+                builtin_exc: false,
+            };
+            let t = TypeObject::create(
+                "NamedTuple".to_string(),
+                "NamedTuple".to_string(),
+                vec![object_class(interp)],
+                PyDict::new(),
+                flags,
+                None,
+            )
+            .map_err(|_| raise("TypeError", "cannot synthesize NamedTuple base"))?;
+            Ok(Some(t))
+        }
         Value::Obj(o)
             if o.kind == ap_obj::ObjKind::BuiltinFn
                 && matches!(o.name.as_str(), "classmethod" | "staticmethod" | "property") =>
@@ -1619,6 +1656,15 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
                 };
                 if sf_marker {
                     return Ok(false);
+                }
+                // T1 (scrapy.utils.python): isinstance(func, partial) — the
+                // ap functools.partial is the '<partial:...>' marker fn.
+                if matches!(t, Value::Obj(to) if to.kind == ap_obj::ObjKind::BuiltinFn
+                    && matches!(to.name.as_str(), "partial" | "functools.partial"))
+                {
+                    let is_partial = matches!(x, Value::Obj(vo) if vo.kind == ap_obj::ObjKind::BuiltinFn
+                        && vo.name.starts_with("<partial:"));
+                    return Ok(is_partial);
                 }
                 return Err(raise(
                     "TypeError",
@@ -2109,6 +2155,9 @@ fn class_attr_get(interp: &Rc<Interpreter>, cls_v: &Value, t: &Rc<TypeRef>, name
             | "__str__"
             | "__repr__"
             | "__eq__"
+            // T1 (http.cookies Morsel: `__ne__ = object.__ne__`): __ne__ joins
+            // the object-virtual allowlist.
+            | "__ne__"
             | "__hash__"
             | "__doc__"
             | "__format__"

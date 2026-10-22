@@ -415,10 +415,27 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
                     if let Some(d) = crate::classes::dict_backing(obj) {
                         return match d.get(key) {
                             Some(v) => Ok(v),
-                            None => Err(Flow::Raise(ExceptionValue::new(
-                                "KeyError",
-                                vec![key.clone()],
-                            ))),
+                            None => {
+                                // CPython dict-subclass protocol: a __missing__
+                                // hook on the subclass answers a missed lookup
+                                // (typing._overload_registry = defaultdict(
+                                // partial(defaultdict, dict)) depends on it).
+                                // Misses without the hook raise KeyError.
+                                if let Some((mf, _)) = t.lookup_with_owner("__missing__") {
+                                    if matches!(&mf, Value::Obj(fo)
+                                        if fo.kind == ap_obj::ObjKind::Function)
+                                    {
+                                        return crate::interp::call_value_pub3(
+                                            &mf,
+                                            &[obj.clone(), key.clone()],
+                                        );
+                                    }
+                                }
+                                Err(Flow::Raise(ExceptionValue::new(
+                                    "KeyError",
+                                    vec![key.clone()],
+                                )))
+                            }
                         };
                     }
                 }
@@ -638,6 +655,7 @@ pub fn builtin_method_routed(name: &str) -> bool {
             | "partition"
             | "encode"
             | "decode"
+            | "translate"
             | "append"
             | "clear"
             | "keys"
@@ -854,6 +872,54 @@ pub fn call_method(
                 Value::Str(PyString::new(triple.1)),
                 Value::Str(PyString::new(triple.2)),
             ])))))
+        }
+        (Value::Bytes(b), "translate") => {
+            // bytes.translate(table[, delete]): v0 covers the w3lib module-level
+            // forms — table None (delete-only) and a 256-entry int-map table
+            // built by bytes.maketrans.
+            let mut out: Vec<u8> = Vec::with_capacity(b.len());
+            let table: Option<Vec<Option<u8>>> = match args.first() {
+                Some(Value::None) | None => None,
+                Some(Value::Bytes(tb)) => {
+                    Some(tb.iter().map(|x| Some(*x)).collect::<Vec<Option<u8>>>())
+                }
+                Some(Value::Dict(d)) => {
+                    // int->int mapping dict (bytes.maketrans output shape).
+                    let mut m: Vec<Option<u8>> = (0u16..256u16).map(|i| Some(i as u8)).collect();
+                    for (k, v) in d.items() {
+                        if let (Some(ki), Some(vi)) = (k.as_int(), v.as_int()) {
+                            if let (Some(k64), Some(v64)) = (ki.to_i64(), vi.to_i64()) {
+                                if (0..256).contains(&k64) && (0..256).contains(&v64) {
+                                    m[k64 as usize] = Some(v64 as u8);
+                                }
+                            }
+                        }
+                    }
+                    Some(m)
+                }
+                Some(_) => None,
+            };
+            let mut delete: Vec<u8> = Vec::new();
+            if let Some(Value::Bytes(dl)) = args.get(1) {
+                delete = (**dl).clone();
+            }
+            for (k, kw) in [("delete", true)] {
+                let _ = (k, kw);
+            }
+            for &byte in b.iter() {
+                if delete.contains(&byte) {
+                    continue;
+                }
+                match &table {
+                    Some(m) => {
+                        if let Some(Some(mapped)) = m.get(byte as usize) {
+                            out.push(*mapped);
+                        }
+                    }
+                    None => out.push(byte),
+                }
+            }
+            Some(Ok(Value::Bytes(Gc::new(out))))
         }
         (Value::Bytes(b), "decode") => {
             let codec = args

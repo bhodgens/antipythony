@@ -75,6 +75,10 @@ def get_annotations(obj, *, globals=None, locals=None, eval_str=False,
             anns = {}
         elif isinstance(obj, type):
             anns = {}
+        elif callable(obj):
+            # T1: function/callable objects (inspect.signature chain) — v0
+            # returns an empty mapping (annotations unevaluated).
+            anns = {}
         else:
             raise TypeError(f"{obj!r} is not a module, class, or callable.")
     return anns

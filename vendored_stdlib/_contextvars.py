@@ -29,3 +29,30 @@ class ContextVar:
 
     def reset(self, token):
         self._value, self._set = token
+
+
+class Token:
+    __slots__ = ("_var", "_old", "_used")
+
+    def __init__(self, var, old):
+        self._var = var
+        self._old = old
+        self._used = False
+
+
+class Context:
+    """Inert single-context surface: every ContextVar shares one slot, so
+    run()/copy() are identity-like operations (documented v0 gap)."""
+
+    def run(self, callable, *args, **kwargs):
+        return callable(*args, **kwargs)
+
+    def copy(self):
+        return self
+
+    def get(self, name):
+        raise AttributeError(name)
+
+
+def copy_context():
+    return Context()

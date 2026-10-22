@@ -59,6 +59,15 @@ fn s(x: impl Into<String>) -> Value {
 thread_local! {
     static SYS_MODULES: RefCell<HashMap<String, Value>> = RefCell::new(HashMap::new());
     static SYS_PATH: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    /// The PyList exposed as `sys.path` (attached by attach_sys_extras via
+    /// sys_path_value). Once set, this list object is the LIVE source of
+    /// truth: user code mutating `sys.path` (`sys.path.insert(0, ...)`,
+    /// `.append(...)`) mutates THIS list, and every importer lookup reads
+    /// through sys_path_entries() so runtime mutations are visible to the
+    /// file finder (previously the finder read the bootstrap Vec snapshot
+    /// and user mutations were invisible).
+    static SYS_PATH_VIEW: RefCell<Option<ap_obj::int::Gc<ap_obj::value::PyList>>> =
+        const { RefCell::new(None) };
 }
 
 /// sys.path bootstrap: [script_dir] + vendored_stdlib + **fetched
@@ -89,6 +98,21 @@ pub fn bootstrap_sys_path(script_dir: &str, extra: &[String]) {
     SYS_PATH.with(|p| {
         *p.borrow_mut() = path;
     });
+    // LIVE-list wiring: if a sys.path PyList view already exists (same-process
+    // re-bootstrap), sync the fresh bootstrap content into it so the view
+    // stays the single source of truth. If not, DROP any stale view so the
+    // next sys_path_value() rebuilds from this bootstrap.
+    let existing = SYS_PATH_VIEW.with(|v| v.borrow().clone());
+    if let Some(l) = existing {
+        let items: Vec<Value> =
+            SYS_PATH.with(|p| p.borrow().iter().map(|e| s(e.clone())).collect());
+        l.clear();
+        for it in items {
+            l.append(it);
+        }
+    } else {
+        SYS_PATH_VIEW.with(|v| *v.borrow_mut() = None);
+    }
 }
 
 /// The site-packages dir to join sys.path for a script in `script_dir`
@@ -140,15 +164,44 @@ fn vendored_stdlib_dir() -> Option<String> {
     p.to_str().map(|s| s.to_string())
 }
 
-/// Read access for the sys module surface (`sys.path` list value).
+/// Read access for the sys module surface (`sys.path` list value). The FIRST
+/// call creates the PyList, seeds it from the bootstrap Vec and installs it
+/// as the LIVE view (SYS_PATH_VIEW); every later call returns that same list
+/// object, so user mutations of `sys.path` persist and the importer sees them.
 pub fn sys_path_value() -> Value {
+    let existing = SYS_PATH_VIEW.with(|v| v.borrow().clone());
+    if let Some(l) = existing {
+        return Value::List(l);
+    }
     let items: Vec<Value> = SYS_PATH.with(|p| p.borrow().iter().map(|e| s(e.clone())).collect());
-    Value::List(ap_obj::value::PyList::from_vec(items))
+    let l = ap_obj::value::PyList::from_vec(items);
+    SYS_PATH_VIEW.with(|v| {
+        *v.borrow_mut() = Some(l.clone());
+    });
+    Value::List(l)
 }
 
 /// T1 (scrapy fix pass): raw sys.path entries for native package builders
 /// that need to point __path__ at their vendored subpackage dirs.
+///
+/// LIVE-list wiring: once a `sys.path` list object exists (SYS_PATH_VIEW,
+/// created by the first sys_path_value/attach_sys_extras), it IS the source
+/// of truth — user code mutating sys.path at runtime (sys.path.insert/
+/// .append) mutates that list, and this read (used by find_on_path and every
+/// other importer lookup) sees the mutation. Falls back to the bootstrap Vec
+/// for reads before sys is ever built.
 pub fn sys_path_entries() -> Vec<String> {
+    let view = SYS_PATH_VIEW.with(|v| v.borrow().clone());
+    if let Some(l) = view {
+        return l
+            .items()
+            .iter()
+            .filter_map(|v| match v {
+                Value::Str(sp) => Some(sp.as_str().to_string()),
+                _ => None,
+            })
+            .collect();
+    }
     SYS_PATH.with(|p| p.borrow().clone())
 }
 
@@ -164,8 +217,13 @@ pub fn sys_modules_value() -> Value {
 }
 
 /// Test seam: clear the cache (one Interpreter per process normally).
+/// The live sys.path view is dropped too: the next sys_path_value() rebuilds
+/// it from SYS_PATH (bootstrap_sys_path), mirroring the fresh-process runs
+/// the test suite spawns. (SYS_PATH itself intentionally persists like the
+/// bootstrap Vec did — reset_import_state never cleared it.)
 pub fn reset_import_state() {
     SYS_MODULES.with(|m| m.borrow_mut().clear());
+    SYS_PATH_VIEW.with(|v| *v.borrow_mut() = None);
 }
 
 /// Public read for the Import binding (top-package fetch) and the ap-gc
@@ -271,7 +329,8 @@ fn find_on_path(name: &str) -> Option<Found> {
     if !segment_is_safe(name) {
         return None;
     }
-    let entries = SYS_PATH.with(|p| p.borrow().clone());
+    // LIVE sys.path (see sys_path_entries): runtime insert/append visible.
+    let entries = sys_path_entries();
     for base in entries {
         let bp = std::path::Path::new(&base);
         let dir = bp.join(name);
@@ -573,6 +632,10 @@ pub fn import_module_inner(interp: &Rc<Interpreter>, name: &str) -> EResult {
         }
     }
     if let Some(m) = builtins_modules::get_or_make_module(interp, name) {
+        // T1 fix: native modules with a vendored package dir (importlib)
+        // carry __path__ so later dotted children resolve through the file
+        // finder (CPython _find_spec walks parent.__path__).
+        attach_native_vendored_path(&m);
         sys_modules_insert(name, &m);
         return Ok(m);
     }
@@ -686,6 +749,9 @@ fn import_file_module(interp: &Rc<Interpreter>, name: &str) -> EResult {
         }
         // Native registry dotted names (os.path under native os): the parent
         // resolved natively (no __path__) — delegate the whole remainder.
+        // Native-registry precedence stays intact (importlib.util,
+        // importlib.machinery, os.path resolve native, never vendored); only
+        // names with NO native surface fall through to the file finder.
         if parent_dir.is_none() && !prefix.is_empty() {
             if let Some(m) = builtins_modules::get_or_make_module(interp, &full) {
                 // T1: CPython puts EVERY walked prefix in sys.modules
@@ -693,6 +759,7 @@ fn import_file_module(interp: &Rc<Interpreter>, name: &str) -> EResult {
                 // binds the top package). Without this a later bare
                 // `import collections` re-runs the vendored collections.py
                 // exec and dies on native-only surfaces.
+                attach_native_vendored_path(&m);
                 sys_modules_insert(&full, &m);
                 link_parent_attr(&full, &m);
                 continue;
@@ -700,17 +767,33 @@ fn import_file_module(interp: &Rc<Interpreter>, name: &str) -> EResult {
         }
         let found = match &parent_dir {
             Some(dir) => find_submodule(dir, part),
-            // Leaf 02.02 note: CPython raises "No module named '<name>';
-            // '<parent>' is not a package" when a loaded parent has no
-            // __path__ (probes: 'os.nope', 'keyword.nope', 'abc.x'). ap's
-            // pre-existing fallthrough to find_on_path (plain message) is a
-            // documented native-module fidelity gap (Plan-02 surface, noted
-            // in the leaf PROGRESS entry) — forcing the suffix here would
-            // regress native `json.decoder` / `os.path` (ap's json/os are
-            // native, CPython's json is a package with __path__). The child
-            // segment is guarded by find_on_path's own segment check
-            // regardless, so no unsafe join is possible on this arm.
-            None => find_on_path(part),
+            // T1 fix: native parent with no dotted registry entry — CPython's
+            // _find_spec walks the PARENT's __path__ for the child segment
+            // (never a fresh top-level search). Native parents carry __path__
+            // pointing at their vendored package dir (attach helper), so the
+            // file finder must search there.
+            None => {
+                let parent_name = if prefix.len() >= 2 {
+                    Some(prefix[..prefix.len() - 1].join("."))
+                } else {
+                    None
+                };
+                match parent_name
+                    .and_then(|p| sys_modules_get(&p))
+                    .as_ref()
+                    .and_then(module_path_dir)
+                {
+                    // (a) parent has __path__ (native w/ vendored dir or a
+                    // file-finder package that lost the race): search it.
+                    Some(dir) => find_submodule(&dir, part),
+                    // (b) parent is native, on sys.modules, no __path__: not
+                    // a package — CPython message is the is-not-a-package
+                    // form, but the pre-existing fallthrough to find_on_path
+                    // stays for native json.decoder / os.path fidelity (see
+                    // the leaf 02.02 note below).
+                    None => find_on_path(part),
+                }
+            }
         };
         let found = match found {
             Some(f) => Some(f),
@@ -791,6 +874,117 @@ fn import_file_module(interp: &Rc<Interpreter>, name: &str) -> EResult {
     })
 }
 
+/// T1 fix: file-loaded packages get a minimal `__spec__` (name/origin/
+/// submodule_search_locations/loader). importlib.resources.files() reads
+/// package.__spec__ (wrap_spec → SpecLoaderAdapter → get_resource_reader);
+/// CPython source loaders always provide one. `loader` stays unset — the
+/// vendored resources chain suppress()es the AttributeError and falls back
+/// to CompatibilityFiles.files() (a path-backed Traversable), matching the
+/// CPython behavior our probe pins (files(...) is a PosixPath, not callable).
+fn attach_module_spec(name: &str) {
+    if let Some(Value::Obj(m)) = sys_modules_get(name) {
+        if let Some(ns) = &*m.module_ns.borrow_mut() {
+            if ns.get(&s("__spec__")).is_some() {
+                return;
+            }
+        }
+        let spec = PyObject::new(ap_obj::ObjKind::Namespace, "ModuleSpec");
+        {
+            let mut attrs = spec.attrs.borrow_mut();
+            let _ = attrs.set(s("name"), s(name));
+            let _ = attrs.set(s("origin"), Value::None);
+        }
+        // T1: CPython's SourceFileLoader implements get_resource_reader, so
+        // importlib.resources.files() returns a pathlib.Path for on-disk
+        // packages. Model the loader + reader as native namespaces; the
+        // reader's files() marker dispatches to pathlib.Path(pkg_dir).
+        {
+            let loader = PyObject::new(ap_obj::ObjKind::Namespace, "SourceFileLoader");
+            let reader = PyObject::new(ap_obj::ObjKind::Namespace, "ResourceReader");
+            if let Some(Value::List(pl)) = {
+                let b = m.module_ns.borrow();
+                b.as_ref().and_then(|ns| ns.get(&s("__path__")))
+            } {
+                if let Some(Value::Str(pdir)) = pl.items().first() {
+                    let files_fn =
+                        PyObject::new(ap_obj::ObjKind::BuiltinFn, "__ap_resreader__.files");
+                    *files_fn.slice_parts.borrow_mut() = vec![s(pdir.as_str().to_string())];
+                    let _ = reader
+                        .attrs
+                        .borrow_mut()
+                        .set(s("files"), Value::Obj(files_fn));
+                    let get_rr = PyObject::new(
+                        ap_obj::ObjKind::BuiltinFn,
+                        "__ap_loader__.get_resource_reader",
+                    );
+                    *get_rr.slice_parts.borrow_mut() = vec![Value::Obj(reader.clone())];
+                    let _ = loader
+                        .attrs
+                        .borrow_mut()
+                        .set(s("get_resource_reader"), Value::Obj(get_rr));
+                    let _ = spec.attrs.borrow_mut().set(s("loader"), Value::Obj(loader));
+                }
+            }
+        }
+        let sv = Value::Obj(spec.clone());
+        if let Some(ns) = &*m.module_ns.borrow_mut() {
+            if let Some(Value::List(pl)) = ns.get(&s("__path__")) {
+                if let Some(Value::Str(p)) = pl.items().first() {
+                    let _ = spec.attrs.borrow_mut().set(
+                        s("submodule_search_locations"),
+                        Value::List(ap_obj::value::PyList::from_vec(vec![s(p
+                            .as_str()
+                            .to_string())])),
+                    );
+                }
+            }
+        }
+        if let Some(ns) = &*m.module_ns.borrow_mut() {
+            let _ = ns.set(s("__spec__"), sv);
+        }
+    }
+}
+
+/// T1 fix: give a native module a `__path__` when its top-level name has a
+/// vendored package directory (`vendored_stdlib/<top>/`). CPython's
+/// _find_spec resolves dotted children by walking parent.__path__; native
+/// modules with vendored subpackages (importlib — importlib.resources) need
+/// the same surface or the child search degenerates to a top-level lookup.
+/// Idempotent: never overwrites an existing __path__ (the importlib builder
+/// already sets one; this generalizes to any future native top-level pkg).
+fn attach_native_vendored_path(m: &Value) {
+    let Value::Obj(o) = m else { return };
+    if o.kind != ap_obj::ObjKind::Module {
+        return;
+    }
+    let Some(ns) = &*o.module_ns.borrow() else {
+        return;
+    };
+    let Some(Value::Str(name)) = ns.get(&s("__name__")) else {
+        return;
+    };
+    // Only top-level native names can have a vendored dir.
+    let top = match name.as_str().split_once('.') {
+        Some((t, _)) => t,
+        None => name.as_str(),
+    };
+    if ns.get(&s("__path__")).is_some() {
+        return;
+    }
+    for base in sys_path_entries() {
+        let dir = std::path::Path::new(&base).join(top);
+        if dir.join("__init__.py").is_file() {
+            let _ = ns.set(
+                s("__path__"),
+                Value::List(ap_obj::value::PyList::from_vec(vec![s(dir
+                    .to_string_lossy()
+                    .into_owned())])),
+            );
+            return;
+        }
+    }
+}
+
 /// Extract `[pkg_dir]` from a module value's `__path__` (packages only).
 fn module_path_dir(m: &Value) -> Option<String> {
     if let Value::Obj(o) = m {
@@ -818,7 +1012,9 @@ fn exec_found(interp: &Rc<Interpreter>, name: &str, found: &Found) -> Result<(),
         }
         Found::Package { dir, init } => {
             let compiled = compile_file(init, true, dir.clone())?;
-            exec_compiled(interp, name, init, name, &compiled)
+            exec_compiled(interp, name, init, name, &compiled)?;
+            attach_module_spec(name);
+            Ok(())
         }
         Found::Namespace { dir } => {
             // Namespace package: empty namespace + __path__, no body to run.
@@ -1302,7 +1498,7 @@ pub(crate) fn augment_with_vendored(interp: &Rc<Interpreter>, name: &str, m: &Va
         }
     }
     // Locate the vendored file.
-    let entries = SYS_PATH.with(|p| p.borrow().clone());
+    let entries = sys_path_entries();
     for base in entries {
         let file = std::path::Path::new(&base).join(format!("{name}.py"));
         if !file.is_file() {
@@ -1320,11 +1516,17 @@ pub(crate) fn augment_with_vendored(interp: &Rc<Interpreter>, name: &str, m: &Va
         // Best-effort body run (vendored namesakes may pull imports we
         // don't serve — ignore failures and copy what landed).
         let _ = run_loaded(interp, &loaded, &stmts);
-        // Copy names the native namespace lacks.
+        // Copy names the native namespace lacks. T1 (typing): the vendored
+        // defaultdict is a REAL dict subclass (dict-backing + __missing__);
+        // the native interned Type stub constructs plain dicts and breaks
+        // typing._overload_registry. Vendored definitions WIN for names on
+        // this override list (native identity for everything else).
+        const VENDORED_WINS: &[&str] = &["defaultdict"];
         if let Value::Obj(mo) = m {
             if let Some(cns) = &*mo.module_ns.borrow_mut() {
                 for (k, v) in loaded.ns.items() {
-                    if cns.get(&k).is_none() {
+                    let wins = matches!(&k, Value::Str(kv) if VENDORED_WINS.contains(&kv.as_str()));
+                    if wins || cns.get(&k).is_none() {
                         let _ = cns.set(k, v);
                     }
                 }

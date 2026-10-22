@@ -724,6 +724,8 @@ fn registry() -> &'static [(&'static str, ModuleBuilder)] {
         // 04.01: minimal struct surface — six.py does
         // `struct.Struct(">B").pack(n)` at module scope (byte-exact int2byte).
         ("struct", crate::structmod::build_struct),
+        // T1 (w3lib.url): unicodedata.normalize for NFKC URL cleanup.
+        ("unicodedata", build_unicodedata),
         ("string2", build_string), // dedup guard, never matched
     ]
 }
@@ -1472,6 +1474,16 @@ fn build__collections(_i: &crate::frame::Interpreter) -> Value {
     ] {
         let _ = ns.set(Value::Str(PyString::new(n)), interned_type_pub(n));
     }
+    finish(m, ns)
+}
+
+/// T1 (w3lib.url): unicodedata — only the normalize() surface the vendored
+/// URL-cleanup path calls (NFC/NFD/NFKC/NFKD). Rust's unicode-normalization
+/// implements the same Unicode algorithms CPython's C module does.
+fn build_unicodedata(_i: &crate::frame::Interpreter) -> Value {
+    let (m, ns) = new_module("unicodedata");
+    fn1(&ns, "unicodedata", "normalize");
+    ns_const(&ns, "unidata_version", s("16.0.0"));
     finish(m, ns)
 }
 
@@ -3475,6 +3487,44 @@ fn build_operator(_i: &crate::frame::Interpreter) -> Value {
     finish(m, ns)
 }
 
+fn call_unicodedata(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Option<BResult> {
+    if name != "normalize" {
+        return None;
+    }
+    let form = match args.first() {
+        Some(Value::Str(f)) => f.as_str().to_string(),
+        _ => {
+            return Some(Err(raise(
+                "TypeError",
+                "normalize() argument 1 must be str",
+            )))
+        }
+    };
+    let text = match args.get(1) {
+        Some(Value::Str(t)) => t.as_str().to_string(),
+        _ => {
+            return Some(Err(raise(
+                "TypeError",
+                "normalize() argument 2 must be str",
+            )))
+        }
+    };
+    use unicode_normalization::UnicodeNormalization;
+    let out: String = match form.as_str() {
+        "NFC" => text.nfc().collect(),
+        "NFD" => text.nfd().collect(),
+        "NFKC" => text.nfkc().collect(),
+        "NFKD" => text.nfkd().collect(),
+        other => {
+            return Some(Err(raise(
+                "ValueError",
+                format!("invalid normalization form {other}"),
+            )))
+        }
+    };
+    Some(Ok(s(out)))
+}
+
 fn binop_by_name(name: &str, a: &Value, b: &Value) -> BResult {
     use ap_obj::ops::BinOp;
     let op = match name {
@@ -4097,6 +4147,10 @@ fn build_functools(_i: &crate::frame::Interpreter) -> Value {
         "singledispatch",
         // 02.04: unittest.loader sorts test names with cmp_to_key.
         "cmp_to_key",
+        // T1 (vendored ipaddress): functools.total_ordering decorates the
+        // IPv4Address/IPv6Address classes; the marker just needs to exist and
+        // pass the class through (ordering dunders are v0-inert).
+        "total_ordering",
     ] {
         fn1(&ns, "functools", n);
     }
@@ -4183,6 +4237,13 @@ pub fn call_functools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
                 }
                 *o.repr_text.borrow_mut() = Some("<functools.cmp_to_key object>".to_string());
                 return Ok(Value::Obj(o));
+            }
+            // T1 (vendored ipaddress): total_ordering(cls) — CPython wraps the
+            // class adding rich comparisons from __eq__/__lt__; v0 passes the
+            // class through (ordering dunders inert, equality still works).
+            "total_ordering" => {
+                let r = args.first().cloned().unwrap_or(Value::None);
+                return Ok(r);
             }
             // 02.04a fix pass (BUG-A follow-on): pass-through decorators.
             // Two-stage forms (`@lru_cache(...)`) park the decorator in an
@@ -4353,6 +4414,18 @@ fn build_string(_i: &crate::frame::Interpreter) -> Value {
         s("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~ \t\n\r\u{0b}\u{0c}"),
     );
     fn1(&ns, "string", "capwords");
+    // T1 (logging): string.Template — a real user class built via the
+    // 3-arg type() machinery would be heavy; the shim is a namespace TYPE
+    // whose instantiation routes through call_type_ctor (template built at
+    // call time in Python is out of scope — substitute via the marker).
+    let _ = ns.set(
+        Value::Str(PyString::new("Template")),
+        interned_type_pub("Template"),
+    );
+    let _ = ns.set(
+        Value::Str(PyString::new("Formatter")),
+        interned_type_pub("Formatter"),
+    );
     finish(m, ns)
 }
 
@@ -7597,7 +7670,15 @@ fn hex_bytes(hex: &str) -> Vec<u8> {
 
 fn build_base64(_i: &crate::frame::Interpreter) -> Value {
     let (m, ns) = new_module("base64");
-    for n in ["b64encode", "b64decode", "b16encode", "b16decode"] {
+    // T1 (xml.parsers.expat): encodebytes/decodebytes surfaces.
+    for n in [
+        "b64encode",
+        "b64decode",
+        "b16encode",
+        "b16decode",
+        "encodebytes",
+        "decodebytes",
+    ] {
         fn1(&ns, "base64", n);
     }
     finish(m, ns)
@@ -7605,7 +7686,16 @@ fn build_base64(_i: &crate::frame::Interpreter) -> Value {
 
 fn build_binascii(_i: &crate::frame::Interpreter) -> Value {
     let (m, ns) = new_module("binascii");
-    for n in ["hexlify", "unhexlify", "a2b_hex", "b2a_hex", "crc32"] {
+    // T1 (xml.parsers.expat): b2a/a2b_base64 for the expat wrapper.
+    for n in [
+        "hexlify",
+        "unhexlify",
+        "a2b_hex",
+        "b2a_hex",
+        "b2a_base64",
+        "a2b_base64",
+        "crc32",
+    ] {
         fn1(&ns, "binascii", n);
     }
     finish(m, ns)
@@ -7621,6 +7711,28 @@ pub fn call_base64(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> O
             "b64encode" => {
                 let data = bytes_arg(required(args, "b64encode")?)?;
                 Ok(Value::Bytes(Gc::new(b64_encode(&data))))
+            }
+            // T1: encodebytes = base64.encodebytes — 76-char chunked lines.
+            "encodebytes" => {
+                let data = bytes_arg(required(args, name)?)?;
+                let full = b64_encode(&data);
+                let mut out = Vec::with_capacity(full.len() + full.len() / 76 + 2);
+                for chunk in full.chunks(76) {
+                    out.extend_from_slice(chunk);
+                    out.push(b'\n');
+                }
+                Ok(Value::Bytes(Gc::new(out)))
+            }
+            "decodebytes" => {
+                let data = bytes_arg(required(args, name)?)?;
+                let cleaned: Vec<u8> = data
+                    .iter()
+                    .copied()
+                    .filter(|b| !b.is_ascii_whitespace())
+                    .collect();
+                b64_decode(&cleaned)
+                    .map(|b| Value::Bytes(Gc::new(b)))
+                    .map_err(|()| raise("binascii.Error", "Invalid base64-encoded string"))
             }
             "b64decode" => {
                 let data = bytes_arg(required(args, "b64decode")?)?;
@@ -7721,6 +7833,23 @@ pub fn call_binascii(name: &str, args: &[Value], _kwargs: &[(String, Value)]) ->
                     out.extend(format!("{b:02x}").into_bytes());
                 }
                 Ok(Value::Bytes(Gc::new(out)))
+            }
+            // T1 (xml.parsers.expat): b2a_base64(data, /, *, newline=True) —
+            // base64 + trailing newline (CPython appends b"\n" by default).
+            "b2a_base64" => {
+                let data = bytes_arg(required(args, name)?)?;
+                let mut out = b64_encode(&data);
+                out.push(b'\n');
+                Ok(Value::Bytes(Gc::new(out)))
+            }
+            "a2b_base64" => {
+                let mut data = bytes_arg(required(args, name)?)?;
+                if data.last() == Some(&b'\n') {
+                    data.pop();
+                }
+                b64_decode(&data)
+                    .map(|b| Value::Bytes(Gc::new(b)))
+                    .map_err(|()| raise("binascii.Error", "Invalid base64-encoded string"))
             }
             "unhexlify" | "a2b_hex" => {
                 let txt = match required(args, name)? {
@@ -8320,6 +8449,7 @@ pub fn call_native(
         "binascii" => call_binascii(fname, args, kwargs),
         "re" => call_re(fname, args, kwargs),
         "_colorize" => call_colorize(fname, args, kwargs),
+        "unicodedata" => call_unicodedata(fname, args, kwargs),
         "_codecs" => call_codecs(fname, args, kwargs),
         "_tokenize" => call_tokenize(fname, args, kwargs),
         // 02.03b-fix: _signal — no-op stubs.
@@ -8621,6 +8751,21 @@ pub fn call_native_object(
 /// native-type instances, hexdigest objects). Called from the attr_get hook.
 pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
     if let Value::Obj(o) = obj {
+        // T1 (importlib.resources.files → wrap_spec): every module object
+        // exposes a minimal __spec__ (name-only ModuleSpec).
+        if o.kind == ap_obj::ObjKind::Module && name == "__spec__" {
+            if let Some(ns) = &*o.module_ns.borrow() {
+                if let Some(Value::Str(mn)) = ns.get(&s("__name__")) {
+                    let spec = PyObject::new(ap_obj::ObjKind::Namespace, "ModuleSpec");
+                    {
+                        let mut a = spec.attrs.borrow_mut();
+                        let _ = a.set(s("name"), s(mn.as_str().to_string()));
+                    }
+                    return Some(Value::Obj(spec));
+                }
+            }
+            return Some(Value::None);
+        }
         match o.kind {
             // 02.07: threading/queue native-object attribute surface. Runs
             // FIRST so thread.name/daemon/ident and queue emptiness win over
@@ -10767,6 +10912,30 @@ pub fn call_builtin_values(
                     return Ok(i(b.len() as i64));
                 }
                 Err(raise("SystemError", "bad receiver"))
+            }
+            // T1: bytes.maketrans(from, to) — full 256-entry int map.
+            ("pybytes", "maketrans") if false => {
+                let from_b = match a(1) {
+                    Some(Value::Bytes(b)) => (**b).to_vec(),
+                    _ => return Err(raise("TypeError", "maketrans expected bytes")),
+                };
+                let to_b = match a(2) {
+                    Some(Value::Bytes(b)) => (**b).to_vec(),
+                    _ => Vec::new(),
+                };
+                let d = PyDict::new();
+                for i in 0u16..256u16 {
+                    let _ = d.set(Value::Int(Int::from_i64(i as i64)), {
+                        let byte = i as u8;
+                        match from_b.iter().position(|&f| f == byte) {
+                            Some(n) => Value::Int(Int::from_i64(
+                                to_b.get(n).copied().unwrap_or(byte) as i64,
+                            )),
+                            None => Value::Int(Int::from_i64(byte as i64)),
+                        }
+                    });
+                }
+                return Ok(Value::Dict(d));
             }
             // ==== dict surface: fromkeys / views / update forms ====
             ("pystr", "maketrans") => {

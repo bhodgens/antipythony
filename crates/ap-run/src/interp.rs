@@ -786,7 +786,15 @@ fn exec_stmt(
                 let m = importer::import_module(interp, &dotted)?;
                 // `import a.b` binds the TOP package: fetch it back through
                 // sys.modules (the walker guarantees every prefix is there).
-                let m = if a.path.len() > 1 {
+                // T1 fix: `import a.b as c` binds a.b itself (CPython
+                // _handle_fromlist on the aliased form) — os.path as op was
+                // binding `os`, so op.realpath died with AttributeError.
+                // T1 fix: `import a.b as c` binds a.b itself (CPython
+                // _handle_fromlist on the aliased form) — os.path as op was
+                // binding `os`, so op.realpath died with AttributeError.
+                let m = if a.alias.is_some() && a.path.len() > 1 {
+                    importer::sys_modules_get(&dotted).unwrap_or(m)
+                } else if a.path.len() > 1 {
                     importer::sys_modules_get(&a.path[0]).unwrap_or(m)
                 } else {
                     m
@@ -2447,11 +2455,15 @@ fn eval_binop(a: &Value, op: BinOp, b: &Value) -> EResult {
         }
     }
     // 02.04a (interp bug #7b): PEP 604 union `int | str` — types.py reads
-    // type(int | str) at import. v0: stub _Union value.
+    // type(int | str) at import. T1: produce the SAME __union__ Opaque the
+    // main interception builds (parts parked) so chains like
+    // `(str | bytes) | None` flatten instead of TypeErroring on a Namespace
+    // stub that nothing downstream recognizes.
     if matches!(op, BinOp::BitOr) {
         let is_type = |v: &Value| matches!(v, Value::Obj(o) if o.kind == ap_obj::ObjKind::Type);
         if is_type(a) && is_type(b) {
             let u = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "_Union");
+            *u.slice_parts.borrow_mut() = vec![a.clone(), b.clone()];
             return Ok(Value::Obj(u));
         }
     }
@@ -2475,15 +2487,59 @@ fn eval_binop(a: &Value, op: BinOp, b: &Value) -> EResult {
         };
         let _ = iop_name; // augmented ops route through exec_stmt's AugAssign
                           // Union types: X | Y on class values (S-03-31 isinstance union form).
+                          // T1 (w3lib/typing conformance): CPython's type.__or__ (PEP 604) makes
+                          // `|` valid across ALL class-like operands — builtin Types, user
+                          // classes, existing unions (flatten), and typing._GenericAlias
+                          // placeholders (`Any | Sequence[bytes]`). Previously only the
+                          // UserClass|UserClass pair unioned; everything else TypeErrored.
         if op == BinOp::BitOr {
-            let both_classes = matches!(
-                (a, b),
-                (Value::Obj(x), Value::Obj(y))
-                    if x.kind == ap_obj::ObjKind::UserClass && y.kind == ap_obj::ObjKind::UserClass
-            );
-            if both_classes {
+            let is_classlike = |v: &Value| match v {
+                Value::Obj(o)
+                    if o.kind == ap_obj::ObjKind::UserClass
+                        || o.kind == ap_obj::ObjKind::Type
+                        || (o.kind == ap_obj::ObjKind::Opaque
+                            && o.name == "typing._GenericAlias")
+                        // Type.__getitem__-shaped alias (dict[...], list[...]).
+                        || (o.kind == ap_obj::ObjKind::Namespace
+                            && o.name == "_GenericAlias") =>
+                {
+                    true
+                }
+                // TypeVar/ParamSpec markers (`_VT | None`, scrapy datatypes).
+                Value::Obj(o)
+                    if o.kind == ap_obj::ObjKind::Opaque
+                        && o.name.starts_with("_typing.")
+                        && o.slice_parts
+                            .borrow()
+                            .first()
+                            .map(|p| matches!(p, Value::Str(ps) if ps.as_str() == "__ap_typevar__"))
+                            .unwrap_or(false) =>
+                {
+                    true
+                }
+                Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque && o.name == "__union__" => true,
+                // The Type|Type stub shape (types.py UnionType probe).
+                Value::Obj(o) if o.kind == ap_obj::ObjKind::Namespace && o.name == "_Union" => true,
+                // `X | None` (PEP 604): None is a valid union arm.
+                Value::None => true,
+                _ => false,
+            };
+            if is_classlike(a) && is_classlike(b) {
+                // Flatten nested unions: (X|Y) | Z -> arms [X, Y, Z].
+                let mut arms: Vec<Value> = Vec::new();
+                for v in [a, b] {
+                    if let Value::Obj(o) = v {
+                        if (o.kind == ap_obj::ObjKind::Opaque && o.name == "__union__")
+                            || (o.kind == ap_obj::ObjKind::Namespace && o.name == "_Union")
+                        {
+                            arms.extend(o.slice_parts.borrow().iter().cloned());
+                            continue;
+                        }
+                    }
+                    arms.push(v.clone());
+                }
                 let u = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "__union__");
-                *u.slice_parts.borrow_mut() = vec![a.clone(), b.clone()];
+                *u.slice_parts.borrow_mut() = arms;
                 return Ok(Value::Obj(u));
             }
         }
@@ -2570,6 +2626,49 @@ fn eval_binop(a: &Value, op: BinOp, b: &Value) -> EResult {
         BinOp::BitXor => OB::BitXor,
         BinOp::BitAnd => OB::BitAnd,
     };
+    // T1 (sysconfig): dict | dict — PEP 584 merge (right side wins).
+    if op == BinOp::BitOr {
+        if let (Value::Dict(a), Value::Dict(b)) = (a, b) {
+            let out = ap_obj::dict::PyDict::new();
+            for (k, v) in a.items() {
+                let _ = out.set(k.clone(), v.clone());
+            }
+            for (k, v) in b.items() {
+                let _ = out.set(k.clone(), v.clone());
+            }
+            return Ok(Value::Dict(out));
+        }
+    }
+    // T1 (vendored ipaddress): `'%s/%d' % (net_addr, prefixlen)` — %d/%i/%x
+    // on a UserInstance converts via __int__/__index__. ap-obj's percent
+    // formatter can't dispatch user dunders (leaf crate); normalize here.
+    if op == BinOp::Mod {
+        if let Value::Str(_) = a {
+            let interp = current_interp_for_bindings();
+            let norm = |v: &Value| -> Value {
+                if !matches!(v, Value::Obj(_)) {
+                    return v.clone();
+                }
+                for slot in ["__int__", "__index__"] {
+                    if let Some((f, _)) = crate::classes::special_lookup(&interp, v, slot) {
+                        if let Ok(r) = call_value_pub3(&f, std::slice::from_ref(v)) {
+                            if matches!(r, Value::Int(_)) {
+                                return r;
+                            }
+                        }
+                    }
+                }
+                v.clone()
+            };
+            if let Value::Tuple(t) = b {
+                let args: Vec<Value> = t.0.iter().map(norm).collect();
+                return ap_obj::ops::binop(a, mapped, &Value::Tuple(Gc::new(Tuple(args))))
+                    .map_err(Flow::from_py);
+            }
+            let nb = norm(b);
+            return ap_obj::ops::binop(a, mapped, &nb).map_err(Flow::from_py);
+        }
+    }
     ap_obj::ops::binop(a, mapped, b).map_err(Flow::from_py)
 }
 
@@ -5712,6 +5811,17 @@ fn class_isinstance(interp: &Rc<Interpreter>, args: &[Value]) -> EResult {
         if is_special_form_marker {
             return Ok(Value::Bool(false));
         }
+        // T1 (scrapy.utils.python): isinstance(func, partial) — the ap
+        // functools.partial is a marker fn '<partial:...>'; treat the marker
+        // names 'partial'/'functools.partial' as pseudo-types matching
+        // partial markers.
+        if matches!(t, Value::Obj(o) if o.kind == ap_obj::ObjKind::BuiltinFn
+            && matches!(o.name.as_str(), "partial" | "functools.partial"))
+        {
+            let is_partial = matches!(v, Value::Obj(vo) if vo.kind == ap_obj::ObjKind::BuiltinFn
+                && vo.name.starts_with("<partial:"));
+            return Ok(Value::Bool(is_partial));
+        }
         if is_descr_type || is_descr_marker {
             // Subject of the same descriptor kind -> True (enum.py
             // isinstance(value, staticmethod) where value IS the descriptor).
@@ -6103,6 +6213,13 @@ fn user_compare_value(
     None
 }
 fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option<Value>, Flow> {
+    // T1 (email._policybase._extend_docstrings iterates cls.__dict__ and
+    // reads attr.__doc__ on ANY value — bools, frozensets, weaksets):
+    // every CPython object exposes __doc__; primitives carry None. Handled
+    // up front so per-kind arms that Ok(None) don't turn it AttributeError.
+    if name == "__doc__" {
+        return Ok(Some(Value::None));
+    }
     // __class__ on any builtin value (V045: fs.__class__ is frozenset).
     // Type objects are INTERNED so `x.__class__ is frozenset` holds.
     if name == "__class__" {
@@ -6194,6 +6311,22 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
             if name == "__name__" || name == "__qualname__" {
                 return Ok(Some(Value::Str(PyString::new(o.name.clone()))));
             }
+            // T1 (inspect.signature chain): __defaults__/__kwdefaults__ on
+            // marker fns — empty tuple / None (no bound defaults).
+            if name == "__defaults__" {
+                return Ok(Some(Value::Tuple(Gc::new(Tuple(Vec::new())))));
+            }
+            if name == "__kwdefaults__" {
+                return Ok(Some(Value::None));
+            }
+            // T1 (w3lib.http/overload chain): identity shim — plain functions
+            // answer __func__ with themselves so `x.__func__ is x` probes in
+            // inspect/_finddoc-style code don't AttributeError. (CPython plain
+            // functions lack __func__; the shim only risks misclassifying in
+            // code guarded by hasattr(x, '__func__').)
+            if name == "__func__" {
+                return Ok(Some(obj.clone()));
+            }
         }
     }
     // 02.04a fix pass: class-statement keyword marker — the lowering emits
@@ -6216,6 +6349,28 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
         }
         if name == "__name__" {
             return Ok(Some(Value::Str(PyString::new("singledispatch"))));
+        }
+    }
+    // T1 (importlib.resources.files → wrap_spec): every module object
+    // exposes a minimal __spec__ (name-only) so package_to_anchor chains
+    // work; real specs are a documented v0 gap.
+    if name == "__spec__" {
+        if let Value::Obj(o) = obj {
+            if o.kind == ap_obj::ObjKind::Module {
+                if let Some(ns) = &*o.module_ns.borrow() {
+                    if let Some(Value::Str(mn)) = ns.get(&Value::Str(PyString::new("__name__"))) {
+                        let spec = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "ModuleSpec");
+                        {
+                            let mut a = spec.attrs.borrow_mut();
+                            let _ = a.set(
+                                Value::Str(PyString::new("name")),
+                                Value::Str(PyString::new(mn.as_str().to_string())),
+                            );
+                        }
+                        return Ok(Some(Value::Obj(spec)));
+                    }
+                }
+            }
         }
     }
     // 02.03b: `_value_` on builtin str/int "enum members" (StrEnum/IntEnum
@@ -6469,6 +6624,11 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                         Value::Str(PyString::new("co_name")),
                         Value::Str(PyString::new(o.name.clone())),
                     );
+                    // T1 (logging stack-walk): co_filename for findsource.
+                    let _ = code.attrs.borrow_mut().set(
+                        Value::Str(PyString::new("co_filename")),
+                        Value::Str(PyString::new(_interp.script_path.clone())),
+                    );
                     let _ = code.attrs.borrow_mut().set(
                         Value::Str(PyString::new("co_freevars")),
                         Value::Tuple(Gc::new(Tuple(Vec::new()))),
@@ -6476,6 +6636,37 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                     let _ = code.attrs.borrow_mut().set(
                         Value::Str(PyString::new("co_firstlineno")),
                         Value::Int(ap_obj::Int::from_i64(1)),
+                    );
+                    // T1 (inspect.signature on builtin markers, e.g.
+                    // xmlrpclib.dumps via scrapy get_func_args): signature
+                    // machinery reads co_argcount / co_argdefs.
+                    let _ = code.attrs.borrow_mut().set(
+                        Value::Str(PyString::new("co_argcount")),
+                        Value::Int(ap_obj::Int::from_i64(0)),
+                    );
+                    let _ = code.attrs.borrow_mut().set(
+                        Value::Str(PyString::new("co_posonlyargcount")),
+                        Value::Int(ap_obj::Int::from_i64(0)),
+                    );
+                    let _ = code.attrs.borrow_mut().set(
+                        Value::Str(PyString::new("co_kwonlyargcount")),
+                        Value::Int(ap_obj::Int::from_i64(0)),
+                    );
+                    let _ = code.attrs.borrow_mut().set(
+                        Value::Str(PyString::new("co_nlocals")),
+                        Value::Int(ap_obj::Int::from_i64(0)),
+                    );
+                    let _ = code.attrs.borrow_mut().set(
+                        Value::Str(PyString::new("co_stacksize")),
+                        Value::Int(ap_obj::Int::from_i64(0)),
+                    );
+                    let _ = code.attrs.borrow_mut().set(
+                        Value::Str(PyString::new("co_names")),
+                        Value::Tuple(Gc::new(Tuple(Vec::new()))),
+                    );
+                    let _ = code.attrs.borrow_mut().set(
+                        Value::Str(PyString::new("co_defaults")),
+                        Value::Tuple(Gc::new(Tuple(Vec::new()))),
                     );
                     let _ = code.attrs.borrow_mut().set(
                         Value::Str(PyString::new("co_varnames")),
@@ -6740,6 +6931,30 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                             )
                             .map(Some);
                         }
+                    }
+                    // T1 (importlib.resources.files → wrap_spec): every
+                    // module object exposes a minimal name-only __spec__.
+                    if name == "__spec__" {
+                        if let Some(Value::Str(mn)) = ns.get(&Value::Str(PyString::new("__name__")))
+                        {
+                            let spec =
+                                ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "ModuleSpec");
+                            let _ = spec.attrs.borrow_mut().set(
+                                Value::Str(PyString::new("name")),
+                                Value::Str(PyString::new(mn.as_str().to_string())),
+                            );
+                            // wrap_spec reads spec.loader (getattr chain);
+                            // a bare namespace object suffices — missing
+                            // get_resource_reader falls back to None.
+                            let loader =
+                                ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "Loader");
+                            let _ = spec
+                                .attrs
+                                .borrow_mut()
+                                .set(Value::Str(PyString::new("loader")), Value::Obj(loader));
+                            return Ok(Some(Value::Obj(spec)));
+                        }
+                        return Ok(Some(Value::None));
                     }
                 }
                 Ok(None)
@@ -7012,6 +7227,12 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                         let m = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "str.maketrans");
                         Ok(Some(Value::Obj(m)))
                     }
+                    // T1: bytes.maketrans (classmethod) — same marker style.
+                    "maketrans" if o.name == "bytes" => {
+                        let m =
+                            ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "bytes.maketrans");
+                        Ok(Some(Value::Obj(m)))
+                    }
                     // float.fromhex (V068): builtin marker dispatched by name.
                     "fromhex" if o.name == "float" => {
                         let m = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "float.fromhex");
@@ -7108,6 +7329,24 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
         | Value::Tuple(_)
         | Value::Set(_)
         | Value::Frozen(_) => {
+            // T1 (vendored dataclasses): dunder reads on builtin INSTANCES
+            // (`set().__contains__`-style probe of real dunders). Route the
+            // object-virtual markers so the class-level virtual path answers.
+            // SCOPE: set/frozenset only — blanket dunder markers on str/dict/
+            // list broke enum's class-iteration paths (list(C) lost members).
+            if matches!(obj, Value::Set(_) | Value::Frozen(_))
+                && name.starts_with("__")
+                && name.ends_with("__")
+                && name.len() > 4
+                && !matches!(name, "__class__" | "__dict__" | "__doc__")
+            {
+                let m = ap_obj::PyObject::new(
+                    ap_obj::ObjKind::BuiltinFn,
+                    &format!("__object_virtual_{}__", name.trim_matches('_')),
+                );
+                *m.slice_parts.borrow_mut() = vec![obj.clone()];
+                return Ok(Some(Value::Obj(m)));
+            }
             // 02.04a fix pass (BUG-B): bind ANY method-name read on a builtin
             // value — the methods.rs dispatch table owns arity/shape errors
             // at call time. The old hand-written allowlist dropped names the
@@ -7117,10 +7356,17 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 let m =
                     ap_obj::PyObject::with_self(ap_obj::ObjKind::BoundMethod, name, obj.clone());
                 Ok(Some(Value::Obj(m)))
+            } else if name == "__doc__" {
+                // T1 (email._policybase): primitive __doc__ reads → None.
+                Ok(Some(Value::None))
             } else {
                 Ok(None)
             }
         }
+        // T1 (email._policybase._extend_docstrings): `attr.__doc__` on
+        // primitive-valued class attributes (bools etc.) — CPython exposes
+        // __doc__ on every type's instances; primitives carry None.
+        _ if name == "__doc__" => Ok(Some(Value::None)),
         _ => Ok(None),
     }
 }

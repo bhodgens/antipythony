@@ -228,6 +228,11 @@ impl Frame {
                 }
             }
         }
+        if let Some(cns) = &self.class_ns {
+            if cns.pop(&Value::Str(ap_obj::PyString::new(name))).is_some() {
+                return true;
+            }
+        }
         self.globals
             .pop(&Value::Str(ap_obj::PyString::new(name)))
             .is_some()

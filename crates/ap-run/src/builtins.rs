@@ -295,6 +295,26 @@ pub fn builtin_int(interp: &Interpreter, args: &[Value]) -> BResult {
                     let text = String::from_utf8_lossy(b);
                     parse_int_str(interp, &text, 10)
                 }
+                // CPython int(x) protocol: __int__ first, then __index__
+                // (user classes; vendored ipaddress IPv4Address.__int__).
+                Value::Obj(_) => {
+                    if let Some((f, _)) = crate::classes::special_lookup(interp, v, "__int__") {
+                        let r = crate::interp::call_value_pub3(&f, std::slice::from_ref(v))?;
+                        if matches!(r, Value::Int(_)) {
+                            return Ok(r);
+                        }
+                    }
+                    if let Some((f, _)) = crate::classes::special_lookup(interp, v, "__index__") {
+                        let r = crate::interp::call_value_pub3(&f, std::slice::from_ref(v))?;
+                        if matches!(r, Value::Int(_)) {
+                            return Ok(r);
+                        }
+                    }
+                    Err(raise(
+                        "TypeError",
+                        format!("int() argument must be a string, a bytes-like object or a real number, not '{}'", v.type_name()),
+                    ))
+                }
                 _ => Err(raise(
                     "TypeError",
                     format!("int() argument must be a string, a bytes-like object or a real number, not '{}'", v.type_name()),
@@ -760,7 +780,27 @@ fn check_isinstance(v: &Value, t: &Value) -> Result<Value, Flow> {
             {
                 return Ok(Value::Bool(false));
             }
+            // T1 (scrapy.utils.python get_func_args_dict): isinstance(func,
+            // partial) — the ap functools.partial is the '<partial:...>'
+            // marker fn; match those markers.
+            if o.name == "partial" {
+                let is_partial = matches!(v, Value::Obj(vo) if vo.kind == ap_obj::ObjKind::BuiltinFn
+                    && vo.name.starts_with("<partial:"));
+                return Ok(Value::Bool(is_partial));
+            }
             Ok(Value::Bool(type_matches(v, &o.name)))
+        }
+        // T1 (scrapy.utils.python get_func_args_dict): isinstance(func,
+        // partial) — the ap functools.partial is the '<partial:...>' marker.
+        _ if matches!(
+            t,
+            Value::Obj(o) if o.kind == ap_obj::ObjKind::BuiltinFn
+                && matches!(o.name.as_str(), "partial" | "functools.partial")
+        ) =>
+        {
+            let is_partial = matches!(v, Value::Obj(vo) if vo.kind == ap_obj::ObjKind::BuiltinFn
+                && vo.name.starts_with("<partial:"));
+            Ok(Value::Bool(is_partial))
         }
         _ => Err(raise(
             "TypeError",
@@ -1546,6 +1586,16 @@ pub fn make_sys_module(interp: &Interpreter) -> Value {
         Value::Str(PyString::new("builtin_module_names")),
         Value::Tuple(Gc::new(Tuple(Vec::new()))),
     );
+    // T1 (vendored dataclasses): sys._clear_type_descriptors — 3.14 C-API
+    // surface; our class model keeps no separate descriptor caches, so an
+    // inert callable is semantically exact.
+    let _ = ns.set(
+        Value::Str(PyString::new("_clear_type_descriptors")),
+        Value::Obj(ap_obj::PyObject::new(
+            ap_obj::ObjKind::BuiltinFn,
+            "sys._clear_type_descriptors",
+        )),
+    );
     // 02.03b-fix: sys.path config surface (sysconfig/site paths read it).
     for (k, v) in [
         ("base_prefix", "/usr/local"),
@@ -1556,12 +1606,19 @@ pub fn make_sys_module(interp: &Interpreter) -> Value {
         ("implementation", "cpython"),
         ("dont_write_bytecode", "True"),
         ("_base_executable", "/usr/local/bin/python3.14"),
+        ("executable", "/usr/local/bin/python3.14"),
     ] {
         let val = match v {
             "True" => Value::Bool(true),
             other => Value::Str(PyString::new(other)),
         };
         let _ = ns.set(Value::Str(PyString::new(k)), val);
+    }
+    // T1 (sysconfig darwin): sys._framework — framework-name mapping;
+    // an empty mapping keeps sysconfig's probe inert on this runtime.
+    {
+        let fw = PyDict::new();
+        let _ = ns.set(Value::Str(PyString::new("_framework")), Value::Dict(fw));
     }
     let _ = ns.set(
         Value::Str(PyString::new("maxsize")),
@@ -1673,6 +1730,11 @@ pub fn make_sys_module(interp: &Interpreter) -> Value {
         let _ = attrs.set(
             Value::Str(PyString::new("suffix_bits")),
             Value::Int(Int::Smi(0)),
+        );
+        // T1 (_pydecimal): sys.hash_info.nan (hash sentinel for NaN).
+        let _ = attrs.set(
+            Value::Str(PyString::new("nan")),
+            Value::Int(Int::from_i64(0)),
         );
     }
     let _ = ns.set(Value::Str(PyString::new("hash_info")), Value::Obj(hi));
@@ -1889,6 +1951,8 @@ fn builtin_marker(name: &str) -> Value {
 /// Dispatch a sys-module attribute access that is a function marker.
 pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<BResult> {
     match name {
+        // T1 (vendored dataclasses): inert (see make_sys_module).
+        "_clear_type_descriptors" => Some(Ok(Value::None)),
         // 02.08-full part 1: name-surface fns.
         "intern" => {
             // Canonical-instance table keyed by content: intern(a + "") is
@@ -1938,6 +2002,33 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
                         Value::Str(PyString::new("co_name")),
                         Value::Str(PyString::new("<module>")),
                     );
+                    // T1 (inspect.signature on marker fns, e.g.
+                    // xmlrpclib.dumps via scrapy get_func_args): minimal
+                    // signature surface.
+                    let _ = cattrs.set(
+                        Value::Str(PyString::new("co_argcount")),
+                        Value::Int(Int::from_i64(0)),
+                    );
+                    let _ = cattrs.set(
+                        Value::Str(PyString::new("co_varnames")),
+                        Value::Tuple(Gc::new(Tuple(Vec::new()))),
+                    );
+                    // T1 (inspect.stack): co_positions() — a long tuple of
+                    // (None, None, None, None); islice indexes into it. 1024
+                    // covers any stub-frame f_lasti the runtime produces.
+                    let none4 = || {
+                        Value::Tuple(Gc::new(Tuple(vec![
+                            Value::None,
+                            Value::None,
+                            Value::None,
+                            Value::None,
+                        ])))
+                    };
+                    let positions: Vec<Value> = (0..1024).map(|_| none4()).collect();
+                    let cp =
+                        ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "__ap_code_positions__");
+                    *cp.slice_parts.borrow_mut() = vec![Value::Tuple(Gc::new(Tuple(positions)))];
+                    let _ = cattrs.set(Value::Str(PyString::new("co_positions")), Value::Obj(cp));
                 }
                 let mut attrs = frame.attrs.borrow_mut();
                 let _ = attrs.set(
@@ -1965,6 +2056,13 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
                     Value::Int(Int::from_i64(lineno as i64)),
                 );
                 let _ = attrs.set(Value::Str(PyString::new("f_back")), Value::None);
+                // T1 (importlib.resources._infer_caller): inspect.stack()
+                // reads f_lasti + code.co_positions(); the stub serves
+                // position 0 / an empty positions iterator respectively.
+                let _ = attrs.set(
+                    Value::Str(PyString::new("f_lasti")),
+                    Value::Int(Int::from_i64(0)),
+                );
             }
             Some(Ok(Value::Obj(frame)))
         }
@@ -2744,6 +2842,48 @@ pub fn call_builtin(
     // `TypeVar("T")` etc. The stub module provides _typing.* marker fns;
     // calling them yields opaque placeholder objects carrying the name
     // (real substitution semantics are a documented Plan-02 gap).
+    // T1 (http.server): str.maketrans(dict) — copy int/char-keyed mapping.
+    if name == "str.maketrans" {
+        if let Some(Value::Dict(src_d)) = args.first() {
+            let d = ap_obj::dict::PyDict::new();
+            for (k, v) in src_d.items() {
+                let _ = d.set(k.clone(), v.clone());
+            }
+            return Ok(Value::Dict(d));
+        }
+    }
+    // T1: bytes.maketrans(from, to) — full 256-entry int map dict.
+    if name == "bytes.maketrans" {
+        let from_b = match args.first() {
+            Some(Value::Bytes(b)) => (**b).to_vec(),
+            _ => return Err(raise("TypeError", "maketrans expected bytes")),
+        };
+        let to_b = match args.get(1) {
+            Some(Value::Bytes(b)) => (**b).to_vec(),
+            _ => Vec::new(),
+        };
+        let d = ap_obj::dict::PyDict::new();
+        for i in 0u16..256u16 {
+            let byte = i as u8;
+            let v = match from_b.iter().position(|&f| f == byte) {
+                Some(n) => to_b.get(n).copied().unwrap_or(byte) as i64,
+                None => byte as i64,
+            };
+            let _ = d.set(
+                Value::Int(ap_obj::Int::from_i64(i as i64)),
+                Value::Int(ap_obj::Int::from_i64(v)),
+            );
+        }
+        return Ok(Value::Dict(d));
+    }
+    // T1 (inspect.stack): stub code object co_positions() → parked tuple.
+    if name == "__ap_code_positions__" {
+        let t = args
+            .first()
+            .cloned()
+            .unwrap_or(Value::Tuple(Gc::new(Tuple(Vec::new()))));
+        return Ok(t);
+    }
     if let Some(rest) = name.strip_prefix("_typing.") {
         let o = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, &format!("_typing.{rest} instance"));
         {
@@ -2756,6 +2896,12 @@ pub fn call_builtin(
                 Value::Str(PyString::new("__name__")),
                 nm.unwrap_or(Value::None),
             );
+        }
+        // T1 (scrapy datatypes): TypeVar instances participate in PEP 604
+        // unions (`_VT | None` in scrapy.utils.datatypes generics). Park the
+        // class-like marker so the BitOr union interception accepts them.
+        if rest == "TypeVar" || rest == "ParamSpec" || rest == "TypeVarTuple" {
+            *o.slice_parts.borrow_mut() = vec![Value::Str(PyString::new("__ap_typevar__"))];
         }
         return Ok(Value::Obj(o));
     }
@@ -3459,6 +3605,39 @@ pub fn call_builtin_dotted(
     args: &[Value],
     kwargs: &[(String, Value)],
 ) -> Option<BResult> {
+    // T1 (importlib.resources): the native resource-reader markers installed
+    // by attach_module_spec. files() -> pathlib.Path(package dir).
+    if name == "__ap_resreader__.files" {
+        let dir = args
+            .first()
+            .and_then(|v| match v {
+                Value::Str(sv) => Some(sv.as_str().to_string()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let Some(interp) = crate::builtins_modules::current_interp() else {
+            return None;
+        };
+        let pathlib = match crate::importer::import_module(&interp, "pathlib") {
+            Ok(v) => v,
+            Err(f) => return Some(Err(f)),
+        };
+        let path_v = match crate::interp::attr_get_public(&interp.rc(), &pathlib, "Path") {
+            Ok(Some(v)) => v,
+            Ok(None) => {
+                return Some(Err(raise("AttributeError", "pathlib has no Path")));
+            }
+            Err(f) => return Some(Err(f)),
+        };
+        return Some(crate::interp::call_value_pub3(
+            &path_v,
+            &[Value::Str(PyString::new(dir))],
+        ));
+    }
+    if name == "__ap_loader__.get_resource_reader" {
+        let reader = args.first().cloned().unwrap_or(Value::None);
+        return Some(Ok(reader));
+    }
     let (mod_name, fname) = name.split_once('.')?;
     if mod_name == "sys" {
         return None; // handled by the legacy sys.* path
