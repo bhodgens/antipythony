@@ -67,6 +67,17 @@ GIL, uv-backed deps at build time. Byte-exact differential conformance vs CPytho
   gate green at that state, full `pytest tests/ -q` still running at
   verify time (~50% done: 0 F/0 E, 3 skipped, 280 xfail, 0 xpass;
   differential ap-conform suites are the long pole).
+- T1 SCRAPY (live 2026-10-21, after 4 fix dispatches): import chain cleared
+  through typing, zope, twisted, importlib.resources, logging. Commit a14fe0d
+  = live-sys.path importer fix (SYS_PATH_VIEW) + 30 vendored stdlib modules
+  (datetime, decimal, logging pkg, socket, email, urllib, xml). Gates:
+  cargo 0 failed, pytest 1912/0, corpus 174/213=82%. Import scrapy now blocked
+  ONLY on lxml (C-ext, APX-CEXT). Leaf 02.08-c lxml-shim in flight
+  (plans/antipythany/02-native-backend/leaves/02.08-c-lxml-shim.md) - native
+  Rust etree/html/xpath-subset, gate = SCRAPY IMPORT OK. Then file:// spider
+  crawl + items.jsonl byte-compare = T1 GREEN. Syspath doc:
+  docs/t1-syspath-fix.md. Stdlib-corpus fix wave dispatched (19/48 -> target
+  48/48, clusters: from-import binding, class-attr resolution, generator.throw).
 - AFTER: Plan 03 WASM, Plan 04 packaging (uv) -> T1 scrapy attempt.
 - Ecosystem targets locked (master.md tier table): scrapy T1, pytest T2,
   hermes-agent T3, fastapi T4, comfyui T5 (gates on Plan 10). TEST DATA ONLY -
