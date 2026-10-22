@@ -207,3 +207,8 @@ carries ref-vs-our bytes verbatim.
   orchestrator preference). repr_fuzz writes no ledger file.
 - Ownership held: touched ONLY `.github/workflows/nightly-fuzz.yml` (new)
   + this PROGRESS.md append. ci.yml untouched. No commits.
+
+- POINTER 2026-10-22: RF-2/3/5/7 exposure vs the scrapy T1 dependency closure
+  is mapped + probe-verified in `docs/t1-regex-risk-map.md` (verdict: none of
+  the four currently blocks or corrupts the file:// crawl path; fix priority
+  RF-2 pattern-method count= leg first).
