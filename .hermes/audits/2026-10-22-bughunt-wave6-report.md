@@ -91,7 +91,30 @@ provenance-gate red is the one CI-visible regression this commit introduced;
 it does not affect cargo test / pytest (those don't run stdlib-provenance),
 only the ci.yml fast-lints job.
 
-## Merge note
+## ADDENDUM 3 - docs-auditor CRITICAL finding CONFIRMED after deeper git archaeology
+
+The docs auditor's CRITICAL finding is CORRECT and the initial doubt was
+wrong: `git show c51d78d --stat` proves the commit touched ONLY
+plans/robustness-ci/04-fuzz/PROGRESS.md (+5 lines). The two docs files
+(docs/02-10-scheduler-design.md, docs/t1-regex-risk-map.md) were never in
+any commit - they sit STAGED in the sibling's index (A status; the sibling
+`git add`ed them but its commit only included the PROGRESS.md pathspec).
+They also don't exist in HEAD's tree (git ls-tree HEAD -- docs/02-10* is
+empty). The auditor read the INDEX state (staged = appears present to a
+casual ls) and git ls-tree correctly showed them absent from the commit.
+
+Classification: not a code bug - a commit-composition miss by the sibling
+(files it `git add`ed were excluded by its own pathspec). Both docs are
+real, on disk, staged, and referenced by the commit message. Action for
+the sibling or next merge: `git commit` the two staged docs (message
+already claims them). Line-citation findings (interp.rs:471/486 vs 474/488
+off-by-3; 4723/4736 pointing at conversion code) are minor doc-message
+inaccuracies, consistent with the files having been drafted against a
+pre-edit line numbering.
+
+Also corrected: the parent's wave-4-era note that these docs were "my
+merge content" was wrong - they were the sibling's staged files all along.
+
 
 No fixes to merge this wave (all findings in the sibling's contested T1
 zone). This report + the two findings.json files are the deliverable. When
