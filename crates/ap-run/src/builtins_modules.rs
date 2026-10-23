@@ -10611,6 +10611,15 @@ pub fn call_native_marker(full: &str, args: &[Value]) -> Option<BResult> {
     if let Some(fname) = full.strip_prefix("__ap_lxml__.") {
         return crate::lxml::call_elem(fname, args, &[]);
     }
+    // 02.08-c: compiled etree.XPath instances. The ctor registers (query,
+    // namespaces) in a thread-local registry and hands back a BuiltinFn
+    // marker named `lxml.etree.XPath.call.<id>`; calls route here, where the
+    // receiver element rides args[0].
+    if let Some(rest) = full.strip_prefix("lxml.etree.XPath.call.") {
+        if let Ok(id) = rest.parse::<usize>() {
+            return crate::lxml::call_xpath_by_id(id, args);
+        }
+    }
     // 02.08-c: lxml.etree.FunctionNamespace(...) ctor marker.
     if full == "lxml.etree.FunctionNamespace" {
         return crate::lxml::call_lxml("etree.FunctionNamespace", args, &[]);

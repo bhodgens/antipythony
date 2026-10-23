@@ -640,6 +640,27 @@ fn xml_escape_attr(t: &str) -> String {
     out
 }
 
+/// libxml2's HTML serializer emits these attribute names WITHOUT values
+/// (HTML boolean attributes), regardless of the stored value.
+fn html_attr_is_bool(name: &str) -> bool {
+    matches!(
+        name,
+        "checked"
+            | "compact"
+            | "declare"
+            | "defer"
+            | "disabled"
+            | "ismap"
+            | "multiple"
+            | "nohref"
+            | "noresize"
+            | "noshade"
+            | "nowrap"
+            | "readonly"
+            | "selected"
+    )
+}
+
 fn html_escape_attr(t: &str) -> String {
     // lxml's html serializer switches to single quotes ONLY when the value
     // contains a double quote and no single quote; otherwise double quotes.
@@ -665,8 +686,10 @@ fn serialize(doc: &LxDoc, idx: usize, method: &str, with_tail: bool, out: &mut S
         for (k, v) in &node.attrib {
             out.push(' ');
             out.push_str(k);
-            out.push('=');
-            out.push_str(&html_escape_attr(v));
+            if !(html_mode && html_attr_is_bool(k)) {
+                out.push('=');
+                out.push_str(&html_escape_attr(v));
+            }
         }
         out.push('>');
     } else if empty {
@@ -675,13 +698,15 @@ fn serialize(doc: &LxDoc, idx: usize, method: &str, with_tail: bool, out: &mut S
         for (k, v) in &node.attrib {
             out.push(' ');
             out.push_str(k);
-            out.push('=');
-            let esc = if html_mode {
-                html_escape_attr(v)
-            } else {
-                format!("\"{}\"", xml_escape_attr(v))
-            };
-            out.push_str(&esc);
+            if !(html_mode && html_attr_is_bool(k)) {
+                out.push('=');
+                let esc = if html_mode {
+                    html_escape_attr(v)
+                } else {
+                    format!("\"{}\"", xml_escape_attr(v))
+                };
+                out.push_str(&esc);
+            }
         }
         if html_mode {
             out.push_str("></");
@@ -696,13 +721,15 @@ fn serialize(doc: &LxDoc, idx: usize, method: &str, with_tail: bool, out: &mut S
         for (k, v) in &node.attrib {
             out.push(' ');
             out.push_str(k);
-            out.push('=');
-            let esc = if html_mode {
-                html_escape_attr(v)
-            } else {
-                format!("\"{}\"", xml_escape_attr(v))
-            };
-            out.push_str(&esc);
+            if !(html_mode && html_attr_is_bool(k)) {
+                out.push('=');
+                let esc = if html_mode {
+                    html_escape_attr(v)
+                } else {
+                    format!("\"{}\"", xml_escape_attr(v))
+                };
+                out.push_str(&esc);
+            }
         }
         out.push('>');
         if let Some(t) = &node.text {
@@ -784,6 +811,11 @@ enum Pred {
 #[derive(Debug, Clone)]
 struct PathExpr {
     steps: Vec<Step>,
+    /// Per-step predicates: step_preds[i] filters the node-set produced by
+    /// steps[i] (XPath applies [n] to the step it follows, not the output).
+    step_preds: Vec<Option<Pred>>,
+    /// Legacy trailing predicate (applies to the final node-set); kept for
+    /// paths whose pred attaches after a text()/@attr output step.
     pred: Option<Pred>,
     /// /@attr output filter after node selection
     out_attr: Option<String>,
@@ -890,6 +922,7 @@ fn parse_path(expr: &str) -> Option<PathExpr> {
     if expr.is_empty() {
         return None;
     }
+    let mut step_preds: Vec<Option<Pred>> = Vec::new();
     // Leading //, /, ./, .//, or bare `.`.
     let mut rest = expr;
     if let Some(r) = rest.strip_prefix("//") {
@@ -899,7 +932,17 @@ fn parse_path(expr: &str) -> Option<PathExpr> {
         // CHILDREN, missing the descendants themselves).
         let head = r;
         let seg_end = head.find(|c| c == '/').unwrap_or(head.len());
-        let first_seg = head[..seg_end].trim();
+        // Strip a trailing predicate before the identifier peek so `//li[1]`
+        // folds to SelfAxis+Descendant(li)+pred (identical node-set to
+        // //li) instead of the Descendant(*)+Child fallback.
+        let first_seg_raw = head[..seg_end].trim();
+        let (first_seg, first_pred) = match first_seg_raw.find('[') {
+            Some(op) if first_seg_raw.ends_with(']') => (
+                first_seg_raw[..op].trim(),
+                Some(&first_seg_raw[op + 1..first_seg_raw.len() - 1]),
+            ),
+            _ => (first_seg_raw, None),
+        };
         if let Some(name) = first_seg.strip_prefix('@') {
             steps.push(Step::Descendant("*".into()));
             steps.push(Step::Child("*".into()));
@@ -916,6 +959,13 @@ fn parse_path(expr: &str) -> Option<PathExpr> {
         {
             steps.push(Step::SelfAxis);
             steps.push(Step::Descendant(first_seg.to_string()));
+            if let Some(pv) = first_pred {
+                // `//li[1]` — pred rides the Descendant step.
+                while step_preds.len() < steps.len() - 1 {
+                    step_preds.push(None);
+                }
+                step_preds.push(Some(parse_predicate_body(pv)?));
+            }
             rest = &head[seg_end..];
         } else {
             steps.push(Step::Descendant("*".into()));
@@ -958,13 +1008,11 @@ fn parse_path(expr: &str) -> Option<PathExpr> {
             continue;
         }
         let (path_part, p) = split_predicate(seg)?;
-        if let Some(p) = p {
-            if pred.is_some() {
-                // Only one predicate in the subset.
-                return None;
-            }
-            pred = Some(p);
-        }
+        // A pred on THIS segment belongs to the step this segment pushes.
+        // If the segment is an output step (text()/@attr), it lands in the
+        // legacy trailing slot instead (applied to the output values).
+        let steps_before = steps.len();
+        let _ = steps_before;
         if path_part.contains("::") {
             let (axis, name) = path_part.split_once("::")?;
             match axis.trim() {
@@ -994,6 +1042,28 @@ fn parse_path(expr: &str) -> Option<PathExpr> {
             }
             steps.push(Step::Child(path_part.to_string()));
         }
+        // Attach the segment's pred to the step this segment pushed (output
+        // steps text()/@attr RETURN from eval directly, so their preds use
+        // the legacy trailing slot instead).
+        if steps.len() > step_preds.len() {
+            // A node-selecting step was pushed: own the pred here.
+            while step_preds.len() < steps.len() - 1 {
+                step_preds.push(None);
+            }
+            if steps.len() > step_preds.len() {
+                step_preds.push(p);
+            } else {
+                pred = p;
+            }
+        } else {
+            // Output step (Attribute/Text) - pred filters output values.
+            if p.is_some() {
+                if pred.is_some() {
+                    return None;
+                }
+                pred = p;
+            }
+        }
     }
     if steps.is_empty() {
         return None;
@@ -1003,11 +1073,28 @@ fn parse_path(expr: &str) -> Option<PathExpr> {
     // itself is a candidate when it matches the tag).
     Some(PathExpr {
         steps,
+        step_preds,
         pred,
         out_attr,
         out_text,
         absolute,
     })
+}
+
+fn parse_predicate_body(t: &str) -> Option<Pred> {
+    let t = t.trim();
+    if t == "last()" {
+        Some(Pred::Last)
+    } else if let Some(rest) = t.strip_prefix("position()>") {
+        Some(Pred::PositionGt(rest.trim().parse().ok()?))
+    } else if let Ok(n) = t.parse::<i64>() {
+        Some(Pred::Position(n))
+    } else {
+        if !pred_supported(t) {
+            return None;
+        }
+        Some(Pred::Expr(t.to_string()))
+    }
 }
 
 fn split_predicate(seg: &str) -> Option<(&str, Option<Pred>)> {
@@ -1023,20 +1110,7 @@ fn split_predicate(seg: &str) -> Option<(&str, Option<Pred>)> {
         return None;
     }
     let path = &seg[..open];
-    let t = inner.trim();
-    let pred = if t == "last()" {
-        Pred::Last
-    } else if let Some(rest) = t.strip_prefix("position()>") {
-        Pred::PositionGt(rest.trim().parse().ok()?)
-    } else if let Ok(n) = t.parse::<i64>() {
-        Pred::Position(n)
-    } else {
-        if !pred_supported(t) {
-            return None;
-        }
-        Pred::Expr(t.to_string())
-    };
-    Some((path, Some(pred)))
+    Some((path, Some(parse_predicate_body(inner)?)))
 }
 
 fn pred_supported(t: &str) -> bool {
@@ -1092,7 +1166,7 @@ fn eval_path(doc: &LxDoc, ctx: usize, pe: &PathExpr) -> Option<XValue> {
         (pe.steps.first(), pe.steps.get(1)),
         (Some(Step::SelfAxis), Some(Step::Descendant(_)))
     );
-    for step in &pe.steps {
+    for (step_i, step) in pe.steps.iter().enumerate() {
         let mut next = Vec::new();
         match step {
             Step::SelfAxis => {
@@ -1179,6 +1253,11 @@ fn eval_path(doc: &LxDoc, ctx: usize, pe: &PathExpr) -> Option<XValue> {
             }
         }
         current = next;
+        // Per-step predicate: XPath applies [n]/[@a] to the node-set the
+        // step produced, BEFORE the next axis runs.
+        if let Some(Some(p)) = pe.step_preds.get(step_i) {
+            current = apply_pred(doc, current, p)?;
+        }
     }
     if let Some(p) = &pe.pred {
         current = apply_pred(doc, current, p)?;
@@ -1699,7 +1778,12 @@ pub fn build_html(_i: &crate::frame::Interpreter) -> Value {
     for n in ["fromstring", "document_fromstring", "fragment_fromstring"] {
         crate::builtins_modules::fn1(&ns, "lxml.html", n);
     }
-    let o = PyObject::new(ap_obj::ObjKind::Type, "HTMLParser");
+    // Constructible via the native path: Type-kind ctor chokes on kwargs
+    // (recover=True); a BuiltinFn marker routes call_native -> call_lxml ctor.
+    let o = PyObject::new(
+        ap_obj::ObjKind::BuiltinFn,
+        "lxml.html.HTMLParser",
+    );
     let _ = ns.set(s("HTMLParser"), Value::Obj(o));
     let o = PyObject::new(ap_obj::ObjKind::Type, "HtmlElement");
     let _ = ns.set(s("HtmlElement"), Value::Obj(o));
@@ -2013,25 +2097,62 @@ pub fn call_lxml(fname: &str, args: &[Value], kwargs: &[(String, Value)]) -> Opt
                 t.to_lowercase().starts_with("<!doctype") || t.to_lowercase().starts_with("<html")
             };
             let d = DOCS.with(|c| c.borrow().docs.get(doc_id).cloned()).unwrap();
-            let dd = d.borrow();
             let root_idx = if looks_full_doc {
                 root
             } else {
-                // find body under html root
-                let body = dd
-                    .get(root)
-                    .children
-                    .iter()
-                    .copied()
-                    .find(|&c| dd.get(c).tag == "body")
-                    .unwrap_or(root);
-                let kids = dd.get(body).children.clone();
-                match kids.len() {
-                    1 => kids[0],
-                    _ => root,
+                // lxml fragment rule: 1 top-level element (no stray text)
+                // returns it; >1 elements or body-level stray text wraps
+                // ALL body content in a <span> and returns the span.
+                let (pick, needs_span) = {
+                    let dd = d.borrow();
+                    let body = dd
+                        .get(root)
+                        .children
+                        .iter()
+                        .copied()
+                        .find(|&c| dd.get(c).tag == "body")
+                        .unwrap_or(root);
+                    let kids = dd.get(body).children.clone();
+                    let stray = dd.get(body).text.is_some()
+                        || kids.iter().any(|&k| dd.get(k).tail.is_some());
+                    if kids.len() == 1 && !stray {
+                        (Some(kids[0]), false)
+                    } else {
+                        (None, true)
+                    }
+                };
+                if let Some(p) = pick {
+                    p
+                } else if needs_span {
+                    let mut dd = d.borrow_mut();
+                    let body = dd
+                        .get(root)
+                        .children
+                        .iter()
+                        .copied()
+                        .find(|&c| dd.get(c).tag == "body")
+                        .unwrap_or(root);
+                    let kids = dd.get(body).children.clone();
+                    if kids.is_empty() {
+                        root
+                    } else {
+                        let span_ix = dd.nodes.len();
+                        let mut span = LxNode::new("span", true);
+                        span.parent = Some(body);
+                        span.text = dd.get_mut(body).text.take();
+                        dd.nodes.push(span);
+                        for &k in &kids {
+                            dd.get_mut(k).parent = Some(span_ix);
+                            dd.get_mut(span_ix).children.push(k);
+                        }
+                        dd.get_mut(body).children.clear();
+                        dd.get_mut(body).children.push(span_ix);
+                        span_ix
+                    }
+                } else {
+                    root
                 }
             };
-            drop(dd);
             Ok(make_element(doc_id, root_idx, true))
         }
         "html.document_fromstring" => {
@@ -2764,14 +2885,36 @@ fn urljoin_simple(base: &str, href: &str) -> String {
 /// (call_builtin → call_native_marker, dotted names) routes its call into
 /// call_xpath_object below — a plain Opaque falls off call_value_inner's
 /// not-callable arm (real lxml XPath instances are callable).
+thread_local! {
+    /// Compiled XPath queries registered by `etree.XPath(query)`. The ctor
+    /// returns a BuiltinFn marker `lxml.etree.XPath.call.<id>`; calls route
+    /// through call_native_marker -> call_xpath_by_id (the marker dispatch
+    /// has no object access, so the query rides the registry, not attrs).
+    static XPATH_OBJECTS: std::cell::RefCell<Vec<(String, Option<Value>)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
 pub fn make_xpath_object(query: String, namespaces: Option<Value>) -> Value {
-    let o = PyObject::new(ap_obj::ObjKind::BuiltinFn, "lxml.etree.XPath.__call__");
-    {
-        let mut a = o.attrs.borrow_mut();
-        let _ = a.set(s("<query>"), s(query));
-        let _ = a.set(s("<namespaces>"), namespaces.unwrap_or(Value::None));
-    }
+    let id = XPATH_OBJECTS.with(|c| {
+        let mut r = c.borrow_mut();
+        r.push((query, namespaces));
+        r.len() - 1
+    });
+    let o = PyObject::new(
+        ap_obj::ObjKind::BuiltinFn,
+        format!("lxml.etree.XPath.call.{id}"),
+    );
     Value::Obj(o)
+}
+
+/// Dispatch arm for `lxml.etree.XPath.call.<id>` markers: evaluate the
+/// registered query against the receiver element (args[0]).
+pub fn call_xpath_by_id(id: usize, args: &[Value]) -> Option<BResult> {
+    let query = XPATH_OBJECTS.with(|c| c.borrow().get(id).map(|(q, _)| q.clone()))?;
+    let recv = args.first()?.clone();
+    let (doc, idx, html) = elem_parts(&recv)?;
+    let doc_id = doc_id_of(&recv);
+    Some(run_xpath(&doc, idx, doc_id, html, &query))
 }
 
 pub fn call_xpath_object(
