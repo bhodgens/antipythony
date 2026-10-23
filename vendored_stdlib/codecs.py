@@ -17,6 +17,14 @@ try:
 except ImportError as why:
     raise SystemError('Failed to load the builtin codecs: %s' % why)
 
+# s037: CPython's codecs.encode/decode are the HELPER forms (bytes-only /
+# str-only results via the codec registry), not the raw _codecs tuples.
+def encode(input, encoding='utf-8', errors='strict'):
+    return lookup(encoding).encode(input, errors)
+
+def decode(input, encoding='utf-8', errors='strict'):
+    return lookup(encoding).decode(input, errors)
+
 __all__ = ["register", "lookup", "open", "EncodedFile", "BOM", "BOM_BE",
            "BOM_LE", "BOM32_BE", "BOM32_LE", "BOM64_BE", "BOM64_LE",
            "BOM_UTF8", "BOM_UTF16", "BOM_UTF16_LE", "BOM_UTF16_BE",

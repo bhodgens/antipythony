@@ -869,3 +869,5 @@
 - SURGICAL FIX DISPATCHED (deleg_12a4960d): importer reads the LIVE sys
   module path list per import; bootstrap defaults seed it.
 - Note: importlib.resources.files already works via native __path__ fix.
+
+## 02.10 research note - docs/02-10-scheduler-design.md (leaf dispatched 2026-10-20)

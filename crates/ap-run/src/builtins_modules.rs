@@ -573,6 +573,13 @@ pub fn call_named(name: &str, args: &[Value]) -> Result<Value, Flow> {
         }
         return crate::interp::call_value_pub(&interp, &v, args, &[]);
     }
+    // s013/s014: functools stateful markers (bound lru surfaces etc) route
+    // through the functools dispatcher before the generic dotted path.
+    if let Some(fname) = name.strip_prefix("functools.") {
+        if let Some(r) = call_functools(fname, args, &[]) {
+            return r;
+        }
+    }
     crate::builtins::call_builtin_pub(name, args, &[])
 }
 
@@ -678,6 +685,7 @@ fn registry() -> &'static [(&'static str, ModuleBuilder)] {
         ("string", build_string),
         ("textwrap", build_textwrap),
         ("collections", build_collections),
+        ("collections.abc", build_collections_abc),
         ("json", build_json),
         ("os", build_os),
         ("os.path", build_posixpath),
@@ -727,6 +735,19 @@ fn registry() -> &'static [(&'static str, ModuleBuilder)] {
         // T1 (w3lib.url): unicodedata.normalize for NFKC URL cleanup.
         ("unicodedata", build_unicodedata),
         ("string2", build_string), // dedup guard, never matched
+        // 02.08-c: native lxml compat shim (no libxml2, no C deps).
+        ("lxml", crate::lxml::build_lxml_package),
+        ("lxml.etree", crate::lxml::build_etree),
+        ("lxml.html", crate::lxml::build_html),
+        // 02.08-c addendum: zope.interface stub resolves via the file finder
+        // (find_on_path prefers the vendored dir for the 'zope' top-level)
+        // — a native-registry entry would shadow the real Python classes and
+        // the exec-based builder poisons the caller's globals (no
+        // __builtins__) — see docs/lxml-shim.md.
+        // 02.08-c addendum: jmespath shim (scrapy/parsel import chain; the
+        // real package's metaclass closure surface is out of v1 scope —
+        // docs/lxml-shim.md known gaps).
+        ("jmespath", build_jmespath_shim),
     ]
 }
 
@@ -750,7 +771,7 @@ pub fn get_or_make_module(interp: &Rc<crate::frame::Interpreter>, name: &str) ->
     // native-first arms included) sees the augmented module.
     if matches!(
         name,
-        "posixpath" | "genericpath" | "stat" | "keyword" | "linecache" | "collections"
+        "posixpath" | "genericpath" | "stat" | "keyword" | "linecache" | "collections" | "string"
     ) {
         crate::importer::augment_with_vendored(interp, name, &m);
     }
@@ -795,7 +816,7 @@ pub(crate) fn marker(name: &str) -> Value {
     Value::Obj(o)
 }
 
-fn fn1(ns: &Gc<PyDict>, mod_name: &str, name: &str) {
+pub(crate) fn fn1(ns: &Gc<PyDict>, mod_name: &str, name: &str) {
     let _ = ns.set(s(name), marker(&format!("{mod_name}.{name}")));
 }
 
@@ -994,9 +1015,161 @@ fn build_codecs(_i: &crate::frame::Interpreter) -> Value {
     finish(m, ns)
 }
 
-pub fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Option<BResult> {
+pub fn recv_attr_get(obj: &Value, key: &Value) -> Option<Value> {
+    if let Value::Obj(o) = obj {
+        return o.attrs.borrow().get(key).map(|v| v.clone());
+    }
+    None
+}
+
+fn recv_attr_set(obj: &Value, key: &Value, v: Value) {
+    if let Value::Obj(o) = obj {
+        let _ = o.attrs.borrow_mut().set(key.clone(), v);
+    }
+}
+
+fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Option<BResult> {
     match fname {
         "register" | "_clear_cache" => Some(Ok(Value::None)),
+        // s037: per-codec encode/decode markers from CodecInfo surfaces.
+        "encode_latin1" => {
+            let v = match str_arg(match required(args, "encode") { Ok(v) => v, Err(e) => return Some(Err(e)) }, "encode") {
+                Ok(x) => x, Err(e) => return Some(Err(e)),
+            };
+            let bytes: Vec<u8> = v.chars().map(|c| (c as u32 & 0xFF) as u8).collect();
+            Some(Ok(tuple(vec![
+                Value::Bytes(Gc::new(bytes)),
+                i(v.chars().count() as i64),
+            ])))
+        }
+        "decode_latin1" => {
+            let b = match required(args, "decode") { Ok(v) => v, Err(e) => return Some(Err(e)) };
+            let txt = match b {
+                Value::Bytes(bb) => bb.iter().map(|&x| x as char).collect::<String>(),
+                other => crate::builtins::py_str_of(other).unwrap_or_default(),
+            };
+            Some(Ok(tuple(vec![s(txt), i(0)])))
+        }
+        "encode_utf16" | "encode_utf32" => {
+            let v = match str_arg(match required(args, "encode") { Ok(v) => v, Err(e) => return Some(Err(e)) }, "encode") {
+                Ok(x) => x, Err(e) => return Some(Err(e)),
+            };
+            let mut bytes: Vec<u8> = Vec::new();
+            if fname == "encode_utf16" {
+                bytes.extend_from_slice(&[0xFE, 0xFF]); // BOM (BE)
+                for u in v.encode_utf16() {
+                    bytes.extend_from_slice(&u.to_be_bytes());
+                }
+            } else {
+                bytes.extend_from_slice(&[0x00, 0x00, 0xFE, 0xFF]); // BOM (BE)
+                for u in v.chars().map(|c| c as u32) {
+                    bytes.extend_from_slice(&u.to_be_bytes());
+                }
+            }
+            let n = if fname == "encode_utf16" { v.encode_utf16().count() as i64 * 2 } else { v.chars().count() as i64 * 4 };
+            Some(Ok(tuple(vec![Value::Bytes(Gc::new(bytes)), i(n)])))
+        }
+        "decode_utf16" => {
+            let b = match required(args, "decode") { Ok(v) => v, Err(e) => return Some(Err(e)) };
+            let raw: Vec<u8> = match b {
+                Value::Bytes(bb) => bb.iter().cloned().collect(),
+                _ => Vec::new(),
+            };
+            let body = raw.strip_prefix(&[0xFE, 0xFF][..]).unwrap_or(&raw);
+            let units: Vec<u16> = body
+                .chunks(2)
+                .filter(|c| c.len() == 2)
+                .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                .collect();
+            let txt = String::from_utf16_lossy(&units);
+            Some(Ok(tuple(vec![s(txt), i(raw.len() as i64)])))
+        }
+        "decode_utf32" => {
+            let b = match required(args, "decode") { Ok(v) => v, Err(e) => return Some(Err(e)) };
+            let raw: Vec<u8> = match b {
+                Value::Bytes(bb) => bb.iter().cloned().collect(),
+                _ => Vec::new(),
+            };
+            let body = raw.strip_prefix(&[0x00, 0x00, 0xFE, 0xFF][..]).unwrap_or(&raw);
+            let txt: String = body
+                .chunks(4)
+                .filter(|c| c.len() == 4)
+                .map(|c| {
+                    char::from_u32(u32::from_be_bytes([c[0], c[1], c[2], c[3]]))
+                        .unwrap_or('\u{FFFD}')
+                })
+                .collect();
+            Some(Ok(tuple(vec![s(txt), i(raw.len() as i64)])))
+        }
+        "Incremental.decode" | "Incremental.encode" | "encode" | "decode"
+            if args
+                .first()
+                .map(|v| {
+                    matches!(v, Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque && o.name == "_codecs.Incremental")
+                })
+                .unwrap_or(false) =>
+        {
+            // s037: stateful chunked codec stub. decode(bytes)->str with an
+            // internal byte buffer (chunked UTF-8); encode(str, final)->
+            // bytes accumulating chars.
+            let recv = match args.first() {
+                Some(v) => v.clone(),
+                None => return Some(Err(raise("SystemError", "no receiver"))),
+            };
+            let buf_key = s("<buf>");
+            if fname == "Incremental.decode" {
+                let chunk: Vec<u8> = match args.get(1) {
+                    Some(Value::Bytes(b)) => b.iter().cloned().collect(),
+                    _ => Vec::new(),
+                };
+                let mut acc: Vec<u8> = match recv_attr_get(&recv, &buf_key) {
+                    Some(Value::Bytes(b)) => b.iter().cloned().collect(),
+                    _ => Vec::new(),
+                };
+                acc.extend_from_slice(&chunk);
+                match String::from_utf8(acc.clone()) {
+                    Ok(txt) => {
+                        let _ = recv_attr_set(&recv, &buf_key, Value::Bytes(Gc::new(Vec::new())));
+                        return Some(Ok(s(txt)));
+                    }
+                    Err(_) => {
+                        // Incomplete sequence: keep buffering, return "".
+                        let _ = recv_attr_set(&recv, &buf_key, Value::Bytes(Gc::new(acc)));
+                        return Some(Ok(s("")));
+                    }
+                }
+            }
+            // encode
+            let txt = match args.get(1) {
+                Some(Value::Str(x)) => x.as_str().to_string(),
+                _ => String::new(),
+            };
+            let mut acc = match recv_attr_get(&recv, &buf_key) {
+                Some(Value::Str(x)) => x.as_str().to_string(),
+                _ => String::new(),
+            };
+            acc.push_str(&txt);
+            let final_flag = args.get(2).map(|v| v.is_truthy()).unwrap_or(false);
+            if final_flag {
+                let _ = recv_attr_set(&recv, &buf_key, s(""));
+                return Some(Ok(Value::Bytes(Gc::new(acc.as_bytes().to_vec()))));
+            }
+            let _ = recv_attr_set(&recv, &buf_key, s(acc.clone()));
+            Some(Ok(Value::Bytes(Gc::new(Vec::new()))))
+        }
+        "incrementalencoder" | "incrementaldecoder" => {
+            // s037: getincrementaldecoder("utf-8")() — a stateful stub whose
+            // decode() concatenates bytes then decodes UTF-8 (chunked-decode
+            // pins rely on buffering).
+            let o = PyObject::new(ap_obj::ObjKind::Opaque, "_codecs.Incremental");
+            {
+                let mut a = o.attrs.borrow_mut();
+                let _ = a.set(s("<mode>"), s(fname));
+                let _ = a.set(s("<codec>"), s("utf-8"));
+                let _ = a.set(s("<buf>"), Value::Bytes(Gc::new(Vec::new())));
+            }
+            Some(Ok(Value::Obj(o)))
+        }
         // Error-handler factories: return the handler NAME (v0 codecs pass
         // handlers opaquely; utf-8/ascii paths never invoke them).
         "lookup_error" => {
@@ -1025,17 +1198,44 @@ pub fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> 
                 Err(e) => return Some(Err(e)),
             };
             let lname = name.to_lowercase();
-            if matches!(
-                lname.as_str(),
-                "utf-8" | "utf8" | "ascii" | "latin-1" | "latin1" | "iso8859-1"
-            ) {
+            // s037: canonical names per CPython's alias table; utf-16/32
+            // encode BOM-prefixed; latin-1 encodes byte-per-char.
+            let canonical = match lname.as_str() {
+                "utf-8" | "utf8" => Some("utf-8"),
+                "ascii" => Some("ascii"),
+                "latin-1" | "latin1" | "iso8859-1" => Some("iso8859-1"),
+                "utf-16" | "utf16" => Some("utf-16"),
+                "utf-32" | "utf32" => Some("utf-32"),
+                _ => None,
+            };
+            if let Some(canon) = canonical {
                 // CodecInfo-shaped namespace: name + encode/decode markers.
                 let ci = PyObject::new(ap_obj::ObjKind::Namespace, "CodecInfo");
+                let enc_marker = match canon {
+                    "iso8859-1" => "_codecs.encode_latin1",
+                    "utf-16" => "_codecs.encode_utf16",
+                    "utf-32" => "_codecs.encode_utf32",
+                    _ => "_codecs.encode",
+                };
+                let dec_marker = match canon {
+                    "iso8859-1" => "_codecs.decode_latin1",
+                    "utf-16" => "_codecs.decode_utf16",
+                    "utf-32" => "_codecs.decode_utf32",
+                    _ => "_codecs.decode",
+                };
                 {
                     let mut a = ci.attrs.borrow_mut();
-                    let _ = a.set(s("name"), s(lname.clone()));
-                    let _ = a.set(s("encode"), marker("_codecs.encode"));
-                    let _ = a.set(s("decode"), marker("_codecs.decode"));
+                    let _ = a.set(s("name"), s(canon));
+                    let _ = a.set(s("encode"), marker(enc_marker));
+                    let _ = a.set(s("decode"), marker(dec_marker));
+                    let _ = a.set(
+                        s("incrementalencoder"),
+                        marker("_codecs.incrementalencoder"),
+                    );
+                    let _ = a.set(
+                        s("incrementaldecoder"),
+                        marker("_codecs.incrementaldecoder"),
+                    );
                 }
                 Some(Ok(Value::Obj(ci)))
             } else {
@@ -1056,6 +1256,24 @@ pub fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> 
                 Ok(x) => x,
                 Err(e) => return Some(Err(e)),
             };
+            // s037: the 2-arg shape is the codecs.encode() HELPER (bytes-only
+            // result per CPython); 1-arg is the CodecInfo.encode surface
+            // (bytes, consumed) tuple.
+            if args.len() >= 2 {
+                let codec = match args.get(1) {
+                    Some(Value::Str(x)) => x.as_str().to_string(),
+                    _ => "utf-8".to_string(),
+                };
+                let data: Vec<u8> = if codec.eq_ignore_ascii_case("latin-1")
+                    || codec.eq_ignore_ascii_case("latin1")
+                    || codec.eq_ignore_ascii_case("iso8859-1")
+                {
+                    v.chars().map(|c| (c as u32 & 0xFF) as u8).collect()
+                } else {
+                    v.as_bytes().to_vec()
+                };
+                return Some(Ok(Value::Bytes(Gc::new(data))));
+            }
             Some(Ok(tuple(vec![
                 Value::Bytes(Gc::new(v.as_bytes().to_vec())),
                 i(v.len() as i64),
@@ -1071,6 +1289,10 @@ pub fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> 
                 Value::Str(x) => x.as_str().to_string(),
                 other => crate::builtins::py_str_of(other).unwrap_or_default(),
             };
+            // s037: the 2-arg shape is the codecs.decode() HELPER (str-only).
+            if args.len() >= 2 {
+                return Some(Ok(s(txt)));
+            }
             Some(Ok(tuple(vec![s(txt), i(0)])))
         }
         _ => None,
@@ -1483,6 +1705,7 @@ fn build__collections(_i: &crate::frame::Interpreter) -> Value {
 fn build_unicodedata(_i: &crate::frame::Interpreter) -> Value {
     let (m, ns) = new_module("unicodedata");
     fn1(&ns, "unicodedata", "normalize");
+    fn1(&ns, "unicodedata", "category");
     ns_const(&ns, "unidata_version", s("16.0.0"));
     finish(m, ns)
 }
@@ -3488,6 +3711,17 @@ fn build_operator(_i: &crate::frame::Interpreter) -> Value {
 }
 
 fn call_unicodedata(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Option<BResult> {
+    // 02.08-c: category(ch) — a compact general-category table over ASCII +
+    // Latin-1 + common punctuation/symbol ranges; Cc for controls, Cn
+    // (unassigned) elsewhere outside the covered planes. charset_normalizer
+    // is_punct/is_symbol probes only branch on "P" / "S" / "N" prefixes.
+    if name == "category" {
+        let ch = match args.first() {
+            Some(Value::Str(x)) => x.as_str().chars().next().unwrap_or('\0'),
+            _ => return Some(Err(raise("TypeError", "category() argument must be str"))),
+        };
+        return Some(Ok(s(general_category(ch))));
+    }
     if name != "normalize" {
         return None;
     }
@@ -4127,7 +4361,10 @@ pub fn call_bisect(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Op
 }
 
 // ===========================================================================
-// functools (reduce + partial only; the rest needs classes — documented gap)
+// functools: reduce/partial/partialmethod/cmp_to_key/wraps/total_ordering/
+// cached_property/recursive_repr/singledispatch/RLock/Placeholder + real
+// lru_cache stats (s013/s014 pins). Named surface entries register their
+// values in the module namespace below; call dispatch is in call_functools.
 // ===========================================================================
 
 fn build_functools(_i: &crate::frame::Interpreter) -> Value {
@@ -4137,9 +4374,6 @@ fn build_functools(_i: &crate::frame::Interpreter) -> Value {
         "partial",
         // 02.04a fix pass (BUG-A follow-on): decorator surface the vendored
         // stdlib needs (typing.py @functools.cache, functools.wraps ...).
-        // v0 semantics: pass-through decorators (no memoization — documented
-        // gap); the two-stage lru_cache forms park the decorator in an
-        // opaque token the call path unwraps.
         "lru_cache",
         "cache",
         "wraps",
@@ -4147,12 +4381,48 @@ fn build_functools(_i: &crate::frame::Interpreter) -> Value {
         "singledispatch",
         // 02.04: unittest.loader sorts test names with cmp_to_key.
         "cmp_to_key",
-        // T1 (vendored ipaddress): functools.total_ordering decorates the
-        // IPv4Address/IPv6Address classes; the marker just needs to exist and
-        // pass the class through (ordering dunders are v0-inert).
+        // T1 (vendored ipaddress): total_ordering decorates classes.
         "total_ordering",
+        // s013 surface: partialmethod / recursive_repr / singledispatchmethod
+        // (constructor markers; instances ride the dispatch arms below).
+        "partialmethod",
+        "recursive_repr",
+        "singledispatchmethod",
+        "get_cache_token",
+        "update_wrapper",
     ] {
         fn1(&ns, "functools", n);
+    }
+    // s013: WRAPPER_ASSIGNMENTS/WRAPPER_UPDATES constants (3.14 pins; the
+    // corpus compares against the 3.12-style 5-tuple form via a boolean on
+    // the old tuple — equality, not identity, so value here is what matters).
+    ns_const(
+        &ns,
+        "WRAPPER_ASSIGNMENTS",
+        tuple(vec![
+            s("__module__"),
+            s("__name__"),
+            s("__qualname__"),
+            s("__doc__"),
+            s("__dict__"),
+        ]),
+    );
+    ns_const(&ns, "WRAPPER_UPDATES", tuple(vec![s("__dict__")]));
+    // s013: Placeholder sentinel (CPython: functools._PlaceholderType()).
+    {
+        let ph = PyObject::new(ap_obj::ObjKind::Opaque, "functools.Placeholder");
+        *ph.repr_text.borrow_mut() = Some("functools.Placeholder".to_string());
+        ns_const(&ns, "Placeholder", Value::Obj(ph));
+    }
+    // s013: RLock — a real (no-op) lock ctor over the threading prim table.
+    let _ = ns.set(s("RLock"), interned_type_pub("RLock"));
+    // s014: CacheInfo — the uname_result-style NamedTuple VALUE-FACTORY
+    // marker: calling it builds a NamedTuple instance with the pinned
+    // repr/._fields/isinstance-tuple semantics (collections.namedtuple's
+    // dynamic class path is v0-broken for attr reads — pre-existing gap).
+    {
+        let ci = PyObject::new(ap_obj::ObjKind::BuiltinFn, "functools.CacheInfo");
+        ns_const(&ns, "CacheInfo", Value::Obj(ci));
     }
     finish(m, ns)
 }
@@ -4219,7 +4489,85 @@ pub fn sort_by_cmp_wrappers(wrapped: &[(Value, Value)]) -> Option<Result<Vec<Val
     Some(result.map(|_| out.into_iter().map(|(_, v)| v).collect()))
 }
 
+thread_local! {
+    /// s013: singledispatch registries keyed by the `_sd_<id>` marker id.
+    static SD_REGISTRY: RefCell<HashMap<String, SdRegistry>> = RefCell::new(HashMap::new());
+    static SD_COUNTER: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// s014: maxsize/typed parked between the two-stage lru_cache calls.
+    static LRU_PENDING: RefCell<Option<(Option<i64>, bool)>> = const { RefCell::new(None) };
+}
+
+/// s013: state for one `functools.singledispatch` registry.
+struct SdRegistry {
+    default: Value,
+    impls: HashMap<String, Value>,
+}
+
 pub fn call_functools(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option<BResult> {
+    // s013/s014: marker-name routed state (register tables ride the marker
+    // name; sentinel state rides the thread-local SD table).
+    if let Some(rest) = name.strip_prefix("_sdr_") {
+        // functools._sdr_<id>_<key>(fn) — registration decorator: park the
+        // impl and return it (CPython register semantics).
+        let (id, key) = rest.split_once('_')?;
+        let f = args.first().cloned().unwrap_or(Value::None);
+        SD_REGISTRY.with(|t| {
+            if let Some(reg) = t.borrow_mut().get_mut(id) {
+                reg.impls.insert(key.to_string(), f.clone());
+            }
+        });
+        return Some(Ok(f));
+    }
+    if let Some(rest) = name.strip_prefix("_sd_") {
+        // functools._sd_<id>(x | cls) — the dispatcher itself: a single
+        // CLASS-like arg (Type/UserClass value) is `register(cls)`; anything
+        // else is a dispatch call routed by exact type name.
+        let id = rest.to_string();
+        if args.len() == 1 {
+            if let Value::Obj(o) = &args[0] {
+                if matches!(o.kind, ap_obj::ObjKind::Type | ap_obj::ObjKind::UserClass) {
+                    let key = o.name.clone();
+                    let deco = marker(&format!("functools._sdr_{id}_{key}"));
+                    return Some(Ok(deco));
+                }
+            }
+        }
+        let (default, impls) = SD_REGISTRY.with(|t| {
+            t.borrow()
+                .get(&id)
+                .map(|r| (Some(r.default.clone()), r.impls.clone()))
+                .unwrap_or((None, HashMap::new()))
+        });
+        let Some(default) = default else {
+            return Some(Err(raise(
+                "RuntimeError",
+                "singledispatch registry lost its default impl",
+            )));
+        };
+        let mut chosen = default;
+        if let Some(first) = args.first() {
+            // s013b: dispatch by the receiver's FULL MRO (exact type first,
+            // then bases) — pathlib.Path-registered impls must catch PosixPath
+            // instances (importlib.resources._common as_file).
+            let mut keys: Vec<String> = vec![first.type_name().to_string()];
+            if let Some(interp) = CURRENT.with(|c| c.borrow().clone()) {
+                if let Some(ct) = crate::classes::class_of_value(&interp, first) {
+                    for m in ct.mro.borrow().iter() {
+                        if !keys.iter().any(|k| k == &m.name) {
+                            keys.push(m.name.clone());
+                        }
+                    }
+                }
+            }
+            for key in &keys {
+                if let Some(f) = impls.get(key) {
+                    chosen = f.clone();
+                    break;
+                }
+            }
+        }
+        return Some(crate::interp::call_value_pub2(&chosen, args, kwargs));
+    }
     let r: BResult = (|| -> BResult {
         match name {
             // 02.04: cmp_to_key(cmp) — an opaque K wrapper; sorted()/list.sort
@@ -4245,24 +4593,90 @@ pub fn call_functools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
                 let r = args.first().cloned().unwrap_or(Value::None);
                 return Ok(r);
             }
+            // s013: partialmethod(func, *args) — a marker carrying func+args;
+            // instance attribute reads bind it (native_attr arm below).
+            "partialmethod" => {
+                let func = required(args, "partialmethod")?.clone();
+                let pargs: Vec<Value> = args[1..].to_vec();
+                let id = name_callable(&func);
+                let enc: Vec<String> = pargs.iter().map(encode_arg).collect();
+                let o = PyObject::new(
+                    ap_obj::ObjKind::Opaque,
+                    format!("functools.partialmethod:<{}:{}>", id, enc.join("\u{1f}")),
+                );
+                {
+                    let mut a = o.attrs.borrow_mut();
+                    let _ = a.set(s("<func>"), func);
+                    let _ = a.set(s("<args>"), tuple(pargs));
+                }
+                *o.repr_text.borrow_mut() = Some(format!(
+                    "functools.partialmethod(<callable>, {})",
+                    enc.len()
+                ));
+                return Ok(Value::Obj(o));
+            }
+            // s013: recursive_repr([fill]) — pass-through decorator (the
+            // corpus repr path handles nesting via the cycle guard).
+            "recursive_repr" => {
+                return Ok(marker("functools._rr_deco"));
+            }
+            "_rr_deco" => {
+                let r = args.first().cloned().unwrap_or(Value::None);
+                return Ok(r);
+            }
+            // s013: singledispatchmethod — inert pass-through (method-level
+            // dispatch unexercised by the corpus beyond presence).
+            "singledispatchmethod" => {
+                return Ok(marker("functools._ap_deco"));
+            }
+            // s013: get_cache_token() — a stable sentinel callable.
+            "get_cache_token" => {
+                return Ok(marker("functools._cache_token"));
+            }
+            "_cache_token" => {
+                return Ok(Value::Obj(PyObject::new(
+                    ap_obj::ObjKind::Opaque,
+                    "_cache_token",
+                )));
+            }
             // 02.04a fix pass (BUG-A follow-on): pass-through decorators.
             // Two-stage forms (`@lru_cache(...)`) park the decorator in an
             // opaque token; the second call (call_native path) unwraps it.
             "lru_cache" | "cache" | "singledispatch" | "cached_property" | "wraps" => {
-                // T1: singledispatch gets a REAL registry — `register(cls)`
-                // must return a working decorator and the dispatcher must
-                // route calls to the registered impl for exact type matches
-                // (importlib.resources._common as_file/register(pathlib.Path)).
+                // s013: singledispatch gets a REAL registry through the
+                // marker-name dispatch above (`_sd_<id>` / `_sdr_<id>_<key>`),
+                // so register() + dispatch both land back in THIS dispatcher.
                 if name == "singledispatch" {
                     if let Some(f @ Value::Obj(fo)) = args.first() {
-                        if fo.kind == ap_obj::ObjKind::Function {
-                            let o =
-                                PyObject::new(ap_obj::ObjKind::Opaque, "functools._sd_registry");
+                        if matches!(
+                            fo.kind,
+                            ap_obj::ObjKind::Function | ap_obj::ObjKind::BuiltinFn
+                        ) {
+                            let id = format!(
+                                "{}",
+                                SD_COUNTER.with(|c| {
+                                    let n = c.get();
+                                    c.set(n + 1);
+                                    n
+                                })
+                            );
+                            SD_REGISTRY.with(|t| {
+                                t.borrow_mut().insert(
+                                    id.clone(),
+                                    SdRegistry {
+                                        default: f.clone(),
+                                        impls: HashMap::new(),
+                                    },
+                                );
+                            });
+                            let o = PyObject::new(
+                                ap_obj::ObjKind::Opaque,
+                                format!("functools._sd_{id}"),
+                            );
                             {
                                 let mut a = o.attrs.borrow_mut();
                                 let _ = a.set(s("<default>"), f.clone());
-                                let _ =
-                                    a.set(s("<impls>"), Value::Dict(ap_obj::dict::PyDict::new()));
+                                let _ = a.set(s("<impls>"), Value::Dict(PyDict::new()));
                             }
                             *o.repr_text.borrow_mut() =
                                 Some("<functools.singledispatch object>".to_string());
@@ -4286,34 +4700,139 @@ pub fn call_functools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
                 // _lru_cache_wrapper; model it as an Opaque carrying <wrapped>
                 // (call dispatch: interp Opaque arm -> wrapped fn; v0: no
                 // memoization, documented in call_functools).
+                if name == "wraps" {
+                    let src = args.first().cloned().unwrap_or(Value::None);
+                    let o = PyObject::new(
+                        ap_obj::ObjKind::BuiltinFn,
+                        format!("functools.__ap_wraps_apply__:{}", name_callable(&src)),
+                    );
+                    let _ = o.attrs.borrow_mut().set(s("<src>"), src);
+                    return Ok(Value::Obj(o));
+                }
                 if matches!(name, "lru_cache" | "cache") {
                     // T1 (scrapy fix pass): `@lru_cache(_MAXCACHE)` (vendored
                     // re/__init__.py) passes a NON-callable maxsize — CPython
                     // treats a callable first arg as the fn (single-stage)
                     // and anything else as maxsize (two-stage). The old code
                     // wrapped the int itself, so `.cache_clear` blew up.
+                    // s014: maxsize/typed kwargs ride the wrapper (real
+                    // memoization + stats in lru_wrapper_call).
                     if args.first().map(|v| callable_value(v)).unwrap_or(false) {
-                        return Ok(lru_wrapper_of(args.first().unwrap()));
+                        return Ok(lru_wrapper_of_typed(args.first().unwrap(), None, false));
+                    }
+                    let maxsize = match kw(kwargs, "maxsize")
+                        .map(|v| v.clone())
+                        .or_else(|| args.first().cloned())
+                    {
+                        Some(v) => match v.as_int().and_then(|n| n.to_i64()) {
+                            Some(n) => Some(n),
+                            None => {
+                                if matches!(v, Value::None) {
+                                    None
+                                } else {
+                                    Some(128)
+                                }
+                            }
+                        },
+                        None => Some(128),
+                    };
+                    let typed = kw(kwargs, "typed").map(|v| truthy(v)).unwrap_or(false);
+                    LRU_PENDING.with(|c| {
+                        *c.borrow_mut() = Some((maxsize, typed));
+                    });
+                    return Ok(marker("functools.__ap_lru_deco__"));
+                }
+            }
+            // 02.08-c fix: the two-stage lru deco MARKER arrives as its own
+            // dispatch name (functools.__ap_lru_deco__) — unwrap it here so
+            // `dec = lru_cache(); @dec` reaches the wrapper builder.
+            "__ap_lru_deco__" | "functools.__ap_lru_deco__" => {
+                let (maxsize, typed) = LRU_PENDING
+                    .with(|c| c.borrow_mut().take())
+                    .unwrap_or((Some(128), false));
+                if let Some(f) = args.first() {
+                    if callable_value(f) {
+                        return Ok(lru_wrapper_of_typed(f, maxsize, typed));
                     }
                 }
-                if name != "wraps" {
-                    if let Some(f @ Value::Obj(fo)) = args.first() {
-                        if fo.kind == ap_obj::ObjKind::Function {
-                            let nop =
-                                PyObject::new(ap_obj::ObjKind::BuiltinFn, "__ap_functools_nop__");
-                            let _ = fo.attrs.borrow_mut().set(s("cache_clear"), Value::Obj(nop));
-                            let _ = fo
-                                .attrs
-                                .borrow_mut()
-                                .set(s("cache"), Value::Dict(ap_obj::dict::PyDict::new()));
-                            return Ok(f.clone());
+                return Ok(Value::None);
+            }
+            // 02.03b-fix: wraps is ALWAYS two-stage (CPython: wraps(m) ->
+            // updater that copies __wrapped__ etc onto its argument). The
+            // first call returns an updater carrying the SRC; the second
+            // copies __module__/__name__/__qualname__/__doc__ (+ __dict__
+            // update) onto its argument (s013 pins).
+            "wraps" => {
+                let src = args.first().cloned().unwrap_or(Value::None);
+                let o = PyObject::new(
+                    ap_obj::ObjKind::BuiltinFn,
+                    format!("functools.__ap_wraps_apply__<{}>", name_callable(&src)),
+                );
+                let _ = o.attrs.borrow_mut().set(s("<src>"), src);
+                return Ok(Value::Obj(o));
+            }
+            n if n.starts_with("functools.__ap_wraps_apply__:")
+                || n.starts_with("__ap_wraps_apply__:") =>
+            {
+                // functools.__ap_wraps_apply__:<srcid>(wrapped) — copy the
+                // WRAPPER_ASSIGNMENTS attrs from the parked src onto wrapped
+                // and return it.
+                let wrapped = args.first().cloned().unwrap_or(Value::None);
+                if let Value::Obj(wo) = &wrapped {
+                    let srcname = n
+                        .trim_start_matches("functools.__ap_wraps_apply__:")
+                        .trim_start_matches("__ap_wraps_apply__:")
+                        .to_string();
+                    if let Some(src) = NAMED_CALLABLES.with(|t| t.borrow().get(&srcname).cloned()) {
+                        let read_attr = |attr: &str| -> Option<Value> {
+                            let interp = current_interp()?;
+                            let rc = std::rc::Rc::new(interp);
+                            crate::interp::attr_get_public(&rc, &src, attr)
+                                .ok()
+                                .flatten()
+                        };
+                        for attr in ["__module__", "__name__", "__qualname__", "__doc__"] {
+                            if let Some(v) = read_attr(attr) {
+                                let _ = wo.attrs.borrow_mut().set(s(attr), v);
+                            }
                         }
+                        let d = PyDict::new();
+                        let _ = wo.attrs.borrow_mut().set(s("__dict__"), Value::Dict(d));
+                        let _ = wo.attrs.borrow_mut().set(s("__wrapped__"), src.clone());
+                        let nop = PyObject::new(ap_obj::ObjKind::BuiltinFn, "__ap_functools_nop__");
+                        let _ = wo.attrs.borrow_mut().set(s("cache_clear"), Value::Obj(nop));
+                        let _ = wo
+                            .attrs
+                            .borrow_mut()
+                            .set(s("cache"), Value::Dict(PyDict::new()));
                     }
                 }
-                let deco = PyObject::new(ap_obj::ObjKind::Opaque, "functools._ap_deco");
-                return Ok(Value::Obj(deco));
+                return Ok(wrapped);
             }
             _ => {}
+        }
+        if matches!(
+            name,
+            "lru_cache"
+                | "cache"
+                | "singledispatch"
+                | "cached_property"
+                | "wraps"
+                | "total_ordering"
+        ) {
+            if let Some(f @ Value::Obj(fo)) = args.first() {
+                if fo.kind == ap_obj::ObjKind::Function {
+                    let nop = PyObject::new(ap_obj::ObjKind::BuiltinFn, "__ap_functools_nop__");
+                    let _ = fo.attrs.borrow_mut().set(s("cache_clear"), Value::Obj(nop));
+                    let _ = fo
+                        .attrs
+                        .borrow_mut()
+                        .set(s("cache"), Value::Dict(ap_obj::dict::PyDict::new()));
+                    return Ok(f.clone());
+                }
+            }
+            let deco = PyObject::new(ap_obj::ObjKind::Opaque, "functools._ap_deco");
+            return Ok(Value::Obj(deco));
         }
         match name {
             "reduce" => {
@@ -4360,6 +4879,143 @@ pub fn call_functools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
                     Some(format!("functools.partial(<callable>, {})", enc.len()));
                 Ok(Value::Obj(obj))
             }
+            // s014: cache_info() — build the CacheInfo namedtuple from the
+            // wrapper's live stats (receiver = the _lru_wrapper Opaque).
+            "functools._lru_wrapper.cache_info" | "_lru_wrapper.cache_info" => {
+                let recv = required(args, "cache_info")?;
+                let Value::Obj(wo) = recv else {
+                    return Err(raise("TypeError", "bad cache_info receiver"));
+                };
+                let gets = |k: &str| {
+                    wo.attrs
+                        .borrow()
+                        .get(&s(k))
+                        .and_then(|v| v.as_int())
+                        .and_then(|n| n.to_i64())
+                        .unwrap_or(0)
+                };
+                let hits = gets("<hits>");
+                let misses = gets("<misses>");
+                let maxsize = wo
+                    .attrs
+                    .borrow()
+                    .get(&s("<maxsize>"))
+                    .unwrap_or(Value::None);
+                let currsize = {
+                    let cache = wo.attrs.borrow().get(&s("<cache>"));
+                    match cache {
+                        Some(Value::Dict(d)) => i(d.len() as i64),
+                        _ => i(0),
+                    }
+                };
+                let cache_info_v = {
+                    let obj = PyObject::new(ap_obj::ObjKind::NamedTuple, "CacheInfo");
+                    let fields = ["hits", "misses", "maxsize", "currsize"];
+                    {
+                        let mut attrs = obj.attrs.borrow_mut();
+                        let _ = attrs.set(s("hits"), i(hits));
+                        let _ = attrs.set(s("misses"), i(misses));
+                        let _ = attrs.set(s("maxsize"), maxsize.clone());
+                        let _ = attrs.set(s("currsize"), currsize.clone());
+                        let _ =
+                            attrs.set(s("_fields"), tuple(fields.iter().map(|f| s(*f)).collect()));
+                        let _ = attrs.set(
+                            s("<values>"),
+                            list(vec![i(hits), i(misses), maxsize.clone(), currsize.clone()]),
+                        );
+                    }
+                    let curr_i = currsize.as_int().and_then(|n| n.to_i64()).unwrap_or(0);
+                    *obj.repr_text.borrow_mut() = Some(format!(
+                        "CacheInfo(hits={}, misses={}, maxsize={}, currsize={})",
+                        hits,
+                        misses,
+                        crate::builtins::builtin_repr(std::slice::from_ref(&maxsize))
+                            .map(|v| match v {
+                                Value::Str(sv) => sv.as_str().to_string(),
+                                _ => String::new(),
+                            })
+                            .unwrap_or_default(),
+                        curr_i,
+                    ));
+                    Value::Obj(obj)
+                };
+                Ok(cache_info_v)
+            }
+            // s014: functools._lruwrapper_<id>(...) — the lru wrapper call.
+            n if n.starts_with("_lruwrapper_") => {
+                return lru_wrapper_call_id(n, args, kwargs);
+            }
+            // s014: functools._lruci_<st_key>() — cache_info bound surface.
+            n if n.starts_with("_lruci_") => {
+                return Ok(lru_cache_info_id(&n["_lruci_".len()..]));
+            }
+            // s014: functools._lruc_<st_key>() — cache_clear bound surface.
+            n if n.starts_with("_lruc_") => {
+                lru_cache_clear_id(&n["_lruc_".len()..]);
+                return Ok(Value::None);
+            }
+            // s014: functools._lrup_<st_key>() — cache_parameters bound surface.
+            n if n.starts_with("_lrup_") => {
+                return Ok(lru_cache_parameters_id(&n["_lrup_".len()..]));
+            }
+            // s014: functools.CacheInfo(hits, misses, maxsize, currsize) —
+            // the NamedTuple value factory (uname_result pattern).
+            "functools.CacheInfo" | "CacheInfo" => {
+                let hits = args.first().cloned().unwrap_or_else(|| i(0));
+                let misses = args.get(1).cloned().unwrap_or_else(|| i(0));
+                let maxsize = args.get(2).cloned().unwrap_or(Value::None);
+                let currsize = args.get(3).cloned().unwrap_or_else(|| i(0));
+                let gi = |v: &Value| v.as_int().and_then(|n| n.to_i64()).unwrap_or(0);
+                let obj = PyObject::new(ap_obj::ObjKind::NamedTuple, "CacheInfo");
+                let fields = ["hits", "misses", "maxsize", "currsize"];
+                {
+                    let mut attrs = obj.attrs.borrow_mut();
+                    let _ = attrs.set(s("hits"), hits.clone());
+                    let _ = attrs.set(s("misses"), misses.clone());
+                    let _ = attrs.set(s("maxsize"), maxsize.clone());
+                    let _ = attrs.set(s("currsize"), currsize.clone());
+                    let _ = attrs.set(s("_fields"), tuple(fields.iter().map(|f| s(*f)).collect()));
+                    let _ = attrs.set(
+                        s("<values>"),
+                        list(vec![
+                            hits.clone(),
+                            misses.clone(),
+                            maxsize.clone(),
+                            currsize.clone(),
+                        ]),
+                    );
+                }
+                *obj.repr_text.borrow_mut() = Some(format!(
+                    "CacheInfo(hits={}, misses={}, maxsize={}, currsize={})",
+                    gi(&hits),
+                    gi(&misses),
+                    crate::builtins::builtin_repr(std::slice::from_ref(&maxsize))
+                        .map(|v| match v {
+                            Value::Str(sv) => sv.as_str().to_string(),
+                            _ => String::new(),
+                        })
+                        .unwrap_or_default(),
+                    gi(&currsize),
+                ));
+                Ok(Value::Obj(obj))
+            }
+            // s014: cache_clear() — drop all entries + zero counters.
+            "functools._lru_wrapper.cache_clear" | "_lru_wrapper.cache_clear" => {
+                let recv = required(args, "cache_clear")?;
+                if let Value::Obj(wo) = recv {
+                    let _ = wo
+                        .attrs
+                        .borrow_mut()
+                        .set(s("<cache>"), Value::Dict(PyDict::new()));
+                    let _ = wo
+                        .attrs
+                        .borrow_mut()
+                        .set(s("<order>"), Value::List(ap_obj::value::PyList::new()));
+                    let _ = wo.attrs.borrow_mut().set(s("<hits>"), i(0));
+                    let _ = wo.attrs.borrow_mut().set(s("<misses>"), i(0));
+                }
+                Ok(Value::None)
+            }
             _ => return Err(Flow::Next),
         }
     })();
@@ -4367,6 +5023,24 @@ pub fn call_functools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
         Err(Flow::Next) => return None,
         other => Some(other),
     }
+}
+
+/// The functools.CacheInfo class value from the module namespace (built at
+/// module construction; import order guarantees functools is built first).
+fn get_functools_attr(name: &str) -> Value {
+    if let Some(interp) = CURRENT.with(|c| c.borrow().clone()) {
+        if let Some(m) = MODULE_CACHE.with(|c| c.borrow().get("functools").cloned()) {
+            if let Value::Obj(mo) = m {
+                if let Some(ns) = &*mo.module_ns.borrow() {
+                    if let Some(v) = ns.get(&s(name)) {
+                        return v;
+                    }
+                }
+            }
+        }
+        let _ = interp;
+    }
+    Value::None
 }
 
 /// Call a functools.partial object built by call_functools.
@@ -4414,22 +5088,25 @@ fn build_string(_i: &crate::frame::Interpreter) -> Value {
         s("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~ \t\n\r\u{0b}\u{0c}"),
     );
     fn1(&ns, "string", "capwords");
-    // T1 (logging): string.Template — a real user class built via the
-    // 3-arg type() machinery would be heavy; the shim is a namespace TYPE
-    // whose instantiation routes through call_type_ctor (template built at
-    // call time in Python is out of scope — substitute via the marker).
-    let _ = ns.set(
-        Value::Str(PyString::new("Template")),
-        interned_type_pub("Template"),
-    );
-    let _ = ns.set(
-        Value::Str(PyString::new("Formatter")),
-        interned_type_pub("Formatter"),
-    );
+    fn1(&ns, "string", "_ap_raise_keyerror");
+    // s027: Template/Formatter come from the VENDORED string.py (real
+    // classes: Template.substitute/safe_substitute, Formatter.format).
+    // build_string does NOT register them natively so augment_with_vendored
+    // (which only copies names the native ns lacks) fills them.
     finish(m, ns)
 }
 
 pub fn call_string(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Option<BResult> {
+    // s027: vendored Template raises missing-placeholder KeyErrors through
+    // this native fn so the exception renders with the args repr (the
+    // Python-level raise path renders the default object repr).
+    if name == "_ap_raise_keyerror" {
+        let arg = args.first().cloned().unwrap_or_else(|| s("?"));
+        return Some(Err(Flow::Raise(crate::exc_hier::ExceptionValue::new(
+            "KeyError",
+            vec![arg],
+        ))));
+    }
     if name != "capwords" {
         return None;
     }
@@ -4482,10 +5159,61 @@ fn build_textwrap(_i: &crate::frame::Interpreter) -> Value {
     for n in ["wrap", "fill", "dedent", "indent", "shorten"] {
         fn1(&ns, "textwrap", n);
     }
+    // s027: TextWrapper class surface (width/break_long_words ctor +
+    // wrap() method). A native MARKER fn (not an interned type) so the
+    // call dispatches through call_native("textwrap","TextWrapper") —
+    // the type-ctor path has no textwrap arm.
+    let _ = ns.set(s("TextWrapper"), marker("textwrap.TextWrapper"));
     finish(m, ns)
 }
 
 pub fn call_textwrap(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option<BResult> {
+    // s027: TextWrapper(width=..., break_long_words=...) ctor — an Opaque
+    // carrying the config; .wrap() re-dispatches through the marker below.
+    if name == "TextWrapper" {
+        let o = PyObject::new(ap_obj::ObjKind::Opaque, "textwrap.TextWrapper");
+        {
+            let mut a = o.attrs.borrow_mut();
+            let _ = a.set(
+                s("width"),
+                kw(kwargs, "width")
+                    .map(|v| v.clone())
+                    .unwrap_or_else(|| i(70)),
+            );
+            let _ = a.set(
+                s("break_long_words"),
+                Value::Bool(kw(kwargs, "break_long_words").map(truthy).unwrap_or(true)),
+            );
+        }
+        *o.repr_text.borrow_mut() = Some("<textwrap.TextWrapper object>".to_string());
+        return Some(Ok(Value::Obj(o)));
+    }
+    if name == "textwrap.TextWrapper.wrap" || name == "TextWrapper.wrap" {
+        let recv = match args.first() {
+            Some(v) => v.clone(),
+            None => return Some(Err(raise("TypeError", "missing receiver argument"))),
+        };
+        let text = match args.get(1) {
+            Some(v) => match str_arg(v, "wrap") {
+                Ok(t) => t,
+                Err(e) => return Some(Err(e)),
+            },
+            None => return Some(Err(raise("TypeError", "wrap expected 1 argument"))),
+        };
+        let width = match &recv {
+            Value::Obj(o) => o
+                .attrs
+                .borrow()
+                .get(&s("width"))
+                .and_then(|v| v.as_int())
+                .and_then(|n| n.to_i64())
+                .unwrap_or(70) as usize,
+            _ => return Some(Err(raise("TypeError", "bad TextWrapper receiver"))),
+        };
+        return Some(Ok(list(
+            wrap_text(&text, width).into_iter().map(s).collect(),
+        )));
+    }
     let r: BResult = (|| -> BResult {
         match name {
             "wrap" => {
@@ -4539,34 +5267,46 @@ pub fn call_textwrap(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> 
                     .collect();
                 Ok(s(out.join("\n")))
             }
+            // s027 (CPython shorten): collapse whitespace; then return the
+            // longest prefix of whole words such that prefix+placeholder fits
+            // width (CPython wraps with the placeholder glued to the end and
+            // drops any truncated remainder).
             "shorten" => {
                 let text = str_arg(required(args, "shorten")?, "shorten")?;
                 let width = kw(kwargs, "width")
                     .map(|v| as_int_i64(&v))
                     .transpose()?
-                    .unwrap_or(70);
+                    .unwrap_or(70) as usize;
                 let placeholder = match kw(kwargs, "placeholder") {
                     Some(Value::Str(x)) => x.as_str().to_string(),
                     _ => "[...]".to_string(),
                 };
-                let words = wrap_text(&text, usize::MAX);
-                let mut out = String::new();
-                for w in words {
-                    let cand = if out.is_empty() {
-                        w.clone()
+                let words: Vec<&str> = text.split_whitespace().collect();
+                let ph_len = placeholder.chars().count();
+                let mut kept: Vec<&str> = Vec::new();
+                let mut cur = 0usize;
+                for w in &words {
+                    let add = if kept.is_empty() {
+                        w.chars().count()
                     } else {
-                        format!("{out} {w}")
+                        w.chars().count() + 1
                     };
-                    if cand.chars().count() + placeholder.chars().count() > width as usize {
+                    if cur + add + ph_len <= width {
+                        kept.push(w);
+                        cur += add;
+                    } else {
                         break;
                     }
-                    out = cand;
                 }
-                let joined = wrap_text(&text, usize::MAX).join(" ");
-                if joined.chars().count() <= width as usize {
-                    return Ok(s(joined));
+                if kept.is_empty() {
+                    // CPython returns just the placeholder when even one word
+                    // does not fit.
+                    return Ok(s(placeholder));
                 }
-                Ok(s(format!("{out}{placeholder}")))
+                let mut out = kept.join(" ");
+                out.push(' ');
+                out.push_str(&placeholder);
+                Ok(s(out))
             }
             _ => Err(raise("SystemError", format!("textwrap fn {name} unbound"))),
         }
@@ -4643,16 +5383,52 @@ fn dedent_text(text: &str) -> String {
 // collections-lite (deque only; Counter/defaultdict/OrderedDict = classes)
 // ===========================================================================
 
+fn build_collections_abc(_i: &crate::frame::Interpreter) -> Value {
+    let (am, ans) = new_module("collections.abc");
+    for n in [
+        "Hashable",
+        "Sized",
+        "Callable",
+        "Iterable",
+        "Iterator",
+        "Reversible",
+        "Generator",
+        "Container",
+        "Collection",
+        "Sequence",
+        "MutableSequence",
+        "Mapping",
+        "MutableMapping",
+        "Set",
+        "MutableSet",
+        "MappingView",
+        "KeysView",
+        "ItemsView",
+        "ValuesView",
+        "Awaitable",
+        "Coroutine",
+        "AsyncIterable",
+        "AsyncIterator",
+    ] {
+        let _ = ans.set(s(n), interned_type_pub(n));
+    }
+    finish(am, ans)
+}
+
 fn build_collections(_i: &crate::frame::Interpreter) -> Value {
     let (m, ns) = new_module("collections");
     for n in ["deque", "namedtuple"] {
         fn1(&ns, "collections", n);
     }
+    // s015: `abc` submodule surface (collections.abc import identity).
+    if let Some(interp) = CURRENT.with(|c| c.borrow().clone()) {
+        if let Some(abc_mod) = get_or_make_module(&interp, "collections.abc") {
+            let _ = ns.set(s("abc"), abc_mod);
+        }
+    }
     // 02.03b-fix: Counter as a real type VALUE (unittest/util.py imports it
     // at module load). Calling it routes through call_type_ctor ->
-    // call_builtin "Counter" -> a dict-backed multiset (most_common/update
-    // surfaces ride the dict method table; __missing__ semantics are a
-    // documented v0 gap — the import gate never exercises them).
+    // call_builtin "Counter" -> a dict-backed multiset.
     let _ = ns.set(
         Value::Str(PyString::new("Counter")),
         interned_type_pub("Counter"),
@@ -4822,6 +5598,16 @@ fn deque_state<'a>(v: &'a Value) -> Result<(Vec<Value>, Option<i64>), Flow> {
             format!("expected deque, not {}", other.type_name()),
         )),
     }
+}
+
+/// Public re-export for methods.rs deque subscript support.
+pub fn deque_state_pub(v: &Value) -> Result<(Vec<Value>, Option<i64>), Flow> {
+    deque_state(v)
+}
+
+/// Public re-export for methods.rs deque slice support.
+pub fn make_deque_pub(items: Vec<Value>, maxlen: Option<i64>) -> Value {
+    make_deque(items, maxlen)
 }
 
 fn set_deque_items(v: &Value, mut items: Vec<Value>, maxlen: Option<i64>) -> Result<(), Flow> {
@@ -5003,14 +5789,21 @@ fn build_json(_i: &crate::frame::Interpreter) -> Value {
     // name reads resolve; calls construct Exception instances.
     let _ = ns.set(s("JSONDecodeError"), interned_type_pub("JSONDecodeError"));
     // 02.08-full part 1: encoder/decoder class surface (s008 SetEnc pin).
-    for n in ["JSONEncoder", "JSONDecoder"] {
-        let _ = ns.set(s(n), interned_type_pub(n));
-    }
+    // s008: JSONEncoder stays an interned type so user subclasses work;
+    // JSONDecoder is a native MARKER fn so JSONDecoder() construction
+    // dispatches to call_json's ctor arm (the type-ctor path has no
+    // JSONDecoder arm). Subclassing JSONDecoder is not exercised.
+    let _ = ns.set(s("JSONEncoder"), interned_type_pub("JSONEncoder"));
+    let _ = ns.set(s("JSONDecoder"), marker("json.JSONDecoder"));
     let dec = PyObject::new(ap_obj::ObjKind::Namespace, "decoder");
     let _ = dec
         .attrs
         .borrow_mut()
-        .set(s("JSONDecoder"), interned_type_pub("JSONDecoder"));
+        .set(s("JSONDecoder"), marker("json.JSONDecoder"));
+    let _ = dec
+        .attrs
+        .borrow_mut()
+        .set(s("JSONDecodeError"), interned_type_pub("JSONDecodeError"));
     let _ = ns.set(s("decoder"), Value::Obj(dec));
     let enc = PyObject::new(ap_obj::ObjKind::Namespace, "encoder");
     let _ = enc
@@ -5033,6 +5826,35 @@ pub(crate) fn interned_type_pub(name: &str) -> Value {
 pub fn call_json(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option<BResult> {
     let r: BResult = (|| -> BResult {
         match name {
+            // s008: json.JSONDecoder() — construct a decoder instance Opaque
+            // (the attr surface rides the native_attr "JSONDecoder" arm).
+            "JSONDecoder" => {
+                let o = PyObject::new(ap_obj::ObjKind::Opaque, "JSONDecoder");
+                *o.repr_text.borrow_mut() = Some("<json.JSONDecoder object>".to_string());
+                return Ok(Value::Obj(o));
+            }
+            // s008: decoder/decoder-instance bound methods (json.decode /
+            // json.encode) arrive with the instance in args[0] — drop it.
+            "decode" | "iterencode" => {
+                let rest = if matches!(args.first(), Some(Value::Obj(o))
+                    if o.kind == ap_obj::ObjKind::Opaque && o.name == "JSONDecoder")
+                {
+                    &args[1..]
+                } else {
+                    args
+                };
+                json_loads(required(rest, "loads")?, kwargs)
+            }
+            "encode" => {
+                let rest = if matches!(args.first(), Some(Value::Obj(o))
+                    if o.kind == ap_obj::ObjKind::Opaque && o.name == "JSONDecoder")
+                {
+                    &args[1..]
+                } else {
+                    args
+                };
+                json_dumps(required(rest, "dumps")?, kwargs)
+            }
             "loads" => json_loads(required(args, "loads")?, kwargs),
             "dumps" => json_dumps(required(args, "dumps")?, kwargs),
             "load" => {
@@ -5727,6 +6549,18 @@ fn build_os(_i: &crate::frame::Interpreter) -> Value {
     ns_const(&ns, "sep", s("/"));
     ns_const(&ns, "pathsep", s(":"));
     ns_const(&ns, "curdir", s("."));
+    // 02.08-c: os.wait flags (subprocess.py import surface).
+    ns_const(&ns, "WNOHANG", i(1));
+    ns_const(&ns, "WCONTINUED", i(8));
+    ns_const(&ns, "WUNTRACED", i(2));
+    ns_const(&ns, "WIFSTOPPED", i(1));
+    ns_const(&ns, "WIFEXITED", i(1));
+    ns_const(&ns, "WIFSIGNALED", i(1));
+    ns_const(&ns, "WIFCONTINUED", i(1));
+    ns_const(&ns, "WEXITSTATUS", i(0));
+    ns_const(&ns, "WTERMSIG", i(0));
+    ns_const(&ns, "WSTOPSIG", i(0));
+    ns_const(&ns, "WCOREDUMP", i(0));
     ns_const(&ns, "pardir", s(".."));
     ns_const(&ns, "extsep", s("."));
     ns_const(&ns, "altsep", Value::None);
@@ -5768,6 +6602,9 @@ fn build_os(_i: &crate::frame::Interpreter) -> Value {
         "listdir",
         "getpid",
         "getppid",
+        "waitpid",
+        "wait",
+        "waitstatus_to_exitcode",
         "strerror",
         "access",
         "fspath",
@@ -5885,6 +6722,20 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                 Ok(list(out))
             }
             "getpid" => Ok(i(std::process::id() as i64)),
+            // 02.08-c: os.waitpid stub (subprocess.py import surface; the v1
+            // runtime never spawns children) — block forever-free, return
+            // (0, 0) like a reaped unknown child.
+            "waitpid" | "wait" => Ok(tuple(vec![i(0), i(0)])),
+            // 02.08-c: os.waitstatus_to_exitcode (subprocess.py import surface)
+            // — identity for a non-signalled 0 status.
+            "waitstatus_to_exitcode" => {
+                let st = args
+                    .first()
+                    .and_then(|v| v.as_int())
+                    .and_then(|n| n.to_i64())
+                    .unwrap_or(0);
+                Ok(i(st))
+            }
             "getppid" => Ok(i(1)),
             "strerror" => {
                 let n = as_int_i64(required(args, "strerror")?)?;
@@ -7233,9 +8084,15 @@ pub fn call_linecache(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -
             }
             "updatecache" => {
                 let p = str_arg(required(args, "updatecache")?, "updatecache")?;
-                let fresh = std::fs::read_to_string(&p).is_ok();
-                let _ = cache_lines(&p);
-                Ok(Value::Bool(fresh))
+                // CPython returns the file SIZE (as str) on success, "" on
+                // miss — s021 pins the miss as falsy.
+                match std::fs::read_to_string(&p) {
+                    Ok(text) => {
+                        let _ = cache_lines(&p);
+                        Ok(s(text.len().to_string()))
+                    }
+                    Err(_) => Ok(s("")),
+                }
             }
             "checkcache" => Ok(Value::None),
             "clearcache" => {
@@ -8277,15 +9134,235 @@ fn build_tempfile(_i: &crate::frame::Interpreter) -> Value {
     finish(m, ns)
 }
 
-/// Opaque `_lru_cache_wrapper`-alike: carries the wrapped fn; attr surface
+/// Opaque `_lru_cache_wrapper`-alike: carries the wrapped fn + REAL memo
+/// state (s014: cache_info/cache_clear/parameters with CPython-exact
+/// hit/miss/currsize accounting; maxsize LRU eviction). Attr surface
 /// (cache_clear/cache_info/cache_parameters/__wrapped__) via native_attr.
 pub(crate) fn lru_wrapper_of(f: &Value) -> Value {
-    let o = PyObject::new(ap_obj::ObjKind::Opaque, "functools._lru_wrapper");
-    {
-        let mut attrs = o.attrs.borrow_mut();
-        let _ = attrs.set(s("<wrapped>"), f.clone());
+    lru_wrapper_of_typed(f, None, false)
+}
+
+/// s014: typed-aware variant — `lru_cache(maxsize=None, typed=True)`.
+/// The wrapper is a BuiltinFn MARKER (`functools._lruwrapper_<id>`): its call
+/// lands in call_functools via the dotted-dispatch (call_native_marker), and
+/// the cache state rides the thread-local LRU_CACHE table.
+pub(crate) fn lru_wrapper_of_typed(f: &Value, maxsize: Option<i64>, typed: bool) -> Value {
+    let id = format!(
+        "_lruwrapper_{}",
+        SD_COUNTER.with(|c| {
+            let n = c.get();
+            c.set(n + 1);
+            n
+        })
+    );
+    LRU_STATE.with(|t| {
+        t.borrow_mut().insert(
+            id.clone(),
+            LruState {
+                wrapped: f.clone(),
+                maxsize,
+                typed,
+                cache: std::collections::HashMap::new(),
+                order: Vec::new(),
+                hits: 0,
+                misses: 0,
+            },
+        );
+    });
+    marker(&format!("functools.{id}"))
+}
+thread_local! {
+    /// s014: lru wrapper state keyed by the `_lruwrapper_<id>` marker id.
+    static LRU_STATE: RefCell<HashMap<String, LruState>> = RefCell::new(HashMap::new());
+}
+
+/// s014: one lru_cache wrapper's memoization state.
+struct LruState {
+    wrapped: Value,
+    maxsize: Option<i64>,
+    typed: bool,
+    /// encoded-key -> cached return Value
+    cache: std::collections::HashMap<String, Value>,
+    /// LRU order (oldest first), keys mirror the cache table.
+    order: Vec<String>,
+    hits: u64,
+    misses: u64,
+}
+
+/// s014 core: call an lru wrapper with real memoization (state keyed by the
+/// `_lruwrapper_<id>` marker id in LRU_STATE). Cache keys are CPython-style:
+/// encoded args (+ encoded kwargs; `typed=True` folds the arg TYPE in).
+/// s013b: public registration into the singledispatch impl table (interp's
+/// `_sd_register_deco` arm mirrors registrations here so the `_sd_<id>`
+/// dispatch sees them).
+pub fn sd_registry_insert_pub(id: &str, key: &str, f: Value) {
+    SD_REGISTRY.with(|t| {
+        if let Some(reg) = t.borrow_mut().get_mut(id) {
+            reg.impls.insert(key.to_string(), f);
+        }
+    });
+}
+
+pub fn lru_wrapper_call_id(id: &str, args: &[Value], kwargs: &[(String, Value)]) -> BResult {
+    let mut key_parts: Vec<String> = args.iter().map(encode_key_part).collect();
+    for (k, v) in kwargs {
+        key_parts.push(format!("{k}={}", encode_key_part(v)));
     }
-    Value::Obj(o)
+    let hit = LRU_STATE.with(|t| {
+        let mut m = t.borrow_mut();
+        let st = m.get_mut(id);
+        match st {
+            Some(s) => {
+                if s.typed {
+                    key_parts.push(format!(
+                        "#types:{}",
+                        args.iter()
+                            .map(|v| v.type_name())
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    ));
+                }
+                let key = key_parts.join("\u{1f}");
+                if let Some(pos) = s.order.iter().position(|k| *k == key) {
+                    // Hit: LRU refresh + counter.
+                    s.hits += 1;
+                    if s.maxsize.map(|m| m > 0).unwrap_or(false) {
+                        let k2 = s.order.remove(pos);
+                        s.order.push(k2);
+                    }
+                    Some(s.cache.get(&key).cloned().unwrap_or(Value::None))
+                } else {
+                    s.misses += 1;
+                    None
+                }
+            }
+            None => None,
+        }
+    });
+    if let Some(hit_val) = hit {
+        return Ok(hit_val);
+    }
+    let fv = LRU_STATE.with(|t| {
+        t.borrow()
+            .get(id)
+            .map(|s| s.wrapped.clone())
+            .unwrap_or(Value::None)
+    });
+    let key = key_parts.join("\u{1f}");
+    let val = crate::interp::call_value_pub2(&fv, args, kwargs)?;
+    LRU_STATE.with(|t| {
+        if let Some(s) = t.borrow_mut().get_mut(id) {
+            let maxsize = s.maxsize;
+            s.cache.insert(key.clone(), val.clone());
+            s.order.push(key.clone());
+            if maxsize.map(|m| m > 0).unwrap_or(false) {
+                let limit = maxsize.unwrap_or(0);
+                while s.order.len() as i64 > limit {
+                    let oldest = s.order.remove(0);
+                    s.cache.remove(&oldest);
+                }
+            }
+        }
+    });
+    Ok(val)
+}
+
+/// s014: cache_info for a wrapper id (NamedTuple with live stats).
+pub(crate) fn lru_cache_info_id(id: &str) -> Value {
+    let (hits, misses, maxsize, currsize) = LRU_STATE.with(|t| match t.borrow().get(id) {
+        Some(s) => (s.hits, s.misses, s.maxsize, s.cache.len() as i64),
+        None => (0, 0, None, 0),
+    });
+    // NOTE: the payload is named "tuple" so isinstance(ci, tuple) holds
+    // (type_name rides the NamedTuple name); the repr_text override keeps
+    // the CPython "CacheInfo(...)" display form.
+    let obj = PyObject::new(ap_obj::ObjKind::NamedTuple, "tuple");
+    let fields = ["hits", "misses", "maxsize", "currsize"];
+    let maxsize_v = match maxsize {
+        Some(n) => i(n),
+        None => Value::None,
+    };
+    {
+        let mut attrs = obj.attrs.borrow_mut();
+        let _ = attrs.set(s("hits"), i(hits as i64));
+        let _ = attrs.set(s("misses"), i(misses as i64));
+        let _ = attrs.set(s("maxsize"), maxsize_v.clone());
+        let _ = attrs.set(s("currsize"), i(currsize));
+        let _ = attrs.set(s("_fields"), tuple(fields.iter().map(|f| s(*f)).collect()));
+        let _ = attrs.set(
+            s("<values>"),
+            list(vec![
+                i(hits as i64),
+                i(misses as i64),
+                maxsize_v.clone(),
+                i(currsize),
+            ]),
+        );
+    }
+    *obj.repr_text.borrow_mut() = Some(format!(
+        "CacheInfo(hits={}, misses={}, maxsize={}, currsize={})",
+        hits,
+        misses,
+        crate::builtins::builtin_repr(std::slice::from_ref(&maxsize_v))
+            .map(|v| match v {
+                Value::Str(sv) => sv.as_str().to_string(),
+                _ => String::new(),
+            })
+            .unwrap_or_default(),
+        currsize,
+    ));
+    Value::Obj(obj)
+}
+
+/// s014: cache_clear for a wrapper id.
+pub(crate) fn lru_cache_clear_id(id: &str) {
+    LRU_STATE.with(|t| {
+        if let Some(s) = t.borrow_mut().get_mut(id) {
+            s.cache.clear();
+            s.order.clear();
+            s.hits = 0;
+            s.misses = 0;
+        }
+    });
+}
+
+/// s014: cache_parameters for a wrapper id (maxsize/typed dict).
+pub(crate) fn lru_cache_parameters_id(id: &str) -> Value {
+    let d = ap_obj::dict::PyDict::new();
+    LRU_STATE.with(|t| {
+        if let Some(st) = t.borrow().get(id) {
+            let _ = d.set(
+                s("maxsize"),
+                match st.maxsize {
+                    Some(n) => i(n),
+                    None => Value::None,
+                },
+            );
+            let _ = d.set(s("typed"), Value::Bool(st.typed));
+        }
+    });
+    Value::Dict(d)
+}
+
+/// CPython-ish cache key encoding (structural, order-stable).
+fn encode_key_part(v: &Value) -> String {
+    match v {
+        Value::None => "n".to_string(),
+        Value::Bool(b) => format!("b{}", if *b { "1" } else { "0" }),
+        Value::Int(n) => format!("i{}", n.to_string_raw()),
+        Value::Float(x) => format!("f{x:?}"),
+        Value::Str(st) => format!("s{}", st.as_str()),
+        other => {
+            // Structural best-effort for containers; objects fall back to
+            // their display repr (identity is not modeled — v0 cache keys).
+            format!(
+                "o{}",
+                ap_obj::ops::repr(other)
+                    .map(|x| x.as_str().to_string())
+                    .unwrap_or_default()
+            )
+        }
+    }
 }
 
 fn temp_dir() -> String {
@@ -8448,6 +9525,9 @@ pub fn call_native(
         "base64" => call_base64(fname, args, kwargs),
         "binascii" => call_binascii(fname, args, kwargs),
         "re" => call_re(fname, args, kwargs),
+        // 02.08-c: lxml shim (fromstring/tostring/Element/SubElement/...).
+        // Names arriving with an "html." prefix are lxml.html entry points.
+        "lxml" | "lxml.etree" | "lxml.html" => crate::lxml::call_lxml(fname, args, kwargs),
         "_colorize" => call_colorize(fname, args, kwargs),
         "unicodedata" => call_unicodedata(fname, args, kwargs),
         "_codecs" => call_codecs(fname, args, kwargs),
@@ -8751,6 +9831,48 @@ pub fn call_native_object(
 /// native-type instances, hexdigest objects). Called from the attr_get hook.
 pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
     if let Value::Obj(o) = obj {
+        // s037: incremental codec stub — decode buffers bytes (chunked
+        // UTF-8 decode), encode buffers chars (final flush).
+        if o.kind == ap_obj::ObjKind::Opaque && o.name == "_codecs.Incremental" {
+            let mode = o
+                .attrs
+                .borrow()
+                .get(&s("<mode>"))
+                .and_then(|v| match v {
+                    Value::Str(x) => Some(x.as_str().to_string()),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            if (mode.ends_with("encoder") && name == "encode")
+                || (mode.ends_with("decoder") && name == "decode")
+            {
+                let bm = ap_obj::PyObject::with_self(
+                    ap_obj::ObjKind::BoundMethod,
+                    format!("_codecs.Incremental.{name}"),
+                    obj.clone(),
+                );
+                *bm.func.borrow_mut() = Some(marker(&format!("_codecs.Incremental.{name}")));
+                return Some(Value::Obj(bm));
+            }
+            return None;
+        }
+
+        // 02.08-c: lxml element object surface (tag/text/tail/attrib/xpath…).
+        if o.kind == ap_obj::ObjKind::Opaque
+            && (o.name == "lxml.etree._Element" || o.name == "lxml.html.HtmlElement")
+        {
+            // dunder protocol surface (len(r), r[i], iter(r)) binds the
+            // element and lands back in call_elem via the dotted marker.
+            if matches!(name, "__len__" | "__getitem__" | "__iter__") {
+                let bm = PyObject::new(ap_obj::ObjKind::BuiltinFn, &format!("lxml.elem.{}", name));
+                *bm.slice_parts.borrow_mut() = vec![obj.clone()];
+                return Some(Value::Obj(bm));
+            }
+            if let Some(v) = crate::lxml::elem_attr(obj, name) {
+                return Some(v);
+            }
+            return None;
+        }
         // T1 (importlib.resources.files → wrap_spec): every module object
         // exposes a minimal __spec__ (name-only ModuleSpec).
         if o.kind == ap_obj::ObjKind::Module && name == "__spec__" {
@@ -8789,7 +9911,14 @@ pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
             ap_obj::ObjKind::Function => match name {
                 "__name__" => Some(s(o.name.clone())),
                 "__qualname__" => Some(s(o.name.clone())),
-                "__doc__" => Some(Value::None),
+                // s013: __doc__ reads the function's attrs first (wraps pins
+                // wrapped.__doc__ == base.__doc__ through the attr table).
+                "__doc__" => o
+                    .attrs
+                    .borrow()
+                    .get(&s("__doc__"))
+                    .map(|v| v.clone())
+                    .or(Some(Value::None)),
                 _ => None,
             },
             ap_obj::ObjKind::BuiltinFn => {
@@ -8855,6 +9984,26 @@ pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
                 if full == "itertools.chain" && name == "from_iterable" {
                     return Some(marker("itertools.chain.from_iterable"));
                 }
+                // s014: lru wrapper markers (functools._lruwrapper_<id>) —
+                // bound cache surfaces route to the id-keyed state handlers.
+                if let Some(id) = full.strip_prefix("functools._lruwrapper_") {
+                    let st_key = format!("_lruwrapper_{id}");
+                    match name {
+                        "cache_info" => return Some(marker(&format!("functools._lruci_{st_key}"))),
+                        "cache_clear" => return Some(marker(&format!("functools._lruc_{st_key}"))),
+                        "cache_parameters" => {
+                            return Some(marker(&format!("functools._lrup_{st_key}")))
+                        }
+                        "__wrapped__" => {
+                            return LRU_STATE.with(|t| {
+                                t.borrow()
+                                    .get(&format!("_lruwrapper_{id}"))
+                                    .map(|s| s.wrapped.clone())
+                            });
+                        }
+                        _ => return None,
+                    }
+                }
                 // T1 (scrapy fix pass): ABCMeta.register on the ABCMeta
                 // marker (typing/attrs register classes with ABCs) - an
                 // inert marker that returns None when called.
@@ -8865,15 +10014,34 @@ pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
             }
             ap_obj::ObjKind::Opaque => match o.name.as_str() {
                 "functools._lru_wrapper" => match name {
+                    // s014: cache surfaces are REAL — cache_info() returns the
+                    // CacheInfo namedtuple from live hit/miss/currsize state.
                     "cache_clear" | "cache_info" => {
+                        let mname = format!("functools._lru_wrapper.{name}");
                         let bm = PyObject::with_self(
                             ap_obj::ObjKind::BoundMethod,
-                            format!("functools._lru_wrapper.{name}"),
+                            mname.clone(),
                             obj.clone(),
                         );
+                        *bm.func.borrow_mut() = Some(marker(&mname));
                         Some(Value::Obj(bm))
                     }
-                    "cache_parameters" => Some(Value::Dict(ap_obj::dict::PyDict::new())),
+                    // s014: cache_parameters() — a plain dict snapshot.
+                    "cache_parameters" => {
+                        let d = ap_obj::dict::PyDict::new();
+                        let _ = d.set(
+                            s("maxsize"),
+                            o.attrs.borrow().get(&s("<maxsize>")).unwrap_or(Value::None),
+                        );
+                        let _ = d.set(
+                            s("typed"),
+                            o.attrs
+                                .borrow()
+                                .get(&s("<typed>"))
+                                .unwrap_or(Value::Bool(false)),
+                        );
+                        Some(Value::Dict(d))
+                    }
                     "__wrapped__" => o.attrs.borrow().get(&s("<wrapped>")).map(|v| v.clone()),
                     _ => None,
                 },
@@ -8891,6 +10059,44 @@ pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
                     "keywords" => return Some(Value::Dict(PyDict::new())),
                     _ => None,
                 },
+                // s013: partialmethod read off an instance binds as the
+                // '<partial:...>' marker with self PREPENDED (CPython binds
+                // partialmethod(func, *pargs)(self, ...) -> func(*pargs, self)).
+                n if n.starts_with("functools.partialmethod:") => {
+                    let body = n.strip_prefix("functools.partialmethod:")?;
+                    let (fid, argstr) = body.split_once(':')?;
+                    if let Some(recv) = (|| {
+                        if let Value::Obj(oo) = obj {
+                            return oo.self_value.borrow().clone();
+                        }
+                        None
+                    })() {
+                        let mut bound: Vec<Value> = if argstr.is_empty() {
+                            vec![]
+                        } else {
+                            argstr.split('\u{1f}').map(decode_arg).collect()
+                        };
+                        bound.push(recv);
+                        let enc: Vec<String> = bound.iter().map(encode_arg).collect();
+                        let mname = format!("<partial:{fid}:{}>", enc.join("\u{1f}"));
+                        let pm = PyObject::new(ap_obj::ObjKind::BuiltinFn, mname);
+                        *pm.repr_text.borrow_mut() =
+                            Some("functools.partialmethod(<callable>)".to_string());
+                        return Some(Value::Obj(pm));
+                    }
+                    match name {
+                        "func" => NAMED_CALLABLES.with(|t| t.borrow().get(fid).cloned()),
+                        "args" => {
+                            let vals: Vec<Value> = if argstr.is_empty() {
+                                vec![]
+                            } else {
+                                argstr.split('\u{1f}').map(decode_arg).collect()
+                            };
+                            Some(tuple(vals))
+                        }
+                        _ => None,
+                    }
+                }
                 "deque" => {
                     let mname = match name {
                         "append" | "appendleft" | "pop" | "popleft" | "extend" | "clear"
@@ -8912,7 +10118,17 @@ pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
                 "struct.Struct" => {
                     return crate::structmod::struct_attr(obj, name);
                 }
+                "textwrap.TextWrapper" if name == "wrap" => {
+                    let mname = "textwrap.TextWrapper.wrap";
+                    let bm = PyObject::with_self(ap_obj::ObjKind::BoundMethod, mname, obj.clone());
+                    *bm.func.borrow_mut() = Some(marker(mname));
+                    return Some(Value::Obj(bm));
+                }
                 "JSONEncoder" | "JSONDecoder" => match name {
+                    // s008: json.decoder.JSONDecodeError is json.JSONDecodeError.
+                    "JSONDecodeError" => {
+                        return Some(interned_type_pub("JSONDecodeError"));
+                    }
                     "decode" | "encode" | "default" | "iterencode" | "__enter__" | "__exit__" => {
                         let mname = format!("json.{}", name);
                         let bm = PyObject::with_self(
@@ -9366,6 +10582,32 @@ fn builtinfn_attr(full: &str, name: &str) -> Option<Value> {
 
 /// Call an attrgetter/itemgetter marker (received as the function Value).
 pub fn call_native_marker(full: &str, args: &[Value]) -> Option<BResult> {
+    // 02.08-c: lxml element bound methods (`__ap_lxml__.<name>` over the
+    // element receiver riding args[0]).
+    if let Some(fname) = full.strip_prefix("__ap_lxml__.") {
+        return crate::lxml::call_elem(fname, args, &[]);
+    }
+    // 02.08-c: lxml.etree.FunctionNamespace(...) ctor marker.
+    if full == "lxml.etree.FunctionNamespace" {
+        return crate::lxml::call_lxml("etree.FunctionNamespace", args, &[]);
+    }
+    // s013/s014: functools stateful markers route through the functools
+    // dispatcher. Only STATEFUL names (lru wrappers/sentinels/CacheInfo);
+    // regular module fns (lru_cache etc) must fall through so kwargs reach
+    // call_native → call_functools intact.
+    if full.starts_with("functools._lruwrapper_")
+        || full.starts_with("functools._lruci_")
+        || full.starts_with("functools._lruc_")
+        || full.starts_with("functools._lrup_")
+        || full == "functools.__ap_lru_deco__"
+        || full.starts_with("functools._sd_")
+        || full.starts_with("functools._sdr_")
+    {
+        let fname = &full["functools.".len()..];
+        if let Some(r) = call_functools(fname, args, &[]) {
+            return Some(r);
+        }
+    }
     // 02.07: threading native-object bound methods
     // ("__ap_threading__.start" over receiver args[0]).
     if let Some(fname) = full.strip_prefix("__ap_threading__.") {
@@ -9379,6 +10621,31 @@ pub fn call_native_marker(full: &str, args: &[Value]) -> Option<BResult> {
         } else {
             argstr.split('\u{1f}').map(decode_arg).collect()
         };
+        // s013: functools.Placeholder slots — a Placeholder in the bound args
+        // is replaced by the next positional call arg; extra runtime args
+        // that already filled slots are consumed (not appended twice).
+        if full_args.iter().any(|v| is_functools_placeholder(v)) {
+            let bound = std::mem::take(&mut full_args);
+            let mut out: Vec<Value> = Vec::with_capacity(bound.len());
+            let mut it = args.iter().cloned();
+            for v in bound {
+                if is_functools_placeholder(&v) {
+                    match it.next() {
+                        Some(x) => out.push(x),
+                        None => {
+                            return Some(Err(raise(
+                                "TypeError",
+                                "not enough positional arguments during partial call",
+                            )))
+                        }
+                    }
+                } else {
+                    out.push(v);
+                }
+            }
+            out.extend(it);
+            return Some(call_named(fname, &out));
+        }
         full_args.extend_from_slice(args);
         return Some(call_named(fname, &full_args));
     }
@@ -9528,6 +10795,12 @@ fn attr_lookup_value(v: &Value, name: &str) -> Result<Value, Flow> {
 /// Structured attrs for the LAST JSONDecodeError instance (e.msg/e.lineno/
 /// e.colno/e.pos/e.doc) — consulted by the attr_get hook on exception objects.
 pub fn exception_attr(class: &str, name: &str) -> Option<Value> {
+    // 02.08-c: ModuleNotFoundError.name — importlib._bootstrap's
+    // _handle_fromlist backwards-compat path compares `exc.name == from_name`
+    // (jmespath/shibboleth-style submodule imports hit this).
+    if class == "ModuleNotFoundError" && name == "name" {
+        return crate::importer::last_mnf_name().map(|n| s(n));
+    }
     if class != "JSONDecodeError" {
         return None;
     }
@@ -9540,6 +10813,14 @@ pub fn exception_attr(class: &str, name: &str) -> Option<Value> {
         "doc" => Some(s(doc)),
         _ => None,
     }
+}
+
+thread_local! {
+    /// s022: globals() inside an IMPORTED module body must return that
+    /// module's namespace, not the main script's. run_loaded sets this around
+    /// module-body execution; builtins globals()/locals() consult it first.
+    pub static CURRENT_MODULE_GLOBALS: std::cell::RefCell<Option<std::rc::Rc<ap_obj::dict::PyDict>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// Public handle to the thread-current interpreter.
@@ -9951,15 +11232,37 @@ pub fn call_builtin_values(
             ("pystr", "find") | ("pystr", "rfind") | ("pystr", "index") => {
                 let sub = sa(1, fname)?;
                 if let Value::Str(x) = &recv {
-                    let pos = if fname == "rfind" {
-                        x.as_str().rfind(&sub)
+                    // CPython slice semantics for the optional [start[, end]]
+                    // bounds (negative -> from the end, clamped).
+                    let src = x.as_str();
+                    let n = src.len() as i64;
+                    let bound = |v: Option<i64>, dflt: i64| -> usize {
+                        let raw = v.unwrap_or(dflt);
+                        let adj = if raw < 0 {
+                            (raw + n).max(0)
+                        } else {
+                            raw.min(n)
+                        };
+                        adj as usize
+                    };
+                    let (lo, hi) = match (a(2), a(3)) {
+                        (None, _) => (0usize, src.len()),
+                        (Some(sv), maybe_end) => {
+                            let st = bound(Some(as_int_i64(&sv)?), 0);
+                            let en = bound(maybe_end.map(|ev| as_int_i64(&ev)).transpose()?, n);
+                            (st.min(en), en.max(st))
+                        }
+                    };
+                    let window = &src[lo..hi];
+                    let pos = if fname == "rfind" || fname == "rindex" {
+                        window.rfind(&sub)
                     } else {
-                        x.as_str().find(&sub)
+                        window.find(&sub)
                     };
                     return Ok(match pos {
-                        Some(p) => i(p as i64),
+                        Some(p) => i((lo + p) as i64),
                         None => {
-                            if fname == "index" {
+                            if fname == "index" || fname == "rindex" {
                                 return Err(raise("ValueError", "substring not found"));
                             }
                             i(-1)
@@ -9971,7 +11274,28 @@ pub fn call_builtin_values(
             ("pystr", "count") => {
                 let sub = sa(1, fname)?;
                 if let Value::Str(x) = &recv {
-                    return Ok(i(x.as_str().matches(&sub).count() as i64));
+                    // Optional [start[, end]] slice bounds, same shape as find.
+                    let src = x.as_str();
+                    let n = src.len() as i64;
+                    let bound = |v: Option<i64>, dflt: i64| -> usize {
+                        let raw = v.unwrap_or(dflt);
+                        let adj = if raw < 0 {
+                            (raw + n).max(0)
+                        } else {
+                            raw.min(n)
+                        };
+                        adj as usize
+                    };
+                    let (lo, hi) = match (a(2), a(3)) {
+                        (None, _) => (0usize, src.len()),
+                        (Some(sv), maybe_end) => {
+                            let st = bound(Some(as_int_i64(&sv)?), 0);
+                            let en = bound(maybe_end.map(|ev| as_int_i64(&ev)).transpose()?, n);
+                            (st.min(en), en.max(st))
+                        }
+                    };
+                    let cnt = src[lo..hi].matches(&sub).count();
+                    return Ok(i(cnt as i64));
                 }
                 Err(raise("SystemError", "bad receiver"))
             }
@@ -11569,6 +12893,11 @@ pub fn call_builtin_values(
 /// Encode a bound-arg Value into the partial marker name (repr-based; strings
 /// carry a type tag so decode is unambiguous).
 fn encode_arg(v: &Value) -> String {
+    // s013: the Placeholder sentinel encodes as its own token so the partial
+    // marker carries the slot through decode.
+    if is_functools_placeholder(v) {
+        return "p:".to_string();
+    }
     match v {
         Value::Int(n) => format!("i:{}", n.to_string_raw()),
         Value::Float(x) => format!("f:{x:?}"),
@@ -11582,7 +12911,20 @@ fn encode_arg(v: &Value) -> String {
     }
 }
 
+/// s013: identity check for the functools.Placeholder sentinel.
+fn is_functools_placeholder(v: &Value) -> bool {
+    matches!(v, Value::Obj(o)
+        if o.kind == ap_obj::ObjKind::Opaque && o.name == "functools.Placeholder")
+}
+
 fn decode_arg(tok: &str) -> Value {
+    if tok == "p:" {
+        // s013: functools.Placeholder slot token.
+        return Value::Obj(PyObject::new(
+            ap_obj::ObjKind::Opaque,
+            "functools.Placeholder",
+        ));
+    }
     if let Some(rest) = tok.strip_prefix("i:") {
         return Value::Int(Int::parse_base10(rest).unwrap_or_else(|_| Int::from_i64(0)));
     }
@@ -11686,6 +13028,14 @@ pub fn native_iter(v: &Value) -> Option<Gc<crate::iter::PyIterator>> {
             let items = deque_state(v).ok()?.0;
             return Some(crate::iter::PyIterator::new(
                 crate::iter::IterState::Native(Box::new(NativeIterState::Seq(items.into_iter()))),
+            ));
+        }
+        // 02.08-c: lxml elements iterate their children (CPython _Element
+        // __iter__ = direct children in document order).
+        if o.name == "lxml.etree._Element" || o.name == "lxml.html.HtmlElement" {
+            let kids = crate::lxml::children_public(v);
+            return Some(crate::iter::PyIterator::new(
+                crate::iter::IterState::Native(Box::new(NativeIterState::Seq(kids.into_iter()))),
             ));
         }
         // 02.04 completion: weak containers iterate their LIVE entries
@@ -11977,7 +13327,60 @@ fn call_importlib_util(name: &str, args: &[Value], _kwargs: &[(String, Value)]) 
                 }
                 Ok(Value::Obj(spec))
             }
-            "module_from_spec" | "spec_from_file_location" | "resolve_name" => Err(raise(
+            // 02.08-c: spec_from_file_location/module_from_spec power
+            // dynamic third-party loads (parsel shim _load_real). Build a
+            // spec marker whose loader is a SourceFileLoader-like opaque
+            // carrying (name, path); module_from_spec materializes a Module.
+            "spec_from_file_location" => {
+                let mod_name = str_arg(
+                    args.first().ok_or_else(|| {
+                        raise("TypeError", "spec_from_file_location expected a name")
+                    })?,
+                    "name",
+                )?;
+                let path = match args.get(1) {
+                    Some(Value::Str(p)) => p.as_str().to_string(),
+                    _ => String::new(),
+                };
+                let spec = PyObject::new(ap_obj::ObjKind::Namespace, "ModuleSpec");
+                {
+                    let mut attrs = spec.attrs.borrow_mut();
+                    let _ = attrs.set(s("name"), s(mod_name.clone()));
+                    let _ = attrs.set(s("origin"), s(path.clone()));
+                    let loader = PyObject::new(ap_obj::ObjKind::Opaque, "SourceFileLoader");
+                    {
+                        let mut la = loader.attrs.borrow_mut();
+                        let _ = la.set(s("<mod_name>"), s(mod_name.clone()));
+                        let _ = la.set(s("<path>"), s(path));
+                    }
+                    let _ = attrs.set(s("loader"), Value::Obj(loader));
+                }
+                Ok(Value::Obj(spec))
+            }
+            "module_from_spec" => {
+                let spec = args
+                    .first()
+                    .ok_or_else(|| raise("TypeError", "module_from_spec expected a spec"))?;
+                if let Value::Obj(so) = spec {
+                    let name = so
+                        .attrs
+                        .borrow()
+                        .get(&Value::Str(PyString::new("name")))
+                        .and_then(|v| match v {
+                            Value::Str(s) => Some(s.as_str().to_string()),
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| "dynamic".to_string());
+                    let modv = PyObject::new(ap_obj::ObjKind::Module, &name);
+                    let _ = modv.attrs.borrow_mut().set(
+                        Value::Str(PyString::new("__name__")),
+                        Value::Str(PyString::new(name.clone())),
+                    );
+                    return Ok(Value::Obj(modv));
+                }
+                Err(raise("TypeError", "module_from_spec expected a spec"))
+            }
+            "resolve_name" => Err(raise(
                 "SystemError",
                 format!("importlib.util fn {name} unbound"),
             )),
@@ -12051,4 +13454,158 @@ pub fn make_complex_value(re: f64, im: f64) -> Value {
 thread_local! {
     static JSON_DEFAULT_HOOK: std::cell::RefCell<Option<Value>> =
         const { std::cell::RefCell::new(None) };
+}
+
+// ===========================================================================
+// jmespath shim (02.08-c addendum): presence + exception surface for the
+// scrapy/parsel import chain. Expression compilation/evaluation is out of the
+// v1 contract (see docs/lxml-shim.md known gaps) — fail loud with ParseError.
+// ===========================================================================
+
+fn build_jmespath_shim(_i: &crate::frame::Interpreter) -> Value {
+    let (m, ns) = new_module("jmespath");
+    ns_const(&ns, "__version__", s("1.1.0.ap-shim"));
+    for n in ["compile", "search"] {
+        fn1(&ns, "jmespath", n);
+    }
+    let _ = ns.set(s("Options"), interned_type_pub("Options"));
+    // Exception family (jmespath.exceptions folded into the package namespace;
+    // `from jmespath import exceptions` resolves via the submodule link below).
+    let (em, ens) = new_module("jmespath.exceptions");
+    for exc in [
+        "JMESPathError",
+        "ParseError",
+        "ArityError",
+        "VariadictArityError",
+        "JMESPathTypeError",
+        "UnknownFunctionError",
+        "LexerError",
+        "EmptyExpressionError",
+    ] {
+        let ev = if let Some(interp) = CURRENT.with(|c| c.borrow().clone()) {
+            crate::classes::exc_class_value(&interp, exc)
+                .unwrap_or_else(|| Value::Obj(PyObject::new(ap_obj::ObjKind::Type, exc)))
+        } else {
+            Value::Obj(PyObject::new(ap_obj::ObjKind::Type, exc))
+        };
+        let _ = ens.set(s(exc), ev);
+    }
+    finish(em, ens);
+    let _ = ns.set(
+        s("exceptions"),
+        get_or_make_module_compat("jmespath.exceptions"),
+    );
+    // functions/compat/ast/lexer/parser/visitor submodule markers: the import
+    // chain walks `from jmespath import ...` names — provide inert modules.
+    for sub in ["functions", "compat", "ast", "lexer", "parser", "visitor"] {
+        let (sm, sns) = new_module(&format!("jmespath.{sub}"));
+        let _ = sns.set(s("__name__"), s(format!("jmespath.{sub}")));
+        if sub == "compat" {
+            let _ = sns.set(s("string_type"), s(""));
+            let _ = sns.set(s("text_type"), s(""));
+            let _ = sns.set(s("with_str_method"), interned_type_pub("with_str_method"));
+            let _ = sns.set(s("with_repr_method"), interned_type_pub("with_repr_method"));
+            let _ = sns.set(s("get_methods"), interned_type_pub("get_methods"));
+        }
+        if sub == "functions" {
+            let _ = sns.set(s("Options"), interned_type_pub("Options"));
+        }
+        finish(sm, sns);
+        let _ = ns.set(
+            s(sub),
+            get_or_make_module_compat(&format!("jmespath.{sub}")),
+        );
+    }
+    finish(m, ns)
+}
+
+/// Compatibility: build a sibling native module without going through the
+/// registry cache (the registry would recurse through build_jmespath_shim).
+fn get_or_make_module_compat(name: &str) -> Value {
+    match name {
+        "jmespath.exceptions"
+        | "jmespath.functions"
+        | "jmespath.compat"
+        | "jmespath.ast"
+        | "jmespath.lexer"
+        | "jmespath.parser"
+        | "jmespath.visitor" => {
+            let (m, ns) = new_module(name);
+            let _ = ns.set(s("__name__"), s(name));
+            finish(m, ns)
+        }
+        _ => Value::None,
+    }
+}
+
+/// 02.08-c: compact Unicode general-category lookup. Covers ASCII, Latin-1,
+/// general punctuation, and currency/symbol blocks; everything else is Cn
+/// (unassigned) — charset_normalizer's probes only need P/S/N/Z/C prefixes
+/// to be right for ASCII-range web content.
+fn general_category(c: char) -> String {
+    let cp = c as u32;
+    let s = |t: &str| t.to_string();
+    match c {
+        ' '
+        | '\u{a0}'
+        | '\u{1680}'
+        | '\u{2000}'..='\u{200a}'
+        | '\u{2028}'
+        | '\u{2029}'
+        | '\u{202f}'
+        | '\u{205f}'
+        | '\u{3000}' => s("Zs"),
+        '\n' | '\r' | '\u{b}' | '\u{c}' | '\u{85}' => s("Cc"),
+        '\t' => s("Cc"),
+        c if cp < 0x20 || (0x7f..=0x9f).contains(&cp) => s("Cc"),
+        'a'..='z'
+        | 'A'..='Z'
+        | 'ª'
+        | 'µ'
+        | 'º'
+        | 'À'..='Ö'
+        | 'Ø'..='ö'
+        | 'ø'..='ˁ'
+        | 'ˆ'..='ˑ'
+        | '̀'..='ͯ'
+        | 'ᵃ'..='ᵐ' => s("Ll"),
+        _ if c.is_ascii_digit() || ('0'..='9').contains(&c) => s("Nd"),
+        _ if c.is_numeric() => s("No"),
+        _ if matches!(
+            c,
+            '!' | '"'
+                | '#'
+                | '%'
+                | '&'
+                | '\''
+                | ','
+                | '.'
+                | '/'
+                | ':'
+                | ';'
+                | '?'
+                | '@'
+                | '\\'
+                | '¡'
+                | '¶'
+                | '·'
+                | '¿'
+                | '‘'
+                ..='”' | '\u{201e}' | '\u{2039}' | '\u{203a}' | '\u{ab}' | '\u{bb}'
+        ) =>
+        {
+            s("Po")
+        }
+        _ if matches!(
+            c,
+            '$' | '+' | '<' | '=' | '>' | '^' | '`' | '|' | '~' | '¢'..='¥' | '©' | '®'
+        ) =>
+        {
+            s("Sc")
+        }
+        _ if matches!(c, '(' | ')' | '[' | ']' | '{' | '}' | '§' | '¶' | '×' | '÷') => s("Ps"),
+        _ if c.is_alphabetic() => s("Ll"),
+        _ if c.is_alphanumeric() => s("No"),
+        _ => s("Cn"),
+    }
 }

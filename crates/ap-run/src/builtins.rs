@@ -78,6 +78,16 @@ pub fn py_str_of(v: &Value) -> Result<String, ap_obj::exc::PyException> {
             let exc = crate::exc_hier::ExceptionValue::new(&o.name, o.args.borrow().clone());
             return exc.py_str();
         }
+        // Real-class exception instances (S-03-32 UserInstance payloads):
+        // str(e) renders the args text (interp's str() ctor arm does this —
+        // print()/format() route through here and must agree).
+        if o.kind == ap_obj::ObjKind::UserInstance && crate::interp::is_exception_instance_pub(v) {
+            if let Ok(ev) = crate::interp::exception_value_of_instance_pub(v) {
+                if let Ok(s) = ev.py_str() {
+                    return Ok(s);
+                }
+            }
+        }
     }
     ap_obj::ops::to_str(v)
 }
@@ -280,10 +290,16 @@ pub fn builtin_int(interp: &Interpreter, args: &[Value]) -> BResult {
             let v = &args[0];
             match v {
                 // 02.08-full p2: re.NOFLAG marker int()s to 0.
-                Value::Obj(o)
-                    if o.kind == ap_obj::ObjKind::Opaque && o.name == "re.NOFLAG" =>
-                {
-                    Ok(Value::Int(Int::Smi(0)))
+                // 02.08-c: any Opaque carrying an <int_value> attr (lxml
+                // ErrorTypes members etc.) int()s to that stored value.
+                Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque => {
+                    match o.attrs.borrow().get(&Value::Str(PyString::new("<int_value>"))) {
+                        Some(v @ Value::Int(_)) => Ok(v.clone()),
+                        _ => Err(raise(
+                            "TypeError",
+                            "int() argument must be a string, a bytes-like object or a real number, not 'object'",
+                        )),
+                    }
                 }
                 Value::Int(_) => Ok(v.clone()),
                 Value::Bool(b) => Ok(Value::Int(Int::Smi(i64::from(*b)))),
@@ -428,6 +444,20 @@ pub fn builtin_bool(args: &[Value]) -> BResult {
                 &[],
             )
             .unwrap_or_else(|| Ok(Value::Bool(true)));
+        }
+        // collections.deque: live truthiness from the <items> backing list
+        // (contextlib.ExitStack does `while self._exit_callbacks:`).
+        if o.kind == ap_obj::ObjKind::Opaque && o.name == "deque" {
+            let n = o
+                .attrs
+                .borrow()
+                .get(&Value::Str(PyString::new("<items>")))
+                .map(|v| match v {
+                    Value::List(l) => l.len(),
+                    _ => 0,
+                })
+                .unwrap_or(0);
+            return Ok(Value::Bool(n != 0));
         }
     }
     Ok(Value::Bool(match args.first() {
@@ -837,6 +867,8 @@ pub fn type_matches(v: &Value, want: &str) -> bool {
         (Value::Bool(_), "int") => true, // bool is a subclass of int (S-01-9)
         (Value::Int(_), "bool") => false,
         (Value::Frozen(_), "set") => false,
+        // s014: namedtuple instances ARE tuples (NamedTuple payload kind).
+        (Value::Obj(o), "tuple") if o.kind == ap_obj::ObjKind::NamedTuple => true,
         (a, b) => a.type_name() == b,
     }
 }
@@ -2155,6 +2187,8 @@ pub fn install_builtins(interp: &Interpreter) {
         "divmod",
         "compile",
         "__import__",
+        "aiter",
+        "anext",
         "enumerate",
         "eval",
         "exec",
@@ -2531,6 +2565,39 @@ pub fn builtin_vars(interp: &Interpreter, args: &[Value]) -> BResult {
                 for (k, v) in ns.items() {
                     let _ = d.set(k, v);
                 }
+            }
+            Ok(Value::Dict(d))
+        }
+        // 02.08-c: Opaque instances (lxml elements, functools markers) and
+        // UserInstances carry a live attrs dict — vars() returns a snapshot.
+        Some(Value::Obj(o))
+            if matches!(
+                o.kind,
+                ap_obj::ObjKind::UserInstance
+                    | ap_obj::ObjKind::Opaque
+                    | ap_obj::ObjKind::Namespace
+                    | ap_obj::ObjKind::Exception
+                    | ap_obj::ObjKind::UserClass
+                    | ap_obj::ObjKind::Type
+                    | ap_obj::ObjKind::Function
+                    | ap_obj::ObjKind::BuiltinFn
+                    | ap_obj::ObjKind::BoundMethod
+            ) =>
+        {
+            // 02.08-c: classes/functions expose their class/attr dict;
+            // instances/markers expose the live attrs snapshot.
+            if o.kind == ap_obj::ObjKind::UserClass {
+                if let Some(t) = crate::classes::type_of(interp, &Value::Obj(o.clone())) {
+                    let d = PyDict::new();
+                    for (k, v) in t.dict.items() {
+                        let _ = d.set(k, v);
+                    }
+                    return Ok(Value::Dict(d));
+                }
+            }
+            let d = PyDict::new();
+            for (k, v) in o.attrs.borrow().items() {
+                let _ = d.set(k, v);
             }
             Ok(Value::Dict(d))
         }
@@ -2960,8 +3027,16 @@ pub fn call_builtin(
         "abs" => builtin_abs(args),
         // 02.04a (interp bug #9): globals()/locals() — vendored stdlib calls
         // globals() at module scope (types.py __all__ comprehension).
-        "globals" => Ok(Value::Dict(interp.globals.clone())),
-        "locals" => Ok(Value::Dict(interp.globals.clone())),
+        "globals" => Ok(Value::Dict(
+            crate::builtins_modules::CURRENT_MODULE_GLOBALS
+                .with(|c| c.borrow().clone())
+                .unwrap_or_else(|| interp.globals.clone()),
+        )),
+        "locals" => Ok(Value::Dict(
+            crate::builtins_modules::CURRENT_MODULE_GLOBALS
+                .with(|c| c.borrow().clone())
+                .unwrap_or_else(|| interp.globals.clone()),
+        )),
         // 02.04a (interp bug #12): bytearray — mutable in CPython; v0 returns
         // our immutable Bytes payload (mutation methods unexercised by the
         // import gates; documented divergence).
@@ -3094,6 +3169,11 @@ pub fn call_builtin(
         "bin" => builtin_bin(args),
         "format" => builtin_format(args),
         "iter" => builtin_iter(args),
+        // s001: async-iteration builtins. v0 has no async iterators — aiter
+        // returns the (sync) iterator; anext resumes it (StopIteration at
+        // exhaustion matches the exhausted-anext CPython shape).
+        "aiter" => builtin_iter(args),
+        "anext" => builtin_next(interp, args),
         "next" => builtin_next(interp, args),
         "range" => builtin_range(args),
         "sorted" => builtin_sorted(interp, args, kwargs),
@@ -3420,8 +3500,20 @@ pub fn builtin_eval(interp: &Interpreter, args: &[Value]) -> crate::EvalResult {
 /// executed in the CURRENT globals (explicit dicts v0-ignored with a
 /// documented note — same shape as builtin_eval's globals handling).
 pub fn builtin_exec(interp: &Interpreter, args: &[Value]) -> crate::EvalResult {
+    // 02.08-c: compile() returns a `<code>` marker carrying co_source —
+    // exec must accept it (parsel/csstranslator-style dynamic loads).
     let src = match args.first() {
         Some(Value::Str(s)) => s.as_str().to_string(),
+        Some(Value::Obj(o)) if o.kind == ap_obj::ObjKind::Namespace && o.name == "<code>" => {
+            match o
+                .attrs
+                .borrow()
+                .get(&Value::Str(PyString::new("co_source")))
+            {
+                Some(Value::Str(s)) => s.as_str().to_string(),
+                _ => String::new(),
+            }
+        }
         Some(other) => {
             return Err(raise(
                 "TypeError",
@@ -3675,6 +3767,17 @@ pub fn interp_register_iter(id: u64, it: std::rc::Rc<crate::iter::PyIterator>) {
 /// dispatch path (used by builtins_modules hooks for conversion callables).
 pub fn call_builtin_ctor(name: &str, args: &[Value]) -> Option<BResult> {
     match name {
+        // 02.08-c: direct compile() (call_builtin_dotted routes the bare name
+        // to re.compile); used by the zope.interface stub builder.
+        "compile" => {
+            let kwargs: Vec<(String, Value)> = Vec::new();
+            let mut a = args.to_vec();
+            if a.len() < 3 {
+                a.push(Value::Str(PyString::new("exec".to_string())));
+            }
+            let interp = crate::builtins_modules::current_interp()?;
+            Some(call_builtin(&interp, name, &a, &kwargs))
+        }
         "str" => Some(builtin_str(args)),
         "int" => Some(builtin_int(
             &*crate::builtins_modules::current_interp()?,

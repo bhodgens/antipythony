@@ -845,20 +845,35 @@ fn exec_stmt(
             }
             // Absolute: native registry first (byte-exact legacy texts), then
             // the file machinery with CPython's "cannot import name ... (file)"
-            // shape.
-            if let Some(m) = builtins_modules::get_or_make_module(interp, module) {
-                for (src_name, bind) in &names {
-                    match attr_get(interp, &m, src_name)? {
-                        Some(v) => frame.store_global(bind, v),
-                        None => {
-                            return Err(raise(
-                                "ImportError",
-                                format!("cannot import name '{src_name}' from '{module}'"),
-                            ))
+            // shape. 02.08-c fix: a native PARENT (collections) must NOT
+            // short-circuit `from collections.abc import X` — the submodule
+            // resolution in import_from_module finds the real abc module.
+            // Only short-circuit when the native module itself carries every
+            // requested name AND is not a package whose submodule shadow
+            // applies (name has a vendored dir).
+            let native_is_package = matches!(
+                module.as_str(),
+                "collections" | "importlib" | "concurrent" | "logging" | "urllib" | "xml"
+            );
+            if !native_is_package {
+                if let Some(m) = builtins_modules::get_or_make_module(interp, module) {
+                    let mut all_found = true;
+                    for (src_name, bind) in &names {
+                        match attr_get(interp, &m, src_name)? {
+                            Some(v) => frame.store_global(bind, v),
+                            None => {
+                                all_found = false;
+                                break;
+                            }
                         }
                     }
+                    if all_found {
+                        return Ok(StmtOut::Next);
+                    }
+                    // Fall through to the full import machinery: it resolves
+                    // submodules and gives CPython's error shape on a real
+                    // miss.
                 }
-                return Ok(StmtOut::Next);
             }
             if module == "sys" {
                 let m = builtins::get_or_make_sys(interp);
@@ -1124,13 +1139,18 @@ fn exc_matches(tv: &Value, exc: &ExceptionValue) -> Result<bool, Flow> {
                 || legacy_exc_is_subclass(&exc.class, &t))
         }
         Value::Obj(o) if o.kind == ap_obj::ObjKind::Type => {
-            if !is_builtin_exc_name(&o.name) {
+            // s005: native surface exception types (io.UnsupportedOperation —
+            // raised as class "io.UnsupportedOperation", caught via the
+            // interned "UnsupportedOperation" name-Type) are catchable.
+            let dotted_match = exc.class.ends_with(&o.name) && exc.class.contains('.');
+            if !is_builtin_exc_name(&o.name) && !dotted_match {
                 return Err(raise(
                     "TypeError",
                     "catching classes that do not inherit from BaseException is not allowed",
                 ));
             }
-            Ok(is_subclass(&exc.class, &o.name))
+            Ok(is_subclass(&exc.class, &o.name)
+                || (dotted_match && exc.class == format!("io.{}", o.name)))
         }
         Value::Tuple(parts) => {
             // FLAT tuples only (A-4: nesting raises the same TypeError).
@@ -1533,6 +1553,13 @@ fn read_target(
 // Name resolution (task brief §1 chain)
 // ===========================================================================
 
+fn key_str(o: &Gc<ap_obj::PyObject>) -> String {
+    if let Some(Value::Str(k)) = o.attrs.borrow().get(&Value::Str(PyString::new("<key>"))) {
+        return k.as_str().to_string();
+    }
+    String::new()
+}
+
 fn lookup_name(interp: &Rc<Interpreter>, frame: &Rc<Frame>, name: &str) -> EResult {
     match frame.lookup(name) {
         crate::frame::Lookup::Found(v) => Ok(v),
@@ -1859,6 +1886,17 @@ pub(crate) fn eval_expr(
                             }
                         }
                     }
+                }
+            } else if let Value::Obj(sup) = &o {
+                if sup.kind == ap_obj::ObjKind::Opaque && sup.name == "super" && name != "__new__" {
+                    // s016: the blanket unbound marker is __new__-only —
+                    // clear it for any other attribute read so methods
+                    // (__instancecheck__ in collections.abc's
+                    // _DeprecateByteStringMeta) bind the class normally.
+                    let _ = sup.attrs.borrow_mut().set(
+                        Value::Str(PyString::new("__ap_unbound_new__")),
+                        Value::Bool(false),
+                    );
                 }
             }
             attr_get(interp, &o, name)?.ok_or_else(|| {
@@ -2460,6 +2498,40 @@ fn eval_binop(a: &Value, op: BinOp, b: &Value) -> EResult {
     // `(str | bytes) | None` flatten instead of TypeErroring on a Namespace
     // stub that nothing downstream recognizes.
     if matches!(op, BinOp::BitOr) {
+        // 02.08-c (PEP 604 on non-type callables): `etree.XMLParser |
+        // etree.HTMLParser` — the operands are fn-like Opaque markers
+        // (native classes), not Value::Type. A union of them must NOT hit
+        // the user-slot machinery (which TypeErrors 'function | function');
+        // build the same _Union marker. Runs for any BitOr of two non-user
+        // Opaques, and unions-of-unions flatten via slice_parts.
+        let is_marker = |v: &Value| {
+            matches!(v, Value::Obj(o) if o.kind == ap_obj::ObjKind::Type
+                || (o.kind == ap_obj::ObjKind::BuiltinFn
+                    && (o.name.starts_with("lxml.")
+                        || o.name.starts_with("__object_virtual_")
+                        || o.name.starts_with("__ap_"))))
+        };
+        let is_union = |v: &Value| matches!(v, Value::Obj(o) if o.kind == ap_obj::ObjKind::Namespace && o.name == "_Union");
+        if (is_marker(a) && is_marker(b)) || is_union(a) || is_union(b) {
+            let mut parts = Vec::new();
+            if is_union(a) {
+                if let Value::Obj(oa) = a {
+                    parts.extend(oa.slice_parts.borrow().iter().cloned());
+                }
+            } else {
+                parts.push(a.clone());
+            }
+            if is_union(b) {
+                if let Value::Obj(ob) = b {
+                    parts.extend(ob.slice_parts.borrow().iter().cloned());
+                }
+            } else {
+                parts.push(b.clone());
+            }
+            let u = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "_Union");
+            *u.slice_parts.borrow_mut() = parts;
+            return Ok(Value::Obj(u));
+        }
         let is_type = |v: &Value| matches!(v, Value::Obj(o) if o.kind == ap_obj::ObjKind::Type);
         if is_type(a) && is_type(b) {
             let u = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "_Union");
@@ -2705,6 +2777,25 @@ fn call_value_inner(
                     if std::env::var("APX_TDEBUG").is_ok() {
                         eprintln!("[TDEBUG] BuiltinFn call: {}", o.name);
                     }
+                    // 02.08-c: lxml element dunder protocol markers
+                    // (len(r) / r[i] / iter(r)) — dispatch into the native
+                    // element surface with the parked receiver as args[0].
+                    if let Some(dunder) = o.name.strip_prefix("lxml.elem.") {
+                        if matches!(dunder, "__len__" | "__getitem__" | "__iter__") {
+                            let mut a2: Vec<Value> = vec![Value::None];
+                            a2.extend(args.iter().cloned());
+                            if let Some(first) = o.slice_parts.borrow().first() {
+                                a2[0] = first.clone();
+                            }
+                            return match crate::lxml::call_elem(dunder, &a2, kwargs) {
+                                Some(r) => r,
+                                None => Err(raise(
+                                    "TypeError",
+                                    format!("lxml element has no {}", dunder),
+                                )),
+                            };
+                        }
+                    }
                     if o.name == "type" {
                         if let Some(Value::Obj(so)) = args.first() {
                             if so.kind == ap_obj::ObjKind::Opaque && so.name == "thread" {
@@ -2738,6 +2829,42 @@ fn call_value_inner(
                     // 02.04a coroutine-stub methods (close/send/throw): no-ops.
                     if o.name == "__ap_coroutine_noop__" {
                         return Ok(Value::None);
+                    }
+                    // s018: generator close/send/throw (BoundMethod marker over
+                    // the generator object). Eager-materialized v0 generators
+                    // are exhausted by call time: close() = no-op, send() =
+                    // StopIteration, throw(e, ...) = raise e (CPython semantics
+                    // for throwing into a finished generator).
+                    if o.name == "__ap_gen_close__" {
+                        return Ok(Value::None);
+                    }
+                    if o.name == "__ap_gen_send__" {
+                        return Err(raise("StopIteration", ""));
+                    }
+                    if o.name == "__ap_gen_throw__" {
+                        let exc = args.first().cloned().unwrap_or(Value::None);
+                        return match exc {
+                            Value::Obj(eo) if eo.kind == ap_obj::ObjKind::Exception => {
+                                let ev = crate::exc_hier::ExceptionValue::new(
+                                    &eo.name,
+                                    eo.args.borrow().clone(),
+                                );
+                                Err(Flow::Raise(ev))
+                            }
+                            Value::Obj(ref eo) if eo.kind == ap_obj::ObjKind::UserClass => {
+                                // Exception CLASS thrown into the generator:
+                                // raise a bare instance of it (v0 — the
+                                // generator is already exhausted).
+                                Err(Flow::Raise(crate::exc_hier::ExceptionValue::new(
+                                    &eo.name,
+                                    vec![],
+                                )))
+                            }
+                            _ => Err(raise(
+                                "TypeError",
+                                "exceptions must derive from BaseException",
+                            )),
+                        };
                     }
                     if o.name == "__ap_functools_nop__" {
                         return Ok(Value::None);
@@ -3027,6 +3154,15 @@ fn call_value_inner(
                         return Ok(Value::None);
                     }
                     if o.name.starts_with("__object_virtual_") {
+                        let base0 = o
+                            .name
+                            .trim_start_matches("__object_virtual_")
+                            .trim_end_matches('_');
+                        if base0.trim_start_matches('_') == "subclasshook" {
+                            let ni =
+                                ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "NotImplemented");
+                            return Ok(Value::Obj(ni));
+                        }
                         let base = o
                             .name
                             .trim_start_matches("__object_virtual_")
@@ -3056,17 +3192,23 @@ fn call_value_inner(
                                 // Call shapes: bound marker -> args = (name,
                                 // val), self rides slice_parts; unbound ->
                                 // args = (self, name, val).
-                                let subject = o
+                                // 02.08-c fix: disambiguate by ARITY —
+                                // bound call = (name, val) [2 args];
+                                // unbound call = (self, name, val) [3
+                                // args]. The old UserInstance sniff
+                                // misrouted the unbound shape (its args[0]
+                                // IS an instance) and dropped every write
+                                // (decimal.Context.Emin et al).
+                                let parked = o
                                     .slice_parts
                                     .borrow()
                                     .first()
                                     .cloned()
                                     .unwrap_or(Value::None);
                                 let (subject, attr, val): (Value, Option<String>, Option<Value>) =
-                                    if matches!(&subject, Value::Obj(io) if io.kind == ap_obj::ObjKind::UserInstance)
-                                    {
+                                    if args.len() <= 2 && !matches!(parked, Value::None) {
                                         (
-                                            subject.clone(),
+                                            parked.clone(),
                                             args.first().and_then(|v| match v {
                                                 Value::Str(s) => Some(s.as_str().to_string()),
                                                 _ => None,
@@ -3136,7 +3278,20 @@ fn call_value_inner(
                     builtins::call_builtin(interp, &o.name, args, kwargs)
                 }
                 ap_obj::ObjKind::Function => call_function(interp, o, args, kwargs),
-                ap_obj::ObjKind::Type => call_type_ctor(interp, &o.name, args, kwargs),
+                ap_obj::ObjKind::Type => {
+                    // 02.08-c fix: types.ModuleType == type(sys) — the
+                    // interned "module" Type must construct REAL module
+                    // objects (jmespath-free six.moves-style callers); route
+                    // through instantiate's ModuleType fast-path.
+                    if o.name == "module" {
+                        let t = crate::classes::base_type_ref(interp, f)
+                            .ok()
+                            .flatten()
+                            .ok_or_else(|| raise("TypeError", "module type payload missing"))?;
+                        return crate::classes::instantiate(interp, f, &t, args, kwargs);
+                    }
+                    call_type_ctor(interp, &o.name, args, kwargs)
+                }
                 ap_obj::ObjKind::UserClass => {
                     // 02.03 instantiation (S-03-05..08) — except `type` itself,
                     // which CALLS as the metaclass: type(x) -> metaclass of x
@@ -3369,7 +3524,11 @@ fn call_value_inner(
                 //   exact-type match only — ABC fallback rides abc.register).
                 // - dispatcher(*args) -> route to the registered impl whose
                 //   key is the EXACT type of args[0], else the default.
-                ap_obj::ObjKind::Opaque if o.name == "functools._sd_registry" => {
+                ap_obj::ObjKind::Opaque
+                    if o.name == "functools._sd_registry"
+                        || o.name.starts_with("functools._sd_")
+                        || o.name.starts_with("functools._sdr_") =>
+                {
                     // `register` attr access: dispatch on the parked marker.
                     // The registry object itself IS the dispatcher; attribute
                     // reads of `register` return a marker that the call arm
@@ -3395,6 +3554,17 @@ fn call_value_inner(
                                     let _ = a.set(Value::Str(PyString::new("<key>")), key);
                                     let _ =
                                         a.set(Value::Str(PyString::new("<impls>")), impls.clone());
+                                    // s013b: recover the registry id from the
+                                    // dispatcher object's name (`_sd_<id>`).
+                                    let sd_id = o
+                                        .name
+                                        .strip_prefix("functools._sd_")
+                                        .unwrap_or("")
+                                        .to_string();
+                                    let _ = a.set(
+                                        Value::Str(PyString::new("<sd_id>")),
+                                        Value::Str(PyString::new(sd_id)),
+                                    );
                                 }
                                 return Ok(Value::Obj(marker));
                             }
@@ -3427,6 +3597,16 @@ fn call_value_inner(
                         o.attrs.borrow().get(&Value::Str(PyString::new("<key>"))),
                     ) {
                         let _ = d.set(key, f.clone());
+                    }
+                    // s013b: mirror into SD_REGISTRY so the `_sd_<id>`
+                    // dispatch (builtins_modules) sees the impl.
+                    if let Some(sid) = o.attrs.borrow().get(&Value::Str(PyString::new("<sd_id>"))) {
+                        let id_s = crate::builtins::py_str_of(&sid).unwrap_or_default();
+                        crate::builtins_modules::sd_registry_insert_pub(
+                            &id_s,
+                            &key_str(o),
+                            f.clone(),
+                        );
                     }
                     Ok(f)
                 }
@@ -3480,6 +3660,25 @@ fn call_type_ctor(
     args: &[Value],
     kwargs: &[(String, Value)],
 ) -> EResult {
+    // 02.08-c fix: string.Formatter / string.Template — the native string
+    // module surface interned name-Types (logging imports Formatter at module
+    // scope and instantiates it). v0 ctor: a Namespace instance whose methods
+    // ride the attr layer; Formatter().format calls route to str.format-ish
+    // behavior in methods.rs via the "string.Formatter" tag.
+    if name == "Formatter" || name == "Template" {
+        let o = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, &format!("string.{name}"));
+        return Ok(Value::Obj(o));
+    }
+    // contextlib.ExitStack (via types.MethodType = type(C()._m)): the
+    // interned "method" Type CALLS as MethodType(func, obj) — build a real
+    // BoundMethod carrying func + receiver (the call path binds them).
+    if name == "method" {
+        let func = args.first().cloned().unwrap_or(Value::None);
+        let recv = args.get(1).cloned().unwrap_or(Value::None);
+        let bm = ap_obj::PyObject::with_self(ap_obj::ObjKind::BoundMethod, "method", recv);
+        *bm.func.borrow_mut() = Some(func);
+        return Ok(Value::Obj(bm));
+    }
     // 02.03b-fix: int.from_bytes(b, byteorder='big') classmethod.
     if name == "int" {
         if let Some(Value::Obj(m)) = args.first() {
@@ -4608,12 +4807,12 @@ fn register_iter(interp: &Rc<Interpreter>, v: &Value) -> Result<u64, Flow> {
     let it = iterable_of(v)?;
     let id = interp.next_iter_id.get();
     interp.next_iter_id.set(id + 2); // even ids only (gen ids are odd)
-    // 02.07 race fix (wave-4 audit): a worker parked inside pull_iter's
-    // it.next() holds a READ borrow of interp.iterators across the park
-    // (GIL released while parked). The main thread reaching register_iter
-    // then panics 'RefCell already borrowed' on the unconditional
-    // borrow_mut (T102-lock-shared-list aborts rc=134 ~1-in-8 runs).
-    // Mirror pull_iter's contended-borrow retry discipline.
+                                     // 02.07 race fix (wave-4 audit): a worker parked inside pull_iter's
+                                     // it.next() holds a READ borrow of interp.iterators across the park
+                                     // (GIL released while parked). The main thread reaching register_iter
+                                     // then panics 'RefCell already borrowed' on the unconditional
+                                     // borrow_mut (T102-lock-shared-list aborts rc=134 ~1-in-8 runs).
+                                     // Mirror pull_iter's contended-borrow retry discipline.
     loop {
         match interp.iterators.try_borrow_mut() {
             Ok(mut its) => {
@@ -4998,6 +5197,23 @@ pub fn seed_class_cell(interp: &Rc<Interpreter>, class_frame: &Rc<Frame>, class_
 /// User-protocol truthiness: __bool__ then __len__ then default (S-01-27
 /// + S-03-26). Returns None when no protocol applies.
 fn user_truthiness(interp: &Rc<Interpreter>, v: &Value) -> Result<Option<bool>, Flow> {
+    // collections.deque (native opaque): live truthiness from the <items>
+    // backing list — `while self._exit_callbacks:` (contextlib) mutates the
+    // deque in the loop condition. Value::is_truthy has no per-object state.
+    if let Value::Obj(o) = v {
+        if o.kind == ap_obj::ObjKind::Opaque && o.name == "deque" {
+            let n = o
+                .attrs
+                .borrow()
+                .get(&Value::Str(PyString::new("<items>")))
+                .map(|v| match v {
+                    Value::List(l) => l.len(),
+                    _ => 0,
+                })
+                .unwrap_or(0);
+            return Ok(Some(n != 0));
+        }
+    }
     if let Some((f, _)) = crate::classes::special_lookup(interp, v, "__bool__") {
         let r = call_value(interp, &module_frame_pub(), &f, &[v.clone()], &[])?;
         let b = r
@@ -5296,6 +5512,21 @@ fn class_protocol_builtin(
     let subject = args.first();
     let is_user_instance =
         matches!(subject, Some(Value::Obj(o)) if o.kind == ap_obj::ObjKind::UserInstance);
+    // 02.08-c: lxml elements len() natively (Opaque surface).
+    if name == "len" {
+        if let Some(Value::Obj(o)) = subject {
+            if o.kind == ap_obj::ObjKind::Opaque
+                && (o.name == "lxml.etree._Element" || o.name == "lxml.html.HtmlElement")
+            {
+                return Some(
+                    match crate::lxml::call_elem("__len__", &[subject.unwrap().clone()], &[]) {
+                        Some(r) => r,
+                        None => Err(raise("TypeError", "lxml element has no __len__")),
+                    },
+                );
+            }
+        }
+    }
     match name {
         "len" if is_user_instance => Some(match user_len(interp, subject.unwrap()) {
             Ok(Some(n)) => Ok(Value::Int(ap_obj::Int::from_i64(n))),
@@ -5530,6 +5761,12 @@ fn class_protocol_builtin(
             // mcs/cls explicitly. Mark the resolved value unbound here so
             // attr_get hands back the bare function; zero-arg super()
             // contexts stay intact for every other attribute.
+            // s016 fix: the marker must scope to __new__ READS ONLY — a
+            // blanket marker made super().__instancecheck__/__subclasscheck__
+            // (collections.abc _DeprecateByteStringMeta) hand back the bare
+            // function, losing the cls binding ("missing 1 required
+            // positional argument: 'instance'"). The attr read clears it for
+            // non-__new__ names.
             if args.is_empty() {
                 if let Value::Obj(so) = &r {
                     if so.kind == ap_obj::ObjKind::Opaque && so.name == "super" {
@@ -5728,6 +5965,16 @@ fn is_exception_instance(v: &Value) -> bool {
         && crate::classes::is_exception_value(v)
 }
 
+/// Public re-exports for builtins::py_str_of (print/format must agree with
+/// the str() ctor arm on exception-instance rendering).
+pub fn is_exception_instance_pub(v: &Value) -> bool {
+    is_exception_instance(v)
+}
+
+pub fn exception_value_of_instance_pub(v: &Value) -> Result<crate::exc_hier::ExceptionValue, Flow> {
+    exception_value_of_instance(v)
+}
+
 /// `<module.Class object at 0x...>` deterministic form (V066/C-24: the
 /// address digits are UNSPECIFIED; the prefix is byte-pinned).
 fn default_instance_repr(v: &Value) -> String {
@@ -5773,16 +6020,25 @@ fn class_isinstance(interp: &Rc<Interpreter>, args: &[Value]) -> EResult {
         if to.kind == ap_obj::ObjKind::UserClass {
             if let Some(tc) = crate::classes::type_of(interp, t) {
                 if let Some(meta) = tc.metaclass.borrow().clone() {
-                    if let Some(hook) = meta.lookup("__instancecheck__") {
+                    if let Some((hook, owner)) = meta.lookup_with_owner("__instancecheck__") {
                         if matches!(&hook, Value::Obj(f) if f.kind == ap_obj::ObjKind::Function) {
-                            return call_value(
+                            // Zero-arg super() inside __instancecheck__
+                            // (collections.abc _DeprecateByteStringMeta):
+                            // stage (start=owner-metaclass, obj=cls) before
+                            // the raw-function call (BoundMethod staging
+                            // never runs for this shape).
+                            let owner_v = crate::classes::class_value_for_public(&owner);
+                            *interp.pending_super_ctx.borrow_mut() = Some((owner, t.clone(), true));
+                            let _ = owner_v;
+                            let r = call_value(
                                 interp,
                                 &module_frame_pub(),
                                 &hook,
                                 &[t.clone(), v.clone()],
                                 &[],
-                            )
-                            .map(|r| Value::Bool(r.is_truthy()));
+                            );
+                            *interp.pending_super_ctx.borrow_mut() = None;
+                            return r.map(|r| Value::Bool(r.is_truthy()));
                         }
                     }
                 }
@@ -6365,6 +6621,18 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
             return Ok(Some(Value::Str(PyString::new("singledispatch"))));
         }
     }
+    // s013: functools._sd_<id> dispatcher — `register` returns the marker the
+    // call path consumes (importlib.resources._common @resolve.register).
+    if matches!(obj, Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque
+        && o.name.starts_with("functools._sd_"))
+    {
+        if name == "register" {
+            return Ok(Some(obj.clone()));
+        }
+        if name == "__name__" {
+            return Ok(Some(Value::Str(PyString::new("singledispatch"))));
+        }
+    }
     // T1 (importlib.resources.files → wrap_spec): every module object
     // exposes a minimal __spec__ (name-only) so package_to_anchor chains
     // work; real specs are a documented v0 gap.
@@ -6440,6 +6708,21 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 // fall through to the generic surfaces below
             } else {
                 return crate::classes::attr_get_protocol(_interp, &target, name).map(Some);
+            }
+        }
+    }
+    // 02.08-c: range exposes start/stop/step (scrapy.utils.datatypes and
+    // vendored stdlib slices read them).
+    if let Value::Obj(o) = obj {
+        if o.kind == ap_obj::ObjKind::Range {
+            if matches!(name, "start" | "stop" | "step") {
+                let ints = o.ints.borrow();
+                let idx = match name {
+                    "start" => 0,
+                    "stop" => 1,
+                    _ => 2,
+                };
+                return Ok(Some(Value::Int(ap_obj::Int::from_i64(ints[idx]))));
             }
         }
     }
@@ -6583,6 +6866,17 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
             let marker = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "__ap_builtin_repr__");
             *marker.slice_parts.borrow_mut() = vec![obj.clone()];
             return Ok(Some(Value::Obj(marker)));
+        }
+        // 02.08-c (attr/_make.py): `_OBJ_SETATTR.__get__(a)` — object-virtual
+        // markers answer descriptor __get__ by returning a BOUND copy (the
+        // receiver rides slice_parts; the setattr call handler reads it).
+        if o.kind == ap_obj::ObjKind::BuiltinFn
+            && o.name.starts_with("__object_virtual_")
+            && name == "__get__"
+        {
+            let bound = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, o.name.clone());
+            *bound.slice_parts.borrow_mut() = vec![obj.clone()];
+            return Ok(Some(Value::Obj(bound)));
         }
         // 02.03b: functions ARE descriptors in CPython (enum._is_descriptor
         // probes __get__ to keep plain methods out of _member_names_).
@@ -6980,7 +7274,42 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                     "NoneType.__new__",
                 ))))
             }
-            ap_obj::ObjKind::Namespace | ap_obj::ObjKind::NamedTuple => {
+            ap_obj::ObjKind::Generator => {
+                // Generator method surface (s018: contextlib's
+                // _GeneratorContextManager calls gen.throw/close). v0
+                // generators materialize eagerly, so: close() = no-op,
+                // send() = resume (next), throw(e, ...) = raise e (CPython
+                // raises into an exhausted generator too).
+                let m = match name {
+                    "close" | "send" | "throw" => {
+                        let bm = ap_obj::PyObject::with_self(
+                            ap_obj::ObjKind::BoundMethod,
+                            &format!("generator.{name}"),
+                            obj.clone(),
+                        );
+                        *bm.func.borrow_mut() = Some(Value::Obj(ap_obj::PyObject::new(
+                            ap_obj::ObjKind::BuiltinFn,
+                            &format!("__ap_gen_{}__", name),
+                        )));
+                        Some(Value::Obj(bm))
+                    }
+                    _ => None,
+                };
+                match m {
+                    Some(v) => Ok(Some(v)),
+                    None => Ok(None),
+                }
+            }
+            ap_obj::ObjKind::Namespace => {
+                // Generic namespace attr reads (coroutine stub close/send/
+                // throw markers, ModuleSpec surfaces) — creation-stored
+                // attrs answer by name.
+                if let Some(v) = o.attrs.borrow().get(&Value::Str(PyString::new(name))) {
+                    return Ok(Some(v));
+                }
+                Ok(None)
+            }
+            ap_obj::ObjKind::NamedTuple => {
                 if let Some(v) = o.attrs.borrow().get(&Value::Str(PyString::new(name))) {
                     return Ok(Some(v));
                 }
@@ -7136,6 +7465,51 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                                 .map(|(_, m)| m.to_string())
                                 .unwrap_or_else(|| "builtins".to_string()),
                         ))))
+                    }
+                    // s016: ABC structural protocol — hasattr(list,
+                    // "__getitem__") / getattr(C, m, None) inside
+                    // _collections_abc._check_methods must see the type's
+                    // native method surface (bound marker over an empty
+                    // instance). Guarded tight: other names fall through.
+                    "__getitem__" | "__len__" | "__iter__" | "__contains__" | "__next__"
+                    | "__call__" | "__hash__" | "__eq__" | "__enter__" | "__exit__"
+                    | "__setitem__"
+                        if o.kind == ap_obj::ObjKind::Type
+                            && matches!(
+                                o.name.as_str(),
+                                "list"
+                                    | "tuple"
+                                    | "dict"
+                                    | "set"
+                                    | "frozenset"
+                                    | "str"
+                                    | "bytes"
+                                    | "range"
+                            ) =>
+                    {
+                        let inst: Option<Value> = match o.name.as_str() {
+                            "list" => Some(Value::List(ap_obj::value::PyList::new())),
+                            "tuple" => Some(Value::Tuple(Gc::new(ap_obj::value::Tuple(vec![])))),
+                            "dict" => Some(Value::Dict(ap_obj::dict::PyDict::new())),
+                            "set" => Some(Value::Set(ap_obj::dict::PySet::new())),
+                            "frozenset" => Some(Value::Frozen(ap_obj::dict::PySet::new())),
+                            "str" => Some(Value::Str(PyString::new(""))),
+                            "bytes" => Some(Value::Bytes(Gc::new(Vec::new()))),
+                            "range" => Some(Value::Obj(ap_obj::PyObject::new(
+                                ap_obj::ObjKind::Range,
+                                "range",
+                            ))),
+                            _ => None,
+                        };
+                        if let Some(inst) = inst {
+                            let bm = ap_obj::PyObject::with_self(
+                                ap_obj::ObjKind::BoundMethod,
+                                name,
+                                inst,
+                            );
+                            return Ok(Some(Value::Obj(bm)));
+                        }
+                        Ok(None)
                     }
                     // 02.04a (interp bug #18): __mro__ reads on Type objects
                     // (ABCMeta.__subclasscheck__ on a non-class 'type' value) —
@@ -7325,7 +7699,15 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                         );
                         // T1 (dataclasses frozen): object.__setattr__ writes
                         // through this marker — the receiver must ride it.
-                        *m.slice_parts.borrow_mut() = vec![obj.clone()];
+                        // 02.08-c fix: the receiver rides ONLY for INSTANCE
+                        // reads. A CLASS-level read (object.__setattr__ used
+                        // unbound, decimal.Context.__setattr__ style) must
+                        // leave slice_parts EMPTY so the call handler takes
+                        // the (self, name, val) shape (the parked subject
+                        // made every unbound write a silent no-op).
+                        if !matches!(obj, Value::Obj(so) if so.kind == ap_obj::ObjKind::UserClass) {
+                            *m.slice_parts.borrow_mut() = vec![obj.clone()];
+                        }
                         Ok(Some(Value::Obj(m)))
                     }
                     _ => Ok(None),

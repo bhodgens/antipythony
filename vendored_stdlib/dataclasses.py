@@ -177,6 +177,11 @@ class _HAS_DEFAULT_FACTORY_CLASS:
     def __repr__(self):
         return '<factory>'
 _HAS_DEFAULT_FACTORY = _HAS_DEFAULT_FACTORY_CLASS()
+# s025: the generated __init__ bodies reference this name; expose it as a
+# module global so code paths that don't thread it through _create_fn's
+# locals (interp exec quirks) still resolve it.
+__dataclass_HAS_DEFAULT_FACTORY__ = _HAS_DEFAULT_FACTORY
+__dataclass_builtins_object__ = object
 
 # A sentinel object to detect if a parameter is supplied or not.  Use
 # a class to give it a better repr.
@@ -473,7 +478,10 @@ class _FuncBuilder:
         body = '\n'.join(body)
 
         # Compute the text of the entire function, add it to the text we're generating.
-        self.src.append(f'{f' {decorator}\n' if decorator else ''} def {name}({args}):\n{body}')
+        # s025: nested f-string quote reuse (f'...f'...') is 3.12+ syntax the
+        # interp parser rejects; flatten to a single-level f-string.
+        deco_prefix = f' {decorator}\n' if decorator else ''
+        self.src.append(f'{deco_prefix} def {name}({args}):\n{body}')
 
     def add_fns_to_class(self, cls):
         # The source to all of the functions we're generating.
@@ -1000,6 +1008,13 @@ def _process_class(cls, init, repr, eq, order, unsafe_hash, frozen,
         # (w.r.t. typing.get_type_hints) but will still function
         # correctly.
         globals = {}
+
+    # s025 fix: the generated __init__ bodies reference these names. CPython
+    # threads them via _create_fn's locals (closure params); the interp exec
+    # doesn't carry those bindings, so resolve them from the module globals
+    # at call time. Inject them into the exec globals so the lookup hits.
+    globals.setdefault('__dataclass_HAS_DEFAULT_FACTORY__', _HAS_DEFAULT_FACTORY)
+    globals.setdefault('__dataclass_builtins_object__', object)
 
     setattr(cls, _PARAMS, _DataclassParams(init, repr, eq, order,
                                            unsafe_hash, frozen,

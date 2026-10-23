@@ -25,6 +25,7 @@ pub mod gcsupport;
 pub mod importer;
 pub mod interp;
 pub mod iter;
+pub mod lxml;
 pub mod methods;
 pub mod sre;
 pub mod sre_tables;

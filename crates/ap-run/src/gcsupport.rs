@@ -121,6 +121,16 @@ pub fn weakref_ref(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
         .cloned()
         .or_else(|| kwarg_value(kwargs, "callback").cloned());
     let target_addr = target_addr_of(target);
+    // s016: interned Type objects (list, dict, ...) are NOT GC-tracked
+    // (interp.type_objects holds them), so a weak token reports dead at the
+    // first prune and ABC registries (WeakSet of classes) silently empty —
+    // MutableSequence.register(list) vanished. They are immortal for the
+    // run: pin a strong clone and skip the ap-gc entry (no callback to
+    // mis-fire); token_alive/weakref_call answer from the pin table.
+    let untracked_immortal = matches!(target, Value::Obj(o) if o.kind == ap_obj::ObjKind::Type);
+    if untracked_immortal {
+        INTERNED_TYPE_PINS.with(|p| p.borrow_mut().push(target.clone()));
+    }
     // arg 2 (internal) names the token kind: "ref" or "_weakref_proxy".
     let token_name = match args.get(2) {
         Some(Value::Str(x)) if x.as_str() == "_weakref_proxy" => "_weakref_proxy",
@@ -132,21 +142,23 @@ pub fn weakref_ref(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
         let mut tattrs = token.attrs.borrow_mut();
         let _ = tattrs.set(s("<target_addr>"), i(target_addr as i64));
     }
-    ap_gc::weakref_add(ap_gc::WeakEntry {
-        target: target_addr,
-        token: Value::Obj(token.clone()),
-        callback,
-        dead: false,
-        fired: false,
-    });
-    WEAK_TOKENS.with(|w| {
-        w.borrow_mut().push(WeakToken {
-            token: token.clone(),
-            target_addr,
-            callback: None, // callback lives in the ap-gc entry
-            entry_index,
+    if !untracked_immortal {
+        ap_gc::weakref_add(ap_gc::WeakEntry {
+            target: target_addr,
+            token: Value::Obj(token.clone()),
+            callback,
+            dead: false,
+            fired: false,
         });
-    });
+        WEAK_TOKENS.with(|w| {
+            w.borrow_mut().push(WeakToken {
+                token: token.clone(),
+                target_addr,
+                callback: None, // callback lives in the ap-gc entry
+                entry_index,
+            });
+        });
+    }
     Ok(Value::Obj(token))
 }
 
@@ -222,10 +234,20 @@ pub fn target_value_by_addr(addr: usize) -> Option<Value> {
 /// `ref()` — return the target while alive, None when dead (C-22).
 pub fn weakref_call(token: &Gc<PyObject>) -> Value {
     let addr = target_addr_of_token(token);
-    if addr == 0 || !ap_gc::weakref_alive(addr) {
+    let pinned = INTERNED_TYPE_PINS.with(|p| p.borrow().iter().any(|v| target_addr_of(v) == addr));
+    if addr == 0 || (!ap_gc::weakref_alive(addr) && !pinned) {
         return Value::None;
     }
-    target_value_by_addr(addr).unwrap_or(Value::None)
+    target_value_by_addr(addr).unwrap_or_else(|| {
+        // Pinned (non-GC-tracked) targets: recover from the pin table.
+        INTERNED_TYPE_PINS.with(|p| {
+            p.borrow()
+                .iter()
+                .find(|v| target_addr_of(v) == addr)
+                .cloned()
+                .unwrap_or(Value::None)
+        })
+    })
 }
 
 /// The `<target_addr>` recorded on a token object (0 when absent).
@@ -931,7 +953,33 @@ fn weakset_data(v: &Value) -> Option<Gc<ap_obj::dict::PySet>> {
 
 /// A ref token for `target` (no callback — pruning is at access).
 fn make_token(target: &Value) -> BResult {
+    // Interned Type objects (list, dict, ...) are NOT GC-tracked (they live
+    // in interp.type_objects), so a weak token to one reports dead at the
+    // first prune and ABC registries (WeakSet of classes) silently empty —
+    // s016's MutableSequence.register(list) vanished. These objects are
+    // immortal for the run: pin a strong clone and build the token WITHOUT
+    // an ap-gc weakref entry (no callbacks to mis-fire, no dead-prune).
+    if let Value::Obj(o) = target {
+        if o.kind == ap_obj::ObjKind::Type {
+            INTERNED_TYPE_PINS.with(|p| p.borrow_mut().push(target.clone()));
+            let addr = target_addr_of(target);
+            let token = PyObject::new(ap_obj::ObjKind::Opaque, "_weakref_token");
+            let _ = token
+                .attrs
+                .borrow_mut()
+                .set(s("<target_addr>"), i(addr as i64));
+            return Ok(Value::Obj(token));
+        }
+    }
     weakref_ref(&[target.clone()], &[])
+}
+
+thread_local! {
+    /// Strong pins for weakref targets that are not GC-tracked (interned
+    /// Type objects). They live for the whole run; the pin keeps their
+    /// address stable so token_alive / target_value_by_addr agree.
+    static INTERNED_TYPE_PINS: std::cell::RefCell<Vec<Value>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 fn token_target(token: &Value) -> Option<usize> {
@@ -950,7 +998,10 @@ fn token_target(token: &Value) -> Option<usize> {
 
 fn token_alive(token: &Value) -> bool {
     token_target(token)
-        .map(|a| ap_gc::weakref_alive(a))
+        .map(|a| {
+            ap_gc::weakref_alive(a)
+                || INTERNED_TYPE_PINS.with(|p| p.borrow().iter().any(|v| target_addr_of(v) == a))
+        })
         .unwrap_or(false)
 }
 

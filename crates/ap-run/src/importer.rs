@@ -48,6 +48,25 @@ fn raise(class: &str, msg: impl Into<String>) -> Flow {
     Flow::Raise(ExceptionValue::msg(class, msg.into()))
 }
 
+thread_local! {
+    /// 02.08-c: the module name of the most recent ModuleNotFoundError raised
+    /// by the importer (importlib._bootstrap._handle_fromlist reads
+    /// `exc.name` for its backwards-compat fromlist path).
+    static LAST_MNF_NAME: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Record + raise a ModuleNotFoundError carrying the module name.
+fn raise_mnf(name: &str, msg: String) -> Flow {
+    LAST_MNF_NAME.with(|c| *c.borrow_mut() = Some(name.to_string()));
+    Flow::Raise(ExceptionValue::msg("ModuleNotFoundError", msg))
+}
+
+/// The module name of the most recent importer ModuleNotFoundError.
+pub fn last_mnf_name() -> Option<String> {
+    LAST_MNF_NAME.with(|c| c.borrow().clone())
+}
+
 fn s(x: impl Into<String>) -> Value {
     Value::Str(PyString::new(x.into()))
 }
@@ -150,7 +169,7 @@ pub fn site_packages_for_script(script_dir: &str) -> Option<String> {
 
 /// The vendored_stdlib/ dir at the repo root (resolved relative to this
 /// crate's manifest; also overridable via ANTPYTHANY_STDLIB for installs).
-fn vendored_stdlib_dir() -> Option<String> {
+pub fn vendored_stdlib_dir() -> Option<String> {
     if let Ok(v) = std::env::var("ANTPYTHANY_STDLIB") {
         if std::path::Path::new(&v).is_dir() {
             return Some(v);
@@ -331,6 +350,22 @@ fn find_on_path(name: &str) -> Option<Found> {
     }
     // LIVE sys.path (see sys_path_entries): runtime insert/append visible.
     let entries = sys_path_entries();
+    // 02.08-c: the zope.interface stub must win even when the gate probe
+    // inserts site-packages at sys.path[0] (the real zope's ro.py descriptor
+    // identity-scan is out of v1 scope — docs/lxml-shim.md). Search the
+    // vendored dir FIRST for the zope top-level package.
+    if name == "zope" {
+        if let Some(vd) = vendored_stdlib_dir() {
+            let dir = std::path::Path::new(&vd).join("zope");
+            let init = dir.join("__init__.py");
+            if init.is_file() {
+                return Some(Found::Package {
+                    dir: dir.to_string_lossy().into_owned(),
+                    init: init.to_string_lossy().into_owned(),
+                });
+            }
+        }
+    }
     for base in entries {
         let bp = std::path::Path::new(&base);
         let dir = bp.join(name);
@@ -501,7 +536,13 @@ fn run_loaded(
     loaded: &Loaded,
     stmts: &[ap_ir::Stmt],
 ) -> Result<(), Flow> {
-    exec_block(interp, &loaded.frame, stmts, &loaded.reg)
+    // s022: builtins globals()/locals() must see the MODULE ns while its body
+    // runs (token.py builds tok_name from globals().items()).
+    let saved = builtins_modules::CURRENT_MODULE_GLOBALS
+        .with(|c| c.borrow_mut().replace(loaded.frame.globals.clone()));
+    let r = exec_block(interp, &loaded.frame, stmts, &loaded.reg);
+    builtins_modules::CURRENT_MODULE_GLOBALS.with(|c| *c.borrow_mut() = saved);
+    r
 }
 
 // ---------------------------------------------------------------------------
@@ -618,7 +659,10 @@ pub fn import_module_inner(interp: &Rc<Interpreter>, name: &str) -> EResult {
     // parent package exposes __path__ (native importlib now points at the
     // vendored dir), so `import importlib.resources` resolves the vendored
     // subpackage instead of the native-parent early return.
-    if name.contains('.') {
+    // 02.08-c: EXCEPT registered native stubs (zope.interface.*) — the gate
+    // probe inserts site-packages at sys.path[0] and the REAL zope package
+    // would shadow the shim; the native registry must win (docs/lxml-shim.md).
+    if name.contains('.') && !builtins_modules::is_native_module(name) {
         match import_file_module(interp, name) {
             Ok(m) => {
                 ap_trace(format!("dotted {name}: file finder OK"));
@@ -638,6 +682,20 @@ pub fn import_module_inner(interp: &Rc<Interpreter>, name: &str) -> EResult {
         attach_native_vendored_path(&m);
         sys_modules_insert(name, &m);
         return Ok(m);
+    }
+    // 02.08-c: importlib.abc probes `import _frozen_importlib[ _external]`
+    // and compares `exc.name`; CPython has these frozen. Alias them to the
+    // vendored importlib._bootstrap[ _external] modules.
+    if name == "_frozen_importlib" || name == "_frozen_importlib_external" {
+        let alias_target = if name == "_frozen_importlib" {
+            "importlib._bootstrap"
+        } else {
+            "importlib._bootstrap_external"
+        };
+        if let Ok(m) = import_module_inner(interp, alias_target) {
+            sys_modules_insert(name, &m);
+            return Ok(m);
+        }
     }
     if name == "sys" {
         let m = builtins::get_or_make_sys(interp);
@@ -696,10 +754,7 @@ fn import_file_module(interp: &Rc<Interpreter>, name: &str) -> EResult {
         //   '.os/', '.1') -> ModuleNotFoundError: No module named '.x' up to
         //   the first dot (the failing parent-prefix report).
         if name.starts_with("..") {
-            return Err(raise(
-                "ModuleNotFoundError",
-                "No module named '.'".to_string(),
-            ));
+            return Err(raise_mnf(".", "No module named '.'".to_string()));
         }
         let head = name.strip_prefix('.').unwrap_or(name);
         let first = head.split('.').next().unwrap_or("");
@@ -718,8 +773,8 @@ fn import_file_module(interp: &Rc<Interpreter>, name: &str) -> EResult {
             Some(i) => format!(".{}", &head[..i]),
             None => name.to_string(),
         };
-        return Err(raise(
-            "ModuleNotFoundError",
+        return Err(raise_mnf(
+            &reported,
             format!("No module named {}", py_name_repr(&reported)),
         ));
     }
@@ -844,8 +899,8 @@ fn import_file_module(interp: &Rc<Interpreter>, name: &str) -> EResult {
                 // 02.02: CPython embeds repr(name) ("No module named
                 // 'a\\b'"), so segments the finder refused for containing
                 // backslashes print doubled, byte-exact.
-                return Err(raise(
-                    "ModuleNotFoundError",
+                return Err(raise_mnf(
+                    &full,
                     format!("No module named {}", py_name_repr(&full)),
                 ));
             }
@@ -866,12 +921,8 @@ fn import_file_module(interp: &Rc<Interpreter>, name: &str) -> EResult {
         }
         parent_dir = module_path_dir(&m);
     }
-    sys_modules_get(name).ok_or_else(|| {
-        raise(
-            "ModuleNotFoundError",
-            format!("No module named {}", py_name_repr(name)),
-        )
-    })
+    sys_modules_get(name)
+        .ok_or_else(|| raise_mnf(name, format!("No module named {}", py_name_repr(name))))
 }
 
 /// T1 fix: file-loaded packages get a minimal `__spec__` (name/origin/

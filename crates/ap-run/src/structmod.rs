@@ -19,6 +19,7 @@ pub(crate) fn build_struct(_i: &crate::frame::Interpreter) -> Value {
         "calcsize",
         "pack_into",
         "unpack_from",
+        "iter_unpack",
         "Struct",
     ] {
         let _ = ns.set(
@@ -26,6 +27,10 @@ pub(crate) fn build_struct(_i: &crate::frame::Interpreter) -> Value {
             crate::builtins_modules::marker(&format!("struct.{n}")),
         );
     }
+    let _ = ns.set(
+        s("error"),
+        crate::builtins_modules::interned_type_pub("struct.error"),
+    );
     finish(m, ns)
 }
 
@@ -47,13 +52,11 @@ pub(crate) fn call_struct(name: &str, args: &[Value]) -> Option<crate::builtins_
         Some(Value::Str(f)) => (f.as_str().to_string(), &args[1..]),
         _ => return None,
     };
-    if !matches!(name, "calcsize" | "pack" | "unpack") {
-        if matches!(name, "pack_into" | "unpack_from") {
-            return Some(Err(raise(
-                "NotImplementedError",
-                format!("ap: struct.{name} unsupported (v0 shim)"),
-            )));
-        }
+    let name = name.rsplit('.').next().unwrap_or(name); // Struct.<op> markers
+    if !matches!(
+        name,
+        "calcsize" | "pack" | "unpack" | "pack_into" | "unpack_from" | "iter_unpack"
+    ) {
         return None;
     }
     let r: crate::builtins_modules::BResult = (|| -> crate::builtins_modules::BResult {
@@ -61,10 +64,121 @@ pub(crate) fn call_struct(name: &str, args: &[Value]) -> Option<crate::builtins_
             "calcsize" => calcsize(&fmt),
             "pack" => pack(&fmt, rest),
             "unpack" => unpack(&fmt, rest),
+            // s036: pack_into(fmt, buffer, offset, *vals) — pack then write
+            // at offset (buffer must be a bytearray-sized list-backed obj).
+            "pack_into" => {
+                let buf = rest
+                    .first()
+                    .ok_or_else(|| raise("TypeError", "pack_into needs a buffer"))?;
+                let off = match rest.get(2) {
+                    Some(Value::Int(n)) => n.to_i64().unwrap_or(0).max(0) as usize,
+                    _ => 0,
+                };
+                let vals: Vec<Value> = rest.iter().skip(2).cloned().collect();
+                let packed = pack_bytes(&fmt, &vals)?;
+                if let Value::Bytes(b) = buf {
+                    // bytearray is bytes-backed (immutable Vec) at v0 — the
+                    // payload may be aliased, so in-place write is unsound
+                    // (documented divergence; fail loud like the other gaps).
+                    let _ = b;
+                    return Err(raise(
+                        "NotImplementedError",
+                        "ap: struct.pack_into bytearray mutation unsupported (v0 shim)",
+                    ));
+                }
+                if let Value::Obj(bo) = buf {
+                    if let Some(Value::List(l)) = bo.attrs.borrow().get(&s("<data>")) {
+                        while l.len() < off + packed.len() {
+                            l.append(Value::Int(ap_obj::Int::from_i64(0)));
+                        }
+                        for (k, b) in packed.iter().enumerate() {
+                            l.set_at(off + k, Value::Int(ap_obj::Int::from_i64(*b as i64)));
+                        }
+                        return Ok(Value::None);
+                    }
+                }
+                Err(raise("TypeError", "pack_into buffer must be a bytearray"))
+            }
+            // s036: unpack_from(fmt, buffer, offset=0)
+            "unpack_from" => {
+                let buf = rest
+                    .first()
+                    .ok_or_else(|| raise("TypeError", "unpack_from needs a buffer"))?;
+                let off = match rest.get(2) {
+                    Some(Value::Int(n)) => n.to_i64().unwrap_or(0).max(0) as usize,
+                    _ => 0,
+                };
+                let data = buffer_bytes(buf)?;
+                let sub = &data[off.min(data.len())..];
+                unpack_bytes(&fmt, sub)
+            }
+            // s036: iter_unpack(fmt, buffer) — repeated unpack over the whole
+            // buffer; size must divide evenly.
+            "iter_unpack" => {
+                let buf = rest
+                    .get(1)
+                    .ok_or_else(|| raise("TypeError", "iter_unpack needs a buffer"))?;
+                let data = buffer_bytes(buf)?;
+                let size = match calcsize(&fmt)? {
+                    Value::Int(n) => n.to_i64().unwrap_or(0).max(0) as usize,
+                    _ => 0,
+                };
+                if size == 0 {
+                    return Err(raise("struct.error", "iter_unpack: size is 0"));
+                }
+                if data.len() % size != 0 {
+                    return Err(raise(
+                        "struct.error",
+                        "iter_unpack: length must be a multiple of the struct size",
+                    ));
+                }
+                let mut out: Vec<Value> = Vec::new();
+                for chunk in data.chunks(size) {
+                    out.push(unpack_bytes(&fmt, chunk)?);
+                }
+                Ok(Value::List(ap_obj::value::PyList::from_vec(out)))
+            }
             _ => unreachable!(),
         }
     })();
     Some(r)
+}
+
+/// Pack to raw bytes (shared by pack + pack_into).
+type BResultV<T> = Result<T, crate::Flow>;
+fn pack_bytes(fmt: &str, vals: &[Value]) -> BResultV<Vec<u8>> {
+    match pack(fmt, vals)? {
+        Value::Bytes(b) => Ok(b.iter().cloned().collect()),
+        _ => Err(raise("SystemError", "pack produced non-bytes")),
+    }
+}
+
+/// Bytes of a bytes-like buffer argument (bytes/bytearray).
+fn buffer_bytes(buf: &Value) -> BResultV<Vec<u8>> {
+    match buf {
+        Value::Bytes(b) => Ok(b.iter().cloned().collect()),
+        Value::Obj(o) => {
+            if let Some(Value::List(l)) = o.attrs.borrow().get(&s("<data>")) {
+                let mut out = Vec::new();
+                for it in l.items().iter() {
+                    if let Value::Int(n) = it {
+                        out.push(n.to_i64().unwrap_or(0) as u8);
+                    }
+                }
+                return Ok(out);
+            }
+            Err(raise("TypeError", "expected a bytes-like object"))
+        }
+        _ => Err(raise("TypeError", "expected a bytes-like object")),
+    }
+}
+
+/// Unpack to a tuple Value from raw bytes (shared by unpack/unpack_from/
+/// iter_unpack).
+fn unpack_bytes(fmt: &str, data: &[u8]) -> BResultV<Value> {
+    match unpack(fmt, &[Value::Bytes(Gc::new(data.to_vec()))])? {
+        v => Ok(v),
+    }
 }
 
 fn strip_order(fmt: &str) -> (&str, bool) {
@@ -82,7 +196,8 @@ fn calcsize(fmt: &str) -> crate::builtins_modules::BResult {
     let (f, _) = strip_order(fmt);
     let mut total = 0usize;
     let mut chars = f.chars().peekable();
-    while let Some(c) = chars.next() {
+    loop {
+        // Repeat count precedes the format char (s036: ">2h").
         let mut count_str = String::new();
         while let Some(d) = chars.peek() {
             if d.is_ascii_digit() {
@@ -91,6 +206,9 @@ fn calcsize(fmt: &str) -> crate::builtins_modules::BResult {
                 break;
             }
         }
+        let Some(c) = chars.next() else {
+            break;
+        };
         let count: usize = if count_str.is_empty() {
             1
         } else {
@@ -135,8 +253,9 @@ fn pack(fmt: &str, vals: &[Value]) -> crate::builtins_modules::BResult {
     let (f, little) = strip_order(fmt);
     let mut out: Vec<u8> = Vec::new();
     let mut vi = 0usize;
-    let mut chars = f.chars();
-    while let Some(c) = chars.next() {
+    let mut chars = f.chars().peekable();
+    loop {
+        // Repeat count precedes the format char (s036: ">2h").
         let mut count_str = String::new();
         while let Some(d) = chars.clone().next() {
             if d.is_ascii_digit() {
@@ -145,6 +264,9 @@ fn pack(fmt: &str, vals: &[Value]) -> crate::builtins_modules::BResult {
                 break;
             }
         }
+        let Some(c) = chars.next() else {
+            break;
+        };
         let count: usize = if count_str.is_empty() {
             1
         } else {
@@ -217,8 +339,9 @@ fn unpack(fmt: &str, vals: &[Value]) -> crate::builtins_modules::BResult {
     }
     let mut out: Vec<Value> = Vec::new();
     let mut off = 0usize;
-    let mut chars = f.chars();
-    while let Some(c) = chars.next() {
+    let mut chars = f.chars().peekable();
+    loop {
+        // Repeat count precedes the format char (s036: ">2h").
         let mut count_str = String::new();
         while let Some(d) = chars.clone().next() {
             if d.is_ascii_digit() {
@@ -227,6 +350,9 @@ fn unpack(fmt: &str, vals: &[Value]) -> crate::builtins_modules::BResult {
                 break;
             }
         }
+        let Some(c) = chars.next() else {
+            break;
+        };
         let count: usize = if count_str.is_empty() {
             1
         } else {
@@ -321,9 +447,32 @@ pub(crate) fn struct_attr(obj: &Value, name: &str) -> Option<Value> {
                 "pack" | "unpack" | "pack_into" | "unpack_from" => {
                     format!("struct.{name}")
                 }
-                "size" | "format" => {
+                "format" => {
                     let fmt = o.attrs.borrow().get(&s("<fmt>")).map(|v| v.clone());
                     return Some(fmt.unwrap_or(Value::None));
+                }
+                "size" => {
+                    // s036: Struct(fmt).size = calcsize(fmt).
+                    let sz = o
+                        .attrs
+                        .borrow()
+                        .get(&s("<fmt>"))
+                        .and_then(|v| match v {
+                            Value::Str(x) => Some(x.as_str().to_string()),
+                            _ => None,
+                        })
+                        .map(|f| calcsize(&f))
+                        .and_then(|r| r.ok())
+                        .unwrap_or(Value::Int(ap_obj::Int::from_i64(0)));
+                    return Some(sz);
+                }
+                "iter_unpack" => {
+                    let bm = ap_obj::PyObject::with_self(
+                        ap_obj::ObjKind::BoundMethod,
+                        "struct.Struct.iter_unpack",
+                        obj.clone(),
+                    );
+                    return Some(Value::Obj(bm));
                 }
                 "calcsize" => {
                     return Some(crate::builtins_modules::marker("struct.Struct.calcsize"))

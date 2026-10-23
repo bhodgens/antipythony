@@ -6,6 +6,16 @@ such it requires the injection of specific modules and attributes in order to
 work. One should use importlib as the public-facing version of this module.
 
 """
+
+# antipythany: CPython injects `sys` into the bootstrap module during
+# _setup; our loader execs this file raw, so import it here.
+import sys
+import _imp
+import _warnings
+# The vendored _bootstrap references `_warnings` and `weakref` the same way
+# CPython injects them during _setup.
+import weakref
+
 #
 # IMPORTANT: Whenever making changes to this module, be sure to run a top-level
 # `make regen-importlib` followed by `make` in order to get the frozen version
@@ -30,7 +40,8 @@ def _object_name(obj):
 
 # Modules injected manually by _setup()
 _thread = None
-_warnings = None
+if _warnings is None:
+    _warnings = __import__("_warnings")
 _weakref = None
 
 # Import done by _install_external_importers()

@@ -229,10 +229,18 @@ pub fn dynamic_type(
         *t.metaclass.borrow_mut() = Some(resolved.clone());
     }
     let class_v = ap_obj::classes::make_class_value(t.clone());
-    let _ = t.dict.set(
-        Value::Str(PyString::new("__module__")),
-        Value::Str(PyString::new(ap_obj::MODULE_NAME)),
-    );
+    // 02.08-c: exec_class_def seeds __module__ from the DEFINING frame's
+    // globals __name__ BEFORE calling here; dynamic_type (enum._simple_enum,
+    // namedtuple) has no frame context and keeps the builtins default.
+    if t.dict
+        .get(&Value::Str(PyString::new("__module__")))
+        .is_none()
+    {
+        let _ = t.dict.set(
+            Value::Str(PyString::new("__module__")),
+            Value::Str(PyString::new(ap_obj::MODULE_NAME)),
+        );
+    }
     run_set_name_hooks(interp, &class_v, &t)?;
     Ok(class_v)
 }
@@ -902,14 +910,21 @@ pub fn exec_class_def(
     // Module marker: builtin exceptions report "builtins" (e010); user
     // classes "__main__" (S-03-04). 02.08-full p2: stdlib-exception classes
     // report their home module (re.error.__module__ == 're').
-    let module_name = if t.flags.builtin_exc {
+    // 02.08-c: prefer the DEFINING frame's __name__ (CPython: a class
+    // defined in module M reports __module__ == M; enum.global_enum's
+    // sys.modules[cls.__module__].__dict__.update depends on it). Builtin
+    // exceptions keep their pinned home modules.
+    let module_name: String = if t.flags.builtin_exc {
         match t.name.as_str() {
-            "PatternError" => "re",
-            "JSONDecodeError" => "json",
-            _ => "builtins",
+            "PatternError" => "re".to_string(),
+            "JSONDecodeError" => "json".to_string(),
+            _ => "builtins".to_string(),
         }
     } else {
-        ap_obj::MODULE_NAME
+        match frame.globals.get(&Value::Str(PyString::new("__name__"))) {
+            Some(Value::Str(modn)) => modn.as_str().to_string(),
+            _ => ap_obj::MODULE_NAME.to_string(),
+        }
     };
     let _ = t.dict.set(
         Value::Str(PyString::new("__module__")),
@@ -1065,6 +1080,22 @@ pub fn exec_class_def(
         bound_v = call_value(interp, &module_frame(interp), &df, &[bound_v], &[])?;
     }
     store_name(interp, frame, bind_name, bound_v, reg)?;
+    // 02.08-c: a class defined in module M reports __module__ == M (CPython
+    // semantics; enum.global_enum's
+    // `sys.modules[cls.__module__].__dict__.update(cls.__members__)` depends
+    // on it). Take __name__ from the DEFINING frame's globals — the class
+    // body's own ns may not carry it.
+    if t.dict
+        .get(&Value::Str(PyString::new("__module__")))
+        .is_none()
+    {
+        if let Some(Value::Str(modn)) = frame.globals.get(&Value::Str(PyString::new("__name__"))) {
+            let _ = t.dict.set(
+                Value::Str(PyString::new("__module__")),
+                Value::Str(PyString::new(modn.as_str().to_string())),
+            );
+        }
+    }
     Ok(class_v)
 }
 
@@ -1598,6 +1629,25 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
             Ok(false)
         }
         _ => {
+            // s014: namedtuple instances ARE tuples (class carries the
+            // __tupleclass__ marker set at class creation).
+            if let Value::Obj(xo) = x {
+                if xo.kind == ap_obj::ObjKind::UserInstance {
+                    if let Some(xc) = crate::classes::type_of(interp, x) {
+                        if xc
+                            .dict
+                            .get(&Value::Str(PyString::new("__tupleclass__")))
+                            .is_some_and(|v| v.is_truthy())
+                            && matches!(
+                                t,
+                                Value::Obj(to) if to.kind == ap_obj::ObjKind::Type && to.name == "tuple"
+                            )
+                        {
+                            return Ok(true);
+                        }
+                    }
+                }
+            }
             // 02.04a fix pass: `isinstance(SomeType, type)` — a builtin/interned
             // type object against the real `type` class (warnings.py
             // isinstance(category, type)).
@@ -1820,6 +1870,18 @@ pub fn special_lookup(interp: &Interpreter, v: &Value, name: &str) -> Option<(Va
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
             let t = o.type_ref.borrow().as_ref().and_then(|w| w.upgrade())?;
             t.lookup_with_owner(name)
+        }
+        // 02.08-c: lxml elements answer len()/iter() dunders natively.
+        Value::Obj(o)
+            if o.kind == ap_obj::ObjKind::Opaque
+                && (o.name == "lxml.etree._Element" || o.name == "lxml.html.HtmlElement")
+                && matches!(name, "__len__" | "__iter__" | "__getitem__") =>
+        {
+            let marker =
+                ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, &format!("lxml.elem.{}", name));
+            *marker.slice_parts.borrow_mut() = vec![v.clone()];
+            // owner type is unused by the marker dispatch path
+            Some((Value::Obj(marker), object_class(interp)))
         }
         _ => None,
     }
@@ -2098,6 +2160,23 @@ fn class_attr_get(interp: &Rc<Interpreter>, cls_v: &Value, t: &Rc<TypeRef>, name
             // 02.04a (interp bug #16): metaclass-level plain methods read on
             // the class (ABCMeta.register via Hashable.register) bind the
             // CLASS as the receiver, like CPython method descriptors.
+            // 02.08-c (zope.interface): `Base.__new__(cls)` where Base's
+            // MRO has no own __new__ resolves to object.__new__ in CPython
+            // (the metatype is consulted only for names absent from the
+            // MRO) — the metaclass __new__ must NOT win the lookup.
+            if name == "__new__" {
+                let mro_len = t.mro.borrow().len();
+                let mro_has_own_new = t
+                    .mro
+                    .borrow()
+                    .iter()
+                    .take(mro_len.saturating_sub(1))
+                    .any(|c| c.dict.get(&Value::Str(PyString::new("__new__"))).is_some());
+                if !mro_has_own_new {
+                    let f = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "__object_new2__");
+                    return Ok(Value::Obj(f));
+                }
+            }
             if is_user_function(&mv) {
                 return Ok(bind_function_owned(&mv, cls_v.clone(), Some(&owner)));
             }
@@ -2111,6 +2190,23 @@ fn class_attr_get(interp: &Rc<Interpreter>, cls_v: &Value, t: &Rc<TypeRef>, name
             if is_prop {
                 let meta_cls_v = class_value_for(&meta);
                 return descr_get(interp, &mv, cls_v, &meta_cls_v);
+            }
+            // 02.08-c (zope.interface): `Base.__new__(cls)` where Base's
+            // MRO has no own __new__ must resolve to object.__new__ (found
+            // in the MRO in CPython), NOT the metaclass __new__ (CPython
+            // consults the metatype only for names absent from the MRO).
+            // Same for the type.__new__ marker case below.
+            if name == "__new__" {
+                let mro_has_own_new = t
+                    .mro
+                    .borrow()
+                    .iter()
+                    .take(t.mro.borrow().len().saturating_sub(1))
+                    .any(|c| c.dict.get(&Value::Str(PyString::new("__new__"))).is_some());
+                if !mro_has_own_new {
+                    let f = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "__object_new2__");
+                    return Ok(Value::Obj(f));
+                }
             }
             // 02.03b: C.__new__ on a user class (enum member creation:
             // enum_class._new_member_(enum_class, ...)) must ALLOCATE an
@@ -2364,6 +2460,13 @@ pub fn attr_set_protocol(
         {
             crate::threading_call::native_thread_attr_set(obj, name, v)
         }
+        // 02.08-c: lxml element instance writes (el.text = ..., el.tail = ...).
+        Value::Obj(o)
+            if o.kind == ap_obj::ObjKind::Opaque
+                && (o.name == "lxml.etree._Element" || o.name == "lxml.html.HtmlElement") =>
+        {
+            crate::lxml::elem_attr_set(obj, name, v)
+        }
         other => Err(raise(
             "AttributeError",
             format!("'{}' object has no attribute '{}'", other.type_name(), name),
@@ -2600,11 +2703,10 @@ pub fn instantiate(
     // Module_six_moves_urllib(types.ModuleType) is constructed at module
     // scope. CPython's ModuleType.__new__ consumes the name; mirror that:
     // allocate the instance, set __name__/__doc__.
-    if t.name != "module"
-        && t.mro.borrow().iter().any(|b| b.name == "module")
-        && new_f.is_none()
-        && init_f.is_none()
-    {
+    // 02.08-c fix: `type(sys)("name")` DIRECTLY (types.ModuleType("x")) —
+    // the interned module-type payload. Same allocation as the subclass path.
+    let is_module_type = t.name == "module" || t.mro.borrow().iter().any(|b| b.name == "module");
+    if is_module_type && new_f.is_none() && init_f.is_none() {
         // Allocate a REAL module object (six.moves must pass ObjKind::Module
         // checks in the importer's submodule adoption + attr protocol);
         // __name__/__doc__ go into the module NAMESPACE (module attr reads

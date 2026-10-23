@@ -25,6 +25,12 @@ class nonmember(object):
     """
     def __init__(self, value):
         self.value = value
+    def __eq__(self, other):
+        if isinstance(other, nonmember):
+            return self.value == other.value
+        return self.value == other
+    def __hash__(self):
+        return hash(self.value)
 
 class member(object):
     """

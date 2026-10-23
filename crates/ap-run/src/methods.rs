@@ -292,6 +292,32 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
                 )),
             }
         }
+        // collections.deque subscript (native opaque): negative indices,
+        // IndexError "deque index out of range".
+        (Value::Obj(o), Key::Index(i))
+            if o.kind == ap_obj::ObjKind::Opaque && o.name == "deque" =>
+        {
+            let (items, _) = crate::builtins_modules::deque_state_pub(obj)?;
+            let idx = normalize_index(*i, items.len() as i64)
+                .ok_or_else(|| raise("IndexError", "deque index out of range"))?;
+            Ok(items[idx as usize].clone())
+        }
+        (Value::Obj(o), Key::Slice { lo, hi, step })
+            if o.kind == ap_obj::ObjKind::Opaque && o.name == "deque" =>
+        {
+            if *step == 0 {
+                return Err(raise("ValueError", "slice step cannot be zero"));
+            }
+            let (items, _) = crate::builtins_modules::deque_state_pub(obj)?;
+            let out = slice_seq(&items, *lo, *hi, *step);
+            Ok(crate::builtins_modules::make_deque_pub(out, None))
+        }
+        (Value::Obj(o), _k) if o.kind == ap_obj::ObjKind::Opaque && o.name == "deque" => {
+            Err(raise(
+                "TypeError",
+                "deque indices must be integers or slices, not str",
+            ))
+        }
         // 02.08-full p2: re.Match[m] / re.Pattern[...] subscripts.
         (Value::Obj(o), k) if o.kind == ap_obj::ObjKind::Opaque && o.name == "re.Match" => {
             let kv = match k {
@@ -351,28 +377,41 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
                 let is_generic = t.lookup("__class_getitem__").is_some()
                     || t.mro.borrow().iter().any(|m| m.name == "Generic")
                     || o.name == "Generic";
-                if is_generic {
-                    if let Some(gf) = t.lookup("__class_getitem__") {
-                        if matches!(&gf, Value::Obj(fo) if fo.kind == ap_obj::ObjKind::Function) {
-                            return crate::interp::call_value_pub3(
-                                &gf,
-                                &[obj.clone(), key.clone()],
-                            );
-                        }
-                    }
-                    // T1 (scrapy fix pass): Native/no-impl __class_getitem__
-                    // (e.g. the _typing Generic stub): opaque alias
-                    // placeholder. origin + params parked; real alias
-                    // semantics are a documented Plan-02 gap.
-                    let g = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "typing._GenericAlias");
-                    *g.slice_parts.borrow_mut() = vec![obj.clone(), key.clone()];
-                    return Ok(Value::Obj(g));
-                }
+                // 02.08-c fix: classes deriving from builtin containers
+                // (`class SelectorList(list)`) get PEP 560
+                // __class_getitem__ from the C base — parsel's
+                // `SelectorList["Selector"]` class-body annotation hits this
+                // at import. Default to the alias placeholder for ANY
+                // UserClass without an explicit __getitem__ metaclass hook:
+                // the subscription result only needs to EXIST and be inert.
+                let g = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "typing._GenericAlias");
+                *g.slice_parts.borrow_mut() = vec![obj.clone(), key.clone()];
+                return Ok(Value::Obj(g));
             }
             Err(raise(
                 "TypeError",
                 format!("'{}' object is not subscriptable", o.name),
             ))
+        }
+        // 02.08-c: lxml element indexing (r[0], r[-1]) — native surface.
+        (Value::Obj(o), _k)
+            if o.kind == ap_obj::ObjKind::Opaque
+                && (o.name == "lxml.etree._Element" || o.name == "lxml.html.HtmlElement") =>
+        {
+            let key = crate::builtins::py_str_of(&key.clone())
+                .map(|s| s.as_str().to_string())
+                .unwrap_or_default();
+            match crate::lxml::call_elem(
+                "__getitem__",
+                &[obj.clone(), Value::Str(ap_obj::PyString::new(key))],
+                &[],
+            ) {
+                Some(r) => r,
+                None => Err(raise(
+                    "TypeError",
+                    format!("'{}' object is not subscriptable", o.name),
+                )),
+            }
         }
         (Value::Obj(o), _k) if o.kind == ap_obj::ObjKind::BuiltinFn => {
             // T1 (scrapy fix pass): subscripting a builtin marker fn (PEP 560
@@ -567,6 +606,9 @@ pub fn subscript_set(obj: &Value, key: &Value, v: Value) -> Result<(), Flow> {
                 ),
             ))
         }
+        // 02.08-c: Opaque markers accept item stores inertly (lxml
+        // FunctionNamespace registry: ns_fns[fname] = func at import).
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque => Ok(()),
         _ => Err(raise(
             "TypeError",
             format!(
