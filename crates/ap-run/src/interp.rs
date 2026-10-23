@@ -3646,10 +3646,30 @@ fn call_value_inner(
                 )),
             }
         }
-        _ => Err(raise(
-            "TypeError",
-            format!("'{}' object is not callable", f.type_name()),
-        )),
+        _ => {
+            if std::env::var("APX_NCDBG").is_ok() {
+                eprintln!(
+                    "[NCDBG] not-callable f={:?} caller.q={} caller.sp={}",
+                    f.type_name(),
+                    caller.qualname,
+                    caller.scope_path
+                );
+                let gf = caller.globals.get(&Value::Str(PyString::new("__file__")));
+                eprintln!("[NCDBG] caller file={:?}", gf);
+                let gn = caller.globals.get(&Value::Str(PyString::new("__name__")));
+                eprintln!("[NCDBG] caller module={:?}", gn);
+                if let Value::Obj(uo) = f {
+                    eprintln!("[NCDBG] objname={} kind={:?}", uo.name, uo.kind);
+                }
+                for (qn, ln) in interp.tb_frames.borrow().iter() {
+                    eprintln!("[NCDBG]   frame {} line {}", qn, ln);
+                }
+            }
+            Err(raise(
+                "TypeError",
+                format!("'{}' object is not callable", f.type_name()),
+            ))
+        }
     }
 }
 
@@ -6920,13 +6940,81 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                     return Ok(Some(Value::Tuple(Gc::new(Tuple(vec![Value::Obj(cell)])))));
                 }
                 // 02.04a: a stub code object (types.py/inspect.py/dataclasses
-                // probe __code__ at import). Only the attributes those probes
-                // read exist; no bytecode.
+                // probe __code__ at import). T1-d: the stub now reflects the
+                // REAL signature (co_argcount/co_varnames/kwonly/defaults)
+                // resolved through the function table — inspect.signature()
+                // (scrapy get_func_args) reads these to build Parameter lists;
+                // the old all-zero stub made every signature ().
                 "__code__" => {
                     let code = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<code>");
+                    let sig = _interp
+                        .fn_entry(o.fn_id.unwrap_or(u32::MAX))
+                        .map(|e| e.def.clone());
+                    let mut co_flags: i64 = 67; // OPTIMIZED|NEWLOCALS (stub default)
+                    let mut posonly = 0i64;
+                    let mut kwonly = 0i64;
+                    let mut argcount = 0i64;
+                    let mut varnames: Vec<Value> = Vec::new();
+                    let mut defaults: Vec<Value> = Vec::new();
+                    let mut kwdefaults: Option<Gc<PyDict>> = None;
+                    if let Some(def) = &sig {
+                        let mut saw_vararg = false;
+                        let mut saw_kwarg = false;
+                        for p in &def.params {
+                            match p.kind {
+                                ParamKind::PosOnly => {
+                                    posonly += 1;
+                                    argcount += 1;
+                                    varnames.push(Value::Str(PyString::new(p.name.clone())));
+                                    if let Some(d) = &p.default {
+                                        if let Ok(v) = eval_default(_interp, o, d) {
+                                            defaults.push(v);
+                                        }
+                                    }
+                                }
+                                ParamKind::PosOrKw => {
+                                    argcount += 1;
+                                    varnames.push(Value::Str(PyString::new(p.name.clone())));
+                                    if let Some(d) = &p.default {
+                                        if let Ok(v) = eval_default(_interp, o, d) {
+                                            defaults.push(v);
+                                        }
+                                    }
+                                }
+                                ParamKind::VarArg => {
+                                    saw_vararg = true;
+                                    varnames.push(Value::Str(PyString::new(p.name.clone())));
+                                }
+                                ParamKind::KwOnly => {
+                                    kwonly += 1;
+                                    varnames.push(Value::Str(PyString::new(p.name.clone())));
+                                    let kd = kwdefaults.get_or_insert_with(PyDict::new);
+                                    if let Some(d) = &p.default {
+                                        if let Ok(v) = eval_default(_interp, o, d) {
+                                            let _ = kd.set(
+                                                Value::Str(PyString::new(p.name.clone())),
+                                                v,
+                                            );
+                                        }
+                                    }
+                                }
+                                ParamKind::KwArg => {
+                                    saw_kwarg = true;
+                                    varnames.push(Value::Str(PyString::new(p.name.clone())));
+                                }
+                            }
+                        }
+                        // CO_VARARGS 0x04, CO_VARKEYWORDS 0x08.
+                        if saw_vararg {
+                            co_flags |= 0x04;
+                        }
+                        if saw_kwarg {
+                            co_flags |= 0x08;
+                        }
+                    }
                     let _ = code.attrs.borrow_mut().set(
                         Value::Str(PyString::new("co_flags")),
-                        Value::Int(ap_obj::Int::from_i64(67)),
+                        Value::Int(ap_obj::Int::from_i64(co_flags)),
                     );
                     let _ = code.attrs.borrow_mut().set(
                         Value::Str(PyString::new("co_name")),
@@ -6950,19 +7038,19 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                     // machinery reads co_argcount / co_argdefs.
                     let _ = code.attrs.borrow_mut().set(
                         Value::Str(PyString::new("co_argcount")),
-                        Value::Int(ap_obj::Int::from_i64(0)),
+                        Value::Int(ap_obj::Int::from_i64(argcount)),
                     );
                     let _ = code.attrs.borrow_mut().set(
                         Value::Str(PyString::new("co_posonlyargcount")),
-                        Value::Int(ap_obj::Int::from_i64(0)),
+                        Value::Int(ap_obj::Int::from_i64(posonly)),
                     );
                     let _ = code.attrs.borrow_mut().set(
                         Value::Str(PyString::new("co_kwonlyargcount")),
-                        Value::Int(ap_obj::Int::from_i64(0)),
+                        Value::Int(ap_obj::Int::from_i64(kwonly)),
                     );
                     let _ = code.attrs.borrow_mut().set(
                         Value::Str(PyString::new("co_nlocals")),
-                        Value::Int(ap_obj::Int::from_i64(0)),
+                        Value::Int(ap_obj::Int::from_i64(varnames.len() as i64)),
                     );
                     let _ = code.attrs.borrow_mut().set(
                         Value::Str(PyString::new("co_stacksize")),
@@ -6978,8 +7066,32 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                     );
                     let _ = code.attrs.borrow_mut().set(
                         Value::Str(PyString::new("co_varnames")),
-                        Value::Tuple(Gc::new(Tuple(Vec::new()))),
+                        Value::Tuple(Gc::new(Tuple(varnames))),
                     );
+                    // CPython spells them __defaults__/__kwdefaults__ on the
+                    // FUNCTION, but inspect._signature_from_function reads
+                    // func.__defaults__/func.__kwdefaults__ — serve both under
+                    // the code-object names AND mirror onto the function's
+                    // attr dict so the func-level reads hit the attr hook's
+                    // first branch.
+                    let _ = code.attrs.borrow_mut().set(
+                        Value::Str(PyString::new("co_defaults")),
+                        Value::Tuple(Gc::new(Tuple(defaults.clone()))),
+                    );
+                    {
+                        let mut fa = o.attrs.borrow_mut();
+                        let _ = fa.set(
+                            Value::Str(PyString::new("__defaults__")),
+                            Value::Tuple(Gc::new(Tuple(defaults))),
+                        );
+                        let _ = fa.set(
+                            Value::Str(PyString::new("__kwdefaults__")),
+                            match kwdefaults {
+                                Some(d) => Value::Dict(d),
+                                None => Value::None,
+                            },
+                        );
+                    }
                     return Ok(Some(Value::Obj(code)));
                 }
                 _ => {}

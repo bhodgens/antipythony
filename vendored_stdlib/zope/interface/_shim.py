@@ -28,6 +28,11 @@ class InterfaceClass:
     def providedBy(self, obj):
         return self
 
+    def implementedBy(self, cls):
+        # Advisory: always truthy so twisted's `IFoo.implementedBy(Bar)`
+        # registration checks succeed. Real verification is a Plan-02 gap.
+        return True
+
     def isOrExtends(self, other):
         return True
 

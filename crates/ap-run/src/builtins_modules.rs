@@ -543,6 +543,12 @@ fn name_callable(v: &Value) -> String {
 
 /// Call a named callable (synthetic or dotted builtin marker).
 pub fn call_named(name: &str, args: &[Value]) -> Result<Value, Flow> {
+    call_named_kw(name, args, &[])
+}
+
+/// T1: call_named with runtime kwargs — `partial(f, kw=...)` markers merge
+/// their bound keywords into every call (CPython partial.keywords merge).
+pub fn call_named_kw(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Result<Value, Flow> {
     if let Some(ctor) = name
         .strip_prefix("<ap-ctor-")
         .and_then(|s| s.strip_suffix('>'))
@@ -561,7 +567,7 @@ pub fn call_named(name: &str, args: &[Value]) -> Result<Value, Flow> {
         // treat interned name-Types as callable).
         if let Value::Obj(o) = &v {
             if o.kind == ap_obj::ObjKind::Type {
-                return crate::builtins::call_builtin_pub(&o.name, args, &[]);
+                return crate::builtins::call_builtin_pub(&o.name, args, kwargs);
             }
             // Constructor BuiltinFns without dots (str/int/float/bool): the
             // dotted dispatch misses them, so route by marker name.
@@ -571,16 +577,16 @@ pub fn call_named(name: &str, args: &[Value]) -> Result<Value, Flow> {
                 }
             }
         }
-        return crate::interp::call_value_pub(&interp, &v, args, &[]);
+        return crate::interp::call_value_pub(&interp, &v, args, kwargs);
     }
     // s013/s014: functools stateful markers (bound lru surfaces etc) route
     // through the functools dispatcher before the generic dotted path.
     if let Some(fname) = name.strip_prefix("functools.") {
-        if let Some(r) = call_functools(fname, args, &[]) {
+        if let Some(r) = call_functools(fname, args, kwargs) {
             return r;
         }
     }
-    crate::builtins::call_builtin_pub(name, args, &[])
+    crate::builtins::call_builtin_pub(name, args, kwargs)
 }
 
 /// Publish the running interpreter (called from the import hook, which fires
@@ -4859,26 +4865,44 @@ pub fn call_functools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
                 }
                 Ok(acc)
             }
-            "partial" => {
-                let func = required(args, "partial")?.clone();
-                let pargs: Vec<Value> = args[1..].to_vec();
-                // partial objects: a self-describing BuiltinFn marker whose
-                // name carries the callee + bound args (callable without an
-                // interp.rs Opaque-call hook; attrs via the native_attr layer).
-                let name_id = name_callable(&func);
-                let enc: Vec<String> = pargs.iter().map(encode_arg).collect();
-                let marker_name = format!("<partial:{name_id}:{}>", enc.join("\u{1f}"));
-                let obj = PyObject::new(ap_obj::ObjKind::BuiltinFn, marker_name);
-                {
-                    let mut attrs = obj.attrs.borrow_mut();
-                    let _ = attrs.set(s("func"), func);
-                    let _ = attrs.set(s("args"), tuple(pargs));
-                    let _ = attrs.set(s("keywords"), Value::Dict(PyDict::new()));
-                }
-                *obj.repr_text.borrow_mut() =
-                    Some(format!("functools.partial(<callable>, {})", enc.len()));
-                Ok(Value::Obj(obj))
+        "partial" | "partial_kw" => {
+            let func = required(args, "partial")?.clone();
+            let pargs: Vec<Value> = args[1..].to_vec();
+            // partial objects: a self-describing BuiltinFn marker whose
+            // name carries the callee + bound args (callable without an
+            // interp.rs Opaque-call hook; attrs via the native_attr layer).
+            let name_id = name_callable(&func);
+            let enc: Vec<String> = pargs.iter().map(encode_arg).collect();
+            // T1: bound KEYWORDS (partial(f, sigcls=...)) ride the marker name
+            // too (after a \u{1e} separator) so the call arm can merge them.
+            let mut kwenc: Vec<String> = Vec::new();
+            for (k, v) in kwargs {
+                kwenc.push(format!("{k}={}", encode_arg(v)));
             }
+            let marker_name = if kwenc.is_empty() {
+                format!("<partial:{name_id}:{}>", enc.join("\u{1f}"))
+            } else {
+                format!(
+                    "<partial:{name_id}:{}\u{1e}{}>",
+                    enc.join("\u{1f}"),
+                    kwenc.join("\u{1f}")
+                )
+            };
+            let obj = PyObject::new(ap_obj::ObjKind::BuiltinFn, marker_name);
+            {
+                let mut attrs = obj.attrs.borrow_mut();
+                let _ = attrs.set(s("func"), func);
+                let _ = attrs.set(s("args"), tuple(pargs));
+                let mut kd = PyDict::new();
+                for (k, v) in kwargs {
+                    let _ = kd.set(Value::Str(PyString::new(k.clone())), v.clone());
+                }
+                let _ = attrs.set(s("keywords"), Value::Dict(kd));
+            }
+            *obj.repr_text.borrow_mut() =
+                Some(format!("functools.partial(<callable>, {})", enc.len()));
+            Ok(Value::Obj(obj))
+        }
             // s014: cache_info() — build the CacheInfo namedtuple from the
             // wrapper's live stats (receiver = the _lru_wrapper Opaque).
             "functools._lru_wrapper.cache_info" | "_lru_wrapper.cache_info" => {
@@ -10615,11 +10639,31 @@ pub fn call_native_marker(full: &str, args: &[Value]) -> Option<BResult> {
     }
     if let Some(rest) = full.strip_prefix("<partial:") {
         let body = rest.strip_suffix('>')?;
-        let (fname, argstr) = body.split_once(':')?;
+        // T1: bound KEYWORDS after a \u{1e} separator ("k=v\u{1f}..."); the
+        // positional section splits at the FIRST \u{1e} so fname/argstr
+        // parsing stays on the head.
+        let (head, kwstr) = match body.split_once('\u{1e}') {
+            Some((h, k)) => (h, k),
+            None => (body, ""),
+        };
+        let (fname, argstr) = head.split_once(':')?;
         let mut full_args: Vec<Value> = if argstr.is_empty() {
             vec![]
         } else {
             argstr.split('\u{1f}').map(decode_arg).collect()
+        };
+        // T1: decode the bound keywords ("name=enc" tokens) — call_named's
+        // NAMED_CALLABLES path takes Value-pair kwargs.
+        let full_kwargs: Vec<(String, Value)> = if kwstr.is_empty() {
+            vec![]
+        } else {
+            kwstr
+                .split('\u{1f}')
+                .filter_map(|tok| {
+                    let (k, enc) = tok.split_once('=')?;
+                    Some((k.to_string(), decode_arg(enc)))
+                })
+                .collect()
         };
         // s013: functools.Placeholder slots — a Placeholder in the bound args
         // is replaced by the next positional call arg; extra runtime args
@@ -10644,10 +10688,10 @@ pub fn call_native_marker(full: &str, args: &[Value]) -> Option<BResult> {
                 }
             }
             out.extend(it);
-            return Some(call_named(fname, &out));
+            return Some(call_named_kw(fname, &out, &full_kwargs));
         }
         full_args.extend_from_slice(args);
-        return Some(call_named(fname, &full_args));
+        return Some(call_named_kw(fname, &full_args, &full_kwargs));
     }
     if let Some(rest) = full.strip_prefix("<attrgetter:") {
         let attrs_str = rest.strip_suffix("/>")?;
@@ -12892,7 +12936,7 @@ pub fn call_builtin_values(
 
 /// Encode a bound-arg Value into the partial marker name (repr-based; strings
 /// carry a type tag so decode is unambiguous).
-fn encode_arg(v: &Value) -> String {
+pub(crate) fn encode_arg(v: &Value) -> String {
     // s013: the Placeholder sentinel encodes as its own token so the partial
     // marker carries the slot through decode.
     if is_functools_placeholder(v) {
@@ -12917,7 +12961,7 @@ fn is_functools_placeholder(v: &Value) -> bool {
         if o.kind == ap_obj::ObjKind::Opaque && o.name == "functools.Placeholder")
 }
 
-fn decode_arg(tok: &str) -> Value {
+pub(crate) fn decode_arg(tok: &str) -> Value {
     if tok == "p:" {
         // s013: functools.Placeholder slot token.
         return Value::Obj(PyObject::new(

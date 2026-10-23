@@ -1263,6 +1263,30 @@ pub fn base_type_ref(interp: &Interpreter, v: &Value) -> Result<Option<Rc<TypeRe
             .map_err(|_| raise("TypeError", "cannot synthesize decorator base class"))?;
             Ok(Some(t))
         }
+        // T1-d: catch-all — any remaining function-base (BuiltinFn or Function)
+        // NOT covered by the descriptor allowlist above synthesizes an
+        // object-derived TypeObject named after the function. CPython would
+        // TypeError, but the T1 chain policy is create-then-degrade; descriptor
+        // inheritance from these bases is a documented v0 gap (docs/lxml-shim.md
+        // DEVIATIONS).
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::BuiltinFn || o.kind == ap_obj::ObjKind::Function =>
+        {
+            let flags = TypeFlags {
+                slots: None,
+                is_exception: false,
+                builtin_exc: false,
+            };
+            let t = TypeObject::create(
+                o.name.clone(),
+                o.name.clone(),
+                vec![object_class(interp)],
+                PyDict::new(),
+                flags,
+                None,
+            )
+            .map_err(|_| raise("TypeError", "cannot synthesize function base class"))?;
+            Ok(Some(t))
+        }
         _ => Ok(None),
     }
 }

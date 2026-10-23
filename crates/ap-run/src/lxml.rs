@@ -1084,6 +1084,14 @@ fn pred_supported(t: &str) -> bool {
 fn eval_path(doc: &LxDoc, ctx: usize, pe: &PathExpr) -> Option<XValue> {
     let mut current: Vec<usize> = vec![if pe.absolute { doc.root } else { ctx }];
     let mut first_step = true;
+    // True while the path is still inside the leading `//` fold's
+    // descendant-or-self semantics (`//tag` parses to SelfAxis + Descendant).
+    // `./tag` (SelfAxis + Child) must NOT self-insert — child::a on <a>
+    // correctly yields nothing.
+    let mut desc_ctx = matches!(
+        (pe.steps.first(), pe.steps.get(1)),
+        (Some(Step::SelfAxis), Some(Step::Descendant(_)))
+    );
     for step in &pe.steps {
         let mut next = Vec::new();
         match step {
@@ -1139,11 +1147,16 @@ fn eval_path(doc: &LxDoc, ctx: usize, pe: &PathExpr) -> Option<XValue> {
                 }
                 // 02.08-c: descendant-or-self semantics from the `//tag`
                 // fold — the context node itself is a candidate when it
-                // matches (root == a; `//a` must find it).
-                if !pe.absolute && first_step && current.len() == 1 && current[0] == ctx {
+                // matches (root == a; `//a` must find it). Keyed on the
+                // fold shape (SelfAxis + Descendant), NOT `first_step`:
+                // the leading SelfAxis hop consumes first_step before the
+                // Descendant step runs, so the old gate never fired for
+                // `//tag` on a context element that IS the match.
+                if desc_ctx && current.len() == 1 && current[0] == ctx {
                     if name == "*" || &doc.get(ctx).tag == name {
                         next.insert(0, ctx);
                     }
+                    desc_ctx = false;
                 }
             }
             Step::Attribute(name) => {
@@ -1165,7 +1178,6 @@ fn eval_path(doc: &LxDoc, ctx: usize, pe: &PathExpr) -> Option<XValue> {
                 return Some(XValue::Texts(texts));
             }
         }
-        first_step = false;
         current = next;
     }
     if let Some(p) = &pe.pred {
@@ -2746,10 +2758,14 @@ fn urljoin_simple(base: &str, href: &str) -> String {
 // etree.XPath class instances (parsel: etree.XPath(query, ...)(root))
 // ===========================================================================
 
-/// Build a compiled-XPath object: an Opaque carrying the query; calling it
-/// evaluates against the receiver element.
+/// Build a compiled-XPath object: carries the query; calling it evaluates
+/// against the receiver element. The object is a BuiltinFn marker named
+/// `lxml.etree.XPath.__call__` so the generic marker dispatch
+/// (call_builtin → call_native_marker, dotted names) routes its call into
+/// call_xpath_object below — a plain Opaque falls off call_value_inner's
+/// not-callable arm (real lxml XPath instances are callable).
 pub fn make_xpath_object(query: String, namespaces: Option<Value>) -> Value {
-    let o = PyObject::new(ap_obj::ObjKind::Opaque, "lxml.etree.XPath");
+    let o = PyObject::new(ap_obj::ObjKind::BuiltinFn, "lxml.etree.XPath.__call__");
     {
         let mut a = o.attrs.borrow_mut();
         let _ = a.set(s("<query>"), s(query));
