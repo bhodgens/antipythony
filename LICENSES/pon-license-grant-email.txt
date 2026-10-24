@@ -1,0 +1,241 @@
+MIME-Version: 1.0
+Date: Fri, 16 Oct 2026 00:53:09 -0600
+Message-ID: <CABzos_uFQQc8k526OGWHXJvHhytTr3e2odXU2nVYdPxv--LWAg@mail.gmail.com>
+Subject: pon licensing
+From: Benjamin Hodgens <ben@hodgens.net>
+To: me@can.ac
+Content-Type: multipart/alternative; boundary="000000000000017a31065def9e68"
+
+--000000000000017a31065def9e68
+Content-Type: text/plain; charset="UTF-8"
+
+Greetings Can,
+
+I'm starting a project I'm calling antipythany, a Python 3.14-compatible
+runtime and compiler in Rust : tracing GC instead of refcounting, no GIL,
+and two output targets, producing statically-linked native binaries
+(Go-style UX) and WasmGC modules. The architecture overlaps yours in pon
+substantially: ruff parser pinned to 3.14, a single shared IR, Cranelift as
+the backend, tiered execution with tier-0 as the correctness baseline, and
+byte-exact differential conformance testing against CPython as the gate.
+
+To the point: pon has no license file, so I am treating your code as
+all-rights-reserved: zero lines of pon will be read or copied, and my IR
+and codegen are being written clean-room from your public README's
+architecture description and from independent designs (kohebi's spec,
+Monty, p2w).
+
+However: (1) if you're willing to license pon MIT or Apache-2.0, it would
+let me study your tier-1 inline-cache and OSR implementation directly and
+save weeks of clean-room rediscovery, and (2) antipythany diverges from pon
+enough that I don't think it belongs as a contribution to your repo: the
+WasmGC backend, the GC-representation divergence (MMTk rather than Green
+Tea), the WasmGC object model, and the uv-integrated build/deps are new
+subsystems, not incremental features, and the dual-backend IR contract
+shapes every layer differently.
+
+My objective is to be able to run the myriad gobs of python that is filling
+up the world due to AI development, without having to run python, and to
+hopefully produce something that helps unclutter every machine that runs a
+python script. Performance gains are great, too.
+
+If pon's direction and antipythany's converge enough that you'd rather they
+stay one project, I'm open to that conversation instead - but the working
+assumption is that this diverges enough you might want a separate project
+(that cites yours as prior art and stays in clean-room discipline). I'd be
+glad to collaborate.
+
+Thank you for your time.
+
+Benjamin Hodgens
+ben@hodgens.net
+925.301.0768
+
+--000000000000017a31065def9e68
+Content-Type: text/html; charset="UTF-8"
+Content-Transfer-Encoding: quoted-printable
+
+<div dir=3D"ltr"><div>Greetings Can,=C2=A0<br><br>I&#39;m starting a projec=
+t I&#39;m calling antipythany, a Python 3.14-compatible runtime and compile=
+r in Rust=C2=A0<span style=3D"background-color:transparent">: tracing GC in=
+stead of refcounting, no GIL, and two output targets, producing statically-=
+linked native binaries (Go-style UX) and WasmGC modules. The architecture o=
+verlaps yours in pon substantially: ruff parser pinned to 3.14, a single sh=
+ared IR, Cranelift as the backend, tiered execution with tier-0 as the corr=
+ectness baseline, and byte-exact differential conformance testing against C=
+Python as the gate.=C2=A0</span></div><div><br></div><div>To the point: pon=
+ has no license file, so I am treating your code as all-rights-reserved: ze=
+ro lines of pon will be read or copied, and my IR and codegen are being wri=
+tten clean-room from your public README&#39;s architecture description and =
+from independent designs (kohebi&#39;s spec, Monty, p2w).=C2=A0</div><div><=
+br></div><div>However: (1) if you&#39;re willing to license pon MIT or Apac=
+he-2.0, it would let me study your tier-1 inline-cache and OSR implementati=
+on directly and save weeks of clean-room rediscovery, and (2) antipythany d=
+iverges from pon enough that I don&#39;t think it belongs as a contribution=
+ to your repo: the WasmGC backend, the GC-representation divergence (MMTk r=
+ather than Green Tea), the WasmGC object model, and the uv-integrated build=
+/deps are new subsystems, not incremental features, and the dual-backend IR=
+ contract shapes every layer differently.=C2=A0</div><div><br>My objective =
+is to be able to run the myriad gobs of python that is filling up the world=
+ due to AI development, without having to run python, and to hopefully prod=
+uce something that helps unclutter every machine that runs a python script.=
+ Performance gains are great, too.=C2=A0</div><div><br></div><div>If pon&#3=
+9;s direction and antipythany&#39;s converge enough that you&#39;d rather t=
+hey stay one project, I&#39;m open to that conversation instead - but the w=
+orking assumption is that this diverges enough you might want a separate pr=
+oject (that cites yours as prior art and stays in clean-room discipline). I=
+&#39;d be glad to collaborate.=C2=A0<br><br>Thank you for your time.=C2=A0<=
+br><div><br clear=3D"all"></div><div><div dir=3D"ltr" class=3D"gmail_signat=
+ure" data-smartmail=3D"gmail_signature"><div dir=3D"ltr">Benjamin Hodgens<b=
+r><a href=3D"mailto:ben@hodgens.net" target=3D"_blank">ben@hodgens.net</a><=
+br>925.301.0768</div></div></div></div><div><br></div></div>
+
+--000000000000017a31065def9e68--
+Delivered-To: aequitas@gmail.com
+Received: by 2002:a05:622a:5b8b:b0:536:3157:7117 with SMTP id ec11csp470923qtb; Fri, 16 Oct 2026 03:41:57 -0700 (PDT)
+X-Forwarded-Encrypted: i=4; AKwUvBz4xxJJu8SA6HD87hcBFkvIOW4wvmNs7dBaHny07/8uuU/h7cEXU4bG5b1Vn+5v+VOV30k9WgdgXQ==@gmail.com
+X-Received: by 2002:a05:690e:14c6:b0:674:1750:6efa with SMTP id 956f58d0204a3-679b1207838mr932272d50.20.1792147317643; Fri, 16 Oct 2026 03:41:57 -0700 (PDT)
+ARC-Seal: i=3; a=rsa-sha256; t=1792147317; cv=pass; d=google.com; s=arc-20260327; b=mJDatwq8T7ywfrxEG1XHee9jrWY+6Z8Hdozx8K2DMTyTRm5lOM91KRWK9kWJzLBnVR z23pv2BBneX5seDSCH00RSPxbLndIPwukcPMpHvYtWg4wrlu+rZgDVfKnzqO8HBumDkF ZVAXhVEeinRoP0p6K1arms+ams6ybD/uiN/i1ehln7OeHENjQhY6Atydt3ePSLk4ckTb N/NU7i9FS7aHa8pEvyFdceJESfslAFylFBBIqS8Yfy1LSa2ALjT1zthAqbuC/mdf2SBG dMVjir39T1z/sMqz/0kuPQEor3SXE2If3xm4h/Nj4Vlokfa/SrtoQaBlxGix0BYnAPb6 xVCQ==
+ARC-Message-Signature: i=3; a=rsa-sha256; c=relaxed/relaxed; d=google.com; s=arc-20260327; h=to:subject:message-id:date:from:in-reply-to:references:mime-version :dkim-signature:feedback-id:dkim-signature:dkim-signature; bh=wk4/N5i17MjsQY0i4N/X1O6Oc0IcdtLx4U2r1sBLyZo=; fh=jDdREjemm62Z9ZEcJVuRQwOLPju2P4WQ6O4Wfecs1KQ=; b=RezWKYyWeSemQgr5ymzzZDlKkq+G1pXznA1wN5OEJbqdnc3DR7AVpRISvJSYd+vxw+ iCxh9FWWefmbt/si965RuC8kcW94LJHqUuV2/XCLGMnRgCGkfOuR1BiKrqGoOtEiXPno gcsOjDjizKXK6xxk54DdwyvuWCA8RJNVlgoJhBD4+T7jmhodL7rkoYyRl02ZPYSJIVVY wGZLPGqQOdf3CuJy5rpAG33H00Q7j/Y4YeUxxbuLLBJ3PYSgONQXeTcj8WS2UvYalCpJ Ni5VlMBIxbgPs5znpMM824EIKyGN0/ZAHO+SoY1tras2vQN7hZGtKzWHbn03Mb/QebK4 fUQA==; dara=google.com
+ARC-Authentication-Results: i=3; mx.google.com; dkim=pass header.i=@hodgens.net header.s=cf2024-1 header.b=e8ixOfyz; dkim=pass header.i=@cloudflare-email.net header.s=cf2024-1 header.b="aU/7JmzV"; dkim=pass header.i=@gmail.com header.s=20251104 header.b=Afqj2n71; arc=pass (i=2 spf=pass spfdomain=gmail.com dkim=pass dkdomain=gmail.com dmarc=pass fromdomain=gmail.com); spf=pass (google.com: domain of srs0=4dh9=gi=gmail.com=can.boluk89@hodgens.net designates 104.30.8.53 as permitted sender) smtp.mailfrom="SRS0=4dh9=gi=gmail.com=can.boluk89@hodgens.net"; dmarc=pass (p=NONE sp=QUARANTINE dis=NONE) header.from=gmail.com; dara=neutral header.i=@gmail.com
+Return-Path: <SRS0=4dh9=gi=gmail.com=can.boluk89@hodgens.net>
+Received: from i-fd.cloudflare-email.net (i-fd.cloudflare-email.net. [104.30.8.53]) by mx.google.com with ESMTPS id 956f58d0204a3-679b1fbf8e0si954679d50.122.2026.10.16.03.41.56 for <aequitas@gmail.com> (version=TLS1_3 cipher=TLS_AES_128_GCM_SHA256 bits=128/128); Fri, 16 Oct 2026 03:41:57 -0700 (PDT)
+Received-SPF: pass (google.com: domain of srs0=4dh9=gi=gmail.com=can.boluk89@hodgens.net designates 104.30.8.53 as permitted sender) client-ip=104.30.8.53;
+Authentication-Results: mx.google.com; dkim=pass header.i=@hodgens.net header.s=cf2024-1 header.b=e8ixOfyz; dkim=pass header.i=@cloudflare-email.net header.s=cf2024-1 header.b="aU/7JmzV"; dkim=pass header.i=@gmail.com header.s=20251104 header.b=Afqj2n71; arc=pass (i=2 spf=pass spfdomain=gmail.com dkim=pass dkdomain=gmail.com dmarc=pass fromdomain=gmail.com); spf=pass (google.com: domain of srs0=4dh9=gi=gmail.com=can.boluk89@hodgens.net designates 104.30.8.53 as permitted sender) smtp.mailfrom="SRS0=4dh9=gi=gmail.com=can.boluk89@hodgens.net"; dmarc=pass (p=NONE sp=QUARANTINE dis=NONE) header.from=gmail.com; dara=neutral header.i=@gmail.com
+DKIM-Signature: v=1; a=rsa-sha256; s=cf2024-1; d=hodgens.net; c=relaxed/relaxed; h=To:Subject:Date:From:In-Reply-To:References:Feedback-ID:from:reply-to:cc :resent-date:resent-from:resent-to:resent-cc:list-id:list-help :list-unsubscribe:list-unsubscribe-post:list-subscribe:list-post :list-owner:list-archive; t=1792147316; x=1792752116; bh=wk4/N5i17MjsQY0i4N /X1O6Oc0IcdtLx4U2r1sBLyZo=; b=e8ixOfyzEcfSMdRbC9LPMrSJgdIK49KWEb1VMHMAvPRBu lazaOFJiUpqhQz2d0e7bD9MB6MFNoHUNfBa50a/RNboP/gASSvNCrpc7j1m3rqOhFAZtSPd75F1 RmEP8/DipzREZUG/Bvkkm5VKaZ1Ov5Nh4ZZlCzelJTTB3Lra/7+s8OQXN8uBHsiPcE448FuRGz7 EHz+KOITCiOia4R2I6Qx3nFc+/5lkp3GAlLd891zNayyQp6MpKnvaSEwjXpY/acd1J/bvxinHeX nEyMFvRw2NZkv9hjPfaux8FO26z679Woopm3+arDgdG8NAEUQUlTNikPwy1qvfcqQD13pOnw==;
+DKIM-Signature: v=1; a=rsa-sha256; s=cf2024-1; d=cloudflare-email.net; c=relaxed/relaxed; h=To:Subject:Date:From:In-Reply-To:References:Feedback-ID:from:reply-to:cc :resent-date:resent-from:resent-to:resent-cc:list-id:list-help :list-unsubscribe:list-unsubscribe-post:list-subscribe:list-post :list-owner:list-archive; t=1792147316; x=1792752116; bh=wk4/N5i17MjsQY0i4N /X1O6Oc0IcdtLx4U2r1sBLyZo=; b=aU/7JmzVQW3N9iA+4LoEhwM5RvI+5R8RGMYwWJhoaq43g bpL3DoikvFjUHTC/9FShvg1oHyT/SDItowNcc1/9buXi029IiD8oa7QexEB6NzL7xms2fwRlze2 DaCf+R8UB3Dvgibe84Jx3/P4YT+QxIg9VeBiZvA+q4IfzLwWaZ7q2wFAueCW2Oo9Cecd6FSzyA5 PeTOaB50Zbnm7+OzBpHjjXU4p4t1YehQpmey6OTZUuCRIq/iMUeGiIc6KVFi/uKbvjIsDGym3gX oUGFLoW30nODeVxwXZYitSsnUy6yiQBhA/SHphhOX905NgXemQU/pOM1eAQjR/Zf4ije0LtQ==;
+X-Forwarded-To: aequitas@gmail.com
+X-Forwarded-For: ben@hodgens.net aequitas@gmail.com
+Feedback-ID: hodgens.net:1:1:Cloudflare
+Received: from mail-yw1-x1129.google.com (2607:f8b0:4864:20::1129) by cloudflare-email.net (cloudflare) id 3mCLFnB7vbDZ for <ben@hodgens.net>; Fri, 16 Oct 2026 10:41:53 +0000
+ARC-Seal: i=2; a=rsa-sha256; s=cf2024-1; d=cloudflare-email.net; cv=pass; b=X6IG6PZA8ezQN2M/DiBsWwulB48gIKFZXWQctD+UCupOMLt0aNigWxXkQH8rA5p2+UPgmvRCc seT/x8WtkZnjwFvZKsFM2H4w5aoxwU+JFeOFGkeNyvvZSYo4mh9YnELQeSHJcPySiahbvZb9czW hKLNgbUGIw7cB5RJRg2Vq9KpeJFO6Djg91ctw9zswJHQoVteMEIANYwhRi7OL/N4fWkd5a07+B3 6KxSuMf3k/4sid3dIElgpTeXODgB/gqXt9iNn8QQVYbsNneqeEOBJtYuO5475Pm1aNALgTerGh9 m9rz6VgTP2bePa4Mqg7zAwS2ls8dgnhuNGGLsOJaGONQ==;
+ARC-Message-Signature: i=2; a=rsa-sha256; s=cf2024-1; d=cloudflare-email.net; c=relaxed/relaxed; h=To:Subject:Date:From:In-Reply-To:References:from:reply-to:cc:resent-date :resent-from:resent-to:resent-cc:list-id:list-help:list-subscribe :list-post:list-owner:list-archive; t=1792147313; x=1792752113; bh=wk4/N5i1 7MjsQY0i4N/X1O6Oc0IcdtLx4U2r1sBLyZo=; b=Qcpg2yG207AzK4B3W38HkNRP2sfIt2DPMsR 4cjzIjNHJXrIin49P1YegQDUBhbBxPTB73IUy3JQzdd2h5UINWAnbEiR2iXwNhoskQOSouvqB7C QMcGwqHK3Ki+Xx487B7kviwxdmdyzKD5QgDG1Gh0WWicmtXLiDpo+Qnl4JAt/nY2DML9Odfb9LR rXqiZa/E2Fy5Y35+xuXiBAnQmE5tg1QTR/ZOx9RBQ9XmpdW0mgacGJ9HpYmIOoYRnRgmMFjITXx azcc49ZILo2gPZQPupXTrAPzG8ASvt7SAzTnBrvn6TOdz7qWL/2PNwfqQ32SR6CG8FhwSPH32iL dYlY4rQ==;
+ARC-Authentication-Results: i=2; mx.cloudflare.net; dkim=pass header.d=gmail.com header.s=20251104 header.b=Afqj2n71; dmarc=pass header.from=gmail.com policy.dmarc=none; spf=none (mx.cloudflare.net: no SPF records found for postmaster@mail-yw1-x1129.google.com) smtp.helo=mail-yw1-x1129.google.com; spf=pass (mx.cloudflare.net: domain of can.boluk89@gmail.com designates 2607:f8b0:4864:20::1129 as permitted sender) smtp.mailfrom=can.boluk89@gmail.com; arc=pass smtp.remote-ip="2607:f8b0:4864:20::1129"
+Received-SPF: pass (mx.cloudflare.net: domain of can.boluk89@gmail.com designates 2607:f8b0:4864:20::1129 as permitted sender) receiver=mx.cloudflare.net; client-ip=2607:f8b0:4864:20::1129; envelope-from="can.boluk89@gmail.com"; helo=mail-yw1-x1129.google.com;
+Authentication-Results: mx.cloudflare.net; dkim=pass header.d=gmail.com header.s=20251104 header.b=Afqj2n71; dmarc=pass header.from=gmail.com policy.dmarc=none; spf=none (mx.cloudflare.net: no SPF records found for postmaster@mail-yw1-x1129.google.com) smtp.helo=mail-yw1-x1129.google.com; spf=pass (mx.cloudflare.net: domain of can.boluk89@gmail.com designates 2607:f8b0:4864:20::1129 as permitted sender) smtp.mailfrom=can.boluk89@gmail.com; arc=pass smtp.remote-ip="2607:f8b0:4864:20::1129"
+X-CF-SpamH-Score: 0
+Received: by mail-yw1-x1129.google.com with SMTP id 00721157ae682-8b0c5a64de8so8001557b3.0 for <ben@hodgens.net>; Fri, 16 Oct 2026 03:41:53 -0700 (PDT)
+ARC-Seal: i=1; a=rsa-sha256; t=1792147312; cv=none; d=google.com; s=arc-20260327; b=dtKkTmx4R5cpGiK96uniQ70Jduz22HDsrP+BBXTkqUdVbvOn8oSF6uAYJ/5HrdCZMy XblHGpblfPLanw8NBJNJWOZh9lR50oLbFecNeRp2cwi4Gkj4LPIHVe5TMNzYzcKfcn3u GMH0opvlQ7FlQsFmaVpjYkTZNbTDr6iTK5L6JEbmH4UMmHQT6XR0TM8MMHvkStiO4BNP 1E24qlz3psEJOul5u2patuG35MFQc1sGnlzbRE8yc3h7zGXhKgUgfzjvvVRGtTXknvqR jyd7toPJ0+ItqBd2vPOcXjeMgGECs0pPgug6/BknvJqVXXb1Oy+kT1o7G6hqnaI7fKo2 qvkQ==
+ARC-Message-Signature: i=1; a=rsa-sha256; c=relaxed/relaxed; d=google.com; s=arc-20260327; h=to:subject:message-id:date:from:in-reply-to:references:mime-version :dkim-signature; bh=wk4/N5i17MjsQY0i4N/X1O6Oc0IcdtLx4U2r1sBLyZo=; fh=jDdREjemm62Z9ZEcJVuRQwOLPju2P4WQ6O4Wfecs1KQ=; b=U5pGvcAldgnXG4vP/Cx1blxtOhHvCsds8MtGHSqcY4L7WEvATBiisdZ3jD/4RrnITq BGWT1E1qTn0NoJX3Zsh3KiyAcjgiX+J2caQKEpk8rV3DPTlChhfHhSBDIpjBc4nd97T+ Gd7+iIk02svKs5KMwVMy74xa0rV3qNfIWwh95JmvBDW+ZOa6Sjw0w/8/mDFrtneI76uJ F4j7IFb/Y66Vk3mVznsHHMTtAwhY6N/HLbpZgORhinELYeJ6Su0hTBYI0qrBXXtLf8rS EefFpqRM6EKeBl5tRRZp8AdDZhuAxDWJP3GI/6x2+ppOoJH6TBRh/uQOBLXgJWi+y537 ObVw==; darn=hodgens.net
+ARC-Authentication-Results: i=1; mx.google.com; arc=none
+DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed; d=gmail.com; s=20251104; t=1792147312; x=1792752112; darn=hodgens.net; h=content-type:to:subject:message-id:date:from:in-reply-to:references :mime-version:from:to:cc:subject:date:message-id:reply-to :content-type; bh=wk4/N5i17MjsQY0i4N/X1O6Oc0IcdtLx4U2r1sBLyZo=; b=Afqj2n71OCSFE9dWqBhySXTZjTI91SYex2J33u1w9Q6uJ/OBmMTa8bz8XKY6pjHbk1 mJeq6hqbuedXWeLmX//rqkA+3CAj4pgsKLBNC2wMailz3z97FpQoRtUDkE4DAZnw0KmZ Lr3EWxwwJ3sRQz8UqXPz6cTavTQz+JfWsxbApyGNilzPdbw8z5+1ITLhTUplpf369uXu xZls0Iujxj/LMDVBhIPotj+ND+PKyuTGHj0K4NvKhYLnLX4Lk9T41JPXRrYV7t20/Axq bqwaMJvECvgtOjVAB+6HIZm/43Q/+2O5LeyuWYtJIfkHsE1d+vK1RIU8CEbgNuG0LfuQ yNog==
+X-Google-DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed; d=1e100.net; s=20260707; t=1792147312; x=1792752112; h=content-type:to:subject:message-id:date:from:in-reply-to:references :mime-version:x-gm-gg:x-gm-message-state:from:to:cc:subject:date :message-id:reply-to:content-type; bh=wk4/N5i17MjsQY0i4N/X1O6Oc0IcdtLx4U2r1sBLyZo=; b=EDEVqN1RZWEkDwrVBIHSyfmHHkH0wnavMMcZu0IfD8vWB4B/G4GDcr2a9BC9/9c3wM kNJZv0Z8BKEAOqilQBuSbIGk+4SiQ0qYyI+OOo1EKzDidObgEi62YyNMZ4Fi4WhrJdiC 63mDhA+jG3bOAYpao80i/vXIln4hwIT3tS3E0D6+ldiikelDf2xze7sWIWlqyd7bIBPo FW7s8fVLCH6eFGph9tztjuiSH6OKM1pTUc/RsBbKH6SXV4ulLneLhlZSqvIebk7jYGlr iNRDjeoZsBm8s/iRr9cSFJgOCFpSlsbv6/P5UMTjndmzvzCTBVK2WwUu7TP/b//gCqiY 2KTQ==
+X-Gm-Message-State: AFq9FYK3y+AqEJr26LADPZXKAVO4/8ab7E+Tgi/6eiktPqK0qeJGGxWu TBMHw47KQmuJZEYDytfO4nRcwY7KupgFhtoO3YpAdx8mTv1EfDjiuXYBofI8ckcSJEuveZaOPMN tWyQZ4or5Mp3+qqBbVBXlIdm+UYlEpALca5sI
+X-Gm-Gg: AYBFou2UNnP2roPjsdPzF/1Kf+PCePIpFCdiR5bsATrqE6k7XVtcmnq7PqNwK7Z5D6O 3vAKEWRf/V4PRPAaG7NMT2hH4Q0gbx5exX2c01z7afxmSsni6cHYUVO9OmRc9uEwqhOXHLY+rDR IDIaEaY2HKjQO4tVTJ3Fd1gVT/WnttMyK0Er9BFvymZxvm4WM6zKooTTlvrOZ+jIfRhMuZMjMI3 QIuqY2Ip+DZHC0k39WxtpcKD+xVap8BXlHL7YFVGp+AOBMUUBdtfWapdRGsCLfLVsEGLibrJxnp FZ6iW5RKm7qcrc1L6GGzdwA/SQuxw2LyLdgbIOVlAFLcRnXlXYCmk6Arf5aHcQqKaCllcQCCkt1 7oelIvfQUzA==
+X-Received: by 2002:a05:690e:d59:b0:679:9b4c:5baa with SMTP id 956f58d0204a3-679b1149fc3mr723107d50.50.1792147312477; Fri, 16 Oct 2026 03:41:52 -0700 (PDT)
+MIME-Version: 1.0
+References: <CABzos_uFQQc8k526OGWHXJvHhytTr3e2odXU2nVYdPxv--LWAg@mail.gmail.com>
+In-Reply-To: <CABzos_uFQQc8k526OGWHXJvHhytTr3e2odXU2nVYdPxv--LWAg@mail.gmail.com>
+From: Can Boluk <can.boluk89@gmail.com>
+Date: Fri, 16 Oct 2026 12:41:39 +0200
+X-Gm-Features: AclHuK_3Bc1NaV_tqxzShne9gqmy2W1RHF8R1DHmW4kon5SCSunaWkzvhSywKHY
+Message-ID: <CAGY-K_CwnT+Ko+DBH3XP2O=X6F7tmkhMoK4uu1PzAS3TAarXHQ@mail.gmail.com>
+Subject: Re: pon licensing
+To: ben@hodgens.net
+Content-Type: multipart/alternative; boundary="000000000000f20921065df2cf90"
+
+--000000000000f20921065df2cf90
+Content-Type: text/plain; charset="UTF-8"
+
+Hey Ben!
+
+Sounds awesome.
+Done!
+
+Best,
+Can
+
+On Fri, 16 Oct 2026 at 08:53, Benjamin Hodgens <ben@hodgens.net> wrote:
+
+> Greetings Can,
+>
+> I'm starting a project I'm calling antipythany, a Python 3.14-compatible
+> runtime and compiler in Rust : tracing GC instead of refcounting, no GIL,
+> and two output targets, producing statically-linked native binaries
+> (Go-style UX) and WasmGC modules. The architecture overlaps yours in pon
+> substantially: ruff parser pinned to 3.14, a single shared IR, Cranelift as
+> the backend, tiered execution with tier-0 as the correctness baseline, and
+> byte-exact differential conformance testing against CPython as the gate.
+>
+> To the point: pon has no license file, so I am treating your code as
+> all-rights-reserved: zero lines of pon will be read or copied, and my IR
+> and codegen are being written clean-room from your public README's
+> architecture description and from independent designs (kohebi's spec,
+> Monty, p2w).
+>
+> However: (1) if you're willing to license pon MIT or Apache-2.0, it would
+> let me study your tier-1 inline-cache and OSR implementation directly and
+> save weeks of clean-room rediscovery, and (2) antipythany diverges from pon
+> enough that I don't think it belongs as a contribution to your repo: the
+> WasmGC backend, the GC-representation divergence (MMTk rather than Green
+> Tea), the WasmGC object model, and the uv-integrated build/deps are new
+> subsystems, not incremental features, and the dual-backend IR contract
+> shapes every layer differently.
+>
+> My objective is to be able to run the myriad gobs of python that is
+> filling up the world due to AI development, without having to run python,
+> and to hopefully produce something that helps unclutter every machine that
+> runs a python script. Performance gains are great, too.
+>
+> If pon's direction and antipythany's converge enough that you'd rather
+> they stay one project, I'm open to that conversation instead - but the
+> working assumption is that this diverges enough you might want a separate
+> project (that cites yours as prior art and stays in clean-room discipline).
+> I'd be glad to collaborate.
+>
+> Thank you for your time.
+>
+> Benjamin Hodgens
+> ben@hodgens.net
+> 925.301.0768
+>
+>
+
+--000000000000f20921065df2cf90
+Content-Type: text/html; charset="UTF-8"
+Content-Transfer-Encoding: quoted-printable
+
+<div dir=3D"ltr">Hey Ben!<div><br></div><div>Sounds awesome.</div><div>Done=
+!</div><div><br></div><div>Best,</div><div>Can</div></div><br><div class=3D=
+"gmail_quote gmail_quote_container"><div dir=3D"ltr" class=3D"gmail_attr">O=
+n Fri, 16 Oct 2026 at 08:53, Benjamin Hodgens &lt;<a href=3D"mailto:ben@hod=
+gens.net">ben@hodgens.net</a>&gt; wrote:<br></div><blockquote class=3D"gmai=
+l_quote" style=3D"margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,20=
+4,204);padding-left:1ex"><div dir=3D"ltr"><div>Greetings Can,=C2=A0<br><br>=
+I&#39;m starting a project I&#39;m calling antipythany, a Python 3.14-compa=
+tible runtime and compiler in Rust=C2=A0<span style=3D"background-color:tra=
+nsparent">: tracing GC instead of refcounting, no GIL, and two output targe=
+ts, producing statically-linked native binaries (Go-style UX) and WasmGC mo=
+dules. The architecture overlaps yours in pon substantially: ruff parser pi=
+nned to 3.14, a single shared IR, Cranelift as the backend, tiered executio=
+n with tier-0 as the correctness baseline, and byte-exact differential conf=
+ormance testing against CPython as the gate.=C2=A0</span></div><div><br></d=
+iv><div>To the point: pon has no license file, so I am treating your code a=
+s all-rights-reserved: zero lines of pon will be read or copied, and my IR =
+and codegen are being written clean-room from your public README&#39;s arch=
+itecture description and from independent designs (kohebi&#39;s spec, Monty=
+, p2w).=C2=A0</div><div><br></div><div>However: (1) if you&#39;re willing t=
+o license pon MIT or Apache-2.0, it would let me study your tier-1 inline-c=
+ache and OSR implementation directly and save weeks of clean-room rediscove=
+ry, and (2) antipythany diverges from pon enough that I don&#39;t think it =
+belongs as a contribution to your repo: the WasmGC backend, the GC-represen=
+tation divergence (MMTk rather than Green Tea), the WasmGC object model, an=
+d the uv-integrated build/deps are new subsystems, not incremental features=
+, and the dual-backend IR contract shapes every layer differently.=C2=A0</d=
+iv><div><br>My objective is to be able to run the myriad gobs of python tha=
+t is filling up the world due to AI development, without having to run pyth=
+on, and to hopefully produce something that helps unclutter every machine t=
+hat runs a python script. Performance gains are great, too.=C2=A0</div><div=
+><br></div><div>If pon&#39;s direction and antipythany&#39;s converge enoug=
+h that you&#39;d rather they stay one project, I&#39;m open to that convers=
+ation instead - but the working assumption is that this diverges enough you=
+ might want a separate project (that cites yours as prior art and stays in =
+clean-room discipline). I&#39;d be glad to collaborate.=C2=A0<br><br>Thank =
+you for your time.=C2=A0<br><div><br clear=3D"all"></div><div><div dir=3D"l=
+tr" class=3D"gmail_signature"><div dir=3D"ltr">Benjamin Hodgens<br><a href=
+=3D"mailto:ben@hodgens.net" target=3D"_blank">ben@hodgens.net</a><br>925.30=
+1.0768</div></div></div></div><div><br></div></div>
+</blockquote></div>
+
+--000000000000f20921065df2cf90--
+

@@ -23,6 +23,31 @@ Design choices that define the project:
 License: Apache-2.0 WITH LLVM-exception. See `LICENSE`,
 `THIRD_PARTY_NOTICES`, and `docs/attribution.md`.
 
+## Prior art and borrowed design
+
+**pon** (github.com/can1357/pon, Can Bölük) — antipythany's architecture
+overlaps pon's substantially (ruff-pinned frontend, shared IR, Cranelift
+tiered backend, differential conformance gating). Can Bölük granted this
+project a full code-donor license (MIT/Apache-2.0 dual, adapt and vendor
+freely with attribution) by email on 2026-10-16 — the primary evidence is
+archived at `LICENSES/pon-license-grant-email.txt`, license texts in
+`LICENSES/`. Current status: **designs and implementation strategies have
+been studied from pon** (see `docs/pon-study-lowering.md` and
+`docs/pon-study-tier1.md` — lowering shape, inline-cache/OSR/deopt
+architecture); **no pon source code has been vendored into `crates/`
+yet.** When adaptation lands, each derived file carries an attribution
+header ("adapted from pon, Copyright Can Bölük, MIT/Apache-2.0") per
+`plans/antipythany/master.md`, and pon stays cited in `docs/attribution.md`.
+pon is not forked: antipythany diverges by design (WasmGC backend, MMTk
+tracing GC, uv-integrated packaging, dual-backend IR contract).
+
+Other cited sources (full detail in `docs/attribution.md` and
+`LICENSES/`): monty (MIT) — ap-obj adaptation donor; ruff (MIT) — parser;
+Cranelift/wasmtime; MMTk; CPython stdlib vendored files (PSF-2.0,
+`vendored_stdlib/`); RustPython (MIT, fallback donor only); p2w and kohebi
+specs (design reference only). Nuitka (AGPL) is a subprocess tool only —
+never vendored or linked.
+
 ## Status (2026-10)
 
 The project is mid-build, executing a hierarchical plan tree
