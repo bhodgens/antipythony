@@ -1218,3 +1218,28 @@ try:
     MutableSequence.register(bytearray)
 except RuntimeError:
     pass  # antipythany v0: legacy name-Type register probe mis-fires
+
+# T1-d (scrapy.http.Headers.update: `isinstance(seq, Mapping)` with a plain
+# dict value). CPython registers dict as a MutableMapping in C; our v0
+# ABC registry doesn't see native dicts, so teach the metaclass check.
+def _ap_native_isinstance(cls, obj):
+    if cls in (Mapping, MutableMapping, Collection, Iterable, Container, Sized):
+        return isinstance(obj, dict)
+    return None
+
+
+for _cls in (Mapping, MutableMapping, Collection, Iterable, Container, Sized):
+    _orig = getattr(type(_cls), "__instancecheck__", None)
+
+    def _make_check(orig, mapping_cls):
+        def __instancecheck__(self, obj):
+            r = _ap_native_isinstance(self, obj)
+            if r is not None:
+                return r
+            return orig(self, obj)
+        return __instancecheck__
+
+    try:
+        type(_cls).__instancecheck__ = _make_check(_orig, _cls)
+    except Exception:
+        pass

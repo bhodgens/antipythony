@@ -91,4 +91,12 @@ if 'valid_signals' in _globals:
         return {_int_to_enum(x, Signals) for x in _signal.valid_signals()}
 
 
-del _globals, _wraps
+# T1-d (twisted.internet._signals.installHandler): wakeup-fd plumbing the
+# file:// gate calls during reactor setup; inert passthroughs.
+if 'set_wakeup_fd' in _globals:
+    def set_wakeup_fd(fd):
+        return _signal.set_wakeup_fd(fd)
+
+if 'siginterrupt' in _globals:
+    def siginterrupt(signalnum, flag):
+        return _signal.siginterrupt(signalnum, flag)

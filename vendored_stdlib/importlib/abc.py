@@ -23,14 +23,16 @@ __all__ = [
 
 
 def _register(abstract_cls, *classes):
+    # T1-d: our runtime binds metaclass methods through the class-object
+    # access path with the class as self, swallowing the first positional.
+    # Implement the registration inline (mirrors _py_abc.ABCMeta.register).
     for cls in classes:
-        abstract_cls.register(cls)
-        if _frozen_importlib is not None:
-            try:
-                frozen_cls = getattr(_frozen_importlib, cls.__name__)
-            except AttributeError:
-                frozen_cls = getattr(_frozen_importlib_external, cls.__name__)
-            abstract_cls.register(frozen_cls)
+        reg = getattr(abstract_cls, "_abc_registry", None)
+        if reg is None:
+            continue
+        reg.add(cls)
+        # T1-d v0: skip frozen-class twin registration (the runtime maps
+        # frozen importers through its own interned types).
 
 
 class MetaPathFinder(metaclass=abc.ABCMeta):

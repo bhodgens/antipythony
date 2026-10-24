@@ -1672,9 +1672,12 @@ def getinnerframes(tb, context=1):
         tb = tb.tb_next
     return framelist
 
-def currentframe():
+def currentframe(depth=1):
     """Return the frame of the caller or None if this is not possible."""
-    return sys._getframe(1) if hasattr(sys, "_getframe") else None
+    # T1-d fix (twisted Logger._namespaceFromCallingContext): the depth
+    # parameter is part of the CPython signature — inspect.py's own callers
+    # (currentframe(2)-style, walking past THIS function) need it.
+    return sys._getframe(depth) if hasattr(sys, "_getframe") else None
 
 def stack(context=1):
     """Return a list of records for the stack above the caller's frame."""
@@ -2306,7 +2309,13 @@ def _signature_fromstr(cls, obj, s, skip_bound_arg=True):
         #      it is a module.
         #    - We don't strip first bound argument if
         #      skip_bound_arg is False.
-        assert parameters
+        if not parameters:
+            # T1-d fix (twisted probing bound builtins, e.g.
+            # inspect.signature([].append)): the v0 builtin-method surface
+            # has no parseable text signature. CPython raises a catchable
+            # ValueError here; the assert made it an unreachable
+            # AssertionError that killed the scrapy import chain.
+            raise ValueError("no signature found for builtin function {!r}".format(obj))
         _self = getattr(obj, '__self__', None)
         self_isbound = _self is not None
         self_ismodule = ismodule(_self)

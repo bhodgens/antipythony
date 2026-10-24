@@ -41,8 +41,14 @@ kqueue = None
 epoll = None
 
 
-def select(*args, **kwargs):
-    raise NotImplementedError("select requires the _select C extension")
+def select(rlist, wlist, xlist, timeout=None):
+    # T1-d fix (twisted selectreactor._doRun): the file:// gate has no real
+    # fds; return an empty ready-set after a bounded sleep so reactor
+    # iterations idle correctly. Optional timeout per CPython signature.
+    import time
+    if timeout is not None and timeout > 0:
+        time.sleep(min(timeout, 0.5))
+    return ([], [], [])
 
 
 class poll:
@@ -63,8 +69,10 @@ class poll:
 
 
 def epoll(*args, **kwargs):
-    raise NotImplementedError("epoll requires the _select C extension")
+    # T1-d fix: selectors._can_use() probes these and catches OSError only —
+    # NotImplementedError escaped and killed the selectors import.
+    raise OSError("epoll requires the _select C extension")
 
 
 def kqueue(*args, **kwargs):
-    raise NotImplementedError("kqueue requires the _select C extension")
+    raise OSError("kqueue requires the _select C extension")

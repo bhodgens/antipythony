@@ -1,32 +1,17 @@
-"""Minimal annotationlib shim (antipythany vendored stdlib).
+"""antipythany deviation shim — annotationlib (see docs/lxml-shim.md)."""
 
-The CPython 3.14 annotationlib.py uses t-strings (PEP 750 templates), which
-are outside the v1 grammar subset. inspect.py imports `Format`, `ForwardRef`,
-and `get_annotations` at module level; the annotation-evaluation functions
-they support are not exercised by the vendored-stdlib import gates. This
-shim provides the name surface with v0 semantics and is a documented gap:
-format-aware annotation evaluation raises NotImplementedError.
-"""
-
-import enum
 import types
 
-__all__ = ["Format", "ForwardRef", "get_annotations", "get_type_hints"]
 
-
-class Format(enum.IntEnum):
+class Format:
     VALUE = 1
-    VALUE_WITH_FAKE_GLOBALS = 2
-    FORWARDREF = 3
-    STRING = 4
+    FORWARDREF = 2
+    STRING = 3
 
 
 class ForwardRef:
     """Stub forward reference: v0 keeps the raw text only."""
 
-    # T1 (typing_extensions): `__forward_is_class__ in ForwardRef.__slots__`
-    # (typing.py line 161) reads this — the CPython class declares
-    # __slots__ with these names; v0 mirrors the surface.
     __slots__ = ("__forward_arg__", "__forward_module__", "__forward_is_class__",
                  "__forward_value__", "__forward_evaluated__", "__owner__",
                  "__cell__")
@@ -42,6 +27,12 @@ class ForwardRef:
 
     def __repr__(self):
         return f"ForwardRef({self.__forward_arg__!r})"
+
+    @property
+    def __forward_code__(self):
+        # T1-d (typing._make_forward_ref eagerly compiles the arg text so
+        # __forward_code__ probes work): v0 compiles the string.
+        return compile(str(self.__forward_arg__), "<forward_ref>", "eval")
 
     def __eq__(self, other):
         return (
@@ -65,25 +56,29 @@ class ForwardRef:
 
 def get_annotations(obj, *, globals=None, locals=None, eval_str=False,
                     annotation_format=Format.VALUE, owner=None, format=None):
-    # T1 (scrapy fix pass): typing._get_protocol_attrs calls with the 3.14
-    # `format=` kwarg; the v0 vendored copy predates it (accept + ignore -
-    # format only selects FORWARDREF evaluation strategies we don't do).
     """Return obj.__annotations__ (v0: the raw dict, never evaluated)."""
     anns = getattr(obj, "__annotations__", None)
     if anns is None:
-        if isinstance(obj, types.ModuleType):
-            anns = {}
-        elif isinstance(obj, type):
-            anns = {}
-        elif callable(obj):
-            # T1: function/callable objects (inspect.signature chain) — v0
-            # returns an empty mapping (annotations unevaluated).
-            anns = {}
-        else:
-            raise TypeError(f"{obj!r} is not a module, class, or callable.")
+        return {}
     return anns
 
 
-def get_type_hints(obj, *args, **kwargs):
-    """v0 alias: raw annotations without evaluation."""
-    return get_annotations(obj)
+def get_annotate_from_class_namespace(ns, *, owner=None):
+    """v0: return the __annotations__-style dict as a callable shim."""
+    anns = ns.get("__annotations__") if hasattr(ns, "get") else None
+    if anns is None:
+        return None
+
+    def _annotate():
+        return dict(anns)
+
+    return _annotate
+
+
+def call_annotate_function(annotate, format, *, owner=None,
+                           globals=None, locals=None):
+    return annotate()
+
+
+def annotations_to_string(anns):
+    return {k: str(v) for k, v in anns.items()}

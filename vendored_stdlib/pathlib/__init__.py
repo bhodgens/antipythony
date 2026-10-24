@@ -145,7 +145,9 @@ class PurePath:
                 try:
                     path = os.fspath(arg)
                 except TypeError:
-                    path = arg
+                    # T1-d: PurePath instances whose isinstance check fails
+                    # in our runtime still expose as_posix().
+                    path = arg.as_posix() if hasattr(arg, "as_posix") else arg
                 if not isinstance(path, str):
                     raise TypeError(
                         "argument should be a str or an os.PathLike "
@@ -781,11 +783,21 @@ class Path(PurePath):
         """
         Open the file in text mode, read it, and close the file.
         """
-        # Call io.text_encoding() here to ensure any warning is raised at an
-        # appropriate stack level.
-        encoding = io.text_encoding(encoding)
-        with self.open(mode='r', encoding=encoding, errors=errors, newline=newline) as f:
-            return f.read()
+        # T1-d: v0 join the _raw_paths strings and read directly (the
+        # with_segments round-trip loses segments in our runtime).
+        parts = []
+        for p in self._raw_paths:
+            if isinstance(p, str):
+                parts.append(p)
+            elif hasattr(p, "as_posix"):
+                parts.append(p.as_posix())
+            elif hasattr(p, "_raw_paths"):
+                parts.extend(q for q in p._raw_paths if isinstance(q, str))
+        import os as _os
+
+        full = _os.path.join(*parts) if parts else ""
+        data = open(full).read()
+        return data
 
     def write_bytes(self, data):
         """

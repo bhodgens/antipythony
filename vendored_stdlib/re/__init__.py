@@ -305,6 +305,11 @@ def compile(pattern, flags=0):
     "Compile a regular expression pattern, returning a Pattern object."
     return _compile(pattern, flags)
 
+def std_dbg():
+    import os as _os
+    return _os.environ.get("APX_STMTDBG") is not None
+
+
 def purge():
     "Clear the regular expression caches"
     _cache.clear()
@@ -346,6 +351,9 @@ assert _MAXCACHE2 < _MAXCACHE
 
 def _compile(pattern, flags):
     # internal: compile pattern
+    if std_dbg() and not isinstance(pattern, str) and not isinstance(pattern, Pattern):
+        import sys as _s
+        _s.stderr.write("[REDBG] non-str pattern: %r" % (pattern,))
     if isinstance(flags, RegexFlag):
         flags = flags.value
     try:

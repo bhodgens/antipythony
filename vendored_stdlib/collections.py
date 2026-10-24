@@ -137,3 +137,102 @@ class OrderedDict(dict):
         k, v = items[-1] if last else items[0]
         del self[k]
         return (k, v)
+
+
+# T1-d (scrapy.utils.datatypes CaseInsensitiveDict): real UserDict/UserList/
+# UserString — v0 shims over native dict/list/str so dict-subclass machinery
+# (super().__setitem__ etc.) works in the gate chain.
+class UserDict(dict):
+    data = None
+
+    def __init__(self, *args, **kwargs):
+        self.data = {}
+        self.update(*args, **kwargs)
+
+    def __getitem__(self, key):
+        return self.data[key]
+
+    def __setitem__(self, key, value):
+        self.data[key] = value
+
+    def __delitem__(self, key):
+        del self.data[key]
+
+    def __contains__(self, key):
+        return key in self.data
+
+    def __len__(self):
+        return len(self.data)
+
+    def __iter__(self):
+        return iter(self.data)
+
+    def keys(self):
+        return self.data.keys()
+
+    def values(self):
+        return self.data.values()
+
+    def items(self):
+        return self.data.items()
+
+    def get(self, key, default=None):
+        return self.data.get(key, default)
+
+    def pop(self, key, *default):
+        return self.data.pop(key, *default)
+
+    def clear(self):
+        self.data.clear()
+
+    def copy(self):
+        n = type(self)()
+        n.data = dict(self.data)
+        return n
+
+    def update(self, *args, **kwargs):
+        if args:
+            other = args[0]
+            if hasattr(other, "items"):
+                for k, v in other.items():
+                    self[k] = v
+            else:
+                for k, v in other:
+                    self[k] = v
+        for k, v in kwargs.items():
+            self[k] = v
+
+    def setdefault(self, key, default=None):
+        if key not in self.data:
+            self.data[key] = default
+        return self.data[key]
+
+
+class UserList(list):
+    def __init__(self, initlist=None):
+        self.data = list(initlist) if initlist else []
+
+    def __getitem__(self, i):
+        return self.data[i]
+
+    def __setitem__(self, i, v):
+        self.data[i] = v
+
+    def __len__(self):
+        return len(self.data)
+
+    def append(self, v):
+        self.data.append(v)
+
+    def __iter__(self):
+        return iter(self.data)
+
+
+class UserString(str):
+    data = None
+
+    def __new__(cls, seq=""):
+        s = str(seq)
+        obj = super().__new__(cls, s)
+        obj.data = s
+        return obj

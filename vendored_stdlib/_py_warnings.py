@@ -3,9 +3,6 @@
 import sys
 import _contextvars
 import _thread
-_dbg = open('/tmp/apscript/wdbg.txt', 'w')
-_dbg.write('module body ran\n')
-_dbg.close()
 
 
 __all__ = ["warn", "warn_explicit", "showwarning",

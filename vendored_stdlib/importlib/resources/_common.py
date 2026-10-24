@@ -53,7 +53,20 @@ def files(anchor: Optional[Anchor] = None) -> Traversable:
     """
     Get a Traversable resource for an anchor.
     """
-    return from_package(resolve(anchor))
+    # T1-d (scrapy.__init__ files("scrapy").joinpath("VERSION")): for str
+    # anchors resolve to the module, then straight to its on-disk package
+    # dir as a pathlib Path (CPython returns a PosixPath here too).
+    import pathlib as _pathlib
+    import importlib as _importlib
+
+    mod = _importlib.import_module(anchor) if isinstance(anchor, str) else anchor
+    pdir = getattr(mod, "__path__", None)
+    if pdir:
+        return _pathlib.Path(list(pdir)[0])
+    f = getattr(mod, "__file__", None)
+    if f:
+        return _pathlib.Path(f).parent
+    return from_package(mod)
 
 
 def get_resource_reader(package: types.ModuleType) -> Optional[ResourceReader]:
