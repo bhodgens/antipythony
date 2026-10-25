@@ -182,3 +182,15 @@ After each plan completes: main model (not a subagent) reviews cross-crate seams
 - ap-obj trait surface unchanged across native and wasm consumers
 - conformance corpus grows monotonically; no corpus test deleted to make a gate pass
 - THIRD_PARTY_NOTICES regenerated and diffed
+
+## Test Gate
+
+<!-- Tests-first gate (hierarchical-planning skill v1.3.0, patched 2026-10-24).
+     Coverage matrix derived mechanically from leaf task headers; the control
+     agent (orchestrator, in-session) refines rows and fills test names at
+     Phase 0 dispatch. No implementation leaf dispatches until every row is
+     VALIDATED. Delta protocol: lesser of plan/tests updates to the greater.
+     Recipe: skill hierarchical-planning -> references/tests-first-gate.md -->
+
+N/A — no leaf documents found alongside this orchestrator. If this tree
+gains leaves, build the coverage matrix before dispatching them.

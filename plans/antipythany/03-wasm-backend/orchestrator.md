@@ -73,3 +73,15 @@ Plan 02 (ap-obj semantics stable), spec 07 gate before any codegen leaf.
 ## Dispatch notes
 03.01 first (it is the contract), then 03.02 -> 03.03 -> 03.04 sequential (each
 builds on the module emitter), 03.05 parallel with 03.03 onward, 03.06 last.
+
+## Test Gate
+
+<!-- Tests-first gate (hierarchical-planning skill v1.3.0, patched 2026-10-24).
+     Coverage matrix derived mechanically from leaf task headers; the control
+     agent (orchestrator, in-session) refines rows and fills test names at
+     Phase 0 dispatch. No implementation leaf dispatches until every row is
+     VALIDATED. Delta protocol: lesser of plan/tests updates to the greater.
+     Recipe: skill hierarchical-planning -> references/tests-first-gate.md -->
+
+N/A — no leaf documents found alongside this orchestrator. If this tree
+gains leaves, build the coverage matrix before dispatching them.

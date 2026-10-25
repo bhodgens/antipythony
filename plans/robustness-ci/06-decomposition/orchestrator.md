@@ -53,3 +53,15 @@ This branch is intentionally last (Wave E). If Plan 02's remaining leaves
 (02.05 tier-1, 02.06 AoT, 02.07 threading) rewrite interp.rs heavily, these
 leaves re-base onto the new shape - check Plan 02 PROGRESS first, and prefer
 running 06.01 before 06.02 (builtins families are the safer rehearsal).
+
+## Test Gate
+
+<!-- Tests-first gate (hierarchical-planning skill v1.3.0, patched 2026-10-24).
+     Coverage matrix derived mechanically from leaf task headers; the control
+     agent (orchestrator, in-session) refines rows and fills test names at
+     Phase 0 dispatch. No implementation leaf dispatches until every row is
+     VALIDATED. Delta protocol: lesser of plan/tests updates to the greater.
+     Recipe: skill hierarchical-planning -> references/tests-first-gate.md -->
+
+N/A — no leaf documents found alongside this orchestrator. If this tree
+gains leaves, build the coverage matrix before dispatching them.

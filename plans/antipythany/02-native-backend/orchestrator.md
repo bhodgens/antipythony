@@ -138,3 +138,22 @@ file ownership in ap-run; do not let "after tier-1" prose re-gate it - the
 master.md Design intent section makes the >=3x scaling gate a v1-exit
 expectation. 02.10 research leaf may start any time; implementation only
 after 02.09.
+
+## Test Gate
+
+<!-- Tests-first gate (hierarchical-planning skill v1.3.0, patched 2026-10-24).
+     Coverage matrix derived mechanically from leaf task headers; the control
+     agent (orchestrator, in-session) refines rows and fills test names at
+     Phase 0 dispatch. No implementation leaf dispatches until every row is
+     VALIDATED. Delta protocol: lesser of plan/tests updates to the greater.
+     Recipe: skill hierarchical-planning -> references/tests-first-gate.md -->
+
+| # | Feature (from plan) | Source | Unit tests | E2E tests | Status |
+|---|---------------------|--------|-----------|-----------|--------|
+| F1 | PROGRESS-02-04a.md | PROGRESS-02-04a.md | (pending) | (pending) | PENDING |
+| F2 | Plan 02 progress log | PROGRESS.md | (pending) | (pending) | PENDING |
+| F3 | Stale xfail ledger - 2026-10-18, updated 2026-10-19 | STALE-XFAIL-LEDGER.md | (pending) | (pending) | PENDING |
+
+Statuses: PENDING | DELTA | VALIDATED
+
+Delta log: (none yet)
