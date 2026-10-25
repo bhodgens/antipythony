@@ -192,5 +192,21 @@ After each plan completes: main model (not a subagent) reviews cross-crate seams
      VALIDATED. Delta protocol: lesser of plan/tests updates to the greater.
      Recipe: skill hierarchical-planning -> references/tests-first-gate.md -->
 
-N/A — no leaf documents found alongside this orchestrator. If this tree
-gains leaves, build the coverage matrix before dispatching them.
+Branch-level matrix (leaves live under NN-*/ subdirs, each with its own
+orchestrator + Test Gate). Control-agent survey 2026-10-24: repo has a LIVE
+sibling session (dirty: interp.rs, builtins*.rs, classes.rs, threading*.rs) —
+read-only verification only, no test dispatch this pass.
+
+| # | Feature (from plan) | Source | Unit tests | E2E tests | Status |
+|---|---------------------|--------|-----------|-----------|--------|
+| F1 | 00-foundation-contract (workspace scaffold, 10 crates, toolchain pin) | 00-foundation-contract/ | cargo build --workspace exit 0 (verified per PROGRESS) | n/a — scaffold | VALIDATED |
+| F2 | 01-frontend-ir (ap-parse wrapper, PY314 pin, fail-closed syntax, line_col) | 01-frontend-ir/ | ap-parse in-crate tests (leaf 01.01 COMPLETE, committed 81126cc) | differential corpus (tests/) | VALIDATED |
+| F3 | 02-native-backend (codegen, tier-0 unboxed scalars, GIL v1 interim) | 02-native-backend/ | in-progress branch — threading wave LIVE (sibling dirty set) | T121 >=3x scaling test is the no-GIL GREEN gate (02.09) | DELTA |
+| F4 | 03-wasm-backend (WasmGC) | 03-wasm-backend/ | not yet dispatched | pre-Wasm era: semantic gate per Amendment A-3 | PENDING |
+| F5 | 04-packaging-ecosystem (uv wheel-fetch, sys.path, ap-pack) | 04-packaging-ecosystem/ | ap-pack tests exist (LANDED, uncommitted per PROGRESS) | n/a yet | DELTA |
+| F6 | 05-ecosystem-t2 leaf A-1 (RustPython donor backfill, 32-case mined corpus) | 05-ecosystem-t2/ | tests/test_a1_rustpython_backfill.py — DISPATCHED as separate-authorship xfail-first test track (tests-first shape already) | differential vs live 3.14 | DELTA |
+| F7 | 10-c-extensions-stretch (v2 scope) | 10-c-extensions-stretch/ | not dispatched | n/a | PENDING |
+
+DELTA rows: F3/F5/F6 have in-flight sibling work — the control agent must
+re-survey after the sibling session commits, then converge matrices (lesser
+updates to greater). Do NOT dispatch test subagents into the dirty file set.

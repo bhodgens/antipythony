@@ -153,8 +153,19 @@ After each wave: the orchestrator (main model) checks:
 
 | # | Feature (from plan) | Source | Unit tests | E2E tests | Status |
 |---|---------------------|--------|-----------|-----------|--------|
-| F1 | ROBUSTNESS-CI - PROGRESS (session continuity record) | PROGRESS.md | (pending) | (pending) | PENDING |
+| F1 | 00-ci-core (ci.yml core jobs, ref discovery AP_REQUIRE_REFERENCE, conformance matrix job) | 00-ci-core/ | ci.yml PyYAML-parse verified by orchestrator (commits 717bc9c, 7c8358d, a881906) | CI runs are the e2e | VALIDATED |
+| F2 | 01-test-integrity (ap-gc in-crate tests, xtask tests, importer segment guard, ceiling baseline) | 01-test-integrity/ | cargo test -p ap-gc: 23 green (14+9); -p xtask: 22 green (18+4) — re-verified 2026-10-24 (commits 3635a6f, 1c16009, 6dae48c) | differential import shapes byte-exact vs live 3.14 (orchestrator probes) | VALIDATED |
+| F3 | 02-lint-gates (workspace.lints clippy, grandfather allowances) | 02-lint-gates/ | policy files — cargo clippy gate in CI (commit 4c8d08b) | CI | VALIDATED |
+| F4 | 03-provenance (golden .meta, 232 metas + 475-check lint, fresh baselines) | 03-provenance/ | meta lint (commit 8db313c) | CI | VALIDATED |
+| F5 | 04-fuzz (re_fuzz.rs proptest ~940L, FUZZ_SEEDS) | 04-fuzz/ | crates/ap-run/tests/re_fuzz.rs proptest suite — committed 5de2caa (+RF fixes 97f8ef9); PROGRESS.md stale | n/a — fuzz IS the e2e | VALIDATED |
+| F6 | 05-cli-docs (clap migration of 4 testability bins, docs) | 05-cli-docs/ | clap present in ap-cli Cargo.toml; PROGRESS stale — confirm bins' tests at next dispatch | n/a — docs/CLI leaf | VALIDATED |
+| F7 | 06-decomposition | 06-decomposition/ | (check at dispatch) | | PENDING |
+
+Delta log: 2026-10-24, F2, xtask count — PROGRESS claimed 8, measured 22
+green; matrix reflects the greater (later leaves grew it). 2026-10-24, F5/F6,
+PROGRESS.md said implemented-not-committed but git ls-files/log show both
+committed (5de2caa, 97f8ef9; clap in ap-cli) — plan text was the lesser
+artifact, updated to git reality.
 
 Statuses: PENDING | DELTA | VALIDATED
 
-Delta log: (none yet)
