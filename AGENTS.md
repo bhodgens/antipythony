@@ -76,8 +76,13 @@ GIL, uv-backed deps at build time. Byte-exact differential conformance vs CPytho
   works-best-effort; byte-exact returns post-Plan-03. A-1 RustPython wave 1
   landed: errno 108 pairs, binascii qp/uu/hqx, bytes hex sep, os pipe/kill/
   stat/utime arms, ClosureMarker fix, function-not-iterable fix (cfe2465).
-  Corpus 149/178=84%+; stdlib 28/48. Next: T2 pytest (leaf brief committed,
-  pytest 9.1.1 staged).
+  Corpus 149/178=84%+; stdlib 28/48.
+- T2 PYTEST (in progress 2026-10-25, commit 1161466): pytest 9.1.1 imports
+  cleanly (all 48 _pytest submodules; --version works). BLOCKED at pytest.main:
+  generators materialize eagerly (no PEP-342 send()) so pluggy wrapper hooks
+  (yield-based coroutines) cannot run - issue #7, semantic/gate-blocking.
+  Fix = lazy generator suspension, also unblocks s018 (contextlib ExitStack).
+  Byte-divergence protocol in use: issues #2-#7, Amendment A-3/D6 (86cefd8).
 - AFTER: Plan 03 WASM, Plan 04 packaging (uv) -> T1 scrapy attempt.
 - AFTER: Plan 03 WASM, Plan 04 packaging (uv) -> T1 scrapy attempt.
 - Ecosystem targets locked (master.md tier table): scrapy T1, pytest T2,
