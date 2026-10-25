@@ -7214,6 +7214,23 @@ fn user_compare_value(
         CmpOp::NotEq => "__ne__",
         _ => return None,
     };
+    // A-1 fix (unittest _tearDownPreviousClass): `currentClass ==
+    // previousClass` compares TYPE objects. CPython never dispatches an
+    // instance's __eq__ for type-vs-anything without a custom metaclass;
+    // with plain `type`, equality is identity. Serving the class's own
+    // __eq__ (TestCase.__eq__) with self=type crashed on missing instance
+    // attrs ('type' object has no attribute '_testMethodName').
+    let is_class = |v: &Value| matches!(v, Value::Obj(o) if o.kind == ap_obj::ObjKind::Type || o.kind == ap_obj::ObjKind::UserClass);
+    let a_is_type = is_class(a);
+    let b_is_type = is_class(b);
+    if a_is_type || b_is_type {
+        // Identity semantics (Value::is for Obj is Rc::ptr_eq).
+        let same = match (a, b) {
+            (Value::Obj(x), Value::Obj(y)) => std::rc::Rc::ptr_eq(x, y),
+            _ => false,
+        };
+        return Some(Ok(Value::Bool(same)));
+    }
     let mut a_slot = crate::classes::special_lookup(interp, a, slot);
     let mut b_slot = crate::classes::special_lookup(interp, b, slot);
     // != derives from __eq__ when __ne__ is absent (S-03-25/c028).
@@ -7379,7 +7396,19 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
         && name.starts_with("__")
         && name.ends_with("__")
         && name.len() > 4
-        && !matches!(name, "__class__" | "__dict__" | "__doc__" | "__new__")
+        && !matches!(
+            name,
+            "__class__" | "__dict__" | "__doc__" | "__new__"
+                // A-1 fix (attrs _create_slots_class): getattr(item,
+                // "__closure__", None) over the class dict hits a None value
+                // (an erased cell slot); CPython raises AttributeError so the
+                // default None kicks in. Serving a callable marker made the
+                // closure-rewrite loop iterate a function ->
+                // "'function' object is not iterable" (scrapy gate blocker).
+                | "__closure__" | "__code__" | "__defaults__" | "__kwdefaults__"
+                | "__globals__" | "__module__" | "__qualname__" | "__annotations__"
+                | "__wrapped__" | "__self__" | "__func__"
+        )
     {
         // Same marker shape the object-virtual path answers with (classes.rs
         // type-level arm / set instance arm) so marker-name comparisons in

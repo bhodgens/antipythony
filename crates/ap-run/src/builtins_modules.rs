@@ -6937,6 +6937,135 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                 std::fs::rename(&a, &b).map_err(|e| os_error(&a, &e))?;
                 Ok(Value::None)
             }
+            // A-1: os.stat/lstat real implementations — the names were
+            // registered but armless (silent fall-through). genericpath,
+            // pathlib, zipfile read st_* attrs off the result.
+            "stat" | "lstat" => {
+                let p = str_arg(required(args, name)?, name)?;
+                let c_path = std::ffi::CString::new(p.as_str())
+                    .map_err(|_| raise("ValueError", "embedded null byte"))?;
+                let mut st: libc::stat = unsafe { std::mem::zeroed() };
+                let rc = if name == "lstat" {
+                    unsafe { libc::lstat(c_path.as_ptr(), &mut st) }
+                } else {
+                    unsafe { libc::stat(c_path.as_ptr(), &mut st) }
+                };
+                if rc != 0 {
+                    return Err(os_error(&p, &std::io::Error::last_os_error()));
+                }
+                let mode = st.st_mode as i64;
+                let size = st.st_size as i64;
+                #[cfg(target_os = "macos")]
+                let (mtime, atime, ctime) = (
+                    st.st_mtime as f64 + st.st_mtime_nsec as f64 / 1e9,
+                    st.st_atime as f64 + st.st_atime_nsec as f64 / 1e9,
+                    st.st_ctime as f64 + st.st_ctime_nsec as f64 / 1e9,
+                );
+                #[cfg(not(target_os = "macos"))]
+                let (mtime, atime, ctime) = (
+                    st.st_mtim.tv_sec as f64 + st.st_mtim.tv_nsec as f64 / 1e9,
+                    st.st_atim.tv_sec as f64 + st.st_atim.tv_nsec as f64 / 1e9,
+                    st.st_ctim.tv_sec as f64 + st.st_ctim.tv_nsec as f64 / 1e9,
+                );
+                let fields = vec![
+                    i(mode),
+                    i(st.st_ino as i64),
+                    i(st.st_dev as i64),
+                    i(st.st_nlink as i64),
+                    i(st.st_uid as i64),
+                    i(st.st_gid as i64),
+                    i(size),
+                    Value::Float(atime.into()),
+                    Value::Float(mtime.into()),
+                    Value::Float(ctime.into()),
+                ];
+                let o = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "stat_result");
+                let attrs = [
+                    ("st_mode", i(mode)),
+                    ("st_ino", i(st.st_ino as i64)),
+                    ("st_dev", i(st.st_dev as i64)),
+                    ("st_nlink", i(st.st_nlink as i64)),
+                    ("st_uid", i(st.st_uid as i64)),
+                    ("st_gid", i(st.st_gid as i64)),
+                    ("st_size", i(size)),
+                    ("st_atime", Value::Float(atime.into())),
+                    ("st_mtime", Value::Float(mtime.into())),
+                    ("st_ctime", Value::Float(ctime.into())),
+                    ("st_atime_ns", i((atime * 1e9) as i64)),
+                    ("st_mtime_ns", i((mtime * 1e9) as i64)),
+                    ("st_ctime_ns", i((ctime * 1e9) as i64)),
+                    ("st_blksize", i(st.st_blksize as i64)),
+                    ("st_blocks", i(st.st_blocks as i64)),
+                    ("st_rdev", i(st.st_rdev as i64)),
+                    ("st_flags", i(0)),
+                    ("st_birthtime", Value::Float(atime.into())),
+                ];
+                {
+                    let mut a = o.attrs.borrow_mut();
+                    for (k, v) in attrs {
+                        let _ = a.set(s(k), v);
+                    }
+                }
+                *o.slice_parts.borrow_mut() = fields;
+                Ok(Value::Obj(o))
+            }
+            // A-1 item 5: fd I/O arms for the registered-but-armless
+            // read/write/close/lseek (pipe round-trip; subprocess chain).
+            "read" => {
+                let fd = as_int_i64(required(args, "read")?)? as i32;
+                let n = args
+                    .get(1)
+                    .and_then(|v| v.as_int())
+                    .and_then(|x| x.to_i64())
+                    .unwrap_or(4096)
+                    .max(0) as usize;
+                let mut buf = vec![0u8; n];
+                let got = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, n) };
+                if got < 0 {
+                    return Err(io_flow(std::io::Error::last_os_error()));
+                }
+                buf.truncate(got as usize);
+                Ok(Value::Bytes(Gc::new(buf)))
+            }
+            "write" => {
+                let fd = as_int_i64(required(args, "write")?)? as i32;
+                let data = bytes_arg(
+                    args.get(1)
+                        .ok_or_else(|| raise("TypeError", "write() missing required argument"))?,
+                )?;
+                let n = unsafe {
+                    libc::write(fd, data.as_ptr() as *const libc::c_void, data.len())
+                };
+                if n < 0 {
+                    return Err(io_flow(std::io::Error::last_os_error()));
+                }
+                Ok(i(n as i64))
+            }
+            "close" => {
+                let fd = as_int_i64(required(args, "close")?)? as i32;
+                let rc = unsafe { libc::close(fd) };
+                if rc != 0 {
+                    return Err(io_flow(std::io::Error::last_os_error()));
+                }
+                Ok(Value::None)
+            }
+            "lseek" => {
+                let fd = as_int_i64(required(args, "lseek")?)? as i32;
+                let off = as_int_i64(
+                    args.get(1)
+                        .ok_or_else(|| raise("TypeError", "lseek() missing required argument"))?,
+                )?;
+                let whence = args
+                    .get(2)
+                    .and_then(|v| v.as_int())
+                    .and_then(|x| x.to_i64())
+                    .unwrap_or(0) as i32;
+                let pos = unsafe { libc::lseek(fd, off, whence) };
+                if pos < 0 {
+                    return Err(io_flow(std::io::Error::last_os_error()));
+                }
+                Ok(i(pos as i64))
+            }
             // A-1 item 5: os.pipe() -> (r, w) real fds (adapted from
             // RustPython host_env/posix.rs pipe + vm/stdlib/posix.rs arm).
             "pipe" => {
@@ -6999,7 +7128,14 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
             // via utimensat (donor vm/stdlib/os.rs utime pattern, MIT).
             "utime" => {
                 let p = str_arg(required(args, "utime")?, "utime")?;
-                let times = kw(_kwargs, "times");
+                // CPython signature: utime(path, times=None, *, ns=None,
+                // dir_fd=None, follow_symlinks=True) — `times` is the 2nd
+                // POSITIONAL as well as a keyword.
+                let times = args
+                    .get(1)
+                    .filter(|v| !matches!(v, Value::None))
+                    .cloned()
+                    .or_else(|| kw(_kwargs, "times").cloned());
                 let ns = kw(_kwargs, "ns");
                 let dir_fd = kw(_kwargs, "dir_fd");
                 let follow = kw(_kwargs, "follow_symlinks");
@@ -7078,7 +7214,16 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                 }
                 Ok(Value::None)
             }
-            _ => return Err(Flow::Next),
+            _ => {
+                // F1 (mined-corpus finding): an armless-but-registered os
+                // name must raise AttributeError like CPython, never
+                // silently fall through (which terminated the script with
+                // truncated stdout, rc=0).
+                return Err(raise(
+                    "AttributeError",
+                    format!("module 'os' has no attribute '{}' (module 'os')", name),
+                ));
+            }
         }
     })();
     if r.is_err() && name == "cpu_count" {
@@ -7105,7 +7250,29 @@ fn os_environ() -> Result<Value, Flow> {
 
 /// A-1 item 5/6: raw-errno io::Error -> OSError Flow.
 fn io_flow(e: std::io::Error) -> Flow {
-    Flow::Raise(ExceptionValue::new("OSError", vec![s(e.to_string())]))
+    // Map the raw errno to CPython's OSError subclass taxonomy (same
+    // mapping os_error uses for io::ErrorKind, plus the fd-level errnos
+    // pipe/kill paths produce).
+    let class = match e.raw_os_error() {
+        Some(2) => "FileNotFoundError",
+        Some(13) => "PermissionError",
+        Some(17) => "FileExistsError",
+        Some(20) => "NotADirectoryError",
+        Some(21) => "IsADirectoryError",
+        Some(3) => "ProcessLookupError",
+        Some(4) => "InterruptedError",
+        Some(32) | Some(54) | Some(61) | Some(60) | Some(53) => "ConnectionError",
+        Some(11) | Some(35) => "BlockingIOError",
+        _ => "OSError",
+    };
+    // CPython OSError args: (errno, strerror) — OSError.errno reads args[0]
+    // (interp.rs native-attr arm), so the raw errno rides first.
+    let eno = e.raw_os_error().unwrap_or(0) as i64;
+    let strerror = errno_text(eno);
+    Flow::Raise(ExceptionValue::new(
+        class,
+        vec![i(eno), s(strerror)],
+    ))
 }
 
 fn os_error(path: &str, e: &std::io::Error) -> Flow {
@@ -7120,14 +7287,119 @@ fn os_error(path: &str, e: &std::io::Error) -> Flow {
     Flow::Raise(ExceptionValue::new(kind, vec![s(e.to_string())]))
 }
 
+/// strerror(3) texts for darwin errnos 1..=107 (host libc strings,
+/// matching CPython's os.strerror output byte-for-byte). NOT donor code:
+/// generated from the local libc, checked against RustPython's
+/// errno-strerror plumbing (vm/src/stdlib/errno.rs module_exec).
 fn errno_text(n: i64) -> String {
     match n {
         1 => "Operation not permitted",
         2 => "No such file or directory",
-        13 => "Permission denied",
-        17 => "File exists",
-        22 => "Invalid argument",
+        3 => "No such process",
         4 => "Interrupted system call",
+        5 => "Input/output error",
+        6 => "Device not configured",
+        7 => "Argument list too long",
+        8 => "Exec format error",
+        9 => "Bad file descriptor",
+        10 => "No child processes",
+        11 => "Resource deadlock avoided",
+        12 => "Cannot allocate memory",
+        13 => "Permission denied",
+        14 => "Bad address",
+        15 => "Block device required",
+        16 => "Resource busy",
+        17 => "File exists",
+        18 => "Cross-device link",
+        19 => "Operation not supported by device",
+        20 => "Not a directory",
+        21 => "Is a directory",
+        22 => "Invalid argument",
+        23 => "Too many open files in system",
+        24 => "Too many open files",
+        25 => "Inappropriate ioctl for device",
+        26 => "Text file busy",
+        27 => "File too large",
+        28 => "No space left on device",
+        29 => "Illegal seek",
+        30 => "Read-only file system",
+        31 => "Too many links",
+        32 => "Broken pipe",
+        33 => "Numerical argument out of domain",
+        34 => "Result too large",
+        35 => "Resource temporarily unavailable",
+        36 => "Operation now in progress",
+        37 => "Operation already in progress",
+        38 => "Socket operation on non-socket",
+        39 => "Destination address required",
+        40 => "Message too long",
+        41 => "Protocol wrong type for socket",
+        42 => "Protocol not available",
+        43 => "Protocol not supported",
+        44 => "Socket type not supported",
+        45 => "Operation not supported",
+        46 => "Protocol family not supported",
+        47 => "Address family not supported by protocol family",
+        48 => "Address already in use",
+        49 => "Can't assign requested address",
+        50 => "Network is down",
+        51 => "Network is unreachable",
+        52 => "Network dropped connection on reset",
+        53 => "Software caused connection abort",
+        54 => "Connection reset by peer",
+        55 => "No buffer space available",
+        56 => "Socket is already connected",
+        57 => "Socket is not connected",
+        58 => "Can't send after socket shutdown",
+        59 => "Too many references: can't splice",
+        60 => "Operation timed out",
+        61 => "Connection refused",
+        62 => "Too many levels of symbolic links",
+        63 => "File name too long",
+        64 => "Host is down",
+        65 => "No route to host",
+        66 => "Directory not empty",
+        67 => "Too many processes",
+        68 => "Too many users",
+        69 => "Disc quota exceeded",
+        70 => "Stale NFS file handle",
+        71 => "Too many levels of remote in path",
+        72 => "RPC struct is bad",
+        73 => "RPC version wrong",
+        74 => "RPC prog. not avail",
+        75 => "Program version wrong",
+        76 => "Bad procedure for program",
+        77 => "No locks available",
+        78 => "Function not implemented",
+        79 => "Inappropriate file type or format",
+        80 => "Authentication error",
+        81 => "Need authenticator",
+        82 => "Device power is off",
+        83 => "Device error",
+        84 => "Value too large to be stored in data type",
+        85 => "Bad executable (or shared library)",
+        86 => "Bad CPU type in executable",
+        87 => "Shared library version mismatch",
+        88 => "Malformed Mach-o file",
+        89 => "Operation canceled",
+        90 => "Identifier removed",
+        91 => "No message of desired type",
+        92 => "Illegal byte sequence",
+        93 => "Attribute not found",
+        94 => "Bad message",
+        95 => "EMULTIHOP (Reserved)",
+        96 => "No message available on STREAM",
+        97 => "ENOLINK (Reserved)",
+        98 => "No STREAM resources",
+        99 => "Not a STREAM",
+        100 => "Protocol error",
+        101 => "STREAM ioctl timeout",
+        102 => "Operation not supported on socket",
+        103 => "Policy not found",
+        104 => "State not recoverable",
+        105 => "Previous owner died",
+        106 => "Interface output queue is full",
+        107 => "Capabilities insufficient",
         _ => "Unknown error",
     }
     .to_string()
@@ -7584,11 +7856,38 @@ fn build_stat(_i: &crate::frame::Interpreter) -> Value {
         ("ST_ATIME", 7),
         ("ST_MTIME", 8),
         ("ST_CTIME", 9),
+        // A-1 item 4: BSD file-flag constants (UF_/SF_), adapted from
+        // RustPython crates/host_env/src/os.rs ChFlag table + _stat.rs
+        // re-exports (MIT). Values are the darwin chflags bit masks; the
+        // macOS-only SF_SETTABLE/SF_SUPPORTED/SF_SYNTHETIC composites match
+        // sys/stat.h.
+        ("UF_SETTABLE", 0x0000ffff),
+        ("UF_NODUMP", 0x00000001),
+        ("UF_IMMUTABLE", 0x00000002),
+        ("UF_APPEND", 0x00000004),
+        ("UF_OPAQUE", 0x00000008),
+        ("UF_NOUNLINK", 0x00000010),
+        ("UF_COMPRESSED", 0x00000020),
+        ("UF_TRACKED", 0x00000040),
+        ("UF_DATAVAULT", 0x00000080),
+        ("UF_HIDDEN", 0x00008000),
+        ("SF_SETTABLE", 0x3fff0000),
+        ("SF_ARCHIVED", 0x00010000),
+        ("SF_IMMUTABLE", 0x00020000),
+        ("SF_APPEND", 0x00040000),
+        ("SF_NOUNLINK", 0x00100000),
+        ("SF_SNAPSHOT", 0x00200000),
+        ("SF_FIRMLINK", 0x00800000),
+        ("SF_DATALESS", 0x40000000),
+        ("SF_SUPPORTED", 0x009f0000),
+        ("SF_SYNTHETIC", 0xc0000000),
     ] {
         ns_const(&ns, k, i(v));
     }
     for n in [
         "filemode", "S_ISDIR", "S_ISCHR", "S_ISBLK", "S_ISREG", "S_ISFIFO", "S_ISLNK", "S_ISSOCK",
+        // A-1 item 4: callable mask forms (donor _stat.rs S_IMODE/S_IFMT consts).
+        "S_IMODE", "S_IFMT",
     ] {
         fn1(&ns, "stat", n);
     }
@@ -7607,6 +7906,9 @@ pub fn call_stat(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opt
             "S_ISFIFO" => Ok(Value::Bool(m & 0o170000 == 0o010000)),
             "S_ISLNK" => Ok(Value::Bool(m & 0o170000 == 0o120000)),
             "S_ISSOCK" => Ok(Value::Bool(m & 0o170000 == 0o140000)),
+            // A-1 item 4: callable mask forms (donor _stat.rs S_IMODE/S_IFMT).
+            "S_IMODE" => Ok(i(m & 0o7777)),
+            "S_IFMT" => Ok(i(m & 0o170000)),
             _ => Err(raise("SystemError", format!("stat fn {name} unbound"))),
         }
     })();
@@ -7652,6 +7954,10 @@ fn build_errno(_i: &crate::frame::Interpreter) -> Value {
     // RustPython vm/src/stdlib/errno.rs ERROR_CODES (MIT) — names/values
     // cross-checked against the host libc (num != 0 rules out EOK).
     static ERRNO_CODES: &[(&str, i64)] = &[
+        // Alias spellings first so errorcode[N] ends on the canonical name
+        // (CPython: errorcode[35] == "EAGAIN" — the alias loses the
+        // last-writer race by design).
+        ("EWOULDBLOCK", 35),
         ("EPERM", 1),
         ("ENOENT", 2),
         ("ESRCH", 3),
@@ -7759,9 +8065,6 @@ fn build_errno(_i: &crate::frame::Interpreter) -> Value {
         ("EOWNERDEAD", 105),
         ("EQFULL", 106),
         ("ENOTCAPABLE", 107),
-        // CPython alias spelling present on posix (errno.errorcode maps the
-        // canonical name; the alias attr is part of the module surface).
-        ("EWOULDBLOCK", 35),
     ];
     let ec = PyDict::new();
     for (k, v) in ERRNO_CODES {
@@ -9161,7 +9464,15 @@ pub fn call_binascii(name: &str, args: &[Value], _kwargs: &[(String, Value)]) ->
             }
             "crc32" => {
                 let data = bytes_arg(required(args, "crc32")?)?;
-                let mut crc: u32 = 0xFFFF_FFFF;
+                // CPython: crc32(data, value) seeds the register with
+                // !value (the caller passes a previous RESULT).
+                let seed = args
+                    .get(1)
+                    .and_then(|v| v.as_int())
+                    .and_then(|n| n.to_i64())
+                    .map(|v| !(v as u32))
+                    .unwrap_or(0xFFFF_FFFF);
+                let mut crc: u32 = seed;
                 for &b in &data {
                     crc ^= b as u32;
                     for _ in 0..8 {
@@ -9226,12 +9537,13 @@ pub fn call_binascii(name: &str, args: &[Value], _kwargs: &[(String, Value)]) ->
             }
             "b2a_uu" => {
                 let data = bytes_arg(required(args, "b2a_uu")?)?;
-                // backtick=True is the CPython 3.14 default.
+                // CPython 3.14 observed default: backtick=False (zero bytes
+                // encode as spaces, not backticks).
                 let backtick = args
                     .get(1)
                     .map(truthy)
                     .or_else(|| kw(_kwargs, "backtick").map(truthy))
-                    .unwrap_or(true);
+                    .unwrap_or(false);
                 match b2a_uu(&data, backtick) {
                     Ok(out) => Ok(Value::Bytes(Gc::new(out))),
                     Err(_) => Err(raise(

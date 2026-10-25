@@ -571,3 +571,129 @@ print(sorted(u._fields) == sorted(["system", "node", "release", "version",
 "#,
     );
 }
+
+
+// ---------------------------------------------------------------------------
+// A-1 (RustPython adaptation wave 1): errno table, binascii qp/uu/hqx,
+// bytes.hex sep forms + fromhex, stat S_IMODE/S_IFMT, os.pipe/kill/utime.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn errno_full_table_differential() {
+    assert_differential(
+        r#"
+import errno
+for n in (1, 2, 13, 35, 107):
+    print(n, errno.errorcode[n], errno.errorcode[n] != "")
+print(errno.EWOULDBLOCK == errno.EAGAIN)
+print(errno.ENOTCAPABLE > 100, errno.EDEADLK == 11)
+print(len(errno.errorcode) >= 100)
+"#,
+    );
+}
+
+#[test]
+fn binascii_qp_uu_hqx_differential() {
+    assert_differential(
+        r#"
+import binascii
+data = b"hello =20 world
+"
+enc = binascii.b2a_qp(data)
+print(enc)
+print(binascii.a2b_qp(enc))
+print(binascii.a2b_qp(b"a=41b=7Ec=3Dd"))
+print(binascii.b2a_qp(b"foo bar  ", istext=True))
+print(binascii.crc_hqx(b"123456789", 0))
+u = binascii.b2a_uu(b"Hell")
+print(u)
+print(binascii.a2b_uu(u))
+print(binascii.Error.__name__, binascii.Incomplete.__name__)
+try:
+    binascii.unhexlify("zz")
+except binascii.Error as e:
+    print("caught", type(e).__name__, e)
+"#,
+    );
+}
+
+#[test]
+fn bytes_hex_sep_fromhex_differential() {
+    assert_differential(
+        r#"
+print(b"hello".hex())
+print(b"hello".hex(":"))
+print(b"hello".hex(":", 2))
+print(b"hello".hex(":", -2))
+print(b"hello".hex(":", 10))
+print(bytes.fromhex("68 65"))
+try:
+    bytes.fromhex("6")
+except ValueError as e:
+    print("VE:", e)
+try:
+    bytes.fromhex("6z")
+except ValueError as e:
+    print("VE:", e)
+import binascii
+print(binascii.hexlify(b"abc"))
+"#,
+    );
+}
+
+#[test]
+fn stat_imode_ifmt_differential() {
+    assert_differential(
+        r#"
+import stat
+print(stat.S_IMODE(0o100644))
+print(oct(stat.S_IFMT(0o100644)))
+print(stat.S_ISREG(0o100644), stat.S_ISDIR(0o040755))
+"#,
+    );
+}
+
+#[test]
+fn os_pipe_kill_utime_differential() {
+    assert_differential(
+        r#"
+import os
+r_, w_ = os.pipe()
+os.write(w_, b"ping")
+print("pipe:", os.read(r_, 4))
+os.close(r_)
+os.close(w_)
+try:
+    os.kill(999999999, 15)
+except OSError as e:
+    print("kill-err:", type(e).__name__)
+p = "/tmp/a1_gate_utime"
+open(p, "w").write("x")
+os.utime(p, ns=(1000000000, 2000000000))
+st = os.stat(p)
+print("utime:", st.st_atime, st.st_mtime)
+os.utime(p, times=(5.5, 6.25))
+st = os.stat(p)
+print("utime times:", st.st_atime, st.st_mtime)
+os.utime(p)
+print("utime now ok")
+os.unlink(p)
+"#,
+    );
+}
+
+#[test]
+fn bytearray_fromhex_error_position_differential() {
+    assert_differential(
+        r#"
+try:
+    bytearray.fromhex("ab zz cd")
+except ValueError as e:
+    print("VE:", e)
+try:
+    bytearray.fromhex("abc")
+except ValueError as e:
+    print("VE:", e)
+"#,
+    );
+}
