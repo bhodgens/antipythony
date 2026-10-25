@@ -108,7 +108,31 @@
   (interp-owned, needs leaf brief); blake2 keyed params; vendored
   select/zlib DEVIATIONS cleanup.
 
-## A-3 COMPLETE - LANDED via control-agent commit 1161466 (verified 2026-10-25)
+## A-4 REVIEW (2026-10-25) - ALL 6 ITEMS VERIFIED; COMMIT PENDING
+- Orchestrator probes (byte-exact vs python3.14): bytearray repr/type/
+  mutation/equality + UNHASHABLE (brief premise corrected: 3.14 bytearray
+  does not hash - agent implemented/pinned unhashable, correct); blake2b
+  keyed digest + keyed/salt/person + 64-byte key ValueError EXACT;
+  filemode full table (0o4755->?rwsr-xr-x, 0o2755->?rwxr-sr-x,
+  0o1755->?rwxr-xr-t, T/S variants) EXACT; uname u[0]/u[4]/u[-1]/u[:2]
+  tuple EXACT; a2b_base64 strict_mode error text EXACT (brief's
+  validate=/altchars= premise also corrected by probe: 3.14 has
+  strict_mode=/newline=); notices 190 deps exit 0; provenance
+  'OK (454 files, 88 deviated declared)' exit 0; pytest 1951/0.
+- COMMIT BLOCKED by sibling churn: the 02.09-pre agent (deleg_632d6db6)
+  holds in-flight generators.rs + interp.rs yield-from/si_value work;
+  the workspace gate shows 2 transient fails in name_resolution
+  (gate_gen_list, bug_c_yield_from_generator) that track the sibling's
+  live edits (my isolated re-check showed 6 fails -> 2 fails -> the
+  binary flipping between builds). A-4's owned files are clean of it.
+- Separation performed: stash-isolated interp/frame/lib, moved the
+  sibling's untracked generators.rs to /tmp, restored everything
+  (stash pop verified, generators.rs returned, lib.rs mod line
+  re-added, build 0 errors, yield-from works in the current tree).
+- PATH: commit A-4's owned files by explicit pathspec ONLY (never
+  interp.rs/generators.rs/frame.rs/lib.rs which the sibling owns);
+  the 2 failing tests are sibling-owned regressions to fix at ITS
+  commit gate, not A-4's.
 - Continuation agent (sa-0-c87f7258) finished all 5 items + AT_FDCWD
   re-derivation; the control agent committed the tree (1161466, mixed
   with its T2-a pytest work - A-3 hunks identified inside: exc_hier
