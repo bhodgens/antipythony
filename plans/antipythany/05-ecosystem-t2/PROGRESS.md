@@ -227,3 +227,13 @@ Gates verified this dispatch: cargo build clean; `cargo test --workspace`
 652 xfailed / 90 xpassed (>=1912 OK); corpus 270 .py cases (non-decreasing).
 NOTE: tree is shared with the A-2 impl sibling (zlib/select/hashlib waves
 in flight in builtins_modules.rs) — coordinate before committing.
+
+
+## Update 2026-10-25 (post PEP-342)
+
+PEP-342 lazy generators LANDED (commit 7c0a645): real send/throw/close/
+StopIteration(value) via corosensei stackful fibers. `import pytest` green
+(48 _pytest submodules + pluggy). pytest.main blocked at plugin-spec
+resolution ([] plugins) + int(ExitCode) - follow-up dispatched.
+s018 FLIPPED to passing. s019 ExitStack byte-exact.
+Issue #7 (PEP-342) CLOSED by this. Issues #8/#9 remain (byte-divergence).
