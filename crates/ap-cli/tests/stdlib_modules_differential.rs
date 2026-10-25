@@ -1156,3 +1156,185 @@ print("pair ok")
 "#,
     );
 }
+
+// ---------------------------------------------------------------------------
+// A-4 (campaign closeout): bytearray representation, binascii a2b/b2a_base64
+// surface, blake2 keyed params, stat.filemode setuid/setgid/sticky, os.uname
+// structseq subscripting.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a4_bytearray_representation_differential() {
+    // A-4 item 1: bytearray is a distinct type with repr bytearray(b'..'),
+    // mutable via append/extend/insert/pop/remove/reverse/clear/+=/item
+    // assign, == -comparable with bytes, UNHASHABLE (mutable buffer).
+    assert_differential(
+        r#"
+ba = bytearray(b"ab")
+print(repr(ba), type(ba).__name__)
+print(ba == b"ab", b"ab" == ba)
+try:
+    hash(ba)
+except TypeError as e:
+    print("TypeError |", e)
+try:
+    {ba: 1}
+except TypeError as e:
+    print("TypeError |", e)
+ba2 = bytearray.fromhex("ab")
+print(repr(ba2), type(ba2).__name__, ba2 == bytearray(b"\xab"))
+print(len(ba), bool(ba), bool(bytearray()))
+print(ba[0], ba[-1], repr(ba[:1]))
+ba[0] = 65
+print(repr(ba))
+ba += b"CD"
+print(repr(ba), len(ba))
+print(list(ba))
+ba.append(90); ba.extend(b"123"); ba.insert(0, 48)
+print(repr(ba))
+print(ba.pop(), repr(ba.remove(49)), repr(ba.reverse()), repr(ba.clear()))
+ba3 = bytearray(b"Hello")
+print(ba3.hex(), ba3.decode(), repr(ba3.upper()), repr(ba3.replace(b"l", b"L")))
+print(repr(bytearray(3)), repr(bytearray("hi", "utf-8")))
+print(b"ab" == bytearray(b"ab"), bytearray(b"ab") != b"x")
+print(repr(bytearray(b"a,b").split(b",")))
+print(repr(bytearray(b"ab") + b"cd"), (bytearray(b"ab") + b"cd") == bytearray(b"abcd"))
+print(repr(b"cd" + bytearray(b"ab")))
+it = iter(bytearray(b"hi"))
+print(next(it), next(it))
+print(repr(bytearray(b"hi").copy()))
+"#,
+    );
+}
+
+#[test]
+fn a4_binascii_base64_surface_differential() {
+    // A-4 item 2: a2b_base64(strict_mode=)/b2a_base64(newline=) — exact
+    // binascii.c port. The 3.14-REMOVED b64decode/b16* alias names are
+    // asserted ABSENT; the pre-3.14 validate=/altchars= kwargs raise TypeError.
+    assert_differential(
+        r#"
+import binascii
+print(binascii.b2a_base64(b"hello"))
+print(binascii.b2a_base64(b"hello", newline=False))
+print(binascii.b2a_base64(b""))
+print(binascii.a2b_base64(b"aGVsbG8="))
+print(binascii.a2b_base64(b"aGVs\nbG8="))
+try:
+    print(binascii.a2b_base64(b"aGVsbG8"))
+except Exception as e:
+    print(type(e).__name__, "|", e)
+try:
+    print(binascii.a2b_base64(b"aGVsbG8", strict_mode=True))
+except Exception as e:
+    print(type(e).__name__, "|", e)
+try:
+    binascii.a2b_base64(b"x", validate=True)
+except TypeError as e:
+    print("TypeError |", e)
+try:
+    binascii.b2a_base64(b"x", altchars=b"-_")
+except TypeError as e:
+    print("TypeError |", e)
+try:
+    binascii.b64decode
+except AttributeError:
+    print("b64decode absent")
+try:
+    binascii.b16encode
+except AttributeError:
+    print("b16encode absent")
+try:
+    print(binascii.a2b_base64(b"a", strict_mode=True))
+except Exception as e:
+    print(type(e).__name__, "|", e)
+try:
+    print(binascii.a2b_base64(b"====", strict_mode=True))
+except Exception as e:
+    print(type(e).__name__, "|", e)
+try:
+    print(binascii.a2b_base64(b"aG==", strict_mode=True))
+except Exception as e:
+    print(type(e).__name__, "|", e)
+try:
+    print(binascii.a2b_base64(b"aGVs=", strict_mode=True))
+except Exception as e:
+    print(type(e).__name__, "|", e)
+try:
+    print(binascii.a2b_base64(b"aGVsbG8==", strict_mode=True))
+except Exception as e:
+    print(type(e).__name__, "|", e)
+try:
+    print(binascii.a2b_base64(b"aGVs bG8=", strict_mode=True))
+except Exception as e:
+    print(type(e).__name__, "|", e)
+print(binascii.a2b_base64(b"aGVsbG8=!!extra=="))
+print(binascii.a2b_base64(b"!!aGVsbG8=!!"))
+print(binascii.a2b_base64(binascii.b2a_base64(b"roundtrip \x00\xff")))
+"#,
+    );
+}
+
+#[test]
+fn a4_blake2_keyed_params_differential() {
+    // A-4 item 3: key/salt/person via the RustCrypto Mac cores; error texts
+    // pinned vs python3.14. fanout/depth are validated byte-exact but their
+    // digest-level tree semantics (non-default values changing the param
+    // block) are NOT implementable on blake2 0.10 (no param hook).
+    assert_differential(
+        r#"
+import hashlib
+print(hashlib.blake2b(b"abc", key=b"secret").hexdigest())
+print(hashlib.blake2s(b"abc", key=b"secret").hexdigest())
+print(hashlib.blake2b(b"abc", key=b"k", digest_size=16).hexdigest())
+print(hashlib.blake2b(b"abc", key=b"secret", salt=b"sa", person=b"pe").hexdigest())
+print(hashlib.blake2s(b"abc", key=b"secret", salt=b"sa", person=b"pe").hexdigest())
+for kw in [
+    {"key": b"k" * 65}, {"salt": b"s" * 33}, {"person": b"p" * 17},
+    {"fanout": 300}, {"depth": 0}, {"digest_size": 0},
+]:
+    try:
+        hashlib.blake2b(b"abc", **kw)
+    except Exception as e:
+        print(type(e).__name__, "|", e)
+for kw in [{"key": b"k" * 33}, {"salt": b"s" * 17}, {"person": b"p" * 9}]:
+    try:
+        hashlib.blake2s(b"abc", **kw)
+    except Exception as e:
+        print(type(e).__name__, "|", e)
+"#,
+    );
+}
+
+#[test]
+fn a4_filemode_special_bits_differential() {
+    // A-4 item 4: setuid/setgid/sticky blend into the x positions; the 'l'
+    // symlink kind letter; sticky-without-exec 'T'.
+    assert_differential(
+        r#"
+import stat
+for mode in [0o4755, 0o2755, 0o1755, 0o6755, 0o7755, 0o1754, 0o1444, 0o777, 0o0]:
+    print(stat.filemode(mode))
+print(stat.filemode(stat.S_IFLNK | 0o777))
+print(stat.filemode(stat.S_IFDIR | 0o1777))
+print(stat.filemode(stat.S_IFCHR | 0o4620))
+"#,
+    );
+}
+
+#[test]
+fn a4_uname_structseq_subscript_differential() {
+    // A-4 item 5b: u[0]/u[4] must work (the A-3 residual) and slices are
+    // tuples; stat_result slices stay tuple-typed too.
+    assert_differential(
+        r#"
+import os
+u = os.uname()
+print(u[0], u[4], u[0] == u.sysname, u[4] == u.machine)
+print(len(u), u[:2] == (u[0], u[1]))
+print(tuple(u)[0] == u[0])
+st = os.stat("/tmp")
+print(st[0] == st.st_mode, st[:2] == (st[0], st[1]))
+"#,
+    );
+}

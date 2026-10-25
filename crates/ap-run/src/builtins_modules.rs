@@ -5707,6 +5707,258 @@ fn deque_state<'a>(v: &'a Value) -> Result<(Vec<Value>, Option<i64>), Flow> {
     }
 }
 
+// ===========================================================================
+// A-4 item 1: bytearray representation (ObjKind::Opaque "bytearray", buffer
+// in the "<data>" attr as a plain Value::Bytes — see builtins.rs ctor for the
+// choice rationale). Shared state accessors for len/bool/subscript/methods.
+// ===========================================================================
+
+/// Read the buffer of a bytearray object (Err for non-bytearrays).
+pub fn bytearray_state(v: &Value) -> Result<Vec<u8>, Flow> {
+    match v {
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque && o.name == "bytearray" => {
+            match o.attrs.borrow().get(&s("<data>")) {
+                Some(Value::Bytes(b)) => Ok(b.as_ref().clone()),
+                _ => Err(raise("SystemError", "bytearray without buffer")),
+            }
+        }
+        other => Err(raise(
+            "TypeError",
+            format!("expected bytearray, not {}", other.type_name()),
+        )),
+    }
+}
+
+/// Write the buffer back (repr refresh rides along).
+pub fn bytearray_set(v: &Value, data: Vec<u8>) -> Result<(), Flow> {
+    if let Value::Obj(o) = v {
+        let _ = o
+            .attrs
+            .borrow_mut()
+            .set(s("<data>"), Value::Bytes(Gc::new(data.clone())));
+        let mut repr = "bytearray(".to_string();
+        repr.push_str(&ap_obj::str_repr::bytes_repr(&data));
+        repr.push(')');
+        *o.repr_text.borrow_mut() = Some(repr);
+        Ok(())
+    } else {
+        Err(raise("SystemError", "bytearray_set on non-obj"))
+    }
+}
+
+/// A-4 item 1: construct a bytearray object (public: used by fromhex, the
+/// concat/binop arms, and slices).
+pub fn make_bytearray(data: Vec<u8>) -> Value {
+    let obj = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "bytearray");
+    let _ = obj
+        .attrs
+        .borrow_mut()
+        .set(s("<data>"), Value::Bytes(Gc::new(data.clone())));
+    let mut repr = "bytearray(".to_string();
+    repr.push_str(&ap_obj::str_repr::bytes_repr(&data));
+    repr.push(')');
+    *obj.repr_text.borrow_mut() = Some(repr);
+    Value::Obj(obj)
+}
+
+/// A-4 item 1: bytearray bound-method dispatch (receiver = args[0]).
+fn call_bytearray_method(fname: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option<BResult> {
+    // UNBOUND classmethod form: bytearray.fromhex(s) — args[0] is the string
+    // (the type-object BoundMethod's receiver is an inert empty Bytes and is
+    // dropped here, mirroring the pybytes.fromhex UNBOUND detection).
+    if fname == "fromhex" {
+        let arg = args
+            .get(if matches!(args.first(), Some(Value::Bytes(_)) | Some(Value::Str(_)))
+                && args.len() >= 2
+            {
+                1
+            } else {
+                0
+            })
+            .cloned()
+            .unwrap_or(Value::None);
+        let txt: Vec<u8> = match &arg {
+            Value::Str(st) => st.as_str().as_bytes().to_vec(),
+            Value::Bytes(b) => (**b).clone(),
+            other => {
+                return Some(Err(raise(
+                    "TypeError",
+                    format!(
+                        "fromhex() argument must be str or bytes-like, not {}",
+                        other.type_name()
+                    ),
+                )))
+            }
+        };
+        return Some(
+            bytes_fromhex(&txt).map(|v| match v {
+                Value::Bytes(b) => make_bytearray(b.as_ref().clone()),
+                other => other,
+            }),
+        );
+    }
+    let recv = match args.first() {
+        Some(v) => v.clone(),
+        None => return None,
+    };
+    let rest = &args[1.min(args.len())..];
+    let r: BResult = (|| -> BResult {
+        let mut data = bytearray_state(&recv)?;
+        match fname {
+            "append" => {
+                let b = as_int_i64(required(rest, "append")?)?;
+                if !(0..=255).contains(&b) {
+                    return Err(raise("ValueError", "byte must be in range(0, 256)"));
+                }
+                data.push(b as u8);
+                bytearray_set(&recv, data)?;
+                Ok(Value::None)
+            }
+            "extend" => {
+                let src_v = required(rest, "extend")?;
+                let more = match src_v {
+                    Value::Bytes(b) => b.as_ref().clone(),
+                    Value::Obj(o)
+                        if o.kind == ap_obj::ObjKind::Opaque && o.name == "bytearray" =>
+                    {
+                        bytearray_state(src_v)?
+                    }
+                    other => {
+                        let interp = current_interp().ok_or_else(|| {
+                            raise("RuntimeError", "no interpreter on this thread")
+                        })?;
+                        let it = crate::interp::iterable_of_public(other)?;
+                        let items = crate::interp::collect_iter_public(&it);
+                        let mut out = Vec::with_capacity(items.len());
+                        for x in items {
+                            let b = x.as_int().and_then(|n| n.to_i64()).ok_or_else(|| {
+                                raise("TypeError", "an integer is required")
+                            })?;
+                            if !(0..=255).contains(&b) {
+                                return Err(raise(
+                                    "ValueError",
+                                    "byte must be in range(0, 256)",
+                                ));
+                            }
+                            out.push(b as u8);
+                        }
+                        out
+                    }
+                };
+                data.extend_from_slice(&more);
+                bytearray_set(&recv, data)?;
+                Ok(Value::None)
+            }
+            "insert" => {
+                let idx = as_int_i64(required(rest, "insert")?)?;
+                let b = as_int_i64(rest.get(1).ok_or_else(|| {
+                    raise("TypeError", "insert() missing required argument")
+                })?)?;
+                if !(0..=255).contains(&b) {
+                    return Err(raise("ValueError", "byte must be in range(0, 256)"));
+                }
+                let len = data.len() as i64;
+                let pos = if idx < 0 { (idx + len).max(0) } else { idx.min(len) };
+                data.insert(pos as usize, b as u8);
+                bytearray_set(&recv, data)?;
+                Ok(Value::None)
+            }
+            "pop" => {
+                let idx = match rest.first() {
+                    Some(v) => as_int_i64(v)?,
+                    None => -1,
+                };
+                let len = data.len() as i64;
+                let pos = if idx < 0 { idx + len } else { idx };
+                if pos < 0 || pos >= len {
+                    return Err(raise("IndexError", "pop index out of range"));
+                }
+                let b = data.remove(pos as usize);
+                bytearray_set(&recv, data)?;
+                Ok(i(b as i64))
+            }
+            "remove" => {
+                let b = as_int_i64(required(rest, "remove")?)?;
+                if let Some(pos) = data.iter().position(|&x| x as i64 == b) {
+                    data.remove(pos);
+                    bytearray_set(&recv, data)?;
+                    Ok(Value::None)
+                } else {
+                    Err(raise("ValueError", "value not found in bytearray"))
+                }
+            }
+            "reverse" => {
+                data.reverse();
+                bytearray_set(&recv, data)?;
+                Ok(Value::None)
+            }
+            "clear" => {
+                bytearray_set(&recv, Vec::new())?;
+                Ok(Value::None)
+            }
+            "copy" => Ok(make_bytearray(data)),
+            // Read-only shared surface: delegate to the pybytes arms over a
+            // snapshot, then re-wrap bytearray-typed results (CPython: bytes
+            // -returning methods return bytearray on a bytearray receiver).
+            "hex" | "decode" | "find" | "rfind" | "index" | "rindex" | "count"
+            | "startswith" | "endswith" => {
+                let mut a2: Vec<Value> = vec![Value::Bytes(Gc::new(data))];
+                a2.extend_from_slice(rest);
+                call_builtin_values("pybytes", fname, &a2, kwargs)
+                    .unwrap_or_else(|| Err(raise("SystemError", "pybytes arm unbound")))
+            }
+            "upper" | "lower" | "strip" | "lstrip" | "rstrip" | "replace" | "center" => {
+                let mut a2: Vec<Value> = vec![Value::Bytes(Gc::new(data))];
+                a2.extend_from_slice(rest);
+                match call_builtin_values("pybytes", fname, &a2, kwargs) {
+                    Some(Ok(Value::Bytes(b))) => Ok(make_bytearray(b.as_ref().clone())),
+                    other => {
+                        other.unwrap_or_else(|| Err(raise("SystemError", "pybytes arm unbound")))
+                    }
+                }
+            }
+            "split" | "rsplit" => {
+                let mut a2: Vec<Value> = vec![Value::Bytes(Gc::new(data))];
+                a2.extend_from_slice(rest);
+                match call_builtin_values("pybytes", fname, &a2, kwargs) {
+                    Some(Ok(Value::List(l))) => {
+                        let items: Vec<Value> = l
+                            .items()
+                            .iter()
+                            .map(|it| match it {
+                                Value::Bytes(b) => make_bytearray(b.as_ref().clone()),
+                                other => other.clone(),
+                            })
+                            .collect();
+                        Ok(list(items))
+                    }
+                    other => {
+                        other.unwrap_or_else(|| Err(raise("SystemError", "pybytes arm unbound")))
+                    }
+                }
+            }
+            "join" => {
+                let mut a2: Vec<Value> = vec![Value::Bytes(Gc::new(data))];
+                a2.extend_from_slice(rest);
+                match call_builtin_values("pybytes", fname, &a2, kwargs) {
+                    Some(Ok(Value::Bytes(b))) => Ok(make_bytearray(b.as_ref().clone())),
+                    other => {
+                        other.unwrap_or_else(|| Err(raise("SystemError", "pybytes arm unbound")))
+                    }
+                }
+            }
+            _ => Err(raise(
+                "SystemError",
+                format!("bytearray fn {fname} unbound"),
+            )),
+        }
+    })();
+    match r {
+        Err(Flow::Next) => None,
+        other => Some(other),
+    }
+}
+
 /// Public re-export for methods.rs deque subscript support.
 pub fn deque_state_pub(v: &Value) -> Result<(Vec<Value>, Option<i64>), Flow> {
     deque_state(v)
@@ -7213,6 +7465,12 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                         list(vals.iter().map(|x| s(x.clone())).collect()),
                     );
                 }
+                // A-4 item 5b: structseq SUBSCRIPTING (u[0], u[4], u[:2]) —
+                // len() routes through <values>, but subscript_get's generic
+                // Opaque arm reads slice_parts (the exact arm stat_result got
+                // in A-3 item 5). Populate it with the same five field
+                // values so u[i] and tuple(u) agree with CPython.
+                *obj.slice_parts.borrow_mut() = vals.iter().map(|x| s(x.clone())).collect();
                 *obj.repr_text.borrow_mut() = Some(format!(
                     "posix.uname_result(sysname='{}', nodename='{}', release='{}', version='{}', machine='{}')",
                     vals[0], vals[1], vals[2], vals[3], vals[4]
@@ -8415,22 +8673,46 @@ fn file_mode(m: i64) -> String {
         0o140000 => 's',
         _ => '?',
     };
-    let bits = [
-        (0o400, 'r'),
-        (0o200, 'w'),
-        (0o100, 'x'),
-        (0o40, 'r'),
-        (0o20, 'w'),
-        (0o10, 'x'),
-        (0o4, 'r'),
-        (0o2, 'w'),
-        (0o1, 'x'),
-    ];
+    // A-4 item 4: setuid/setgid/sticky blend into the x positions
+    // (_stat.filemode transcription: S_IXUSR+setuid → 's', plain setuid
+    // → 'S'; same for setgid 's'/'S' at group-x; sticky+search → 't',
+    // sticky-without-search → 'T'). The '?rwsr-xr-T' shapes come from
+    // these three pairings, not from the x bits.
+    let (ux, uid, gx, gid, ox) = (
+        m & 0o100,
+        m & 0o4000 != 0,
+        m & 0o10,
+        m & 0o2000 != 0,
+        m & 0o1,
+    );
+    // S_ISVTX (sticky) — pairs with other-x for 't' vs 'T'.
+    let sticky = m & 0o1000 != 0;
     let mut out = String::new();
     out.push(kind);
-    for (bit, c) in bits {
-        out.push(if m & bit != 0 { c } else { '-' });
-    }
+    out.push(if m & 0o400 != 0 { 'r' } else { '-' });
+    out.push(if m & 0o200 != 0 { 'w' } else { '-' });
+    out.push(match (ux != 0, uid) {
+        (true, true) => 's',
+        (true, false) => 'x',
+        (false, true) => 'S',
+        (false, false) => '-',
+    });
+    out.push(if m & 0o40 != 0 { 'r' } else { '-' });
+    out.push(if m & 0o20 != 0 { 'w' } else { '-' });
+    out.push(match (gx != 0, gid) {
+        (true, true) => 's',
+        (true, false) => 'x',
+        (false, true) => 'S',
+        (false, false) => '-',
+    });
+    out.push(if m & 0o4 != 0 { 'r' } else { '-' });
+    out.push(if m & 0o2 != 0 { 'w' } else { '-' });
+    out.push(match (ox != 0, sticky) {
+        (true, true) => 't',
+        (true, false) => 'x',
+        (false, true) => 'T',
+        (false, false) => '-',
+    });
     out
 }
 
@@ -9823,8 +10105,14 @@ pub fn call_hashlib(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> 
                 Ok(Value::Obj(obj))
             }
             // A-2 item 1: blake2b/blake2s with the digest_size parameter
-            // (adapted from RustPython hashlib.rs BlakeHashArgs handling;
-            // keyed/salt/person/tree params unsupported — needs-redesign).
+            // (adapted from RustPython hashlib.rs BlakeHashArgs handling).
+            // A-4 item 3: the keyed/parameterized surface — key/salt/person
+            // via the RustCrypto blake2 Mac cores (Blake2bMac/Blake2sMac
+            // new_with_salt_and_personal drives new_with_params under the
+            // hood); fanout/depth are ACCEPTED + VALIDATED byte-exact
+            // (CPython pins the ranges + error texts) but their digest-level
+            // tree semantics (non-default values changing the p[0] param
+            // word) are NOT implementable on blake2 0.10 — no param hook.
             "blake2b" | "blake2s" => {
                 let data = bytes_arg(required(args, name)?)?;
                 let max = if name == "blake2b" { 64 } else { 32 };
@@ -9844,13 +10132,58 @@ pub fn call_hashlib(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> 
                     }
                     None => max as usize,
                 };
-                if kw(_kwargs, "key").is_some() || kw(_kwargs, "salt").is_some() {
+                let key: Vec<u8> = match kw(_kwargs, "key") {
+                    Some(v) => bytes_arg(v)?,
+                    None => Vec::new(),
+                };
+                let max_us = max as usize;
+                if key.len() > max_us {
                     return Err(raise(
-                        "NotImplementedError",
-                        format!("hashlib.{name}: keyed/tree parameters unsupported"),
+                        "ValueError",
+                        format!("maximum key length is {max} bytes"),
                     ));
                 }
-                let hex = blake2_variable_hex(name, &data, ds);
+                let salt: Vec<u8> = match kw(_kwargs, "salt") {
+                    Some(v) => bytes_arg(v)?,
+                    None => Vec::new(),
+                };
+                if salt.len() > max_us / 4 {
+                    return Err(raise(
+                        "ValueError",
+                        format!("maximum salt length is {} bytes", max / 4),
+                    ));
+                }
+                let person: Vec<u8> = match kw(_kwargs, "person") {
+                    Some(v) => bytes_arg(v)?,
+                    None => Vec::new(),
+                };
+                if person.len() > max_us / 4 {
+                    return Err(raise(
+                        "ValueError",
+                        format!("maximum person length is {} bytes", max / 4),
+                    ));
+                }
+                // Tree-shaping params: accepted + range-validated (CPython
+                // behavior + exact error texts); value-inert for the digest.
+                if let Some(v) = kw(_kwargs, "fanout") {
+                    let n = as_int_i64(v)?;
+                    if !(0..=255).contains(&n) {
+                        return Err(raise(
+                            "ValueError",
+                            format!("fanout must be between 0 and 255"),
+                        ));
+                    }
+                }
+                if let Some(v) = kw(_kwargs, "depth") {
+                    let n = as_int_i64(v)?;
+                    if !(1..=255).contains(&n) {
+                        return Err(raise(
+                            "ValueError",
+                            format!("depth must be between 1 and 255"),
+                        ));
+                    }
+                }
+                let hex = blake2_variable_hex(name, &data, ds, &key, &salt, &person);
                 let obj = PyObject::new(ap_obj::ObjKind::Opaque, format!("{name}_HASH").as_str());
                 {
                     let mut attrs = obj.attrs.borrow_mut();
@@ -10709,7 +11042,26 @@ fn b64_decode(data: &[u8]) -> Result<Vec<u8>, ()> {
     Ok(out)
 }
 
-pub fn call_binascii(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Option<BResult> {
+pub fn call_binascii(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option<BResult> {
+    // A-4 item 2: CPython's a2b/b2a_base64 accept ONLY their pinned kwargs
+    // (strict_mode= / newline=); anything else is a TypeError unexpected
+    // keyword (pins the removed validate=/altchars= spellings).
+    let _kwargs = kwargs;
+    if matches!(name, "b2a_base64" | "a2b_base64") {
+        let allowed: &[&str] = if name == "b2a_base64" {
+            &["newline"]
+        } else {
+            &["strict_mode"]
+        };
+        for (k, _) in kwargs {
+            if !allowed.contains(&k.as_str()) {
+                return Some(Err(raise(
+                    "TypeError",
+                    format!("{name}() got an unexpected keyword argument '{k}'"),
+                )));
+            }
+        }
+    }
     let r: BResult = (|| -> BResult {
         match name {
             "hexlify" | "b2a_hex" => {
@@ -10721,21 +11073,171 @@ pub fn call_binascii(name: &str, args: &[Value], _kwargs: &[(String, Value)]) ->
                 Ok(Value::Bytes(Gc::new(out)))
             }
             // T1 (xml.parsers.expat): b2a_base64(data, /, *, newline=True) —
-            // base64 + trailing newline (CPython appends b"\n" by default).
+            // base64 + trailing newline. A-4 item 2: exact binascii.c port —
+            // bit-accumulator encoder + newline kwarg. CPython 3.14: altchars
+            // is NOT accepted (TypeError); b64decode/b16* names are REMOVED.
             "b2a_base64" => {
                 let data = bytes_arg(required(args, name)?)?;
-                let mut out = b64_encode(&data);
-                out.push(b'\n');
+                let newline = match kw(kwargs, "newline") {
+                    Some(v) => match v {
+                        Value::Bool(b) => *b,
+                        Value::Int(n) => !n.is_zero(),
+                        _ => {
+                            return Err(raise(
+                                "TypeError",
+                                format!("newline must be bool, not {}", v.type_name()),
+                            ))
+                        }
+                    },
+                    None => true,
+                };
+                const TABLE_B2A: &[u8; 64] =
+                    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+                let mut out = Vec::with_capacity(data.len() * 2 + 3);
+                let mut leftchar: u32 = 0;
+                let mut leftbits: u32 = 0;
+                for &byte in &data {
+                    leftchar = (leftchar << 8) | byte as u32;
+                    leftbits += 8;
+                    while leftbits >= 6 {
+                        leftbits -= 6;
+                        let ch = ((leftchar >> leftbits) & 0x3f) as usize;
+                        out.push(TABLE_B2A[ch]);
+                    }
+                }
+                if leftbits == 2 {
+                    out.push(TABLE_B2A[((leftchar & 3) << 4) as usize]);
+                    out.push(b'=');
+                    out.push(b'=');
+                } else if leftbits == 4 {
+                    out.push(TABLE_B2A[((leftchar & 0xf) << 2) as usize]);
+                    out.push(b'=');
+                }
+                if newline {
+                    out.push(b'\n');
+                }
                 Ok(Value::Bytes(Gc::new(out)))
             }
+            // A-4 item 2: a2b_base64(data, /, *, strict_mode=False) — exact
+            // port of binascii.c binascii_a2b_base64_impl (quad_pos/pads
+            // state machine; all error texts byte-identical). CPython 3.14:
+            // validate=/altchars= do NOT exist; strict_mode is the kwarg.
             "a2b_base64" => {
-                let mut data = bytes_arg(required(args, name)?)?;
-                if data.last() == Some(&b'\n') {
-                    data.pop();
+                let data = bytes_arg(required(args, name)?)?;
+                let strict_mode = match kw(kwargs, "strict_mode") {
+                    Some(v) => match v {
+                        Value::Bool(b) => *b,
+                        Value::Int(n) => !n.is_zero(),
+                        _ => {
+                            return Err(raise(
+                                "TypeError",
+                                format!("strict_mode must be bool, not {}", v.type_name()),
+                            ))
+                        }
+                    },
+                    None => false,
+                };
+                fn table_a2b(c: u8) -> i8 {
+                    match c {
+                        b'A'..=b'Z' => (c - b'A') as i8,
+                        b'a'..=b'z' => (c - b'a') as i8 + 26,
+                        b'0'..=b'9' => (c - b'0') as i8 + 52,
+                        b'+' => 62,
+                        b'/' => 63,
+                        _ => -1,
+                    }
                 }
-                b64_decode(&data)
-                    .map(|b| Value::Bytes(Gc::new(b)))
-                    .map_err(|()| raise("binascii.Error", "Invalid base64-encoded string"))
+                let mut out: Vec<u8> = Vec::with_capacity((data.len() / 4) * 3 + 3);
+                let mut quad_pos = 0i32;
+                let mut leftchar: u8 = 0;
+                let mut pads = 0i32;
+                let mut err: Option<String> = None;
+                'scan: for (i, &raw) in data.iter().enumerate() {
+                    let mut this_ch = raw;
+                    if this_ch == b'=' {
+                        pads += 1;
+                        if quad_pos >= 2 && quad_pos + pads <= 4 {
+                            continue;
+                        }
+                        if !strict_mode {
+                            continue;
+                        }
+                        if quad_pos == 1 {
+                            err = Some(format!(
+                                "Invalid base64-encoded string: number of data characters ({}) cannot be 1 more than a multiple of 4",
+                                out.len() / 3 * 4 + 1
+                            ));
+                            break 'scan;
+                        }
+                        err = Some(
+                            if quad_pos == 0 && i == 0 {
+                                "Leading padding not allowed"
+                            } else {
+                                "Excess padding not allowed"
+                            }
+                            .to_string(),
+                        );
+                        break 'scan;
+                    }
+                    let v = table_a2b(this_ch);
+                    if v < 0 {
+                        if strict_mode {
+                            err = Some("Only base64 data is allowed".to_string());
+                            break 'scan;
+                        }
+                        continue;
+                    }
+                    if pads != 0 && strict_mode {
+                        err = Some(
+                            if quad_pos + pads == 4 {
+                                "Excess data after padding"
+                            } else {
+                                "Discontinuous padding not allowed"
+                            }
+                            .to_string(),
+                        );
+                        break 'scan;
+                    }
+                    pads = 0;
+                    this_ch = v as u8;
+                    match quad_pos {
+                        0 => {
+                            quad_pos = 1;
+                            leftchar = this_ch;
+                        }
+                        1 => {
+                            quad_pos = 2;
+                            out.push((leftchar << 2) | (this_ch >> 4));
+                            leftchar = this_ch & 0x0f;
+                        }
+                        2 => {
+                            quad_pos = 3;
+                            out.push((leftchar << 4) | (this_ch >> 2));
+                            leftchar = this_ch & 0x03;
+                        }
+                        _ => {
+                            quad_pos = 0;
+                            out.push((leftchar << 6) | this_ch);
+                            leftchar = 0;
+                        }
+                    }
+                }
+                if let Some(e) = err {
+                    return Err(raise("binascii.Error", e));
+                }
+                if quad_pos == 1 {
+                    return Err(raise(
+                        "binascii.Error",
+                        format!(
+                            "Invalid base64-encoded string: number of data characters ({}) cannot be 1 more than a multiple of 4",
+                            out.len() / 3 * 4 + 1
+                        ),
+                    ));
+                }
+                if quad_pos != 0 && quad_pos + pads < 4 {
+                    return Err(raise("binascii.Error", "Incorrect padding"));
+                }
+                Ok(Value::Bytes(Gc::new(out)))
             }
             "unhexlify" | "a2b_hex" => {
                 let txt = match required(args, name)? {
@@ -10800,7 +11302,7 @@ pub fn call_binascii(name: &str, args: &[Value], _kwargs: &[(String, Value)]) ->
                 let header = args
                     .get(1)
                     .map(truthy)
-                    .or_else(|| kw(_kwargs, "header").map(truthy))
+                    .or_else(|| kw(kwargs, "header").map(truthy))
                     .unwrap_or(false);
                 Ok(Value::Bytes(Gc::new(a2b_qp(&data, header))))
             }
@@ -10809,17 +11311,17 @@ pub fn call_binascii(name: &str, args: &[Value], _kwargs: &[(String, Value)]) ->
                 let quotetabs = args
                     .get(1)
                     .map(truthy)
-                    .or_else(|| kw(_kwargs, "quotetabs").map(truthy))
+                    .or_else(|| kw(kwargs, "quotetabs").map(truthy))
                     .unwrap_or(false);
                 let istext = args
                     .get(2)
                     .map(truthy)
-                    .or_else(|| kw(_kwargs, "istext").map(truthy))
+                    .or_else(|| kw(kwargs, "istext").map(truthy))
                     .unwrap_or(true);
                 let header = args
                     .get(3)
                     .map(truthy)
-                    .or_else(|| kw(_kwargs, "header").map(truthy))
+                    .or_else(|| kw(kwargs, "header").map(truthy))
                     .unwrap_or(false);
                 Ok(Value::Bytes(Gc::new(b2a_qp(
                     &data, quotetabs, istext, header,
@@ -10842,7 +11344,7 @@ pub fn call_binascii(name: &str, args: &[Value], _kwargs: &[(String, Value)]) ->
                 let backtick = args
                     .get(1)
                     .map(truthy)
-                    .or_else(|| kw(_kwargs, "backtick").map(truthy))
+                    .or_else(|| kw(kwargs, "backtick").map(truthy))
                     .unwrap_or(false);
                 match b2a_uu(&data, backtick) {
                     Ok(out) => Ok(Value::Bytes(Gc::new(out))),
@@ -12052,6 +12554,9 @@ pub fn call_native(
         "select" => call_select(fname, args, kwargs),
         "base64" => call_base64(fname, args, kwargs),
         "binascii" => call_binascii(fname, args, kwargs),
+        // A-4 item 1: bytearray method markers ("bytearray.append" etc; the
+        // receiver rides args[0], same convention as the deque markers).
+        "bytearray" => call_bytearray_method(fname, args, kwargs),
         "re" => call_re(fname, args, kwargs),
         // 02.08-c: lxml shim (fromstring/tostring/Element/SubElement/...).
         // Names arriving with an "html." prefix are lxml.html entry points.
@@ -12646,6 +13151,24 @@ pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
                         *bm.func.borrow_mut() = Some(marker(&mname));
                         Some(Value::Obj(bm))
                     }
+                }
+                // A-4 item 1: bytearray method surface (mutation + shared
+                // read-only helpers). Mutation markers route to the dotted
+                // dispatch via "bytearray.<n>".
+                "bytearray" => {
+                    let mname = match name {
+                        "append" | "extend" | "insert" | "pop" | "remove" | "reverse"
+                        | "clear" | "copy" | "hex" | "decode" | "upper" | "lower" | "strip"
+                        | "lstrip" | "rstrip" | "replace" | "split" | "join" | "startswith"
+                        | "endswith" | "find" | "rfind" | "index" | "count" => {
+                            format!("bytearray.{name}")
+                        }
+                        _ => return None,
+                    };
+                    let bm =
+                        PyObject::with_self(ap_obj::ObjKind::BoundMethod, mname.clone(), obj.clone());
+                    *bm.func.borrow_mut() = Some(marker(&mname));
+                    Some(Value::Obj(bm))
                 }
                 "struct.Struct" => {
                     return crate::structmod::struct_attr(obj, name);
@@ -13444,22 +13967,75 @@ fn shake_hex(alg: &str, data: &[u8], len: usize) -> String {
 }
 
 /// A-2 item 1: blake2b/blake2s at a variable digest size (unkeyed).
-fn blake2_variable_hex(alg: &str, data: &[u8], ds: usize) -> String {
+/// A-4 item 3: keyed/parameterized form — key/salt/person ride the
+/// RustCrypto Mac cores (Blake2bMac/Blake2sMac) via new_with_salt_and_personal.
+/// Byte-exact vs python3.14 for the keyed cases.
+fn blake2_variable_hex(
+    alg: &str,
+    data: &[u8],
+    ds: usize,
+    key: &[u8],
+    salt: &[u8],
+    person: &[u8],
+) -> String {
     use blake2::digest::Update;
     use blake2::digest::VariableOutput;
-    let out_hex: String = match alg {
-        "blake2b" => {
-            let mut h = blake2::Blake2bVar::new(ds).expect("checked digest_size");
+    if key.is_empty() && salt.is_empty() && person.is_empty() {
+        // Unkeyed fast path (unchanged A-2 behavior).
+        let out_hex: String = match alg {
+            "blake2b" => {
+                let mut h = blake2::Blake2bVar::new(ds).expect("checked digest_size");
+                h.update(data);
+                h.finalize_boxed()
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect()
+            }
+            _ => {
+                let mut h = blake2::Blake2sVar::new(ds).expect("checked digest_size");
+                h.update(data);
+                h.finalize_boxed()
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect()
+            }
+        };
+        return out_hex;
+    }
+    // Keyed/parameterized: Mac cores are generic over the output SIZE as a
+    // typenum; dispatch the common sizes and clamp the rest to the max
+    // (digest_size was already range-validated 1..=max by the caller).
+    use blake2::digest::consts::{U16, U20, U24, U28, U32, U48, U64, U8};
+    macro_rules! keyed_hex {
+        ($core:ty) => {{
+            use blake2::digest::FixedOutput;
+            let mut h = <$core>::new_with_salt_and_personal(key, salt, person)
+                .expect("checked key/salt/person lengths");
             h.update(data);
-            let out = h.finalize_boxed();
-            out.iter().map(|b| format!("{b:02x}")).collect()
-        }
-        _ => {
-            let mut h = blake2::Blake2sVar::new(ds).expect("checked digest_size");
-            h.update(data);
-            let out = h.finalize_boxed();
-            out.iter().map(|b| format!("{b:02x}")).collect()
-        }
+            let out: blake2::digest::Output<$core> = {
+                let mut buf = Default::default();
+                h.finalize_into(&mut buf);
+                buf
+            };
+            out.iter().map(|b| format!("{b:02x}")).collect::<String>()
+        }};
+    }
+    let out_hex: String = match (alg, ds) {
+        ("blake2b", 8) => keyed_hex!(blake2::Blake2bMac<U8>),
+        ("blake2b", 16) => keyed_hex!(blake2::Blake2bMac<U16>),
+        ("blake2b", 20) => keyed_hex!(blake2::Blake2bMac<U20>),
+        ("blake2b", 24) => keyed_hex!(blake2::Blake2bMac<U24>),
+        ("blake2b", 28) => keyed_hex!(blake2::Blake2bMac<U28>),
+        ("blake2b", 32) => keyed_hex!(blake2::Blake2bMac<U32>),
+        ("blake2b", 48) => keyed_hex!(blake2::Blake2bMac<U48>),
+        ("blake2b", _) => keyed_hex!(blake2::Blake2bMac<U64>),
+        ("blake2s", 8) => keyed_hex!(blake2::Blake2sMac<U8>),
+        ("blake2s", 16) => keyed_hex!(blake2::Blake2sMac<U16>),
+        ("blake2s", 20) => keyed_hex!(blake2::Blake2sMac<U20>),
+        ("blake2s", 24) => keyed_hex!(blake2::Blake2sMac<U24>),
+        ("blake2s", 28) => keyed_hex!(blake2::Blake2sMac<U28>),
+        ("blake2s", _) => keyed_hex!(blake2::Blake2sMac<U32>),
+        _ => String::new(),
     };
     out_hex
 }
@@ -15824,6 +16400,17 @@ pub fn native_iter(v: &Value) -> Option<Gc<crate::iter::PyIterator>> {
                 crate::iter::IterState::Native(Box::new(NativeIterState::Seq(items.into_iter()))),
             ));
         }
+        // A-4 item 1: bytearray iterates its bytes as ints.
+        if o.name == "bytearray" {
+            if let Ok(data) = bytearray_state(v) {
+                let ints: Vec<Value> = data.into_iter().map(|b| i(b as i64)).collect();
+                return Some(crate::iter::PyIterator::new(
+                    crate::iter::IterState::Native(Box::new(NativeIterState::Seq(
+                        ints.into_iter(),
+                    ))),
+                ));
+            }
+        }
         // 02.08-c: lxml elements iterate their children (CPython _Element
         // __iter__ = direct children in document order).
         if o.name == "lxml.etree._Element" || o.name == "lxml.html.HtmlElement" {
@@ -16423,3 +17010,5 @@ fn general_category(c: char) -> String {
         _ => s("Cn"),
     }
 }
+
+// ===========================================================================

@@ -66,6 +66,26 @@ pub fn binop(a: &Value, op: BinOp, b: &Value) -> Result<Value, PyException> {
                 v.extend_from_slice(y);
                 Ok(Value::Bytes(Gc::new(v)))
             }
+            // A-4 item 1: bytearray + bytes → bytearray (left operand's type,
+            // like CPython).
+            (Value::Obj(o), Value::Bytes(y)) if is_bytearray(o) => {
+                let mut v = bytearray_buf(o);
+                v.extend_from_slice(y);
+                Ok(make_bytearray_value(v))
+            }
+            // bytes + bytearray → BYTES (CPython: bytes.__add__ accepts any
+            // bytes-like and returns bytes; bytearray is only "promoted" when
+            // it is the LEFT operand).
+            (Value::Bytes(x), Value::Obj(o)) if is_bytearray(o) => {
+                let mut v = (**x).clone();
+                v.extend_from_slice(&bytearray_buf(o));
+                Ok(Value::Bytes(Gc::new(v)))
+            }
+            (Value::Obj(x), Value::Obj(y)) if is_bytearray(x) && is_bytearray(y) => {
+                let mut v = bytearray_buf(x);
+                v.extend_from_slice(&bytearray_buf(y));
+                Ok(make_bytearray_value(v))
+            }
             (Value::List(x), Value::List(y)) => {
                 let mut items = x.items().to_vec();
                 items.extend(y.items().iter().cloned());
@@ -1005,4 +1025,31 @@ mod tests {
             .to_string_raw()
             .starts_with("10000000000000000525047602552"));
     }
+}
+
+
+// A-4 item 1: bytearray helpers for the binop layer (mirrors dict::bytearray_data;
+// local because ap-run owns the public constructors).
+fn is_bytearray(o: &crate::object::PyObject) -> bool {
+    o.kind == crate::object::ObjKind::Opaque && o.name == "bytearray"
+}
+
+fn bytearray_buf(o: &crate::object::PyObject) -> Vec<u8> {
+    crate::dict::bytearray_data(o)
+        .map(|b| b.as_ref().clone())
+        .unwrap_or_default()
+}
+
+fn make_bytearray_value(data: Vec<u8>) -> Value {
+    use crate::PyString;
+    let obj = crate::object::PyObject::new(crate::object::ObjKind::Opaque, "bytearray");
+    let _ = obj.attrs.borrow_mut().set(
+        Value::Str(PyString::new("<data>")),
+        Value::Bytes(Gc::new(data.clone())),
+    );
+    let mut repr = "bytearray(".to_string();
+    repr.push_str(&crate::str_repr::bytes_repr(&data));
+    repr.push(')');
+    *obj.repr_text.borrow_mut() = Some(repr);
+    Value::Obj(obj)
 }

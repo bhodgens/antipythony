@@ -68,6 +68,14 @@ pub fn py_hash(v: &Value) -> Result<i64, PyException> {
         // Exception: weakref tokens hash BY TARGET (CPython ref semantics —
         // refs to the same object dedupe in sets/dicts; WeakSet/WKD keys).
         Value::Obj(o) => {
+            // A-4 item 1: bytearray is UNHASHABLE in CPython (mutable buffer)
+            // — hash(bytearray(b'a')) raises TypeError exactly like list/dict.
+            if o.kind == crate::object::ObjKind::Opaque
+                && o.name == "bytearray"
+                && crate::dict::bytearray_data(o).is_some()
+            {
+                return Err(PyException::unhashable("bytearray"));
+            }
             if let Some(t) = crate::value::weakref_target_addr(o) {
                 return Ok(hash_i64(t as i64));
             }

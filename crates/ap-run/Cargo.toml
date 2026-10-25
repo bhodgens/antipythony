@@ -35,6 +35,7 @@ flate2 = "1"
 # T1 (w3lib.url): native unicodedata.normalize (NFC/NFD/NFKC/NFD) for the
 # vendored URL-cleanup path. Crate is in the offline registry cache.
 unicode-normalization = "0.1"
+corosensei = "0.3.4"
 
 # A-1 (RustPython adaptation wave 1): os.pipe/pipe2, os.kill/killpg,
 # utimensat-based os.utime — direct libc syscalls, following the donor's

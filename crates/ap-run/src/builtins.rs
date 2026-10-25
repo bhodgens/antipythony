@@ -183,6 +183,18 @@ pub fn builtin_len(args: &[Value]) -> BResult {
                     }
                 }
             }
+            ap_obj::ObjKind::Opaque if o.name == "bytearray" => {
+                // A-4 item 1: len(bytearray) over the <data> buffer.
+                match o.attrs.borrow().get(&Value::Str(PyString::new("<data>"))) {
+                    Some(Value::Bytes(b)) => b.len(),
+                    _ => {
+                        return Err(raise(
+                            "TypeError",
+                            "object of type 'bytearray' has no len()",
+                        ))
+                    }
+                }
+            }
             ap_obj::ObjKind::Opaque => {
                 // 02.08-lite native types (struct_time, uname_result) expose
                 // their field tuple under the <values> key.
@@ -453,6 +465,19 @@ pub fn builtin_bool(args: &[Value]) -> BResult {
             )
             .unwrap_or_else(|| Ok(Value::Bool(true)));
         }
+        // A-4 item 1: bytearray truthiness follows the buffer length.
+        if o.kind == ap_obj::ObjKind::Opaque && o.name == "bytearray" {
+            let n = o
+                .attrs
+                .borrow()
+                .get(&Value::Str(PyString::new("<data>")))
+                .map(|v| match v {
+                    Value::Bytes(b) => !b.is_empty(),
+                    _ => false,
+                })
+                .unwrap_or(false);
+            return Ok(Value::Bool(n));
+        }
         // collections.deque: live truthiness from the <items> backing list
         // (contextlib.ExitStack does `while self._exit_callbacks:`).
         if o.kind == ap_obj::ObjKind::Opaque && o.name == "deque" {
@@ -482,6 +507,37 @@ pub fn builtin_list(args: &[Value]) -> BResult {
     match args.first() {
         None => Ok(Value::List(PyList::new())),
         Some(v) => {
+            // PEP-342: generators must drain LAZILY through the executor
+            // (iterable_of would hand back the lazy anchor; collect() on it
+            // sees an empty Seq). Drive gen pulls directly.
+            if let Value::Obj(o) = v {
+                if o.kind == ap_obj::ObjKind::Generator {
+                    if let Some(id) = *o.gen_id.borrow() {
+                        let interp = crate::builtins_modules::current_interp();
+                        let Some(interp) = interp else {
+                            // No interpreter on this thread: legacy path.
+                            let it = iterable_of(v)?;
+                            let items = crate::iter::collect(&it);
+                            return Ok(Value::List(PyList::from_vec(items)));
+                        };
+                        let mut items = Vec::new();
+                        loop {
+                            let r = if interp.generators.borrow().contains_key(&id) {
+                                let rc = interp.rc();
+                                crate::interp::gen_pull_public(&rc, id)
+                            } else {
+                                break Ok(());
+                            };
+                            match r {
+                                Ok(Some(val)) => items.push(val),
+                                Ok(None) => break Ok(()),
+                                Err(f) => break Err(f),
+                            }
+                        }?;
+                        return Ok(Value::List(PyList::from_vec(items)));
+                    }
+                }
+            }
             let it = iterable_of(v)?;
             let items = crate::iter::collect(&it);
             Ok(Value::List(PyList::from_vec(items)))
@@ -1022,7 +1078,7 @@ pub fn builtin_type(interp: &Interpreter, args: &[Value], kwargs: &[(String, Val
                 // A-3 item 5: opaque native result records report their own
                 // name (type(os.uname()) == "uname_result"; stat_result too).
                 Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque => match o.name.as_str() {
-                    "uname_result" | "stat_result" | "statvfs_result" | "struct_time" => {
+                    "uname_result" | "stat_result" | "statvfs_result" | "struct_time" | "bytearray" => {
                         o.name.clone()
                     }
                     _ => o.type_name(),
@@ -1089,6 +1145,24 @@ pub fn builtin_iter(args: &[Value]) -> BResult {
     let v = one(args, "iter")?;
     // 02.08-lite: register the iterator in the live table and hand back a
     // handle whose gen_id resolves (fixes list(iter(x)) / prod(iter(x))).
+    // PEP-342: a GENERATOR keeps its OWN id — iter(gen) must be a handle
+    // onto the same lazy state, not a fresh registered wrapper of a
+    // materialized snapshot.
+    if let Value::Obj(o) = v {
+        if o.kind == ap_obj::ObjKind::Generator {
+            if let Some(id) = *o.gen_id.borrow() {
+                // Ensure the lazy anchor exists (iterable_of installs it).
+                let interp = crate::builtins_modules::current_interp();
+                if let Some(interp) = interp {
+                    let _ = crate::interp::iterable_of_public(&v)?;
+                    let _ = interp;
+                }
+                let obj = ap_obj::PyObject::new(ap_obj::ObjKind::Iterator, "iterator");
+                *obj.gen_id.borrow_mut() = Some(id);
+                return Ok(Value::Obj(obj));
+            }
+        }
+    }
     let it = iterable_of(v)?;
     let id = crate::builtins_modules::register_shared_iter(it);
     let obj = ap_obj::PyObject::new(ap_obj::ObjKind::Iterator, "iterator");
@@ -1106,6 +1180,26 @@ pub fn builtin_next(interp: &Interpreter, args: &[Value]) -> BResult {
                 .gen_id
                 .borrow()
                 .ok_or_else(|| raise("TypeError", "'iterator' object is not an iterator"))?;
+            // Generators (PEP-342): a body exception propagates; clean
+            // exhaustion maps to StopIteration carrying si_value as .value.
+            if interp.generators.borrow().contains_key(&id) {
+                let rc = interp.rc();
+                match crate::interp::gen_pull_public(&rc, id) {
+                    Ok(Some(x)) => return Ok(x),
+                    Ok(None) => match args.get(1) {
+                        Some(default) => return Ok(default.clone()),
+                        None => {
+                            let val = interp.si_value.borrow_mut().take().unwrap_or(Value::None);
+                            let mut e = ExceptionValue::new("StopIteration", vec![]);
+                            if !matches!(val, Value::None) {
+                                e.args.push(val);
+                            }
+                            return Err(Flow::Raise(e));
+                        }
+                    },
+                    Err(f) => return Err(f),
+                }
+            }
             match next_registered(interp, id) {
                 Some(v) => Ok(v),
                 None => match args.get(1) {
@@ -3470,19 +3564,44 @@ pub fn call_builtin(
                 Ok(Value::Bytes(Gc::new(out)))
             }
         },
-        "bytearray" => match args.first() {
-            Some(Value::Int(n)) => {
-                let len = n.to_i64().unwrap_or(0).max(0) as usize;
-                Ok(Value::Bytes(Gc::new(vec![0u8; len])))
+        "bytearray" => {
+            // A-4 item 1: bytearray is a DISTINCT type (type(ba).__name__ ==
+            // 'bytearray', repr bytearray(b'...')), mutable, equality equal
+            // with bytes, UNHASHABLE. Representation choice (documented per
+            // the leaf): the tree carries 171 Value::Bytes match sites, so a
+            // new Value arm (option (a)) would break every one at compile
+            // time; instead the bytearray is an ObjKind::Opaque object named
+            // "bytearray" whose buffer rides the "<data>" attr as a plain
+            // Value::Bytes. Equality gains cross-type arms (ap-obj dict.rs),
+            // hashing raises unhashable (ap-obj hash.rs), and every existing
+            // Bytes match site compiles unchanged.
+            fn bytearray_value(data: Vec<u8>) -> Value {
+                use ap_obj::PyString;
+                let obj = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "bytearray");
+                let _ = obj.attrs.borrow_mut().set(
+                    Value::Str(PyString::new("<data>")),
+                    Value::Bytes(Gc::new(data.clone())),
+                );
+                let mut repr = "bytearray(".to_string();
+                repr.push_str(&ap_obj::str_repr::bytes_repr(&data));
+                repr.push(')');
+                *obj.repr_text.borrow_mut() = Some(repr);
+                Value::Obj(obj)
             }
-            Some(Value::Bytes(b)) => Ok(Value::Bytes(Gc::new(b.as_ref().clone()))),
-            Some(Value::Str(sv)) => Ok(Value::Bytes(Gc::new(sv.as_str().as_bytes().to_vec()))),
-            None => Ok(Value::Bytes(Gc::new(Vec::new()))),
-            Some(other) => Err(crate::Flow::Raise(crate::exc_hier::ExceptionValue::msg(
-                "TypeError",
-                format!("cannot convert '{}' to bytearray", other.type_name()),
-            ))),
-        },
+            match args.first() {
+                Some(Value::Int(n)) => {
+                    let len = n.to_i64().unwrap_or(0).max(0) as usize;
+                    Ok(bytearray_value(vec![0u8; len]))
+                }
+                Some(Value::Bytes(b)) => Ok(bytearray_value(b.as_ref().clone())),
+                Some(Value::Str(sv)) => Ok(bytearray_value(sv.as_str().as_bytes().to_vec())),
+                None => Ok(bytearray_value(Vec::new())),
+                Some(other) => Err(crate::Flow::Raise(crate::exc_hier::ExceptionValue::msg(
+                    "TypeError",
+                    format!("cannot convert '{}' to bytearray", other.type_name()),
+                ))),
+            }
+        }
         // 02.04a fix pass: memoryview(data) — inert bytes-backed stub; only
         // .tobytes()-free surfaces the import gates touch.
         "memoryview" => match args.first() {
@@ -3802,7 +3921,7 @@ pub fn call_builtin(
                 // name (type(os.uname()) == "uname_result"; stat_result too).
                 if matches!(
                     o.name.as_str(),
-                    "uname_result" | "stat_result" | "statvfs_result" | "struct_time"
+                    "uname_result" | "stat_result" | "statvfs_result" | "struct_time" | "bytearray"
                 ) {
                     return Ok(crate::builtins::interned_type(&interp, &o.name));
                 }

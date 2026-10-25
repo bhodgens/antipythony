@@ -341,6 +341,14 @@ pub fn values_eq(a: &Value, b: &Value) -> bool {
         }
         (Value::Str(x), Value::Str(y)) => x == y,
         (Value::Bytes(x), Value::Bytes(y)) => x == y,
+        // A-4 item 1: bytearray == bytes (CPython buffer equality; bytearray
+        // is an Opaque object with its buffer in the "<data>" attr).
+        (Value::Bytes(x), Value::Obj(o)) | (Value::Obj(o), Value::Bytes(x)) => {
+            match bytearray_data(o) {
+                Some(d) => &**x == &*d,
+                None => false,
+            }
+        }
         (Value::List(x), Value::List(y)) => {
             let (x, y) = (&**x, &**y);
             x.len() == y.len()
@@ -361,7 +369,10 @@ pub fn values_eq(a: &Value, b: &Value) -> bool {
         // Exception: weakref tokens compare BY TARGET (CPython: two refs to
         // the same object are ==; the WeakSet/WKD data model relies on it).
         (Value::Obj(x), Value::Obj(y)) => {
-            if let (Some(a), Some(b)) = (
+            // A-4 item 1: two bytearrays compare by buffer content.
+            if let (Some(a), Some(b)) = (bytearray_data(x), bytearray_data(y)) {
+                a == b
+            } else if let (Some(a), Some(b)) = (
                 crate::value::weakref_target_addr(x),
                 crate::value::weakref_target_addr(y),
             ) {
@@ -383,6 +394,19 @@ impl crate::int::Int {
             crate::int::Int::Smi(v) => num_bigint::BigInt::from(*v),
             crate::int::Int::Big(b) => (**b).clone(),
         }
+    }
+}
+
+/// A-4 item 1: the bytearray Opaque object's buffer (None for other Objs).
+pub(crate) fn bytearray_data(o: &crate::object::PyObject) -> Option<Gc<Vec<u8>>> {
+    if o.kind == crate::object::ObjKind::Opaque && o.name == "bytearray" {
+        let ab = o.attrs.borrow();
+        match ab.get(&Value::Str(crate::PyString::new("<data>"))) {
+            Some(Value::Bytes(b)) => Some(b.clone()),
+            _ => None,
+        }
+    } else {
+        None
     }
 }
 

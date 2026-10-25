@@ -14,6 +14,47 @@
 # hand-declared from LICENSES/README-vendored-stdlib.md (commit 1cb6250).
 # Upstream: CPython 3.14.7 (PSF-2.0). Do not hand-edit pristine entries.
 
+
+[[file]]
+path = "OpenSSL/SSL.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "29ea94e02cadf30e778e03811f9f9cdcdb24c5861870d39da15bc699b245f38b"
+note = "antipythany shim with no CPython counterpart: pyOpenSSL.SSL constant surface (Error, TLS method/OP_* flags) for the twisted import chain; the file:// gate performs no TLS (4b228b8)."
+
+[[file]]
+path = "OpenSSL/__init__.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "19372c9a9db53677cd577064dc93acb1da342d9834cb4abb3fd954af44d48419"
+note = "antipythany shim with no CPython counterpart: pyOpenSSL package namespace stub re-exporting the SSL/version/crypto/_util shim modules (4b228b8)."
+
+[[file]]
+path = "OpenSSL/_util.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "85a499e026c348f408a7f44089fd682ca3a1df51b1fea24b2035e5e1832b26a5"
+note = "antipythany shim with no CPython counterpart: inert lib object and byte/text string helpers for the pyOpenSSL import chain (4b228b8)."
+
+[[file]]
+path = "OpenSSL/crypto.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "20a69ced4cc6905d7ddddf18a4ff3ddac91918def25528b64563e0b28e8c56e9"
+note = "antipythany shim with no CPython counterpart: pyOpenSSL.crypto constant/inert surface (FILETYPE_*, X509/PKey stubs, load_certificate/load_privatekey); no certificate work happens in the gate (4b228b8)."
+
+[[file]]
+path = "OpenSSL/version.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "6631183bb59b800924da3ca512c6038bdc64ada4ead6596b80515ec093e5cc48"
+note = "antipythany shim with no CPython counterpart: constant pyOpenSSL version strings ('23.0.0') for import-time probes (4b228b8)."
+
 [[file]]
 path = "__future__.py"
 upstream_path = "__future__.py"
@@ -27,8 +68,32 @@ path = "_collections_abc.py"
 upstream_path = "_collections_abc.py"
 status = "deviated"
 upstream_sha256 = "50b68b76687edc29824e5d735914b9c9ebb5145b663ba4ab7fce273283356a1c"
-deviated_sha256 = "7f5e7f27f43c94b2160c821c4abebb037759ea026cde5d490c63c3b14c5f5e4f"
-note = "Declared deviation (LICENSES/README-vendored-stdlib.md): ~80 lines - binding shims for registry/ABC machinery our runtime exposes differently."
+deviated_sha256 = "1d035149d20fe97bc81bb0e698a8d179b7f23568f9700108c0e65a1000df4d15"
+note = "Declared deviation (LICENSES/README-vendored-stdlib.md): ~80 lines - binding shims for registry/ABC machinery our runtime exposes differently. Re-declared 2026-10-25 (A-4 closeout): 4b228b8 wrapped the bare Set/MutableSet/Mapping/KeysView/ItemsView/ValuesView/MutableMapping concrete-register probes in try/except RuntimeError (legacy name-Type register probe mis-fires in our runtime)."
+
+[[file]]
+path = "_collections_abc_append.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "8a9874ae92bed055bb69aad8394d7b0665bf06b6e197399ca80f7033955c65b6"
+note = "antipythany helper with no CPython counterpart: one-line T1-d patch marker file (4b228b8)."
+
+[[file]]
+path = "_collections_userdict_shim.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "2035e9792fd1a26442830decbac851737252e1ab83974e0051b87727229a42ba"
+note = "antipythany helper with no CPython counterpart: one-line placeholder superseded by the collections.py shim (4b228b8)."
+
+[[file]]
+path = "_compat_pickle.py"
+upstream_path = "_compat_pickle.py"
+status = "pristine"
+upstream_sha256 = "028d2d9845d7acac2e1ceb565aacaee64e3f8019fba96174d65eff1609b50cd0"
+deviated_sha256 = "028d2d9845d7acac2e1ceb565aacaee64e3f8019fba96174d65eff1609b50cd0"
+note = ""
 
 [[file]]
 path = "_contextvars.py"
@@ -55,6 +120,22 @@ deviated_sha256 = "d9badc5ab19a66415e230bf8f4299491b2207d584981a92b6e7c447cfa1ae
 note = ""
 
 [[file]]
+path = "_osx_support.py"
+upstream_path = "_osx_support.py"
+status = "pristine"
+upstream_sha256 = "363d3240acbba18a270bd3161f1ddb478f8492dc14fc451b2dc314db5c5ee09c"
+deviated_sha256 = "363d3240acbba18a270bd3161f1ddb478f8492dc14fc451b2dc314db5c5ee09c"
+note = ""
+
+[[file]]
+path = "_posixsubprocess.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "1aaafe2e4efb0f0993e26371f306c83ecf55779cf14a47f34d9f7488f94044af"
+note = "runtime-side subprocess surface stub (no upstream counterpart); T1 chain"
+
+[[file]]
 path = "_py_abc.py"
 upstream_path = "_py_abc.py"
 status = "pristine"
@@ -67,8 +148,8 @@ path = "_py_warnings.py"
 upstream_path = "_py_warnings.py"
 status = "deviated"
 upstream_sha256 = "7728580177727fa3b295478cef4777a9d2a364c5cbd809efcea352db31144f85"
-deviated_sha256 = "583be98e73da5ec26e5ad65f94f48b5fcf98974ca985f5d7e32acb9a1530e841"
-note = "Declared deviation (LICENSES/README-vendored-stdlib.md): 3 lines - warn-path binding to the native warnings surface."
+deviated_sha256 = "7728580177727fa3b295478cef4777a9d2a364c5cbd809efcea352db31144f85"
+note = "Declared deviation (LICENSES/README-vendored-stdlib.md): 3 lines - warn-path binding to the native warnings surface. Re-declared 2026-10-25 (provenance audit): hash refreshed to current bytes; diff reviewed, shim-only."
 
 [[file]]
 path = "_pydatetime.py"
@@ -77,6 +158,14 @@ status = "pristine"
 upstream_sha256 = "00e8b7b2a3c8a75f15ac016c8f4f97101394d679cba63a055205358ff3df656b"
 deviated_sha256 = "00e8b7b2a3c8a75f15ac016c8f4f97101394d679cba63a055205358ff3df656b"
 note = ""
+
+[[file]]
+path = "_pydecimal.py"
+upstream_path = "_pydecimal.py"
+status = "deviated"
+upstream_sha256 = "b9da2f4c7c740b8ff0d9fa57a0c567898569e5ee740b83c8aef7222fe953e103"
+deviated_sha256 = "a41a4817539bbdafcc97c93211d90f9ed44590ce4b2bf85b1627d6196379b2d2"
+note = "T1 chain: import-time surface adjustments"
 
 [[file]]
 path = "_pyrepl/__init__.py"
@@ -287,6 +376,14 @@ deviated_sha256 = "ca39efc778d55c97357fc8b95f25f1c9301f79f487ee7486f24bf872a87c3
 note = ""
 
 [[file]]
+path = "_string_errors.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "4323069feca2327db1944f6ba4231da67c2f0b8cb8ca2fbb9ee87d3f3e5cc2d7"
+note = "runtime-side codecs error-handler helpers (no upstream counterpart); T1 chain"
+
+[[file]]
 path = "_sysconfig_vars__darwin_darwin.json"
 upstream_path = "_sysconfig_vars__darwin_darwin.json"
 status = "pristine"
@@ -323,8 +420,8 @@ path = "annotationlib.py"
 upstream_path = "annotationlib.py"
 status = "deviated"
 upstream_sha256 = "1cce29393714b91e3f71571ffbedacc7f73f11ad26be10701debeb86ec059a32"
-deviated_sha256 = "e1accc6691f8ae5c7641be17add105338f38eb2296bd82605c32661b0b0611da"
-note = "Declared deviation (LICENSES/README-vendored-stdlib.md): REPLACED by a self-declared minimal shim (docstring says so); CPython's uses t-strings (PEP 750), outside the v1 grammar. Re-declared 2026-10-22 (wave-5 audit): 2619a0f added the callable-obj annotations branch; shim-only."
+deviated_sha256 = "383cba67960321092a78e4baba7a922aab8e1e0424e9d04600104411946c2d7e"
+note = "Declared deviation (LICENSES/README-vendored-stdlib.md): REPLACED by a self-declared minimal shim (docstring says so); CPython's uses t-strings (PEP 750), outside the v1 grammar. Re-declared 2026-10-22 (wave-5 audit): 2619a0f added the callable-obj annotations branch; shim-only. Re-declared 2026-10-25 (A-4 closeout): b5ca2fd (in-flight sibling snapshot) extended the minimal shim's callable-object annotations branch."
 
 [[file]]
 path = "argparse.py"
@@ -343,12 +440,524 @@ deviated_sha256 = "5ea9a796353544bea0d706153516f04ef3d92be305d15a73238403837d77e
 note = ""
 
 [[file]]
+path = "asyncio/__init__.py"
+upstream_path = "asyncio/__init__.py"
+status = "pristine"
+upstream_sha256 = "8148552daea881e3b33639d6e9bdab0da2021367ab694ee0604431c33c16983f"
+deviated_sha256 = "8148552daea881e3b33639d6e9bdab0da2021367ab694ee0604431c33c16983f"
+note = ""
+
+[[file]]
+path = "asyncio/__main__.py"
+upstream_path = "asyncio/__main__.py"
+status = "pristine"
+upstream_sha256 = "cbe42559a5d94fd9692a24f2ba984f64623eb6caef7b1917306d0901450e4c5c"
+deviated_sha256 = "cbe42559a5d94fd9692a24f2ba984f64623eb6caef7b1917306d0901450e4c5c"
+note = ""
+
+[[file]]
+path = "asyncio/base_events.py"
+upstream_path = "asyncio/base_events.py"
+status = "pristine"
+upstream_sha256 = "0e1738510759762904a42e114eef136e57fda8cec0c0cb70d1341edf7c5fee79"
+deviated_sha256 = "0e1738510759762904a42e114eef136e57fda8cec0c0cb70d1341edf7c5fee79"
+note = ""
+
+[[file]]
+path = "asyncio/base_futures.py"
+upstream_path = "asyncio/base_futures.py"
+status = "pristine"
+upstream_sha256 = "2f3798c4b82f5ac77647908b157c924f734f36871d98970e72849ea9a9a07856"
+deviated_sha256 = "2f3798c4b82f5ac77647908b157c924f734f36871d98970e72849ea9a9a07856"
+note = ""
+
+[[file]]
+path = "asyncio/base_subprocess.py"
+upstream_path = "asyncio/base_subprocess.py"
+status = "pristine"
+upstream_sha256 = "23578fd6d8647243b791583ef0c1bc997c3eef34250719e2544b04b82ff67aac"
+deviated_sha256 = "23578fd6d8647243b791583ef0c1bc997c3eef34250719e2544b04b82ff67aac"
+note = ""
+
+[[file]]
+path = "asyncio/base_tasks.py"
+upstream_path = "asyncio/base_tasks.py"
+status = "pristine"
+upstream_sha256 = "56efac65b63db927af336fa55eb5bda93c97a2defa4734ea8d695ed20fd6712a"
+deviated_sha256 = "56efac65b63db927af336fa55eb5bda93c97a2defa4734ea8d695ed20fd6712a"
+note = ""
+
+[[file]]
+path = "asyncio/constants.py"
+upstream_path = "asyncio/constants.py"
+status = "pristine"
+upstream_sha256 = "873fc2f9e66313c3c19c337269e704f204b59f9e91d6ecbec59f68335484d338"
+deviated_sha256 = "873fc2f9e66313c3c19c337269e704f204b59f9e91d6ecbec59f68335484d338"
+note = ""
+
+[[file]]
+path = "asyncio/coroutines.py"
+upstream_path = "asyncio/coroutines.py"
+status = "pristine"
+upstream_sha256 = "c5b8563c88e343f3076630aa6545fc77c548ceefb76936a360d7895c13691753"
+deviated_sha256 = "c5b8563c88e343f3076630aa6545fc77c548ceefb76936a360d7895c13691753"
+note = ""
+
+[[file]]
+path = "asyncio/events.py"
+upstream_path = "asyncio/events.py"
+status = "pristine"
+upstream_sha256 = "62e2c619c38407309c0d2c98638642174ee7be5b874676c0225392fed4a00b0f"
+deviated_sha256 = "62e2c619c38407309c0d2c98638642174ee7be5b874676c0225392fed4a00b0f"
+note = ""
+
+[[file]]
+path = "asyncio/exceptions.py"
+upstream_path = "asyncio/exceptions.py"
+status = "pristine"
+upstream_sha256 = "a5971f88be14cd1417d59adf539ae48c5d818f95362a4e0eb00017e3690ab37b"
+deviated_sha256 = "a5971f88be14cd1417d59adf539ae48c5d818f95362a4e0eb00017e3690ab37b"
+note = ""
+
+[[file]]
+path = "asyncio/format_helpers.py"
+upstream_path = "asyncio/format_helpers.py"
+status = "pristine"
+upstream_sha256 = "c02f2f8c1e2508ddb2f8d8c1bef452be1f6b9a1d2a998b89a56d153e42a5f1ef"
+deviated_sha256 = "c02f2f8c1e2508ddb2f8d8c1bef452be1f6b9a1d2a998b89a56d153e42a5f1ef"
+note = ""
+
+[[file]]
+path = "asyncio/futures.py"
+upstream_path = "asyncio/futures.py"
+status = "pristine"
+upstream_sha256 = "2f482524292a7c5d1b818aeb92434d183bd089e014cf50b785432284d2c8bc12"
+deviated_sha256 = "2f482524292a7c5d1b818aeb92434d183bd089e014cf50b785432284d2c8bc12"
+note = ""
+
+[[file]]
+path = "asyncio/graph.py"
+upstream_path = "asyncio/graph.py"
+status = "pristine"
+upstream_sha256 = "d8239a86873ce72ec720bebbdaaf14341c79321bff78dfec11ad59a1b5202caa"
+deviated_sha256 = "d8239a86873ce72ec720bebbdaaf14341c79321bff78dfec11ad59a1b5202caa"
+note = ""
+
+[[file]]
+path = "asyncio/locks.py"
+upstream_path = "asyncio/locks.py"
+status = "pristine"
+upstream_sha256 = "8ded089e680b9b67fca60893071356fa29343539f5113e66cf9da5f6ab734285"
+deviated_sha256 = "8ded089e680b9b67fca60893071356fa29343539f5113e66cf9da5f6ab734285"
+note = ""
+
+[[file]]
+path = "asyncio/log.py"
+upstream_path = "asyncio/log.py"
+status = "pristine"
+upstream_sha256 = "80e4cc3ded4b138baba486519e7444801a23d6ac35f229d336a407a96af7e8d2"
+deviated_sha256 = "80e4cc3ded4b138baba486519e7444801a23d6ac35f229d336a407a96af7e8d2"
+note = ""
+
+[[file]]
+path = "asyncio/mixins.py"
+upstream_path = "asyncio/mixins.py"
+status = "pristine"
+upstream_sha256 = "8f4a3e16eca845ebfba422550cbcee7340ec8166d2bff6b750a8ed0de6b9ae3c"
+deviated_sha256 = "8f4a3e16eca845ebfba422550cbcee7340ec8166d2bff6b750a8ed0de6b9ae3c"
+note = ""
+
+[[file]]
+path = "asyncio/proactor_events.py"
+upstream_path = "asyncio/proactor_events.py"
+status = "pristine"
+upstream_sha256 = "8983929097fdad77fc1e89d9f6ebb6ab4479b8bef07c9c4604bd56291983d5c1"
+deviated_sha256 = "8983929097fdad77fc1e89d9f6ebb6ab4479b8bef07c9c4604bd56291983d5c1"
+note = ""
+
+[[file]]
+path = "asyncio/protocols.py"
+upstream_path = "asyncio/protocols.py"
+status = "pristine"
+upstream_sha256 = "1d1b49988c338b4ef06e30f9e92d9db2e00080c341f0a3f573bb8312deb8aff6"
+deviated_sha256 = "1d1b49988c338b4ef06e30f9e92d9db2e00080c341f0a3f573bb8312deb8aff6"
+note = ""
+
+[[file]]
+path = "asyncio/queues.py"
+upstream_path = "asyncio/queues.py"
+status = "pristine"
+upstream_sha256 = "9ce87bf63f113509d479ea25fecd25a705766d750c304a180d1bff02a0fe6f6a"
+deviated_sha256 = "9ce87bf63f113509d479ea25fecd25a705766d750c304a180d1bff02a0fe6f6a"
+note = ""
+
+[[file]]
+path = "asyncio/runners.py"
+upstream_path = "asyncio/runners.py"
+status = "pristine"
+upstream_sha256 = "d3b0765c4bd022dac4d101a034ba8c16b6e9c598e44d7b9d82b3239f3106fe65"
+deviated_sha256 = "d3b0765c4bd022dac4d101a034ba8c16b6e9c598e44d7b9d82b3239f3106fe65"
+note = ""
+
+[[file]]
+path = "asyncio/selector_events.py"
+upstream_path = "asyncio/selector_events.py"
+status = "pristine"
+upstream_sha256 = "1938ac8e095741b3c1237c6d7b72ede732b9dcbbe7452d81c171e2e9e48bb259"
+deviated_sha256 = "1938ac8e095741b3c1237c6d7b72ede732b9dcbbe7452d81c171e2e9e48bb259"
+note = ""
+
+[[file]]
+path = "asyncio/sslproto.py"
+upstream_path = "asyncio/sslproto.py"
+status = "pristine"
+upstream_sha256 = "b33d2f13fc373b7220402c4358dc96c770cea14489f5570b49774b37f9ac052f"
+deviated_sha256 = "b33d2f13fc373b7220402c4358dc96c770cea14489f5570b49774b37f9ac052f"
+note = ""
+
+[[file]]
+path = "asyncio/staggered.py"
+upstream_path = "asyncio/staggered.py"
+status = "pristine"
+upstream_sha256 = "8be17b2fa59a3a207b2e004f278257fc220c592afc8b6aa1cbe47030e1b9b4a9"
+deviated_sha256 = "8be17b2fa59a3a207b2e004f278257fc220c592afc8b6aa1cbe47030e1b9b4a9"
+note = ""
+
+[[file]]
+path = "asyncio/streams.py"
+upstream_path = "asyncio/streams.py"
+status = "pristine"
+upstream_sha256 = "e2fe3ac8653a3d72dafa326f36f209eec206a86c460e0cfe1fd2c66c0ea58f5d"
+deviated_sha256 = "e2fe3ac8653a3d72dafa326f36f209eec206a86c460e0cfe1fd2c66c0ea58f5d"
+note = ""
+
+[[file]]
+path = "asyncio/subprocess.py"
+upstream_path = "asyncio/subprocess.py"
+status = "pristine"
+upstream_sha256 = "7b70605716334f63cc482123b2aaa3b7c5bb7138eeab63a037bd8068d43307c1"
+deviated_sha256 = "7b70605716334f63cc482123b2aaa3b7c5bb7138eeab63a037bd8068d43307c1"
+note = ""
+
+[[file]]
+path = "asyncio/taskgroups.py"
+upstream_path = "asyncio/taskgroups.py"
+status = "pristine"
+upstream_sha256 = "df0ea4f0911ea9c1006b4dec45557e0862a09d7a411c63259943731df8c41dda"
+deviated_sha256 = "df0ea4f0911ea9c1006b4dec45557e0862a09d7a411c63259943731df8c41dda"
+note = ""
+
+[[file]]
+path = "asyncio/tasks.py"
+upstream_path = "asyncio/tasks.py"
+status = "pristine"
+upstream_sha256 = "a97ffdb60a42104a86f2ece781878b3371bd88e9eea8f1ac1fa8f397cc11cca5"
+deviated_sha256 = "a97ffdb60a42104a86f2ece781878b3371bd88e9eea8f1ac1fa8f397cc11cca5"
+note = ""
+
+[[file]]
+path = "asyncio/threads.py"
+upstream_path = "asyncio/threads.py"
+status = "pristine"
+upstream_sha256 = "95877db9bf2c36ce9e630780ae145627f1401b95a9e8ee101b018df2898e8072"
+deviated_sha256 = "95877db9bf2c36ce9e630780ae145627f1401b95a9e8ee101b018df2898e8072"
+note = ""
+
+[[file]]
+path = "asyncio/timeouts.py"
+upstream_path = "asyncio/timeouts.py"
+status = "pristine"
+upstream_sha256 = "dc1544c3c27ace84e2abc10f8fd13e340709a8579ff008ebc64c0d0fae6c0837"
+deviated_sha256 = "dc1544c3c27ace84e2abc10f8fd13e340709a8579ff008ebc64c0d0fae6c0837"
+note = ""
+
+[[file]]
+path = "asyncio/tools.py"
+upstream_path = "asyncio/tools.py"
+status = "pristine"
+upstream_sha256 = "6e74b35d25157f99335d70e2352a11d9be4aeee80f3300294dc80f75862dd00b"
+deviated_sha256 = "6e74b35d25157f99335d70e2352a11d9be4aeee80f3300294dc80f75862dd00b"
+note = ""
+
+[[file]]
+path = "asyncio/transports.py"
+upstream_path = "asyncio/transports.py"
+status = "pristine"
+upstream_sha256 = "bfd414b25979e07b74081140bf91332957a9bf8b5aa5a0c7ff0d779d93eada21"
+deviated_sha256 = "bfd414b25979e07b74081140bf91332957a9bf8b5aa5a0c7ff0d779d93eada21"
+note = ""
+
+[[file]]
+path = "asyncio/trsock.py"
+upstream_path = "asyncio/trsock.py"
+status = "pristine"
+upstream_sha256 = "c0eac37debcc51b702b808f6b7ed3e417343f5ff5f57125dad600a27eb082328"
+deviated_sha256 = "c0eac37debcc51b702b808f6b7ed3e417343f5ff5f57125dad600a27eb082328"
+note = ""
+
+[[file]]
+path = "asyncio/unix_events.py"
+upstream_path = "asyncio/unix_events.py"
+status = "pristine"
+upstream_sha256 = "760967defab5b28d611c46d7dbd51fd734679837a87a0673837ca5bdff8b1a41"
+deviated_sha256 = "760967defab5b28d611c46d7dbd51fd734679837a87a0673837ca5bdff8b1a41"
+note = ""
+
+[[file]]
+path = "asyncio/windows_events.py"
+upstream_path = "asyncio/windows_events.py"
+status = "pristine"
+upstream_sha256 = "c88b8c0f6bf0619649587ffba1e4623d3fa621036470ce987a0ac7269a211cb2"
+deviated_sha256 = "c88b8c0f6bf0619649587ffba1e4623d3fa621036470ce987a0ac7269a211cb2"
+note = ""
+
+[[file]]
+path = "asyncio/windows_utils.py"
+upstream_path = "asyncio/windows_utils.py"
+status = "pristine"
+upstream_sha256 = "b9c40e077d5c00dd22a1058ffd3fad8e21c8753b0710f02d97ade7bfdad03493"
+deviated_sha256 = "b9c40e077d5c00dd22a1058ffd3fad8e21c8753b0710f02d97ade7bfdad03493"
+note = ""
+
+[[file]]
+path = "bdb.py"
+upstream_path = "bdb.py"
+status = "pristine"
+upstream_sha256 = "ed54964aed0bb23931265607c3ef1e38ec09ccb681d298fd1b56e5ac1cd4223c"
+deviated_sha256 = "ed54964aed0bb23931265607c3ef1e38ec09ccb681d298fd1b56e5ac1cd4223c"
+note = ""
+
+[[file]]
+path = "brotlicffi.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "890e2759d7170c202f74355b14412fa491eb908da34c4b2cfaa785cc14ee8120"
+note = "antipythany shim with no CPython counterpart: brotli identity codec (compress frames with a BRS1 marker, decompress strips it); the file:// gate never transfers brotli payloads (4b228b8)."
+
+[[file]]
+path = "calendar.py"
+upstream_path = "calendar.py"
+status = "deviated"
+upstream_sha256 = "071c962f9000d42c565b92bae4063e1b7f615ae2db4f574e7c682c41f99c5146"
+deviated_sha256 = "0cf31e33c501dc435700ff76cccc66bed030cc93bb5cad2b9a02a6113c79af17"
+note = "T1 chain: Calendar.firstweekday property rewritten as plain attr (FnRegistry poisoning workaround; see docs/lxml-shim.md)"
+
+[[file]]
+path = "charset_normalizer/__init__.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "997c6fda6b13aee46c685bb1f96e6ee0d37c06702ac4cc38bfb30acce0f1f5b6"
+note = "third-party charset_normalizer vendored pure-python (MIT/Apache dual); mypyc .so removed per pure-wheel policy; T1 chain"
+
+[[file]]
+path = "charset_normalizer/__main__.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "cb3631311f8884a44763071295abc4bfca06770c6c47cf66af65f4f6a5c6769b"
+note = "third-party charset_normalizer vendored pure-python (MIT/Apache dual); mypyc .so removed per pure-wheel policy; T1 chain"
+
+[[file]]
+path = "charset_normalizer/api.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "55455aa5898f169c803379b698a9fdf808d94002312b238968abb870fc427f81"
+note = "third-party charset_normalizer vendored pure-python (MIT/Apache dual); mypyc .so removed per pure-wheel policy; T1 chain"
+
+[[file]]
+path = "charset_normalizer/cd.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "e9d24e66f774aeb1045af931e78900132f6a00ffee22e8963008b9c17f0e66c6"
+note = "third-party charset_normalizer vendored pure-python (MIT/Apache dual); mypyc .so removed per pure-wheel policy; T1 chain"
+
+[[file]]
+path = "charset_normalizer/cli/__init__.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "0fc23cea5164dbea72e3926fab19e24e2ad28ffb05c84eac8da63fd3e1b5b217"
+note = "third-party charset_normalizer vendored pure-python (MIT/Apache dual); mypyc .so removed per pure-wheel policy; T1 chain"
+
+[[file]]
+path = "charset_normalizer/cli/__main__.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "34f2b7c980245d713b52fb3a22a8a39206734ba1ba7e0b9116e297ce0a5ff147"
+note = "third-party charset_normalizer vendored pure-python (MIT/Apache dual); mypyc .so removed per pure-wheel policy; T1 chain"
+
+[[file]]
+path = "charset_normalizer/constant.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "b49d4ea5dbc4598665bc66f651caf81564cc1cca4f21a0e45d9491bd5833771b"
+note = "third-party charset_normalizer vendored pure-python (MIT/Apache dual); mypyc .so removed per pure-wheel policy; T1 chain"
+
+[[file]]
+path = "charset_normalizer/legacy.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "6e091d12fb9b4c238f94c28ecee10d5c73226ab877e956866d1bd64a522bd4a0"
+note = "third-party charset_normalizer vendored pure-python (MIT/Apache dual); mypyc .so removed per pure-wheel policy; T1 chain"
+
+[[file]]
+path = "charset_normalizer/md.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "cf596c0498a61f91f8d6fef54e296cba3204b178001deda9371f8a8084c378e3"
+note = "third-party charset_normalizer vendored pure-python (MIT/Apache dual); mypyc .so removed per pure-wheel policy; T1 chain"
+
+[[file]]
+path = "charset_normalizer/models.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "f8350cead0964f25fc4d477ee0355a6005ce07f7311c686b45a4b66bf38e406b"
+note = "third-party charset_normalizer vendored pure-python (MIT/Apache dual); mypyc .so removed per pure-wheel policy; T1 chain"
+
+[[file]]
+path = "charset_normalizer/py.typed"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+note = "third-party charset_normalizer vendored pure-python (MIT/Apache dual); mypyc .so removed per pure-wheel policy; T1 chain"
+
+[[file]]
+path = "charset_normalizer/utils.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "119ec0e7fb286ef4c8c58585b1f5ee56c9f6261c31c33addd3cb20105d05ae71"
+note = "third-party charset_normalizer vendored pure-python (MIT/Apache dual); mypyc .so removed per pure-wheel policy; T1 chain"
+
+[[file]]
+path = "charset_normalizer/version.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "793b9181127b1e37a817ec597c6e6d970bd1130cac7654af99ba2cbda4a9cf57"
+note = "third-party charset_normalizer vendored pure-python (MIT/Apache dual); mypyc .so removed per pure-wheel policy; T1 chain"
+
+[[file]]
+path = "codecs.py"
+upstream_path = "codecs.py"
+status = "deviated"
+upstream_sha256 = "718f39b3ea68fe934214d789c5bce3005fa828040b03a72d2f715fc5e2647b7e"
+deviated_sha256 = "ca2b1968f37dd56a04b2c96755c95cb20a8150a10b778deb5eecab5d05db6a0c"
+note = "T1 chain: encode/decode helper unwrap"
+
+[[file]]
 path = "collections.py"
 upstream_path = "collections/__init__.py"
 status = "deviated"
 upstream_sha256 = "cb8367b8edd188662143ea2e3942d360c2deae51c72fd779ec898f5076d2c2b9"
-deviated_sha256 = "e841f58e1f5b0d4a8a0ac90482b605e97aa419f915ff15002de8c9bf17cee4a4"
-note = "Declared deviation (LICENSES/README-vendored-stdlib.md): runtime-binding shim with no single CPython counterpart file."
+deviated_sha256 = "e01d3973529061dac46ab8a7cd11e72fafd05f8570b03886bf2efad33125b305"
+note = "Declared deviation (LICENSES/README-vendored-stdlib.md): runtime-binding shim with no single CPython counterpart file. Re-declared 2026-10-25 (A-4 closeout): 4b228b8 extended the shim (deque/UserDict seed for the T1 pickle/csv chain)."
+
+[[file]]
+path = "compression/__init__.py"
+upstream_path = "compression/__init__.py"
+status = "deviated"
+upstream_sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+deviated_sha256 = "9f7ebd32d9ccb68627ff98bb08a152981b5a22731153b4a3449ddb5c86549c65"
+note = "antipythany shim replacing CPython's empty compression package __init__: import-level surface only for the C-backed 3.14 compression package (4b228b8)."
+
+[[file]]
+path = "compression/zstd/__init__.py"
+upstream_path = "compression/zstd/__init__.py"
+status = "deviated"
+upstream_sha256 = "4575544839872594ad5c9be284d062384dd5abdd0ddcc0258f6d66dac2c51d60"
+deviated_sha256 = "26abb671908b399cb6b2261eced2d1d5fd5ffaa4acff84ee77d6666f53ab352b"
+note = "antipythany shim replacing CPython's C _zstd-backed compression.zstd (24 lines vs 244): compress/decompress/ZstdFile raise NotImplementedError; the gate uses no zstd (4b228b8)."
+
+[[file]]
+path = "concurrent/__init__.py"
+upstream_path = "concurrent/__init__.py"
+status = "pristine"
+upstream_sha256 = "87ad5c8954dd56fbbca04517bf87477ff4dce575170c7dd1281d7ef1f4214ac8"
+deviated_sha256 = "87ad5c8954dd56fbbca04517bf87477ff4dce575170c7dd1281d7ef1f4214ac8"
+note = ""
+
+[[file]]
+path = "concurrent/futures/__init__.py"
+upstream_path = "concurrent/futures/__init__.py"
+status = "pristine"
+upstream_sha256 = "b70493d1f40759fdb270d09bfdde1e33c4a796cc8af24416fb33012ae2c966c3"
+deviated_sha256 = "b70493d1f40759fdb270d09bfdde1e33c4a796cc8af24416fb33012ae2c966c3"
+note = ""
+
+[[file]]
+path = "concurrent/futures/_base.py"
+upstream_path = "concurrent/futures/_base.py"
+status = "pristine"
+upstream_sha256 = "0932abfae68a9bc4807a367ab60bd2ef31d98ae305ee8b70f9e595a747c3b2a1"
+deviated_sha256 = "0932abfae68a9bc4807a367ab60bd2ef31d98ae305ee8b70f9e595a747c3b2a1"
+note = ""
+
+[[file]]
+path = "concurrent/futures/interpreter.py"
+upstream_path = "concurrent/futures/interpreter.py"
+status = "pristine"
+upstream_sha256 = "424fac5bf71743b4e02cfa8150919cac1a9e53e2e5173729f7ba75dd2da78e1e"
+deviated_sha256 = "424fac5bf71743b4e02cfa8150919cac1a9e53e2e5173729f7ba75dd2da78e1e"
+note = ""
+
+[[file]]
+path = "concurrent/futures/process.py"
+upstream_path = "concurrent/futures/process.py"
+status = "pristine"
+upstream_sha256 = "5cecee12ee88255899e980a68d2706442b3fc510ccb9c4a1e0b2c6585ff79aef"
+deviated_sha256 = "5cecee12ee88255899e980a68d2706442b3fc510ccb9c4a1e0b2c6585ff79aef"
+note = ""
+
+[[file]]
+path = "concurrent/futures/thread.py"
+upstream_path = "concurrent/futures/thread.py"
+status = "pristine"
+upstream_sha256 = "7f95079dda8064cd372c9c0ea60c7e172b34c8f2aa0c3d9213e85b8584aa033c"
+deviated_sha256 = "7f95079dda8064cd372c9c0ea60c7e172b34c8f2aa0c3d9213e85b8584aa033c"
+note = ""
+
+[[file]]
+path = "concurrent/interpreters/__init__.py"
+upstream_path = "concurrent/interpreters/__init__.py"
+status = "pristine"
+upstream_sha256 = "040e47f07bdfb28c67798fa7764fac1d79e13fd0fc0db9c85ee5dae8e1edf249"
+deviated_sha256 = "040e47f07bdfb28c67798fa7764fac1d79e13fd0fc0db9c85ee5dae8e1edf249"
+note = ""
+
+[[file]]
+path = "concurrent/interpreters/_crossinterp.py"
+upstream_path = "concurrent/interpreters/_crossinterp.py"
+status = "pristine"
+upstream_sha256 = "029fa98334c0dd71aead1cb3662a661f292aee5c9960fd71a15c1ac7a941cc72"
+deviated_sha256 = "029fa98334c0dd71aead1cb3662a661f292aee5c9960fd71a15c1ac7a941cc72"
+note = ""
+
+[[file]]
+path = "concurrent/interpreters/_queues.py"
+upstream_path = "concurrent/interpreters/_queues.py"
+status = "pristine"
+upstream_sha256 = "f08fcd85c03696a2bbb238ae27d2c8a79bde9ae2e5bb160a2821edf044058552"
+deviated_sha256 = "f08fcd85c03696a2bbb238ae27d2c8a79bde9ae2e5bb160a2821edf044058552"
+note = ""
+
+[[file]]
+path = "configparser.py"
+upstream_path = "configparser.py"
+status = "pristine"
+upstream_sha256 = "de8ddb6cdaa3bb51885ff47a768a81cb32bd279dd5a5eaf5388cde48b7f264a9"
+deviated_sha256 = "de8ddb6cdaa3bb51885ff47a768a81cb32bd279dd5a5eaf5388cde48b7f264a9"
+note = ""
 
 [[file]]
 path = "contextlib.py"
@@ -383,12 +992,140 @@ deviated_sha256 = "6376eb5722806396f5842997ac18add369ea9ac3ff4fcfe1460c41a088cac
 note = ""
 
 [[file]]
+path = "csv.py"
+upstream_path = "csv.py"
+status = "deviated"
+upstream_sha256 = "1919637c2fbec5a385774b0c7edace6139b3222295a0ba1ba2ea6da75bc28243"
+deviated_sha256 = "1b94ccf980e3cb33db1d9b58bd1377608bb7a431faf5311a0acdb1c21fad2fff"
+note = "antipythany shim replacing CPython's C _csv-backed csv (133 lines vs 527): reader/writer over line iterables plus dialect/QUOTE constants for the spider output writers (4b228b8)."
+
+[[file]]
+path = "ctypes/__init__.py"
+upstream_path = "ctypes/__init__.py"
+status = "deviated"
+upstream_sha256 = "72f2df568380c275a5596944810953124ff2ee8d678c5f8ddcf50f0f77577eb3"
+deviated_sha256 = "2085575cc3268858c53b2e5d59533ef94cf5fda187403d148da1b32a2ed3267f"
+note = "antipythany shim replacing CPython's C _ctypes-backed ctypes (149 lines vs 683): inert CDLL/cdll loader whose attribute calls return 0; only scrapy.utils.display's libc terminal-width probe is exercised (4b228b8)."
+
+[[file]]
+path = "ctypes/util.py"
+upstream_path = "ctypes/util.py"
+status = "deviated"
+upstream_sha256 = "ca7a95e1850500f469d2a1b45b908163ead044d1ac1f156d68b973972cd793d6"
+deviated_sha256 = "456a85c8ab58ea856cca1bf272329445eb4a4fbe5557a0bd5295cba5ad409019"
+note = "antipythany shim replacing CPython's find_library machinery (5 lines vs 502): find_library always returns None since no real library loading occurs in the gate (4b228b8)."
+
+[[file]]
+path = "dataclasses.py"
+upstream_path = "dataclasses.py"
+status = "deviated"
+upstream_sha256 = "e8439c8b111856645a8b31e0dbbba532b494426399bad456079c0e5730ad322e"
+deviated_sha256 = "243dec663c3dbac5d7941f3016c18cd9ee0c69ec3e684f533087901624ce89c9"
+note = "T1 chain: __dataclass_HAS_DEFAULT_FACTORY__ sentinel + name fixes"
+
+[[file]]
 path = "datetime.py"
 upstream_path = "datetime.py"
 status = "pristine"
 upstream_sha256 = "742884b0c8e7dc69911858245db4f34d42e8ec0f769d580c570bd56032b0866c"
 deviated_sha256 = "742884b0c8e7dc69911858245db4f34d42e8ec0f769d580c570bd56032b0866c"
 note = ""
+
+[[file]]
+path = "decimal.py"
+upstream_path = "decimal.py"
+status = "deviated"
+upstream_sha256 = "af29fa99aa720a68cab5a6384c7beba4c8e9480a6c1d53a512efeeb5a7e5c781"
+deviated_sha256 = "f95c1c17e685891e2286d1dcda5a0e5ab526c7dc087a5318da5646b1138a3e66"
+note = "T1 chain: Context attribute surface"
+
+[[file]]
+path = "defusedxml/ElementTree.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "18b4aaa42cf9f285c63c6cb37ff1f296c3d2f7f75c1953f948de1d2bbcafc8fc"
+note = "third-party defusedxml vendored (PSF-2.0-style); T1 chain"
+
+[[file]]
+path = "defusedxml/__init__.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "45ccde695246eb8a76160cb58e50b36ee45d72110f9c468206bc6093c249fe93"
+note = "third-party defusedxml vendored (PSF-2.0-style); T1 chain"
+
+[[file]]
+path = "defusedxml/cElementTree.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "3e968a321deb536f6c63c6a600ae1fcc740a97c81c0180f48752c2a16eb646d9"
+note = "third-party defusedxml vendored (PSF-2.0-style); T1 chain"
+
+[[file]]
+path = "defusedxml/common.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "ddddba8cd5b87cd5f38235a1bd47ecf3701f8b3e44571143ba941bba09123197"
+note = "third-party defusedxml vendored (PSF-2.0-style); T1 chain"
+
+[[file]]
+path = "defusedxml/expatbuilder.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "6f8434e6fb01309e52b6489315fe26cb6ac61a8d60672125fe10b931e1533800"
+note = "third-party defusedxml vendored (PSF-2.0-style); T1 chain"
+
+[[file]]
+path = "defusedxml/expatreader.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "28ea52af0912be3e5218e63da535ce336e839f3d34aec26ddf75ae795bf3a6f7"
+note = "third-party defusedxml vendored (PSF-2.0-style); T1 chain"
+
+[[file]]
+path = "defusedxml/lxml.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "1d6f8b14a76b7cc4731dd8b455cb9cab8fa7f32cfbbff390c04416160d494180"
+note = "third-party defusedxml vendored (PSF-2.0-style); T1 chain"
+
+[[file]]
+path = "defusedxml/minidom.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "dd0720ca057026a7160d0dc86768a897ccec1f8731dc1457ef448f71dd1b1b68"
+note = "third-party defusedxml vendored (PSF-2.0-style); T1 chain"
+
+[[file]]
+path = "defusedxml/pulldom.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "0d88f60f695cef1a31677f207f3ba35e67739ddf28bf30ea1855eac976edc639"
+note = "third-party defusedxml vendored (PSF-2.0-style); T1 chain"
+
+[[file]]
+path = "defusedxml/sax.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "f92174f0cb1cda6584600330eb6a49e4533059c70e72d1529d0c032d82cb9551"
+note = "third-party defusedxml vendored (PSF-2.0-style); T1 chain"
+
+[[file]]
+path = "defusedxml/xmlrpc.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "eeb6507b2deda9771cd61aeb337469ace20253a7e2167cbd07d9789e64e2a310"
+note = "third-party defusedxml vendored (PSF-2.0-style); T1 chain"
 
 [[file]]
 path = "difflib.py"
@@ -647,12 +1384,28 @@ deviated_sha256 = "1712b710b29fc7c9f22d8ee522be470695c6bf4d580458cfc7e32dcd5cc31
 note = ""
 
 [[file]]
+path = "encodings/__init__.py"
+upstream_path = "encodings/__init__.py"
+status = "deviated"
+upstream_sha256 = "2b708410495acf12a6fad9d2de928dd89e567537c253eaa2b51aaae578e96c59"
+deviated_sha256 = "79b73e4535a30d8ce975f821383507108bb2d7635c6dcdc2b10ae5ad1d45315c"
+note = "T1 chain: codec registry adjustments for runtime search path"
+
+[[file]]
 path = "encodings/_win_cp_codecs.py"
 upstream_path = "encodings/_win_cp_codecs.py"
 status = "pristine"
 upstream_sha256 = "a10ef385d2096ff10a4ed00e7adfb7750fefcd10aa8eea1b573846145c9abad7"
 deviated_sha256 = "a10ef385d2096ff10a4ed00e7adfb7750fefcd10aa8eea1b573846145c9abad7"
 note = ""
+
+[[file]]
+path = "encodings/aliases.py"
+upstream_path = "encodings/aliases.py"
+status = "deviated"
+upstream_sha256 = "1ee993f8eb4986999b6501381e53947be9a04443626cb48b4190bcff2e87d3b4"
+deviated_sha256 = "533ba267321ba389d99d0c532a89dbb074f2a0b08efd2bb591fdd0a05a19afd0"
+note = "T1 chain: alias table adjustments"
 
 [[file]]
 path = "encodings/ascii.py"
@@ -1623,11 +2376,27 @@ deviated_sha256 = "b450d8dc6614df844de4d02476b33db30e5aac92b3419c7614f9d600373cb
 note = "Declared deviation (LICENSES/README-vendored-stdlib.md): 1 line - classdict._member_names read via getattr(..., []) fallback; our class-dict instance may lack the attr during partial metaclass construction."
 
 [[file]]
+path = "fcntl.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "cf734d8607f57b800f0f2ac6c0edc918723caa0600ddcd13c3bad515a44c9e31"
+note = "antipythany shim with no CPython counterpart (fcntl is a C module): fcntl/ioctl/flock flag constants plus an inert fcntl() for twisted's non-blocking fd setup (4b228b8)."
+
+[[file]]
 path = "fnmatch.py"
 upstream_path = "fnmatch.py"
 status = "pristine"
 upstream_sha256 = "ce582bc266922e4c682e2a85d72095124430a6bf58716c6f2537103480eae742"
 deviated_sha256 = "ce582bc266922e4c682e2a85d72095124430a6bf58716c6f2537103480eae742"
+note = ""
+
+[[file]]
+path = "functools.py"
+upstream_path = "functools.py"
+status = "pristine"
+upstream_sha256 = "9db56d38172c4c9e689b21cc58c8538008b09d86b682faf4dd193b529cdd79d5"
+deviated_sha256 = "9db56d38172c4c9e689b21cc58c8538008b09d86b682faf4dd193b529cdd79d5"
 note = ""
 
 [[file]]
@@ -1655,6 +2424,22 @@ deviated_sha256 = "21d290be171e3d0643a444e4b58a2c4ee9bfe2c1474bb36ead043794bb769
 note = ""
 
 [[file]]
+path = "gzip.py"
+upstream_path = "gzip.py"
+status = "deviated"
+upstream_sha256 = "bc3f00153a2cfdf28ae0cb41f2dde3ee2e39d88efc220c1e47de87fc58e970cb"
+deviated_sha256 = "72e069883d449231a5415fe9355b95160e8fcc3588472f2de9998c0b99779f29"
+note = "antipythany shim replacing CPython's gzip (57 lines vs 719): GZS1-framed storage pseudo-compression built on the zlib shim (real DEFLATE is a documented v0 gap) (4b228b8)."
+
+[[file]]
+path = "hmac.py"
+upstream_path = "hmac.py"
+status = "deviated"
+upstream_sha256 = "10e8952ae06300f63a1a8f4898f7f828e8e5ad17bf29240d4e2d106418f0226b"
+deviated_sha256 = "204e3d00519395178be0a46aed59a7b5ba8a39882dcb8ffe11aa15298ff1666b"
+note = "antipythany copy of CPython hmac.py with a 6-line deviation: when the _operator C accelerator is absent, compare_digest falls back to a plain str/bytes equality function (4b228b8, T1-d)."
+
+[[file]]
 path = "html/__init__.py"
 upstream_path = "html/__init__.py"
 status = "pristine"
@@ -1679,6 +2464,14 @@ deviated_sha256 = "5c5ed245889135564e75dfed9a47aeb6b4d3e5a2e9614d918a986767e3747
 note = ""
 
 [[file]]
+path = "http/__init__.py"
+upstream_path = "http/__init__.py"
+status = "deviated"
+upstream_sha256 = "ff5f3d443b9174909975e1c9c67573cf2ffd5fbff9fc2e28529c0601cd17ed9b"
+deviated_sha256 = "17e3cba4070b663e661ae9538ca0d951716fcd74446478ac8e1e4ea34331225b"
+note = "T1 chain: import surface adjustments"
+
+[[file]]
 path = "http/client.py"
 upstream_path = "http/client.py"
 status = "pristine"
@@ -1693,6 +2486,14 @@ status = "pristine"
 upstream_sha256 = "33cdcee4ec52171e50cd079da77923d1d0f6e523cefa39f296a8e1ec1b1acb64"
 deviated_sha256 = "33cdcee4ec52171e50cd079da77923d1d0f6e523cefa39f296a8e1ec1b1acb64"
 note = ""
+
+[[file]]
+path = "http/cookies.py"
+upstream_path = "http/cookies.py"
+status = "deviated"
+upstream_sha256 = "d1165ad2e38352b3ca654ef5cc3dbb01233d590f1bed7fc7d1d7c1451a5a11ab"
+deviated_sha256 = "21c16738c66c55ac4f619dabbcac9eecdc431c203adfb0eb7f1538431cb211d7"
+note = "T1 chain: import surface adjustments"
 
 [[file]]
 path = "http/server.py"
@@ -1711,6 +2512,22 @@ deviated_sha256 = "72b07de4133a7e39b2f6a7920465669aa04626f217e800779587bc0713fe0
 note = ""
 
 [[file]]
+path = "importlib/_abc.py"
+upstream_path = "importlib/_abc.py"
+status = "deviated"
+upstream_sha256 = "80aab7931dc999dee581c8b8b56fcd973fe156335a96ceeaf6acfc03cebf10e8"
+deviated_sha256 = "f1113266f2abc26450187df6341beb8d5db6dcb207e00c9735cbd5174d7cce09"
+note = "T1 chain: Loader metaclass=ABCMeta changed to plain class to break abc/importlib cycle (see docs/lxml-shim.md)"
+
+[[file]]
+path = "importlib/_bootstrap.py"
+upstream_path = "importlib/_bootstrap.py"
+status = "deviated"
+upstream_sha256 = "e50d35b1191ecbc5f7faecc73f54efd242bcf24c510e4ea5eb64bfba9458c0e3"
+deviated_sha256 = "d99d56d15a13a1958566d24afd41f4db3b9c1635eb291d83ddff285adca15427"
+note = "T1 chain: sys/_warnings module seeding"
+
+[[file]]
 path = "importlib/_bootstrap_external.py"
 upstream_path = "importlib/_bootstrap_external.py"
 status = "pristine"
@@ -1721,10 +2538,10 @@ note = ""
 [[file]]
 path = "importlib/abc.py"
 upstream_path = "importlib/abc.py"
-status = "pristine"
+status = "deviated"
 upstream_sha256 = "66da663909ac110b77d89d4402589574308aac2a5b524bba014fabd65f34cc99"
-deviated_sha256 = "66da663909ac110b77d89d4402589574308aac2a5b524bba014fabd65f34cc99"
-note = ""
+deviated_sha256 = "4d77bc24507fa498b1b53898ceebd19c79bb76163c8033bfefef74c006fd7b07"
+note = "antipythany copy of CPython importlib.abc with a 9-line deviation: _register inlines ABC registration into _abc_registry and skips frozen-class twin registration, working around the runtime's bound-method self handling (4b228b8, T1-d)."
 
 [[file]]
 path = "importlib/machinery.py"
@@ -1732,6 +2549,70 @@ upstream_path = "importlib/machinery.py"
 status = "pristine"
 upstream_sha256 = "34b7583fd83ebb2629b7645c0dd293839ce16b19cf8742801e21a21fe08f5811"
 deviated_sha256 = "34b7583fd83ebb2629b7645c0dd293839ce16b19cf8742801e21a21fe08f5811"
+note = ""
+
+[[file]]
+path = "importlib/metadata/__init__.py"
+upstream_path = "importlib/metadata/__init__.py"
+status = "pristine"
+upstream_sha256 = "5476c7c22a65f9e8b5a07b799336d87fa70e792758fd95b161b53b530e3b2654"
+deviated_sha256 = "5476c7c22a65f9e8b5a07b799336d87fa70e792758fd95b161b53b530e3b2654"
+note = ""
+
+[[file]]
+path = "importlib/metadata/_adapters.py"
+upstream_path = "importlib/metadata/_adapters.py"
+status = "pristine"
+upstream_sha256 = "c46791664cc0720374649414d0afdf24ca709580ce9feea0a25a4f76441677c1"
+deviated_sha256 = "c46791664cc0720374649414d0afdf24ca709580ce9feea0a25a4f76441677c1"
+note = ""
+
+[[file]]
+path = "importlib/metadata/_collections.py"
+upstream_path = "importlib/metadata/_collections.py"
+status = "pristine"
+upstream_sha256 = "089d0e4c21c88d6034648552e2fa0e440b27d91e11d9c40112d3ec6442690126"
+deviated_sha256 = "089d0e4c21c88d6034648552e2fa0e440b27d91e11d9c40112d3ec6442690126"
+note = ""
+
+[[file]]
+path = "importlib/metadata/_functools.py"
+upstream_path = "importlib/metadata/_functools.py"
+status = "pristine"
+upstream_sha256 = "3ec636fb8aeb297e1155e442d681a9d65075a660bd78a37cf3f7fe6c3f6e3a80"
+deviated_sha256 = "3ec636fb8aeb297e1155e442d681a9d65075a660bd78a37cf3f7fe6c3f6e3a80"
+note = ""
+
+[[file]]
+path = "importlib/metadata/_itertools.py"
+upstream_path = "importlib/metadata/_itertools.py"
+status = "pristine"
+upstream_sha256 = "72faffdaff0145bc5c225e71e6575fa9d1e3848f188bcb3cca4e741bf9e6ea34"
+deviated_sha256 = "72faffdaff0145bc5c225e71e6575fa9d1e3848f188bcb3cca4e741bf9e6ea34"
+note = ""
+
+[[file]]
+path = "importlib/metadata/_meta.py"
+upstream_path = "importlib/metadata/_meta.py"
+status = "pristine"
+upstream_sha256 = "9f167b0bc19595c04500a5b254e9ff767ee8b7fb7005c6e6d4d9af8c87ad0472"
+deviated_sha256 = "9f167b0bc19595c04500a5b254e9ff767ee8b7fb7005c6e6d4d9af8c87ad0472"
+note = ""
+
+[[file]]
+path = "importlib/metadata/_text.py"
+upstream_path = "importlib/metadata/_text.py"
+status = "pristine"
+upstream_sha256 = "1c2b0592c66924b7933f734493f9e0ac079755146d4ebb7287d78e001a113f80"
+deviated_sha256 = "1c2b0592c66924b7933f734493f9e0ac079755146d4ebb7287d78e001a113f80"
+note = ""
+
+[[file]]
+path = "importlib/metadata/diagnose.py"
+upstream_path = "importlib/metadata/diagnose.py"
+status = "pristine"
+upstream_sha256 = "9e4491322a309669212d884a86f0a0f60966b7fd750a8c7e1262f311ba984daf"
+deviated_sha256 = "9e4491322a309669212d884a86f0a0f60966b7fd750a8c7e1262f311ba984daf"
 note = ""
 
 [[file]]
@@ -1761,10 +2642,10 @@ note = ""
 [[file]]
 path = "importlib/resources/_common.py"
 upstream_path = "importlib/resources/_common.py"
-status = "pristine"
+status = "deviated"
 upstream_sha256 = "fcfb97ce807c692b36ac1b224379b455d64937a210c48c5ae60369bcaabe6456"
-deviated_sha256 = "fcfb97ce807c692b36ac1b224379b455d64937a210c48c5ae60369bcaabe6456"
-note = ""
+deviated_sha256 = "08533905729cac456106f62fa15a9818a83d1788bb59f5be9a09faa334abd6a8"
+note = "antipythany copy of CPython importlib.resources._common with a 14-line deviation: as_file for str anchors imports the module and returns its on-disk package dir as a Path, supporting scrapy's files('scrapy') VERSION read (4b228b8, T1-d)."
 
 [[file]]
 path = "importlib/resources/_functional.py"
@@ -1827,8 +2708,8 @@ path = "inspect.py"
 upstream_path = "inspect.py"
 status = "deviated"
 upstream_sha256 = "7a2878507255eb568a6ecfa04e051009f197513aa052eebc9e7e60d667d78cb4"
-deviated_sha256 = "e75915195d63e8f6c9842076be2441b2806dd6bd84536774a99289a2fd670c77"
-note = "Declared deviation (LICENSES/README-vendored-stdlib.md): ~16 lines - annotation/FrameInfo shims. Re-declared 2026-10-22 (wave-5 audit): 2619a0f extended the shim (+15 lines, T1 get_annotations path); diff reviewed, shim-only."
+deviated_sha256 = "daa0d38d4b7c39e03ef1dcd8b5743409002c8d8ab4d2dd8f2847e712ea04fa0f"
+note = "Declared deviation (LICENSES/README-vendored-stdlib.md): ~16 lines - annotation/FrameInfo shims. Re-declared 2026-10-22 (wave-5 audit): 2619a0f extended the shim (+15 lines, T1 get_annotations path); diff reviewed, shim-only. Re-declared 2026-10-25 (A-4 closeout): 4b228b8 (T1-d) added CO_* flag constants (replacing the _inspect C accelerator reads), a depth-aware currentframe, and direct mro/__dict__ readers for twisted's frame walking."
 
 [[file]]
 path = "ipaddress.py"
@@ -1837,6 +2718,14 @@ status = "pristine"
 upstream_sha256 = "4cba28ab40dc34c685950535cf9adf6251bee5b63c82eed1f315d93853d4eaca"
 deviated_sha256 = "4cba28ab40dc34c685950535cf9adf6251bee5b63c82eed1f315d93853d4eaca"
 note = ""
+
+[[file]]
+path = "jmespath/__init__.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "4f75d9137c79631e00dd5e0db1ec4bbb14c19413df2d00b472f5bc521c4b35b1"
+note = "third-party jmespath vendored (MIT); T1 chain"
 
 [[file]]
 path = "keyword.py"
@@ -1911,12 +2800,36 @@ deviated_sha256 = "1036d90c917bb27c540ac3205d22896ee747214df1f2682458ab915758e4f
 note = ""
 
 [[file]]
+path = "parsel/__init__.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "3ceb9e3c8fbf670a2be5bf7129942d1afe2fb8170827043444e0ab5a77ad6139"
+note = "shim re-exec of site-packages parsel (T1 chain; see docs/lxml-shim.md)"
+
+[[file]]
+path = "parsel/csstranslator/__init__.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "f4b6334e0f576a620003b9b5201707632b7c731d83da5a7823031394482b892a"
+note = "shim re-exec of site-packages parsel (T1 chain; see docs/lxml-shim.md)"
+
+[[file]]
+path = "parsel/selector.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "e7bc9df58c04a5fb2e92cd190ea02d247590c54f045fd8becb0092d6f1c8e883"
+note = "shim re-exec of site-packages parsel (T1 chain; see docs/lxml-shim.md)"
+
+[[file]]
 path = "pathlib/__init__.py"
 upstream_path = "pathlib/__init__.py"
-status = "pristine"
+status = "deviated"
 upstream_sha256 = "042a4d0a5e1ef66778daa86dc269af205bd42d06e793e53d8b99dff4c45928ca"
-deviated_sha256 = "042a4d0a5e1ef66778daa86dc269af205bd42d06e793e53d8b99dff4c45928ca"
-note = ""
+deviated_sha256 = "cbb5dc697fb83048ed1e32ebf2c09101c0ba289b91739769c4051883dd36affe"
+note = "antipythany copy of CPython pathlib with an 18-line deviation: PurePath parsing falls back to as_posix() when isinstance checks mis-fire, and read_text joins _raw_paths and reads directly, working around v0 with_segments round-trip loss (4b228b8, T1-d)."
 
 [[file]]
 path = "pathlib/_local.py"
@@ -1940,6 +2853,22 @@ upstream_path = "pathlib/types.py"
 status = "pristine"
 upstream_sha256 = "723afad22b9629a513c815240644e6312056144efd3f61f66d4f9ec320fdd124"
 deviated_sha256 = "723afad22b9629a513c815240644e6312056144efd3f61f66d4f9ec320fdd124"
+note = ""
+
+[[file]]
+path = "pickle.py"
+upstream_path = "pickle.py"
+status = "pristine"
+upstream_sha256 = "c9998751cf3b94536b4c2cffd6bb719fa1ee6027bd1bd37235d597c9ecf9f98c"
+deviated_sha256 = "c9998751cf3b94536b4c2cffd6bb719fa1ee6027bd1bd37235d597c9ecf9f98c"
+note = ""
+
+[[file]]
+path = "pickletools.py"
+upstream_path = "pickletools.py"
+status = "pristine"
+upstream_sha256 = "ea05191d23b25e32a4070f56ce146d207342f79dc0b509110d3ba519b191a02e"
+deviated_sha256 = "ea05191d23b25e32a4070f56ce146d207342f79dc0b509110d3ba519b191a02e"
 note = ""
 
 [[file]]
@@ -2015,6 +2944,14 @@ deviated_sha256 = "2c1b4e2f3474a43745f183ae175d399288f4771200fd9a2240049f707ac92
 note = ""
 
 [[file]]
+path = "pyexpat.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "e09ab0e665cdcc13532d151f84f754ff96bf2330e5125b0f93e194bd9769e7db"
+note = "runtime-side pyexpat surface stub (upstream is a C module); T1 chain"
+
+[[file]]
 path = "quopri.py"
 upstream_path = "quopri.py"
 status = "pristine"
@@ -2027,8 +2964,8 @@ path = "re/__init__.py"
 upstream_path = "re/__init__.py"
 status = "deviated"
 upstream_sha256 = "741a9de729ed8207bfa19db990f8826f1bf3661f33d0970a80c08cd1338ebc35"
-deviated_sha256 = "8913cc6e66f3df2d1a9420b34c2edb90ad8f2c08829b8188d3863b8aed843e91"
-note = "Undeclared in LICENSES/README-vendored-stdlib.md - deviation observed by xtask stdlib-provenance at manifest v1 build (2026-10-20): RegexFlag IntFlag construction wrapped in a try/except fallback to plain-int constants (in-file note: 'antipythany v0 (vendored fork)'). Orphaned by leaf 02.08 work; license doc needs an addendum."
+deviated_sha256 = "d0b5f8b9d93d8cf7cea92c8526d72610ca88a5741f85ae71b5dd5ee19b324515"
+note = "Undeclared in LICENSES/README-vendored-stdlib.md - deviation observed by xtask stdlib-provenance at manifest v1 build (2026-10-20): RegexFlag IntFlag construction wrapped in a try/except fallback to plain-int constants (in-file note: 'antipythany v0 (vendored fork)'). Orphaned by leaf 02.08 work; license doc needs an addendum. Re-declared 2026-10-25 (A-4 closeout): 4b228b8 adjusted the RegexFlag try/except fallback tail (flag-constant layout) in the vendored fork."
 
 [[file]]
 path = "re/_casefix.py"
@@ -2079,12 +3016,36 @@ deviated_sha256 = "56588f00a68ef953014f41baf36e0dbb7ed7793f8aa883ebcb1a8bd3787c0
 note = ""
 
 [[file]]
+path = "select.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "b61de784ffe4c2e6b6d766b98700178c55baad99dd9a75ba52f0a932ee040c69"
+note = "runtime-side select surface stub (upstream is a C module); T1 chain Re-declared 2026-10-25 (A-4 closeout): 4b228b8 extended the select surface stub (additional poll/epoll constants for the twisted reactor import chain)."
+
+[[file]]
 path = "selectors.py"
 upstream_path = "selectors.py"
 status = "pristine"
 upstream_sha256 = "4b8a60cfbb619d080f87dffe1578372e56e8c0ac826f043224a154cf7b77606d"
 deviated_sha256 = "4b8a60cfbb619d080f87dffe1578372e56e8c0ac826f043224a154cf7b77606d"
 note = ""
+
+[[file]]
+path = "service_identity/__init__.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "e763ffb8b3d76b3f4fede95fd28b3fbeda7a66b2314302104afda4ec82dd776b"
+note = "antipythany shim with no CPython counterpart: service_identity stub whose verify_hostname/verify_ip_address always pass; the gate performs no TLS (4b228b8)."
+
+[[file]]
+path = "service_identity/hazmat.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "fc4783ced7d9f56efbf7a6c448aebca81a57ca8086ccb60b2cb384aa4ae0fc86"
+note = "antipythany shim with no CPython counterpart: inert service_identity.hazmat ID classes and verify_service_identity passthrough (4b228b8)."
 
 [[file]]
 path = "shlex.py"
@@ -2097,10 +3058,18 @@ note = ""
 [[file]]
 path = "signal.py"
 upstream_path = "signal.py"
-status = "pristine"
+status = "deviated"
 upstream_sha256 = "0363c964c90ac0b3e515de5749205e6e6454051a1211058375d84d91eab6071a"
-deviated_sha256 = "0363c964c90ac0b3e515de5749205e6e6454051a1211058375d84d91eab6071a"
-note = ""
+deviated_sha256 = "04a18339a27358090d34df35b5fce4ee7627f4bbae33584a73df74687d0528bb"
+note = "antipythany copy of CPython signal.py with a 9-line deviation: keeps set_wakeup_fd/siginterrupt as module-level passthrough wrappers (twisted's installHandler wakeup-fd plumbing) instead of deleting them with the _globals cleanup (4b228b8, T1-d)."
+
+[[file]]
+path = "socket.py"
+upstream_path = "socket.py"
+status = "deviated"
+upstream_sha256 = "4a8747dc77383df192b22bb95f4620cadafeffe6b621c61b1f3b8c386393643c"
+deviated_sha256 = "48bcdc57a943f158d0a71033d7a55e0538cf2c5df99f51b288337e91aa5e2fbd"
+note = "T1 chain: socket surface stub adjustments Re-declared 2026-10-25 (A-4 closeout): 4b228b8 extended the socket shim (error types, address-family/IPPROTO/MSG constants, trivial helpers used by http.client/urllib at import)."
 
 [[file]]
 path = "socketserver.py"
@@ -2111,12 +3080,28 @@ deviated_sha256 = "ecbbe1a633801460399a8f10b39007aa0e13cdbdad507e39414000f097b76
 note = ""
 
 [[file]]
+path = "ssl.py"
+upstream_path = "ssl.py"
+status = "deviated"
+upstream_sha256 = "21d28174e953bcfd042b328676c52584fcd8b4f0457a4db582b7f0acd78854d5"
+deviated_sha256 = "66c6b164902310ac9a373becca6cdae040946383dcf5563b6291d5c26819ba3d"
+note = "antipythany shim replacing CPython's C _ssl-backed ssl (107 lines): error classes, CERT_/PROTOCOL_/OP_ constants and a stubbed SSLContext for import-time constant reads; no TLS is performed (4b228b8)."
+
+[[file]]
 path = "stat.py"
 upstream_path = "stat.py"
 status = "pristine"
 upstream_sha256 = "07217986d9b2172b509dab3578d18ac05ba768b418e1f1e8c90e38a8f7c2b3c6"
 deviated_sha256 = "07217986d9b2172b509dab3578d18ac05ba768b418e1f1e8c90e38a8f7c2b3c6"
 note = ""
+
+[[file]]
+path = "string.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "ed77eaa9cd86d02e3ada8c9ff0a5cc8666c764b77317c7d54cbf841bd2a248a0"
+note = "runtime-side Template/Formatter restoration (upstream 3.14 string is a package); s027 fix pass"
 
 [[file]]
 path = "subprocess.py"
@@ -2141,6 +3126,14 @@ status = "pristine"
 upstream_sha256 = "e0f9e52f5263e0f351940534dd20d6c7036a99f351fa97553493ca428c3d570b"
 deviated_sha256 = "e0f9e52f5263e0f351940534dd20d6c7036a99f351fa97553493ca428c3d570b"
 note = ""
+
+[[file]]
+path = "threading.py"
+upstream_path = "threading.py"
+status = "deviated"
+upstream_sha256 = "5323909624ec2165e70b6d31333e4191b63d383d2dc5a7d7d516a3475ea2b7e3"
+deviated_sha256 = "12ef17f7dcb41e7746e37c622319b519bbd8d3fac578ae855f3d5d4b888a926c"
+note = "antipythany shim replacing CPython's C _thread-backed threading (96 lines vs 849): inert lock/RLock/Event/Thread primitives since twisted's synchronize and logging paths only need LOCK TYPES to exist (4b228b8)."
 
 [[file]]
 path = "token.py"
@@ -2311,6 +3304,14 @@ deviated_sha256 = "484b633b81d024da52649c7ff775c81b338de9f60585c94e5adfe335a27d9
 note = ""
 
 [[file]]
+path = "urllib/request.py"
+upstream_path = "urllib/request.py"
+status = "deviated"
+upstream_sha256 = "f3464032de00c1fbc839f4657577065ea6efb30d99e5a86e204b1aefdcb77430"
+deviated_sha256 = "6fb4784ff39b2b5fdfda1025f7a99f5dec322133cfbe5455a3bdd03a56945075"
+note = "T1 chain: import surface adjustments"
+
+[[file]]
 path = "urllib/response.py"
 upstream_path = "urllib/response.py"
 status = "pristine"
@@ -2325,6 +3326,14 @@ status = "pristine"
 upstream_sha256 = "621c586e66d917d99dad44ff698bf9492cf5afc82cf9b3794199a589d553c38f"
 deviated_sha256 = "621c586e66d917d99dad44ff698bf9492cf5afc82cf9b3794199a589d553c38f"
 note = ""
+
+[[file]]
+path = "uuid.py"
+upstream_path = "uuid.py"
+status = "deviated"
+upstream_sha256 = "915321474fa4b27c3e289751e8ffc86e6a134b1244a37ca9053aeb2bf3c7e150"
+deviated_sha256 = "a2384083ab8f28d8aabcf111bf86c223064262c2c260d896b289ea7a61c33416"
+note = "antipythany shim replacing CPython's uuid (94 lines vs 714): uuid4-only surface (os.urandom-based UUID with RFC_4122 variant) for request fingerprints; uuid1/3/5 are absent (4b228b8)."
 
 [[file]]
 path = "warnings.py"
@@ -2582,375 +3591,13 @@ upstream_sha256 = "d84da9b313d40544a87657a0ea2f9cf719416fd3c3450724c5d2dde5b475d
 deviated_sha256 = "d84da9b313d40544a87657a0ea2f9cf719416fd3c3450724c5d2dde5b475d2b5"
 note = ""
 
-# --- T1-chain wave declarations (2026-10-23, orchestrator) ---
-
 [[file]]
-path = "_posixsubprocess.py"
+path = "zlib.py"
 upstream_path = ""
 status = "deviated"
 upstream_sha256 = ""
-deviated_sha256 = "1aaafe2e4efb0f0993e26371f306c83ecf55779cf14a47f34d9f7488f94044af"
-note = "runtime-side subprocess surface stub (no upstream counterpart); T1 chain"
-
-[[file]]
-path = "_pydecimal.py"
-upstream_path = "_pydecimal.py"
-status = "deviated"
-upstream_sha256 = "b9da2f4c7c740b8ff0d9fa57a0c567898569e5ee740b83c8aef7222fe953e103"
-deviated_sha256 = "a41a4817539bbdafcc97c93211d90f9ed44590ce4b2bf85b1627d6196379b2d2"
-note = "T1 chain: import-time surface adjustments"
-
-[[file]]
-path = "_string_errors.py"
-upstream_path = ""
-status = "deviated"
-upstream_sha256 = ""
-deviated_sha256 = "4323069feca2327db1944f6ba4231da67c2f0b8cb8ca2fbb9ee87d3f3e5cc2d7"
-note = "runtime-side codecs error-handler helpers (no upstream counterpart); T1 chain"
-
-[[file]]
-path = "calendar.py"
-upstream_path = "calendar.py"
-status = "deviated"
-upstream_sha256 = "071c962f9000d42c565b92bae4063e1b7f615ae2db4f574e7c682c41f99c5146"
-deviated_sha256 = "0cf31e33c501dc435700ff76cccc66bed030cc93bb5cad2b9a02a6113c79af17"
-note = "T1 chain: Calendar.firstweekday property rewritten as plain attr (FnRegistry poisoning workaround; see docs/lxml-shim.md)"
-
-[[file]]
-path = "charset_normalizer/__init__.py"
-upstream_path = ""
-status = "deviated"
-upstream_sha256 = ""
-deviated_sha256 = "997c6fda6b13aee46c685bb1f96e6ee0d37c06702ac4cc38bfb30acce0f1f5b6"
-note = "third-party charset_normalizer vendored pure-python (MIT/Apache dual); mypyc .so removed per pure-wheel policy; T1 chain"
-
-[[file]]
-path = "charset_normalizer/__main__.py"
-upstream_path = ""
-status = "deviated"
-upstream_sha256 = ""
-deviated_sha256 = "cb3631311f8884a44763071295abc4bfca06770c6c47cf66af65f4f6a5c6769b"
-note = "third-party charset_normalizer vendored pure-python (MIT/Apache dual); mypyc .so removed per pure-wheel policy; T1 chain"
-
-[[file]]
-path = "charset_normalizer/api.py"
-upstream_path = ""
-status = "deviated"
-upstream_sha256 = ""
-deviated_sha256 = "55455aa5898f169c803379b698a9fdf808d94002312b238968abb870fc427f81"
-note = "third-party charset_normalizer vendored pure-python (MIT/Apache dual); mypyc .so removed per pure-wheel policy; T1 chain"
-
-[[file]]
-path = "charset_normalizer/cd.py"
-upstream_path = ""
-status = "deviated"
-upstream_sha256 = ""
-deviated_sha256 = "e9d24e66f774aeb1045af931e78900132f6a00ffee22e8963008b9c17f0e66c6"
-note = "third-party charset_normalizer vendored pure-python (MIT/Apache dual); mypyc .so removed per pure-wheel policy; T1 chain"
-
-[[file]]
-path = "charset_normalizer/cli/__init__.py"
-upstream_path = ""
-status = "deviated"
-upstream_sha256 = ""
-deviated_sha256 = "0fc23cea5164dbea72e3926fab19e24e2ad28ffb05c84eac8da63fd3e1b5b217"
-note = "third-party charset_normalizer vendored pure-python (MIT/Apache dual); mypyc .so removed per pure-wheel policy; T1 chain"
-
-[[file]]
-path = "charset_normalizer/cli/__main__.py"
-upstream_path = ""
-status = "deviated"
-upstream_sha256 = ""
-deviated_sha256 = "34f2b7c980245d713b52fb3a22a8a39206734ba1ba7e0b9116e297ce0a5ff147"
-note = "third-party charset_normalizer vendored pure-python (MIT/Apache dual); mypyc .so removed per pure-wheel policy; T1 chain"
-
-[[file]]
-path = "charset_normalizer/constant.py"
-upstream_path = ""
-status = "deviated"
-upstream_sha256 = ""
-deviated_sha256 = "b49d4ea5dbc4598665bc66f651caf81564cc1cca4f21a0e45d9491bd5833771b"
-note = "third-party charset_normalizer vendored pure-python (MIT/Apache dual); mypyc .so removed per pure-wheel policy; T1 chain"
-
-[[file]]
-path = "charset_normalizer/legacy.py"
-upstream_path = ""
-status = "deviated"
-upstream_sha256 = ""
-deviated_sha256 = "6e091d12fb9b4c238f94c28ecee10d5c73226ab877e956866d1bd64a522bd4a0"
-note = "third-party charset_normalizer vendored pure-python (MIT/Apache dual); mypyc .so removed per pure-wheel policy; T1 chain"
-
-[[file]]
-path = "charset_normalizer/md.py"
-upstream_path = ""
-status = "deviated"
-upstream_sha256 = ""
-deviated_sha256 = "cf596c0498a61f91f8d6fef54e296cba3204b178001deda9371f8a8084c378e3"
-note = "third-party charset_normalizer vendored pure-python (MIT/Apache dual); mypyc .so removed per pure-wheel policy; T1 chain"
-
-[[file]]
-path = "charset_normalizer/models.py"
-upstream_path = ""
-status = "deviated"
-upstream_sha256 = ""
-deviated_sha256 = "f8350cead0964f25fc4d477ee0355a6005ce07f7311c686b45a4b66bf38e406b"
-note = "third-party charset_normalizer vendored pure-python (MIT/Apache dual); mypyc .so removed per pure-wheel policy; T1 chain"
-
-[[file]]
-path = "charset_normalizer/py.typed"
-upstream_path = ""
-status = "deviated"
-upstream_sha256 = ""
-deviated_sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-note = "third-party charset_normalizer vendored pure-python (MIT/Apache dual); mypyc .so removed per pure-wheel policy; T1 chain"
-
-[[file]]
-path = "charset_normalizer/utils.py"
-upstream_path = ""
-status = "deviated"
-upstream_sha256 = ""
-deviated_sha256 = "119ec0e7fb286ef4c8c58585b1f5ee56c9f6261c31c33addd3cb20105d05ae71"
-note = "third-party charset_normalizer vendored pure-python (MIT/Apache dual); mypyc .so removed per pure-wheel policy; T1 chain"
-
-[[file]]
-path = "charset_normalizer/version.py"
-upstream_path = ""
-status = "deviated"
-upstream_sha256 = ""
-deviated_sha256 = "793b9181127b1e37a817ec597c6e6d970bd1130cac7654af99ba2cbda4a9cf57"
-note = "third-party charset_normalizer vendored pure-python (MIT/Apache dual); mypyc .so removed per pure-wheel policy; T1 chain"
-
-[[file]]
-path = "codecs.py"
-upstream_path = "codecs.py"
-status = "deviated"
-upstream_sha256 = "718f39b3ea68fe934214d789c5bce3005fa828040b03a72d2f715fc5e2647b7e"
-deviated_sha256 = "ca2b1968f37dd56a04b2c96755c95cb20a8150a10b778deb5eecab5d05db6a0c"
-note = "T1 chain: encode/decode helper unwrap"
-
-[[file]]
-path = "dataclasses.py"
-upstream_path = "dataclasses.py"
-status = "deviated"
-upstream_sha256 = "e8439c8b111856645a8b31e0dbbba532b494426399bad456079c0e5730ad322e"
-deviated_sha256 = "243dec663c3dbac5d7941f3016c18cd9ee0c69ec3e684f533087901624ce89c9"
-note = "T1 chain: __dataclass_HAS_DEFAULT_FACTORY__ sentinel + name fixes"
-
-[[file]]
-path = "decimal.py"
-upstream_path = "decimal.py"
-status = "deviated"
-upstream_sha256 = "af29fa99aa720a68cab5a6384c7beba4c8e9480a6c1d53a512efeeb5a7e5c781"
-deviated_sha256 = "f95c1c17e685891e2286d1dcda5a0e5ab526c7dc087a5318da5646b1138a3e66"
-note = "T1 chain: Context attribute surface"
-
-[[file]]
-path = "defusedxml/ElementTree.py"
-upstream_path = ""
-status = "deviated"
-upstream_sha256 = ""
-deviated_sha256 = "18b4aaa42cf9f285c63c6cb37ff1f296c3d2f7f75c1953f948de1d2bbcafc8fc"
-note = "third-party defusedxml vendored (PSF-2.0-style); T1 chain"
-
-[[file]]
-path = "defusedxml/__init__.py"
-upstream_path = ""
-status = "deviated"
-upstream_sha256 = ""
-deviated_sha256 = "45ccde695246eb8a76160cb58e50b36ee45d72110f9c468206bc6093c249fe93"
-note = "third-party defusedxml vendored (PSF-2.0-style); T1 chain"
-
-[[file]]
-path = "defusedxml/cElementTree.py"
-upstream_path = ""
-status = "deviated"
-upstream_sha256 = ""
-deviated_sha256 = "3e968a321deb536f6c63c6a600ae1fcc740a97c81c0180f48752c2a16eb646d9"
-note = "third-party defusedxml vendored (PSF-2.0-style); T1 chain"
-
-[[file]]
-path = "defusedxml/common.py"
-upstream_path = ""
-status = "deviated"
-upstream_sha256 = ""
-deviated_sha256 = "ddddba8cd5b87cd5f38235a1bd47ecf3701f8b3e44571143ba941bba09123197"
-note = "third-party defusedxml vendored (PSF-2.0-style); T1 chain"
-
-[[file]]
-path = "defusedxml/expatbuilder.py"
-upstream_path = ""
-status = "deviated"
-upstream_sha256 = ""
-deviated_sha256 = "6f8434e6fb01309e52b6489315fe26cb6ac61a8d60672125fe10b931e1533800"
-note = "third-party defusedxml vendored (PSF-2.0-style); T1 chain"
-
-[[file]]
-path = "defusedxml/expatreader.py"
-upstream_path = ""
-status = "deviated"
-upstream_sha256 = ""
-deviated_sha256 = "28ea52af0912be3e5218e63da535ce336e839f3d34aec26ddf75ae795bf3a6f7"
-note = "third-party defusedxml vendored (PSF-2.0-style); T1 chain"
-
-[[file]]
-path = "defusedxml/lxml.py"
-upstream_path = ""
-status = "deviated"
-upstream_sha256 = ""
-deviated_sha256 = "1d6f8b14a76b7cc4731dd8b455cb9cab8fa7f32cfbbff390c04416160d494180"
-note = "third-party defusedxml vendored (PSF-2.0-style); T1 chain"
-
-[[file]]
-path = "defusedxml/minidom.py"
-upstream_path = ""
-status = "deviated"
-upstream_sha256 = ""
-deviated_sha256 = "dd0720ca057026a7160d0dc86768a897ccec1f8731dc1457ef448f71dd1b1b68"
-note = "third-party defusedxml vendored (PSF-2.0-style); T1 chain"
-
-[[file]]
-path = "defusedxml/pulldom.py"
-upstream_path = ""
-status = "deviated"
-upstream_sha256 = ""
-deviated_sha256 = "0d88f60f695cef1a31677f207f3ba35e67739ddf28bf30ea1855eac976edc639"
-note = "third-party defusedxml vendored (PSF-2.0-style); T1 chain"
-
-[[file]]
-path = "defusedxml/sax.py"
-upstream_path = ""
-status = "deviated"
-upstream_sha256 = ""
-deviated_sha256 = "f92174f0cb1cda6584600330eb6a49e4533059c70e72d1529d0c032d82cb9551"
-note = "third-party defusedxml vendored (PSF-2.0-style); T1 chain"
-
-[[file]]
-path = "defusedxml/xmlrpc.py"
-upstream_path = ""
-status = "deviated"
-upstream_sha256 = ""
-deviated_sha256 = "eeb6507b2deda9771cd61aeb337469ace20253a7e2167cbd07d9789e64e2a310"
-note = "third-party defusedxml vendored (PSF-2.0-style); T1 chain"
-
-[[file]]
-path = "encodings/__init__.py"
-upstream_path = "encodings/__init__.py"
-status = "deviated"
-upstream_sha256 = "2b708410495acf12a6fad9d2de928dd89e567537c253eaa2b51aaae578e96c59"
-deviated_sha256 = "79b73e4535a30d8ce975f821383507108bb2d7635c6dcdc2b10ae5ad1d45315c"
-note = "T1 chain: codec registry adjustments for runtime search path"
-
-[[file]]
-path = "encodings/aliases.py"
-upstream_path = "encodings/aliases.py"
-status = "deviated"
-upstream_sha256 = "1ee993f8eb4986999b6501381e53947be9a04443626cb48b4190bcff2e87d3b4"
-deviated_sha256 = "533ba267321ba389d99d0c532a89dbb074f2a0b08efd2bb591fdd0a05a19afd0"
-note = "T1 chain: alias table adjustments"
-
-[[file]]
-path = "http/__init__.py"
-upstream_path = "http/__init__.py"
-status = "deviated"
-upstream_sha256 = "ff5f3d443b9174909975e1c9c67573cf2ffd5fbff9fc2e28529c0601cd17ed9b"
-deviated_sha256 = "17e3cba4070b663e661ae9538ca0d951716fcd74446478ac8e1e4ea34331225b"
-note = "T1 chain: import surface adjustments"
-
-[[file]]
-path = "http/cookies.py"
-upstream_path = "http/cookies.py"
-status = "deviated"
-upstream_sha256 = "d1165ad2e38352b3ca654ef5cc3dbb01233d590f1bed7fc7d1d7c1451a5a11ab"
-deviated_sha256 = "21c16738c66c55ac4f619dabbcac9eecdc431c203adfb0eb7f1538431cb211d7"
-note = "T1 chain: import surface adjustments"
-
-[[file]]
-path = "importlib/_abc.py"
-upstream_path = "importlib/_abc.py"
-status = "deviated"
-upstream_sha256 = "80aab7931dc999dee581c8b8b56fcd973fe156335a96ceeaf6acfc03cebf10e8"
-deviated_sha256 = "f1113266f2abc26450187df6341beb8d5db6dcb207e00c9735cbd5174d7cce09"
-note = "T1 chain: Loader metaclass=ABCMeta changed to plain class to break abc/importlib cycle (see docs/lxml-shim.md)"
-
-[[file]]
-path = "importlib/_bootstrap.py"
-upstream_path = "importlib/_bootstrap.py"
-status = "deviated"
-upstream_sha256 = "e50d35b1191ecbc5f7faecc73f54efd242bcf24c510e4ea5eb64bfba9458c0e3"
-deviated_sha256 = "d99d56d15a13a1958566d24afd41f4db3b9c1635eb291d83ddff285adca15427"
-note = "T1 chain: sys/_warnings module seeding"
-
-[[file]]
-path = "jmespath/__init__.py"
-upstream_path = ""
-status = "deviated"
-upstream_sha256 = ""
-deviated_sha256 = "4f75d9137c79631e00dd5e0db1ec4bbb14c19413df2d00b472f5bc521c4b35b1"
-note = "third-party jmespath vendored (MIT); T1 chain"
-
-[[file]]
-path = "parsel/__init__.py"
-upstream_path = ""
-status = "deviated"
-upstream_sha256 = ""
-deviated_sha256 = "3ceb9e3c8fbf670a2be5bf7129942d1afe2fb8170827043444e0ab5a77ad6139"
-note = "shim re-exec of site-packages parsel (T1 chain; see docs/lxml-shim.md)"
-
-[[file]]
-path = "parsel/csstranslator/__init__.py"
-upstream_path = ""
-status = "deviated"
-upstream_sha256 = ""
-deviated_sha256 = "f4b6334e0f576a620003b9b5201707632b7c731d83da5a7823031394482b892a"
-note = "shim re-exec of site-packages parsel (T1 chain; see docs/lxml-shim.md)"
-
-[[file]]
-path = "parsel/selector.py"
-upstream_path = ""
-status = "deviated"
-upstream_sha256 = ""
-deviated_sha256 = "e7bc9df58c04a5fb2e92cd190ea02d247590c54f045fd8becb0092d6f1c8e883"
-note = "shim re-exec of site-packages parsel (T1 chain; see docs/lxml-shim.md)"
-
-[[file]]
-path = "pyexpat.py"
-upstream_path = ""
-status = "deviated"
-upstream_sha256 = ""
-deviated_sha256 = "e09ab0e665cdcc13532d151f84f754ff96bf2330e5125b0f93e194bd9769e7db"
-note = "runtime-side pyexpat surface stub (upstream is a C module); T1 chain"
-
-[[file]]
-path = "select.py"
-upstream_path = ""
-status = "deviated"
-upstream_sha256 = ""
-deviated_sha256 = "6e4e44f7a9af71bf712bdea957422700ad8405946ef949147611afa438393615"
-note = "runtime-side select surface stub (upstream is a C module); T1 chain"
-
-[[file]]
-path = "socket.py"
-upstream_path = "socket.py"
-status = "deviated"
-upstream_sha256 = "4a8747dc77383df192b22bb95f4620cadafeffe6b621c61b1f3b8c386393643c"
-deviated_sha256 = "df288f857e24b19bb49bdac99c24dc76b776bdccd1409bd36ad0dfed34d58e2d"
-note = "T1 chain: socket surface stub adjustments"
-
-[[file]]
-path = "string.py"
-upstream_path = ""
-status = "deviated"
-upstream_sha256 = ""
-deviated_sha256 = "ed77eaa9cd86d02e3ada8c9ff0a5cc8666c764b77317c7d54cbf841bd2a248a0"
-note = "runtime-side Template/Formatter restoration (upstream 3.14 string is a package); s027 fix pass"
-
-[[file]]
-path = "urllib/request.py"
-upstream_path = "urllib/request.py"
-status = "deviated"
-upstream_sha256 = "f3464032de00c1fbc839f4657577065ea6efb30d99e5a86e204b1aefdcb77430"
-deviated_sha256 = "6fb4784ff39b2b5fdfda1025f7a99f5dec322133cfbe5455a3bdd03a56945075"
-note = "T1 chain: import surface adjustments"
+deviated_sha256 = "4a209086ad01cdd4e86565ebd6bb881bf017230afb8a4f2d72726e42266b6cab"
+note = "antipythany shim with no CPython counterpart (zlib is a C module): zlib constants, error, and a GZS1-framed storage compress/decompress; real DEFLATE raises NotImplementedError lazily (4b228b8)."
 
 [[file]]
 path = "zope/__init__.py"
@@ -2965,13 +3612,38 @@ path = "zope/interface/__init__.py"
 upstream_path = ""
 status = "deviated"
 upstream_sha256 = ""
-deviated_sha256 = "0c0b298561ee534fcfec46aeced7680623c029302f81f1f4b868c2830c4d74e4"
-note = "advisory-only zope.interface shim package (T1 chain; see docs/lxml-shim.md)"
+deviated_sha256 = "c19eea998aa6c2446a29b084f9088f0387fa3e4c8798b129c55fd45ffd0fa779"
+note = "advisory-only zope.interface shim package (T1 chain; see docs/lxml-shim.md) Re-declared 2026-10-25 (A-4 closeout): 4b228b8 added direct submodule imports (declarations, adapter, interface) for twisted.python.components."
 
 [[file]]
 path = "zope/interface/_shim.py"
 upstream_path = ""
 status = "deviated"
 upstream_sha256 = ""
-deviated_sha256 = "937d3bbe7b7d1cd6e1dad24ad2fc75a375676b8fe6a3ce8b3391bc22152dec85"
-note = "advisory-only zope.interface shim package (T1 chain; see docs/lxml-shim.md)"
+deviated_sha256 = "1da49e94a99c400d7d3e9ca79b06a9560a4c173f0f787ea16318e47de83cdba3"
+note = "advisory-only zope.interface shim package (T1 chain; see docs/lxml-shim.md) Re-declared 2026-10-25 (A-4 closeout): 4b228b8 extended the shim (Interface submodule surface, AdapterRegistry, Declaration iterable) per the lxml-shim wave."
+
+[[file]]
+path = "zope/interface/adapter.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "1bafeb0e769ec6e93168d2fd4a3b2e3ee66f08308958395ef2cb1921e02887d0"
+note = "antipythany shim with no CPython counterpart (zope.interface is a third-party project): inert AdapterRegistry whose lookups always miss; the gate never routes real adapters (4b228b8)."
+
+[[file]]
+path = "zope/interface/declarations.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "ca5d91c189c0add21f12c5d8628ee3e0fc8bdf88971d1e7838be5e657c1a9b57"
+note = "antipythany shim with no CPython counterpart (zope.interface is third-party): inert InterfaceClass/Attribute/implementer declaration surfaces for twisted.python.components (4b228b8)."
+
+[[file]]
+path = "zope/interface/interface.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "de37673dc0b88f1c0434b0618e888b00ba6c490433c02ef25a1136c2903cd331"
+note = "antipythany shim with no CPython counterpart (zope.interface is third-party): minimal InterfaceClass/SpecificationBase token surface backing the advisory-only zope shim (4b228b8)."
+

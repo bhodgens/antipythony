@@ -227,12 +227,12 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
             // tuples for the first unhashable element).
             if ap_obj::ops::hash(key).is_err() {
                 let inner =
-                    first_unhashable_type(key).unwrap_or_else(|| key.type_name().to_string());
+                    first_unhashable_type(key).unwrap_or_else(|| key_type_name(key));
                 return Err(raise(
                     "TypeError",
                     format!(
                         "cannot use '{}' as a dict key (unhashable type: '{}')",
-                        key.type_name(),
+                        key_type_name(key),
                         inner
                     ),
                 ));
@@ -552,11 +552,24 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
         }
         // A-3 item 5: stat_result (opaque, slice_parts-populated) subscripts
         // and slices through slice_parts like a plain sequence.
+        // A-4 item 5b: slices return a TUPLE — stat_result and uname_result
+        // are structseqs (tuple subclasses), st[:2] must be a tuple in
+        // CPython, not a list.
         (Value::Obj(o), _k)
             if o.kind == ap_obj::ObjKind::Opaque && !o.slice_parts.borrow().is_empty() =>
         {
             let parts = o.slice_parts.borrow().clone();
-            return subscript_get(&Value::List(PyList::from_vec(parts)), key);
+            return subscript_get(&Value::Tuple(Gc::new(Tuple(parts))), key);
+        }
+        // A-4 item 1: bytearray subscripts — ba[i] → int, ba[a:b] →
+        // bytearray (CPython returns the SAME type for a slice).
+        (Value::Obj(o), _k) if o.kind == ap_obj::ObjKind::Opaque && o.name == "bytearray" => {
+            let data = crate::builtins_modules::bytearray_state(obj)?;
+            match subscript_get(&Value::Bytes(Gc::new(data)), key)? {
+                Value::Int(n) => Ok(Value::Int(n)),
+                Value::Bytes(b) => Ok(crate::builtins_modules::make_bytearray(b.as_ref().clone())),
+                other => Ok(other),
+            }
         }
         (Value::Obj(o), _k) if o.kind == ap_obj::ObjKind::UserInstance => {
             // T1-d (attr/_make.py): builtin-backed subclass instances carry
@@ -670,6 +683,17 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
     }
 }
 
+/// A-4 item 1: observable type name for dict-key errors — bytearray Objs
+/// report 'bytearray', not the Opaque fallback 'object'.
+pub(crate) fn key_type_name(v: &Value) -> String {
+    if let Value::Obj(o) = v {
+        if o.kind == ap_obj::ObjKind::Opaque && o.name == "bytearray" {
+            return "bytearray".to_string();
+        }
+    }
+    v.type_name().to_string()
+}
+
 fn normalize_index(i: i64, len: i64) -> Option<i64> {
     let idx = if i < 0 { i + len } else { i };
     if idx >= 0 && idx < len {
@@ -682,6 +706,44 @@ fn normalize_index(i: i64, len: i64) -> Option<i64> {
 /// obj[key] = v store.
 pub fn subscript_set(obj: &Value, key: &Value, v: Value) -> Result<(), Flow> {
     match obj {
+        // A-4 item 1: bytearray item assignment (ba[0] = 65) and slice
+        // replacement (ba[1:2] = b"x", equal-length only at v0).
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque && o.name == "bytearray" => {
+            let k = subscript_key(key)?;
+            let mut data = crate::builtins_modules::bytearray_state(obj)?;
+            match (&k, &v) {
+                (Key::Index(i), Value::Int(n)) => {
+                    let idx = normalize_index(*i, data.len() as i64).ok_or_else(|| {
+                        raise("IndexError", "bytearray assignment index out of range")
+                    })?;
+                    let b = n.to_i64().unwrap_or(0);
+                    if !(0..=255).contains(&b) {
+                        return Err(raise("ValueError", "byte must be in range(0, 256)"));
+                    }
+                    data[idx as usize] = b as u8;
+                    crate::builtins_modules::bytearray_set(obj, data)
+                }
+                (Key::Slice { lo, hi, step }, Value::Bytes(nb)) if *step == 1 => {
+                    let len = data.len() as i64;
+                    let clamp = |x: i64| -> i64 {
+                        let x = if x < 0 { x + len } else { x };
+                        x.clamp(0, len)
+                    };
+                    let start = clamp(lo.unwrap_or(0));
+                    let stop = clamp(hi.unwrap_or(len));
+                    let span = (stop - start) as usize;
+                    if nb.len() != span {
+                        return Err(raise(
+                            "NotImplementedError",
+                            "bytearray slice resize unsupported (v0)",
+                        ));
+                    }
+                    data[start as usize..stop as usize].copy_from_slice(nb);
+                    crate::builtins_modules::bytearray_set(obj, data)
+                }
+                _ => Err(raise("TypeError", "an integer is required (got type str)")),
+            }
+        }
         Value::List(l) => {
             let k = subscript_key(key)?;
             let i = match k {
@@ -701,8 +763,8 @@ pub fn subscript_set(obj: &Value, key: &Value, v: Value) -> Result<(), Flow> {
                         "TypeError",
                         format!(
                             "cannot use '{}' as a dict key (unhashable type: '{}')",
-                            key.type_name(),
-                            key.type_name()
+                            key_type_name(key),
+                            key_type_name(key)
                         ),
                     )
                     .tap(|_| {
