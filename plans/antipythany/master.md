@@ -3,8 +3,17 @@
 A Python 3.14-compatible runtime and compiler, written in Rust. Compiles Python to
 native single static binaries (Go-style UX) and WasmGC modules (portable, sandboxed).
 Tracing GC instead of refcounting. No GIL. uv-based dependency resolution at build
-time. Byte-exact differential conformance against CPython is the exit gate for every
-phase.
+time. Differential conformance against CPython is the exit gate for every phase.
+
+**Pass-bar framing (Amendment A-3, docs/compat-contract.md §9, 2026-10-24):**
+byte-exact differential testing against CPython 3.14 remains the measurement
+methodology and quality bar in every phase, but during the pre-Wasm era (until
+Plan 03 completes) it is not a binary pass/fail requirement: the gate is
+semantic correctness (values, control flow, exceptions raised, exit codes) plus
+tracked, registered exactness divergences (divergence class X / D6 — error
+message wording, traceback frame formatting, float-repr edge cases, diagnostic
+text). "Works - best effort" on bytes; correct on semantics. After Plan 03
+(Wasm) completes, full byte-exactness returns as a requirement phase.
 
 ## Design intent (owner statement, 2026-10-20)
 
@@ -46,7 +55,8 @@ later" as license for the no-GIL goal to slip silently.
     - Architecture stays OURS: parser/AST, IR, eval loop, object model, GC, import
       machinery. RustPython's architecture conflicts with locked decisions (ruff
       parser, ap-ir, AOT/WasmGC goals) and its conformance ceiling is below our
-      byte-exact vs CPython 3.14 gate.
+      differential-conformance gate vs CPython 3.14 (semantics always; byte-exact
+      per Amendment A-3 post-Wasm).
     - Leaf-level adoption APPROVED with standard MIT attribution (same treatment
       as monty/ruff): (a) vm/src/builtins/* function surfaces - pure-Rust
       implementations (bytes.fromhex, os.utime, base64.urlsafe_b64encode, ...);

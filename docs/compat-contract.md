@@ -17,6 +17,7 @@ may relax a clause silently.
 | --- | --- | --- | --- | --- |
 | A-1 | 2026-10-16 | C-16 | Quoted ZeroDivisionError messages corrected: `1.0/0.0` and `1.0%0.0` raise `division by zero` (identical to the int text), not `float division` / `float modulo`. Rule (IEEE-754, message must equal reference) unchanged. | `python3.14 -c "1.0/0.0"` / `-c "1.0%0.0"` → `ZeroDivisionError: division by zero` |
 | A-2 | 2026-10-16 | C-14 | Digit-limit text split into the two measured forms: str(int) form has no digit count; int(str) form adds `: value has N digits`. Both now quoted in full. | `python3.14 -c "str(10**5000)"` vs `-c "int('1'*5000)"` — see clause body for exact bytes |
+| A-3 | 2026-10-24 | §9 | Pre-Wasm era policy: byte-exactness is best-effort for non-critical (serialization/exactness) channels — error-message wording, traceback frame formatting, float-repr edge cases, diagnostic text. Semantic correctness (exit codes, control flow, values, exceptions raised) remains gate-blocking. Byte-exact differential testing is UNCHANGED as the measurement methodology and quality bar; it is no longer a binary pass/fail requirement for program compatibility until Plan 03 (Wasm) completes. New divergence-class register (Class S / Class X) + D6. Full byte-exactness returns as a requirement phase after Plan 03 completes. User directive 2026-10-24. | n/a (policy amendment, no probe) |
 
 ## 0. How to read this document
 
@@ -569,16 +570,41 @@ dropped side effects across an OSR/deopt boundary).
 
 ## 9. Documented divergences register
 
-| Id | Divergence | Clauses | Test policy |
-| --- | --- | --- | --- |
-| D1 | `__del__`/finalizer/weakref-callback timing is GC-based, not deterministic at last-reference-drop | C-19..C-23 | Property-style assertions only (C-23); never byte-interleave diffs of finalizer output against heartbeat prints |
-| D2 | v1 refuses C-extension imports at compile time instead of loading them | C-06..C-11 | Positive test: refusal with stable diagnostic; no partial-module state observable |
-| D3 | Refcount-introspection APIs are corpus-prohibited (presence/absence not gated) | C-19 | Lint + harness rejection; no conformance case may call them |
-| D4 | wasm mode has no tier-1 in v1 (timing only) | C-31 | Excluded from corpus by construction (no perf assertions in conformance cases) |
-| D5 | `re` matching aborts with `re.error("ap: matching step limit exceeded")` after 4M atomic steps; CPython's backtracker instead runs unboundedly (catastrophic patterns like `(a+)+b` on `"a"*22` complete in CPython, raise here) | C-01, C-02 | No corpus case may rely on completing catastrophic-backtracking patterns; the abort is a stable diagnostic |
+**Divergence classes (Amendment A-3, 2026-10-24).** Every registered output
+divergence carries one of two classes:
 
-No other divergence exists. Anything not in D1–D5 MUST be byte-identical to the
-reference on the three channels (C-01, C-02, C-24, C-27).
+- **Class S (semantics):** the program behaves *incorrectly* relative to the
+  reference — wrong values, wrong control flow, a missing or spurious
+  exception, a wrong exit code. Class-S mismatches are gate-blocking: they are
+  bugs unless registered here, and registered Class-S entries keep the exact
+  test policy stated in their row.
+- **Class X (serialization/exactness):** the program *works correctly* (values,
+  control flow, exceptions raised, exit code all match the reference) but
+  non-critical output bytes differ — error-message wording, traceback frame
+  formatting, float-repr edge cases, diagnostic text. During the **pre-Wasm
+  era** (until Plan 03 completes), Class-X divergences are TRACKED (each one
+  registered here with a test policy) and TOLERATED: they do not fail the
+  gate. After Plan 03 (Wasm) completes, full byte-exactness returns as a
+  requirement phase and Class-X tolerance is withdrawn by a further amendment.
+
+Byte-exact differential testing against the pinned reference remains the
+measurement methodology in both eras (C-01, C-24, C-27): the corpus still
+compares all three channels to MEASURE divergence; what changes pre-Wasm is
+only the pass bar — semantic correctness + tracked exactness divergences.
+
+| Id | Class | Divergence | Clauses | Test policy |
+| --- | --- | --- | --- |
+| D1 | S | `__del__`/finalizer/weakref-callback timing is GC-based, not deterministic at last-reference-drop | C-19..C-23 | Property-style assertions only (C-23); never byte-interleave diffs of finalizer output against heartbeat prints |
+| D2 | S | v1 refuses C-extension imports at compile time instead of loading them | C-06..C-11 | Positive test: refusal with stable diagnostic; no partial-module state observable |
+| D3 | S | Refcount-introspection APIs are corpus-prohibited (presence/absence not gated) | C-19 | Lint + harness rejection; no conformance case may call them |
+| D4 | S | wasm mode has no tier-1 in v1 (timing only) | C-31 | Excluded from corpus by construction (no perf assertions in conformance cases) |
+| D5 | S | `re` matching aborts with `re.error("ap: matching step limit exceeded")` after 4M atomic steps; CPython's backtracker instead runs unboundedly (catastrophic patterns like `(a+)+b` on `"a"*22` complete in CPython, raise here) | C-01, C-02 | No corpus case may rely on completing catastrophic-backtracking patterns; the abort is a stable diagnostic |
+| D6 | X | **Pre-Wasm era (Amendment A-3, 2026-10-24): byte-exactness is best-effort for non-critical channels** — error message wording, traceback frame formatting, float repr edge cases, diagnostic text. Semantic correctness (exit codes, control flow, values, exceptions raised) remains gate-blocking (Class S). Full byte-exactness returns as a requirement phase after Plan 03 (Wasm) completes. | §9 classes; C-24, C-27 (methodology unchanged) | Differential harness still measures all three channels; a Class-X mismatch is recorded as a tracked divergence (case header cites D6 or a specific D-id) rather than failing the gate. No new Class-X tolerance may be used to mask a semantic difference — if values/control-flow/exit code differ, it is Class S and still a bug |
+
+No other divergence exists. Anything not in D1–D6 MUST match the reference on
+the three channels (C-01, C-02, C-24, C-27); during the pre-Wasm era
+(Amendment A-3) Class-X byte mismatches inside the D6 scope are the sanctioned
+exception — tolerated, tracked, and withdrawn once Plan 03 completes.
 
 ## 10. Contract versioning and evolution
 

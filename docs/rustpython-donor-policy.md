@@ -9,7 +9,9 @@ the same treatment as monty and ruff.
 Parser/AST, compiler IR, eval loop, object model, GC, and import machinery are
 ours to build. RustPython's architecture conflicts with locked decisions (ruff
 parser, ap-ir, AOT/WasmGC goals), and its conformance ceiling is below our
-byte-exact vs CPython 3.14 gate.
+differential-conformance gate vs CPython 3.14 (semantics always gate-blocking;
+byte-exactness per Amendment A-3, docs/compat-contract.md - best-effort
+pre-Wasm, required again post-Wasm).
 
 ## Tier 2 - leaf-level adoption: APPROVED (MIT attribution required)
 
