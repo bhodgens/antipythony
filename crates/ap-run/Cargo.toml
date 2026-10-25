@@ -30,6 +30,13 @@ sha2 = "0.10"
 # vendored URL-cleanup path. Crate is in the offline registry cache.
 unicode-normalization = "0.1"
 
+# A-1 (RustPython adaptation wave 1): os.pipe/pipe2, os.kill/killpg,
+# utimensat-based os.utime — direct libc syscalls, following the donor's
+# host_env/posix.rs layer (RustPython hosts them behind nix; we call libc
+# directly to avoid the extra dependency).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [lints]
 workspace = true  # robustness-ci 02.01 - see root Cargo.toml [workspace.lints]
 

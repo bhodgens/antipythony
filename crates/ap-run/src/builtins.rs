@@ -801,11 +801,22 @@ fn check_isinstance(v: &Value, t: &Value) -> Result<Value, Flow> {
             // T1 (dataclasses): typing.Union is a fn-MARKER (v0) — isinstance
             // against a special form is False, not a TypeError (CPython does
             // a metaclass __instancecheck__; v0 tolerance, documented).
+            // T2 (typing_extensions 4.16): ParamSpec/TypeVar/TypeVarTuple
+            // ctor markers join the same tolerance — _TypeVarLikeMeta
+            // .__instancecheck__ delegates to isinstance(x, typing.ParamSpec)
+            // and MUST NOT raise (the backported sentinel/ParamSpec chain
+            // dies on the miss).
             if matches!(
                 o.kind,
                 ap_obj::ObjKind::BuiltinFn | ap_obj::ObjKind::Function
             ) && (o.name == "Union"
                 || o.name == "_typing.Union"
+                || matches!(
+                    o.name.as_str(),
+                    "ParamSpec" | "TypeVar" | "TypeVarTuple" | "NewType"
+                )
+                || o.name.starts_with("_typing.ParamSpec")
+                || o.name.starts_with("_typing.TypeVar")
                 || o.name.starts_with("__ap_typing_"))
             {
                 return Ok(Value::Bool(false));
@@ -831,6 +842,32 @@ fn check_isinstance(v: &Value, t: &Value) -> Result<Value, Flow> {
             let is_partial = matches!(v, Value::Obj(vo) if vo.kind == ap_obj::ObjKind::BuiltinFn
                 && vo.name.starts_with("<partial:"));
             Ok(Value::Bool(is_partial))
+        }
+        // T1-d (attrs _create_slots_class): `isinstance(cached_prop,
+        // cached_property)` — the v0 functools.cached_property is a
+        // pass-through fn; only functions it decorated (marker attr) answer
+        // True.
+        _ if matches!(
+            t,
+            Value::Obj(o)
+                if matches!(
+                    o.kind,
+                    ap_obj::ObjKind::BuiltinFn | ap_obj::ObjKind::Function
+                ) && matches!(
+                    o.name.as_str(),
+                    "cached_property" | "functools.cached_property"
+                )
+        ) =>
+        {
+            Ok(Value::Bool(matches!(
+                v,
+                Value::Obj(vo) if vo.kind == ap_obj::ObjKind::Function
+                    && vo
+                        .attrs
+                        .borrow()
+                        .get(&Value::Str(PyString::new("__ap_cached_property__")))
+                        .is_some_and(|x| x.is_truthy())
+            )))
         }
         _ => Err(raise(
             "TypeError",
@@ -869,6 +906,82 @@ pub fn type_matches(v: &Value, want: &str) -> bool {
         (Value::Frozen(_), "set") => false,
         // s014: namedtuple instances ARE tuples (NamedTuple payload kind).
         (Value::Obj(o), "tuple") if o.kind == ap_obj::ObjKind::NamedTuple => true,
+        // T1-d (inspect.iscode / ismethod...): a Namespace/Opaque payload
+        // (<code>, coroutine, thread) IS an instance of its interned
+        // name-Type — compare the payload name, not the flattened type.
+        (Value::Obj(o), b)
+            if matches!(
+                o.kind,
+                ap_obj::ObjKind::Namespace
+                    | ap_obj::ObjKind::Opaque
+                    | ap_obj::ObjKind::NamedTuple
+            ) =>
+        {
+            o.name.as_str() == b
+        }
+        // T1-d (attrs _create_slots_class): Descriptor instances answer
+        // classmethod/staticmethod/property isinstance probes by descr kind.
+        (Value::Obj(o), b)
+            if o.kind == ap_obj::ObjKind::Descriptor =>
+        {
+            let kind = o.descr_kind.borrow().clone().unwrap_or_default();
+            match b {
+                "classmethod" => kind == "classmethod",
+                "staticmethod" => kind == "staticmethod",
+                "property" => kind == "property",
+                _ => false,
+            }
+        }
+        // T1-d (attrs _create_slots_class cached_property probe): the v0
+        // functools.cached_property is a pass-through fn — plain functions
+        // (the decorated results) answer True against its marker.
+        (Value::Obj(o), "cached_property")
+            if o.kind == ap_obj::ObjKind::Function =>
+        {
+            true
+        }
+        // T1-d (scrapy.http.Headers.update): CPython registers dict as a
+        // MutableMapping/Collection/Iterable/etc at the C level; our ABC
+        // registry can't see native dicts, so answer by name here.
+        (Value::Dict(_), "Mapping")
+        | (Value::Dict(_), "MutableMapping")
+        | (Value::Dict(_), "Collection")
+        | (Value::Dict(_), "Iterable")
+        | (Value::Dict(_), "Container")
+        | (Value::Dict(_), "Sized")
+        | (Value::Dict(_), "Hashable") => true,
+        (Value::List(_), "Iterable")
+        | (Value::List(_), "Collection")
+        | (Value::List(_), "Container")
+        | (Value::List(_), "Sized")
+        | (Value::List(_), "Sequence")
+        | (Value::List(_), "MutableSequence") => true,
+        (Value::Tuple(_), "Iterable")
+        | (Value::Tuple(_), "Collection")
+        | (Value::Tuple(_), "Container")
+        | (Value::Tuple(_), "Sized")
+        | (Value::Tuple(_), "Sequence")
+        | (Value::Tuple(_), "Hashable") => true,
+        (Value::Str(_), "Iterable")
+        | (Value::Str(_), "Collection")
+        | (Value::Str(_), "Container")
+        | (Value::Str(_), "Sized")
+        | (Value::Str(_), "Sequence")
+        | (Value::Str(_), "Hashable")
+        | (Value::Str(_), "ByteString") => true,
+        (Value::Bytes(_), "Iterable")
+        | (Value::Bytes(_), "Collection")
+        | (Value::Bytes(_), "Container")
+        | (Value::Bytes(_), "Sized")
+        | (Value::Bytes(_), "Sequence")
+        | (Value::Bytes(_), "Hashable")
+        | (Value::Bytes(_), "ByteString") => true,
+        (Value::Set(_), "Iterable")
+        | (Value::Set(_), "Collection")
+        | (Value::Set(_), "Container")
+        | (Value::Set(_), "Sized")
+        | (Value::Set(_), "Set")
+        | (Value::Set(_), "MutableSet") => true,
         (a, b) => a.type_name() == b,
     }
 }
@@ -1635,6 +1748,11 @@ pub fn make_sys_module(interp: &Interpreter) -> Value {
         ("prefix", "/usr/local"),
         ("exec_prefix", "/usr/local"),
         ("platform", "darwin"),
+        // T1-d (packaging.tags sys_tags): CPython's macOS builds carry an
+        // empty abiflags (the "m"/"d" suffixes are gone in 3.8+).
+        ("abiflags", ""),
+        // T1-d (sysconfig paths): CPython 3.14 sys.platlibdir default "lib".
+        ("platlibdir", "lib"),
         ("implementation", "cpython"),
         ("dont_write_bytecode", "True"),
         ("_base_executable", "/usr/local/bin/python3.14"),
@@ -1852,6 +1970,12 @@ pub fn make_sys_module(interp: &Interpreter) -> Value {
         let _ = attrs.set(
             Value::Str(PyString::new("cache_tag")),
             Value::Str(PyString::new("cpython-314")),
+        );
+        // T1-d (sysconfig._get_sysconfigdata_name): multiarch suffix so the
+        // vendored _sysconfigdata__darwin_darwin module resolves.
+        let _ = attrs.set(
+            Value::Str(PyString::new("_multiarch")),
+            Value::Str(PyString::new("darwin")),
         );
         let _ = attrs.set(
             Value::Str(PyString::new("version")),
@@ -2087,7 +2211,38 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
                     Value::Str(PyString::new("f_lineno")),
                     Value::Int(Int::from_i64(lineno as i64)),
                 );
-                let _ = attrs.set(Value::Str(PyString::new("f_back")), Value::None);
+                // T1-d fix (twisted.compat.currentframe walks f_back):
+                // chain to the next-outer frame as a synthetic stub. Depth
+                // rides slice_parts so repeated f_back walks outward.
+                let depth = frame
+                    .slice_parts
+                    .borrow()
+                    .first()
+                    .and_then(|v| v.as_int())
+                    .and_then(|i| i.to_i64())
+                    .unwrap_or(0);
+                let stack_len = interp.frame_stack.borrow().len();
+                // Generous cap: twisted.compat.currentframe(2)+ walks past
+                // the import machinery; always allow a stub chain long
+                // enough (min 32) — the walk ends at None.
+                let outer_exists = (depth as usize + 1) < (stack_len.max(32));
+                let f_back = if outer_exists {
+                    let fb = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<frame>");
+                    let _ = fb.attrs.borrow_mut().set(
+                        Value::Str(PyString::new("f_back")),
+                        Value::None,
+                    );
+                    *fb.slice_parts.borrow_mut() =
+                        vec![Value::Int(Int::from_i64(depth + 1))];
+                    let _ = fb.attrs.borrow_mut().set(
+                        Value::Str(PyString::new("f_globals")),
+                        Value::Dict(interp.globals.clone()),
+                    );
+                    Value::Obj(fb)
+                } else {
+                    Value::None
+                };
+                let _ = attrs.set(Value::Str(PyString::new("f_back")), f_back);
                 // T1 (importlib.resources._infer_caller): inspect.stack()
                 // reads f_lasti + code.co_positions(); the stub serves
                 // position 0 / an empty positions iterator respectively.
@@ -2097,6 +2252,34 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
                 );
             }
             Some(Ok(Value::Obj(frame)))
+        }
+        // T1-d (scrapy chain, orchestrator handoff): `input([prompt])` —
+        // print the prompt to stdout WITHOUT a trailing newline, read one
+        // line from stdin, strip the trailing newline (CPython semantics).
+        "input" => {
+            let r = (|| {
+                if let Some(p) = args.first() {
+                    let text = py_str_of(p).unwrap_or_default();
+                    interp.write_out(&text);
+                    let _ = std::io::Write::flush(&mut std::io::stdout());
+                }
+                let mut line = String::new();
+                match std::io::stdin().read_line(&mut line) {
+                    Ok(0) => {
+                        return Err(raise("EOFError", "EOF when reading a line"));
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        return Err(raise("OSError", format!("input() read failed: {e}")));
+                    }
+                }
+                let stripped = line
+                    .strip_suffix('\n')
+                    .map(|s| s.strip_suffix('\r').unwrap_or(s))
+                    .unwrap_or(&line);
+                Ok(Value::Str(PyString::new(stripped.to_string())))
+            })();
+            Some(r)
         }
         "exit" => {
             let code = args
@@ -2143,11 +2326,52 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
             ap_obj::int::get_int_str_digit_limit() as i64,
         )))),
         "getdefaultencoding" => Some(Ok(Value::Str(PyString::new("utf-8")))),
-        "exc_info" => Some(Ok(Value::Tuple(Gc::new(Tuple(vec![
-            Value::None,
-            Value::None,
-            Value::None,
-        ]))))),
+        // T1-d fix: sys.exc_info() returns the IN-FLIGHT handled exception
+        // (interp.current_exception), not (None,None,None) — twisted's
+        // Failure() and log.err() depend on it.
+        "exc_info" => {
+            let interp2 = match crate::builtins_modules::current_interp() {
+                Some(i) => i,
+                None => {
+                    return Some(Ok(Value::Tuple(Gc::new(Tuple(vec![
+                        Value::None,
+                        Value::None,
+                        Value::None,
+                    ])))))
+                }
+            };
+            let inflight = interp2.current_exception.borrow().clone();
+            match inflight {
+                Some(ev) => {
+                    let cls = crate::classes::exc_class_value(&interp2, &ev.class)
+                        .or_else(|| crate::classes::exc_class_value(&interp2, "Exception"))
+                        .unwrap_or_else(|| {
+                            Value::Obj(ap_obj::PyObject::new(
+                                ap_obj::ObjKind::Type,
+                                ev.class.clone(),
+                            ))
+                        });
+                    let inst = ap_obj::PyObject::new(
+                        ap_obj::ObjKind::Exception,
+                        ev.class.clone(),
+                    );
+                    *inst.args.borrow_mut() = ev.args.clone();
+                    let interp3 = interp2.rc();
+                    let tb = crate::classes::traceback_value(&interp3);
+                    return Some(Ok(Value::Tuple(Gc::new(Tuple(vec![
+                        cls,
+                        Value::Obj(inst),
+                        tb,
+                    ])))));
+                }
+                None => {}
+            }
+            Some(Ok(Value::Tuple(Gc::new(Tuple(vec![
+                Value::None,
+                Value::None,
+                Value::None,
+            ])))))
+        }
         // T1 (scrapy fix pass): sys.exception() — the active handled exception
         // in CPython; v0 returns None (matches the exc_info stub above).
         "exception" => Some(Ok(Value::None)),
@@ -2221,6 +2445,8 @@ pub fn install_builtins(interp: &Interpreter) {
         "tuple",
         "type",
         "zip",
+        // T1-d (scrapy chain): input([prompt]) — prompt + stdin line read.
+        "input",
     ];
     for n in names {
         let o = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, *n);
@@ -2796,9 +3022,28 @@ pub fn builtin_setattr(interp: &Interpreter, args: &[Value]) -> BResult {
                 .set(Value::Str(PyString::new(name.clone())), v.clone());
             Ok(Value::None)
         }
+        // T1-d (typing._make_nmtuple): `nm_tpl.__new__.__annotate__ = fn` —
+        // BuiltinFn markers (object.__new__ etc) take arbitrary attrs like
+        // functions do; the read side (interp Function arm) already answers
+        // from attrs first for markers.
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::BuiltinFn => {
+            let _ = o
+                .attrs
+                .borrow_mut()
+                .set(Value::Str(PyString::new(name.clone())), v.clone());
+            Ok(Value::None)
+        }
         Value::Obj(o)
             if o.kind == ap_obj::ObjKind::UserInstance || o.kind == ap_obj::ObjKind::UserClass =>
         {
+            let interp_rc = crate::builtins_modules::current_interp()
+                .ok_or_else(|| raise("SystemError", "no interpreter for setattr"))?;
+            crate::classes::attr_set_protocol(&interp_rc, obj, &name, v.clone())
+                .map(|_| Value::None)
+        }
+        // T1-d: Namespace objects (closure cell stubs) route through the
+        // protocol — the cell_contents arm updates the LIVE cell.
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::Namespace => {
             let interp_rc = crate::builtins_modules::current_interp()
                 .ok_or_else(|| raise("SystemError", "no interpreter for setattr"))?;
             crate::classes::attr_set_protocol(&interp_rc, obj, &name, v.clone())
@@ -2952,6 +3197,17 @@ pub fn call_builtin(
         return Ok(t);
     }
     if let Some(rest) = name.strip_prefix("_typing.") {
+        // T1-d: _idfunc is the identity fn — NewType.__call__ delegates to
+        // it, so handles (twisted _SystemEventID tuples) return their arg.
+        // Bound-call shape (self, obj) returns the LAST arg; direct shape
+        // returns the first.
+        if rest == "_idfunc" {
+            return Ok(if args.len() > 1 {
+                args.last().cloned().unwrap_or(Value::None)
+            } else {
+                args.first().cloned().unwrap_or(Value::None)
+            });
+        }
         let o = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, &format!("_typing.{rest} instance"));
         {
             let mut a = o.attrs.borrow_mut();
@@ -2963,13 +3219,53 @@ pub fn call_builtin(
                 Value::Str(PyString::new("__name__")),
                 nm.unwrap_or(Value::None),
             );
+            // T1-d: typing._make_substitution probes these on TypeVar args
+            // when re-subscripting aliases (list[T][int]); provide the v0
+            // surface so getattr defaults work and substitution is identity.
+            if rest == "TypeVar" || rest == "ParamSpec" || rest == "TypeVarTuple" {
+                let _ = a.set(
+                    Value::Str(PyString::new("__parameters__")),
+                    Value::Tuple(Gc::new(Tuple(Vec::new()))),
+                );
+                let _ = a.set(
+                    Value::Str(PyString::new("__typing_subst__")),
+                    Value::Obj(ap_obj::PyObject::new(
+                        ap_obj::ObjKind::BuiltinFn,
+                        "__ap_typevar_subst__",
+                    )),
+                );
+            }
         }
         // T1 (scrapy datatypes): TypeVar instances participate in PEP 604
         // unions (`_VT | None` in scrapy.utils.datatypes generics). Park the
         // class-like marker so the BitOr union interception accepts them.
         if rest == "TypeVar" || rest == "ParamSpec" || rest == "TypeVarTuple" {
             *o.slice_parts.borrow_mut() = vec![Value::Str(PyString::new("__ap_typevar__"))];
+            // T2 (typing_extensions 4.16 sentinel/ParamSpec): attr WRITES on
+            // the TypeVar-like marker land in o.attrs (Opaque early-attr arm
+            // reads them back). Seed the PEP 696 surface the backported
+            // classes write/read right after construction:
+            // __infer_variance__, __default__, has_default, __module__.
+            let a2 = o.attrs.borrow_mut();
+            let _ = a2.set(
+                Value::Str(PyString::new("__infer_variance__")),
+                Value::Bool(false),
+            );
+            let _ = a2.set(Value::Str(PyString::new("__default__")), Value::None);
+            let _ = a2.set(
+                Value::Str(PyString::new("has_default")),
+                Value::Obj(ap_obj::PyObject::new(
+                    ap_obj::ObjKind::BuiltinFn,
+                    "__ap_typevar_has_default__",
+                )),
+            );
+            drop(a2);
         }
+        // Attr WRITES on the TypeVar-like marker must persist (typing_extensions
+        // _set_default/_set_module do `typevarlike.__default__ = ...` /
+        // `typevarlike.__module__ = ...` immediately after construction).
+        // Opaque markers already accept arbitrary attr writes via
+        // classes::attr_set_protocol's Opaque arm; nothing to add here.
         return Ok(Value::Obj(o));
     }
     // 02.08-lite: dotted native-module markers (math.sqrt, itertools.count, ...).
@@ -3183,6 +3479,29 @@ pub fn call_builtin(
         "filter" => builtin_filter(interp, args),
         "float.fromhex" => builtin_float_fromhex(args),
         "eval" => builtin_eval(interp, args),
+        // T1-d (scrapy chain, orchestrator handoff): `input([prompt])` —
+        // prompt to stdout WITHOUT trailing newline, read one stdin line,
+        // strip the trailing newline (CPython semantics).
+        "input" => {
+            if let Some(p) = args.first() {
+                let text = py_str_of(p).unwrap_or_default();
+                interp.write_out(&text);
+                let _ = std::io::Write::flush(&mut std::io::stdout());
+            }
+            let mut line = String::new();
+            match std::io::stdin().read_line(&mut line) {
+                Ok(0) => return Err(raise("EOFError", "EOF when reading a line")),
+                Ok(_) => {}
+                Err(e) => {
+                    return Err(raise("OSError", format!("input() read failed: {e}")))
+                }
+            }
+            let stripped = line
+                .strip_suffix('\n')
+                .map(|s| s.strip_suffix('\r').unwrap_or(s))
+                .unwrap_or(&line);
+            Ok(Value::Str(PyString::new(stripped.to_string())))
+        }
         // 04.01: exec — six.py binds `getattr(moves.builtins, "exec")` and
         // execs `def raise_from(...)` source at import.
         "exec" => builtin_exec(interp, args),
@@ -3203,7 +3522,41 @@ pub fn call_builtin(
             // v0: plain dict payload (insertion-order IS our dict order).
             let d = ap_obj::dict::PyDict::new();
             if let Some(first) = args.first() {
-                if let Some(pairs) = mapping_items(first) {
+                // T1-d fix (inspect.Signature): the source may be a LIST/
+                // iterable of (k, v) PAIRS, not a mapping — fall back to
+                // generic iteration when mapping_items doesn't apply.
+                let pairs = match mapping_items(first) {
+                    Some(p) => Some(p),
+                    None => {
+                        let it = crate::interp::iterable_of_public(first)?;
+                        let items = crate::interp::collect_iter_public(&it);
+                        let mut out = Vec::new();
+                        for pair in items {
+                            // (k, v) tuple unpack.
+                            let kv: Option<(Value, Value)> = match &pair {
+                                Value::Tuple(t) if t.0.len() == 2 => {
+                                    Some((t.0[0].clone(), t.0[1].clone()))
+                                }
+                                Value::List(l) if l.items().len() == 2 => {
+                                    let it2 = l.items();
+                                    Some((it2[0].clone(), it2[1].clone()))
+                                }
+                                _ => None,
+                            };
+                            match kv {
+                                Some(kv) => out.push(kv),
+                                None => {
+                                    return Err(raise(
+                                        "ValueError",
+                                        "OrderedDict/update expected pairs",
+                                    ))
+                                }
+                            }
+                        }
+                        Some(out)
+                    }
+                };
+                if let Some(pairs) = pairs {
                     for (k, v) in pairs {
                         let _ = d.set(k, v);
                     }
@@ -3410,6 +3763,27 @@ pub fn call_builtin(
             }
             None => Err(raise("TypeError", "type() takes 1 or 3 arguments")),
         },
+        // T1-d: typing._idfunc — identity (NewType.__call__).
+        // T1-d: TypeVar.__typing_subst__ — identity substitution.
+        "__ap_typevar_subst__" => {
+            Ok(args.last().cloned().unwrap_or(Value::None))
+        }
+        // T2 (typing_extensions PEP 696): the seeded has_default marker.
+        "__ap_typevar_has_default__" => Ok(Value::Bool(false)),
+        "__ap_typing_idfunc__" | "_typing._idfunc" => {
+            Ok(args.first().cloned().unwrap_or(Value::None))
+        }
+        "__object_virtual___get____" => {
+            // T1-d: descriptor-__get__ marker call (attr/_make.py):
+            // returns a BOUND object.__setattr__ marker for args[0].
+            let inst = args.first().cloned().unwrap_or(Value::None);
+            let m = ap_obj::PyObject::new(
+                ap_obj::ObjKind::BuiltinFn,
+                "__object_virtual___setattr____",
+            );
+            *m.slice_parts.borrow_mut() = vec![inst];
+            Ok(Value::Obj(m))
+        }
         _ => Err(raise("NameError", format!("name '{name}' is not defined"))),
     }
 }
@@ -3468,6 +3842,24 @@ pub fn builtin_range(args: &[Value]) -> crate::EvalResult {
 /// eval(expr_string) — single-expression eval against module globals
 /// (V063: eval(repr(v)) == v round-trip).
 pub fn builtin_eval(interp: &Interpreter, args: &[Value]) -> crate::EvalResult {
+    // T1-d: eval(compile(...)) — the `<code>` Namespace marker (compile()
+    // output, ForwardRef.__forward_code__) carries co_source; unwrap it
+    // exactly like builtin_exec already does.
+    // T1-d (attr/_make.py): eval accepts a compile() `<code>` marker AND
+    // statement-bearing source (attrs compiles `def __attrs_init__...`
+    // scripts and evals them into a locs dict). Delegate anything that is
+    // not a plain expression to builtin_exec, which already handles code
+    // markers + explicit (globals, locals) namespaces.
+    let is_code_marker = matches!(
+        args.first(),
+        Some(Value::Obj(o))
+            if o.kind == ap_obj::ObjKind::Namespace
+                && o.name == "<code>"
+                && o.attrs.borrow().get(&Value::Str(PyString::new("co_source"))).is_some()
+    );
+    if is_code_marker {
+        return builtin_exec(interp, args);
+    }
     let src = match args.first() {
         Some(Value::Str(s)) => s.as_str().to_string(),
         Some(other) => {
@@ -3481,7 +3873,29 @@ pub fn builtin_eval(interp: &Interpreter, args: &[Value]) -> crate::EvalResult {
         }
         None => return Err(raise("TypeError", "eval expected at least 1 argument")),
     };
-    let (module, _scopes) = match ap_parse::lower_source(&format!("__ap_eval__ = {src}\n")) {
+    // Statement source (def/class/...) goes through exec semantics; attrs
+    // reads the resulting bindings out of the `locals` dict arg. The wrap
+    // `__ap_eval__ = <src>` only parses when src is an EXPRESSION — a def/
+    // class script fails the wrap parse itself, so that failure is the
+    // statement signal (delegate to exec with the RAW source).
+    // CPython pin (s001): eval of a statement OR a malformed expression is
+    // SyntaxError "invalid syntax" — detect REAL parse errors first and keep
+    // that pin; only validly-parsing non-Assign wraps delegate to exec.
+    // (ruff is error-RECOVERING: eval("1+") parses to a bogus Name with
+    // ExprContext::Invalid, so a missing-Assign shape is ambiguous and the
+    // error check must come first.)
+    let wrapped = ap_parse::lower_source(&format!("__ap_eval__ = {src}\n"));
+    let is_expr = matches!(
+        wrapped.as_ref().ok().map(|(m, _)| m.items.first()),
+        Some(Some(ap_ir::Item::Stmt(ap_ir::Stmt::Assign(_, _))))
+    );
+    if wrapped.is_err() {
+        return Err(raise("SyntaxError", "invalid syntax"));
+    }
+    if !is_expr {
+        return builtin_exec(interp, args);
+    }
+    let (module, _scopes) = match wrapped {
         Ok(m) => m,
         // CPython pin (s001): eval("1+") msg is exactly "invalid syntax".
         Err(_) => return Err(raise("SyntaxError", "invalid syntax")),
@@ -3594,12 +4008,18 @@ pub fn builtin_exec(interp: &Interpreter, args: &[Value]) -> crate::EvalResult {
             let _ = module2;
             crate::interp::FnRegistry::extend_current(&rc_interp, items, scopes2, globals.clone());
             // Bind the function objects into the exec globals dict.
+            // T1-d (attr/_make.py _compile_and_eval): defs bind into LOCALS
+            // too — attrs passes globs as globals and a fresh locs dict as
+            // locals, then reads `locs["__attrs_init__"]`.
             let reg = crate::interp::interp_registry(&rc_interp);
             for it in items.iter() {
                 if let ap_ir::Item::FnDef(f) = it {
                     let id = reg.by_path_lookup(&f.name).unwrap_or(0);
                     let func = make_function(id, &f.name);
-                    let _ = globals.set(Value::Str(PyString::new(f.name.clone())), func);
+                    let _ = globals.set(Value::Str(PyString::new(f.name.clone())), func.clone());
+                    if let Some(loc) = &locals {
+                        let _ = loc.set(Value::Str(PyString::new(f.name.clone())), func);
+                    }
                 }
             }
         }
@@ -3648,6 +4068,7 @@ pub fn call_builtin_pub(name: &str, args: &[Value], kwargs: &[(String, Value)]) 
         None => Err(raise("NameError", format!("name '{name}' is not defined"))),
     }
 }
+
 
 /// Public method-call shim (json.load(fp) -> fp.read() etc).
 pub fn call_method_pub(recv: &Value, name: &str, args: &[Value]) -> BResult {
@@ -3930,6 +4351,28 @@ fn builtin_type_new(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
         None,
     )
     .map_err(|_| raise("TypeError", "failed to create type (MRO error)"))?;
+    // T1-d: dynamic classes with a BUILTIN base (type("X", (tuple,), body),
+    // attr/_make.py _make_attr_tuple_class) — mark the payload so
+    // instantiate constructs the backing builtin from ctor args. This is
+    // the 3-arg type() path; the enum-style path lives in classes.rs
+    // base_type_ref.
+    if let Some(Value::Obj(first_base)) = args.get(1).and_then(|v| match v {
+        Value::Tuple(tup) => tup.0.first().cloned(),
+        Value::List(l) => l.items().first().cloned(),
+        _ => None,
+    }) {
+        if first_base.kind == ap_obj::ObjKind::Type
+            && matches!(
+                first_base.name.as_str(),
+                "tuple" | "list" | "dict" | "set" | "str"
+            )
+        {
+            let _ = t.dict.set(
+                Value::Str(PyString::new("__ap_builtin_base__")),
+                Value::Str(PyString::new(first_base.name.clone())),
+            );
+        }
+    }
     // The creating metaclass rides the payload.
     if let Some(m) = class_of_value(&interp, &args[0]) {
         *t.metaclass.borrow_mut() = Some(m);

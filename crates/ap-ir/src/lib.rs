@@ -36,7 +36,7 @@ pub mod verify;
 pub mod walk;
 
 pub use builder::{Builder, NumberLit};
-pub use dump::{dump_module, dump_module_tree};
+pub use dump::{dump_expr_inline, dump_module, dump_module_tree};
 pub use expr::{Arg, BinOp, BoolOp, CmpOp, Conversion, Expr, FStrPart, UnaryOp};
 pub use item::{
     Ann, ClassDef, ExceptHandler, FnBody, FnDef, ImportAlias, Item, MatchCase, Param, ParamKind,

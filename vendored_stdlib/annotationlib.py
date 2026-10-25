@@ -82,3 +82,19 @@ def call_annotate_function(annotate, format, *, owner=None,
 
 def annotations_to_string(anns):
     return {k: str(v) for k, v in anns.items()}
+
+
+def type_repr(value):
+    """Convert a value to a format suitable for the STRING format (CPython
+    parity, simplified: repr() for most objects; bare qualname for builtins)."""
+    import inspect
+
+    if isinstance(value, type) or inspect.isfunction(value):
+        module = getattr(value, "__module__", "")
+        qualname = getattr(value, "__qualname__", getattr(value, "__name__", "?"))
+        if module == "builtins":
+            return qualname
+        return f"{module}.{qualname}"
+    if value is Ellipsis:
+        return "..."
+    return repr(value)

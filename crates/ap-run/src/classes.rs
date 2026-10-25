@@ -177,7 +177,10 @@ pub fn dynamic_type(
         .map(|(f, _)| f)
         .filter(|f| is_user_function(f));
     let t = if let Some(f) = meta_new_f {
-        let meta_v = ap_obj::classes::make_class_value(resolved.clone());
+        // T1-d fix: the cached class VALUE (make_class_value OVERWRITES the
+        // back-pointer, so every metaclass-__new__ creation broke the
+        // `type(X) is M2` identity for the metaclass itself).
+        let meta_v = class_value_for_public(&resolved);
         let start_owner = resolved.lookup_with_owner("__new__").map(|(_, o)| o);
         let bound = match start_owner.as_ref() {
             Some(ow) => bind_function_owned(&f, meta_v.clone(), Some(ow)),
@@ -222,6 +225,32 @@ pub fn dynamic_type(
             None,
         )
         .map_err(|e| raise("TypeError", ap_obj::classes::mro_error_message(&e)))?;
+        // T1-d: builtin-base marker (3-arg type("X", (tuple,), body) and
+        // class-stmt subclasses of tuple/list/set/str) — instantiate
+        // constructs the backing builtin from ctor args.
+        for (bv, bt) in bases_v.iter().zip(base_types.iter()) {
+            let bname = match bv {
+                Value::Obj(bo) if bo.kind == ap_obj::ObjKind::Type => Some(bo.name.clone()),
+                _ => None,
+            };
+            let marker = bname.or_else(|| {
+                bt.dict
+                    .get(&Value::Str(PyString::new("__ap_builtin_base__")))
+                    .and_then(|v| match v {
+                        Value::Str(s) => Some(s.as_str().to_string()),
+                        _ => None,
+                    })
+            });
+            if let Some(b) = marker {
+                if matches!(b.as_str(), "tuple" | "list" | "dict" | "set" | "str" | "property") {
+                    let _ = t.dict.set(
+                        Value::Str(PyString::new("__ap_builtin_base__")),
+                        Value::Str(PyString::new(b)),
+                    );
+                    break;
+                }
+            }
+        }
         *t.metaclass.borrow_mut() = Some(resolved.clone());
         t
     };
@@ -349,6 +378,9 @@ pub const EXC_TREE: &[(&str, Option<&str>)] = &[
     ("StopAsyncIteration", Some("Exception")),
     ("StopIteration", Some("Exception")),
     ("SyntaxError", Some("Exception")),
+    // T1-d (inspect stdlib chain): the SyntaxError subtree.
+    ("IndentationError", Some("SyntaxError")),
+    ("TabError", Some("IndentationError")),
     ("SystemError", Some("Exception")),
     ("TypeError", Some("Exception")),
     ("ValueError", Some("Exception")),
@@ -549,7 +581,71 @@ pub fn exec_class_def(
                 continue;
             }
         }
-        bases_v.push(v);
+        // T1-d (typing.NamedTuple / PEP 560): non-class bases with
+        // __mro_entries__ replace themselves in the bases (NamedTuple ->
+        // tuple). The replaced base rides __orig_bases__.
+        let mut replaced = false;
+        let is_user_cls = matches!(&v, Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass);
+        if !is_user_cls {
+            if let Value::Obj(bo) = &v {
+                // T1-d fix: instance-as-base PEP 560 (zope Interface) —
+                // UserInstance bases can carry __mro_entries__ too.
+                if bo.kind == ap_obj::ObjKind::Function
+                    || bo.kind == ap_obj::ObjKind::BuiltinFn
+                    || bo.kind == ap_obj::ObjKind::UserInstance
+                {
+                    let mut me_opt = bo
+                        .attrs
+                        .borrow()
+                        .get(&Value::Str(PyString::new("__mro_entries__")))
+                        .map(|x| x.clone());
+                    if me_opt.is_none() {
+                        if bo.kind == ap_obj::ObjKind::UserInstance {
+                            // T1-d: class-level __mro_entries__ must bind to
+                            // the INSTANCE (zope Interface shim).
+                            if let Some(t) = bo
+                                .type_ref
+                                .borrow()
+                                .as_ref()
+                                .and_then(|w| w.upgrade())
+                            {
+                                if let Some(f) = t.lookup("__mro_entries__") {
+                                    me_opt = Some(bind_function_owned(
+                                        &f, v.clone(), Some(&t),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    if let Some(me) = me_opt {
+                        // CPython passes the FULL original bases tuple
+                        // (including this base) — _namedtuple_mro_entries
+                        // asserts `NamedTuple in bases`.
+                        let mut full = bases_v.clone();
+                        full.push(v.clone());
+                        let r = call_value(
+                            interp,
+                            &module_frame(interp),
+                            &me,
+                            &[Value::Tuple(Gc::new(Tuple(full)))],
+                            &[],
+                        )?;
+                        let entries: Vec<Value> = match r {
+                            Value::Tuple(t) => t.0.clone(),
+                            Value::List(l) => l.items().to_vec(),
+                            _ => vec![],
+                        };
+                        if !entries.is_empty() {
+                            bases_v.extend(entries);
+                            replaced = true;
+                        }
+                    }
+                }
+            }
+        }
+        if !replaced {
+            bases_v.push(v);
+        }
     }
     let metaclass_v = match &c.metaclass {
         Some(e) => Some(eval_expr(interp, frame, e, reg)?),
@@ -673,6 +769,22 @@ pub fn exec_class_def(
     };
     class_frame_val.class_ns_inst = prepared_inst.clone();
     let class_frame = Rc::new(class_frame_val);
+    // T1-d: CPython class namespaces carry __module__ (NamedTupleMeta reads
+    // ns['__module__'] at class creation).
+    if class_frame
+        .class_ns
+        .as_ref()
+        .map(|ns| ns.get(&Value::Str(PyString::new("__module__"))).is_none())
+        .unwrap_or(false)
+    {
+        let modname = frame
+            .globals
+            .get(&Value::Str(PyString::new("__name__")))
+            .unwrap_or_else(|| Value::Str(PyString::new(ap_obj::MODULE_NAME)));
+        if let Some(ns) = &class_frame.class_ns {
+            let _ = ns.set(Value::Str(PyString::new("__module__")), modname);
+        }
+    }
     exec_block(interp, &class_frame, &c.body, reg)?;
 
     // 3. Resolve base TypeRefs (S-03-1: `class A:` == `class A(object):`).
@@ -828,9 +940,11 @@ pub fn exec_class_def(
         let ns_v = prepared_inst.clone().unwrap_or(Value::Dict(ns.clone()));
         let name_v = Value::Str(PyString::new(c.name.clone()));
         let bases_v = Value::Tuple(Gc::new(Tuple(original_bases_v.clone())));
+        // T1-d fix: cached VALUE (make_class_value overwrote the
+        // metaclass's cached class_value → identity broke).
         let meta_v = _resolved_meta
             .as_ref()
-            .map(|m| ap_obj::classes::make_class_value(m.clone()))
+            .map(|m| class_value_for_public(m))
             .unwrap_or_else(|| Value::None);
         // Zero-arg super() inside the metaclass __new__ body needs the
         // method context. 02.03b: route through the BoundMethod channel
@@ -892,6 +1006,19 @@ pub fn exec_class_def(
             None,
         )
         .map_err(|e| raise("TypeError", ap_obj::classes::mro_error_message(&e)))?;
+        // T1-d: propagate the builtin-base marker — a class deriving from a
+        // tuple/list/set/str subclass (directly via 3-arg type() or a class
+        // stmt) keeps the backing-builtin construction semantics.
+        for bt in &base_types {
+            if let Some(Value::Str(b)) =
+                bt.dict.get(&Value::Str(PyString::new("__ap_builtin_base__")))
+            {
+                let _ = t
+                    .dict
+                    .set(Value::Str(PyString::new("__ap_builtin_base__")), Value::Str(b.clone()));
+                break;
+            }
+        }
         // The RESOLVED metaclass rides the payload (type(C), meta hook lookup).
         *t.metaclass.borrow_mut() = _resolved_meta.clone();
         t
@@ -1184,6 +1311,16 @@ pub fn base_type_ref(interp: &Interpreter, v: &Value) -> Result<Option<Rc<TypeRe
                 None,
             )
             .map_err(|_| raise("TypeError", "cannot synthesize builtin base class"))?;
+            // T1-d (attr/_make.py): dynamic tuple subclasses
+            // (type("XAttributes", (tuple,), body)) must CONSTRUCT from an
+            // iterable like tuple() does — mark the synthesized base so
+            // instantiate's tuple-storage path engages.
+            if matches!(o.name.as_str(), "tuple" | "list" | "dict" | "set" | "str" | "property") {
+                let _ = t.dict.set(
+                    Value::Str(PyString::new("__ap_builtin_base__")),
+                    Value::Str(PyString::new(o.name.clone())),
+                );
+            }
             Ok(Some(t))
         }
         // T1 (scrapy fix pass): `class Foo(Generic[T])` - the Generic alias
@@ -1261,6 +1398,14 @@ pub fn base_type_ref(interp: &Interpreter, v: &Value) -> Result<Option<Rc<TypeRe
                 None,
             )
             .map_err(|_| raise("TypeError", "cannot synthesize decorator base class"))?;
+            // T1-d (twisted _DeprecatedProperty(property)): subclasses of
+            // property construct via the builtin-base path (fget parked).
+            if o.name == "property" {
+                let _ = t.dict.set(
+                    Value::Str(PyString::new("__ap_builtin_base__")),
+                    Value::Str(PyString::new("property")),
+                );
+            }
             Ok(Some(t))
         }
         // T1-d: catch-all — any remaining function-base (BuiltinFn or Function)
@@ -1377,6 +1522,19 @@ pub fn is_data_descriptor(interp: &Interpreter, v: &Value) -> bool {
         ),
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
             matches!(instance_class(interp, o), Some(t) if t.lookup("__set__").is_some() || t.lookup("__delete__").is_some())
+        }
+        // T1-d fix (attr/_make.py cached_property slots path): a FUNCTION
+        // marked as cached_property is a data descriptor — instance reads
+        // must dispatch its __get__ instead of falling to instance dict /
+        // __getattr__ (which returned the raw fn and broke `c.double`).
+        Value::Obj(o)
+            if o.kind == ap_obj::ObjKind::Function
+                && o.attrs
+                    .borrow()
+                    .get(&Value::Str(PyString::new("__ap_cached_property__")))
+                    .is_some_and(|x| x.is_truthy()) =>
+        {
+            true
         }
         _ => false,
     }
@@ -1683,13 +1841,48 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
                     }
                 }
             }
+            // T1-d (inspect iscode etc): a Namespace/Opaque payload
+            // (<code>, sys.implementation, thread) IS an instance of its
+            // interned name-Type.
+            if let Value::Obj(xo) = x {
+                if matches!(
+                    xo.kind,
+                    ap_obj::ObjKind::Namespace
+                        | ap_obj::ObjKind::Opaque
+                        | ap_obj::ObjKind::NamedTuple
+                ) {
+                    if let Value::Obj(to) = t {
+                        if to.kind == ap_obj::ObjKind::Type && to.name == xo.name {
+                            return Ok(true);
+                        }
+                    }
+                }
+            }
             // 02.04a fix pass: CLASS subject vs a METACLASS target
             // (enum.py _get_mixins_: isinstance(first_enum, EnumType)) —
             // answer via the subject's metaclass chain.
             if let Value::Obj(xo) = x {
                 if xo.kind == ap_obj::ObjKind::UserClass {
                     if let Some(xc) = crate::classes::type_of(interp, x) {
+                        // T1-d fix (constantly): isinstance(C, C) for a
+                        // plain class C (no user metaclass) is FALSE in
+                        // CPython — a class is not an instance of itself.
+                        // The v0 conflation (subject-vs-target subclass)
+                        // made constantly's `_constantType = NamedConstant`
+                        // class-body attr pass the NamedConstant isinstance
+                        // filter and explode on `_container`.
                         if let Some(tc) = base_type_ref(interp, t)? {
+                            if Rc::ptr_eq(&xc, &tc) {
+                                let has_user_meta = xc
+                                    .metaclass
+                                    .borrow()
+                                    .as_ref()
+                                    .map(|m| !Rc::ptr_eq(m, &type_class(interp)))
+                                    .unwrap_or(false);
+                                if !has_user_meta {
+                                    return Ok(false);
+                                }
+                            }
                             if let Some(meta) = xc.metaclass.borrow().clone() {
                                 if meta.is_subclass(&tc) {
                                     return Ok(true);
@@ -1724,6 +1917,19 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
                             ap_obj::ObjKind::BuiltinFn | ap_obj::ObjKind::Function
                         ) && (o.name == "Union"
                             || o.name == "_typing.Union"
+                            // T2 (typing_extensions 4.16): _TypeVarLikeMeta
+                            //.__instancecheck__ delegates to
+                            // isinstance(x, typing.ParamSpec/TypeVar/...) —
+                            // these ctor MARKERS must answer False (never
+                            // raise), or the sentinel/ParamSpec import chain
+                            // dies with "'str' object has no attribute
+                            // 'setter'" from the except-miss.
+                            || matches!(
+                                o.name.as_str(),
+                                "ParamSpec" | "TypeVar" | "TypeVarTuple" | "NewType"
+                            )
+                            || o.name.starts_with("_typing.ParamSpec")
+                            || o.name.starts_with("_typing.TypeVar")
                             || o.name.starts_with("__ap_typing_"))
                     }
                     _ => false,
@@ -1895,6 +2101,14 @@ pub fn special_lookup(interp: &Interpreter, v: &Value, name: &str) -> Option<(Va
             let t = o.type_ref.borrow().as_ref().and_then(|w| w.upgrade())?;
             t.lookup_with_owner(name)
         }
+        // T1-d fix (incremental/_Inf inside Version tuples): elementwise
+        // tuple ordering consults the ORDERING dunders on OBJECT elements
+        // (Version.__lt__ → _cmp → _Inf().__lt__/__gt__). UserClass elements
+        // answer their class-level dunders bound to the class value.
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass => {
+            let t = o.class_ref.borrow().clone()?;
+            t.lookup_with_owner(name)
+        }
         // 02.08-c: lxml elements answer len()/iter() dunders natively.
         Value::Obj(o)
             if o.kind == ap_obj::ObjKind::Opaque
@@ -1991,6 +2205,42 @@ fn instance_attr(
             return Ok(v);
         }
     }
+    // T1-d (twisted waker wakeUp): OSError instances answer .errno/
+    // .strerror/.filename from the constructor args (errno first).
+    if t.flags.is_exception
+        && matches!(
+            name,
+            "errno" | "strerror" | "filename" | " characters_written"
+        )
+    {
+        let name2 = name.trim().to_string();
+        let idx = match name2.as_str() {
+            "errno" => 0usize,
+            "strerror" => 1,
+            _ => 2,
+        };
+        let os_family = matches!(
+            t.name.as_str(),
+            "OSError" | "ConnectionError" | "TimeoutError" | "BlockingIOError"
+                | "InterruptedError" | "PermissionError" | "FileNotFoundError"
+                | "FileExistsError" | "NotADirectoryError" | "IsADirectoryError"
+                | "ProcessLookupError" | "ConnectionAbortedError" | "ConnectionRefusedError"
+                | "ConnectionResetError"
+        );
+        if os_family {
+            // Prefer the instance-dict 'args' (set by BaseException init);
+            // the payload o.args may be empty for UserInstance exceptions.
+            let argvals: Vec<Value> = match o.attrs.borrow().get(&Value::Str(PyString::new("args")))
+            {
+                Some(Value::Tuple(t)) => t.0.clone(),
+                _ => o.args.borrow().clone(),
+            };
+            if let Some(v) = argvals.get(idx) {
+                return Ok(v.clone());
+            }
+            return Ok(Value::None);
+        }
+    }
     // 1. First MRO entry: data descriptor wins over the instance dict.
     if let Some((entry, _owner)) = t.lookup_with_owner(name) {
         if is_data_descriptor(interp, &entry) && !t.is_slot(name) {
@@ -2049,6 +2299,23 @@ fn instance_attr(
     if t.flags.is_exception && name == "__traceback__" {
         return Ok(traceback_value(interp));
     }
+    // T1-d (twisted _ModuleProxy): user-defined __getattribute__ on the
+    // instance's class intercepts EVERY attr read (CPython data model).
+    // object's own __getattribute__ (inherited) does NOT intercept.
+    if name != "__getattribute__" && name != "__dict__" && name != "__class__" {
+        if let Some((ga, owner)) = t.lookup_with_owner("__getattribute__") {
+            let defined_on_self = owner.name != "object";
+            if defined_on_self {
+                return call_value(
+                    interp,
+                    &module_frame(interp),
+                    &ga,
+                    &[obj.clone(), Value::Str(PyString::new(name))],
+                    &[],
+                );
+            }
+        }
+    }
     // 4. __getattr__ fallback (S-03-09).
     if let Some((ga, _)) = t.lookup_with_owner("__getattr__") {
         return call_value(
@@ -2065,6 +2332,9 @@ fn instance_attr(
         && matches!(
             name,
             "__init__" | "__new__" | "__str__" | "__repr__" | "__eq__" | "__hash__"
+                // T1-d (twisted _deprecateAttribute): object.__setattr__ /
+                // object.__getattribute__ read off the object class.
+                | "__setattr__" | "__getattribute__"
         )
     {
         let f = ap_obj::PyObject::new(
@@ -2351,6 +2621,27 @@ pub fn attr_set_protocol(
     ) {
         return Ok(());
     }
+    // T1-d (attrs closure rewrite): cell objects with cell_contents writes
+    // update the LIVE closure cell via the CELL_BACKING registry.
+    if let Value::Obj(o) = obj {
+        if o.kind == ap_obj::ObjKind::Namespace
+            && o.name == "cell"
+            && name == "cell_contents"
+        {
+            let key = std::rc::Rc::as_ptr(o) as usize;
+            let live = crate::interp::CELL_BACKING.with(|reg| {
+                reg.borrow().get(&key).cloned()
+            });
+            if let Some(cell) = live {
+                if matches!(v, Value::None) {
+                    *cell.borrow_mut() = None;
+                } else {
+                    *cell.borrow_mut() = Some(v);
+                }
+                return Ok(());
+            }
+        }
+    }
     // T1 (scrapy fix pass): class-attribute writes on UserClasses
     // (typing: `cls.__protocol_attrs__ = ...` inside __init_subclass__).
     // Land in the class dict so MRO lookups see them.
@@ -2463,11 +2754,17 @@ pub fn attr_set_protocol(
         // 02.04a (interp bug #1b): functions accept arbitrary attribute
         // writes (CPython function.__dict__) — vendored stdlib does
         // `splitext.__doc__ = genericpath._splitext.__doc__` at import.
-        Value::Obj(o) if o.kind == ap_obj::ObjKind::Function => o
-            .attrs
-            .borrow_mut()
-            .set(Value::Str(PyString::new(name)), v)
-            .map_err(Flow::from_py),
+        // T1-d: BuiltinFn markers too (typing._make_nmtuple:
+        // `nm_tpl.__new__.__annotate__ = fn` — object.__new__ is a marker).
+        Value::Obj(o)
+            if o.kind == ap_obj::ObjKind::Function
+                || o.kind == ap_obj::ObjKind::BuiltinFn =>
+        {
+            o.attrs
+                .borrow_mut()
+                .set(Value::Str(PyString::new(name)), v)
+                .map_err(Flow::from_py)
+        }
         // 02.03b-fix: descriptor attr writes (dis.py decorates the namedtuple
         // fields: _Instruction.opname.__doc__ = "...") park on the object;
         // the descriptor __doc__ read arm already prefers o.attrs.
@@ -2628,10 +2925,21 @@ pub fn instantiate(
 
     // 02.03b: collections.namedtuple classes (marked __ap_namedtuple_fields__)
     // construct instances positionally into per-field attrs.
-    if let Some(fields_v) = t
-        .dict
-        .get(&Value::Str(PyString::new("__ap_namedtuple_fields__")))
-    {
+    // T1-d: walk the MRO — namedtuple SUBCLASSES (urllib SplitResult) carry
+    // the marker on the parent class dict.
+    let fields_v_opt = {
+        let mut hit = t.dict.get(&Value::Str(PyString::new("__ap_namedtuple_fields__")));
+        if hit.is_none() {
+            for m in t.mro.borrow().iter() {
+                if let Some(v) = m.dict.get(&Value::Str(PyString::new("__ap_namedtuple_fields__"))) {
+                    hit = Some(v);
+                    break;
+                }
+            }
+        }
+        hit
+    };
+    if let Some(fields_v) = fields_v_opt {
         let fields: Vec<String> = match &fields_v {
             Value::List(l) => l
                 .items()
@@ -2661,8 +2969,12 @@ pub fn instantiate(
         return Ok(obj);
     }
 
-    let new_lookup = t.lookup_with_owner("__new__");
-    let init_lookup = t.lookup_with_owner("__init__");
+    let new_lookup = t
+        .lookup_with_owner("__new__")
+        .filter(|(v, _)| !matches!(v, Value::None));
+    let init_lookup = t
+        .lookup_with_owner("__init__")
+        .filter(|(v, _)| !matches!(v, Value::None));
     let new_f = new_lookup.as_ref().map(|(v, _)| v.clone());
     let init_f = init_lookup.as_ref().map(|(v, _)| v.clone());
     // CPython 3.14 observed (e013): when BOTH __new__ and __init__ are
@@ -2756,7 +3068,72 @@ pub fn instantiate(
         *io.module_ns.borrow_mut() = Some(ns);
         return Ok(Value::Obj(io));
     }
+    // T1-d (attr/_make.py _make_attr_tuple_class + twisted
+    // _DeprecatedProperty): tuple/list/set/str/dict/property subclasses
+    // with NO user __new__/__init__ construct their backing builtin from
+    // the args instead of erroring "takes no arguments".
     if new_f.is_none() && init_f.is_none() && (!args.is_empty() || !kwargs.is_empty()) {
+        let builtin: Option<String> = t
+            .dict
+            .get(&Value::Str(PyString::new("__ap_builtin_base__")))
+            .and_then(|v| match v {
+                Value::Str(s) => Some(s.as_str().to_string()),
+                _ => None,
+            });
+        if let Some(builtin) = builtin {
+            // T1-d (namedtuple SplitResult(5 args)): ALL-positional args
+            // become the tuple payload fields.
+            let payload = match args {
+                [one] => Some(one.clone()),
+                [a, b, c, d, e] if !kwargs.iter().any(|_| true) => {
+                    Some(Value::Tuple(Gc::new(Tuple(vec![
+                        a.clone(),
+                        b.clone(),
+                        c.clone(),
+                        d.clone(),
+                        e.clone(),
+                    ]))))
+                }
+                _ => None,
+            };
+            if let Some(p) = payload {
+                let built = match builtin.as_str() {
+                    "tuple" => match &p {
+                        Value::Tuple(tup) => Some(Value::Tuple(tup.clone())),
+                        Value::List(l) => {
+                            Some(Value::Tuple(Gc::new(Tuple(l.items().to_vec()))))
+                        }
+                        _ => None,
+                    },
+                    "list" => crate::builtins::builtin_list(&[p.clone()]).ok(),
+                    "set" => crate::builtins::call_builtin(interp, "set", &[p.clone()], &[]).ok(),
+                    // property(fget): the fget rides the descriptor.
+                    "property" => {
+                        let o =
+                            ap_obj::PyObject::new(ap_obj::ObjKind::Descriptor, "property");
+                        *o.descr_kind.borrow_mut() = Some("property".to_string());
+                        *o.self_value.borrow_mut() = Some(p.clone());
+                        Some(Value::Obj(o))
+                    }
+                    _ => None,
+                };
+                if let Some(v) = built {
+                    let io =
+                        ap_obj::PyObject::new(ap_obj::ObjKind::UserInstance, t.name.clone());
+                    *io.type_ref.borrow_mut() = Some(std::rc::Rc::downgrade(t));
+                    *io.class_ref.borrow_mut() = Some(t.clone());
+                    let _ = io.attrs.borrow_mut().set(
+                        Value::Str(PyString::new("__ap_tuple_payload__")),
+                        v,
+                    );
+                    return Ok(Value::Obj(io));
+                }
+            }
+            return Err(raise(
+                "TypeError",
+                format!("{}() takes no arguments", t.name),
+            ));
+        }
         return Err(raise(
             "TypeError",
             format!("{}() takes no arguments", t.name),

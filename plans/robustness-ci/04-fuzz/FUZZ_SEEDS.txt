@@ -1961,3 +1961,52 @@ search	"(?<!.)"	"k١ --\nk0.bbk-"	16
 search	"(?<!.)"	"1١1kaa١@@1-"	0
 search	"(?<=\\d)"	"0@1c1-"	0
 findall	"(\\W)??"	" @a.k-ß-\nßc.ba."	0
+subn1	".|\\b"	"١0  1k@aaa@ x k@\nä"	0
+subn1	"(xä)*?"	"cäßk@ck-aß. 中ckß١\n\n"	16
+subn1	"[\\w.]{1,2}"	"k1\nä-x- x1"	0
+subn1	"(\\D)"	"1k1١-.a١\nä١äa-.k\n0c1kc1"	0
+subn1	"(?!(@)|\\D)"	".中k1b-.١axac.ß00k"	0
+subn1	"(?:.){2}"	"b0\n١aä"	0
+search	"(?<=.)"	".-k-1kaxcka @中 \n.1k11 x0xk"	0
+search	"(?<=.)"	"-äa0xkßc-١0a"	0
+subn1	"(?i:[^abc]{2})"	"0@١-k-0\nbxß.\nb\nß中中aaa@ ١@k"	0
+subn1	"(a)?"	"0kkäx\n"	0
+search	"(?<![^ab]){2,}"	"-abx\n.ba ßc"	10
+search	"(?<!.)"	"bb@. -中1k01kxkb1. 中"	0
+findall	"(c*?)"	" \n@-kxxa0\n.1@-cßb"	0
+search	"(?<!.)"	"-ß١k"	80
+findall	"[^abc]??"	" ß@"	0
+COMPILE_TEXT	"((a)?b(?(1)c|d)\\Z++){2}"	"@ka-.\n1k0\nx1中 k-.ß1b-akakc"	0
+findall	"(?=b)|1|b*"	".xb@ ac00a-xx١@x"	0
+search	"(?<![^ab])"	"äß0\nääb ba10ä ä中11c\nb١中"	8
+COMPILE_TEXT	"\\b*?*"	"ck.\n0x"	16
+subn1	"(?<!\\d)"	"aää中c 0中.k"	64
+subn1	"0|@b"	"0.1.1kx-k ba@0ä中kbkcä"	24
+subn1	"(?<!\\d)"	"中@0xß\n\n.äßxxxbc"	0
+subn1	"[0-9]|\\S*"	"\n-١\nx中中0ßbxk\n\nk-bä@中 \nc. "	0
+subn1	"(?<!a)"	"0ckc ßäc -kcaä@äbx0.\n--١x "	0
+subn1	"(?:[abc]+)"	"\n.中c0-@-..acß.kc1"	0
+search	"(?<![^ab])"	"1"	16
+subn1	"-"	"a1xxxkß.-ää-cb1aäß.x1"	0
+subn1	"(?P<b>\\w)"	"@ca1中a-0b."	0
+findall	"(?=.)|\\w|[^abc]"	"中@@1k"	10
+search	"(?<=[^ab])"	"0١@10\nß00"	24
+search	"(?<=\\w)"	"1kk中 ß-中a中@a\n.ßß"	0
+search	"(?<=\\w)"	"a@k1 ck0-0bx"	80
+search	"(?<=\\w)"	"x0-bxak"	0
+search	"(?<!.)"	"a1"	2
+subn1	"(?=\\d)"	"ß1k@a.-acb.c@c\n 0-@kxax"	0
+subn1	"a*"	"@äa"	0
+subn1	"1*+"	"kbbbax1a\nx..c中aßc x01"	0
+subn1	"(?-i:ä)"	"ß. 0b k中c\nk中0 @\nx k中kkää"	16
+subn1	"(b)"	"b\nac.@bx-b\nk1.ßßbxxxka"	0
+subn1	"(?m:\\s){1,2}"	"kä00k\nx@k.äax@中@ aäx1١c中x"	0
+subn1	"(?s)[^abc]"	"k中äb0١0中-\ncc11b١ßkk-k"	0
+subn1	"(?!a)"	".k@a١\nabc.k\nk.xckb1k中"	0
+search	"(?<=\\w)"	"c.@bx. 11xk١ @@äc\nx \nä-"	2
+search	"(?<![abc])"	"b-acc a@"	0
+search	"(?<=[^ab])"	"١ä١١ ß0\n中"	8
+search	"^(?<=[^ab])@"	"@1١k.中 0k١١-.中@a0"	0
+search	"(?<!\\w)"	"1١1c0中١ \n.١中a.x\n0@ß-ääßb"	24
+search	"(?P<a>(?P<b>[0-9]))"	"@bab1"	8
+findall	"(ba)*?|\\w"	"ck.x.k0a1aß-١中中"	0

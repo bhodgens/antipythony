@@ -256,6 +256,14 @@ pub fn sys_modules_get(name: &str) -> Option<Value> {
 }
 
 fn sys_modules_insert(name: &str, v: &Value) {
+    if std::env::var("APX_MODDBG").is_ok() && name.contains("_py_warnings") {
+        if let Value::Obj(o) = v {
+            eprintln!(
+                "[INSDBG] insert {name} obj={:p}",
+                std::rc::Rc::as_ptr(o)
+            );
+        }
+    }
     SYS_MODULES.with(|m| m.borrow_mut().insert(name.to_string(), v.clone()));
     // 02.04a fix pass (BUG-C): keep the PYTHON-VISIBLE sys.modules dict in
     // sync — it was a snapshot taken when sys was built, so
@@ -498,28 +506,17 @@ fn load_into(
         match item {
             ap_ir::Item::Stmt(st) => stmts.push(st.clone()),
             ap_ir::Item::FnDef(f) => {
-                // T1 (scrapy fix pass): decorated module-level defs defer to
-                // source position (mirror of interp::exec_module).
-                if !f.decorators.is_empty() {
-                    stmts.push(ap_ir::Stmt::LocalDef(Box::new(f.clone())));
-                    continue;
-                }
+                // T1-d fix (ast.py `from _ast import *` then `def parse`):
+                // ALL module-level defs now defer to source position (the
+                // old eager binding ran BEFORE body exec, so a star import
+                // clobbered same-named defs). Register the defining frame
+                // eagerly so eval_default resolves module globals.
                 let id = reg.by_path_lookup(&f.name).unwrap_or(0);
-                let func = builtins::make_function(id, &f.name);
-                // T1 (scrapy fix pass): module-level defs previously had NO
-                // defining-frame registration, so default-arg expressions
-                // referencing module globals (`def f(v=_sentinel)`, vendored
-                // traceback.py) evaluated against the MAIN script's globals
-                // and died with NameError. Register the module frame so
-                // eval_default finds it.
                 interp
                     .defining_frames
                     .borrow_mut()
                     .insert(id, frame.clone());
-                if let Value::Obj(o) = &func {
-                    *o.closure_slot.borrow_mut() = Some(id as u64);
-                }
-                frame.store_global(&f.name, func);
+                stmts.push(ap_ir::Stmt::LocalDef(Box::new(f.clone())));
             }
             ap_ir::Item::ClassDef(c) => {
                 stmts.push(ap_ir::Stmt::LocalClass(Box::new(c.clone())));
@@ -541,6 +538,11 @@ fn run_loaded(
     let saved = builtins_modules::CURRENT_MODULE_GLOBALS
         .with(|c| c.borrow_mut().replace(loaded.frame.globals.clone()));
     let r = exec_block(interp, &loaded.frame, stmts, &loaded.reg);
+    if std::env::var("APX_MODDBG").is_ok() {
+        if let Err(ref e) = r {
+            eprintln!("[MODDBG] module exec failed (see traceback above)");
+        }
+    }
     builtins_modules::CURRENT_MODULE_GLOBALS.with(|c| *c.borrow_mut() = saved);
     r
 }
@@ -553,6 +555,7 @@ fn run_loaded(
 /// TOP package for dotted names — the caller binds per CPython rules).
 /// `interp` is needed for registry extension + builtins dispatch.
 pub fn import_module(interp: &Rc<Interpreter>, name: &str) -> EResult {
+    ap_trace(format!("import_module({name})"));
     builtins_modules::set_current_interp(interp);
     // 02.03b-fix: seed the bootstrap builtins ONCE — importlib/_bootstrap's
     // _setup skips _builtin_from_name for names already in sys.modules
@@ -604,6 +607,9 @@ pub fn import_module_inner(interp: &Rc<Interpreter>, name: &str) -> EResult {
     if matches!(
         name,
         "posixpath" | "genericpath" | "stat" | "keyword" | "linecache" | "collections"
+        // T1-d (packaging._elffile etc read functools._unwrap_partialmethod
+        // — private CPython-stdlib names the native surface lacks).
+        | "functools"
     ) {
         if let Some(m) = builtins_modules::get_or_make_module(interp, name) {
             augment_with_vendored(interp, name, &m);
@@ -680,6 +686,24 @@ pub fn import_module_inner(interp: &Rc<Interpreter>, name: &str) -> EResult {
         // carry __path__ so later dotted children resolve through the file
         // finder (CPython _find_spec walks parent.__path__).
         attach_native_vendored_path(&m);
+        // T1-d: a dotted NATIVE import must have its ancestor prefixes in
+        // sys.modules too (inspect's `import importlib.machinery` then
+        // binds top `importlib` in the importer namespace; CPython inserts
+        // every prefix during the walk).
+        let parts: Vec<&str> = name.split('.').collect();
+        if parts.len() > 1 {
+            for i in 1..parts.len() {
+                let anc = parts[..i].join(".");
+                if sys_modules_get(&anc).is_none() {
+                    if let Some(am) = builtins_modules::get_or_make_module(interp, &anc) {
+                        attach_native_vendored_path(&am);
+                        sys_modules_insert(&anc, &am);
+                        link_parent_attr(&anc, &am);
+                    }
+                }
+            }
+        }
+        link_parent_attr(name, &m);
         sys_modules_insert(name, &m);
         return Ok(m);
     }
@@ -815,6 +839,18 @@ fn import_file_module(interp: &Rc<Interpreter>, name: &str) -> EResult {
                 // `import collections` re-runs the vendored collections.py
                 // exec and dies on native-only surfaces.
                 attach_native_vendored_path(&m);
+                // T1-d: ancestors FIRST (importlib.machinery requires
+                // 'importlib' in sys.modules + linked before the leaf).
+                for i in 1..prefix.len() {
+                    let anc = prefix[..i].join(".");
+                    if sys_modules_get(&anc).is_none() {
+                        if let Some(am) = builtins_modules::get_or_make_module(interp, &anc) {
+                            attach_native_vendored_path(&am);
+                            sys_modules_insert(&anc, &am);
+                            link_parent_attr(&anc, &am);
+                        }
+                    }
+                }
                 sys_modules_insert(&full, &m);
                 link_parent_attr(&full, &m);
                 continue;
@@ -1107,13 +1143,37 @@ fn exec_compiled(
     // then `_wm.filterwarnings`) an EMPTY snapshot; sys is a PyDict clone so
     // the clone never sees body writes.
     *m.module_ns.borrow_mut() = Some(loaded.ns.clone());
+    if std::env::var("APX_MODDBG").is_ok() {
+        eprintln!(
+            "[EXECDBG] {} ns_ptr={:p} frame_g={:p}",
+            name,
+            std::rc::Rc::as_ptr(&loaded.ns),
+            std::rc::Rc::as_ptr(&loaded.frame.globals)
+        );
+    }
     // BEFORE body execution (design: CPython circular-import semantics).
     sys_modules_insert(name, &v);
     let stmts = module_stmts(interp, compiled, &loaded.reg, &loaded.frame);
+    if std::env::var("APX_STMTDBG").is_ok() && name.contains("http") {
+        for (i, st) in stmts.iter().enumerate() {
+            eprintln!("[STMTDBG] {} #{} {:?}", name, i, st);
+        }
+    }
     let outcome = run_loaded(interp, &loaded, &stmts);
     // Refresh the module's namespace view after body execution (the module
     // stores a by-value PyDict; body writes landed in `loaded.ns`).
     *m.module_ns.borrow_mut() = Some(loaded.ns.clone());
+    if std::env::var("APX_MODDBG").is_ok() && name == "_py_warnings" {
+        eprintln!(
+            "[EXECDBG-post] {} ns items={} has_DEP={}",
+            name,
+            loaded.ns.items().len(),
+            loaded
+                .ns
+                .get(&Value::Str(PyString::new("_DEPRECATED_MSG")))
+                .is_some()
+        );
+    }
     match outcome {
         Ok(()) => Ok(()),
         Err(f) => {
@@ -1142,26 +1202,38 @@ fn module_stmts(
         match item {
             ap_ir::Item::Stmt(st) => stmts.push(st.clone()),
             ap_ir::Item::FnDef(f) => {
-                // T1 (scrapy fix pass): decorated module-level defs defer to
-                // source position (mirror of interp::exec_module).
-                if !f.decorators.is_empty() {
-                    stmts.push(ap_ir::Stmt::LocalDef(Box::new(f.clone())));
-                    continue;
-                }
-                let id = reg.by_path_lookup(&f.name).unwrap_or(0);
-                let func = builtins::make_function(id, &f.name);
-                // T1 (scrapy fix pass): register the defining frame so
+                // T1-d fix (ast.py star-import + later def parse): ALL
+                // module-level defs defer to source position (eager
+                // binding ran before body exec, so a star import clobbered
+                // same-named defs). Register the defining frame so
                 // default-arg expressions resolve against THIS module's
-                // globals (`def f(v=_sentinel)` — vendored traceback.py),
-                // not the main script's.
+                // globals (`def f(v=_sentinel)` — vendored traceback.py).
+                let id = reg.by_path_lookup(&f.name).unwrap_or(0);
                 interp
                     .defining_frames
                     .borrow_mut()
                     .insert(id, frame.clone());
-                if let Value::Obj(o) = &func {
-                    *o.closure_slot.borrow_mut() = Some(id as u64);
+                // T1-d: pre-create the fn's CELL storage on the module
+                // frame — nested defs wire their free vars from
+                // defining.my_cells at call time; module frames never run
+                // call_function's cell setup, so without this the cells
+                // are missing (typing._tp_cache 'typed' NameError).
+                if let Some(scope) = reg.scope_of(&f.name) {
+                    // T1-d: cells keyed by (module frame ptr, name) —
+                    // nested-def wiring consults this when the defining
+                    // frame is a MODULE frame (which never builds my_cells
+                    // via call_function).
+                    let key = std::rc::Rc::as_ptr(&frame) as usize;
+                    crate::interp::MODULE_FRAME_CELLS.with(|reg2| {
+                        let mut m = reg2.borrow_mut();
+                        for cname in &scope.cells {
+                            m.entry((key, cname.clone())).or_insert_with(|| {
+                                std::rc::Rc::new(std::cell::RefCell::new(None))
+                            });
+                        }
+                    });
                 }
-                frame.store_global(&f.name, func);
+                stmts.push(ap_ir::Stmt::LocalDef(Box::new(f.clone())));
             }
             ap_ir::Item::ClassDef(c) => {
                 stmts.push(ap_ir::Stmt::LocalClass(Box::new(c.clone())));
@@ -1215,6 +1287,9 @@ pub fn resolve_relative_base(
     level: usize,
     module: &str,
 ) -> Result<String, Flow> {
+    ap_trace(format!(
+        "resolve_relative_base(level={level}, module={module})"
+    ));
     builtins_modules::set_current_interp(interp);
     // The __package__ of the frame's module: read the module global the
     // frame chain lives in (module frames keep globals = module ns).
@@ -1294,7 +1369,16 @@ pub fn import_from_module(
                 if let Some(dir) = dir {
                     if let Some(found) = find_submodule(&dir, src) {
                         let full = format!("{module}.{src}");
-                        exec_found(interp, &full, &found)?;
+                        // T1-d fix (asyncio tasks↔timeouts cycle): if the
+                        // submodule is ALREADY in sys.modules (partial from a
+                        // circular import), do NOT re-execute its file —
+                        // CPython returns the half-built module. Re-running
+                        // the body here restarts the cycle forever.
+                        if sys_modules_get(&full).is_none() {
+                            exec_found(interp, &full, &found)?;
+                        } else if !matches!(found, Found::Module { .. }) {
+                            exec_found(interp, &full, &found)?;
+                        }
                         // Re-read the (possibly refreshed) module attr.
                         if let Some(fresh) = sys_modules_get(&full) {
                             // Bind the submodule itself.
@@ -1309,6 +1393,36 @@ pub fn import_from_module(
         match got {
             Some(v) => frame.store_global(bind, v),
             None => {
+                if std::env::var("APX_MODDBG").is_ok() {
+                    if let Value::Obj(o) = mv {
+                        let n = o
+                            .module_ns
+                            .borrow()
+                            .as_ref()
+                            .map(|ns| ns.items().len())
+                            .unwrap_or(usize::MAX);
+                        let keys = o
+                            .module_ns
+                            .borrow()
+                            .as_ref()
+                            .map(|ns| {
+                                ns.items()
+                                    .iter()
+                                    .filter_map(|(k, _)| match k {
+                                        Value::Str(sv) => Some(sv.as_str().to_string()),
+                                        _ => None,
+                                    })
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+                        eprintln!("[FROMDBG] module_ptr={:p}", std::rc::Rc::as_ptr(o));
+                        eprintln!(
+                            "[FROMDBG] miss '{src}' in {module}: ns has {} items: {:?}",
+                            n,
+                            keys
+                        );
+                    }
+                }
                 let file = module_file_repr(mv).unwrap_or_else(|| module.to_string());
                 return Err(raise(
                     "ImportError",
@@ -1490,8 +1604,15 @@ fn typing_stub_module(interp: &crate::frame::Interpreter) -> Value {
     let ns = PyDict::new();
     let _ = ns.set(s("__name__"), s("_typing"));
     let _ = ns.set(s("__doc__"), Value::None);
-    for n in ["_idfunc", "TypeVar", "ParamSpec", "TypeVarTuple", "Union"] {
+    for n in ["TypeVar", "ParamSpec", "TypeVarTuple", "Union"] {
         let _ = ns.set(s(n), marker_fn(&format!("_typing.{n}")));
+    }
+    // T1-d: _idfunc is the identity function — typing.NewType.__call__
+    // delegates to it, so NewType handles (twisted _SystemEventID tuples)
+    // return their argument and stay subscriptable.
+    {
+        let f = PyObject::new(ap_obj::ObjKind::BuiltinFn, "_typing._idfunc");
+        let _ = ns.set(s("_idfunc"), Value::Obj(f));
     }
     for t in [
         "ParamSpecArgs",
@@ -1566,13 +1687,25 @@ pub(crate) fn augment_with_vendored(interp: &Rc<Interpreter>, name: &str, m: &Va
         let stmts = module_stmts(interp, &compiled, &loaded.reg, &loaded.frame);
         // Best-effort body run (vendored namesakes may pull imports we
         // don't serve — ignore failures and copy what landed).
-        let _ = run_loaded(interp, &loaded, &stmts);
+        let outcome = run_loaded(interp, &loaded, &stmts);
+        if std::env::var("APX_MODDBG").is_ok() {
+            let n_items = loaded.ns.items().len();
+            eprintln!("[AUGDBG] augment {name}: run_loaded ok={} ns_items={}", outcome.is_ok(), n_items);
+        }
         // Copy names the native namespace lacks. T1 (typing): the vendored
         // defaultdict is a REAL dict subclass (dict-backing + __missing__);
         // the native interned Type stub constructs plain dicts and breaks
         // typing._overload_registry. Vendored definitions WIN for names on
         // this override list (native identity for everything else).
-        const VENDORED_WINS: &[&str] = &["defaultdict"];
+        const VENDORED_WINS: &[&str] = &[
+            "defaultdict",
+            // T1-d (scrapy.utils.datatypes CaseInsensitiveDict): the native
+            // UserDict interned Type has no data-dict behavior; the vendored
+            // Python class (dict subclass) makes super().__setitem__ work.
+            "UserDict",
+            "UserList",
+            "UserString",
+        ];
         if let Value::Obj(mo) = m {
             if let Some(cns) = &*mo.module_ns.borrow_mut() {
                 for (k, v) in loaded.ns.items() {

@@ -4509,6 +4509,29 @@ struct SdRegistry {
     impls: HashMap<String, Value>,
 }
 
+/// T1: interp.rs tokenize-path helper - returns an iterator object over the
+/// source's tokens by delegating to the vendored tokenize module through the
+/// runtime (a BuiltinFn marker that call_value_inner resolves lazily).
+pub fn tokenizer_iter_obj(_source: &str) -> Value {
+    // Marker: the interp arm stores it; iteration dispatches through the
+    // vendored tokenize.generate_tokens at call time via call_tokenize.
+    let o = ap_obj::PyObject::new(
+        ap_obj::ObjKind::BuiltinFn,
+        "_tokenize.iter_obj",
+    );
+    Value::Obj(o)
+}
+
+/// T1: interp.rs singledispatch register-by-annotation path needs the
+/// registered impl for (id, key) - exposed through this pub wrapper.
+pub fn sd_registry_lookup_pub(id: &str, key: &str) -> Option<Value> {
+    SD_REGISTRY.with(|t| {
+        t.borrow()
+            .get(id)
+            .and_then(|reg| reg.impls.get(key).cloned())
+    })
+}
+
 pub fn call_functools(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option<BResult> {
     // s013/s014: marker-name routed state (register tables ride the marker
     // name; sentinel state rides the thread-local SD table).
@@ -4834,6 +4857,23 @@ pub fn call_functools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
                         .attrs
                         .borrow_mut()
                         .set(s("cache"), Value::Dict(ap_obj::dict::PyDict::new()));
+                    // T1-d fix (attr/_make.py cached_property slots path): the
+                    // decorated fn must carry the cached_property MARKER so
+                    // isinstance probes see it AND instance reads dispatch
+                    // through the descriptor protocol (CPython
+                    // cached_property.__set_name__/__get__). v0: mark + return
+                    // a property-DESCRIPTOR wrapping the fn so instance reads
+                    // call it (computes each access; no instance cache v0).
+                    if name == "cached_property" {
+                        let _ = fo
+                            .attrs
+                            .borrow_mut()
+                            .set(s("__ap_cached_property__"), Value::Bool(true));
+                        let d = PyObject::new(ap_obj::ObjKind::Descriptor, "property");
+                        *d.descr_kind.borrow_mut() = Some("property".to_string());
+                        *d.self_value.borrow_mut() = Some(f.clone());
+                        return Ok(Value::Obj(d));
+                    }
                     return Ok(f.clone());
                 }
             }
@@ -6605,10 +6645,47 @@ fn build_os(_i: &crate::frame::Interpreter) -> Value {
         ("O_CREAT", 0o100),
         ("O_TRUNC", 0o1000),
         ("O_APPEND", 0o2000),
+        // T1-d fix (tempfile chains): O_EXCL is required by
+        // tempfile.mkstemp/O_CREAT|O_EXCL open patterns.
+        ("O_EXCL", 0o200),
+        ("O_NOINHERIT", 0),
+        ("O_TEMPORARY", 0),
     ] {
         ns_const(&ns, k, i(v));
     }
     ns_const(&ns, "TMP_MAX", i(10000));
+    // A-1 item 5: signal constants for os.kill (darwin values; the
+    // posix common set - RustPython exposes these from libc consts).
+    for (k, v) in [
+        ("SIGABRT", 6),
+        ("SIGALRM", 14),
+        ("SIGBUS", 10),
+        ("SIGCHLD", 20),
+        ("SIGCONT", 19),
+        ("SIGFPE", 8),
+        ("SIGHUP", 1),
+        ("SIGILL", 4),
+        ("SIGINT", 2),
+        ("SIGKILL", 9),
+        ("SIGPIPE", 13),
+        ("SIGQUIT", 3),
+        ("SIGSEGV", 11),
+        ("SIGSTOP", 17),
+        ("SIGSYS", 12),
+        ("SIGTERM", 15),
+        ("SIGTRAP", 5),
+        ("SIGTSTP", 18),
+        ("SIGTTIN", 21),
+        ("SIGTTOU", 22),
+        ("SIGURG", 16),
+        ("SIGUSR1", 30),
+        ("SIGUSR2", 31),
+        ("SIGXCPU", 24),
+        ("SIGXFSZ", 25),
+        ("NSIG", 32),
+    ] {
+        ns_const(&ns, k, i(v));
+    }
     // environ: a plain dict (environb shares the class → isinstance holds).
     let env = PyDict::new();
     for (k, v) in std::env::vars() {
@@ -6658,6 +6735,17 @@ fn build_os(_i: &crate::frame::Interpreter) -> Value {
         "lseek",
         "chmod",
         "umask",
+        // T1-d fix (shutil chains): utime/pipe must exist on the os module
+        // surface (shutil copies utime; the file:// gate touches shutil).
+        "utime",
+        "urandom",
+        "kill",
+        // A-1 item 5: pipe/pipe2 + killpg dispatch surfaces.
+        "pipe",
+        "pipe2",
+        "killpg",
+        "readlink",
+        "symlink",
     ] {
         fn1(&ns, "os", n);
     }
@@ -6726,6 +6814,23 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                 .map_err(|e| raise("OSError", e.to_string()))?
                 .to_string_lossy()
                 .to_string())),
+            // T1-d fix (tempfile/random chains): os.urandom(n) -> n random bytes.
+            "urandom" => {
+                let n = as_int_i64(required(args, "urandom")?)?;
+                use std::sync::atomic::{AtomicU64, Ordering};
+                static URAND_STATE: AtomicU64 = AtomicU64::new(0x9E3779B97F4A7C15);
+                let mut out: Vec<u8> = Vec::with_capacity(n.max(0) as usize);
+                let mut st = URAND_STATE.load(Ordering::Relaxed);
+                while (out.len() as i64) < n {
+                    st = st
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
+                    URAND_STATE.store(st, Ordering::Relaxed);
+                    out.extend_from_slice(&st.to_le_bytes());
+                }
+                out.truncate(n.max(0) as usize);
+                Ok(Value::Bytes(Gc::new(out)))
+            }
             "getcwdb" => {
                 let cwd = std::env::current_dir().map_err(|e| raise("OSError", e.to_string()))?;
                 Ok(Value::Bytes(Gc::new(
@@ -6832,6 +6937,147 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                 std::fs::rename(&a, &b).map_err(|e| os_error(&a, &e))?;
                 Ok(Value::None)
             }
+            // A-1 item 5: os.pipe() -> (r, w) real fds (adapted from
+            // RustPython host_env/posix.rs pipe + vm/stdlib/posix.rs arm).
+            "pipe" => {
+                let mut fds = [0i32; 2];
+                let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
+                if rc != 0 {
+                    return Err(io_flow(std::io::Error::last_os_error()));
+                }
+                Ok(tuple(vec![i(fds[0] as i64), i(fds[1] as i64)]))
+            }
+            // pipe2(flags): darwin lacks pipe2; emulate with pipe + fcntl.
+            "pipe2" => {
+                let flags = as_int_i64(required(args, "pipe2")?)? as i32;
+                let mut fds = [0i32; 2];
+                let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
+                if rc != 0 {
+                    return Err(io_flow(std::io::Error::last_os_error()));
+                }
+                let (rfd, wfd) = (fds[0], fds[1]);
+                #[cfg(target_os = "macos")]
+                {
+                    if flags & libc::O_CLOEXEC != 0 {
+                        unsafe { libc::fcntl(rfd, libc::F_SETFD, libc::FD_CLOEXEC) };
+                        unsafe { libc::fcntl(wfd, libc::F_SETFD, libc::FD_CLOEXEC) };
+                    }
+                    if flags & libc::O_NONBLOCK != 0 {
+                        unsafe { libc::fcntl(rfd, libc::F_SETFL, libc::O_NONBLOCK) };
+                        unsafe { libc::fcntl(wfd, libc::F_SETFL, libc::O_NONBLOCK) };
+                    }
+                }
+                Ok(tuple(vec![i(rfd as i64), i(wfd as i64)]))
+            }
+            // A-1 item 5: os.kill(pid, signal) / os.killpg(pgid, signal) —
+            // adapted from RustPython vm/stdlib/posix.rs kill/killpg.
+            "kill" => {
+                let pid = as_int_i64(required(args, "kill")?)? as i32;
+                let sig = as_int_i64(
+                    args.get(1)
+                        .ok_or_else(|| raise("TypeError", "kill() missing required argument"))?,
+                )? as i32;
+                let rc = unsafe { libc::kill(pid, sig) };
+                if rc != 0 {
+                    return Err(io_flow(std::io::Error::last_os_error()));
+                }
+                Ok(Value::None)
+            }
+            "killpg" => {
+                let pgid = as_int_i64(required(args, "killpg")?)? as i32;
+                let sig = as_int_i64(
+                    args.get(1)
+                        .ok_or_else(|| raise("TypeError", "killpg() missing required argument"))?,
+                )? as i32;
+                let rc = unsafe { libc::killpg(pgid, sig) };
+                if rc != 0 {
+                    return Err(io_flow(std::io::Error::last_os_error()));
+                }
+                Ok(Value::None)
+            }
+            // A-1 item 6: os.utime completion — ns=/dir_fd=/follow_symlinks
+            // via utimensat (donor vm/stdlib/os.rs utime pattern, MIT).
+            "utime" => {
+                let p = str_arg(required(args, "utime")?, "utime")?;
+                let times = kw(_kwargs, "times");
+                let ns = kw(_kwargs, "ns");
+                let dir_fd = kw(_kwargs, "dir_fd");
+                let follow = kw(_kwargs, "follow_symlinks");
+                if times.is_some() && ns.is_some() {
+                    return Err(raise(
+                        "ValueError",
+                        "utime: you may specify either 'times' or 'ns' but not both",
+                    ));
+                }
+                // (atime_sec, atime_nsec, mtime_sec, mtime_nsec)
+                let (a_s, a_ns, m_s, m_ns) = if let Some(v) = ns {
+                    match v {
+                        Value::Tuple(t) if t.0.len() >= 2 => {
+                            let at = as_int_i64(&t.0[0])?;
+                            let mt = as_int_i64(&t.0[1])?;
+                            (
+                                at.div_euclid(1_000_000_000),
+                                at.rem_euclid(1_000_000_000),
+                                mt.div_euclid(1_000_000_000),
+                                mt.rem_euclid(1_000_000_000),
+                            )
+                        }
+                        _ => {
+                            return Err(raise(
+                                "TypeError",
+                                "utime: 'ns' must be a tuple of two ints",
+                            ))
+                        }
+                    }
+                } else if let Some(v) = times {
+                    match v {
+                        Value::Tuple(t) if t.0.len() >= 2 => {
+                            let at = as_f64(&t.0[0])?;
+                            let mt = as_f64(&t.0[1])?;
+                            (
+                                at.floor() as i64,
+                                ((at - at.floor()) * 1e9).round() as i64,
+                                mt.floor() as i64,
+                                ((mt - mt.floor()) * 1e9).round() as i64,
+                            )
+                        }
+                        _ => {
+                            return Err(raise(
+                                "TypeError",
+                                "utime: 'times' must be a tuple of two floats",
+                            ))
+                        }
+                    }
+                } else {
+                    // utime(path) — set both to now.
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_err(|e| raise("OverflowError", e.to_string()))?;
+                    let sec = now.as_secs() as i64;
+                    (sec, now.subsec_nanos() as i64, sec, now.subsec_nanos() as i64)
+                };
+                let flags = if follow.map(truthy).unwrap_or(true) {
+                    0
+                } else {
+                    0x100 // AT_SYMLINK_NOFOLLOW
+                };
+                let c_path = std::ffi::CString::new(p.as_str())
+                    .map_err(|_| raise("ValueError", "embedded null byte"))?;
+                let times_v = [
+                    libc::timespec { tv_sec: a_s, tv_nsec: a_ns },
+                    libc::timespec { tv_sec: m_s, tv_nsec: m_ns },
+                ];
+                let dfd = match dir_fd {
+                    Some(v) if !matches!(v, Value::None) => as_int_i64(v)? as i32,
+                    _ => -100, // AT_FDCWD
+                };
+                let rc =
+                    unsafe { libc::utimensat(dfd, c_path.as_ptr(), times_v.as_ptr(), flags) };
+                if rc != 0 {
+                    return Err(io_flow(std::io::Error::last_os_error()));
+                }
+                Ok(Value::None)
+            }
             _ => return Err(Flow::Next),
         }
     })();
@@ -6855,6 +7101,11 @@ fn os_environ() -> Result<Value, Flow> {
         }
     }
     Err(raise("SystemError", "os.environ lost"))
+}
+
+/// A-1 item 5/6: raw-errno io::Error -> OSError Flow.
+fn io_flow(e: std::io::Error) -> Flow {
+    Flow::Raise(ExceptionValue::new("OSError", vec![s(e.to_string())]))
 }
 
 fn os_error(path: &str, e: &std::io::Error) -> Flow {
@@ -7397,7 +7648,10 @@ fn file_mode(m: i64) -> String {
 
 fn build_errno(_i: &crate::frame::Interpreter) -> Value {
     let (m, ns) = new_module("errno");
-    let codes: &[(&str, i64)] = &[
+    // A-1 item 1: full darwin errno table (107 pairs), adapted from
+    // RustPython vm/src/stdlib/errno.rs ERROR_CODES (MIT) — names/values
+    // cross-checked against the host libc (num != 0 rules out EOK).
+    static ERRNO_CODES: &[(&str, i64)] = &[
         ("EPERM", 1),
         ("ENOENT", 2),
         ("ESRCH", 3),
@@ -7408,10 +7662,11 @@ fn build_errno(_i: &crate::frame::Interpreter) -> Value {
         ("ENOEXEC", 8),
         ("EBADF", 9),
         ("ECHILD", 10),
-        ("EAGAIN", 11),
+        ("EDEADLK", 11),
         ("ENOMEM", 12),
         ("EACCES", 13),
         ("EFAULT", 14),
+        ("ENOTBLK", 15),
         ("EBUSY", 16),
         ("EEXIST", 17),
         ("EXDEV", 18),
@@ -7422,6 +7677,7 @@ fn build_errno(_i: &crate::frame::Interpreter) -> Value {
         ("ENFILE", 23),
         ("EMFILE", 24),
         ("ENOTTY", 25),
+        ("ETXTBSY", 26),
         ("EFBIG", 27),
         ("ENOSPC", 28),
         ("ESPIPE", 29),
@@ -7430,9 +7686,85 @@ fn build_errno(_i: &crate::frame::Interpreter) -> Value {
         ("EPIPE", 32),
         ("EDOM", 33),
         ("ERANGE", 34),
+        ("EAGAIN", 35),
+        ("EINPROGRESS", 36),
+        ("EALREADY", 37),
+        ("ENOTSOCK", 38),
+        ("EDESTADDRREQ", 39),
+        ("EMSGSIZE", 40),
+        ("EPROTOTYPE", 41),
+        ("ENOPROTOOPT", 42),
+        ("EPROTONOSUPPORT", 43),
+        ("ESOCKTNOSUPPORT", 44),
+        ("ENOTSUP", 45),
+        ("EPFNOSUPPORT", 46),
+        ("EAFNOSUPPORT", 47),
+        ("EADDRINUSE", 48),
+        ("EADDRNOTAVAIL", 49),
+        ("ENETDOWN", 50),
+        ("ENETUNREACH", 51),
+        ("ENETRESET", 52),
+        ("ECONNABORTED", 53),
+        ("ECONNRESET", 54),
+        ("ENOBUFS", 55),
+        ("EISCONN", 56),
+        ("ENOTCONN", 57),
+        ("ESHUTDOWN", 58),
+        ("ETOOMANYREFS", 59),
+        ("ETIMEDOUT", 60),
+        ("ECONNREFUSED", 61),
+        ("ELOOP", 62),
+        ("ENAMETOOLONG", 63),
+        ("EHOSTDOWN", 64),
+        ("EHOSTUNREACH", 65),
+        ("ENOTEMPTY", 66),
+        ("EPROCLIM", 67),
+        ("EUSERS", 68),
+        ("EDQUOT", 69),
+        ("ESTALE", 70),
+        ("EREMOTE", 71),
+        ("EBADRPC", 72),
+        ("ERPCMISMATCH", 73),
+        ("EPROGUNAVAIL", 74),
+        ("EPROGMISMATCH", 75),
+        ("EPROCUNAVAIL", 76),
+        ("ENOLCK", 77),
+        ("ENOSYS", 78),
+        ("EFTYPE", 79),
+        ("EAUTH", 80),
+        ("ENEEDAUTH", 81),
+        ("EPWROFF", 82),
+        ("EDEVERR", 83),
+        ("EOVERFLOW", 84),
+        ("EBADEXEC", 85),
+        ("EBADARCH", 86),
+        ("ESHLIBVERS", 87),
+        ("EBADMACHO", 88),
+        ("ECANCELED", 89),
+        ("EIDRM", 90),
+        ("ENOMSG", 91),
+        ("EILSEQ", 92),
+        ("ENOATTR", 93),
+        ("EBADMSG", 94),
+        ("EMULTIHOP", 95),
+        ("ENODATA", 96),
+        ("ENOLINK", 97),
+        ("ENOSR", 98),
+        ("ENOSTR", 99),
+        ("EPROTO", 100),
+        ("ETIME", 101),
+        ("EOPNOTSUPP", 102),
+        ("ENOPOLICY", 103),
+        ("ENOTRECOVERABLE", 104),
+        ("EOWNERDEAD", 105),
+        ("EQFULL", 106),
+        ("ENOTCAPABLE", 107),
+        // CPython alias spelling present on posix (errno.errorcode maps the
+        // canonical name; the alias attr is part of the module surface).
+        ("EWOULDBLOCK", 35),
     ];
     let ec = PyDict::new();
-    for (k, v) in codes {
+    for (k, v) in ERRNO_CODES {
         ns_const(&ns, k, i(*v));
         let _ = ec.set(i(*v), s(*k));
     }
@@ -8559,6 +8891,10 @@ fn build_base64(_i: &crate::frame::Interpreter) -> Value {
         "b16decode",
         "encodebytes",
         "decodebytes",
+        // T1-d fix (jwt-style chains): urlsafe variants used by secrets/
+        // token encoders in site-packages deps.
+        "urlsafe_b64encode",
+        "urlsafe_b64decode",
     ] {
         fn1(&ns, "base64", n);
     }
@@ -8568,6 +8904,9 @@ fn build_base64(_i: &crate::frame::Interpreter) -> Value {
 fn build_binascii(_i: &crate::frame::Interpreter) -> Value {
     let (m, ns) = new_module("binascii");
     // T1 (xml.parsers.expat): b2a/a2b_base64 for the expat wrapper.
+    // A-1 item 2: qp/uu/hqx surface + Error/Incomplete exception attrs
+    // (adapted from RustPython crates/common/src/binascii.rs + the stdlib
+    // wrapper, MIT).
     for n in [
         "hexlify",
         "unhexlify",
@@ -8576,9 +8915,42 @@ fn build_binascii(_i: &crate::frame::Interpreter) -> Value {
         "b2a_base64",
         "a2b_base64",
         "crc32",
+        "crc_hqx",
+        "a2b_qp",
+        "b2a_qp",
+        "a2b_uu",
+        "b2a_uu",
     ] {
         fn1(&ns, "binascii", n);
     }
+    // error/Incomplete exception classes (real Type payloads so
+    // `except binascii.Error` binds + matches).
+    let err_v = if let Some(interp) = CURRENT.with(|c| c.borrow().clone()) {
+        let parent = crate::classes::exc_class_value(&interp, "ValueError")
+            .and_then(|v| crate::classes::type_of(&interp, &v));
+        let base = parent.unwrap_or_else(|| crate::classes::object_class(&interp));
+        let t = ap_obj::classes::TypeObject::create(
+            "Error".to_string(),
+            "Error".to_string(),
+            vec![base],
+            PyDict::new(),
+            ap_obj::classes::TypeFlags {
+                slots: None,
+                is_exception: true,
+                builtin_exc: true,
+            },
+            None,
+        )
+        .expect("binascii.Error MRO");
+        let _ = t
+            .dict
+            .set(Value::Str(PyString::new("__module__")), s("binascii"));
+        ap_obj::classes::make_class_value(t)
+    } else {
+        interned_type_pub("Error")
+    };
+    let _ = ns.set(s("Error"), err_v.clone());
+    let _ = ns.set(s("Incomplete"), err_v);
     finish(m, ns)
 }
 
@@ -8592,6 +8964,35 @@ pub fn call_base64(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> O
             "b64encode" => {
                 let data = bytes_arg(required(args, "b64encode")?)?;
                 Ok(Value::Bytes(Gc::new(b64_encode(&data))))
+            }
+            // T1-d fix (jwt-style chains): urlsafe variants — same alphabet
+            // with -_ instead of +/ and no padding on decode.
+            "urlsafe_b64encode" => {
+                let data = bytes_arg(required(args, name)?)?;
+                let std_b64 = b64_encode(&data);
+                let out: Vec<u8> = std_b64
+                    .iter()
+                    .map(|b| match b {
+                        b'+' => b'-',
+                        b'/' => b'_',
+                        other => *other,
+                    })
+                    .collect();
+                Ok(Value::Bytes(Gc::new(out)))
+            }
+            "urlsafe_b64decode" => {
+                let data = bytes_arg(required(args, name)?)?;
+                let restored: Vec<u8> = data
+                    .iter()
+                    .map(|b| match b {
+                        b'-' => b'+',
+                        b'_' => b'/',
+                        other => *other,
+                    })
+                    .collect();
+                b64_decode(&restored)
+                    .map(|b| Value::Bytes(Gc::new(b)))
+                    .map_err(|()| raise("binascii.Error", "Invalid base64-encoded string"))
             }
             // T1: encodebytes = base64.encodebytes — 76-char chunked lines.
             "encodebytes" => {
@@ -8770,6 +9171,75 @@ pub fn call_binascii(name: &str, args: &[Value], _kwargs: &[(String, Value)]) ->
                 }
                 Ok(i(!crc as i64))
             }
+            // A-1 item 2 (below): qp/uu/hqx arms — adapted from RustPython
+            // crates/common/src/binascii.rs (MIT).
+            "crc_hqx" => {
+                let data = bytes_arg(required(args, "crc_hqx")?)?;
+                let init = args
+                    .get(1)
+                    .and_then(|v| v.as_int())
+                    .and_then(|n| n.to_i64())
+                    .unwrap_or(0) as u32;
+                Ok(i(crc_hqx(&data, init) as i64))
+            }
+            "a2b_qp" => {
+                let data = bytes_arg(required(args, "a2b_qp")?)?;
+                // header kwarg (CPython 3.14 signature: (data, header=False)).
+                let header = args
+                    .get(1)
+                    .map(truthy)
+                    .or_else(|| kw(_kwargs, "header").map(truthy))
+                    .unwrap_or(false);
+                Ok(Value::Bytes(Gc::new(a2b_qp(&data, header))))
+            }
+            "b2a_qp" => {
+                let data = bytes_arg(required(args, "b2a_qp")?)?;
+                let quotetabs = args
+                    .get(1)
+                    .map(truthy)
+                    .or_else(|| kw(_kwargs, "quotetabs").map(truthy))
+                    .unwrap_or(false);
+                let istext = args
+                    .get(2)
+                    .map(truthy)
+                    .or_else(|| kw(_kwargs, "istext").map(truthy))
+                    .unwrap_or(true);
+                let header = args
+                    .get(3)
+                    .map(truthy)
+                    .or_else(|| kw(_kwargs, "header").map(truthy))
+                    .unwrap_or(false);
+                Ok(Value::Bytes(Gc::new(b2a_qp(
+                    &data, quotetabs, istext, header,
+                ))))
+            }
+            "a2b_uu" => {
+                let data = bytes_arg(required(args, "a2b_uu")?)?;
+                match a2b_uu(&data) {
+                    Ok(out) => Ok(Value::Bytes(Gc::new(out))),
+                    Err(UuError::TrailingGarbage) => Err(raise(
+                        "binascii.Error",
+                        "Trailing garbage",
+                    )),
+                    Err(_) => Err(raise("binascii.Error", "Illegal char")),
+                }
+            }
+            "b2a_uu" => {
+                let data = bytes_arg(required(args, "b2a_uu")?)?;
+                // backtick=True is the CPython 3.14 default.
+                let backtick = args
+                    .get(1)
+                    .map(truthy)
+                    .or_else(|| kw(_kwargs, "backtick").map(truthy))
+                    .unwrap_or(true);
+                match b2a_uu(&data, backtick) {
+                    Ok(out) => Ok(Value::Bytes(Gc::new(out))),
+                    Err(_) => Err(raise(
+                        "binascii.Error",
+                        "At most 45 bytes at a time",
+                    )),
+                }
+            }
             _ => Err(raise("SystemError", format!("binascii fn {name} unbound"))),
         }
     })();
@@ -8777,6 +9247,392 @@ pub fn call_binascii(name: &str, args: &[Value], _kwargs: &[(String, Value)]) ->
         Err(Flow::Next) => return None,
         other => Some(other),
     }
+}
+
+// ---------------------------------------------------------------------------
+// A-1 item 2: qp/uu/hqx byte transforms — adapted from RustPython
+// crates/common/src/binascii.rs (MIT), VM-free as in the donor.
+// ---------------------------------------------------------------------------
+
+const BINASCII_MAXLINESIZE: usize = 76; // Excluding the CRLF
+
+const fn hex_nibble(n: u8) -> u8 {
+    match n {
+        0..=9 => b'0' + n,
+        10..=15 => b'a' + (n - 10),
+        _ => unreachable!(),
+    }
+}
+
+const fn unhex_nibble(c: u8) -> Option<u8> {
+    match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// `crc_hqx(data, crc)` — CCITT CRC-16/XMODEM table walk (donor's
+/// CRCTAB_HQX computed incrementally; mathematically identical).
+pub(crate) fn crc_hqx(bytes: &[u8], init: u32) -> u32 {
+    let mut crc = init & 0xffff;
+    for &byte in bytes {
+        crc ^= (byte as u32) << 8;
+        for _ in 0..8 {
+            if crc & 0x8000 != 0 {
+                crc = (crc << 1) ^ 0x1021;
+            } else {
+                crc <<= 1;
+            }
+            crc &= 0xffff;
+        }
+    }
+    crc
+}
+
+/// `a2b_qp(data, header=False)` (donor a2b_qp).
+pub(crate) fn a2b_qp(buffer: &[u8], header: bool) -> Vec<u8> {
+    let len = buffer.len();
+    let mut out_data = Vec::with_capacity(len);
+    let mut idx = 0;
+    while idx < len {
+        if buffer[idx] == b'=' {
+            idx += 1;
+            if idx >= len {
+                break;
+            }
+            // Soft line breaks
+            if (buffer[idx] == b'\n') || (buffer[idx] == b'\r') {
+                if buffer[idx] != b'\n' {
+                    while idx < len && buffer[idx] != b'\n' {
+                        idx += 1;
+                    }
+                }
+                if idx < len {
+                    idx += 1;
+                }
+            } else if buffer[idx] == b'=' {
+                // broken case from broken python qp
+                out_data.push(b'=');
+                idx += 1;
+            } else if idx + 1 < len
+                && buffer[idx].is_ascii_hexdigit()
+                && buffer[idx + 1].is_ascii_hexdigit()
+            {
+                if let (Some(ch1), Some(ch2)) =
+                    (unhex_nibble(buffer[idx]), unhex_nibble(buffer[idx + 1]))
+                {
+                    out_data.push((ch1 << 4) | ch2);
+                }
+                idx += 2;
+            } else {
+                out_data.push(b'=');
+            }
+        } else if header && buffer[idx] == b'_' {
+            out_data.push(b' ');
+            idx += 1;
+        } else {
+            out_data.push(buffer[idx]);
+            idx += 1;
+        }
+    }
+    out_data
+}
+
+/// `b2a_qp(data, quotetabs=False, istext=True, header=False)` (donor
+/// b2a_qp, including CRLF detection and the MAXLINESIZE soft-wrap).
+pub(crate) fn b2a_qp(buf: &[u8], quotetabs: bool, istext: bool, header: bool) -> Vec<u8> {
+    let buflen = buf.len();
+    // Detect CRLF from the first line break; donor uses the same rule.
+    let mut crlf = false;
+    {
+        let mut i = 0;
+        while i < buflen {
+            if buf[i] == b'\n' {
+                if i > 0 && buf[i - 1] == b'\r' {
+                    crlf = true;
+                }
+                break;
+            }
+            i += 1;
+        }
+    }
+
+    let needs_quote = |buf: &[u8], i: usize, line_len: usize| -> bool {
+        (buf[i] > 126)
+            || (buf[i] == b'=')
+            || (header && buf[i] == b'_')
+            || (buf[i] == b'.'
+                && line_len == 0
+                && (i + 1 == buflen || buf[i + 1] == b'\n' || buf[i + 1] == b'\r' || buf[i + 1] == 0))
+            || (!istext && (buf[i] == b'\r' || buf[i] == b'\n'))
+            || ((buf[i] == b'\t' || buf[i] == b' ') && (i + 1 == buflen))
+            || ((buf[i] < 33)
+                && (buf[i] != b'\r')
+                && (buf[i] != b'\n')
+                && (quotetabs || (buf[i] != b'\t' && buf[i] != b' ')))
+    };
+
+    let mut out_data = Vec::with_capacity(buflen + buflen / 3 + 16);
+    let mut in_idx = 0;
+    let mut line_len: usize = 0;
+    let push_soft_break = |out_data: &mut Vec<u8>, line_len: &mut usize| {
+        out_data.push(b'=');
+        if crlf {
+            out_data.push(b'\r');
+        }
+        out_data.push(b'\n');
+        *line_len = 0;
+    };
+
+    while in_idx < buflen {
+        if needs_quote(buf, in_idx, line_len) {
+            if (line_len + 3) >= BINASCII_MAXLINESIZE {
+                push_soft_break(&mut out_data, &mut line_len);
+            }
+            out_data.push(b'=');
+            let ch_hi = hex_nibble(buf[in_idx] >> 4);
+            out_data.push(if (b'a'..=b'f').contains(&ch_hi) {
+                ch_hi - b' '
+            } else {
+                ch_hi
+            });
+            let ch_lo = hex_nibble(buf[in_idx] & 0xf);
+            out_data.push(if (b'a'..=b'f').contains(&ch_lo) {
+                ch_lo - b' '
+            } else {
+                ch_lo
+            });
+            in_idx += 1;
+            line_len += 3;
+        } else if istext
+            && ((buf[in_idx] == b'\n')
+                || ((in_idx + 1 < buflen) && (buf[in_idx] == b'\r') && (buf[in_idx + 1] == b'\n')))
+        {
+            line_len = 0;
+            // Protect against trailing whitespace on the line.
+            if out_data.last() == Some(&b' ') || out_data.last() == Some(&b'\t') {
+                let last = *out_data.last().unwrap();
+                out_data.pop();
+                let ch_hi = hex_nibble(last >> 4);
+                out_data.push(if (b'a'..=b'f').contains(&ch_hi) {
+                    ch_hi - b' '
+                } else {
+                    ch_hi
+                });
+                let ch_lo = hex_nibble(last & 0xf);
+                out_data.push(if (b'a'..=b'f').contains(&ch_lo) {
+                    ch_lo - b' '
+                } else {
+                    ch_lo
+                });
+                out_data.insert(out_data.len() - 2, b'=');
+            }
+            if crlf {
+                out_data.push(b'\r');
+            }
+            out_data.push(b'\n');
+            in_idx += if buf[in_idx] == b'\r' { 2 } else { 1 };
+        } else {
+            if (in_idx + 1 != buflen)
+                && (buf[in_idx + 1] != b'\n')
+                && (line_len + 1) >= BINASCII_MAXLINESIZE
+            {
+                push_soft_break(&mut out_data, &mut line_len);
+            }
+            line_len += 1;
+            if header && buf[in_idx] == b' ' {
+                out_data.push(b'_');
+            } else {
+                out_data.push(buf[in_idx]);
+            }
+            in_idx += 1;
+        }
+    }
+    out_data
+}
+
+/// uu decode error variants (donor Error::MissingLengthByte etc).
+pub(crate) enum UuError {
+    MissingLengthByte,
+    IllegalChar,
+    TrailingGarbage,
+    TooLong,
+}
+
+/// `a2b_uu(data)` (donor a2b_uu).
+pub(crate) fn a2b_uu(b: &[u8]) -> Result<Vec<u8>, UuError> {
+    if b.is_empty() {
+        return Err(UuError::MissingLengthByte);
+    }
+    let length = (b[0].wrapping_sub(b' ') & 0x3f) as usize;
+    let mut res = Vec::<u8>::with_capacity(length);
+    let uu_read = |c: u8| -> Result<u8, UuError> {
+        // The 64 instead of the expected 63 is because there are a few
+        // uuencodes out there that use '`' as zero instead of space.
+        if !(b' '..=(b' ' + 64)).contains(&c) {
+            if c == b'\r' || c == b'\n' {
+                return Ok(0);
+            }
+            return Err(UuError::IllegalChar);
+        }
+        Ok((c - b' ') & 0x3f)
+    };
+    for chunk in b.get(1..).unwrap_or_default().chunks(4) {
+        let mut chars: Vec<u8> = chunk
+            .iter()
+            .map(|&x| uu_read(x))
+            .collect::<Result<Vec<_>, _>>()?;
+        while chars.len() < 4 {
+            chars.push(0);
+        }
+        let (char_a, char_b, char_c, char_d) = (chars[0], chars[1], chars[2], chars[3]);
+        if res.len() < length {
+            res.push((char_a << 2) | (char_b >> 4));
+        } else if char_a != 0 || char_b != 0 {
+            return Err(UuError::TrailingGarbage);
+        }
+        if res.len() < length {
+            res.push(((char_b & 0xf) << 4) | (char_c >> 2));
+        } else if char_c != 0 {
+            return Err(UuError::TrailingGarbage);
+        }
+        if res.len() < length {
+            res.push(((char_c & 0x3) << 6) | char_d);
+        } else if char_d != 0 {
+            return Err(UuError::TrailingGarbage);
+        }
+    }
+    let remaining_length = length - res.len();
+    if remaining_length > 0 {
+        res.extend(std::iter::repeat(0).take(remaining_length));
+    }
+    Ok(res)
+}
+
+/// `b2a_uu(data, *, backtick=True)` (donor b2a_uu).
+pub(crate) fn b2a_uu(b: &[u8], backtick: bool) -> Result<Vec<u8>, UuError> {
+    const fn uu_b2a(num: u8, backtick: bool) -> u8 {
+        if backtick && num == 0 {
+            0x60
+        } else {
+            b' ' + num
+        }
+    }
+    let length = b.len();
+    if length > 45 {
+        return Err(UuError::TooLong);
+    }
+    let mut res = Vec::<u8>::with_capacity(2 + length.div_ceil(3) * 4);
+    res.push(uu_b2a(length as u8, backtick));
+    for chunk in b.chunks(3) {
+        let char_a = chunk[0];
+        let char_b = *chunk.get(1).unwrap_or(&0);
+        let char_c = *chunk.get(2).unwrap_or(&0);
+        res.push(uu_b2a(char_a >> 2, backtick));
+        res.push(uu_b2a(((char_a & 0x3) << 4) | (char_b >> 4), backtick));
+        res.push(uu_b2a(((char_b & 0xf) << 2) | (char_c >> 6), backtick));
+        res.push(uu_b2a(char_c & 0x3f, backtick));
+    }
+    res.push(b'\n');
+    Ok(res)
+}
+
+/// A-1 item 3: bytes.hex()/binascii.hexlify with sep/bytes_per_sep —
+/// adapted from RustPython vm/src/bytes_inner.rs bytes_to_hex/hex_impl (MIT).
+pub(crate) fn bytes_to_hex_str(bytes: &[u8], sep: Option<u8>, bytes_per_sep: i64) -> String {
+    let hex_nibbles = |out: &mut Vec<u8>, b: u8| {
+        out.push(hex_nibble(b >> 4));
+        out.push(hex_nibble(b & 0xf));
+    };
+    if sep.is_none() || bytes_per_sep == 0 || bytes.is_empty() {
+        let mut out = Vec::with_capacity(bytes.len() * 2);
+        for &b in bytes {
+            hex_nibbles(&mut out, b);
+        }
+        return String::from_utf8(out).unwrap_or_default();
+    }
+    let sep_char = sep.unwrap();
+    let abs_bps = bytes_per_sep.unsigned_abs() as usize;
+    if abs_bps >= bytes.len() {
+        let mut out = Vec::with_capacity(bytes.len() * 2);
+        for &b in bytes {
+            hex_nibbles(&mut out, b);
+        }
+        return String::from_utf8(out).unwrap_or_default();
+    }
+    let num_separators = (bytes.len() - 1) / abs_bps;
+    let mut out = Vec::with_capacity(bytes.len() * 2 + num_separators);
+    if bytes_per_sep < 0 {
+        // Left-to-right: separator after every abs_bps input bytes
+        // (never trailing).
+        for (i, &b) in bytes.iter().enumerate() {
+            hex_nibbles(&mut out, b);
+            if (i + 1) % abs_bps == 0 && i + 1 < bytes.len() {
+                out.push(sep_char);
+            }
+        }
+    } else {
+        // Right-to-left: separator before every abs_bps input bytes,
+        // counting from the right (never leading).
+        let len = bytes.len();
+        for (i, &b) in bytes.iter().enumerate() {
+            if i != 0 && (len - i) % abs_bps == 0 {
+                out.push(sep_char);
+            }
+            hex_nibbles(&mut out, b);
+        }
+    }
+    String::from_utf8(out).unwrap_or_default()
+}
+
+/// A-1 item 3: bytes/bytearray.fromhex full semantics — whitespace
+/// (ASCII only) skipped between digits, odd-length and bad-digit errors
+/// carry the position (donor bytes_inner.rs fromhex, MIT).
+pub(crate) fn bytes_fromhex(txt: &[u8]) -> BResult {
+    fn is_py_ws(b: u8) -> bool {
+        matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c)
+    }
+    let mut result: Vec<u8> = Vec::with_capacity(txt.len() / 2);
+    let mut iter = txt.iter().copied().enumerate();
+    let bad: Option<(bool, usize)> = loop {
+        let (i, b) = match iter.next() {
+            Some(x) => x,
+            None => return Ok(Value::Bytes(Gc::new(result))),
+        };
+        if is_py_ws(b) {
+            continue;
+        }
+        let top = match b {
+            b'0'..=b'9' => b - b'0',
+            b'a'..=b'f' => 10 + b - b'a',
+            b'A'..=b'F' => 10 + b - b'A',
+            _ => break Some((true, i)), // invalid char at i
+        };
+        let (j, b2) = match iter.next() {
+            Some(x) => x,
+            None => break Some((false, txt.len())), // odd digit count
+        };
+        let bot = match b2 {
+            b'0'..=b'9' => b2 - b'0',
+            b'a'..=b'f' => 10 + b2 - b'a',
+            b'A'..=b'F' => 10 + b2 - b'A',
+            _ => break Some((true, j)),
+        };
+        result.push((top << 4) | bot);
+    };
+    Err(match bad {
+        Some((false, pos)) => raise(
+            "ValueError",
+            "fromhex() arg must contain an even number of hexadecimal digits",
+        ),
+        Some((true, pos)) => raise(
+            "ValueError",
+            format!("non-hexadecimal number found in fromhex() arg at position {pos}"),
+        ),
+        None => raise("SystemError", "fromhex state lost"),
+    })
 }
 
 // ===========================================================================
@@ -10506,6 +11362,8 @@ fn builtin_value_method_exists(tag: &str, name: &str) -> bool {
             | ("pylist", "reverse")
             | ("pylist", "copy")
             | ("pybytes", "hex")
+            // A-1 item 3: bytes/bytearray.fromhex classmethod surface.
+            | ("pybytes", "fromhex")
             | ("pybytes", "startswith")
             | ("pybytes", "endswith")
             // 02.08-full part 1: str extras.
@@ -11451,13 +12309,89 @@ pub fn call_builtin_values(
             }
             ("pybytes", "hex") => {
                 if let Value::Bytes(b) = &recv {
-                    let mut out = String::with_capacity((**b).len() * 2);
-                    for byte in &**b {
-                        out.push_str(&format!("{byte:02x}"));
+                    // A-1 item 3: full bytes.hex semantics — sep must be a
+                    // 1-byte ASCII value, bytes_per_sep default 0 (donor
+                    // bytes_inner.rs bytes_to_hex). sep/bytes_per_sep may be
+                    // positional or keyword.
+                    let sep_arg = args.get(1).or_else(|| kw(kwargs, "sep"));
+                    let bps_arg = if args.len() >= 3 {
+                        args.get(2)
+                    } else {
+                        kw(kwargs, "bytes_per_sep")
+                    };
+                    let sep: Option<u8> = match sep_arg {
+                        Some(Value::Bytes(x)) if x.len() == 1 => Some(x[0]),
+                        Some(Value::Str(x)) if x.as_str().len() == 1 => {
+                            Some(x.as_str().as_bytes()[0])
+                        }
+                        Some(Value::Bytes(x)) => {
+                            return Err(raise(
+                                "TypeError",
+                                format!("sep must be a 1-byte value, got bytes of length {}", x.len()),
+                            ))
+                        }
+                        Some(Value::Str(x)) => {
+                            return Err(raise(
+                                "TypeError",
+                                format!("sep must be a 1-byte value, got str of length {}", x.as_str().len()),
+                            ))
+                        }
+                        Some(other) => {
+                            return Err(raise(
+                                "TypeError",
+                                format!("sep must be a 1-byte value, got {}", other.type_name()),
+                            ))
+                        }
+                        None => None,
+                    };
+                    // CPython 3.14: hex(sep) with no bytes_per_sep groups
+                    // every byte (observed differential: hex(":") ->
+                    // "68:65:...").
+                    let bytes_per_sep = match bps_arg {
+                        Some(v) => as_int_i64(v)?,
+                        None => 1,
+                    };
+                    if sep.is_none() && sep_arg.is_some() {
+                        // bytes.hex(sep=None) is valid CPython: explicit None
+                        // disables separation.
+                        return Ok(s(bytes_to_hex_str(&**b, None, bytes_per_sep)));
                     }
-                    return Ok(s(out));
+                    return Ok(s(bytes_to_hex_str(&**b, sep, bytes_per_sep)));
                 }
                 Err(raise("SystemError", "bad receiver"))
+            }
+            ("pybytes", "fromhex") => {
+                // A-1 item 3: bytes.fromhex / bytearray.fromhex classmethod
+                // with full whitespace-skipping + position-carrying errors
+                // (donor bytes_inner.rs fromhex).
+                let arg = args
+                    .get(if matches!(args.first(), Some(Value::Bytes(_)) | Some(Value::Str(_))) {
+                        // UNBOUND spelling: receiver slot already carries the
+                        // (empty) instance — the string arg follows it.
+                        if args.len() >= 2 { 1 } else { 0 }
+                    } else {
+                        0
+                    })
+                    .ok_or_else(|| {
+                        raise(
+                            "TypeError",
+                            "fromhex() missing required argument (pos 1)",
+                        )
+                    })?;
+                let txt: &[u8] = match arg {
+                    Value::Str(st) => st.as_str().as_bytes(),
+                    Value::Bytes(b) => &**b,
+                    other => {
+                        return Err(raise(
+                            "TypeError",
+                            format!(
+                                "fromhex() argument must be str or bytes-like, not {}",
+                                other.type_name()
+                            ),
+                        ))
+                    }
+                };
+                return bytes_fromhex(txt);
             }
             ("pylist", "sort") => {
                 if let Value::List(l) = &recv {
@@ -13457,9 +14391,19 @@ fn build_importlib_machinery(_i: &crate::frame::Interpreter) -> Value {
         "ExtensionFileLoader",
         "WindowsRegistryFinder",
         "PATH_FALLBACK",
+        // T2 (pluggy -> pytest): pluggy._manager and _pytest.core read
+        // importlib.machinery.PathFinder for their plugin-file discovery
+        // fallback. Same interned-type token as the other loader surfaces.
+        // NamespaceLoader: pluggy's ZipHookImporter / namespace-path probes
+        // reference it; ModuleSpec re-export matches CPython's machinery.
+        "PathFinder",
+        "NamespaceLoader",
+        "ModuleSpec",
+        "AppleFrameworkLoader",
     ] {
         let _ = ns.set(s(n), interned_type_pub(n));
     }
+    ns_const(&ns, "EXTENSION_SUFFIXES", list(vec![s(".so"), s(".dylib")]));
     ns_const(&ns, "SOURCE_SUFFIXES", list(vec![s(".py")]));
     ns_const(&ns, "BYTECODE_SUFFIXES", list(vec![s(".pyc")]));
     ns_const(&ns, "all_suffixes", list(vec![s(".py"), s(".pyc")]));

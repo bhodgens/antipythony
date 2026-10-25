@@ -350,16 +350,45 @@ impl<'s> Lowerer<'s> {
             v.dedup();
             v
         };
-        self.finished.insert(
-            path.clone(),
-            ScopeInfo {
-                path,
-                globals: sorted(data.declared_global),
-                nonlocals: sorted(data.declared_nonlocal),
-                frees: sorted(frees),
-                cells: sorted(data.cells),
-            },
-        );
+        let new_info = ScopeInfo {
+            path: path.clone(),
+            globals: sorted(data.declared_global),
+            nonlocals: sorted(data.declared_nonlocal),
+            frees: sorted(frees),
+            cells: sorted(data.cells),
+        };
+        // T1-d fix: two scopes can finish with the SAME path when a nested
+        // function's parent path was mis-prefixed (twisted deprecate.py
+        // produced two "deprecated" entries — one real, one empty). The
+        // BTreeMap insert CLOBBERED the real classification, breaking
+        // closure wiring ('version' NameError). Merge on collision.
+        match self.finished.get_mut(&path) {
+            Some(existing) => {
+                for c in &new_info.cells {
+                    if !existing.cells.iter().any(|x| x == c) {
+                        existing.cells.push(c.clone());
+                    }
+                }
+                for f in &new_info.frees {
+                    if !existing.frees.iter().any(|x| x == f) {
+                        existing.frees.push(f.clone());
+                    }
+                }
+                for g in &new_info.globals {
+                    if !existing.globals.iter().any(|x| x == g) {
+                        existing.globals.push(g.clone());
+                    }
+                }
+                for nl in &new_info.nonlocals {
+                    if !existing.nonlocals.iter().any(|x| x == nl) {
+                        existing.nonlocals.push(nl.clone());
+                    }
+                }
+            }
+            None => {
+                self.finished.insert(path, new_info);
+            }
+        }
     }
 
     /// Open a new function-like scope named `name` inside the current path.

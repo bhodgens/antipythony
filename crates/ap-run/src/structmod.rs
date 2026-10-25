@@ -50,6 +50,11 @@ pub(crate) fn call_struct(name: &str, args: &[Value]) -> Option<crate::builtins_
             }
         }
         Some(Value::Str(f)) => (f.as_str().to_string(), &args[1..]),
+        // T1-d (zipfile): formats are bytes literals (b"<4s4H2LH").
+        Some(Value::Bytes(b)) => match std::str::from_utf8(&**b) {
+            Ok(fs) => (fs.to_string(), &args[1..]),
+            Err(_) => return None,
+        },
         _ => return None,
     };
     let name = name.rsplit('.').next().unwrap_or(name); // Struct.<op> markers
@@ -227,6 +232,10 @@ fn calcsize(fmt: &str) -> crate::builtins_modules::BResult {
             'h' | 'H' => 2,
             'i' | 'I' | 'l' | 'L' | 'f' => 4,
             'q' | 'Q' | 'd' | 'n' | 'N' => 8,
+            // T1-d (zipfile): 's' (bytes) and 'p' (pascal string) count
+            // toward the size with their repeat count.
+            's' | 'p' => 1, // repeat count in `count` handles the size
+            'P' => 8,
             _ => {
                 return Err(raise(
                     "NotImplementedError",

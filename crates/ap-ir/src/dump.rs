@@ -935,7 +935,7 @@ fn dump_target(t: &Target) -> String {
 
 /// Expressions dump inline (parenthesized by precedence shape, not by source).
 /// Keeping them inline makes the dump compact while staying unambiguous.
-fn dump_expr_inline(e: &Expr) -> String {
+pub fn dump_expr_inline(e: &Expr) -> String {
     let mut s = String::new();
     dump_expr(&mut s, e, 0);
     // single-line: strip any accidental newlines (f-strings never emit them)

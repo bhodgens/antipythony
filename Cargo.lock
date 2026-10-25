@@ -151,6 +151,7 @@ dependencies = [
  "ap-obj",
  "ap-pack",
  "ap-parse",
+ "libc",
  "libm",
  "md-5",
  "num-bigint",

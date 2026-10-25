@@ -493,6 +493,29 @@ pub fn values_cmp(a: &Value, b: &Value) -> Result<std::cmp::Ordering, PyExceptio
             seq_cmp(&xi, &yi)
         }
         (Value::Tuple(x), Value::Tuple(y)) => seq_cmp(&x.0, &y.0),
+        // T1-d fix (sys.version_info chained compares): NamedTuple compares
+        // as its <values> tuple against tuples/lists ((3,13,8)<=vi<(3,14) in
+        // typing_extensions gates the deprecated class body).
+        (Value::Obj(o), _) | (_, Value::Obj(o)) if o.kind == crate::object::ObjKind::NamedTuple => {
+            let a_is_nt =
+                matches!(a, Value::Obj(ao) if ao.kind == crate::object::ObjKind::NamedTuple);
+            let vals = o
+                .attrs
+                .borrow()
+                .get(&Value::Str(crate::PyString::new("<values>")));
+            let tup = match vals {
+                Some(Value::List(l)) => {
+                    Value::Tuple(std::rc::Rc::new(crate::value::Tuple(l.items().to_vec())))
+                }
+                Some(other) => other.clone(),
+                None => return Err(type_err()),
+            };
+            if a_is_nt {
+                values_cmp(&tup, b)
+            } else {
+                values_cmp(a, &tup).map(|ord| ord.reverse())
+            }
+        }
         _ => Err(type_err()),
     }
 }

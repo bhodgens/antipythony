@@ -338,6 +338,87 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
             };
             crate::builtins_modules::re_dispatch("Match.__getitem__", &[obj.clone(), kv], &[])
         }
+        // T1-d: re-subscription of a _GenericAlias alias (list[T][int]) —
+        // substitute __parameters__ with the new args (v0 identity sub).
+        (Value::Obj(o), _k)
+            if o.kind == ap_obj::ObjKind::Namespace && o.name == "_GenericAlias" =>
+        {
+            let has_params = o
+                .attrs
+                .borrow()
+                .get(&Value::Str(PyString::new("__parameters__")))
+                .is_some();
+            if has_params {
+                let ga = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "_GenericAlias");
+                {
+                    let mut attrs = ga.attrs.borrow_mut();
+                    let origin = o
+                        .attrs
+                        .borrow()
+                        .get(&Value::Str(PyString::new("__origin__")))
+                        .map(|x| x.clone())
+                        .unwrap_or(Value::None);
+                    let _ = attrs.set(
+                        Value::Str(PyString::new("__origin__")),
+                        origin,
+                    );
+                    // v0 substitution: walk __args__, replace TypeVar
+                    // positions with the subscription args (single-arg form).
+                    let old_args = o
+                        .attrs
+                        .borrow()
+                        .get(&Value::Str(PyString::new("__args__")))
+                        .map(|x| x.clone());
+                    let mut new_args: Vec<Value> = Vec::new();
+                    if let Some(Value::Tuple(t)) = &old_args {
+                        let kv: Vec<Value> = match key {
+                            Value::Tuple(tt) => tt.0.clone(),
+                            other => vec![other.clone()],
+                        };
+                        let mut ki = 0usize;
+                        for av in &t.0 {
+                            let is_tv = matches!(av, Value::Obj(vo) if {
+                                let sp = vo.slice_parts.borrow();
+                                matches!(sp.first(), Some(Value::Str(ps)) if ps.as_str() == "__ap_typevar__")
+                            });
+                            if is_tv && ki < kv.len() {
+                                new_args.push(kv[ki].clone());
+                                ki += 1;
+                            } else {
+                                new_args.push(av.clone());
+                            }
+                        }
+                    }
+                    let _ = attrs.set(
+                        Value::Str(PyString::new("__args__")),
+                        Value::Tuple(Gc::new(Tuple(new_args))),
+                    );
+                    // All params substituted → empty __parameters__.
+                    let _ = attrs.set(
+                        Value::Str(PyString::new("__parameters__")),
+                        Value::Tuple(Gc::new(Tuple(Vec::new()))),
+                    );
+                }
+                return Ok(Value::Obj(ga));
+            }
+            // No __parameters__ (fully-substituted alias): v0 inert —
+            // return a fresh alias carrying the same origin/args.
+            let ga = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "_GenericAlias");
+            {
+                let mut attrs = ga.attrs.borrow_mut();
+                for src_key in ["__origin__", "__args__"] {
+                    if let Some(vv) = o
+                        .attrs
+                        .borrow()
+                        .get(&Value::Str(PyString::new(src_key)))
+                        .map(|x| x.clone())
+                    {
+                        let _ = attrs.set(Value::Str(PyString::new(src_key)), vv);
+                    }
+                }
+            }
+            return Ok(Value::Obj(ga));
+        }
         (Value::Obj(o), _k) if o.kind == ap_obj::ObjKind::Type => {
             let ga = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "_GenericAlias");
             {
@@ -350,6 +431,32 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
                     Value::Str(PyString::new("__args__")),
                     Value::Tuple(Gc::new(Tuple(vec![key.clone()]))),
                 );
+                // T1-d: typing._GenericAlias.__getitem__ needs
+                // __parameters__ (TypeVar members of __args__) to compute
+                // substitutions for re-subscription (defer.py
+                // (_DeferredListResultListT = list[_DeferredListResultItemT[T]]).
+                let mut tvs: Vec<Value> = Vec::new();
+                let mut collect_tvs = |v: &Value, tvs: &mut Vec<Value>| {
+                    if let Value::Obj(vo) = v {
+                        if let Some(Value::Str(flag)) = vo
+                            .slice_parts
+                            .borrow()
+                            .first()
+                            .cloned()
+                        {
+                            if flag.as_str() == "__ap_typevar__" {
+                                tvs.push(v.clone());
+                            }
+                        }
+                    }
+                };
+                collect_tvs(&key, &mut tvs);
+                if !tvs.is_empty() {
+                    let _ = attrs.set(
+                        Value::Str(PyString::new("__parameters__")),
+                        Value::Tuple(Gc::new(Tuple(tvs))),
+                    );
+                }
             }
             Ok(Value::Obj(ga))
         }
@@ -439,6 +546,46 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
             };
         }
         (Value::Obj(o), _k) if o.kind == ap_obj::ObjKind::UserInstance => {
+            // T1-d (attr/_make.py): builtin-backed subclass instances carry
+            // __ap_tuple_payload__ — subscript/iteration delegate to it
+            // (AttrsClass instances ARE tuples).
+            if let Some(p) =
+                o.attrs.borrow().get(&Value::Str(PyString::new("__ap_tuple_payload__")))
+            {
+                return subscript_get(&p, key);
+            }
+            // T1-d (typing.NamedTuple): namedtuple instances ARE tuples —
+            // index into the declared field order (n[0] == n.<field0>).
+            if let Some(t) = o.type_ref.borrow().as_ref().and_then(|w| w.upgrade()) {
+                if let Some(Value::List(fields)) = t
+                    .dict
+                    .get(&Value::Str(PyString::new("__ap_namedtuple_fields__")))
+                {
+                    let names: Vec<String> = fields
+                        .items()
+                        .iter()
+                        .filter_map(|v| match v {
+                            Value::Str(s) => Some(s.as_str().to_string()),
+                            _ => None,
+                        })
+                        .collect();
+                    let k = subscript_key(key)?;
+                    if let crate::methods::Key::Index(i) = &k {
+                        let idx = if *i < 0 { *i + names.len() as i64 } else { *i };
+                        if idx >= 0 && (idx as usize) < names.len() {
+                            let fname = &names[idx as usize];
+                            if let Some(v) = o
+                                .attrs
+                                .borrow()
+                                .get(&Value::Str(PyString::new(fname.clone())))
+                            {
+                                return Ok(v);
+                            }
+                        }
+                        return Err(raise("IndexError", "tuple index out of range"));
+                    }
+                }
+            }
             // 02.03b: subscript read on dict-derived instances — the
             // subclass __getitem__ (if any) first, else the backing dict.
             if let Some(t) = o.type_ref.borrow().as_ref().and_then(|w| w.upgrade()) {
@@ -707,6 +854,10 @@ pub fn builtin_method_routed(name: &str) -> bool {
             | "copy"
             | "discard"
             | "set_int_max_str_digits"
+            // T1-d (twisted.python.context: setDefault =
+            // defaultContextDict.__setitem__) — dict dunder method surface.
+            | "__setitem__"
+            | "__delitem__"
     )
 }
 
@@ -982,12 +1133,35 @@ pub fn call_method(
             Some(Ok(Value::None))
         }
         (Value::Dict(d), "keys") => {
+            // T1-d: return a dict_keys VIEW (membership `in`, iteration) —
+            // sysconfig._extend_dict does `key in target_keys`.
+            // T1/T2 fix (enum/pluggy): carry BOTH <payload> (creation
+            // snapshot) AND <dict> (live back-pointer). The native_iter
+            // dict_keys/values/items arm reads <dict> first and re-snapshots;
+            // without <dict> the view iterated EMPTY (enum.EnumType.__new__'s
+            // `dict(classdict.items())` lost every member ->
+            // KeyError 'STRICT' unpacking FlagBoundary; import pluggy died
+            // the same way).
             let items = d.keys();
-            Some(Ok(Value::List(PyList::from_vec(items))))
+            let view = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "dict_keys");
+            {
+                let payload = Value::List(PyList::from_vec(items));
+                let mut a = view.attrs.borrow_mut();
+                let _ = a.set(Value::Str(PyString::new("<payload>")), payload);
+                let _ = a.set(Value::Str(PyString::new("<dict>")), Value::Dict(d.clone()));
+            }
+            Some(Ok(Value::Obj(view)))
         }
         (Value::Dict(d), "values") => {
             let items = d.items().into_iter().map(|(_, v)| v).collect();
-            Some(Ok(Value::List(PyList::from_vec(items))))
+            let view = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "dict_values");
+            {
+                let payload = Value::List(PyList::from_vec(items));
+                let mut a = view.attrs.borrow_mut();
+                let _ = a.set(Value::Str(PyString::new("<payload>")), payload);
+                let _ = a.set(Value::Str(PyString::new("<dict>")), Value::Dict(d.clone()));
+            }
+            Some(Ok(Value::Obj(view)))
         }
         (Value::Dict(d), "items") => {
             let items = d
@@ -995,7 +1169,14 @@ pub fn call_method(
                 .into_iter()
                 .map(|(k, v)| Value::Tuple(Gc::new(Tuple(vec![k, v]))))
                 .collect();
-            Some(Ok(Value::List(PyList::from_vec(items))))
+            let view = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "dict_items");
+            {
+                let payload = Value::List(PyList::from_vec(items));
+                let mut a = view.attrs.borrow_mut();
+                let _ = a.set(Value::Str(PyString::new("<payload>")), payload);
+                let _ = a.set(Value::Str(PyString::new("<dict>")), Value::Dict(d.clone()));
+            }
+            Some(Ok(Value::Obj(view)))
         }
         (Value::Set(s), "add") => {
             let r = s.add(one_arg(args)?.clone()).map_err(Flow::from_py);
@@ -1046,6 +1227,21 @@ pub fn call_method(
                 return Some(Err(raise("KeyError", key_txt)));
             }
             let _ = s.pop_discard(k);
+            Some(Ok(Value::None))
+        }
+        // T1-d: dict.__setitem__/__delitem__ as BOUND methods —
+        // scrapy.http.Headers (dict subclass) does
+        // `dict.__setitem__(self, ...)` unbound calls; plain dict values
+        // also need the method surface for `d.__setitem__` attr reads.
+        (Value::Dict(d), "__setitem__") => {
+            let k = one_arg(args)?.clone();
+            let v = args.get(1).cloned().unwrap_or(Value::None);
+            d.set(k, v).map_err(Flow::from_py).ok();
+            Some(Ok(Value::None))
+        }
+        (Value::Dict(d), "__delitem__") => {
+            let k = one_arg(args)?.clone();
+            let _ = d.pop(&k);
             Some(Ok(Value::None))
         }
         // 02.03b: dict.setdefault (EnumDict._ignore_ plumbing).

@@ -185,6 +185,19 @@ impl Frame {
                 None => Lookup::UnboundLocal,
             };
         }
+        // T1-d fix (@x.setter on __name__-style dunders): the CLASS namespace
+        // must be consulted BEFORE module globals — the importer seeds
+        // globals["__name__"] = "__main__", which otherwise shadowed a
+        // @property __name__ defined in the class body (typing_extensions
+        // sentinel class; any @property-over-__name__ + @__name__.setter
+        // resolved to the "__main__" STR and `.setter` blew up).
+        // CPython: class-body name resolution sees the class namespace
+        // before module globals (the body executes with the ns as locals).
+        if let Some(ns) = &self.class_ns {
+            if let Some(v) = ns.get(&Value::Str(ap_obj::PyString::new(name))) {
+                return Lookup::Found(v);
+            }
+        }
         // 02.07: globals may be momentarily borrowed by the sibling thread
         // (store in flight when the GIL rotated). Retry — writes are
         // statement-atomic.
@@ -199,14 +212,6 @@ impl Frame {
         };
         if let Some(v) = v {
             return Lookup::Found(v);
-        }
-        // Class-body frame: the class namespace IS readable from the body
-        // itself (S-03-3: not an ENCLOSING scope for nested functions — that
-        // rule is frontend-side; the body reads its own names, c011 @x.setter).
-        if let Some(ns) = &self.class_ns {
-            if let Some(v) = ns.get(&Value::Str(ap_obj::PyString::new(name))) {
-                return Lookup::Found(v);
-            }
         }
         Lookup::Miss
     }
