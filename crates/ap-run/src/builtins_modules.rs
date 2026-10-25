@@ -7004,13 +7004,13 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                 }
                 let dfd = match dir_fd {
                     Some(v) if !matches!(v, Value::None) => as_int_i64(v)? as i32,
-                    _ => -100, // AT_FDCWD
+                    _ => libc::AT_FDCWD,
                 };
                 let c_path = std::ffi::CString::new(p.as_str())
                     .map_err(|_| raise("ValueError", "embedded null byte"))?;
                 let mut st: libc::stat = unsafe { std::mem::zeroed() };
                 let flags = if name == "lstat" || !follow {
-                    0x100 // AT_SYMLINK_NOFOLLOW
+                    libc::AT_SYMLINK_NOFOLLOW
                 } else {
                     0
                 };
@@ -7267,11 +7267,14 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                     .map_err(|_| raise("ValueError", "embedded null byte"))?;
                 let dfd = match kw(_kwargs, "dir_fd") {
                     Some(v) if !matches!(v, Value::None) => as_int_i64(v)? as i32,
-                    _ => -100, // AT_FDCWD
+                    _ => libc::AT_FDCWD,
                 };
                 let fd = unsafe { libc::openat(dfd, c_path.as_ptr(), flags) };
                 if fd < 0 {
-                    return Err(io_flow(std::io::Error::last_os_error()));
+                    return Err(io_flow_path(
+                        std::io::Error::last_os_error(),
+                        &fd_path,
+                    ));
                 }
                 Ok(i(fd as i64))
             }
@@ -7367,7 +7370,7 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                 let flags = if follow.map(truthy).unwrap_or(true) {
                     0
                 } else {
-                    0x100 // AT_SYMLINK_NOFOLLOW
+                    libc::AT_SYMLINK_NOFOLLOW
                 };
                 let c_path = std::ffi::CString::new(p.as_str())
                     .map_err(|_| raise("ValueError", "embedded null byte"))?;
@@ -7383,7 +7386,7 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                 ];
                 let dfd = match dir_fd {
                     Some(v) if !matches!(v, Value::None) => as_int_i64(v)? as i32,
-                    _ => -100, // AT_FDCWD
+                    _ => libc::AT_FDCWD,
                 };
                 let rc = unsafe { libc::utimensat(dfd, c_path.as_ptr(), times_v.as_ptr(), flags) };
                 if rc != 0 {
@@ -7524,6 +7527,18 @@ fn io_flow(e: std::io::Error) -> Flow {
     let eno = e.raw_os_error().unwrap_or(0) as i64;
     let strerror = errno_text(eno);
     Flow::Raise(ExceptionValue::new(class, vec![i(eno), s(strerror)]))
+}
+
+/// A-3: io_flow with the offending path — CPython's OSError carries the
+/// filename (args[2]) and str() renders "[Errno N] msg: 'path'".
+fn io_flow_path(e: std::io::Error, path: &str) -> Flow {
+    match io_flow(e) {
+        Flow::Raise(mut ev) => {
+            ev.args.push(s(path.to_string()));
+            Flow::Raise(ev)
+        }
+        other => other,
+    }
 }
 
 fn os_error(path: &str, e: &std::io::Error) -> Flow {
@@ -7799,7 +7814,22 @@ pub fn call_posixpath(
                 let p = str_arg(required(args, "isfile")?, "isfile")?;
                 Ok(Value::Bool(std::path::Path::new(&p).is_file()))
             }
-            "islink" => Ok(Value::Bool(false)),
+            // A-3: real lstat-based islink (was a hardcoded false — broke
+            // os.path.islink on every symlink once os.symlink landed).
+            "islink" => {
+                let p = str_arg(required(args, "islink")?, "islink")?;
+                let c_path = std::ffi::CString::new(p.as_str())
+                    .map_err(|_| raise("ValueError", "embedded null byte"))?;
+                let mut st: libc::stat = unsafe { std::mem::zeroed() };
+                let rc = unsafe {
+                    libc::fstatat(libc::AT_FDCWD, c_path.as_ptr(), &mut st, libc::AT_SYMLINK_NOFOLLOW)
+                };
+                if rc != 0 {
+                    Ok(Value::Bool(false))
+                } else {
+                    Ok(Value::Bool((st.st_mode & libc::S_IFMT) == libc::S_IFLNK))
+                }
+            }
             "ismount" => {
                 let p = str_arg(required(args, "ismount")?, "ismount")?;
                 Ok(Value::Bool(p == "/"))
@@ -9948,6 +9978,12 @@ fn build_zlib(_i: &crate::frame::Interpreter) -> Value {
             None,
         )
         .expect("zlib.error MRO");
+        // A-3 item 2: intern under the raised name so bare `except Exception`
+        // resolves the MRO through exc_matches' class-payload walk.
+        interp
+            .exc_classes
+            .borrow_mut()
+            .insert("error".to_string(), ap_obj::classes::make_class_value(t.clone()));
         let _ = t
             .dict
             .set(Value::Str(PyString::new("__module__")), s("zlib"));
@@ -10497,6 +10533,19 @@ fn build_binascii(_i: &crate::frame::Interpreter) -> Value {
             None,
         )
         .expect("binascii.Error MRO");
+        // A-3 item 2: intern under the raised name (same walk as zlib.error).
+        interp
+            .exc_classes
+            .borrow_mut()
+            .insert("Error".to_string(), ap_obj::classes::make_class_value(t.clone()));
+        // The call arms raise under the dotted spelling "binascii.Error".
+        interp
+            .exc_classes
+            .borrow_mut()
+            .insert(
+                "binascii.Error".to_string(),
+                ap_obj::classes::make_class_value(t.clone()),
+            );
         let _ = t
             .dict
             .set(Value::Str(PyString::new("__module__")), s("binascii"));
@@ -12098,11 +12147,15 @@ pub fn call_native(
                         .ok()
                         .and_then(|v| v.parse::<i64>().ok())
                         .unwrap_or(24);
-                    let o = PyObject::new(ap_obj::ObjKind::Namespace, "terminal_size");
+                    // T2 (pytest terminal width): unpackable namedtuple-ish
+                    // payload (`columns, lines = os.get_terminal_size()`).
+                    let o = PyObject::new(ap_obj::ObjKind::NamedTuple, "terminal_size");
                     {
                         let mut attrs = o.attrs.borrow_mut();
                         let _ = attrs.set(s("columns"), i(cols));
                         let _ = attrs.set(s("lines"), i(lines));
+                        let _ = attrs.set(s("<values>"), list(vec![i(cols), i(lines)]));
+                        let _ = attrs.set(s("<fields>"), list(vec![s("columns"), s("lines")]));
                     }
                     let _ = o.repr_text.borrow_mut().take();
                     *o.repr_text.borrow_mut() =

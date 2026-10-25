@@ -193,10 +193,18 @@ pub fn builtin_len(args: &[Value]) -> BResult {
                 {
                     Some(Value::List(l)) => l.len(),
                     _ => {
-                        return Err(raise(
-                            "TypeError",
-                            format!("object of type '{}' has no len()", v.type_name()),
-                        ))
+                        // A-3 item 5: stat_result (and friends) carry their
+                        // sequence in slice_parts, not attrs.
+                        drop(attrs);
+                        let n = o.slice_parts.borrow().len();
+                        if n > 0 {
+                            n
+                        } else {
+                            return Err(raise(
+                                "TypeError",
+                                format!("object of type '{}' has no len()", v.type_name()),
+                            ));
+                        }
                     }
                 }
             }
@@ -912,18 +920,14 @@ pub fn type_matches(v: &Value, want: &str) -> bool {
         (Value::Obj(o), b)
             if matches!(
                 o.kind,
-                ap_obj::ObjKind::Namespace
-                    | ap_obj::ObjKind::Opaque
-                    | ap_obj::ObjKind::NamedTuple
+                ap_obj::ObjKind::Namespace | ap_obj::ObjKind::Opaque | ap_obj::ObjKind::NamedTuple
             ) =>
         {
             o.name.as_str() == b
         }
         // T1-d (attrs _create_slots_class): Descriptor instances answer
         // classmethod/staticmethod/property isinstance probes by descr kind.
-        (Value::Obj(o), b)
-            if o.kind == ap_obj::ObjKind::Descriptor =>
-        {
+        (Value::Obj(o), b) if o.kind == ap_obj::ObjKind::Descriptor => {
             let kind = o.descr_kind.borrow().clone().unwrap_or_default();
             match b {
                 "classmethod" => kind == "classmethod",
@@ -935,11 +939,7 @@ pub fn type_matches(v: &Value, want: &str) -> bool {
         // T1-d (attrs _create_slots_class cached_property probe): the v0
         // functools.cached_property is a pass-through fn — plain functions
         // (the decorated results) answer True against its marker.
-        (Value::Obj(o), "cached_property")
-            if o.kind == ap_obj::ObjKind::Function =>
-        {
-            true
-        }
+        (Value::Obj(o), "cached_property") if o.kind == ap_obj::ObjKind::Function => true,
         // T1-d (scrapy.http.Headers.update): CPython registers dict as a
         // MutableMapping/Collection/Iterable/etc at the C level; our ABC
         // registry can't see native dicts, so answer by name here.
@@ -1019,6 +1019,14 @@ pub fn builtin_type(interp: &Interpreter, args: &[Value], kwargs: &[(String, Val
                         _ => None,
                     })
                     .unwrap_or_else(|| "Thread".to_string()),
+                // A-3 item 5: opaque native result records report their own
+                // name (type(os.uname()) == "uname_result"; stat_result too).
+                Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque => match o.name.as_str() {
+                    "uname_result" | "stat_result" | "statvfs_result" | "struct_time" => {
+                        o.name.clone()
+                    }
+                    _ => o.type_name(),
+                },
                 Value::Obj(o) => o.type_name(),
                 other => other.type_name().to_string(),
             };
@@ -2044,6 +2052,71 @@ pub fn make_sys_module(interp: &Interpreter) -> Value {
         Value::Str(PyString::new("path_importer_cache")),
         Value::Dict(PyDict::new()),
     );
+    // T2 (vendored bdb.py): sys.monitoring surface — module-level
+    // `E = sys.monitoring.events` + Bdb.use_tool_id bookkeeping. The
+    // monitoring machinery itself is inert (no tracing hooks in v0); the
+    // namespace answers the identity/events probes bdb makes at import.
+    {
+        let mon = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "monitoring");
+        {
+            let ma = mon.attrs.borrow_mut();
+            let _ = ma.set(Value::Str(PyString::new("DEBUGGER_ID")), {
+                Value::Int(ap_obj::Int::from_i64(0))
+            });
+            let ev = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "monitoring.events");
+            {
+                let eva = ev.attrs.borrow_mut();
+                // CPython 3.14 sys.monitoring.events int members (bdb reads
+                // them at import: E = sys.monitoring.events).
+                for (i, name) in [
+                    "BRANCH",
+                    "BRANCH_LEFT",
+                    "BRANCH_RIGHT",
+                    "CALL",
+                    "C_RAISE",
+                    "C_RETURN",
+                    "EXCEPTION_HANDLED",
+                    "INSTRUCTION",
+                    "JUMP",
+                    "LINE",
+                    "NO_EVENTS",
+                    "PY_RESUME",
+                    "PY_RETURN",
+                    "PY_START",
+                    "PY_THROW",
+                    "PY_UNWIND",
+                    "PY_YIELD",
+                    "RAISE",
+                    "RERAISE",
+                    "STOP_ITERATION",
+                ]
+                .iter()
+                .enumerate()
+                {
+                    let _ = eva.set(
+                        Value::Str(PyString::new(*name)),
+                        Value::Int(ap_obj::Int::from_i64(i as i64)),
+                    );
+                }
+            }
+            let _ = ma.set(Value::Str(PyString::new("events")), Value::Obj(ev));
+            for f in [
+                "get_tool",
+                "use_tool_id",
+                "clear_tool_id",
+                "set_local_events",
+            ] {
+                let _ = ma.set(
+                    Value::Str(PyString::new(f)),
+                    Value::Obj(ap_obj::PyObject::new(
+                        ap_obj::ObjKind::BuiltinFn,
+                        &format!("sys.monitoring.{f}"),
+                    )),
+                );
+            }
+        }
+        let _ = ns.set(Value::Str(PyString::new("monitoring")), Value::Obj(mon));
+    }
     let _ = ns.set(
         Value::Str(PyString::new("stdin")),
         Value::Obj(ap_obj::PyObject::new(
@@ -2130,6 +2203,11 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
             });
             Some(Ok(canon))
         }
+        // T2 (bdb): inert monitoring-tool registry (single tool, no tracing).
+        "sys.monitoring.get_tool" => Some(Ok(Value::None)),
+        "sys.monitoring.use_tool_id" => Some(Ok(Value::None)),
+        "sys.monitoring.clear_tool_id" => Some(Ok(Value::None)),
+        "sys.monitoring.set_local_events" => Some(Ok(Value::None)),
         "getswitchinterval" => Some(Ok(Value::Float(0.005))),
         "setswitchinterval" => Some(Ok(Value::None)),
         "getfilesystemencoding" => Some(Ok(Value::Str(PyString::new("utf-8")))),
@@ -2228,12 +2306,11 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
                 let outer_exists = (depth as usize + 1) < (stack_len.max(32));
                 let f_back = if outer_exists {
                     let fb = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<frame>");
-                    let _ = fb.attrs.borrow_mut().set(
-                        Value::Str(PyString::new("f_back")),
-                        Value::None,
-                    );
-                    *fb.slice_parts.borrow_mut() =
-                        vec![Value::Int(Int::from_i64(depth + 1))];
+                    let _ = fb
+                        .attrs
+                        .borrow_mut()
+                        .set(Value::Str(PyString::new("f_back")), Value::None);
+                    *fb.slice_parts.borrow_mut() = vec![Value::Int(Int::from_i64(depth + 1))];
                     let _ = fb.attrs.borrow_mut().set(
                         Value::Str(PyString::new("f_globals")),
                         Value::Dict(interp.globals.clone()),
@@ -2351,10 +2428,7 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
                                 ev.class.clone(),
                             ))
                         });
-                    let inst = ap_obj::PyObject::new(
-                        ap_obj::ObjKind::Exception,
-                        ev.class.clone(),
-                    );
+                    let inst = ap_obj::PyObject::new(ap_obj::ObjKind::Exception, ev.class.clone());
                     *inst.args.borrow_mut() = ev.args.clone();
                     let interp3 = interp2.rc();
                     let tb = crate::classes::traceback_value(&interp3);
@@ -2464,6 +2538,10 @@ pub fn install_builtins(interp: &Interpreter) {
         let ni = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "NotImplemented");
         let _ = b.set(Value::Str(PyString::new("NotImplemented")), Value::Obj(ni));
     }
+    // T2 (pytest faulthandler/debugging): `__debug__` builtin — True when
+    // not running with -O (we never do). CPython binds it as a compile-time
+    // constant; a builtins global answers the name reads.
+    let _ = b.set(Value::Str(PyString::new("__debug__")), Value::Bool(true));
     // 02.03b-fix: bytearray is a TYPE in CPython (isinstance(bytearray, type)
     // is True; _collections_abc registers it with MutableSequence at import).
     // The call path routes type-values through call_type_ctor -> call_builtin,
@@ -3492,9 +3570,7 @@ pub fn call_builtin(
             match std::io::stdin().read_line(&mut line) {
                 Ok(0) => return Err(raise("EOFError", "EOF when reading a line")),
                 Ok(_) => {}
-                Err(e) => {
-                    return Err(raise("OSError", format!("input() read failed: {e}")))
-                }
+                Err(e) => return Err(raise("OSError", format!("input() read failed: {e}"))),
             }
             let stripped = line
                 .strip_suffix('\n')
@@ -3722,6 +3798,14 @@ pub fn call_builtin(
                         .unwrap_or_else(|| "Thread".to_string());
                     return Ok(crate::builtins::interned_type(&interp, &cls));
                 }
+                // A-3 item 5: opaque native result records report their own
+                // name (type(os.uname()) == "uname_result"; stat_result too).
+                if matches!(
+                    o.name.as_str(),
+                    "uname_result" | "stat_result" | "statvfs_result" | "struct_time"
+                ) {
+                    return Ok(crate::builtins::interned_type(&interp, &o.name));
+                }
                 match crate::interp::attr_get_public(&interp, v, "__class__") {
                     Ok(Some(t)) => Ok(t),
                     _ => Ok(crate::builtins::interned_type(&interp, v.type_name())),
@@ -3765,9 +3849,7 @@ pub fn call_builtin(
         },
         // T1-d: typing._idfunc — identity (NewType.__call__).
         // T1-d: TypeVar.__typing_subst__ — identity substitution.
-        "__ap_typevar_subst__" => {
-            Ok(args.last().cloned().unwrap_or(Value::None))
-        }
+        "__ap_typevar_subst__" => Ok(args.last().cloned().unwrap_or(Value::None)),
         // T2 (typing_extensions PEP 696): the seeded has_default marker.
         "__ap_typevar_has_default__" => Ok(Value::Bool(false)),
         "__ap_typing_idfunc__" | "_typing._idfunc" => {
@@ -3777,10 +3859,8 @@ pub fn call_builtin(
             // T1-d: descriptor-__get__ marker call (attr/_make.py):
             // returns a BOUND object.__setattr__ marker for args[0].
             let inst = args.first().cloned().unwrap_or(Value::None);
-            let m = ap_obj::PyObject::new(
-                ap_obj::ObjKind::BuiltinFn,
-                "__object_virtual___setattr____",
-            );
+            let m =
+                ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "__object_virtual___setattr____");
             *m.slice_parts.borrow_mut() = vec![inst];
             Ok(Value::Obj(m))
         }
@@ -4068,7 +4148,6 @@ pub fn call_builtin_pub(name: &str, args: &[Value], kwargs: &[(String, Value)]) 
         None => Err(raise("NameError", format!("name '{name}' is not defined"))),
     }
 }
-
 
 /// Public method-call shim (json.load(fp) -> fp.read() etc).
 pub fn call_method_pub(recv: &Value, name: &str, args: &[Value]) -> BResult {

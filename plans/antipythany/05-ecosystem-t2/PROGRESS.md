@@ -126,3 +126,59 @@
   ("'times' must be either a tuple of two ints or None") - wave-1 agent
   fixed positional times but not tuple-length validation. Routed to A-2
   residuals.
+
+## Leaf T2-a (pytest-minimal) — DISPATCH RESULTS (2026-10-25, uncommitted)
+
+State achieved: `import pytest` (all 48 `_pytest` submodules) and
+`pytest --version` -> `pytest 9.1.1` WORK under the runtime. `pytest.main` on a
+trivial suite reaches hook execution and dies at the first wrapper hook
+(pluggy PEP-342 send semantics) — issue #7 (semantic, gate-blocking).
+
+Blockers cleared this dispatch (all general, no pytest special-casing):
+1. classes.rs: Module arm in attr_del_protocol (`del mod.attr` unbinds from
+   module_ns) — pygments lexers/formatters module swap.
+2. tuple/list-derived instances ARE tuples/lists: alloc backings
+   (`__ap_tuple__`/`__ap_list__`), len/iter/contains/subscript/`+` re-wrapped
+   in the subclass — pygments `_TokenType(tuple)`, traceback StackSummary.
+3. str/dict subclass construction (builtin-base fast path arms) — pygments
+   `class include(str)`.
+4. tuple/list `__new__` markers (`tuple.__new__(cls, args)` in derived
+   __new__) — pygments `class combined(tuple)`.
+5. `{*set_display, ...}` starred expansion in set displays — pytest config
+   builtin_plugins.
+6. typing._GenericAlias CALL constructs the origin class — pytest StashKey.
+7. _GenericAlias bases resolve to origin before the metaclass — pytest
+   `class CaptureResult(NamedTuple, Generic[AnyStr])` / NamedTupleMeta.
+8. `__init_subclass__`/`__subclasshook__` readable+callable on every class —
+   NamedTupleMeta post-Generic hook.
+9. `__debug__` builtin; sys.monitoring surface (events + inert tool fns) —
+   vendored bdb.py (new file, from CPython 3.14).
+10. tempfile.TemporaryFile/SpooledTemporaryFile (real file behind Opaque
+    TextIOWrapper) — pytest capture.
+11. native struct_time subscriptable (`_time.localtime(u)[:6]`) — _pydatetime.
+12. functools.update_wrapper real implementation — pytest fixtures.
+13. importlib.machinery.PathFinder.find_spec decline marker — pytest
+    pathlib.import_path meta_path walk.
+14. object.__getattribute__(obj, "__dict__") returns the REAL dict (module_ns
+    for modules, attrs otherwise) — pluggy inspect.getattr_static.
+15. importer: super_stack snapshot/restore around module imports — nested
+    `from X import Y` inside `__init__` before zero-arg super() no longer
+    empties the staged context (PytestPluginManager).
+16. generator introspection surface (gi_code/gi_frame/gi_running/...).
+17. os/shutil terminal_size is a NamedTuple payload (unpackable) — terminal
+    width; native NamedTuple <values> iterable.
+18. function `__code__.co_flags` carries CO_GENERATOR from def.is_generator —
+    pluggy wrapper-hook validation (isgeneratorfunction).
+19. T2-fix: exc_matches falls back to name-based check when a Type-kind
+    target has no UserClass payload (json.JSONDecodeError catch) — repairs a
+    sibling in-flight hunk that SystemError'd the catch site.
+
+Class-X divergences filed: #8 (module delattr note), #9 (str-subclass repr).
+Semantic blocker filed: #7 (eagerly-materialized generators vs pluggy
+wrapper hooks) — this is the ONLY remaining gate blocker for G-T2a.
+
+Gates verified this dispatch: cargo build clean; `cargo test --workspace`
+401 passed / 0 failed; CPython `pytest tests/` 1951 passed / 6 skipped /
+652 xfailed / 90 xpassed (>=1912 OK); corpus 270 .py cases (non-decreasing).
+NOTE: tree is shared with the A-2 impl sibling (zlib/select/hashlib waves
+in flight in builtins_modules.rs) — coordinate before committing.

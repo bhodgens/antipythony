@@ -1780,10 +1780,7 @@ pub fn build_html(_i: &crate::frame::Interpreter) -> Value {
     }
     // Constructible via the native path: Type-kind ctor chokes on kwargs
     // (recover=True); a BuiltinFn marker routes call_native -> call_lxml ctor.
-    let o = PyObject::new(
-        ap_obj::ObjKind::BuiltinFn,
-        "lxml.html.HTMLParser",
-    );
+    let o = PyObject::new(ap_obj::ObjKind::BuiltinFn, "lxml.html.HTMLParser");
     let _ = ns.set(s("HTMLParser"), Value::Obj(o));
     let o = PyObject::new(ap_obj::ObjKind::Type, "HtmlElement");
     let _ = ns.set(s("HtmlElement"), Value::Obj(o));

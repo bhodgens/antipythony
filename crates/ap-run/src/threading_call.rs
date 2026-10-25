@@ -92,7 +92,10 @@ pub fn build_threading_module(interp: &crate::frame::Interpreter) -> Value {
         );
     }
     // T1-d: twisted.threadable reads threading._RLock for its sync wrapper.
-    let _ = ns.set(s("_RLock"), crate::builtins_modules::interned_type_pub("RLock"));
+    let _ = ns.set(
+        s("_RLock"),
+        crate::builtins_modules::interned_type_pub("RLock"),
+    );
     for f in [
         "Lock",
         "RLock",

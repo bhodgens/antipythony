@@ -358,10 +358,7 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
                         .get(&Value::Str(PyString::new("__origin__")))
                         .map(|x| x.clone())
                         .unwrap_or(Value::None);
-                    let _ = attrs.set(
-                        Value::Str(PyString::new("__origin__")),
-                        origin,
-                    );
+                    let _ = attrs.set(Value::Str(PyString::new("__origin__")), origin);
                     // v0 substitution: walk __args__, replace TypeVar
                     // positions with the subscription args (single-arg form).
                     let old_args = o
@@ -438,12 +435,7 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
                 let mut tvs: Vec<Value> = Vec::new();
                 let mut collect_tvs = |v: &Value, tvs: &mut Vec<Value>| {
                     if let Value::Obj(vo) = v {
-                        if let Some(Value::Str(flag)) = vo
-                            .slice_parts
-                            .borrow()
-                            .first()
-                            .cloned()
-                        {
+                        if let Some(Value::Str(flag)) = vo.slice_parts.borrow().first().cloned() {
                             if flag.as_str() == "__ap_typevar__" {
                                 tvs.push(v.clone());
                             }
@@ -545,14 +537,48 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
                 )),
             };
         }
+        // T2 (_pydatetime._mktime: `_time.localtime(u)[:6]`): native
+        // struct_time subscripts through its <values> field tuple.
+        (Value::Obj(o), _k) if o.kind == ap_obj::ObjKind::Opaque && o.name == "struct_time" => {
+            match o.attrs.borrow().get(&Value::Str(PyString::new("<values>"))) {
+                Some(Value::List(l)) => {
+                    return subscript_get(&Value::List(l.clone()), key);
+                }
+                _ => Err(raise(
+                    "TypeError",
+                    "'struct_time' object is not subscriptable",
+                )),
+            }
+        }
+        // A-3 item 5: stat_result (opaque, slice_parts-populated) subscripts
+        // and slices through slice_parts like a plain sequence.
+        (Value::Obj(o), _k)
+            if o.kind == ap_obj::ObjKind::Opaque && !o.slice_parts.borrow().is_empty() =>
+        {
+            let parts = o.slice_parts.borrow().clone();
+            return subscript_get(&Value::List(PyList::from_vec(parts)), key);
+        }
         (Value::Obj(o), _k) if o.kind == ap_obj::ObjKind::UserInstance => {
             // T1-d (attr/_make.py): builtin-backed subclass instances carry
             // __ap_tuple_payload__ — subscript/iteration delegate to it
             // (AttrsClass instances ARE tuples).
-            if let Some(p) =
-                o.attrs.borrow().get(&Value::Str(PyString::new("__ap_tuple_payload__")))
+            if let Some(p) = o
+                .attrs
+                .borrow()
+                .get(&Value::Str(PyString::new("__ap_tuple_payload__")))
             {
                 return subscript_get(&p, key);
+            }
+            // T2 (pygments _TokenType / traceback StackSummary): tuple- and
+            // list-derived instances subscript through their backing builtin.
+            if crate::classes::is_tuple_derived_instance(obj) {
+                return subscript_get(
+                    &Value::Tuple(crate::classes::tuple_backing_or_new(obj)),
+                    key,
+                );
+            }
+            if crate::classes::is_list_derived_instance(obj) {
+                return subscript_get(&Value::List(crate::classes::list_backing_or_new(obj)), key);
             }
             // T1-d (typing.NamedTuple): namedtuple instances ARE tuples —
             // index into the declared field order (n[0] == n.<field0>).

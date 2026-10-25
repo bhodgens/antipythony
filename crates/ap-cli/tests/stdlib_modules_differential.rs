@@ -1025,3 +1025,134 @@ print(len(ba) == 2)
 "#,
     );
 }
+
+
+#[test]
+fn a3_except_exception_catches_native_module_errors_differential() {
+    // A-3 item 2: zlib.Error / binascii.Error are real exception TypeObjects;
+    // bare `except Exception` must walk the MRO and catch them (previously
+    // the except matcher skipped them and the traceback escaped, rc=1).
+    assert_differential(
+        r#"
+import binascii
+import zlib
+
+
+def catch_generic(fn, *a):
+    try:
+        fn(*a)
+    except Exception as e:
+        return "caught " + type(e).__name__ + ": " + str(e)
+    return "uncaught"
+
+
+print(catch_generic(zlib.decompress, b"abc"))
+print(catch_generic(binascii.unhexlify, b"abc"))
+# specific except still binds
+try:
+    zlib.decompress(b"abc")
+except zlib.error as e:
+    print("specific", type(e).__name__)
+
+
+class MyWrap(Exception):
+    pass
+
+
+try:
+    raise binascii.Error("x")
+except Exception as e:
+    print("raised-generic", isinstance(e, Exception))
+"#,
+    );
+}
+
+#[test]
+fn a3_oserror_str_format_differential() {
+    // A-3 item 3: str(OSError(errno, strerror)) is "[Errno N] msg" like
+    // CPython, not the tuple repr; with a filename arg it appends ": 'path'".
+    assert_differential(
+        r#"
+import os
+
+try:
+    os.kill(1, 0)
+except PermissionError as e:
+    print(type(e).__name__, str(e), e.errno)
+
+try:
+    os.open("/tmp/definitely-missing-antipythany-a3", os.O_RDONLY)
+except FileNotFoundError as e:
+    print(type(e).__name__, str(e), e.errno)
+
+e = OSError(1, "Operation not permitted")
+print(str(e))
+"#,
+    );
+}
+
+#[test]
+fn a3_opaque_type_naming_differential() {
+    // A-3 item 5: type(os.uname()) reports uname_result (not object).
+    assert_differential(
+        r#"
+import os
+print(type(os.uname()).__name__)
+"#,
+    );
+}
+
+#[test]
+fn a3_stat_result_sequence_differential() {
+    // A-3 item 5: stat_result is indexable and sized like a plain sequence
+    // (st[0] == st.st_mode, len(st) >= 10).
+    assert_differential(
+        r#"
+import os
+st = os.stat("/tmp")
+print(st[0] == st.st_mode)
+print(len(st) >= 10)
+"#,
+    );
+}
+
+#[test]
+fn a3_symlink_readlink_roundtrip_differential() {
+    // A-3 item 1 verify: os.symlink real arm + os.readlink roundtrip.
+    assert_differential(
+        r#"
+import os
+import tempfile
+
+d = tempfile.mkdtemp()
+p = os.path.join(d, "link")
+os.symlink("/etc/hosts", p)
+print(os.path.islink(p))
+print(os.readlink(p))
+os.unlink(p)
+print(os.path.exists(p))
+"#,
+    );
+}
+
+#[test]
+fn a3_utime_three_tuple_typeerror_differential() {
+    // A-3 item 4 verify: utime(p, (1, 2, 3)) raises the pinned TypeError.
+    assert_differential(
+        r#"
+import os
+import tempfile
+
+d = tempfile.mkdtemp()
+p = os.path.join(d, "f")
+open(p, "w").close()
+try:
+    os.utime(p, (1, 2, 3))
+    print("accepted")
+except TypeError as e:
+    print("TypeError:", e)
+os.utime(p, (1, 2))
+print("pair ok")
+"#,
+    );
+}

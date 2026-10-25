@@ -2063,3 +2063,216 @@ search	"(?<![abc])"	"aab"	2
 COMPILE_MISSED	"(a)\\1*{2,}?"	" c.1ää0b0xb-k-10cä"	0
 search	"(?<!b)"	"b\nxc0k-abßab1-00"	8
 search	"((?P<a>\\d)(?:x*)?(?P=a))"	"中ä 0-kcßc00\nbc中@ b.\n1xä"	0
+subn1	"(?:\\S)"	"c - k-"	0
+search	"(?<=.)"	"1kä.äß.١xa"	2
+subn1	"(a\\A)*"	"@0a .k١\n0bc中c.@kb0١c中xk 中a"	24
+subn1	"(?=\\W)"	"\n-aä中-\n1a中kx0-xx中\n1 "	0
+subn1	"(?<!\\d)"	"bka .kb@kb-k0b-abß١.ä..ä"	24
+subn1	"((?:b))"	"101.b1\näk b"	16
+subn1	".?+"	"@"	0
+subn1	"b{0,2}"	"10b"	24
+search	"(?P<b>(?P<a>[0-9]+?))"	"xa1b\nkß@k.@kx1b中ckbk-a"	0
+subn1	"(?<![abc])"	"00@bbc"	64
+search	"(?<=\\w)"	"bbx\n"	8
+COMPILE_TEXT	"\\b{2}"	"k@- k中.中c0.ß"	10
+findall	"\\b|b+"	"b1ax\n.ä١x \n\n.a-"	0
+search	"(?<![^ab])"	"ß中0c10ka..0b"	2
+COMPILE_TEXT	"\\Z++"	"x@0\n \n\n-"	0
+search	"(?<![^ab])"	"c"	24
+COMPILE_TEXT	"(?P<grp>\\Z{1,2}?)"	"ka"	24
+search	"(?<=\\w)"	"ß"	0
+search	"(?<!\\d)"	"١00k中."	24
+search	"(?:(?<![^ab]))"	"@"	0
+subn1	"(?=a?)"	"1١"	0
+subn1	"(1\\D)"	".\n@1@中-0.0.00中ä1@c١x  @.kb"	0
+search	"(?:(?<!a))"	"aßa \nc-0"	16
+subn1	"[0-9]+"	"-1@cb01b-0k中ak١acb-\nx .0 "	80
+findall	"ß*?"	"ä aß١aa@.xkk1中0k\n1b\n"	16
+subn1	"(?-i:\\s)"	"١中 aä. 中ß@b@"	0
+subn1	"b|\\b|c"	"  äa١  kk1x1中ß١ßacc\n中@kxß١"	16
+search	"(?<=\\w)"	"akß\n-中ß1b\n١kc@0@١b"	0
+subn1	"(c)"	"bä@ ١ßkk-١0cc0\nba-@中\nk"	16
+subn1	"(?:[\\w.])"	"kca١a"	0
+subn1	"1*"	".1 x-kccx@1xß1.c \nx0"	0
+findall	"[^abc]{0,2}|a|a"	" xa0.١0@١\n中x\nac ١..käß1ß0"	0
+findall	"(\\W??)"	"0. -xä.@äx kc0中ä"	64
+search	"(?<!\\w)"	"1"	16
+search	"(?i:(?<!\\d))"	"0.1k@.\nß中١cc 0-k.ß١c."	2
+search	"(?<=[^ab])"	".a.1@äk\näxc١١0ßaa0ac"	10
+COMPILE_TEXT	"(?P<grp>(?P<grp>[^ab])(?:x*)?(?P=grp))"	"kä0.  -中 "	2
+search	"((?P<a>[^a-c0-9]))"	"\nk\n-a\n@kkk\nßx@ .k@01"	0
+COMPILE_TEXT	"(?P<b>(?P<b>b)(?:x*)?(?P=b))"	"-c١-@k01\n0ä.ac0ä-x中 kx0kb"	2
+search	"(?<!\\d)"	"0äac.ä.1-ß"	10
+COMPILE_FALSE	"(?i)(?m)0"	"c-"	0
+findall	"\\D*?"	"b"	0
+COMPILE_TEXT	"\\B{2,}"	"x@-\na@xa中bx\na@ba1@a1cc-k0k"	64
+findall	"\\d*?"	"x.ab1-ä.-ckk1-b0\n0@"	0
+search	"(?<=[^ab])"	"kcäc1@\n\nc١1\na١ kßc-"	24
+COMPILE_TEXT	"(\\d\\A++){2}"	""	0
+subn1	"(\\w)\\1?"	"\nc\nc c١١kxx0-ä中bk"	2
+subn1	"(?<!\\d)"	"ac1 --\n١k\n@١a1 -中x\n00"	0
+subn1	"(?P<grp>b)(?:x*)?(?P=grp)*"	"x. \n--0. bb 1b"	0
+subn1	"[^abc]|a*+"	"中xkkx"	0
+subn1	"x??"	". a١ä01-\n"	2
+subn1	"((?P<b>[abc])(?:x*)?(?P=b)ab)?"	"中.k١中ck-ß"	80
+subn1	"[a-c]*+"	"c1c@\nb.ßa@c x@x\näcx١0."	16
+subn1	"(?>a)"	"\nä@-中xk-ß1ßx\n@中中bßx1aa \n"	24
+search	"(?<!b)"	"b1--k0b-a-@.\nß中\n"	0
+COMPILE_MISSED	"[abc]+?{2,}"	"@11\nxaxxx..kx \nb"	24
+search	"(?<=.)"	"a.x-.a 0ßx"	8
+COMPILE_TEXT	"\\B*?"	"x١cc01ßa中-\nxkc-0"	24
+findall	"\\A|ß*|1"	"\n0bx -c bk.bx١0 @0 10-k.k"	0
+findall	"(\\W(\\S))??"	"axkäkakäa1x١kk-xx"	10
+search	"(?<!\\w)"	"b1.kx\n \n10c1.aa\n0a@ b"	16
+search	"(?<=\\w)"	"1cb1@b 中.xbb0中x ck-中k١"	0
+search	"(?=(?<=\\w))"	"b0.x.äk-k.\n@"	24
+search	"(?<!b)"	"b..١ßäcxxcc0"	0
+subn1	"中{0,2}"	"1ax中"	10
+subn1	"\\D|ab"	"xk0caä1"	10
+subn1	"(?=(?<!b))"	"\nb\nkxb.bk1..-010١.0xcx..-١"	0
+subn1	"(?<![abc])"	" k-111c١x 0.-.k\nakä@ax1-"	2
+subn1	"(?:(?P<a>0))"	"\nkx-01k@äx10äkc."	10
+subn1	"(?s)\\b"	"äx@k-äb\nx中c0k b0@\nc1 .a@-"	0
+search	"(?i)(?<=\\w)"	"ba.-x-ä-"	10
+subn1	"(\\S)"	"1ac@ä.k. \n-axxxcäc中中k. ßä"	2
+subn1	"a|c"	"xc中.cba.k-\n1a\n١0ß@äb中"	0
+search	"(?<![abc])"	"a "	2
+findall	"[\\w.]|\\s??"	"c c\nk中---bß\n 1b \naaa.x0中kk"	8
+COMPILE_MISSED	"0*{0,2}"	"ß.ßkc. \n.xkxa- @1k"	16
+search	"(?<=\\w)"	"ab.0\n cä.١ xax1akk\n.ß.١@"	80
+search	"(?<=\\w)"	"1\n@"	16
+findall	"(?<!b)|c0|\\D"	"١١١a1x"	0
+COMPILE_FALSE	"(?x)(?i)x"	"kkßa\n中k"	10
+COMPILE_TEXT	"^\\D\\b{2}"	"0 ä\n.-\n0ßc١\naß١a1中"	2
+findall	"x*?"	".1ß1b.@ä\ncx@中a ß中@c.c١x.@"	0
+subn1	"\\w|a"	"aca0k0c 0"	0
+subn1	"c*"	"0ä ßck-中@١ kxk١axc中-a1中x@-"	0
+subn1	"(?<![abc])*+"	"ä中  b@.a"	10
+subn1	"\\S|c|@?"	"١-ä\n"	0
+subn1	"\\w|a"	"a@中 ١中11äß"	10
+findall	"\\s*?"	"1ä1-0x١x@.k1١\nä@c.ab\n0\n1"	24
+subn1	"(?:\\d)*+c"	" \nccb00."	80
+subn1	"(a*)"	"äß \nacba @a.b"	0
+subn1	"\\d|x"	"0-ä\na.x\nxß0中."	0
+COMPILE_TEXT	"(?<=c+)x((\\d)\\1)"	"\nbx@1@k@ä"	0
+COMPILE_TEXT	"(?<=(a)\\1*+)x"	"a k1111a@ß0"	0
+search	"(?<!\\w)"	"中 ä@@xk"	64
+COMPILE_TEXT	"\\b*?*"	"@ka-中x1k.k@bcc ä\n"	0
+search	"(?:(?<!\\w))"	"11-1\n"	2
+findall	"-*?"	"a-"	0
+findall	"-*?"	"١xc1a.@c.kk中ä\nßkaba.a \n-x"	0
+findall	"(x)*?"	"1cc١١@x-١@-a"	0
+search	"(?<!\\d)"	"01-c١.a"	2
+findall	"([\\w.]\\d|[^abc])*?"	"@中k1k bß.0b0.@c a@a١"	8
+search	"(?<![^ab])"	"00 00.a-k\n0-. ä ä中\nk@-. b"	0
+subn1	"(?<![abc])"	"x k0a\nkckk中0\nk"	64
+search	"(?<![^ab])"	"-a .a-1ää\nxk\n"	0
+subn1	"(?:\\W)"	"äx@ß@\nb.kßb\n\n.c0."	0
+subn1	"(?:\\b)"	"cß١äc中b١k0\n١00"	0
+subn1	"a|\\w|\\D"	".cc@äc.ß@a-x-中.cß@ä"	0
+subn1	"[-a]\\d"	"ßb ß 1中a1kca.ä-a-١ca\n.ß-@"	0
+subn1	"(a\\dc)??"	"a-@ x0-ax١1 bc"	0
+subn1	"(?P<a>\\w)(?:x*)?(?P=a)"	"xx@x1@.@a中c١@١ 中bb.ä١ @c"	0
+subn1	"\\s|[\\w.]"	"b@中bk\nx中cakc---c"	0
+search	"(?<![^ab])"	"x0x@ äß.kx\n00\n@-\nk-kk"	64
+findall	"((?>a)\\D)??"	"aa-١a0c.ca中a.cc."	2
+search	"(?<![^ab])"	"c-xbbßk0@0١0x中-bk1k@١١١"	10
+search	"(?<!\\w)"	"١k0-0ak@-ä @\nä0a中\nßa١."	0
+search	"(?<=[^ab])"	"-xc b"	0
+search	"(?<=\\w)|-"	"ax中١ @k中xk\nb@..1ßk"	0
+search	"(?<!\\w)|0"	"kb١-中c@@bk0aä@ \n-\n"	10
+COMPILE_MISSED	"1|x*+{2}"	".-\n.bkß-١@1\n.0b.c١ ١0c"	0
+search	"(?P<grp>(?P<a>1))"	"1"	0
+subn1	"c?"	"中1\n1ßca\nk\n0"	24
+subn1	"(?=[0-9])"	"k\nb-c-1c@xaax0x中١k1ck"	64
+subn1	"(?=[abc])"	"cx\nx\nkkß @--cb١1١0@k."	24
+subn1	"((?=.))"	"١١"	0
+subn1	"[]a]|x|١"	"ß\nkak10a ßa١中0ax äxb"	0
+subn1	"(?=\\s)"	"x.kßbßa١0k0@\nßa--k\n 中 c0-x"	0
+subn1	"(ba)*?"	"xä中1.--١中b\n中@c\n 0kßa中@"	0
+subn1	"(?<!b)"	"\n@"	64
+search	"c|(?<!.)"	".\n1x0-\n@b xß. ß١.x -.a"	0
+search	"((?P<grp>a)[^a-c0-9])*"	"aß-@@ ..١b中0xackkb1 .c@b-x"	0
+search	"(?<=\\w)"	"a中\n --x0.ä11\n"	0
+COMPILE_MISSED	"a+{2}"	".k中ä-. c-1١c-0"	8
+search	"(?<!\\w)"	"aa1. 1\n.١\n"	64
+COMPILE_TEXT	"\\b*?"	"中k@ac1b"	0
+search	"(([abc]))"	"a-\nc.x -"	8
+search	"(?<=[abc])"	"aa@1中x@c..@c"	0
+COMPILE_TEXT	"\\b*+"	"ß١1.ß..ä@0c0-ß@b -ax1"	0
+search	"(?<!.)"	"aä.@kbc."	0
+findall	".*?"	"\n1-١-0١k中.äk"	0
+search	"(?<![^ab])|[^abc]"	".k0١"	8
+subn1	"(?:c){1,2}?"	"bc c\n١@kba.äab@0x-ka-b.b"	0
+subn1	"(?<=\\d)"	"-\nä@@ß0-0äk0@xx01- .a\n"	24
+subn1	"(?P<grp>(?!ß))"	" k-ää 0ä--äk00\n1b00ä"	8
+subn1	"0|\\W"	"k-ß .@.ca0ß--中ß"	0
+subn1	"١|b"	"aaßab١ ."	2
+subn1	"\\w|\\D"	" k@c-0@"	80
+findall	"\\B|[\\w.]a"	"ck -\n@0x0...١ka.b1@  \n@0"	0
+subn1	"(\\B\\D)*"	"ß@. b \n.1@0xcbca-kxbk1@@x"	2
+subn1	"(?!ax*)"	"a0@acä"	64
+search	"(?<=\\w)"	"ßkä@-äkkxcß\n"	64
+findall	"a*|\\w"	"中-\n中\n"	0
+COMPILE_TEXT	"(?<=(?P<a>[abc])(?:x*)?(?P=a)+)x"	"xxc01x中x.. -\nx"	16
+COMPILE_MISSED	"([abc])\\1+{2,}?"	"xcß- ä1 11 xx.-k.0\n"	64
+search	"(?<![^ab])"	"ä00中k0\n١ a.١bx-k@\n\n0k"	64
+search	"((?P<b>0))"	"b@b@kxax中\nä@ 中ä0"	0
+search	"(?P<a>([^a-c0-9]))"	"bxcxä١@\n١x中kkxß中k"	10
+search	"(?i)(?<!b)|[a-c]"	"b@--١kxaa"	10
+subn1	"b*"	"b١1ba1 "	64
+subn1	"([0-9])"	"١ä@ä0١١ß1kc.x0ßxbaä\nä"	0
+subn1	"(?P<b>\\S)"	"١bka"	16
+subn1	"((?P<b>\\d)(?:x*)?(?P=b)a)?"	"@\n.cä--\nbbcx0.0@k."	24
+subn1	"."	"k\nc"	24
+subn1	"\\w|[0-9]"	"k@kbkx1-中kkß\n.@-"	0
+subn1	"x"	"xx١ kk"	8
+search	"(?<=\\w)"	"ß-@"	0
+subn1	"\\w"	"xß"	24
+findall	"b*?"	"@äb١١b\n.a."	0
+search	"(?<!\\w)"	"cßbb١@"	0
+search	"(?P<a>(?<=[^ab]))"	"中\n@äbkb\nkk-x"	16
+findall	"(?=.){2,}?|a"	"kb١bxa.cxkä"	80
+COMPILE_TEXT	"(?P<a>\\b??)"	"ßk1-"	0
+search	"(?!((?<=.)))"	"ä\n.@aaxa١0-xcäa\ncx.k."	0
+findall	"([abc][abc])*?"	"@ä١1@ckßk abäk @x\nßäk@"	80
+search	"(?<![^ab])"	"@"	0
+search	"(?<![abc])|."	"cx11caßa1١b"	8
+COMPILE_TEXT	"\\B{2,}"	"k\n中١0 中1b.@."	2
+subn1	"^aa|[-a]"	"b0١ß@\n@a0a01 \n@-a-@"	0
+subn1	"\\b"	"k١kx .x . bä"	0
+subn1	"\\w|\\s|ab"	".cb1-b\n@"	0
+findall	"[]a]*?"	"ä.01--bxabß中ä"	0
+subn1	"(?<!b)"	"c. \n0ß١a0ä 0@١-11c"	8
+subn1	"b|\\W|c"	"0-b\n\nßkak.x١0١x 0\nk\n0"	0
+subn1	"\\S*+"	"x -١١-@c1bbbbxä1@ ß0.\nb"	0
+subn1	"[a-c]{1,2}?"	"k-\n.k1@a\nß.1中c.\n1b00k中c"	2
+subn1	"(?!\\b)"	"1aäx-k@@b.kkaaaß@k.xb01ba中"	0
+findall	"(?!@)|(?<=[abc])|c+"	"@\ncä\n@a1.١.\n@xc\n.ä1bc."	16
+search	"(?<!\\d)"	"1"	2
+search	"(([abc]{2,}?))"	" 0\n١aa١.akk-中中@-١käb١"	0
+search	"(?<!\\w)"	"中k0ß"	8
+COMPILE_TEXT	"c|\\A*+"	"b x-11a0\n"	64
+search	"(?<=\\w)"	"a.bb0100-"	10
+COMPILE_TEXT	"(?s)(?P<a>\\A{2})"	""	2
+COMPILE_MISSED	"(a-){2,}?{1,2}?"	"..\n中1kx.\n"	0
+COMPILE_MISSED	"\\d+?{0,2}"	"a1"	0
+subn1	"x|(?<!\\d)"	"@.kb- k@ß1x-. .-.cbc"	0
+COMPILE_TEXT	"(?<=(?P<grp>[abc])(?:x*)?(?P=grp)+)x"	"@cßäcßb  ä0b١@a"	8
+subn1	"1*"	"@ß ß.@. -k."	0
+subn1	"(?x)c|\\w"	"k-\nä--k00ck中 -xbc\n\n"	80
+subn1	"[-a]|\\w|0"	"kccxkß b0b0kkäb.-0"	8
+subn1	"(?s)a|x"	"kcb-x-1c.ä.bacc.中xkka."	2
+subn1	"a|(?:\\b)"	"k中"	2
+subn1	"(?P<grp>\\W)"	"ä-c\n-ßa@١1 @\näc"	0
+subn1	"(?P<a>\\w)(?:x*)?(?P=a)"	"bä1١@ ١ 中ää\nxßß-b\n١١bx0中"	2
+search	"(?<![^ab])"	"0ca"	0
+findall	"(?=[^abc])|0|ab"	"@0\nca\n-0\n1 "	2
+search	"(?<![^ab])"	" x1k中\nx10-.ß@@\n-ackä\naä"	64
+search	"(?<!\\w)"	"a.k\nab1kx-kacc1 .0bxcxba.k"	8
+COMPILE_FALSE	"(?x:b+?)*?"	"a0@ ä中.c10ä.١c١k@1中a\nc.@c"	16
+search	"(?<!.)"	"x-k0 \n中0kkb0"	0
+findall	"a|c|0*?"	"kbßxcc1aä.a0äa\na0b1a-ba\n"	0
+search	"(?<=\\w)"	"xä.-.kx@\n"	10
+search	"(?:(?<=[^ab]))"	"x\nxb.-ß--ß\n١b c- xb\n..äk@"	64
+findall	"\\b|\\S"	"b.bx.äba ١\n1@b cbb-k0-a"	0

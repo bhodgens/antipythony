@@ -242,7 +242,10 @@ pub fn dynamic_type(
                     })
             });
             if let Some(b) = marker {
-                if matches!(b.as_str(), "tuple" | "list" | "dict" | "set" | "str" | "property") {
+                if matches!(
+                    b.as_str(),
+                    "tuple" | "list" | "dict" | "set" | "str" | "property"
+                ) {
                     let _ = t.dict.set(
                         Value::Str(PyString::new("__ap_builtin_base__")),
                         Value::Str(PyString::new(b)),
@@ -586,6 +589,20 @@ pub fn exec_class_def(
         // tuple). The replaced base rides __orig_bases__.
         let mut replaced = false;
         let is_user_cls = matches!(&v, Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass);
+        // T2 (pytest `class CaptureResult(NamedTuple, Generic[AnyStr])`):
+        // a _GenericAlias base (Generic[...]/ABC[...]) resolves to its ORIGIN
+        // in the bases before the metaclass runs (CPython __mro_entries__ on
+        // _GenericAlias) — NamedTupleMeta's `base is not Generic` identity
+        // check depends on seeing the origin, not the alias.
+        if let Value::Obj(ga) = &v {
+            if ga.kind == ap_obj::ObjKind::Opaque && ga.name == "typing._GenericAlias" {
+                if let Some(origin) = ga.slice_parts.borrow().first().cloned() {
+                    bases_v.push(origin);
+                    replaced = true;
+                }
+                continue;
+            }
+        }
         if !is_user_cls {
             if let Value::Obj(bo) = &v {
                 // T1-d fix: instance-as-base PEP 560 (zope Interface) —
@@ -603,16 +620,10 @@ pub fn exec_class_def(
                         if bo.kind == ap_obj::ObjKind::UserInstance {
                             // T1-d: class-level __mro_entries__ must bind to
                             // the INSTANCE (zope Interface shim).
-                            if let Some(t) = bo
-                                .type_ref
-                                .borrow()
-                                .as_ref()
-                                .and_then(|w| w.upgrade())
+                            if let Some(t) = bo.type_ref.borrow().as_ref().and_then(|w| w.upgrade())
                             {
                                 if let Some(f) = t.lookup("__mro_entries__") {
-                                    me_opt = Some(bind_function_owned(
-                                        &f, v.clone(), Some(&t),
-                                    ));
+                                    me_opt = Some(bind_function_owned(&f, v.clone(), Some(&t)));
                                 }
                             }
                         }
@@ -1010,12 +1021,14 @@ pub fn exec_class_def(
         // tuple/list/set/str subclass (directly via 3-arg type() or a class
         // stmt) keeps the backing-builtin construction semantics.
         for bt in &base_types {
-            if let Some(Value::Str(b)) =
-                bt.dict.get(&Value::Str(PyString::new("__ap_builtin_base__")))
+            if let Some(Value::Str(b)) = bt
+                .dict
+                .get(&Value::Str(PyString::new("__ap_builtin_base__")))
             {
-                let _ = t
-                    .dict
-                    .set(Value::Str(PyString::new("__ap_builtin_base__")), Value::Str(b.clone()));
+                let _ = t.dict.set(
+                    Value::Str(PyString::new("__ap_builtin_base__")),
+                    Value::Str(b.clone()),
+                );
                 break;
             }
         }
@@ -1315,7 +1328,10 @@ pub fn base_type_ref(interp: &Interpreter, v: &Value) -> Result<Option<Rc<TypeRe
             // (type("XAttributes", (tuple,), body)) must CONSTRUCT from an
             // iterable like tuple() does — mark the synthesized base so
             // instantiate's tuple-storage path engages.
-            if matches!(o.name.as_str(), "tuple" | "list" | "dict" | "set" | "str" | "property") {
+            if matches!(
+                o.name.as_str(),
+                "tuple" | "list" | "dict" | "set" | "str" | "property"
+            ) {
                 let _ = t.dict.set(
                     Value::Str(PyString::new("__ap_builtin_base__")),
                     Value::Str(PyString::new(o.name.clone())),
@@ -1414,7 +1430,8 @@ pub fn base_type_ref(interp: &Interpreter, v: &Value) -> Result<Option<Rc<TypeRe
         // TypeError, but the T1 chain policy is create-then-degrade; descriptor
         // inheritance from these bases is a documented v0 gap (docs/lxml-shim.md
         // DEVIATIONS).
-        Value::Obj(o) if o.kind == ap_obj::ObjKind::BuiltinFn || o.kind == ap_obj::ObjKind::Function =>
+        Value::Obj(o)
+            if o.kind == ap_obj::ObjKind::BuiltinFn || o.kind == ap_obj::ObjKind::Function =>
         {
             let flags = TypeFlags {
                 slots: None,
@@ -2221,10 +2238,19 @@ fn instance_attr(
         };
         let os_family = matches!(
             t.name.as_str(),
-            "OSError" | "ConnectionError" | "TimeoutError" | "BlockingIOError"
-                | "InterruptedError" | "PermissionError" | "FileNotFoundError"
-                | "FileExistsError" | "NotADirectoryError" | "IsADirectoryError"
-                | "ProcessLookupError" | "ConnectionAbortedError" | "ConnectionRefusedError"
+            "OSError"
+                | "ConnectionError"
+                | "TimeoutError"
+                | "BlockingIOError"
+                | "InterruptedError"
+                | "PermissionError"
+                | "FileNotFoundError"
+                | "FileExistsError"
+                | "NotADirectoryError"
+                | "IsADirectoryError"
+                | "ProcessLookupError"
+                | "ConnectionAbortedError"
+                | "ConnectionRefusedError"
                 | "ConnectionResetError"
         );
         if os_family {
@@ -2341,6 +2367,13 @@ fn instance_attr(
             ap_obj::ObjKind::BuiltinFn,
             &format!("__object_virtual_{name}__"),
         );
+        return Ok(Value::Obj(f));
+    }
+    // T2 (typing NamedTupleMeta: `nm_tpl.__init_subclass__()`): the implicit
+    // subclass hook is readable (and callable) on every class — v0 default
+    // is a no-op marker.
+    if matches!(name, "__init_subclass__" | "__subclasshook__") {
+        let f = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, &format!("object.{name}"));
         return Ok(Value::Obj(f));
     }
     Err(raise(
@@ -2590,6 +2623,13 @@ fn class_attr_get(interp: &Rc<Interpreter>, cls_v: &Value, t: &Rc<TypeRef>, name
         let stub = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<stub>");
         return Ok(Value::Obj(stub));
     }
+    // T2 (typing NamedTupleMeta `nm_tpl.__init_subclass__()`): the implicit
+    // subclass hook is readable (and callable) on every class — v0 default
+    // is a no-op marker. __subclasshook__ rides the same default.
+    if matches!(name, "__init_subclass__" | "__subclasshook__") {
+        let f = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, &format!("object.{name}"));
+        return Ok(Value::Obj(f));
+    }
     Err(raise(
         "AttributeError",
         format!("type object '{}' has no attribute '{}'", t.name, name),
@@ -2624,14 +2664,9 @@ pub fn attr_set_protocol(
     // T1-d (attrs closure rewrite): cell objects with cell_contents writes
     // update the LIVE closure cell via the CELL_BACKING registry.
     if let Value::Obj(o) = obj {
-        if o.kind == ap_obj::ObjKind::Namespace
-            && o.name == "cell"
-            && name == "cell_contents"
-        {
+        if o.kind == ap_obj::ObjKind::Namespace && o.name == "cell" && name == "cell_contents" {
             let key = std::rc::Rc::as_ptr(o) as usize;
-            let live = crate::interp::CELL_BACKING.with(|reg| {
-                reg.borrow().get(&key).cloned()
-            });
+            let live = crate::interp::CELL_BACKING.with(|reg| reg.borrow().get(&key).cloned());
             if let Some(cell) = live {
                 if matches!(v, Value::None) {
                     *cell.borrow_mut() = None;
@@ -2757,8 +2792,7 @@ pub fn attr_set_protocol(
         // T1-d: BuiltinFn markers too (typing._make_nmtuple:
         // `nm_tpl.__new__.__annotate__ = fn` — object.__new__ is a marker).
         Value::Obj(o)
-            if o.kind == ap_obj::ObjKind::Function
-                || o.kind == ap_obj::ObjKind::BuiltinFn =>
+            if o.kind == ap_obj::ObjKind::Function || o.kind == ap_obj::ObjKind::BuiltinFn =>
         {
             o.attrs
                 .borrow_mut()
@@ -2870,6 +2904,27 @@ pub fn attr_del_protocol(interp: &Rc<Interpreter>, obj: &Value, name: &str) -> R
             }
             Ok(())
         }
+        // T2 (pytest -> pygments lexers/formatters __init__ swap):
+        // `del newmod.newmod` on a ModuleType subclass instance — the module
+        // NAMESPACE is the attribute store (setattr on modules routes there),
+        // so delattr must unbind from module_ns too. CPython's module.__delattr__
+        // raises AttributeError when absent — same message shape as the read
+        // path ("module' object has no attribute").
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::Module => {
+            let ns = o.module_ns.borrow().clone().ok_or_else(|| {
+                raise(
+                    "AttributeError",
+                    format!("'module' object has no attribute '{}'", name),
+                )
+            })?;
+            if ns.pop(&Value::Str(PyString::new(name))).is_none() {
+                return Err(raise(
+                    "AttributeError",
+                    format!("'module' object has no attribute '{}'", name),
+                ));
+            }
+            Ok(())
+        }
         other => Err(raise(
             "AttributeError",
             format!("'{}' object has no attribute '{}'", other.type_name(), name),
@@ -2928,10 +2983,15 @@ pub fn instantiate(
     // T1-d: walk the MRO — namedtuple SUBCLASSES (urllib SplitResult) carry
     // the marker on the parent class dict.
     let fields_v_opt = {
-        let mut hit = t.dict.get(&Value::Str(PyString::new("__ap_namedtuple_fields__")));
+        let mut hit = t
+            .dict
+            .get(&Value::Str(PyString::new("__ap_namedtuple_fields__")));
         if hit.is_none() {
             for m in t.mro.borrow().iter() {
-                if let Some(v) = m.dict.get(&Value::Str(PyString::new("__ap_namedtuple_fields__"))) {
+                if let Some(v) = m
+                    .dict
+                    .get(&Value::Str(PyString::new("__ap_namedtuple_fields__")))
+                {
                     hit = Some(v);
                     break;
                 }
@@ -3100,17 +3160,20 @@ pub fn instantiate(
                 let built = match builtin.as_str() {
                     "tuple" => match &p {
                         Value::Tuple(tup) => Some(Value::Tuple(tup.clone())),
-                        Value::List(l) => {
-                            Some(Value::Tuple(Gc::new(Tuple(l.items().to_vec()))))
-                        }
+                        Value::List(l) => Some(Value::Tuple(Gc::new(Tuple(l.items().to_vec())))),
                         _ => None,
                     },
                     "list" => crate::builtins::builtin_list(&[p.clone()]).ok(),
                     "set" => crate::builtins::call_builtin(interp, "set", &[p.clone()], &[]).ok(),
+                    // T2 (pygments `class include(str)` + enum `_inherit`):
+                    // str subclasses construct from the single arg like
+                    // CPython str(obj).
+                    "str" => crate::builtins::call_builtin(interp, "str", &[p.clone()], &[]).ok(),
+                    // dict subclass: dict(mapping-or-iterable, **kw).
+                    "dict" => crate::builtins::call_builtin(interp, "dict", &[p.clone()], &[]).ok(),
                     // property(fget): the fget rides the descriptor.
                     "property" => {
-                        let o =
-                            ap_obj::PyObject::new(ap_obj::ObjKind::Descriptor, "property");
+                        let o = ap_obj::PyObject::new(ap_obj::ObjKind::Descriptor, "property");
                         *o.descr_kind.borrow_mut() = Some("property".to_string());
                         *o.self_value.borrow_mut() = Some(p.clone());
                         Some(Value::Obj(o))
@@ -3118,14 +3181,48 @@ pub fn instantiate(
                     _ => None,
                 };
                 if let Some(v) = built {
-                    let io =
-                        ap_obj::PyObject::new(ap_obj::ObjKind::UserInstance, t.name.clone());
+                    let io = ap_obj::PyObject::new(ap_obj::ObjKind::UserInstance, t.name.clone());
                     *io.type_ref.borrow_mut() = Some(std::rc::Rc::downgrade(t));
                     *io.class_ref.borrow_mut() = Some(t.clone());
-                    let _ = io.attrs.borrow_mut().set(
-                        Value::Str(PyString::new("__ap_tuple_payload__")),
-                        v,
-                    );
+                    // T2 (pygments _TokenType): keep a TUPLE-typed backing so
+                    // the derived-instance protocol (len/slice/contains/+)
+                    // can see the ctor contents; the payload below answers
+                    // subscript/iter for the attr-style consumers.
+                    if matches!(builtin.as_str(), "tuple" | "list" | "str") {
+                        if let Some(items) = match &v {
+                            Value::Tuple(tup) => Some(tup.0.clone()),
+                            Value::List(l) => Some(l.items().to_vec()),
+                            Value::Str(sv) => {
+                                // str subclasses park the string under
+                                // __ap_str__ so eq/repr/concat normalize.
+                                let _ = io.attrs.borrow_mut().set(
+                                    Value::Str(PyString::new("__ap_str__")),
+                                    Value::Str(sv.clone()),
+                                );
+                                None
+                            }
+                            _ => None,
+                        } {
+                            let backing = if builtin == "tuple" {
+                                Value::Tuple(Gc::new(Tuple(items)))
+                            } else {
+                                Value::List(ap_obj::value::PyList::from_vec(items))
+                            };
+                            let key = if builtin == "tuple" {
+                                "__ap_tuple__"
+                            } else {
+                                "__ap_list__"
+                            };
+                            let _ = io
+                                .attrs
+                                .borrow_mut()
+                                .set(Value::Str(PyString::new(key)), backing);
+                        }
+                    }
+                    let _ = io
+                        .attrs
+                        .borrow_mut()
+                        .set(Value::Str(PyString::new("__ap_tuple_payload__")), v);
                     return Ok(Value::Obj(io));
                 }
             }
@@ -3294,6 +3391,45 @@ pub fn is_list_derived_instance(v: &Value) -> bool {
         }
         _ => false,
     }
+}
+
+/// T2 (pytest -> pygments token.py `_TokenType(tuple)`): is this a
+/// UserInstance whose class MRO carries a synthesized `tuple` base? CPython
+/// tuple subclasses ARE tuples: len/index/slice/iter/contains/eq/`+` all
+/// behave tuple-wise. The dict/list twins above key the same model.
+pub fn is_tuple_derived_instance(v: &Value) -> bool {
+    match v {
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
+            match o.type_ref.borrow().as_ref().and_then(|w| w.upgrade()) {
+                Some(t) => t.mro.borrow().iter().any(|m| m.name == "tuple"),
+                None => false,
+            }
+        }
+        _ => false,
+    }
+}
+
+/// The backing tuple of a tuple-derived instance, creating it (empty) on
+/// first use. Stored under attrs["__ap_tuple__"] (mirrors list_backing_or_new).
+pub fn tuple_backing_or_new(v: &Value) -> Gc<Tuple> {
+    if let Value::Obj(o) = v {
+        if let Some(t) = o
+            .attrs
+            .borrow()
+            .get(&Value::Str(PyString::new("__ap_tuple__")))
+        {
+            if let Value::Tuple(t) = t {
+                return t.clone();
+            }
+        }
+        let t = Gc::new(Tuple(Vec::new()));
+        let _ = o.attrs.borrow_mut().set(
+            Value::Str(PyString::new("__ap_tuple__")),
+            Value::Tuple(t.clone()),
+        );
+        return t;
+    }
+    Gc::new(Tuple(Vec::new()))
 }
 
 /// The backing list of a list-derived instance, creating it (empty) on first

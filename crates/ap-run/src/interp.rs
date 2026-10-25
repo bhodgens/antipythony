@@ -544,12 +544,20 @@ pub(crate) fn exec_block(
                     let det = match s {
                         Stmt::Import(names) => format!(
                             "Import {}",
-                            names.iter().map(|a| a.path.join(".")).collect::<Vec<_>>().join(",")
+                            names
+                                .iter()
+                                .map(|a| a.path.join("."))
+                                .collect::<Vec<_>>()
+                                .join(",")
                         ),
                         Stmt::ImportFrom(m, names, _) => format!(
                             "ImportFrom {} {}",
                             m,
-                            names.iter().map(|a| a.path.join(".")).collect::<Vec<_>>().join(",")
+                            names
+                                .iter()
+                                .map(|a| a.path.join("."))
+                                .collect::<Vec<_>>()
+                                .join(",")
                         ),
                         Stmt::Assign(t, _) => {
                             let mut parts = Vec::new();
@@ -1062,13 +1070,19 @@ fn exec_stmt(
             // defs chain "<name>.<locals>.<inner>" — matching the lowerer's
             // scope table (typing.py _tp_cache 'typed' NameError). A
             // leading "<locals>." broke scope_of matching.
-            let sp = frame.scope_path.strip_prefix('.').unwrap_or(&frame.scope_path);
+            let sp = frame
+                .scope_path
+                .strip_prefix('.')
+                .unwrap_or(&frame.scope_path);
             let (qual, scope_path) = if sp.is_empty() || sp == "<module>" {
                 // Module-level def: plain name root.
                 (f.name.clone(), f.name.clone())
             } else {
                 // Nested def: CPython qualname chain.
-                (format!("{}.{}", sp, f.name), format!("{}.<locals>.{}", sp, f.name))
+                (
+                    format!("{}.{}", sp, f.name),
+                    format!("{}.<locals>.{}", sp, f.name),
+                )
             };
             let id = interp.register_nested(FnEntry {
                 def: (**f).clone(),
@@ -1086,9 +1100,7 @@ fn exec_stmt(
                     if let Some(ann) = &p.ann {
                         ann_pairs.push((
                             Value::Str(PyString::new(p.name.clone())),
-                            Value::Str(PyString::new(ap_ir::dump_expr_inline(
-                                &ann.expr,
-                            ))),
+                            Value::Str(PyString::new(ap_ir::dump_expr_inline(&ann.expr))),
                         ));
                     }
                 }
@@ -1097,10 +1109,10 @@ fn exec_stmt(
                     for (k, v) in ann_pairs {
                         let _ = d.set(k, v);
                     }
-                    let _ = fo.attrs.borrow_mut().set(
-                        Value::Str(PyString::new("__annotations__")),
-                        Value::Dict(d),
-                    );
+                    let _ = fo
+                        .attrs
+                        .borrow_mut()
+                        .set(Value::Str(PyString::new("__annotations__")), Value::Dict(d));
                 }
             }
             // Defaults + closures evaluate in the DEFINING frame (S-02-7).
@@ -1323,8 +1335,25 @@ fn exc_matches(tv: &Value, exc: &ExceptionValue) -> Result<bool, Flow> {
                     "catching classes that do not inherit from BaseException is not allowed",
                 ));
             }
-            Ok(is_subclass(&exc.class, &o.name)
-                || (dotted_match && exc.class.ends_with(&format!(".{}", o.name))))
+            // A-3 item 2: native module exceptions (zlib.Error, binascii.Error)
+            // are raised as legacy names ("error"/"Error") but registered as
+            // real exception TypeObjects with proper MROs — walk the raised
+            // name's class payload so bare `except Exception` catches them.
+            // T2-fix: a Type-kind target without a UserClass payload
+            // (native module exception classes like json.JSONDecodeError) has
+            // no class payload to walk — fall back to the name-based check
+            // instead of SystemError-ing the catch site.
+            match crate::classes::type_of(&interp, tv) {
+                Some(target_t) => {
+                    let mro_walk = crate::classes::exc_class(&interp, &exc.class)
+                        .is_some_and(|ec| ec.is_subclass(&target_t));
+                    Ok(is_subclass(&exc.class, &target_t.name)
+                        || mro_walk
+                        || (dotted_match && exc.class.ends_with(&format!(".{}", target_t.name))))
+                }
+                None => Ok(is_subclass(&exc.class, &o.name)
+                    || (dotted_match && exc.class.ends_with(&format!(".{}", o.name)))),
+            }
         }
         Value::Tuple(parts) => {
             // FLAT tuples only (A-4: nesting raises the same TypeError).
@@ -1752,8 +1781,8 @@ fn lookup_name(interp: &Rc<Interpreter>, frame: &Rc<Frame>, name: &str) -> EResu
             // their OWN module's globals. The currently-executing module ns
             // (CURRENT_MODULE_GLOBALS) is the best second chance.
             if !frame.is_module {
-                if let Some(mg) = crate::builtins_modules::CURRENT_MODULE_GLOBALS
-                    .with(|c| c.borrow().clone())
+                if let Some(mg) =
+                    crate::builtins_modules::CURRENT_MODULE_GLOBALS.with(|c| c.borrow().clone())
                 {
                     if !Rc::ptr_eq(&mg, &frame.globals) {
                         if let Some(v) = mg.get(&Value::Str(PyString::new(name))) {
@@ -2169,6 +2198,26 @@ pub(crate) fn eval_expr(
         Expr::Set(items) => {
             let s = ap_obj::PySet::new();
             for it in items {
+                // T2 (pytest config: `{*default_plugins, ...}`): starred
+                // elements expand their iterable into the set display.
+                if let Expr::Starred(inner) = it {
+                    let v = eval_expr(interp, frame, inner, reg)?;
+                    let it2 = iterable_of(&v)?;
+                    for item in collect_iter(&it2) {
+                        if let Err(_) = ap_obj::ops::hash(&item) {
+                            return Err(raise(
+                                "TypeError",
+                                format!(
+                                    "cannot use '{}' as a set element (unhashable type: '{}')",
+                                    item.type_name(),
+                                    item.type_name()
+                                ),
+                            ));
+                        }
+                        s.add(item).map_err(Flow::from_py)?;
+                    }
+                    continue;
+                }
                 let v = eval_expr(interp, frame, it, reg)?;
                 // Display element: SET-ELEMENT phrasing (V046) — PySet::add
                 // carries the plain text; the display needs the element
@@ -2467,12 +2516,8 @@ fn eval_compare(left: &Value, op: CmpOp, right: &Value) -> Result<bool, Flow> {
                     (Value::List(l1), Value::List(l2)) => {
                         (l1.items().to_vec(), l2.items().to_vec())
                     }
-                    (Value::Tuple(t1), Value::List(l2)) => {
-                        (t1.0.clone(), l2.items().to_vec())
-                    }
-                    (Value::List(l1), Value::Tuple(t2)) => {
-                        (l1.items().to_vec(), t2.0.clone())
-                    }
+                    (Value::Tuple(t1), Value::List(l2)) => (t1.0.clone(), l2.items().to_vec()),
+                    (Value::List(l1), Value::Tuple(t2)) => (l1.items().to_vec(), t2.0.clone()),
                     _ => unreachable!(),
                 };
                 let has_user_elem = xs.iter().chain(ys.iter()).any(|e| {
@@ -2579,6 +2624,27 @@ fn contains(a: &Value, b: &Value) -> Result<bool, Flow> {
             return Ok(r.is_truthy());
         }
         if matches!(b, Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance) {
+            // T2 (pygments _TokenType): tuple/list-derived instances contain
+            // through their backing builtin (before the __iter__ miss).
+            if crate::classes::is_tuple_derived_instance(b) {
+                let t = crate::classes::tuple_backing_or_new(b);
+                for item in t.0.iter() {
+                    if eval_compare(a, CmpOp::Eq, item)? {
+                        return Ok(true);
+                    }
+                }
+                return Ok(false);
+            }
+            if crate::classes::is_list_derived_instance(b) {
+                let l = crate::classes::list_backing_or_new(b);
+                let items: Vec<Value> = l.items().to_vec();
+                for item in &items {
+                    if eval_compare(a, CmpOp::Eq, item)? {
+                        return Ok(true);
+                    }
+                }
+                return Ok(false);
+            }
             if crate::classes::special_lookup(&interp, b, "__iter__").is_some()
                 || crate::classes::special_lookup(&interp, b, "__getitem__").is_some()
             {
@@ -2699,10 +2765,7 @@ fn contains(a: &Value, b: &Value) -> Result<bool, Flow> {
         // against their payload (sysconfig._extend_dict: key in keys()).
         Value::Obj(o)
             if o.kind == ap_obj::ObjKind::Opaque
-                && matches!(
-                    o.name.as_str(),
-                    "dict_keys" | "dict_values" | "dict_items"
-                ) =>
+                && matches!(o.name.as_str(), "dict_keys" | "dict_values" | "dict_items") =>
         {
             let items: Vec<Value> = o
                 .attrs
@@ -3052,6 +3115,55 @@ fn eval_binop(a: &Value, op: BinOp, b: &Value) -> EResult {
             return ap_obj::ops::binop(a, mapped, &nb).map_err(Flow::from_py);
         }
     }
+    // T2 (pygments _TokenType(tuple): `self + (val,)`; traceback
+    // StackSummary(list) `+`): derived instances normalize to their backing
+    // builtin for the arithmetic binop, then re-wrap in the subclass.
+    {
+        let normalize = |v: &Value| -> Option<Value> {
+            if crate::classes::is_tuple_derived_instance(v) {
+                return Some(Value::Tuple(crate::classes::tuple_backing_or_new(v)));
+            }
+            if crate::classes::is_list_derived_instance(v) {
+                return Some(Value::List(crate::classes::list_backing_or_new(v)));
+            }
+            None
+        };
+        if matches!(op, BinOp::Add) {
+            if normalize(a).is_some() || normalize(b).is_some() {
+                let na = normalize(a).unwrap_or_else(|| a.clone());
+                let nb = normalize(b).unwrap_or_else(|| b.clone());
+                let joined = ap_obj::ops::binop(&na, mapped, &nb).map_err(Flow::from_py)?;
+                // Re-wrap: the RESULT is an instance of the LEFT operand's
+                // class (CPython tuple.__add__ semantics).
+                if let (Value::Obj(ao), payload) = (&a, &joined) {
+                    let t = ao
+                        .type_ref
+                        .borrow()
+                        .as_ref()
+                        .and_then(|w| w.upgrade())
+                        .ok_or_else(|| raise("SystemError", "derived instance without class"))?;
+                    let io = ap_obj::PyObject::new(ap_obj::ObjKind::UserInstance, t.name.clone());
+                    *io.type_ref.borrow_mut() = Some(std::rc::Rc::downgrade(&t));
+                    *io.class_ref.borrow_mut() = Some(t.clone());
+                    let key = if crate::classes::is_tuple_derived_instance(a) {
+                        "__ap_tuple__"
+                    } else {
+                        "__ap_list__"
+                    };
+                    let _ = io
+                        .attrs
+                        .borrow_mut()
+                        .set(Value::Str(PyString::new(key)), payload.clone());
+                    let _ = io.attrs.borrow_mut().set(
+                        Value::Str(PyString::new("__ap_tuple_payload__")),
+                        payload.clone(),
+                    );
+                    return Ok(Value::Obj(io));
+                }
+                return Ok(joined);
+            }
+        }
+    }
     ap_obj::ops::binop(a, mapped, b).map_err(Flow::from_py)
 }
 
@@ -3120,6 +3232,18 @@ fn call_value_inner(
                                     })
                                     .unwrap_or_else(|| "Thread".to_string());
                                 return Ok(builtins::interned_type(interp, &cls));
+                            }
+                            // A-3 item 5: opaque native result records report
+                            // their own name (type(os.uname()) ==
+                            // "uname_result"; stat_result too).
+                            if so.kind == ap_obj::ObjKind::Opaque
+                                && matches!(
+                                    so.name.as_str(),
+                                    "uname_result" | "stat_result" | "statvfs_result"
+                                        | "struct_time"
+                                )
+                            {
+                                return Ok(builtins::interned_type(interp, &so.name));
                             }
                         }
                     }
@@ -3255,13 +3379,7 @@ fn call_value_inner(
                             .cloned()
                             .unwrap_or(Value::None);
                         if let Some(t) = crate::classes::type_of(interp, &class_v) {
-                            return crate::classes::instantiate(
-                                interp,
-                                &class_v,
-                                &t,
-                                &items,
-                                &[],
-                            );
+                            return crate::classes::instantiate(interp, &class_v, &t, &items, &[]);
                         }
                         return Ok(Value::None);
                     }
@@ -3270,10 +3388,7 @@ fn call_value_inner(
                     if o.name == "__ap_namedtuple_len__" {
                         let recv = args.first().cloned().unwrap_or(Value::None);
                         let n = match &recv {
-                            Value::Obj(io) => io
-                                .attrs
-                                .borrow()
-                                .len(),
+                            Value::Obj(io) => io.attrs.borrow().len(),
                             Value::Tuple(t) => t.0.len(),
                             _ => 0,
                         };
@@ -3282,8 +3397,13 @@ fn call_value_inner(
                     if o.name == "__ap_namedtuple_iter__" {
                         let recv = args.first().cloned().unwrap_or(Value::None);
                         let items: Vec<Value> = match &recv {
-                            Value::Obj(io) => io.attrs.borrow().items()
-                                .into_iter().map(|(_, v)| v).collect(),
+                            Value::Obj(io) => io
+                                .attrs
+                                .borrow()
+                                .items()
+                                .into_iter()
+                                .map(|(_, v)| v)
+                                .collect(),
                             Value::Tuple(t) => t.0.clone(),
                             _ => Vec::new(),
                         };
@@ -3293,8 +3413,13 @@ fn call_value_inner(
                         let recv = args.first().cloned().unwrap_or(Value::None);
                         let idx = args.get(1).cloned().unwrap_or(Value::None);
                         let items: Vec<Value> = match &recv {
-                            Value::Obj(io) => io.attrs.borrow().items()
-                                .into_iter().map(|(_, v)| v).collect(),
+                            Value::Obj(io) => io
+                                .attrs
+                                .borrow()
+                                .items()
+                                .into_iter()
+                                .map(|(_, v)| v)
+                                .collect(),
                             Value::Tuple(t) => t.0.clone(),
                             _ => Vec::new(),
                         };
@@ -3320,8 +3445,10 @@ fn call_value_inner(
                         // property again (data descriptor wins over the
                         // instance dict) -> infinite recursion.
                         if let Value::Obj(io) = &recv {
-                            if let Some(v) =
-                                io.attrs.borrow().get(&Value::Str(PyString::new(field.clone())))
+                            if let Some(v) = io
+                                .attrs
+                                .borrow()
+                                .get(&Value::Str(PyString::new(field.clone())))
                             {
                                 return Ok(v.clone());
                             }
@@ -3479,11 +3606,66 @@ fn call_value_inner(
                             },
                         });
                     }
+                    // T2 (pygments `class combined(tuple)`: __new__ does
+                    // `tuple.__new__(cls, args)`): tuple/list/set-derived
+                    // __new__ allocates a DERIVED instance of the RECEIVING
+                    // class (args[0]) with the payload built from the rest.
+                    if matches!(o.name.as_str(), "__tuple__new__" | "__list__new__") {
+                        let cls = args.first().cloned().unwrap_or(Value::None);
+                        let rest: Vec<Value> = args.iter().skip(1).cloned().collect();
+                        let payload_src = if rest.len() == 1 {
+                            rest.into_iter().next().unwrap()
+                        } else {
+                            Value::Tuple(Gc::new(Tuple(rest)))
+                        };
+                        let is_tuple = o.name == "__tuple__new__";
+                        let built = if is_tuple {
+                            match payload_src {
+                                Value::Tuple(t) => Value::Tuple(t),
+                                Value::List(l) => Value::Tuple(Gc::new(Tuple(l.items().to_vec()))),
+                                _ => Value::Tuple(Gc::new(Tuple(Vec::new()))),
+                            }
+                        } else {
+                            crate::builtins::builtin_list(&[payload_src])?
+                        };
+                        if let Value::Obj(co) = &cls {
+                            if let Some(t) = co.type_ref.borrow().as_ref().and_then(|w| w.upgrade())
+                            {
+                                let io = ap_obj::PyObject::new(
+                                    ap_obj::ObjKind::UserInstance,
+                                    t.name.clone(),
+                                );
+                                *io.type_ref.borrow_mut() = Some(std::rc::Rc::downgrade(&t));
+                                *io.class_ref.borrow_mut() = Some(t.clone());
+                                let key = if is_tuple {
+                                    "__ap_tuple__"
+                                } else {
+                                    "__ap_list__"
+                                };
+                                let _ = io
+                                    .attrs
+                                    .borrow_mut()
+                                    .set(Value::Str(PyString::new(key)), built.clone());
+                                let _ = io.attrs.borrow_mut().set(
+                                    Value::Str(PyString::new("__ap_tuple_payload__")),
+                                    built.clone(),
+                                );
+                                return Ok(Value::Obj(io));
+                            }
+                        }
+                        // Not a derived cls: return the bare builtin payload.
+                        return Ok(built);
+                    }
                     // 02.03b: object-virtual markers called as methods
                     // (enum member __init__ via the object.__init__
                     // virtual): default object.__init__/__setattr__ etc are
                     // no-ops here; __str__/__repr__/__format__ fall through
                     // to the builtin surfaces below via the dotted name.
+                    // T2 (typing NamedTupleMeta): object.__init_subclass__()
+                    // default is a no-op returning None.
+                    if o.name == "object.__init_subclass__" {
+                        return Ok(Value::None);
+                    }
                     // 02.03b: re.Pattern.match/search — v0 literal engine.
                     if let Some(meth) = o.name.strip_prefix("__re_pattern_") {
                         let meth = meth.trim_end_matches('_');
@@ -3619,9 +3801,7 @@ fn call_value_inner(
                                     (
                                         args.first().cloned().unwrap_or(Value::None),
                                         match args.get(1) {
-                                            Some(Value::Str(s)) => {
-                                                s.as_str().to_string()
-                                            }
+                                            Some(Value::Str(s)) => s.as_str().to_string(),
                                             _ => String::new(),
                                         },
                                     )
@@ -3629,24 +3809,39 @@ fn call_value_inner(
                                     (
                                         parked,
                                         match args.first() {
-                                            Some(Value::Str(s)) => {
-                                                s.as_str().to_string()
-                                            }
+                                            Some(Value::Str(s)) => s.as_str().to_string(),
                                             _ => String::new(),
                                         },
                                     )
                                 };
+                                // T2 (pluggy inspect.getattr_static →
+                                // _check_instance): `__dict__` must yield the
+                                // REAL attrs dict (CPython raises AttributeError
+                                // when absent; the blanket None-swallow below
+                                // fed dict.get a None receiver).
+                                if attr == "__dict__" {
+                                    // Modules keep their content in
+                                    // module_ns (attrs is a near-empty
+                                    // surface); instances use attrs.
+                                    if let Value::Obj(so) = &subject {
+                                        let d: Gc<ap_obj::dict::PyDict> =
+                                            if so.kind == ap_obj::ObjKind::Module {
+                                                so.module_ns.borrow().clone().unwrap_or_else(|| {
+                                                    Gc::new((*ap_obj::dict::PyDict::new()).clone())
+                                                })
+                                            } else {
+                                                Gc::new((**so.attrs.borrow()).clone())
+                                            };
+                                        return Ok(Value::Dict(d));
+                                    }
+                                }
                                 let interp2 = crate::builtins_modules::current_interp()
                                     .unwrap_or_else(interp_rc);
                                 return match crate::classes::attr_get_protocol(
-                                    &interp2,
-                                    &subject,
-                                    &attr,
+                                    &interp2, &subject, &attr,
                                 ) {
                                     Ok(v) => Ok(v),
-                                    Err(Flow::Raise(e))
-                                        if e.class == "AttributeError" =>
-                                    {
+                                    Err(Flow::Raise(e)) if e.class == "AttributeError" => {
                                         Ok(Value::None)
                                     }
                                     Err(other) => Err(other),
@@ -3885,6 +4080,16 @@ fn call_value_inner(
                                                     )
                                                 {
                                                     o.name.as_str().to_string()
+                                                } else if o.kind == ap_obj::ObjKind::Opaque
+                                                    && matches!(
+                                                        o.name.as_str(),
+                                                        "uname_result"
+                                                            | "stat_result"
+                                                            | "statvfs_result"
+                                                            | "struct_time"
+                                                    )
+                                                {
+                                                    o.name.as_str().to_string()
                                                 } else {
                                                     o.type_name().to_string()
                                                 }
@@ -3926,9 +4131,7 @@ fn call_value_inner(
                             // via the native-module router.
                             if o.name.contains('.') {
                                 return crate::builtins_modules::call_named_kw(
-                                    &o.name,
-                                    args,
-                                    kwargs,
+                                    &o.name, args, kwargs,
                                 );
                             }
                         }
@@ -4038,10 +4241,8 @@ fn call_value_inner(
                                         }
                                     }
                                 }
-                                if let Some(sid) = o
-                                    .name
-                                    .strip_prefix("functools._sd_")
-                                    .map(|s| s.to_string())
+                                if let Some(sid) =
+                                    o.name.strip_prefix("functools._sd_").map(|s| s.to_string())
                                 {
                                     crate::builtins_modules::sd_registry_insert_pub(
                                         &sid,
@@ -4071,19 +4272,14 @@ fn call_value_inner(
                                 // register(func): key = first annotation's
                                 // source string (stored by the AnnAssign fix).
                                 let key = match &args[0] {
-                                    Value::Obj(fo)
-                                        if fo.kind == ap_obj::ObjKind::Function =>
-                                    {
+                                    Value::Obj(fo) if fo.kind == ap_obj::ObjKind::Function => {
                                         let mut kv = String::new();
                                         if let Some(Value::Dict(ad)) = fo
                                             .attrs
                                             .borrow()
-                                            .get(&Value::Str(PyString::new(
-                                                "__annotations__",
-                                            )))
+                                            .get(&Value::Str(PyString::new("__annotations__")))
                                         {
-                                            if let Some((_, v)) = ad.items().first()
-                                            {
+                                            if let Some((_, v)) = ad.items().first() {
                                                 if let Value::Str(sv) = v {
                                                     kv = sv.as_str().to_string();
                                                 }
@@ -4091,9 +4287,9 @@ fn call_value_inner(
                                         }
                                         Value::Str(PyString::new(kv))
                                     }
-                                    other => Value::Str(PyString::new(
-                                        other.type_name().to_string(),
-                                    )),
+                                    other => {
+                                        Value::Str(PyString::new(other.type_name().to_string()))
+                                    }
                                 };
                                 let marker = ap_obj::PyObject::new(
                                     ap_obj::ObjKind::Opaque,
@@ -4139,12 +4335,10 @@ fn call_value_inner(
                                 .strip_prefix("functools._sd_")
                                 .unwrap_or("")
                                 .to_string();
-                            if let Some(f) =
-                                crate::builtins_modules::sd_registry_lookup_pub(
-                                    &sd_id,
-                                    &args[0].type_name().to_string(),
-                                )
-                            {
+                            if let Some(f) = crate::builtins_modules::sd_registry_lookup_pub(
+                                &sd_id,
+                                &args[0].type_name().to_string(),
+                            ) {
                                 chosen = f;
                             }
                         }
@@ -4175,11 +4369,7 @@ fn call_value_inner(
                         } else {
                             key_str(o)
                         };
-                        crate::builtins_modules::sd_registry_insert_pub(
-                            &id_s,
-                            &k,
-                            f.clone(),
-                        );
+                        crate::builtins_modules::sd_registry_insert_pub(&id_s, &k, f.clone());
                     }
                     Ok(f)
                 }
@@ -4213,18 +4403,41 @@ fn call_value_inner(
                     }
                     Ok(f)
                 }
+                // T2 (pytest StashKey[Config | None]() — typing alias CALL):
+                // `Cls[params]` produces the inert _GenericAlias placeholder;
+                // CPython's _GenericAlias.__call__ constructs the ORIGIN
+                // class. slice_parts = [origin, key].
+                ap_obj::ObjKind::Opaque if o.name == "typing._GenericAlias" => {
+                    let origin = o
+                        .slice_parts
+                        .borrow()
+                        .first()
+                        .cloned()
+                        .unwrap_or(Value::None);
+                    if let Value::Obj(_) = origin {
+                        let interp_rc = current_interp_for_bindings();
+                        return crate::classes::instantiate(
+                            &interp_rc,
+                            &origin,
+                            &crate::classes::type_of(&interp_rc, &origin).ok_or_else(|| {
+                                raise("SystemError", "alias origin without class")
+                            })?,
+                            args,
+                            kwargs,
+                        );
+                    }
+                    Err(raise("TypeError", "'_GenericAlias' object is not callable"))
+                }
                 _ => Err(raise(
                     "TypeError",
                     format!("'{}' object is not callable", f.type_name()),
                 )),
             }
         }
-        _ => {
-            Err(raise(
-                "TypeError",
-                format!("'{}' object is not callable", f.type_name()),
-            ))
-        }
+        _ => Err(raise(
+            "TypeError",
+            format!("'{}' object is not callable", f.type_name()),
+        )),
     }
 }
 
@@ -4382,11 +4595,20 @@ fn call_type_ctor(
         // waker reads e.errno in its except-OSError handler.
         if matches!(
             name,
-            "OSError" | "ConnectionError" | "TimeoutError" | "BlockingIOError"
-                | "InterruptedError" | "PermissionError" | "FileNotFoundError"
-                | "FileExistsError" | "NotADirectoryError" | "IsADirectoryError"
-                | "ProcessLookupError" | "ConnectionAbortedError"
-                | "ConnectionRefusedError" | "ConnectionResetError"
+            "OSError"
+                | "ConnectionError"
+                | "TimeoutError"
+                | "BlockingIOError"
+                | "InterruptedError"
+                | "PermissionError"
+                | "FileNotFoundError"
+                | "FileExistsError"
+                | "NotADirectoryError"
+                | "IsADirectoryError"
+                | "ProcessLookupError"
+                | "ConnectionAbortedError"
+                | "ConnectionRefusedError"
+                | "ConnectionResetError"
         ) {
             let attrs = o.attrs.borrow_mut();
             let _ = attrs.set(
@@ -4424,9 +4646,7 @@ fn call_type_ctor(
             if name == "TokenizerIter" {
                 let source = args
                     .first()
-                    .map(|v| {
-                        crate::builtins::py_str_of(v).unwrap_or_default()
-                    })
+                    .map(|v| crate::builtins::py_str_of(v).unwrap_or_default())
                     .unwrap_or_default();
                 let o = crate::builtins_modules::tokenizer_iter_obj(&source);
                 return Ok(o);
@@ -4451,7 +4671,6 @@ fn call_function(
         .fn_entry(fn_id)
         .ok_or_else(|| raise("SystemError", "function table miss"))?;
     let def = entry.def.clone();
-
 
     if def.is_generator {
         return start_generator(interp, entry, o, args, kwargs);
@@ -4864,11 +5083,9 @@ fn bind_params(
                 if !wired && defining.is_module {
                     // T1-d: module frames pre-create cells in
                     // MODULE_FRAME_CELLS (keyed by frame ptr).
-                    let key =
-                        std::rc::Rc::as_ptr(&defining) as usize;
-                    let cell = MODULE_FRAME_CELLS.with(|reg| {
-                        reg.borrow().get(&(key, name.clone())).cloned()
-                    });
+                    let key = std::rc::Rc::as_ptr(&defining) as usize;
+                    let cell = MODULE_FRAME_CELLS
+                        .with(|reg| reg.borrow().get(&(key, name.clone())).cloned());
                     if let Some(cell) = cell {
                         free_cells.insert(name.clone(), cell);
                         wired = true;
@@ -5347,6 +5564,18 @@ fn assign_comp_target(frame: &Rc<Frame>, target: &Expr, v: Value) -> Result<(), 
 // ===========================================================================
 
 fn iterable_of(v: &Value) -> Result<Gc<PyIterator>, Flow> {
+    // T2 (os/shutil.get_terminal_size): native NamedTuple payloads iterate
+    // their <values> field list.
+    if let Value::Obj(o) = v {
+        if o.kind == ap_obj::ObjKind::NamedTuple {
+            if let Some(Value::List(l)) =
+                o.attrs.borrow().get(&Value::Str(PyString::new("<values>")))
+            {
+                let items: Vec<Value> = l.items().to_vec();
+                return Ok(PyIterator::new(IterState::Seq(items, 0)));
+            }
+        }
+    }
     // 02.03 user instances: __iter__ / legacy __getitem__ (S-03-24).
     if matches!(v, Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance) {
         // T1-d: tuple-backed payload instances (AttrsClass etc) iterate
@@ -5364,7 +5593,9 @@ fn iterable_of(v: &Value) -> Result<Gc<PyIterator>, Flow> {
         // in declared order (tokenize: `for a, b, c, d, e in [t]`).
         if let Value::Obj(o) = v {
             if let Some(t) = o.type_ref.borrow().as_ref().and_then(|w| w.upgrade()) {
-                let mut fields_hit = t.dict.get(&Value::Str(PyString::new("__ap_namedtuple_fields__")));
+                let mut fields_hit = t
+                    .dict
+                    .get(&Value::Str(PyString::new("__ap_namedtuple_fields__")));
                 if fields_hit.is_none() {
                     for m in t.mro.borrow().iter() {
                         if let Some(v) = m
@@ -5409,10 +5640,7 @@ fn iterable_of(v: &Value) -> Result<Gc<PyIterator>, Flow> {
             }
             None
         })() {
-            let has_iter = t
-                .dict
-                .get(&Value::Str(PyString::new("__iter__")))
-                .is_some()
+            let has_iter = t.dict.get(&Value::Str(PyString::new("__iter__"))).is_some()
                 || t.mro
                     .borrow()
                     .iter()
@@ -5420,11 +5648,7 @@ fn iterable_of(v: &Value) -> Result<Gc<PyIterator>, Flow> {
             // Restrict to zope InterfaceClass-derived tokens (the gate's
             // proxyForInterface `for name in iface`); enum/Flag classes
             // rely on the metaclass iter path.
-            let zopeish = t
-                .mro
-                .borrow()
-                .iter()
-                .any(|m| m.name == "InterfaceClass");
+            let zopeish = t.mro.borrow().iter().any(|m| m.name == "InterfaceClass");
             let found = has_iter && zopeish;
             if found {
                 // v0: zope Interface tokens iterate EMPTY (proxyForInterface
@@ -5983,6 +6207,12 @@ fn user_len(interp: &Rc<Interpreter>, v: &Value) -> Result<Option<i64>, Flow> {
         let l = crate::classes::list_backing_or_new(v);
         return Ok(Some(l.len() as i64));
     }
+    // T2 (pygments _TokenType(tuple)): tuple-derived instances size via
+    // their backing tuple.
+    if crate::classes::is_tuple_derived_instance(v) {
+        let t = crate::classes::tuple_backing_or_new(v);
+        return Ok(Some(t.0.len() as i64));
+    }
     match crate::classes::special_lookup(interp, v, "__len__") {
         Some((f, _)) => {
             let r = call_value(interp, &module_frame_pub(), &f, &[v.clone()], &[])?;
@@ -6459,6 +6689,17 @@ fn class_protocol_builtin(
                 }
                 if o.kind == ap_obj::ObjKind::Opaque && o.name == "complex" {
                     let t = crate::builtins::interned_type(interp, "complex");
+                    return Some(Ok(t));
+                }
+                // A-3 item 5: opaque native result records report their own
+                // name (type(os.uname()) == "uname_result"; stat_result too).
+                if o.kind == ap_obj::ObjKind::Opaque
+                    && matches!(
+                        o.name.as_str(),
+                        "uname_result" | "stat_result" | "statvfs_result" | "struct_time"
+                    )
+                {
+                    let t = crate::builtins::interned_type(interp, &o.name);
                     return Some(Ok(t));
                 }
             }
@@ -7111,6 +7352,13 @@ fn user_iter_to_iterator(interp: &Rc<Interpreter>, v: &Value) -> Result<Gc<PyIte
         let items: Vec<Value> = l.items().to_vec();
         return Ok(PyIterator::new(IterState::Seq(items, 0)));
     }
+    // T2 (pygments _TokenType(tuple)): tuple-derived instances iterate
+    // their backing tuple.
+    if crate::classes::is_tuple_derived_instance(v) {
+        let t = crate::classes::tuple_backing_or_new(v);
+        let items: Vec<Value> = t.0.to_vec();
+        return Ok(PyIterator::new(IterState::Seq(items, 0)));
+    }
     if let Some((f, _)) = crate::classes::special_lookup(interp, v, "__getitem__") {
         let mut items = Vec::new();
         for i in 0.. {
@@ -7361,6 +7609,17 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                             | "zip_longest"
                             | "batched"
                             | "pairwise"
+                    ) =>
+            {
+                o.name.as_str()
+            }
+            // A-3 item 5: opaque native result records report their own
+            // class name (type(os.uname()) == "uname_result").
+            Value::Obj(o)
+                if o.kind == ap_obj::ObjKind::Opaque
+                    && matches!(
+                        o.name.as_str(),
+                        "uname_result" | "stat_result" | "statvfs_result" | "struct_time"
                     ) =>
             {
                 o.name.as_str()
@@ -7822,10 +8081,7 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
             // attr WRITES land on the function attrs so the chained set
             // works).
             if name == "__new__" {
-                let m = ap_obj::PyObject::new(
-                    ap_obj::ObjKind::BuiltinFn,
-                    "__object_new__",
-                );
+                let m = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "__object_new__");
                 return Ok(Some(Value::Obj(m)));
             }
             match name {
@@ -7860,15 +8116,13 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                                 if let Some(cell) =
                                     df.my_cells.get(cname).or_else(|| df.free_cells.get(cname))
                                 {
-                                    let c = ap_obj::PyObject::new(
-                                        ap_obj::ObjKind::Namespace,
-                                        "cell",
-                                    );
+                                    let c =
+                                        ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "cell");
                                     let cur = cell.borrow().clone().unwrap_or(Value::None);
-                                    let _ = c.attrs.borrow_mut().set(
-                                        Value::Str(PyString::new("cell_contents")),
-                                        cur,
-                                    );
+                                    let _ = c
+                                        .attrs
+                                        .borrow_mut()
+                                        .set(Value::Str(PyString::new("cell_contents")), cur);
                                     // Track the LIVE cell for writes: park it
                                     // on the cell object (Rc clone rides the
                                     // type_ref slot — it is RefCell<Option<Weak>>
@@ -7883,8 +8137,7 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                         }
                     }
                     if cells.is_empty() {
-                        let cell =
-                            ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "cell");
+                        let cell = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "cell");
                         let _ = cell
                             .attrs
                             .borrow_mut()
@@ -7945,10 +8198,8 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                                     let kd = kwdefaults.get_or_insert_with(PyDict::new);
                                     if let Some(d) = &p.default {
                                         if let Ok(v) = eval_default(_interp, o, d) {
-                                            let _ = kd.set(
-                                                Value::Str(PyString::new(p.name.clone())),
-                                                v,
-                                            );
+                                            let _ = kd
+                                                .set(Value::Str(PyString::new(p.name.clone())), v);
                                         }
                                     }
                                 }
@@ -7970,6 +8221,17 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                         Value::Str(PyString::new("co_flags")),
                         Value::Int(ap_obj::Int::from_i64(co_flags)),
                     );
+                    // T2 (pluggy wrapper-hook validation:
+                    // inspect.isgeneratorfunction): surface the def's
+                    // generator flag in the stub code object (CO_GENERATOR).
+                    if let Some(def) = &sig {
+                        if def.is_generator {
+                            let _ = code.attrs.borrow_mut().set(
+                                Value::Str(PyString::new("co_flags")),
+                                Value::Int(ap_obj::Int::from_i64(co_flags | 0x20)),
+                            );
+                        }
+                    }
                     let _ = code.attrs.borrow_mut().set(
                         Value::Str(PyString::new("co_name")),
                         Value::Str(PyString::new(o.name.clone())),
@@ -8281,9 +8543,7 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
     }
     match obj {
         Value::Obj(o) => match o.kind {
-            ap_obj::ObjKind::Namespace
-                if o.name == "cell" && name == "cell_contents" =>
-            {
+            ap_obj::ObjKind::Namespace if o.name == "cell" && name == "cell_contents" => {
                 // T1-d: live closure cell read (attrs may be stale after a
                 // write to the live cell).
                 let key = std::rc::Rc::as_ptr(o) as usize;
@@ -8306,8 +8566,7 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                     .and_then(|v| v.as_int())
                     .and_then(|i| i.to_i64())
                     .unwrap_or(0);
-                let interp2 = crate::builtins_modules::current_interp()
-                    .unwrap_or_else(interp_rc);
+                let interp2 = crate::builtins_modules::current_interp().unwrap_or_else(interp_rc);
                 let stack_len = interp2.frame_stack.borrow().len();
                 let outer_exists = ((depth + 1) as usize) < stack_len.max(32);
                 if !outer_exists {
@@ -8319,10 +8578,10 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                     Value::Str(PyString::new("f_globals")),
                     Value::Dict(interp2.globals.clone()),
                 );
-                let _ = fb
-                    .attrs
-                    .borrow_mut()
-                    .set(Value::Str(PyString::new("f_lineno")), Value::Int(Int::from_i64(1)));
+                let _ = fb.attrs.borrow_mut().set(
+                    Value::Str(PyString::new("f_lineno")),
+                    Value::Int(Int::from_i64(1)),
+                );
                 return Ok(Some(Value::Obj(fb)));
             }
             ap_obj::ObjKind::Module => {
@@ -8407,7 +8666,45 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 };
                 match m {
                     Some(v) => Ok(Some(v)),
-                    None => Ok(None),
+                    None => {
+                        // T2 (pluggy _raise_wrapfail → inspect on the failing
+                        // wrapper's generator): the introspection surface.
+                        match name {
+                            "gi_running" | "gi_suspended" => Ok(Some(Value::Bool(false))),
+                            "gi_yieldfrom" | "gi_frame" => Ok(Some(Value::None)),
+                            // pluggy _raise_wrapfail reads gi_code.co_name.
+                            "gi_code" => {
+                                let code = ap_obj::PyObject::new(
+                                    ap_obj::ObjKind::Namespace,
+                                    "<code>",
+                                );
+                                let _ = code.attrs.borrow_mut().set(
+                                    Value::Str(PyString::new("co_name")),
+                                    Value::Str(PyString::new(o.name.clone())),
+                                );
+                                let _ = code.attrs.borrow_mut().set(
+                                    Value::Str(PyString::new("co_filename")),
+                                    Value::Str(PyString::new("<generator>")),
+                                );
+                                for (k2, v2) in [
+                                    ("co_firstlineno", 0i64),
+                                    ("co_argcount", 0),
+                                    ("co_varnames", 0),
+                                ] {
+                                    let _ = code.attrs.borrow_mut().set(
+                                        Value::Str(PyString::new(k2)),
+                                        if k2 == "co_varnames" {
+                                            Value::Tuple(Gc::new(Tuple(Vec::new())))
+                                        } else {
+                                            Value::Int(ap_obj::Int::from_i64(v2))
+                                        },
+                                    );
+                                }
+                                Ok(Some(Value::Obj(code)))
+                            }
+                            _ => Ok(None),
+                        }
+                    }
                 }
             }
             ap_obj::ObjKind::Namespace => {
@@ -8422,6 +8719,15 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
             ap_obj::ObjKind::NamedTuple => {
                 if let Some(v) = o.attrs.borrow().get(&Value::Str(PyString::new(name))) {
                     return Ok(Some(v));
+                }
+                // T2 (typing NamedTupleMeta `nm_tpl.__init_subclass__()`):
+                // namedtuple CLASS payloads answer the implicit object hooks.
+                if matches!(name, "__init_subclass__" | "__subclasshook__") {
+                    let m = ap_obj::PyObject::new(
+                        ap_obj::ObjKind::BuiltinFn,
+                        &format!("object.{name}"),
+                    );
+                    return Ok(Some(Value::Obj(m)));
                 }
                 Ok(None)
             }
@@ -8438,10 +8744,18 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                     };
                     let is_os_err = matches!(
                         o.name.as_str(),
-                        "OSError" | "ConnectionError" | "TimeoutError" | "BlockingIOError"
-                            | "InterruptedError" | "PermissionError" | "FileNotFoundError"
-                            | "FileExistsError" | "NotADirectoryError" | "IsADirectoryError"
-                            | "InterruptedError" | "ProcessLookupError"
+                        "OSError"
+                            | "ConnectionError"
+                            | "TimeoutError"
+                            | "BlockingIOError"
+                            | "InterruptedError"
+                            | "PermissionError"
+                            | "FileNotFoundError"
+                            | "FileExistsError"
+                            | "NotADirectoryError"
+                            | "IsADirectoryError"
+                            | "InterruptedError"
+                            | "ProcessLookupError"
                     );
                     if !is_os_err {
                         return Ok(None);
@@ -8555,9 +8869,26 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                         }
                     }
                 }
+                if o.kind == ap_obj::ObjKind::UserClass && std::env::var("APX_ATTRDBG").is_ok() {
+                    eprintln!("[ATTRDBG] UserClass {} :: {} (miss)", o.name, name);
+                }
+                // T2 (typing NamedTupleMeta `nm_tpl.__init_subclass__()`):
+                // the implicit hook answers on every class payload, including
+                // ones whose class_ref is None (type(name, bases, dict)
+                // products) — object's default is an inert no-op.
+                if matches!(name, "__init_subclass__" | "__subclasshook__") {
+                    let m = ap_obj::PyObject::new(
+                        ap_obj::ObjKind::BuiltinFn,
+                        &format!("object.{name}"),
+                    );
+                    return Ok(Some(Value::Obj(m)));
+                }
                 // Real exception classes (re.error etc) answer via the class
                 // protocol first (__dict__-seeded __module__).
                 if o.kind == ap_obj::ObjKind::Type {
+                    if std::env::var("APX_ATTRDBG").is_ok() {
+                        eprintln!("[ATTRDBG] Type {} :: {}", o.name, name);
+                    }
                     if let Some(v) = crate::classes::attr_get_opt(_interp, obj, name)? {
                         return Ok(Some(v));
                     }
@@ -8737,7 +9068,9 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                     // 02.03b: str.__new__/int.__new__ (enum member creation:
                     // member = str.__new__(cls, value)) — the marker returns
                     // the value itself (a v0 str/int IS the value model).
-                    "__new__" if matches!(o.name.as_str(), "str" | "int" | "bytes") => {
+                    // T2 (pygments): tuple/list __new__ joins the marker
+                    // surface (`tuple.__new__(cls, args)` in derived __new__).
+                    "__new__" if matches!(o.name.as_str(), "str" | "int" | "bytes" | "tuple" | "list") => {
                         let m = ap_obj::PyObject::new(
                             ap_obj::ObjKind::BuiltinFn,
                             &format!("__{}__new__", o.name),
@@ -8747,6 +9080,13 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                     "__new__" => Ok(Some(Value::Obj(ap_obj::PyObject::new(
                         ap_obj::ObjKind::BuiltinFn,
                         "type.__new__",
+                    )))),
+                    // T2 (typing NamedTupleMeta: `nm_tpl.__init_subclass__()`
+                    // after Generic parametrization): the object-virtual hook
+                    // is callable on any class; v0 default is a no-op.
+                    "__init_subclass__" => Ok(Some(Value::Obj(ap_obj::PyObject::new(
+                        ap_obj::ObjKind::BuiltinFn,
+                        "object.__init_subclass__",
                     )))),
                     // 02.04: inspect.isabstract probes type.__flags__ (int bit
                     // mask); 0 = no TPFLAGS — every v1 type is concrete.
@@ -8904,9 +9244,7 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                                             .borrow()
                                             .first()
                                             .and_then(|v| match v {
-                                                Value::Str(sv) => {
-                                                    Some(sv.as_str().to_string())
-                                                }
+                                                Value::Str(sv) => Some(sv.as_str().to_string()),
                                                 _ => None,
                                             })
                                             .unwrap_or_default();
@@ -8956,10 +9294,7 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                                     }
                                 }
                                 // Non-marker fget: call it with self.
-                                let r = crate::interp::call_value_pub3(
-                                    &fget,
-                                    &[obj.clone()],
-                                )?;
+                                let r = crate::interp::call_value_pub3(&fget, &[obj.clone()])?;
                                 return Ok(Some(r));
                             }
                         }

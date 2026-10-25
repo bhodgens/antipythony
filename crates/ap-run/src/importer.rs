@@ -258,10 +258,7 @@ pub fn sys_modules_get(name: &str) -> Option<Value> {
 fn sys_modules_insert(name: &str, v: &Value) {
     if std::env::var("APX_MODDBG").is_ok() && name.contains("_py_warnings") {
         if let Value::Obj(o) = v {
-            eprintln!(
-                "[INSDBG] insert {name} obj={:p}",
-                std::rc::Rc::as_ptr(o)
-            );
+            eprintln!("[INSDBG] insert {name} obj={:p}", std::rc::Rc::as_ptr(o));
         }
     }
     SYS_MODULES.with(|m| m.borrow_mut().insert(name.to_string(), v.clone()));
@@ -557,6 +554,19 @@ fn run_loaded(
 pub fn import_module(interp: &Rc<Interpreter>, name: &str) -> EResult {
     ap_trace(format!("import_module({name})"));
     builtins_modules::set_current_interp(interp);
+    // T2 (pytest PytestPluginManager.__init__: nested `from _pytest.assertion
+    // import ...` between the class entry and its zero-arg super()): a module
+    // exec'd during the import can leave the LIFO super_stack imbalanced
+    // (generator sinks / early returns inside the imported body), which
+    // emptied the CALLER's staged __init__ context. Snapshot and restore the
+    // stack around the whole import so the enclosing method's context survives
+    // anything the imported module does.
+    let saved_super: Vec<(std::rc::Rc<ap_obj::classes::TypeRef>, Value, bool)> =
+        interp.super_stack.borrow().iter().cloned().collect();
+    let super_guard = SuperStackGuard {
+        interp: std::rc::Rc::downgrade(interp),
+        saved: saved_super,
+    };
     // 02.03b-fix: seed the bootstrap builtins ONCE — importlib/_bootstrap's
     // _setup skips _builtin_from_name for names already in sys.modules
     // (CPython: real builtins are always present there).
@@ -584,6 +594,26 @@ pub fn import_module(interp: &Rc<Interpreter>, name: &str) -> EResult {
         }
     });
     import_module_inner(interp, name)
+}
+
+/// T2: RAII restore of the zero-arg-super stack across a module import (the
+/// imported body may imbalanced-pop the caller's staged method context).
+struct SuperStackGuard {
+    interp: std::rc::Weak<Interpreter>,
+    saved: Vec<(std::rc::Rc<ap_obj::classes::TypeRef>, Value, bool)>,
+}
+impl Drop for SuperStackGuard {
+    fn drop(&mut self) {
+        if let Some(rc) = self.interp.upgrade() {
+            let mut st = rc.super_stack.borrow_mut();
+            if st.len() != self.saved.len() {
+                st.clear();
+                for entry in self.saved.drain(..) {
+                    st.push(entry);
+                }
+            }
+        }
+    }
 }
 
 thread_local! {
@@ -1227,9 +1257,8 @@ fn module_stmts(
                     crate::interp::MODULE_FRAME_CELLS.with(|reg2| {
                         let mut m = reg2.borrow_mut();
                         for cname in &scope.cells {
-                            m.entry((key, cname.clone())).or_insert_with(|| {
-                                std::rc::Rc::new(std::cell::RefCell::new(None))
-                            });
+                            m.entry((key, cname.clone()))
+                                .or_insert_with(|| std::rc::Rc::new(std::cell::RefCell::new(None)));
                         }
                     });
                 }
@@ -1418,8 +1447,7 @@ pub fn import_from_module(
                         eprintln!("[FROMDBG] module_ptr={:p}", std::rc::Rc::as_ptr(o));
                         eprintln!(
                             "[FROMDBG] miss '{src}' in {module}: ns has {} items: {:?}",
-                            n,
-                            keys
+                            n, keys
                         );
                     }
                 }
@@ -1690,7 +1718,11 @@ pub(crate) fn augment_with_vendored(interp: &Rc<Interpreter>, name: &str, m: &Va
         let outcome = run_loaded(interp, &loaded, &stmts);
         if std::env::var("APX_MODDBG").is_ok() {
             let n_items = loaded.ns.items().len();
-            eprintln!("[AUGDBG] augment {name}: run_loaded ok={} ns_items={}", outcome.is_ok(), n_items);
+            eprintln!(
+                "[AUGDBG] augment {name}: run_loaded ok={} ns_items={}",
+                outcome.is_ok(),
+                n_items
+            );
         }
         // Copy names the native namespace lacks. T1 (typing): the vendored
         // defaultdict is a REAL dict subclass (dict-backing + __missing__);

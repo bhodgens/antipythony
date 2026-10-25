@@ -202,6 +202,30 @@ impl ExceptionValue {
     /// - one arg → str(arg) (KeyError special: repr(arg))
     /// - multi-arg → "arg1, arg2" joined with ", " (str of each)
     pub fn py_str(&self) -> Result<String, ap_obj::exc::PyException> {
+        // A-3 item 3: OSError(errno, strerror) formats as
+        // "[Errno <errno>] <strerror>" in CPython (BaseException.__str__
+        // special case for OSError with a 2-int-first args tuple).
+        if self.class == "OSError"
+            || self.class == "PermissionError"
+            || self.class == "FileNotFoundError"
+            || self.class == "ProcessLookupError"
+        {
+            if self.args.len() == 2 {
+                if let Some(errno) = self.args[0].as_int().and_then(|n| n.to_i64()) {
+                    let strerror = ap_obj::ops::to_str(&self.args[1])?;
+                    return Ok(format!("[Errno {}] {}", errno, strerror));
+                }
+            }
+            // A-3: 3-arg OSError(errno, strerror, filename) appends the path
+            // (CPython: "[Errno 2] No such file or directory: '/x'").
+            if self.args.len() == 3 {
+                if let Some(errno) = self.args[0].as_int().and_then(|n| n.to_i64()) {
+                    let strerror = ap_obj::ops::to_str(&self.args[1])?;
+                    let fname = ap_obj::ops::repr(&self.args[2])?;
+                    return Ok(format!("[Errno {}] {}: {}", errno, strerror, fname));
+                }
+            }
+        }
         match self.args.len() {
             0 => Ok(String::new()),
             1 => {
