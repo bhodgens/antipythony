@@ -42,7 +42,23 @@ later" as license for the no-GIL goal to slip silently.
   - Cranelift + wasmtime (Apache-2.0 WITH LLVM-exception) - notice + exception text
   - MMTk (Apache-2.0) - notice
   - pydantic/monty (MIT, Rust) - notice; adapted code keeps its headers
-  - RustPython (MIT, Rust) - notice; fallback donor only
+  - RustPython (MIT, Rust) - notice; TIERED donor policy (docs/rustpython-donor-policy.md).
+    - Architecture stays OURS: parser/AST, IR, eval loop, object model, GC, import
+      machinery. RustPython's architecture conflicts with locked decisions (ruff
+      parser, ap-ir, AOT/WasmGC goals) and its conformance ceiling is below our
+      byte-exact vs CPython 3.14 gate.
+    - Leaf-level adoption APPROVED with standard MIT attribution (same treatment
+      as monty/ruff): (a) vm/src/builtins/* function surfaces - pure-Rust
+      implementations (bytes.fromhex, os.utime, base64.urlsafe_b64encode, ...);
+      (b) stdlib re-implementations in Rust that replace C-extension shims
+      (hashlib, zlib stubs, select); (c) python_tests/ conformance corpus -
+      mine for gaps, no code coupling; (d) derive macros / slot patterns -
+      mechanical plumbing.
+    - Wasm constraint: pure-Rust implementations are REQUIRED for anything that
+      must exist on the WasmGC target (Plan 03) - system libraries cannot exist
+      in a Wasm sandbox. Native-target-only system-lib backends (OpenSSL,
+      CommonCrypto) are allowed later as opt-in performance upgrades behind
+      feature flags, never as the base implementation.
   - abilian/p2w (MIT, Python) - DESIGN REFERENCE ONLY (wrong language, own IR); no code
   - kohebi spec docs (Apache-2.0) - design reference
   - pon (DUAL LICENSE MIT / Apache-2.0 - granted by Can Bölük, me@can.ac, email
