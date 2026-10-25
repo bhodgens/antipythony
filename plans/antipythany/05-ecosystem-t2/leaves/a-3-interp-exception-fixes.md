@@ -1,5 +1,14 @@
 # Leaf A-3: interpreter exception-flow fixes from the RustPython campaign
 
+## DISPATCH HISTORY
+- First dispatch (sa-0-bdc24419) DIED of model degeneration (repetition
+  loop) 33 min in. Salvage verified by orchestrator probes: os.open
+  arm-miss FIXED (now FileNotFoundError instead of hard-exit), os.utime
+  tuple-length TypeError LANDED; except-Exception escape, OSError str,
+  Opaque naming/stat_result sequence still broken; AT_FDCWD constant
+  edits lost with the loop.
+- CONTINUATION dispatched (sa-0-c87f7258) with surviving-state brief.
+
 ## Source
 Findings F1/F2 verified firsthand 2026-10-25 (plans/antipythany/
 05-ecosystem-t2/PROGRESS.md). These are NOT donor ports - they are
