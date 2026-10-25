@@ -50,3 +50,26 @@
 - Findings F1/F2 route to an interp-owned fix leaf (builtins_modules.rs
   region is A-1-owned until it lands); the byte-surface findings
   (F3/F4/F5) overlap A-1 items and ride into the A-1 review.
+
+## A-1 REVIEW COMPLETE - LANDED (commit cfe2465, reviewed 2026-10-25)
+- NOTE: the commit was made by the repo's control agent, not this session;
+  contents match the reviewed state. Orchestrator verification FIRSTHAND:
+  cargo workspace 392 passed / 0 failed (incl. gc_weakref_unittest_battery
+  now GREEN via the interp.rs type-vs-anything __eq__ identity fix);
+  pytest 1951 passed / 6 skipped / 660 xfailed / 82 xpassed exit 0;
+  notices --check exit 0; errno count 107 == CPython 107.
+- 10 fresh probes vs python3.14: bytes.hex sep forms EXACT, fromhex error
+  position EXACT, errno alias/reverse-dict EXACT, stat S_IMODE/S_IFMT/UF_
+  EXACT, os.pipe roundtrip OK, binascii qp roundtrip + crc_hqx EXACT.
+- 3 RESIDUALS verified, routed into A-2 brief: bytearray.fromhex returns
+  bytes-typed object (F4 unresolved); os.utime ns= loses precision
+  (...123 reads back ...256 - f64 rounding in utimensat arg path);
+  os.kill(1,0) str(e) '(1, Operation not permitted)' vs '[Errno 1] ...'
+  (exc_hier py_str, finding only - interp-owned).
+- Also still open: stat.filemode setuid/sticky ('?rwxr-xr-x' vs
+  '?rwsr-xr-x'); F1 silent hard-exit on unimplemented call_os arms
+  (os.open/os.symlink probed) - both routed to the A-2 agent's finding
+  queue / a later surface leaf.
+- WAVE 2 DISPATCHED (sa-0-4098dc0b): hashlib sha3/blake2/shake, zlib
+  one-shot via flate2, os dup/dup2/fstat/dir_fd, os.uname, realpath
+  symlinks + '//' preservation, select error types, plus the residuals.
