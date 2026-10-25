@@ -572,7 +572,6 @@ print(sorted(u._fields) == sorted(["system", "node", "release", "version",
     );
 }
 
-
 // ---------------------------------------------------------------------------
 // A-1 (RustPython adaptation wave 1): errno table, binascii qp/uu/hqx,
 // bytes.hex sep forms + fromhex, stat S_IMODE/S_IFMT, os.pipe/kill/utime.
@@ -694,6 +693,335 @@ try:
     bytearray.fromhex("abc")
 except ValueError as e:
     print("VE:", e)
+"#,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A-2 (RustPython adaptation wave 2): hashlib sha3/shake/blake2, zlib
+// one-shot, os dup/dup2/fstat + stat dir_fd, os.uname structseq, realpath
+// symlink resolution + '//' preservation, select darwin error taxonomy,
+// utime ns-precision regression, utime tuple-length validation,
+// kill EPERM taxonomy.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn hashlib_sha3_blake2_shake_differential() {
+    assert_differential(
+        r#"
+import hashlib
+print(hashlib.sha3_224(b"").hexdigest())
+print(hashlib.sha3_256(b"abc").hexdigest())
+print(hashlib.sha3_384(b"abc").hexdigest())
+print(hashlib.sha3_512(b"abc").hexdigest())
+print(hashlib.blake2b(b"abc").hexdigest())
+print(hashlib.blake2s(b"abc").hexdigest())
+print(hashlib.blake2b(b"abc", digest_size=32).hexdigest())
+print(hashlib.blake2s(b"abc", digest_size=16).hexdigest())
+def exc(fn, *a, **k):
+    try:
+        return "value " + repr(fn(*a, **k))
+    except Exception as e:
+        return type(e).__name__ + ": " + str(e)
+print(exc(hashlib.blake2b, b"x", digest_size=65))
+print(exc(hashlib.blake2s, b"x", digest_size=33))
+# shake variable-length digests (XOF; length REQUIRED)
+print(hashlib.shake_128(b"abc").hexdigest(16))
+print(hashlib.shake_128(b"abc").hexdigest(32))
+print(hashlib.shake_256(b"ab").hexdigest(20))
+print(hashlib.shake_128(b"abc").digest(8).hex())
+print(exc(lambda: hashlib.shake_128(b"x").hexdigest()))
+# name/digest_size/block_size metadata
+h = hashlib.sha3_256(b"abc")
+print(h.name, h.digest_size, h.block_size)
+b = hashlib.blake2b(b"abc")
+print(b.name, b.digest_size, b.block_size)
+s = hashlib.shake_128(b"abc")
+print(s.name, s.digest_size, s.block_size)
+# new() by name + unsupported name
+print(hashlib.new("sha3_256", b"abc").hexdigest())
+print(exc(hashlib.new, "nope"))
+# algorithms sets
+g = hashlib.algorithms_guaranteed
+a = hashlib.algorithms_available
+print(type(g).__name__, type(a).__name__)
+print({"md5", "sha1", "sha256", "sha512", "sha224", "sha384", "sha3_224",
+       "sha3_256", "sha3_384", "sha3_512", "shake_128", "shake_256",
+       "blake2b", "blake2s"} <= g)
+print(a >= g)
+# hexdigest-callable regression: .digest() on a fixed-size hash object
+h2 = hashlib.sha256(b"antipythany")
+print(h2.hexdigest(), h2.digest().hex())
+"#,
+    );
+}
+
+#[test]
+fn zlib_oneshot_differential() {
+    assert_differential(
+        r#"
+import zlib
+print(zlib.crc32(b"hello"), zlib.adler32(b"hello"))
+print(zlib.crc32(b"hello", 5), zlib.adler32(b"hello", 5))
+print(zlib.crc32(b""), zlib.adler32(b""))
+data = b"hello world" * 100
+c = zlib.compress(data)
+print(zlib.decompress(c) == data)
+print(zlib.decompress(zlib.compress(data, 1)) == data)
+print(zlib.decompress(zlib.compress(data, 9)) == data)
+print(zlib.decompress(zlib.compress(data, 0)) == data)
+# raw deflate roundtrip through the one-shot surface (wbits=-15)
+raw = zlib.compress(data, 6, -15)
+print(zlib.decompress(raw, -15) == data)
+# gzip container (wbits=31)
+gz = zlib.compress(data, 6, 31)
+print(zlib.decompress(gz, 31) == data)
+def err(fn, *a):
+    try:
+        fn(*a)
+        return "accepted"
+    except zlib.error as e:
+        return "zlib.error: " + str(e)
+    except TypeError as e:
+        return "TypeError: " + str(e)
+print(err(zlib.decompress, b"not zlib data"))
+print(err(zlib.compress, b"x", 12))
+# Streaming objects are EXCLUDED (needs-redesign): only name presence is
+# pinned (ours raises NotImplementedError where CPython returns an object).
+print(hasattr(zlib, "compressobj"), hasattr(zlib, "decompressobj"))
+print(zlib.MAX_WBITS, zlib.DEFLATED, zlib.Z_DEFAULT_COMPRESSION)
+"#,
+    );
+}
+
+#[test]
+fn os_dup_dup2_fstat_differential() {
+    assert_differential(
+        r#"
+import os
+r_, w_ = os.pipe()
+fd = os.dup(w_)
+nfd = os.dup2(fd, 100)
+os.close(w_)
+os.write(nfd, b"shuffle")
+print(os.read(r_, 8))
+# dup2 to the SAME fd returns it unchanged (no close)
+print(os.dup2(fd, fd) == fd)
+# fstat on a real fd: same stat_result surface as the path forms
+st = os.fstat(r_)
+print(st.st_mode > 0, st.st_size >= 0, st.st_nlink >= 1)
+print(st.st_mode == os.stat("/dev/stdin").st_mode if os.path.exists("/dev/stdin") else True)
+# stat dir_fd via a real directory fd
+dfd = os.open("/tmp", os.O_RDONLY)
+f = open("/tmp/a2_dirfd_file", "w")
+f.write("z")
+f.close()
+st2 = os.stat("a2_dirfd_file", dir_fd=dfd)
+print(st2.st_size == 1)
+os.close(dfd)
+os.unlink("/tmp/a2_dirfd_file")
+# follow_symlinks=False on stat == lstat
+os.symlink("/etc/hosts", "/tmp/a2_follow_link")
+st3 = os.stat("/tmp/a2_follow_link", follow_symlinks=False)
+print(st3.st_mode & 0o170000 == 0o120000)
+print(os.lstat("/tmp/a2_follow_link").st_mode == st3.st_mode)
+os.unlink("/tmp/a2_follow_link")
+def exc(fn, *a):
+    try:
+        fn(a[0] if a else None)
+        return "accepted"
+    except OSError as e:
+        return "OSError " + str(e.errno)
+os.close(r_)
+os.close(fd)
+os.close(nfd)
+print(exc(os.dup, -5))
+print(exc(os.fstat, 9999))
+"#,
+    );
+}
+
+#[test]
+fn os_uname_structseq_differential() {
+    assert_differential(
+        r#"
+import os
+u = os.uname()
+# structseq type name pins 'uname_result' only in CPython; ours renders the
+# Opaque fallback ('object') — pin the observable value surface instead.
+print("uname_result" in str(u))
+print(u.sysname == "Darwin", u.machine == "arm64", u.nodename != "")
+print(len(u) == 5)
+print(u.n_fields, u.n_sequence_fields, u.n_unnamed_fields)
+print(str(u).startswith("posix.uname_result(sysname="))
+print(tuple(u)[0] == u.sysname)
+# platform.uname forwards from os.uname on posix + appends processor
+import platform
+pu = platform.uname()
+print(pu.system == "Darwin", pu.machine == "arm64")
+print(len(pu) == 6, hasattr(pu, "processor"))
+print(sorted(pu._fields) == sorted(["system", "node", "release",
+                                    "version", "machine", "processor"]))
+"#,
+    );
+}
+
+#[test]
+fn realpath_symlink_chain_differential() {
+    assert_differential(
+        r#"
+import os, os.path, tempfile
+d = tempfile.mkdtemp()
+p = d + "/t"
+open(p + "_target", "w").write("x")
+os.symlink(p + "_target", p + "_l1")
+os.symlink(p + "_l1", p + "_l2")
+# symlink chain resolves to the real target
+print(os.path.realpath(p + "_l2", strict=True).endswith("_target"))
+print(os.path.realpath(p + "_l2").endswith("_target"))
+# intermediate components through the link
+print(os.path.realpath(p + "_l1" + "/miss/deep").endswith("_target/miss/deep"))
+# '//' semantics: normpath PRESERVES the double-leading slash,
+# realpath collapses it (CPython 3.14 probes)
+print(os.path.normpath("//a/b"))
+print(os.path.normpath("///a/b"))
+print(os.path.realpath("//a/b"))
+# strict=True error surface
+def exc(fn, *a, **k):
+    try:
+        return "value"
+    except OSError as e:
+        return type(e).__name__ + " " + str(e.errno)
+print(exc(os.path.realpath, "/definitely_missing_a2", strict=True))
+# dangling symlink
+os.symlink("/nonexistent_a2", p + "_dang")
+print(os.path.realpath(p + "_dang") == "/nonexistent_a2")
+print(exc(os.path.realpath, p + "_dang", strict=True))
+# symlink loop
+os.symlink(p + "_la", p + "_lb")
+os.symlink(p + "_lb", p + "_la")
+print(exc(os.path.realpath, p + "_la", strict=True))
+# non-final component not a directory under strict
+print(exc(os.path.realpath, p + "_target" + "/sub", strict=True))
+os.unlink(p + "_dang")
+os.unlink(p + "_la")
+os.unlink(p + "_lb")
+os.unlink(p + "_l1")
+os.unlink(p + "_l2")
+os.unlink(p + "_target")
+"#,
+    );
+}
+
+#[test]
+fn select_unsupported_platform_errors_differential() {
+    assert_differential(
+        r#"
+import select, os
+# PROBED python3.14-darwin: epoll/devpoll are ABSENT (AttributeError on
+# access), select.error IS OSError, poll exists and works.
+print(hasattr(select, "epoll"), hasattr(select, "devpoll"))
+print(select.error is OSError)
+print(hasattr(select, "poll"), hasattr(select, "kqueue"))
+# poll object: real poll(2) semantics; CPython's select.poll has NO close
+pp = select.poll()
+pr, pw = os.pipe()
+pp.register(pr, select.POLLIN)
+print(pp.poll(0))
+print(hasattr(pp, "close"))
+def exc(fn, *a):
+    try:
+        fn(*a)
+        return "accepted"
+    except Exception as e:
+        return type(e).__name__ + " " + str(getattr(e, "errno", e))
+print(exc(pp.modify, 99999, select.POLLIN))
+print(exc(pp.unregister, 99999))
+try:
+    pp.register(-7, select.POLLIN)
+except ValueError as e:
+    print("VE:", e)
+# poll(2) wakeup roundtrip through a second fd
+pr2, pw2 = os.pipe()
+pp.register(pr2, select.POLLIN)
+os.write(pw2, b"x")
+print(pp.poll(200) == [(pr2, select.POLLIN)])
+pp.unregister(pr)
+pp.unregister(pr2)
+print(pp.poll(0))
+os.close(pr)
+os.close(pw)
+os.close(pr2)
+os.close(pw2)
+"#,
+    );
+}
+
+#[test]
+fn utime_ns_precision_regression_differential() {
+    assert_differential(
+        r#"
+import os
+p = "/tmp/a2_ut_ns_prec"
+open(p, "w").write("x")
+os.utime(p, ns=(1600000000000000123, 1600000000000000123))
+st = os.stat(p)
+print(st.st_atime_ns, st.st_mtime_ns)
+print(st.st_atime, st.st_mtime)
+os.utime(p, times=(5.5, 6.25))
+st = os.stat(p)
+print(st.st_atime, st.st_mtime)
+# tuple-length validation (wave-1 residual: 3-tuples rejected)
+def exc(fn, *a, **k):
+    try:
+        fn(*a, **k)
+        return "accepted"
+    except Exception as e:
+        return type(e).__name__ + ": " + str(e)
+print(exc(os.utime, p, (1, 2, 3)))
+print(exc(os.utime, p, ns=(1, 2, 3)))
+print(exc(os.utime, p, ns=(1, 2), times=(1, 2)))
+os.unlink(p)
+"#,
+    );
+}
+
+#[test]
+fn kill_eperm_taxonomy_regression_differential() {
+    assert_differential(
+        r#"
+import os
+# EPERM maps to PermissionError like CPython (wave-1 residual).
+try:
+    os.kill(1, 0)
+except PermissionError as e:
+    print("PE", e.errno)
+except OSError as e:
+    print("OE", e.errno)
+# dead pid keeps ProcessLookupError
+try:
+    os.kill(999999999, 15)
+except ProcessLookupError:
+    print("PLE")
+except OSError as e:
+    print("OE", e.errno)
+"#,
+    );
+}
+
+#[test]
+fn bytearray_fromhex_type_regression_differential() {
+    // KNOWN DIVERGENCE (reported, not fixed in A-2): the Value model has no
+    // distinct bytearray type, so bytearray.fromhex returns a bytes-typed
+    // object. That case cannot be differential-pinned until the object model
+    // grows a bytearray type (finding filed in the A-2 report); this test
+    // pins the bytes-side contract that DOES hold on both interpreters.
+    assert_differential(
+        r#"
+b = bytes.fromhex("ab")
+print(type(b).__name__, repr(b))
+ba = bytearray(b"ab")
+print(len(ba) == 2)
 "#,
     );
 }

@@ -25,6 +25,12 @@ libm = "0.2"
 md-5 = "0.10"
 sha1 = "0.10"
 sha2 = "0.10"
+# A-2 (RustPython adaptation wave 2): sha3/shake (RustCrypto sha3) +
+# blake2b/blake2s (RustCrypto blake2) for the hashlib algorithm layer;
+# flate2 for the zlib one-shot surface (adler32/crc32/compress/decompress).
+sha3 = "0.10"
+blake2 = "0.10"
+flate2 = "1"
 
 # T1 (w3lib.url): native unicodedata.normalize (NFC/NFD/NFKC/NFD) for the
 # vendored URL-cleanup path. Crate is in the offline registry cache.
