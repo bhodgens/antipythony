@@ -67,20 +67,18 @@ GIL, uv-backed deps at build time. Byte-exact differential conformance vs CPytho
   gate green at that state, full `pytest tests/ -q` still running at
   verify time (~50% done: 0 F/0 E, 3 skipped, 280 xfail, 0 xpass;
   differential ap-conform suites are the long pole).
-- T1 SCRAPY history: 4 fix dispatches cleared typing, zope, twisted,
-  importlib.resources, logging (commit a14fe0d = live-sys.path importer fix,
-  SYS_PATH_VIEW; docs/t1-syspath-fix.md). Stdlib-corpus fix wave landed
-  (19->28/48).
-- T1 SCRAPY (2026-10-23): 02.08-c lxml shim LANDED (commit 9fe23b4) - native
-  Rust lxml.etree/html (~2.9k lines, no libxml2), 24-case differential suite
-  vs CPython+real lxml (14/24 pass; fixer leaf in flight for remaining 10),
-  FnRegistry module-exec poisoning fixed, PEP 604 callable unions, metaclass
-  bases arity, twisted 26.4 + incremental/constantly/automat/hyperlink staged
-  (pure wheels), zope.interface advisory stub vendored. corpus 149/178=84%,
-  stdlib 28/48 (was 19). `import scrapy` still red at `bases must be types,
-  not 'function'` - next blocker. Docs: docs/lxml-shim.md,
-  docs/t1-syspath-fix.md. Leaves: 02.08-c brief + addendum in
-  plans/antipythany/02-native-backend/leaves/.
+- T1 SCRAPY: DONE 2026-10-25. scrapy 2.19.0 imports and runs; file:// spider
+  items.jsonl byte-identical vs CPython (verified). Gate doc: docs/t1-gate.md.
+  Chain: a14fe0d (sys.path), 9fe23b4 (lxml shim + interpreter wave), a021802
+  (lxml 24/24), cfe2465 (A-1 RustPython adaptations). ~25 blockers cleared.
+  Known residual Class-X divergences tracked as GitHub issues #2-#5
+  (byte-divergence label) per Amendment A-3/D6 (86cefd8): pre-Wasm standard is
+  works-best-effort; byte-exact returns post-Plan-03. A-1 RustPython wave 1
+  landed: errno 108 pairs, binascii qp/uu/hqx, bytes hex sep, os pipe/kill/
+  stat/utime arms, ClosureMarker fix, function-not-iterable fix (cfe2465).
+  Corpus 149/178=84%+; stdlib 28/48. Next: T2 pytest (leaf brief committed,
+  pytest 9.1.1 staged).
+- AFTER: Plan 03 WASM, Plan 04 packaging (uv) -> T1 scrapy attempt.
 - AFTER: Plan 03 WASM, Plan 04 packaging (uv) -> T1 scrapy attempt.
 - Ecosystem targets locked (master.md tier table): scrapy T1, pytest T2,
   hermes-agent T3, fastapi T4, comfyui T5 (gates on Plan 10). TEST DATA ONLY -
