@@ -74,6 +74,40 @@
   one-shot via flate2, os dup/dup2/fstat/dir_fd, os.uname, realpath
   symlinks + '//' preservation, select error types, plus the residuals.
 
+## A-2 REVIEW COMPLETE - LANDED (commit 6fb081b, reviewed 2026-10-25)
+- Orchestrator verification FIRSTHAND: cargo workspace 401 passed /
+  0 failed (wave-1 was 392; +9 from new differentials); pytest
+  1951 passed / 653 xfailed / 89 xpassed / 0 failed; notices --check
+  exit 0 (178 deps). Committed by explicit pathspec (5 files, 2680
+  insertions). Attribution markers verified (7x "adapted from
+  RustPython" in builtins_modules.rs).
+- Fresh probes vs python3.14, ALL EXACT: sha3_256(b"abc") digest,
+  shake_128 variable-length hexdigest, algorithms_guaranteed,
+  zlib roundtrip + adler32/crc32 incl. incremental seed,
+  zlib.error text, realpath dangling-symlink + strict FileNotFoundError
+  + '//tmp//a2r' collapse, os.dup write/read through the dup'd fd,
+  os.fstat st_mode, os.uname fields, utime ns= EXACT (...123 readback).
+- Residuals re-checked: kill(1,0) now PermissionError errno 1 (str
+  format still pending, A-3); bytearray.fromhex still bytes-typed
+  (needs ap-obj bytearray representation - A-3 gap, NOT assigned);
+  F2 except-Exception escape CONFIRMED still open for zlib.error
+  AND binascii.Error (A-3 item 2).
+- A-2 agent-reported gaps routed: blake2 keyed params
+  NotImplementedError (small follow-up leaf candidate); kqueue object
+  excluded per policy (selectors falls back to PollSelector - behavior
+  equivalent); platform.uname processor '' vs 'arm' (documented);
+  zlib compressed bytes differ (valid-stream variance, roundtrip pinned).
+- stdlib-provenance --check baseline FAIL (121 pre-existing problems)
+  NOT touched by this campaign - includes stale select.py/zlib.py
+  DEVIATIONS now shadowed by native modules; vendored-tree cleanup is a
+  separate queue item.
+- A-3 DISPATCHED (sa-0-bdc24419): 5 items - arm-miss hard-exit,
+  except-Exception MRO walk, OSError str format, utime arity,
+  Opaque type naming + stat_result sequence protocol.
+- Remaining open items after A-3: bytearray ap-obj representation
+  (interp-owned, needs leaf brief); blake2 keyed params; vendored
+  select/zlib DEVIATIONS cleanup.
+
 ## Previously-unverified mining findings - NOW VERIFIED (2026-10-25)
 - b16decode MISSING entirely: AttributeError on both impl and CPython
   3.14.7 ('module binascii has no attribute b16decode' - mining report
