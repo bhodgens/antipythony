@@ -73,3 +73,20 @@
 - WAVE 2 DISPATCHED (sa-0-4098dc0b): hashlib sha3/blake2/shake, zlib
   one-shot via flate2, os dup/dup2/fstat/dir_fd, os.uname, realpath
   symlinks + '//' preservation, select error types, plus the residuals.
+
+## Previously-unverified mining findings - NOW VERIFIED (2026-10-25)
+- b16decode MISSING entirely: AttributeError on both impl and CPython
+  3.14.7 ('module binascii has no attribute b16decode' - mining report
+  wrong that CPython has it; the casefold divergence is moot at 3.14).
+  binascii.b64decode also MISSING on impl (AttributeError) - route both
+  to a binascii surface leaf.
+- os.kill(1,0): impl raises OSError(1) where CPython raises
+  PermissionError(1) - subclass taxonomy missing in call_os error
+  mapping. Route with the exc_hier py_str finding.
+- realpath(strict=True) silently IGNORED on impl (returns the path where
+  CPython 3.14 raises FileNotFoundError errno 2) - already covered by
+  A-2 item 5.
+- os.utime(p, (1,2,3)) ACCEPTED by impl where CPython raises TypeError
+  ("'times' must be either a tuple of two ints or None") - wave-1 agent
+  fixed positional times but not tuple-length validation. Routed to A-2
+  residuals.
