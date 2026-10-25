@@ -40,3 +40,15 @@ Compare: `diff /tmp/t1/items_cpy.jsonl <repo>/items.jsonl` -> identical.
 
 - T1 scrapy: GATE GREEN (this doc)
 - T2 pytest: next (builds on unittest + traceback surfaces already landed)
+
+
+## Tier status update (2026-10-25)
+
+- T1 scrapy: DONE (this doc).
+- T2 pytest: import gate GREEN (pytest 9.1.1, all 48 _pytest submodules;
+  pluggy imports). pytest.main reached config/plugin loading. Remaining
+  blocker: plugin-spec resolution + int(ExitCode) (see issues #7, #10 and
+  the PEP-342 lazy-generator feature, landed in 7c0a645).
+- PEP-342 lazy generators landed (7c0a645): real send/throw/close/
+  StopIteration(value) via corosensei stackful fibers. Unblocks pytest.main,
+  s018, and future async.
