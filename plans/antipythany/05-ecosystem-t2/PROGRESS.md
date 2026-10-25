@@ -112,8 +112,10 @@
 - b16decode MISSING entirely: AttributeError on both impl and CPython
   3.14.7 ('module binascii has no attribute b16decode' - mining report
   wrong that CPython has it; the casefold divergence is moot at 3.14).
-  binascii.b64decode also MISSING on impl (AttributeError) - route both
-  to a binascii surface leaf.
+  CORRECTION 2026-10-25 (later probe): b64decode/b16decode/b16encode are
+  ALL absent from CPython 3.14 - the aliases were removed in 3.14. Our
+  impl lacking them is CORRECT, not a gap. Only a2b_base64/b2a_base64
+  remain as a surface (A-4 item 2 rewritten accordingly).
 - os.kill(1,0): impl raises OSError(1) where CPython raises
   PermissionError(1) - subclass taxonomy missing in call_os error
   mapping. Route with the exc_hier py_str finding.

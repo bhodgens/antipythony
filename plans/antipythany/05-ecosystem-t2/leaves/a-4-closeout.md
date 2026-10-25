@@ -21,13 +21,13 @@ type/attr layer are A-3-owned until then).
    CPython; dict/set keying hashes equal), and every existing
    Value::Bytes match site must still compile - grep the match arms
    first and count them before choosing.
-2. binascii b64 family completion: b64decode/b64encode with
-   validate=/altchars=, standard_b64decode, a2b_base64/b2a_base64
-   (they are the real names; b64decode etc. too). b16encode/b16decode
-   with casefold= (3.14 still HAS b16encode/b16decode - only the
-   donor's newer-3.x kwargs are absent; b16decode MISSING on impl is a
-   real gap, the earlier 'removed in 3.14' note applies to the hqx
-   family ONLY). Probe python3.14 for every name before implementing.
+2. binascii base64 family: CPython 3.14 has a2b_base64/b2a_base64 ONLY -
+   probed 2026-10-25: b16decode/b16encode/b64decode are ALL ABSENT from
+   python3.14 (the b64/b16 alias names were removed in 3.14; earlier
+   mining findings claiming those gaps were probing the aliases). The
+   impl lacking them MATCHES CPython - do not add them. Verify our
+   a2b_base64/b2a_base64 surface (validate=/altchars= kwargs) against
+   python3.14 and complete only what CPython actually exposes.
 3. blake2 keyed/tree params: key/salt/person/fanout/depth/digest_size
    via RustCrypto blake2 keyed API; pin error texts vs python3.14.
 4. stat.filemode setuid/setgid/sticky: '?rwxr-xr-x' must be
