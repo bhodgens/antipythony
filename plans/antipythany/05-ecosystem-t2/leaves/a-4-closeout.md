@@ -30,11 +30,16 @@ type/attr layer are A-3-owned until then).
    python3.14 and complete only what CPython actually exposes.
 3. blake2 keyed/tree params: key/salt/person/fanout/depth/digest_size
    via RustCrypto blake2 keyed API; pin error texts vs python3.14.
-4. stat.filemode setuid/setgid/sticky: '?rwxr-xr-x' must be
+5. stat.filemode setuid/setgid/sticky: '?rwxr-xr-x' must be
    '?rwsr-xr-T' shape (0o4755 -> ?rwsr-xr-x, 0o2755 -> ?rwxr-sr-x,
    0o1755 -> ?rwxr-xr-t; sticky without exec lowercase t). Probe 3.14
    for the full table incl. the 'l' case for symlinks.
-5. Vendored DEVIATIONS cleanup (mechanical): stdlib-provenance --check
+5b. os.uname() / os.stat() SUBSCRIPTING: u[0] raises TypeError
+   ('object' object is not subscriptable) while len(u)==5 works and
+   os.stat st[0] works - the uname_result dispatch path misses the
+   Opaque slice_parts subscript arm that stat_result got in A-3.
+   CPython structseq: u[0]=='Darwin', u[4]==machine. Probe both.
+- Vendored DEVIATIONS cleanup (mechanical): stdlib-provenance --check
    has 121 baseline problems incl. select.py/zlib.py now shadowed by
    native modules. Script the deviated/stale entry updates per the
    documented procedure; run --fix then hand-write the residual

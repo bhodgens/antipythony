@@ -108,6 +108,27 @@
   (interp-owned, needs leaf brief); blake2 keyed params; vendored
   select/zlib DEVIATIONS cleanup.
 
+## A-3 COMPLETE - LANDED via control-agent commit 1161466 (verified 2026-10-25)
+- Continuation agent (sa-0-c87f7258) finished all 5 items + AT_FDCWD
+  re-derivation; the control agent committed the tree (1161466, mixed
+  with its T2-a pytest work - A-3 hunks identified inside: exc_hier
+  OSError str form, interp exc_matches MRO walk, Opaque naming/sequence).
+- Orchestrator verification FIRSTHAND (final-state, post-commit):
+  stdlib_modules_differential 40/0 (reran after the agent's mid-session
+  flaky runs of a3_symlink_readlink - green in final state);
+  cargo workspace 407/0; pytest 1951/0; notices --check exit 0.
+- Fresh probes: except Exception catches zlib.error AND binascii.Error
+  (byte-exact); PermissionError str '[Errno 1] Operation not permitted'
+  EXACT; FileNotFoundError carries ': <path>' suffix EXACT; symlink->
+  readlink->realpath roundtrip EXACT (islink now real fstatat check);
+  type(os.uname()) == 'uname_result', len == 5 EXACT; os.stat st[0] ==
+  st.st_mode and len >= 10 EXACT; utime 3-tuple TypeError EXACT.
+- ONE RESIDUAL found (routed to A-4): os.uname() SUBSCRIPTING fails -
+  u[0] raises TypeError 'object' object is not subscriptable while
+  CPython structseq supports it (len works, subscript does not; the
+  agent wired subscript_get for Opaque slice_parts but uname_result
+  hits a different dispatch path).
+
 ## Previously-unverified mining findings - NOW VERIFIED (2026-10-25)
 - b16decode MISSING entirely: AttributeError on both impl and CPython
   3.14.7 ('module binascii has no attribute b16decode' - mining report
