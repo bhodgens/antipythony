@@ -24,6 +24,7 @@ thread_local! {
         std::cell::RefCell::new(std::collections::HashMap::new());
 }
 use crate::frame::{CellSlot, FnEntry, Frame, Interpreter, Loc};
+use crate::generators;
 use crate::iter::{IterState, PyIterator};
 use crate::{builtins, builtins_modules, importer, methods, RunOutcome};
 use ap_ir::expr::{Arg, BinOp, BoolOp, CmpOp, Conversion, Expr, FStrPart, UnaryOp};
@@ -1439,6 +1440,30 @@ fn frame_stack_pop(interp: &Rc<Interpreter>) {
     }
 }
 
+/// PEP-342 (generators.rs suspend/resume): pop the fiber's line cell while
+/// the generator is suspended so module statements keep their own lines.
+pub fn frame_stack_pop_pub(interp: &Rc<Interpreter>) -> Option<Rc<RustCell<usize>>> {
+    for _ in 0..2000 {
+        match interp.frame_stack.try_borrow_mut() {
+            Ok(mut fs) => return fs.pop(),
+            Err(_) => std::thread::sleep(std::time::Duration::from_micros(50)),
+        }
+    }
+    None
+}
+
+pub fn frame_stack_push_pub(interp: &Rc<Interpreter>, cell: Rc<RustCell<usize>>) {
+    for _ in 0..2000 {
+        match interp.frame_stack.try_borrow_mut() {
+            Ok(mut fs) => {
+                fs.push(cell);
+                return;
+            }
+            Err(_) => std::thread::sleep(std::time::Duration::from_micros(50)),
+        }
+    }
+}
+
 fn current_frame_line(interp: &Rc<Interpreter>) -> usize {
     let top = loop {
         match interp.frame_stack.try_borrow() {
@@ -2258,12 +2283,14 @@ pub(crate) fn eval_expr(
                     let k = eval_expr(interp, frame, &item.key, reg)?;
                     let v = eval_expr(interp, frame, &item.value, reg)?;
                     if let Err(_) = ap_obj::ops::hash(&k) {
+                        // A-4: bytearray reports its own name in the dict-key
+                        // error (methods::key_type_name knows the Opaque map).
+                        let ktn = crate::methods::key_type_name(&k);
                         return Err(raise(
                             "TypeError",
                             format!(
                                 "cannot use '{}' as a dict key (unhashable type: '{}')",
-                                k.type_name(),
-                                k.type_name()
+                                ktn, ktn
                             ),
                         ));
                     }
@@ -2337,23 +2364,99 @@ pub(crate) fn eval_expr(
                 Some(x) => eval_expr(interp, frame, x, reg)?,
                 None => Value::None,
             };
+            // PEP-342: suspend the generator fiber — the resume input (send
+            // value) IS the expression's value; throw/close raise here via
+            // the Err path. No fiber (genexpr bodies): v0 sink protocol.
+            if crate::generators::in_fiber() {
+                // While suspended the fiber's line cell must NOT sit on the
+                // frame stack: module statements between resumes would write
+                // their lines into it (the <module> tb frame went stale to
+                // the def line). Pop on suspend, re-push on resume.
+                let line_cell = frame_stack_pop_pub(interp);
+                let r = crate::generators::gen_yield(val);
+                if let Some(cell) = line_cell {
+                    frame_stack_push_pub(interp, cell);
+                }
+                return r;
+            }
             Err(Flow::YieldBack(val))
         }
         Expr::YieldFrom(iter) => {
-            // Generator delegation (BUG-C fix): pull each value from the
-            // sub-iterable and re-yield it through the active sink. The
-            // sub-iterator's StopIteration.value (its return value) is
-            // DISCARDED in v0 — the sink model has no channel for a delegated
-            // result expression; documented divergence (progress log).
+            // PEP-380 delegation (S-02-26). Inside a generator fiber: pull
+            // the sub-iterator to exhaustion; each sub-yield re-suspends THIS
+            // fiber (so outer send/throw reach the sub at its suspension
+            // point); the sub's StopIteration.value becomes the
+            // yield-from-expression value. Outside a fiber (genexpr bodies),
+            // keep the legacy eager drain.
             let iterable = eval_expr(interp, frame, iter, reg)?;
-            let id = register_iter(interp, &iterable)?;
-            loop {
-                match pull_iter(interp, id)? {
-                    Some(v) => gen_sink_push(interp, v),
-                    None => break,
+            let sub_is_gen = matches!(&iterable,
+                Value::Obj(o) if o.kind == ap_obj::ObjKind::Generator);
+            if !crate::generators::in_fiber() {
+                // Legacy path (genexpr bodies): eager drain through the sink.
+                let id = register_iter(interp, &iterable)?;
+                loop {
+                    match pull_iter(interp, id)? {
+                        Some(v) => gen_sink_push(interp, v),
+                        None => break,
+                    }
                 }
+                return Ok(Value::None);
             }
-            Ok(Value::None)
+            // Fiber path: register the sub (generators keep their gen id;
+            // plain iterables get an iterator-table id).
+            let sub_id = register_iter(interp, &iterable)?;
+            let result = loop {
+                let pulled = if sub_is_gen {
+                    gen_pull(interp, sub_id)
+                } else {
+                    pull_iter(interp, sub_id)
+                };
+                match pulled {
+                    Ok(Some(v)) => {
+                        // Re-suspend: the value flows out; the resume input
+                        // flows into the sub ONLY on the next loop pass (the
+                        // sub stays suspended at its yield across the outer
+                        // suspension — pushing it again here would
+                        // double-advance past the value we just relayed).
+                        // The fiber's line cell must be OFF the frame stack
+                        // while suspended (same rule as Expr::Yield).
+                        let line_cell = frame_stack_pop_pub(interp);
+                        let sent = crate::generators::gen_yield(v);
+                        if let Some(cell) = line_cell {
+                            frame_stack_push_pub(interp, cell);
+                        }
+                        let sent = sent?;
+                        if sub_is_gen && !matches!(sent, Value::None) {
+                            // send(v) with v != None must reach the sub at
+                            // its suspension point. The send ALSO advances
+                            // the sub: its next yield (or its exhaustion)
+                            // surfaces immediately — relay it instead of
+                            // re-pulling (which would skip it).
+                            let forwarded = gen_send(interp, sub_id, sent)?;
+                            if let Some(next_v) = forwarded {
+                                let line_cell = frame_stack_pop_pub(interp);
+                                let sent2 = crate::generators::gen_yield(next_v);
+                                if let Some(cell) = line_cell {
+                                    frame_stack_push_pub(interp, cell);
+                                }
+                                let sent2 = sent2?;
+                                if sub_is_gen && !matches!(sent2, Value::None) {
+                                    gen_send(interp, sub_id, sent2)?;
+                                }
+                            }
+                        }
+                        // send(None) / next() re-pull on the next loop pass.
+                    }
+                    Ok(None) => {
+                        // Sub exhausted: its return value is the expression's
+                        // value (S-02-26); gen_pull parks it on si_value.
+                        break interp.si_value.borrow_mut().take().unwrap_or(Value::None);
+                    }
+                    Err(Flow::Raise(e)) => return Err(Flow::Raise(e)),
+                    Err(f) => return Err(f),
+                }
+            };
+            Ok(result)
         }
         Expr::Await(_) => Err(raise(
             "NotImplementedError",
@@ -3234,13 +3337,13 @@ fn call_value_inner(
                                 return Ok(builtins::interned_type(interp, &cls));
                             }
                             // A-3 item 5: opaque native result records report
-                            // their own name (type(os.uname()) ==
-                            // "uname_result"; stat_result too).
+                            // their own name (type(os.uname()) == "uname_result";
+                            // stat_result too; A-4: bytearray).
                             if so.kind == ap_obj::ObjKind::Opaque
                                 && matches!(
                                     so.name.as_str(),
                                     "uname_result" | "stat_result" | "statvfs_result"
-                                        | "struct_time"
+                                        | "struct_time" | "bytearray"
                                 )
                             {
                                 return Ok(builtins::interned_type(interp, &so.name));
@@ -3265,41 +3368,110 @@ fn call_value_inner(
                     if o.name == "__ap_coroutine_noop__" {
                         return Ok(Value::None);
                     }
-                    // s018: generator close/send/throw (BoundMethod marker over
-                    // the generator object). Eager-materialized v0 generators
-                    // are exhausted by call time: close() = no-op, send() =
-                    // StopIteration, throw(e, ...) = raise e (CPython semantics
-                    // for throwing into a finished generator).
+                    // s018/T2: generator close/send/throw — REAL PEP-342
+                    // dispatch (generators.rs fiber resume). args[0] is the
+                    // generator receiver (BoundMethod prepends self).
                     if o.name == "__ap_gen_close__" {
+                        let Some(Value::Obj(g)) = args.first() else {
+                            return Ok(Value::None);
+                        };
+                        let Some(id) = *g.gen_id.borrow() else {
+                            return Ok(Value::None);
+                        };
+                        crate::interp::gen_close_pub(&interp, id)?;
                         return Ok(Value::None);
                     }
                     if o.name == "__ap_gen_send__" {
-                        return Err(raise("StopIteration", ""));
+                        let Some(Value::Obj(g)) = args.first() else {
+                            return Err(raise("StopIteration", ""));
+                        };
+                        let Some(id) = *g.gen_id.borrow() else {
+                            return Err(raise("StopIteration", ""));
+                        };
+                        let v = args.get(1).cloned().unwrap_or(Value::None);
+                        match crate::interp::gen_send_pub(&interp, id, v)? {
+                            Some(v) => return Ok(v),
+                            None => {
+                                let val =
+                                    interp.si_value.borrow_mut().take().unwrap_or(Value::None);
+                                let mut e =
+                                    crate::exc_hier::ExceptionValue::new("StopIteration", vec![]);
+                                if !matches!(val, Value::None) {
+                                    e.args.push(val);
+                                }
+                                return Err(crate::Flow::Raise(e));
+                            }
+                        }
                     }
                     if o.name == "__ap_gen_throw__" {
-                        let exc = args.first().cloned().unwrap_or(Value::None);
-                        return match exc {
-                            Value::Obj(eo) if eo.kind == ap_obj::ObjKind::Exception => {
-                                let ev = crate::exc_hier::ExceptionValue::new(
-                                    &eo.name,
-                                    eo.args.borrow().clone(),
-                                );
-                                Err(Flow::Raise(ev))
-                            }
-                            Value::Obj(ref eo) if eo.kind == ap_obj::ObjKind::UserClass => {
-                                // Exception CLASS thrown into the generator:
-                                // raise a bare instance of it (v0 — the
-                                // generator is already exhausted).
-                                Err(Flow::Raise(crate::exc_hier::ExceptionValue::new(
-                                    &eo.name,
-                                    vec![],
-                                )))
-                            }
-                            _ => Err(raise(
+                        let Some(Value::Obj(g)) = args.first() else {
+                            return Err(raise(
                                 "TypeError",
                                 "exceptions must derive from BaseException",
-                            )),
+                            ));
                         };
+                        let Some(id) = *g.gen_id.borrow() else {
+                            return Err(raise(
+                                "TypeError",
+                                "exceptions must derive from BaseException",
+                            ));
+                        };
+                        // args[1..] = the throw args: single instance/class
+                        // or the deprecated (class, value[, tb]) form.
+                        let rest = &args[1.min(args.len())..];
+                        let ev = match rest.first() {
+                            None => crate::exc_hier::ExceptionValue::msg(
+                                "TypeError",
+                                "throw() requires an exception",
+                            ),
+                            Some(Value::Obj(eo)) if eo.kind == ap_obj::ObjKind::Exception => {
+                                crate::exc_hier::ExceptionValue::new(
+                                    &eo.name,
+                                    eo.args.borrow().clone(),
+                                )
+                            }
+                            Some(Value::Obj(eo)) if eo.kind == ap_obj::ObjKind::UserInstance => {
+                                crate::interp::exception_value_of_instance_pub(&rest[0].clone())?
+                            }
+                            Some(Value::Obj(eo)) if eo.kind == ap_obj::ObjKind::UserClass => {
+                                // Exception CLASS: instantiate (bare raise
+                                // semantics).
+                                crate::interp::raise_class_pub(&interp, eo)?
+                            }
+                            Some(Value::Obj(eo)) if eo.kind == ap_obj::ObjKind::Type => {
+                                if crate::interp::is_builtin_exc_name_pub(&eo.name) {
+                                    // (Class, value) deprecated form: use the
+                                    // value as the constructor arg when given.
+                                    let argv =
+                                        rest.get(1).map(|v| vec![v.clone()]).unwrap_or_default();
+                                    crate::exc_hier::ExceptionValue::new(&eo.name, argv)
+                                } else {
+                                    return Err(raise(
+                                        "TypeError",
+                                        "exceptions must derive from BaseException",
+                                    ));
+                                }
+                            }
+                            Some(_) => {
+                                return Err(raise(
+                                    "TypeError",
+                                    "exceptions must derive from BaseException",
+                                ));
+                            }
+                        };
+                        match crate::interp::gen_throw_pub(&interp, id, ev)? {
+                            Some(v) => return Ok(v),
+                            None => {
+                                let val =
+                                    interp.si_value.borrow_mut().take().unwrap_or(Value::None);
+                                let mut e =
+                                    crate::exc_hier::ExceptionValue::new("StopIteration", vec![]);
+                                if !matches!(val, Value::None) {
+                                    e.args.push(val);
+                                }
+                                return Err(crate::Flow::Raise(e));
+                            }
+                        }
                     }
                     if o.name == "__ap_functools_nop__" {
                         return Ok(Value::None);
@@ -4087,6 +4259,7 @@ fn call_value_inner(
                                                             | "stat_result"
                                                             | "statvfs_result"
                                                             | "struct_time"
+                                                            | "bytearray"
                                                     )
                                                 {
                                                     o.name.as_str().to_string()
@@ -5111,6 +5284,11 @@ fn eval_default(interp: &Rc<Interpreter>, o: &Gc<ap_obj::PyObject>, d: &ap_ir::E
 
 // ===========================================================================
 // Generators (explicit state machine per the pon study note)
+//
+// PEP-342 resumable generators live in generators.rs (fiber-backed); the
+// GenFrame::Fn variant stores the not-yet-started state, GenFrame::Live the
+// resumable fiber; the drivers below (gen_pull / gen_send / gen_throw /
+// gen_close) are the ONLY entries. GenExpr keeps the v0 materialization.
 // ===========================================================================
 
 pub enum GenFrame {
@@ -5122,15 +5300,77 @@ pub enum GenFrame {
         defining: Rc<Frame>,
         reg: Rc<FnRegistry>,
     },
-    /// def-generator: suspended frame (v0 runs its body collecting ALL
-    /// yields into a stream on first pull — yield-then-observe-interleave
-    /// is unobservable in the gate corpus; documented).
+    /// def-generator: resumable fiber state (PEP-342). The fiber is created
+    /// at call time but NOT started — the body runs on first resume.
     Fn {
         entry: FnEntry,
         func_obj: Gc<ap_obj::PyObject>,
         args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
     },
+    /// def-generator past ensure_fiber: live resumable state.
+    Live(crate::generators::GenState),
+}
+
+thread_local! {
+    /// Error raised inside a generator fiber awaiting pickup by the resumer
+    /// (resume_live returns it exactly once when the body terminates).
+    static PENDING_GEN_ERROR: RefCell<Option<Flow>> = const { RefCell::new(None) };
+}
+
+pub(crate) fn set_pending_generator_error(f: Flow) {
+    PENDING_GEN_ERROR.with(|p| *p.borrow_mut() = Some(f));
+}
+
+pub(crate) fn take_pending_generator_error() -> Option<Flow> {
+    PENDING_GEN_ERROR.with(|p| p.borrow_mut().take())
+}
+
+// ---- narrow shims for generators.rs (private interp helpers) ----
+
+pub(crate) fn bind_params_for_generator(
+    interp: &Rc<Interpreter>,
+    entry: &FnEntry,
+    def: &FnDef,
+    func_obj: &Gc<ap_obj::PyObject>,
+    args: &[Value],
+    kwargs: &[(String, Value)],
+) -> Result<
+    (
+        HashMap<String, Loc>,
+        HashMap<String, CellSlot>,
+        HashMap<String, CellSlot>,
+    ),
+    Flow,
+> {
+    let is_lambda = interp
+        .lambda_bodies
+        .borrow()
+        .contains_key(&func_obj.fn_id.unwrap_or(u32::MAX));
+    bind_params(interp, entry, def, func_obj, is_lambda, args, kwargs)
+}
+
+pub(crate) fn scope_globals_pub(
+    interp: &Rc<Interpreter>,
+    entry: &FnEntry,
+) -> std::collections::HashSet<String> {
+    scope_globals(interp, entry)
+}
+
+pub(crate) fn scope_nonlocals_pub(
+    interp: &Rc<Interpreter>,
+    entry: &FnEntry,
+) -> std::collections::HashSet<String> {
+    scope_nonlocals(interp, entry)
+}
+
+pub(crate) fn eval_expr_on_frame(
+    interp: &Rc<Interpreter>,
+    frame: &Rc<Frame>,
+    e: &Expr,
+    reg: &Rc<FnRegistry>,
+) -> EResult {
+    eval_expr(interp, frame, e, reg)
 }
 
 fn start_generator(
@@ -5156,27 +5396,90 @@ fn start_generator(
     Ok(Value::Obj(obj))
 }
 
-/// Pull one value from a generator: resume/sink semantics (see GenFrame).
-fn gen_pull(interp: &Rc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> {
-    // First pull: materialize the stream into a plain iterator.
-    let take = {
-        let mut gens = interp.generators.borrow_mut();
-        gens.remove(&id)
-    };
-    let Some(gen) = take else {
-        // Already materialized: pull from the iterator table.
-        if let Some(it) = interp.iterators.borrow().get(&id) {
-            return Ok(it.next());
+/// Map a resume outcome into the caller-facing protocol:
+/// Some(v) = yield; None = clean StopIteration (value on interp.si_value);
+/// Err = the body's / the input's exception (StopIteration inside a body
+/// becomes RuntimeError per PEP-479; a real thrown exception that fell out
+/// unhandled propagates to the caller).
+fn pump_outcome(
+    interp: &Rc<Interpreter>,
+    r: Result<Option<Value>, Flow>,
+    throwing: Option<ExceptionValue>,
+) -> Result<Option<Value>, Flow> {
+    match r {
+        Ok(Some(v)) => Ok(Some(v)),
+        Ok(None) => {
+            // Body exited cleanly after a throw()/close(). CPython: a body
+            // that ABSORBS the thrown exception and runs to completion ends
+            // the generator — throw() raises StopIteration (the generator
+            // protocol maps exhaustion, NOT the thrown object). Only an
+            // UNSTARTED generator (no body ran at all) surfaces the thrown
+            // exception itself.
+            if let Some(te) = throwing {
+                let started = {
+                    // pump_outcome has no id; callers that reach here with a
+                    // throwing=Some always post-start (unstarted throws retire
+                    // early in resume_live). So a clean exit here is exhaustion.
+                    let _ = &te;
+                    true
+                };
+                if started {
+                    return Err(Flow::Raise(crate::exc_hier::ExceptionValue::msg(
+                        "StopIteration",
+                        "",
+                    )));
+                }
+                return Err(Flow::Raise(te));
+            }
+            Ok(None)
         }
-        return Ok(None);
+        Err(Flow::Raise(mut e)) => {
+            if e.class == "StopIteration" {
+                // PEP-479: StopIteration inside a generator body becomes
+                // RuntimeError('generator raised StopIteration') with the
+                // original as __cause__ (S-02-23).
+                if let Some(te) = &throwing {
+                    // A throw() of StopIteration into the generator is NOT
+                    // PEP-479: it propagates as StopIteration itself.
+                    if te.class != "StopIteration" {
+                        return Err(Flow::Raise(e));
+                    }
+                    return Err(Flow::Raise(te.clone()));
+                }
+                let mut rte =
+                    ExceptionValue::msg("RuntimeError", "generator raised StopIteration");
+                rte.cause = Some(Box::new(e.clone()));
+                e = rte;
+            }
+            Err(Flow::Raise(e))
+        }
+        Err(other) => Err(other),
+    }
+}
+
+/// Pull one value from a generator: PEP-342 resume semantics.
+fn gen_pull(interp: &Rc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> {
+    let gen_kind = {
+        let gens = interp.generators.borrow();
+        gens.get(&id).map(|g| match g {
+            GenFrame::GenExpr { .. } => 0,
+            // Fn (not yet started) and Live (started) both resume.
+            GenFrame::Fn { .. } | GenFrame::Live(_) => 1,
+        })
     };
-    match gen {
-        GenFrame::GenExpr {
-            elt,
-            clauses,
-            defining,
-            reg,
-        } => {
+    match gen_kind {
+        Some(0) => {
+            // GenExpr: v0 materialize-on-first-pull (documented).
+            let take = interp.generators.borrow_mut().remove(&id);
+            let Some(GenFrame::GenExpr {
+                elt,
+                clauses,
+                defining,
+                reg,
+            }) = take
+            else {
+                return Ok(None);
+            };
             let sink: Rc<RefCell<Vec<Value>>> = Rc::new(RefCell::new(Vec::new()));
             run_gen_body(interp, &defining, |cf| {
                 run_comp_clauses_into(
@@ -5197,56 +5500,22 @@ fn gen_pull(interp: &Rc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> {
             }
             Ok(None)
         }
-        GenFrame::Fn {
-            entry,
-            func_obj,
-            args,
-            kwargs,
-        } => {
-            let def = entry.def.clone();
-            let lambda_body = interp
-                .lambda_bodies
-                .borrow()
-                .get(&func_obj.fn_id.unwrap_or(u32::MAX))
-                .cloned();
-            let (locals, my_cells, free_cells) = bind_params(
+        Some(1) => {
+            // Def-generator: ensure the fiber exists, then resume (send None).
+            // NOTE: si_value is NOT cleared here — for an already-finished
+            // generator the parked StopIteration.value must survive this
+            // pull (nested yield-from reads it on the pull AFTER the sub
+            // returns). Callers that need a clean slot clear it themselves.
+            ensure_fiber(interp, id)?;
+            let r = crate::generators::resume_live(
                 interp,
-                &entry,
-                &def,
-                &func_obj,
-                lambda_body.is_some(),
-                &args,
-                &kwargs,
-            )?;
-            let frame = Rc::new(Frame::new_function(
-                entry.globals.clone(),
-                &entry.scope_path,
-                &entry.qualname,
-                scope_globals(interp, &entry),
-                scope_nonlocals(interp, &entry),
-                my_cells,
-                free_cells,
-                locals,
-            ));
-            let sink: Rc<RefCell<Vec<Value>>> = Rc::new(RefCell::new(Vec::new()));
-            let prev = interp.active_gen_sink.borrow().clone();
-            *interp.active_gen_sink.borrow_mut() = Some(sink.clone());
-            let r: Result<Value, Flow> = if let Some(body) = lambda_body {
-                eval_expr(interp, &frame, &body, &current_registry(interp))
-            } else {
-                exec_block(interp, &frame, &def.body.blocks, &current_registry(interp))
-                    .map(|_| Value::None)
-            };
-            *interp.active_gen_sink.borrow_mut() = prev;
-            match r {
-                Ok(_) | Err(Flow::Return(_)) | Err(Flow::YieldBack(_)) => {}
-                Err(f) => return Err(f),
-            }
-            // The sink accumulated every yielded value (exec_block catches
-            // YieldBack and continues the body after the yield).
-            let values: Vec<Value> = sink.borrow().clone();
-            let it = PyIterator::new(IterState::Seq(values, 0));
-            interp.iterators.borrow_mut().insert(id, it);
+                id,
+                crate::generators::GenInput::Send(Value::None),
+            );
+            pump_outcome(interp, r, None)
+        }
+        _ => {
+            // Already-materialized GenExpr: pull from the iterator table.
             if let Some(it) = interp.iterators.borrow().get(&id) {
                 return Ok(it.next());
             }
@@ -5255,85 +5524,137 @@ fn gen_pull(interp: &Rc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> {
     }
 }
 
-/// Materialize a generator's stream WITHOUT advancing (iterable_of path).
-fn gen_materialize(interp: &Rc<Interpreter>, id: u64) -> Result<(), Flow> {
-    let take = {
-        let mut gens = interp.generators.borrow_mut();
-        gens.remove(&id)
+/// Create the fiber for a not-yet-started def-generator (first resume).
+fn ensure_fiber(interp: &Rc<Interpreter>, id: u64) -> Result<(), Flow> {
+    let needs = {
+        let gens = interp.generators.borrow();
+        matches!(gens.get(&id), Some(GenFrame::Fn { .. }))
     };
-    let Some(gen) = take else {
-        return Ok(()); // already materialized
+    if !needs {
+        return Ok(());
+    }
+    let Some(GenFrame::Fn {
+        entry,
+        func_obj,
+        args,
+        kwargs,
+    }) = interp.generators.borrow_mut().remove(&id)
+    else {
+        return Ok(());
     };
-    let values: Vec<Value> = match gen {
-        GenFrame::GenExpr {
-            elt,
-            clauses,
-            defining,
-            reg,
-        } => {
-            let mut sink = Vec::new();
-            run_comp_clauses_into(interp, &defining, &elt, None, &clauses, &reg, &mut sink)?;
-            sink
-        }
-        GenFrame::Fn {
-            entry,
-            func_obj,
-            args,
-            kwargs,
-        } => {
-            // Run the def-generator body; exec_block catches YieldBack and
-            // appends each yielded value to the sink.
-            let def = entry.def.clone();
-            let lambda_body = interp
-                .lambda_bodies
-                .borrow()
-                .get(&func_obj.fn_id.unwrap_or(u32::MAX))
-                .cloned();
-            let Ok((locals, my_cells, free_cells)) = bind_params(
-                interp,
-                &entry,
-                &def,
-                &func_obj,
-                lambda_body.is_some(),
-                &args,
-                &kwargs,
-            ) else {
-                return Ok(());
-            };
-            let frame = Rc::new(Frame::new_function(
-                entry.globals.clone(),
-                &entry.scope_path,
-                &entry.qualname,
-                scope_globals(interp, &entry),
-                scope_nonlocals(interp, &entry),
-                my_cells,
-                free_cells,
-                locals,
-            ));
-            let sink: Rc<RefCell<Vec<Value>>> = Rc::new(RefCell::new(Vec::new()));
-            let prev = interp.active_gen_sink.borrow().clone();
-            *interp.active_gen_sink.borrow_mut() = Some(sink.clone());
-            let r: Result<Value, Flow> = if let Some(body) = lambda_body {
-                eval_expr(interp, &frame, &body, &current_registry(interp))
-            } else {
-                exec_block(interp, &frame, &def.body.blocks, &current_registry(interp))
-                    .map(|_| Value::None)
-            };
-            *interp.active_gen_sink.borrow_mut() = prev;
-            match r {
-                Ok(_) | Err(Flow::Return(_)) | Err(Flow::YieldBack(_)) => {}
-                Err(f) => {
-                    // Exception mid-generation: surface it.
-                    return Err(f);
+    let fiber = crate::generators::make_fiber(
+        interp.clone(),
+        entry.clone(),
+        func_obj.clone(),
+        args.clone(),
+        kwargs.clone(),
+    );
+    interp.generators.borrow_mut().insert(
+        id,
+        GenFrame::Live(crate::generators::GenState {
+            fiber: Some(fiber),
+            started: false,
+            running: false,
+            retired: false,
+        }),
+    );
+    Ok(())
+}
+
+/// send(v) into generator `id` (PEP-342 / S-02-24).
+pub(crate) fn gen_send(interp: &Rc<Interpreter>, id: u64, v: Value) -> Result<Option<Value>, Flow> {
+    ensure_fiber(interp, id)?;
+    {
+        let gens = interp.generators.borrow();
+        match gens.get(&id) {
+            Some(GenFrame::Live(st)) => {
+                if !st.started && !matches!(v, Value::None) {
+                    return Err(raise(
+                        "TypeError",
+                        "can't send non-None value to a just-started generator",
+                    ));
                 }
             }
-            let taken: Vec<Value> = sink.borrow().clone();
-            taken
+            _ => {
+                // Genexpr send: CPython genexprs support send too; our v0
+                // genexpr materialization cannot receive — treat as next().
+            }
         }
+    }
+    interp.si_value.borrow_mut().take();
+    let r = crate::generators::resume_live(interp, id, crate::generators::GenInput::Send(v));
+    pump_outcome(interp, r, None)
+}
+
+/// throw(e) into generator `id` (S-02-25 area; raises at the suspension
+/// point; unstarted = raise before the first line; exhausted = propagate).
+pub(crate) fn gen_throw(
+    interp: &Rc<Interpreter>,
+    id: u64,
+    ev: ExceptionValue,
+) -> Result<Option<Value>, Flow> {
+    ensure_fiber(interp, id)?;
+    interp.si_value.borrow_mut().take();
+    let r =
+        crate::generators::resume_live(interp, id, crate::generators::GenInput::Throw(ev.clone()));
+    pump_outcome(interp, r, Some(ev))
+}
+
+/// close() on generator `id` (S-02-25: GeneratorExit at the suspension
+/// point; finally blocks run; a generator that then yields again raises
+/// RuntimeError('generator ignored GeneratorExit'); clean exits absorb it).
+pub(crate) fn gen_close(interp: &Rc<Interpreter>, id: u64) -> Result<(), Flow> {
+    ensure_fiber(interp, id)?;
+    interp.si_value.borrow_mut().take();
+    let r = crate::generators::resume_live(interp, id, crate::generators::GenInput::Close);
+    match r {
+        Ok(_) => Ok(()),
+        Err(Flow::Raise(e)) => {
+            if e.class == "GeneratorExit" {
+                Ok(()) // clean unwinding: close() returns None
+            } else if e.class == "StopIteration" {
+                Ok(())
+            } else {
+                Err(Flow::Raise(e))
+            }
+        }
+        Err(other) => Err(other),
+    }
+}
+
+/// Materialize a generator's stream WITHOUT advancing (iterable_of path).
+/// GenExpr keeps the v0 eager drain; def-generators are now LAZY (PEP-342),
+/// so this simply makes sure the fiber exists and lets pulls drive it —
+/// `iterable_of` returns the registered id and gen_pull resumes per-step.
+fn gen_materialize(interp: &Rc<Interpreter>, id: u64) -> Result<(), Flow> {
+    let gen_kind = {
+        let gens = interp.generators.borrow();
+        gens.get(&id).map(|g| match g {
+            GenFrame::GenExpr { .. } => 0u8,
+            _ => 1,
+        })
     };
-    #[allow(clippy::redundant_clone)]
-    let values = values;
-    let it = PyIterator::new(IterState::Seq(values, 0));
+    let Some(kind) = gen_kind else {
+        return Ok(()); // already materialized / live
+    };
+    if kind == 1 {
+        // Def-generator: LAZY now. No eager drain — ensure the fiber is
+        // ready so pulls go through gen_pull (sends stay observable).
+        return ensure_fiber(interp, id);
+    }
+    let take = interp.generators.borrow_mut().remove(&id);
+    let Some(GenFrame::GenExpr {
+        elt,
+        clauses,
+        defining,
+        reg,
+    }) = take
+    else {
+        return Ok(());
+    };
+    let mut sink = Vec::new();
+    run_comp_clauses_into(interp, &defining, &elt, None, &clauses, &reg, &mut sink)?;
+    let it = PyIterator::new(IterState::Seq(sink, 0));
     interp.iterators.borrow_mut().insert(id, it);
     Ok(())
 }
@@ -5705,12 +6026,27 @@ fn iterable_of(v: &Value) -> Result<Gc<PyIterator>, Flow> {
             }
         }
     }
-    // Generators: materialize their stream (GenFrame → iterator table).
+    // Generators: PEP-342 lazy — the returned iterator handle shares the
+    // generator's id; pulls route through gen_pull (pull_iter's generator
+    // arm). No eager materialization.
     if let Value::Obj(o) = v {
         if o.kind == ap_obj::ObjKind::Generator {
             if let Some(id) = *o.gen_id.borrow() {
                 let interp = interp_rc();
                 gen_materialize(&interp, id)?;
+                // Def-generators stay lazy: no Seq snapshot is installed, so
+                // install an empty ANCHOR entry under the gen id. pull_iter
+                // checks the generators registry FIRST, so the anchor only
+                // serves iter(gen) identity; the actual values come from the
+                // fiber. Genexprs DID install their Seq snapshot above.
+                {
+                    let its = interp.iterators.borrow();
+                    if its.get(&id).is_none() {
+                        drop(its);
+                        let anchor = PyIterator::new(IterState::Seq(vec![], 0));
+                        interp.iterators.borrow_mut().insert(id, anchor);
+                    }
+                }
                 let its = interp.iterators.borrow();
                 if let Some(it) = its.get(&id) {
                     return Ok(it.clone());
@@ -6697,6 +7033,7 @@ fn class_protocol_builtin(
                     && matches!(
                         o.name.as_str(),
                         "uname_result" | "stat_result" | "statvfs_result" | "struct_time"
+                            | "bytearray"
                     )
                 {
                     let t = crate::builtins::interned_type(interp, &o.name);
@@ -7614,12 +7951,13 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 o.name.as_str()
             }
             // A-3 item 5: opaque native result records report their own
-            // class name (type(os.uname()) == "uname_result").
+            // class name (type(os.uname()) == "uname_result"; A-4: bytearray).
             Value::Obj(o)
                 if o.kind == ap_obj::ObjKind::Opaque
                     && matches!(
                         o.name.as_str(),
                         "uname_result" | "stat_result" | "statvfs_result" | "struct_time"
+                            | "bytearray"
                     ) =>
             {
                 o.name.as_str()
@@ -8733,6 +9071,11 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
             }
             ap_obj::ObjKind::Exception => match name {
                 "args" => Ok(Some(Value::Tuple(Gc::new(Tuple(o.args.borrow().clone()))))),
+                // PEP-342 (S-02-22): StopIteration.value — the generator's
+                // return value rides as the single constructor arg.
+                "value" if o.name == "StopIteration" => Ok(Some(
+                    o.args.borrow().first().cloned().unwrap_or(Value::None),
+                )),
                 // T1-d (twisted waker wakeUp): OSError.errno/.strerror/
                 // .filename from the constructor args (errno first).
                 "errno" | "strerror" | "filename" => {
@@ -8986,7 +9329,10 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                             let bm_name = if name == "fromhex"
                                 && matches!(o.name.as_str(), "bytes" | "bytearray")
                             {
-                                "bytes.fromhex".to_string()
+                                // Keep the SOURCE type in the marker name: the
+                                // pybytes fromhex arm returns a bytearray for
+                                // bytearray.fromhex (CPython semantics).
+                                format!("{name}.fromhex", name = o.name.as_str())
                             } else {
                                 name.to_string()
                             };
@@ -9501,6 +9847,75 @@ pub fn interp_registry(interp: &Rc<Interpreter>) -> Rc<FnRegistry> {
 /// Public gen_pull for the builtins' next() surface.
 pub fn gen_pull_public(interp: &Rc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> {
     gen_pull(interp, id)
+}
+
+/// Drain a generator value LAZILY through the executor (PEP-342). Used by
+/// collectors (list/tuple/sum/sorted/...) that would otherwise see only the
+/// lazy anchor from iterable_of. Returns None when `v` is not a generator.
+pub fn drain_generator_public(v: &Value) -> Option<Result<Vec<Value>, Flow>> {
+    let Value::Obj(o) = v else {
+        return None;
+    };
+    if o.kind != ap_obj::ObjKind::Generator {
+        return None;
+    }
+    let id = match *o.gen_id.borrow() {
+        Some(i) => i,
+        None => return None,
+    };
+    let interp = current_interp_for_bindings();
+    let mut items = Vec::new();
+    Some(loop {
+        let r = if interp.generators.borrow().contains_key(&id) {
+            gen_pull_public(&interp, id)
+        } else {
+            break Ok(items);
+        };
+        match r {
+            Ok(Some(val)) => items.push(val),
+            Ok(None) => break Ok(items),
+            Err(f) => break Err(f),
+        }
+    })
+}
+
+/// Public send/throw/close entries (builtins' generator method surface).
+pub fn gen_send_pub(interp: &Rc<Interpreter>, id: u64, v: Value) -> Result<Option<Value>, Flow> {
+    gen_send(interp, id, v)
+}
+pub fn gen_throw_pub(
+    interp: &Rc<Interpreter>,
+    id: u64,
+    ev: ExceptionValue,
+) -> Result<Option<Value>, Flow> {
+    gen_throw(interp, id, ev)
+}
+pub fn gen_close_pub(interp: &Rc<Interpreter>, id: u64) -> Result<(), Flow> {
+    gen_close(interp, id)
+}
+
+/// Instantiate an exception CLASS payload (throw() path; S-03-33).
+pub fn raise_class_pub(
+    interp: &Rc<Interpreter>,
+    eo: &Gc<ap_obj::PyObject>,
+) -> Result<ExceptionValue, Flow> {
+    let v = Value::Obj(eo.clone());
+    let t = crate::classes::type_of(interp, &v);
+    let is_exc = t.as_ref().is_some_and(|t| t.flags.is_exception);
+    if !is_exc {
+        return Err(raise(
+            "TypeError",
+            "exceptions must derive from BaseException",
+        ));
+    }
+    let inst = crate::classes::instantiate(interp, &v, &t.unwrap(), &[], &[])?;
+    let mut ev = exception_value_of_instance(&inst)?;
+    ev.instance = Some(inst);
+    Ok(ev)
+}
+
+pub fn is_builtin_exc_name_pub(n: &str) -> bool {
+    is_builtin_exc_name(n)
 }
 
 /// Public thread-local interpreter handle (classes.rs metaclass hooks).

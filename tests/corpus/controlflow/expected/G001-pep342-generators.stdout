@@ -1,0 +1,30 @@
+created
+start
+next1 1
+got a x 1
+send 2
+got None x 2
+next2 4
+got None x 4
+stopit done
+fresh-send: can't send non-None value to a just-started generator
+1
+1
+cleanup
+stop-after-close
+1
+caught-in-gen boom
+thrown-> 99
+cleanup
+exhausted-throw late
+unstarted-throw early
+pep479 generator raised StopIteration
+1
+inner-got s
+2
+inner-ret ret
+99
+outer-done
+[0, 1, 2]
+loop-end
+[0, 1, 2]

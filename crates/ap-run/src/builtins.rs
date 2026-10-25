@@ -97,21 +97,33 @@ pub fn py_str_of(v: &Value) -> Result<String, ap_obj::exc::PyException> {
 pub fn print(interp: &Interpreter, args: &[Value], kwargs: &[(String, Value)]) -> BResult {
     let mut sep = " ".to_string();
     let mut end = "\n".to_string();
+    // redirect_stdout support: print writes to sys.stdout's .write() when the
+    // attribute holds a non-default stream (io.StringIO in tests/corpus s018).
+    let sys_stdout: Option<Value> = crate::builtins_modules::current_interp().as_ref().and_then(
+        |ic| {
+            let sys_v = ic.sys_module.borrow().clone()?;
+            match sys_v {
+                Value::Obj(o) if o.kind == ap_obj::ObjKind::Module => o.module_ns.borrow().as_ref(
+                ).and_then(|ns| ns.get(&Value::Str(PyString::new("stdout")))),
+                _ => None,
+            }
+        },
+    );
+    let redirected: Option<Value> = match &sys_stdout {
+        Some(v @ Value::Obj(o))
+            if !(o.kind == ap_obj::ObjKind::Namespace && o.name == "stdout") =>
+        {
+            Some(v.clone())
+        }
+        _ => None,
+    };
     for (k, v) in kwargs {
         match k.as_str() {
             "sep" => sep = ap_obj::ops::to_str(v).map_err(Flow::from_py)?,
             "end" => end = ap_obj::ops::to_str(v).map_err(Flow::from_py)?,
             "file" => {
-                // v0: only sys.stdout accepted (identity checked by caller
-                // passing nothing or the module attr — reject others).
-                let is_stdout = matches!(v, Value::Obj(o) if o.kind == ap_obj::ObjKind::Namespace
-                    && o.name == "stdout");
-                if !is_stdout {
-                    return Err(raise(
-                        "TypeError",
-                        "print() in v0 supports only file=sys.stdout",
-                    ));
-                }
+                // explicit file= wins over the redirect probe
+                return print_to_file(interp, v, args, &sep, &end);
             }
             "flush" => {}
             other => {
@@ -148,8 +160,44 @@ pub fn print(interp: &Interpreter, args: &[Value], kwargs: &[(String, Value)]) -
         out.push_str(&s);
     }
     out.push_str(&end);
+    if let Some(stream) = redirected {
+        // Call stream.write(out) through the interpreter's method dispatch.
+        let r = call_method_pub(
+            &stream,
+            "write",
+            &[Value::Str(PyString::new(out.clone()))],
+        );
+        if r.is_ok() {
+            return Ok(Value::None);
+        }
+    }
     interp.write_out(&out);
     Ok(Value::None)
+}
+
+/// print(file=...) v0 surface: only sys.stdout accepted (identity checked by
+/// the caller passing nothing or the module attr — reject others).
+fn print_to_file(
+    interp: &Interpreter,
+    v: &Value,
+    args: &[Value],
+    sep: &str,
+    end: &str,
+) -> BResult {
+    let is_stdout = matches!(v, Value::Obj(o) if o.kind == ap_obj::ObjKind::Namespace
+        && o.name == "stdout");
+    if !is_stdout {
+        return Err(raise(
+            "TypeError",
+            "print() in v0 supports only file=sys.stdout",
+        ));
+    }
+    let _ = (args, sep, end);
+    let _ = interp;
+    Err(raise(
+        "TypeError",
+        "print() in v0 supports only file=sys.stdout",
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -741,6 +789,19 @@ fn call_key_stub(_f: &Value, _v: &Value) -> Result<Value, Flow> {
 
 pub fn builtin_sum(args: &[Value]) -> BResult {
     let first = one(args, "sum")?;
+    // PEP-342: generators drain lazily through the executor.
+    if let Some(drained) = crate::interp::drain_generator_public(first) {
+        let items = drained?;
+        let mut acc = match args.get(1) {
+            Some(start) => start.clone(),
+            None => Value::Int(Int::Smi(0)),
+        };
+        for item in &items {
+            acc = ap_obj::ops::binop(&acc, ap_obj::ops::BinOp::Add, item)
+                .map_err(Flow::from_py)?;
+        }
+        return Ok(acc);
+    }
     let it = iterable_of(first)?;
     let mut acc = match args.get(1) {
         Some(start) => start.clone(),

@@ -22,6 +22,7 @@ pub mod exc_hier;
 pub mod format;
 pub mod frame;
 pub mod gcsupport;
+pub mod generators;
 pub mod importer;
 pub mod interp;
 pub mod iter;

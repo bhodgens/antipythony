@@ -304,6 +304,9 @@ pub struct Interpreter {
     /// Generator yield sink (v0 stream materialization).
     pub gen_sink: RefCell<Vec<Vec<ap_obj::value::Value>>>,
     pub active_gen_sink: RefCell<Option<Rc<RefCell<Vec<ap_obj::value::Value>>>>>,
+    /// PEP-342: the return value of the generator that JUST finished
+    /// (StopIteration.value; S-02-22). Set by the yield-site return path.
+    pub si_value: RefCell<Option<ap_obj::value::Value>>,
     /// The sys module object (lazy singleton for `import sys`).
     pub sys_module: RefCell<Option<Value>>,
     /// Interned builtin type objects (__class__ returns the SAME object
@@ -377,6 +380,7 @@ impl Interpreter {
             defining_frames: RefCell::new(HashMap::new()),
             gen_sink: RefCell::new(Vec::new()),
             active_gen_sink: RefCell::new(None),
+            si_value: RefCell::new(None),
             sys_module: RefCell::new(None),
             type_objects: RefCell::new(HashMap::new()),
             stmt_lines: RefCell::new(Vec::new()),

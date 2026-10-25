@@ -14774,6 +14774,15 @@ pub fn call_builtin_values(
                         ))
                     }
                 };
+                // bytearray.fromhex returns a BYTEARRAY (CPython); only the
+                // bytes spelling returns bytes. The marker name now carries
+                // the source type ("bytearray.fromhex" vs "bytes.fromhex").
+                if fname == "bytearray.fromhex" {
+                    return bytes_fromhex(txt).map(|v| match v {
+                        Value::Bytes(b) => make_bytearray(b.as_ref().clone()),
+                        other => other,
+                    });
+                }
                 return bytes_fromhex(txt);
             }
             ("pylist", "sort") => {
