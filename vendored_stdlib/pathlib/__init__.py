@@ -60,6 +60,13 @@ class _PathParents(Sequence):
     def __len__(self):
         return len(self._tail)
 
+    # antipythany T2: ABC-mixin __iter__ doesn't reach instances whose ABC
+    # registration is virtual; list()/reversed() then see an empty sequence.
+    # Provide the concrete iterator CPython synthesizes from __getitem__.
+    def __iter__(self):
+        for i in range(len(self._tail)):
+            yield self[i]
+
     def __getitem__(self, idx):
         if isinstance(idx, slice):
             return tuple(self[i] for i in range(*idx.indices(len(self))))

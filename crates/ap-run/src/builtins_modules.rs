@@ -5427,6 +5427,38 @@ pub fn call_textwrap(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> 
 pub(crate) fn str_arg(v: &Value, fname: &str) -> Result<String, Flow> {
     match v {
         Value::Str(x) => Ok(x.as_str().to_string()),
+        // T2 (pytest safe_exists -> os.path.exists(Path)): path-like objects
+        // coerce via __fspath__ (CPython os.fspath protocol).
+        Value::Obj(_) => {
+            let interp = current_interp().ok_or_else(|| {
+                raise("TypeError", format!("{fname}() argument must be str"))
+            })?;
+            match crate::interp::attr_get_public(&interp, v, "__fspath__") {
+                Ok(Some(f)) => {
+                    // The marker may be BOUND (receiver parked in
+                    // slice_parts) or raw; call with no args first, then
+                    // with the receiver.
+                    let r = match crate::interp::call_value_pub3(&f, &[]) {
+                        Ok(r) => r,
+                        Err(_) => crate::interp::call_value_pub3(&f, std::slice::from_ref(v))?,
+                    };
+                    match r {
+                        Value::Str(s) => Ok(s.as_str().to_string()),
+                        other => Err(raise(
+                            "TypeError",
+                            format!(
+                                "{fname}() argument must be str, not {}",
+                                other.type_name()
+                            ),
+                        )),
+                    }
+                }
+                _ => Err(raise(
+                    "TypeError",
+                    format!("{fname}() argument must be str, not {}", v.type_name()),
+                )),
+            }
+        }
         other => Err(raise(
             "TypeError",
             format!("{fname}() argument must be str, not {}", other.type_name()),
@@ -6994,6 +7026,7 @@ fn build_os(_i: &crate::frame::Interpreter) -> Value {
         "putenv",
         "unsetenv",
         "getcwd",
+        "chdir",
         "getcwdb",
         "listdir",
         "getpid",
@@ -7115,6 +7148,13 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                 .map_err(|e| raise("OSError", e.to_string()))?
                 .to_string_lossy()
                 .to_string())),
+            // T2 (pytest path walking): os.chdir(path) — real cwd change.
+            "chdir" => {
+                let p = str_arg(required(args, "chdir")?, "chdir")?;
+                std::env::set_current_dir(&p)
+                    .map_err(|e| crate::builtins_modules::os_error(&p, &e))?;
+                Ok(Value::None)
+            }
             // T1-d fix (tempfile/random chains): os.urandom(n) -> n random bytes.
             "urandom" => {
                 let n = as_int_i64(required(args, "urandom")?)?;
@@ -11860,7 +11900,19 @@ pub fn call_io(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option
                     .transpose()?
                     .unwrap_or_else(|| "utf-8".to_string());
                 let (data, _, _) = stream_parts(inner)?;
-                Ok(make_stream("TextIOWrapper", data, Some(enc)))
+                let out = make_stream("TextIOWrapper", data, Some(enc));
+                // T2 (pytest EncodedFile(TemporaryFile)): a wrap of a REAL-fd
+                // stream must carry the fd (fileno() delegates through the
+                // chain for dup2()-based capture).
+                if let (Value::Obj(src), Value::Obj(dst)) = (&inner, &out) {
+                    if let Some(fd) = src.attrs.borrow().get(&s("<fd>")) {
+                        let _ = dst.attrs.borrow_mut().set(s("<fd>"), fd.clone());
+                    }
+                    if let Some(p) = src.attrs.borrow().get(&s("<path>")) {
+                        let _ = dst.attrs.borrow_mut().set(s("<path>"), p.clone());
+                    }
+                }
+                Ok(out)
             }
             "BufferedReader" | "BufferedWriter" | "BufferedRWPair" | "BufferedRandom" => {
                 let inner = required(args, name)?;
@@ -11899,7 +11951,7 @@ pub fn call_io(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option
                     return Ok(st);
                 }
                 let data = std::fs::read(&path).map_err(|e| os_error(&path, &e))?;
-                Ok(make_stream(
+                let st = make_stream(
                     if mode.contains('b') {
                         "BufferedReader"
                     } else {
@@ -11907,7 +11959,21 @@ pub fn call_io(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option
                     },
                     data,
                     Some("utf-8".into()),
-                ))
+                );
+                // T2 (pytest FDCapture fd=0 opens os.devnull): real-mode open
+                // carries a real fd for fileno()/dup2()-based capture.
+                if let Value::Obj(o) = &st {
+                    if let Ok(cp) = std::ffi::CString::new(path.clone()) {
+                        let flags = if mode.contains('w') {
+                            libc::O_RDWR | libc::O_CREAT | libc::O_TRUNC
+                        } else {
+                            libc::O_RDONLY
+                        };
+                        let fd = unsafe { libc::open(cp.as_ptr(), flags, 0o600) };
+                        let _ = o.attrs.borrow_mut().set(s("<fd>"), i(fd as i64));
+                    }
+                }
+                Ok(st)
             }
             "text_encoding" => match args.first() {
                 None | Some(Value::None) => Ok(s("utf-8")),
@@ -12050,6 +12116,42 @@ pub fn call_io(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option
                     }
                 }
                 Ok(Value::Bytes(Gc::new(data)))
+            }
+            // T2 (pytest FDCapture): fileno() must return the stream's REAL
+            // fd (capture dup2()s it onto stdout/stderr). In-memory streams
+            // without an fd raise UnsupportedOperation like CPython's IOBase.
+            "fileno" => {
+                let v = required(args, "fileno")?;
+                if let Value::Obj(o) = &v {
+                    if let Some(fd) = o.attrs.borrow().get(&s("<fd>")).and_then(|x| {
+                        x.as_int().and_then(|n| n.to_i64())
+                    }) {
+                        return Ok(i(fd));
+                    }
+                }
+                Err(Flow::Raise(crate::exc_hier::ExceptionValue::new(
+                    "io.UnsupportedOperation",
+                    vec![s("fileno")],
+                )))
+            }
+            // flush(): no-op (write-mode disk flush rides close()).
+            "flush" => Ok(Value::None),
+            // truncate(size=None): resize to size or current pos; returns the
+            // new size (pytest snap() calls seek(0); truncate() per snapshot).
+            "truncate" => {
+                let v = required(args, "truncate")?;
+                let (data, pos, _) = stream_parts(v)?;
+                let size = match args.get(1) {
+                    Some(x) => as_int_i64(x)?.max(0) as usize,
+                    None => pos,
+                };
+                let mut nd = data;
+                nd.resize(size.min(nd.len()).max(size), 0);
+                nd.truncate(size);
+                if let Value::Obj(o) = v {
+                    let _ = o.attrs.borrow_mut().set(s("<buf>"), Value::Bytes(Gc::new(nd.clone())));
+                }
+                Ok(i(nd.len() as i64))
             }
             "close" => {
                 // Write-mode streams flush their buffer to disk on close.
@@ -12487,9 +12589,19 @@ pub fn call_tempfile(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> 
                 let f = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "TextIOWrapper");
                 {
                     let mut fa = f.attrs.borrow_mut();
-                    let _ = fa.set(s("<path>"), s(path));
-                    let _ = fa.set(s("name"), s("tempfile"));
+                    let _ = fa.set(s("<path>"), s(path.clone()));
+                    let _ = fa.set(s("name"), s("<fd>"));
                     let _ = fa.set(s("closed"), Value::Bool(false));
+                    // T2 (pytest FDCapture): capture machinery dup2()s the
+                    // file's real fd onto the target fd, so fileno() must
+                    // return an actual OS descriptor (buffering=0 in pytest =
+                    // unbuffered; our <buf> stays the in-memory content).
+                    let cpath = std::ffi::CString::new(path.clone())
+                        .map_err(|_| raise("ValueError", "embedded null byte in temp path"))?;
+                    let fd = unsafe {
+                        libc::open(cpath.as_ptr(), libc::O_RDWR | libc::O_CREAT, 0o600)
+                    };
+                    let _ = fa.set(s("<fd>"), i(fd as i64));
                 }
                 Ok(Value::Obj(f))
             }
@@ -13309,9 +13421,17 @@ pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
                 | "BufferedRWPair"
                 | "BufferedRandom"
                 | "IncrementalNewlineDecoder" => {
+                    // T2 (pytest EncodedFile/FDCaptureBinary): `.buffer` /
+                    // `.raw` alias the stream itself (buffering=0 semantics:
+                    // the raw file IS the buffer; reads/writes see the same
+                    // <buf> storage).
+                    if matches!(name, "buffer" | "raw") {
+                        return Some(obj.clone());
+                    }
                     let mname = match name {
                         "read" | "readline" | "write" | "tell" | "seek" | "getvalue" | "close"
-                        | "peek" | "read1" | "decode" | "__enter__" | "__exit__" => {
+                        | "peek" | "read1" | "decode" | "__enter__" | "__exit__" | "fileno"
+                        | "flush" | "truncate" => {
                             format!("io.{name}")
                         }
                         _ => return None,

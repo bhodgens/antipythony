@@ -394,6 +394,19 @@ pub fn builtin_int(interp: &Interpreter, args: &[Value]) -> BResult {
                             return Ok(r);
                         }
                     }
+                    // T2 (pytest ExitCode): enum members whose class mixes in
+                    // int (IntEnum/IntFlag) carry the value in the _value_
+                    // instance attr (enum.py __set_name__); CPython members
+                    // ARE ints. int(member) == member._value_.
+                    if let Value::Obj(o) = v {
+                        if let Some(Value::Int(i)) = o
+                            .attrs
+                            .borrow()
+                            .get(&Value::Str(PyString::new("_value_")))
+                        {
+                            return Ok(Value::Int(i.clone()));
+                        }
+                    }
                     Err(raise(
                         "TypeError",
                         format!("int() argument must be a string, a bytes-like object or a real number, not '{}'", v.type_name()),
@@ -601,10 +614,18 @@ pub fn builtin_tuple(args: &[Value]) -> BResult {
             let attrs = o.attrs.borrow();
             match attrs.get(&Value::Str(PyString::new("<values>"))) {
                 Some(Value::List(l)) => Ok(Value::Tuple(Gc::new(Tuple(l.items().to_vec())))),
-                _ => Err(raise(
-                    "TypeError",
-                    format!("'{}' object is not iterable", o.type_name()),
-                )),
+                // T2 (inspect._signature_bound_method: tuple(
+                // sig.parameters.values())): dict-values views park their
+                // snapshot in <payload> — drain it like list().
+                _ => match attrs.get(&Value::Str(PyString::new("<payload>"))) {
+                    Some(Value::List(l)) => {
+                        Ok(Value::Tuple(Gc::new(Tuple(l.items().to_vec()))))
+                    }
+                    _ => Err(raise(
+                        "TypeError",
+                        format!("'{}' object is not iterable", o.type_name()),
+                    )),
+                },
             }
         }
         Some(v) => {
@@ -993,6 +1014,17 @@ fn check_isinstance(v: &Value, t: &Value) -> Result<Value, Flow> {
                         .get(&Value::Str(PyString::new("__ap_cached_property__")))
                         .is_some_and(|x| x.is_truthy())
             )))
+        }
+        // T2 (_pytest._code.Source: isinstance(obj, tuple | list)):
+        // types.UnionType (`X | Y`) is the Namespace "_Union" with member
+        // types in slice_parts — isinstance accepts unions (CPython 3.10+).
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::Namespace && o.name == "_Union" => {
+            for p in o.slice_parts.borrow().iter() {
+                if check_isinstance(v, p)?.is_truthy() {
+                    return Ok(Value::Bool(true));
+                }
+            }
+            Ok(Value::Bool(false))
         }
         _ => Err(raise(
             "TypeError",
@@ -2101,7 +2133,20 @@ pub fn make_sys_module(interp: &Interpreter) -> Value {
         Value::Str(PyString::new("write")),
         builtin_marker("__ap_stream_write__"),
     );
-    let _ = ns.set(Value::Str(PyString::new("stdout")), Value::Obj(so));
+    let _ = so.attrs.borrow_mut().set(
+        Value::Str(PyString::new("fileno")),
+        builtin_marker("sys.stdout.fileno"),
+    );
+    let _ = so.attrs.borrow_mut().set(
+        Value::Str(PyString::new("isatty")),
+        builtin_marker("sys.stdout.isatty"),
+    );
+    let _ = so.attrs.borrow_mut().set(
+        Value::Str(PyString::new("flush")),
+        builtin_marker("__ap_stream_flush__"),
+    );
+    let _ = ns.set(Value::Str(PyString::new("stdout")), Value::Obj(so.clone()));
+    let _ = ns.set(Value::Str(PyString::new("__stdout__")), Value::Obj(so));
     let se = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "stderr");
     {
         let mut se_attrs = se.attrs.borrow_mut();
@@ -2113,8 +2158,17 @@ pub fn make_sys_module(interp: &Interpreter) -> Value {
             Value::Str(PyString::new("flush")),
             builtin_marker("__ap_stream_flush__"),
         );
+        let _ = se_attrs.set(
+            Value::Str(PyString::new("fileno")),
+            builtin_marker("sys.stderr.fileno"),
+        );
+        let _ = se_attrs.set(
+            Value::Str(PyString::new("isatty")),
+            builtin_marker("sys.stderr.isatty"),
+        );
     }
-    let _ = ns.set(Value::Str(PyString::new("stderr")), Value::Obj(se));
+    let _ = ns.set(Value::Str(PyString::new("stderr")), Value::Obj(se.clone()));
+    let _ = ns.set(Value::Str(PyString::new("__stderr__")), Value::Obj(se));
     // sys.unraisablehook / sys.__unraisablehook__ (gc009): seeded None =
     // native default (report goes to the real stderr stream). The attribute
     // must EXIST — reads raise AttributeError on a missing module attr, and
@@ -2335,6 +2389,15 @@ fn builtin_marker(name: &str) -> Value {
 /// Dispatch a sys-module attribute access that is a function marker.
 pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<BResult> {
     match name {
+        // T2 (pytest faulthandler get_stderr_fileno): the console streams
+        // report the real fd numbers.
+        "stdout.fileno" => Some(Ok(Value::Int(Int::from_i64(1)))),
+        "stderr.fileno" => Some(Ok(Value::Int(Int::from_i64(2)))),
+        "stdin.fileno" => Some(Ok(Value::Int(Int::from_i64(0)))),
+        // T2 (pytest terminal _TerminalWriter: `file.isatty()`):
+        "stdout.isatty" | "stderr.isatty" | "stdin.isatty" => {
+            Some(Ok(Value::Bool(false)))
+        }
         // T1 (vendored dataclasses): inert (see make_sys_module).
         "_clear_type_descriptors" => Some(Ok(Value::None)),
         // 02.08-full part 1: name-surface fns.
@@ -2897,6 +2960,38 @@ fn dir_surface(v: &Value) -> Vec<String> {
     // 02.04: user classes list their MRO dicts (unittest.getTestCaseNames
     // discovers test methods through dir()).
     if let Value::Obj(o) = v {
+        if o.kind == ap_obj::ObjKind::UserInstance {
+            // T2 (pluggy hook discovery): dir() on an instance lists its
+            // class's MRO dict keys — pluggy.register scans dir(plugin).
+            let interp = crate::builtins_modules::current_interp();
+            let mut names: Vec<String> = Vec::new();
+            let handled = if let Some(ic) = interp {
+                if let Some(t) = crate::classes::class_of_value(&ic, v) {
+                    for m in t.mro.borrow().iter() {
+                        for (k, _) in m.dict.items() {
+                            if let Value::Str(x) = k {
+                                names.push(x.as_str().to_string());
+                            }
+                        }
+                    }
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            if !handled {
+                return names;
+            }
+            let attrs = o.attrs.borrow();
+            for (k, _) in attrs.items() {
+                if let Value::Str(x) = k {
+                    names.push(x.as_str().to_string());
+                }
+            }
+            return names;
+        }
         if o.kind == ap_obj::ObjKind::UserClass {
             let mut names: Vec<String> = Vec::new();
             if let Some(t) = o.class_ref.borrow().clone() {
@@ -2904,6 +2999,31 @@ fn dir_surface(v: &Value) -> Vec<String> {
                     for (k, _) in m.dict.items() {
                         if let Value::Str(x) = k {
                             names.push(x.as_str().to_string());
+                        }
+                    }
+                }
+            }
+            let attrs = o.attrs.borrow();
+            for (k, _) in attrs.items() {
+                if let Value::Str(x) = k {
+                    names.push(x.as_str().to_string());
+                }
+            }
+            return names;
+        }
+    }
+    // T2 (pluggy hook discovery): dir() on a UserInstance lists its class's
+    // MRO dict keys — pluggy.register scans dir(plugin) for hookimpls.
+    if let Value::Obj(o) = v {
+        if o.kind == ap_obj::ObjKind::UserInstance {
+            let mut names: Vec<String> = Vec::new();
+            if let Some(ic) = crate::builtins_modules::current_interp() {
+                if let Some(t) = crate::classes::class_of_value(&ic, v) {
+                    for m in t.mro.borrow().iter() {
+                        for (k, _) in m.dict.items() {
+                            if let Value::Str(x) = k {
+                                names.push(x.as_str().to_string());
+                            }
                         }
                     }
                 }
@@ -4628,6 +4748,22 @@ fn builtin_type_new(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
         {
             let _ = t.dict.set(
                 Value::Str(PyString::new("__ap_builtin_base__")),
+                Value::Str(PyString::new(first_base.name.clone())),
+            );
+        }
+        // T2 (pytest capture EncodedFile/CaptureIO(io.TextIOWrapper)):
+        // classes deriving from a native STREAM type with no user
+        // __new__/__init__ must construct via the native base ctor. Mark
+        // the payload so instantiate() can route the call.
+        if first_base.kind == ap_obj::ObjKind::Type
+            && matches!(
+                first_base.name.as_str(),
+                "TextIOWrapper" | "BytesIO" | "StringIO" | "BufferedReader"
+                    | "BufferedWriter" | "FileIO"
+            )
+        {
+            let _ = t.dict.set(
+                Value::Str(PyString::new("__ap_stream_base__")),
                 Value::Str(PyString::new(first_base.name.clone())),
             );
         }

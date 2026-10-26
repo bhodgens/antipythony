@@ -237,3 +237,72 @@ StopIteration(value) via corosensei stackful fibers. `import pytest` green
 resolution ([] plugins) + int(ExitCode) - follow-up dispatched.
 s018 FLIPPED to passing. s019 ExitStack byte-exact.
 Issue #7 (PEP-342) CLOSED by this. Issues #8/#9 remain (byte-divergence).
+
+## T2-gate closure attempt (sa-0-46c08b82, 2026-10-25) - PROGRESS, NOT CLOSED
+- pytest.main now: resolves plugins, parses config, FD capture dup2 chains
+  work, hook multicall runs, enters wrap_session. Dies in
+  Config._ensure_unconfigure -> ExitStack.close teardown with IndexError
+  (unisolated; interp frame attribution scrambled hinders tracing).
+- Agent fixes (in worktree, reviewed): tempfile TemporaryFile/Spooled
+  now carry REAL fds (<fd> via libc::open) + fileno/flush/truncate io
+  arms + buffer/raw attr aliasing + TextIOWrapper fd carry - pytest
+  FDCapture/snap chains work. dataclasses exec-GLOBALS fix (generated
+  fns' freevars threaded per-class, NOT closures) fixes NameError
+  __dataclass_dflt_astcache__ for ANY default_factory dataclass -
+  VERIFIED firsthand (dataclass OK 42).
+- Gates: cargo -p ap-run -p ap-cli 236/0 (verified firsthand).
+- FINDINGS routed (interp.rs read-only): (1) isinstance(x, A|B) TypeError
+  - is_union gate matches '__union__' but unions are Namespace '_Union'
+  (one-line fix at interp.rs:7571; verified repro); (2) interp traceback
+  frame attribution shows driver file/line for library frames; (3) _Union
+  lacks __args__/__origin__; (4) teardown IndexError unisolated.
+- REMAINING for T2 gate: fix the 4 findings (needs interp.rs owners),
+  then byte-compare trivial-file terminal summary vs CPython pytest.
+
+## BeautifulRust skills installed (2026-10-25)
+- skillspector --no-llm gate run pre-install: rust-review clean;
+  rust-best-practices 1 HIGH analysis-evasion flag on one reference file,
+  manually inspected = plain prose digest (scanner coverage limit), noted.
+- Installed: ~/.hermes/skills/rust-best-practices/ (44 components),
+  ~/.hermes/skills/rust-review/. lints/ clippy config not a skill, skipped.
+
+
+## Update 2026-10-25 (T2 close-out attempt, dispatch 2)
+
+pytest.main PROGRESS this dispatch (uncommitted; sibling files in tree):
+- tempfile.TemporaryFile/SpooledTemporaryFile now open a REAL fd (libc::open)
+  stored as <fd>; io dispatch gained fileno/flush/truncate; TextIOWrapper
+  wrap + io.open carry <fd> through; streams gained .buffer/.raw alias arms
+  (builtins_modules.rs). pytest FDCapture start/suspend/resume/dup2 chains work.
+- vendored dataclasses: generated __create_fn__ free variables now thread via
+  per-class exec GLOBALS instead of closure params — exec-generated nested
+  functions were losing/reordering closure cells (freevar/cell mismatch), so
+  any dataclass with default_factory fields (e.g. _pytest._code.code
+  ExceptionInfoFormatter) raised NameError __dataclass_dflt_astcache__ at
+  construction. All dataclasses in-repo construct again.
+- builtins.rs: isinstance(x, A | B) accepts _Union namespaces (was TypeError;
+  blocked every _pytest traceback format — _pytest._code.Source.__init__ does
+  isinstance(obj, tuple | list)).
+- pytest.main now: plugin-spec resolves, Config.parse succeeds, capture
+  starts/stops, hooks run, session runs; still fails at Config._ensure_unconfigure
+  ExitStack.close teardown with IndexError (frame attribution scrambled; root
+  cause NOT yet isolated — needs interp trace).
+- REMAINING READ-ONLY-FILE FINDINGS for the next dispatch:
+  1. interp.rs:7571 is_union gate matches Opaque "__union__" but unions are
+     Namespace "_Union" (interp.rs:3013) — isinstance(x, A|B) with a builtin
+     subject still TypeErrors in the interp path even though builtins.rs
+     handles it. One-line: add Namespace/"_Union" to that is_union arm (and
+     classes.rs:2066 gate). Repro: `isinstance("x", tuple | list)` -> TypeError
+     (builtins path fixed; interp path still raises).
+  2. interp frame attribution garbage in tracebacks (frames of the driver line
+     shown for every library frame) — breaks _pytest traceback walking
+     (ExceptionInfo.getrepr -> repr_traceback) and debugging.
+- Baseline for the byte-compare (CPython 3.14.7, staged pytest 9.1.1, pluggy
+  1.7.0, iniconfig 2.3.1, packaging 26.3): "1 failed, 1 passed, 1 skipped",
+  exit 1 — captured in this session log.
+- Gates this dispatch: cargo test -p ap-run -p ap-cli GREEN (0 failed); full
+  cargo test --workspace dispatched.
+
+3. _Union namespaces (interp.rs:3013) lack __args__/__origin__ surfaces
+   (repr'd <_Union object>; getattr(__args__) is None) — typing introspection
+   of unions will need these.

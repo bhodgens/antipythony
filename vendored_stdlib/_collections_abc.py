@@ -1223,8 +1223,13 @@ except RuntimeError:
 # dict value). CPython registers dict as a MutableMapping in C; our v0
 # ABC registry doesn't see native dicts, so teach the metaclass check.
 def _ap_native_isinstance(cls, obj):
+    # T2 fix: answer True ONLY. Returning False here short-circuits the
+    # real ABC check (orig), breaking registered virtual subclasses
+    # (pluggy's _WeakSet-based registries, pytest's Sequence probes) —
+    # anything non-dict was reported NOT an Iterable/Collection/etc.
     if cls in (Mapping, MutableMapping, Collection, Iterable, Container, Sized):
-        return isinstance(obj, dict)
+        if isinstance(obj, dict):
+            return True
     return None
 
 

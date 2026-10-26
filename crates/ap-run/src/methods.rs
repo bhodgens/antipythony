@@ -748,6 +748,67 @@ pub fn subscript_set(obj: &Value, key: &Value, v: Value) -> Result<(), Flow> {
             let k = subscript_key(key)?;
             let i = match k {
                 Key::Index(i) => i,
+                // T2 (argparse `positionals[:] = positionals[len(arg_counts):]`):
+                // list slice ASSIGNMENT (step==1: replace span with any
+                // iterable; step!=1: lengths must match exactly).
+                Key::Slice { lo, hi, step } => {
+                    let len = l.len() as i64;
+                    let clamp = |x: i64| -> i64 {
+                        let x = if x < 0 { x + len } else { x };
+                        x.clamp(0, len)
+                    };
+                    if step == 1 {
+                        let start = clamp(lo.unwrap_or(0));
+                        let stop = clamp(hi.unwrap_or(len));
+                        let items: Vec<Value> = match &v {
+                            Value::List(src) => src.items().to_vec(),
+                            Value::Tuple(t) => t.0.clone(),
+                            other => {
+                                let it = crate::interp::iterable_of_public(other)?;
+                                crate::iter::collect(&it)
+                            }
+                        };
+                        // span items [start, stop) removed, `items` inserted
+                        // (append-before-insertion-point via set+push shim).
+                        l.remove_range(start as usize, stop as usize);
+                        for (off, item) in items.iter().enumerate() {
+                            let pos = start as usize + off;
+                            if pos < l.len() {
+                                l.set_at(pos, item.clone());
+                            } else {
+                                l.append(item.clone());
+                            }
+                        }
+                        return Ok(());
+                    }
+                    let start = clamp(lo.unwrap_or(0));
+                    let stop = clamp(hi.unwrap_or(len));
+                    let span_len = ((stop - start + step.abs() - 1) / step.abs()).max(0);
+                    let items: Vec<Value> = match &v {
+                        Value::List(src) => src.items().to_vec(),
+                        Value::Tuple(t) => t.0.clone(),
+                        other => {
+                            let it = crate::interp::iterable_of_public(other)?;
+                            crate::iter::collect(&it)
+                        }
+                    };
+                    if items.len() as i64 != span_len {
+                        return Err(raise(
+                            "ValueError",
+                            "attempt to assign sequence of size \
+                             X to extended slice of size Y"
+                                .to_string(),
+                        ));
+                    }
+                    let mut idx = start;
+                    let mut off = 0usize;
+                    while (step > 0 && idx < stop) || (step < 0 && idx > stop) {
+                        l.set_at(idx as usize, items[off].clone());
+                        idx += step;
+                        off += 1;
+                    }
+                    return Ok(());
+                }
                 _ => return Err(raise("TypeError", "list indices must be integers")),
             };
             let idx = normalize_index(i, l.len() as i64)

@@ -509,10 +509,20 @@ class _FuncBuilder:
         #   return f"cls(x={self.x!r},y={self.y!r})"
         # return __init__,__repr__
 
-        txt = f"def __create_fn__({local_vars}):\n{fns_src}\n return {return_names}"
+        # s025/t2: thread the generated-function free variables through the
+        # exec GLOBALS (a per-class copy) instead of __create_fn__ closure
+        # parameters. Closure cells for exec-generated nested functions lose
+        # or reorder cells on the interp (freevar/cell mismatch -> NameError
+        # like "__dataclass_dflt_astcache__ is not defined" for
+        # _pytest._code.code.ExceptionInfoFormatter); globals lookup at call
+        # time is equivalent here (factory objects/default values are stable
+        # per class) and dodges the bug.
+        fn_globals = dict(self.globals)
+        fn_globals.update(self.locals)
+        txt = f"def __create_fn__():\n{fns_src}\n return {return_names}"
         ns = {}
-        exec(txt, self.globals, ns)
-        fns = ns['__create_fn__'](**self.locals)
+        exec(txt, fn_globals, ns)
+        fns = ns['__create_fn__']()
 
         # Now that we've generated the functions, assign them into cls.
         for name, fn in zip(self.names, fns):

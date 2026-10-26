@@ -3833,6 +3833,171 @@ fn call_value_inner(
                     // virtual): default object.__init__/__setattr__ etc are
                     // no-ops here; __str__/__repr__/__format__ fall through
                     // to the builtin surfaces below via the dotted name.
+                    // T2 (pytest Config.parse copy.copy): __reduce_ex__
+                    // marker -> protocol-4 reduce tuple. copy._reconstruct
+                    // calls copyreg.__newobj__((cls,)) -> cls.__new__(cls),
+                    // then y.__dict__.update(state).
+                    if o.name == "__ap_reduce_ex__" {
+                        let recv = o.slice_parts.borrow().first().cloned().unwrap_or(Value::None);
+                        let proto = args.get(1).cloned().unwrap_or(Value::Int(Int::from_i64(2)));
+                        let _ = proto;
+                        let cls_v = crate::classes::class_of_value(interp, &recv)
+                            .map(|t| crate::classes::class_value_for_public(&t))
+                            .unwrap_or(Value::None);
+                        // Only plain object-reduce: a UserInstance with a
+                        // dict. (cls, state) -> __newobj__ form.
+                        let state = match crate::classes::dict_backing(&recv) {
+                            Some(d) => Value::Dict(d),
+                            None => Value::None,
+                        };
+                        let newobj = crate::interp::attr_get_public(
+                            interp,
+                            &cls_v,
+                            "__new__",
+                        )?
+                        .unwrap_or(Value::None);
+                        // (func, args, state): copy._reconstruct calls
+                        // func(*args) -> __newobj__(cls) -> instance.
+                        let newobj_marker = ap_obj::PyObject::new(
+                            ap_obj::ObjKind::BuiltinFn,
+                            "__ap_newobj__",
+                        );
+                        *newobj_marker.slice_parts.borrow_mut() = vec![cls_v.clone()];
+                        return Ok(Value::Tuple(Gc::new(Tuple(vec![
+                            Value::Obj(newobj_marker),
+                            Value::Tuple(Gc::new(Tuple(vec![cls_v]))),
+                            state,
+                        ]))));
+                    }
+                    if o.name == "__ap_newobj__" {
+                        let cls_v = o.slice_parts.borrow().first().cloned().unwrap_or(Value::None);
+                        // cls.__new__(cls)
+                        let newf = crate::interp::attr_get_public(interp, &cls_v, "__new__")?
+                            .ok_or_else(|| raise("TypeError", "cannot __newobj__ class"))?;
+                        return call_value(
+                            interp,
+                            &module_frame_pub(),
+                            &newf,
+                            &[cls_v],
+                            &[],
+                        );
+                    }
+                    // T2 (pytest NodeMeta._create): super().__call__(*kw) in
+                    // a metaclass method — type.__call__ virtual: instantiate
+                    // the parked class with the given args/kwargs.
+                    if o.name == "type.__call__" {
+                        if std::env::var("APX_SUPERDBG").is_ok() {
+                            eprintln!("[SUPERDBG] type.__call__ virtual fired");
+                        }
+                        crate::interp::supercall_flag_set();
+                        let cls_v = o
+                            .slice_parts
+                            .borrow()
+                            .first()
+                            .cloned()
+                            .unwrap_or(Value::None);
+                        let t = crate::classes::type_of(interp, &cls_v)
+                            .ok_or_else(|| raise("SystemError", "class without payload"))?;
+                        return crate::classes::instantiate(interp, &cls_v, &t, args, kwargs);
+                    }
+                    // T2 (pluggy _static_hook_attr): function.__get__(inst,
+                    // owner) BINDS the parked function to inst (method
+                    // descriptor protocol). Unbound (None) returns the func.
+                    if o.name == "function.__get__" {
+                        let f = o
+                            .slice_parts
+                            .borrow()
+                            .first()
+                            .cloned()
+                            .unwrap_or(Value::None);
+                        let inst = args.first().cloned().unwrap_or(Value::None);
+                        if matches!(inst, Value::None) {
+                            return Ok(f);
+                        }
+                        let name = match &f {
+                            Value::Obj(fo) => fo.name.clone(),
+                            _ => "f".to_string(),
+                        };
+                        let bm = ap_obj::PyObject::with_self(
+                            ap_obj::ObjKind::BoundMethod,
+                            &name,
+                            inst,
+                        );
+                        *bm.func.borrow_mut() = Some(f);
+                        return Ok(Value::Obj(bm));
+                    }
+                    // T2 (pathlib _PathParents): slice.indices(n) ->
+                    // (start, stop, stride) clamped CPython-style.
+                    if o.name == "__ap_slice_indices__" {
+                        let recv = o
+                            .slice_parts
+                            .borrow()
+                            .first()
+                            .cloned()
+                            .unwrap_or(Value::None);
+                        let (lo, hi, st) = {
+                            let parts = match &recv {
+                                Value::Obj(r) => r.slice_parts.borrow().clone(),
+                                _ => vec![Value::None, Value::None, Value::None],
+                            };
+                            (
+                                parts.first().cloned().unwrap_or(Value::None),
+                                parts.get(1).cloned().unwrap_or(Value::None),
+                                parts.get(2).cloned().unwrap_or(Value::None),
+                            )
+                        };
+                        let as_i = |x: &Value, dflt: i64| -> i64 {
+                            x.as_int().and_then(|i| i.to_i64()).unwrap_or(dflt)
+                        };
+                        let n = args
+                            .first()
+                            .and_then(|x| x.as_int())
+                            .and_then(|i| i.to_i64())
+                            .unwrap_or(0);
+                        let step = if matches!(st, Value::None) {
+                            1
+                        } else {
+                            as_i(&st, 1)
+                        };
+                        if step == 0 {
+                            return Err(raise("ValueError", "slice step cannot be zero"));
+                        }
+                        let dflt_lo = if step < 0 { n - 1 } else { 0 };
+                        let dflt_hi = if step < 0 { -1 } else { n };
+                        let mut start = if matches!(lo, Value::None) {
+                            dflt_lo
+                        } else {
+                            as_i(&lo, dflt_lo)
+                        };
+                        let mut stop = if matches!(hi, Value::None) {
+                            dflt_hi
+                        } else {
+                            as_i(&hi, dflt_hi)
+                        };
+                        if start < 0 {
+                            start += n;
+                            if start < 0 {
+                                start = if step < 0 { -1 } else { 0 };
+                            }
+                        }
+                        if start > n {
+                            start = n;
+                        }
+                        if stop < 0 {
+                            stop += n;
+                            if stop < 0 {
+                                stop = if step < 0 { -1 } else { 0 };
+                            }
+                        }
+                        if stop > n {
+                            stop = n;
+                        }
+                        return Ok(Value::Tuple(Gc::new(Tuple(vec![
+                            Value::Int(Int::from_i64(start)),
+                            Value::Int(Int::from_i64(stop)),
+                            Value::Int(Int::from_i64(step)),
+                        ]))));
+                    }
                     // T2 (typing NamedTupleMeta): object.__init_subclass__()
                     // default is a no-op returning None.
                     if o.name == "object.__init_subclass__" {
@@ -6095,6 +6260,43 @@ fn register_iter(interp: &Rc<Interpreter>, v: &Value) -> Result<u64, Flow> {
                 .ok_or_else(|| raise("TypeError", "iterator without state"));
         }
     }
+    // T2 (pytest WeakSet/__iter__-generator): a UserInstance whose __iter__
+    // returns a GENERATOR must iterate that generator LAZILY under the
+    // generator's own odd id. The generic path below would re-register
+    // iterable_of(gen) — the lazy empty ANCHOR — under a fresh even id, and
+    // the for-loop would pull an exhausted Seq. Route pulls through gen_pull
+    // by handing back the generator's gen_id (registered by start_generator).
+    if let Value::Obj(o) = v {
+        if o.kind == ap_obj::ObjKind::UserInstance {
+            if let Some((f, _)) = crate::classes::special_lookup(interp, v, "__iter__") {
+                // Only intercept when the method is a generator FUNCTION
+                // (its call yields a Generator object); non-generator
+                // __iter__ returns keep the generic path.
+                let is_gen_fn = match &f {
+                    Value::Obj(fo) => {
+                        fo.fn_id
+                            .and_then(|id| interp.fn_entry(id))
+                            .map(|e| e.def.is_generator)
+                            .unwrap_or(false)
+                    }
+                    _ => false,
+                };
+                if is_gen_fn {
+                    let r = call_value(interp, &module_frame_pub(), &f, &[v.clone()], &[])?;
+                    if let Value::Obj(g) = &r {
+                        if g.kind == ap_obj::ObjKind::Generator {
+                            if let Some(id) = *g.gen_id.borrow() {
+                                return Ok(id);
+                            }
+                        }
+                    }
+                    // Non-generator result: fall through to the generic path
+                    // with the returned value as the iterable.
+                    return register_iter(interp, &r);
+                }
+            }
+        }
+    }
     let it = iterable_of(v)?;
     let id = interp.next_iter_id.get();
     interp.next_iter_id.set(id + 2); // even ids only (gen ids are odd)
@@ -7593,6 +7795,19 @@ fn make_descr(interp: &Rc<Interpreter>, kind: &str, args: &[Value]) -> EResult {
 /// v0 zero-arg: the enclosing method's `self`/`cls` is the FIRST parameter
 /// slot; we record (start-class) on the super VALUE and resolve attributes
 /// against type(self).__mro__ after that class (S-03-18).
+/// T2 (pytest NodeMeta._create): one-shot flag set by the type.__call__
+/// virtual (a super().__call__ route) so instantiate() skips the metaclass
+/// __call__ override — CPython's type.__call__ allocates directly.
+thread_local! {
+    static SUPERCALL_SKIP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+pub fn supercall_flag_set() {
+    SUPERCALL_SKIP.with(|f| f.set(true));
+}
+pub fn supercall_flag_take() -> bool {
+    SUPERCALL_SKIP.with(|f| std::mem::replace(&mut f.get(), false))
+}
+
 fn builtin_super(interp: &Rc<Interpreter>, args: &[Value], _kwargs: &[(String, Value)]) -> EResult {
     match args.len() {
         0 => {
@@ -7818,6 +8033,38 @@ fn user_compare_value(
     }
     let mut a_slot = crate::classes::special_lookup(interp, a, slot);
     let mut b_slot = crate::classes::special_lookup(interp, b, slot);
+    // T2 (pytest ExitCode): enum members (UserInstance with a _value_ attr)
+    // compare NUMERICALLY against int/bool/float (CPython: IntEnum members
+    // ARE ints). Neither side has an __eq__ slot (object identity default),
+    // so the member-vs-int compare would fall through to ptr-eq == false.
+    let enum_value = |v: &Value| -> Option<Value> {
+        if let Value::Obj(o) = v {
+            if o.kind == ap_obj::ObjKind::UserInstance {
+                if let Some(val) = o
+                    .attrs
+                    .borrow()
+                    .get(&Value::Str(PyString::new("_value_")))
+                {
+                    if matches!(val, Value::Int(_) | Value::Bool(_) | Value::Str(_)) {
+                        return Some(val.clone());
+                    }
+                }
+            }
+        }
+        None
+    };
+    if slot == "__eq__" {
+        let (av, bv) = (enum_value(a), enum_value(b));
+        if let (Some(av), Some(bv)) = (&av, &bv) {
+            if matches!(
+                (a, b),
+                (Value::Obj(_), Value::Int(_) | Value::Bool(_) | Value::Float(_) | Value::Str(_))
+                    | (Value::Int(_) | Value::Bool(_) | Value::Float(_) | Value::Str(_), Value::Obj(_))
+            ) {
+                return Some(Ok(Value::Bool(ap_obj::ops::eq(av, bv))));
+            }
+        }
+    }
     // != derives from __eq__ when __ne__ is absent (S-03-25/c028).
     let negate = slot == "__ne__" && a_slot.is_none() && b_slot.is_none();
     if negate {
@@ -8192,8 +8439,44 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
             }
         }
     }
+    // T2 (pluggy HookSpec.__init__ reads unwrap(bound).__defaults__):
+    // BoundMethod forwards function-introspection attrs to its __func__
+    // (CPython method objects delegate these to the underlying function).
+    if let Value::Obj(o) = obj {
+        if o.kind == ap_obj::ObjKind::BoundMethod
+            && matches!(
+                name,
+                "__defaults__" | "__kwdefaults__" | "__code__" | "__qualname__"
+                    | "__annotations__" | "__doc__"
+            )
+        {
+            if let Some(f) = o.func.borrow().clone() {
+                return attr_get(_interp, &f, name);
+            }
+        }
+    }
     if let Some(v) = builtins_modules::native_attr(obj, name) {
         return Ok(Some(v));
+    }
+    // T2 (pathlib _PathParents.__getitem__: slice.indices(len)): SliceObj
+    // attribute surface — start/stop/step + indices(n).
+    if let Value::Obj(o) = obj {
+        if o.kind == ap_obj::ObjKind::SliceObj {
+            if matches!(name, "start" | "stop" | "step") {
+                let parts = o.slice_parts.borrow();
+                let idx = match name {
+                    "start" => 0,
+                    "stop" => 1,
+                    _ => 2,
+                };
+                return Ok(Some(parts[idx].clone()));
+            }
+            if name == "indices" {
+                let m = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "__ap_slice_indices__");
+                *m.slice_parts.borrow_mut() = vec![obj.clone()];
+                return Ok(Some(Value::Obj(m)));
+            }
+        }
     }
     if let Value::Obj(o) = obj {
         if o.kind == ap_obj::ObjKind::Exception {
@@ -8397,13 +8680,18 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
         }
         // 02.03b: functions ARE descriptors in CPython (enum._is_descriptor
         // probes __get__ to keep plain methods out of _member_names_).
+        // T2 (pluggy _static_hook_attr): f.__get__(obj, owner) must BIND —
+        // the marker carries the function so the call handler can produce a
+        // real BoundMethod (pluggy's hook discovery calls __get__).
         if o.kind == ap_obj::ObjKind::Function
             && matches!(name, "__get__" | "__set__" | "__delete__")
         {
-            return Ok(Some(Value::Obj(ap_obj::PyObject::new(
+            let m = ap_obj::PyObject::new(
                 ap_obj::ObjKind::BuiltinFn,
                 &format!("function.{}", name),
-            ))));
+            );
+            *m.slice_parts.borrow_mut() = vec![obj.clone()];
+            return Ok(Some(Value::Obj(m)));
         }
         // 02.04a (interp bug #1, vendored-stdlib stress): CPython functions
         // carry __doc__/__module__/__qualname__ — posixpath.py does
@@ -8670,8 +8958,15 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 // ReprEnum→Enum→object and misses ABCMeta/type entirely.
                 let scan_mro: Vec<std::rc::Rc<ap_obj::classes::TypeRef>>;
                 let borrowed;
-                let subject_is_class =
-                    matches!(&subject, Value::Obj(so) if so.kind == ap_obj::ObjKind::UserClass);
+                let subject_is_class = matches!(&subject, Value::Obj(so) if so.kind == ap_obj::ObjKind::UserClass)
+                    // T2 (pytest NodeMeta): class objects created through a
+                    // Python metaclass may carry the Type kind (native-type
+                    // shaped); treat any subject whose class-of has a
+                    // metaclass as a class for super-scan routing.
+                    || crate::classes::class_of_value(_interp, &subject)
+                        .and_then(|st| st.metaclass.borrow().clone())
+                        .map(|m| m.name != "type")
+                        .unwrap_or(false);
                 let meta_of_subject = if subject_is_class {
                     crate::classes::type_of(_interp, &subject)
                         .and_then(|st| st.metaclass.borrow().clone())
@@ -8679,7 +8974,13 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                     None
                 };
                 if let Some(meta) = &meta_of_subject {
-                    if meta.is_subclass(&start_t) || std::rc::Rc::ptr_eq(meta, &start_t) {
+                    if meta.is_subclass(&start_t)
+                        || std::rc::Rc::ptr_eq(meta, &start_t)
+                        // T2 (pytest NodeMeta): the super-stack start may be
+                        // a DIFFERENT payload for the same-named metaclass
+                        // (class values cache independently); match by name.
+                        || meta.name == start_t.name
+                    {
                         scan_mro = meta.mro.borrow().clone();
                         borrowed = scan_mro;
                         // fall through to the shared scan below using `borrowed`
@@ -8687,7 +8988,9 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                         let mut after = false;
                         for cls in mro.iter() {
                             if !after {
-                                if std::rc::Rc::ptr_eq(cls, &start_t) {
+                                if std::rc::Rc::ptr_eq(cls, &start_t)
+                                    || cls.name == start_t.name
+                                {
                                     after = true;
                                 }
                                 continue;
@@ -8747,6 +9050,18 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                                 *f.slice_parts.borrow_mut() = vec![subject.clone()];
                                 return Ok(Some(Value::Obj(f)));
                             }
+                            // T2 (pytest NodeMeta._create:
+                            // super().__call__(*k, **kw) inside a metaclass
+                            // method): type.__call__ virtual in the
+                            // metaclass chain — instantiates the subject.
+                            if cls.name == "type" && name == "__call__" {
+                                let m = ap_obj::PyObject::new(
+                                    ap_obj::ObjKind::BuiltinFn,
+                                    "type.__call__",
+                                );
+                                *m.slice_parts.borrow_mut() = vec![subject.clone()];
+                                return Ok(Some(Value::Obj(m)));
+                            }
                         }
                         return Ok(None);
                     }
@@ -8755,7 +9070,7 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 let mut after = false;
                 for cls in mro.iter() {
                     if !after {
-                        if std::rc::Rc::ptr_eq(cls, &start_t) {
+                        if std::rc::Rc::ptr_eq(cls, &start_t) || cls.name == start_t.name {
                             after = true;
                         }
                         continue;
@@ -9153,6 +9468,15 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 }
                 if o.kind == ap_obj::ObjKind::UserInstance && name == "__traceback__" {
                     return Ok(Some(Value::None));
+                }
+                // T2 (pytest Config.parse: copy.copy(self.option)): instances
+                // answer object.__reduce_ex__ so copy.py's reduce path works
+                // (protocol 4: (copyreg.__newobj__, (cls,), state)). The call
+                // handler dispatches the __ap_reduce_ex__ marker below.
+                if o.kind == ap_obj::ObjKind::UserInstance && name == "__reduce_ex__" {
+                    let m = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "__ap_reduce_ex__");
+                    *m.slice_parts.borrow_mut() = vec![obj.clone()];
+                    return Ok(Some(Value::Obj(m)));
                 }
                 // 02.04: exc.with_traceback(None) (assertRaises stores the
                 // exception traceback-free) — v0 tracebacks are stubs, so

@@ -1008,6 +1008,41 @@ pub fn exec_class_def(
             }
         }
     } else {
+        // T2 (pluggy varnames heuristic): CPython's type.__new__ rewrites
+        // the __qualname__ of every plain function in the class namespace to
+        // "<Class>.<name>" — class-body ALIASES (`rep2 = rep`) share the
+        // function object and must be requalified too. pluggy's bound-method
+        // detection keys on the dotted qualname.
+        {
+            let mut keys: Vec<Value> = Vec::new();
+            for (k, v) in ns.items() {
+                if let Value::Obj(fo) = v {
+                    if fo.kind == ap_obj::ObjKind::Function {
+                        let dotted = fo
+                            .attrs
+                            .borrow()
+                            .get(&Value::Str(PyString::new("__qualname__")))
+                            .and_then(|q| match q {
+                                Value::Str(s) => Some(s.as_str().contains('.')),
+                                _ => Some(false),
+                            })
+                            .unwrap_or(false);
+                        if !dotted {
+                            keys.push(k.clone());
+                        }
+                    }
+                }
+            }
+            for k in keys {
+                if let Some(Value::Obj(fo)) = ns.get(&k) {
+                    let fname = fo.name.clone();
+                    let _ = fo.attrs.borrow_mut().set(
+                        Value::Str(PyString::new("__qualname__")),
+                        Value::Str(PyString::new(format!("{}.{}", c.name, fname))),
+                    );
+                }
+            }
+        }
         let t = TypeObject::create(
             c.name.clone(),
             qualname,
@@ -1032,10 +1067,73 @@ pub fn exec_class_def(
                 break;
             }
         }
+        // T2 (pytest capture EncodedFile(io.TextIOWrapper)): propagate the
+        // stream-base marker so instantiate() routes construction through
+        // the native stream ctor.
+        for bt in &base_types {
+            if let Some(Value::Str(b)) =
+                bt.dict.get(&Value::Str(PyString::new("__ap_stream_base__")))
+            {
+                let _ = t.dict.set(
+                    Value::Str(PyString::new("__ap_stream_base__")),
+                    Value::Str(b.clone()),
+                );
+                break;
+            }
+            let bname = bt.name.clone();
+            if matches!(
+                bname.as_str(),
+                "TextIOWrapper"
+                    | "BytesIO"
+                    | "StringIO"
+                    | "BufferedReader"
+                    | "BufferedWriter"
+                    | "FileIO"
+            ) {
+                let _ = t.dict.set(
+                    Value::Str(PyString::new("__ap_stream_base__")),
+                    Value::Str(PyString::new(bname)),
+                );
+                break;
+            }
+        }
         // The RESOLVED metaclass rides the payload (type(C), meta hook lookup).
         *t.metaclass.borrow_mut() = _resolved_meta.clone();
         t
     };
+    // T2 (pluggy varnames): the class-body __qualname__ rewrite must cover
+    // BOTH creation paths (Session has a Python metaclass → meta-new path).
+    // The class dict IS the live namespace; requalify undotted functions.
+    {
+        let mut keys: Vec<Value> = Vec::new();
+        for (k, v) in t.dict.items() {
+            if let Value::Obj(fo) = v {
+                if fo.kind == ap_obj::ObjKind::Function {
+                    let dotted = fo
+                        .attrs
+                        .borrow()
+                        .get(&Value::Str(PyString::new("__qualname__")))
+                        .and_then(|q| match q {
+                            Value::Str(s) => Some(s.as_str().contains('.')),
+                            _ => Some(false),
+                        })
+                        .unwrap_or(false);
+                    if !dotted {
+                        keys.push(k.clone());
+                    }
+                }
+            }
+        }
+        for k in keys {
+            if let Some(Value::Obj(fo)) = t.dict.get(&k) {
+                let fname = fo.name.clone();
+                let _ = fo.attrs.borrow_mut().set(
+                    Value::Str(PyString::new("__qualname__")),
+                    Value::Str(PyString::new(format!("{}.{}", t.name, fname))),
+                );
+            }
+        }
+    }
     // 02.04a fix pass: the creating metaclass rides the payload in BOTH
     // creation paths (the else branch set it inline; the meta __new__ path
     // left it None, breaking isinstance(C, EnumType)-style checks and any
@@ -2949,12 +3047,18 @@ pub fn instantiate(
     // Metaclass __call__ override wraps instantiation (S-03-28).
     // 02.03b: forward the constructor args/kwargs (EnumType.__call__(cls,
     // value, ...) — the old call passed only cls, dropping `value`).
-    if let Some(meta) = t.metaclass.borrow().clone() {
-        if let Some((call, _)) = meta.lookup_with_owner("__call__") {
-            if is_user_function(&call) {
-                let mut full = vec![cls.clone()];
-                full.extend_from_slice(args);
-                return call_value(interp, &module_frame(interp), &call, &full, kwargs);
+    // T2 (pytest NodeMeta._create): a super().__call__ route must SKIP the
+    // metaclass override (CPython type.__call__ allocates directly); the
+    // marker `_ap_supercall` on the thread side marks that route.
+    let skip_meta_call = crate::interp::supercall_flag_take();
+    if !skip_meta_call {
+        if let Some(meta) = t.metaclass.borrow().clone() {
+            if let Some((call, _)) = meta.lookup_with_owner("__call__") {
+                if is_user_function(&call) {
+                    let mut full = vec![cls.clone()];
+                    full.extend_from_slice(args);
+                    return call_value(interp, &module_frame(interp), &call, &full, kwargs);
+                }
             }
         }
     }
@@ -3027,6 +3131,48 @@ pub fn instantiate(
             }
         }
         return Ok(obj);
+    }
+
+    // T2 (pytest capture EncodedFile(io.TextIOWrapper)): a class deriving
+    // from a native stream type constructs via the native base ctor
+    // (CPython TextIOWrapper(buffer, ...)) — marker or MRO base-name check
+    // (the base's generic __init__/__new__ markers make the user-override
+    // detection unreliable here).
+    let stream_base = t
+        .dict
+        .get(&Value::Str(PyString::new("__ap_stream_base__")))
+        .and_then(|v| match v {
+            Value::Str(s) => Some(s.as_str().to_string()),
+            _ => None,
+        })
+        .or_else(|| {
+            t.mro.borrow().iter().find_map(|m| {
+                m.dict
+                    .get(&Value::Str(PyString::new("__ap_stream_base__")))
+                    .and_then(|v| match v {
+                        Value::Str(s) => Some(s.as_str().to_string()),
+                        _ => None,
+                    })
+                    .or_else(|| {
+                        if matches!(
+                            m.name.as_str(),
+                            "TextIOWrapper"
+                                | "BytesIO"
+                                | "StringIO"
+                                | "BufferedReader"
+                                | "BufferedWriter"
+                                | "FileIO"
+                        ) {
+                            Some(m.name.clone())
+                        } else {
+                            None
+                        }
+                    })
+            })
+        });
+    if let Some(sb) = stream_base {
+        let native = builtins::interned_type(interp, &sb);
+        return call_value(interp, &module_frame(interp), &native, args, kwargs);
     }
 
     let new_lookup = t
