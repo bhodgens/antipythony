@@ -946,7 +946,14 @@ impl Parser {
                     self.flags = saved;
                     return Ok(scoped);
                 }
-                _ => unreachable!(),
+                _ => {
+                    let m = if c.is_alphabetic() {
+                        "unknown flag"
+                    } else {
+                        "missing flag"
+                    };
+                    return Err(self.err(m, self.pos - start));
+                }
             };
             add |= bit;
             if (bit & (F_ASCII | F_UNICODE | F_LOCALE)) != 0

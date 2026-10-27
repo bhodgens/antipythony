@@ -152,7 +152,14 @@ pub fn binop(a: &Value, op: BinOp, b: &Value) -> Result<Value, PyException> {
 
 fn to_repeat_count(i: Int) -> Result<usize, PyException> {
     match i.to_i64() {
-        Some(n) if n >= 0 => usize::try_from(n).map_err(|_| memory_error()),
+        Some(n) if n >= 0 => {
+            // CPython raises MemoryError for very large repeats (e.g., [1] * 2**62).
+            // We cap the repeat count to a reasonable bound to avoid allocation panics.
+            if n > 1 << 30 {
+                return Err(memory_error());
+            }
+            usize::try_from(n).map_err(|_| memory_error())
+        }
         Some(_) => Ok(0), // negative repeat → empty
         None => Err(memory_error()),
     }
