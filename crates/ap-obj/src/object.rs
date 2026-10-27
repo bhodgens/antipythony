@@ -104,6 +104,8 @@ pub struct PyObject {
     /// For Function: executor-side closure state slot (defining-frame id
     /// in the interpreter's frame table; the executor owns the typing).
     pub closure_slot: RefCell<Option<u64>>,
+    /// For Function: default argument values, evaluated at DEF time.
+    pub defaults: RefCell<Vec<Value>>,
     /// For UserClass: the class payload (TypeObject: MRO, dict, flags).
     /// Strong handle — the TypeObject never points back at the PyObject.
     pub class_ref: RefCell<Option<Rc<crate::classes::TypeObject>>>,
@@ -138,6 +140,7 @@ impl PyObject {
             repr_text: RefCell::new(None),
             module_ns: RefCell::new(None),
             closure_slot: RefCell::new(None),
+            defaults: RefCell::new(Vec::new()),
             class_ref: RefCell::new(None),
             type_ref: RefCell::new(None),
             descr_kind: RefCell::new(None),
@@ -173,6 +176,7 @@ impl PyObject {
             repr_text: RefCell::new(None),
             module_ns: RefCell::new(None),
             closure_slot: RefCell::new(None),
+            defaults: RefCell::new(Vec::new()),
             class_ref: RefCell::new(None),
             type_ref: RefCell::new(None),
             descr_kind: RefCell::new(None),

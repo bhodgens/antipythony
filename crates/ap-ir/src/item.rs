@@ -53,6 +53,8 @@ pub struct Param {
     /// Default expression, evaluated at def time, left-to-right.
     /// Clause: S-02-7.
     pub default: Option<Expr>,
+    /// Index into the function object's defaults vector (set at def time).
+    pub default_index: Option<usize>,
     /// Annotation, if written (seeds `ty`).
     pub ann: Option<Ann>,
     /// Static type guess from the annotation.

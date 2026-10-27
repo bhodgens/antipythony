@@ -16,7 +16,7 @@
 //!   limit for `str(int)` (default 4300, matching `sys.get_int_max_str_digits`).
 
 use num_bigint::BigInt as Big;
-use num_traits::{Signed, ToPrimitive, Zero};
+use num_traits::{Signed, ToPrimitive, Zero, One};
 use std::cmp::Ordering;
 
 /// Documented conformance constant (C-13 boundary sweep reads THIS value):
@@ -98,6 +98,14 @@ impl Int {
         match self {
             Int::Smi(v) => *v == 0,
             Int::Big(b) => b.is_zero(),
+        }
+    }
+
+    /// True iff the value is exactly one.
+    pub fn is_one(&self) -> bool {
+        match self {
+            Int::Smi(v) => *v == 1,
+            Int::Big(b) => **b == Big::one(),
         }
     }
 
@@ -426,23 +434,38 @@ impl Int {
     }
 
     /// Parse a base-10 int literal with surrounding whitespace and optional
-    /// sign (S-01-13). Underscores are pre-stripped by the parser; this takes
-    /// the raw digit text. Returns `Err(message-literal)` for invalid input —
-    /// the caller wraps in `invalid_int_literal`.
+    /// sign (S-01-13). Underscores are allowed between digits (Python literal
+    /// syntax); leading/trailing/doubled underscores are invalid.
+    /// Returns `Err(())` for invalid input — the caller wraps in
+    /// `invalid_int_literal`.
     pub fn parse_base10(text: &str) -> Result<Int, ()> {
         let t = text.trim_matches(|c: char| {
             c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\x0b' || c == '\x0c'
         });
-        let (neg, digits) = match t.strip_prefix('-') {
+        let (neg, rest) = match t.strip_prefix('-') {
             Some(rest) => (true, rest),
             None => (false, t.strip_prefix('+').unwrap_or(t)),
         };
-        if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        if rest.is_empty() {
+            return Err(());
+        }
+        // Underscores allowed between digits (Python literal syntax carries
+        // into int()); a leading/trailing/doubled underscore is invalid.
+        let cleaned: String = rest.chars().filter(|&c| c != '_').collect();
+        let underscores_ok = !rest.starts_with('_')
+            && !rest.ends_with('_')
+            && !rest.contains("__")
+            && rest.chars().filter(|&c| c == '_').count()
+                == rest.chars().count() - cleaned.chars().count();
+        if !underscores_ok {
+            return Err(());
+        }
+        if cleaned.is_empty() || !cleaned.bytes().all(|b| b.is_ascii_digit()) {
             return Err(());
         }
         // int(str) digit limit (C-14/A-2): caller checks BEFORE calling by
         // counting input digits vs INT_STR_DIGIT_LIMIT — this fn stays pure.
-        match digits.parse::<Big>() {
+        match cleaned.parse::<Big>() {
             Ok(b) => {
                 let b = if neg { -b } else { b };
                 Ok(Int::from_big(b))
