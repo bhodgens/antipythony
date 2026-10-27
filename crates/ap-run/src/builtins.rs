@@ -1028,19 +1028,87 @@ pub fn builtin_pow(args: &[Value]) -> BResult {
                 return Err(raise("ValueError", "pow() 3rd argument cannot be 0"));
             }
             if b.is_negative() {
-                return Err(raise(
-                    "ValueError",
-                    "pow() 2nd argument cannot be negative when 3rd specified",
-                ));
+                // Modular inverse: compute a^b mod m where b < 0
+                // Use extended Euclidean algorithm to find a^(-1) mod m
+                // CPython: raises ValueError "base is not invertible for the given modulus"
+                // when gcd(a, m) != 1
+                let a_abs = a.abs();
+                let m_abs = m.abs();
+                let (gcd_val, _, _) = extended_gcd(&a_abs, &m_abs);
+                if !gcd_val.is_one() {
+                    return Err(raise(
+                        "ValueError",
+                        "base is not invertible for the given modulus",
+                    ));
+                }
+                // Compute modular inverse of a mod m
+                let inv = mod_inverse(&a_abs, &m_abs);
+                // a^(-b) mod m = inv^b mod m
+                let b_pos = b.to_big_for_cmp();
+                let b_pos = -b_pos;
+                let r = mod_pow(&inv, &Int::from_big(b_pos), &m_abs);
+                // Handle sign of result (mod m)
+                Ok(Value::Int(r))
+            } else {
+                let r = mod_pow(&a, &b, &m);
+                Ok(Value::Int(r))
             }
-            let r = mod_pow(&a, &b, &m);
-            Ok(Value::Int(r))
         }
         _ => Err(raise(
             "TypeError",
             "pow expected at least 2 arguments, got 0",
         )),
     }
+}
+
+/// Extended Euclidean Algorithm: returns (gcd, x, y) such that a*x + b*y = gcd
+fn extended_gcd(a: &Int, b: &Int) -> (Int, Int, Int) {
+    use num_bigint::BigInt as Big;
+    use num_integer::Integer;
+    use num_traits::{One, Zero};
+    let mut old_r = a.to_big_for_cmp();
+    let mut r = b.to_big_for_cmp();
+    let mut old_s = Big::one();
+    let mut s = Big::zero();
+    let mut old_t = Big::zero();
+    let mut t = Big::one();
+    while !r.is_zero() {
+        let q = old_r.div_rem(&r).0;
+        let tmp_r = r.clone();
+        r = old_r - &q * &r;
+        old_r = tmp_r;
+        let tmp_s = s.clone();
+        s = old_s - &q * &s;
+        old_s = tmp_s;
+        let tmp_t = t.clone();
+        t = old_t - &q * &t;
+        old_t = tmp_t;
+    }
+    // old_r = gcd, old_s, old_t are coefficients
+    (
+        Int::from_big(old_r),
+        Int::from_big(old_s),
+        Int::from_big(old_t),
+    )
+}
+
+/// Modular inverse: returns a^(-1) mod m using extended Euclidean algorithm
+fn mod_inverse(a: &Int, m: &Int) -> Int {
+    use num_bigint::BigInt as Big;
+    use num_traits::{One, Zero};
+    let (gcd, x, _) = extended_gcd(a, m);
+    if !gcd.is_one() {
+        // This should never happen since we check gcd before calling
+        return Int::Smi(0);
+    }
+    // x is the coefficient such that a*x + m*y = 1
+    // So x mod m is the modular inverse
+    let x_big = x.to_big_for_cmp();
+    let m_big = m.to_big_for_cmp();
+    let inv = x_big % &m_big;
+    // Ensure positive result
+    let inv = if inv < Big::zero() { inv + &m_big } else { inv };
+    Int::from_big(inv)
 }
 
 fn mod_pow(a: &Int, b: &Int, m: &Int) -> Int {
@@ -2303,7 +2371,7 @@ pub fn interned_type(interp: &Interpreter, name: &str) -> Value {
 }
 
 /// Build a function-object Value for the function table id.
-pub fn make_function(fn_id: u32, name: &str, defaults: &[Value]) -> Value {
+pub fn make_function(fn_id: u32, name: &str) -> Value {
     let o = ap_obj::PyObject::with_fn_id(ap_obj::ObjKind::Function, name, fn_id);
     Value::Obj(o)
 }
@@ -3506,7 +3574,7 @@ pub fn builtin_exec(interp: &Interpreter, args: &[Value]) -> crate::EvalResult {
             for it in items.iter() {
                 if let ap_ir::Item::FnDef(f) = it {
                     let id = reg.by_path_lookup(&f.name).unwrap_or(0);
-                    let func = make_function(id, &f.name, &[]);
+                    let func = make_function(id, &f.name);
                     let _ = globals.set(Value::Str(PyString::new(f.name.clone())), func);
                 }
             }
@@ -3523,7 +3591,7 @@ pub fn builtin_exec(interp: &Interpreter, args: &[Value]) -> crate::EvalResult {
                 let rc_interp = interp.rc();
                 let reg = crate::interp::interp_registry(&rc_interp);
                 let id = reg.by_path_lookup(&f.name).unwrap_or(0);
-                let func = make_function(id, &f.name, &[]);
+                let func = make_function(id, &f.name);
                 let _ = interp
                     .globals
                     .set(Value::Str(PyString::new(f.name.clone())), func);

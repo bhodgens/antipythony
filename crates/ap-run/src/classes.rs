@@ -1528,6 +1528,7 @@ pub fn bind_function_owned(f: &Value, receiver: Value, owner: Option<&Rc<TypeRef
                 repr_text: std::cell::RefCell::new(None),
                 module_ns: std::cell::RefCell::new(None),
                 closure_slot: std::cell::RefCell::new(None),
+                defaults: std::cell::RefCell::new(Vec::new()),
                 class_ref: std::cell::RefCell::new(None),
                 type_ref: std::cell::RefCell::new(None),
                 descr_kind: std::cell::RefCell::new(None),

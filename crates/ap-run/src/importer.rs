@@ -470,7 +470,7 @@ fn load_into(
                     continue;
                 }
                 let id = reg.by_path_lookup(&f.name).unwrap_or(0);
-                let func = builtins::make_function(id, &f.name, &[]);
+                let func = builtins::make_function(id, &f.name);
                 // T1 (scrapy fix pass): module-level defs previously had NO
                 // defining-frame registration, so default-arg expressions
                 // referencing module globals (`def f(v=_sentinel)`, vendored
@@ -1098,7 +1098,7 @@ fn module_stmts(
                     continue;
                 }
                 let id = reg.by_path_lookup(&f.name).unwrap_or(0);
-                let func = builtins::make_function(id, &f.name, &[]);
+                let func = builtins::make_function(id, &f.name);
                 // T1 (scrapy fix pass): register the defining frame so
                 // default-arg expressions resolve against THIS module's
                 // globals (`def f(v=_sentinel)` — vendored traceback.py),

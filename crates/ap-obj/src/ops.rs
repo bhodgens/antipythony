@@ -448,33 +448,38 @@ fn unsupported_binop(a: &Value, op: BinOp, b: &Value) -> PyException {
         a,
         Value::Str(_) | Value::Bytes(_) | Value::List(_) | Value::Tuple(_)
     );
+    // For Value::Obj, use the object's actual class name if available
+    let a_name = match a {
+        Value::Obj(o) => o.name.as_str(),
+        _ => a.type_name(),
+    };
+    let b_name = match b {
+        Value::Obj(o) => o.name.as_str(),
+        _ => b.type_name(),
+    };
     let msg = match op {
         BinOp::Add if !is_sequence => {
             // Numeric left operand: CPython's generic message (c027 probe
             // `1 + "x"`); sequence text only applies to sequences.
             format!(
                 "unsupported operand type(s) for {}: '{}' and '{}'",
-                "+",
-                a.type_name(),
-                b.type_name()
+                "+", a_name, b_name
             )
         }
         BinOp::Add => {
-            if a.type_name() == "bytes" {
+            if a_name == "bytes" {
                 // bytes.__add__ text differs from str's (probed V015).
-                format!("can't concat {} to bytes", b.type_name())
+                format!("can't concat {} to bytes", b_name)
             } else {
                 format!(
                     "can only concatenate {} (not \"{}\") to {}",
-                    a.type_name(),
-                    b.type_name(),
-                    a.type_name()
+                    a_name, b_name, a_name
                 )
             }
         }
         BinOp::Mul => format!(
             "can't multiply sequence by non-int of type '{}'",
-            b.type_name()
+            b_name
         ),
         _ => format!(
             "unsupported operand type(s) for {}: '{}' and '{}'",
@@ -492,7 +497,7 @@ fn unsupported_binop(a: &Value, op: BinOp, b: &Value) -> PyException {
                 BinOp::BitOr => "|",
                 BinOp::BitXor => "^",
             },
-            a.type_name(),
+            a_name,
             b.type_name()
         ),
     };

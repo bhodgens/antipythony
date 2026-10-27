@@ -378,7 +378,7 @@ fn exec_module(
                     continue;
                 }
                 let id = reg.by_path.get(&f.name).copied().unwrap_or(0);
-                let func = builtins::make_function(id, &f.name, &[]);
+                let func = builtins::make_function(id, &f.name);
                 // Module bindings live in the GLOBALS dict (BUG-A fix): the
                 // module frame keeps `locals` empty and every nested frame
                 // resolves globals through frame.globals — store_local would
@@ -935,7 +935,7 @@ fn exec_stmt(
                 qualname: qual,
                 globals: frame.globals.clone(),
             });
-            let func = builtins::make_function(id, &f.name, &[]);
+            let func = builtins::make_function(id, &f.name);
             // Defaults + closures evaluate in the DEFINING frame (S-02-7).
             interp
                 .defining_frames
