@@ -231,6 +231,11 @@ pub struct FnRegistry {
     scopes: &'static ScopeInfoModule,
     pub(crate) entries: Vec<FnEntry>,
     by_path: HashMap<String, u32>,
+    /// T2-perf: memoized richest-wins scope path → ScopeInfo. Interior
+    /// mutable so scope_of can populate lazily; lives INSIDE the registry
+    /// (a thread_local keyed by pointer aliased dropped registries after
+    /// extend_current rebuilt them — stale maps produced spurious NameErrors).
+    scope_cache: RefCell<HashMap<String, &'static ap_parse::ScopeInfo>>,
 }
 
 impl FnRegistry {
@@ -241,6 +246,7 @@ impl FnRegistry {
             scopes: EMPTY.get_or_init(ScopeInfoModule::default),
             entries: Vec::new(),
             by_path: HashMap::new(),
+            scope_cache: RefCell::new(HashMap::new()),
         }
     }
 
@@ -267,59 +273,53 @@ impl FnRegistry {
             scopes,
             entries,
             by_path,
+            scope_cache: RefCell::new(HashMap::new()),
         }
     }
 
     pub(crate) fn scope_of(&self, path: &str) -> Option<&'static ap_parse::ScopeInfo> {
         // T2-perf: O(n) scan with a String join per scope made big modules
         // (pytest python.py, pluggy) quadratic on every function-scope
-        // lookup — the 100%-CPU hang in pytest.main collection. Memoize
-        // richest-wins resolution per path (OnceLock per registry is not
-        // available on &self without interior mutability; cache in a
-        // thread_local keyed by registry identity is overkill — instead
-        // precompute the map on first use via a leaked Box, since a run is
-        // a process and the registry outlives it).
+        // lookup - the 100%-CPU hang in pytest.main collection. Memoize
+        // richest-wins per path INSIDE the registry (interior mutability).
         // Fast path: single-scope registries (most modules).
         if self.scopes.scopes.len() <= 1 {
-            return self.scopes.scopes.first().filter(|s| {
-                s.path.join(".").as_str() == path
-            });
+            return self
+                .scopes
+                .scopes
+                .first()
+                .filter(|s| s.path.join(".").as_str() == path);
         }
-        thread_local! {
-            static SCOPE_CACHE: RefCell<HashMap<*const FnRegistry, HashMap<String, &'static ap_parse::ScopeInfo>>> =
-                RefCell::new(HashMap::new());
+        if let Some(hit) = self.scope_cache.borrow().get(path) {
+            return Some(*hit);
         }
-        let key = self as *const FnRegistry;
-        SCOPE_CACHE.with(|c| {
-            let mut cache = c.borrow_mut();
-            let entry = cache.entry(key).or_insert_with(|| {
-                // T1-d: after cross-module merging, several entries can share
-                // a path; prefer the RICHEST (cells/frees content) so closure
-                // wiring never binds against an empty shadow.
-                let mut m: HashMap<String, &'static ap_parse::ScopeInfo> = HashMap::new();
-                for s in self.scopes.scopes.iter() {
-                    let p = s.path.join(".");
-                    let sp = unsafe {
-                        std::mem::transmute::<&ap_parse::ScopeInfo, &'static ap_parse::ScopeInfo>(s)
-                    };
-                    match m.get(&p) {
-                        None => {
-                            m.insert(p, sp);
-                        }
-                        Some(cur) => {
-                            if cur.cells.is_empty()
-                                && cur.frees.is_empty()
-                                && (!s.cells.is_empty() || !s.frees.is_empty())
-                            {
-                                m.insert(p, sp);
-                            }
-                        }
+        // T1-d: after cross-module merging, several entries can share a
+        // path; prefer the RICHEST (cells/frees content) so closure wiring
+        // never binds against an empty shadow.
+        let mut best: Option<&'static ap_parse::ScopeInfo> = None;
+        for s in self.scopes.scopes.iter() {
+            if s.path.join(".").as_str() != path {
+                continue;
+            }
+            let sp = unsafe {
+                std::mem::transmute::<&ap_parse::ScopeInfo, &'static ap_parse::ScopeInfo>(s)
+            };
+            match best {
+                None => best = Some(sp),
+                Some(cur) => {
+                    if cur.cells.is_empty()
+                        && cur.frees.is_empty()
+                        && (!s.cells.is_empty() || !s.frees.is_empty())
+                    {
+                        best = Some(sp);
                     }
                 }
-                m
-            });
-            entry.get(path).copied()
-        })
+            }
+        }
+        if let Some(sp) = best {
+            self.scope_cache.borrow_mut().insert(path.to_string(), sp);
+        }
+        best
     }
 
     /// 02.04a: module-level fn-id lookup for an IMPORTED module's defs
@@ -364,6 +364,7 @@ impl FnRegistry {
             scopes: merge_scopes_static(cur.scopes, leaked),
             entries,
             by_path,
+            scope_cache: RefCell::new(HashMap::new()),
         });
         // Publish: fn_entry resolves through interp.registry, so imported
         // modules' defs must LIVE there (not just on the local handle).
