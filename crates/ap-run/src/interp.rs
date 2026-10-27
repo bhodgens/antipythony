@@ -622,6 +622,7 @@ fn exec_stmt(
             .map(|_| StmtOut::Next)
         }
         Stmt::While(cond, body, orelse) => {
+            let mut broke = false;
             loop {
                 let c = eval_expr(interp, frame, cond, reg)?;
                 if !truthy(interp, &c)? {
@@ -629,15 +630,24 @@ fn exec_stmt(
                 }
                 match run_loop_body(interp, frame, body, reg)? {
                     LoopOut::Normal | LoopOut::Continue => continue,
-                    LoopOut::Break => break,
+                    LoopOut::Break => {
+                        broke = true;
+                        break;
+                    }
                     LoopOut::Escape(f) => return Ok(StmtOut::Unwind(f)),
                 }
             }
-            exec_block(interp, frame, orelse, reg).map(|_| StmtOut::Next)
+            // Execute orelse ONLY if loop completed normally (not via break)
+            if !broke {
+                exec_block(interp, frame, orelse, reg).map(|_| StmtOut::Next)
+            } else {
+                Ok(StmtOut::Next)
+            }
         }
         Stmt::For(target, iter, body, orelse) => {
             let iterable = eval_expr(interp, frame, iter, reg)?;
             let id = register_iter(interp, &iterable)?;
+            let mut broke = false;
             loop {
                 let next = match pull_iter(interp, id)? {
                     Some(v) => v,
@@ -646,11 +656,19 @@ fn exec_stmt(
                 assign_target(interp, frame, target, next, reg)?;
                 match run_loop_body(interp, frame, body, reg)? {
                     LoopOut::Normal | LoopOut::Continue => continue,
-                    LoopOut::Break => break,
+                    LoopOut::Break => {
+                        broke = true;
+                        break;
+                    }
                     LoopOut::Escape(f) => return Ok(StmtOut::Unwind(f)),
                 }
             }
-            exec_block(interp, frame, orelse, reg).map(|_| StmtOut::Next)
+            // Execute orelse ONLY if loop completed normally (not via break)
+            if !broke {
+                exec_block(interp, frame, orelse, reg).map(|_| StmtOut::Next)
+            } else {
+                Ok(StmtOut::Next)
+            }
         }
         Stmt::With(items, body) => {
             // Context-manager protocol (S-03-26/S-02-40..42): __enter__ then
