@@ -7111,6 +7111,45 @@ fn get_or_make_module_cached(name: &str) -> Option<Value> {
 pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Option<BResult> {
     let r: BResult = (|| -> BResult {
         match name {
+            // T2 (pytest collection): bound dunders/methods on the scandir
+            // surfaces (receiver parked in the BoundMethod / attrs).
+            "ScandirIterator.__enter__" | "ScandirIterator.__iter__" => {
+                let recv = match args.first() {
+                    Some(Value::Obj(o)) => o.clone(),
+                    _ => return Err(raise("TypeError", "unbound ScandirIterator method")),
+                };
+                let entries = recv.slice_parts.borrow().clone();
+                Ok(list(entries))
+            }
+            "ScandirIterator.__exit__" => Ok(Value::Bool(false)),
+            "DirEntry.is_file" => {
+                let recv = match args.first() {
+                    Some(Value::Obj(o)) => o.clone(),
+                    _ => return Err(raise("TypeError", "unbound DirEntry method")),
+                };
+                let f = recv
+                    .attrs
+                    .borrow()
+                    .get(&s("<is_file>"))
+                    .map(|v| v.is_truthy())
+                    .unwrap_or(false);
+                Ok(Value::Bool(f))
+            }
+            "DirEntry.is_dir" => {
+                let recv = match args.first() {
+                    Some(Value::Obj(o)) => o.clone(),
+                    _ => return Err(raise("TypeError", "unbound DirEntry method")),
+                };
+                let d = recv
+                    .attrs
+                    .borrow()
+                    .get(&s("<is_dir>"))
+                    .map(|v| v.is_truthy())
+                    .unwrap_or(false);
+                Ok(Value::Bool(d))
+            }
+            "DirEntry.is_symlink" => Ok(Value::Bool(false)),
+            "DirEntry.stat" => Err(raise("OSError", "DirEntry.stat not supported")),
             "getenv" => {
                 let k = str_arg(required(args, "getenv")?, "getenv")?;
                 let dflt = args.get(1).cloned().unwrap_or(Value::None);
@@ -7190,6 +7229,41 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                     out.push(s(e.file_name().to_string_lossy().to_string()));
                 }
                 Ok(list(out))
+            }
+            // T2 (pytest collection): os.scandir(path) — CPython returns a
+            // ScandirIterator (context manager) of os.DirEntry objects.
+            // pytest's _pytest.pathlib.scandir does
+            // `with os.scandir(path) as it: for entry in it: ...` and uses
+            // entry.name / entry.is_file() / entry.is_dir() / entry.path.
+            "scandir" => {
+                let path = match args.first() {
+                    Some(Value::Str(x)) => x.as_str().to_string(),
+                    _ => ".".to_string(),
+                };
+                let rd = std::fs::read_dir(&path).map_err(|e| os_error(&path, &e))?;
+                let mut entries: Vec<Value> = Vec::new();
+                for e in rd {
+                    let e = e.map_err(|e| os_error(&path, &e))?;
+                    let fname = e.file_name().to_string_lossy().to_string();
+                    let full = format!("{}/{}", path.trim_end_matches('/'), fname);
+                    let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                    let is_file = e.file_type().map(|t| t.is_file()).unwrap_or(false);
+                    let entry = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "os.DirEntry");
+                    {
+                        let mut a = entry.attrs.borrow_mut();
+                        let _ = a.set(s("name"), s(fname.clone()));
+                        let _ = a.set(s("path"), s(full));
+                        let _ = a.set(s("<is_dir>"), Value::Bool(is_dir));
+                        let _ = a.set(s("<is_file>"), Value::Bool(is_file));
+                    }
+                    *entry.slice_parts.borrow_mut() = Vec::new();
+                    entries.push(Value::Obj(entry));
+                }
+                // ScandirIterator: a context-manager list surrogate. Store
+                // the entries; dunders dispatch via native_attr markers.
+                let it = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "os.ScandirIterator");
+                *it.slice_parts.borrow_mut() = entries;
+                Ok(Value::Obj(it))
             }
             "getpid" => Ok(i(std::process::id() as i64)),
             // 02.08-c: os.waitpid stub (subprocess.py import surface; the v1
@@ -12980,6 +13054,42 @@ pub fn call_native_object(
 /// native-type instances, hexdigest objects). Called from the attr_get hook.
 pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
     if let Value::Obj(o) = obj {
+        // T2 (pytest collection): os.ScandirIterator / os.DirEntry surface.
+        if o.kind == ap_obj::ObjKind::Opaque && o.name == "os.ScandirIterator" {
+            match name {
+                // `with os.scandir(p) as it:` — CPython's __enter__ returns
+                // the iterator itself; iteration then walks the entries.
+                "__enter__" | "__iter__" | "__exit__" => {
+                    let bm = PyObject::with_self(
+                        ap_obj::ObjKind::BoundMethod,
+                        format!("os.ScandirIterator.{name}"),
+                        obj.clone(),
+                    );
+                    *bm.func.borrow_mut() = Some(marker(&format!("os.ScandirIterator.{name}")));
+                    return Some(Value::Obj(bm));
+                }
+                _ => {}
+            }
+            return None;
+        }
+        if o.kind == ap_obj::ObjKind::Opaque && o.name == "os.DirEntry" {
+            if matches!(name, "is_file" | "is_dir" | "is_symlink" | "stat") {
+                let bm = PyObject::with_self(
+                    ap_obj::ObjKind::BoundMethod,
+                    format!("os.DirEntry.{name}"),
+                    obj.clone(),
+                );
+                *bm.func.borrow_mut() = Some(marker(&format!("os.DirEntry.{name}")));
+                return Some(Value::Obj(bm));
+            }
+            if let Some(v) = o.attrs.borrow().get(&s(name)) {
+                if !name.starts_with('<') {
+                    return Some(v.clone());
+                }
+            }
+            return None;
+        }
+
         // s037: incremental codec stub — decode buffers bytes (chunked
         // UTF-8 decode), encode buffers chars (final flush).
         if o.kind == ap_obj::ObjKind::Opaque && o.name == "_codecs.Incremental" {

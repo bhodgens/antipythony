@@ -583,7 +583,16 @@ pub fn builtin_list(args: &[Value]) -> BResult {
                         };
                         let mut items = Vec::new();
                         loop {
-                            let r = if interp.generators.borrow().contains_key(&id) {
+                            // T2 fix: a GenExpr REMOVES its registry entry on
+                            // the first pull (materializes to
+                            // interp.iterators[id]); the old
+                            // contains_key(generators) guard stopped the drain
+                            // after one item. Keep pulling while either the
+                            // generator entry or the materialized iterator
+                            // still exists.
+                            let alive = interp.generators.borrow().contains_key(&id)
+                                || interp.iterators.borrow().contains_key(&id);
+                            let r = if alive {
                                 let rc = interp.rc();
                                 crate::interp::gen_pull_public(&rc, id)
                             } else {
@@ -926,6 +935,16 @@ pub fn builtin_isinstance(args: &[Value]) -> BResult {
 }
 
 fn check_isinstance(v: &Value, t: &Value) -> Result<Value, Flow> {
+    // T2 (inspect.isclass): an instance is never an instance of `type`.
+    // Only UserClass/Type subjects can be. Guard here too — the
+    // class_isinstance path doesn't cover every dispatch (hook callbacks).
+    if matches!(t, Value::Obj(to) if to.kind == ap_obj::ObjKind::Type && to.name == "type") {
+        let is_class_subject = matches!(v, Value::Obj(vo)
+            if vo.kind == ap_obj::ObjKind::UserClass || vo.kind == ap_obj::ObjKind::Type);
+        if !is_class_subject {
+            return Ok(Value::Bool(false));
+        }
+    }
     match t {
         Value::Tuple(parts) => {
             for p in &parts.0 {
@@ -1753,6 +1772,14 @@ pub fn builtin_map(interp: &Interpreter, args: &[Value]) -> BResult {
     let f = args[0].clone();
     let mut cols: Vec<Vec<Value>> = Vec::new();
     for a in &args[1..] {
+        // T2 fix: a def-generator argument (glob's selector walk, pytest
+        // collection) must drain through the lazy gen_pull path — the anchor
+        // Seq that iterable_of installs for def-generators stays EMPTY and
+        // collect() would return zero items.
+        if let Some(drain) = crate::interp::drain_generator_public(a) {
+            cols.push(drain?);
+            continue;
+        }
         let it = crate::interp::iterable_of_public(a)?;
         cols.push(crate::iter::collect(&it));
     }
@@ -2226,6 +2253,10 @@ pub fn make_sys_module(interp: &Interpreter) -> Value {
         builtin_marker("sys.getrecursionlimit"),
     );
     let _ = ns.set(
+        Value::Str(PyString::new("audit")),
+        builtin_marker("sys.audit"),
+    );
+    let _ = ns.set(
         Value::Str(PyString::new("setrecursionlimit")),
         builtin_marker("sys.setrecursionlimit"),
     );
@@ -2400,6 +2431,10 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
         }
         // T1 (vendored dataclasses): inert (see make_sys_module).
         "_clear_type_descriptors" => Some(Ok(Value::None)),
+        // T2 (pytest collection): CPython audit hooks — no-op sink; the
+        // vendored glob/pickle/subprocess paths call sys.audit(...) and
+        // must not AttributeError mid-collection.
+        "audit" => Some(Ok(Value::None)),
         // 02.08-full part 1: name-surface fns.
         "intern" => {
             // Canonical-instance table keyed by content: intern(a + "") is

@@ -2069,6 +2069,40 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
             if xc.is_subclass(&tc) {
                 return Ok(true);
             }
+            // T2 (pluggy _static_hook_attr): CPython resolves
+            // isinstance(x, C) as type(C).__instancecheck__(C, x) — the
+            // hook lives on the TARGET's metaclass, never the subject's.
+            // The old arm consulted the SUBJECT class's metaclass, whose
+            // chain (NodeMeta/ABCMeta ⊂ type) subclass-matched every
+            // user-class target: isinstance(session_instance,
+            // AnyUserClass) answered True and pluggy treated Session
+            // instances as classes (unbound hookimpls → "missing 1
+            // required positional argument: 'self'"). For a plain
+            // instance subject with no MRO match, CPython answers False;
+            // a target with a custom metaclass hook is handled via
+            // class_isinstance's target-metaclass arm.
+            if matches!(x, Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance) {
+                // Target metaclass __instancecheck__ (proper spelling):
+                // only when the TARGET carries a custom hook.
+                if let Some(meta) = tc.metaclass.borrow().clone() {
+                    if !Rc::ptr_eq(&meta, &type_class(interp)) {
+                        if let Some(hook) = meta.lookup("__instancecheck__") {
+                            if matches!(&hook, Value::Obj(f) if f.kind == ap_obj::ObjKind::Function)
+                            {
+                                let interp_rc = crate::interp::current_interp_handle();
+                                let r = crate::interp::call_value_pub(
+                                    &interp_rc,
+                                    &hook,
+                                    &[t.clone(), x.clone()],
+                                    &[],
+                                )?;
+                                return Ok(r.is_truthy());
+                            }
+                        }
+                    }
+                }
+                return Ok(false);
+            }
             // Custom metaclass __instancecheck__ (S-03-31; c033 Weird).
             if let Some(meta) = xc.metaclass.borrow().clone() {
                 if let Some(hook) = meta.lookup("__instancecheck__") {
@@ -2236,6 +2270,21 @@ pub fn special_lookup(interp: &Interpreter, v: &Value, name: &str) -> Option<(Va
             // owner type is unused by the marker dispatch path
             Some((Value::Obj(marker), object_class(interp)))
         }
+        // T2 (pytest collection): os.ScandirIterator iterates its cached
+        // entries (CPython: scandir's iterator; our __iter__ marker yields
+        // the stored list via the call_os surface).
+        Value::Obj(o)
+            if o.kind == ap_obj::ObjKind::Opaque
+                && o.name == "os.ScandirIterator"
+                && name == "__iter__" =>
+        {
+            let marker = ap_obj::PyObject::new(
+                ap_obj::ObjKind::BuiltinFn,
+                "os.ScandirIterator.__iter__",
+            );
+            *marker.slice_parts.borrow_mut() = vec![v.clone()];
+            Some((Value::Obj(marker), object_class(interp)))
+        }
         _ => None,
     }
 }
@@ -2319,6 +2368,15 @@ fn instance_attr(
         if t.is_slot(name) {
             return Ok(v);
         }
+    }
+    // T2 (pytest exit codes): SystemExit instances answer .code from the
+    // constructor arg (CPython: SystemExit() -> None, SystemExit(n) -> n).
+    if t.flags.is_exception && name == "code" && t.name == "SystemExit" {
+        let argvals: Vec<Value> = match o.attrs.borrow().get(&Value::Str(PyString::new("args"))) {
+            Some(Value::Tuple(t)) => t.0.clone(),
+            _ => o.args.borrow().clone(),
+        };
+        return Ok(argvals.into_iter().next().unwrap_or(Value::None));
     }
     // T1-d (twisted waker wakeUp): OSError instances answer .errno/
     // .strerror/.filename from the constructor args (errno first).

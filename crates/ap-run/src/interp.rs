@@ -271,35 +271,55 @@ impl FnRegistry {
     }
 
     pub(crate) fn scope_of(&self, path: &str) -> Option<&'static ap_parse::ScopeInfo> {
-        // T1-d: after cross-module merging, several entries can share a
-        // path; prefer the RICHEST (cells/frees content) so closure wiring
-        // never binds against an empty shadow.
-        let mut best: Option<&'static ap_parse::ScopeInfo> = None;
-        for s in self.scopes.scopes.iter() {
-            if s.path.join(".").as_str() != path {
-                continue;
-            }
-            match best {
-                None => best = Some(s),
-                Some(cur) => {
-                    if cur.cells.is_empty()
-                        && cur.frees.is_empty()
-                        && (!s.cells.is_empty() || !s.frees.is_empty())
-                    {
-                        best = Some(s);
+        // T2-perf: O(n) scan with a String join per scope made big modules
+        // (pytest python.py, pluggy) quadratic on every function-scope
+        // lookup — the 100%-CPU hang in pytest.main collection. Memoize
+        // richest-wins resolution per path (OnceLock per registry is not
+        // available on &self without interior mutability; cache in a
+        // thread_local keyed by registry identity is overkill — instead
+        // precompute the map on first use via a leaked Box, since a run is
+        // a process and the registry outlives it).
+        // Fast path: single-scope registries (most modules).
+        if self.scopes.scopes.len() <= 1 {
+            return self.scopes.scopes.first().filter(|s| {
+                s.path.join(".").as_str() == path
+            });
+        }
+        thread_local! {
+            static SCOPE_CACHE: RefCell<HashMap<*const FnRegistry, HashMap<String, &'static ap_parse::ScopeInfo>>> =
+                RefCell::new(HashMap::new());
+        }
+        let key = self as *const FnRegistry;
+        SCOPE_CACHE.with(|c| {
+            let mut cache = c.borrow_mut();
+            let entry = cache.entry(key).or_insert_with(|| {
+                // T1-d: after cross-module merging, several entries can share
+                // a path; prefer the RICHEST (cells/frees content) so closure
+                // wiring never binds against an empty shadow.
+                let mut m: HashMap<String, &'static ap_parse::ScopeInfo> = HashMap::new();
+                for s in self.scopes.scopes.iter() {
+                    let p = s.path.join(".");
+                    let sp = unsafe {
+                        std::mem::transmute::<&ap_parse::ScopeInfo, &'static ap_parse::ScopeInfo>(s)
+                    };
+                    match m.get(&p) {
+                        None => {
+                            m.insert(p, sp);
+                        }
+                        Some(cur) => {
+                            if cur.cells.is_empty()
+                                && cur.frees.is_empty()
+                                && (!s.cells.is_empty() || !s.frees.is_empty())
+                            {
+                                m.insert(p, sp);
+                            }
+                        }
                     }
                 }
-            }
-        }
-        return best;
-        #[allow(unreachable_code)]
-        self.scopes
-            .scopes
-            .iter()
-            .find(|s| s.path.join(".").as_str() == path)
-            .map(|s| unsafe {
-                std::mem::transmute::<&ap_parse::ScopeInfo, &'static ap_parse::ScopeInfo>(s)
-            })
+                m
+            });
+            entry.get(path).copied()
+        })
     }
 
     /// 02.04a: module-level fn-id lookup for an IMPORTED module's defs
@@ -2832,6 +2852,15 @@ fn contains(a: &Value, b: &Value) -> Result<bool, Flow> {
                 {
                     return Ok(true);
                 }
+                // T2 (pytest _initialpaths frozenset): members whose __eq__
+                // is user-level (pathlib.Path exec'd from source) are missed
+                // by the hash-bucket values_eq probe in PySet::contains —
+                // ap-obj has no interpreter to call user __eq__. Fall back
+                // to the rich compare per element (CPython does the same
+                // via PyObject_RichCompare in set_contains).
+                if eval_compare(&e, CmpOp::Eq, a)? {
+                    return Ok(true);
+                }
             }
             s.contains(a).map_err(Flow::from_py)
         }
@@ -4786,6 +4815,14 @@ fn call_type_ctor(
     args: &[Value],
     kwargs: &[(String, Value)],
 ) -> EResult {
+    // T2 (pytest Scope.from_user): `@classmethod` in a class body calls the
+    // interned 'classmethod'/'staticmethod' Type — produce a REAL
+    // descriptor payload (make_descr) so _is_descriptor sees __get__ and
+    // class access binds properly. The previous fallthrough made the bare
+    // instance indistinguishable from an enum member.
+    if name == "classmethod" || name == "staticmethod" {
+        return make_descr(interp, name, args);
+    }
     // 02.08-c fix: string.Formatter / string.Template — the native string
     // module surface interned name-Types (logging imports Formatter at module
     // scope and instantiates it). v0 ctor: a Namespace instance whose methods
@@ -5818,7 +5855,13 @@ fn gen_materialize(interp: &Rc<Interpreter>, id: u64) -> Result<(), Flow> {
         return Ok(());
     };
     let mut sink = Vec::new();
-    run_comp_clauses_into(interp, &defining, &elt, None, &clauses, &reg, &mut sink)?;
+    // T2 fix: yields are captured through the interpreter's active_gen_sink
+    // (same as gen_pull's GenExpr arm). Without this wrapper the genexp's
+    // yields went nowhere and materialized an EMPTY Seq — map/list/tuple over
+    // a not-yet-started genexp all saw zero items.
+    run_gen_body(interp, &defining, |cf| {
+        run_comp_clauses_into(interp, cf, &elt, None, &clauses, &reg, &mut sink)
+    })?;
     let it = PyIterator::new(IterState::Seq(sink, 0));
     interp.iterators.borrow_mut().insert(id, it);
     Ok(())
@@ -6060,6 +6103,13 @@ fn iterable_of(v: &Value) -> Result<Gc<PyIterator>, Flow> {
                 let items: Vec<Value> = l.items().to_vec();
                 return Ok(PyIterator::new(IterState::Seq(items, 0)));
             }
+        }
+        // T2 (pytest collection): os.ScandirIterator parks its entries in
+        // slice_parts (call_os "ScandirIterator.__iter__" returns the same
+        // list); CPython iterates scandir's live iterator.
+        if o.kind == ap_obj::ObjKind::Opaque && o.name == "os.ScandirIterator" {
+            let entries: Vec<Value> = o.slice_parts.borrow().clone();
+            return Ok(PyIterator::new(IterState::Seq(entries, 0)));
         }
     }
     // 02.03 user instances: __iter__ / legacy __getitem__ (S-03-24).
@@ -7525,6 +7575,27 @@ fn class_isinstance(interp: &Rc<Interpreter>, args: &[Value]) -> EResult {
     let t = args
         .get(1)
         .ok_or_else(|| raise("TypeError", "isinstance expected 2 arguments, got 1"))?;
+    // T2 (pluggy _static_hook_attr / inspect.isclass): an INSTANCE is never
+    // an instance of `type` — CPython isinstance(x, type) is True only for
+    // classes themselves. Our metaclass-aware class-of-value walk made a
+    // NodeMeta instance answer True (its class chain includes `type`),
+    // breaking inspect.isclass(instance) → pluggy treated Session instances
+    // as classes and called hookimpls unbound.
+    // The target can be the interned Type `type` OR a UserClass spelled
+    // `type` (ABC-meta runs rebind the name surface), so match both.
+    if matches!(t, Value::Obj(to) if to.name == "type"
+        && (to.kind == ap_obj::ObjKind::Type || to.kind == ap_obj::ObjKind::UserClass))
+    {
+        let is_class_subject = matches!(v, Value::Obj(vo)
+            if vo.kind == ap_obj::ObjKind::UserClass || vo.kind == ap_obj::ObjKind::Type);
+        if std::env::var("APX_ISIDBG").is_ok() {
+            eprintln!("[ISIDBG] type-subject: {} is_class={}",
+                crate::classes::display_type_name(v), is_class_subject);
+        }
+        if !is_class_subject {
+            return Ok(Value::Bool(false));
+        }
+    }
     // Custom metaclass __instancecheck__ (S-03-31; c033 Weird) — consulted
     // before the structural check, for any subject.
     if let Value::Obj(to) = t {
@@ -8453,6 +8524,25 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
             if let Some(f) = o.func.borrow().clone() {
                 return attr_get(_interp, &f, name);
             }
+        }
+    }
+    // T2 (enum _is_descriptor): classmethod/staticmethod Descriptor
+    // instances must answer the descriptor protocol dunders so
+    // hasattr(cm, '__get__') is True (enum bodies skip them as members).
+    if let Value::Obj(o) = obj {
+        if o.kind == ap_obj::ObjKind::Descriptor
+            && matches!(
+                o.descr_kind.borrow().as_deref(),
+                Some("classmethod") | Some("staticmethod") | Some("property")
+            )
+            && matches!(name, "__get__" | "__set__" | "__delete__")
+        {
+            let m = ap_obj::PyObject::new(
+                ap_obj::ObjKind::BuiltinFn,
+                &format!("__ap_descr_{}__", name.trim_matches('_')),
+            );
+            *m.slice_parts.borrow_mut() = vec![obj.clone()];
+            return Ok(Some(Value::Obj(m)));
         }
     }
     if let Some(v) = builtins_modules::native_attr(obj, name) {
@@ -9386,6 +9476,11 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
             }
             ap_obj::ObjKind::Exception => match name {
                 "args" => Ok(Some(Value::Tuple(Gc::new(Tuple(o.args.borrow().clone()))))),
+                // T2 (pytest exit codes): SystemExit.code — the constructor
+                // arg; SystemExit() -> None (CPython exact).
+                "code" if o.name == "SystemExit" => Ok(Some(
+                    o.args.borrow().first().cloned().unwrap_or(Value::None),
+                )),
                 // PEP-342 (S-02-22): StopIteration.value — the generator's
                 // return value rides as the single constructor arg.
                 "value" if o.name == "StopIteration" => Ok(Some(
@@ -10190,7 +10285,12 @@ pub fn drain_generator_public(v: &Value) -> Option<Result<Vec<Value>, Flow>> {
     let interp = current_interp_for_bindings();
     let mut items = Vec::new();
     Some(loop {
-        let r = if interp.generators.borrow().contains_key(&id) {
+        // T2 fix: same as builtin_list — a GenExpr removes its registry entry
+        // on first pull (materialized into interp.iterators[id]); keep
+        // draining while either surface still exists.
+        let alive = interp.generators.borrow().contains_key(&id)
+            || interp.iterators.borrow().contains_key(&id);
+        let r = if alive {
             gen_pull_public(&interp, id)
         } else {
             break Ok(items);
