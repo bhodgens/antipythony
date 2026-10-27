@@ -2303,7 +2303,7 @@ pub fn interned_type(interp: &Interpreter, name: &str) -> Value {
 }
 
 /// Build a function-object Value for the function table id.
-pub fn make_function(fn_id: u32, name: &str) -> Value {
+pub fn make_function(fn_id: u32, name: &str, defaults: &[Value]) -> Value {
     let o = ap_obj::PyObject::with_fn_id(ap_obj::ObjKind::Function, name, fn_id);
     Value::Obj(o)
 }
@@ -3506,7 +3506,7 @@ pub fn builtin_exec(interp: &Interpreter, args: &[Value]) -> crate::EvalResult {
             for it in items.iter() {
                 if let ap_ir::Item::FnDef(f) = it {
                     let id = reg.by_path_lookup(&f.name).unwrap_or(0);
-                    let func = make_function(id, &f.name);
+                    let func = make_function(id, &f.name, &[]);
                     let _ = globals.set(Value::Str(PyString::new(f.name.clone())), func);
                 }
             }
@@ -3523,7 +3523,7 @@ pub fn builtin_exec(interp: &Interpreter, args: &[Value]) -> crate::EvalResult {
                 let rc_interp = interp.rc();
                 let reg = crate::interp::interp_registry(&rc_interp);
                 let id = reg.by_path_lookup(&f.name).unwrap_or(0);
-                let func = make_function(id, &f.name);
+                let func = make_function(id, &f.name, &[]);
                 let _ = interp
                     .globals
                     .set(Value::Str(PyString::new(f.name.clone())), func);
