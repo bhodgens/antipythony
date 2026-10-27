@@ -47,6 +47,10 @@ pub fn parse(source: &str) -> Result<ModuleAst, ParseError> {
         .try_into_module()
         .expect("module mode always parses to ModModule")
         .into_syntax();
+
+    // Post-parse validation for diagnostic gaps (wave-7 frontend audit)
+    validate_module(&module, source)?;
+
     Ok(ModuleAst {
         module,
         source: source.to_string(),
@@ -221,6 +225,252 @@ impl fmt::Display for ParseError {
 }
 
 impl std::error::Error for ParseError {}
+
+/// Post-parse validation to catch semantic syntax errors that ruff's parser
+/// doesn't flag. These produce [`ParseError`] in the T-01 contract format.
+fn validate_module(module: &ModModule, source: &str) -> Result<(), ParseError> {
+    // Check for `return`/`yield` at module level
+    for stmt in &module.body {
+        match stmt {
+            ruff_python_ast::Stmt::Return(r) => {
+                let offset = usize::try_from(u32::from(r.range().start())).unwrap_or(0);
+                return Err(error_at(
+                    source,
+                    offset,
+                    "'return' outside function".to_string(),
+                ));
+            }
+            ruff_python_ast::Stmt::Expr(e) => {
+                if let ruff_python_ast::Expr::Yield(_) = &*e.value {
+                    let offset = usize::try_from(u32::from(e.range().start())).unwrap_or(0);
+                    return Err(error_at(
+                        source,
+                        offset,
+                        "'yield' outside function".to_string(),
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Check for duplicate function arguments
+    for stmt in &module.body {
+        if let ruff_python_ast::Stmt::FunctionDef(f) = stmt {
+            check_duplicate_params(f, source)?;
+        }
+        if let ruff_python_ast::Stmt::ClassDef(c) = stmt {
+            for s in &c.body {
+                if let ruff_python_ast::Stmt::FunctionDef(f) = s {
+                    check_duplicate_params(f, source)?;
+                }
+            }
+        }
+    }
+
+    // Check for `nonlocal` without binding
+    check_unbound_nonlocal(module, source)?;
+
+    Ok(())
+}
+
+fn check_duplicate_params(f: &ruff_python_ast::StmtFunctionDef, source: &str) -> Result<(), ParseError> {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for p in &f.parameters.posonlyargs {
+        let name = p.parameter.name.id.as_str().to_string();
+        if !seen.insert(name.clone()) {
+            let offset = usize::try_from(u32::from(p.range().start())).unwrap_or(0);
+            return Err(error_at(
+                source,
+                offset,
+                format!("duplicate argument '{}' in function definition", name),
+            ));
+        }
+    }
+
+    for p in &f.parameters.args {
+        let name = p.parameter.name.id.as_str().to_string();
+        if !seen.insert(name.clone()) {
+            let offset = usize::try_from(u32::from(p.range().start())).unwrap_or(0);
+            return Err(error_at(
+                source,
+                offset,
+                format!("duplicate argument '{}' in function definition", name),
+            ));
+        }
+    }
+
+    for p in &f.parameters.kwonlyargs {
+        let name = p.parameter.name.id.as_str().to_string();
+        if !seen.insert(name.clone()) {
+            let offset = usize::try_from(u32::from(p.range().start())).unwrap_or(0);
+            return Err(error_at(
+                source,
+                offset,
+                format!("duplicate argument '{}' in function definition", name),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn check_unbound_nonlocal(module: &ModModule, source: &str) -> Result<(), ParseError> {
+    use ruff_python_ast as ast;
+
+    struct NonlocalChecker {
+        source: String,
+        errors: Vec<ParseError>,
+    }
+
+    impl NonlocalChecker {
+        fn new(source: &str) -> Self {
+            Self {
+                source: source.to_string(),
+                errors: Vec::new(),
+            }
+        }
+
+        fn check_stmts(
+            &mut self,
+            stmts: &[ast::Stmt],
+            scope_bounds: &mut Vec<std::collections::HashSet<String>>,
+        ) {
+            for stmt in stmts {
+                self.check_stmt(stmt, scope_bounds);
+            }
+        }
+
+        fn check_stmt(
+            &mut self,
+            stmt: &ast::Stmt,
+            scope_bounds: &mut Vec<std::collections::HashSet<String>>,
+        ) {
+            match stmt {
+                ast::Stmt::FunctionDef(f) => {
+                    let mut func_bounds: std::collections::HashSet<String> =
+                        std::collections::HashSet::new();
+                    for p in &f.parameters.posonlyargs {
+                        func_bounds.insert(p.parameter.name.id.as_str().to_string());
+                    }
+                    for p in &f.parameters.args {
+                        func_bounds.insert(p.parameter.name.id.as_str().to_string());
+                    }
+                    for p in &f.parameters.kwonlyargs {
+                        func_bounds.insert(p.parameter.name.id.as_str().to_string());
+                    }
+                    func_bounds.insert(f.name.id.as_str().to_string());
+
+                    scope_bounds.push(func_bounds);
+                    self.check_stmts(&f.body, scope_bounds);
+                    scope_bounds.pop();
+                }
+                ast::Stmt::ClassDef(c) => {
+                    let mut class_bounds: std::collections::HashSet<String> =
+                        std::collections::HashSet::new();
+                    class_bounds.insert(c.name.id.as_str().to_string());
+                    scope_bounds.push(class_bounds);
+                    self.check_stmts(&c.body, scope_bounds);
+                    scope_bounds.pop();
+                }
+                ast::Stmt::Nonlocal(nl) => {
+                    for name in &nl.names {
+                        let name_str = name.id.as_str().to_string();
+                        let mut found = false;
+                        for bounds in scope_bounds.iter().rev() {
+                            if bounds.contains(&name_str) {
+                                found = true;
+                                break;
+                            }
+                        }
+                        if !found {
+                            let offset =
+                                usize::try_from(u32::from(name.range().start())).unwrap_or(0);
+                            self.errors.push(error_at(
+                                &self.source,
+                                offset,
+                                format!("no binding for nonlocal '{}' found", name_str),
+                            ));
+                        }
+                    }
+                }
+                ast::Stmt::Assign(a) => {
+                    for target in &a.targets {
+                        if let Some(bounds) = scope_bounds.last_mut() {
+                            self.bind_target_names(target, bounds);
+                        }
+                    }
+                }
+                ast::Stmt::Import(imp) => {
+                    for alias in &imp.names {
+                        let bind_name = match &alias.asname {
+                            Some(n) => n.id.as_str().to_string(),
+                            None => alias
+                                .name
+                                .id
+                                .as_str()
+                                .split('.')
+                                .next()
+                                .unwrap_or_default()
+                                .to_string(),
+                        };
+                        if let Some(bounds) = scope_bounds.last_mut() {
+                            bounds.insert(bind_name);
+                        }
+                    }
+                }
+                ast::Stmt::ImportFrom(imp) => {
+                    for alias in &imp.names {
+                        if alias.name.id.as_str() != "*" {
+                            let bind_name = match &alias.asname {
+                                Some(n) => n.id.as_str().to_string(),
+                                None => alias.name.id.as_str().to_string(),
+                            };
+                            if let Some(bounds) = scope_bounds.last_mut() {
+                                bounds.insert(bind_name);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        fn bind_target_names(
+            &mut self,
+            target: &ast::Expr,
+            bounds: &mut std::collections::HashSet<String>,
+        ) {
+            match target {
+                ast::Expr::Name(n) => {
+                    bounds.insert(n.id.as_str().to_string());
+                }
+                ast::Expr::Tuple(tup) => {
+                    for el in &tup.elts {
+                        self.bind_target_names(el, bounds);
+                    }
+                }
+                ast::Expr::List(list) => {
+                    for el in &list.elts {
+                        self.bind_target_names(el, bounds);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut checker = NonlocalChecker::new(source);
+    let mut scope_bounds: Vec<std::collections::HashSet<String>> = Vec::new();
+    checker.check_stmts(&module.body, &mut scope_bounds);
+
+    if !checker.errors.is_empty() {
+        return Err(checker.errors.remove(0));
+    }
+
+    Ok(())
+}
 
 #[cfg(test)]
 mod ir_matrix_check;
