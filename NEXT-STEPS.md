@@ -612,3 +612,20 @@ throw/resume path (instrumentation already partially in place), find
 where the Skipped disappears, and fix the Rust side (gen_pull /
 resume_live / GenInput::Throw interaction with pluggy's wrapper
 teardown protocol).
+
+## RETRACTION of /tmp/t2sk.py repro (2026-10-27)
+
+The repro named the trylast impl `call_hook_2` — pluggy matches impls
+to specs by function NAME, so it was correctly never registered as an
+impl of `call_hook`. Invalid repro. (Instrumentation of
+site-packages/pluggy reverted to clean.)
+
+The REAL pytest flow verified earlier still stands: python.py's
+pytest_pyfunc_call impl (trylast, correctly named) RAN and returned
+True (verified via IAF probe printing False inside its body). So the
+impl executes fine; the vanish is AFTER its return, in the firstresult
+return path. Next session: instrument pluggy _multicall's
+`if firstresult: result = results[0]` + final `raise exception` /
+`return result` lines with stderr traces, run the real pytest flow,
+and find which return statement executes and what it returns. The
+`int - NoneType` then identifies the consumer that got None.
