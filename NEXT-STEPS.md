@@ -1447,3 +1447,27 @@ population + the 9403 arm entry with APX_SUPERDBG and find which
 path the super proxy read actually takes.
 
 Gates: T2 minimal green, FD-OK green, full cargo 0 failed x2.
+
+## Wave-39 addendum: super failure PRECISELY identified
+
+APX_SUPERDBG on the 9403 super-scan arm: the zero-arg super()
+inside C2.__init__ (stream-base case) reads ctx = (start='type',
+subject='object') — the CLASS-CREATION super ctx — instead of
+(CaptureIO, instance). The super_stack carries a STALE imbalanced
+(type, object) entry (left by the class-creation/import chain),
+and stack.last() returns it instead of the staged __init__ ctx.
+
+Contrast: non-stream __init__ paths consume the staged ctx
+correctly (Traceback(list) passes) — so the imbalance enters via
+the class-creation path SPECIFICALLY when the base is a native
+stream type (interned type creation path leaves (type, object)
+pushed, or the __init__ call bypasses the staged-ctx push).
+
+NEXT SESSION (single focus): in the 3276 stream branch and the
+post-patch standard path, verify pending_super_ctx staging order
+around instantiate() for stream bases; add a super_stack depth
+assert/log at C2.__init__ entry; find who pushes (type, object)
+and either pop it after class creation or fix the imbalance at
+its source (likely interned-type class-creation super ctx not
+popped - same family as the import-imbalance guard in
+import_module).
