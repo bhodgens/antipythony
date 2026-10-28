@@ -332,7 +332,11 @@ fn fold_src(src: &str) -> Option<String> {
     let (module, _) = lower_source(&format!("x = {src}\n")).unwrap();
     let mut module = module;
     fold(&mut module);
-    match &module.items[0] {
+    let first = module
+        .items
+        .iter()
+        .find(|i| !matches!(i, Item::Stmt(Stmt::Line(_))))?;
+    match first {
         Item::Stmt(Stmt::Assign(_, v)) => Some(render(v)),
         _ => None,
     }
@@ -520,7 +524,12 @@ fn fold_does_not_fold_raising_ops() {
         let (module, _) = lower_source(&format!("x = {src}\n")).unwrap();
         let mut module = module;
         fold(&mut module);
-        match &module.items[0] {
+        let first = module
+            .items
+            .iter()
+            .find(|i| !matches!(i, Item::Stmt(Stmt::Line(_))))
+            .unwrap_or_else(|| panic!("{src}: empty"));
+        match first {
             Item::Stmt(Stmt::Assign(_, v)) => {
                 assert!(
                     !matches!(v, Expr::LitInt(_) | Expr::LitFloat(_) | Expr::LitBigInt(_)),
@@ -537,13 +546,18 @@ fn fold_never_touches_names_or_calls() {
     let (module, _) = lower_source("y = 3\nx = y + 1\nprint(x)\n").unwrap();
     let mut module = module;
     fold(&mut module);
-    match &module.items[1] {
+    let stmts: Vec<&Item> = module
+        .items
+        .iter()
+        .filter(|i| !matches!(i, Item::Stmt(Stmt::Line(_))))
+        .collect();
+    match stmts[1] {
         Item::Stmt(Stmt::Assign(_, v)) => {
             assert!(matches!(v, Expr::BinOp(..)), "folded a name expr: {v:?}");
         }
         other => panic!("unexpected shape {other:?}"),
     }
-    match &module.items[2] {
+    match stmts[2] {
         Item::Stmt(Stmt::ExprStmt(v)) => {
             assert!(matches!(v, Expr::Call(..)), "folded a call: {v:?}");
         }
@@ -558,7 +572,11 @@ fn fold_comparisons_unfolded() {
     let (module, _) = lower_source("x = 1 < 2\n").unwrap();
     let mut module = module;
     fold(&mut module);
-    match &module.items[0] {
+    let first = module
+        .items
+        .iter()
+        .find(|i| !matches!(i, Item::Stmt(Stmt::Line(_))));
+    match first.unwrap() {
         Item::Stmt(Stmt::Assign(_, v)) => {
             assert!(matches!(v, Expr::Compare(..)), "folded a compare: {v:?}");
         }

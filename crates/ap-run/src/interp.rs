@@ -662,6 +662,15 @@ fn exec_stmt(
     touch_line(interp, stmt_source_line(interp, s));
 
     match s {
+        // T2: source-line marker - record the true line on THIS frame so
+        // tracebacks carry real linenos (replaces the desync-prone global
+        // ordinal mapping for marked statements).
+        Stmt::Line(n) => {
+            if let Some(top) = interp.frame_stack.borrow().last().cloned() {
+                top.set(*n);
+            }
+            Ok(StmtOut::Next)
+        }
         Stmt::Pass => Ok(StmtOut::Next),
         Stmt::Break => Ok(StmtOut::Unwind(Flow::Break)),
         Stmt::Continue => Ok(StmtOut::Unwind(Flow::Continue)),

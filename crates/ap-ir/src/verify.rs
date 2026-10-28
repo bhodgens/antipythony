@@ -757,6 +757,7 @@ impl Verifier {
         match s {
             Stmt::LocalDef(f) => self.verify_fn(f, path, module, enclosing),
             Stmt::LocalClass(c) => self.verify_class(c, path, module, enclosing),
+            Stmt::Line(_) => {}
             Stmt::Assign(_, v) => self.nested_expr(v, &qual_of(path), enclosing),
             Stmt::AugAssign(t, _, v) => {
                 self.nested_target(t, path, enclosing);
@@ -831,6 +832,8 @@ impl Verifier {
             Stmt::ExprStmt(e) => self.nested_expr(e, &qual_of(path), enclosing),
             Stmt::Global(_) | Stmt::Nonlocal(_) | Stmt::Import(_) | Stmt::ImportFrom(..) => {}
             Stmt::Pass | Stmt::Break | Stmt::Continue => {}
+        Stmt::Line(_) => {}
+            Stmt::Line(_) => {}
         }
     }
 
@@ -1383,6 +1386,7 @@ fn collect_stmt(s: &Stmt, scope: &mut ScopeData) {
         }
         Stmt::ExprStmt(e) => collect_expr_loads(e, scope),
         Stmt::Pass | Stmt::Break | Stmt::Continue => {}
+        Stmt::Line(_) => {}
     }
 }
 
@@ -1982,7 +1986,8 @@ fn fold_stmt(s: &mut Stmt) {
         | Stmt::ImportFrom(..)
         | Stmt::Pass
         | Stmt::Break
-        | Stmt::Continue => {}
+        | Stmt::Continue
+        | Stmt::Line(_) => {}
     }
 }
 

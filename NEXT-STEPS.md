@@ -888,3 +888,22 @@ stmt_ordinal/touch_line mapping with per-frame line tracking:
 This is the known documented follow-up (span map on the IR). It
 fixes: corrupted tracebacks everywhere, pytest formatter crash,
 longrepr quality, and the "everything at line 8" noise.
+
+## Wave-20 (2026-10-28): IR line-span infra LANDED
+
+- ap-ir: new Stmt::Line(usize) variant (no-op marker); dump/verify/
+  walk updated.
+- ap-parse lowering: lower_stmt_list, lower_fn_body, lower_class_body
+  emit Stmt::Line(stmt line from ruff span) before each statement.
+- ap-run exec_stmt: Stmt::Line(n) sets the current frame's line cell.
+- test fixups: ap-ir fold tests now skip Line markers when indexing
+  module items.
+
+Gates: 412/0/1. Known remaining gap: tracebacks of CAUGHT exceptions
+(tb_frames are only pushed on UNWOUND frame exits, then truncated on
+catch) - e.__traceback__ for a caught exception still shows stale/
+module lines. Full fix = push tb entries at RAISE time into the
+exception value (per-exception tb), not per-interpreter table. That
+is the next structural step; it also fixes pytest's longrepr
+formatting (real filenames/linenos per frame) and unblocks the T2
+minimal gate's last formatter IndexError.

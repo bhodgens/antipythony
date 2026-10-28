@@ -409,6 +409,9 @@ impl<'s> Lowerer<'s> {
     fn lower_stmt_list(&mut self, body: &[ast::Stmt]) -> Result<Vec<Item>, LowerError> {
         let mut items = Vec::with_capacity(body.len());
         for stmt in body {
+            // T2: line marker before each top-level statement so tracebacks
+            // carry true linenos.
+            items.push(Item::Stmt(Stmt::Line(self.line_of(stmt))));
             items.extend(self.lower_stmt(stmt)?);
         }
         Ok(items)
@@ -418,9 +421,21 @@ impl<'s> Lowerer<'s> {
     /// source position via [`Stmt::LocalDef`]/[`Stmt::LocalClass`] — hoisting
     /// them to module items would reorder observable def-time effects
     /// (S-02-7: `def` executes and binds at its statement position).
+    /// T2: source line of a statement (ruff span).
+    fn line_of(&self, stmt: &ast::Stmt) -> usize {
+        use ruff_text_size::Ranged;
+        let off = stmt.start().to_u32() as usize;
+        self.src[..off.min(self.src.len())]
+            .bytes()
+            .filter(|&b| b == b'\n')
+            .count()
+            + 1
+    }
+
     fn lower_fn_body(&mut self, body: &[ast::Stmt]) -> Result<FnBody, LowerError> {
         let mut blocks = Vec::with_capacity(body.len());
         for stmt in body {
+            blocks.push(Stmt::Line(self.line_of(stmt)));
             for item in self.lower_stmt(stmt)? {
                 match item {
                     Item::Stmt(s) => blocks.push(s),
@@ -437,6 +452,7 @@ impl<'s> Lowerer<'s> {
     fn lower_class_body(&mut self, body: &[ast::Stmt]) -> Result<Vec<Stmt>, LowerError> {
         let mut blocks = Vec::with_capacity(body.len());
         for stmt in body {
+            blocks.push(Stmt::Line(self.line_of(stmt)));
             for item in self.lower_stmt(stmt)? {
                 match item {
                     Item::Stmt(s) => blocks.push(s),

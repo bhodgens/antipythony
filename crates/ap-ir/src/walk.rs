@@ -60,6 +60,7 @@ pub fn stmt_yields(s: &Stmt) -> bool {
         Stmt::ExprStmt(e) => expr_yields(e),
         Stmt::Global(_) | Stmt::Nonlocal(_) | Stmt::Import(_) | Stmt::ImportFrom(..) => false,
         Stmt::Pass | Stmt::Break | Stmt::Continue => false,
+        Stmt::Line(_) => false,
     }
 }
 

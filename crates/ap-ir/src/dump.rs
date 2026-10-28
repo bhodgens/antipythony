@@ -322,6 +322,7 @@ fn tree_stmt(out: &mut String, s: &Stmt, depth: usize) {
         }
         Stmt::LocalDef(f) => tree_fn_def(out, f, depth),
         Stmt::LocalClass(c) => tree_class_def(out, c, depth),
+        Stmt::Line(_) => {}
     }
 }
 
@@ -820,6 +821,7 @@ fn dump_stmt(out: &mut String, s: &Stmt, depth: usize) {
         }
         Stmt::LocalDef(f) => dump_fn_def(out, f, depth),
         Stmt::LocalClass(c) => dump_class_def(out, c, depth),
+        Stmt::Line(_) => {}
     }
 }
 

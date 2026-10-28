@@ -191,6 +191,11 @@ pub enum Stmt {
     /// (S-03-1 creation order). Module-level classes are
     /// [`Item::ClassDef`].
     LocalClass(Box<ClassDef>),
+    /// Source-line marker (T2): emitted before each converted statement
+    /// by the builder when span info is available. The executor records
+    /// the line into the frame so tracebacks carry true linenos/filenames.
+    /// No-Op semantics otherwise.
+    Line(usize),
 }
 
 /// An assignment/del target the frontend accepts: a name, subscript, attribute,
