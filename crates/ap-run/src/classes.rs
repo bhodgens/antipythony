@@ -2279,6 +2279,29 @@ pub fn special_lookup(interp: &Interpreter, v: &Value, name: &str) -> Option<(Va
             // owner type is unused by the marker dispatch path
             Some((Value::Obj(marker), object_class(interp)))
         }
+        // T2 (wave-39): stream-derived user instances (CaptureIO etc) are
+        // Opaque stream objects; super().__init__(buffer, ...) must bind
+        // the base-stream init marker so the ctor args land in the attrs.
+        Value::Obj(o)
+            if o.kind == ap_obj::ObjKind::Opaque
+                && matches!(
+                    o.name.as_str(),
+                    "TextIOWrapper"
+                        | "BytesIO"
+                        | "StringIO"
+                        | "BufferedReader"
+                        | "BufferedWriter"
+                        | "FileIO"
+                )
+                && name == "__init__" =>
+        {
+            let marker = ap_obj::PyObject::new(
+                ap_obj::ObjKind::BuiltinFn,
+                &format!("__ap_base_{}__init__", o.name),
+            );
+            *marker.slice_parts.borrow_mut() = vec![v.clone()];
+            Some((Value::Obj(marker), object_class(interp)))
+        }
         // T2 (pytest collection): os.ScandirIterator iterates its cached
         // entries (CPython: scandir's iterator; our __iter__ marker yields
         // the stored list via the call_os surface).
@@ -3230,7 +3253,7 @@ pub fn instantiate(
     // (CPython TextIOWrapper(buffer, ...)) — marker or MRO base-name check
     // (the base's generic __init__/__new__ markers make the user-override
     // detection unreliable here).
-    let stream_base = t
+    let stream_base: Option<String> = t
         .dict
         .get(&Value::Str(PyString::new("__ap_stream_base__")))
         .and_then(|v| match v {
@@ -3262,6 +3285,7 @@ pub fn instantiate(
                     })
             })
         });
+
     let new_lookup = t
         .lookup_with_owner("__new__")
         .filter(|(v, _)| !matches!(v, Value::None));
@@ -3273,7 +3297,7 @@ pub fn instantiate(
     // (io.TextIOWrapper)) supplies the buffer via super().__init__(buf)
     // AFTER allocation — do NOT run the native ctor with the outer
     // (possibly empty) args first.
-    if let Some(sb) = stream_base.filter(|_| init_f.is_none()) {
+    if let Some(sb) = stream_base.as_ref().filter(|_| init_f.is_none()).cloned() {
         let native = builtins::interned_type(interp, &sb);
         return call_value(interp, &module_frame(interp), &native, args, kwargs);
     }
@@ -3514,8 +3538,45 @@ pub fn instantiate(
         }
         return Ok(obj);
     }
-    let obj = alloc_instance(t);
-    if let Some(inf) = &init_f {
+    let mut obj = alloc_instance(t);
+    // T2 (wave-39, pytest CaptureIO(TextIOWrapper)): a stream-base
+    // subclass instance must BE a stream so native stream method
+    // dispatch works on it (native_attr keys on ObjKind::Opaque +
+    // o.name). Replace the fresh UserInstance with a stream object
+    // carrying the user class refs; the user __init__ then runs on it.
+    if let Some(sb) = &stream_base {
+        let kind = match sb.as_str() {
+            "BytesIO" | "StringIO" => "BytesIO",
+            _ => "TextIOWrapper",
+        };
+        if let Value::Obj(old_o) = &obj {
+            let fresh = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, kind.clone());
+            *fresh.type_ref.borrow_mut() = old_o.type_ref.borrow().clone();
+            let cr = old_o.class_ref.borrow().clone().unwrap_or_else(|| t.clone());
+            *fresh.class_ref.borrow_mut() = Some(cr);
+            {
+                let mut attrs = fresh.attrs.borrow_mut();
+                let _ = attrs.set(
+                    Value::Str(PyString::new("<buf>".to_string())),
+                    Value::Bytes(Gc::new(vec![])),
+                );
+                let _ = attrs.set(
+                    Value::Str(PyString::new("<pos>".to_string())),
+                    Value::Int(ap_obj::Int::from_i64(0)),
+                );
+                let _ = attrs.set(
+                    Value::Str(PyString::new("<encoding>".to_string())),
+                    Value::Str(PyString::new("utf-8".to_string())),
+                );
+                let _ = attrs.set(
+                    Value::Str(PyString::new("<closed>".to_string())),
+                    Value::Bool(false),
+                );
+            }
+            obj = Value::Obj(fresh);
+        }
+    }
+if let Some(inf) = &init_f {
         if is_user_function(inf) {
             let mut a = vec![obj.clone()];
             a.extend_from_slice(args);

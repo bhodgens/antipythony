@@ -4003,6 +4003,66 @@ fn call_value_inner_impl(
                                 let _ = it;
                                 return Ok(Value::None);
                             }
+                            // T2 (wave-39, CaptureIO(TextIOWrapper)):
+                            // super().__init__(buffer, encoding=...) binds
+                            // the backing buffer into the stream attrs.
+                            "TextIOWrapper" | "BufferedReader" | "BufferedWriter"
+                            | "FileIO" => {
+                                if let Some(Value::Obj(so)) = it {
+                                    // Accept the buffer arg: capture its
+                                    // current bytes into <buf> when the arg
+                                    // is a BytesIO-like stream.
+                                    let buf_key = Value::Str(PyString::new(
+                                        "<buf>".to_string(),
+                                    ));
+                                    if let Some(Value::Obj(b)) = args.get(1) {
+                                        if let Some(Value::Bytes(bt)) =
+                                            b.attrs.borrow().get(&buf_key)
+                                        {
+                                            let mut attrs = so.attrs.borrow_mut();
+                                            let _ = attrs.set(
+                                                buf_key.clone(),
+                                                Value::Bytes(Gc::new(bt.to_vec())),
+                                            );
+                                        }
+                                        let _ = b.attrs.borrow_mut().set(
+                                            Value::Str(PyString::new(
+                                                "<closed>".to_string(),
+                                            )),
+                                            Value::Bool(true),
+                                        );
+                                    }
+                                    let enc = kwargs
+                                        .iter()
+                                        .find(|(k, _)| k == "encoding")
+                                        .map(|(_, v)| v.clone())
+                                        .unwrap_or(Value::Str(PyString::new(
+                                            "utf-8".to_string(),
+                                        )));
+                                    let mut attrs = so.attrs.borrow_mut();
+                                    let _ = attrs.set(
+                                        Value::Str(PyString::new(
+                                            "<encoding>".to_string(),
+                                        )),
+                                        enc,
+                                    );
+                                    let _ = attrs.set(
+                                        Value::Str(PyString::new("<pos>".to_string())),
+                                        Value::Int(ap_obj::Int::from_i64(0)),
+                                    );
+                                    let _ = attrs.set(
+                                        Value::Str(PyString::new(
+                                            "<closed>".to_string(),
+                                        )),
+                                        Value::Bool(false),
+                                    );
+                                }
+                                return Ok(Value::None);
+                            }
+                            "BytesIO" | "StringIO" => {
+                                let _ = it;
+                                return Ok(Value::None);
+                            }
                             _ => {}
                         }
                     }
@@ -9560,7 +9620,11 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                     // Traceback(list) does super().__init__(gen) and the
                     // list must consume the iterable. Without this the
                     // subclass stays empty (Traceback entries lost).
-                    if matches!(cls.name.as_str(), "list" | "tuple" | "set" | "frozenset")
+                    if matches!(
+                        cls.name.as_str(),
+                        "list" | "tuple" | "set" | "frozenset" | "TextIOWrapper" | "BytesIO"
+                                | "StringIO" | "BufferedReader" | "BufferedWriter" | "FileIO"
+                    )
                         && name == "__init__"
                     {
                         let f = ap_obj::PyObject::new(
