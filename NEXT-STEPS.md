@@ -1018,3 +1018,27 @@ Regression sweep after the exception-system rework:
   find(".//ul") / findall(".//li") now work (ab9d82e).
 - scrapy import 'phrase' failure: pre-existing at HEAD~3 (verified);
   import-order/context related, separate issue.
+
+## Wave-25 (2026-10-28): Tier-2 first blocker identified
+
+pytest fixtures/parametrize probe: parametrize+fixture collection
+itself works (tests were collected in an earlier manual run); the
+CURRENT blocker is importlib.metadata: `Distribution.from_name`
+/ PathFinder.find_spec return nothing because the runtime's importer
+does not register modules with the Python-level
+importlib.machinery.PathFinder — `import pluggy` works (runtime
+importer) but importlib.metadata (pure stdlib, uses
+importlib.machinery.PathFinder over sys.path) sees no distributions.
+
+Required: wire FileFinder/PathFinder for filesystem sys.path
+entries (or implement a runtime DistributionFinder that scans the
+joined site-packages for *.dist-info). This unblocks: pluggy
+version banner in pytest, importlib.metadata users generally,
+entry-point loading (pytest plugin autoload!).
+
+Also fixed this wave: native-stream subclass instantiation
+(CaptureIO(io.TextIOWrapper)) — python __init__ now defers the
+native ctor; sys-capture method works ("sys OK").
+
+Reproduction: /tmp/t2meta*.py; fixture probe /tmp/t2fix5.py +
+tests/corpus-style test_fix.py in /tmp/t2suite.
