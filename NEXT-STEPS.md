@@ -863,3 +863,28 @@ traceback_value's nodes tolerant; (2) then the T2 gate should go
 green; (3) run lxml 24/24 + corpus to confirm no regressions from
 the ev.instance change (raising sites now carry instances - watch
 for cycles via instance refs, GC).
+
+## Wave-19 (2026-10-28): formatter IndexError scoped
+
+After the ev.instance fix, item2's Skipped now reaches makereport,
+but report FORMATTING raises IndexError inside
+ExceptionInfoFormatter.repr_excinfo chain (repr_traceback itself
+succeeds with filtered n=0; probes on get_source and _getreprcrash
+did NOT fire). Root of THAT is the tb lineno/filename corruption:
+touch_line() advances a GLOBAL stmt_ordinal (nested calls desync
+it), and tb_node stamps every frame with script_path. pytest's
+filter then hides all frames (all "internal") and downstream Source
+indexing crashes.
+
+STRUCTURAL FIX (next session, the real work): replace the global
+stmt_ordinal/touch_line mapping with per-frame line tracking:
+1. Add a line span to IR statements (ap-parse already has
+   collect_stmt_lines; better: carry ruff spans through the builder).
+2. exec_stmt sets frame.line from the span.
+3. Frame exit pushes (qualname, frame.line, FILENAME) into tb_frames
+   - extend the tuple with the frame's filename (function's defining
+   module).
+4. tb_node emits per-frame filenames.
+This is the known documented follow-up (span map on the IR). It
+fixes: corrupted tracebacks everywhere, pytest formatter crash,
+longrepr quality, and the "everything at line 8" noise.
