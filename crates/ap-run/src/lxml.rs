@@ -971,10 +971,8 @@ fn parse_path(expr: &str) -> Option<PathExpr> {
             steps.push(Step::Descendant("*".into()));
             rest = r;
         }
-    } else if let Some(r) = rest.strip_prefix("./") {
-        steps.push(Step::SelfAxis);
-        rest = r;
     } else if let Some(r) = rest.strip_prefix(".//") {
+        // NOTE: must be checked BEFORE "./" — ".//ul" starts with "./"!
         steps.push(Step::SelfAxis);
         let seg_end = r.find('/').unwrap_or(r.len());
         let first_seg = r[..seg_end].trim();
@@ -991,6 +989,9 @@ fn parse_path(expr: &str) -> Option<PathExpr> {
             steps.push(Step::Descendant("*".into()));
             rest = r;
         }
+    } else if let Some(r) = rest.strip_prefix("./") {
+        steps.push(Step::SelfAxis);
+        rest = r;
     } else if rest == "." {
         steps.push(Step::SelfAxis);
         rest = "";
