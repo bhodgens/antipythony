@@ -1233,3 +1233,25 @@ that calls Path.mkdir and check the dir exists after. Suspect the
 fiber's syscall/CString path handling or the interpreter's cwd
 context differs during fiber execution. Fix in generators.rs or the
 mkdir syscall wrapper.
+
+## Wave-34 (2026-10-28): TWO SYSTEMIC BUGS FIXED - tmp_path fixture PASSES
+
+The wave-33 "fiber mkdir no-op" theory was WRONG. Real chain:
+1. os.O_CREAT/O_EXCL/etc used Linux octal values, wrong on macOS.
+   make_numbered_dir's mkdir actually SUCCEEDED; the failing call
+   was create_cleanup_lock's os.open(..., O_CREAT|O_EXCL) with
+   garbage flags -> misleading ENOENT on pytest-N/.lock.
+2. File-object __exit__ was a bare stub (return False, no close):
+   every `with open(...) as f:` write never flushed.
+   write_text/read_text roundtrip returned ''. Fixed: __exit__ now
+   closes (builtins_modules.rs ~12466).
+
+RESULTS: test_fix2.py -> tmp_path PASS, monkeypatch PASS (after
+fixing my test's raising=False), capsys blocked on StashKey module
+duality ([STASH-MISS]: capsys stores via item.stash under a key
+object; teardown reads a DIFFERENT Stash with different key ids).
+T2 minimal gate stable green. Commit 3f183ee.
+
+NEXT: capsys stash-key duality (same family as os-module duality;
+likely fix = canonicalize module identity in sys.modules across
+import paths), then Tier-2 fixtures complete.
