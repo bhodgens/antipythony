@@ -103,3 +103,31 @@ supported" for the SYNC test_pass. Traced:
   monkeypatching. CPython semantics require globals lookup to go
   through the module __dict__ at call time. This is a fundamental
   interpreter fix worth its own leaf.
+
+## Wave-4 finding (2026-10-27, latest)
+
+Runtest execution narrows to: pytest_runtest_protocol enters for item 1
+(shouldstop=False), setup report logs passed, pytest_pyfunc_call body
+runs (is_async_function verified False via instrumentation), and then
+the call-phase completes SILENTLY — no call report, protocol never
+returns, run ends 'no tests ran' rc=1.
+
+Root cause hypothesis (high confidence): the runtest protocol runs the
+call phase through pluggy hookwrappers (generators). Our runtime drops
+or prematurely exhausts the resumption chain when the call function
+itself executes through the interpreter — i.e. the nested
+hookwrapper-generator resume bug (issue-#7 class). Evidence:
+- from_call entered for 'call', never logged ok/error, yet pytest
+  continued to session summary.
+- Hand-written deep chains (lambda → method → assert) work fine.
+- HookimplMarker in our pluggy stub lacks wrapper/hookwrapper kwargs —
+  terminal.py's @hookimpl(wrapper=True) must be falling back to a
+  plain-impl path, breaking the wrapper protocol silently.
+
+Next concrete steps:
+1. Extend HookimplMarker/make_descr to accept wrapper= and hookwrapper=
+   kwargs and mark the descriptor kind (pluggy stub in builtins_modules).
+2. In pluggy's _multicall (site-packages, test-data-only), verify
+   wrapper impls are detected via impl.wrapper attr and driven as
+   generators (send/throw protocol) — instrument if needed.
+3. Re-run /tmp/t2run14.py: expect 1 passed, 1 failed, 1 skipped, RC=1.
