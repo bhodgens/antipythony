@@ -679,3 +679,37 @@ loses its continuation, sometimes nondeterministically re-raising a
 stale Skipped("not today") at interpreter shutdown (stale exception
 object identity). (b) frame/tb metadata corruption (all frames labeled
 t2run36.py:8 with wrong function names) - traceback renderer.
+
+## Wave-14 (2026-10-28): get_ident fix; skip evaluation now REACHED
+
+SECOND REAL FIX: _thread.get_ident was bound to a plain INT (v0
+stub). reprlib.recursive_repr CALLS get_ident(); dataclasses wraps
+every generated __repr__ in @recursive_repr, so repr() of ANY
+dataclass instance raised TypeError('int' object is not callable).
+This corrupted: pytest's Skip dataclass handling, our own probes
+(repr(_ev)), and pluggy wrapper teardown paths that repr objects.
+FIX: bind marker("threading.get_ident") — the existing dispatcher
+(threading_call.rs:191 get_ident_value()).
+
+CHAIN RECONSTRUCTED (wave-11..14): the "nondeterminism" was layers of
+bugs masking each other: (1) NoneType __await__ (fixed, b7a5faf),
+(2) get_ident int (fixed this wave), (3) trace prints swallowed by the
+capture plugin's stderr redirection (instrumentation artifact), (4)
+stale OutcomeException re-raise at interpreter exit.
+
+CURRENT STATE after both fixes: bare run t2run36 → skip mark IS
+evaluated (skipping.py's pytest_runtest_setup raises Skipped), but the
+Skipped vanishes during the setup multicall's wrapper teardown resume:
+teardown.throw(Skipped) into the CaptureManager/Logging wrappers
+RETURNS normally instead of propagating (pluggy then hits
+_raise_wrapfail → 'object' has no 'f_code' — our gi_code surface is
+also broken). Narrow repros of throw+with+contextmanager all PASS —
+the bug needs the REAL fd-juggling item_capture __exit__ (os.dup2) or
+the two-wrapper interplay.
+
+NEXT SESSION (single focus): repro teardown.throw() returning
+normally: wrap the CaptureManager wrapper EXACTLY (item_capture with
+global fd capture active: capman activates GLOBAL capture earlier in
+the session), throw Skipped, observe. Then fix gen.throw() resume in
+generators.rs. Also fix gi_code to expose f_code (used by
+_raise_wrapfail).

@@ -1555,19 +1555,21 @@ fn builtins_module(interp: &Rc<Interpreter>) -> Value {
 /// `_thread` stub: reprlib (and traceback filtering) call `_thread.get_ident()`.
 /// Single-threaded v0: a monotonic counter keyed per call site is enough.
 fn thread_stub_module(interp: &crate::frame::Interpreter) -> Value {
-    static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let m = PyObject::new(ap_obj::ObjKind::Module, "_thread");
     let ns = PyDict::new();
     let _ = ns.set(s("__name__"), s("_thread"));
     let _ = ns.set(s("__doc__"), Value::None);
-    // get_ident: marker fn dispatched by call_named/builtins route — use a
-    // BuiltinFn whose call path is the generic "call the ctor" miss... v0:
-    // bind a plain int per import (ident stability within one thread is all
-    // reprlib's per-thread cache needs; identity comparisons only).
-    let ident = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    // get_ident: T2 fix - bind a REAL callable. It was a plain int (v0
+    // "identity comparisons only"), but reprlib.recursive_repr CALLS
+    // get_ident(); dataclasses wraps every generated __repr__ in
+    // @recursive_repr, so repr() of any dataclass instance raised
+    // TypeError: int object is not callable (pytest Skip dataclass,
+    // outcome reports). threading_call.rs:191 already dispatches the
+    // "get_ident" marker name to get_ident_value(); a BuiltinFn marker
+    // routes there.
     let _ = ns.set(
         s("get_ident"),
-        Value::Int(ap_obj::Int::from_i64(ident as i64)),
+        crate::builtins_modules::marker("threading.get_ident"),
     );
     let _ = ns.set(s("allocate_lock"), Value::None);
     // 02.04a fix pass (BUG-C): RLock — _py_warnings does `with _lock:`.
