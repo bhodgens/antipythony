@@ -303,3 +303,23 @@ Next session, precise plan:
 3. If obj is the plain function: our is_async_function's second leg
    (isasyncgenfunction) misfires under pytest's import context — diff
    inspect module state between standalone and pytest contexts.
+
+## MILESTONE (2026-10-27, final): "1 passed in -0.00s"
+
+With P.async_fail patched to return None instead of raising, the full
+pytest.main run completes: **1 passed** (test_pass), test_skip's skip
+fires ("Skipped: not today" in output), session completes. pytest runs
+real tests on our runtime for the first time.
+
+Remaining single issue: python.py's pytest_pyfunc_call calls
+async_fail(nodeid) for the SYNC test_pass — is_async_function(obj)
+returns True inside the hook while standalone probes return False.
+Since P.async_fail's module-global patch works (binding is live), the
+same technique on P.is_async_function should reveal what obj is at
+raise time (repr + mro). The t2run40 attempt added the trace but a
+later crash (Skipped path) obscured it — rerun with BOTH patches
+(async_fail = no-op AND is_async_function traced) to get the answer,
+then fix is_async_function or the obj shape.
+
+The 'in -0.00s' negative duration is cosmetic (duration math with
+None/0 — trace sessionstart Instant wiring if it bothers anyone).
