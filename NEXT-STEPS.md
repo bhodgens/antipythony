@@ -557,3 +557,22 @@ teardown traces — traces will then be visible through the whole call/
 teardown phase. The failing call-report path under -s is the true
 remaining runtime bug (if any); distinguish it from capture-related
 output plumbing.
+
+## Subset-caller repro also passes (2026-10-27) — repro attempts closed
+
+from_call + subset_hook_caller + wrapper works correctly on our
+runtime. All synthetic repros pass; only the REAL pytest flow fails.
+The difference must be in pytest's own layers between genitems/protocol
+and the hook calls (CallInfo, _pytest.outcomes, fixture machinery,
+Skipped handling) interacting with a runtime edge — OR the async_fail
+OutcomeException escape (BaseException subclass bypassing `except
+Exception`) is still firing nondeterministically for test_pass.
+
+DEFINITIVE next-session probe: patch P.async_fail to a no-op (proven
+working — produced "1 passed") AND simultaneously patch
+P.is_async_function to log its input's repr at call time. If
+is_async_function fires True for test_pass, print
+`repr(testfunction)[:200]` + `type(testfunction).__mro__` + its
+`__code__.co_flags` — this identifies the exact object shape our
+inspect misreads as async. Then fix inspect.iscoroutinefunction or
+the obj shape.
