@@ -490,3 +490,20 @@ unexpected write identifies the culprit.
 Also unexplored: pytest_untrunnable / unraisableexception plugin's
 sessionfinish arithmetic (int - None) may itself BE the loop-exit
 trigger via an exception swallowed by wrap_session's except chain.
+
+## Session checkpoint note (2026-10-27, end)
+
+Instrumentation attempt on Session.__init__ triggered an unrelated
+`RuntimeError: super(): no arguments` (zero-arg super in
+subclass__init__ after module-level __init__ reassignment) — do NOT
+patch Session.__init__ directly; use plugin hooks instead.
+
+Precise current behavior (deterministic): pytest collects 3 items,
+runtest protocol for item 1 runs setup (report: passed), the call
+phase hooks execute through pytest_pyfunc_call (verified via
+APX_CALLTRACE + IAF probes), then the session ends without a call
+verdict — items 2,3 never protocol. rc=1, "no tests ran", int-None
+at teardown summary. No exception escapes any hookexec (verified).
+Suspect: silent BaseException (StopIteration or similar) escaping a
+from_call lambda inside runtestprotocol, unwinding to wrap_session's
+except chain which swallows it and converts to exit code 1.
