@@ -3262,19 +3262,22 @@ pub fn instantiate(
                     })
             })
         });
-    if let Some(sb) = stream_base {
-        let native = builtins::interned_type(interp, &sb);
-        return call_value(interp, &module_frame(interp), &native, args, kwargs);
-    }
-
     let new_lookup = t
         .lookup_with_owner("__new__")
         .filter(|(v, _)| !matches!(v, Value::None));
     let init_lookup = t
         .lookup_with_owner("__init__")
         .filter(|(v, _)| !matches!(v, Value::None));
-    let new_f = new_lookup.as_ref().map(|(v, _)| v.clone());
     let init_f = init_lookup.as_ref().map(|(v, _)| v.clone());
+    // T2: a python __init__ on a native-stream subclass (CaptureIO
+    // (io.TextIOWrapper)) supplies the buffer via super().__init__(buf)
+    // AFTER allocation — do NOT run the native ctor with the outer
+    // (possibly empty) args first.
+    if let Some(sb) = stream_base.filter(|_| init_f.is_none()) {
+        let native = builtins::interned_type(interp, &sb);
+        return call_value(interp, &module_frame(interp), &native, args, kwargs);
+    }
+    let new_f = new_lookup.as_ref().map(|(v, _)| v.clone());
     // CPython 3.14 observed (e013): when BOTH __new__ and __init__ are
     // inherited from the same ancestor, the ancestor's __new__ is NOT
     // invoked for the subclass (recorded expected bytes govern).

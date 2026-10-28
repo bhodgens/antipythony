@@ -727,6 +727,9 @@ fn registry() -> &'static [(&'static str, ModuleBuilder)] {
         ("importlib.machinery", build_importlib_machinery),
         ("importlib.util", build_importlib_util),
         ("importlib._bootstrap", build_importlib__bootstrap),
+        // T2 (pytest TerminalReporter version banner, plugin metadata):
+        // native importlib.metadata over the runtime site-packages.
+        ("importlib.metadata", build_importlib_metadata),
         ("re", build_re),
         ("_collections", build__collections),
         ("_colorize", build_colorize),
@@ -16977,6 +16980,35 @@ fn call_importlib(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Opt
             // v0: reload resolves to the already-imported module object.
             "reload" => Ok(args.last().cloned().unwrap_or(Value::None)),
             "invalidate_caches" => Ok(Value::None),
+            // T2: importlib.metadata markers route to the native
+            // metadata surface.
+            n if n.starts_with("metadata.") => {
+                let sub = &n["metadata.".len()..];
+                match sub {
+                    "version" => {
+                        let name_v =
+                            args.first().cloned().unwrap_or(Value::None);
+                        let name = str_arg(&name_v, "name")?;
+                        match find_dist_version(&name) {
+                            Some(v) => Ok(Value::Str(PyString::new(v.as_str()))),
+                            None => Err(raise(
+                                "PackageNotFoundError",
+                                &format!("No package metadata was found for {name}"),
+                            )),
+                        }
+                    }
+                    // T2: entry_points()/distributions() return an
+                    // empty selectable so plugin discovery degrades to
+                    // "no plugins" instead of crashing.
+                    "entry_points" | "distributions" => {
+                        Ok(Value::List(PyList::from_vec(vec![])))
+                    }
+                    _ => Err(raise(
+                        "SystemError",
+                        format!("importlib fn {name} unbound"),
+                    )),
+                }
+            }
             _ => Err(raise("SystemError", format!("importlib fn {name} unbound"))),
         }
     })();
@@ -17319,3 +17351,81 @@ fn general_category(c: char) -> String {
 }
 
 // ===========================================================================
+
+
+/// T2: native importlib.metadata - version(name) (+ PackageNotFound)
+/// backed by scanning the runtime site-packages for *.dist-info
+/// directories. The vendored stdlib metadata relies on
+/// importlib.machinery.PathFinder, which our runtime importer does not
+/// populate (module imports bypass the path-based machinery).
+fn build_importlib_metadata(_i: &crate::frame::Interpreter) -> Value {
+    let (m, ns) = new_module("importlib.metadata");
+    let _ = ns.set(s("version"), marker("importlib.metadata.version"));
+    let _ = ns.set(
+        s("PackageNotFoundError"),
+        interned_type_pub("PackageNotFoundError"),
+    );
+    let _ = ns.set(s("distribution"), marker("importlib.metadata.distribution"));
+    let _ = ns.set(s("entry_points"), marker("importlib.metadata.entry_points"));
+    let _ = ns.set(s("metadata"), marker("importlib.metadata.metadata"));
+    let _ = ns.set(
+        s("distributions"),
+        marker("importlib.metadata.distributions"),
+    );
+    finish(m, ns)
+}
+
+
+/// T2: scan the runtime site-packages roots for `<name>*.dist-info/
+/// METADATA` and return the Version. Roots: $ANTPYTHANY_PATH entries
+/// plus the default cache site-packages.
+fn find_dist_version(name: &str) -> Option<String> {
+    let mut roots: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(env) = std::env::var("ANTPYTHANY_PATH") {
+        for p in env.split(':') {
+            if !p.is_empty() {
+                roots.push(std::path::PathBuf::from(p));
+            }
+        }
+    }
+    if let Some(sp) = ap_pack::cache::site_packages_dir() {
+        roots.push(sp);
+    }
+    let lname = name.to_ascii_lowercase().replace('-', "_");
+    for root in roots {
+        let rd = match std::fs::read_dir(&root) {
+            Ok(rd) => rd,
+            Err(_) => continue,
+        };
+        for entry in rd.flatten() {
+            let fname = entry.file_name().to_string_lossy().to_string();
+            if !fname.ends_with(".dist-info") {
+                continue;
+            }
+            let stem = &fname[..fname.len() - ".dist-info".len()];
+            let stem_norm = stem
+                .split('-')
+                .next()
+                .unwrap_or("")
+                .to_ascii_lowercase()
+                .replace('-', "_");
+            if stem_norm != lname {
+                continue;
+            }
+            let meta = entry.path().join("METADATA");
+            let data = match std::fs::read_to_string(&meta) {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+            for line in data.lines() {
+                if let Some(rest) = line.strip_prefix("Version:") {
+                    return Some(rest.trim().to_string());
+                }
+                if line.is_empty() {
+                    break;
+                }
+            }
+        }
+    }
+    None
+}

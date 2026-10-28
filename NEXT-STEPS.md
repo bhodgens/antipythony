@@ -1042,3 +1042,25 @@ native ctor; sys-capture method works ("sys OK").
 
 Reproduction: /tmp/t2meta*.py; fixture probe /tmp/t2fix5.py +
 tests/corpus-style test_fix.py in /tmp/t2suite.
+
+## *** Tier-2 PROGRESS (2026-10-28): native importlib.metadata + capture + fixtures ***
+
+1. Native importlib.metadata (build_importlib_metadata):
+   version(name) reads <name>*.dist-info/METADATA from the runtime
+   site-packages roots ($ANTPYTHANY_PATH + default cache). Fixes the
+   pluggy version banner + PackageNotFoundError paths. distributions()
+   /entry_points() degrade to empty (plugin autoload = no plugins).
+2. Native-stream subclass instantiation fixed: a python __init__ on
+   a subclass of io.TextIOWrapper etc now defers the native ctor;
+   CaptureIO(io.TextIOWrapper) works -> capture method "sys" works
+   ("sys OK"; was "TextIOWrapper() missing required argument").
+3. Fixture probe result (test_fix.py):
+   - fixture sample(): test_fixture PASSES (basic fixture works!)
+   - parametrize: collects + names [1-2]/[3-4] correctly; tests run
+     but FAIL KeyError: 'y' - parametrized args not bound into
+     funcargs. NEXT: fixture machinery - bind parametrize args into
+     the call's funcargs (python.py's parameter handling /
+     funcargs dict population in the runner).
+
+Gates: 412/0/1. corpus 271/0. pytest verdicts now include real
+parametrize IDs and fixture injection.

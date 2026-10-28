@@ -748,6 +748,30 @@ pub fn import_module_inner(interp: &Rc<Interpreter>, name: &str) -> EResult {
         };
         if let Ok(m) = import_module_inner(interp, alias_target) {
             sys_modules_insert(name, &m);
+            // T2: CPython runs _bootstrap_external._install(...) at
+            // startup — it registers FileFinder in sys.path_hooks and
+            // PathFinder in sys.meta_path. Without it, sys.path_hooks is
+            // empty and importlib.machinery.PathFinder/importlib.metadata
+            // find nothing on sys.path.
+            if name == "_frozen_importlib_external" {
+                let frozen = SYS_MODULES.with(|m| m.borrow().get("_frozen_importlib").cloned());
+                let ext = SYS_MODULES.with(|m| m.borrow().get(name).cloned());
+                if let (Some(Value::Obj(frozen_m)), Some(Value::Obj(ext_m))) = (frozen, ext)
+                {
+                    let install = ext_m
+                        .module_ns
+                        .borrow()
+                        .as_ref()
+                        .and_then(|ns| ns.get(&s("_install")));
+                    if let Some(install) = install {
+                        let frozen_v = Value::Obj(frozen_m);
+                        let _ = crate::interp::call_value_pub3(
+                            &install,
+                            &[frozen_v],
+                        );
+                    }
+                }
+            }
             return Ok(m);
         }
     }
