@@ -1178,3 +1178,26 @@ object it is. Also remove the leftover [TD-ERR]/[OS-MOD] probes in
 pluggy/_execution.py once done.
 
 T2 minimal gate: STABLE GREEN across all runs this session.
+
+## Wave-31 (2026-10-28): tmp_path scoped to scandir/listing
+
+make_numbered_dir loop: each new_path.mkdir() is wrapped in
+`except Exception: pass` — a real mkdir failure is swallowed and the
+loop retries with an incremented number (observed numbers jumped to
+29). The numbered dirs pytest-0/pytest-1 DO exist on disk after
+runs, so SOME mkdirs succeed. The lock-open FileNotFoundError for
+pytest-29 means mkdir silently failed for that number.
+
+Suspect: find_prefixed() uses os.scandir(root) → our DirEntry shim
+(returns DirEntry objects; extract_suffixes then does
+entry.name[len(prefix):] and parse_num int() conversion). If our
+scandir yields wrong entries (or .name attributes) the numbering
+desyncs from reality and mkdir attempts hit bad paths.
+NEXT SESSION: probe os.scandir(root) entry.name correctness inside
+the pytest run (test_osid.py style, writing results to a file),
+compare against CPython's listing of the same root. Then trace
+FixtureDef.execute's tmp_path factory error with the numbered-dir
+loop instrumented to log each new_path (file-append probe).
+
+Fixed earlier this wave: os.chmod/chown/chroot libc arms in call_os
+(wave-28b committed), max(default=) semantics, os supports_* sets.
