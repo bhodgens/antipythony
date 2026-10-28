@@ -1123,3 +1123,23 @@ creation, and in runner.py's call_and_report/teardown print
 id(pyfuncitem)/id(request.node) — confirm duplication, then find
 where the duplicate is created (likely from_parent identity or the
 genitems wrapper resume creating a second object).
+
+## Wave-28b (2026-10-28): os surface + duplicate-module finding
+
+Added to the os module surface: chmod/lchmod/chown/lchown/chflags/
+lchflags/chroot/statvfs/sync fns + supports_follow_symlinks/
+supports_effective_ids/supports_dir_fd sets + supports_bytes_environ.
+posixpath: supports_follow_symlinks/supports_bytes_environ.
+
+NEWLY IDENTIFIED ROOT (blocks tmp_path): module duality — the
+runtime importer recreates the `os` module object mid-run (native
+registry get_or_make_module path for submodule imports), so modules
+imported BEFORE see one os (with chmod) and code importing AFTER a
+submodule import gets a fresh os namespace missing the fn markers.
+tmpdir.py reads os.chmod at import -> AttributeError. Same duality
+family as the wave-27 duplicate-Function-objects finding.
+
+NEXT SESSION (single focus): make get_or_make_module return the
+CACHED module from SYS_MODULES for already-imported names (os etc)
+instead of rebuilding; then re-verify tmp_path/monkeypatch/capsys
+fixture tests (test_fix2.py).

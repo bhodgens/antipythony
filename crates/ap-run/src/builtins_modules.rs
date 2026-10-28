@@ -7092,6 +7092,14 @@ fn build_os(_i: &crate::frame::Interpreter) -> Value {
         "write",
         "lseek",
         "chmod",
+        "lchmod",
+        "chown",
+        "lchown",
+        "chflags",
+        "lchflags",
+        "chroot",
+        "statvfs",
+        "sync",
         "umask",
         // T1-d fix (shutil chains): utime/pipe must exist on the os module
         // surface (shutil copies utime; the file:// gate touches shutil).
@@ -7112,6 +7120,39 @@ fn build_os(_i: &crate::frame::Interpreter) -> Value {
         "uname",
     ] {
         fn1(&ns, "os", n);
+    }
+    // T2 (pytest tmpdir: os.stat in os.supports_follow_symlinks): the
+    // supports_* sets — treat all listed fns as supported.
+    {
+        let sup = PyList::from_vec(vec![
+            s("stat"),
+            s("statvfs"),
+            s("chown"),
+            s("chmod"),
+            s("chflags"),
+            s("rename"),
+            s("replace"),
+            s("remove"),
+            s("unlink"),
+            s("mkdir"),
+            s("mkfifo"),
+            s("mknod"),
+            s("symlink"),
+            s("link"),
+            s("truncate"),
+            s("utime"),
+            s("chdir"),
+            s("lchflags"),
+            s("lchmod"),
+            s("chroot"),
+        ]);
+        let _ = ns.set(s("supports_follow_symlinks"), Value::List(sup.clone()));
+        let _ = ns.set(s("supports_effective_ids"), Value::List(sup.clone()));
+        let _ = ns.set(s("supports_dir_fd"), Value::List(sup));
+        let _ = ns.set(
+            s("supports_bytes_environ"),
+            Value::Bool(true),
+        );
     }
     // os.path submodule link + os.error is OSError (SAME object as the
     // builtin OSError name — pull it from the builtins dict so identity
@@ -8144,6 +8185,10 @@ fn build_posixpath(_i: &crate::frame::Interpreter) -> Value {
     ns_const(&ns, "defpath", s(":"));
     ns_const(&ns, "devnull", s("/dev/null"));
     ns_const(&ns, "ALLOW_MISSING", i(1));
+    // T2 (pytest tmp_path fixture): os.path.supports_follow_symlinks
+    // boolean — the fixture probes it in get_user_id().
+    ns_const(&ns, "supports_follow_symlinks", Value::Bool(true));
+    ns_const(&ns, "supports_bytes_environ", Value::Bool(true));
     for n in [
         "join",
         "split",
