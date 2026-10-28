@@ -1392,3 +1392,35 @@ NEXT SESSION: log the hook name at HookCaller.__call__ entry
 (py-level probe, one line) to identify WHICH hook fires after
 shutdown; then either defer that hook before shutdown or fix the
 cleared-state read.
+
+## Wave-38 FINAL: CAPSYS ROOT CAUSE FOUND
+
+Hook-name probe (HookCaller.__call__): the fatal hook is
+pytest_fixture_setup for capsys. Progress probes inside the capsys
+fixture body: dies at `capture_fixture._start()`.
+
+ROOT CAUSE: CaptureIO(io.TextIOWrapper) instances are HOLLOW -
+isinstance(CaptureIO(), io.TextIOWrapper) == False and the
+instance lacks ALL native stream methods (write/read/seek). The
+TextIOWrapper builtin-base subclass ctor creates a plain
+UserInstance without native stream delegation. SysCapture then
+installs it as sys.stdout; print/write paths calling its missing
+methods produce the NoneType-call (write resolved to None).
+
+Same bug family as wave-23's `class T(list)` builtin-base
+derivation (partially landed for list/tuple/set via
+__ap_base_<base>__init__ markers). TextIOWrapper (and other
+stream bases) need the same treatment: builtin-base subclass
+instances must BE stream objects (carry <buf>/<pos>/<encoding>)
+with method dispatch, plus isinstance recognition.
+
+FIX PLAN (wave-39): in classes.rs instantiate(), when a base in
+the MRO is a builtin stream type (TextIOWrapper/Buffered*/Raw*),
+create the stream Opaque object (make_stream-equivalent) with the
+user __init__ applied, register the user class in its type chain
+for isinstance, and route method dispatch through the native
+stream surface.
+
+Verified this wave: fd primitives real (fdopen/mkstemp/dup,
+def8b53); all investigation probes removed; staging parse-clean;
+gates green (T2 minimal, FD-OK, cargo 0 failed).
