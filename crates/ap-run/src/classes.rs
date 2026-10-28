@@ -2306,12 +2306,37 @@ pub fn special_lookup(interp: &Interpreter, v: &Value, name: &str) -> Option<(Va
 /// misses raise AttributeError with the pinned text (caller distinguishes
 /// via the `quiet` form below when it needs Option semantics).
 pub fn attr_get_protocol(interp: &Rc<Interpreter>, obj: &Value, name: &str) -> EResult {
-    attr_get_opt(interp, obj, name)?.ok_or_else(|| {
-        raise(
+    match attr_get_opt(interp, obj, name)? {
+        Some(v) => Ok(v),
+        // T2 fix: frame-protocol attrs must never AttributeError on ANY
+        // object - frame walkers read frame.f_back / frame.f_code during
+        // exception unwinds; a miss REPLACES the in-flight exception
+        // (pytest Skipped) and derails the runtest protocol.
+        None if name == "f_back" && matches!(obj, Value::Obj(_)) => Ok(Value::None),
+        None if name == "f_code" && matches!(obj, Value::Obj(_)) => {
+            let code = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<code>");
+            {
+                let mut cattrs = code.attrs.borrow_mut();
+                let _ = cattrs.set(
+                    Value::Str(PyString::new("co_filename")),
+                    Value::Str(PyString::new("<antipythany>")),
+                );
+                let oname = match obj {
+                    Value::Obj(o) => o.name.clone(),
+                    _ => "<anon>".to_string(),
+                };
+                let _ = cattrs.set(
+                    Value::Str(PyString::new("co_name")),
+                    Value::Str(PyString::new(oname)),
+                );
+            }
+            Ok(Value::Obj(code))
+        }
+        None => Err(raise(
             "AttributeError",
             format!("'{}' object has no attribute '{}'", type_name_of(obj), name),
-        )
-    })
+        )),
+    }
 }
 
 /// The display type name used in attribute errors (class name for

@@ -713,3 +713,36 @@ global fd capture active: capman activates GLOBAL capture earlier in
 the session), throw Skipped, observe. Then fix gen.throw() resume in
 generators.rs. Also fix gi_code to expose f_code (used by
 _raise_wrapfail).
+
+## Wave-15 (2026-10-28): frame-protocol hardening + loop-stall isolated
+
+FIXES LANDED (gates 412/0/1 held):
+1. Chained stub frames (builtins.rs sys._getframe chain + interp.rs
+   f_back arm) now carry f_code (co_filename/co_name) - _py_warnings
+   walk_stack reads frame.f_code.co_filename on every step.
+2. Frame-protocol fallback at BOTH attr layers: interp.rs generic
+   Namespace arm + classes.rs attr_get_protocol now answer f_back
+   (None) and f_code (stub code object) for ANY object instead of
+   raising AttributeError. Rationale: a miss during an unwind REPLACES
+   the in-flight exception.
+3. CRITICAL DIAGNOSTIC LESSON: the long-running "f_back AttributeError"
+   was OUR OWN STALE PROBE - the [SKIPPED-INIT] instrumentation in
+   outcomes.py called traceback.format_stack, whose frame walk hit
+   frames lacking f_back. REMOVED. Lesson: instrument with
+   print-only probes; never format tracebacks from probe code on this
+   runtime (frame surfaces are incomplete).
+
+REMAINING BLOCKER (single, now precisely characterized): in the REAL
+pytest run, the setup multicall for item 2 iterates its 6 impls but
+STOPS after the 2 wrapper impls (LoggingPlugin, CaptureManager) are
+dispatched - the 4 plain impls never dispatch (PLAIN-CALL probe in
+pluggy's else-branch never prints). The plain-impl else branch is
+never reached. The loop's continuation is lost after the SECOND
+generator first-yield next() dispatch. Synthetic reversed()+generator
+in for-loop repros PASS - the trigger needs HookImpl method-wrapper
+dispatch (kwargs binding, bound methods, capture fd juggling).
+NEXT: bisect which wrapper's next() kills the loop: register ONLY
+CaptureManager wrapper + plain impl (drop Logging) in the synthetic
+multicall (t2thr9.py shape), then ONLY Logging. Whichever wrapper
+kills the loop is the bug site; then fix its next()/generator frame
+interaction in generators.rs.

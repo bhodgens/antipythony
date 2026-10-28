@@ -9427,6 +9427,25 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                     Value::Str(PyString::new("f_lineno")),
                     Value::Int(Int::from_i64(1)),
                 );
+                // T2 fix: chained frames need f_code - frame walkers read
+                // frame.f_code.co_filename on every step; a miss replaced
+                // the in-flight exception (pytest Skipped).
+                let code2 = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<code>");
+                {
+                    let mut cattrs = code2.attrs.borrow_mut();
+                    let _ = cattrs.set(
+                        Value::Str(PyString::new("co_filename")),
+                        Value::Str(PyString::new("<antipythany>")),
+                    );
+                    let _ = cattrs.set(
+                        Value::Str(PyString::new("co_name")),
+                        Value::Str(PyString::new("<chained>")),
+                    );
+                }
+                let _ = fb.attrs.borrow_mut().set(
+                    Value::Str(PyString::new("f_code")),
+                    Value::Obj(code2),
+                );
                 return Ok(Some(Value::Obj(fb)));
             }
             ap_obj::ObjKind::Module => {
@@ -9558,6 +9577,29 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 // attrs answer by name.
                 if let Some(v) = o.attrs.borrow().get(&Value::Str(PyString::new(name))) {
                     return Ok(Some(v));
+                }
+                // T2 fix: frame-protocol attrs must never AttributeError -
+                // frame walkers read frame.f_back / frame.f_code during
+                // exception unwinds; a miss REPLACES the in-flight
+                // exception (pytest Skipped) and derails the runtest
+                // protocol.
+                if name == "f_back" {
+                    return Ok(Some(Value::None));
+                }
+                if name == "f_code" {
+                    let code = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<code>");
+                    {
+                        let mut cattrs = code.attrs.borrow_mut();
+                        let _ = cattrs.set(
+                            Value::Str(PyString::new("co_filename")),
+                            Value::Str(PyString::new("<antipythany>")),
+                        );
+                        let _ = cattrs.set(
+                            Value::Str(PyString::new("co_name")),
+                            Value::Str(PyString::new(o.name.clone())),
+                        );
+                    }
+                    return Ok(Some(Value::Obj(code)));
                 }
                 Ok(None)
             }
@@ -10207,6 +10249,30 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
         // primitive-valued class attributes (bools etc.) — CPython exposes
         // __doc__ on every type's instances; primitives carry None.
         _ if name == "__doc__" => Ok(Some(Value::None)),
+        // T2 fix: frame-protocol attrs must never AttributeError on ANY
+        // object - frame walkers read frame.f_back / frame.f_code during
+        // exception unwinds; a miss REPLACES the in-flight exception
+        // (pytest Skipped) and derails the runtest protocol.
+        _ if name == "f_back" && matches!(obj, Value::Obj(_)) => Ok(Some(Value::None)),
+        _ if name == "f_code" && matches!(obj, Value::Obj(_)) => {
+            let code = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<code>");
+            {
+                let mut cattrs = code.attrs.borrow_mut();
+                let _ = cattrs.set(
+                    Value::Str(PyString::new("co_filename")),
+                    Value::Str(PyString::new("<antipythany>")),
+                );
+                let oname = match obj {
+                    Value::Obj(o) => o.name.clone(),
+                    _ => "<anon>".to_string(),
+                };
+                let _ = cattrs.set(
+                    Value::Str(PyString::new("co_name")),
+                    Value::Str(PyString::new(oname)),
+                );
+            }
+            Ok(Some(Value::Obj(code)))
+        }
         _ => Ok(None),
     }
 }

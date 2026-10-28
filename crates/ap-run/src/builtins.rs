@@ -2652,6 +2652,26 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
                         Value::Str(PyString::new("f_globals")),
                         Value::Dict(interp.globals.clone()),
                     );
+                    // T2 fix: chained frames need f_code - _py_warnings
+                    // reads frame.f_code.co_filename on every walk step;
+                    // missing f_code raised AttributeError mid-unwind and
+                    // replaced the in-flight exception (pytest Skipped).
+                    let code = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<code>");
+                    {
+                        let mut cattrs = code.attrs.borrow_mut();
+                        let _ = cattrs.set(
+                            Value::Str(PyString::new("co_filename")),
+                            Value::Str(PyString::new(interp.script_path.clone())),
+                        );
+                        let _ = cattrs.set(
+                            Value::Str(PyString::new("co_name")),
+                            Value::Str(PyString::new("<module>")),
+                        );
+                    }
+                    let _ = fb.attrs.borrow_mut().set(
+                        Value::Str(PyString::new("f_code")),
+                        Value::Obj(code),
+                    );
                     Value::Obj(fb)
                 } else {
                     Value::None
