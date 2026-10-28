@@ -7814,13 +7814,21 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
             "open" if matches!(args.get(1), Some(Value::Int(_))) => {
                 let fd_path = str_arg(required(args, "open")?, "open")?;
                 let flags = as_int_i64(args.get(1).unwrap())? as i32;
+                let py_mode = match args.get(2) {
+                    Some(v) => as_int_i64(v)? as u32,
+                    None => 0o644,
+                };
                 let c_path = std::ffi::CString::new(fd_path.as_str())
                     .map_err(|_| raise("ValueError", "embedded null byte"))?;
                 let dfd = match kw(_kwargs, "dir_fd") {
                     Some(v) if !matches!(v, Value::None) => as_int_i64(v)? as i32,
                     _ => libc::AT_FDCWD,
                 };
-                let fd = unsafe { libc::openat(dfd, c_path.as_ptr(), flags) };
+                // O_CREAT requires the mode argument; without it new
+                // files get 0o000 (sandbox reads then EACCES - the
+                // '.lock'/log-file ghosts).
+                let mode = if flags & libc::O_CREAT != 0 { py_mode } else { 0 };
+                let fd = unsafe { libc::openat(dfd, c_path.as_ptr(), flags, mode) };
                 if fd < 0 {
                     return Err(io_flow_path(
                         std::io::Error::last_os_error(),
