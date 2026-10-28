@@ -1081,3 +1081,24 @@ investigation is follow-up (affects fixture-dependent tests that
 rely on request-time fills).
 
 Gates after fix: cargo 412/0/1; T2 gate still green.
+
+## Wave-26 (2026-10-28): Scope comparison + os.getuid fixes
+
+1. Reflected comparison ops (user_compare): `a > b` / `a >= b` now
+   fall back to b.__lt__(a) / b.__le__(a) (and Lt/LtE to reflected
+   __gt__/__ge__) per CPython operator semantics. Unblocks
+   functools.total_ordering classes — pytest's Scope enum
+   (@total_ordering + Enum) compares correctly now (was
+   "'>' not supported between Scope and Scope" in FixtureDef.execute
+   during fixture setup).
+2. os.getuid/getgid/geteuid/getegid added to the os surface (tmp_path
+   fixture's get_user_id).
+
+VERIFIED next blocker in built-in fixtures (test_fix2.py with
+tmp_path/monkeypatch/capsys): 'ExceptionInfo' object has no attribute
+'traceback' during fixture-error report formatting. ExceptionInfo is
+a Generic[E] dataclass — instances created via from_exception on our
+runtime lose the CLASS (so the class-level `traceback` property
+isn't found). Suspect: Generic dataclass creation through
+instantiate() with TypeVar bases produces a broken class object.
+Gates: 412/0/1.

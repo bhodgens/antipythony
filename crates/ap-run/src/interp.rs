@@ -7216,8 +7216,21 @@ fn user_compare(
         CmpOp::GtE => "__ge__",
         _ => return None,
     };
+    // CPython reflected-op mapping: `a > b` falls back to
+    // b.__lt__(a); `a >= b` falls back to b.__le__(a). total_ordering
+    // classes (functools) often define only __lt__/__eq__, so the
+    // reflected lookup is REQUIRED for `>` / `>=` to work at all.
+    let rslot = match op {
+        CmpOp::Gt => Some("__lt__"),
+        CmpOp::GtE => Some("__le__"),
+        CmpOp::Lt => Some("__gt__"),
+        CmpOp::LtE => Some("__ge__"),
+        _ => None,
+    };
     let a_slot = crate::classes::special_lookup(interp, a, slot);
     let b_slot = crate::classes::special_lookup(interp, b, slot);
+    let b_rslot = rslot.and_then(|rs| crate::classes::special_lookup(interp, b, rs));
+    let a_rslot = rslot.and_then(|rs| crate::classes::special_lookup(interp, a, rs));
     let call_slot = |f: &Value, x: &Value, y: &Value| {
         call_value(interp, &module_frame_pub(), f, &[x.clone(), y.clone()], &[])
     };
@@ -7231,6 +7244,12 @@ fn user_compare(
             Some(r.map(|v| v.is_truthy()))
         }
     };
+    // Reflected call: `a OP b` via b ROP a — the result of the
+    // reflected slot is already the answer (no negation needed for
+    // lt/gt pairs; le/ge likewise).
+    let reflected_pair = |f: &Value| -> Option<Result<bool, Flow>> {
+        try_one(f, b, a)
+    };
     if b_proper {
         if let Some((f, _)) = &b_slot {
             if let Some(r) = try_one(f, b, a) {
@@ -7242,6 +7261,16 @@ fn user_compare(
                 return Some(r);
             }
         }
+        if let Some((rf, _)) = &a_rslot {
+            if let Some(r) = try_one(rf, a, b) {
+                return Some(r);
+            }
+        }
+        if let Some((rf, _)) = &b_rslot {
+            if let Some(r) = reflected_pair(rf) {
+                return Some(r);
+            }
+        }
     } else {
         if let Some((f, _)) = &a_slot {
             if let Some(r) = try_one(f, a, b) {
@@ -7250,6 +7279,16 @@ fn user_compare(
         }
         if let Some((f, _)) = &b_slot {
             if let Some(r) = try_one(f, b, a) {
+                return Some(r);
+            }
+        }
+        if let Some((rf, _)) = &b_rslot {
+            if let Some(r) = reflected_pair(rf) {
+                return Some(r);
+            }
+        }
+        if let Some((rf, _)) = &a_rslot {
+            if let Some(r) = try_one(rf, a, b) {
                 return Some(r);
             }
         }

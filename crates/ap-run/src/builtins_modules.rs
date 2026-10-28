@@ -7056,6 +7056,10 @@ fn build_os(_i: &crate::frame::Interpreter) -> Value {
         "getcwdb",
         "listdir",
         "getpid",
+        "getuid",
+        "getgid",
+        "geteuid",
+        "getegid",
         "getppid",
         "waitpid",
         "wait",
@@ -7302,6 +7306,17 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                 Ok(Value::Obj(it))
             }
             "getpid" => Ok(i(std::process::id() as i64)),
+            "getuid" | "geteuid" => {
+                #[cfg(target_os = "macos")]
+                {
+                    Ok(i(unsafe { libc::getuid() as i64 }))
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    Ok(i(unsafe { libc::getuid() as i64 }))
+                }
+            }
+            "getgid" | "getegid" => Ok(i(unsafe { libc::getgid() as i64 })),
             // 02.08-c: os.waitpid stub (subprocess.py import surface; the v1
             // runtime never spawns children) — block forever-free, return
             // (0, 0) like a reaped unknown child.
