@@ -3342,6 +3342,40 @@ fn call_value_inner(
     args: &[Value],
     kwargs: &[(String, Value)],
 ) -> EResult {
+    // T2: env-gated call/return tracing (APX_CALLTRACE=<substr>) to catch
+    // frame-return misdirection across native/python boundary stacks.
+    let trace_filter = std::env::var("APX_CALLTRACE").ok();
+    let (trace_name, do_trace) = match (&trace_filter, f) {
+        (Some(filt), Value::Obj(o)) => {
+            let nm = o.name.clone();
+            let hit = nm.contains(filt.as_str());
+            (nm, hit)
+        }
+        _ => (String::new(), false),
+    };
+    if do_trace {
+        eprintln!("[CALL+] {}", trace_name);
+    }
+    let result = call_value_inner_impl(interp, caller, f, args, kwargs);
+    if do_trace {
+        match &result {
+            Ok(v) => eprintln!("[CALL-] {} -> ok {}", trace_name, v.type_name()),
+            Err(crate::Flow::Raise(ev)) => {
+                eprintln!("[CALL-] {} -> raise {}", trace_name, ev.class)
+            }
+            Err(_) => eprintln!("[CALL-] {} -> flow(other)", trace_name),
+        }
+    }
+    result
+}
+
+fn call_value_inner_impl(
+    interp: &Rc<Interpreter>,
+    caller: &Rc<Frame>,
+    f: &Value,
+    args: &[Value],
+    kwargs: &[(String, Value)],
+) -> EResult {
     match f {
         Value::Obj(o) => {
             match o.kind {
