@@ -594,3 +594,21 @@ impl raises Skipped-like BaseException, with a wrapper impl around it
 _multicall correctly. Fix in our exception propagation through
 generator teardown .throw() (generators.rs resume_live GenInput::Throw
 path interacting with pluggy's finally block).
+
+## MINIMAL DETERMINISTIC REPRO (/tmp/t2sk.py, 2026-10-27 final)
+
+Two impls of one hook: a wrapper (yield) + a trylast impl that raises
+a BaseException subclass (Skipped). Expected (CPython): the Skipped
+propagates out of pm.hook.call_hook() so from_call's `exc` captures it.
+Ours: r1=[], exc=None — the exception VANISHES inside pluggy's
+_multicall on our runtime (impl print also absent — suggesting the
+impl ordering or the exception capture in `except BaseException as
+exc` misbehaves).
+
+This repro is small, deterministic, self-contained, and needs NO pytest
+— pure pluggy + our runtime. Next session starts HERE: instrument
+_execution.py's `except BaseException as exc` and the teardown
+throw/resume path (instrumentation already partially in place), find
+where the Skipped disappears, and fix the Rust side (gen_pull /
+resume_live / GenInput::Throw interaction with pluggy's wrapper
+teardown protocol).
