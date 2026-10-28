@@ -1255,3 +1255,28 @@ T2 minimal gate stable green. Commit 3f183ee.
 NEXT: capsys stash-key duality (same family as os-module duality;
 likely fix = canonicalize module identity in sys.modules across
 import paths), then Tier-2 fixtures complete.
+
+## Wave-35 (2026-10-28): .lock ENOENT is a TEARDOWN-path error
+
+Findings:
+- Stash works correctly in isolation (set/get/identity all pass).
+  The [STASH-MISS] lines are BENIGN first-access setdefault
+  misses followed immediately by a set on the same stash.
+- OSError matching works (FileNotFoundError caught as OSError).
+- make_numbered_dir never silently no-ops (exists-check probe
+  never fired a noop).
+- The escaping FileNotFoundError on pytest-N/.lock surfaces at
+  _GeneratorContextManager.__exit__ during FIXTURE TEARDOWN
+  (ExitStack.close), not at creation. Suspects in
+  make_numbered_dir_with_cleanup's post-lock code: p.stat() on a
+  vanished dir (no swallow), or retention prune (keep=3, "all"
+  policy) deleting dirs then stat/lock on a removed one.
+- IMPORTANT probe lesson: MNDL print probes inside
+  make_numbered_dir_with_cleanup never appeared — verify probe
+  placement by running the function in isolation BEFORE trusting
+  silence (same discipline as wave-17).
+
+NEXT SESSION: run make_numbered_dir_with_cleanup standalone under
+our runtime (FakeConfig like t2bt2.py) to reproduce the teardown
+ENOENT deterministically, then fix the unswallowed stat/lock on
+the retention-cleanup path.
