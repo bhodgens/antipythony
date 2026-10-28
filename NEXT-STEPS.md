@@ -1201,3 +1201,19 @@ loop instrumented to log each new_path (file-append probe).
 
 Fixed earlier this wave: os.chmod/chown/chroot libc arms in call_os
 (wave-28b committed), max(default=) semantics, os supports_* sets.
+
+## Wave-32 addendum: scandir + mkdir verified correct in isolation
+
+os.scandir(root) lists all 32 entries correctly; standalone
+mkdir(mode=0o700) of pytest-901/2/3 succeeds. The lock-open failure
+was for pytest-29 which does NOT exist on disk -> the run's
+make_numbered_dir loop computed max=-1 (empty find_suffixes in ITS
+root context) and retried pytest-0.., while a CONCURRENT/prior run
+had created pytest-29 via a different root... Actually strongest
+theory: the loop's `except Exception: pass` swallowed a real mkdir
+error 10 times, then the OSError propagated; the .lock open error
+was a SECOND symptom.
+
+Next session: file-append probe inside make_numbered_dir loop
+logging each new_path + the swallowed exception (currently `pass`),
+then fix the real mkdir error (likely mode/umask or parent paths).
