@@ -6282,25 +6282,19 @@ fn iterable_of(v: &Value) -> Result<Gc<PyIterator>, Flow> {
     if let Value::Obj(o) = v {
         if o.kind == ap_obj::ObjKind::Generator {
             if let Some(id) = *o.gen_id.borrow() {
+                // T2 root fix (pytest genitems/extend): the old path installed
+                // an EMPTY Seq anchor for def-generators, so every collector
+                // that used iterable_of + collect (tuple/set/sorted/
+                // dict.update/list.extend on a PyList-with-generator arg)
+                // saw zero items. Return an IterState::Generator handle —
+                // pulls route through gen_pull for def-generators and
+                // through the materialized Seq for GenExprs, both correct.
                 let interp = interp_rc();
                 gen_materialize(&interp, id)?;
-                // Def-generators stay lazy: no Seq snapshot is installed, so
-                // install an empty ANCHOR entry under the gen id. pull_iter
-                // checks the generators registry FIRST, so the anchor only
-                // serves iter(gen) identity; the actual values come from the
-                // fiber. Genexprs DID install their Seq snapshot above.
-                {
-                    let its = interp.iterators.borrow();
-                    if its.get(&id).is_none() {
-                        drop(its);
-                        let anchor = PyIterator::new(IterState::Seq(vec![], 0));
-                        interp.iterators.borrow_mut().insert(id, anchor);
-                    }
-                }
-                let its = interp.iterators.borrow();
-                if let Some(it) = its.get(&id) {
+                if let Some(it) = interp.iterators.borrow().get(&id) {
                     return Ok(it.clone());
                 }
+                return Ok(PyIterator::new(IterState::Generator(id)));
             }
             return Ok(PyIterator::new(IterState::Seq(vec![], 0)));
         }

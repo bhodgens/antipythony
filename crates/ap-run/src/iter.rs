@@ -150,7 +150,20 @@ impl PyIterator {
                 }
             }
             IterState::DictKeys(it) => it.next(),
-            IterState::Generator(_) | IterState::Enumerate { .. } | IterState::Zip(_) => {
+            IterState::Generator(id) => {
+                // T2 root fix: resume through the interpreter. Collectors
+                // (list.extend, tuple, set, sorted, dict.update, snapshot)
+                // all pull via this method; returning None silently dropped
+                // every generator-driven drain (pytest collected 0 items).
+                match crate::builtins_modules::current_interp() {
+                    Some(ic) => match crate::interp::gen_pull_public(&ic, *id) {
+                        Ok(Some(v)) => Some(v),
+                        _ => None,
+                    },
+                    None => None,
+                }
+            }
+            IterState::Enumerate { .. } | IterState::Zip(_) => {
                 // These resume through the interpreter (they need frame
                 // access); handled in interp.rs, never via this method.
                 None
