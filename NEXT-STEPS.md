@@ -1102,3 +1102,24 @@ runtime lose the CLASS (so the class-level `traceback` property
 isn't found). Suspect: Generic dataclass creation through
 instantiate() with TypeVar bases produces a broken class object.
 Gates: 412/0/1.
+
+## Wave-27 (2026-10-28): tmp_path KeyError root = DUPLICATE ITEM OBJECTS
+
+tmp_path teardown KeyError root-caused: the makereport wrapper
+(tmpdir.py:350) does item.stash.setdefault(key,...) on ONE Function
+item instance; the fixture teardown reads request.node.stash[key] on
+a DIFFERENT Function instance for the same nodeid (setdefault ran 5x
+on the same key object across node stashes; the read missed).
+=> collection/runner creates DUPLICATE Function objects per
+parametrized node (or request.node re-wraps), so stash state set on
+one is invisible on the other. Also explains earlier "setup error
+then teardown KeyError" patterns.
+Probe state: stash.py setdefault stderr probe + tmpdir.py
+/tmp/tmppath_probe.txt id(item) probe are ACTIVE in staging (remove
+once fixed).
+
+NEXT SESSION: in python.py's generate loop print id(item) at
+creation, and in runner.py's call_and_report/teardown print
+id(pyfuncitem)/id(request.node) — confirm duplication, then find
+where the duplicate is created (likely from_parent identity or the
+genitems wrapper resume creating a second object).
