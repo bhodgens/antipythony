@@ -143,3 +143,21 @@ non-matching. Verify: instrument pluggy/_execution.py _multicall with a
 stderr print of hook_impls length (site-packages is test-data-only) —
 if 0, the gap is in HookImpl._from_hookimpl/varnames; if N, the gap is
 in the wrapper-drive loop.
+
+## Wave-4 addendum 3 (CONFIRMED root, 2026-10-27)
+
+pluggy add_hookspecs(module) RAISES 'did not find any hooks' — hookspec
+discovery iterates the module's attributes and finds NONE. Our native
+Module objects (ObjKind::Module) do not enumerate their namespace
+through the paths pluggy uses (dir(module)/vars(module) → attribute
+getattr chain). The earlier 'working' run used a CLASS as hookspec
+holder (class attr enumeration works) which is why pytest config-time
+hooks (registered via class instances) ran, but module-style plugin
+registration yields zero hookimpls → every ihook call returns empty →
+silent skips everywhere (collection reports, runtest protocol,
+verdicts).
+
+Concrete fix (next session): make dir(module) / vars(module) /
+getattr-chain enumeration work for ObjKind::Module values, OR wire
+pluggy's add_hookspecs plugin-name discovery through module_ns directly.
+Test: /tmp/t2hw4.py (add_hookspecs must not raise; impl count == 2).
