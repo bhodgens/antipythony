@@ -1164,3 +1164,17 @@ native-registry submodule path re-execs parents, (c) pytest's
 importmode=importlib path double-imports. Fix: make module exec
 idempotent via SYS_MODULES check at the exec site (the runtime
 importer may exec without inserting into SYS_MODULES first).
+
+## Wave-30 (2026-10-28): chmod investigation status
+
+The fixture-tier os.chmod failure: the receiving module lacks chmod
+but APX_ATTRMISS is silent (read via a non-instrumented path).
+Suspect: with _install now running (sys.path_hooks populated), some
+lazily-imported module loaded a REAL CPython os.py via the new
+FileFinder (which supports_follow_symlinks DOES have chmod — so
+probably not). Next probe: in the fixture-error frame, print
+repr(the_os) and the_os.__dict__ size to identify which module
+object it is. Also remove the leftover [TD-ERR]/[OS-MOD] probes in
+pluggy/_execution.py once done.
+
+T2 minimal gate: STABLE GREEN across all runs this session.
