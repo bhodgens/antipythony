@@ -629,3 +629,27 @@ return path. Next session: instrument pluggy _multicall's
 `return result` lines with stderr traces, run the real pytest flow,
 and find which return statement executes and what it returns. The
 `int - NoneType` then identifies the consumer that got None.
+
+## Wave-11 addendum (2026-10-27, DEFINITIVE data point)
+
+Instrumented the REAL failing run: pytest_pyfunc_call's multicall ends
+with `exception=Failed('async def functions are not natively
+supported')` — async_fail DID fire for test_pass in that run. Yet
+probing the same hook in other runs shows
+is_async_function(test_pass) = False (both inspect legs). CONFIRMED
+NONDETERMINISTIC across runs of the same binary/args — import-order or
+module-state dependent.
+
+Working theory: our runtime's `from inspect import iscoroutinefunction`
+binding in _pytest/compat.py resolves to a DIFFERENT callable depending
+on import interleaving (e.g., our importer's from-import snapshot vs
+live dict), or inspect module state diverges between import orders.
+Under CPython both legs are always False.
+
+Next session (single focus): run t2run36 under our runtime 5x with
+compat.py instrumented (CAF probe restored); if nondeterministic,
+print `id(iscoroutinefunction)` + `iscoroutinefunction.__module__`
+inside is_async_function each call and compare ids across runs. That
+identifies whether the from-import binding flips between the real
+inspect function and a runtime marker — then fix our from-import
+resolution (or the marker) accordingly.
