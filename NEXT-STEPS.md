@@ -405,3 +405,17 @@ parse (plugin=runner.py module) may fail for module-level hookimpl
 functions because OUR module attr lookup on ObjKind::Module during
 FIBER execution skips BuiltinFn/Function-kind values created by the
 importer (vs regular attribute reads outside fibers).
+
+## Wave-9 final (2026-10-27): repro lessons
+
+Two more invalid repros (impl name mismatch; registration timing) —
+retracted. Building a faithful pluggy repro requires mirroring
+pytest's structure exactly. RECOMMENDED APPROACH for next session:
+skip synthetic repros. Instead, run the real pytest flow with
+pluggy/_caller.py and pluggy/_execution.py instrumented (stderr prints
+of hook name + len(hook_impls) + HookCaller identity) — the previous
+instrumentation caught pytest hooks firing OUTSIDE genitems but we
+never verified whether pytest_itemcollected's _multicall runs INSIDE
+the genitems fiber with a non-empty impl list. That single data point
+(decide: empty-impl-list vs never-called vs called-but-result-dropped)
+directly selects which runtime layer to fix.
