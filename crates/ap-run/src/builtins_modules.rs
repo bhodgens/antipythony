@@ -6992,17 +6992,22 @@ fn build_os(_i: &crate::frame::Interpreter) -> Value {
         ("W_OK", 1),
         ("R_OK", 2),
         ("X_OK", 1),
-        ("O_RDONLY", 0o0),
-        ("O_WRONLY", 0o1),
-        ("O_RDWR", 0o2),
-        ("O_CREAT", 0o100),
-        ("O_TRUNC", 0o1000),
-        ("O_APPEND", 0o2000),
+        ("O_RDONLY", libc::O_RDONLY as i64),
+        ("O_WRONLY", libc::O_WRONLY as i64),
+        ("O_RDWR", libc::O_RDWR as i64),
+        ("O_CREAT", libc::O_CREAT as i64),
+        ("O_TRUNC", libc::O_TRUNC as i64),
+        ("O_APPEND", libc::O_APPEND as i64),
         // T1-d fix (tempfile chains): O_EXCL is required by
         // tempfile.mkstemp/O_CREAT|O_EXCL open patterns.
-        ("O_EXCL", 0o200),
+        // T2: all O_* flags now use libc values (the old octal Linux
+        // values were wrong on macOS: O_CREAT=0o1000, O_TRUNC=0o2000,
+        // O_APPEND=0o200000, O_EXCL=0o2000).
+        ("O_EXCL", libc::O_EXCL as i64),
         ("O_NOINHERIT", 0),
         ("O_TEMPORARY", 0),
+        ("O_NOFOLLOW", libc::O_NOFOLLOW as i64),
+        ("O_SYNC", libc::O_SYNC as i64),
     ] {
         ns_const(&ns, k, i(v));
     }
@@ -12458,7 +12463,14 @@ pub fn call_io(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option
                 Ok(Value::None)
             }
             "__enter__" => Ok(required(args, "__enter__")?.clone()),
-            "__exit__" => Ok(Value::Bool(false)),
+            // T2 fix: the file CM __exit__ MUST close (flush) the file —
+            // a bare `false` left every `with open(...) as f:` write
+            // unflushed (write_text/read_text roundtrip returned '').
+            "__exit__" => {
+                let recv = required(args, "__exit__")?;
+                let _ = call_io("close", std::slice::from_ref(recv), &[]);
+                Ok(Value::Bool(false))
+            }
             "peek" => {
                 let (data, pos, _) = stream_parts(required(args, "peek")?)?;
                 Ok(Value::Bytes(Gc::new(data[pos..].to_vec())))
