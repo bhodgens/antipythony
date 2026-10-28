@@ -746,3 +746,29 @@ CaptureManager wrapper + plain impl (drop Logging) in the synthetic
 multicall (t2thr9.py shape), then ONLY Logging. Whichever wrapper
 kills the loop is the bug site; then fix its next()/generator frame
 interaction in generators.rs.
+
+## Wave-16 addendum: bisect results
+
+Synthetic bisects all PASS (Capture wrapper alone, Logging wrapper
+alone, both + global capture + plain raiser, reversed-loop + generator
+per-iteration). The loop-stall does NOT reproduce outside the full
+pytest env. All wrapper dispatches complete in isolation.
+
+Note: the [DISP] probe placement initially misled - wrapper=True impls
+go through the elif branch (new-style), not the hookwrapper branch.
+[DISP2] confirmed: per item, exactly the 2 wrapper impls dispatch
+their first-yield; the 4 plain impls never dispatch; the loop then
+ends silently.
+
+NEXT SESSION: instrument inside the elif branch AFTER next(function_gen)
+to see if next() RETURNS (loop should continue - then inspect the
+iterator state) vs next() raising StopIteration (would hit
+_raise_wrapfail) vs next() never returning control. Also compare
+hook_impls identity: print id(hook_impls) and len at loop entry vs
+after each iteration - if the Sequence shrinks (a plugin REMOVES
+impls mid-loop - pluggy _remove_plugin!), that's the mechanism: one
+of the wrapper's pre-yield code (Logging's catching_logs) may
+register/unregister plugins, and our runtime's list mutation during
+reversed() iteration may TRUNCATE the iteration. CPython tolerates
+this because reversed() takes a snapshot; our reversed may iterate
+the LIVE list by index!
