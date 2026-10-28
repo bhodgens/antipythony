@@ -1143,3 +1143,24 @@ NEXT SESSION (single focus): make get_or_make_module return the
 CACHED module from SYS_MODULES for already-imported names (os etc)
 instead of rebuilding; then re-verify tmp_path/monkeypatch/capsys
 fixture tests (test_fix2.py).
+
+## Wave-29 (2026-10-28): module duality CONFIRMED for tmpdir
+
+In a fresh pytest run (t2fix24.py), at import time tmpdir.os HAS
+chmod (same object as compat.os). Yet during FixtureDef.execute the
+error 'module os has no attribute chmod' still fires — meaning
+tmpdir.py (or the module holding the failing code) is executed a
+SECOND time in a context whose `os` is a bare rebuild lacking the
+fn1 markers. The second copy's module-level
+`os.chmod in os.supports_follow_symlinks` raises, the fixture is
+marked errored, and the teardown KeyError cascade follows.
+
+ACTION (next session, single focus): find the SECOND execution of
+tmpdir.py — instrument the importer (import_module_inner) to log
+module name + id + __name__ on every exec of _pytest/tmpdir.py and
+of the os module build. Likely causes: (a) conftest.py collection
+re-imports with a different sys.path context, (b) our importer's
+native-registry submodule path re-execs parents, (c) pytest's
+importmode=importlib path double-imports. Fix: make module exec
+idempotent via SYS_MODULES check at the exec site (the runtime
+importer may exec without inserting into SYS_MODULES first).
