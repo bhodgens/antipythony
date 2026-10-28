@@ -4842,6 +4842,22 @@ fn call_type_ctor(
     if name == "classmethod" || name == "staticmethod" {
         return make_descr(interp, name, args);
     }
+    // T2 (pytest threadexception cleanup): threading.ExceptHookArgs() —
+    // a namespace of the four hook fields; unset fields are None (CPython
+    // signature: exc_type, exc_value, exc_traceback, thread).
+    if name == "ExceptHookArgs" {
+        let o = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "ExceptHookArgs");
+        {
+            let mut a = o.attrs.borrow_mut();
+            for f in ["exc_type", "exc_value", "exc_traceback", "thread"] {
+                let _ = a.set(Value::Str(PyString::new(f)), Value::None);
+            }
+            for (k, v) in kwargs {
+                let _ = a.set(Value::Str(PyString::new(k.clone())), v.clone());
+            }
+        }
+        return Ok(Value::Obj(o));
+    }
     // 02.08-c fix: string.Formatter / string.Template — the native string
     // module surface interned name-Types (logging imports Formatter at module
     // scope and instantiates it). v0 ctor: a Namespace instance whose methods
@@ -7656,6 +7672,24 @@ fn class_isinstance(interp: &Rc<Interpreter>, args: &[Value]) -> EResult {
         }
         // Non-type second arg with a builtin subject: pinned TypeError
         // (c033 `isinstance(1, 2)`).
+        // T2 fix: X | Y unions (types.UnionType) are Namespace "_Union"
+        // objects with the member types parked in slice_parts (built by the
+        // binop arm); isinstance recurses over the members. The old check
+        // looked for Opaque "__union__" — a name/kind that never existed —
+        // so every union isinstance raised TypeError. That made
+        // `isinstance(obj, staticmethod | classmethod)` in pytest's
+        // istestfunction raise, silently killing collection (0 items).
+        if let Value::Obj(uo) = t {
+            if uo.kind == ap_obj::ObjKind::Namespace && uo.name == "_Union" {
+                let members: Vec<Value> = uo.slice_parts.borrow().clone();
+                for m in &members {
+                    if crate::classes::value_isinstance(interp, v, m)? {
+                        return Ok(Value::Bool(true));
+                    }
+                }
+                return Ok(Value::Bool(false));
+            }
+        }
         let is_union = matches!(t, Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque && o.name == "__union__");
         // 02.03b: descriptor pseudo-types (enum.py isinstance(value,
         // staticmethod) in EnumDict.__setitem__) — v0: staticmethod/
@@ -10183,6 +10217,7 @@ fn builtin_method_exists(name: &str) -> bool {
             | "symmetric_difference"
             | "symmetric_difference_update"
             | "pop"
+            | "popitem"
             | "get"
             | "fromkeys"
             | "setdefault"

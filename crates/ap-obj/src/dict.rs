@@ -262,6 +262,32 @@ impl PyDict {
         entry.map(|e| e.value)
     }
 
+    /// `d.popitem()` — remove and return the LAST inserted (key, value)
+    /// pair (CPython 3.7+ LIFO); None when empty.
+    pub fn popitem(&self) -> Option<(Value, Value)> {
+        let mut state = self.state.borrow_mut();
+        let slot = state
+            .entries
+            .iter()
+            .rposition(|e| e.is_some())?;
+        let entry = state.entries[slot].take();
+        // Find the index slot pointing at this entry and mark it dummy.
+        if let Some(h) = entry.as_ref().map(|e| Self::hash_of(&e.key).ok()) {
+            if let Some(hv) = h {
+                for (i, ix) in state.indices.iter().enumerate() {
+                    if *ix == slot as isize {
+                        state.indices[i] = DKIX_DUMMY;
+                        break;
+                    }
+                }
+                let _ = hv;
+            }
+        }
+        state.used -= 1;
+        state.dummies += 1;
+        entry.map(|e| (e.key, e.value))
+    }
+
     /// Insertion-ordered snapshot of live entries (cloned handles — the
     /// borrow must end before callers can re-enter the dict, e.g. repr
     /// recursion through a value whose `__repr__` mutates this dict).

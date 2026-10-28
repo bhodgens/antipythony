@@ -1751,7 +1751,30 @@ pub fn call_colorize(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -
             let t = PyObject::new(ap_obj::ObjKind::Namespace, "Theme");
             {
                 let mut a = t.attrs.borrow_mut();
-                for f in ["traceback", "frame", "prompt", "default"] {
+                // T2 fix: vendored traceback.py formats exceptions via
+                // theme.{type,reset,message,error_highlight,error_range,
+                // filename,frame,line_no} — no-color theme: every field is
+                // the empty string. Without these the f-string read dies
+                // with AttributeError and EVERY traceback render fails.
+                let sub = PyObject::new(ap_obj::ObjKind::Namespace, "traceback");
+                {
+                    let mut sa = sub.attrs.borrow_mut();
+                    for f in [
+                        "type",
+                        "reset",
+                        "message",
+                        "error_highlight",
+                        "error_range",
+                        "filename",
+                        "frame",
+                        "line_no",
+                        "color",
+                    ] {
+                        let _ = sa.set(s(f), s(""));
+                    }
+                }
+                let _ = a.set(s("traceback"), Value::Obj(sub));
+                for f in ["frame", "prompt", "default"] {
                     let sub = PyObject::new(ap_obj::ObjKind::Namespace, f);
                     let _ = sub.attrs.borrow_mut().set(s("color"), Value::None);
                     let _ = a.set(s(f), Value::Obj(sub));

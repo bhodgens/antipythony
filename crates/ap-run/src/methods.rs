@@ -962,6 +962,32 @@ pub fn subscript_del(obj: &Value, key: &Value) -> Result<(), Flow> {
                 None => Ok(()),
             }
         }
+        // T2 (pytest Stash.__delitem__: threadexception cleanup does
+        // `del config.stash[key]`): user instances answer del via their
+        // class __delitem__, same as the assignment path answers
+        // __setitem__.
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
+            let interp = crate::builtins_modules::current_interp()
+                .ok_or_else(|| raise("TypeError", "no interpreter for __delitem__"))?;
+            if let Some((f, _)) =
+                crate::classes::special_lookup(&interp, obj, "__delitem__")
+            {
+                return crate::interp::call_value_pub(
+                    &interp,
+                    &f,
+                    &[obj.clone(), key.clone()],
+                    &[],
+                )
+                .map(|_| ());
+            }
+            Err(raise(
+                "TypeError",
+                format!(
+                    "'{}' object doesn't support item deletion",
+                    obj.type_name()
+                ),
+            ))
+        }
         Value::Tuple(_) => Err(raise(
             "TypeError",
             "'tuple' object doesn't support item deletion",
@@ -1420,6 +1446,18 @@ pub fn call_method(
             match d.pop(k) {
                 Some(v) => Some(Ok(v)),
                 None => Some(Ok(dv)),
+            }
+        }
+        (Value::Dict(d), "popitem") => {
+            // T2 (pytest SetupState.teardown_exact): stack.popitem() —
+            // CPython LIFO: remove and return the last (key, value) pair;
+            // KeyError on an empty dict.
+            match d.popitem() {
+                Some((k, v)) => Some(Ok(Value::Tuple(Gc::new(Tuple(vec![k, v]))))),
+                None => Some(Err(raise(
+                    "KeyError",
+                    "popitem(): dictionary is empty",
+                ))),
             }
         }
         (Value::Set(s), "clear") => {
