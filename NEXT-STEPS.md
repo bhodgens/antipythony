@@ -179,3 +179,22 @@ Validated facts that still stand:
   pluggy/_callers.py _multicall old-style and new-style wrapper
   driving (teardown.send / next(teardown)) in the pytest process
   context next session.
+
+## Wave-5 narrowing (2026-10-27, final this session)
+
+Precise trigger isolated: patching ONLY Session.genitems to eager
+list(orig(self)) makes collection produce all 3 items and run tests.
+The ORIGINAL lazy generator drops items when DRIVEN through pytest's
+nested machinery (ihook multicall + from_call frames), while:
+- the same genitems logic in a hand-written repro works,
+- union isinstance works inside generators,
+- pluggy wrapper protocol (pre-yield/plain/post-yield) works,
+- bare generator send() works.
+
+The bug is the def-generator fiber resume when its caller frame chain
+includes native dispatch layers (our call_value_pub -> ihook -> _multicall
+-> wrapper gen). Root fix belongs in the generator/fiber resume path
+(crates/ap-run generators.rs) — likely frame state loss across the
+native-call boundary. Suggest: add a debug env var tracing
+gen_pull/resume_live with generator ids + call depth to catch where the
+lazy genitems' frames drop their children.
