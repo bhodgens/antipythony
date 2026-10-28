@@ -507,3 +507,17 @@ at teardown summary. No exception escapes any hookexec (verified).
 Suspect: silent BaseException (StopIteration or similar) escaping a
 from_call lambda inside runtestprotocol, unwinding to wrap_session's
 except chain which swallows it and converts to exit code 1.
+
+## Wave-11 (2026-10-27): precise failure point
+
+test_pass RUNS AND PASSES (pytest_pyfunc_call impl executed the test
+function). The failure is in the runtest_call wrapper TEARDOWN phase:
+after pyfunc_call returns True, the 3 wrapper teardowns (Logging,
+Capture, module-level) resume via teardown.send(result), and somewhere
+in that resume chain the runtestprotocol continuation is dropped (no
+makereport MC-entry, session unwinds, rc=1).
+
+Next session: instrument _execution.py teardown loop per-wrapper
+(print which wrapper's send/throw raised or returned unexpectedly) in
+the real pytest flow. The first wrapper whose resume misbehaves is the
+fix target. Also verify test_skip/test_fail behavior once fixed.
