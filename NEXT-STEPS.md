@@ -323,3 +323,24 @@ then fix is_async_function or the obj shape.
 
 The 'in -0.00s' negative duration is cosmetic (duration math with
 None/0 — trace sessionstart Instant wiring if it bothers anyone).
+
+## Determinism check (2026-10-27, session end)
+
+- With eager genitems + async_fail no-op: "1 passed" — milestone
+  reproducible.
+- WITHOUT the eager patch (original lazy genitems): collection reports
+  3 items but the runtest loop runs only item 1's setup, stalls at
+  test_pass, 'no tests ran', rc=1 — deterministic across 3 runs.
+- So the remaining runtime bug: the RECURSIVE yield-from genitems
+  generator (Session.genitems → yield from self.genitems(subnode)),
+  driven via PyList.extend through the new IterState::Generator pulls,
+  completes collection but the recursion + nested ihook calls
+  (pytest_itemcollected) inside it drop later items or corrupt the
+  runtest loop state. Simple (non-recursive) generator drains work.
+
+Next session: add a depth/trace env-var to gen_pull/resume_live, run
+the runner3 flow with tracing, find the exact recursion depth where
+the lazy genitems generator misbehaves vs the eager path. Likely the
+fiber's parent-frame resume loses the outer genitems generator's
+position when a nested ihook (pytest_itemcollected) re-enters the
+interpreter.
