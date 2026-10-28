@@ -440,3 +440,31 @@ where between 'pyfunc_call returns True' and 'logreport(call)' the
 continuation drops. Suspects: our runtime's StopIteration-as-value
 handling in wrapper teardown resume (si.value may come back None),
 or _Result.__force_result arithmetic.
+
+## Wave-10 (2026-10-27, session end): vanish precisely characterized
+
+Instrumented HookCaller.__call__ + _multicall for every call. Full
+sequence: [setup makereport → setup logreport → teststatus] →
+[runtest_call MC → 3 wrappers → pyfunc_call MC] → **sessionfinish**.
+NO exception escapes any hookexec (HOOKESC tracer silent). The call
+verdict hooks (makereport/logreport for 'call') never fire.
+
+=> runner.py's runtestprotocol stops executing right after
+`call_and_report(item, "call")` returns: the very next statement
+(`rep = ihook.pytest_runtest_makereport(...)`) never runs, and control
+appears to return past runtestprotocol directly to wrap_session
+(sessionfinish fires; 'no tests ran'; rc=1). The 'int - NoneType'
+TypeError is session-teardown duration math running with partially
+initialized state — a SECONDARY symptom of the same lost continuation.
+
+Working hypothesis: our runtime's function-return path unwinds to the
+wrong frame when a python lambda (from_call's arg) calls through a
+native dispatch layer (ihook → _multicall → wrapper gen resume) that
+itself executes interpreter code — i.e., a frame-return addressing bug
+across the native/python boundary in deep mixed stacks.
+
+Next session: add APX env-gated tracing to call_value return paths
+(print frame depth + function name on entry/exit), run t2runner3, and
+compare the observed unwind against the expected one. The first
+'wrong frame' jump localizes the bug in interp.rs call/return
+handling.
