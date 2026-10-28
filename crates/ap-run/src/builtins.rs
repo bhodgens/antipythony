@@ -214,6 +214,29 @@ pub fn builtin_len(args: &[Value]) -> BResult {
         Value::Tuple(t) => t.len(),
         Value::Dict(d) => d.len(),
         Value::Set(s) | Value::Frozen(s) => s.len(),
+        // T2: traceback objects - len(tb) = entry count (pytest's
+        // Traceback list semantics; ExceptionInfo.traceback returns the
+        // raw tb and callers len() it).
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::Namespace && o.name == "<traceback>" => {
+            if std::env::var("APX_TBDBG").is_ok() {
+                eprintln!("[LEN-TB] counted");
+            }
+            let mut n = 0usize;
+            if let Some(interp2) = crate::builtins_modules::current_interp() {
+                let mut cur = Some(v.clone());
+                while let Some(cv) = cur {
+                    n += 1;
+                    cur = match crate::interp::attr_get_public(&interp2, &cv, "tb_next") {
+                        Ok(Some(next_v)) => Some(next_v),
+                        _ => None,
+                    };
+                    if n > 1000 {
+                        break; // defensive: corrupted chain
+                    }
+                }
+            }
+            n
+        }
         Value::Obj(o) => match o.kind {
             ap_obj::ObjKind::Opaque if crate::gcsupport::is_weak_container(&o.name) => {
                 // 02.04 completion: weak containers report the LIVE count.
@@ -1066,6 +1089,15 @@ pub fn type_matches(v: &Value, want: &str) -> bool {
     }
     match (v, want) {
         (_, "object") => true,
+        // T2: fake-native traceback objects. The chain nodes are
+        // Namespace("<traceback>") values; types.TracebackType is the
+        // auto-class of the same shape, so isinstance must accept them
+        // (pytest's Traceback walker consumes them via tb_next).
+        (Value::Obj(o), "<traceback>")
+            if o.kind == ap_obj::ObjKind::Namespace && o.name == "<traceback>" =>
+        {
+            true
+        }
         // 02.08-full p2: isinstance(mm, re.Match) / isinstance(p, re.Pattern).
         (Value::Obj(o), "Match") if o.kind == ap_obj::ObjKind::Opaque && o.name == "re.Match" => {
             true
@@ -2790,6 +2822,9 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
                     let interp3 = interp2.rc();
                     // T2: prefer the exception's OWN tb entries (true raise
                     // site + frame chain); fall back to the global table.
+                    if std::env::var("APX_TBDBG").is_ok() {
+                        eprintln!("[EXCINFO] class={} tb_len={} tb={:?}", ev.class, ev.tb.len(), ev.tb);
+                    }
                     let tb = if !ev.tb.is_empty() {
                         crate::interp::build_tb_chain(&interp3.script_path, &ev.tb)
                     } else {

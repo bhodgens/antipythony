@@ -1574,7 +1574,7 @@ pub fn build_tb_chain(script: &str, entries: &[(String, usize)]) -> Value {
                 Value::Str(PyString::new("f_lineno")),
                 Value::Int(ap_obj::Int::from_i64(*line as i64)),
             );
-            let _ = attrs.set(Value::Str(PyString::new("f_back")), next);
+            let _ = attrs.set(Value::Str(PyString::new("f_back")), next.clone());
         }
         let tb = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<traceback>");
         let _ = tb.attrs.borrow_mut().set(
@@ -1585,6 +1585,10 @@ pub fn build_tb_chain(script: &str, entries: &[(String, usize)]) -> Value {
             Value::Str(PyString::new("tb_lineno")),
             Value::Int(ap_obj::Int::from_i64(*line as i64)),
         );
+        let _ = tb
+            .attrs
+            .borrow_mut()
+            .set(Value::Str(PyString::new("tb_next")), next.clone());
         next = Value::Obj(tb);
     }
     next
@@ -3926,6 +3930,40 @@ fn call_value_inner_impl(
                                 }
                                 d.set(k, dv.clone()).map_err(Flow::from_py)?;
                                 return Ok(dv);
+                            }
+                            _ => {}
+                        }
+                    }
+                    // T2: builtin-base __init__ via super() — extend the
+                    // receiver's backing collection from the iterable arg
+                    // (pytest Traceback(list): super().__init__(gen)).
+                    if o.name.starts_with("__ap_base_") && o.name.ends_with("__init__") {
+                        let subject = o
+                            .slice_parts
+                            .borrow()
+                            .first()
+                            .cloned()
+                            .unwrap_or(Value::None);
+                        let it = args.first().cloned();
+                        let base = o
+                            .name
+                            .trim_start_matches("__ap_base_")
+                            .trim_end_matches("__init__")
+                            .to_string();
+                        match base.as_str() {
+                            "list" => {
+                                if let Some(it) = it {
+                                    let pyit = crate::builtins::iterable_of(&it)?;
+                                    let items = crate::iter::collect(&pyit);
+                                    if let Value::Obj(so) = &subject {
+                                        *so.slice_parts.borrow_mut() = items;
+                                    }
+                                }
+                                return Ok(Value::None);
+                            }
+                            "tuple" | "set" | "frozenset" => {
+                                let _ = it;
+                                return Ok(Value::None);
                             }
                             _ => {}
                         }
@@ -9441,6 +9479,20 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                         *f.slice_parts.borrow_mut() = vec![subject.clone()];
                         return Ok(Some(Value::Obj(f)));
                     }
+                    // T2: builtin-base __init__ via super() — pytest's
+                    // Traceback(list) does super().__init__(gen) and the
+                    // list must consume the iterable. Without this the
+                    // subclass stays empty (Traceback entries lost).
+                    if matches!(cls.name.as_str(), "list" | "tuple" | "set" | "frozenset")
+                        && name == "__init__"
+                    {
+                        let f = ap_obj::PyObject::new(
+                            ap_obj::ObjKind::BuiltinFn,
+                            &format!("__ap_base_{}__init__", cls.name),
+                        );
+                        *f.slice_parts.borrow_mut() = vec![subject.clone()];
+                        return Ok(Some(Value::Obj(f)));
+                    }
                     // T1 (scrapy fix pass): virtual object.__setattr__ —
                     // typing.py's _BaseGenericAlias.__setattr__ calls
                     // super().__setattr__(attr, val); the default is the
@@ -9796,6 +9848,9 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                     return Ok(Some(Value::None));
                 }
                 if o.kind == ap_obj::ObjKind::UserInstance && name == "__traceback__" {
+                    if std::env::var("APX_TBDBG").is_ok() {
+                        eprintln!("[UITB] __traceback__ read on {}", o.name);
+                    }
                     // T2: render THIS exception's own chain when we recorded
                     // one at raise/propagation time.
                     if let Some(tb_val) = o

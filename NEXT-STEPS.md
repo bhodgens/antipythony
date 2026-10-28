@@ -956,3 +956,22 @@ NEXT SESSION (single focus): per-exception tb + true linenos are in;
 debug the remaining makereport IndexError against the now-pristine
 staging with print-only probes. The tb chain for the Skipped should
 now carry real entries — confirm what pytest's filter sees.
+
+## Wave-23 (2026-10-28): builtin-base super().__init__ foundation
+
+Landed: super-chain virtual for list/tuple/set/frozenset __init__
+(marker __ap_base_<base>__init__) + call dispatch that fills the
+receiver's slice_parts from the iterable arg (list) and len(tb) for
+"<traceback>" chains.
+
+DISCOVERED runtime gap (next session's focused work): user classes
+deriving from builtin bases (class T(list)) don't get list semantics
+- T([1,2]) stores nothing, len(t)=0, no __getitem__/__iter__
+synthesis. pluggy 1.7's Traceback(list) needs this to hold entries.
+Required: slice_parts-backed builtin-base derivation for
+list/tuple/set/dict with __len__/__getitem__/__iter__/__contains__
+synthesis on UserInstance whose MRO includes the base, plus
+instantiate() wiring so constructor args reach
+__ap_base_<base>__init__.
+
+Gates: 412/0/1.
