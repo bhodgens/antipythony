@@ -1280,3 +1280,27 @@ NEXT SESSION: run make_numbered_dir_with_cleanup standalone under
 our runtime (FakeConfig like t2bt2.py) to reproduce the teardown
 ENOENT deterministically, then fix the unswallowed stat/lock on
 the retention-cleanup path.
+
+## Wave-36 (2026-10-28): capsys root cause = no fd-backed streams
+
+Deterministic capsys-only repro dies in fixture setup
+(test_cap.py, rc=1, 'NoneType' not callable inside wrap_session).
+Root chain found:
+- Our streams (make_stream) are Vec<u8> snapshot buffers - no fd
+  backing. os.fdopen(fd) is a PATH-based fake (reads a filename,
+  errors 'fdopen() argument must be str, not int' on a real fd).
+- tempfile.mkstemp returns fd=0 (wrong; CPython returns >=3 via
+  O_CREAT|O_EXCL on a real file).
+- capsys setup needs: os.dup/dup2 on fd 1/2, os.fdopen(fd, 'w+'),
+  os.read/os.write on fds. With fdopen broken, setup dies.
+
+Probe cleanup done: all staging probes removed (pathlib, tmpdir,
+stash, contextlib, pluggy, Rust eprintlns). Earlier wave probes in
+'exec' of tmpdir import cleaned. T2 minimal gate + with-file flush
++ O_* flags verified post-cleanup.
+
+NEXT SESSION (single focus): fd-backed capture - implement
+os.dup/dup2 (real fds via libc), os.fdopen(fd, mode) returning a
+fd-backed stream (read/write through the fd; text wrapper over a
+FdBuffer), fix mkstemp to return a real fd. Then capsys fixture,
+then Tier-2 complete (tmp_path + monkeypatch + capsys all pass).
