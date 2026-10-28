@@ -1471,3 +1471,26 @@ and either pop it after class creation or fix the imbalance at
 its source (likely interned-type class-creation super ctx not
 popped - same family as the import-imbalance guard in
 import_module).
+
+## Wave-40 (2026-10-28): os.open mode fix (410aba6) + capsys status
+
+FIXED: os.open dropped the mode argument - O_CREAT files were
+created 0o000, so every later open/read failed EACCES. This was
+the source of the PermissionError ghosts in fixture tests and
+probably contributed to the historical '.lock' EACCES nondeterminism.
+Now defaults 0o644 and honors os.open(path, flags, mode).
+
+VERIFIED WORKING: generator fixtures end-to-end (setup/yield/
+teardown log order correct); CaptureIO-style stream subclass
+construct/write/getvalue; tmp_path + monkeypatch in the real
+suite (2 passed).
+
+REMAINING (capsys only): fixture setup raises a MESSAGE-LESS
+AssertionError before the fixture body (T1 probe never runs).
+Candidates: python assert in the setup chain whose message our
+runtime fails to format, or a bare assert in fixture plumbing.
+The corrupt tb attribution hides the true frame. Next session:
+1. bisect pytest_fixture_setup with file-logging probes between
+   its statements (cache_key, resolve, call_fixture_func).
+2. check our Stmt::Assert message evaluation (msg eval failure
+   path may drop the message and raise bare).
