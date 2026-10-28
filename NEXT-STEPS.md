@@ -803,3 +803,29 @@ add_report_section) raises IndexError during the Skipped throw-unwind
 StopIteration -> exception=None. VERIFY by instrumenting
 item_capture's finally with print-only probes (NO traceback
 formatting).
+
+## Wave-18 (2026-10-28): stall EXACTLY located
+
+With print-only probes (no traceback formatting), the item-2 flow
+traces: Skipped raised -> MC-catch -> LOOP-EXIT exc=Skipped ->
+teardown loop resumes Capture wrapper -> IC-FIN (item_capture finally
+COMPLETES CLEANLY - no IndexError) -> then the teardown loop's next
+advance (Logging wrapper) NEVER HAPPENS. The for-loop iterator
+advance after a throw-resume that completed the generator (its
+with-block finished, generator returned -> StopIteration ->
+exception=None; continue) is lost.
+
+MINIMAL SHAPE for next session: for-loop over a small list; body =
+nested try; inside, gen.throw(Outcome) into a generator whose body
+is `with CM(): yield` (CM = contextlib._GeneratorContextManager or
+manual class); the throw unwinds the with-block (CM cleanup runs) and
+the generator RETURNS -> StopIteration -> `exception = None;
+continue`. Reproduce THAT exact chain; the loop's next advance is
+lost. Suggested Rust-side inspection: the for-loop's iterator slot
+handling when `continue` executes from a nested except handler after
+a cross-fiber (corosensei) generator resume.
+
+NOTE: still verify against CPython first (method lesson from
+wave-17) - the expected CPython result of the minimal shape is:
+CM cleanup runs, Outcome propagates (the generator does NOT return
+normally), StopIteration only if generator completes.
