@@ -277,3 +277,29 @@ Further narrowing:
 Next session: single-plugin repro with Session.collect/Item.runtest
 split across two HookRelays on one 'pytest' project name; trace
 gen_pull/resume_live around the pyfunc_call firstresult return.
+
+## Wave-8 (2026-10-27, final)
+
+Deterministic repro captured: with Function.runtest wrapped, runtest()
+for test_pass ESCAPES with `Failed: async def functions are not
+natively supported.` — raised by python.py's pytest_pyfunc_call
+because is_async_function(pyfuncitem.obj) returned True for the sync
+test_pass. In pytest 9, OutcomeException inherits BaseException, so it
+bypasses runner.py's `except Exception` and unwinds the whole session —
+hence rc=1 with no verdicts.
+
+Direct probes of the same function object (import_path → mod.test_pass)
+show iscoroutinefunction/isasyncgenfunction both False. The True must
+arise from pyfuncitem.obj being a DIFFERENT object at hook time (fixture
+wrap) or our iscoroutinefunction mis-reading the wrapped object.
+
+Next session, precise plan:
+1. In the pytest process, patch python.py's async_fail binding (module
+   global at call time works — verified binding is live) to print
+   `repr(pyfuncitem.obj)` and `type(obj).__mro__` BEFORE raising.
+2. If obj is a fixture-wrapped partial/marker: fix our
+   iscoroutinefunction/isasyncgenfunction (or functools partial marker
+   handling) for that shape.
+3. If obj is the plain function: our is_async_function's second leg
+   (isasyncgenfunction) misfires under pytest's import context — diff
+   inspect module state between standalone and pytest contexts.
