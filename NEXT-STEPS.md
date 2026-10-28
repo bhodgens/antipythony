@@ -1217,3 +1217,19 @@ was a SECOND symptom.
 Next session: file-append probe inside make_numbered_dir loop
 logging each new_path + the swallowed exception (currently `pass`),
 then fix the real mkdir error (likely mode/umask or parent paths).
+
+## Wave-33 (2026-10-28): tmp_path scoped to fiber-context mkdir no-op
+
+FULL CHAIN NAILED: pytest-933/.lock open fails FileNotFound because
+pytest-933 dir was never created — new_path.mkdir(mode=mode) inside
+make_numbered_dir SILENTLY NO-OPS when executed during fixture setup
+(i.e., inside a corosensei fiber resume). Standalone tests (same
+subclass Path, same root, same mode) succeed outside the fiber.
+The `except Exception: pass` in the loop swallows the no-op.
+
+NEXT SESSION (single focus): test Path.mkdir inside a corosensei
+fiber (generators.rs resume path) — minimal repro: start a fiber
+that calls Path.mkdir and check the dir exists after. Suspect the
+fiber's syscall/CString path handling or the interpreter's cwd
+context differs during fiber execution. Fix in generators.rs or the
+mkdir syscall wrapper.
