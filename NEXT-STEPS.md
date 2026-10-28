@@ -344,3 +344,20 @@ the lazy genitems generator misbehaves vs the eager path. Likely the
 fiber's parent-frame resume loses the outer genitems generator's
 position when a nested ihook (pytest_itemcollected) re-enters the
 interpreter.
+
+## MINIMAL REPRO FOUND (/tmp/t2yf13.py, 2026-10-27)
+
+Recursive yield-from generator + pm.hook.<name> calls inside, driven
+by extend()-style iteration: hook impls registered on the same pm DO
+NOT FIRE (fired=0) and the recursion collapses (items=1, expected 3).
+The hook relay call inside the generator fiber silently no-ops.
+
+Repro essentials: add_hookspecs(module); register(impl); generator
+function that calls pm.hook.X() and recursively yields from itself;
+drive with a for-loop. Compare CPython: fires=3, items=3.
+
+Next session: instrument pm.hook.X attribute path (HookRelay.__getattr__
+→ HookCaller) INSIDE the generator fiber — the relay lookup likely
+returns a stale/empty HookCaller because the generator fiber's module
+globals/context differ, or gen_pull's fiber resume loses the relay
+binding. Fix, then pytest gate completes.
