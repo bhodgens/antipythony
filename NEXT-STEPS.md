@@ -772,3 +772,34 @@ register/unregister plugins, and our runtime's list mutation during
 reversed() iteration may TRUNCATE the iteration. CPython tolerates
 this because reversed() takes a snapshot; our reversed may iterate
 the LIVE list by index!
+
+## Wave-17 (2026-10-28): repro campaign closed - all invalid
+
+EVERY synthetic repro attempt for the item-2 loop stall was INVALID:
+each either used wrong Python semantics (next() on a
+_GeneratorContextManager object - genuine TypeError in CPython too),
+didn't throw before the teardown loop, or matched CPython behavior
+exactly. The runtime matches CPython on all of them.
+
+Verified working in isolation: CaptureManager wrapper, LoggingPlugin
+wrapper, both together, global capture, plain raiser, reversed()
+loop, generator-per-iteration, deep frames, live-list mutation,
+GC-pressure (invalid repro), CM objects (invalid repro).
+
+METHOD LESSON: before chasing a runtime bug synthetically, write the
+CPython reference run of the repro FIRST. Multiple sessions were
+spent on repros that CPython also fails.
+
+STATE: bare pytest run = "1 passed" (test_pass), session completes
+through unconfigure. Item2's Skipped IS raised and IS captured by
+_multicall (MC-catch, LOOP-EXIT exc=Skipped) - the loss is between
+_multicall's normal return (exception=None after the FINAL trace
+showed None - meaning the teardown loop CLEARED exception via
+StopIteration from a wrapper throw-resume) and from_call's except.
+PRIME SUSPECT (unverified): CaptureManager.item_capture's finally
+(deactivate_fixture/suspend_global_capture/read_global_capture/
+add_report_section) raises IndexError during the Skipped throw-unwind
+(replacing it), then Logging wrapper's resume completes normally ->
+StopIteration -> exception=None. VERIFY by instrumenting
+item_capture's finally with print-only probes (NO traceback
+formatting).
