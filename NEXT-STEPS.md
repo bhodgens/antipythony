@@ -86,3 +86,20 @@ reliable gates (412/0/1).
 - /tmp/lxml-ref-venv gets wiped by /tmp cleaners and loses pyvenv.cfg;
   recreate with `uv venv /tmp/lxml-ref-venv --python 3.14` +
   `uv pip install -p /tmp/lxml-ref-venv lxml` before lxml gates.
+
+## Wave-3 addendum (late finding, 2026-10-27)
+
+pytest_pyfunc_call raises "async def functions are not natively
+supported" for the SYNC test_pass. Traced:
+- inspect.iscoroutinefunction(test_pass) = False inside the hook.
+- The True must come from the `inspect.isasyncgenfunction(func)` leg of
+  _pytest.compat.is_async_function, OR pyfuncitem.obj differs from the
+  plain function under hook context.
+- CRITICAL related finding: monkeypatching a module attribute after
+  import does NOT affect already-defined functions in our runtime
+  (globals resolve through FnRegistry captured at definition, not a
+  live module-dict lookup). This breaks unittest.mock.patch, pytest
+  monkeypatch.setattr on modules, and all orchestrator debugging via
+  monkeypatching. CPython semantics require globals lookup to go
+  through the module __dict__ at call time. This is a fundamental
+  interpreter fix worth its own leaf.
