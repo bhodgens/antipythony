@@ -521,3 +521,24 @@ Next session: instrument _execution.py teardown loop per-wrapper
 (print which wrapper's send/throw raised or returned unexpectedly) in
 the real pytest flow. The first wrapper whose resume misbehaves is the
 fix target. Also verify test_skip/test_fail behavior once fixed.
+
+## Wave-12 (2026-10-27, budget end)
+
+Teardown-loop trace for pytest_runtest_call shows only 1 of the
+expected ~3 wrapper teardowns resuming before control jumps to the
+protocol-level teardowns. The teardowns list appears to contain fewer
+entries than expected, OR the loop exits early via an uncaught path.
+The [impl] trace confirms 6 impls registered for pytest_runtest_call
+(Logging wrapper, Capture wrapper, 2 module plain, unittest,
+python.py trylast).
+
+RECOMMENDED next session: print `len(teardowns)` and each entry's
+type/kind at the top of the teardown loop in pluggy/_execution.py
+(the instrumentation is already in place — just extend the [td] line
+format), plus verify hook_impl.wrapper/hookwrapper flags match the
+wrapper count. If wrapper flags are all False on our runtime (our
+HookimplMarker stub may not propagate wrapper=True into
+parse_hookimpl_opts), the wrapper impls are driven as PLAIN impls —
+their generator return value is appended to results and never driven
+→ exactly matches all observed symptoms (silent single-step, no call
+report, items 2/3 dropped, rc=1).
