@@ -198,3 +198,30 @@ includes native dispatch layers (our call_value_pub -> ihook -> _multicall
 native-call boundary. Suggest: add a debug env var tracing
 gen_pull/resume_live with generator ids + call depth to catch where the
 lazy genitems' frames drop their children.
+
+## Wave-6 ROOT CAUSE FOUND (2026-10-27, commit 943dca9)
+
+PyIterator::next() returned None for IterState::Generator ("handled in
+interp.rs, never via this method"). Every collector draining via
+it.next() — snapshot()/collect() in builtins_modules (list.extend,
+tuple, set, sorted, dict.update) — silently got ZERO values from any
+def-generator. perform_collect's
+`self.items.extend(self.genitems(node))` appended nothing; runtest loop
+had no items; session ended 'no tests ran'.
+
+FIX: next() routes Generator(id) pulls through
+builtins_modules::current_interp + gen_pull_public (crate-internal,
+legal since iter.rs lives in ap-run). Probes: extend/list/tuple/set/
+sorted/dict.update all drain generators correctly.
+
+## Next session target (precise)
+
+pytest now collects 3 items. Remaining single issue: runtest protocol
+for item 1 completes setup (report logs passed) and executes the call
+(verified pytest_pyfunc_call entered, is_async False) but the session
+ends silently afterwards ('no tests ran', rc=1, int-NoneType TypeError
+at top level). Next: trace the item.ihook pytest_runtest_makereport /
+pytest_runtest_logreport chain for item 1 — the call report is created
+but not logged, or the logreport hook vanishes. Tools ready:
+/tmp/t2run22.py (hook-fail tracer), /tmp/t2run28.py (protocol/report
+tracer), /tmp/t2run27.py (top-level exception walker).
