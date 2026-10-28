@@ -807,11 +807,14 @@ pub fn builtin_max(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
 fn min_max(args: &[Value], kwargs: &[(String, Value)], is_min: bool) -> BResult {
     let name = if is_min { "min" } else { "max" };
     let mut key_fn: Option<&Value> = None;
+    let mut default_val: Option<Value> = None;
     for (k, v) in kwargs {
         if k == "key" {
             key_fn = Some(v);
         } else if k == "default" {
-            // single-iterable form only; v0 corpus doesn't exercise
+            // T2 (pytest pathlib.make_numbered_dir): max(iterable,
+            // default=N) with map() generators that can be empty.
+            default_val = Some(v.clone());
         } else {
             return Err(raise(
                 "TypeError",
@@ -826,6 +829,14 @@ fn min_max(args: &[Value], kwargs: &[(String, Value)], is_min: bool) -> BResult 
     } else {
         args.to_vec()
     };
+    if candidates.is_empty() {
+        // T2: empty iterable with default= returns the default
+        // (CPython semantics; pytest tmp_path depends on it).
+        if let Some(d) = default_val {
+            return Ok(d);
+        }
+        return Err(raise("ValueError", format!("{name}() arg is an empty sequence")));
+    }
     let first = candidates
         .first()
         .ok_or_else(|| raise("ValueError", format!("{name}() arg is an empty sequence")))?;

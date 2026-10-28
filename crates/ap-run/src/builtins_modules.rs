@@ -7893,6 +7893,49 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                 }
                 Ok(Value::None)
             }
+            // T2 (pytest tmp_path): chmod/lchmod family — libc calls.
+            "chmod" | "lchmod" => {
+                let p = str_arg(required(args, name)?, name)?;
+                let mode = match args.get(1) {
+                    Some(v) => as_int_i64(v)?,
+                    None => 0o644,
+                };
+                let c_path = std::ffi::CString::new(p.as_str())
+                    .map_err(|_| raise("ValueError", "embedded null byte"))?;
+                let rc = unsafe { libc::chmod(c_path.as_ptr(), mode as libc::mode_t) };
+                if rc != 0 {
+                    return Err(io_flow(std::io::Error::last_os_error()));
+                }
+                Ok(Value::None)
+            }
+            "chown" | "lchown" => {
+                let p = str_arg(required(args, name)?, name)?;
+                let uid = match args.get(1) {
+                    Some(v) => as_int_i64(v)?,
+                    None => -1,
+                };
+                let gid = match args.get(2) {
+                    Some(v) => as_int_i64(v)?,
+                    None => -1,
+                };
+                let c_path = std::ffi::CString::new(p.as_str())
+                    .map_err(|_| raise("ValueError", "embedded null byte"))?;
+                let rc = unsafe { libc::chown(c_path.as_ptr(), uid as libc::uid_t, gid as libc::gid_t) };
+                if rc != 0 {
+                    return Err(io_flow(std::io::Error::last_os_error()));
+                }
+                Ok(Value::None)
+            }
+            "chroot" => {
+                let p = str_arg(required(args, name)?, name)?;
+                let c_path = std::ffi::CString::new(p.as_str())
+                    .map_err(|_| raise("ValueError", "embedded null byte"))?;
+                let rc = unsafe { libc::chroot(c_path.as_ptr()) };
+                if rc != 0 {
+                    return Err(io_flow(std::io::Error::last_os_error()));
+                }
+                Ok(Value::None)
+            }
             _ => {
                 // F1 (mined-corpus finding): an armless-but-registered os
                 // name must raise AttributeError like CPython, never

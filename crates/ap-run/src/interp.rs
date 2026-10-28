@@ -2307,6 +2307,13 @@ pub(crate) fn eval_expr(
                         last
                     );
                 }
+                if std::env::var("APX_ATTRMISS").is_ok() {
+                    eprintln!(
+                        "[ATTRMISS2] recv={} attr={}",
+                        crate::classes::display_type_name(&o),
+                        name
+                    );
+                }
                 raise(
                     "AttributeError",
                     format!(
