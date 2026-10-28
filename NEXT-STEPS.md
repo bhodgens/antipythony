@@ -387,3 +387,21 @@ stale relay/context in the fiber, or gen_pull's fiber executing with a
 fresh/empty interpreter state (CURRENT_INTERP thread-local not
 propagated into the resumed fiber → pluggy's hookexec closure or the
 impl enumeration reads a fresh registry).
+
+## Wave-9 addendum: thread-local check (negative, 2026-10-27)
+
+Generator fibers run via corosensei stack-switching on the SAME OS
+thread (generators.rs ACTIVE/PARKED thread-local stack), so the
+CURRENT_INTERP thread-local is preserved across resume — the
+hypothesis "fresh interpreter state in the fiber" is WRONG.
+
+Refined next-step: inside the genitems fiber, log
+`id(pm.hook.item_collected._hookimpls)` and the pluggy
+PluginManager._hookimpls dict identity vs the same objects outside.
+If they match, the dispatch reaches _multicall and the IMPL LIST is
+the thing that's empty at that point → then instrument pluggy's
+parse_hookimpl_opts: OUR runtime's getattr(plugin, name) inside
+parse (plugin=runner.py module) may fail for module-level hookimpl
+functions because OUR module attr lookup on ObjKind::Module during
+FIBER execution skips BuiltinFn/Function-kind values created by the
+importer (vs regular attribute reads outside fibers).
