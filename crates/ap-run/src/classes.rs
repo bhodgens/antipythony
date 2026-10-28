@@ -476,12 +476,20 @@ pub fn install_exception_classes(interp: &Rc<Interpreter>) {
         .builtins
         .set(Value::Str(PyString::new("type")), type_v);
     // 02.03 class-machinery builtins (dispatched through
-    // interp::class_protocol_builtin).
-    for n in ["super", "property", "classmethod", "staticmethod"] {
+    // interp::class_protocol_builtin). staticmethod/classmethod bind their
+    // INTERNED TYPE values so `type(sm) is staticmethod` identity checks in
+    // user code hold — vendored enum.py relies on that identity to avoid
+    // double-wrapping staticmethods. super/property keep the BuiltinFn
+    // marker (their call paths depend on the marker dispatch).
+    for n in ["super", "property"] {
         let o = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, n);
         let _ = interp
             .builtins
             .set(Value::Str(PyString::new(n)), Value::Obj(o));
+    }
+    for n in ["classmethod", "staticmethod"] {
+        let tv = crate::builtins::interned_type(interp, n);
+        let _ = interp.builtins.set(Value::Str(PyString::new(n)), tv);
     }
     // NotImplemented singleton (S-03-25 defer marker).
     let ni = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "NotImplemented");

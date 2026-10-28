@@ -1168,6 +1168,23 @@ pub fn builtin_type(interp: &Interpreter, args: &[Value], kwargs: &[(String, Val
                     );
                 }
             }
+            // T2 fix: user classes must return their OWN class value (the
+            // identity `type(C) is C's metaclass instance` and cached
+            // isinstance paths depend on it), and builtin-typed values must
+            // return the CACHED interned type so `type(x) is SomeBuiltin`
+            // identity checks hold (vendored enum.py: `type(_gnv) is not
+            // staticmethod` guards a double-wrap; a fresh Type per call
+            // broke that and double-wrapped staticmethods).
+            if let Value::Obj(o) = v {
+                if o.kind == ap_obj::ObjKind::UserClass {
+                    if let Some(t) = o.class_ref.borrow().clone() {
+                        if let Some(cv) = t.class_value.borrow().clone() {
+                            return Ok(cv);
+                        }
+                    }
+                    // fall through to name-based intern below
+                }
+            }
             let name = match v {
                 Value::Obj(o) if o.kind == ap_obj::ObjKind::Exception => o.name.clone(),
                 // 02.04a: coroutine stubs report their own name (types.py
@@ -1198,8 +1215,7 @@ pub fn builtin_type(interp: &Interpreter, args: &[Value], kwargs: &[(String, Val
                 Value::Obj(o) => o.type_name(),
                 other => other.type_name().to_string(),
             };
-            let t = ap_obj::PyObject::new(ap_obj::ObjKind::Type, name);
-            Ok(Value::Obj(t))
+            Ok(interned_type(interp, &name))
         }
         // 02.03b: 3-arg type(name, bases, dict, **kwds) — dynamic class
         // creation (enum._simple_enum's `type(cls_name, (etype,), body,

@@ -7236,8 +7236,18 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
             // `with os.scandir(path) as it: for entry in it: ...` and uses
             // entry.name / entry.is_file() / entry.is_dir() / entry.path.
             "scandir" => {
+                // T2 fix: accept os.PathLike (pathlib.Path) args — pytest's
+                // _pytest.pathlib.scandir passes Path objects; silently
+                // scanning "." instead produced relative DirEntry paths and
+                // broke Session/Dir collection matching.
                 let path = match args.first() {
                     Some(Value::Str(x)) => x.as_str().to_string(),
+                    // T2 fix: accept os.PathLike (pathlib.Path) args via the
+                    // __fspath__ protocol — pytest's _pytest.pathlib.scandir
+                    // passes Path objects; silently scanning "." instead
+                    // produced relative DirEntry paths and broke Session/Dir
+                    // collection matching.
+                    Some(v @ Value::Obj(_)) => str_arg(v, "scandir")?,
                     _ => ".".to_string(),
                 };
                 let rd = std::fs::read_dir(&path).map_err(|e| os_error(&path, &e))?;
@@ -7281,6 +7291,41 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                 Ok(i(st))
             }
             "getppid" => Ok(i(1)),
+            // T2 (pytest Config._ensure_unconfigure cleanup): os.umask +
+            // os.getcwd are real syscalls.
+            "umask" => {
+                let mask = args
+                    .first()
+                    .and_then(|v| v.as_int())
+                    .and_then(|n| n.to_i64())
+                    .unwrap_or(-1);
+                if mask >= 0 {
+                    #[cfg(unix)]
+                    {
+                        unsafe {
+                            libc::umask(mask as libc::mode_t);
+                        }
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        let _ = mask;
+                    }
+                    Ok(Value::None)
+                } else {
+                    #[cfg(unix)]
+                    {
+                        let cur = unsafe { libc::umask(0o022) };
+                        unsafe {
+                            libc::umask(cur);
+                        }
+                        Ok(i(cur as i64))
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        Ok(i(0o022))
+                    }
+                }
+            }
             "strerror" => {
                 let n = as_int_i64(required(args, "strerror")?)?;
                 Ok(s(errno_text(n)))
