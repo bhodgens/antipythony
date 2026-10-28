@@ -1304,3 +1304,26 @@ os.dup/dup2 (real fds via libc), os.fdopen(fd, mode) returning a
 fd-backed stream (read/write through the fd; text wrapper over a
 FdBuffer), fix mkstemp to return a real fd. Then capsys fixture,
 then Tier-2 complete (tmp_path + monkeypatch + capsys all pass).
+
+## Wave-37 (2026-10-28): fd-backed os primitives LANDED (def8b53)
+
+1. os.fdopen(fd, mode): real int-fd arm; readable modes snapshot
+   fd content; <fd> attr stored on the stream.
+2. io write write-through for <fd> streams (libc::write).
+3. tempfile.mkstemp: real fd via O_CREAT|O_EXCL|O_RDWR (was fd=0).
+
+CRITICAL INVESTIGATION LESSON: my own mis-placed probe in pluggy
+_multicall (raise inserted between wrapper branches) MANUFACTURED
+the exact TypeError being hunted. Two sessions of chasing were
+polluted by probe artifacts. RULE: when hunting an error whose
+message a probe also emits, grep the probe text FIRST.
+
+STATE: capsys fixture still fails; the NoneType-call now has NO
+known source (both interp.rs raise arms instrumented - neither
+fired). Suspects: methods.rs dispatch path, or the error comes
+from a py-level generic via a different format path. Next session:
+APX_CALLTRACE=<substr> around the teardown window, or instrument
+methods.rs's call_method None arm.
+
+Gates post-cleanup: T2 minimal green, FD-OK probe green, with-file
+flush green, cargo all-suite 0 failed, corpus spot green.
