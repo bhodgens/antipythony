@@ -1327,3 +1327,43 @@ methods.rs's call_method None arm.
 
 Gates post-cleanup: T2 minimal green, FD-OK probe green, with-file
 flush green, cargo all-suite 0 failed, corpus spot green.
+
+## Wave-38 (2026-10-28): capsys NoneType — investigation map
+
+Systematic elimination this wave:
+- Both interp.rs not-callable raise arms instrumented with
+  std::backtrace::force_capture: NEITHER fires when the error
+  appears.
+- pluggy _multicall except never catches it (MC-CATCH probe
+  silent).
+- wrap_session: WS-ENTER fires; its except BaseException does NOT
+  run (ORIG-EXC silent) on failing runs; pytest_sessionfinish
+  probe (SF-ERR) silent; _ensure_unconfigure EU probes silent.
+- Stash.__getitem__ frames in the tb are CORRUPT attribution
+  (direct StashKey-miss probe raises clean KeyError; dict user-key
+  path verified). co_filename on all tb frames echoes the main
+  script - per-exception tb frame attribution is unreliable.
+- Nondeterminism observed: some runs die silently INSIDE
+  wrap_session (WS-ENTER then nothing), others print EXC from the
+  outer handler with rc=1.
+
+CONCLUSION: the NoneType-call happens inside wrap_session's try
+(during session run/config teardown) via a path that BYPASSES the
+native not-callable raise sites - i.e. the error object was
+created earlier and stored (exception = e in _multicall teardowns,
+ExitStack callbacks, or our global tb-table aliasing), then
+re-raised where no probe sits. OR a runtime bug drops the except
+handler during nested unwinding.
+
+NEXT SESSION options (in order):
+1. Set APX_CALLTRACE=1 and diff the call log of a GREEN
+   test_fix2-style run vs test_cap.py to find the last call before
+   death.
+2. Audit our unwinding: exception raised while another is being
+   handled (except-handler body itself raising) - check Flow::
+   Raise during handler execution in interp.rs.
+3. Check ExitStack/teardown generator paths for stored exceptions
+   re-raised at session end.
+
+All probes removed; staging parse-verified; gates green
+(FD-OK, T2 minimal gate, cargo 0 failed).
