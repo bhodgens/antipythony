@@ -16,34 +16,38 @@ Follow-up fixes in 63a80f7.
 - Gates: cargo test --workspace 412 passed / 0 failed / 1 ignored;
   lxml_differential 24/24.
 
-## The ONE remaining deterministic blocker (next wave, ~1-2h)
+## Fixed in 62b2885 (2026-10-27, wave 2)
 
-_staticmethod unwrapping on metaclass-built classes._
+- staticmethod type identity: `type(sm) is staticmethod` was False
+  (builtin_type created a fresh Type per call) → vendored enum.py's
+  double-wrap guard failed → staticmethod(staticmethod(f)) → 'object'
+  object is not callable in _simple_enum. type(x) now returns the
+  cached interned type; UserClass returns its own cached class Value.
+- os.scandir(Path(...)) silently scanned "." (relative DirEntry paths
+  broke Session/Dir collection matching). Now coerces PathLike args
+  via __fspath__.
+- os.umask: real syscall arm (pytest cleanup needs it).
 
-Repro: `vendored_stdlib/enum.py` _simple_enum decorates a class; inside
-convert_class, `etype._generate_next_value_` (a staticmethod stored
-through the EnumType metaclass path) reads back RAW from
-class_attr_get — descriptor_kind() does not classify it, so the call
-site dies with `TypeError: 'object' object is not callable`.
+Probes green: /tmp/t2ident.py (type identity), /tmp/t2nonlocal3.py
+(_simple_enum builds Color), /tmp/t2prop.py (@property), t2sm2.
 
-Probe: /tmp/t2nonlocal3.py (expects `ok <Color.RED: 1>` on CPython).
-Plain-class staticmethod access works (/tmp/t2sm2.py). The failing
-lookup is specific to classes built via the metaclass kwargs path
-(type(..., boundary=..., _simple=True) → EnumType.__new__ re-stores
-dict entries; see vendored_stdlib/enum.py:514-515 where
-`staticmethod(_gnv)` is called explicitly).
+## Current state after 62b2885
 
-Fix shape: find how EnumType.__new__ re-stores the class dict (probably
-through a different attr storage than the plain class literal) and make
-descriptor_kind/class_attr_get classify staticmethod objects there —
-or normalize the storage to ObjKind::Descriptor with
-descr_kind="staticmethod" at creation.
+pytest.main completes parse, collection, session setup AND reaches
+Config._ensure_unconfigure teardown. Remaining error in cleanup:
+`TypeError: unsupported operand type(s) for -: 'int' and 'NoneType'`
+raised from _pytest/threadexception.py cleanup →
+collect_thread_exception → Stash[thread_exceptions].pop path
+(deque.pop on our runtime raised correctly in isolation; the int-None
+comes from somewhere inside the hook/stash interplay — needs
+isolation). Also the traceback renderer still misattributes frames
+('object' object has no attribute 'type' inside TracebackException) —
+fix that FIRST, it masks every error's real location.
 
-After that lands: rerun /tmp/t2runner3.py. Expected remaining layer(s):
-whatever pytest does next after collection matches (item execution,
-assertion rewriting, terminal summary). Budget 1-3 layers by T1
-experience (~1 layer/agent-hour, faster now that the hang and the
-genexp drains are gone).
+Note: cargo test full-workspace has a flaky parallel-suite failure
+(circular_imports_partial_visibility passes in isolation; suspect
+fixture/target-dir race). Use `cargo test --workspace -j 4` for
+reliable gates (412/0/1).
 
 ## Queued (unchanged)
 
