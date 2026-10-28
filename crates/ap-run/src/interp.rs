@@ -9403,8 +9403,8 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
         if o.kind == ap_obj::ObjKind::Opaque && o.name == "super" {
             let parts = o.slice_parts.borrow();
             let (start_v, subject) = (parts[0].clone(), parts[1].clone());
-            let start_t = crate::classes::type_of(_interp, &start_v)
-                .or_else(|| crate::classes::class_of_value(_interp, &start_v));
+            let start_t = crate::classes::class_of_value(_interp, &start_v)
+                .or_else(|| crate::classes::type_of(_interp, &start_v));
             let subj_t = crate::classes::class_of_value(_interp, &subject);
             if let (Some(start_t), Some(subj_t)) = (start_t, subj_t) {
                 // 02.04a fix pass: when the enclosing method belongs to the

@@ -289,6 +289,13 @@ fn raise(class: &str, msg: impl Into<String>) -> Flow {
 pub fn type_of(_interp: &Interpreter, v: &Value) -> Option<Rc<TypeRef>> {
     match v {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass => o.class_ref.borrow().clone(),
+        // T2 (wave-39): stream-derived instances are Opaque carrying the
+        // user class ref; super()/isinstance must see the user class.
+        Value::Obj(o)
+            if o.kind == ap_obj::ObjKind::Opaque && o.class_ref.borrow().is_some() =>
+        {
+            o.class_ref.borrow().clone()
+        }
         _ => None,
     }
 }
@@ -310,6 +317,13 @@ pub fn class_of_value(interp: &Interpreter, v: &Value) -> Option<Rc<TypeRef>> {
             .clone()
             .or_else(|| exc_class(interp, &o.name)),
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass => o.class_ref.borrow().clone(),
+        // T2 (wave-39): stream-derived instances are Opaque carrying the
+        // user class ref; super()/isinstance must see the user class.
+        Value::Obj(o)
+            if o.kind == ap_obj::ObjKind::Opaque && o.class_ref.borrow().is_some() =>
+        {
+            o.class_ref.borrow().clone()
+        }
         _ => None,
     }
 }
