@@ -161,3 +161,21 @@ Concrete fix (next session): make dir(module) / vars(module) /
 getattr-chain enumeration work for ObjKind::Module values, OR wire
 pluggy's add_hookspecs plugin-name discovery through module_ns directly.
 Test: /tmp/t2hw4.py (add_hookspecs must not raise; impl count == 2).
+
+## Wave-4 addendum 4 (2026-10-27, correction)
+
+The add_hookspecs 'did not find hooks' repro was INVALID: the probe
+used a bare function without the @HookspecMarker decorator, so pluggy
+correctly found no specs. dir()/vars() enumeration on modules and
+__main__ works fine in our runtime. Retract that root-cause claim.
+
+Validated facts that still stand:
+- isinstance(x, A|B) works (wave-3 fix).
+- pytest collects 3 items and reaches pytest_pyfunc_call for item 1;
+  is_async_function(test_pass)=False verified inside the hook.
+- The call phase still vanishes silently after pyfunc_call runs; the
+  int-None and 'no tests ran' remain unexplained. The generator
+  resume bug (issue-#7 class) remains the prime suspect: instrument
+  pluggy/_callers.py _multicall old-style and new-style wrapper
+  driving (teardown.send / next(teardown)) in the pytest process
+  context next session.
