@@ -576,3 +576,21 @@ is_async_function fires True for test_pass, print
 `__code__.co_flags` — this identifies the exact object shape our
 inspect misreads as async. Then fix inspect.iscoroutinefunction or
 the obj shape.
+
+## Wave-final summary (2026-10-27)
+
+Deterministic state: test_pass PASSES ("1 passed in 0.00s"); test_skip
+fires Skipped but the session then loses the remaining items; test_fail
+unreached. The last runtime bug: OutcomeException (Skipped/Failed,
+BaseException subclasses in pytest 9) raised inside a nested ihook
+relay call is not correctly re-raised through pluggy's
+_multicall finally-block teardown resume chain on our runtime —
+CPython re-raises it at the end of _multicall; ours appears to lose or
+mangle it, terminating the runtest loop.
+
+Next session: minimal repro = from_call(lambda: pm.hook.X()) where X's
+impl raises Skipped-like BaseException, with a wrapper impl around it
+(teardown.send path), then verify the exception re-emerges from
+_multicall correctly. Fix in our exception propagation through
+generator teardown .throw() (generators.rs resume_live GenInput::Throw
+path interacting with pluggy's finally block).
