@@ -829,3 +829,37 @@ NOTE: still verify against CPython first (method lesson from
 wave-17) - the expected CPython result of the minimal shape is:
 CM cleanup runs, Outcome propagates (the generator does NOT return
 normally), StopIteration only if generator completes.
+
+## *** ROOT CAUSE FOUND: ev.instance missing in exception_value_of_instance (2026-10-28) ***
+
+exception_value_of_instance() built ExceptionValue with ONLY the
+class NAME - it never set ev.instance. Consequence: a USER exception
+class (OutcomeException(BaseException), Skipped, any plugin
+exception) that travels through gen.throw() has class="Outcome" with
+no instance and no builtin-tree entry, so exc_matches()
+`except BaseException` CANNOT match it (class-name equality fails,
+via_instance needs instance, exc_class lookup needs the builtin
+tree). The exception escaped EVERY handler - the entire runtest
+protocol vanishing act.
+
+FIX (one line): ev.instance = Some(v.clone()) in
+exception_value_of_instance. Verified: min24 "caught Outcome".
+
+NEW GATE STATE: pytest run reaches makereport for the Skipped; the
+report formatting crashes with IndexError in
+ExceptionInfoFormatter.repr_traceback chain - because our tb frames
+ALL carry the runner script + wrong linenos, so pytest's filter
+hides all frames (n=0) and a later Source[] lookup indexes out of
+range. This is the KNOWN traceback-renderer corruption (frames
+mislabeled), now the ONLY blocker for the T2 minimal gate: once tb
+frames carry true filenames/linenos (or the formatter degrades
+gracefully), Skipped -> skipped report -> 1 passed, 1 skipped,
+1 failed.
+
+NEXT SESSION: (1) fix tb_frames recording so linenos/filenames are
+the real raise-site values (interp raise path pushes (qualname,
+line) - currently they all show the module-level line), or make
+traceback_value's nodes tolerant; (2) then the T2 gate should go
+green; (3) run lxml 24/24 + corpus to confirm no regressions from
+the ev.instance change (raising sites now carry instances - watch
+for cycles via instance refs, GC).

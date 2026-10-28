@@ -1633,6 +1633,13 @@ fn exception_value_of_instance(v: &Value) -> Result<ExceptionValue, Flow> {
         None => o.args.borrow().clone(),
     };
     let mut ev = ExceptionValue::new(&o.name, args);
+    // T2 fix: keep the instance so except-clause matching can walk the
+    // USER class MRO. Without it, a user exception (e.g. pluggy's
+    // OutcomeException(BaseException)) thrown through gen.throw() has
+    // class="Outcome" with no tree entry, so `except BaseException`
+    // fails to match and the exception escapes every handler -
+    // exactly the pytest runtest-protocol vanishing act.
+    ev.instance = Some(v.clone());
     // User __str__ override: pickle the rendering into args so py_str
     // (which joins args) reproduces it byte-exactly. class_of_value reads
     // the class_ref back-ref first (user exception classes).
