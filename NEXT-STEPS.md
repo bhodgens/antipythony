@@ -1367,3 +1367,28 @@ NEXT SESSION options (in order):
 
 All probes removed; staging parse-verified; gates green
 (FD-OK, T2 minimal gate, cargo 0 failed).
+
+## Wave-38 addendum: APX_CALLTRACE captured - strong lead
+
+Full calltrace (116K calls) captured on the failing capsys run.
+LAST traced call: `shutdown -> ok NoneType` (threading shutdown).
+The fatal TypeError traceback prints right after, with hook-chain
+frames (HookCaller/_multicall) + 3x Stash.__getitem__ - i.e. a
+hook fires AFTER threading shutdown() and dies reading a stash.
+
+LEAD: post-shutdown hook execution. threading.shutdown() tears
+down fiber/thread state; a hook impl that runs after it and
+touches stash/dict storage hits cleared state -> NoneType call.
+Check WHAT registers a hook/callback that runs after
+threading.shutdown: our drain_atexit (runs LIFO at exit - could
+re-enter hook machinery), faulthandler cleanup, or pytest's
+atexit.register(es.close) path.
+
+Also verified this wave: nested-unwind dispatch correct;
+stored-exception re-raise correct; dict user-key miss correct;
+gc.collect() does not break stash reads.
+
+NEXT SESSION: log the hook name at HookCaller.__call__ entry
+(py-level probe, one line) to identify WHICH hook fires after
+shutdown; then either defer that hook before shutdown or fix the
+cleared-state read.
