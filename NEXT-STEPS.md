@@ -361,3 +361,29 @@ Next session: instrument pm.hook.X attribute path (HookRelay.__getattr__
 returns a stale/empty HookCaller because the generator fiber's module
 globals/context differ, or gen_pull's fiber resume loses the relay
 binding. Fix, then pytest gate completes.
+
+## Wave-9: repro CORRECTED and boundary pinned (2026-10-27)
+
+The minimal repro (pm.register(bare_function)) was invalid — pluggy
+correctly skips bare functions lacking the hook-name attribute. The
+faithful repro of the pytest failure is:
+
+- a MODULE (or class) with @hookimpl-marked methods registered via
+  pm.register(module_or_class) — impls fire outside generators;
+- Session.genitems-style generator that calls pm.hook.<spec>()
+  inside recursive yield-from, driven by list/extend iteration —
+  inside the generator fiber, the identical hook call resolves the
+  HookCaller but iterates ZERO impls (or never reaches _multicall).
+
+Boundary pinned: the vanishing happens only when the hook call is made
+from inside a generator fiber resumed via the new IterState::Generator
+pulls. Single-level and wrapper chains outside generators work.
+
+Next session: dump HookRelay identity + HookCaller._hookimpls length +
+_multicall entry from INSIDE the genitems fiber in the REAL pytest flow
+(t2run41-style tracing but on pytest_itemcollected), then compare the
+relay object identity across the fiber boundary — the bug should be a
+stale relay/context in the fiber, or gen_pull's fiber executing with a
+fresh/empty interpreter state (CURRENT_INTERP thread-local not
+propagated into the resumed fiber → pluggy's hookexec closure or the
+impl enumeration reads a fresh registry).
