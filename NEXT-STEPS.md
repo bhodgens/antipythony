@@ -249,3 +249,31 @@ Next session: build the two-level nested ihook repro (Function-style
 per-node HookRelay), then fix the fiber/return propagation through it.
 Also verify with the int-None walker (/tmp/t2run27.py pattern) once the
 call report exists.
+
+## Wave-7 (2026-10-27, session end)
+
+Further narrowing:
+- item.runtest() IS called ([runtest] test_pass traced via
+  Function.runtest patch).
+- Inside it, item.ihook.pytest_pyfunc_call(...) is the call that
+  vanishes. Traced: HookCaller.__call__ for pytest_pyfunc_call FIRES
+  (from HC-call log), the impl runs (is_async probe printed inside
+  python.py's pytest_pyfunc_call body), then the RELAY RETURN path
+  vanishes — runtest() never sees the result, runtestprotocol never
+  proceeds, loop exits, rc=1.
+- The return path crosses: pluggy _multicall firstresult return →
+  HookCaller.__call__ return → Function.runtest return → pytest_runtest
+  _call impl return → wrapper teardowns → runtestprotocol. One of these
+  returns drops the whole continuation (not just the value).
+- Repro attempts with two separate PluginManagers did NOT reproduce
+  (works fine) — real pytest uses ONE 'pytest' project with
+  Session-level and item-level HookRelays; repro must use a single pm
+  with per-item hook relays emulating _pytest.hookspec + node
+  construction.
+- int-NoneType TypeError at session end: likely
+  terminal summary duration math (self._session_start.elapsed()) when
+  sessionstart partially completed, secondary to the vanish.
+
+Next session: single-plugin repro with Session.collect/Item.runtest
+split across two HookRelays on one 'pytest' project name; trace
+gen_pull/resume_live around the pyfunc_call firstresult return.
