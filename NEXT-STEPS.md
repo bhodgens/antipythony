@@ -542,3 +542,18 @@ parse_hookimpl_opts), the wrapper impls are driven as PLAIN impls —
 their generator return value is appended to results and never driven
 → exactly matches all observed symptoms (silent single-step, no call
 report, items 2/3 dropped, rc=1).
+
+## Wave-13 (2026-10-27, verified)
+
+Wrapper flags ARE correct (3 wrapper=True impls for runtest_call). The
+apparent "trace disappearance" after the first teardown resume is the
+CAPTURE PLUGIN's stderr redirection: the capture wrapper's pre-yield
+code replaces sys.stderr with the capture buffer, so subsequent debug
+writes land in the buffer, not the console. Earlier "vanishing traces"
+were partially an artifact of this.
+
+REFINED next session: run with -s (capture disabled) plus the per-
+teardown traces — traces will then be visible through the whole call/
+teardown phase. The failing call-report path under -s is the true
+remaining runtime bug (if any); distinguish it from capture-related
+output plumbing.
