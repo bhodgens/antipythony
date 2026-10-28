@@ -2788,7 +2788,13 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
                     let inst = ap_obj::PyObject::new(ap_obj::ObjKind::Exception, ev.class.clone());
                     *inst.args.borrow_mut() = ev.args.clone();
                     let interp3 = interp2.rc();
-                    let tb = crate::classes::traceback_value(&interp3);
+                    // T2: prefer the exception's OWN tb entries (true raise
+                    // site + frame chain); fall back to the global table.
+                    let tb = if !ev.tb.is_empty() {
+                        crate::interp::build_tb_chain(&interp3.script_path, &ev.tb)
+                    } else {
+                        crate::classes::traceback_value(&interp3)
+                    };
                     return Some(Ok(Value::Tuple(Gc::new(Tuple(vec![
                         cls,
                         Value::Obj(inst),

@@ -497,6 +497,8 @@ fn exec_module(
         Err(Flow::Raise(exc)) => {
             // Module frame is OUTERMOST: append last (render order).
             let line = line_track.get();
+            let mut exc = exc;
+            exc.tb.push(("<module>".to_string(), line));
             interp
                 .tb_frames
                 .borrow_mut()
@@ -931,10 +933,12 @@ fn exec_stmt(
                     e.context = None;
                 }
                 e.raise_line = last_executed_line(interp);
+                e.tb.push(("<module>".to_string(), e.raise_line));
                 return Err(Flow::Raise(e));
             }
             let mut e = e;
             e.raise_line = last_executed_line(interp);
+            e.tb.push(("<module>".to_string(), e.raise_line));
             Err(Flow::Raise(e))
         }
         Stmt::Assert(test, msg) => {
@@ -1541,9 +1545,75 @@ fn last_executed_line(interp: &Rc<Interpreter>) -> usize {
     line.unwrap_or_else(|| current_frame_line(interp))
 }
 
+/// T2: build a traceback chain Value from (qualname, lineno) entries
+/// (outermost first), for per-exception __traceback__ rendering.
+pub fn build_tb_chain(script: &str, entries: &[(String, usize)]) -> Value {
+    let mut next: Value = Value::None;
+    for (qualname, line) in entries.iter().rev() {
+        let frame = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<frame>");
+        let code = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<code>");
+        {
+            let mut cattrs = code.attrs.borrow_mut();
+            let _ = cattrs.set(
+                Value::Str(PyString::new("co_filename")),
+                Value::Str(PyString::new(script)),
+            );
+            let _ = cattrs.set(
+                Value::Str(PyString::new("co_name")),
+                Value::Str(PyString::new(qualname.as_str())),
+            );
+            let _ = cattrs.set(
+                Value::Str(PyString::new("co_firstlineno")),
+                Value::Int(ap_obj::Int::from_i64(*line as i64)),
+            );
+        }
+        {
+            let mut attrs = frame.attrs.borrow_mut();
+            let _ = attrs.set(Value::Str(PyString::new("f_code")), Value::Obj(code));
+            let _ = attrs.set(
+                Value::Str(PyString::new("f_lineno")),
+                Value::Int(ap_obj::Int::from_i64(*line as i64)),
+            );
+            let _ = attrs.set(Value::Str(PyString::new("f_back")), next);
+        }
+        let tb = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<traceback>");
+        let _ = tb.attrs.borrow_mut().set(
+            Value::Str(PyString::new("tb_frame")),
+            Value::Obj(frame),
+        );
+        let _ = tb.attrs.borrow_mut().set(
+            Value::Str(PyString::new("tb_lineno")),
+            Value::Int(ap_obj::Int::from_i64(*line as i64)),
+        );
+        next = Value::Obj(tb);
+    }
+    next
+}
+
 fn exception_instance(exc: &ExceptionValue) -> Value {
     // Real instance raised as-is: identity preserved at the handler (e007).
     if let Some(v) = &exc.instance {
+        // T2: attach the per-exception tb as a hidden attr so
+        // __traceback__ on THIS instance renders ITS chain, not the
+        // interpreter-wide table.
+        if !exc.tb.is_empty() {
+            if let Value::Obj(o) = v {
+                let entries: Vec<Value> = exc
+                    .tb
+                    .iter()
+                    .map(|(q, l)| {
+                        Value::Tuple(ap_obj::int::Gc::new(ap_obj::value::Tuple(vec![
+                            Value::Str(PyString::new(q.as_str())),
+                            Value::Int(ap_obj::Int::from_i64(*l as i64)),
+                        ])))
+                    })
+                    .collect();
+                let _ = o.attrs.borrow_mut().set(
+                    Value::Str(PyString::new("__ap_tb__")),
+                    Value::List(PyList::from_vec(entries)),
+                );
+            }
+        }
         return v.clone();
     }
     let o = ap_obj::PyObject::new(ap_obj::ObjKind::Exception, exc.class.clone());
@@ -5266,6 +5336,10 @@ fn call_function(
         Err(Flow::Raise(mut exc)) => {
             // Frame exit with an exception: record THIS frame's line.
             let line = line_track.get();
+            // T2: per-exception traceback - the exception carries its own
+            // entries so a CAUGHT exception keeps a correct tb (the global
+            // tb_frames table is truncated on catch).
+            exc.tb.insert(0, (entry.qualname.clone(), line.max(1)));
             interp
                 .tb_frames
                 .borrow_mut()
@@ -9722,6 +9796,36 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                     return Ok(Some(Value::None));
                 }
                 if o.kind == ap_obj::ObjKind::UserInstance && name == "__traceback__" {
+                    // T2: render THIS exception's own chain when we recorded
+                    // one at raise/propagation time.
+                    if let Some(tb_val) = o
+                        .attrs
+                        .borrow()
+                        .get(&Value::Str(PyString::new("__ap_tb__")))
+                    {
+                        if let Value::List(lst) = tb_val {
+                            let entries: Vec<(String, usize)> = lst
+                                .items()
+                                .iter()
+                                .filter_map(|it| match it {
+                                    Value::Tuple(t) if t.0.len() == 2 => {
+                                        let q = match &t.0[0] {
+                                            Value::Str(s) => s.as_str().to_string(),
+                                            _ => return None,
+                                        };
+                                        let l = t.0[1].as_int()?.to_i64()? as usize;
+                                        Some((q, l))
+                                    }
+                                    _ => None,
+                                })
+                                .collect();
+                            if !entries.is_empty() {
+                                let script =
+                                    _interp.script_path.clone();
+                                return Ok(Some(build_tb_chain(&script, &entries)));
+                            }
+                        }
+                    }
                     return Ok(Some(Value::None));
                 }
                 // T2 (pytest Config.parse: copy.copy(self.option)): instances

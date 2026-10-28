@@ -160,6 +160,11 @@ pub struct ExceptionValue {
     /// finalizer's frame has already popped, so the frame cells no longer
     /// carry the raise site.
     pub raise_line: usize,
+    /// T2: per-exception traceback entries (qualname, lineno), outermost
+    /// first, appended at each frame exit the exception passes through.
+    /// Parallel to the legacy interpreter-wide tb_frames table; consumers
+    /// should prefer this when non-empty.
+    pub tb: Vec<(String, usize)>,
 }
 
 impl ExceptionValue {
@@ -171,6 +176,7 @@ impl ExceptionValue {
             context: None,
             instance: None,
             raise_line: 0,
+            tb: Vec::new(),
         }
     }
 

@@ -907,3 +907,26 @@ exception value (per-exception tb), not per-interpreter table. That
 is the next structural step; it also fixes pytest's longrepr
 formatting (real filenames/linenos per frame) and unblocks the T2
 minimal gate's last formatter IndexError.
+
+## Wave-21 (2026-10-28): per-exception tracebacks LANDED
+
+- ExceptionValue.tb: Vec<(qualname, lineno)> - appended at raise
+  (raise-site entry), each FnDef frame exit, and module exit.
+- exception_instance() serializes exc.tb onto the instance as hidden
+  attr __ap_tb__ (list of (name, line) tuples).
+- UserInstance.__traceback__ renders __ap_tb__ via build_tb_chain()
+  (real filenames/linenos per frame).
+- sys.exc_info prefers ev.tb over the global table (build_tb_chain).
+
+Gates: 412/0/1. Test-data staging restored to pristine (pluggy
+1.7.0 reinstalled; pytest 9.1.1 files from system install - my
+probe edits to the cache had corrupted pluggy/_execution.py).
+
+REMAINING for T2 minimal gate: the Skipped report formatting still
+hits IndexError in ExceptionInfoFormatter.repr_excinfo chain. With
+per-exception tb landed, next session should re-investigate with
+CLEAN site-packages: the crash may now have a different shape (the
+filter previously saw all-hidden frames; now frames carry real
+paths). Also confirm the corpus/lxml regressions didn't appear from
+the tb/instance changes (cargo 412 green; run the differential
+suites next session).
