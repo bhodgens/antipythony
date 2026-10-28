@@ -225,3 +225,27 @@ pytest_runtest_logreport chain for item 1 — the call report is created
 but not logged, or the logreport hook vanishes. Tools ready:
 /tmp/t2run22.py (hook-fail tracer), /tmp/t2run28.py (protocol/report
 tracer), /tmp/t2run27.py (top-level exception walker).
+
+## Wave-6 addendum (2026-10-27, end of session)
+
+Traced every pluggy hook call (HookCaller.__call__ instrumented).
+Sequence for item 1: ... setup → makereport → logreport → teststatus →
+pytest_runtest_call → pytest_pyfunc_call → **pytest_sessionfinish**.
+
+The makereport-for-call and logreport-for-call hooks NEVER fire:
+runtestprotocol's continuation after the call-phase from_call is
+dropped. from_call(lambda: ihook.pytest_runtest_call(...)) — the lambda
+runs the wrapper chain to completion (pyfunc_call verified), but the
+return into runtestprotocol vanishes, so the call report is never made
+and pytest ends the session.
+
+Minimal repro attempts (single wrapper + follow-up hook) all PASS — the
+vanish requires pytest's real structure: runtestprotocol → from_call →
+lambda → ihook.runtest_call (wrapper) → impl → item.runtest() → nested
+ihook.pytest_pyfunc_call → testfn, i.e. TWO nested ihook relays with a
+wrapper at each level and a plain return through both.
+
+Next session: build the two-level nested ihook repro (Function-style
+per-node HookRelay), then fix the fiber/return propagation through it.
+Also verify with the int-None walker (/tmp/t2run27.py pattern) once the
+call report exists.
