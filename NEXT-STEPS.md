@@ -1005,3 +1005,16 @@ at HEAD~3, likely pluggy-1.7-vs-1.6 + import-order related).
 
 NEXT: corpus differential sweep + lxml 24/24 re-verify, then the
 Tier-2 "useful pytest" phase (fixtures/parametrize coverage).
+
+## Wave-24 (2026-10-28): lxml .// regression sweep + shim fix
+
+Regression sweep after the exception-system rework:
+- Corpus differential: 271/0 GREEN (all families incl. exceptions).
+- cargo gates: 412/0/1.
+- FOUND + FIXED a real pre-existing shim bug: `.//tag` paths in
+  Element.find/findall parsed as `./` + absolute (arm order: "./"
+  checked before ".//", and ".//ul".strip_prefix("./") = "/ul" flipped
+  absolute). Reordered so ".//" matches first.
+  find(".//ul") / findall(".//li") now work (ab9d82e).
+- scrapy import 'phrase' failure: pre-existing at HEAD~3 (verified);
+  import-order/context related, separate issue.
