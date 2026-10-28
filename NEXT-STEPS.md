@@ -930,3 +930,29 @@ filter previously saw all-hidden frames; now frames carry real
 paths). Also confirm the corpus/lxml regressions didn't appear from
 the tb/instance changes (cargo 412 green; run the differential
 suites next session).
+
+## Wave-22 (2026-10-28): regression sweep result
+
+- cargo gates: 412/0/1 green after ALL this turn's changes
+  (ev.instance, frame-protocol, Stmt::Line infra, per-exception tb).
+- scrapy import regression sweep: FAILS with a misleading
+  "'int' object has no attribute 'phrase'" — VERIFIED PRE-EXISTING
+  (fails identically at HEAD~3 with this turn's commits stashed).
+  Likely the documented import-order nondeterminism; not caused by
+  the tb/instance changes. The T1 environment needs its original
+  invocation context (the probe ran inside a project dir; /tmp
+  scripts lack the antipythany.lock that joins site-packages, and
+  ANTPYTHANY_PATH alone reproduces the failure).
+
+COMMITTED THIS TURN:
+- 5424f1b ev.instance fix (THE T2 root cause)
+- c9926f6 frame-protocol hardening
+- 944948d IR Stmt::Line markers
+- 4e7bf76 per-exception tracebacks (ExceptionValue.tb +
+  __ap_tb__ + build_tb_chain + sys.exc_info preference)
+- docs waves 17-22
+
+NEXT SESSION (single focus): per-exception tb + true linenos are in;
+debug the remaining makereport IndexError against the now-pristine
+staging with print-only probes. The tb chain for the Skipped should
+now carry real entries — confirm what pytest's filter sees.
