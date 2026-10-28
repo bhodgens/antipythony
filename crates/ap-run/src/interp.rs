@@ -8404,6 +8404,27 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 | "__closure__" | "__code__" | "__defaults__" | "__kwdefaults__"
                 | "__globals__" | "__module__" | "__qualname__" | "__annotations__"
                 | "__wrapped__" | "__self__" | "__func__"
+                // T2 fix (pytest 9 python.py:173): pytest probes
+                // hasattr(result, "__await__") or hasattr(result,
+                // "__aiter__") on the test's return value (None for a sync
+                // test) and calls async_fail when either is found. CPython's
+                // NoneType has NO async/iter/context dunder surface. Serving
+                // a virtual marker here made every sync test raise
+                // Failed("async def functions are not natively supported").
+                //
+                // CPython NoneType surface: __bool__, __class__, __delattr__,
+                // __doc__, __eq__, __format__, __ge__, __getattribute__,
+                // __gt__, __hash__, __init__, __le__, __lt__, __ne__,
+                // __new__, __reduce__, __reduce_ex__, __repr__, __setattr__,
+                // __sizeof__, __str__, __subclasshook__. Everything else
+                // raises AttributeError. Keep enum's None-placeholder probes
+                // working: __new__/__class__/__doc__ stay served above.
+                | "__await__" | "__aiter__" | "__anext__" | "__asend__"
+                | "__aiter__" | "__call__" | "__iter__" | "__next__"
+                | "__enter__" | "__exit__" | "__get__" | "__set__" | "__delete__"
+                | "__index__" | "__int__" | "__float__" | "__bytes__"
+                | "__length_hint__" | "__getitem__" | "__setitem__"
+                | "__delitem__" | "__len__" | "__contains__"
         )
     {
         // Same marker shape the object-virtual path answers with (classes.rs

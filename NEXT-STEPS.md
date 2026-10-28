@@ -653,3 +653,29 @@ inside is_async_function each call and compare ids across runs. That
 identifies whether the from-import binding flips between the real
 inspect function and a runtime marker — then fix our from-import
 resolution (or the marker) accordingly.
+
+## BREAKTHROUGH: ROOT CAUSE of the T2 async misfire FIXED (2026-10-28)
+
+`NoneType` attr fallback (interp.rs ~8391) synthesized a virtual dunder
+marker for ANY `__x__` name on None. `hasattr(None, "__await__")` and
+`hasattr(None, "__aiter__")` returned True. pytest 9's
+pytest_pyfunc_call (python.py:173) probes exactly those on every test's
+return value; a sync test returns None -> async_fail -> Failed ->
+session unwind. All earlier "nondeterminism" was probe placement and
+buffering illusions.
+
+FIX: block the async/iter/call/sequence dunder surface for the None
+placeholder (matches CPython NoneType, which only serves
+__bool__/__class__/__new__/__doc__/__str__/__repr__/__hash__/__eq__/
+etc). Verified: hasattr(None,"__await__")=False.
+
+RESULT: bare pytest run (t2run36, NO genitems/async_fail patches) now
+prints "test_trivial.py::test_pass PASSED [ 33%]" and
+"1 passed in 0.00s" - the milestone run works unpatched.
+
+REMAINING (much narrower): (a) runtest loop stops after item 1 - items
+2/3 (skip/fail) never execute; setup multicall of the second item
+loses its continuation, sometimes nondeterministically re-raising a
+stale Skipped("not today") at interpreter shutdown (stale exception
+object identity). (b) frame/tb metadata corruption (all frames labeled
+t2run36.py:8 with wrong function names) - traceback renderer.
