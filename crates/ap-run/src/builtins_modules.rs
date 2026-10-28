@@ -7464,14 +7464,61 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                 std::fs::remove_dir(&path).map_err(|e| os_error(&path, &e))?;
                 Ok(Value::None)
             }
+            // T2 (pytest capsys): real fd-backed fdopen. fd=0/1/2 wrap
+            // the std streams; snapshot readable fds, keep the fd for
+            // write-through in the io "write"/"close" arms (<fd> attr).
             "fdopen" => {
-                let path = str_arg(
-                    args.first()
-                        .ok_or_else(|| raise("TypeError", "fdopen() missing required argument"))?,
-                    "fdopen",
-                )?;
-                let data = std::fs::read(&path).unwrap_or_default();
-                return Ok(make_stream("TextIOWrapper", data, Some("utf-8".into())));
+                let fd = match args.first() {
+                    Some(v) if matches!(v, Value::Int(_)) => as_int_i64(v)? as i32,
+                    Some(Value::Obj(o))
+                        if o.kind == ap_obj::ObjKind::Opaque && o.name == "fd" =>
+                    {
+                        // python-level int-like wrapper (not used today)
+                        0
+                    }
+                    _ => {
+                        return Err(raise(
+                            "TypeError",
+                            "fdopen() argument must be int, not str",
+                        ))
+                    }
+                };
+                let mode = args
+                    .get(1)
+                    .and_then(|v| match v {
+                        Value::Str(m) => Some(m.as_str().to_string()),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| "r".to_string());
+                let readable = mode.contains('r');
+                let mut data: Vec<u8> = vec![];
+                if readable {
+                    unsafe {
+                        let saved = libc::lseek(fd, 0, libc::SEEK_CUR);
+                        let mut buf = [0u8; 4096];
+                        loop {
+                            let n = libc::read(fd, buf.as_mut_ptr() as *mut _, 4096);
+                            if n <= 0 {
+                                break;
+                            }
+                            data.extend_from_slice(&buf[..n as usize]);
+                            if (n as usize) < 4096 {
+                                break;
+                            }
+                        }
+                        // readable fd exhausted; leave offset where it is
+                        let _ = saved;
+                    }
+                }
+                let v = make_stream(
+                    if mode.contains('b') { "BufferedWriter" } else { "TextIOWrapper" },
+                    data,
+                    Some("utf-8".into()),
+                );
+                if let Value::Obj(o) = &v {
+                    let _ = o.attrs.borrow_mut().set(s("<fd>"), i(fd as i64));
+                }
+                return Ok(v);
             }
             "rename" | "replace" => {
                 let a = str_arg(required(args, name)?, name)?;
@@ -12365,6 +12412,26 @@ pub fn call_io(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option
                     let total = nd.len();
                     let _ = attrs.set(s("<buf>"), Value::Bytes(Gc::new(nd)));
                     let _ = attrs.set(s("<pos>"), i(total as i64));
+                    // T2 (capsys): fd-backed streams write through to
+                    // the real fd (the buffer stays for readback).
+                    if let Some(fdv) = attrs.get(&s("<fd>")) {
+                        let fd = as_int_i64(&fdv.clone())? as i32;
+                        unsafe {
+                            let mut off = 0usize;
+                            let buf = payload.as_ptr();
+                            while off < payload.len() {
+                                let w = libc::write(
+                                    fd,
+                                    buf.add(off) as *const _,
+                                    payload.len() - off,
+                                );
+                                if w <= 0 {
+                                    break;
+                                }
+                                off += w as usize;
+                            }
+                        }
+                    }
                     return Ok(i(n as i64));
                 }
                 Err(raise("SystemError", "bad stream"))
@@ -12815,8 +12882,23 @@ pub fn call_tempfile(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> 
                     .transpose()?
                     .unwrap_or_default();
                 let path = temp_name(&prefix, &suffix);
-                std::fs::write(&path, b"").map_err(|e| os_error(&path, &e))?;
-                Ok(tuple(vec![i(0), s(path)]))
+                // T2 (capsys/pytest): return a REAL fd (CPython opens the
+                // file O_CREAT|O_EXCL|O_RDWR and returns the fd). The old
+                // hardcoded fd=0 closed stdin on close and broke every
+                // fdopen() consumer.
+                let c_path = std::ffi::CString::new(path.as_str())
+                    .map_err(|_| raise("ValueError", "embedded null byte"))?;
+                let fd = unsafe {
+                    libc::open(
+                        c_path.as_ptr(),
+                        libc::O_CREAT | libc::O_EXCL | libc::O_RDWR,
+                        0o600,
+                    )
+                };
+                if fd < 0 {
+                    return Err(io_flow_path(std::io::Error::last_os_error(), &path));
+                }
+                Ok(tuple(vec![i(fd as i64), s(path)]))
             }
             "mkdtemp" => {
                 let prefix = kw(kwargs, "prefix")
