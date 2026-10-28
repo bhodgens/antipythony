@@ -468,3 +468,25 @@ Next session: add APX env-gated tracing to call_value return paths
 compare the observed unwind against the expected one. The first
 'wrong frame' jump localizes the bug in interp.rs call/return
 handling.
+
+## Session end state (2026-10-27)
+
+Exhaustive call-level tracing (APX_CALLTRACE) shows ALL hooks returning
+"cleanly" (generator values are correct — logging.py/terminal.py
+wrappers, pluggy drives them properly). No exception escapes any
+hookexec. The runtest loop runs item 1's protocol (setup report logged
+passed) then exits the loop silently: items 2,3 never protocol'd, no
+call report for item 1, session.items.count discrepancy, rc=1.
+
+Prime remaining suspect (unexplored): session.shouldstop /
+session.testsfailed state corrupted during item 1's protocol (int
+arithmetic on a None), causing main.py:409-412 (`if session.shouldfail:
+raise` / `if session.shouldstop: raise`) to fire — with the raise
+caught by wrap_session and converted to a silent exit. Next session:
+instrument Session.shouldstop/shouldfail/testsfailed writes (they're
+plain attrs; patch Session class) and log every write. The first
+unexpected write identifies the culprit.
+
+Also unexplored: pytest_untrunnable / unraisableexception plugin's
+sessionfinish arithmetic (int - None) may itself BE the loop-exit
+trigger via an exception swallowed by wrap_session's except chain.
