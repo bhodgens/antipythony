@@ -1064,3 +1064,20 @@ tests/corpus-style test_fix.py in /tmp/t2suite.
 
 Gates: 412/0/1. corpus 271/0. pytest verdicts now include real
 parametrize IDs and fixture injection.
+
+## *** Tier-2: PARAMETRIZE + FIXTURES GREEN (2026-10-28) ***
+
+test_fix.py: @pytest.mark.parametrize 2 cases + @pytest.fixture
+injection -> **3 passed in 0.00s**.
+
+Fix: pytest_pyfunc_call binds callspec.params into funcargs
+(setdefault) before running the test (staged python.py). Root gap:
+our runtime's Function.__init__/from_parent forwarding doesn't run
+the fixture fill path that CPython uses to populate funcargs from
+callspec.params (the [CS] probe in Function.__init__ never printed —
+from_parent(**kw) kwargs forwarding suspect). The pyfunc_call bind
+is the stable workaround; the from_parent kwargs-forwarding
+investigation is follow-up (affects fixture-dependent tests that
+rely on request-time fills).
+
+Gates after fix: cargo 412/0/1; T2 gate still green.
