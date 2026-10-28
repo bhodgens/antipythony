@@ -31,7 +31,34 @@ Follow-up fixes in 63a80f7.
 Probes green: /tmp/t2ident.py (type identity), /tmp/t2nonlocal3.py
 (_simple_enum builds Color), /tmp/t2prop.py (@property), t2sm2.
 
-## Current state after 62b2885
+## Fixed in cd3602b (2026-10-27, wave 3)
+
+- _colorize Theme traceback sub-namespace fields (traceback render now
+  works - this was masking every error's location).
+- isinstance(x, A | B) union support (the 0-items collection blocker:
+  istestfunction's isinstance(obj, staticmethod | classmethod) raised).
+- user-instance __delitem__ (del config.stash[key]).
+- threading.ExceptHookArgs constructor.
+- dict.popitem (pytest SetupState.teardown_exact).
+
+**MILESTONE: pytest.main collects 3 items and EXECUTES tests**
+(test_trivial.py::test_pass runs; RC=1 with remaining teardown issue).
+
+## Current state after cd3602b (next session targets)
+
+1. `int - NoneType` during runtest teardown/verdict recording: after
+   test_pass executes, the protocol dies silently (rc=1, "no tests
+   ran"). The error is caught by pytest's report machinery - trace via
+   the HOOKFAIL wrapper pattern (/tmp/t2run17.py) on
+   pytest_runtest_teardown / pytest_runtest_makereport hooks.
+2. Session.genitems lazy-generator resume bug (issue-#7 class): the
+   original generator breaks under items.extend(); eager list()
+   workaround works. Root-cause in the generator fiber resume path.
+3. Kw-only call syntax `f(*, a=b)` is a parser SyntaxError - parser gap.
+4. inspect.getsource broken (tokenize) - separate issue.
+5. flaky parallel test: circular_imports_partial_visibility - use
+   `cargo test --workspace -j 4` (412/0/1 reliable).
+6. /tmp cleaners: recreate lxml-ref-venv before lxml gates.
 
 pytest.main completes parse, collection, session setup AND reaches
 Config._ensure_unconfigure teardown. Remaining error in cleanup:
