@@ -1424,3 +1424,26 @@ stream surface.
 Verified this wave: fd primitives real (fdopen/mkstemp/dup,
 def8b53); all investigation probes removed; staging parse-clean;
 gates green (T2 minimal, FD-OK, cargo 0 failed).
+
+## Wave-39 (2026-10-28): stream-base instances WIP (79ecf4f)
+
+Landed:
+- instantiate(): stream-base subclass instances are now REAL
+  stream objects (Opaque, kind-named, stream attrs) carrying the
+  user class refs; user __init__ runs on them.
+- __ap_base_<kind>__init__ markers extended to stream bases in
+  both the instance attr walk and the super-scan.
+- special_lookup: stream-kind Opaque + __init__ binds the
+  base-init marker.
+
+REMAINING: zero-arg super() inside the user __init__ still fails
+("'object' object has no attribute '__init__'"). The super proxy
+attr read for __init__ doesn't reach the marker arm - suspect the
+scan's start_t = type_of(class_value) resolves the METACLASS
+('type') instead of the class, so `after` never triggers, OR the
+read bypasses the 9403 super-scan entirely (probes show the scan
+never runs for this case). Next: instrument builtin_super's ctx
+population + the 9403 arm entry with APX_SUPERDBG and find which
+path the super proxy read actually takes.
+
+Gates: T2 minimal green, FD-OK green, full cargo 0 failed x2.
