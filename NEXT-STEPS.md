@@ -419,3 +419,24 @@ never verified whether pytest_itemcollected's _multicall runs INSIDE
 the genitems fiber with a non-empty impl list. That single data point
 (decide: empty-impl-list vs never-called vs called-but-result-dropped)
 directly selects which runtime layer to fix.
+
+## Wave-9 final resolution (2026-10-27)
+
+DECISIVE: explicit `list(session.perform_collect())` inside a
+pytest_collection plugin yields items=3, session.items=3 — COLLECTION
+IS FULLY WORKING through the eager perform_collect body (the itemcollected
+impls=0 lines are normal: no plugin implements that hook in a bare
+install).
+
+The remaining failure is purely in the RUN phase: pytest_runtestloop →
+pytest_runtest_protocol(item 1) → setup passes → call executes
+(pytest_pyfunc_call verified entered and returning) → the call REPORT
+chain vanishes → 'no tests ran', rc=1, int-NoneType surfaced.
+
+Next session focus (single narrow target): instrument
+runner.py call_and_report / pytest_runtest_makereport for the 'call'
+phase (CallInfo.from_call enter/exit already proven to enter) — find
+where between 'pyfunc_call returns True' and 'logreport(call)' the
+continuation drops. Suspects: our runtime's StopIteration-as-value
+handling in wrapper teardown resume (si.value may come back None),
+or _Result.__force_result arithmetic.
