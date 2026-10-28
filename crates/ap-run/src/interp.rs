@@ -1550,6 +1550,7 @@ fn last_executed_line(interp: &Rc<Interpreter>) -> usize {
 pub fn build_tb_chain(script: &str, entries: &[(String, usize)]) -> Value {
     let mut next: Value = Value::None;
     for (qualname, line) in entries.iter().rev() {
+        let line = (*line).max(1);
         let frame = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<frame>");
         let code = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<code>");
         {
@@ -1564,7 +1565,7 @@ pub fn build_tb_chain(script: &str, entries: &[(String, usize)]) -> Value {
             );
             let _ = cattrs.set(
                 Value::Str(PyString::new("co_firstlineno")),
-                Value::Int(ap_obj::Int::from_i64(*line as i64)),
+                Value::Int(ap_obj::Int::from_i64(line as i64)),
             );
         }
         {
@@ -1572,9 +1573,19 @@ pub fn build_tb_chain(script: &str, entries: &[(String, usize)]) -> Value {
             let _ = attrs.set(Value::Str(PyString::new("f_code")), Value::Obj(code));
             let _ = attrs.set(
                 Value::Str(PyString::new("f_lineno")),
-                Value::Int(ap_obj::Int::from_i64(*line as i64)),
+                Value::Int(ap_obj::Int::from_i64(line as i64)),
             );
             let _ = attrs.set(Value::Str(PyString::new("f_back")), next.clone());
+            // T2: pytest's formatter reads frame.f_locals (TracebackEntry
+            // locals rendering).
+            let _ = attrs.set(
+                Value::Str(PyString::new("f_locals")),
+                Value::Dict(PyDict::new()),
+            );
+            let _ = attrs.set(
+                Value::Str(PyString::new("f_globals")),
+                Value::Dict(PyDict::new()),
+            );
         }
         let tb = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<traceback>");
         let _ = tb.attrs.borrow_mut().set(
@@ -1583,7 +1594,11 @@ pub fn build_tb_chain(script: &str, entries: &[(String, usize)]) -> Value {
         );
         let _ = tb.attrs.borrow_mut().set(
             Value::Str(PyString::new("tb_lineno")),
-            Value::Int(ap_obj::Int::from_i64(*line as i64)),
+            Value::Int(ap_obj::Int::from_i64(line.max(1) as i64)),
+        );
+        let _ = tb.attrs.borrow_mut().set(
+            Value::Str(PyString::new("tb_lasti")),
+            Value::Int(ap_obj::Int::from_i64(0)),
         );
         let _ = tb
             .attrs
@@ -3938,6 +3953,9 @@ fn call_value_inner_impl(
                     // receiver's backing collection from the iterable arg
                     // (pytest Traceback(list): super().__init__(gen)).
                     if o.name.starts_with("__ap_base_") && o.name.ends_with("__init__") {
+                        if std::env::var("APX_TBDBG").is_ok() {
+                            eprintln!("[BASEINIT] dispatch {} args={}", o.name, args.len());
+                        }
                         let subject = o
                             .slice_parts
                             .borrow()
@@ -3955,8 +3973,21 @@ fn call_value_inner_impl(
                                 if let Some(it) = it {
                                     let pyit = crate::builtins::iterable_of(&it)?;
                                     let items = crate::iter::collect(&pyit);
+                                    if std::env::var("APX_TBDBG").is_ok() {
+                                        eprintln!("[BASEINIT] filled {} items", items.len());
+                                    }
                                     if let Value::Obj(so) = &subject {
-                                        *so.slice_parts.borrow_mut() = items;
+                                        // T2: the list-derived backing store is
+                                        // attrs["__ap_list__"] (list_backing_
+                                        // or_new reads/writes it); fill it so
+                                        // len()/getitem/iter see the items.
+                                        let l = crate::classes::list_backing_or_new(
+                                            &Value::Obj(so.clone()),
+                                        );
+                                        l.clear();
+                                        for it2 in items {
+                                            l.append(it2);
+                                        }
                                     }
                                 }
                                 return Ok(Value::None);
@@ -9727,6 +9758,29 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 // protocol.
                 if name == "f_back" {
                     return Ok(Some(Value::None));
+                }
+                // T2: fake frame/code/tb objects — pytest's traceback
+                // formatter probes many attrs (tb_lasti, f_trace,
+                // co_positions, ...); missing ones raise AttributeError
+                // mid-format. Answer safe defaults instead.
+                if o.name == "<traceback>" || o.name == "<frame>" || o.name == "<code>" {
+                    let default_val = match name {
+                        "tb_lasti" | "f_lasti" => Some(Value::Int(ap_obj::Int::from_i64(0))),
+                        "f_trace" | "f_builtins" | "co_positions" | "co_qualname" => None,
+                        "traceback" => None,
+                        _ => None,
+                    };
+                    if let Some(dv) = default_val {
+                        return Ok(Some(dv));
+                    }
+                    // Unknown probes on these synthetic objects get a
+                    // harmless None rather than AttributeError, which
+                    // would replace the in-flight exception.
+                    if name.starts_with("_") || name.starts_with("co_") || name.starts_with("tb_")
+                        || name.starts_with("f_")
+                    {
+                        return Ok(Some(Value::None));
+                    }
                 }
                 if name == "f_code" {
                     let code = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<code>");

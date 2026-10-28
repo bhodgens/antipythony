@@ -207,6 +207,12 @@ fn print_to_file(
 /// len(v): sized types only, exact TypeError.
 pub fn builtin_len(args: &[Value]) -> BResult {
     let v = one(args, "len")?;
+    if std::env::var("APX_TBDBG").is_ok() {
+        match v {
+            Value::Obj(o) => eprintln!("[LEN] Obj kind={:?} name={}", o.kind, o.name),
+            other => eprintln!("[LEN] other={:?}", other),
+        }
+    }
     let n = match v {
         Value::Str(s) => s.len(),
         Value::Bytes(b) => b.len(),
@@ -217,6 +223,26 @@ pub fn builtin_len(args: &[Value]) -> BResult {
         // T2: traceback objects - len(tb) = entry count (pytest's
         // Traceback list semantics; ExceptionInfo.traceback returns the
         // raw tb and callers len() it).
+        // T2: user instances of builtin-derived classes (class T(list))
+        // - len reads the backing slice_parts filled via
+        // __ap_base_<base>__init__.
+        Value::Obj(o)
+            if o.kind == ap_obj::ObjKind::UserInstance
+                && !o.slice_parts.borrow().is_empty() =>
+        {
+            // T2: builtin-derived instances - len reads the backing
+            // slice_parts (filled via __ap_base_<base>__init__).
+            if std::env::var("APX_TBDBG").is_ok() {
+                let mro_names: Vec<String> = o
+                    .class_ref
+                    .borrow()
+                    .as_ref()
+                    .map(|t| t.mro.borrow().iter().map(|c| c.name.clone()).collect())
+                    .unwrap_or_default();
+                eprintln!("[LEN-USER] n={} mro={:?}", o.slice_parts.borrow().len(), mro_names);
+            }
+            o.slice_parts.borrow().len()
+        }
         Value::Obj(o) if o.kind == ap_obj::ObjKind::Namespace && o.name == "<traceback>" => {
             if std::env::var("APX_TBDBG").is_ok() {
                 eprintln!("[LEN-TB] counted");
@@ -2817,8 +2843,19 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
                                 ev.class.clone(),
                             ))
                         });
-                    let inst = ap_obj::PyObject::new(ap_obj::ObjKind::Exception, ev.class.clone());
-                    *inst.args.borrow_mut() = ev.args.clone();
+                    // T2: prefer the REAL instance when the raise carried
+                    // one (identity + user-class isinstance preserved).
+                    let inst = ev
+                        .instance
+                        .clone()
+                        .unwrap_or_else(|| {
+                            let i = ap_obj::PyObject::new(
+                                ap_obj::ObjKind::Exception,
+                                ev.class.clone(),
+                            );
+                            *i.args.borrow_mut() = ev.args.clone();
+                            Value::Obj(i)
+                        });
                     let interp3 = interp2.rc();
                     // T2: prefer the exception's OWN tb entries (true raise
                     // site + frame chain); fall back to the global table.
@@ -2832,7 +2869,7 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
                     };
                     return Some(Ok(Value::Tuple(Gc::new(Tuple(vec![
                         cls,
-                        Value::Obj(inst),
+                        inst,
                         tb,
                     ])))));
                 }

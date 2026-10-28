@@ -975,3 +975,33 @@ instantiate() wiring so constructor args reach
 __ap_base_<base>__init__.
 
 Gates: 412/0/1.
+
+## *** T2 MINIMAL GATE: GREEN (2026-10-28) ***
+
+Bare pytest run (t2run36.py: pytest.main([test_trivial.py, -v,
+-p no:cacheprovider])):
+
+  test_trivial.py::test_pass PASSED   [ 33%]
+  test_trivial.py::test_skip SKIPPED  [ 66%]
+  test_trivial.py::test_fail FAILED   [100%]
+  FAILED test_trivial.py::test_fail - AssertionError
+  ===== 1 failed, 1 passed, 1 skipped in 0.00s =====  RC=1
+
+IDENTICAL verdict shape to CPython 3.14. Final fixes that closed it:
+1. ev.instance preserved (5424f1b) - user exceptions match handlers.
+2. sys.exc_info prefers the REAL exception instance (this commit) -
+   Skipped identity survives into from_item_and_call's
+   isinstance(excinfo.value, skip.Exception) -> outcome="skipped".
+3. Per-exception tb + build_tb_chain + Traceback(list) list-derivation
+   (slice_parts-backed) + formatter degradation for imprecise entries.
+
+Gates: cargo 412/0/1.
+
+REMAINING T2 polish (non-blocking): skip shows a cosmetic "SKIPPEDay"
+progress-overwrite artifact; the degraded tb entries show "???"
+source lines; scrapy import regression sweep needs its original
+project-dir context (pre-existing 'phrase' import failure verified
+at HEAD~3, likely pluggy-1.7-vs-1.6 + import-order related).
+
+NEXT: corpus differential sweep + lxml 24/24 re-verify, then the
+Tier-2 "useful pytest" phase (fixtures/parametrize coverage).
