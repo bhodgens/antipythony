@@ -12095,6 +12095,39 @@ pub fn call_io(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option
                     }
                     return Ok(st);
                 }
+                // T2: append mode ("a"/"ab") — create if missing, writes
+                // go to the end. Backed by a growable buffer seeded from
+                // the existing content; writes carry the real fd so the
+                // data lands on disk.
+                if mode.contains('a') && !mode.contains('+') {
+                    let existing = std::fs::read(&path).unwrap_or_default();
+                    let st = make_stream(
+                        if mode.contains('b') {
+                            "BufferedWriter"
+                        } else {
+                            "TextIOWrapper"
+                        },
+                        existing,
+                        Some("utf-8".into()),
+                    );
+                    if let Value::Obj(o) = &st {
+                        let mut attrs = o.attrs.borrow_mut();
+                        let _ = attrs.set(s("<path>"), s(path.clone()));
+                        let _ = attrs.set(s("<append>"), Value::Bool(true));
+                        let _ = attrs.set(s("<not-readable>"), Value::Bool(true));
+                        if let Ok(cp) = std::ffi::CString::new(path.clone()) {
+                            let fd = unsafe {
+                                libc::open(
+                                    cp.as_ptr(),
+                                    libc::O_WRONLY | libc::O_CREAT | libc::O_APPEND,
+                                    0o600,
+                                )
+                            };
+                            let _ = attrs.set(s("<fd>"), i(fd as i64));
+                        }
+                    }
+                    return Ok(st);
+                }
                 let data = std::fs::read(&path).map_err(|e| os_error(&path, &e))?;
                 let st = make_stream(
                     if mode.contains('b') {
