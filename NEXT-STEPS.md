@@ -131,3 +131,15 @@ Next concrete steps:
    wrapper impls are detected via impl.wrapper attr and driven as
    generators (send/throw protocol) — instrument if needed.
 3. Re-run /tmp/t2run14.py: expect 1 passed, 1 failed, 1 skipped, RC=1.
+
+## Wave-4 addendum 2 (2026-10-27)
+
+Isolated the empty-collection mechanics: pluggy registration + call
+SUCCEED structurally (pm.hook.outer_hook exists) but _multicall runs
+ZERO impls (r=[]). Prime suspect: pluggy's varnames()/HookImpl
+argnames extraction inspects function signatures via our code-object
+surface; if argnames come back empty the impl is skipped as
+non-matching. Verify: instrument pluggy/_execution.py _multicall with a
+stderr print of hook_impls length (site-packages is test-data-only) —
+if 0, the gap is in HookImpl._from_hookimpl/varnames; if N, the gap is
+in the wrapper-drive loop.
