@@ -3715,6 +3715,9 @@ pub fn call_builtin(
     args: &[Value],
     kwargs: &[(String, Value)],
 ) -> crate::EvalResult {
+    if std::env::var("APX_SCOPE_DEBUG").is_ok() {
+        eprintln!("[CB] name={}", name);
+    }
     // Wave-68: copy._reconstruct dictiter form — fresh dict.
     if name == "__dict__new__" {
         return Ok(Value::Dict(PyDict::new()));

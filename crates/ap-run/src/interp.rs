@@ -3648,6 +3648,97 @@ fn call_value_inner_impl(
                     if std::env::var("APX_TDEBUG").is_ok() {
                         eprintln!("[TDEBUG] BuiltinFn call: {}", o.name);
                     }
+                    // Wave-70: copy._reconstruct marker calls.
+                    if o.name == "__dict__new__" {
+                        let cls = o
+                            .attrs
+                            .borrow()
+                            .get(&Value::Str(PyString::new("__ap_dict_cls__")))
+                            .unwrap_or_else(|| {
+                                Value::Obj(ap_obj::PyObject::new(ap_obj::ObjKind::Type, "dict"))
+                            });
+                        if let Some(t) = crate::classes::type_of(interp, &cls) {
+                            return crate::classes::instantiate(interp, &cls, &t, &[], &[]);
+                        }
+                        return Ok(Value::Dict(PyDict::new()));
+                    }
+                    if o.name == "__ap_reduce_ex__" {
+                        let recv = o.slice_parts.borrow().first().cloned().unwrap_or(Value::None);
+                        // UserInstance receivers: state = the attrs dict,
+                        // cls = the receiver's own class (Settings.copy
+                        // etc. must round-trip as their own type).
+                        if let Value::Obj(io) = &recv {
+                            if io.kind == ap_obj::ObjKind::UserInstance {
+                                let d = PyDict::new();
+                                for (k, v) in io.attrs.borrow().items() {
+                                    let _ = d.set(k.clone(), v.clone());
+                                }
+                                let cls_v = crate::classes::class_of_value(interp, &recv)
+                                    .map(|t| crate::classes::class_value_for_public(&t))
+                                    .unwrap_or(Value::None);
+                                let newm = ap_obj::PyObject::new(
+                                    ap_obj::ObjKind::BuiltinFn,
+                                    "__ap_newobj__",
+                                );
+                                *newm.slice_parts.borrow_mut() = vec![cls_v.clone()];
+                                return Ok(Value::Tuple(Gc::new(Tuple(vec![
+                                    Value::Obj(newm),
+                                    Value::Tuple(Gc::new(Tuple(vec![cls_v]))),
+                                    Value::Dict(d),
+                                ]))));
+                            }
+                        }
+                        let pairs: Vec<Value> = match &recv {
+                            Value::Dict(d) => d
+                                .items()
+                                .iter()
+                                .map(|(k, v)| {
+                                    Value::Tuple(Gc::new(Tuple(vec![k.clone(), v.clone()])))
+                                })
+                                .collect(),
+                            Value::List(l) => l.items().iter().cloned().collect(),
+                            Value::Set(st) => st.iter().map(|v| v.clone()).collect(),
+                            Value::Tuple(t) => t.0.iter().cloned().collect(),
+                            _ => Vec::new(),
+                        };
+                        let cls_name = match &recv {
+                            Value::Dict(_) => "dict",
+                            Value::List(_) => "list",
+                            Value::Set(_) => "set",
+                            _ => "tuple",
+                        };
+                        let cls = crate::builtins::interned_type(interp, cls_name);
+                        let newm = ap_obj::PyObject::new(
+                            ap_obj::ObjKind::BuiltinFn,
+                            "__dict__new__",
+                        );
+                        let _ = newm
+                            .attrs
+                            .borrow_mut()
+                            .set(Value::Str(PyString::new("__ap_dict_cls__")), cls);
+                        let items_list = if cls_name == "dict" {
+                            let l = PyList::from_vec(
+                                pairs
+                                    .iter()
+                                    .map(|p| {
+                                        Value::Tuple(Gc::new(Tuple(match p {
+                                            Value::Tuple(t) => t.0.clone(),
+                                            _ => Vec::new(),
+                                        })))
+                                    })
+                                    .collect(),
+                            );
+                            Value::List(l)
+                        } else {
+                            Value::List(PyList::from_vec(pairs))
+                        };
+                        return Ok(Value::Tuple(Gc::new(Tuple(vec![
+                            Value::Obj(newm),
+                            Value::Tuple(Gc::new(Tuple(vec![]))),
+                            Value::None,
+                            items_list,
+                        ]))));
+                    }
                     // 02.08-c: lxml element dunder protocol markers
                     // (len(r) / r[i] / iter(r)) — dispatch into the native
                     // element surface with the parked receiver as args[0].
@@ -4420,6 +4511,24 @@ fn call_value_inner_impl(
                         // refill it.
                         let d = PyDict::new();
                         return Ok(Value::Dict(d));
+                    }
+                    if o.name == "__dict__new__" {
+                        // Wave-70: copy._reconstruct func slot — fresh
+                        // container of the class carried in __ap_dict_cls__.
+                        let cls = o
+                            .attrs
+                            .borrow()
+                            .get(&Value::Str(PyString::new("__ap_dict_cls__")))
+                            .unwrap_or_else(|| {
+                                Value::Obj(ap_obj::PyObject::new(
+                                    ap_obj::ObjKind::Type,
+                                    "dict",
+                                ))
+                            });
+                        if let Some(t) = crate::classes::type_of(interp, &cls) {
+                            return crate::classes::instantiate(interp, &cls, &t, &[], &[]);
+                        }
+                        return Ok(Value::Dict(PyDict::new()));
                     }
                     if o.name == "__ap_newobj__" {
                         let cls_v = o.slice_parts.borrow().first().cloned().unwrap_or(Value::None);
