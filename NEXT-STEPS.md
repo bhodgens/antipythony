@@ -1904,3 +1904,17 @@ APX_ASSERTDBG log at exec_stmt:691's Assign arm when the RHS
 eval raises TypeError (one-line change), rerun test_capF, read
 the assign target name from the log — that names the exact
 attribute whose read returns None. Then fix that dispatch.
+
+## Wave-53 final cleanup (2026-10-28, later): BINOP-ERR probes removed
+
+The BINOP-ERR probes at the two eval_binop raise sites stayed
+silent across repeated runs with the exact TypeError present —
+the raise path for this error class is NOT the eval_binop
+map_err sites. Removed both probes; sites restored to
+map_err(Flow::from_py). Gates green (T2 minimal gate, CaptureIO
+repro, cargo 0 failed).
+The definitive next probe remains: extend EV-AE backtracing to
+run unconditionally on cls=TypeError args=1 and capture the
+Rust backtrace at construction (proven to work — the wave-54
+backtrace was captured this way), then map the frames to the
+source raise.

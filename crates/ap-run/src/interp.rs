@@ -688,7 +688,20 @@ fn exec_stmt(
             Ok(StmtOut::Next)
         }
         Stmt::Assign(targets, value) => {
-            let v = eval_expr(interp, frame, value, reg)?;
+            let v = match eval_expr(interp, frame, value, reg) {
+                Ok(v) => v,
+                Err(Flow::Raise(ref ev))
+                    if ev.class == "TypeError"
+                        && std::env::var("APX_ASSERTDBG").is_ok() =>
+                {
+                    eprintln!(
+                        "[ASSIGN-ERR] TypeError raised at Assign stmt (gen-resume); msg={}",
+                        ev.args.first().map(|a| a.type_name()).unwrap_or_default()
+                    );
+                    return Err(Flow::Raise(ev.clone()));
+                }
+                Err(other) => return Err(other),
+            };
             for t in targets {
                 assign_target(interp, frame, t, v.clone(), reg)?;
             }
