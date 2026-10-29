@@ -2095,3 +2095,27 @@ assertion-rewrite quality, then per NEXT-STEPS order.
   nothing). Likely the collector/mark-stacking applies marks to
   the wrong function or stops after 2. First item of the
   parametrize tier.
+
+## Wave-59 (2026-10-28): parametrize matrix narrowed; probes clean
+
+Matrix facts:
+- 2+ plain parametrized tests per file: PASS (q2 4/4, q4 5/5).
+- ids= on the ONLY parametrized test: PASS (p2).
+- ids= present alongside ANY other parametrized test in the
+  same module: 0 collected (q5, q6 — both orders fail).
+
+Narrowed this window: marks store correctly on both functions
+(verified via direct import: pytestmark + __dict__ entries
+perfect); module import OK; COLLECT-FILE hook fires;
+Module.collect enters (probe logged) but even for WORKING files
+the probe stops right after enter — the successful path never
+shows MAKEITEM-HOOK/ISTF either, so our runtime reaches
+collection through a path where python.py's collect() body
+post-enter is skipped or duplicated (apc-cache/eager-import
+interaction is the prime suspect). Probes reverted; gates
+re-verified green (q4 5/5, fix2 3/3).
+
+NEXT SESSION: clear apc cache BEFORE probing python.py (the
+cache made probe results ambiguous), then log inside
+Module.collect around the __test__ getattr and the dicts loop
+with per-line logging to find where ids=-modules diverge.
