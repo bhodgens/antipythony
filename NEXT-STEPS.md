@@ -2659,3 +2659,28 @@ backtrace force-capture filtered for the frame's fn name —
 the arms support it (BT loop pattern landed, just extend the
 filter or use Backtrace::force_capture() frames). The caller
 frame names the Python function doing the assignment.
+
+## Wave-76 (7a4b18b): SMOKING GUN — the str-key list hit is `del self[lower_key]` in scrapy CaseInsensitiveDict.__setitem__
+
+RUST_BACKTRACE panic captured the full frame:
+subscript_del (methods.rs:944) called from exec_stmt Del
+(interp:1171) — i.e. `del self[lower_key]` inside
+CaseInsensitiveDict.__setitem__ (scrapy/utils/datatypes.py:42).
+The receiver `self` was a Value::List — CaseInsensitiveDict
+(UserDict subclass) instances are being materialized as LISTS
+by our runtime (same builtin-base storage misrouting as the
+ConvertingDict tuple-payload issue).
+
+The del then dispatches by __delitem__ for UserInstance — but
+the instance is a raw list here, so subscript_del raises
+'list indices must be integers'.
+
+ROOT CAUSE (same family as wave-62): UserDict/dict-subclass
+instances get materialized through builtin-base storage with
+the wrong builtin (list instead of dict) OR without
+__ap_dict__ backing. Fix: make CaseInsensitiveDict-style
+UserDict subclasses carry __ap_dict__ backing (dict_backing
+resolve), like the ConvertingDict fix in e51eead — check
+instantiate's builtin-base selection for UserDict-derived
+classes and/or how `self` binds in CaseInsensitiveDict
+methods.
