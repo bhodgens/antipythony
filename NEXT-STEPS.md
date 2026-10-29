@@ -2142,3 +2142,46 @@ PARAMETRIZE TIER: basic+multi-arg+ids all green. Remaining for
 the tier: indirect fixtures, pytest.param(..., id=/marks=),
 stacked parametrize, class-level params, parametrize + fixtures
 interaction.
+
+## Wave-60 — RUNTIME BUG: nested-def self-recursion NameError FIXED; advanced parametrize nearly green
+
+Found via the advanced-parametrize matrix (ids + fixture interplay):
+traverse_fixture_closure's recursive nested generator silently
+stopped -> item.fixturenames=['v'] only (fixtures dropped) ->
+KeyError at test call.
+
+ROOT CAUSE: nested function SELF-recursion raised NameError —
+the def's name binds AFTER its body lowers, so the scope
+classifier's free-variable walk (at inner close) couldn't see
+the future binding. Minimal repro /tmp/t2self.py,
+/tmp/t2self3.py (also hit plain code: any nested function
+calling itself by name).
+
+FIX (ap-parse lowering): loads that resolve to NO enclosing
+bind at scope close are DEFERRED with the immediately-enclosing
+function path; finish_scopes retries after all binds: if the
+load is truly bound in that scope (checked via a new
+finished_bounds map), mark cell-in-enclosing + free-in-inner.
+Builtin/global reads (getattr etc.) stay builtin (guarded by
+the bounds check).
+
+Results: t2self/t2self3/t2yf4 green; advanced parametrize:
+pytest.param id=, stacked decorators, class params, indirect
+fixtures, parametrize+tmp_path ALL PASS (adv 8/8, adv2 3/3).
+Wave-59 suite still green (fix2 3/3, param 6/6). T2 gate green.
+
+REMAINING known: scrapy bare-import hits the documented
+pre-existing 'int.phrase' issue (twisted chain, corrupt-tb
+masked site) — T1 crawl gate needs re-verification separately.
+
+## Wave-60 gates (final): cargo test --workspace 0 failed x2 clean
+runs (one known flake re-run green). Staging probes: only the
+env-gated SCOPE dump remains in ap-parse (APX_SCOPE_DEBUG).
+
+## STATUS SNAPSHOT (end of wave-60)
+- Tier-2 built-in fixtures: DONE (tmp_path, monkeypatch, capsys,
+  generator fixtures).
+- Parametrize: basic/multi-arg/ids/pytest.param/stacked/class/
+  indirect/fixture-interaction ALL GREEN.
+- Next tier candidates: assertion-rewrite quality; unittest
+  deeper surface; scrapy T1 gate re-verification (int.phrase).
