@@ -2603,6 +2603,11 @@ fn instance_attr(
         let f = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, &format!("object.{name}"));
         return Ok(Value::Obj(f));
     }
+    // T2 (contextlib _BaseExitStack.__exit__): exception-chain dunders
+    // must answer on every exception-typed value, defaulting to None.
+    if matches!(name, "__context__" | "__cause__" | "__suppress_context__") {
+        return Ok(Value::None);
+    }
     Err(raise(
         "AttributeError",
         format!("'{}' object has no attribute '{}'", t.name, name),
@@ -3048,6 +3053,26 @@ pub fn attr_set_protocol(
                 && (o.name == "lxml.etree._Element" || o.name == "lxml.html.HtmlElement") =>
         {
             crate::lxml::elem_attr_set(obj, name, v)
+        }
+        // T2 (contextlib/pluggy exception chaining): native exception
+        // values accept chain-dunder writes (__context__/__cause__/
+        // __suppress_context__/__traceback__) — stored in attrs so the
+        // matching read arms (interp 9992 family) see them.
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::Exception => {
+            if matches!(
+                name,
+                "__context__" | "__cause__" | "__suppress_context__" | "__traceback__"
+            ) {
+                let _ = o
+                    .attrs
+                    .borrow_mut()
+                    .set(Value::Str(PyString::new(name.to_string())), v);
+                return Ok(());
+            }
+            Err(raise(
+                "AttributeError",
+                format!("'{}' object has no attribute '{}'", o.name, name),
+            ))
         }
         other => Err(raise(
             "AttributeError",
