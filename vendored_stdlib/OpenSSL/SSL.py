@@ -118,3 +118,24 @@ WantReadError = Error
 WantWriteError = Error
 SysCallError = Error
 ZeroReturnError = Error
+
+
+# Wave-79: scrapy/utils/ssl.py probes the OpenSSL build via
+# SSLeay_version(SSLEAY_VERSION). Real pyOpenSSL exposes the
+# SSLeay_* constants (SSLEAY_VERSION = 0) and SSLeay_version()
+# returning the OpenSSL banner string.
+SSLEAY_VERSION = 0
+SSLEAY_CFLAGS = 1
+SSLEAY_BUILT_ON = 2
+SSLEAY_PLATFORM = 3
+SSLEAY_DIR = 4
+
+
+def SSLeay_version(t: int = SSLEAY_VERSION) -> str:
+    if t == SSLEAY_VERSION:
+        return "OpenSSL 3.0.0 (antipythany shim)"
+    return "antipythany shim"
+
+
+def OPENSSL_version(*args: object) -> str:
+    return SSLeay_version(*args)

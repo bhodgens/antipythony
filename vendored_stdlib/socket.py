@@ -257,3 +257,95 @@ def inet_pton(address_family, ip_string):
             out[i * 2 + 1] = int(g, 16) & 0xFF
         return bytes(out)
     raise OSError("unknown address family")
+
+
+# Wave-79: asyncio reactor needs socket.socketpair(). Emulate a
+# bidirectional pair with two os.pipe() halves wrapped in
+# socket-like objects (reads/writes via raw fd I/O). Real
+# socketpair lands with the native _socket module (C-07).
+def socketpair(family=AF_INET, type=SOCK_STREAM, proto=0):
+    import os as _os
+    r1, w1 = _os.pipe()
+    r2, w2 = _os.pipe()
+    a = socket(family, type, proto)
+    b = socket(family, type, proto)
+    # Rebind each socket's fileno to the remote write end for
+    # sends and the local read end for receives via raw fds.
+    a._sp_fds = (r1, w2)
+    b._sp_fds = (r2, w1)
+    import fcntl as _fcntl
+
+    def _nb(fd):
+        try:
+            _fcntl.fcntl(fd, _fcntl.F_SETFL, _fcntl.fcntl(fd, _fcntl.F_GETFL) | _os.O_NONBLOCK)
+        except Exception:
+            pass
+
+    _nb(r1)
+    _nb(r2)
+    _nb(w1)
+    _nb(w2)
+
+    def _make(sp):
+        (rfd, wfd) = sp
+
+        def fileno():
+            return rfd
+
+        def recv(bufsize, flags=0):
+            try:
+                return _os.read(rfd, bufsize)
+            except BlockingIOError:
+                return None
+
+        def send(data, flags=0):
+            return _os.write(wfd, data)
+
+        def sendall(data, flags=0):
+            view = memoryview(data)
+            while view:
+                try:
+                    n = _os.write(wfd, view)
+                except BlockingIOError:
+                    continue
+                view = view[n:]
+            return len(data)
+
+        def close():
+            for fd in (rfd, wfd):
+                try:
+                    _os.close(fd)
+                except OSError:
+                    pass
+
+        def setblocking(flag):
+            return None
+
+        def getpeername():
+            return ("127.0.0.1", 0)
+
+        def getsockname():
+            return ("127.0.0.1", 0)
+
+        class _P:
+            pass
+
+        o = _P()
+        o.fileno = fileno
+        o.recv = recv
+        o.send = send
+        o.sendall = sendall
+        o.close = close
+        o.setblocking = setblocking
+        o.getpeername = getpeername
+        o.getsockname = getsockname
+        o.family = family
+        o.type = type
+        o.proto = proto
+        o.gettimeout = lambda: None
+        o.settimeout = lambda v: None
+        o.setsockopt = lambda *a, **k: None
+        o.getsockopt = lambda *a, **k: 0
+        return o
+
+    return (_make(a._sp_fds), _make(b._sp_fds))

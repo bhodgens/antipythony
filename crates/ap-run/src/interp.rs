@@ -5466,7 +5466,7 @@ fn call_value_inner_impl(
                 }
                 _ => {
                     if std::env::var("APX_ASSERTDBG").is_ok() && f.type_name() == "NoneType" {
-                        eprintln!("[NONECALL] callee={:?}", f.type_name());
+                        eprintln!("[NONECALL] callee=None");
                     }
                     Err(raise(
                         "TypeError",

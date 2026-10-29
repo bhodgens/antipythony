@@ -7046,6 +7046,8 @@ fn build_os(_i: &crate::frame::Interpreter) -> Value {
         // values were wrong on macOS: O_CREAT=0o1000, O_TRUNC=0o2000,
         // O_APPEND=0o200000, O_EXCL=0o2000).
         ("O_EXCL", libc::O_EXCL as i64),
+        ("O_NONBLOCK", libc::O_NONBLOCK as i64),
+        ("O_CLOEXEC", libc::O_CLOEXEC as i64),
         ("O_NOINHERIT", 0),
         ("O_TEMPORARY", 0),
         ("O_NOFOLLOW", libc::O_NOFOLLOW as i64),

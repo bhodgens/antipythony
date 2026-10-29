@@ -970,20 +970,52 @@ pub fn subscript_del(obj: &Value, key: &Value) -> Result<(), Flow> {
             let k = subscript_key(key)?;
             let i = match k {
                 Key::Index(i) => i,
-                other => {
-                    let tname = match obj {
-                        Value::Obj(ob) => format!("{:?}", ob.kind),
-                        _ => "prim".to_string(),
-                    };
-                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/t1listidx.txt") {
-                        use std::io::Write;
-                        let key_repr = match other {
-                            Key::Other(v) => format!("Other({})", v.type_name()),
-                            Key::Index(i) => format!("Index({})", i),
-                            _ => "other".to_string(),
-                        };
-                        let _ = writeln!(f, "LISTIDX-OTHER other={} objkind={}", key_repr, tname);
+                // Wave-79: list slice deletion (del lst[1:3]) — mirrors
+                // the set route's Slice arm. step==1 removes the span;
+                // step!=1 removes the projected indices high-to-low so
+                // the remaining indices stay valid.
+                Key::Slice { lo, hi, step } => {
+                    if step == 0 {
+                        return Err(raise("ValueError", "slice step cannot be zero"));
                     }
+                    let len = l.len() as i64;
+                    let clamp = |v: i64| -> i64 {
+                        if v < 0 {
+                            (v + len).max(0).min(len)
+                        } else {
+                            v.min(len)
+                        }
+                    };
+                    if step == 1 {
+                        let start = clamp(lo.unwrap_or(0));
+                        let stop = clamp(hi.unwrap_or(len));
+                        for _ in start..stop {
+                            l.remove_at(start as usize);
+                        }
+                    } else {
+                        let mut idxs: Vec<i64> = Vec::new();
+                        let mut cur = if step > 0 {
+                            clamp(lo.unwrap_or(0))
+                        } else {
+                            clamp(hi.unwrap_or(len)) - 1
+                        };
+                        let end = if step > 0 {
+                            clamp(hi.unwrap_or(len))
+                        } else {
+                            clamp(lo.unwrap_or(0)) - 1
+                        };
+                        while cur != end && cur >= 0 && cur < len {
+                            idxs.push(cur);
+                            cur += step;
+                        }
+                        idxs.sort_unstable_by(|a, b| b.cmp(a));
+                        for ix in idxs {
+                            l.remove_at(ix as usize);
+                        }
+                    }
+                    return Ok(());
+                }
+                _other => {
                     return Err(raise("TypeError", "list indices must be integers"));
                 }
             };

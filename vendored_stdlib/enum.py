@@ -273,8 +273,6 @@ class _proto_member:
                     new_exc.__cause__ = exc
                     raise new_exc
         value = enum_member._value_
-        import sys as _sn1
-        _sn1.stderr.write("W1 " + member_name + " type(m)=" + repr(type(enum_member))[:30] + " map=" + repr(enum_class._value2member_map_)[:60] + "\n")
         enum_member._name_ = member_name
         enum_member.__objclass__ = enum_class
         enum_member.__init__(*args)
@@ -318,8 +316,6 @@ class _proto_member:
                 # no other instances found, record this member in _member_names_
                 enum_class._member_names_.append(member_name)
 
-        import sys as _sn2
-        _sn2.stderr.write("W2 " + member_name + " type(m)=" + repr(type(enum_member))[:30] + " map=" + repr(enum_class._value2member_map_)[:60] + "\n")
         enum_class._add_member_(member_name, enum_member)
         try:
             # This may fail if value is not hashable. We can't add the value
