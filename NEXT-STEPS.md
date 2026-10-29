@@ -2684,3 +2684,19 @@ resolve), like the ConvertingDict fix in e51eead — check
 instantiate's builtin-base selection for UserDict-derived
 classes and/or how `self` binds in CaseInsensitiveDict
 methods.
+
+## Wave-76 addendum: partial super-ctx fix landed; remaining = stack the pending_super_ctx
+
+subscript_del now saves/restores pending_super_ctx around the
+__delitem__ dispatch (743503c). The CaseInsensitiveDict repro
+still fails with "super(): no arguments" — the CLOBBER comes
+from a DIFFERENT staging site during the del's call chain
+(bound-method dispatch stages at interp.rs 5186/8348, or
+instantiate's staging). 
+
+NEXT (well-defined): convert pending_super_ctx from
+Option<(owner, recv, is_cls)> to a Vec stack — push at each
+staging site, pop at the super() reader (interp.rs ~5817).
+The reader currently pops via super_stack already; the ctx
+slot just needs the same discipline. ~6 staging sites (grep
+pending_super_ctx).
