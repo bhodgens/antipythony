@@ -1722,3 +1722,24 @@ NEXT SESSION (two options):
 All probes cleaned; staging parse-verified; gates green (T2
 minimal gate, genfix, fix6b tmp_path+monkeypatch, CaptureIO,
 cargo 0 errors).
+
+## Wave-50 (2026-10-28): nondeterminism confirmed; run varying
+
+The capsys run now varies: some runs fail with
+TypeError('NoneType' object is not callable) at
+HookCaller.__call__ (MAINCATCH), others complete the session
+with 2 empty AssertionErrors, and the runner.py RP probe
+sometimes logs, sometimes not (file verified correct, bytecode
+cache cleared). This is NONDETERMINISTIC behavior in our runtime
+- consistent with a fiber/GC/ordering bug (the known issue #10
+GC family), not a single deterministic site.
+
+NEXT SESSION plan (ordered):
+1. Run test_capF 5x, record which of the 3 failure variants
+   appears each time (variant census).
+2. For the TypeError-NoneType-callable variant: it fires inside
+   HookCaller.__call__ during the CALL phase — instrument
+   HookCaller.__call__ with a file-log of each attribute step to
+   find the None callee (bounded, one hook).
+3. The 80s runtime per invocation suggests heavy retry/GC
+   pressure - check GC stats (GCSTATS=1) across variants.
