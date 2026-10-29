@@ -1870,3 +1870,19 @@ NEXT SESSION: identify the exact generator (add gen-id logging
 to gen_fiber_body) and the exact binop line in the python body
 (the exec_stmt:691 assign) by logging the assign target name in
 the APX_ASSERTDBG arm. Then fix the None-returning dispatch.
+
+## Wave-54 SMOKING GUN: CaptureFixture instance attrs LOST
+
+`CaptureFixture.__init__` runs (via our runtime), but afterwards
+`self.captureclass` reads back as None (probe:
+AttributeError: 'NoneType' object has no attribute
+'EMPTY_BUFFER'). All instance attrs set in __init__ of this
+Generic[T]-subscripted class are lost — instance dict writes
+don't persist for Generic-subscripted classes on our runtime.
+The `None += str` binop in close() then raises our TypeError.
+
+FIX TARGET (concrete): instance attribute persistence for
+classes created via Generic[...] subscripting (and any class
+whose instantiate() routes through a replaced/rebuilt instance).
+Repro: /tmp/t2capfix.py (construct CaptureFixture, read
+self.captureclass).
