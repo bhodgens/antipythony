@@ -2084,3 +2084,14 @@ corpus 15/0/9xp, cargo test 0 failed x2, lxml 24/24 intact.
 
 NEXT: parametrize tier (@pytest.mark.parametrize), then
 assertion-rewrite quality, then per NEXT-STEPS order.
+
+## Wave-58b: parametrize smoke results
+
+- Single parametrize per file: ALL shapes pass (multi-arg
+  tuples, ids=, arithmetic in body) — test_param 3/3, p1+p2
+  2/2, p3 2/2.
+- OPEN BUG: 3+ parametrize-decorated tests in ONE file
+  (test_param2.py) -> "no tests ran" (collection yields
+  nothing). Likely the collector/mark-stacking applies marks to
+  the wrong function or stops after 2. First item of the
+  parametrize tier.
