@@ -1010,13 +1010,24 @@ pub fn subscript_del(obj: &Value, key: &Value) -> Result<(), Flow> {
             if let Some((f, _)) =
                 crate::classes::special_lookup(&interp, obj, "__delitem__")
             {
-                return crate::interp::call_value_pub(
+                // Wave-76: save/restore the pending super ctx — the
+                // __delitem__ body may itself dispatch __setitem__ (scrapy
+                // CaseInsensitiveDict.__setitem__ does `del self[...]`
+                // before super().__setitem__), which re-stages the single
+                // pending_super_ctx slot and clobbers the outer call's
+                // staged ctx ("super(): no arguments").
+                let saved = interp
+                    .pending_super_ctx
+                    .borrow()
+                    .clone();
+                let r = crate::interp::call_value_pub(
                     &interp,
                     &f,
                     &[obj.clone(), key.clone()],
                     &[],
-                )
-                .map(|_| ());
+                );
+                *interp.pending_super_ctx.borrow_mut() = saved;
+                return r.map(|_| ());
             }
             Err(raise(
                 "TypeError",
