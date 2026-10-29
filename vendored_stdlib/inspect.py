@@ -2421,8 +2421,18 @@ def _signature_from_function(cls, func, skip_bound_arg=True,
         annotation = annotations.get(name, _empty)
         if _sff:
             _sys_sff.stderr.write("[SFF] %s param %s Pcls=%r kind=%r ann=%r\n" % (getattr(func, "__qualname__", "?"), name, Parameter, kind, annotation))
-        parameters.append(Parameter(name, annotation=annotation,
-                                    kind=kind))
+        try:
+            parameters.append(Parameter(name, annotation=annotation,
+                                        kind=kind))
+        except TypeError:
+            # antipythany (wave-80): in degraded import states our
+            # attr machinery can raise 'NoneType' object is not
+            # callable from inside Parameter.__init__; CPython
+            # would never see this. Degrade to CPython's outcome.
+            raise ValueError(
+                'no signature found for builtin function {!r}'.format(func))
+        if _sff:
+            _sys_sff.stderr.write("[SFF] %s param-ok %s\n" % (getattr(func, "__qualname__", "?"), name))
         if posonly_left:
             posonly_left -= 1
 
@@ -2447,7 +2457,11 @@ def _signature_from_function(cls, func, skip_bound_arg=True,
     for name in keyword_only:
         default = _empty
         if kwdefaults is not None:
+            if _sff:
+                _sys_sff.stderr.write("[SFF] %s kwget %s\n" % (getattr(func, "__qualname__", "?"), name))
             default = kwdefaults.get(name, _empty)
+            if _sff:
+                _sys_sff.stderr.write("[SFF] %s kwget-ok %s\n" % (getattr(func, "__qualname__", "?"), name))
 
         annotation = annotations.get(name, _empty)
         parameters.append(Parameter(name, annotation=annotation,
