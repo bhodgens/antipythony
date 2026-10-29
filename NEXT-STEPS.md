@@ -1763,3 +1763,34 @@ debugging session established:
   resumption specifically (wave-47's MC-RAISE found the
   AssertionError stored with NO frames — consistent with our
   runtime raising it in the send/resume machinery in Rust).
+
+## Wave-51 (2026-10-28): TypeError root localised via APX_CALLTRACE
+
+APX_CALLTRACE= full trace (240K lines) captured. The final
+sequence: ... _exit_wrapper -> ok | close -> ok | ExitStack
+constructed (__init__) | _ensure_unconfigure -> ok NoneType |
+pydict.pop -> ok str | _main -> raise TypeError | main -> raise
+TypeError | MAINCATCH TypeError 'NoneType' object is not callable.
+
+The TypeError raises in the _main FRAME at the `rc = pytest.main
+(...)` statement RETURN — after pytest.main internally completed
+_ensure_unconfigure cleanly. No [CALL-] -> raise precedes it in
+the tail; the None-call happens in our frame-return/unwind path
+(_main frame exit executing a pending error/finalizer slot), NOT
+in python-visible code and NOT inside _multicall.
+
+This localises the bug to OUR frame-return machinery: during
+_main's frame exit we call something that is None (a pending
+super/finalizer/error slot), manufacturing TypeError
+'NoneType' object is not callable — and the MFR tb chain
+(main→HookCaller→_multicall→wrap_session) seen all along is the
+CORRUPT attribution (those frames never executed the raise).
+
+NEXT SESSION (single focus): in interp.rs call_function /
+exec_block frame-return path, find the pending slot invoked at
+_main frame exit after pytest.main returns; add
+APX_SUPERDBG-style logging at the frame-return finalizer
+invocation; fix the None dereference (guard or populate). This
+unblocks capsys AND likely several report-attribution
+corruptions seen all along (MFR chains pointing at wrong
+frames).
