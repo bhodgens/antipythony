@@ -2185,3 +2185,34 @@ env-gated SCOPE dump remains in ap-parse (APX_SCOPE_DEBUG).
   indirect/fixture-interaction ALL GREEN.
 - Next tier candidates: assertion-rewrite quality; unittest
   deeper surface; scrapy T1 gate re-verification (int.phrase).
+
+## Wave-61 — scrapy int.phrase ROOT CAUSE FOUND: IntEnum members are raw ints
+
+Chain: scrapy import -> gettext translation('messages',
+fallback=False) -> find() returns [] (no locales) -> raise
+FileNotFoundError(ENOENT,...) -> CALLER catches and the chain
+hits http/client.py:108 `responses = {v: v.phrase for v in
+http.HTTPStatus.__members__.values()}` -> v.phrase fails:
+'IntEnum member' is a RAW INT on our runtime.
+
+MINIMAL REPRO (/tmp/t2enum2.py):
+    class N(enum.IntEnum): ONE = 1
+    N.ONE.name  ->  AttributeError: 'int' object has no
+    attribute 'name'
+Plain Enum members work (Color.RED.name fine). IntEnum member
+creation: enum.py sets `enum_member._value_ = int(*args)` on
+the object returned by int.__new__(cls) — our int.__new__
+returns a PLAIN Value::Int (class info lost; Value::Int has no
+class_ref). N.__dict__['ONE'] stores raw 1.
+
+FIX NEEDED (leaf-sized): int-subclass instances must carry
+their class. Options: (a) ObjKind::IntStorage wrapper carrying
+class_ref + i64 (like NamedTuple's pattern), engaged from
+instantiate when __ap_builtin_base__=='int' or int.__new__
+receives a subclass; wire attr lookup + int ops (arith, hash,
+repr, comparisons) through the payload. Enum attr access then
+resolves via the class MRO (name/value/phrase).
+This unblocks the whole twisted/scrapy import chain (constantly
+NamedConstant may share the pattern).
+
+Probes in vendored_stdlib/gettext.py removed (ast-verified).

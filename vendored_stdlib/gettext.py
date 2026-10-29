@@ -552,10 +552,14 @@ def translation(domain, localedir=None, languages=None,
         # are not used.
         import copy
         t = copy.copy(t)
+        import sys as _sy2
+        _sy2.stderr.write("TR copied\n")
         if result is None:
             result = t
         else:
             result.add_fallback(t)
+    import sys as _sy3
+    _sy3.stderr.write("TR returning\n")
     return result
 
 
