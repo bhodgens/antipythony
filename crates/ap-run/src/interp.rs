@@ -996,7 +996,16 @@ fn exec_stmt(
                 } else {
                     m
                 };
-                frame.store_global(&bind_target, m);
+                // T2 (wave-41): `import x as y` inside a function binds a
+                // LOCAL (CPython semantics); store_local keeps the compiler's
+                // CellSlot classification so nested defs capture it as a
+                // free var. The old store_global left nested closures with
+                // an unbound local (UnboundLocalError on `_os` etc).
+                if frame.is_module {
+                    frame.store_global(&bind_target, m);
+                } else {
+                    frame.store_local(&bind_target, m);
+                }
             }
             Ok(StmtOut::Next)
         }
@@ -1057,7 +1066,11 @@ fn exec_stmt(
                     let mut all_found = true;
                     for (src_name, bind) in &names {
                         match attr_get(interp, &m, src_name)? {
-                            Some(v) => frame.store_global(bind, v),
+                            Some(v) => if frame.is_module {
+                                frame.store_global(bind, v);
+                            } else {
+                                frame.store_local(bind, v);
+                            },
                             None => {
                                 all_found = false;
                                 break;
@@ -1077,7 +1090,11 @@ fn exec_stmt(
                 importer::attach_sys_extras(interp, &m);
                 for (src_name, bind) in &names {
                     match attr_get(interp, &m, src_name)? {
-                        Some(v) => frame.store_global(bind, v),
+                        Some(v) => if frame.is_module {
+                            frame.store_global(bind, v);
+                        } else {
+                            frame.store_local(bind, v);
+                        },
                         None => {
                             return Err(raise(
                                 "ImportError",
