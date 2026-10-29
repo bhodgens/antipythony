@@ -2743,3 +2743,35 @@ failure at run_ap.py:12 p.start(): TypeError list indices must
 be integers with __getattr__ x2 frames (3845 = unreliable
 attribution). NEXT: probe the get/subscript routes for the
 str-key list hit in p.start() context (CrawlerProcess.start).
+
+## Wave-79: slice-del + 3 shim layers; crawl at log_scrapy_info (committed)
+
+CONFIRMED + FIXED (all byte-identical vs CPython 3.14.7):
+- list SLICE DELETION (del lst[a:b:step]) was unimplemented in
+  subscript_del — the 'list indices must be integers' blocker.
+- os.O_NONBLOCK/O_CLOEXEC added to native os constants.
+- OpenSSL.SSL.SSLeay_version + SSLEAY_* constants shim (scrapy
+  get_openssl_version).
+- socket.socketpair emulated via double os.pipe + raw-fd IO
+  wrapper (asyncio reactor).
+- lxml-5.3.0.dist-info metadata staged (importlib.metadata).
+- LEFTOVER unconditional W1/W2 probe removed from enum.py
+  (survived wave-63's 'probe removal' — check-all-copies rule
+  bit again).
+
+CRAWL NOW FAILS AT: CrawlerProcess.__init__ → log_scrapy_info
+→ versions → get_openssl_version (SSLeay fixed) — the NEXT
+error is a signature walk (inspect.signature on a native
+callable) hitting an object whose __getattr__ resolves to
+None then CALLS it: chain _signature_from_callable →
+__getattr__ x2 → 'NoneType' object is not callable.
+current_task/get_running_loop signatures PASS standalone —
+crawl-context-specific again (wave-74 family). The traceback
+shows the failure during CrawlerProcessBase.__init__ — need
+to identify the exact callable being signature-walked (entry
+logging at _signature_from_callable worked in wave-74; redo
+that probe).
+
+NOTE: a zlib.error at PROCESS EXIT (after main completes) is
+separate, harmless-to-main-flow shutdown noise — investigate
+later.
