@@ -817,7 +817,28 @@ pub fn subscript_set(obj: &Value, key: &Value, v: Value) -> Result<(), Flow> {
                     }
                     return Ok(());
                 }
-                _ => return Err(raise("TypeError", "list indices must be integers")),
+                other => {
+                    let tname = match obj {
+                        Value::Obj(ob) => format!("{:?}", ob.kind),
+                        _ => "prim".to_string(),
+                    };
+                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/t1listidx.txt") {
+                        use std::io::Write;
+                        let key_repr = match other {
+                            Key::Other(v) => format!("Other({})", v.type_name()),
+                            Key::Index(i) => format!("Index({})", i),
+                            _ => "other".to_string(),
+                        };
+                        let _ = writeln!(f, "LISTIDX-OTHER other={} objkind={}", key_repr, tname);
+                        let bt = std::backtrace::Backtrace::force_capture().to_string();
+                        for line in bt.lines() {
+                            if line.contains("run_ap") || line.contains("scrapy") {
+                                let _ = writeln!(f, "BT {}", line.trim());
+                            }
+                        }
+                    }
+                    return Err(raise("TypeError", "list indices must be integers"));
+                }
             };
             let idx = normalize_index(i, l.len() as i64)
                 .ok_or_else(|| raise("IndexError", "list assignment index out of range"))?;
@@ -938,7 +959,22 @@ pub fn subscript_del(obj: &Value, key: &Value) -> Result<(), Flow> {
             let k = subscript_key(key)?;
             let i = match k {
                 Key::Index(i) => i,
-                _ => return Err(raise("TypeError", "list indices must be integers")),
+                other => {
+                    let tname = match obj {
+                        Value::Obj(ob) => format!("{:?}", ob.kind),
+                        _ => "prim".to_string(),
+                    };
+                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/t1listidx.txt") {
+                        use std::io::Write;
+                        let key_repr = match other {
+                            Key::Other(v) => format!("Other({})", v.type_name()),
+                            Key::Index(i) => format!("Index({})", i),
+                            _ => "other".to_string(),
+                        };
+                        let _ = writeln!(f, "LISTIDX-OTHER other={} objkind={}", key_repr, tname);
+                    }
+                    return Err(raise("TypeError", "list indices must be integers"));
+                }
             };
             let idx = normalize_index(i, l.len() as i64)
                 .ok_or_else(|| raise("IndexError", "list index out of range"))?;
