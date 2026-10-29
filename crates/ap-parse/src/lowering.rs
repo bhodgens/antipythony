@@ -220,6 +220,13 @@ struct Lowerer<'s> {
     scopes: Vec<(ScopeKind, ScopeData, Vec<String>)>,
     /// Completed classifications keyed by dotted path (sorted on output).
     finished: BTreeMap<Vec<String>, ScopeInfo>,
+    /// Wave-60: loads whose enclosing bind had not happened yet at scope
+    /// close (self-recursive nested defs: the def's name binds after its
+    /// body lowers). Retried once in finish_scopes.
+    deferred_frees: Vec<(Vec<String>, String, Vec<String>)>,
+    /// Wave-60: bound names per finished scope path, for the deferred-free
+    /// retry to verify the load was truly bound (vs a builtin/global).
+    finished_bounds: BTreeMap<Vec<String>, Vec<String>>,
 }
 
 impl<'s> Lowerer<'s> {
@@ -229,6 +236,8 @@ impl<'s> Lowerer<'s> {
             b: Builder::new(),
             scopes: vec![(ScopeKind::Module, ScopeData::default(), Vec::new())],
             finished: BTreeMap::new(),
+            deferred_frees: Vec::new(),
+            finished_bounds: BTreeMap::new(),
         }
     }
 
@@ -251,6 +260,41 @@ impl<'s> Lowerer<'s> {
         // it is not classified).
         while self.scopes.len() > 1 {
             self.close_scope();
+        }
+        // Wave-60: resolve deferred frees now that every bind has run.
+        // For each deferred (path, load): find the nearest ENCLOSING
+        // function scope (path is a prefix-chain: enclosing scopes'
+        // paths are strict prefixes with "<locals>." separators) that
+        // bound the load; mark it as a cell there and add the load to
+        // the deferred scope's frees.
+        let bounds = self.finished_bounds.clone();
+        let deferred = std::mem::take(&mut self.deferred_frees);
+        for (path, load, enclosing) in deferred {
+            // Only apply when the load is truly BOUND in the enclosing
+            // scope (def/assign). Builtin/global reads (e.g. `getattr`)
+            // must stay builtin — binding them as cells turns them into
+            // UnboundLocalError.
+            let truly_bound = bounds
+                .get(&enclosing)
+                .map(|b| b.iter().any(|n| n == &load))
+                .unwrap_or(false);
+            if !truly_bound {
+                continue;
+            }
+            // The binding now exists in the enclosing scope's bound set —
+            // but ScopeInfo doesn't carry `bound`; the runtime closure
+            // wiring keys on cells, so mark the load as a cell in the
+            // enclosing scope and a free in the deferred scope.
+            if let Some(si) = self.finished.get_mut(&enclosing) {
+                if !si.cells.iter().any(|c| c == &load) {
+                    si.cells.push(load.clone());
+                }
+            }
+            if let Some(si) = self.finished.get_mut(&path) {
+                if !si.frees.iter().any(|f| f == &load) {
+                    si.frees.push(load.clone());
+                }
+            }
         }
         ScopeInfoModule {
             scopes: self.finished.into_values().collect(),
@@ -313,6 +357,22 @@ impl<'s> Lowerer<'s> {
             }
             if found {
                 frees.push(load.clone());
+            } else {
+                // Wave-60: the enclosing def's bind() may not have run
+                // yet (a def's name binds AFTER its body lowers, so a
+                // self-recursive nested def reads its own future
+                // binding). Defer with the IMMEDIATELY enclosing
+                // function scope path — that is where the binding will
+                // appear once the def statement lowers.
+                let enclosing = self
+                    .scopes
+                    .iter()
+                    .rev()
+                    .find(|(k, _, _)| *k == ScopeKind::Function)
+                    .map(|(_, _, p)| p.clone());
+                if let Some(enc) = enclosing {
+                    self.deferred_frees.push((path.clone(), load.clone(), enc));
+                }
             }
         }
 
@@ -357,6 +417,16 @@ impl<'s> Lowerer<'s> {
             frees: sorted(frees),
             cells: sorted(data.cells),
         };
+        if std::env::var("APX_SCOPE_DEBUG").is_ok() {
+            eprintln!(
+                "[SCOPE] {:?} loads={:?} bound={:?} frees={:?} cells={:?}",
+                new_info.path,
+                data.loads,
+                data.bound,
+                new_info.frees,
+                new_info.cells
+            );
+        }
         // T1-d fix: two scopes can finish with the SAME path when a nested
         // function's parent path was mis-prefixed (twisted deprecate.py
         // produced two "deprecated" entries — one real, one empty). The
@@ -386,6 +456,8 @@ impl<'s> Lowerer<'s> {
                 }
             }
             None => {
+                self.finished_bounds
+                    .insert(path.clone(), data.bound.clone());
                 self.finished.insert(path, new_info);
             }
         }
