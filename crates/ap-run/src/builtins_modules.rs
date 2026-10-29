@@ -9298,6 +9298,8 @@ fn build_platform(_i: &crate::frame::Interpreter) -> Value {
         "python_implementation",
         "processor",
         "uname",
+        "mac_ver",
+        "platform",
     ] {
         fn1(&ns, "platform", n);
     }
@@ -9398,6 +9400,32 @@ pub fn call_platform(name: &str, args: &[Value], _kwargs: &[(String, Value)]) ->
                     u[0], u[1], u[2], u[3], u[4], u[5]
                 ));
                 Ok(Value::Obj(obj))
+            }
+            // Wave-82: scrapy's log_scrapy_info → get_versions →
+            // platform.platform(); CPython composes
+            // system-release-version. mac_ver returns the
+            // (release, versioninfo, machine) triple from the uname.
+            "mac_ver" => {
+                let u = uname_tuple();
+                let release = u[2].clone();
+                let machine = u[4].clone();
+                Ok(tuple(vec![
+                    s(release),
+                    tuple(vec![s(""), s(""), s("")]),
+                    s(machine),
+                ]))
+            }
+            "platform" => {
+                let u = uname_tuple();
+                let (system, _node, release, version, _machine, _proc) =
+                    (u[0].clone(), u[1].clone(), u[2].clone(), u[3].clone(), u[4].clone(), u[5].clone());
+                let system_c = if system == "Darwin" { "Darwin" } else { system.as_str() };
+                Ok(s(format!(
+                    "{}-{}-{}",
+                    system_c,
+                    release,
+                    version.split(' ').next().unwrap_or(&release)
+                )))
             }
             _ => Err(raise("SystemError", format!("platform fn {name} unbound"))),
         }

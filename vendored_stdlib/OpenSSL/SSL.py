@@ -131,10 +131,12 @@ SSLEAY_PLATFORM = 3
 SSLEAY_DIR = 4
 
 
-def SSLeay_version(t: int = SSLEAY_VERSION) -> str:
+def SSLeay_version(t: int = SSLEAY_VERSION) -> bytes:
+    # CPython pyOpenSSL returns bytes (scrapy decodes with
+    # .decode("ascii", errors="replace")).
     if t == SSLEAY_VERSION:
-        return "OpenSSL 3.0.0 (antipythany shim)"
-    return "antipythany shim"
+        return b"OpenSSL 3.0.0 (antipythany shim)"
+    return b"antipythany shim"
 
 
 def OPENSSL_version(*args: object) -> str:

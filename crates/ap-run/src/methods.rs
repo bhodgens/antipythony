@@ -1580,6 +1580,19 @@ pub fn call_method(
                     .unwrap_or_else(|| Ok(Value::None)),
             )
         }
+        // Wave-82: receiver shapes with NO such method — CPython raises
+        // AttributeError at ATTR time; our permissive bind list attached a
+        // BoundMethod marker, so answer the shape error HERE (the old
+        // fallthrough let the caller treat "unhandled" as a None callee →
+        // "'NoneType' object is not callable").
+        (Value::Str(_), "decode")
+        | (Value::List(_), "decode")
+        | (Value::Tuple(_), "decode")
+        | (Value::Int(_), "decode")
+        | (Value::Dict(_), "decode") => Some(Err(raise(
+            "AttributeError",
+            format!("'{}' object has no attribute '{}'", obj.type_name(), name),
+        ))),
         (Value::Obj(o), _) if o.kind == ap_obj::ObjKind::UserInstance => {
             // 02.03: instances dispatch through the class MRO; the v0
             // attrs-only path stays as fallback for legacy shapes.

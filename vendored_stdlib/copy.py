@@ -228,16 +228,31 @@ def _keep_alive(x, memo):
 def _reconstruct(x, memo, func, args,
                  state=None, listiter=None, dictiter=None,
                  *, deepcopy=deepcopy):
+    # antipythany (wave-82, env-gated): pin the first None-call
+    # in the deepcopy reconstruct chain (CrawlerProcess init).
+    import os as _os_rc
+    _rc = _os_rc.environ.get("APX_SFCDBG")
+    if _rc:
+        import sys as _sys_rc
+        _sys_rc.stderr.write("[RC] enter func=%s x=%s\n" % (getattr(func, "__name__", type(func).__name__), type(x).__name__))
     deep = memo is not None
     if deep and args:
         args = (deepcopy(arg, memo) for arg in args)
+    if _rc:
+        _sys_rc.stderr.write("[RC] pre-call func=%s\n" % getattr(func, "__name__", type(func).__name__))
     y = func(*args)
+    if _rc:
+        _sys_rc.stderr.write("[RC] call-ok y=%s\n" % type(y).__name__)
     if deep:
         memo[id(x)] = y
 
     if state is not None:
         if deep:
+            if _rc:
+                _sys_rc.stderr.write("[RC] pre-state y=%s\n" % type(y).__name__)
             state = deepcopy(state, memo)
+            if _rc:
+                _sys_rc.stderr.write("[RC] state-ok\n")
         if hasattr(y, '__setstate__'):
             y.__setstate__(state)
         else:

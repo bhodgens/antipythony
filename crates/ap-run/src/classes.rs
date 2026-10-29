@@ -2026,6 +2026,17 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
                                     return Ok(true);
                                 }
                             }
+                            // Wave-82: a CLASS subject is an instance of
+                            // its METACLASS, never of the class's own MRO.
+                            // With no user metaclass the effective
+                            // metaclass is `type`; isinstance(T1Spider,
+                            // Spider) must be False (issubclass(type,
+                            // Spider) is False) — the old
+                            // xc.is_subclass(&tc) wrongly walked the
+                            // class's own MRO and answered True.
+                            if !Rc::ptr_eq(&xc, &tc) {
+                                return Ok(false);
+                            }
                             return Ok(xc.is_subclass(&tc));
                         }
                         if matches!(t, Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass || o.kind == ap_obj::ObjKind::Type)
