@@ -2985,3 +2985,36 @@ deferred wrap) with stderr markers to find the exact
 statement that blocks. Then fix that runtime path (likely
 a deferred/maybeDeferred construct our runtime doesn't
 schedule).
+
+## Wave-86: reactor hang PINNED to @inlineCallbacks join() — deferred scheduling gap (documented)
+
+Probe ladder (W86→W89) pinned the crawl hang exactly:
+- CrawlerProcess.start (the TWISTED start at ~876, not the
+  asyncio one at ~1010 — earlier probes targeted the wrong
+  class) enters fine, imports reactor fine.
+- Death inside `d = self.join()` (crawler.py ~588):
+  @inlineCallbacks generator `while self._active: yield
+  DeferredList(self._active)`.
+- CPython: inlineCallbacks SUSPENDS the generator at the
+  yield and returns a Deferred immediately (reactor.run()
+  then drives it). OUR runtime: runs the generator eagerly —
+  the yielded DeferredList never resolves (crawlers need the
+  reactor that hasn't started) → infinite block.
+
+ROOT CAUSE CLASS: twisted inlineCallbacks/Deferred
+cooperative scheduling is not emulated — our PEP-342 fiber
+work handles plain generators, but the yield-a-Deferred →
+suspend-until-fired contract is missing.
+
+FIX PLAN (next sessions): implement Deferred-aware
+inlineCallbacks: when an @inlineCallbacks generator yields
+a Deferred, suspend the fiber, register the remaining
+generator drive as the Deferred's callback chain, return
+the outer Deferred. twisted.internet.defer.inlineCallbacks
++ _DEFERRED generation (defer.py in staged site-packages)
+is the integration point. Verify with a minimal
+inlineCallbacks repro, then the crawl.
+
+ALSO NOTED: engine.py/asyncio/events.py wave-84/85 probes
+are still in the STAGED tree (not repo); clean before any
+byte-compare gates.
