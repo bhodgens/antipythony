@@ -3047,3 +3047,27 @@ must print 'G2 resumed x=7'). Inspect our runtime's
 Deferred.callback → callback-chain invocation
 (methods.rs/builtins Deferred surface) for why the
 registered _gotResultInlineCallbacks doesn't run.
+
+## Wave-88 addendum: the lazy path is a NO-OP crawl (final state this window)
+
+Re-run of the lazy path (run_ap3) COMPLETES (exit 0) but:
+join enters with active=0 — the crawler deferred was never
+added to _active, i.e. _crawl's `d = crawler.crawl(...)`
+produced a deferred that never entered the scheduling, so
+p.start() finds nothing to run and returns immediately. No
+engine, no fetch, no items.
+
+SO THE REAL DEFECT: in the lazy path, our runtime never
+EXECUTES the _crawl @inlineCallbacks body (the generator
+never advances past creation — crawler.crawl never runs).
+W92 crawl-d created (probe inside _crawl) never printed.
+The @inlineCallbacks generator body for _crawl is created
+but not driven.
+
+NEXT: inspect why @inlineCallbacks-decorated _crawl's
+generator body doesn't execute when called via p.crawl —
+compare with the working path (explicit _create_crawler
+runs it). Suspect: our runtime's attribute call on
+`self._crawl(crawler, *args, **kwargs)` with *args-kwargs
+forwarding through a decorator wrapper vs the registry
+path.
