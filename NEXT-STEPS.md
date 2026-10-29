@@ -2528,3 +2528,13 @@ committed earlier — it lists every un-routed tag/fname pair;
 any (X, pop) pair with X != pydict names the receiver class
 directly. Then either add that class's mapping methods or fix
 its construction.
+
+## Wave-70/71 final gates (2026-10-29): all green
+build 0 errors; corpus 15 passed / 8 xfailed / 9 xpassed;
+worktree clean. The crawl's recv='object' pydict-pop error is
+confirmed as a real object receiver (not a routing artifact).
+The receiver is created before the types.py MappingProxyType
+alias takes effect OR is a plain object() — next session:
+log the receiver's full class MRO at the raise site (one
+eprintln with type_name + __class__ attrs), then fix its
+construction or add its mapping surface.
