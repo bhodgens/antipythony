@@ -169,7 +169,7 @@ pub struct ExceptionValue {
 
 impl ExceptionValue {
     pub fn new(class: &str, args: Vec<ap_obj::value::Value>) -> Self {
-        if class == "AssertionError"
+        if (class == "AssertionError" || class == "TypeError")
             && std::env::var("APX_ASSERTDBG").is_ok()
         {
             let bt = std::backtrace::Backtrace::force_capture();
@@ -179,7 +179,8 @@ impl ExceptionValue {
                 .filter(|l| l.contains("ap_run") && !l.contains("exc_hier"))
                 .collect();
             eprintln!(
-                "[EV-AE] args={} bt={}",
+                "[EV-AE] cls={} args={} bt={}",
+                class,
                 args.len(),
                 interesting.iter().take(8).cloned().collect::<Vec<_>>().join(" <- ")
             );
