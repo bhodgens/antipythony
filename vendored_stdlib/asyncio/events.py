@@ -669,6 +669,7 @@ class _AbstractEventLoopPolicy:
     """Abstract policy for accessing the event loop."""
 
     def get_event_loop(self):
+        import sys as _s84c; _s84c.stderr.write('POLICY get_event_loop\n')
         """Get the event loop for the current context.
 
         Returns an event loop object implementing the AbstractEventLoop interface,

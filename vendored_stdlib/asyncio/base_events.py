@@ -671,6 +671,7 @@ class BaseEventLoop(events.AbstractEventLoop):
             self._old_agen_hooks = None
 
     def run_forever(self):
+        import sys as _s84; _s84.stderr.write('LOOP run_forever enter\n')
         """Run until stop() is called."""
         self._run_forever_setup()
         try:
@@ -1975,6 +1976,11 @@ class BaseEventLoop(events.AbstractEventLoop):
             self._timer_cancelled_count += 1
 
     def _run_once(self):
+        import sys as _s84b
+        if getattr(self, '_w84n', 0) < 3:
+            _s84b.stderr.write('LOOP _run_once\n'); self._w84n = getattr(self, '_w84n', 0) + 1
+        elif getattr(self, '_w84n', 0) == 3:
+            _s84b.stderr.write('LOOP _run_once spinning\n'); self._w84n = 4
         """Run one full iteration of the event loop.
 
         This calls all currently ready callbacks, polls for I/O,
