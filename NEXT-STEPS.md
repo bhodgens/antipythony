@@ -2119,3 +2119,26 @@ NEXT SESSION: clear apc cache BEFORE probing python.py (the
 cache made probe results ambiguous), then log inside
 Module.collect around the __test__ getattr and the dicts loop
 with per-line logging to find where ids=-modules diverge.
+
+## Wave-59 FINAL — multi-parametrize bug FIXED (48b6ba4)
+
+Root cause: str.encode("unicode_escape") raised LookupError —
+pytest's IdMaker._idval_from_value -> ascii_escaped needs it
+whenever ids= are resolved; the collection error was swallowed
+upstream, so ids= + another parametrized test in one module
+silently collected 0 items. Added unicode_escape +
+raw_unicode_escape codecs (methods.rs encode_str): ASCII
+through, C escapes, \xNN / \uNNNN / \UNNNNNNNN.
+
+Staged _pytest/python.py restored to pristine 9.1.1 + the one
+real local change (pytest_pyfunc_call callspec funcargs
+binding) re-applied. All probes removed (grep-verified).
+
+Matrix now: test_param 3/3, test_param2 6/6 (multi-test +
+ids=), p1/p2/p3 pass, q4/q5/q6 pass, fix2 3/3, T2 gate green,
+cargo 0 failed.
+
+PARAMETRIZE TIER: basic+multi-arg+ids all green. Remaining for
+the tier: indirect fixtures, pytest.param(..., id=/marks=),
+stacked parametrize, class-level params, parametrize + fixtures
+interaction.
