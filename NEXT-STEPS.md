@@ -2625,3 +2625,21 @@ functions created via load_into exec (module ns __name__ =
 'builtins' misattribution is the smoking gun for a namespace
 identity bug); (2) fix __module__ assignment for load_into
 modules; the annotations list-vs-dict should fall out.
+
+## Wave-75: __module__ fix landed (commit after e51eead)
+
+Functions now record __module__ from the defining frame's
+globals __name__ at def time (Stmt::LocalDef). Verified:
+Settings.__init__ mod='scrapy.settings'; collections.abc
+classes full mro + correct module. Gates: corpus 15/0/9xp, T2
+gate green, fixtures 3/3, scrapy import OK.
+
+Crawl current blocker: TypeError list indices must be integers
+(a __ap_list__ or plain list indexed with a str during the
+signature walk — the signature() on the failing __init__ now
+RUNS (was the mod=builtins misattribution cascading), so the
+walk proceeds into annotation/ForwardRef evaluation where a
+list gets a str key). Next: probe annotationlib/Format.
+FORWARDREF path for list indexing, since scrapy's
+_signature(func, annotation_format=Format.FORWARDREF) is the
+entry.
