@@ -82,7 +82,11 @@ def get_annotations(obj, *, globals=None, locals=None, eval_str=False,
         d = getattr(obj, "__dict__", None)
     if _ga:
         _sys_ga.stderr.write("[GA] dict-ok %r\n" % (d is not None))
+    if _ga:
+        _sys_ga.stderr.write("[GA] pre-hasattr\n")
     if d is not None and hasattr(d, "get"):
+        if _ga:
+            _sys_ga.stderr.write("[GA] pre-dget\n")
         try:
             own = d.get("__annotations__")
         except Exception:

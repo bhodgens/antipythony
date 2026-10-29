@@ -4554,13 +4554,21 @@ fn call_value_inner_impl(
                         if let Some(newf) =
                             crate::interp::attr_get_public(interp, &cls_v, "__new__")?
                         {
-                            return call_value(
-                                interp,
-                                &module_frame_pub(),
-                                &newf,
-                                &[cls_v.clone()],
-                                &[],
-                            );
+                            // Wave-81: a degraded attr resolution can
+                            // hand back Some(Value::None) (the None-
+                            // descriptor problem); calling that is the
+                            // "'NoneType' object is not callable" seen in
+                            // CrawlerProcess init's Settings deepcopy.
+                            // Fall through to instantiate instead.
+                            if newf.type_name() != "NoneType" {
+                                return call_value(
+                                    interp,
+                                    &module_frame_pub(),
+                                    &newf,
+                                    &[cls_v.clone()],
+                                    &[],
+                                );
+                            }
                         }
                         if let Some(t) = crate::classes::type_of(interp, &cls_v) {
                             return crate::classes::instantiate(
@@ -5477,7 +5485,8 @@ fn call_value_inner_impl(
         }
         _ => {
             if std::env::var("APX_ASSERTDBG").is_ok() {
-                eprintln!("[NONECALL-OUTER] type={:?}", f.type_name());
+                let ln = last_executed_line(interp);
+                eprintln!("[NONECALL-OUTER] type={:?} line={}", f.type_name(), ln);
             }
             Err(raise(
                 "TypeError",

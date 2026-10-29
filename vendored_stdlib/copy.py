@@ -151,8 +151,6 @@ def deepcopy(x, memo=None, _nil=[]):
                         else:
                             raise Error(
                                 "un(deep)copyable object of type %s" % cls)
-                import sys as _s2
-                _s2.stderr.write("RV type=" + repr(type(rv))[:30] + " rv=" + repr(rv)[:60] + "\n")
                 if isinstance(rv, str):
                     y = x
                 else:
