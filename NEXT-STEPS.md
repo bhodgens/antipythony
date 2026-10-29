@@ -1601,3 +1601,21 @@ return, (b) FixtureDef.execute return, (c) the test call in
 runner.py's call phase — find which statement raises the
 AssertionError, and confirm the assert-message rendering bug
 (empty messages) separately.
+
+## Wave-45 (2026-10-28): pdb NameError resolved; SetupState.setup assert scoped
+
+- debugging.py got a module-level `import pdb` (staged test-data
+  edit): our runtime's correct import-local semantics exposed that
+  pytest's error paths reference global pdb that CPython's earlier
+  function-level import had (bug-compatibly) leaked to module
+  globals.
+- The remaining capsys empty AssertionError is in
+  SetupState.setup (runner.py:525) or a collector's setup():
+  runner.py:537 has a BARE `assert col not in self.stack`; the
+  collector .setup() calls (capman/logging) may also raise.
+- NEXT SESSION: log at SetupState.setup entry with the collector
+  name, and wrap each col.setup() to catch+log — identify which
+  collector's setup raises the empty AssertionError.
+- Gates: T2 minimal gate green; genfix (generator fixture)
+  1 passed; test_fix2: tmp_path+monkeypatch pass, capsys setup
+  error remains; CaptureIO repro green; cargo 0 failed.
