@@ -14750,6 +14750,20 @@ pub fn call_builtin_values(
     args: &[Value],
     kwargs: &[(String, Value)],
 ) -> Option<BResult> {
+    // Wave-72: dict-subclass instances (logging ConvertingDict etc.)
+    // arriving with tag=pydict — re-point args[0] at the instance's
+    // dict backing so the (Value::Dict, fn) arms match.
+    if tag == "pydict" {
+        if let Some(Value::Obj(io)) = args.first() {
+            if io.kind == ap_obj::ObjKind::UserInstance {
+                if let Some(d) = crate::classes::dict_backing(args.first().unwrap()) {
+                    let mut a2: Vec<Value> = vec![Value::Dict(d)];
+                    a2.extend(args.iter().skip(1).cloned());
+                    return call_builtin_values(tag, fname, &a2, kwargs);
+                }
+            }
+        }
+    }
     let recv = args.first()?.clone();
     let a = |i: usize| args.get(i).cloned();
     // owned-arg str helper (str_arg takes &Value)
@@ -14826,6 +14840,10 @@ pub fn call_builtin_values(
                         },
                     }
                 } else {
+                    if std::env::var("APX_SCOPE_DEBUG").is_ok() {
+                        let k2 = if let Value::Obj(ob) = &recv { format!("Obj kind={:?} name={} attrs={:?} backing={:?}", ob.kind, ob.name, ob.attrs.borrow().items().iter().map(|(k,_k)| crate::builtins::py_str_of(k).unwrap_or_default()).collect::<Vec<_>>(), crate::classes::dict_backing(&recv).is_some()) } else { format!("{}", recv.type_name()) };
+                        eprintln!("POPMISS k2={}", k2);
+                    }
                     Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
                 }
             }

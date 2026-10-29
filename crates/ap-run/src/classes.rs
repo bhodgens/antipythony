@@ -3552,6 +3552,15 @@ pub fn instantiate(
                                 .set(Value::Str(PyString::new(key)), backing);
                         }
                     }
+                    // Wave-72: dict-derived instances carry their backing
+                    // under __ap_dict__ so dict_backing()/pydict arms
+                    // (pop/get/items) resolve (logging ConvertingDict).
+                    if builtin == "dict" {
+                        let _ = io
+                            .attrs
+                            .borrow_mut()
+                            .set(Value::Str(PyString::new("__ap_dict__")), v.clone());
+                    }
                     let _ = io
                         .attrs
                         .borrow_mut()
