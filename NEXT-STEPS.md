@@ -2643,3 +2643,19 @@ list gets a str key). Next: probe annotationlib/Format.
 FORWARDREF path for list indexing, since scrapy's
 _signature(func, annotation_format=Format.FORWARDREF) is the
 entry.
+
+## Wave-73b (2026-10-29): str-key list hit = the SET route
+
+The LISTIDX probe fired once: the failing access is a
+SUBSCRIPT ASSIGNMENT (obj[str_key] = value) on a PRIMITIVE
+Value::List — not a get, not a derived instance. Some code
+assigns into a list with a string key. In CPython that list
+would be a DICT — our runtime created/kept a LIST where a
+DICT was expected, OR scrapy assigns into
+BaseSettings.attributes via a path that got a list.
+
+NEXT (one step): at the SET-route probe, also log a Rust
+backtrace force-capture filtered for the frame's fn name —
+the arms support it (BT loop pattern landed, just extend the
+filter or use Backtrace::force_capture() frames). The caller
+frame names the Python function doing the assignment.
