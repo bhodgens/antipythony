@@ -1494,3 +1494,27 @@ The corrupt tb attribution hides the true frame. Next session:
    its statements (cache_key, resolve, call_fixture_func).
 2. check our Stmt::Assert message evaluation (msg eval failure
    path may drop the message and raise bare).
+
+## Wave-41 (2026-10-28): function-level import closure fix (bf741f4)
+
+MAJOR RUNTIME BUG FIXED: `import x as y` inside a function stored
+the binding via store_global; a nested def capturing y as a free
+variable got UnboundLocalError. CPython binds imports as function
+locals and the symtable already classified import aliases as cells
+when captured. Import/ImportFrom now use store_local in function
+frames (preserving CellSlot classification), store_global at
+module level; the ImportFrom native-short-circuit path fixed too.
+
+Proven with t2impcl.py (nested def writing via closure-imported
+os) - previously UnboundLocalError, now works.
+
+capsys status: fixture setup now reaches call_fixture_func (the
+FS probe chain runs through FS-ENTER/OK/resolve/key/isgen=True).
+The remaining capsys error is the CaptureIO.getvalue assert:
+`assert isinstance(self.buffer, io.BytesIO)` - our TextIOWrapper
+.buffer returns the wrapper itself (not an io.BytesIO-bound
+object), so the isinstance assert fails; the assert message then
+renders empty (message-rendering bug, secondary).
+NEXT: make stream .buffer expose an io.BytesIO-coercible object
+sharing <buf> storage, or teach CaptureIO compatibility at the
+isinstance layer.
