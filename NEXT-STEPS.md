@@ -2700,3 +2700,22 @@ staging site, pop at the super() reader (interp.rs ~5817).
 The reader currently pops via super_stack already; the ctx
 slot just needs the same discipline. ~6 staging sites (grep
 pending_super_ctx).
+
+## Wave-77 (f1760b4, REVERTED 99a87a0): pending_super_ctx Vec-stack conversion broke pytest collection — reverted
+
+Converting pending_super_ctx from Option to Vec (mechanical,
+all 20 sites) compiled clean and held corpus+import gates, but
+pytest collection silently returned "collected 0 items"
+(T2 gate RC=5). Root cause of the breakage: the plain-fn
+reader (interp.rs ~5815) does try_borrow_mut().ok() — under
+borrow contention it SKIPS consumption; with the Option that
+left the staged ctx for the right consumer; with a shared Vec
+the wrong consumer later pops a foreign ctx (LIFO mismatch
+under GC re-entry). The reader consumption protocol must be
+redesigned together with the stack (per-call-site pairing or
+generation tags), not just the container type.
+
+LESSON: shared-repo note — `git stash` in this repo also
+stashes sibling agents' modified files; the stash+pop cycle
+touched 35 sibling corpus files (recovered intact). Do NOT
+stash in the shared tree; use a temp worktree instead.
