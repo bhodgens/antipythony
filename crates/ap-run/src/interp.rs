@@ -4340,9 +4340,60 @@ fn call_value_inner_impl(
                             .unwrap_or(Value::None);
                         // Only plain object-reduce: a UserInstance with a
                         // dict. (cls, state) -> __newobj__ form.
+                        // Wave-68: Dict receivers use copy._reconstruct's
+                        // dictiter slot — a plain list of [k, v] pairs —
+                        // because cls.__new__ resolution on builtin-type
+                        // class values returns None.
+                        if let Value::Dict(d) = &recv {
+                            let pairs: Vec<Value> = d
+                                .items()
+                                .iter()
+                                .map(|(k, v)| {
+                                    Value::Tuple(Gc::new(Tuple(vec![k.clone(), v.clone()])))
+                                })
+                                .collect();
+                            let items_list =
+                                crate::builtins::builtin_list(&[Value::Tuple(Gc::new(Tuple(
+                                    pairs,
+                                )))])?;
+                            let dict_cls = crate::builtins::interned_type(interp, "dict");
+                            let newm = ap_obj::PyObject::new(
+                                ap_obj::ObjKind::BuiltinFn,
+                                "__dict__new__",
+                            );
+                            let _ = newm
+                                .attrs
+                                .borrow_mut()
+                                .set(Value::Str(PyString::new("__ap_dict_cls__")), dict_cls);
+                            return Ok(Value::Tuple(Gc::new(Tuple(vec![
+                                Value::Obj(newm),
+                                Value::Tuple(Gc::new(Tuple(vec![]))),
+                                Value::None,
+                                items_list,
+                            ]))));
+                        }
                         let state = match crate::classes::dict_backing(&recv) {
                             Some(d) => Value::Dict(d),
-                            None => Value::None,
+                            // Wave-68: instances whose attrs live in
+                            // o.attrs (no dict backing) must still round-
+                            // trip — otherwise copy.deepcopy loses every
+                            // instance attribute (scrapy Settings.copy()
+                            // -> deepcopy -> attributes gone).
+                            None => {
+                                if let Value::Obj(io) = &recv {
+                                    let d = PyDict::new();
+                                    for (k, v) in io.attrs.borrow().items() {
+                                        let _ = d.set(k.clone(), v.clone());
+                                    }
+                                    if d.items().is_empty() {
+                                        Value::None
+                                    } else {
+                                        Value::Dict(d)
+                                    }
+                                } else {
+                                    Value::None
+                                }
+                            }
                         };
                         let newobj = crate::interp::attr_get_public(
                             interp,
@@ -4363,18 +4414,39 @@ fn call_value_inner_impl(
                             state,
                         ]))));
                     }
+                    if o.name == "__dict__new__" {
+                        // Wave-68: copy._reconstruct dictiter form —
+                        // construct a fresh dict and let the dictiter
+                        // refill it.
+                        let d = PyDict::new();
+                        return Ok(Value::Dict(d));
+                    }
                     if o.name == "__ap_newobj__" {
                         let cls_v = o.slice_parts.borrow().first().cloned().unwrap_or(Value::None);
-                        // cls.__new__(cls)
-                        let newf = crate::interp::attr_get_public(interp, &cls_v, "__new__")?
-                            .ok_or_else(|| raise("TypeError", "cannot __newobj__ class"))?;
-                        return call_value(
-                            interp,
-                            &module_frame_pub(),
-                            &newf,
-                            &[cls_v],
-                            &[],
-                        );
+                        // cls.__new__(cls); when no __new__ resolves
+                        // (plain user classes), instantiate directly —
+                        // copy._reconstruct only needs a fresh instance.
+                        if let Some(newf) =
+                            crate::interp::attr_get_public(interp, &cls_v, "__new__")?
+                        {
+                            return call_value(
+                                interp,
+                                &module_frame_pub(),
+                                &newf,
+                                &[cls_v.clone()],
+                                &[],
+                            );
+                        }
+                        if let Some(t) = crate::classes::type_of(interp, &cls_v) {
+                            return crate::classes::instantiate(
+                                interp,
+                                &cls_v,
+                                &t,
+                                &[],
+                                &[],
+                            );
+                        }
+                        return Err(raise("TypeError", "cannot __newobj__ class"));
                     }
                     // T2 (pytest NodeMeta._create): super().__call__(*kw) in
                     // a metaclass method — type.__call__ virtual: instantiate

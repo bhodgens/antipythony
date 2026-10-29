@@ -3708,6 +3708,10 @@ pub fn call_builtin(
     args: &[Value],
     kwargs: &[(String, Value)],
 ) -> crate::EvalResult {
+    // Wave-68: copy._reconstruct dictiter form — fresh dict.
+    if name == "__dict__new__" {
+        return Ok(Value::Dict(PyDict::new()));
+    }
     // T1 (scrapy fix pass): traceback.py 3.13+ calls code.co_positions()
     // while walking tracebacks; our synthetic code objects answer with a
     // position-less generator ((None, None, None, None) per instruction) so
