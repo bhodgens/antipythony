@@ -64,7 +64,24 @@ def get_annotations(obj, *, globals=None, locals=None, eval_str=False,
     namespace dict directly and only fall back to getattr for
     non-class objects (modules/functions).
     """
-    d = getattr(obj, "__dict__", None)
+    import os as _os_ga
+    _ga = _os_ga.environ.get("APX_SFCDBG")
+    if _ga:
+        import sys as _sys_ga
+        _sys_ga.stderr.write("[GA] enter %s\n" % type(obj).__name__)
+    d = None
+    if isinstance(obj, type):
+        # antipythany (wave-80): classes (esp. typing._ProtocolMeta
+        # instances) — read the OWN namespace via vars() to avoid
+        # the general attr machinery (a None-descriptor call).
+        try:
+            d = vars(obj)
+        except Exception:
+            d = None
+    else:
+        d = getattr(obj, "__dict__", None)
+    if _ga:
+        _sys_ga.stderr.write("[GA] dict-ok %r\n" % (d is not None))
     if d is not None and hasattr(d, "get"):
         try:
             own = d.get("__annotations__")

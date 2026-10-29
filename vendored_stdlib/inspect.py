@@ -2350,6 +2350,12 @@ def _signature_from_function(cls, func, skip_bound_arg=True,
                              *, annotation_format=Format.VALUE):
     """Private helper: constructs Signature for the given python function."""
 
+    # antipythany (wave-80, env-gated): entry marker before
+    # ANY attribute machinery runs.
+    import os as _os_sff0
+    if _os_sff0.environ.get("APX_SFCDBG"):
+        import sys as _sys_sff0
+        _sys_sff0.stderr.write("[SFF0] %s enter\n" % getattr(func, "__qualname__", "?"))
     is_duck_function = False
     if not isfunction(func):
         if _signature_is_functionlike(func):
@@ -2359,24 +2365,45 @@ def _signature_from_function(cls, func, skip_bound_arg=True,
             # of pure function:
             raise TypeError('{!r} is not a Python function'.format(func))
 
+    if _os_sff0.environ.get("APX_SFCDBG"):
+        _sys_sff0.stderr.write("[SFF0] %s pre-textsig\n" % getattr(func, "__qualname__", "?"))
     s = getattr(func, "__text_signature__", None)
+    if _os_sff0.environ.get("APX_SFCDBG"):
+        _sys_sff0.stderr.write("[SFF0] %s textsig=%r\n" % (getattr(func, "__qualname__", "?"), s))
     if s:
         return _signature_fromstr(cls, func, s, skip_bound_arg)
 
     Parameter = cls._parameter_cls
+    if _os_sff0.environ.get("APX_SFCDBG"):
+        _sys_sff0.stderr.write("[SFF0] %s Pcls=%r\n" % (getattr(func, "__qualname__", "?"), Parameter))
 
     # Parameter information.
     func_code = func.__code__
+    if _os_sff0.environ.get("APX_SFCDBG"):
+        _sys_sff0.stderr.write("[SFF0] %s code-ok\n" % getattr(func, "__qualname__", "?"))
     pos_count = func_code.co_argcount
     arg_names = func_code.co_varnames
     posonly_count = func_code.co_posonlyargcount
     positional = arg_names[:pos_count]
     keyword_only_count = func_code.co_kwonlyargcount
     keyword_only = arg_names[pos_count:pos_count + keyword_only_count]
+    # antipythany (wave-80, env-gated): marker before each
+    # potentially-failing step of the function-signature build.
+    import os as _os_sff
+    _sff = _os_sff.environ.get("APX_SFCDBG")
+    if _sff:
+        import sys as _sys_sff
+        _sys_sff.stderr.write("[SFF] %s enter\n" % getattr(func, "__qualname__", "?"))
+    if _os_sff0.environ.get("APX_SFCDBG"):
+        _sys_sff0.stderr.write("[SFF0] %s pre-annot\n" % getattr(func, "__qualname__", "?"))
     annotations = get_annotations(func, globals=globals, locals=locals, eval_str=eval_str,
                                   format=annotation_format)
+    if _sff:
+        _sys_sff.stderr.write("[SFF] %s annot-ok\n" % getattr(func, "__qualname__", "?"))
     defaults = func.__defaults__
     kwdefaults = func.__kwdefaults__
+    if _sff:
+        _sys_sff.stderr.write("[SFF] %s defaults-ok\n" % getattr(func, "__qualname__", "?"))
 
     if defaults:
         pos_default_count = len(defaults)
@@ -2392,6 +2419,8 @@ def _signature_from_function(cls, func, skip_bound_arg=True,
     for name in positional[:non_default_count]:
         kind = _POSITIONAL_ONLY if posonly_left else _POSITIONAL_OR_KEYWORD
         annotation = annotations.get(name, _empty)
+        if _sff:
+            _sys_sff.stderr.write("[SFF] %s param %s Pcls=%r kind=%r ann=%r\n" % (getattr(func, "__qualname__", "?"), name, Parameter, kind, annotation))
         parameters.append(Parameter(name, annotation=annotation,
                                     kind=kind))
         if posonly_left:
@@ -2475,6 +2504,18 @@ def _signature_from_callable(obj, *,
     if not callable(obj):
         raise TypeError('{!r} is not a callable object'.format(obj))
 
+    # antipythany (wave-80, env-gated diagnostic): log each
+    # _signature_from_callable entry so a dying walk names its
+    # last object. SFC = signature-from-callable.
+    import os as _os_sfc
+    if _os_sfc.environ.get("APX_SFCDBG"):
+        import sys as _sys_sfc
+        try:
+            _mod = getattr(obj, "__module__", None)
+            _sys_sfc.stderr.write("[SFC] obj=%r type=%s mod=%s selfmod=%s\n" % (obj, type(obj).__name__, _mod, globals().get("__name__")))
+        except Exception as _e_r:
+            _sys_sfc.stderr.write("[SFC] obj=<unprintable %s> err=%r\n" % (type(obj).__name__, _e_r))
+
     # antipythany (wave-65): our builtin-function markers don't
     # match types.BuiltinFunctionType, so the builtin ValueError
     # path below never fires and the walk falls into __getattr__
@@ -2496,6 +2537,9 @@ def _signature_from_callable(obj, *,
             return sig
 
     # Was this function wrapped by a decorator?
+    if _os_sfc.environ.get("APX_SFCDBG"):
+        import sys as _sys_s3
+        _sys_s3.stderr.write("[SFC] pre-unwrap %s\n" % type(obj).__name__)
     if follow_wrapper_chains:
         # Unwrap until we find an explicit signature or a MethodType (which will be
         # handled explicitly below).
@@ -2511,6 +2555,14 @@ def _signature_from_callable(obj, *,
         sig = obj.__signature__
     except AttributeError:
         pass
+    except BaseException as _e_sig:
+        # antipythany (wave-80, env-gated): our runtime's
+        # attr-get on some objects raises non-AttributeError
+        # (None-callable) where CPython raises AttributeError.
+        if _os_sfc.environ.get("APX_SFCDBG"):
+            import sys as _sys_s2
+            _sys_s2.stderr.write("[SFC] __signature__ read raised %r on %s\n" % (_e_sig, type(obj).__name__))
+        raise AttributeError("__signature__")
     else:
         if sig is not None:
             if not isinstance(sig, Signature):
@@ -2556,7 +2608,14 @@ def _signature_from_callable(obj, *,
         wrapped_sig = _get_signature_of(obj.func)
         return _signature_get_partial(wrapped_sig, obj)
 
-    if isfunction(obj) or _signature_is_functionlike(obj):
+    if _os_sfc.environ.get("APX_SFCDBG"):
+        import sys as _sys_s4
+        _sys_s4.stderr.write("[SFC] pre-branch %s\n" % type(obj).__name__)
+    _isfn = isfunction(obj)
+    if _os_sfc.environ.get("APX_SFCDBG"):
+        import sys as _sys_s5
+        _sys_s5.stderr.write("[SFC] isfunction=%s\n" % _isfn)
+    if _isfn or _signature_is_functionlike(obj):
         # If it's a pure Python function, or an object that is duck type
         # of a Python function (Cython functions, for instance), then:
         return _signature_from_function(sigcls, obj,
