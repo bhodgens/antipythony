@@ -10062,7 +10062,16 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                             }
                         }
                     }
-                    return Ok(Some(Value::None));
+                    // T2 (pytest runner.py:191 asserts
+                    // e.__traceback__ is not None): never answer None —
+                    // a minimal one-frame chain keeps downstream
+                    // traceback consumers working.
+                    let script = _interp.script_path.clone();
+                    let name = o.name.clone();
+                    return Ok(Some(build_tb_chain(
+                        &script,
+                        &[(name, 1)],
+                    )));
                 }
                 // T2 (pytest Config.parse: copy.copy(self.option)): instances
                 // answer object.__reduce_ex__ so copy.py's reduce path works
