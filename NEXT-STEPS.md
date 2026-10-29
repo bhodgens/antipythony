@@ -1794,3 +1794,25 @@ invocation; fix the None dereference (guard or populate). This
 unblocks capsys AND likely several report-attribution
 corruptions seen all along (MFR chains pointing at wrong
 frames).
+
+## Wave-52 (2026-10-28): EV-AE/AE-NEW tracing committed (0a22646)
+
+APX_ASSERTDBG now covers BOTH AssertionError construction sites:
+- AE-NEW (interp.rs Stmt::Assert): logs args count + Rust
+  backtrace frames through ap_run.
+- EV-AE (exc_hier.rs ExceptionValue::new): logs args count when
+  class=="AssertionError".
+
+Decisive finding on the failing capsys run: exactly ONE
+AssertionError construction happens in the entire session (the
+caught _assertion_supported self-test, args=0, CAUGHT). The
+reported capsys AssertionError never constructs via either site -
+confirming wave-51: it is re-raised from a stored/ manufactured
+value in the frame-exit pending slot of the _main module frame.
+
+NEXT SESSION (single focus): instrument the _main module-frame
+return path (exec_block module exit / run_loaded return) for a
+None-function invocation - the pending error/finalizer slot at
+module frame exit. The APX_CALLTRACE tail showed `_main -> raise
+TypeError` right after `_ensure_unconfigure -> ok` with only a
+pydict.pop between - the raise is in OUR frame-return code.
