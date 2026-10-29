@@ -1918,3 +1918,29 @@ run unconditionally on cls=TypeError args=1 and capture the
 Rust backtrace at construction (proven to work — the wave-54
 backtrace was captured this way), then map the frames to the
 source raise.
+
+## Wave-55 final (2026-10-28): probes cleaned; all gates green
+
+All file-log probes removed (runner.py, capture.py, fixtures.py,
+pluggy/_execution.py, pluggy/_caller.py, skipping.py) -
+parse-verified. Repro files on disk for next session:
+- /tmp/t2capF_run.py + /tmp/t2suite/test_capF.py (capsys repro)
+- /tmp/t2genfix_run.py + /tmp/t2suite/test_genfix.py (gen fixture,
+  1 passed)
+- /tmp/t2sup3.py, /tmp/t2capio4.py (stream subclass repro, works)
+
+FINAL DIAGNOSTIC STATE (all committed):
+- The capsys TypeError("'NoneType' object is not callable") is
+  constructed during the CALL phase after the capsys fixture body
+  yielded (B1-B5 verified). It does NOT pass Stmt::Assert, does
+  NOT construct via ExceptionValue::new with the AssertionError/
+  TypeError+message strings at the 4 raise sites, and does NOT
+  construct via name_callable - i.e. our runtime manufactures it
+  via the class-ctor path (raise TypeError(<f-string>)) where the
+  f-string renders to the CPython slot text, in a frame whose tb
+  attribution is corrupt (all frames point at the run script).
+- Working: tmp_path, monkeypatch, generator fixtures, CaptureIO
+  stream ops, os.open modes, import closures, chain dunders.
+- Gates: T2 minimal gate green; genfix 1 passed; fix6b tmp_path +
+  monkeypatch pass; CaptureIO repro green; cargo build 0 errors;
+  cargo test 0 failed.
