@@ -1160,7 +1160,24 @@ pub fn type_matches(v: &Value, want: &str) -> bool {
                 ap_obj::ObjKind::Namespace | ap_obj::ObjKind::Opaque | ap_obj::ObjKind::NamedTuple
             ) =>
         {
-            o.name.as_str() == b
+            if o.name.as_str() == b {
+                return true;
+            }
+            // Wave-58: stream-subclass instances (CaptureIO(TextIOWrapper))
+            // are swapped to real stream objects whose NAME is the native
+            // kind; the USER class identity rides class_ref. Walk its MRO
+            // so isinstance(c, CaptureIO) holds (pytest's
+            // SysCapture.snap asserts it).
+            if o.kind == ap_obj::ObjKind::Opaque {
+                if let Some(t) = o.class_ref.borrow().clone() {
+                    for m in t.mro.borrow().iter() {
+                        if m.name.as_str() == b {
+                            return true;
+                        }
+                    }
+                }
+            }
+            false
         }
         // T1-d (attrs _create_slots_class): Descriptor instances answer
         // classmethod/staticmethod/property isinstance probes by descr kind.

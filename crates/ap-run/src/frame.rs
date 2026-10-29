@@ -33,6 +33,12 @@ pub struct Frame {
     pub declared_nonlocals: std::collections::HashSet<String>,
     /// Qualname for traceback rendering.
     pub qualname: String,
+    /// Wave-58: the last executed statement's source line IN THIS
+    /// frame. The old frame_stack-of-cells approach let a parent
+    /// frame's touch_line overwrite a child's cell mid-unwind (shared
+    /// fs.last() writes), so traceback entries recorded the caller's
+    /// line. Per-frame cell is written only by this frame's exec_stmt.
+    pub last_line: Cell<usize>,
     pub is_module: bool,
     /// Class-body frames: the dotted qualname prefix nested classes extend
     /// (S-03-04 `Outer.Inner`); empty elsewhere.
@@ -71,6 +77,7 @@ impl Frame {
             declared_nonlocals: std::collections::HashSet::new(),
             qualname: "<module>".to_string(),
             is_module: true,
+            last_line: std::cell::Cell::new(0),
             class_qual_prefix: String::new(),
             class_cell: std::cell::RefCell::new(None),
             class_ns: None,
@@ -99,6 +106,7 @@ impl Frame {
             declared_nonlocals,
             qualname: qualname.to_string(),
             is_module: false,
+            last_line: std::cell::Cell::new(0),
             class_qual_prefix: String::new(),
             class_cell: std::cell::RefCell::new(None),
             class_ns: None,
@@ -119,6 +127,7 @@ impl Frame {
             declared_nonlocals: std::collections::HashSet::new(),
             qualname: parent.qualname.clone(),
             is_module: false,
+            last_line: std::cell::Cell::new(0),
             class_qual_prefix: String::new(),
             class_cell: std::cell::RefCell::new(None),
             class_ns: None,
@@ -141,6 +150,7 @@ impl Frame {
             declared_nonlocals: std::collections::HashSet::new(),
             qualname: parent.qualname.clone(),
             is_module: false,
+            last_line: std::cell::Cell::new(0),
             class_qual_prefix: String::new(),
             class_cell: std::cell::RefCell::new(None),
             class_ns: Some(ns),

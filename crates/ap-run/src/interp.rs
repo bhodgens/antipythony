@@ -624,13 +624,21 @@ enum StmtOut {
 /// Nth executable statement, precomputed by scanning the source. This is
 /// enough for the corpus's single-statement-per-line programs; a span map
 /// on the IR is a documented follow-up (progress log).
-fn touch_line(interp: &Rc<Interpreter>, _line: usize) {
-    // Map the CURRENT statement ordinal through the precomputed table.
+fn touch_line(interp: &Rc<Interpreter>, frame: Option<&Rc<Frame>>, line: usize) {
+    // Wave-58: the global ordinal->line table counts statements in
+    // EXECUTION order across ALL frames, so a nested frame's statement
+    // maps to the caller's next line (inner's raise read line 9). The
+    // frame-local last_line must be the statement's REAL source line,
+    // which the caller already computed via stmt_source_line.
+    if line > 0 {
+        if let Some(fr) = frame {
+            fr.last_line.set(line);
+        }
+    }
     let ordinal = interp.stmt_ordinal.get();
-    // 02.07: every thread touches this per statement; a worker can hold the
-    // table borrow while the main thread resumes under the GIL. The table is
-    // write-once — retry briefly instead of panicking on contention.
-    let line = loop {
+    // Keep the legacy global table/cell in sync for other readers
+    // (f_lineno stubs, generator resumption).
+    let mapped = loop {
         match interp.stmt_lines.try_borrow() {
             Ok(table) => {
                 break table
@@ -642,8 +650,6 @@ fn touch_line(interp: &Rc<Interpreter>, _line: usize) {
         }
     };
     interp.stmt_ordinal.set(ordinal + 1);
-    // Same for the frame stack (push/pop at call boundaries race the line
-    // update from a sibling thread resuming under the GIL).
     let top = loop {
         match interp.frame_stack.try_borrow() {
             Ok(fs) => break fs.last().cloned(),
@@ -651,7 +657,7 @@ fn touch_line(interp: &Rc<Interpreter>, _line: usize) {
         }
     };
     if let Some(top) = top {
-        top.set(line);
+        top.set(mapped);
     }
 }
 
@@ -661,7 +667,7 @@ fn exec_stmt(
     s: &Stmt,
     reg: &Rc<FnRegistry>,
 ) -> Result<StmtOut, Flow> {
-    touch_line(interp, stmt_source_line(interp, s));
+    touch_line(interp, Some(frame), stmt_source_line(interp, s));
 
     match s {
         // T2: source-line marker - record the true line on THIS frame so
@@ -671,6 +677,7 @@ fn exec_stmt(
             if let Some(top) = interp.frame_stack.borrow().last().cloned() {
                 top.set(*n);
             }
+            frame.last_line.set(*n);
             Ok(StmtOut::Next)
         }
         Stmt::Pass => Ok(StmtOut::Next),
@@ -950,16 +957,16 @@ fn exec_stmt(
                 if e.cause.is_some() {
                     e.context = None;
                 }
-                e.raise_line = last_executed_line(interp);
-                e.tb.push(("<module>".to_string(), e.raise_line));
+                e.raise_line = frame.last_line.get();
                 return Err(Flow::Raise(e));
             }
             let mut e = e;
-            e.raise_line = last_executed_line(interp);
-            if std::env::var("APX_ASSERTDBG").is_ok() && e.class == "AssertionError" {
-                eprintln!("[AE-RAISE] line={} tb={:?}", e.raise_line, e.tb);
-            }
-            e.tb.push(("<module>".to_string(), e.raise_line));
+            // Wave-58: raise_line from THIS frame's own cell; the tb
+            // entries are added by the frame-exit hooks (5573/501) —
+            // the old hardcoded ("<module>", global-line) push here
+            // both mis-attributed nested raises and double-counted
+            // the module frame.
+            e.raise_line = frame.last_line.get();
             Err(Flow::Raise(e))
         }
         Stmt::Assert(test, msg) => {
@@ -1693,6 +1700,9 @@ fn exception_instance(exc: &ExceptionValue) -> Value {
         // __traceback__ on THIS instance renders ITS chain, not the
         // interpreter-wide table.
         if !exc.tb.is_empty() {
+            if std::env::var("APX_TBDBG").is_ok() {
+                eprintln!("[APTB] cls={} tb={:?}", exc.class, exc.tb);
+            }
             if let Value::Obj(o) = v {
                 let entries: Vec<Value> = exc
                     .tb
@@ -5566,7 +5576,10 @@ fn call_function(
         Err(Flow::Return(v)) => Ok(v),
         Err(Flow::Raise(mut exc)) => {
             // Frame exit with an exception: record THIS frame's line.
-            let line = line_track.get();
+            let line = frame.last_line.get();
+            if std::env::var("APX_TBDBG").is_ok() {
+                eprintln!("[FEXIT2] fn={} line={}", entry.qualname, line);
+            }
             // T2: per-exception traceback - the exception carries its own
             // entries so a CAUGHT exception keeps a correct tb (the global
             // tb_frames table is truncated on catch).
@@ -9007,6 +9020,16 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
             return Ok(Some(Value::Obj(m)));
         }
     }
+    // Wave-58: stream-subclass instances (Opaque + class_ref) resolve
+    // PYTHON class methods BEFORE the native stream surface — subclass
+    // overrides win (CaptureIO.getvalue beats TextIOWrapper's).
+    if let Value::Obj(o) = obj {
+        if o.kind == ap_obj::ObjKind::Opaque && o.class_ref.borrow().is_some() {
+            if let Some(v) = crate::classes::attr_get_opt(_interp, obj, name)? {
+                return Ok(Some(v));
+            }
+        }
+    }
     if let Some(v) = builtins_modules::native_attr(obj, name) {
         return Ok(Some(v));
     }
@@ -10073,6 +10096,40 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 // T1 (scrapy fix pass): real tb chain via the shared helper
                 // (matches the classes.rs class-instance arm).
                 "__traceback__" => {
+                    // Wave-58: prefer the per-exception chain recorded at
+                    // raise time (exception_instance attaches __ap_tb__).
+                    // The old live-frame-stack walk answered WALK-TIME
+                    // lines for every frame (every frame showed the
+                    // reader's current line) and skipped the <module>
+                    // frame.
+                    if let Some(tbv) = o
+                        .attrs
+                        .borrow()
+                        .get(&Value::Str(PyString::new("__ap_tb__")))
+                    {
+                        if let Value::List(lst) = tbv {
+                            let entries: Vec<(String, usize)> = lst
+                                .items()
+                                .iter()
+                                .filter_map(|it| match it {
+                                    Value::Tuple(t) if t.0.len() == 2 => {
+                                        let q = match &t.0[0] {
+                                            Value::Str(sv) => sv.as_str().to_string(),
+                                            _ => return None,
+                                        };
+                                        let l = t.0[1].as_int()?.to_i64()? as usize;
+                                        Some((q, l))
+                                    }
+                                    _ => None,
+                                })
+                                .collect();
+                            if !entries.is_empty() {
+                                let interp = crate::interp::current_interp_handle();
+                                let script = interp.script_path.clone();
+                                return Ok(Some(build_tb_chain(&script, &entries)));
+                            }
+                        }
+                    }
                     let interp = crate::interp::current_interp_handle();
                     return Ok(Some(crate::classes::traceback_value(&interp)));
                 }

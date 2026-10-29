@@ -2422,6 +2422,19 @@ pub fn attr_get_opt(
             };
             class_attr_get(interp, obj, &t, name).map(Some)
         }
+        // Wave-58: stream-subclass instances (CaptureIO(TextIOWrapper) &
+        // friends) are Opaque carrying a user class_ref. Resolve PYTHON
+        // methods from that class FIRST (subclass overrides win —
+        // CaptureIO.getvalue must beat the native TextIOWrapper one);
+        // misses fall through to the native stream surface below.
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque && o.class_ref.borrow().is_some() => {
+            let t = o.class_ref.borrow().clone().unwrap();
+            match instance_attr(interp, obj, o, &t, name) {
+                Ok(v) => Ok(Some(v)),
+                Err(Flow::Raise(e)) if e.class == "AttributeError" => Ok(None),
+                Err(other) => Err(other),
+            }
+        }
         _ => Ok(None),
     }
 }
