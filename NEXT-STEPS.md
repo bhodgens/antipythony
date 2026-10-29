@@ -2775,3 +2775,37 @@ that probe).
 NOTE: a zlib.error at PROCESS EXIT (after main completes) is
 separate, harmless-to-main-flow shutdown noise — investigate
 later.
+
+## Wave-80: signature-walk death localized to Parameter(self) in CrawlerProcess ctx (committed)
+
+Probes: [SFC] per _signature_from_callable entry, [SFF0/SFF]
+per _signature_from_function step, [GA] per get_annotations.
+
+MAP: CrawlerProcess.__init__ → log_scrapy_info → get_versions
+→ get_openssl_version → ... → inspect.signature walk on
+twisted.internet._sslverify.__init__ (a FUNCTION; isfunction
+True; textsig None; code reads OK; annotations OK via the
+new vars()-based class path) → Parameter('self', kind,
+annotation=_empty) construction → 'NoneType' object is not
+callable.
+
+KEY FACTS: (1) Parameter('self', POSITIONAL_OR_KEYWORD)
+PASSES standalone (t2par.py), passes after `import scrapy`
+(t2par2), and enum _ParameterKind(member) call is healthy in
+crawl-context (t2par3). (2) At the death point, repr() of
+ordinary objects raises TypeError — interpreter state is
+DEGRADED (attr machinery resolving/calling None) during
+CrawlerProcess.__init__ — this is a STATE problem, not a
+Parameter problem. (3) get_annotations fixed to read class
+own-ns via vars() — _ProtocolMeta classes no longer die
+there.
+
+NEXT (2 options): (a) find the degradation trigger — the
+LAST import executed before the first degraded repr — by
+logging module name at import_module_inner:806 env-gated;
+likely an ssl/OpenSSL or cryptography module corrupting a
+type's slots. (b) make the walk resilient: in
+_signature_from_function wrap Parameter construction in
+try/except -> raise ValueError('no signature found for...') —
+CPython-compatible outcome, unblocks the crawl NOW.
+Option (b) first (small, safe); option (a) as follow-up.
