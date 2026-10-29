@@ -1584,7 +1584,29 @@ pub fn encode_str(s: &str, codec: &str) -> MResult {
                 ))
             }
         }
-        "latin-1" | "latin1" | "iso-8859-1" | "iso8859-1" => {
+                "unicode_escape" | "raw_unicode_escape" => {
+            let mut out = String::with_capacity(s.len());
+            for c in s.chars() {
+                match c {
+                    '\u{000a}' => out.push_str("\\n"),
+                    '\u{0009}' => out.push_str("\\t"),
+                    '\u{000d}' => out.push_str("\\r"),
+                    '\u{005c}' => out.push_str("\\\\"),
+                    c if (c as u32) < 0x80 => out.push(c),
+                    c if (c as u32) <= 0xFF => {
+                        out.push_str(&format!("\\x{:02x}", c as u32));
+                    }
+                    c if (c as u32) <= 0xFFFF => {
+                        out.push_str(&format!("\\u{:04x}", c as u32));
+                    }
+                    c => {
+                        out.push_str(&format!("\\U{:08x}", c as u32));
+                    }
+                }
+            }
+            Ok(Value::Bytes(Gc::new(out.into_bytes())))
+        }
+"latin-1" | "latin1" | "iso-8859-1" | "iso8859-1" => {
             // 04.01 (six.b: s.encode("latin-1")): latin-1 maps U+0000..U+00FF
             // to the identical byte values.
             let mut out = Vec::with_capacity(s.len());
