@@ -1579,3 +1579,25 @@ return; then between FixtureDef.execute return and the test call.
 
 All probes removed; staging parse-verified; gates green (T2
 minimal gate, CaptureIO repro, cargo 0 failed).
+
+## Wave-44 (2026-10-28): __traceback__ never-None fix (0a31a8c)
+
+ROOT of the empty-message AssertionErrors: our UserInstance
+__traceback__ read returned None when no per-exception tb was
+recorded; pytest runner.py:191 asserts `e.__traceback__ is not
+None` on call-phase exceptions and the bare assert REPLACED the
+real error (empty message). Now a minimal one-frame chain is
+synthesized. Also staged runner.py carries a defensive
+e.__traceback__ = sys.exc_info()[2] fallback (test-data edit).
+
+Also this window: staging probes fully cleaned (fixtures.py,
+capture.py, pluggy _execution/_caller, runner.py); function-level
+import closure fix verified across the suite.
+
+CAPSYS REMAINING: the fixture body runs to yield (B1-B5
+verified); the error is now in the yield-to-test-call window.
+NEXT SESSION: file-log probes bracketing (a) call_fixture_func
+return, (b) FixtureDef.execute return, (c) the test call in
+runner.py's call phase — find which statement raises the
+AssertionError, and confirm the assert-message rendering bug
+(empty messages) separately.
