@@ -4163,16 +4163,49 @@ fn call_value_inner_impl(
                     }
                     // 02.03b: str.__new__(cls, value) / int.__new__ —
                     // v0 value model: the value IS the str/int; return it.
+                    // Wave-62: int.__new__(DerivedClass, value) — when the
+                    // receiving class is a USER class deriving int (enum
+                    // IntEnum members), allocate a UserInstance carrying
+                    // the int payload (__ap_int__) + class_ref so member
+                    // attribute access (name/value/phrase) resolves via
+                    // the class MRO. Bare int stays a plain value.
+                    if o.name == "__int__new__" {
+                        if let Some(Value::Obj(co)) = args.first() {
+                            let t_opt = match co.kind {
+                                ap_obj::ObjKind::UserClass => {
+                                    co.type_ref.borrow().as_ref().and_then(|w| w.upgrade())
+                                }
+                                _ => co.class_ref.borrow().clone(),
+                            };
+                            if let Some(t) = t_opt {
+                                    let payload = args.get(1).cloned().unwrap_or(Value::Int(ap_obj::Int::from_i64(0)));
+                                    let io = ap_obj::PyObject::new(
+                                        ap_obj::ObjKind::UserInstance,
+                                        t.name.clone(),
+                                    );
+                                    *io.type_ref.borrow_mut() = Some(std::rc::Rc::downgrade(&t));
+                                    *io.class_ref.borrow_mut() = Some(t.clone());
+                                    let _ = io.attrs.borrow_mut().set(
+                                        Value::Str(PyString::new("__ap_int__")),
+                                        payload,
+                                    );
+                                return Ok(Value::Obj(io));
+                            }
+                        }
+                        return Ok(match args.get(1) {
+                            Some(v) => v.clone(),
+                            None => Value::Int(ap_obj::Int::from_i64(0)),
+                        });
+                    }
                     if matches!(
                         o.name.as_str(),
-                        "__str__new__" | "__int__new__" | "__bytes__new__"
+                        "__str__new__" | "__bytes__new__"
                     ) {
                         // (cls) -> zero value; (cls, value) -> the value.
                         return Ok(match args.get(1) {
                             Some(v) => v.clone(),
                             None => match o.name.as_str() {
                                 "__str__new__" => Value::Str(PyString::new(String::new())),
-                                "__int__new__" => Value::Int(ap_obj::Int::from_i64(0)),
                                 _ => Value::Bytes(Gc::new(Vec::new())),
                             },
                         });
