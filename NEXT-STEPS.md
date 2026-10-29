@@ -1981,3 +1981,79 @@ NEXT SESSION (bounded): add file-log probes to wrap_session's
 except-branch statements (notify_exception call) — the first
 probe after the raise names the None attribute. Expect the fix
 to be a missing shim (capture/terminal) on our runtime.
+
+## Wave-57 (2026-10-28): TWO systemic bugs found+fixed; None-call pinned to co_positions
+
+FIX 1 (dataclass, root cause): annotationlib.get_annotations
+returned INHERITED __annotations__ (our runtime's class-attr
+getattr walks the MRO). Child dataclass re-collected base fields
+from the inherited annotations, rebuilding `sections:
+field(init=False, default_factory=list)` as init=True with no
+default -> "__create_fn__.__init__() missing 1 required
+positional argument: 'sections'" -> ExceptionInfo.getrepr raised
+TypeError. Fix: vendored annotationlib.get_annotations reads the
+class's OWN __dict__ first; classes without own __annotations__
+return {}. Repro: /tmp/t2dc9.py (fails before, OK now),
+t2dc4.py = full ExceptionRepr chain.
+
+FIX 2: sys.__stdin__ (earlier this session, 40d083a).
+
+REMAINING None-call: `<X>.co_positions()` where attribute
+lookup on a frame/code-adjacent object resolves to None
+(NONECALL-OUTER type="NoneType", 2 hits, from
+call_value_inner_impl outer fallthrough at interp.rs:5134
+region, via eval_expr Call arm - assign stmt). Who calls
+co_positions as a plain attr at runtest time: twisted failure
+path (failure.py:202 defines it as method) or our own frame
+f_code stubs lacking the method with attr-miss -> None. All
+python-level probes removed from staging (parse-verified).
+Runner MAINCATCH/MFR loop itself works.
+
+NEXT: find the caller of the co_positions attribute (NONECALL
+probe now env-gated in call_value fallthrough + Call-arm callee
+desc) - extend to log the full callee chain, or add co_positions
+to our real UserFunction code objects.
+
+## Wave-57 continued: co_positions root cause FIXED; empty-AE isolated further
+
+FIX 3 (real): co_positions on code stubs. (a) interp.rs:1610
+per-frame code stubs now carry co_positions (4096x (None,..)
+via __ap_code_positions__); (b) classes.rs:2353 f_code fallback
+stub gains co_positions + co_firstlineno; (c) THE KEY BUG:
+builtins.rs __ap_code_positions__ returned args.first() which
+bound-dispatch makes EMPTY -> co_positions() == () ->
+inspect._get_code_position's islice next() raises StopIteration
+-> PEP-479 "generator raised StopIteration" killed the pytest
+session. Now returns 4096 position-less tuples. This killed
+the NoneType-call AND the StopIteration layer.
+
+Now: pytest reports reach the summary (2x ERROR AssertionError
+setup+teardown of test_capsys). Instrumented facts: only ONE
+AssertionError constructed per run (the _assertion_supported
+self-test, properly caught — WARNCHK probe proves it returns
+True); it never passes Stmt::Raise; ASSERT-FAIL logs nothing
+else. => The reported AE is the SAME instance escaping via a
+wrapper path OR manufactured by pluggy wrapper-resume on an
+UNRELATED flow error. tb source lines still render as "rc = 99"
+(co_filename/co_lineno attribution bug) which blocks reading
+the real failing frame.
+
+NEXT: (1) fix tb source-line attribution (all frames show the
+runner script) — biggest debug blocker; (2) then re-run capsys.
+Python-level probes in _pytest/config removed except WARNCHK
+(tiny, inert). NONECALL probes still in interp.rs (env-gated).
+
+## Wave-57 committed (2bab46d)
+
+All wave-57 fixes committed: annotationlib own-annotations,
+co_positions on all code stubs, __ap_code_positions__ 4096-tuple
+(the StopIteration killer), importlib _install() invoked, AE
+backtraces. cargo test 0 failed; T2 gate green.
+
+State: capsys still ERROR at setup+teardown (empty AssertionError
+reported through the now-working getrepr pipeline). Facts: only
+1 AE constructed per run (the caught self-test); the reported AE
+never passes Stmt::Raise/Assert logs => manufactured at
+wrapper-resume or flow level. tb source lines render "rc = 99"
+for every frame — fixing tb co_filename/co_lineno attribution is
+the NEXT prerequisite (it will show the real failing frame).
