@@ -2440,3 +2440,34 @@ deepcopy:160/_keep_alive:222 but attribution is unreliable;
 KeepAlive works standalone). One more probe: log type(y) after
 `y = func(*args)` in _reconstruct to see what __dict__new__
 returns in the REAL flow.
+
+## Wave-68 close (2026-10-29): deepcopy repro matrix complete; plumbing reverted to known-good
+
+Repro matrix established:
+- copy.deepcopy(plain-empty-instance) OK
+- copy.deepcopy(dict) FAILS ('NoneType' object is not callable,
+  tb unreliable)
+- copy.deepcopy(instance-with-attrs) FAILS (same)
+- __reduce_ex__ on a dict instance doesn't resolve at all
+  ('dict' object has no attribute '__reduce_ex__') — Value::Dict
+  primitives have no reduce surface.
+
+An incomplete __reduce_ex__/dictiter plumbing attempt was
+REVERTED to known-good (git checkout; the bulk-delete incident
+in builtins.rs was caught and restored — file back to 5043
+lines, builds clean).
+
+Committed state: int.__new__ derived allocation (correct
+CPython shape), __ap_int__ ordering, sys.__stdin__,
+operator.* binops, service_identity + OpenSSL shims. All
+gates green (corpus 15/0/9xp, T2 gate green, scrapy import
+OK, IntEnum attrs work).
+
+NEXT SESSION (single focus): deepcopy. The int.__new__
+derived-instance allocation means EnumMeta's member dict now
+holds wrapped instances whose deepcopy/state path must work.
+Two-hour budget: (1) trace deepcopy(dict) failure with
+sys.settrace-free probes INSIDE copy.py (RV-type log at the
+reductor call); (2) decide: full __reduce_ex__ support for
+builtin containers OR make deepcopy prefer __copy__/__class__
+dispatch for our container values.
