@@ -5869,6 +5869,11 @@ fn call_function(
         // The staged __new__/__init__ context sits above the sentinel.
         interp.super_stack.borrow_mut().pop();
     }
+    if std::env::var("APX_SUPERDBG").is_ok() {
+        let depth = interp.super_stack.borrow().len();
+        let fname = def.name.as_str();
+        eprintln!("SUPER-RET {} depth={}", fname, depth);
+    }
 
     match result {
         Ok(v) => Ok(v),
@@ -8638,14 +8643,38 @@ fn builtin_super(interp: &Rc<Interpreter>, args: &[Value], _kwargs: &[(String, V
             // Zero-arg super(): the innermost active method context
             // (S-03-17). Outside a method the stack is empty -> the pinned
             // RuntimeError.
-            let ctx = interp
-                .super_stack
-                .borrow()
-                .last()
-                .cloned()
-                .filter(|(start, _, _)| start.name != "__plain_fn__");
+            // Wave-78: a dispatch that pushes a real method ctx BELOW
+            // the plain-fn sentinel (subscript_del's __delitem__ call)
+            // wants the ctx, not the sentinel it got stacked under.
+            // Skip one sentinel only when a real ctx sits directly
+            // beneath — the pure plain-fn case (c021) has nothing
+            // beneath, so zero-arg super() still errors there.
+            let ctx = {
+                let st = interp.super_stack.borrow();
+                let n = st.len();
+                let top = st.last().cloned();
+                match top {
+                    Some(t) if t.0.name == "__plain_fn__" && n >= 2 => {
+                        let below = st[n - 2].clone();
+                        if below.0.name != "__plain_fn__" {
+                            Some(below)
+                        } else {
+                            Some(t)
+                        }
+                    }
+                    other => other,
+                }
+            };
+            let ctx = ctx.filter(|(start, _, _)| start.name != "__plain_fn__");
             match ctx {
-                None => Err(raise("RuntimeError", "super(): no arguments")),
+                None => {
+                    if std::env::var("APX_SUPERDBG").is_ok() {
+                        let depth = interp.super_stack.borrow().len();
+                        let pend = interp.pending_super_ctx.borrow().is_some();
+                        eprintln!("SUPER-NOCTX super_stack={} pending_some={}", depth, pend);
+                    }
+                    Err(raise("RuntimeError", "super(): no arguments"))
+                }
                 Some((start_t, obj, is_cls)) => {
                     let start_v = crate::classes::class_value_for_public(&start_t);
                     let o = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "super");

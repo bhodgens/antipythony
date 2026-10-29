@@ -637,8 +637,19 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
             // subclass __getitem__ (if any) first, else the backing dict.
             if let Some(t) = o.type_ref.borrow().as_ref().and_then(|w| w.upgrade()) {
                 if crate::classes::is_dict_derived(&t) {
-                    if let Some((gf, _)) = t.lookup_with_owner("__getitem__") {
+                    if let Some((gf, gowner)) = t.lookup_with_owner("__getitem__") {
                         if matches!(&gf, Value::Obj(fo) if fo.kind == ap_obj::ObjKind::Function) {
+                            // Wave-78: direct ctx push — CID.__getitem__ calls
+                            // super().__getitem__ (same as the set/del paths).
+                            if let Some(interp) = crate::builtins_modules::current_interp() {
+                                interp.super_stack.borrow_mut().push((gowner, obj.clone(), false));
+                                let r = crate::interp::call_value_pub3(
+                                    &gf,
+                                    &[obj.clone(), key.clone()],
+                                );
+                                interp.super_stack.borrow_mut().pop();
+                                return r;
+                            }
                             return crate::interp::call_value_pub3(
                                 &gf,
                                 &[obj.clone(), key.clone()],
@@ -900,7 +911,12 @@ pub fn subscript_set(obj: &Value, key: &Value, v: Value) -> Result<(), Flow> {
                     // super() inside __setitem__ (EnumDict -> dict) needs
                     // the defining-class ctx (same channel as bound-method
                     // dispatch).
-                    *interp.pending_super_ctx.borrow_mut() = Some((owner, obj.clone(), false));
+                    // Wave-78: push the ctx DIRECTLY (not via pending) —
+                    // the plain-fn reader can skip pending under borrow
+                    // contention, leaving it for the next nested call to
+                    // steal. Direct push + builtin_super's skip-sentinel
+                    // makes the ctx visible to super() inside __setitem__.
+                    interp.super_stack.borrow_mut().push((owner, obj.clone(), false));
                     let r = crate::interp::call_value(
                         &interp,
                         &caller,
@@ -908,6 +924,7 @@ pub fn subscript_set(obj: &Value, key: &Value, v: Value) -> Result<(), Flow> {
                         &[obj.clone(), key.clone(), v],
                         &[],
                     );
+                    interp.super_stack.borrow_mut().pop();
                     interp.super_stack.borrow_mut().pop();
                     return r.map(|_| ());
                 }
@@ -1007,26 +1024,34 @@ pub fn subscript_del(obj: &Value, key: &Value) -> Result<(), Flow> {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
             let interp = crate::builtins_modules::current_interp()
                 .ok_or_else(|| raise("TypeError", "no interpreter for __delitem__"))?;
-            if let Some((f, _)) =
-                crate::classes::special_lookup(&interp, obj, "__delitem__")
-            {
-                // Wave-76: save/restore the pending super ctx — the
-                // __delitem__ body may itself dispatch __setitem__ (scrapy
-                // CaseInsensitiveDict.__setitem__ does `del self[...]`
-                // before super().__setitem__), which re-stages the single
-                // pending_super_ctx slot and clobbers the outer call's
-                // staged ctx ("super(): no arguments").
-                let saved = interp
-                    .pending_super_ctx
-                    .borrow()
-                    .clone();
+            let t = o
+                .type_ref
+                .borrow()
+                .as_ref()
+                .and_then(|w| w.upgrade());
+            let entry = t
+                .as_ref()
+                .and_then(|t| t.lookup_with_owner("__delitem__"));
+            if let Some((f, owner)) = entry {
+                // Wave-78: push the defining-class super ctx DIRECTLY
+                // onto super_stack around the __delitem__ call — scrapy
+                // CaseInsensitiveDict.__delitem__ calls super().
+                //__delitem__, which needs the ctx. (Staging via
+                // pending_super_ctx does not work here: call_value_pub
+                // bypasses the plain-fn reader that consumes pending, so
+                // the next nested plain-fn call — e.g. self._normkey —
+                // steals the staged ctx.)
+                if std::env::var("APX_SUPERDBG").is_ok() {
+                    eprintln!("SUPER-DELSTAGE owner={}", owner.name);
+                }
+                interp.super_stack.borrow_mut().push((owner, obj.clone(), false));
                 let r = crate::interp::call_value_pub(
                     &interp,
                     &f,
                     &[obj.clone(), key.clone()],
                     &[],
                 );
-                *interp.pending_super_ctx.borrow_mut() = saved;
+                interp.super_stack.borrow_mut().pop();
                 return r.map(|_| ());
             }
             Err(raise(
