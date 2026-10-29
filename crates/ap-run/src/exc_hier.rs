@@ -169,6 +169,21 @@ pub struct ExceptionValue {
 
 impl ExceptionValue {
     pub fn new(class: &str, args: Vec<ap_obj::value::Value>) -> Self {
+        if class == "AssertionError"
+            && std::env::var("APX_ASSERTDBG").is_ok()
+        {
+            let bt = std::backtrace::Backtrace::force_capture();
+            let bt_str = format!("{:?}", bt);
+            let interesting: Vec<&str> = bt_str
+                .lines()
+                .filter(|l| l.contains("ap_run") && !l.contains("exc_hier"))
+                .collect();
+            eprintln!(
+                "[EV-AE] args={} bt={}",
+                args.len(),
+                interesting.iter().take(8).cloned().collect::<Vec<_>>().join(" <- ")
+            );
+        }
         ExceptionValue {
             class: class.to_string(),
             args,

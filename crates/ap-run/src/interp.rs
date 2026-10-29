@@ -955,6 +955,19 @@ fn exec_stmt(
                         last_executed_line(interp)
                     );
                 }
+                if std::env::var("APX_ASSERTDBG").is_ok() {
+                    let bt = std::backtrace::Backtrace::force_capture();
+                    let bt_str = bt.to_string();
+                    let interesting: Vec<&str> = bt_str
+                        .lines()
+                        .filter(|l| l.contains("ap_run") && !l.contains("interp::exec_stmt"))
+                        .collect();
+                    eprintln!(
+                        "[AE-NEW] args={} bt={}",
+                        args.len(),
+                        interesting.iter().take(6).cloned().collect::<Vec<_>>().join(" <- ")
+                    );
+                }
                 return Err(Flow::Raise(ExceptionValue::new("AssertionError", args)));
             }
             Ok(StmtOut::Next)
