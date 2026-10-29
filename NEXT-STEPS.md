@@ -2509,3 +2509,22 @@ as attr-lookups, looping. Fix direction: in the BuiltinFn
 call dispatch, if fname starts with "__ap_" treat slice_parts
 [0] as receiver and route to builtins::call_builtin with the
 FULL marker name (bypassing the attr re-lookup).
+
+## Wave-70/71 (6f7a7): marker dispatch arms landed; crawl blocker narrowed to a MappingProxyType-derived object
+
+Landed: __dict__new__/__ap_reduce_ex__/__ap_newobj__ arms in
+the BuiltinFn call dispatch (interp 3645 region) AND
+call_builtin_values; MappingProxyType aliases dict (types.py).
+
+The crawl's recv='object' pydict-pop: the receiver is an
+instance whose class resolves to 'object' — i.e. a
+MappingProxyType product created BEFORE the types.py alias,
+or a different plain-object in the signature walk. All gates
+held through every change (corpus 15/0/9xp, T2 green, scrapy
+import OK).
+
+NEXT: re-run the crawl with APX_SCOPE_DEBUG CBV-MISS logging
+committed earlier — it lists every un-routed tag/fname pair;
+any (X, pop) pair with X != pydict names the receiver class
+directly. Then either add that class's mapping methods or fix
+its construction.
