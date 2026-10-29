@@ -2719,3 +2719,27 @@ LESSON: shared-repo note — `git stash` in this repo also
 stashes sibling agents' modified files; the stash+pop cycle
 touched 35 sibling corpus files (recovered intact). Do NOT
 stash in the shared tree; use a temp worktree instead.
+
+## Wave-78 (committed): CaseInsensitiveDict super() chain FIXED — crawl advanced to p.start()
+
+Root cause found by SUPER-NOCTX/SUPER-RET probes: the
+dict-subclass dunder dispatches (__getitem__ 640, __setitem__
+903, __delitem__ 1013) called python overrides with NO super
+ctx, and builtin_super read top-of-stack = the plain-fn
+sentinel → "super(): no arguments".
+
+FIX (one commit): (1) direct super_stack ctx push around each
+dunder call (pending_super_ctx staging is stealable by nested
+plain-fn calls because call_value_pub bypasses the pending
+reader); (2) builtin_super skips ONE sentinel when a real ctx
+sits directly beneath (preserves c021 plain-fn-no-ctx).
+
+VERIFIED: /tmp/t2cid.py getitem=1 set-ok bar=2 (both super
+paths). Gates: corpus 15/0/9xp, T2 gate 1F/1P/1S (historical),
+scrapy import OK.
+
+CRAWL STATUS: advanced past the signature-walk blocker; NEW
+failure at run_ap.py:12 p.start(): TypeError list indices must
+be integers with __getattr__ x2 frames (3845 = unreliable
+attribution). NEXT: probe the get/subscript routes for the
+str-key list hit in p.start() context (CrawlerProcess.start).
