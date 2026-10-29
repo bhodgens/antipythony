@@ -2385,3 +2385,35 @@ get/getlist path re-enters importlib during __contains__, and
 our importlib._bootstrap._install (wave-63-edited) or the
 signature default-evaluation reads Settings.attributes on a
 half-constructed instance.
+
+## Wave-67 (2026-10-29): leftover [INST] probe removed; signature ValueError guard; crawl chain findings
+
+- importlib/_bootstrap_external.py: removed the surviving [INST]
+  stderr probe from _install (wave-63 cleanup had patched only
+  one of the two copies).
+- inspect.py: signature() now converts AttributeError escaping
+  the from_callable walk into CPython's ValueError("no signature
+  found...") — scrapy's get_func_args_dict catches ValueError
+  and returns {} as on CPython. Verified:
+  inspect.signature(len) -> ValueError (was the raw walk crash).
+- Crawl chain confirmed (full frame list, committed earlier):
+  CrawlerProcess.__init__ -> SpiderLoader.from_settings ->
+  SpiderLoader.__init__ -> BaseSettings.getlist -> get ->
+  __getitem__ -> __contains__ -> (importlib _bootstrap_external
+  _install region) -> signature x2 -> __getattr__ x5 ->
+  AttributeError('Settings' object has no attribute
+  'attributes').
+- BaseSettings init flow exonerated (wave-66 probes): every
+  instance gets attributes=True. The failing instance is
+  created during the import that fires mid-__contains__ — i.e.
+  the import machinery re-initializing (install) while a
+  partially-built Settings exists in the walk.
+
+NEXT: (1) determine which import fires inside __contains__
+(add an import-hook probe or wrap _install to log re-entry);
+(2) the half-built Settings instance in the walk suggests
+importlib re-entrancy during SpiderLoader init — check whether
+service_identity/OpenSSL shims trigger `import
+collections.abc`-style lazy imports at call time (they were
+just added in wave-63 — a shim importing at CALL time rather
+than IMPORT time would explain the mid-contains import).
