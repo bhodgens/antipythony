@@ -2068,6 +2068,9 @@ fn lookup_name(interp: &Rc<Interpreter>, frame: &Rc<Frame>, name: &str) -> EResu
             if let Some(v) = crate::classes::exc_class_value(interp, name) {
                 return Ok(v);
             }
+            if std::env::var("APX_SFCDBG").is_ok() && name == "attr_dict" {
+                eprintln!("[LOADMISS] name={} scope={} src={}", name, frame.scope_path, interp.source);
+            }
             Err(raise("NameError", format!("name '{name}' is not defined")))
         }
     }

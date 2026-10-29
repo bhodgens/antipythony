@@ -4664,6 +4664,25 @@ pub fn builtin_exec(interp: &Interpreter, args: &[Value]) -> crate::EvalResult {
                 ap_parse::lower(&parsed2).map_err(|e| raise("SyntaxError", format!("{e}")))?;
             let _ = module2;
             crate::interp::FnRegistry::extend_current(&rc_interp, items, scopes2, globals.clone());
+            // Wave-83: exec-created defs have NO defining frame (Stmt::
+            // LocalDef never ran), so eval_default falls back to a MAIN-
+            // globals module frame and default exprs referencing exec-globs
+            // names (attrs' attr_dict) NameError. Register a defining frame
+            // over the EXEC globals for each new def id.
+            {
+                let reg2 = crate::interp::interp_registry(&rc_interp);
+                for it in items.iter() {
+                    if let ap_ir::Item::FnDef(f) = it {
+                        if let Some(id) = reg2.by_path_lookup(&f.name) {
+                            let df = crate::frame::Frame::new_module(globals.clone());
+                            rc_interp
+                                .defining_frames
+                                .borrow_mut()
+                                .insert(id, std::rc::Rc::new(df));
+                        }
+                    }
+                }
+            }
             // Bind the function objects into the exec globals dict.
             // T1-d (attr/_make.py _compile_and_eval): defs bind into LOCALS
             // too — attrs passes globs as globals and a fresh locs dict as
@@ -4673,6 +4692,13 @@ pub fn builtin_exec(interp: &Interpreter, args: &[Value]) -> crate::EvalResult {
                 if let ap_ir::Item::FnDef(f) = it {
                     let id = reg.by_path_lookup(&f.name).unwrap_or(0);
                     let func = make_function(id, &f.name);
+                    // Wave-83: the marker's closure_slot drives
+                    // eval_default's defining-frame lookup — without it
+                    // defaults evaluate against MAIN globals and NameError
+                    // (attrs attr_dict pattern).
+                    if let Value::Obj(fo) = &func {
+                        *fo.closure_slot.borrow_mut() = Some(id as u64);
+                    }
                     let _ = globals.set(Value::Str(PyString::new(f.name.clone())), func.clone());
                     if let Some(loc) = &locals {
                         let _ = loc.set(Value::Str(PyString::new(f.name.clone())), func);
