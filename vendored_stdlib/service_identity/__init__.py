@@ -1,35 +1,9 @@
-"""antipythany deviation shim — service_identity (v0: verification always
-passes; the file:// gate performs no TLS)."""
-
-__version__ = "23.1.0"
-
-
-class VerificationError(Exception):
-    pass
-
-
-class CertificateError(VerificationError):
-    pass
-
-
-class DNSMismatch(VerificationError):
-    pass
-
-
-class IPAddressMismatch(VerificationError):
-    pass
-
-
-def verify_hostname(connection, hostname):
-    return None
-
-
-def verify_ip_address(connection, ip):
-    return None
-
-
-def extract_ids(connection):
-    return []
-
-
-pyOpenSSL = None
+# antipythany shim — service_identity (twisted _sslverify chain; v0 constant/method surfaces only)
+from service_identity.pyopenssl import (
+    VerificationError,
+    CertificateError,
+    extract_from_certificate,
+    extract_from_ssl_socket,
+    verify_hostname,
+    verify_ip_address,
+)

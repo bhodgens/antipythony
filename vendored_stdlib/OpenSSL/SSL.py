@@ -13,6 +13,10 @@ SSLv23_METHOD = 0x1000
 TLSv1_2_METHOD = 0x1000
 OP_NO_SSLv2 = 0x1000000
 OP_NO_SSLv3 = 0x2000000
+OP_NO_TLSv1 = 0x4000000
+OP_NO_TLSv1_1 = 0x10000000
+OP_NO_TLSv1_2 = 0x8000000
+OP_NO_TLSv1_3 = 0x20000000
 OP_NO_COMPRESSION = 0x20000
 OP_CIPHER_SERVER_PREFERENCE = 0x400000
 OP_SINGLE_DH_USE = 0x80000
@@ -70,6 +74,8 @@ class Context:
 
 
 class Connection:
+    _app_data = None
+
     def __init__(self, context, sock=None):
         self._sock = sock
 
@@ -87,6 +93,22 @@ class Connection:
 
     def close(self):
         pass
+
+    def get_cipher_list(self):
+        return ["DEFAULT"]
+
+    def get_servername(self):
+        return None
+
+    def set_servername(self, name):
+        return None
+
+    def get_app_data(self):
+        return self._app_data
+
+    def set_app_data(self, data):
+        self._app_data = data
+        return None
 
     def getpeercert(self):
         return None
