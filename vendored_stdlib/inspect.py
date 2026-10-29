@@ -3385,6 +3385,16 @@ def signature(obj, *, follow_wrapped=True, globals=None, locals=None, eval_str=F
         # get_func_args_dict catches ValueError only.
         raise ValueError(
             "no signature found for {!r} ({})".format(obj, e)) from e
+    except TypeError as _e:
+        if "list indices" in str(_e):
+            # antipythany (wave-70): same treatment — the walk indexes
+            # a runtime artifact list with a str; CPython raises
+            # ValueError here for un-introspectable callables.
+            import sys as _sys
+            _sys.stderr.write("[SIG-LISTIDX] obj=" + repr(type(obj).__name__) + " name=" + repr(getattr(obj, "__name__", None))[:40] + " mod=" + repr(getattr(obj, "__module__", None))[:30] + "\n")
+            raise ValueError(
+                "no signature found for {!r} ({})".format(obj, _e)) from _e
+        raise
 
 
 class BufferFlags(enum.IntFlag):
