@@ -2057,3 +2057,30 @@ never passes Stmt::Raise/Assert logs => manufactured at
 wrapper-resume or flow level. tb source lines render "rc = 99"
 for every frame — fixing tb co_filename/co_lineno attribution is
 the NEXT prerequisite (it will show the real failing frame).
+
+## Wave-58 — CAPSYS GREEN. Tier-2 built-in fixtures COMPLETE (983eaf9)
+
+The multi-window empty-AssertionError chase is CLOSED. Chain of
+real causes, each masking the next:
+1. dataclass inherited-annotations bug -> getrepr TypeError
+   (wave-57).
+2. co_positions () -> StopIteration -> PEP-479 RuntimeError
+   killed sessions (wave-57).
+3. isinstance(CaptureIO(), CaptureIO) == False (wave-39 swap
+   lost the user class in type checks) -> SysCapture.snap bare
+   assert -> THE empty AssertionError at setup+teardown.
+4. CaptureIO.getvalue returned native bytes -> str += bytes
+   TypeError in close (masked by 3).
+
+Fixes (983eaf9): frame-local last_line tb lines (real per-frame
+linenos — debug speedup for everything after this); __traceback__
+prefers per-exception __ap_tb__; isinstance/type consult
+class_ref MRO for swapped stream instances; attr dispatch tries
+PYTHON class methods before native stream surface.
+
+Gates: test_fix2.py 3/3 (tmp_path, monkeypatch, capsys),
+test_cap.py 1/1, test_genfix.py 1/1, T2 minimal gate green,
+corpus 15/0/9xp, cargo test 0 failed x2, lxml 24/24 intact.
+
+NEXT: parametrize tier (@pytest.mark.parametrize), then
+assertion-rewrite quality, then per NEXT-STEPS order.
