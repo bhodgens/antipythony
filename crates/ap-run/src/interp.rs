@@ -3176,7 +3176,7 @@ fn other_display_name(o: &ap_obj::PyObject) -> String {
     o.name.clone()
 }
 
-fn eval_binop(a: &Value, op: BinOp, b: &Value) -> EResult {
+pub(crate) fn eval_binop(a: &Value, op: BinOp, b: &Value) -> EResult {
     use ap_obj::ops::BinOp as OB;
     // 02.08-full part 1: complex arithmetic (s029: 3 + 4j). The Opaque
     // complex pair supports + - * and comparisons for equality only.
@@ -4172,9 +4172,12 @@ fn call_value_inner_impl(
                     if o.name == "__int__new__" {
                         if let Some(Value::Obj(co)) = args.first() {
                             let t_opt = match co.kind {
-                                ap_obj::ObjKind::UserClass => {
-                                    co.type_ref.borrow().as_ref().and_then(|w| w.upgrade())
-                                }
+                                ap_obj::ObjKind::UserClass => co
+                                    .type_ref
+                                    .borrow()
+                                    .as_ref()
+                                    .and_then(|w| w.upgrade())
+                                    .or_else(|| co.class_ref.borrow().clone()),
                                 _ => co.class_ref.borrow().clone(),
                             };
                             if let Some(t) = t_opt {
@@ -4189,6 +4192,9 @@ fn call_value_inner_impl(
                                         Value::Str(PyString::new("__ap_int__")),
                                         payload,
                                     );
+                                if std::env::var("APX_SCOPE_DEBUG").is_ok() {
+                                    eprintln!("[INTNEW-RET] kind={:?} name={:?}", io.kind, io.name);
+                                }
                                 return Ok(Value::Obj(io));
                             }
                         }

@@ -3824,6 +3824,29 @@ fn binop_by_name(name: &str, a: &Value, b: &Value) -> BResult {
         "xor" => BinOp::BitXor,
         _ => return Err(raise("SystemError", format!("operator fn {name} unbound"))),
     };
+    // Wave-63: route through the interpreter's eval_binop so
+    // container types (set/frozenset xor/and/or) resolve — the raw
+    // ap_obj::ops::binop only covers primitives.
+    let ir_op = match op {
+        ap_obj::ops::BinOp::Add => ap_ir::BinOp::Add,
+        ap_obj::ops::BinOp::Sub => ap_ir::BinOp::Sub,
+        ap_obj::ops::BinOp::Mul => ap_ir::BinOp::Mul,
+        ap_obj::ops::BinOp::TrueDiv => ap_ir::BinOp::Div,
+        ap_obj::ops::BinOp::FloorDiv => ap_ir::BinOp::FloorDiv,
+        ap_obj::ops::BinOp::Mod => ap_ir::BinOp::Mod,
+        ap_obj::ops::BinOp::Pow => ap_ir::BinOp::Pow,
+        ap_obj::ops::BinOp::LShift => ap_ir::BinOp::LShift,
+        ap_obj::ops::BinOp::RShift => ap_ir::BinOp::RShift,
+        ap_obj::ops::BinOp::BitAnd => ap_ir::BinOp::BitAnd,
+        ap_obj::ops::BinOp::BitOr => ap_ir::BinOp::BitOr,
+        ap_obj::ops::BinOp::BitXor => ap_ir::BinOp::BitXor,
+        _ => ap_ir::BinOp::Add,
+    };
+    if let Some(_interp) = current_interp() {
+        if let Ok(v) = crate::interp::eval_binop(a, ir_op, b) {
+            return Ok(v);
+        }
+    }
     ap_obj::ops::binop(a, op, b).map_err(Flow::from_py)
 }
 
@@ -16831,6 +16854,18 @@ pub fn call_builtin_values(
                     {
                         return r;
                     }
+                }
+                // Wave-63: unbound BUILTIN-TYPE dunder markers reached via
+                // raw __dict__ access (int.__dict__['__repr__'] — pytest's
+                // _find_data_repr_ walks class __dict__s) must behave like
+                // the bound slot: recv IS the value.
+                if fname == "__repr__" {
+                    return crate::builtins::builtin_repr(std::slice::from_ref(&recv));
+                }
+                if fname == "__str__" {
+                    return crate::builtins::py_str_of(&recv)
+                        .map(|sv| Value::Str(ap_obj::PyString::new(sv)))
+                        .map_err(Flow::from_py);
                 }
                 return Err(raise("SystemError", "unbound builtin-value method"));
             }
