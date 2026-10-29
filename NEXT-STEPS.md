@@ -1944,3 +1944,24 @@ FINAL DIAGNOSTIC STATE (all committed):
 - Gates: T2 minimal gate green; genfix 1 passed; fix6b tmp_path +
   monkeypatch pass; CaptureIO repro green; cargo build 0 errors;
   cargo test 0 failed.
+
+## Wave-56 (2026-10-28): sys.__stdin__ fix (40d083a)
+
+Added sys.__stdin__ (original-stdin alias, same TextIOWrapper
+object as sys.stdin) to our sys module — CPython guarantees it;
+pytest's DontReadFromInput restore + capture.py:225
+`assert sys.__stdin__ is not None` rely on it.
+
+capsys TypeError persists (now deterministic TypeError
+'NoneType' object is not callable at HookCaller.__call__ during
+teardown resume). All raise-site probes silent; EV-AE/AE-NEW
+prove the instance is not constructed by either instrumentation
+point — it is created via the CLASS-CTOR path (raise TypeError
+(f-string)) where the f-string built the CPython slot text, in a
+frame whose tb attribution is corrupt.
+
+NEXT SESSION (single focus): APX_CALLTRACE= full trace + find
+the [CALL+] entry immediately preceding the first "-> raise
+TypeError" for the empty-message instance (EV-AE cls=TypeError
+args=0 with empty bt); the CALL+ name names the function whose
+internal call dispatched to None. Bounded: one grep.
