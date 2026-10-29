@@ -2296,3 +2296,48 @@ resolves differently. Repros: /tmp/t2mm.py (fails),
 - collections.abc from-import mro truncation: REPRODUCED and
   isolated (import-as works, from-import truncates) — separate
   leaf. Repros /tmp/t2mm.py vs /tmp/t2mmA.py.
+
+## Wave-64: collections.abc FIXED (mixin methods live); crawl advanced to inspect.signature interplay
+
+FIX: build_collections_abc (native registry stub with base-less
+interned types) now prefers exec'ing the REAL vendored
+_collections_abc.py via import_file_module — full class
+hierarchy + Mapping mixin methods (items/keys/values/get).
+`from collections.abc import Mapping` mro is now complete.
+This UNBLOCKED Settings.items() (was KeyError/'items' miss).
+
+Crawl now reaches CrawlerProcess.__init__ -> SpiderLoader ->
+BaseSettings.getlist -> __contains__ -> _install -> inspect.
+signature(...) on a callable whose __getattr__ recursion (x5,
+default_settings PEP-562 __getattr__ suspected) raises
+AttributeError('Settings' object has no attribute 'attributes').
+Isolated repros: /tmp/t2call.py (inspect.signature correctly
+rejects a plain MutableMapping — so the trigger is callable +
+Settings-specific attr flow).
+
+NEXT: trace _install's signature() call (python.py:1563 region
+in scrapy settings? _sslverify? — the CHAIN line list is
+committed in this log) — determine which callable enters
+signature() and why its __getattr__ walks into Settings.attri
+butes. Likely inspect._signature_from_callable following
+__getattr__ chains our runtime serves where CPython raises.
+
+## Wave-65: __ap_int__ ordering delegation — signature() unblocked (a86d9a0)
+
+IntEnum wrapped members crashed ordering (unreachable! in the
+payload arm for non-ordering CmpOps) and lacked < <= > >=.
+Both fixed: ordering ops compare payload ints (wrapped-vs-
+wrapped and wrapped-vs-plain). inspect.signature(Settings.
+__init__) now completes (was TypeError '<' not supported
+between _ParameterKind instances — the enum members sort).
+
+Scrapy crawl state: CrawlerProcess.__init__ -> SpiderLoader ->
+BaseSettings chain works up to _install -> inspect.signature
+call. Remaining: an AttributeError('Settings' object has no
+attribute 'attributes') raised during signature's attribute
+walk — all direct attr reads there are try/except
+AttributeError-wrapped, so the raise escapes via a non-standard
+path (suspect: our module PEP-562 __getattr__ raise surfacing
+as a different Flow kind, or instance-vs-class module duality).
+Next: verify Flow::Raise(AttributeError) from module
+__getattr__ matches `except AttributeError` in user code.
