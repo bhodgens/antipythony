@@ -4950,6 +4950,13 @@ fn call_value_inner_impl(
                     if let Some(r) = class_protocol_builtin(interp, &o.name, args, kwargs) {
                         return r;
                     }
+                    // Wave-71: runtime-internal markers ("__ap_*") route
+                    // straight to the builtin dispatcher — attribute
+                    // fallbacks would re-dispatch them as method lookups
+                    // on the receiver (the bound-marker call loop).
+                    if o.name.starts_with("__ap_") || o.name == "__dict__new__" {
+                        return builtins::call_builtin(interp, &o.name, args, kwargs);
+                    }
                     builtins::call_builtin(interp, &o.name, args, kwargs)
                 }
                 ap_obj::ObjKind::Function => call_function(interp, o, args, kwargs),

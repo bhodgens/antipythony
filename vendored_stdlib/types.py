@@ -16,7 +16,11 @@ except ImportError:
     FunctionType = type(_f)
     LambdaType = type(lambda: None)  # Same as FunctionType
     CodeType = type(_f.__code__)
-    MappingProxyType = type(type.__dict__)
+    # antipythany (wave-70): type(type.__dict__) resolved to a bare
+    # type whose instances answered no mapping methods — .pop on a
+    # Signature's parameters proxy died with SystemError. Alias to
+    # dict (read-only enforcement not needed by our targets).
+    MappingProxyType = dict
     SimpleNamespace = type(sys.implementation)
 
     def _cell_factory():
