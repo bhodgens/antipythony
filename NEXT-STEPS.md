@@ -1644,3 +1644,28 @@ cleanup) — the very first CFF-EXC line names the true original
 error. Also candidate: our runtime may be re-raising with a
 MANGLED class name (stored OutcomeException/Failed reported as
 "AssertionError" by the report renderer default).
+
+## Wave-47 (2026-10-28): real tb captured; assert bypass found
+
+With probes fixed (runner.py CRTB), the REAL traceback of the
+capsys empty AssertionError is: <lambda> -> HookCaller.__call__
+-> PluginManager._hookexec -> _multicall -> <module>. The
+exception is raised INSIDE _multicall (no deeper frames!) with an
+EMPTY message. pluggy has no bare AssertionError — so our runtime
+MANUFACTURES it inside _multicall's execution: the per-impl loop
+or the wrapper (yield-based skipping.py makereport impl)
+machinery. Prime suspect: our wrapper-hook `rep = yield` send
+path raising a bare AssertionError when the wrapper generator
+protocol misaligns (e.g. send() before start, or second yield).
+
+ALSO: APX_ASSERTDBG=1 now logs every Stmt::Assert failure with
+frame qualname + line (committed). The failing AssertionError
+never appears there — proving it bypasses Stmt::Assert — meaning
+it is Rust-manufactured. Search generator/wrapper send paths in
+generators.rs + interp.rs for bare
+`ExceptionValue::new("AssertionError", ...)` or
+raise("AssertionError") with no message... none found by grep —
+so the raise is constructed via ExceptionValue::new with a
+variable name, or via Flow::Raise of a stored value.
+NEXT SESSION: read generators.rs wrapper-send code paths line by
+line; add APX_ASSERTDBG to any AssertionError construction found.
