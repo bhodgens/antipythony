@@ -1965,3 +1965,19 @@ the [CALL+] entry immediately preceding the first "-> raise
 TypeError" for the empty-message instance (EV-AE cls=TypeError
 args=0 with empty bt); the CALL+ name names the function whose
 internal call dispatched to None. Bounded: one grep.
+
+## Wave-56 correction (2026-10-28, final): pytest.main DID run
+
+The TypeError is raised INSIDE pytest.main's unwinding (after
+_ensure_unconfigure), during wrap_session's exception handling —
+NOT at the call site. The None-call is in pytest's error-
+handling path: wrap_session → notify_exception (or the failure
+report path) touches something that is None on our runtime.
+Prime suspects: the capture manager is None/absent after our
+capture changes, or _pytest.config's pluginmanager hook lost a
+plugin.
+
+NEXT SESSION (bounded): add file-log probes to wrap_session's
+except-branch statements (notify_exception call) — the first
+probe after the raise names the None attribute. Expect the fix
+to be a missing shim (capture/terminal) on our runtime.
