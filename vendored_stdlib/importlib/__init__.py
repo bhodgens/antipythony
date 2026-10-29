@@ -47,6 +47,15 @@ else:
         pass
     sys.modules['importlib._bootstrap_external'] = _bootstrap_external
 
+# T2 (antipythany): the Rust importer aliases _frozen_importlib_
+# external, so CPython's frozen-bootstrap _setup never runs _install.
+# Without it sys.path_hooks stays empty and PathFinder/metadata find
+# nothing on sys.path.
+try:
+    _bootstrap_external._install(_bootstrap)
+except Exception:
+    pass
+
 # To simplify imports in test code
 _pack_uint32 = _bootstrap_external._pack_uint32
 _unpack_uint32 = _bootstrap_external._unpack_uint32

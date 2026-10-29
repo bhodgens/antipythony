@@ -956,6 +956,9 @@ fn exec_stmt(
             }
             let mut e = e;
             e.raise_line = last_executed_line(interp);
+            if std::env::var("APX_ASSERTDBG").is_ok() && e.class == "AssertionError" {
+                eprintln!("[AE-RAISE] line={} tb={:?}", e.raise_line, e.tb);
+            }
             e.tb.push(("<module>".to_string(), e.raise_line));
             Err(Flow::Raise(e))
         }
@@ -1622,6 +1625,25 @@ pub fn build_tb_chain(script: &str, entries: &[(String, usize)]) -> Value {
                 Value::Str(PyString::new("co_firstlineno")),
                 Value::Int(ap_obj::Int::from_i64(line as i64)),
             );
+            // Wave-57: inspect._get_code_position calls
+            // code.co_positions() on EVERY traceback frame; without it
+            // the attribute resolves to None on our Namespace objects
+            // and the call raises "'NoneType' object is not callable"
+            // mid-unwind. Mirror the builtins.rs:2660 stub (1024 x
+            // (None,None,None,None) so islice indexing always lands).
+            let cp = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "__ap_code_positions__");
+            let positions: Vec<Value> = (0..1024)
+                .map(|_| {
+                    Value::Tuple(Gc::new(ap_obj::value::Tuple(vec![
+                        Value::None,
+                        Value::None,
+                        Value::None,
+                        Value::None,
+                    ])))
+                })
+                .collect();
+            *cp.slice_parts.borrow_mut() = vec![Value::Tuple(Gc::new(ap_obj::value::Tuple(positions)))];
+            let _ = cattrs.set(Value::Str(PyString::new("co_positions")), Value::Obj(cp));
         }
         {
             let mut attrs = frame.attrs.borrow_mut();
@@ -2304,6 +2326,14 @@ pub(crate) fn eval_expr(
                         }
                     }
                 }
+            }
+            if std::env::var("APX_ASSERTDBG").is_ok() && fv.type_name() == "NoneType" {
+                let callee_desc = match f.as_ref() {
+                    Expr::Name(n) => format!("Name({})", n.as_str()),
+                    Expr::Attribute(_, a) => format!("Attr({})", a.as_str()),
+                    _ => "Other".to_string(),
+                };
+                eprintln!("[NONECALL-CALLEE-EXPR] {}", callee_desc);
             }
             call_value(interp, frame, &fv, &pos, &kwargs)
         }
@@ -5125,16 +5155,26 @@ fn call_value_inner_impl(
                     }
                     Err(raise("TypeError", "'_GenericAlias' object is not callable"))
                 }
-                _ => Err(raise(
-                    "TypeError",
-                    format!("'{}' object is not callable", f.type_name()),
-                )),
+                _ => {
+                    if std::env::var("APX_ASSERTDBG").is_ok() && f.type_name() == "NoneType" {
+                        eprintln!("[NONECALL] callee={:?}", f.type_name());
+                    }
+                    Err(raise(
+                        "TypeError",
+                        format!("'{}' object is not callable", f.type_name()),
+                    ))
+                }
             }
         }
-        _ => Err(raise(
-            "TypeError",
-            format!("'{}' object is not callable", f.type_name()),
-        )),
+        _ => {
+            if std::env::var("APX_ASSERTDBG").is_ok() {
+                eprintln!("[NONECALL-OUTER] type={:?}", f.type_name());
+            }
+            Err(raise(
+                "TypeError",
+                format!("'{}' object is not callable", f.type_name()),
+            ))
+        }
     }
 }
 

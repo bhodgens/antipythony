@@ -2366,6 +2366,22 @@ pub fn attr_get_protocol(interp: &Rc<Interpreter>, obj: &Value, name: &str) -> E
                     Value::Str(PyString::new("co_name")),
                     Value::Str(PyString::new(oname)),
                 );
+                // Wave-57: match the primary code stub's surface —
+                // co_positions must resolve to a callable here too,
+                // else `tb_frame.f_code.co_positions()` call-sites see
+                // None and our runtime raises "'NoneType' object is not
+                // callable" mid-unwind (twisted/pytest traceback walks).
+                let _ = cattrs.set(
+                    Value::Str(PyString::new("co_positions")),
+                    Value::Obj(ap_obj::PyObject::new(
+                        ap_obj::ObjKind::BuiltinFn,
+                        "<code>.co_positions",
+                    )),
+                );
+                let _ = cattrs.set(
+                    Value::Str(PyString::new("co_firstlineno")),
+                    Value::Int(ap_obj::Int::from_i64(1)),
+                );
             }
             Ok(Value::Obj(code))
         }

@@ -178,7 +178,7 @@ impl ExceptionValue {
                 .lines()
                 .filter(|l| l.contains("ap_run") && !l.contains("exc_hier"))
                 .collect();
-            let bt_full = if class == "TypeError" {
+            let bt_full = if class == "TypeError" || class == "AssertionError" {
                 format!("{:?}", std::backtrace::Backtrace::force_capture())
             } else {
                 String::new()

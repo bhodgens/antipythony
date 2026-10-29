@@ -56,7 +56,24 @@ class ForwardRef:
 
 def get_annotations(obj, *, globals=None, locals=None, eval_str=False,
                     annotation_format=Format.VALUE, owner=None, format=None):
-    """Return obj.__annotations__ (v0: the raw dict, never evaluated)."""
+    """Return obj.__annotations__ (v0: the raw dict, never evaluated).
+
+    CPython semantics: __annotations__ on a CLASS returns that
+    class's OWN annotations, never inherited ones. Our runtime's
+    class-attr getattr walks the MRO, so read the class's own
+    namespace dict directly and only fall back to getattr for
+    non-class objects (modules/functions).
+    """
+    d = getattr(obj, "__dict__", None)
+    if d is not None and hasattr(d, "get"):
+        try:
+            own = d.get("__annotations__")
+        except Exception:
+            own = None
+        if own is not None:
+            return own
+        if isinstance(obj, type):
+            return {}
     anns = getattr(obj, "__annotations__", None)
     if anns is None:
         return {}

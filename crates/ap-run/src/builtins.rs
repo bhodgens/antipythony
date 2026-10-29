@@ -3773,11 +3773,27 @@ pub fn call_builtin(
     }
     // T1 (inspect.stack): stub code object co_positions() → parked tuple.
     if name == "__ap_code_positions__" {
-        let t = args
-            .first()
-            .cloned()
-            .unwrap_or(Value::Tuple(Gc::new(Tuple(Vec::new()))));
-        return Ok(t);
+        // Wave-57 fix: bound dispatch passes no args, so the old
+        // args.first() shape returned an EMPTY tuple ->
+        // itertools.islice(positions_gen, ...) exhausted immediately ->
+        // StopIteration (and PEP-479 RuntimeError inside pytest's
+        // wrapper generators). CPython's co_positions() yields one
+        // (line, end_line, col, end_col) per instruction; our stubs
+        // have no real bytecode, so answer the position-less form.
+        // Callers: inspect._get_code_position (islice at tb_lasti//2),
+        // dis._get_instructions_bytes. 4096 covers any tb_lasti//2 a
+        // synthetic frame can report.
+        let items: Vec<Value> = (0..4096)
+            .map(|_| {
+                Value::Tuple(Gc::new(Tuple(vec![
+                    Value::None,
+                    Value::None,
+                    Value::None,
+                    Value::None,
+                ])))
+            })
+            .collect();
+        return Ok(Value::Tuple(Gc::new(Tuple(items))));
     }
     if let Some(rest) = name.strip_prefix("_typing.") {
         // T1-d: _idfunc is the identity fn — NewType.__call__ delegates to
