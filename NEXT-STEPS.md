@@ -2216,3 +2216,19 @@ This unblocks the whole twisted/scrapy import chain (constantly
 NamedConstant may share the pattern).
 
 Probes in vendored_stdlib/gettext.py removed (ast-verified).
+
+## Wave-61 addendum: the s024 paradox + where the enum fix lands
+
+s024_enum_subset.py reaches line 65 (Mem.M.value) in-full while
+an isolated 3-line IntEnum .name repro fails — some earlier
+definition in s024 (hasattr probes, the names list, or
+Col(Enum) preceding C(IntEnum)) changes the classification
+path. The fix should make IntEnum member creation robust
+regardless: int.__new__(SubClass) must return a class-carrying
+instance (or enum.py's member wrapper must survive our attr
+protocol). Leaf-scale: add an int-subclass instance repr
+(NamedTuple-pattern wrapper: class_ref + i64 payload, int ops
+delegated) OR make enum.py store members via a
+runtime-supported member descriptor. Either unblocks:
+HTTPStatus.phrase (scrapy chain), s024 full pass, and any
+IntEnum/IntFlag consumer.
