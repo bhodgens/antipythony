@@ -1518,3 +1518,24 @@ renders empty (message-rendering bug, secondary).
 NEXT: make stream .buffer expose an io.BytesIO-coercible object
 sharing <buf> storage, or teach CaptureIO compatibility at the
 isinstance layer.
+
+## Wave-41 addendum (0b6bd4d): stream .buffer alias
+
+native_attr buffer/raw: returns a memoized BytesIO-kind stream
+SHARING the wrapper's attrs (same <buf>/<pos>), so
+`assert isinstance(self.buffer, io.BytesIO)` passes and
+getvalue/reads see wrapper writes. CaptureIO repro: write +
+getvalue work.
+
+CRITICAL FINDING for capsys: the fixture generator's body runs
+EAGERLY at fixturefunc(**kwargs) (before next()) — the known
+lazy-generator gap (issue #7). The generator creation call must
+return a suspended generator without executing the body. Until
+lazy generators land for this call shape, generator fixtures
+whose bodies touch capture machinery fail during "setup" with
+errors that surface as bare AssertionErrors (assert-message
+rendering is a secondary display bug).
+NEXT SESSION: make fixturefunc(**kwargs) build a suspended
+generator (route generator-function calls through start_generator
+instead of eager body execution in the CALL path used by
+call_fixture_func), then re-run test_capF/test_fix2.
