@@ -1695,3 +1695,30 @@ NEXT SESSION: instrument runner.py's CRTB spot (file-log, was
 removed with cleanup) to dump call.excinfo.exconly() AND
 excinfo.traceback entries at setup error time - the exconly text
 will name the true origin; then fix that one site.
+
+## Wave-49 (2026-10-28): yield-to-call gap bracketed precisely
+
+Probes (later removed) proved the full setup chain CLEAN for
+capsys: pytest_fixture_setup enters, capsys body runs B1->yield,
+PFS-RETURN, EXEC-RETURN, _fillfixtures fills capsys, Function
+.setup completes ("SETUP done"). Then pytest_runtest_call
+(CALLPHASE) NEVER RUNS — runtestprotocol line 134
+`if rep.passed:` is False, so the call phase is skipped silently
+and the item goes straight to teardown. The empty AssertionError
+was raised DURING setup, AFTER all completion probes — i.e. in
+the WRAPPER resumption path (skipping.py makereport wrapper
+resumes with the setup report; its post-yield code or our
+wrapper-resume machinery raises it), OR rep.passed misreads.
+
+NEXT SESSION (two options):
+1. In runtestprotocol, log rep.passed + rep.outcome + rep.longrepr
+   right after call_and_report(item, "setup") — if outcome is
+   "failed", log rep.longrepr text: it contains the REAL error.
+2. The empty AssertionError likely = skipping.py wrapper or the
+   SetupState teardown finalizers (capture close etc). Wrap the
+   runtest_setup wrapper resume in skipping.py with file-log of
+   the exception (SKIP-ERR style, on the post-yield segment).
+
+All probes cleaned; staging parse-verified; gates green (T2
+minimal gate, genfix, fix6b tmp_path+monkeypatch, CaptureIO,
+cargo 0 errors).
