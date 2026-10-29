@@ -900,7 +900,7 @@ pub fn subscript_set(obj: &Value, key: &Value, v: Value) -> Result<(), Flow> {
                     // super() inside __setitem__ (EnumDict -> dict) needs
                     // the defining-class ctx (same channel as bound-method
                     // dispatch).
-                    interp.pending_super_ctx.borrow_mut().push((owner, obj.clone(), false));
+                    *interp.pending_super_ctx.borrow_mut() = Some((owner, obj.clone(), false));
                     let r = crate::interp::call_value(
                         &interp,
                         &caller,
@@ -1016,16 +1016,17 @@ pub fn subscript_del(obj: &Value, key: &Value) -> Result<(), Flow> {
                 // before super().__setitem__), which re-stages the single
                 // pending_super_ctx slot and clobbers the outer call's
                 // staged ctx ("super(): no arguments").
-                let saved = interp.pending_super_ctx.borrow().last().cloned();
+                let saved = interp
+                    .pending_super_ctx
+                    .borrow()
+                    .clone();
                 let r = crate::interp::call_value_pub(
                     &interp,
                     &f,
                     &[obj.clone(), key.clone()],
                     &[],
                 );
-                if let Some(ctx) = saved {
-                    interp.pending_super_ctx.borrow_mut().push(ctx);
-                }
+                *interp.pending_super_ctx.borrow_mut() = saved;
                 return r.map(|_| ());
             }
             Err(raise(

@@ -2117,7 +2117,8 @@ pub fn store_name(
                             // bound-method dispatch does.
                             let owner_t = t.lookup_with_owner("__setitem__").map(|(_, ow)| ow);
                             if let Some(ow) = &owner_t {
-                                interp.pending_super_ctx.borrow_mut().push((ow.clone(), inst.clone(), false));
+                                *interp.pending_super_ctx.borrow_mut() =
+                                    Some((ow.clone(), inst.clone(), false));
                             }
                             call_value(
                                 &interp,
@@ -2284,7 +2285,8 @@ pub(crate) fn eval_expr(
                                         if matches!(&sf,
                                             Value::Obj(fo) if fo.kind == ap_obj::ObjKind::Function)
                                         {
-                                            interp.pending_super_ctx.borrow_mut().push((owner, recv.clone(), true));
+                                            *interp.pending_super_ctx.borrow_mut() =
+                                                Some((owner, recv.clone(), true));
                                         }
                                     }
                                 }
@@ -5181,7 +5183,7 @@ fn call_value_inner_impl(
                         // classmethod receivers carry the class itself. Staged:
                         // call_function's sentinel lands first, ctx above it.
                         let is_cls = matches!(recv, Value::Obj(ref ro) if ro.kind == ap_obj::ObjKind::UserClass);
-                        interp.pending_super_ctx.borrow_mut().push((owner_t, recv, is_cls));
+                        *interp.pending_super_ctx.borrow_mut() = Some((owner_t, recv, is_cls));
                         return call_value(interp, caller, &func, &full, kwargs);
                     }
                     call_value(interp, caller, &func, &full, kwargs)
@@ -5815,7 +5817,7 @@ fn call_function(
         .pending_super_ctx
         .try_borrow_mut()
         .ok()
-        .and_then(|mut b| b.pop());
+        .and_then(|mut b| b.take());
     // Build the sentinel BEFORE borrowing super_stack: the literal's dict
     // alloc can trigger a GC auto-collect whose weakref callbacks re-enter
     // call_function (which borrows super_stack).
@@ -5840,7 +5842,7 @@ fn call_function(
     // sits ABOVE the sentinel, so super() sees the method context, and the
     // sentinel still guards plain nested frames.
     if let Some(mut b) = interp.pending_super_ctx.try_borrow_mut().ok() {
-        if let Some(ctx) = b.pop() {
+        if let Some(ctx) = b.take() {
             interp.super_stack.borrow_mut().push(ctx);
         }
     }
@@ -8343,7 +8345,7 @@ fn class_isinstance(interp: &Rc<Interpreter>, args: &[Value]) -> EResult {
                             // the raw-function call (BoundMethod staging
                             // never runs for this shape).
                             let owner_v = crate::classes::class_value_for_public(&owner);
-                            interp.pending_super_ctx.borrow_mut().push((owner, t.clone(), true));
+                            *interp.pending_super_ctx.borrow_mut() = Some((owner, t.clone(), true));
                             let _ = owner_v;
                             let r = call_value(
                                 interp,
@@ -8352,7 +8354,7 @@ fn class_isinstance(interp: &Rc<Interpreter>, args: &[Value]) -> EResult {
                                 &[t.clone(), v.clone()],
                                 &[],
                             );
-                            interp.pending_super_ctx.borrow_mut().clear();
+                            *interp.pending_super_ctx.borrow_mut() = None;
                             return r.map(|r| Value::Bool(r.is_truthy()));
                         }
                     }
@@ -9889,7 +9891,8 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                                             // (call_function's pushed-ctx pop
                                             // balances it).
                                             let recv = crate::classes::class_value_for_public(cls);
-                                            _interp.pending_super_ctx.borrow_mut().push((cls.clone(), recv, true));
+                                            *_interp.pending_super_ctx.borrow_mut() =
+                                                Some((cls.clone(), recv, true));
                                             return Ok(Some(entry.clone()));
                                         }
                                     }
@@ -9965,7 +9968,8 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                                         // Stage the defining-class ctx (see
                                         // the metaclass-chain arm above).
                                         let recv = crate::classes::class_value_for_public(cls);
-                                        _interp.pending_super_ctx.borrow_mut().push((cls.clone(), recv, true));
+                                        *_interp.pending_super_ctx.borrow_mut() =
+                                            Some((cls.clone(), recv, true));
                                         return Ok(Some(entry.clone()));
                                     }
                                 }
