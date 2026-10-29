@@ -1260,8 +1260,7 @@ pub fn exec_class_def(
             // zero-arg super() inside the hook resolves (typing:
             // super().__init_subclass__() in Protocol.__init_subclass__).
             if let Some(parent_t) = base_types.first() {
-                *interp.pending_super_ctx.borrow_mut() =
-                    Some((parent_t.clone(), class_v.clone(), true));
+                interp.pending_super_ctx.borrow_mut().push((parent_t.clone(), class_v.clone(), true));
             }
             call_value(
                 interp,
@@ -1289,8 +1288,7 @@ pub fn exec_class_def(
                     let kwargs: Vec<(String, Value)> = CLASS_KWARGS.with(|c| c.borrow().clone());
                     // Stage the super context: zero-arg super() inside the
                     // metaclass __init__ (typing: super().__init__()).
-                    *interp.pending_super_ctx.borrow_mut() =
-                        Some((minit_owner, class_v.clone(), true));
+                    interp.pending_super_ctx.borrow_mut().push((minit_owner, class_v.clone(), true));
                     let _ = call_value(
                         interp,
                         &module_frame(interp),
@@ -2981,7 +2979,7 @@ pub fn attr_set_protocol(
                     // T1 (scrapy fix pass): stage the method super context so
                     // zero-arg super() inside __setattr__ works (typing.py's
                     // _BaseGenericAlias.__setattr__ calls super().__setattr__).
-                    *interp.pending_super_ctx.borrow_mut() = Some((owner, obj.clone(), false));
+                    interp.pending_super_ctx.borrow_mut().push((owner, obj.clone(), false));
                     let r = call_value(
                         interp,
                         &module_frame(interp),
@@ -3591,7 +3589,7 @@ pub fn instantiate(
             .as_ref()
             .map(|(_, o)| o.clone())
             .unwrap_or_else(|| t.clone());
-        *interp.pending_super_ctx.borrow_mut() = Some((new_start, cls.clone(), true));
+        interp.pending_super_ctx.borrow_mut().push((new_start, cls.clone(), true));
         let obj = call_value(interp, &module_frame(interp), nf, &new_args, kwargs);
         let obj = qualify_newinit_error(obj, "__new__", &t.name)?;
         // isinstance(obj, cls) decides whether __init__ runs (S-03-06).
@@ -3603,7 +3601,7 @@ pub fn instantiate(
                     .as_ref()
                     .map(|(_, o)| o.clone())
                     .unwrap_or_else(|| t.clone());
-                *interp.pending_super_ctx.borrow_mut() = Some((init_start, obj.clone(), false));
+                interp.pending_super_ctx.borrow_mut().push((init_start, obj.clone(), false));
                 let r = call_value(interp, &module_frame(interp), inf, &init_args, kwargs);
                 // 02.03b: call_function balances the staged ctx itself; the
                 // extra pop here removed the ENCLOSING frame's context
@@ -3661,7 +3659,7 @@ if let Some(inf) = &init_f {
                 .as_ref()
                 .map(|(_, o)| o.clone())
                 .unwrap_or_else(|| t.clone());
-            *interp.pending_super_ctx.borrow_mut() = Some((init_start2, obj.clone(), false));
+            interp.pending_super_ctx.borrow_mut().push((init_start2, obj.clone(), false));
             let r = call_value(interp, &module_frame(interp), inf, &a, kwargs);
             // 02.03b: call_function balances the staged ctx itself (see the
             // custom-__new__ path note).

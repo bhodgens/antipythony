@@ -342,7 +342,7 @@ pub struct Interpreter {
     pub super_stack: RefCell<Vec<(std::rc::Rc<ap_obj::classes::TypeObject>, Value, bool)>>,
     /// Context staged by instantiate() for the __new__/__init__ call it is
     /// about to make (picked up by call_function after its sentinel push).
-    pub pending_super_ctx: RefCell<Option<(std::rc::Rc<ap_obj::classes::TypeObject>, Value, bool)>>,
+    pub pending_super_ctx: RefCell<Vec<(std::rc::Rc<ap_obj::classes::TypeObject>, Value, bool)>>,
     pub source: String,
     pub script_path: String,
     /// Self handle (set at run_module entry) so &Interpreter surfaces can
@@ -401,7 +401,7 @@ impl Interpreter {
             object_class: RefCell::new(None),
             type_class: RefCell::new(None),
             super_stack: RefCell::new(Vec::new()),
-            pending_super_ctx: RefCell::new(None),
+            pending_super_ctx: RefCell::new(Vec::new()),
             source,
             script_path,
             self_rc: RefCell::new(None),
