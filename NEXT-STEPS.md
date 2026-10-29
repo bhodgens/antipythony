@@ -2232,3 +2232,29 @@ delegated) OR make enum.py store members via a
 runtime-supported member descriptor. Either unblocks:
 HTTPStatus.phrase (scrapy chain), s024 full pass, and any
 IntEnum/IntFlag consumer.
+
+## Wave-62 (a538592): int.__new__ derived allocation landed; wiring remains
+
+int.__new__(UserClassDerivingInt, value) now allocates a
+UserInstance (class_ref + __ap_int__ payload) instead of the
+raw int. Probes confirmed the arm fires with the right class
+(N, UserClass) — but enum member creation STILL yields raw
+ints downstream: after __set_name__ creates the wrapped
+instance, the _value2member_map_ fast-path lookup
+(`enum_member = enum_class._value2member_map_[value]` with
+value = member._value_ = raw 1) replaces it with a previously
+stored raw int, OR the class-dict store unwraps. Verified: the
+stored N.__dict__['ONE'] is genuinely a raw int
+(mtype=int, mname=False on retrieval).
+
+REMAINING for the enum leaf:
+1. enum.py fast-path lookup must prefer the _member_map_
+   (wrapped) instance — or _value2member_map_ must store the
+   wrapped instance (it does — setdefault(value, enum_member) —
+   so investigate WHY the lookup returns a raw int: suspect the
+   map was populated from an earlier pass with raw ints, or
+   dict storage normalized the instance).
+2. int-op delegation for __ap_int__ instances: binop (+ - * /
+   | & ^), hash, ==, int(), repr, str — unwrap payload.
+3. HTTPStatus.phrase end-to-end + scrapy import gate.
+Probes: enum.py clean; INTNEW probe removed from interp.rs.
