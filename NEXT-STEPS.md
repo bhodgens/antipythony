@@ -1619,3 +1619,28 @@ AssertionError, and confirm the assert-message rendering bug
 - Gates: T2 minimal gate green; genfix (generator fixture)
   1 passed; test_fix2: tmp_path+monkeypatch pass, capsys setup
   error remains; CaptureIO repro green; cargo 0 failed.
+
+## Wave-46 (2026-10-28): APX_ASSERTDBG landed; empty AssertionError = stale stored exception
+
+APX_ASSERTDBG=1 env-gated eprintln at Stmt::Assert logs every
+python assert failure with frame qualname + line. Run over the
+failing capsys suite: ONLY _assertion_supported (config/__init__
+:2070, `assert False` self-test) fires — and it is CAUGHT
+correctly. The reported capsys "AssertionError" never passes
+Stmt::Assert and has an EMPTY message with NO traceback frames at
+MC-RAISE time (extract_tb empty).
+
+CONCLUSION: the reported AssertionError is a STALE STORED
+EXCEPTION — pytest_fixture_setup's `except TEST_OUTCOME` stored
+(e, tb) into fixturedef.cached_result during an EARLIER failing
+attempt; later requests re-raise it via `raise exc.with_traceback
+(exc_tb)` in FixtureDef.execute — the re-raise has no live frames
+so extract_tb is empty, and the report renders it bare.
+
+NEXT SESSION: find the ORIGINAL raise that first stored the
+exception: instrument the `except TEST_OUTCOME` in
+pytest_fixture_setup with a file-log (it was removed in probe
+cleanup) — the very first CFF-EXC line names the true original
+error. Also candidate: our runtime may be re-raising with a
+MANGLED class name (stored OutcomeException/Failed reported as
+"AssertionError" by the report renderer default).

@@ -948,6 +948,13 @@ fn exec_stmt(
                     Some(m) => vec![eval_expr(interp, frame, m, reg)?],
                     None => vec![],
                 };
+                if std::env::var("APX_ASSERTDBG").is_ok() {
+                    eprintln!(
+                        "[ASSERT-FAIL] {}:{}",
+                        frame.qualname,
+                        last_executed_line(interp)
+                    );
+                }
                 return Err(Flow::Raise(ExceptionValue::new("AssertionError", args)));
             }
             Ok(StmtOut::Next)
