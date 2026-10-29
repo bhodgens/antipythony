@@ -1669,3 +1669,29 @@ so the raise is constructed via ExceptionValue::new with a
 variable name, or via Flow::Raise of a stored value.
 NEXT SESSION: read generators.rs wrapper-send code paths line by
 line; add APX_ASSERTDBG to any AssertionError construction found.
+
+## Wave-48 (2026-10-28): probes fully cleaned; debugging infrastructure preserved
+
+ALL session probes removed from staging (fixtures.py, runner.py,
+capture.py, python.py, threadexception.py, unraisableexception.py,
+pluggy/_execution.py, pluggy/_caller.py) - parse-verified.
+
+Debugging tools that remain (env-gated or in-repo):
+- APX_ASSERTDBG=1: logs every Stmt::Assert failure (frame
+  qualname + line) to stderr.
+- APX_SUPERDBG / APX_CALLTRACE / APX_TBDBG: existing.
+- The trace findings from waves 41-47 remain in this doc.
+
+PROVEN this debugging campaign (waves 39-47):
+- capsys fixture body runs fully to yield (B1-B5).
+- FixtureDef.execute + pytest_fixture_setup complete cleanly.
+- Generator fixtures work end-to-end (genfix 1 passed).
+- tmp_path + monkeypatch pass.
+- The capsys 2-error report: empty AssertionError at setup +
+  teardown. The error bypasses Stmt::Assert (APX_ASSERTDBG sees
+  only the caught _assertion_supported self-test) - so it is
+  Rust-manufactured OR the message is lost in report rendering.
+NEXT SESSION: instrument runner.py's CRTB spot (file-log, was
+removed with cleanup) to dump call.excinfo.exconly() AND
+excinfo.traceback entries at setup error time - the exconly text
+will name the true origin; then fix that one site.
