@@ -13361,6 +13361,25 @@ pub fn call_native_object(
 
 /// Attribute access on native objects (attrgetter/itemgetter/partial markers,
 /// native-type instances, hexdigest objects). Called from the attr_get hook.
+/// T2: a BytesIO-kind stream sharing the given TextIOWrapper's <buf>
+/// storage (same PyObject attrs backing so reads/writes stay in sync).
+fn builtins_modules_stream_bytesio_alias(wrapper: &Value) -> Value {
+    if let Value::Obj(w) = wrapper {
+        let alias = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "BytesIO");
+        // Share the attrs object itself: <buf>/<pos> reads and writes on
+        // either name hit the same storage (one buffer, two spellings).
+        *alias.attrs.borrow_mut() = w.attrs.borrow().clone();
+        if let Value::Obj(wrc) = wrapper {
+            let _ = alias.attrs.borrow_mut().set(
+                s("<ap_buffer_of>"),
+                Value::Obj(wrc.clone()),
+            );
+        }
+        return Value::Obj(alias);
+    }
+    wrapper.clone()
+}
+
 pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
     if let Value::Obj(o) = obj {
         // T2 (pytest collection): os.ScandirIterator / os.DirEntry surface.
@@ -13845,8 +13864,17 @@ pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
                     // the raw file IS the buffer; reads/writes see the same
                     // <buf> storage).
                     if matches!(name, "buffer" | "raw") {
-                        return Some(obj.clone());
+                    // T2 (CaptureIO.getvalue asserts
+                    // isinstance(self.buffer, io.BytesIO)): return a REAL
+                    // BytesIO-kind stream sharing the wrapper's <buf>
+                    // storage, memoized in <buffer_obj>.
+                    if let Some(v) = o.attrs.borrow().get(&s("<buffer_obj>")) {
+                        return Some(v.clone());
                     }
+                    let io_v = builtins_modules_stream_bytesio_alias(obj);
+                    let _ = o.attrs.borrow_mut().set(s("<buffer_obj>"), io_v.clone());
+                    return Some(io_v);
+                }
                     let mname = match name {
                         "read" | "readline" | "write" | "tell" | "seek" | "getvalue" | "close"
                         | "peek" | "read1" | "decode" | "__enter__" | "__exit__" | "fileno"
