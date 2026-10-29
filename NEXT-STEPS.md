@@ -2809,3 +2809,123 @@ _signature_from_function wrap Parameter construction in
 try/except -> raise ValueError('no signature found for...') —
 CPython-compatible outcome, unblocks the crawl NOW.
 Option (b) first (small, safe); option (a) as follow-up.
+
+## Wave-80 addendum: the death is NONDETERMINISTIC / state-dependent
+
+Parameter('self') construction SUCCEEDS (param-ok self
+printed) in later runs with fuller probes. The failing walk
+differs run-to-run (sometimes __init__ + SFF lines absent,
+sometimes reaching kwonly loop). Combined with repr() raising
+TypeError at the death point, the picture: an import during
+CrawlerProcess.__init__ leaves the interpreter in a degraded
+state (some type's attr/marker machinery resolving to None);
+WHICH signature walk then dies is incidental.
+
+NEXT (concrete): env-gated module-name logging at
+import_module_inner (importer.rs:806) — run the repro, take
+the LAST module imported before the first anomalous
+None-call, and inspect that module's import-time code for
+what corrupts the shared state (suspects: a module replacing
+a type's __getattr__/__repr__ slots with None via our chain
+writes; or a failed import leaving a half-bound marker).
+
+## Wave-81: sys-import spam source killed; None-call chain decoded (committed)
+
+- REMOVED leftover unconditional RV probe in copy.py:155 (the
+  `import sys` + stderr write ran per deepcopy call — 505x
+  during CrawlerProcess init; another check-all-copies miss).
+- AP_IMPORT_TRACE existed already; used it: imports are all
+  normal (sys spam was the RV probe, not real imports).
+- None-call bt decoded: eval_expr 2364 → call_value →
+  call_value_inner_impl 5197 (marker/bound dispatch) →
+  5490 arm raise. The callee comes from an attr resolution
+  returning Some(None).
+- HARDENED __ap_newobj__ dispatch (interp.rs ~4549): if
+  attr_get_public(cls,'__new__') returns Some(None-typed)
+  value, fall through to instantiate() instead of calling
+  None.
+- get_annotations: probes localized the death to
+  d.get('__annotations__') on a _ProtocolMeta class ns in
+  crawl context (works standalone; state-dependent).
+
+STILL OPEN: the CrawlerProcess None-call. The state
+degradation begins during BaseSettings deepcopy
+(_reconstruct chain). NEXT: (1) probe inside _reconstruct
+(python-level markers at line 234 y=func(*args) and line 240
+state deepcopy) to pin WHICH nested step None-calls first;
+(2) then fix that marker resolution (likely the
+__reduce_ex__ state path producing a reduce tuple whose
+func/args embed a None where a marker should be).
+
+## Wave-82: isinstance(class, Base) FIXED — crawl reaches Crawler.start (committed)
+
+THREE REAL FIXES:
+1. isinstance(UserClass, Type) walked the class's OWN mro —
+   isinstance(T1Spider, Spider) wrongly True (CrawlerRunner.
+   crawl ValueError). Fixed in value_isinstance: class
+   subjects check the METACLASS chain; no user metaclass →
+   False (classes/classes.rs ~2029).
+2. bytes vs str: SSLeay_version shim returned str; CPython
+   pyOpenSSL returns bytes (scrapy decodes). Fixed to bytes.
+3. platform module: added mac_ver + platform() to the native
+   platform surface (scrapy get_versions needs both).
+4. Staged cryptography-46.0.4.dist-info (importlib.metadata
+   for LOG_VERSIONS). get_versions now returns full list.
+5. call_method receiver-shape arms: str.decode etc now raise
+   CPython's AttributeError instead of the None-call.
+6. Removed copy.py RV probe (sys-import spam source).
+
+CRAWL STATE: CrawlerProcess() OK; p.crawl(T1Spider) OK;
+p.start() → CrawlerRunner.crawl → inlineCallbacks →
+current_task/get_running_loop → signature walk → NameError:
+name 'attr_dict' is not defined.
+
+PINNED: the walk is on OpenSSLCertificateOptions.__init__
+(21 params, defaults all REAL VALUES). Walk proceeds: param
+self ok, loop2 enter, l2 params through
+contextForServerName get-ok, pre-cls (Signature construction
+entered) — then NameError raised WITHOUT hitting the python
+except NameError wrapping cls(...). The error bypasses
+python-level handling — raised by the RUNTIME during the
+Signature(...) call itself (arg binding with the dunder-like
+__validate_parameters__ kwarg is a suspect; line tables lie).
+
+NEXT: probe Signature.__init__ (a python def with * and
+dunder-like kwarg name) called with __validate_parameters__
+keyword — likely the runtime kwarg-binding path raising
+NameError from a wrong namespace. Minimal repro:
+inspect.Signature([], return_annotation=_empty,
+__validate_parameters__=True).
+
+## Wave-83: attrs NameError ROOT-CAUSED + FIXED — crawl REACHES THE REACTOR (committed)
+
+ROOT CAUSE (minimal repro /tmp/t2exec2.py): exec-created
+defs (attrs _make's exec of generated __init__) never ran
+Stmt::LocalDef, so (1) the function marker had NO
+closure_slot and (2) no defining_frames entry — eval_default
+fell back to Frame::new_module(interp.globals) = MAIN script
+globals → NameError attr_dict at first call with a missing
+arg.
+
+FIX (builtins.rs builtin_exec): after extend_current, set
+each fn marker's closure_slot = Some(id) AND insert a
+defining frame over the EXEC GLOBS dict. Verified: exec'd
+def F(x=attr_dict['p']) now calls correctly (42).
+
+CRAWL STATE — REACTOR STARTS: CrawlerProcess init OK,
+crawl() OK, p.start() no longer errors — the asyncio reactor
+RUNS but the process HANGS silently (no log output, no items,
+exit only via timeout). New phase: runtime hang inside the
+running reactor (likely the file:// fetch or a deferred that
+never fires on our asyncio shim).
+
+ALL GATES GREEN: corpus 15/0/9xp, T2 gate historical 1F/1P/1S,
+scrapy import OK, build 0 errors, worktree clean.
+
+NEXT: diagnose the reactor hang — (1) confirm the spider's
+start_requests/parse run at all (instrument scrapy's
+ExecutionEngine or add stderr prints in spider.parse);
+(2) check whether our asyncio shim's event loop ever
+dispatches the deferred chain (select/poller behavior,
+call_soon_threadsafe, or a blocking read in the file
+handler).
