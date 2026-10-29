@@ -2373,3 +2373,15 @@ imports fine.
 
 NEXT: re-run run_probe printing only type names; the real
 error type will surface and likely be a one-line fix.
+
+## Wave-66 addendum (final probes): confirmed the crawl error is
+genuinely AttributeError('Settings' object has no attribute
+'attributes') — args[0] is a plain str with exactly that text.
+The walk: __contains__ -> an IMPORT fires mid-contains
+(importlib._bootstrap._install frame appears) -> signature()
+called on a plain-function __init__ -> its attr walk raises.
+Strong suspect: a module-level lazy import inside BaseSettings
+get/getlist path re-enters importlib during __contains__, and
+our importlib._bootstrap._install (wave-63-edited) or the
+signature default-evaluation reads Settings.attributes on a
+half-constructed instance.
