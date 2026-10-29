@@ -2538,3 +2538,33 @@ alias takes effect OR is a plain object() — next session:
 log the receiver's full class MRO at the raise site (one
 eprintln with type_name + __class__ attrs), then fix its
 construction or add its mapping surface.
+
+## Wave-72 (e51eead): dict-derived instances carry __ap_dict__ backing
+
+ConvertingDict(dict, ConvertingMixin) — the logging-config
+wrapper that scrapy's settings conversion produces — was built
+through the builtin-base storage path but only stored
+__ap_tuple_payload__; dict_backing() returned None and every
+pydict arm rejected it ('bad receiver'), surfacing as the
+crawl's Settings.attributes chain.
+
+FIX: dict-derived builtin-base instances now also store
+__ap_dict__ (the built dict) so dict_backing() resolves and
+all pydict arms (pop/get/items/setdefault) work.
+
+Crawl advanced to a NEW layer: during the inspect.signature
+walk, a LIST-derived instance is indexed with a STRING key
+(TypeError: list indices must be integers) — i.e. a
+ConvertingList (or the list payload of a converted dict) is
+being used as a mapping. Likely the convert_with_key chain
+wrapping: cfg['X'] on a ConvertingDict returns a
+ConvertingList whose __getitem__ takes ints, but the caller
+indexes with attribute names (a converted-dict semantics
+mismatch — our dict(ConvertingDict) construction lost the
+ConvertingDict wrapper and returned a plain list somewhere).
+
+NEXT: trace the string-index site (add a one-line probe in the
+list getitem for str keys dumping the key), then decide:
+either ConvertingList needs __getitem__ delegation to the
+wrapped container, or the dict(converting_dict) construction
+must preserve the wrapper.
