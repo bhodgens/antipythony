@@ -1743,3 +1743,23 @@ NEXT SESSION plan (ordered):
    find the None callee (bounded, one hook).
 3. The 80s runtime per invocation suggests heavy retry/GC
    pressure - check GC stats (GCSTATS=1) across variants.
+
+## Wave-50 completion notes
+
+All probes removed from staging (8 files, parse-verified). The
+debugging session established:
+- The empty AssertionError at capsys setup originates inside
+  pluggy's _multicall / wrapper-resume machinery (real tb frames:
+  <lambda> -> HookCaller.__call__ -> _hookexec -> _multicall ->
+  <module>), NOT in the fixture body (B1-B5 all pass) and NOT in
+  skipping.py's wrapper (SKIP-ERR silent).
+- Debugging assets kept: APX_ASSERTDBG (assert-failure logging),
+  APX_SUPERDBG, APX_CALLTRACE, APX_TBDBG; the run script
+  /tmp/t2capF_run.py and repro files /tmp/t2cap*.py remain on
+  disk for the next session.
+- NEXT: pluggy's wrapper resume sends the setup report into the
+  skipping.py wrapper; a bare assert OR our runtime's wrapper
+  send path raises. Instrument _multicall's `teardown.send(...)`
+  resumption specifically (wave-47's MC-RAISE found the
+  AssertionError stored with NO frames — consistent with our
+  runtime raising it in the send/resume machinery in Rust).
