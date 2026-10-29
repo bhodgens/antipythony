@@ -2510,13 +2510,15 @@ pub fn make_sys_module(interp: &Interpreter) -> Value {
         }
         let _ = ns.set(Value::Str(PyString::new("monitoring")), Value::Obj(mon));
     }
-    let _ = ns.set(
-        Value::Str(PyString::new("stdin")),
-        Value::Obj(ap_obj::PyObject::new(
-            ap_obj::ObjKind::Opaque,
-            "TextIOWrapper",
-        )),
-    );
+    let stdin_obj = Value::Obj(ap_obj::PyObject::new(
+        ap_obj::ObjKind::Opaque,
+        "TextIOWrapper",
+    ));
+    let _ = ns.set(Value::Str(PyString::new("stdin")), stdin_obj.clone());
+    // CPython: sys.__stdin__ holds the ORIGINAL stdin (pytest's
+    // DontReadFromInput restore + capture.py:225 assert rely on it
+    // existing and being non-None).
+    let _ = ns.set(Value::Str(PyString::new("__stdin__")), stdin_obj);
     let _ = ns.set(
         Value::Str(PyString::new("hexversion")),
         Value::Int(Int::from_i64(0x30E_00_00)),
