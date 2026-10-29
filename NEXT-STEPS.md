@@ -2350,3 +2350,26 @@ the _ParameterKind sort blocker. 3-level MutableMapping super()
 chain verified working in isolation (t2sup3b), so the crawl
 failure involves scrapy's real init flow (SettingsAttribute
 values or a double-module-import of scrapy.settings).
+
+## Wave-66 — BREAKTHROUGH: the 'Settings' error MASKS the real one
+
+The AttributeError('Settings' object has no attribute
+'attributes') that appears in the handler's `str(e)` is raised
+BY THE HANDLER ITSELF: the original exception's args/str
+trigger a Settings attribute read through our runtime's
+attribute fallback, which re-enters and re-raises. Meaning:
+every traceback we've seen for this crawl shows the MASKED
+error, not the real one.
+
+Verified: BaseSettings init flow is CORRECT (BASENEW/BASEINIT
+probes: every instance gets attributes=True). The REAL
+original error needs capture without str(e): log only
+type(e) + walk e.__traceback__ WITHOUT touching e.args str.
+
+Also: MRO confirmed correct
+(Settings->BaseSettings->MutableMapping->Mapping->Collection...),
+single scrapy.settings module instance, get_project_settings
+imports fine.
+
+NEXT: re-run run_probe printing only type names; the real
+error type will surface and likely be a one-line fix.
