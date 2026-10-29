@@ -1561,3 +1561,21 @@ cargo 0 failed).
 NEXT: identify who references `pdb` (grep site-packages for bare
 'pdb' in except paths), then trace the capsys fixture body to its
 current failure point with the file-log probes (fs.log chain).
+
+## Wave-43 (2026-10-28): capsys fixture body RUNS to yield
+
+With the import-local fix in place, the capsys fixture body now
+executes fully: C1 enter -> C2 set_fixture -> C3 _start() ->
+C4 yield (logged via file probes). The generator mechanics work.
+
+Remaining: between the yield and the test body, an empty-message
+AssertionError fires (2 errors: setup/teardown attribution).
+Candidates: fixture result post-processing in FixtureDef.execute
+(cached_result tuple), SubRequest._fillfixtures, or the Capture
+Fixture value wrapping (CaptureFixture[Generic] subscripting at
+fixture creation - Generic[T] subscript on our runtime).
+NEXT: log between call_fixture_func return and FixtureDef.execute
+return; then between FixtureDef.execute return and the test call.
+
+All probes removed; staging parse-verified; gates green (T2
+minimal gate, CaptureIO repro, cargo 0 failed).
