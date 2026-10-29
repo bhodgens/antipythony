@@ -2929,3 +2929,59 @@ ExecutionEngine or add stderr prints in spider.parse);
 dispatches the deferred chain (select/poller behavior,
 call_soon_threadsafe, or a blocking read in the file
 handler).
+
+## Wave-84: crawl hang CHARACTERIZED — call machinery blocks before CrawlerProcess.start body
+
+Facts (all repro'd):
+- run_ap with step prints: S1..S6 print, S7 (post-start)
+  never does. p.start() blocks.
+- CrawlerProcess.start entry probe (first line of body,
+  stderr+flush) NEVER prints → the hang is in the runtime's
+  CALL MACHINERY before the body executes.
+- Unbound call type(p).start(p) hangs identically; trivial
+  method dispatch (p.settings...) on the same object works;
+  dunder-kwarg binding works standalone.
+- Earlier misread: 'hang inside CrawlerProcess init' was
+  actually import scrapy taking ~50-90s under our runtime
+  (timeouts were killing runs mid-import). Not a hang.
+- engine.py / asyncio base_events / events.py probes landed
+  (WAVE84/LOOP/POLICY markers, all env-independent stderr) —
+  none ever print.
+
+SUSPECT: call setup for functions with MULTIPLE defaults
+(stop_after_crawl: bool = True, install_signal_handlers:
+bool = True) — eval_default loop or kwarg binding infinite
+loop/cycle. Also note import scrapy = 50-90s is a
+performance problem worth profiling separately.
+
+NEXT: (1) minimal repro — def f(self, a=True, b=True):
+pass; call type(f)(inst) after deep call stacks; bisect
+call_value_inner_impl setup between arg-binding and body
+entry with markers; (2) profile import scrapy (50-90s).
+
+## Wave-85: crawl flow WORKS with explicit _create_crawler — lazy-crawl path is the hang (documented)
+
+BREAKTHROUGH: construct → _create_crawler → p.crawl →
+p.start(True, True) COMPLETES (exit=0, start-done) — the
+full CrawlerProcess flow runs under our runtime!
+
+THE HANG: without the explicit p._create_crawler(T1Spider),
+p.crawl's LAZY crawler-creation path (spider-loader /
+maybeDeferred / _create_crawler inside the deferred chain)
+never returns — p.start() then 'hangs' because the call is
+never reached (run_ap3 flow blocked in crawl). The earlier
+'start() body never entered' observation was a downstream
+symptom of the blocked crawl() deferred.
+
+Also: my probe edit accidentally clobbered
+AsyncCrawlerRunner.__init__'s TWISTED_REACTOR_ENABLED check
+(replaced getbool call with `if not _tre:`) — RESTORED;
+staged crawler.py verified. engine.py WAVE84 helpers
+removed (unused — engine start never reached).
+
+NEXT (one step): instrument CrawlerRunner.crawl's lazy path
+(crawler.py ~471-510: the isinstance + spider_loader.load +
+deferred wrap) with stderr markers to find the exact
+statement that blocks. Then fix that runtime path (likely
+a deferred/maybeDeferred construct our runtime doesn't
+schedule).
