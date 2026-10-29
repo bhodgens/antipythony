@@ -591,6 +591,14 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
                 );
             }
             if crate::classes::is_list_derived_instance(obj) {
+                if let Value::Str(sk) = key {
+                    if std::env::var("APX_SCOPE_DEBUG").is_ok() {
+                        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/t1listidx.txt") {
+                            use std::io::Write;
+                            let _ = writeln!(f, "LISTIDX str key={} recv={}", sk.as_str(), obj.type_name());
+                        }
+                    }
+                }
                 return subscript_get(&Value::List(crate::classes::list_backing_or_new(obj)), key);
             }
             // T1-d (typing.NamedTuple): namedtuple instances ARE tuples —
