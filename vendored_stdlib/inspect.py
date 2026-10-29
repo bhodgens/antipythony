@@ -3375,9 +3375,17 @@ class Signature:
 def signature(obj, *, follow_wrapped=True, globals=None, locals=None, eval_str=False,
               annotation_format=Format.VALUE):
     """Get a signature object for the passed callable."""
-    return Signature.from_callable(obj, follow_wrapped=follow_wrapped,
-                                   globals=globals, locals=locals, eval_str=eval_str,
-                                   annotation_format=annotation_format)
+    try:
+        return Signature.from_callable(obj, follow_wrapped=follow_wrapped,
+                                       globals=globals, locals=locals, eval_str=eval_str,
+                                       annotation_format=annotation_format)
+    except AttributeError as e:
+        # antipythany (wave-66): attribute walks through runtime
+        # fallbacks can surface AttributeError where CPython raises
+        # ValueError("no signature found..."). scrapy's
+        # get_func_args_dict catches ValueError only.
+        raise ValueError(
+            "no signature found for {!r} ({})".format(obj, e)) from e
 
 
 class BufferFlags(enum.IntFlag):

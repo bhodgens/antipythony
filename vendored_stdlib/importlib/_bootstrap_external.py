@@ -1560,4 +1560,3 @@ def _install(_bootstrap_module):
     supported_loaders = _get_supported_file_loaders()
     sys.path_hooks.extend([FileFinder.path_hook(*supported_loaders)])
     sys.meta_path.append(PathFinder)
-    _sys.stderr.write("[INST] done\n"); _sys.stderr.flush()
