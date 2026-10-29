@@ -2463,7 +2463,6 @@ def _signature_from_callable(obj, *,
     """Private helper function to get signature for arbitrary
     callable objects.
     """
-
     _get_signature_of = functools.partial(_signature_from_callable,
                                 follow_wrapper_chains=follow_wrapper_chains,
                                 skip_bound_arg=skip_bound_arg,
