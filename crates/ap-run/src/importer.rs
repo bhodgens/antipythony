@@ -209,7 +209,7 @@ pub fn sys_path_value() -> Value {
 /// .append) mutates that list, and this read (used by find_on_path and every
 /// other importer lookup) sees the mutation. Falls back to the bootstrap Vec
 /// for reads before sys is ever built.
-pub fn sys_path_entries() -> Vec<String> {
+pub(crate) fn sys_path_entries() -> Vec<String> {
     let view = SYS_PATH_VIEW.with(|v| v.borrow().clone());
     if let Some(l) = view {
         return l
@@ -806,7 +806,7 @@ pub fn import_module_inner(interp: &Rc<Interpreter>, name: &str) -> EResult {
     import_file_module(interp, name)
 }
 
-fn import_file_module(interp: &Rc<Interpreter>, name: &str) -> EResult {
+pub(crate) fn import_file_module(interp: &Rc<Interpreter>, name: &str) -> EResult {
     ap_trace(format!("import_file_module({name})"));
     // --- robustness-ci leaf 02.02: module-name path-segment guard ----------
     // (review finding #16). No unsafe segment ('', '.', '..', or one

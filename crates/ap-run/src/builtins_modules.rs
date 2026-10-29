@@ -5575,6 +5575,22 @@ fn dedent_text(text: &str) -> String {
 // ===========================================================================
 
 fn build_collections_abc(_i: &crate::frame::Interpreter) -> Value {
+    // Wave-63: prefer the REAL vendored _collections_abc (full class
+    // hierarchy with Mapping(Collection) bases + mixin methods). The
+    // old stubs were interned types with no bases, so
+    // MutableMapping.items()/keys()/values() (Mapping mixins) were
+    // unreachable — scrapy Settings.items died on it.
+    for base in crate::importer::sys_path_entries() {
+        let f = std::path::Path::new(&base).join("_collections_abc.py");
+        if f.is_file() {
+            if let Some(interp) = CURRENT.with(|c| c.borrow().clone()) {
+                if let Ok(m) = crate::importer::import_file_module(&interp, "_collections_abc") {
+                    return m;
+                }
+            }
+        }
+    }
+    // Fallback: the old synthesized stubs (no bases).
     let (am, ans) = new_module("collections.abc");
     for n in [
         "Hashable",
