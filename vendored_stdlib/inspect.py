@@ -2476,6 +2476,16 @@ def _signature_from_callable(obj, *,
     if not callable(obj):
         raise TypeError('{!r} is not a callable object'.format(obj))
 
+    # antipythany (wave-65): our builtin-function markers don't
+    # match types.BuiltinFunctionType, so the builtin ValueError
+    # path below never fires and the walk falls into __getattr__
+    # chains that raise. CPython raises ValueError("no signature
+    # found for builtin") for builtins; mirror that.
+    if type(obj).__name__ in ("builtin_function_or_method",
+                              "BuiltinFn"):
+        raise ValueError(
+            "no signature found for builtin function {!r}".format(obj))
+
     if isinstance(obj, types.MethodType):
         # In this case we skip the first parameter of the underlying
         # function (usually `self` or `cls`).
