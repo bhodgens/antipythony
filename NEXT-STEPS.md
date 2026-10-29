@@ -1886,3 +1886,21 @@ classes created via Generic[...] subscripting (and any class
 whose instantiate() routes through a replaced/rebuilt instance).
 Repro: /tmp/t2capfix.py (construct CaptureFixture, read
 self.captureclass).
+
+## Wave-54 final (2026-10-28): capture.py repaired; investigation state
+
+capture.py fully repaired (my probe had mangled readouterr's
+docstring; restored to pristine). Verified under our runtime.
+
+DEFINITIVE root-cause evidence (wave-54): the capsys TypeError is
+constructed at interp.rs:3467 eval_binop via ap_obj::ops::binop,
+inside a generator resume (gen_fiber_body), from an ASSIGN at
+exec_stmt:691. The operand reaching binop is None where CPython
+would have a str — the None originates from a method dispatch
+that returns None instead of raising/returning a value on our
+runtime (wave-39 stream instance family).
+NEXT SESSION (single focus): add the assign-target name to the
+APX_ASSERTDBG log at exec_stmt:691's Assign arm when the RHS
+eval raises TypeError (one-line change), rerun test_capF, read
+the assign target name from the log — that names the exact
+attribute whose read returns None. Then fix that dispatch.
