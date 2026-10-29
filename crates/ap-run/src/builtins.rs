@@ -3441,13 +3441,20 @@ pub fn builtin_id(args: &[Value]) -> BResult {
     let n = match v {
         Value::Obj(o) => std::rc::Rc::as_ptr(o) as *const u8 as i64,
         other => {
-            // inline values: identity == value identity for the corpus shapes
+            // Wave-68: containers get a real per-instance identity (the
+            // payload pointer) — id()-keyed memos (copy.deepcopy,
+            // pickle) COLLIDED under the old constant, breaking
+            // copy.deepcopy(dict) for every caller.
             match other {
-                Value::Int(i) => i.to_i64().unwrap_or(0x5EED_0000_0000_0000u64 as i64),
+                Value::Dict(d) => Gc::as_ptr(d) as *const u8 as i64,
+                Value::List(l) => Gc::as_ptr(l) as *const u8 as i64,
+                Value::Set(st) => Gc::as_ptr(st) as *const u8 as i64,
+                Value::Tuple(t) => Gc::as_ptr(t) as *const u8 as i64,
                 Value::Str(x) => {
                     let h = ap_obj::ops::hash(&Value::Str(x.clone())).unwrap_or_default();
                     h
                 }
+                Value::Int(i) => i.to_i64().unwrap_or(0x5EED_0000_0000_0000u64 as i64),
                 _ => 0x5EED_0000_0000_0001u64 as i64,
             }
         }
