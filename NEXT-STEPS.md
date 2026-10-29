@@ -3018,3 +3018,32 @@ inlineCallbacks repro, then the crawl.
 ALSO NOTED: engine.py/asyncio/events.py wave-84/85 probes
 are still in the STAGED tree (not repo); clean before any
 byte-compare gates.
+
+## Wave-87 addendum: hang narrowed to join() with REAL engine deferred
+
+Repro matrix: bare-Deferred join-shape suspends fine
+(t2ic7); DeferredList constructs fine (t2ic8); inline
+Callbacks suspension + resume-by-callback works (t2ic2 —
+BUT resume-by-callback does NOT re-enter the generator:
+'G2 resumed' never printed after d2.callback(7)! The
+callback fires outer chains but not the suspended gen).
+
+TWO bugs identified:
+1. Deferred.callback() on an inlineCallbacks-wrapped
+   deferred does not resume the suspended generator
+   (_gotResultInlineCallbacks never invoked — probe [IC]
+   gotResult absent). Suspect: our addBoth stores the
+   callback on the deferred but the CALLBACK FIRE path for
+   the _cancellableInlineCallbacks shape (it._callbacks
+   tuple-swap in _addCancelCallbackToDeferred) loses it.
+2. The crawl hang: join() with the REAL engine deferred
+   inside _active never returns (W89 'join called' never
+   prints). Likely the same non-resumption: the DeferredList
+   fires nothing, and somewhere our runtime WAITS instead of
+   returning the pending deferred.
+
+NEXT: fix (1) first — minimal repro t2ic2 (d2.callback(7)
+must print 'G2 resumed x=7'). Inspect our runtime's
+Deferred.callback → callback-chain invocation
+(methods.rs/builtins Deferred surface) for why the
+registered _gotResultInlineCallbacks doesn't run.
