@@ -2341,3 +2341,12 @@ path (suspect: our module PEP-562 __getattr__ raise surfacing
 as a different Flow kind, or instance-vs-class module duality).
 Next: verify Flow::Raise(AttributeError) from module
 __getattr__ matches `except AttributeError` in user code.
+
+## Wave-65 close: inspect.py builtin-ValueError patch committed
+(separate commit; removed the leftover SIG probe). Crawl failure
+unchanged — the 'Settings' object has no attribute 'attributes'
+survives; the wrapped-instance ordering fix (a86d9a0) resolved
+the _ParameterKind sort blocker. 3-level MutableMapping super()
+chain verified working in isolation (t2sup3b), so the crawl
+failure involves scrapy's real init flow (SettingsAttribute
+values or a double-module-import of scrapy.settings).
