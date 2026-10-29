@@ -695,8 +695,13 @@ fn exec_stmt(
                         && std::env::var("APX_ASSERTDBG").is_ok() =>
                 {
                     eprintln!(
-                        "[ASSIGN-ERR] TypeError raised at Assign stmt (gen-resume); msg={}",
-                        ev.args.first().map(|a| a.type_name()).unwrap_or_default()
+                        "[ASSIGN-ERR] frame={} line={} msg={:?}",
+                        frame.qualname,
+                        last_executed_line(interp),
+                        ev.args.first().map(|v| match v {
+                            ap_obj::Value::Str(sv) => sv.as_str().to_string(),
+                            _ => String::new(),
+                        }).unwrap_or_default()
                     );
                     return Err(Flow::Raise(ev.clone()));
                 }
