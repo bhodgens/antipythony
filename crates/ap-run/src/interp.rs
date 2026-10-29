@@ -1209,6 +1209,22 @@ fn exec_stmt(
                 globals: frame.globals.clone(),
             });
             let func = builtins::make_function(id, &f.name);
+            // Wave-75: record the defining module's __name__ so
+            // func.__module__ doesn't fall back to the "builtins"
+            // hardcoded fallback (inspect.signature's
+            // _signature_from_callable mis-attributed such functions,
+            // breaking the scrapy crawl's signature walk).
+            if let Value::Obj(fo) = &func {
+                if let Some(Value::Str(mn)) = frame
+                    .globals
+                    .get(&Value::Str(PyString::new("__name__")))
+                {
+                    let _ = fo.attrs.borrow_mut().set(
+                        Value::Str(PyString::new("__module__")),
+                        Value::Str(mn.clone()),
+                    );
+                }
+            }
             // T1-d: park the annotation SOURCE strings on the function
             // (functools singledispatch register(func) reads
             // __annotations__ to pick the dispatch key).
