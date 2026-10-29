@@ -2471,3 +2471,23 @@ sys.settrace-free probes INSIDE copy.py (RV-type log at the
 reductor call); (2) decide: full __reduce_ex__ support for
 builtin containers OR make deepcopy prefer __copy__/__class__
 dispatch for our container values.
+
+## Wave-69 — ROOT CAUSE of the deepcopy/crawl chain: id() collision (fba9fdc)
+
+builtin_id() returned the CONSTANT 0x5EED_0000_0000_0001 for
+Value::Dict/List/Set/Tuple (inline values, not Obj) — every
+dict had the SAME id(). copy.deepcopy's id()-keyed memo
+collided: memo entries overwritten mid-copy, producing
+half-built clones -> 'Settings' object has no attribute
+'attributes' -> the entire crawl failure chain.
+
+FIX: containers return the payload Gc pointer as identity.
+Strings keep hash ids; ints keep value identity. This one fix
+explains the ENTIRE multi-window crawl failure chain
+(deepcopy->Settings.copy->half-built clone->AttributeError).
+Repro /tmp/t2idcol.py: distinct=False -> True.
+
+Crawl advanced: deepcopy(dict) round-trips; new blocker:
+SystemError: bad receiver in the call dispatch (next session).
+Gates: corpus 15/0/9xp, T2 gate green, fixtures 3/3, scrapy
+import OK.
