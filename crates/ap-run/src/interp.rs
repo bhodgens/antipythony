@@ -2780,6 +2780,62 @@ fn eval_compare(left: &Value, op: CmpOp, right: &Value) -> Result<bool, Flow> {
             return r;
         }
     }
+    // Wave-62/65: int-subclass instances (__ap_int__ payload from
+    // int.__new__(Derived, value) — enum IntEnum members) delegate
+    // ordering comparisons to the payload ints.
+    if matches!(op, CmpOp::Lt | CmpOp::LtE | CmpOp::Gt | CmpOp::GtE) {
+        let _ = &op;
+        let unpack = |v: &Value| -> Option<ap_obj::Int> {
+            if let Value::Obj(o) = v {
+                if o.kind == ap_obj::ObjKind::UserInstance {
+                    if let Some(Value::Int(n)) =
+                        o.attrs.borrow().get(&Value::Str(PyString::new("__ap_int__")))
+                    {
+                        return Some(n.clone());
+                    }
+                }
+            }
+            None
+        };
+        if let (Some(ln), Some(rn)) = (unpack(left), unpack(right)) {
+            let ord = ln.to_i64().cmp(&rn.to_i64());
+            let b = match op {
+                CmpOp::Lt => ord.is_lt(),
+                CmpOp::LtE => ord.is_le(),
+                CmpOp::Gt => ord.is_gt(),
+                CmpOp::GtE => ord.is_ge(),
+                _ => unreachable!(),
+            };
+            return Ok(b);
+        }
+        // Mixed int-payload instance vs plain int.
+        if let Some(ln) = unpack(left) {
+            if let Value::Int(rn) = right {
+                let ord = ln.to_i64().cmp(&rn.to_i64());
+                let b = match op {
+                    CmpOp::Lt => ord.is_lt(),
+                    CmpOp::LtE => ord.is_le(),
+                    CmpOp::Gt => ord.is_gt(),
+                    CmpOp::GtE => ord.is_ge(),
+                    _ => unreachable!(),
+                };
+                return Ok(b);
+            }
+        }
+        if let Some(rn) = unpack(right) {
+            if let Value::Int(ln) = left {
+                let ord = ln.to_i64().cmp(&rn.to_i64());
+                let b = match op {
+                    CmpOp::Lt => ord.is_lt(),
+                    CmpOp::LtE => ord.is_le(),
+                    CmpOp::Gt => ord.is_gt(),
+                    CmpOp::GtE => ord.is_ge(),
+                    _ => unreachable!(),
+                };
+                return Ok(b);
+            }
+        }
+    }
     // Ordering on user instances without slots: exact TypeError with the
     // CLASS names (c027 — values_cmp would print the static 'object').
     let left_user = matches!(left, Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance);
