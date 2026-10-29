@@ -829,13 +829,7 @@ pub fn subscript_set(obj: &Value, key: &Value, v: Value) -> Result<(), Flow> {
                             Key::Index(i) => format!("Index({})", i),
                             _ => "other".to_string(),
                         };
-                        let _ = writeln!(f, "LISTIDX-OTHER other={} objkind={}", key_repr, tname);
-                        let bt = std::backtrace::Backtrace::force_capture().to_string();
-                        for line in bt.lines() {
-                            if line.contains("run_ap") || line.contains("scrapy") {
-                                let _ = writeln!(f, "BT {}", line.trim());
-                            }
-                        }
+                        let _ = writeln!(f, "LISTIDX-SET-OTHER other={} objkind={}", key_repr, tname);
                     }
                     return Err(raise("TypeError", "list indices must be integers"));
                 }
