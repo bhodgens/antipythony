@@ -2491,3 +2491,21 @@ Crawl advanced: deepcopy(dict) round-trips; new blocker:
 SystemError: bad receiver in the call dispatch (next session).
 Gates: corpus 15/0/9xp, T2 gate green, fixtures 3/3, scrapy
 import OK.
+
+## Wave-70 (d028053): list.remove/tuple.index added; marker dispatch loop identified
+
+- call_builtin_values: (pylist, remove) + (pytuple, index)
+  arms added (missing entirely).
+- bad-receiver SystemErrors now carry fname + receiver type.
+
+Crawl chain: markers __dict__new__/__ap_reduce_ex__ now
+DISPATCH correctly (wave-70 arms in call_builtin_values). New
+blocker: pydict 'pop' with receiver type 'object' — a bound
+marker (obj, "pop") from the copied-settings flow routes back
+into call_method, which returns the marker again instead of
+executing. Root cause: bound BuiltinFn markers whose
+slice_parts[0] is the receiver get their calls re-dispatched
+as attr-lookups, looping. Fix direction: in the BuiltinFn
+call dispatch, if fname starts with "__ap_" treat slice_parts
+[0] as receiver and route to builtins::call_builtin with the
+FULL marker name (bypassing the attr re-lookup).
