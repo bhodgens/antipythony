@@ -1816,3 +1816,20 @@ None-function invocation - the pending error/finalizer slot at
 module frame exit. The APX_CALLTRACE tail showed `_main -> raise
 TypeError` right after `_ensure_unconfigure -> ok` with only a
 pydict.pop between - the raise is in OUR frame-return code.
+
+## Wave-53 note: probe placement may be in dead arms
+
+APX_ASSERTDBG probes NC-A/NC-B/NC-U (interp.rs not-callable
+raise sites) and NC-C-UNCOND (name_callable, unconditional) ALL
+stay silent while the exact "'NoneType' object is not callable"
+TypeError appears. Possibilities: (a) the raise comes from a
+FIFTH site not yet found (message built elsewhere, e.g. stored/
+reused exception), (b) the probes sit in arms shadowed by an
+earlier match arm for this callee kind, (c) stale binary at
+runtime (disproven - rebuilt, 0 errors, timestamp newer).
+NEXT SESSION: set APX_TDEBUG=1 (existing BuiltinFn call trace)
+plus a global eprintln at EVERY `'{}' object is not callable`
+format! site (5 sites, unconditional, temporary), run once, and
+the firing site names itself. Then trace the callee back to its
+creator - expected to be the frame-exit/`__context__` chain
+manufacturing path from wave-51.
