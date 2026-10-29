@@ -1539,3 +1539,25 @@ NEXT SESSION: make fixturefunc(**kwargs) build a suspended
 generator (route generator-function calls through start_generator
 instead of eager body execution in the CALL path used by
 call_fixture_func), then re-run test_capF/test_fix2.
+
+## Wave-42 (2026-10-28): exception chain-dunder writes (b8454d6)
+
+Fixed: `exc.__context__ = ...` raised AttributeError on NATIVE
+exception values (ObjKind::Exception had no arm in
+attr_set_protocol). This was pluggy teardown chaining blowing up
+during capsys fixture teardown. Chain dunders
+(__context__/__cause__/__suppress_context__/__traceback__) now
+store into attrs on Exception-kind values.
+
+REVEALED next layer: after the chain fix, the run surfaces
+`NameError: name 'pdb' is not defined` — a post-mortem pdb
+reference in the error path (pytest_exception_interact or our
+handler reaching for pdb that was never importable). Secondary;
+doesn't block the fixture mechanics.
+
+STATE: capsys still errors (2 errors) but the error chain is
+peeling correctly. Gates green (T2 minimal, CaptureIO repro,
+cargo 0 failed).
+NEXT: identify who references `pdb` (grep site-packages for bare
+'pdb' in except paths), then trace the capsys fixture body to its
+current failure point with the file-log probes (fs.log chain).
