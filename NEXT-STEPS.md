@@ -1833,3 +1833,20 @@ format! site (5 sites, unconditional, temporary), run once, and
 the firing site names itself. Then trace the callee back to its
 creator - expected to be the frame-exit/`__context__` chain
 manufacturing path from wave-51.
+
+## Wave-53 final (2026-10-28): EV-AE extended to TypeError (2160111)
+
+APX_ASSERTDBG EV-AE now backtraces TypeError constructions too.
+Probes fully cleaned (builtins_modules.rs NC-C removed, stray
+brace fixed, build 0 errors). Gates: CaptureIO repro green,
+T2 minimal gate green, cargo test 0 failed.
+
+STATE SUMMARY for next session: all runtime fixes committed; the
+capsys TypeError is definitively manufactured at the _main
+module-frame exit pending slot (wave-51 trace); no source site
+constructs it (AE/EV silent, all 5 raise-site probes silent) -
+it must be built via the exc_hier CLASS instantiation path
+(raise-by-class) or reused from a stored Flow. One focused
+session: add EV-AE-style logging to the class-ctor path
+raise_class_pub + Flow::Raise propagation, run once, read the
+construction site.
