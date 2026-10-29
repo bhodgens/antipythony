@@ -2416,7 +2416,11 @@ def _signature_from_function(cls, func, skip_bound_arg=True,
         _sys_sff.stderr.write("[SFF] %s annot-ok\n" % getattr(func, "__qualname__", "?"))
     try:
         defaults = func.__defaults__
-    except NameError:
+        if _sff:
+            _sys_sff.stderr.write("[SFF] %s defaults=%r\n" % (getattr(func, "__qualname__", "?"), defaults))
+    except NameError as _e_d:
+        if _sff:
+            _sys_sff.stderr.write("[SFF] %s DEFAULTS-NAMERR %r\n" % (getattr(func, "__qualname__", "?"), _e_d))
         # antipythany (wave-82): parked default thunks referencing
         # exec-globs names (attr_dict) can NameError on read in
         # states where CPython evaluated at def time. Degrade.
@@ -2441,7 +2445,11 @@ def _signature_from_function(cls, func, skip_bound_arg=True,
     # Non-keyword-only parameters w/o defaults.
     for name in positional[:non_default_count]:
         kind = _POSITIONAL_ONLY if posonly_left else _POSITIONAL_OR_KEYWORD
+        if _sff:
+            _sys_sff.stderr.write("[SFF] %s pre-get %s\n" % (getattr(func, "__qualname__", "?"), name))
         annotation = annotations.get(name, _empty)
+        if _sff:
+            _sys_sff.stderr.write("[SFF] %s get-ok %s\n" % (getattr(func, "__qualname__", "?"), name))
         if _sff:
             _sys_sff.stderr.write("[SFF] %s param %s Pcls=%r kind=%r ann=%r\n" % (getattr(func, "__qualname__", "?"), name, Parameter, kind, annotation))
         try:
@@ -2460,12 +2468,26 @@ def _signature_from_function(cls, func, skip_bound_arg=True,
             posonly_left -= 1
 
     # ... w/ defaults.
+    if _sff:
+        _sys_sff.stderr.write("[SFF] %s loop2 enter\n" % getattr(func, "__qualname__", "?"))
     for offset, name in enumerate(positional[non_default_count:]):
         kind = _POSITIONAL_ONLY if posonly_left else _POSITIONAL_OR_KEYWORD
+        if _sff:
+            _sys_sff.stderr.write("[SFF] %s l2-pre-get %s\n" % (getattr(func, "__qualname__", "?"), name))
         annotation = annotations.get(name, _empty)
-        parameters.append(Parameter(name, annotation=annotation,
-                                    kind=kind,
-                                    default=defaults[offset]))
+        if _sff:
+            _sys_sff.stderr.write("[SFF] %s l2-get-ok %s\n" % (getattr(func, "__qualname__", "?"), name))
+        try:
+            parameters.append(Parameter(name, annotation=annotation,
+                                        kind=kind,
+                                        default=defaults[offset]))
+        except (TypeError, NameError):
+            # antipythany (wave-82): degraded-context Parameter
+            # construction (enum _ParameterKind(kind) hitting a
+            # broken _missing_) — CPython never sees this. The
+            # walk degrades to CPython's "no signature" outcome.
+            raise ValueError(
+                'no signature found for builtin function {!r}'.format(func))
         if posonly_left:
             posonly_left -= 1
 
@@ -2503,9 +2525,20 @@ def _signature_from_function(cls, func, skip_bound_arg=True,
 
     # Is 'func' is a pure Python function - don't validate the
     # parameters list (for correct order and defaults), it should be OK.
-    return cls(parameters,
+    if _sff:
+        _sys_sff.stderr.write("[SFF] %s pre-cls\n" % getattr(func, "__qualname__", "?"))
+    try:
+        return cls(parameters,
                return_annotation=annotations.get('return', _empty),
                __validate_parameters__=is_duck_function)
+    except NameError as _e_sc:
+        # antipythany (wave-82): degraded-context Signature
+        # construction can NameError from lazy thunks; CPython never
+        # sees this. Degrade to "no signature".
+        if _sff:
+            _sys_sff.stderr.write("[SFF] %s cls-NAMERR %r\n" % (getattr(func, "__qualname__", "?"), _e_sc))
+        raise ValueError(
+            'no signature found for builtin function {!r}'.format(func))
 
 
 def _descriptor_get(descriptor, obj):
