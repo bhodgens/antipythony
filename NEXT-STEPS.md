@@ -3071,3 +3071,30 @@ runs it). Suspect: our runtime's attribute call on
 `self._crawl(crawler, *args, **kwargs)` with *args-kwargs
 forwarding through a decorator wrapper vs the registry
 path.
+
+## Wave-88 addendum 2: root cause refined — Deferred callback ORDER starvation
+
+Correction: the lazy-path 'hang' is an INFINITE SPIN:
+join()'s `while active: yield DeferredList(active)` loops
+1524x/150s — d fires (join's DL resumes each time) but
+_crawl's `yield d` resume (registered FIRST on d) never
+empties _active — so the loop spins forever on an
+already-fired d. Isolated primitives (addBoth, resume-by-
+callback, DL-over-fired-d) ALL work in isolation — the bug
+is the ORDER/visibility of d's callback list: callback (1)
+(_crawl's gotResult, registered first) must run before (2)
+(join's DL cb) empties the set; our runtime runs (2)
+repeatedly without (1)'s side effect.
+
+(The synthetic t2wr5 'decorator' repro was a false alarm —
+a plain missing-argument TypeError correctly swallowed into
+the returned deferred's errback.)
+
+NEXT: test callback ORDER: d.addBoth(cb1); d.addBoth(cb2);
+d.callback(x) — do cb1 and cb2 both run, in order? Then
+test with cb1 = a resume-triggering inlineCallbacks
+gotResult (module fn with 4 args) — compare against the
+lambda case. The failing combination is gotResult-then-DL
+on a deferred that has ALREADY been fired once (DL added
+after d fired → immediate synchronous _cbDeferred →
+spin).
