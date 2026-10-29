@@ -2604,3 +2604,24 @@ Concrete next step: log type(annotations) + func.__name__ at
 _SIGNATURE_FROM_FUNCTION entry (not the loop) AND at
 _signature_from_callable entry for each recursion — the
 recursion depth names the failing callable directly.
+
+## Wave-74: SFC probe findings + probe removed (commit after probe removal)
+
+SFC probe results: the failing signature() obj is a FUNCTION
+name='__init__' with __module__='builtins' — but no such
+builtin exists (builtins.__init__ is None). Our runtime
+reports __module__='builtins' for functions created inside
+load_into exec contexts (module ns __name__ mishandling for
+aliased modules) — so the failing obj is a user-defined
+__init__ from an aliased-exec'd module whose __annotations__
+resolves to a LIST instead of the parked DICT.
+
+Standalone signature(Settings.__init__) and
+SpiderLoader.__init__ pass — the failure needs the full crawl
+context (module aliasing).
+
+NEXT: (1) find the function __annotations__ GET path for
+functions created via load_into exec (module ns __name__ =
+'builtins' misattribution is the smoking gun for a namespace
+identity bug); (2) fix __module__ assignment for load_into
+modules; the annotations list-vs-dict should fall out.
