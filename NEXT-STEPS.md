@@ -2417,3 +2417,26 @@ service_identity/OpenSSL shims trigger `import
 collections.abc`-style lazy imports at call time (they were
 just added in wave-63 — a shim importing at CALL time rather
 than IMPORT time would explain the mid-contains import).
+
+## Wave-68 (336b9bb): copy.deepcopy chain root-caused and partially fixed
+
+THE ACTUAL CRAWL BLOCKER CHAIN (via /tmp/t2dcopy*.py repros):
+CrawlerProcess passes settings -> Settings.copy() ->
+copy.deepcopy(self) -> __reduce_ex__(4) -> our __ap_reduce_ex__
+returned state=None for instances without a dict backing ->
+copy._reconstruct built the clone with NO instance attrs ->
+'Settings' object has no attribute 'attributes'. THE ERROR IS
+REAL (not masked) — the clone genuinely lacks attributes.
+
+FIXED this wave: (1) instance state now collects o.attrs when
+no dict backing; (2) Dict receivers reduce via _reconstruct's
+dictiter slot (__dict__new__ marker added to interp dispatch +
+call_builtin); (3) __ap_newobj__ falls back to instantiate when
+no __new__ resolves.
+
+REMAINING: deepcopy of a plain dict still fails
+("'NoneType' object is not callable" — tb points at
+deepcopy:160/_keep_alive:222 but attribution is unreliable;
+KeepAlive works standalone). One more probe: log type(y) after
+`y = func(*args)` in _reconstruct to see what __dict__new__
+returns in the REAL flow.
