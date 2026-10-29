@@ -2568,3 +2568,39 @@ list getitem for str keys dumping the key), then decide:
 either ConvertingList needs __getitem__ delegation to the
 wrapped container, or the dict(converting_dict) construction
 must preserve the wrapper.
+
+## Wave-73 findings (2026-10-29): warning-path ruled out; __getattr__ x5 identity unknown
+
+- The deprecated CONCURRENT_REQUESTS_PER_IP warning path is NOT
+  the trigger — shimming it out in default_settings left the
+  error unchanged (shim committed as a deviation with a comment).
+- The __getattr__ x5 frames (attributed "3845") do not match any
+  scrapy file at that line — our tb line attribution collapses
+  across files, so frame identity is unreliable.
+- The str-key list index is INSIDE the signature walk itself
+  (chain: signature -> from_callable -> _signature_from_callable
+  -> __getattr__ x5), likely inspect.py's own
+  `annotations[name]`-style access where `annotations` resolved
+  to a LIST on our runtime (func.__annotations__ on the failing
+  obj). Isolated repros (BaseSettings subclass methods, plain
+  funcs) pass — the failing obj is crawl-specific (spider
+  loader / load_object result).
+
+NEXT: patch inspect.py line ~1333 (`annotations[name] = ...`)
+to log type(annotations) + name on str-key failure (2-line
+probe, then revert). That names the failing obj directly.
+
+## Wave-73 close: _signature_from_function ruled out; remaining suspect = the recursive _get_signature_of walk
+
+Ruled out this window: warnings.warn path (shimmed, error
+unchanged), _signature_from_function's annotations dict
+(ANTIDX probe never fired — the str-index is not there), plain
+funcs + BaseSettings subclass methods (signature works).
+The str-index happens in the RECURSIVE walk:
+_signature_from_callable -> _get_signature_of(call) for
+metaclass __call__ / _missing_ / partial paths — the failing
+obj is crawl-specific (SpiderLoader / load_object result).
+Concrete next step: log type(annotations) + func.__name__ at
+_SIGNATURE_FROM_FUNCTION entry (not the loop) AND at
+_signature_from_callable entry for each recursion — the
+recursion depth names the failing callable directly.
