@@ -2258,3 +2258,41 @@ REMAINING for the enum leaf:
    | & ^), hash, ==, int(), repr, str — unwrap payload.
 3. HTTPStatus.phrase end-to-end + scrapy import gate.
 Probes: enum.py clean; INTNEW probe removed from interp.rs.
+
+## Wave-63 (2026-10-28): operator.* container binop fix; scrapy crawl chain advanced
+
+1. operator.xor/and_/or_/add/... now route through the
+   interpreter's eval_binop (container arms for set/frozenset
+   xor etc.) instead of the primitives-only
+   ap_obj::ops::binop. Repro: operator.xor(set,set) raised
+   TypeError; constantly's _flagOp needs it — this was the
+   NEXT crawl blocker (ProtocolNegotiationSupport.NOSUPPORT).
+2. OpenSSL/SSL.py shim: added OP_NO_TLSv1/1_1/1_2/1_3 +
+   Connection.get_cipher_list/get_servername/get+set_app_data.
+3. service_identity stub package added (hazmat: DNS_ID/
+   IPAddress_ID/ServiceID/verify_service_identity; pyopenssl:
+   extract_patterns etc) — twisted _sslverify import chain.
+
+Crawl chain now: CrawlerProcess constructs, spider loads, fails
+at OpenSSL.SSL.Connection surface completeness (next: more
+Connection methods).
+
+NEW DOCUMENTED GAP (major): `from collections.abc import
+Mapping` yields a Mapping whose __mro__ is ['Mapping'] only
+(bases dropped) — MutableMapping mixin methods (items/keys/
+values/get) unreachable. `import collections.abc` (import-as)
+gives the FULL mro — the from-import path re-executes or
+resolves differently. Repros: /tmp/t2mm.py (fails),
+/tmp/t2mmA.py (works), /tmp/t2mm7.py (fails).
+
+## Wave-63 STATUS (end of window)
+- IntEnum members: .name/.value WORK (int.__new__ derived
+  allocation + class_ref fallback for Type-kind classes).
+- scrapy import gate: GREEN (SCRAPY IMPORT OK 2.19.0).
+- CrawlerProcess chain: constructs, loads spider, service_identity
+  shim + OpenSSL TLS constants landed. Next blocker in the crawl:
+  OpenSSL.SSL.Connection surface completeness (more methods) OR
+  further chain steps.
+- collections.abc from-import mro truncation: REPRODUCED and
+  isolated (import-as works, from-import truncates) — separate
+  leaf. Repros /tmp/t2mm.py vs /tmp/t2mmA.py.
