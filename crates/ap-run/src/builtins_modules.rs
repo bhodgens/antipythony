@@ -3268,10 +3268,13 @@ fn callable_name(v: &Value) -> Result<String, Flow> {
         {
             Ok(name_callable(v))
         }
-        other => Err(raise(
-            "TypeError",
-            format!("'{}' object is not callable", other.type_name()),
-        )),
+        other => {
+
+            Err(raise(
+                "TypeError",
+                format!("'{}' object is not callable", other.type_name()),
+            ))
+        }
     }
 }
 
