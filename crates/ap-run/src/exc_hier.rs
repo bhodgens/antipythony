@@ -178,12 +178,20 @@ impl ExceptionValue {
                 .lines()
                 .filter(|l| l.contains("ap_run") && !l.contains("exc_hier"))
                 .collect();
+            let bt_full = if class == "TypeError" {
+                format!("{:?}", std::backtrace::Backtrace::force_capture())
+            } else {
+                String::new()
+            };
             eprintln!(
                 "[EV-AE] cls={} args={} bt={}",
                 class,
                 args.len(),
                 interesting.iter().take(8).cloned().collect::<Vec<_>>().join(" <- ")
             );
+            if !bt_full.is_empty() {
+                eprintln!("[EV-AE-BT] {}", bt_full);
+            }
         }
         ExceptionValue {
             class: class.to_string(),

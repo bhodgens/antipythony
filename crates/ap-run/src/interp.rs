@@ -10888,7 +10888,14 @@ pub fn raise_class_pub(
     }
     let inst = crate::classes::instantiate(interp, &v, &t.unwrap(), &[], &[])?;
     let mut ev = exception_value_of_instance(&inst)?;
+    let inst_for_probe = inst.clone();
     ev.instance = Some(inst);
+    if std::env::var("APX_ASSERTDBG").is_ok() {
+        let tn = crate::classes::display_type_name(&inst_for_probe);
+        if tn == "NoneType" || tn == "BaseException" {
+            eprintln!("[RCP] odd class inst display={} ev.class={}", tn, ev.class);
+        }
+    }
     Ok(ev)
 }
 

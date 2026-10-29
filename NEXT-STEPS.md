@@ -1850,3 +1850,23 @@ it must be built via the exc_hier CLASS instantiation path
 session: add EV-AE-style logging to the class-ctor path
 raise_class_pub + Flow::Raise propagation, run once, read the
 construction site.
+
+## Wave-54 (2026-10-28): Rust backtrace CAPTURED - root localised
+
+EV-AE-BT captured the full Rust backtrace of the capsys
+TypeError construction:
+- Constructed at: ap_obj::ops::binop via Flow::from_py
+  (interp.rs:3467 eval_binop ← eval_expr:2116 ← exec_stmt:691
+  ASSIGN ← gen_fiber_body (generator resume)).
+- Meaning: the capsys fixture body (generator), when resumed,
+  executes an ASSIGNMENT whose RHS is a binop where one operand's
+  method dispatch lands on None → ap_obj ops raise
+  TypeError("'NoneType' object is not callable").
+- The fixture body assigns nothing except via method calls... so
+  the None operand likely comes from a method dispatch returning
+  None (our runtime returning None where CPython raises), which
+  then feeds a binop.
+NEXT SESSION: identify the exact generator (add gen-id logging
+to gen_fiber_body) and the exact binop line in the python body
+(the exec_stmt:691 assign) by logging the assign target name in
+the APX_ASSERTDBG arm. Then fix the None-returning dispatch.
