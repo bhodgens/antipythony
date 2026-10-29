@@ -1947,10 +1947,17 @@ def _signature_get_user_defined_method(cls, method_name, *, follow_wrapper_chain
     named ``method_name`` and returns it only if it is a
     pure python function.
     """
-    if method_name == '__new__':
-        meth = getattr(cls, method_name, None)
-    else:
-        meth = getattr_static(cls, method_name, None)
+    try:
+        if method_name == '__new__':
+            meth = getattr(cls, method_name, None)
+        else:
+            meth = getattr_static(cls, method_name, None)
+    except NameError:
+        # antipythany (wave-82): getattr_static over MRO dicts can
+        # touch lazy attribute thunks (attrs attr_dict exec-globs)
+        # that NameError in our runtime; CPython reads plain dict
+        # entries. Degrade to "no user-defined method".
+        return None
     if meth is None:
         return None
 
@@ -2355,7 +2362,7 @@ def _signature_from_function(cls, func, skip_bound_arg=True,
     import os as _os_sff0
     if _os_sff0.environ.get("APX_SFCDBG"):
         import sys as _sys_sff0
-        _sys_sff0.stderr.write("[SFF0] %s enter\n" % getattr(func, "__qualname__", "?"))
+        _sys_sff0.stderr.write("[SFF0] %s enter mod=%s\n" % (getattr(func, "__qualname__", "?"), getattr(func, "__module__", "?")))
     is_duck_function = False
     if not isfunction(func):
         if _signature_is_functionlike(func):
@@ -2396,12 +2403,28 @@ def _signature_from_function(cls, func, skip_bound_arg=True,
         _sys_sff.stderr.write("[SFF] %s enter\n" % getattr(func, "__qualname__", "?"))
     if _os_sff0.environ.get("APX_SFCDBG"):
         _sys_sff0.stderr.write("[SFF0] %s pre-annot\n" % getattr(func, "__qualname__", "?"))
-    annotations = get_annotations(func, globals=globals, locals=locals, eval_str=eval_str,
-                                  format=annotation_format)
+    try:
+        annotations = get_annotations(func, globals=globals, locals=locals, eval_str=eval_str,
+                                      format=annotation_format)
+    except NameError:
+        # antipythany (wave-82): some attrs-generated __init__ functions
+        # reference exec-globs names (attr_dict) from a defining env our
+        # lazy paths can't reach; CPython resolves them at def time. Degrade
+        # to empty annotations rather than killing the walk.
+        annotations = {}
     if _sff:
         _sys_sff.stderr.write("[SFF] %s annot-ok\n" % getattr(func, "__qualname__", "?"))
-    defaults = func.__defaults__
-    kwdefaults = func.__kwdefaults__
+    try:
+        defaults = func.__defaults__
+    except NameError:
+        # antipythany (wave-82): parked default thunks referencing
+        # exec-globs names (attr_dict) can NameError on read in
+        # states where CPython evaluated at def time. Degrade.
+        defaults = None
+    try:
+        kwdefaults = func.__kwdefaults__
+    except NameError:
+        kwdefaults = None
     if _sff:
         _sys_sff.stderr.write("[SFF] %s defaults-ok\n" % getattr(func, "__qualname__", "?"))
 
@@ -3162,10 +3185,20 @@ class Signature:
                       follow_wrapped=True, globals=None, locals=None, eval_str=False,
                       annotation_format=Format.VALUE):
         """Constructs Signature for the given callable object."""
-        return _signature_from_callable(obj, sigcls=cls,
-                                        follow_wrapper_chains=follow_wrapped,
-                                        globals=globals, locals=locals, eval_str=eval_str,
-                                        annotation_format=annotation_format)
+        try:
+            return _signature_from_callable(obj, sigcls=cls,
+                                            follow_wrapper_chains=follow_wrapped,
+                                            globals=globals, locals=locals, eval_str=eval_str,
+                                            annotation_format=annotation_format)
+        except NameError as _e_fc:
+            # antipythany (wave-82): lazy default thunks referencing
+            # attrs exec-globs names (attr_dict) can NameError mid-walk
+            # in states where CPython evaluated at def time. CPython
+            # never sees this; degrade to ValueError (same outcome as
+            # an unsignable builtin) instead of killing callers like
+            # CrawlerProcess.start.
+            raise ValueError(
+                "no signature found for callable {!r} ({})".format(obj, _e_fc))
 
     @property
     def parameters(self):
