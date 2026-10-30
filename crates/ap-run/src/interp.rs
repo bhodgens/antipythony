@@ -3834,12 +3834,33 @@ fn call_value_inner_impl(
                     if o.name == "__ap_coroutine_send__" {
                         return Err(raise("StopIteration", ""));
                     }
+                    // Wave-96b: safe repr for error messages.
+                    if o.name == "__ap_coroutine_repr__" {
+                        let nm = o
+                            .slice_parts
+                            .borrow()
+                            .first()
+                            .cloned()
+                            .unwrap_or(Value::None);
+                        let txt = match &nm {
+                            Value::Obj(c) => c.name.clone(),
+                            _ => "coroutine".to_string(),
+                        };
+                        return Ok(Value::Str(PyString::new(format!(
+                            "<coroutine object {}>",
+                            txt
+                        ))));
+                    }
                     // Wave-96: coroutine.__await__() must return an
                     // ITERATOR (the loop machinery iterates it). v0
                     // stub coroutines do no work → empty iterator.
                     if o.name == "__ap_coroutine_await__" {
+                        // iter([None]) — one step, then StopIteration:
+                        // the awaiting task completes after a single
+                        // loop pass, matching "v0 coroutine does no
+                        // work".
                         return crate::builtins::builtin_iter(&[Value::List(
-                            PyList::from_vec(vec![]),
+                            PyList::from_vec(vec![Value::None]),
                         )]);
                     }
                     // s018/T2: generator close/send/throw — REAL PEP-342
@@ -5818,6 +5839,15 @@ fn call_function(
                 Value::Obj(ap_obj::PyObject::new(
                     ap_obj::ObjKind::BuiltinFn,
                     "__ap_coroutine_send__",
+                )),
+            );
+            // Wave-96b: plain-attr __repr__ so error paths
+            // formatting the marker don't invoke __await__.
+            let _ = attrs.set(
+                Value::Str(PyString::new("__repr__")),
+                Value::Obj(ap_obj::PyObject::new(
+                    ap_obj::ObjKind::BuiltinFn,
+                    "__ap_coroutine_repr__",
                 )),
             );
             let _ = attrs.set(
