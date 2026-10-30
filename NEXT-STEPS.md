@@ -3236,3 +3236,30 @@ This window ended mid-investigation; all probes (W94-W96,
 W-A2/W-A3, W98/W99, W86/W87/W91) remain in the staged
 crawler.py/middleware.py/utils — REVERT staged probe files
 before any byte-compare gate.
+
+## Wave-95: window-end correction — Crawler.__init__ COMPLETES
+
+All 7 init-step probes fired; the earlier 'hang in __init__'
+was a timeout artifact. Current full-flow behavior: entire
+lazy flow COMPLETES (exit 0) but is a NO-OP — join enters
+with active=0, start() runs and returns instantly, engine
+never started, no items.
+
+THE REMAINING DEFECT: crawler.crawl() (W95, suspends at
+`yield deferred_from_coro(engine.open_spider_async())`) is
+scheduled, but by the time start() → join() runs,
+self._active is EMPTY — the discard in _crawl's finally
+already fired, i.e. the `yield d` inside _crawl's
+@inlineCallbacks generator resumed IMMEDIATELY with an
+error/completion (our runtime resolves the yielded
+deferred eagerly/synchronously) instead of waiting for the
+reactor to drive it. The engine start deferred chain then
+either errored (silently, into the deferred) or completed
+without the reactor.
+
+NEXT (one step): capture WHERE the yielded open_spider_
+async deferred resolves — instrument deferred_from_coro +
+open_spider_async entry — and check whether our runtime
+drives coroutines synchronously at creation (awaiting
+without a loop). The fix will be: suspend the coroutine
+until the loop actually runs it.
