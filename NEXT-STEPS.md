@@ -3377,3 +3377,39 @@ attr_get/instance_attr for Namespace-kind objects with
 stored BuiltinFn attrs — verify getattr returns the fn, not
 the call result. Then Task.__init__'s iscoroutine should
 pass and Task creation proceeds.
+
+## Wave-97: worker body never runs; yield-of-Future crosses two drivers
+
+t2ae state: WORKER BODY never executes. create_task(coro)
+succeeds (Task built, iscoroutine True via shim), call_soon
+schedules __step, but the __step drives OUR gen-fiber
+(generators.rs corosensei fiber), which runs worker() until
+its first await — `await asyncio.sleep(0.1)` creates a
+Future and yields it — at which point control returns to
+WHICHEVER driver resumed the fiber: our runtime's, not
+asyncio's Task.__step. The Future then has no loop-registered
+waker, and somewhere the yielded Future gets CALLED by our
+driver ('iterator object is not callable' — the Future/its
+iterator treated as callable).
+
+ARCHITECTURE GAP: async-def coroutines run on our corosensei
+fibers, but asyncio Tasks need the LOOP to drive them
+(__step scheduling + Future wakers). Two drivers, one
+coroutine.
+
+FIX OPTIONS (next sessions, pick one):
+(A) Make async-def coroutines REAL CPython-style coroutines
+    driven purely by the loop: Task.__step → coro.send —
+    requires our coroutine objects to expose send/throw
+    that resume the fiber, and the fiber's yields to bubble
+    to whoever called send (the loop), not our driver.
+(B) Bridge: Task.__step calls our fiber's resume; when the
+    fiber yields a Future, register the fiber's resume as
+    the Future's done-callback (loop.add_done_callback) so
+    the LOOP re-schedules the fiber. This keeps our fibers
+    and uses the loop only as the scheduler.
+
+(B) is smaller. Concrete first step: find where our runtime
+drives a gen-fiber whose owner is an asyncio Task and
+replace the direct resume with loop.add_done_callback on
+the yielded Future.
