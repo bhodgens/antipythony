@@ -3413,3 +3413,28 @@ FIX OPTIONS (next sessions, pick one):
 drives a gen-fiber whose owner is an asyncio Task and
 replace the direct resume with loop.add_done_callback on
 the yielded Future.
+
+## Wave-96c (window end): asyncio probe status + next concrete step
+
+Probes added to vendored asyncio (tasks.py ensure_future +
+Task.__init__ reject-path, base_events run_until_complete +
+_run_once, coroutines.py iscoroutine __dict__-direct +
+getattr-default both verified iscoroutine=True standalone).
+
+KEY ELIMINATION: contextvars Context.run works standalone;
+iscoroutine=True via the shim; Task.__init__ reached (its
+iscoroutine check passes now — earlier 'a coroutine was
+expected' is gone). The 'iterator not callable' TypeError
+fires LATER — likely in Task.__step → coro.send(None) on
+our fiber-backed coroutine, OR in _inlineCallbacks'
+context.run(gen.send, ...) resume path when the loop
+drives it.
+
+THE PRECISE NEXT STEP: run t2ae.py with APX_ICDBG (our
+__await__ dispatch prints '[AW] dispatched') + the W-A7
+Task.__step probe + W-EF, and read the exact LAST marker
+before the TypeError. The failing call is either (a) our
+__await__ result being invoked by Task.__step's
+future-handling branch, or (b) context.run(gen.send,...)
+misbinding. Fix accordingly; verify t2ae.py then the T1
+crawl flow.

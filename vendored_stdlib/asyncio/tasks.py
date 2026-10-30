@@ -90,7 +90,13 @@ class Task(futures._PyFuture):  # Inherit Python Task implementation
             # raise after Future.__init__(), attrs are required for __del__
             # prevent logging for pending task in __del__
             self._log_destroy_pending = False
-            raise TypeError(f"a coroutine was expected, got {coro!r}")
+            import sys as _s_t
+            try:
+                _r = repr(coro)
+            except BaseException as _e:
+                _r = "<repr failed: %s>" % _e
+            _s_t.stderr.write("W-T Task.__init__ rejecting coro repr=%s\n" % _r); _s_t.stderr.flush()
+            raise TypeError(f"a coroutine was expected, got {_r}")
 
         if name is None:
             self._name = f'Task-{_task_name_counter()}'
@@ -281,6 +287,8 @@ class Task(futures._PyFuture):  # Inherit Python Task implementation
             self = None  # Needed to break cycles when an exception occurs.
 
     def __step_run_and_handle_result(self, exc):
+        import sys as _sA7
+        _sA7.stderr.write("W-A7 task __step enter\n"); _sA7.stderr.flush()
         coro = self._coro
         try:
             if exc is None:
@@ -708,6 +716,8 @@ async def sleep(delay, result=None):
 
 
 def ensure_future(coro_or_future, *, loop=None):
+    import sys as _s_ef
+    _s_ef.stderr.write("W-EF ensure_future enter\n"); _s_ef.stderr.flush()
     """Wrap a coroutine or an awaitable in a future.
 
     If the argument is a Future, it is returned directly.

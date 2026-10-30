@@ -683,6 +683,7 @@ class BaseEventLoop(events.AbstractEventLoop):
             self._run_forever_cleanup()
 
     def run_until_complete(self, future):
+        import sys as _sA8; _sA8.stderr.write('LOOP ruc enter\n'); _sA8.stderr.flush()
         """Run until the Future is done.
 
         If the argument is a coroutine, it is wrapped in a Task.
@@ -1976,6 +1977,8 @@ class BaseEventLoop(events.AbstractEventLoop):
             self._timer_cancelled_count += 1
 
     def _run_once(self):
+        import sys as _sA9
+        _sA9.stderr.write('LOOP once\n'); _sA9.stderr.flush()
         import sys as _s84b
         if getattr(self, '_w84n', 0) < 3:
             _s84b.stderr.write('LOOP _run_once\n'); self._w84n = getattr(self, '_w84n', 0) + 1

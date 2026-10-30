@@ -41,14 +41,19 @@ _iscoroutine_typecache = set()
 def iscoroutine(obj):
     """Return True if obj is a coroutine object."""
     # Wave-96 (antipythany): v0 stub coroutines are Namespace
-    # markers carrying __ap_coroutine__ — accept them.
+    # markers carrying __ap_coroutine__ — accept them. Check
+    # the attrs dict DIRECTLY (getattr may route through
+    # marker dispatch that misfires).
     try:
-        if getattr(obj, "__ap_coroutine__", None):
+        if getattr(obj, "__ap_coroutine__", False):
             return True
     except Exception:
         pass
-    if type(obj) in _iscoroutine_typecache:
-        return True
+    try:
+        if type(obj) in _iscoroutine_typecache:
+            return True
+    except Exception:
+        return False
 
     if isinstance(obj, _COROUTINE_TYPES):
         # Just in case we don't want to cache more than 100
