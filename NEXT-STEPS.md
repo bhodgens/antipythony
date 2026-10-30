@@ -3281,3 +3281,28 @@ lowering produces (ap-parse: async def → gen-fiber?) and
 what coroutines.iscoroutine() says about it; (2) make
 Task-compatible coroutine objects (send/throw/close +
 cr_frame) OR provide a Task adapter over our gen-fibers.
+
+## Wave-95 final finding: our coroutine objects LACK __await__
+
+t2ae2: our async-def coroutines are type 'coroutine',
+iscoroutine()=True, .send present — but __await__ MISSING.
+CPython coroutine objects always have __await__ (returning
+an iterator). The asyncio loop machinery (ensure_future →
+Task; also `yield coro` inside other coroutines) calls
+coro.__await__() — our runtime resolves the missing dunder
+through the attr machinery and gets an ITERATOR which the
+loop then CALLS → "TypeError: 'iterator' object is not
+callable".
+
+FIX (runtime, ap-parse/ap-run async lowering): give
+coroutine objects a real __await__ that returns an iterator
+compatible with the loop (self, since coroutines ARE their
+own iterators), i.e. __await__ = lambda self: self. This
+single method should make asyncio Tasks functional —
+unlocking Crawler.crawl's deferred_from_coro chain and the
+whole reactor dispatch.
+
+NEXT SESSION (top priority): add __await__ to the async-def
+coroutine type, verify t2ae.py passes end-to-end
+(asyncio.run + create_task + await), then rerun the T1
+crawl flow.
