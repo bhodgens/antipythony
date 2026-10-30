@@ -3098,3 +3098,32 @@ lambda case. The failing combination is gotResult-then-DL
 on a deferred that has ALREADY been fired once (DL added
 after d fired → immediate synchronous _cbDeferred →
 spin).
+
+## Wave-89: MAJOR runtime fix — str % LIST unpacking (committed)
+
+`"%s" % [list]` unpacked the list ELEMENT-WISE into format
+args (CPython: only tuples/dicts unpack; a list is ONE
+value). Consequences: "%s" % [] → 'None', "%s" % [x] → 'x'
+(dropping the list-ness), multi-element lists → TypeError
+'not all arguments converted'. This corrupted stdlib/logging
+formatting wherever lists were % -formatted.
+
+FIX (ops.rs binop Mod): only Value::Tuple unpacks; all other
+types (incl. List) pass as a single arg. Verified
+byte-identical vs CPython 3.14.7 on 5 shapes incl. the
+tuple-unpack TypeError case. All gates green.
+
+ALSO: the t2wr5 'decorator body never executes' repro was a
+FALSE ALARM — wrapped('T1') with missing second arg raised
+TypeError inside the generator, correctly stored as the
+returned deferred's errback (ignored by the test). The
+inlineCallbacks machinery is correct in isolation
+(t2ic9: @inlineCallbacks method with *args/**kwargs
+forwarding runs its body fine).
+
+So the lazy-path no-op crawl (join active=0) has a subtler
+trigger inside real CrawlerRunner.crawl — next session:
+bisect CrawlerRunner.crawl body statements (isinstance
+check → create_crawler → self._crawl) with markers in the
+REAL flow; W92 probe (in _crawl body) already confirms the
+body never runs there.
