@@ -67,10 +67,14 @@ class Runner:
         """Shutdown and close event loop."""
         if self._state is not _State.INITIALIZED:
             return
+        import sys as _s_c
         try:
             loop = self._loop
+            _s_c.stderr.write("W-C1 cancel_all\n"); _s_c.stderr.flush()
             _cancel_all_tasks(loop)
+            _s_c.stderr.write("W-C2 shutdown_asyncgens\n"); _s_c.stderr.flush()
             loop.run_until_complete(loop.shutdown_asyncgens())
+            _s_c.stderr.write("W-C3 shutdown_default_executor\n"); _s_c.stderr.flush()
             loop.run_until_complete(
                 loop.shutdown_default_executor(constants.THREAD_JOIN_TIMEOUT))
         finally:

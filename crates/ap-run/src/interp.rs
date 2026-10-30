@@ -3832,7 +3832,20 @@ fn call_value_inner_impl(
                     // StopIteration(None) — exhausted semantics so
                     // asyncio Tasks terminate cleanly.
                     if o.name == "__ap_coroutine_send__" {
+                        if std::env::var("APX_ICDBG").is_ok() {
+                            eprintln!("[CO] send called -> StopIteration");
+                        }
                         return Err(raise("StopIteration", ""));
+                    }
+                    if o.name == "__ap_coroutine_repr__" {
+                        if std::env::var("APX_ICDBG").is_ok() {
+                            eprintln!("[CO] repr called");
+                        }
+                    }
+                    if o.name == "__ap_coroutine_await__" {
+                        if std::env::var("APX_ICDBG").is_ok() {
+                            eprintln!("[CO] await called");
+                        }
                     }
                     // Wave-96b: safe repr for error messages.
                     if o.name == "__ap_coroutine_repr__" {

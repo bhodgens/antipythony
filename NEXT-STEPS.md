@@ -3489,3 +3489,53 @@ also completes. The TypeError appears during Runner.close
 → shutdown_asyncgens → create_task — a THIRD create_task
 during loop close. Inspect Runner.close/_cancel_all_tasks
 path next.
+
+## Wave-100 (window end): shutdown_asyncgens is the hang/fail site — primitives all verified
+
+Confirmed working standalone: coroutine marker 'send'
+resolves + fires StopIteration correctly (t2send2);
+Deferred addBoth+callback; DeferredList; contextvars;
+iscoroutine shim; __await__ present.
+
+FAILURE SITE: Runner.close → run_until_complete(loop.
+shutdown_asyncgens()) — the asyncio shim coroutine path
+fails with 'iterator object is not callable' even though
+every primitive works in isolation. The difference is
+STATE: the failing call happens after a full
+crawler-process flow has run (deep runtime state), vs
+short standalone tests.
+
+NEXT (two options):
+1. Minimal delta repro: grow t2ae.py until it fails
+   (add imports/objects stepwise) to find the state
+   trigger.
+2. Our runtime's 'iterator object is not callable' error
+   itself: grep where we raise it — the caller context
+   will name the failing dispatch; add a one-line probe
+   there (function name) to identify WHAT got called.
+
+## Wave-100 final (window end): fail site has __getattr__ frames — probe plan refined
+
+t2def5-style repro: the TypeError surfaces through
+__getattr__ frames (line 3845 markers = our marker-attr
+machinery), during Runner.close → shutdown_asyncgens →
+run_until_complete → ensure_future. The fail site is in
+the runtime's marker-attr CALL path (the generic raise at
+interp.rs 5531/5542 arms show as [NONECALL] under
+APX_ASSERTDBG).
+
+NEXT SESSION (single focused task): run t2ae.py with
+APX_ASSERTDBG=1 and read the [NONECALL-OUTER] line — it
+names the failing TYPE and line. That names exactly which
+marker/value is being called. Fix = either give that
+value a __call__, or fix the dispatch that produced it.
+All primitives verified working in isolation; the fail
+needs deep-crawl state to trigger.
+
+PROBES IN STAGED TREE (revert before byte-compare gates):
+crawler.py (W86/W87/W89/W91/W92/W94/W95/W96), middleware.py
+(W97), utils/misc.py (W98), utils/request.py (W99), engine.py
+(WAVE84), asyncio tasks.py (W-EF/W-T), runners.py (W-C1/2),
+base_events.py (LOOP), events.py (POLICY), coroutines.py
+(iscoroutine shim — KEEP, it's a real fix), spider.py
+(REACTOR-HIT).
