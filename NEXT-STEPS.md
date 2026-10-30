@@ -3263,3 +3263,21 @@ open_spider_async entry — and check whether our runtime
 drives coroutines synchronously at creation (awaiting
 without a loop). The fix will be: suspend the coroutine
 until the loop actually runs it.
+
+## Wave-95 addendum: asyncio.Task creation TypeError repro'd
+
+Minimal: asyncio.run(main()) with create_task(worker())
+fails: TypeError: 'iterator' object is not callable from
+BaseEventLoop.create_task → tasks.Task(...) chain
+(/tmp/t2ae.py). Our async-def functions likely materialize
+as iterator-objects that pass/evade iscoroutine() but fail
+when the loop's task machinery calls into them
+(Task.__step → coro.send, or ensure_future's wrap).
+
+This is THE blocking gap for the crawl: Crawler.crawl's
+`deferred_from_coro(engine.open_spider_async())` requires
+working asyncio Tasks. NEXT: (1) inspect what our async-def
+lowering produces (ap-parse: async def → gen-fiber?) and
+what coroutines.iscoroutine() says about it; (2) make
+Task-compatible coroutine objects (send/throw/close +
+cr_frame) OR provide a Task adapter over our gen-fibers.
