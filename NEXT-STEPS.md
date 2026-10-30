@@ -3170,3 +3170,25 @@ dict op looping. Given the wave-89 % fix just landed, run
 the flow again first WITHOUT new probes (apc cleared) —
 the _apply_settings block may already be cured by the %
 fix if it % -formatted a list.
+
+## Wave-92: crawl reached EXTENSION LOADING (new frontier, documented)
+
+Probe ladder (W95/W96) in the lazy path:
+- Crawler.crawl body enters, spider created ✓
+- _apply_settings: addons ✓, deprecated attrs ✓, stats ✓,
+  logformatter ✓, fingerprinter ✓, use_reactor=True,
+  asyncio reactor INSTALLED ✓, log_reactor_info ✓,
+  apply_settings DONE ✓
+- Death: build_from_crawler(ExtensionManager, self) — the
+  extension-loading subsystem (instantiates ~10 scrapy
+  extensions: memusage, log stats, corestats, etc.)
+
+NOTE: the wave-89 % fix moved the death point from
+_apply_settings' early addons block to extension loading —
+real progress through this chain.
+
+NEXT: instrument ExtensionManager.from_crawler/_load_
+settings to find which extension's from_crawler blocks
+(suspects: MemoryUsage extension touching resource module,
+or an extension whose __init__ loops on our dict/set
+machinery). Same env-gated stderr probe discipline.
