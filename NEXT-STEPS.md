@@ -3438,3 +3438,30 @@ __await__ result being invoked by Task.__step's
 future-handling branch, or (b) context.run(gen.send,...)
 misbinding. Fix accordingly; verify t2ae.py then the T1
 crawl flow.
+
+## Wave-98 (window end): lazy crawl flow STABLE, no spin — engine scheduling is the remaining defect
+
+With the wave-89 % fix + coroutine groundwork, the lazy
+path runs CLEANLY to completion in ~89s (import ~50-90s +
+flow): W86 crawl enter → create_crawler → _crawl returned
+(Deferred) → base-start → reactor imported → [IC2]/[IC3]
+inlineCallbacks drive ✓ → join active=0 → post-start. No
+spin, no error, exit 0.
+
+THE ONE REMAINING DEFECT: the engine never starts — _crawl's
+body (which calls crawler.crawl → engine.open_spider_async
+→ engine.start) suspends on its first deferred and nothing
+ever drives it (no running loop at that point; reactor.run
+comes later but the deferred chain was created under the
+PROCESS context, not the reactor). CPython solves this via
+the deferred's callback being scheduled on the reactor —
+ours resolves/queues it nowhere.
+
+NEXT (concrete): when _crawl's `yield d` suspends, the
+outer inlineCallbacks deferred must schedule d's callbacks
+via reactor.callLater/callFromThread (i.e. wire the
+Deferred's resolution into the reactor loop) — OR start
+the reactor BEFORE crawler.crawl by reordering start()
+(i.e. reactor-first bootstrap). Option B is what
+CrawlerProcess.start does in CPython: it starts the
+REACTOR and the deferreds then fire inside it.
