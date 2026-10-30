@@ -3127,3 +3127,25 @@ bisect CrawlerRunner.crawl body statements (isinstance
 check → create_crawler → self._crawl) with markers in the
 REAL flow; W92 probe (in _crawl body) already confirms the
 body never runs there.
+
+## Wave-90: lazy path bypasses the @inlineCallbacks wrapper (pinned)
+
+Probes: type(self._crawl)='method'; calling it RETURNS a
+Deferred immediately but [IC2] unwindGenerator and [IC3]
+_inlineCallbacks (twisted defer.py) NEVER RUN — the runtime
+does not execute the decorated wrapper body. The wrapper
+unwindGenerator is what starts the generator synchronously
+(CPython behavior, defer.py 2095-2108). Our runtime
+appears to resolve the decorated `_crawl` to its RAW
+GENERATOR and start a suspended gen-fiber (W92 body probe
+never fires) — skipping the decorator wrapper entirely.
+Same defer.py file confirmed loaded.
+
+NEXT: repro outside scrapy — a class whose method is
+decorated with a module-level decorator that WRAPS a
+generator function, where the decorator itself is defined
+in another module; call it via self.m(x). Test whether our
+runtime executes the wrapper. If it reproduces, the fix is
+in the runtime's method-call path (registry/binding) to
+invoke the WRAPPED (decorated) object, not the raw
+generator fn.
