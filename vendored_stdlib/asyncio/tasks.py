@@ -722,6 +722,8 @@ def ensure_future(coro_or_future, *, loop=None):
 
     If the argument is a Future, it is returned directly.
     """
+    import sys as _s_ef2
+    _s_ef2.stderr.write("W-EF2 pre-isfuture\n"); _s_ef2.stderr.flush()
     if futures.isfuture(coro_or_future):
         if loop is not None and loop is not futures._get_loop(coro_or_future):
             raise ValueError('The future belongs to a different loop than '
