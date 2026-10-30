@@ -46,9 +46,13 @@ pub fn binop(a: &Value, op: BinOp, b: &Value) -> Result<Value, PyException> {
     // and much of the stdlib depend on it).
     if op == BinOp::Mod {
         if let Value::Str(fmt) = a {
+            // Wave-89 CPython parity: only TUPLES unpack into
+            // multiple format args. A LIST right-hand side is ONE
+            // value ("%s" % [1,2] formats the whole list — the old
+            // element-wise unpack made "%s" % [] → 'None' and
+            // multi-element lists TypeError).
             let args: Vec<Value> = match b {
                 Value::Tuple(t) => t.0.to_vec(),
-                Value::List(l) => l.items().to_vec(),
                 other => vec![other.clone()],
             };
             return crate::str_repr::percent_format(fmt.as_str(), &args);
