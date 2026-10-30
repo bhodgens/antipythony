@@ -3465,3 +3465,27 @@ the reactor BEFORE crawler.crawl by reordering start()
 (i.e. reactor-first bootstrap). Option B is what
 CrawlerProcess.start does in CPython: it starts the
 REACTOR and the deferreds then fire inside it.
+
+## Wave-99 (window end): error localized to Task eager-start path
+
+Task.__init__ gets past iscoroutine + contextvars.copy_
+context. The remaining TypeError fires in the EAGER-START
+branch (`if eager_start and self._loop.is_running():
+self.__eager_start()`) — taken because create_task runs
+while the loop is running (inside main()). __eager_start
+internals (call_soon_threadsafe / immediate __step) hit
+our runtime's marker-dispatch gap.
+
+NEXT: instrument vendored asyncio/tasks.py __eager_start
+(its body: `self.__step()` guarded) + __step_run_and_
+handle_result markers; find which call inside eager-start
+yields an ITERATOR that then gets CALLED. Context: our
+async-def coroutines are Namespace markers whose send/
+__await__ dispatch through BuiltinFn markers — Task.__step
+does `result = coro.send(None)` → our send raises
+StopIteration(None) → __step catches → set_result ✓. So
+the worker Task should complete. The MAIN task (main())
+also completes. The TypeError appears during Runner.close
+→ shutdown_asyncgens → create_task — a THIRD create_task
+during loop close. Inspect Runner.close/_cancel_all_tasks
+path next.
