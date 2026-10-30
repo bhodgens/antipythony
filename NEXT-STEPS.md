@@ -3306,3 +3306,30 @@ NEXT SESSION (top priority): add __await__ to the async-def
 coroutine type, verify t2ae.py passes end-to-end
 (asyncio.run + create_task + await), then rerun the T1
 crawl flow.
+
+## Wave-96 status: __await__ added; iscoroutine/ABC check still fails — window end
+
+Done: coroutine markers now carry __await__ (BuiltinFn
+marker __ap_coroutine_await__ dispatched to an empty
+iterator), send raises StopIteration, close/throw no-op,
+repr_text set. t2ae2 confirms __await__ present.
+
+REMAINING: Task.__init__'s `coroutines.iscoroutine(coro)`
+still fails: it does isinstance(obj, _COROUTINE_TYPES)
+where _COROUTINE_TYPES includes collections.abc.Coroutine —
+the ABC __subclasshook__ checks for __await__ on the TYPE
+of the object; our marker's type-level resolution invokes
+the instance __await__ marker mid-check → 'iterator object
+is not callable'. Shim patch to coroutines.py iscoroutine
+(getattr __ap_coroutine__) did not take effect — the
+isinstance call happens BEFORE our getattr fallback path
+completes (ABC hook semantics).
+
+NEXT (top priority): fix the RUNTIME's class-attr
+resolution for __await__ on Namespace-kind coroutine
+markers — the ABC hook does `hasattr(C, '__await__')` /
+`C.__await__` on the TYPE; our runtime must NOT invoke the
+instance-level marker during that check, and must return
+the BOUND method for instance reads. Investigate
+value_isinstance/ABC subclasshook path with the marker as
+subject.

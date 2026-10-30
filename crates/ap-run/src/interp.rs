@@ -3819,9 +3819,28 @@ fn call_value_inner_impl(
                         ];
                         return Ok(f.clone());
                     }
-                    // 02.04a coroutine-stub methods (close/send/throw): no-ops.
+                    // 02.04a coroutine-stub methods: close/throw are
+                    // no-ops; send raises StopIteration (v0 stub
+                    // coroutines do no work — a completed send
+                    // matches CPython's exhausted-coroutine
+                    // semantics so asyncio Tasks terminate instead
+                    // of spinning on None results).
                     if o.name == "__ap_coroutine_noop__" {
                         return Ok(Value::None);
+                    }
+                    // Wave-96: stub-coroutine send raises
+                    // StopIteration(None) — exhausted semantics so
+                    // asyncio Tasks terminate cleanly.
+                    if o.name == "__ap_coroutine_send__" {
+                        return Err(raise("StopIteration", ""));
+                    }
+                    // Wave-96: coroutine.__await__() must return an
+                    // ITERATOR (the loop machinery iterates it). v0
+                    // stub coroutines do no work → empty iterator.
+                    if o.name == "__ap_coroutine_await__" {
+                        return crate::builtins::builtin_iter(&[Value::List(
+                            PyList::from_vec(vec![]),
+                        )]);
                     }
                     // s018/T2: generator close/send/throw — REAL PEP-342
                     // dispatch (generators.rs fiber resume). args[0] is the
@@ -5764,13 +5783,22 @@ fn call_function(
     // what types.py needs to NOT raise.
     if def.is_async {
         let co = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "coroutine");
+        // Wave-96: repr of a stub coroutine must be a plain
+        // '<coroutine ...>' — the default attr-walking repr
+        // invokes the __await__ marker and explodes Task error
+        // paths.
+        *co.repr_text.borrow_mut() = Some(format!(
+            "<coroutine object {} at 0x{:x}>",
+            entry.def.name,
+            (&*co as *const _) as usize
+        ));
         {
             let attrs = co.attrs.borrow_mut();
             let _ = attrs.set(
                 Value::Str(PyString::new("__ap_coroutine__")),
                 Value::Bool(true),
             );
-            for m in ["close", "send", "throw"] {
+            for m in ["close", "throw"] {
                 let _ = attrs.set(
                     Value::Str(PyString::new(m)),
                     Value::Obj(ap_obj::PyObject::new(
@@ -5779,6 +5807,26 @@ fn call_function(
                     )),
                 );
             }
+            // Wave-96: coroutine objects must expose __await__
+            // (CPython always does) — the asyncio loop machinery
+            // (ensure_future/Task) calls coro.__await__(); without
+            // it the attr fallback resolved an iterator that the
+            // loop then CALLED ("'iterator' object is not
+            // callable"). v0: await completes immediately.
+            let _ = attrs.set(
+                Value::Str(PyString::new("send")),
+                Value::Obj(ap_obj::PyObject::new(
+                    ap_obj::ObjKind::BuiltinFn,
+                    "__ap_coroutine_send__",
+                )),
+            );
+            let _ = attrs.set(
+                Value::Str(PyString::new("__await__")),
+                Value::Obj(ap_obj::PyObject::new(
+                    ap_obj::ObjKind::BuiltinFn,
+                    "__ap_coroutine_await__",
+                )),
+            );
         }
         return Ok(Value::Obj(co));
     }
