@@ -3192,3 +3192,22 @@ settings to find which extension's from_crawler blocks
 (suspects: MemoryUsage extension touching resource module,
 or an extension whose __init__ loops on our dict/set
 machinery). Same env-gated stderr probe discipline.
+
+## Wave-93: hang isolated to RequestFingerprinter.from_crawler in crawler context
+
+Probe chain (W98): build_from_crawler enters; LogFormatter
+class path completes; RequestFingerprinter enters
+from_crawler and NEVER returns. Standalone
+RequestFingerprinter() constructs fine (t2rf.py).
+
+Difference in context: from_crawler(cls, crawler) with the
+REAL crawler object → cls(crawler) → __init__ stores
+`self._fingerprint = fingerprint` (module fn) — plain.
+The hang likely: our runtime's `cls(crawler)` constructor
+dispatch for a Protocol-subclass class with the real
+crawler arg (heavy Gc'd object) — OR WeakKeyDictionary
+machinery engaged elsewhere. Next: repro with a real-ish
+crawler (Crawler object from the lazy path pre-block) —
+hard; instead instrument RequestFingerprinter.__init__ and
+the fingerprint fn directly (staged request.py), plus
+hasattr(cls,'from_crawler') evaluation path in our runtime.
