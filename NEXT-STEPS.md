@@ -3149,3 +3149,24 @@ runtime executes the wrapper. If it reproduces, the fix is
 in the runtime's method-call path (registry/binding) to
 invoke the WRAPPED (decorated) object, not the raw
 generator fn.
+
+## Wave-90/91: crawl hang narrowed to Crawler._apply_settings() (probes committed)
+
+Probe ladder (W94/W95) in the lazy path: CrawlerRunner.
+_crawl body DOES run (W94) → Crawler.crawl body enters
+(W95) → spider created → DEATH inside self._apply_settings()
+(AddonManager.load_settings / settings machinery). The
+earlier 'engine never starts' was downstream.
+
+Also corrected wave-90's conclusion: the @inlineCallbacks
+wrapper DOES run (W94 proves _crawl executes); the hang is
+a plain block inside Crawler._apply_settings().
+
+NEXT (one step): instrument Crawler._apply_settings body
+(crawler.py ~215-230: addons.load_settings +
+install_shutdown... check source) — likely AddonManager.
+load_settings iterating addons, or a settings % -format or
+dict op looping. Given the wave-89 % fix just landed, run
+the flow again first WITHOUT new probes (apc cleared) —
+the _apply_settings block may already be cured by the %
+fix if it % -formatted a list.
