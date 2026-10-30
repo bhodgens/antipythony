@@ -3358,3 +3358,22 @@ that path), or (b) have __ap_coroutine_await__ return the
 iterator over a SINGLE-VALUE list [None] so the await
 yields None once. Verify with t2ae.py end-to-end
 (asyncio.run + create_task + await + done).
+
+## Wave-96b (window end): Task.__init__ TypeError persists
+
+Even with __repr__ attr + __await__/send dispatch, Task.
+__init__ raises TypeError('iterator object is not callable')
+at the iscoroutine check / f-string. The getattr chain on
+our Namespace coroutine marker (attrs store with fn-id
+markers) misbehaves during error formatting or iscoroutine —
+each stored BuiltinFn marker read may dispatch-and-call
+(our callable-marker semantics) rather than return the fn
+object.
+
+NEXT (root fix): the runtime's attr_get for BuiltinFn
+markers stored in instance attrs should return the MARKER
+(a callable value) without invoking it. Trace
+attr_get/instance_attr for Namespace-kind objects with
+stored BuiltinFn attrs — verify getattr returns the fn, not
+the call result. Then Task.__init__'s iscoroutine should
+pass and Task creation proceeds.
