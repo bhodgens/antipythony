@@ -3211,3 +3211,28 @@ crawler (Crawler object from the lazy path pre-block) —
 hard; instead instrument RequestFingerprinter.__init__ and
 the fingerprint fn directly (staged request.py), plus
 hasattr(cls,'from_crawler') evaluation path in our runtime.
+
+## Wave-94: window-end state — the hang reproduces in Crawler.__init__
+
+Ran the lazy-path repro with step prints: hangs INSIDE
+p._create_crawler(T1Spider) → Crawler.__init__
+(init_reactor=True → install_reactor eager) — BEFORE the
+get_component_priority_dict_with_base block (which ran fine
+standalone: Settings()["EXTENSIONS_BASE"] works both frozen
+and unfrozen; freeze also OK; t2icA/t2set2 verified).
+
+Settings.__getitem__ / __contains__ / freeze all verified
+correct standalone. The hang therefore involves Crawler.
+__init__'s eager reactor install interacting with the
+already-imported asyncio machinery in this flow (the
+standalone install_reactor test at wave-83 passed, but in
+the crawl flow the loop/policy state differs).
+
+NEXT (concrete): instrument Crawler.__init__ (crawler.py,
+class Crawler, __init__ with init_reactor param) with
+step markers around install_reactor/_update_root_log
+_handler; and compare loop policy state before/after.
+This window ended mid-investigation; all probes (W94-W96,
+W-A2/W-A3, W98/W99, W86/W87/W91) remain in the staged
+crawler.py/middleware.py/utils — REVERT staged probe files
+before any byte-compare gate.
