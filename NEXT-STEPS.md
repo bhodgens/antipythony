@@ -3333,3 +3333,28 @@ instance-level marker during that check, and must return
 the BOUND method for instance reads. Investigate
 value_isinstance/ABC subclasshook path with the marker as
 subject.
+
+## Wave-96 status (window end): __await__ lands; loop-iteration semantics incomplete
+
+Committed: __await__ dispatch (returns builtin_iter over an
+empty list), send raises StopIteration, iscoroutine shim
+(iscoroutine=True verified), repr_text.
+
+REMAINING: asyncio Tasks still fail — the loop iterates our
+__await__ result (an Iterator MARKER object); the marker's
+dispatch treats a CALL as iteration ('iterator object is
+not callable'), i.e. our iterator-marker protocol diverges
+from what the vendored asyncio loop expects (__next__
+driving). CPython semantics for coro.__await__(): returns
+an iterator whose __next__ raises StopIteration(result) on
+completion.
+
+NEXT (concrete): give the __await__ result a WORKING
+__next__ — either (a) teach the Iterator marker created
+over an empty list to raise StopIteration on __next__
+dispatch (check how Iterator markers dispatch __next__ for
+list-iterators — list iteration works elsewhere, so reuse
+that path), or (b) have __ap_coroutine_await__ return the
+iterator over a SINGLE-VALUE list [None] so the await
+yields None once. Verify with t2ae.py end-to-end
+(asyncio.run + create_task + await + done).
