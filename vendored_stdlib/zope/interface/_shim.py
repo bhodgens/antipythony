@@ -74,8 +74,46 @@ class InterfaceClass:
 
     # T1-d: `class IFoo(Interface)` — the instance-as-base PEP 560 hook.
     # Subclasses derive from InterfaceClass itself (advisory surface only).
+    # W110: with metaclass=_InterfaceSubclassMetaclass so that
+    # IFoo.providedBy(resolver) binds (plain InterfaceClass base leaves
+    # providedBy unbound -> TypeError missing 'obj' in reactor
+    # installResolver).
     def __mro_entries__(self, bases):
-        return (InterfaceClass,)
+        return (_InterfaceSubclass,)
+class _InterfaceSubclassMetaclass(type):
+    """W110: `class IFoo(Interface)` produces a class whose base is
+    InterfaceClass (via __mro_entries__) — but twisted calls
+    IResolverSimple.providedBy(resolver) as if it were bound to the
+    interface object. A plain InterfaceClass base exposes the raw function
+    (unbound) -> TypeError missing 'obj'. The metaclass pre-binds the
+    advisory methods onto every subclass at class-creation time, with cls
+    in the closure so IFoo.providedBy(obj) answers like
+    InterfaceClass.providedBy(IFoo, obj)."""
+
+    def __init__(cls, name, bases, ns):
+        super().__init__(name, bases, ns)
+        for _m in ("providedBy", "implementedBy", "isOrExtends", "names",
+                   "namesAndDescriptions", "get", "__contains__", "names"):
+            if _m not in ns:
+                _f = getattr(InterfaceClass, _m, None)
+                if _f is not None and callable(_f):
+                    def _bound(*a, _f=_f, _cls=cls, **k):
+                        return _f(_cls, *a, **k)
+
+                    _bound.__name__ = _m
+                    setattr(cls, _m, _bound)
+
+
+
+
+
+
+class _InterfaceSubclass(InterfaceClass, metaclass=_InterfaceSubclassMetaclass):
+    """W110: base for `class IFoo(Interface)` subclasses. Instance of
+    _InterfaceSubclassMetaclass so IFoo.attr binds to the advisory
+    InterfaceClass surface with cls prepended (IFoo.providedBy(resolver)
+    works unbound)."""
+    pass
 
 
 Interface = InterfaceClass('Interface')

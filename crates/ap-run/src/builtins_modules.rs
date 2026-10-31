@@ -9570,6 +9570,8 @@ pub fn call_time(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Opti
                 let epoch = match args.first() {
                     None => now_epoch(),
                     Some(Value::None) => now_epoch(),
+                    // CPython time.gmtime accepts floats (rounds via time_t conversion)
+                    Some(Value::Float(f)) => f.round() as i64,
                     Some(v) => as_int_i64(v)?,
                 };
                 Ok(make_struct_time(civil_fields(epoch)))
@@ -9578,6 +9580,8 @@ pub fn call_time(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Opti
                 let epoch = match args.first() {
                     None => now_epoch(),
                     Some(Value::None) => now_epoch(),
+                    // CPython time.localtime accepts floats (rounds via time_t conversion)
+                    Some(Value::Float(f)) => f.round() as i64,
                     Some(v) => as_int_i64(v)?,
                 };
                 Ok(make_struct_time(civil_fields(epoch + local_utc_offset())))

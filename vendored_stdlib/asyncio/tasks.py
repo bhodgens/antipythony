@@ -31,7 +31,27 @@ from . import timeouts
 # Helper to generate new task names
 # This uses itertools.count() instead of a "+= 1" operation because the latter
 # is not thread safe. See bpo-11866 for a longer explanation.
-_task_name_counter = itertools.count(1).__next__
+# APX-W110: itertools.count(1).__next__ as a bare callable requires the
+# iterator-bound __next__ attribute to be callable; the runtime's Iterator
+# attr surface returns the object itself (interp.rs gap, sibling-owned).
+# Behavior-identical local counter: names stay "Task-1", "Task-2", ...
+class _TaskNameCounter:
+    __slots__ = ("_n",)
+
+    def __init__(self, start):
+        self._n = start
+
+    def __next__(self):
+        n = self._n
+        self._n = n + 1
+        return n
+
+    def __iter__(self):
+        return self
+
+    __call__ = __next__
+
+_task_name_counter = _TaskNameCounter(1)
 
 
 def current_task(loop=None):
@@ -90,13 +110,7 @@ class Task(futures._PyFuture):  # Inherit Python Task implementation
             # raise after Future.__init__(), attrs are required for __del__
             # prevent logging for pending task in __del__
             self._log_destroy_pending = False
-            import sys as _s_t
-            try:
-                _r = repr(coro)
-            except BaseException as _e:
-                _r = "<repr failed: %s>" % _e
-            _s_t.stderr.write("W-T Task.__init__ rejecting coro repr=%s\n" % _r); _s_t.stderr.flush()
-            raise TypeError(f"a coroutine was expected, got {_r}")
+            raise TypeError(f"a coroutine was expected, got {repr(coro)}")
 
         if name is None:
             self._name = f'Task-{_task_name_counter()}'
@@ -716,14 +730,10 @@ async def sleep(delay, result=None):
 
 
 def ensure_future(coro_or_future, *, loop=None):
-    import sys as _s_ef
-    _s_ef.stderr.write("W-EF ensure_future enter\n"); _s_ef.stderr.flush()
     """Wrap a coroutine or an awaitable in a future.
 
     If the argument is a Future, it is returned directly.
     """
-    import sys as _s_ef2
-    _s_ef2.stderr.write("W-EF2 pre-isfuture\n"); _s_ef2.stderr.flush()
     if futures.isfuture(coro_or_future):
         if loop is not None and loop is not futures._get_loop(coro_or_future):
             raise ValueError('The future belongs to a different loop than '

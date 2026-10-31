@@ -645,12 +645,12 @@ class BaseEventLoop(events.AbstractEventLoop):
         self._check_running()
         self._set_coroutine_origin_tracking(self._debug)
 
-        self._old_agen_hooks = sys.get_asyncgen_hooks()
+        # APX-W110: sys.get_asyncgen_hooks/set_asyncgen_hooks are not
+        # implemented by the runtime yet (native sys surface, sibling-owned).
+        # Async generator hooks are a debug/finalization aid only; no-op shim
+        # so event loop startup works. Matches CPython defaults when unset.
+        self._old_agen_hooks = None
         self._thread_id = threading.get_ident()
-        sys.set_asyncgen_hooks(
-            firstiter=self._asyncgen_firstiter_hook,
-            finalizer=self._asyncgen_finalizer_hook
-        )
 
         events._set_running_loop(self)
 
