@@ -3720,3 +3720,28 @@ family) rather than import.
 5. Gates: corpus 15/0/9xp, SCRAPY IMPORT OK 2.19.0. generators.rs W-GEN probe
    (env-gated APX_GENDbg) uncommitted — file has sibling edits (fn_entry_file) in
    flight; probe rides with sibling commit.
+
+
+## Wave-107 (2026-10-30) — print(file=) + exc surface fixes; crawl runs to completion path
+
+1. **with_traceback on native exc instances** (committed): twisted
+   Failure.throwExceptionIntoGenerator calls value.with_traceback(tb); native
+   raise() instances had no method surface. Added ObjKind::Exception attr arm
+   (interp.rs) using the same __ap_with_traceback__ marker as UserInstance.
+2. **print(file=...) general fix** (committed): was a hard rejector; now writes
+   through any object with .write() (Namespace stdout→console, Namespace
+   stderr→process stderr, others via method dispatch). scrapy logging uses
+   print(file=sys.stderr). Byte-matches CPython (t2pf.py).
+3. **BoundMethod.__module__** (interp.rs, uncommitted — file has sibling edits):
+   delegates to __func__.__globals__["__name__"], default "builtins". scrapy
+   utils/log.py reads reactor.__module__.
+4. Chain state: crawl now RUNS (exit 0, ~148s), passes engine ctor, downloader
+   handlers (DataURI/File loaded, 21 W98 markers), logging, join completes.
+   Current last failure thrown into _crawl generator: 'function' object has no
+   attribute 'tb_frame' — a FUNCTION stored where a traceback belongs, inside
+   _inlineCallbacks (defer.py:1837) resume path. Plain gen.throw+Failure works
+   (t2fb.py n=1 frames ok) — the gap is specific to the deep inlineCallbacks
+   resume crossing, likely the EV tb fn-entry path (generators.rs sibling edit
+   pushes (qualname,line,file) via fn_entry_file).
+5. Gates: corpus 15/0 (8 xfailed 9 xpassed), SCRAPY IMPORT OK 2.19.0, build 0
+   errors. builtins.rs committed; interp.rs held (17 hunks, mixed sibling work).
