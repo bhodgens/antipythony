@@ -705,11 +705,50 @@ pub fn builtin_dict(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
                 }
             }
             other => {
-                // iterable of pairs
-                let it = iterable_of(other)?;
-                for pair in crate::iter::collect(&it) {
-                    let (k, v) = unpack_pair(&pair)?;
-                    d.set(k, v).map_err(Flow::from_py)?;
+                // CPython dict(mapping): keys() + __getitem__ wins over
+                // iterable-of-pairs (UserDict/BaseSettings rely on it).
+                if crate::builtins_modules::dict_like_mapping(other) {
+                    let interp = match crate::builtins_modules::current_interp() {
+                        Some(i) => i,
+                        None => {
+                            return Err(raise("SystemError", "no interpreter for dict ctor"))
+                        }
+                    };
+                    let keys_f = match
+                        crate::builtins::attr_get_pub(&interp, other, "keys")
+                    {
+                        Ok(Some(f)) => f,
+                        _ => {
+                            return Err(raise(
+                                "TypeError",
+                                format!("'{}' object is not a mapping", other.type_name()),
+                            ))
+                        }
+                    };
+                    let keys_v = crate::interp::call_value_pub2(&keys_f, &[], &[])?;
+                    let it = crate::interp::iterable_of_public(&keys_v)?;
+                    for k in crate::iter::collect(&it) {
+                        let getitem = match
+                            crate::builtins::attr_get_pub(&interp, other, "__getitem__")
+                        {
+                            Ok(Some(f)) => f,
+                            _ => {
+                                return Err(raise(
+                                    "TypeError",
+                                    format!("'{}' object is not a mapping", other.type_name()),
+                                ))
+                            }
+                        };
+                        let v = crate::interp::call_value_pub2(&getitem, &[k.clone()], &[])?;
+                        d.set(k, v).map_err(Flow::from_py)?;
+                    }
+                } else {
+                    // iterable of pairs
+                    let it = iterable_of(other)?;
+                    for pair in crate::iter::collect(&it) {
+                        let (k, v) = unpack_pair(&pair)?;
+                        d.set(k, v).map_err(Flow::from_py)?;
+                    }
                 }
             }
         }

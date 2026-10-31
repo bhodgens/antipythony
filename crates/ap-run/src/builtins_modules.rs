@@ -619,6 +619,18 @@ fn snapshot(v: &Value) -> Result<Vec<Value>, Flow> {
     collect(v)
 }
 
+/// True when the value exposes a `keys` attribute (CPython mapping protocol).
+pub fn dict_like_mapping(v: &Value) -> bool {
+    let interp = match crate::builtins_modules::current_interp() {
+        Some(i) => i,
+        None => return false,
+    };
+    matches!(
+        crate::builtins::attr_get_pub(&interp, v, "keys"),
+        Ok(Some(_))
+    )
+}
+
 impl NativeIterState {
     fn into_seq_or_snapshot(self) -> std::vec::IntoIter<Value> {
         match self {
@@ -14888,6 +14900,52 @@ pub fn call_builtin_values(
                 match a(1) {
                     Some(Value::Dict(o)) => {
                         for (k, v) in o.items() {
+                            let _ = d.set(k, v);
+                        }
+                    }
+                    Some(other) if dict_like_mapping(&other) =>
+                    {
+                        // CPython update(mapping): keys() + __getitem__
+                        let interp = match crate::builtins_modules::current_interp() {
+                            Some(i) => i,
+                            None => {
+                                return Err(raise(
+                                    "SystemError",
+                                    "no interpreter for pydict.update",
+                                ))
+                            }
+                        };
+                        let keys_f = match crate::builtins::attr_get_pub(&interp, &other, "keys") {
+                            Ok(Some(f)) => f,
+                            _ => {
+                                return Err(raise(
+                                    "TypeError",
+                                    format!("'{}' object is not a mapping", other.type_name()),
+                                ))
+                            }
+                        };
+                        let keys_v = crate::interp::call_value_pub2(&keys_f, &[], &[])?;
+                        let it = crate::interp::iterable_of_public(&keys_v)?;
+                        for k in crate::iter::collect(&it) {
+                            let getitem = match
+                                crate::builtins::attr_get_pub(&interp, &other, "__getitem__")
+                            {
+                                Ok(Some(f)) => f,
+                                _ => {
+                                    return Err(raise(
+                                        "TypeError",
+                                        format!(
+                                            "'{}' object is not a mapping",
+                                            other.type_name()
+                                        ),
+                                    ))
+                                }
+                            };
+                            let v = crate::interp::call_value_pub2(
+                                &getitem,
+                                &[k.clone()],
+                                &[],
+                            )?;
                             let _ = d.set(k, v);
                         }
                     }

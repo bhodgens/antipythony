@@ -3539,3 +3539,44 @@ crawler.py (W86/W87/W89/W91/W92/W94/W95/W96), middleware.py
 base_events.py (LOOP), events.py (POLICY), coroutines.py
 (iscoroutine shim — KEEP, it's a real fix), spider.py
 (REACTOR-HIT).
+
+
+## Wave-101 (2026-10-30)
+
+**REAL root cause of the crawl "clean no-op" found**: the swallowed TypeError was
+`cannot convert dictionary update sequence element to a sequence` inside
+`get_component_priority_dict_with_base` (scrapy/settings/__init__.py:395
+`dict(self[name + "_BASE"] or {})`) — `dict(mapping)` and `dict.update(mapping)`
+only handled `Value::Dict` + iterable-of-pairs, never the CPython mapping
+protocol (keys() + __getitem__). The exception was caught by `_inlineCallbacks`
+and stored on the Deferred; the engine never started and `start()` returned 0.
+The wave-100 "loop-close TypeError" was a red herring — it does not reproduce
+(repeated APX_ASSERTDBG runs exit 0, [NONECALL-OUTER] silent).
+
+**Fix**: mapping branch added to BOTH `builtin_dict` (crates/ap-run/src/builtins.rs
+ctor `other` arm) and the `("pydict","update")` handler (builtins_modules.rs) via
+new `dict_like_mapping()` helper (attr "keys" probe + call_value_pub2 keys() +
+__getitem__ per key). Verified vs CPython 3.14.7 on UserDict mapping shapes:
+dict(m), dict(m or {}), d.update(m) all match.
+
+**Crawl effect (forward progress)**: the dict ctor no longer throws inside
+`_apply_settings`, so CrawlerProcess.__init__ now progresses FURTHER and dies in
+`log_scrapy_info` → logging → `inspect.signature` walk on `_type_check` (typing)
+— wave-82 degrade path fires: `ValueError: no signature found for <function
+_type_check ...> (AttributeError)`. Prior blocker (NoneType-not-callable at
+`cls(parameters,...)` with sigcls=<class Signature> correctly passed) no longer
+reproduces in this run — state-dependent degradation again; re-verify next wave.
+
+**Probes removed**: W-DC, W-U, UPD-A/B/C, SFG, W-ABC all removed + verified 0
+occurrences in crates/ and vendored_stdlib (grep clean). APX_SFCDBG ladder
+(prewave-80, committed) remains env-gated.
+
+**Gates at close**: build 0 errors; corpus 15 passed / 0 failed / 9 xpassed;
+T1 SCRAPY IMPORT OK 2.19.0; dict-mapping repro /tmp/t2dictmap2.py byte-matches
+CPython shapes.
+
+**Next wave (T1 crawl)**: (1) re-run crawl; if `_type_check` signature walk
+blocks, add `__signature__` passthrough or widen the wave-82 degrade to return
+`(*args, **kwargs)` for typing helpers; (2) then the deferred↔reactor /
+reactor-first bootstrap work for the engine-start NO-OP; (3) spider parse →
+items_ap.jsonl byte-compare.
