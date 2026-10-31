@@ -1249,6 +1249,22 @@ class _BaseGenericAlias(_Final, _root=True):
         if self.__origin__ not in bases:
             res.append(self.__origin__)
 
+        # Wave-109 (CPython 3.14 behavior): when the origin is Generic and a
+        # LATER base resolves to a Generic subclass (type or generic alias),
+        # drop our origin entirely — the subclass already pulls Generic into
+        # the MRO, and bases-order (Generic, Sub) with Sub subclassing
+        # Generic is a C3 contradiction (twisted ZipPath).
+        if res and res[0] is Generic:
+            i = bases.index(self)
+            for b in bases[i + 1:]:
+                b_orig = b
+                orig = getattr(b, "__origin__", None)
+                if orig is not None:
+                    b_orig = orig
+                if isinstance(b_orig, type) and issubclass(b_orig, Generic):
+                    res = []
+                    break
+
         # Check if any base that occurs after us in `bases` is either itself a
         # subclass of Generic, or something which will add a subclass of Generic
         # to `__bases__` via its `__mro_entries__`. If not, add Generic
