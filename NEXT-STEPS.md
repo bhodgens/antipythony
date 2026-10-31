@@ -3667,3 +3667,30 @@ and the harness can skip the extension-by-extension march straight to engine sta
 
 Gates: corpus 15/0/9xp, SCRAPY IMPORT OK 2.19.0, build 0 errors, secrets+classexec
 repros match CPython.
+
+
+## Wave-105 (2026-10-30) — EXTENSIONS disable works; engine reached
+
+1. **Harness disable pattern fixed**: user `EXTENSIONS` entries with None
+   correctly disable components (priority-0 was wrong — 0 is a VALID priority,
+   not disable; scrapy's disable is None). The wave-104 "override ignored"
+   finding was a harness bug, not a runtime bug.
+2. **`aiohttp` import-success shim NEW** (vendored_stdlib/aiohttp/): ClientSession
+   etc.; network ops raise. remote_control's load_object chain needed it.
+3. **gcpd ImportError fallback** (staged settings/__init__.py normalize_key):
+   except ImportError → fallback to raw key (runtime raises ImportError from
+   marker machinery in-context where CPython doesn't; documented deviation).
+4. **Probe markers**: W-MM/W-MM0 in staged middleware.py + extension.py W-A.
+
+Result: ExtensionManager constructs fully (`W-MM ctor done`, mwlist n=2 =
+corestats+logcount). Crawl body advances past `W95 settings applied` +
+`W95 log handler updated` for the first time. Next death: `sys` NameError at
+`_create_engine` (ExecutionEngine ctor; standalone import passes — the
+state-dependent marker-machinery 'sys' lookup again).
+
+Gates: corpus 15/0/9xp, SCRAPY IMPORT OK, build 0 errors.
+
+**Next**: ExecutionEngine ctor 'sys' NameError — likely the same global-lookup
+degradation; instrument scrapy/core/engine.py __init__ to find the exact `sys`
+reference, then check whether it's a closure/defining-frame gap (wave-83
+family) rather than import.
