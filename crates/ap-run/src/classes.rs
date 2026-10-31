@@ -42,8 +42,10 @@ pub fn traceback_value(interp: &crate::frame::Interpreter) -> Value {
     let entries = interp.tb_frames.borrow().clone();
     let script = interp.script_path.clone();
     let mut next: Value = Value::None;
-    for (qualname, line) in entries.iter().rev() {
-        next = tb_node(interp, &script, qualname, *line, next);
+    for (qualname, line, file) in entries.iter().rev() {
+        // T2 gate finding 2: per-frame file (empty = script fallback).
+        let file = if file.is_empty() { &script } else { file };
+        next = tb_node(interp, file, qualname, *line, next);
     }
     if matches!(next, Value::None) {
         next = tb_node(interp, &script, "<module>", 1, Value::None);
@@ -224,7 +226,19 @@ pub fn dynamic_type(
             flags,
             None,
         )
-        .map_err(|e| raise("TypeError", ap_obj::classes::mro_error_message(&e)))?;
+        .map_err(|e| {
+            if std::env::var("APX_MRODBG").is_ok() {
+                let bn: Vec<String> = bases_v
+                    .iter()
+                    .map(|b| match b {
+                        Value::Obj(bo) => format!("{}({:?})", bo.name, bo.kind),
+                        other => other.type_name().to_string(),
+                    })
+                    .collect();
+                eprintln!("[MRODBG] class={} bases={:?}", name, bn);
+            }
+            raise("TypeError", ap_obj::classes::mro_error_message(&e))
+        })?;
         // T1-d: builtin-base marker (3-arg type("X", (tuple,), body) and
         // class-stmt subclasses of tuple/list/set/str) — instantiate
         // constructs the backing builtin from ctor args.
@@ -694,6 +708,47 @@ pub fn exec_class_def(
             bases_v.push(v);
         }
     }
+    // Wave-109 (CPython 3.14 alias-base behavior): `class ZP(Generic[...],
+    // Sub[...])` where Sub subclasses Generic — CPython's alias
+    // __mro_entries__ drops the explicit Generic (the subclass already
+    // pulls it into the MRO; keeping both contradicts base order in C3).
+    // Mirror that: drop an explicit Generic base when a LATER base's class
+    // chain already contains Generic.
+    {
+        let mut drop_idx: Vec<usize> = Vec::new();
+        for (i, b) in bases_v.iter().enumerate() {
+            let is_generic_base = matches!(b, Value::Obj(o)
+                if o.name == "Generic"
+                    && matches!(o.kind, ap_obj::ObjKind::Type | ap_obj::ObjKind::UserClass));
+            if !is_generic_base {
+                continue;
+            }
+            let later_has = bases_v[i + 1..].iter().any(|later| {
+                matches!(base_type_ref(interp, later), Ok(Some(t))
+                    if t.mro.borrow().iter().any(|m| m.name == "Generic" && !std::rc::Rc::ptr_eq(m, &t)))
+            });
+            if std::env::var("APX_MRODBG").is_ok() {
+                let lnames: Vec<String> = bases_v[i + 1..]
+                    .iter()
+                    .map(|later| match base_type_ref(interp, later) {
+                        Ok(Some(t)) => format!(
+                            "{}[mro={:?}]",
+                            t.name,
+                            t.mro.borrow().iter().map(|m| m.name.clone()).collect::<Vec<_>>()
+                        ),
+                        _ => "<none>".to_string(),
+                    })
+                    .collect();
+                eprintln!("[MRODBG-DROP] generic at {} later={:?}", i, lnames);
+            }
+            if later_has {
+                drop_idx.push(i);
+            }
+        }
+        for i in drop_idx.into_iter().rev() {
+            bases_v.remove(i);
+        }
+    }
     let metaclass_v = match &c.metaclass {
         Some(e) => Some(eval_expr(interp, frame, e, reg)?),
         None => None,
@@ -1092,7 +1147,19 @@ pub fn exec_class_def(
             flags,
             None,
         )
-        .map_err(|e| raise("TypeError", ap_obj::classes::mro_error_message(&e)))?;
+        .map_err(|e| {
+            if std::env::var("APX_MRODBG").is_ok() {
+                let bn: Vec<String> = bases_v
+                    .iter()
+                    .map(|b| match b {
+                        Value::Obj(bo) => format!("{}({:?})", bo.name, bo.kind),
+                        other => other.type_name().to_string(),
+                    })
+                    .collect();
+                eprintln!("[MRODBG-CLS] class={} bases={:?}", c.name, bn);
+            }
+            raise("TypeError", ap_obj::classes::mro_error_message(&e))
+        })?;
         // T1-d: propagate the builtin-base marker — a class deriving from a
         // tuple/list/set/str subclass (directly via 3-arg type() or a class
         // stmt) keeps the backing-builtin construction semantics.
@@ -1957,6 +2024,14 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
             || (o.kind == ap_obj::ObjKind::Namespace && o.name == "_Union")
         {
             for arm in o.slice_parts.borrow().iter() {
+                // PEP 604: `X | None` parks None as a Value::None arm —
+                // the arm matches NoneType (isinstance(None, int|None)).
+                if matches!(arm, Value::None) {
+                    if matches!(x, Value::None) {
+                        return Ok(true);
+                    }
+                    continue;
+                }
                 if value_isinstance(interp, x, arm)? {
                     return Ok(true);
                 }
