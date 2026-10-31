@@ -175,8 +175,9 @@ pub fn print(interp: &Interpreter, args: &[Value], kwargs: &[(String, Value)]) -
     Ok(Value::None)
 }
 
-/// print(file=...) v0 surface: only sys.stdout accepted (identity checked by
-/// the caller passing nothing or the module attr — reject others).
+/// print(file=...): write through any object with .write() (wave-107).
+/// sys.stdout/ns-stdout goes to the interpreter console; other writers get
+/// write() calls via method dispatch (scrapy logging does print(file=sys.stderr)).
 fn print_to_file(
     interp: &Interpreter,
     v: &Value,
@@ -186,18 +187,32 @@ fn print_to_file(
 ) -> BResult {
     let is_stdout = matches!(v, Value::Obj(o) if o.kind == ap_obj::ObjKind::Namespace
         && o.name == "stdout");
-    if !is_stdout {
-        return Err(raise(
-            "TypeError",
-            "print() in v0 supports only file=sys.stdout",
-        ));
+    let mut out = String::new();
+    for (i, a) in args.iter().enumerate() {
+        if i > 0 {
+            out.push_str(sep);
+        }
+        out.push_str(&py_str_of(a).map_err(Flow::from_py)?);
     }
-    let _ = (args, sep, end);
-    let _ = interp;
-    Err(raise(
-        "TypeError",
-        "print() in v0 supports only file=sys.stdout",
-    ))
+    out.push_str(end);
+    if is_stdout {
+        interp.write_out(&out);
+        return Ok(Value::None);
+    }
+    // Namespace stderr (sys.stderr): write to the process stderr, matching
+    // the native sys.stderr.write surface.
+    if matches!(v, Value::Obj(o) if o.kind == ap_obj::ObjKind::Namespace && o.name == "stderr") {
+        eprint!("{}", out);
+        return Ok(Value::None);
+    }
+    let r = call_method_pub(v, "write", &[Value::Str(PyString::new(out))]);
+    match r {
+        Ok(_) => Ok(Value::None),
+        Err(_) => Err(raise(
+            "TypeError",
+            "print() file must be None or have a write() method",
+        )),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1134,10 +1149,22 @@ fn check_isinstance(v: &Value, t: &Value) -> Result<Value, Flow> {
             )))
         }
         // T2 (_pytest._code.Source: isinstance(obj, tuple | list)):
-        // types.UnionType (`X | Y`) is the Namespace "_Union" with member
-        // types in slice_parts — isinstance accepts unions (CPython 3.10+).
-        Value::Obj(o) if o.kind == ap_obj::ObjKind::Namespace && o.name == "_Union" => {
+        // types.UnionType (`X | Y`) is the Namespace "_Union" (or the
+        // executor's Opaque "__union__") with member types in slice_parts —
+        // isinstance accepts unions (CPython 3.10+).
+        Value::Obj(o)
+            if (o.kind == ap_obj::ObjKind::Namespace && o.name == "_Union")
+                || (o.kind == ap_obj::ObjKind::Opaque && o.name == "__union__") =>
+        {
             for p in o.slice_parts.borrow().iter() {
+                // PEP 604: `X | None` parks None as a Value::None arm —
+                // it matches NoneType (isinstance(None, int|None)).
+                if matches!(p, Value::None) {
+                    if matches!(v, Value::None) {
+                        return Ok(Value::Bool(true));
+                    }
+                    continue;
+                }
                 if check_isinstance(v, p)?.is_truthy() {
                     return Ok(Value::Bool(true));
                 }
