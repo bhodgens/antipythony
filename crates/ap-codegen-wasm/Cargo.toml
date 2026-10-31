@@ -10,3 +10,10 @@ path = "src/lib.rs"
 
 [lints]
 workspace = true  # robustness-ci 02.01 - see root Cargo.toml [workspace.lints]
+
+[dependencies]
+ap-ir = { path = "../ap-ir" }
+wasm-encoder = "0.263.0"
+
+[dev-dependencies]
+wasmparser = "0.263"

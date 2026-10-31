@@ -10,3 +10,11 @@ path = "src/lib.rs"
 
 [lints]
 workspace = true  # robustness-ci 02.01 - see root Cargo.toml [workspace.lints]
+
+[dependencies]
+ap-codegen-wasm = { path = "../ap-codegen-wasm" }
+wasmtime = "47"
+wasmtime-wasi = "47"
+
+[dev-dependencies]
+ap-ir = { path = "../ap-ir" }

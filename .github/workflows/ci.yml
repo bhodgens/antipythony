@@ -5,9 +5,9 @@ name: ci
 #
 # Jobs here: fast-lints (pytest lints + notices drift), rust (pinned fmt /
 # informational clippy / build / test), deny (cargo-deny, master.md:45
-# promise). attribution.yml stays alive until the orchestrator retires it
-# after this file lands - its notices gate is duplicated in fast-lints so
-# retirement is a pure delete.
+# promise). attribution.yml was retired (deleted) once its notices-drift
+# gate was verified duplicated in fast-lints below - pure delete per
+# 00-ci-core/orchestrator.md and docs/ci-branch-protection.md step 3.
 #
 # Toolchain contract (master.md interface table): rustc 1.94.0 pinned via
 # dtolnay/rust-toolchain@master, matching rust-toolchain.toml:6. Homebrew

@@ -83,5 +83,25 @@ builds on the module emitter), 03.05 parallel with 03.03 onward, 03.06 last.
      VALIDATED. Delta protocol: lesser of plan/tests updates to the greater.
      Recipe: skill hierarchical-planning -> references/tests-first-gate.md -->
 
-N/A — no leaf documents found alongside this orchestrator. If this tree
-gains leaves, build the coverage matrix before dispatching them.
+Leaves landed (design wave 2026-10-30; briefs in `leaves/`, design doc
+`docs/03-wasm-representation-design.md`). Coverage matrix — test names are
+filled at dispatch per the tests-first protocol (T-12/T-13 in
+`plans/antipythany/tests/TRACKING.md` are the pre-registered test leaves,
+BLOCKED on spec 07 = leaf 03.01):
+
+| # | Feature (from leaf briefs) | Source | Unit tests | E2E tests | Status |
+|---|---------------------------|--------|-----------|-----------|--------|
+| 1 | spec 07 representation contract (structs, bigint, EH, GC ownership) | 03.01 | doc-review gate (main model) | unblocks T-12/T-13 authoring | PENDING |
+| 2 | values + control flow + closures lowering | 03.02 | ap-codegen-wasm crate tests | values corpus slice native-vs-wasm byte-diff (T-12 rows) | PENDING |
+| 3 | classes + exceptions + traceback rendering | 03.03 | ap-codegen-wasm/ap-host crate tests | classes+exceptions slices byte-diff (T-12 rows) | PENDING |
+| 4 | generators, match, comprehensions | 03.04 | ap-codegen-wasm crate tests | FULL corpus native-vs-wasm (T-12) | PENDING |
+| 5 | ap-host WASI + aprt imports, `ap-host run` CLI | 03.05 | ap-host crate tests | T-13 host/wasi; full corpus in wasm mode | PENDING |
+| 6 | browser smoke + threading spike | 03.06 | n/a (probe) | demo manual verify; spike documented | PENDING |
+| 7 | differential exit gate (return to byte-exact, A-3/D6) | 03.07 | n/a | full-corpus triple-diff report; Class-X burn-down | PENDING |
+
+Hello-world skeleton (this design wave, already compiling — see leaf 03.01
+entry gate): `ap_codegen_wasm::lower_module` (print-literal bootstrap) +
+`ap_host::run` (wasmtime 47 + WASI preview1, captured stdio) + integration
+test. It is bootstrap scaffolding for 03.02 to replace with the GC path;
+its behavior is covered by in-crate tests, matrix rows 1-2 refine it at
+dispatch.
