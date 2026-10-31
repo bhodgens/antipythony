@@ -3642,3 +3642,28 @@ proceed past extensions to engine.open_spider_async.
 
 Probes in staged tree this wave: crawler.py (W94b/W94c), middleware.py (W97
 SKIP) — NOT yet reverted; harness run_ap3.py has HARNESS errback (test data).
+
+
+## Wave-104 (2026-10-30) — extension march: secrets + class-body exec + stdlib shims
+
+1. **`vendored_stdlib/secrets.py` NEW** (os.urandom-backed token_hex/bytes/urlsafe/
+   compare_digest; random.choice/randbelow delegated) — TelnetConsole imports.
+2. **class-body exec fix** (crates/ap-run/src/classes.rs + builtins.rs): exec_class_def
+   now publishes the live class ns via CURRENT_CLASS_NS thread-local around the body;
+   builtin_exec's no-explicit-globals path routes through exec_stmts_in_ns(ns) when
+   present. CPython exec-in-class rule; fixes twisted insults.py
+   `exec(ch + " = _makeSimple(ch, fName)")` (repro /tmp/t2classexec.py, matches CPython).
+3. **`ftplib.py`, `bz2.py`, `lzma.py` shims NEW** — import-success surfaces for
+   feedexport/postprocessing; network/compression ops raise NotImplementedError.
+
+Crawl state: TelnetConsole loads OK; extension ladder now dies at RemoteControl
+(FeedExporter passed with the shims). HARNESS errback confirms the deferred still
+pre-fires with a Failure at each next extension.
+
+**New runtime finding**: user EXTENSIONS settings-dict override does NOT replace the
+base extension list in get_component_priority_dict_with_base merge (harness tried
+disabling all but CoreStats/LogCount — ignored). CPython scrapy replaces. Fix this
+and the harness can skip the extension-by-extension march straight to engine start.
+
+Gates: corpus 15/0/9xp, SCRAPY IMPORT OK 2.19.0, build 0 errors, secrets+classexec
+repros match CPython.

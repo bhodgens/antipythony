@@ -578,6 +578,20 @@ pub fn subclasses_of(interp: &Interpreter, name: &str) -> Vec<Value> {
 
 /// Execute a class statement: bases, body in a fresh namespace, class
 /// creation, hooks, name binding in the enclosing scope.
+
+thread_local! {
+    /// Wave-104: the class namespace of the class body CURRENTLY executing
+    /// (set by exec_class_def, cleared after). 1-arg exec() routes here so
+    /// exec'd statements see class-body names (CPython exec-in-class rule).
+    static CURRENT_CLASS_NS: std::cell::RefCell<Option<Gc<PyDict>>> =
+        std::cell::RefCell::new(None);
+}
+
+/// Public accessor for builtin_exec (builtins.rs).
+pub fn current_class_ns() -> Option<Gc<PyDict>> {
+    CURRENT_CLASS_NS.with(|c| c.borrow().clone())
+}
+
 pub fn exec_class_def(
     interp: &Rc<Interpreter>,
     frame: &Rc<Frame>,
@@ -818,7 +832,12 @@ pub fn exec_class_def(
             let _ = ns.set(Value::Str(PyString::new("__module__")), modname);
         }
     }
-    exec_block(interp, &class_frame, &c.body, reg)?;
+    // Wave-104: publish the class ns for 1-arg exec() inside the class body
+    // (twisted insults.py `exec(ch + " = _makeSimple(ch, fName)")`).
+    CURRENT_CLASS_NS.with(|c| *c.borrow_mut() = Some(ns.clone()));
+    let body_res = exec_block(interp, &class_frame, &c.body, reg);
+    CURRENT_CLASS_NS.with(|c| *c.borrow_mut() = None);
+    body_res?;
 
     // 3. Resolve base TypeRefs (S-03-1: `class A:` == `class A(object):`).
     let mut base_types: Vec<Rc<TypeRef>> = Vec::new();
@@ -1930,7 +1949,13 @@ fn run_set_name_hooks(interp: &Rc<Interpreter>, cls: &Value, t: &Rc<TypeRef>) ->
 pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bool, Flow> {
     // Union marker (X | Y lowered by the executor): any arm matches.
     if let Value::Obj(o) = t {
-        if o.kind == ap_obj::ObjKind::Opaque && o.name == "__union__" {
+        // Both union shapes: the executor's Opaque "__union__" marker AND
+        // the binop arm's Namespace "_Union" (interp.rs). T2 gate finding
+        // 1: only the Opaque shape matched here, so isinstance(user_inst,
+        // tuple | list) fell through to base_type_ref and TypeErrored.
+        if (o.kind == ap_obj::ObjKind::Opaque && o.name == "__union__")
+            || (o.kind == ap_obj::ObjKind::Namespace && o.name == "_Union")
+        {
             for arm in o.slice_parts.borrow().iter() {
                 if value_isinstance(interp, x, arm)? {
                     return Ok(true);

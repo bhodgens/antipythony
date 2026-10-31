@@ -4767,6 +4767,15 @@ pub fn builtin_exec(interp: &Interpreter, args: &[Value]) -> crate::EvalResult {
         })
         .collect();
     let rc_interp = interp.rc();
+    // Wave-104: exec(str) with no explicit namespaces INSIDE A CLASS BODY —
+    // CPython gives the exec the class namespace as locals (twisted
+    // insults.py `exec(ch + " = _makeSimple(ch, fName)")` pattern). Our
+    // exec_stmts_public used a fresh MODULE frame, so class-body names were
+    // invisible to the exec'd code. exec_class_def publishes the live
+    // class ns; route through it when present.
+    if let Some(ns) = crate::classes::current_class_ns() {
+        return crate::interp::exec_stmts_in_ns(&rc_interp, &stmts, ns, None);
+    }
     crate::interp::exec_stmts_public(&rc_interp, &stmts)
 }
 
