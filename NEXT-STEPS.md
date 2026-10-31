@@ -3745,3 +3745,32 @@ family) rather than import.
    pushes (qualname,line,file) via fn_entry_file).
 5. Gates: corpus 15/0 (8 xfailed 9 xpassed), SCRAPY IMPORT OK 2.19.0, build 0
    errors. builtins.rs committed; interp.rs held (17 hunks, mixed sibling work).
+
+
+## Wave-108 (2026-10-30) — logging/traceback fix cascade; 4 real runtime bugs fixed
+
+1. **sys.exception() was hardcoded None** (FIXED, committed): logging.handleError
+   depends on it; CPython returns the active handled exception. Now returns the
+   in-flight instance from interp.current_exception (matches exc_info).
+2. **f_back chain-end attr miss** (FIXED, interp.rs, rides sibling commit): synthetic
+   <frame> chains raised AttributeError at the end instead of answering None —
+   "'object' object has no attribute 'f_back'" in every traceback.print_stack walk.
+   Now returns Value::None at chain end (CPython semantics).
+3. **List-method surface gaps** (FIXED, committed): reverse/sort/insert/extend/
+   index/count added to builtin_method_exists + methods.rs dispatch on list-derived
+   instances (StackSummary.reverse in traceback formatting).
+4. **zipimport v0 shim** (committed): module exists; zipimporter() raises
+   ZipImportError (no archive support). Unblocked the crawl chain past import probes.
+5. **with_traceback on exc + print(file=) from wave-107 verified in-chain**: logging
+   error path now prints real tracebacks; the 3-wave "empty Failure" disease is GONE
+   — failures arrive with true tracebacks (HARNESS TB now names exact missing attrs).
+6. Chain state: crawl exit 0 in ~186s. Newest blocker: MRO conflict
+   "Cannot create a consistent MRO for bases Generic, AbstractFilePath" —
+   FilePath(AbstractFilePath[AnyStr]): our class builder treats the SUBSCRIPTED
+   generic alias as TWO bases (Generic + origin) in wrong order. Simple 1- and
+   2-level Generic cases pass (t2mro/t2mro2) — gap is alias-base decomposition
+   order in the class builder. Next: fix base decomposition of _GenericAlias
+   (single base = origin only).
+7. Gates: corpus 15/0 (8 xf 9 xp), SCRAPY IMPORT OK, build 0 errors. W108 marker
+   in vendored logging + probes in _contextvars.py still in tree (pre-commit
+   cleanup pending; _contextvars W-CRD probe is env-safe but unconditional-write).
