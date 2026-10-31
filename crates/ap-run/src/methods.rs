@@ -1413,6 +1413,84 @@ pub fn call_method(
             l.clear();
             Some(Ok(Value::None))
         }
+        // Wave-108: remaining in-place list surface (StackSummary.reverse in
+        // traceback formatting; sort/insert/index/count/extend same family).
+        (Value::List(l), "reverse") => {
+            let len = l.len();
+            for i in 0..len / 2 {
+                let a = l.get(i).unwrap();
+                let b = l.get(len - 1 - i).unwrap();
+                l.set_at(i, b);
+                l.set_at(len - 1 - i, a);
+            }
+            Some(Ok(Value::None))
+        }
+        (Value::List(l), "sort") => {
+            // v0: homogeneous int/str sort; other item types left as-is
+            // (full __lt__ dispatch arrives with the cmp pass).
+            let all_int = l.items().iter().all(|v| matches!(v, Value::Int(_) | Value::Bool(_)));
+            let all_str = l.items().iter().all(|v| matches!(v, Value::Str(_)));
+            if all_int || all_str {
+                let mut items = l.items().to_vec();
+                items.sort_by(|a, b| match (a, b) {
+                    (Value::Int(x), Value::Int(y)) => x
+                        .to_i64()
+                        .unwrap_or(0)
+                        .cmp(&y.to_i64().unwrap_or(0)),
+                    (Value::Str(x), Value::Str(y)) => x.as_str().cmp(y.as_str()),
+                    _ => std::cmp::Ordering::Equal,
+                });
+                l.clear();
+                for it in items {
+                    l.append(it);
+                }
+            }
+            Some(Ok(Value::None))
+        }
+        (Value::List(l), "insert") => {
+            if args.len() >= 2 {
+                let idx_v = args[0].as_int().and_then(|i| i.to_i64()).unwrap_or(0);
+                let len = l.len() as i64;
+                let idx = if idx_v < 0 {
+                    (len + idx_v).max(0)
+                } else {
+                    idx_v.min(len)
+                } as usize;
+                // v0 PyList has no insert: rebuild tail.
+                let tail: Vec<Value> = l.items()[idx.min(l.len())..].to_vec();
+                if idx < l.len() {
+                    l.remove_range(idx, l.len());
+                }
+                l.append(args[1].clone());
+                for it in tail {
+                    l.append(it);
+                }
+            }
+            Some(Ok(Value::None))
+        }
+        (Value::List(l), "extend") => {
+            if let Some(other) = args.first() {
+                match other {
+                    Value::List(o) => {
+                        for it in o.items().to_vec() {
+                            l.append(it);
+                        }
+                    }
+                    Value::Tuple(t) => {
+                        for it in t.0.iter() {
+                            l.append(it.clone());
+                        }
+                    }
+                    Value::Str(st) => {
+                        for ch in st.as_str().chars() {
+                            l.append(Value::Str(ap_obj::PyString::new(ch.to_string())));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Some(Ok(Value::None))
+        }
         (Value::Dict(d), "keys") => {
             // T1-d: return a dict_keys VIEW (membership `in`, iteration) —
             // sysconfig._extend_dict does `key in target_keys`.

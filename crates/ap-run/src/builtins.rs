@@ -2978,8 +2978,29 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
             ])))))
         }
         // T1 (scrapy fix pass): sys.exception() — the active handled exception
-        // in CPython; v0 returns None (matches the exc_info stub above).
-        "exception" => Some(Ok(Value::None)),
+        // (same in-flight instance exc_info returns; wave-108: was hardcoded
+        // None, breaking logging.handleError which reads exc.__traceback__).
+        "exception" => {
+            let interp2 = match crate::builtins_modules::current_interp() {
+                Some(i) => i,
+                None => return Some(Ok(Value::None)),
+            };
+            let inflight = interp2.current_exception.borrow().clone();
+            match inflight {
+                Some(ev) => {
+                    let inst = ev.instance.clone().unwrap_or_else(|| {
+                        let i = ap_obj::PyObject::new(
+                            ap_obj::ObjKind::Exception,
+                            ev.class.clone(),
+                        );
+                        *i.args.borrow_mut() = ev.args.clone();
+                        Value::Obj(i)
+                    });
+                    Some(Ok(inst))
+                }
+                None => Some(Ok(Value::None)),
+            }
+        }
         _ => None,
     }
 }
