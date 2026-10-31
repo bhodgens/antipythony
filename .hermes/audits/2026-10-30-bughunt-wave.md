@@ -66,6 +66,15 @@ repo; the sibling owns the tree.
 - b1 #2/#3 [MEDIUM] lowering.rs expect("scope stack never empty") at
   255/306/468 + 1161 contradict the file's "no panic paths" claim if the
   invariant can break; UNVERIFIED (no PoC). Queued with a fuzz-seed ask.
+  Binary probes: malformed input yields SyntaxError, not panics.
+- b2 #7 [MEDIUM claimed] "edges_of skips class_ref/type_ref": parent
+  verdict = direction of error is CONSERVATIVE here. mark_reachable
+  seeds any entry with sc > internal+1 as externally referenced; an
+  untraced instance->class Rc makes internal_edges UNDERCOUNT, so the
+  class is seeded and RETAINED (possible leak), never collected early.
+  Not a soundness bug; queued as a leak observation only.
+- b2 #5 [LOW] INTERNED_TYPE_PINS unbounded: accepted (immortal types,
+  bounded by program type count).
 - b1 #9 [INFO] window-diff regression review: no panic-inducing changes
   in ap-parse/ap-ir/ap-cli.
 - Sibling still active (wave-108 landed mid-audit; 50 dirty files).
