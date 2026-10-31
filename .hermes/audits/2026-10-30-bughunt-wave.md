@@ -51,3 +51,22 @@ repo; the sibling owns the tree.
 - NO fixer dispatched: sibling session owns the dirty tree; editing
   interp/threading/generators now would collide. Findings 1, 2, 3, 5 are
   queued for the next clean-tree wave (file:line pinned above).
+
+## SECOND-WAVE ADDENDUM (b1 frontend, b2 GC/object)
+
+- b2 #1 [HIGH claimed] "frame locals not registered as roots": REFUTED
+  by parent. weakbridge_frame_values() returning Vec::new() is
+  deliberate (gcsupport.rs comment): the subtract-refs seeding in
+  mark_reachable (gcmod.rs: sc > internal+1) covers native-stack locals
+  by construction; module namespaces are explicit roots.
+- b2 #2 [MEDIUM] nested CollectGuard clears the flag at inner drop -
+  VERIFIED in code, documented as MMTk-swap debt. Queued.
+- b2 #4 [MEDIUM] SEQ/SEQ_OF finalizer-order staleness across
+  collections: queued for the clean-tree wave.
+- b1 #2/#3 [MEDIUM] lowering.rs expect("scope stack never empty") at
+  255/306/468 + 1161 contradict the file's "no panic paths" claim if the
+  invariant can break; UNVERIFIED (no PoC). Queued with a fuzz-seed ask.
+- b1 #9 [INFO] window-diff regression review: no panic-inducing changes
+  in ap-parse/ap-ir/ap-cli.
+- Sibling still active (wave-108 landed mid-audit; 50 dirty files).
+  Disposition unchanged: audit-only, pinned for next clean wave.
