@@ -3610,3 +3610,35 @@ settings/log path fully passing. Gates: corpus 15/0/9xp, SCRAPY IMPORT OK
 except-Exception from deep marker-attr (__getattr__) frames during
 inspect.signature of cryptography/OpenSSL objects — state-dependent, needs
 paired-consumption-style investigation (see wave-77 postmortem pattern).
+
+
+## Wave-103 (2026-10-30) — NO-OP ROOT CAUSE REFRAMED
+
+**The "engine never starts / deferred-reactor bridge" theory is DEAD.** With the
+wave-101/102 fixes in place, probe ladder (W94b/W94c in staged crawler.py +
+HARNESS errback) shows:
+
+1. `_crawl` runs: crawlers.add OK, `d = crawler.crawl(...)` created with
+   `called=True` IMMEDIATELY — the crawl deferred is pre-fired with a Failure.
+2. HARNESS errback prints the Failure: `NameError: name 'sys' is not defined`,
+   raised inside a frame misattributed to "Context.run" (tb attribution broken
+   for generator frames — all frames report __main__/has-sys=True).
+3. Extension ladder stops at `W97 ext begin TelnetConsole` (twisted.conch
+   import chain). The NameError rides the deferred; `_crawl`'s finally discards
+   it from `_active`; `join()` sees active=0 → `start()` returns 0 → the
+   "clean no-op".
+
+So the engine-start scheduling gap may not exist — the crawl dies INSTANTLY at
+the telnet extension (twisted.conch.sys import/globals issue inside generator
+frames — wave-74/80 module-globals aliasing family), and the swallowed Failure
+masqueraded as a scheduling problem.
+
+**Next wave (T1 crawl, concrete)**: find the frame that lacks `sys` — run the
+crawl with an import-time probe in twisted/conch/telnet.py and
+scrapy/utils/reactor.py (module-level `import sys` + first-use marker), or
+extend the runtime's load_into aliased-module path to verify globals contain
+every imported name (wave-74 regression test). Then the deferred chain should
+proceed past extensions to engine.open_spider_async.
+
+Probes in staged tree this wave: crawler.py (W94b/W94c), middleware.py (W97
+SKIP) — NOT yet reverted; harness run_ap3.py has HARNESS errback (test data).
