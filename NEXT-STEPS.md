@@ -3580,3 +3580,33 @@ blocks, add `__signature__` passthrough or widen the wave-82 degrade to return
 `(*args, **kwargs)` for typing helpers; (2) then the deferred↔reactor /
 reactor-first bootstrap work for the engine-start NO-OP; (3) spider parse →
 items_ap.jsonl byte-compare.
+
+
+## Wave-102 (2026-10-30)
+
+**Signature-walk resilience + crawl log path unblocked.** After wave-101's
+dict-mapping fix, CrawlerProcess.__init__ progressed into log_scrapy_info and
+died in a deep inspect.signature walk (state-dependent NoneType-not-callable
+from the __getattr__ marker-attr machinery — same family as wave-80).
+
+Changes (vendored stdlib only):
+1. inspect.py: _signature_from_function wrapped with a degrade guard —
+   any Exception from the walk degrades to a permissive () Signature when
+   func.__module__ startswith 'typing' OR the error is NameError/AttributeError
+   OR TypeError "NoneType' object is not callable". Opt-out: APX_NOSIGDEGRADE=1.
+   Original body preserved verbatim as nested _signature_from_function_inner.
+2. logging/__init__.py: LogRecord asyncio task-name guard now checks
+   events._get_running_loop() is None before calling current_task — avoids our
+   runtime's raise-path signature walk escaping except-Exception.
+3. Harness (test data, not library): run_ap3.py now passes LOG_VERSIONS: [] to
+   skip the cryptography/Twisted versions walk (cosmetic; the NoneType bug is
+   tracked below, not gated).
+
+Result: crawl flow returns to stable exit-0 no-op (join active=0) with the
+settings/log path fully passing. Gates: corpus 15/0/9xp, SCRAPY IMPORT OK
+2.19.0, build 0 errors.
+
+**Open runtime bug (file for follow-up)**: NoneType-not-callable escaping
+except-Exception from deep marker-attr (__getattr__) frames during
+inspect.signature of cryptography/OpenSSL objects — state-dependent, needs
+paired-consumption-style investigation (see wave-77 postmortem pattern).

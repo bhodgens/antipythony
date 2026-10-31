@@ -380,7 +380,15 @@ class LogRecord(object):
             asyncio = sys.modules.get('asyncio')
             if asyncio:
                 try:
-                    self.taskName = asyncio.current_task().get_name()
+                    # antipythany (wave-102): guard with events._get_running_loop
+                    # first — our runtime's RuntimeError-raise path can trigger a
+                    # deep signature walk that escapes except-Exception. CPython
+                    # has no need for this guard.
+                    _ev = asyncio.events
+                    if _ev is not None and _ev._get_running_loop() is None:
+                        pass
+                    else:
+                        self.taskName = asyncio.current_task().get_name()
                 except Exception:
                     pass
 

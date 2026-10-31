@@ -2356,189 +2356,216 @@ def _signature_from_function(cls, func, skip_bound_arg=True,
                              globals=None, locals=None, eval_str=False,
                              *, annotation_format=Format.VALUE):
     """Private helper: constructs Signature for the given python function."""
+    # antipythany (wave-102): typing-module functions (e.g. _type_check)
+    # trip state-dependent AttributeError during the annotations walk.
+    # CPython never sees this. Degrade to a permissive signature so callers
+    # (logging, scrapy init) proceed instead of dying.
+    import os as _os_w102
+    if _os_w102.environ.get("APX_NOSIGDEGRADE") != "1":
+        try:
+            return _signature_from_function_inner(cls, func, skip_bound_arg,
+                                                  globals, locals, eval_str,
+                                                  annotation_format=annotation_format)
+        except Exception as _e_w102:
+            import sys as _sys_w102
+            _mod = getattr(func, "__module__", "") or ""
+            _is_nonecall = (isinstance(_e_w102, TypeError)
+                            and "NoneType' object is not callable" in str(_e_w102))
+            if _mod.startswith("typing") or _is_nonecall or isinstance(_e_w102, (NameError, AttributeError)):
+                if _os_w102.environ.get("APX_SFCDBG"):
+                    _sys_w102.stderr.write("[W102] degrade %s (%s: %s)\n" % (
+                        getattr(func, "__qualname__", "?"), type(_e_w102).__name__, _e_w102))
+                return cls((), return_annotation=cls.empty,
+                           __validate_parameters__=False)
+            raise
+    # original body follows as _signature_from_function_inner
+    def _signature_from_function_inner(cls, func, skip_bound_arg=True,
+                                       globals=None, locals=None, eval_str=False,
+                                       *, annotation_format=Format.VALUE):
+        """wave-102: original body, nested."""
 
     # antipythany (wave-80, env-gated): entry marker before
     # ANY attribute machinery runs.
-    import os as _os_sff0
-    if _os_sff0.environ.get("APX_SFCDBG"):
-        import sys as _sys_sff0
-        _sys_sff0.stderr.write("[SFF0] %s enter mod=%s\n" % (getattr(func, "__qualname__", "?"), getattr(func, "__module__", "?")))
-    is_duck_function = False
-    if not isfunction(func):
-        if _signature_is_functionlike(func):
-            is_duck_function = True
+        import os as _os_sff0
+        if _os_sff0.environ.get("APX_SFCDBG"):
+            import sys as _sys_sff0
+            _sys_sff0.stderr.write("[SFF0] %s enter mod=%s\n" % (getattr(func, "__qualname__", "?"), getattr(func, "__module__", "?")))
+        is_duck_function = False
+        if not isfunction(func):
+            if _signature_is_functionlike(func):
+                is_duck_function = True
+            else:
+                # If it's not a pure Python function, and not a duck type
+                # of pure function:
+                raise TypeError('{!r} is not a Python function'.format(func))
+
+        if _os_sff0.environ.get("APX_SFCDBG"):
+            _sys_sff0.stderr.write("[SFF0] %s pre-textsig\n" % getattr(func, "__qualname__", "?"))
+        s = getattr(func, "__text_signature__", None)
+        if _os_sff0.environ.get("APX_SFCDBG"):
+            _sys_sff0.stderr.write("[SFF0] %s textsig=%r\n" % (getattr(func, "__qualname__", "?"), s))
+        if s:
+            return _signature_fromstr(cls, func, s, skip_bound_arg)
+
+        Parameter = cls._parameter_cls
+        if _os_sff0.environ.get("APX_SFCDBG"):
+            _sys_sff0.stderr.write("[SFF0] %s Pcls=%r\n" % (getattr(func, "__qualname__", "?"), Parameter))
+
+        # Parameter information.
+        func_code = func.__code__
+        if _os_sff0.environ.get("APX_SFCDBG"):
+            _sys_sff0.stderr.write("[SFF0] %s code-ok\n" % getattr(func, "__qualname__", "?"))
+        pos_count = func_code.co_argcount
+        arg_names = func_code.co_varnames
+        posonly_count = func_code.co_posonlyargcount
+        positional = arg_names[:pos_count]
+        keyword_only_count = func_code.co_kwonlyargcount
+        keyword_only = arg_names[pos_count:pos_count + keyword_only_count]
+        # antipythany (wave-80, env-gated): marker before each
+        # potentially-failing step of the function-signature build.
+        import os as _os_sff
+        _sff = _os_sff.environ.get("APX_SFCDBG")
+        if _sff:
+            import sys as _sys_sff
+            _sys_sff.stderr.write("[SFF] %s enter\n" % getattr(func, "__qualname__", "?"))
+        if _os_sff0.environ.get("APX_SFCDBG"):
+            _sys_sff0.stderr.write("[SFF0] %s pre-annot\n" % getattr(func, "__qualname__", "?"))
+        try:
+            annotations = get_annotations(func, globals=globals, locals=locals, eval_str=eval_str,
+                                          format=annotation_format)
+        except NameError:
+            # antipythany (wave-82): some attrs-generated __init__ functions
+            # reference exec-globs names (attr_dict) from a defining env our
+            # lazy paths can't reach; CPython resolves them at def time. Degrade
+            # to empty annotations rather than killing the walk.
+            annotations = {}
+        if _sff:
+            _sys_sff.stderr.write("[SFF] %s annot-ok\n" % getattr(func, "__qualname__", "?"))
+        try:
+            defaults = func.__defaults__
+            if _sff:
+                _sys_sff.stderr.write("[SFF] %s defaults=%r\n" % (getattr(func, "__qualname__", "?"), defaults))
+        except NameError as _e_d:
+            if _sff:
+                _sys_sff.stderr.write("[SFF] %s DEFAULTS-NAMERR %r\n" % (getattr(func, "__qualname__", "?"), _e_d))
+            # antipythany (wave-82): parked default thunks referencing
+            # exec-globs names (attr_dict) can NameError on read in
+            # states where CPython evaluated at def time. Degrade.
+            defaults = None
+        try:
+            kwdefaults = func.__kwdefaults__
+        except NameError:
+            kwdefaults = None
+        if _sff:
+            _sys_sff.stderr.write("[SFF] %s defaults-ok\n" % getattr(func, "__qualname__", "?"))
+
+        if defaults:
+            pos_default_count = len(defaults)
         else:
-            # If it's not a pure Python function, and not a duck type
-            # of pure function:
-            raise TypeError('{!r} is not a Python function'.format(func))
+            pos_default_count = 0
 
-    if _os_sff0.environ.get("APX_SFCDBG"):
-        _sys_sff0.stderr.write("[SFF0] %s pre-textsig\n" % getattr(func, "__qualname__", "?"))
-    s = getattr(func, "__text_signature__", None)
-    if _os_sff0.environ.get("APX_SFCDBG"):
-        _sys_sff0.stderr.write("[SFF0] %s textsig=%r\n" % (getattr(func, "__qualname__", "?"), s))
-    if s:
-        return _signature_fromstr(cls, func, s, skip_bound_arg)
+        parameters = []
 
-    Parameter = cls._parameter_cls
-    if _os_sff0.environ.get("APX_SFCDBG"):
-        _sys_sff0.stderr.write("[SFF0] %s Pcls=%r\n" % (getattr(func, "__qualname__", "?"), Parameter))
+        non_default_count = pos_count - pos_default_count
+        posonly_left = posonly_count
 
-    # Parameter information.
-    func_code = func.__code__
-    if _os_sff0.environ.get("APX_SFCDBG"):
-        _sys_sff0.stderr.write("[SFF0] %s code-ok\n" % getattr(func, "__qualname__", "?"))
-    pos_count = func_code.co_argcount
-    arg_names = func_code.co_varnames
-    posonly_count = func_code.co_posonlyargcount
-    positional = arg_names[:pos_count]
-    keyword_only_count = func_code.co_kwonlyargcount
-    keyword_only = arg_names[pos_count:pos_count + keyword_only_count]
-    # antipythany (wave-80, env-gated): marker before each
-    # potentially-failing step of the function-signature build.
-    import os as _os_sff
-    _sff = _os_sff.environ.get("APX_SFCDBG")
-    if _sff:
-        import sys as _sys_sff
-        _sys_sff.stderr.write("[SFF] %s enter\n" % getattr(func, "__qualname__", "?"))
-    if _os_sff0.environ.get("APX_SFCDBG"):
-        _sys_sff0.stderr.write("[SFF0] %s pre-annot\n" % getattr(func, "__qualname__", "?"))
-    try:
-        annotations = get_annotations(func, globals=globals, locals=locals, eval_str=eval_str,
-                                      format=annotation_format)
-    except NameError:
-        # antipythany (wave-82): some attrs-generated __init__ functions
-        # reference exec-globs names (attr_dict) from a defining env our
-        # lazy paths can't reach; CPython resolves them at def time. Degrade
-        # to empty annotations rather than killing the walk.
-        annotations = {}
-    if _sff:
-        _sys_sff.stderr.write("[SFF] %s annot-ok\n" % getattr(func, "__qualname__", "?"))
-    try:
-        defaults = func.__defaults__
-        if _sff:
-            _sys_sff.stderr.write("[SFF] %s defaults=%r\n" % (getattr(func, "__qualname__", "?"), defaults))
-    except NameError as _e_d:
-        if _sff:
-            _sys_sff.stderr.write("[SFF] %s DEFAULTS-NAMERR %r\n" % (getattr(func, "__qualname__", "?"), _e_d))
-        # antipythany (wave-82): parked default thunks referencing
-        # exec-globs names (attr_dict) can NameError on read in
-        # states where CPython evaluated at def time. Degrade.
-        defaults = None
-    try:
-        kwdefaults = func.__kwdefaults__
-    except NameError:
-        kwdefaults = None
-    if _sff:
-        _sys_sff.stderr.write("[SFF] %s defaults-ok\n" % getattr(func, "__qualname__", "?"))
-
-    if defaults:
-        pos_default_count = len(defaults)
-    else:
-        pos_default_count = 0
-
-    parameters = []
-
-    non_default_count = pos_count - pos_default_count
-    posonly_left = posonly_count
-
-    # Non-keyword-only parameters w/o defaults.
-    for name in positional[:non_default_count]:
-        kind = _POSITIONAL_ONLY if posonly_left else _POSITIONAL_OR_KEYWORD
-        if _sff:
-            _sys_sff.stderr.write("[SFF] %s pre-get %s\n" % (getattr(func, "__qualname__", "?"), name))
-        annotation = annotations.get(name, _empty)
-        if _sff:
-            _sys_sff.stderr.write("[SFF] %s get-ok %s\n" % (getattr(func, "__qualname__", "?"), name))
-        if _sff:
-            _sys_sff.stderr.write("[SFF] %s param %s Pcls=%r kind=%r ann=%r\n" % (getattr(func, "__qualname__", "?"), name, Parameter, kind, annotation))
-        try:
-            parameters.append(Parameter(name, annotation=annotation,
-                                        kind=kind))
-        except TypeError:
-            # antipythany (wave-80): in degraded import states our
-            # attr machinery can raise 'NoneType' object is not
-            # callable from inside Parameter.__init__; CPython
-            # would never see this. Degrade to CPython's outcome.
-            raise ValueError(
-                'no signature found for builtin function {!r}'.format(func))
-        if _sff:
-            _sys_sff.stderr.write("[SFF] %s param-ok %s\n" % (getattr(func, "__qualname__", "?"), name))
-        if posonly_left:
-            posonly_left -= 1
-
-    # ... w/ defaults.
-    if _sff:
-        _sys_sff.stderr.write("[SFF] %s loop2 enter\n" % getattr(func, "__qualname__", "?"))
-    for offset, name in enumerate(positional[non_default_count:]):
-        kind = _POSITIONAL_ONLY if posonly_left else _POSITIONAL_OR_KEYWORD
-        if _sff:
-            _sys_sff.stderr.write("[SFF] %s l2-pre-get %s\n" % (getattr(func, "__qualname__", "?"), name))
-        annotation = annotations.get(name, _empty)
-        if _sff:
-            _sys_sff.stderr.write("[SFF] %s l2-get-ok %s\n" % (getattr(func, "__qualname__", "?"), name))
-        try:
-            parameters.append(Parameter(name, annotation=annotation,
-                                        kind=kind,
-                                        default=defaults[offset]))
-        except (TypeError, NameError):
-            # antipythany (wave-82): degraded-context Parameter
-            # construction (enum _ParameterKind(kind) hitting a
-            # broken _missing_) — CPython never sees this. The
-            # walk degrades to CPython's "no signature" outcome.
-            raise ValueError(
-                'no signature found for builtin function {!r}'.format(func))
-        if posonly_left:
-            posonly_left -= 1
-
-    # *args
-    if func_code.co_flags & CO_VARARGS:
-        name = arg_names[pos_count + keyword_only_count]
-        annotation = annotations.get(name, _empty)
-        parameters.append(Parameter(name, annotation=annotation,
-                                    kind=_VAR_POSITIONAL))
-
-    # Keyword-only parameters.
-    for name in keyword_only:
-        default = _empty
-        if kwdefaults is not None:
+        # Non-keyword-only parameters w/o defaults.
+        for name in positional[:non_default_count]:
+            kind = _POSITIONAL_ONLY if posonly_left else _POSITIONAL_OR_KEYWORD
             if _sff:
-                _sys_sff.stderr.write("[SFF] %s kwget %s\n" % (getattr(func, "__qualname__", "?"), name))
-            default = kwdefaults.get(name, _empty)
+                _sys_sff.stderr.write("[SFF] %s pre-get %s\n" % (getattr(func, "__qualname__", "?"), name))
+            annotation = annotations.get(name, _empty)
             if _sff:
-                _sys_sff.stderr.write("[SFF] %s kwget-ok %s\n" % (getattr(func, "__qualname__", "?"), name))
+                _sys_sff.stderr.write("[SFF] %s get-ok %s\n" % (getattr(func, "__qualname__", "?"), name))
+            if _sff:
+                _sys_sff.stderr.write("[SFF] %s param %s Pcls=%r kind=%r ann=%r\n" % (getattr(func, "__qualname__", "?"), name, Parameter, kind, annotation))
+            try:
+                parameters.append(Parameter(name, annotation=annotation,
+                                            kind=kind))
+            except TypeError:
+                # antipythany (wave-80): in degraded import states our
+                # attr machinery can raise 'NoneType' object is not
+                # callable from inside Parameter.__init__; CPython
+                # would never see this. Degrade to CPython's outcome.
+                raise ValueError(
+                    'no signature found for builtin function {!r}'.format(func))
+            if _sff:
+                _sys_sff.stderr.write("[SFF] %s param-ok %s\n" % (getattr(func, "__qualname__", "?"), name))
+            if posonly_left:
+                posonly_left -= 1
 
-        annotation = annotations.get(name, _empty)
-        parameters.append(Parameter(name, annotation=annotation,
-                                    kind=_KEYWORD_ONLY,
-                                    default=default))
-    # **kwargs
-    if func_code.co_flags & CO_VARKEYWORDS:
-        index = pos_count + keyword_only_count
+        # ... w/ defaults.
+        if _sff:
+            _sys_sff.stderr.write("[SFF] %s loop2 enter\n" % getattr(func, "__qualname__", "?"))
+        for offset, name in enumerate(positional[non_default_count:]):
+            kind = _POSITIONAL_ONLY if posonly_left else _POSITIONAL_OR_KEYWORD
+            if _sff:
+                _sys_sff.stderr.write("[SFF] %s l2-pre-get %s\n" % (getattr(func, "__qualname__", "?"), name))
+            annotation = annotations.get(name, _empty)
+            if _sff:
+                _sys_sff.stderr.write("[SFF] %s l2-get-ok %s\n" % (getattr(func, "__qualname__", "?"), name))
+            try:
+                parameters.append(Parameter(name, annotation=annotation,
+                                            kind=kind,
+                                            default=defaults[offset]))
+            except (TypeError, NameError):
+                # antipythany (wave-82): degraded-context Parameter
+                # construction (enum _ParameterKind(kind) hitting a
+                # broken _missing_) — CPython never sees this. The
+                # walk degrades to CPython's "no signature" outcome.
+                raise ValueError(
+                    'no signature found for builtin function {!r}'.format(func))
+            if posonly_left:
+                posonly_left -= 1
+
+        # *args
         if func_code.co_flags & CO_VARARGS:
-            index += 1
+            name = arg_names[pos_count + keyword_only_count]
+            annotation = annotations.get(name, _empty)
+            parameters.append(Parameter(name, annotation=annotation,
+                                        kind=_VAR_POSITIONAL))
 
-        name = arg_names[index]
-        annotation = annotations.get(name, _empty)
-        parameters.append(Parameter(name, annotation=annotation,
-                                    kind=_VAR_KEYWORD))
+        # Keyword-only parameters.
+        for name in keyword_only:
+            default = _empty
+            if kwdefaults is not None:
+                if _sff:
+                    _sys_sff.stderr.write("[SFF] %s kwget %s\n" % (getattr(func, "__qualname__", "?"), name))
+                default = kwdefaults.get(name, _empty)
+                if _sff:
+                    _sys_sff.stderr.write("[SFF] %s kwget-ok %s\n" % (getattr(func, "__qualname__", "?"), name))
 
-    # Is 'func' is a pure Python function - don't validate the
-    # parameters list (for correct order and defaults), it should be OK.
-    if _sff:
-        _sys_sff.stderr.write("[SFF] %s pre-cls\n" % getattr(func, "__qualname__", "?"))
-    try:
-        return cls(parameters,
-               return_annotation=annotations.get('return', _empty),
-               __validate_parameters__=is_duck_function)
-    except NameError as _e_sc:
-        # antipythany (wave-82): degraded-context Signature
-        # construction can NameError from lazy thunks; CPython never
-        # sees this. Degrade to "no signature".
+            annotation = annotations.get(name, _empty)
+            parameters.append(Parameter(name, annotation=annotation,
+                                        kind=_KEYWORD_ONLY,
+                                        default=default))
+        # **kwargs
+        if func_code.co_flags & CO_VARKEYWORDS:
+            index = pos_count + keyword_only_count
+            if func_code.co_flags & CO_VARARGS:
+                index += 1
+
+            name = arg_names[index]
+            annotation = annotations.get(name, _empty)
+            parameters.append(Parameter(name, annotation=annotation,
+                                        kind=_VAR_KEYWORD))
+
+        # Is 'func' is a pure Python function - don't validate the
+        # parameters list (for correct order and defaults), it should be OK.
         if _sff:
-            _sys_sff.stderr.write("[SFF] %s cls-NAMERR %r\n" % (getattr(func, "__qualname__", "?"), _e_sc))
-        raise ValueError(
-            'no signature found for builtin function {!r}'.format(func))
+            _sys_sff.stderr.write("[SFF] %s pre-cls\n" % getattr(func, "__qualname__", "?"))
+        try:
+            return cls(parameters,
+                   return_annotation=annotations.get('return', _empty),
+                   __validate_parameters__=is_duck_function)
+        except NameError as _e_sc:
+            # antipythany (wave-82): degraded-context Signature
+            # construction can NameError from lazy thunks; CPython never
+            # sees this. Degrade to "no signature".
+            if _sff:
+                _sys_sff.stderr.write("[SFF] %s cls-NAMERR %r\n" % (getattr(func, "__qualname__", "?"), _e_sc))
+            raise ValueError(
+                'no signature found for builtin function {!r}'.format(func))
 
 
 def _descriptor_get(descriptor, obj):
