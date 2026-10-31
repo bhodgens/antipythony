@@ -77,14 +77,31 @@ GIL, uv-backed deps at build time. Byte-exact differential conformance vs CPytho
   landed: errno 108 pairs, binascii qp/uu/hqx, bytes hex sep, os pipe/kill/
   stat/utime arms, ClosureMarker fix, function-not-iterable fix (cfe2465).
   Corpus 149/178=84%+; stdlib 28/48.
-- T2 PYTEST (in progress 2026-10-25, commit 1161466): pytest 9.1.1 imports
-  cleanly (all 48 _pytest submodules; --version works). BLOCKED at pytest.main:
-  generators materialize eagerly (no PEP-342 send()) so pluggy wrapper hooks
-  (yield-based coroutines) cannot run - issue #7, semantic/gate-blocking.
-  Fix = lazy generator suspension, also unblocks s018 (contextlib ExitStack).
-  Byte-divergence protocol in use: issues #2-#7, Amendment A-3/D6 (86cefd8).
-- AFTER: Plan 03 WASM, Plan 04 packaging (uv) -> T1 scrapy attempt.
-- AFTER: Plan 03 WASM, Plan 04 packaging (uv) -> T1 scrapy attempt.
+- T2 PYTEST (gate GREEN 2026-10-28, waves 6-23 + 25-57 in NEXT-STEPS.md):
+  PEP-342 lazy generators (7c0a645) cleared the pluggy-wrapper blocker
+  (issue #7 CLOSED 2026-10-31). T2 minimal gate: pytest.main runs a 3-test
+  trivial suite to completion, verdict-identical with CPython (1 failed /
+  1 passed / 1 skipped, rc=1). Tier-2 fixtures pass: tmp_path, monkeypatch,
+  generator fixtures, parametrize. Key fixes: ev.instance preservation
+  (5424f1b), per-exception tracebacks with per-frame FILE attribution
+  (98b2964), stream-base subclasses (CaptureIO), fd-backed os primitives,
+  builtin method-surface type gating (list.keys no longer exists),
+  tuple.index start/stop, union __args__/__origin__/isinstance surfaces.
+  Remaining Tier-2 polish: capsys fixture teardown int-None (tracked in
+  NEXT-STEPS waves 50-57), traceback frame linenos imprecise (degrades).
+- T1 SCRAPY CRAWL (in progress 2026-10-31, waves 90-109 in NEXT-STEPS.md):
+  the wave-100..109 march took the crawl from "clean no-op" to RUNNING
+  (exit 0, ~190s; extension ladder + engine ctor + downloader pass). The
+  earlier "T1 DONE 2026-10-25" claim covered IMPORT + a harness-driven
+  spider; the real CrawlerProcess crawl path is the current campaign.
+  Current blocker (wave-109): twisted.conch chain imports cryptography
+  (dispatched: v0 shim or eager-import bypass, deleg_ab35563b). GC issue
+  #10 triage + corpus fence dispatched in parallel (deleg_071c7256).
+  Wave-110 salvage committed 98b2964: T2 union surfaces, per-frame tb
+  file attribution, scrapy shims (urllib proxy/service_identity/
+  tldextract/OpenSSL TLSv1/inspect degrade reorder); gates 417/0, corpus
+  233/271 (all fails pre-existing; T104-event-handshake FIXED).
+- AFTER: Plan 03 WASM, Plan 04 packaging (uv).
 - Ecosystem targets locked (master.md tier table): scrapy T1, pytest T2,
   hermes-agent T3, fastapi T4, comfyui T5 (gates on Plan 10). TEST DATA ONLY -
   never published, no license constraints apply, comfyui included without
