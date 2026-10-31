@@ -3694,3 +3694,29 @@ Gates: corpus 15/0/9xp, SCRAPY IMPORT OK, build 0 errors.
 degradation; instrument scrapy/core/engine.py __init__ to find the exact `sys`
 reference, then check whether it's a closure/defining-frame gap (wave-83
 family) rather than import.
+
+
+## Wave-106 (2026-10-30) — engine ctor GREEN; crawl reaches engine.start
+
+1. **ROOT CAUSE of the 3-wave 'sys' NameError: MY OWN wave-92 probes.** Staged
+   crawler.py `_crawl` used bare `sys.stderr` but crawler.py has no module-level
+   `import sys`. Generator-body resumes hit NameError('sys'). Removed from staged
+   tree; swept ALL staged scrapy files — 0 remaining bare-sys-in-file-without-import.
+   LESSON: probes must import their helpers locally (self-contained) — a bare-name
+   probe inside a generator body poisons every later resume.
+2. **zope.interface `provider` decorator added** to vendored shim (committed b19ad0b) —
+   scrapy.resolver imports `provider` from zope.interface.declarations; was the
+   ImportError (degenerate instance, no with_traceback) blocking the downloader.
+3. **Chain state**: ExecutionEngine.__init__ passes ALL statements (crawler/settings/
+   signals/logformatter/slot/load_object(DOWNLOADER)/downloader ctor) — W-ENG markers
+   all green. scrapy.resolver imports clean. CrawlerProcess.start enters engine.start
+   (W87 base-start). join() now WAITS (DL resumed/yielded loop) — scheduling genuinely
+   works; the crawl Deferred is pending, not pre-fired.
+4. **Remaining**: AttributeError instance (degenerate, lacks with_traceback) thrown
+   into crawl generator during engine.start/open_spider — same class as the ImportError
+   (native raise() creating instances without exception methods). Next: find which
+   native raise site produces it (probably resolver/scheduler/connect path), then
+   open_spider is reachable.
+5. Gates: corpus 15/0/9xp, SCRAPY IMPORT OK 2.19.0. generators.rs W-GEN probe
+   (env-gated APX_GENDbg) uncommitted — file has sibling edits (fn_entry_file) in
+   flight; probe rides with sibling commit.
