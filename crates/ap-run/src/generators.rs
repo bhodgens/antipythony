@@ -219,6 +219,20 @@ fn gen_fiber_body(
             Err(_) => std::thread::sleep(std::time::Duration::from_micros(50)),
         }
     }
+    if let Err(Flow::Raise(e)) = &result {
+        if e.class == "NameError" && std::env::var("APX_GENDbg").is_ok() {
+            let gname = entry
+                .globals
+                .get(&Value::Str(ap_obj::PyString::new("__name__")))
+                .map(|v| crate::builtins::py_str_of(&v).unwrap_or_default())
+                .unwrap_or_default();
+            let has_sys = entry
+                .globals
+                .get(&Value::Str(ap_obj::PyString::new("sys")))
+                .is_some();
+            eprintln!("W-GEN NameError gen module={} has-sys={}", gname, has_sys);
+        }
+    }
     match result {
         Ok(_) | Err(Flow::Return(_)) => {
             // PEP-342: `return X` == StopIteration(X) (S-02-22). Park X for
@@ -227,15 +241,28 @@ fn gen_fiber_body(
                 interp.si_value.borrow_mut().replace(v);
             }
         }
-        Err(Flow::Raise(e)) => {
-            // Frame-exit traceback bookkeeping: the generator's frame is the
-            // INNERMOST (rendered last), so append — matching call_function's
-            // push order for the plain path.
-            let line = line_track.get();
+        Err(Flow::Raise(mut e)) => {
+            // Frame-exit traceback bookkeeping. T2 gate finding 2: the
+            // per-exception tb is what pytest's formatter reads (pluggy
+            // hooks ARE generators) — a generator frame that only landed
+            // in the global tb_frames table vanished from e.__traceback__.
+            // Insert(0) matches call_function (innermost first at record
+            // time; the table renders outermost-first). The frame's OWN
+            // last_line is the true source line (line_track carries the
+            // global-ordinal mapping, which misattributes across modules).
+            // frame.last_line is the statement's REAL source line (the
+            // Stmt::Line markers); line_track carries the legacy global
+            // ordinal mapping — prefer the real one, fall back to it.
+            let line = {
+                let fl = frame.last_line.get();
+                if fl > 0 { fl } else { line_track.get() }
+            };
+            let file = crate::interp::fn_entry_file(&interp, &entry);
+            e.tb.insert(0, (entry.qualname.clone(), line, file.clone()));
             interp
                 .tb_frames
                 .borrow_mut()
-                .push((entry.qualname.clone(), line.max(1)));
+                .insert(0, (entry.qualname.clone(), line, file));
             crate::interp::set_pending_generator_error(Flow::Raise(e));
         }
         Err(_) => {}

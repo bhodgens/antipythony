@@ -1336,6 +1336,19 @@ pub fn builtin_type(interp: &Interpreter, args: &[Value], kwargs: &[(String, Val
                     }
                     // fall through to name-based intern below
                 }
+                // T2 gate finding 3: type(int | str) is types.UnionType —
+                // CPython reprs it <class 'typing.Union'> (vendored
+                // types.py derives UnionType = type(int | str)).
+                if (o.kind == ap_obj::ObjKind::Namespace && o.name == "_Union")
+                    || (o.kind == ap_obj::ObjKind::Opaque && o.name == "__union__")
+                {
+                    let t = interned_type(interp, "UnionType");
+                    if let Value::Obj(to) = &t {
+                        *to.repr_text.borrow_mut() =
+                            Some("<class 'typing.Union'>".to_string());
+                    }
+                    return Ok(t);
+                }
             }
             let name = match v {
                 Value::Obj(o) if o.kind == ap_obj::ObjKind::Exception => o.name.clone(),
@@ -4469,6 +4482,18 @@ pub fn call_builtin(
                     "uname_result" | "stat_result" | "statvfs_result" | "struct_time" | "bytearray"
                 ) {
                     return Ok(crate::builtins::interned_type(&interp, &o.name));
+                }
+                // T2 gate finding 3: type(int | str) is types.UnionType —
+                // CPython reprs it <class 'typing.Union'>.
+                if (o.kind == ap_obj::ObjKind::Namespace && o.name == "_Union")
+                    || (o.kind == ap_obj::ObjKind::Opaque && o.name == "__union__")
+                {
+                    let t = crate::builtins::interned_type(&interp, "UnionType");
+                    if let Value::Obj(to) = &t {
+                        *to.repr_text.borrow_mut() =
+                            Some("<class 'typing.Union'>".to_string());
+                    }
+                    return Ok(t);
                 }
                 match crate::interp::attr_get_public(&interp, v, "__class__") {
                     Ok(Some(t)) => Ok(t),

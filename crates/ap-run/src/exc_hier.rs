@@ -160,11 +160,13 @@ pub struct ExceptionValue {
     /// finalizer's frame has already popped, so the frame cells no longer
     /// carry the raise site.
     pub raise_line: usize,
-    /// T2: per-exception traceback entries (qualname, lineno), outermost
-    /// first, appended at each frame exit the exception passes through.
-    /// Parallel to the legacy interpreter-wide tb_frames table; consumers
-    /// should prefer this when non-empty.
-    pub tb: Vec<(String, usize)>,
+    /// T2: per-exception traceback entries (qualname, lineno, filename),
+    /// outermost first, appended at each frame exit the exception passes
+    /// through. Parallel to the legacy interpreter-wide tb_frames table;
+    /// consumers should prefer this when non-empty. The filename is the
+    /// DEFINING module's __file__ (T2 gate finding 2: library frames used
+    /// to render with the driver script's path for every frame).
+    pub tb: Vec<(String, usize, String)>,
 }
 
 impl ExceptionValue {

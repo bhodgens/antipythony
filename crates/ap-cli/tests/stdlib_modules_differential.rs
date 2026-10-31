@@ -1338,3 +1338,81 @@ print(st[0] == st.st_mode, st[:2] == (st[0], st[1]))
 "#,
     );
 }
+
+// ---------------------------------------------------------------------------
+// T2 gate findings 1+3: PEP 604 unions — isinstance arms + introspection
+// ---------------------------------------------------------------------------
+
+#[test]
+fn t2_union_isinstance_differential() {
+    // T2 gate finding 1: isinstance(x, A|B) must answer (never TypeError)
+    // for builtin subjects, user-class subjects, union-of-unions
+    // flattening, and `X | None` arms (None matches NoneType only).
+    assert_differential(
+        r#"
+class A: pass
+a = A()
+print(isinstance('x', tuple | list))
+print(isinstance((1,), tuple | list))
+print(isinstance(a, A | int))
+print(isinstance(a, tuple | list))
+print(isinstance(a, int | str))
+print(isinstance(1, (int | str) | bytes))
+print(isinstance(3.5, int | float))
+print(isinstance(None, int | None))
+print(isinstance(3, int | None))
+"#,
+    );
+}
+
+#[test]
+fn t2_union_introspection_differential() {
+    // T2 gate finding 3: union namespaces expose __args__ (tuple of the
+    // arms) and the `A | B` repr; typing.get_args/get_origin agree.
+    assert_differential(
+        r#"
+u = tuple | list
+print(u.__args__)
+print(repr(u))
+print(repr(int | str | None))
+print(repr(str | bytes))
+print(u.__origin__ is not None)
+print(isinstance((int | str).__args__, tuple))
+v = int | str | None
+print(len(v.__args__))
+"#,
+    );
+}
+
+#[test]
+fn t2_traceback_frame_file_differential() {
+    // T2 gate finding 2: a traceback through an imported module's frames
+    // shows THAT module's file (not the driver's) per frame, with the
+    // per-frame source echo. Compared as: raise across a module boundary,
+    // render with traceback.print_exc via the module file basename check.
+    // (Full stderr text differs by path layout, so pin the FILE NAMES each
+    // frame reports via sys.exc_info().__traceback__ walking.)
+    assert_differential(
+        r#"
+import sys, types, os, tempfile
+d = tempfile.mkdtemp()
+with open(os.path.join(d, "t2mod.py"), "w") as f:
+    f.write("def inner():\n    x = 1\n    raise ValueError('boom')\n\ndef outer():\n    y = 2\n    inner()\n")
+sys.path.insert(0, d)
+import t2mod
+try:
+    t2mod.outer()
+except ValueError as e:
+    tb = e.__traceback__
+    names = []
+    while tb is not None:
+        names.append(os.path.basename(tb.tb_frame.f_code.co_filename))
+        tb = tb.tb_next
+    # The DRIVER frame's filename differs by harness (reference runs -c
+    # '<string>', ours runs a temp file) — pin only that it IS the driver
+    # (not t2mod), then the library frames exactly.
+    print(names[0] != "t2mod.py", names[1:])
+    print(e.__traceback__.tb_frame.f_code.co_name)
+"#,
+    );
+}

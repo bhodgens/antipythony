@@ -1659,7 +1659,13 @@ fn typing_stub_module(interp: &crate::frame::Interpreter) -> Value {
     let _ = ns.set(s("__name__"), s("_typing"));
     let _ = ns.set(s("__doc__"), Value::None);
     for n in ["TypeVar", "ParamSpec", "TypeVarTuple", "Union"] {
-        let _ = ns.set(s(n), marker_fn(&format!("_typing.{n}")));
+        let mv = marker_fn(&format!("_typing.{n}"));
+        // T2 gate finding 3: these markers ARE classes in CPython — repr
+        // is <class 'typing.X'> (union __origin__ renders byte-exact).
+        if let Value::Obj(mo) = &mv {
+            *mo.repr_text.borrow_mut() = Some(format!("<class 'typing.{n}'>"));
+        }
+        let _ = ns.set(s(n), mv);
     }
     // T1-d: _idfunc is the identity function — typing.NewType.__call__
     // delegates to it, so NewType handles (twisted _SystemEventID tuples)

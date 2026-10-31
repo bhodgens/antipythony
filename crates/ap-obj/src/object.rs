@@ -210,6 +210,11 @@ impl PyObject {
     /// instances, `<function 'f'>`-style for callables. Addresses are
     /// UNSPECIFIED (C-24) — corpus masks them (V066 splits at ' at 0x').
     pub fn default_repr(&self, ptr: usize) -> String {
+        // Explicit repr_text (native markers, T2 union surfaces) wins at
+        // EVERY layer so container/print reprs agree with builtin repr().
+        if let Some(t) = &*self.repr_text.borrow() {
+            return t.clone();
+        }
         match self.kind {
             ObjKind::UserInstance => {
                 format!(
@@ -221,6 +226,9 @@ impl PyObject {
             }
             // Class objects: <class 'name'> (S-03-04; c001 __bases__ repr).
             ObjKind::UserClass => format!("<class '{}'>", self.name),
+            // Builtin type objects repr like classes too (CPython repr(int)
+            // is <class 'int'>; T2 gate finding 3: union __args__ render).
+            ObjKind::Type => format!("<class '{}'>", self.name),
             ObjKind::Function => format!("<function {0} at 0x{1:x}>", self.name, ptr),
             _ => format!("<{} object at 0x{:x}>", self.name, ptr),
         }

@@ -180,20 +180,53 @@ pub fn run_module(
     }
 }
 
+/// Source echo for a traceback frame: the frame's OWN file when it differs
+/// from the driver script (library frames), else the in-memory source.
+/// Cached per (file) via a thread-local to avoid re-reading big stdlib files.
+fn source_line_for(interp: &Rc<Interpreter>, file: &str, line: usize) -> Option<String> {
+    thread_local! {
+        static FILE_SRC: std::cell::RefCell<HashMap<String, Option<String>>> =
+            std::cell::RefCell::new(HashMap::new());
+    }
+    if file == interp.script_path {
+        return interp.source.lines().nth(line.saturating_sub(1)).map(|s| s.to_string());
+    }
+    let content = FILE_SRC.with(|c| {
+        if let Some(hit) = c.borrow().get(file) {
+            return hit.clone();
+        }
+        let loaded = std::fs::read_to_string(file).ok();
+        c.borrow_mut().insert(file.to_string(), loaded.clone());
+        loaded
+    });
+    content
+        .as_deref()
+        .and_then(|c| c.lines().nth(line.saturating_sub(1)))
+        .map(|s| s.to_string())
+}
+
 /// CPython-format traceback (C-25/S-06-7): frames outermost-first with the
 /// innermost LAST, `  File "path", line N, in qualname` + 4-space source
 /// echo, then `ExcType[: str(exc)]`. Chained reports render FIRST (S-06-8).
 fn render_traceback(interp: &Rc<Interpreter>, exc: &ExceptionValue) -> String {
     let mut out = String::new();
     out.push_str("Traceback (most recent call last):\n");
-    for (qualname, line) in interp.tb_frames.borrow().iter() {
+    for (qualname, line, file) in interp.tb_frames.borrow().iter() {
+        // T2 gate finding 2: per-frame FILE attribution — a library frame
+        // renders its defining module's path and the source echo comes from
+        // THAT file, not the driver script.
+        let file = if file.is_empty() {
+            interp.script_path.as_str()
+        } else {
+            file.as_str()
+        };
         out.push_str(&format!(
             "  File \"{}\", line {}, in {}\n",
-            interp.script_path, line, qualname
+            file, line, qualname
         ));
-        if let Some(src_line) = interp.source.lines().nth(line.saturating_sub(1)) {
+        if let Some(src_line) = source_line_for(interp, file, *line) {
             out.push_str("    ");
-            out.push_str(src_line.trim_end());
+            out.push_str(src_line.trim());
             out.push('\n');
         }
     }
@@ -495,14 +528,18 @@ fn exec_module(
     match outcome {
         Ok(()) => Ok(()),
         Err(Flow::Raise(exc)) => {
-            // Module frame is OUTERMOST: append last (render order).
+            // Module frame is OUTERMOST: function-frame exits prepend
+            // (innermost first out), so the module frame — unwinding LAST —
+            // prepends too, yielding CPython's outermost-first order
+            // [<module>, ..., innermost] (T2 gate finding 2).
             let line = line_track.get();
+            let file = interp.script_path.clone();
             let mut exc = exc;
-            exc.tb.push(("<module>".to_string(), line));
+            exc.tb.insert(0, ("<module>".to_string(), line, file.clone()));
             interp
                 .tb_frames
                 .borrow_mut()
-                .push(("<module>".to_string(), line));
+                .insert(0, ("<module>".to_string(), line, file));
             Err(exc)
         }
         Err(_) => Ok(()),
@@ -1361,6 +1398,34 @@ fn exec_try(
                     }
                 };
                 if matches {
+                    // T2 gate finding 2: CPython's traceback of a CAUGHT
+                    // exception includes the frame hosting the try
+                    // statement (the exception propagated INTO it). Our
+                    // frame-exit hooks never fire for a frame that
+                    // catches, so record the catching frame here —
+                    // outermost-first, ahead of the raise-path frames.
+                    let mut exc = exc.clone();
+                    {
+                        let line = frame.last_line.get().max(1);
+                        let file = frame
+                            .globals
+                            .get(&Value::Str(PyString::new("__file__")))
+                            .and_then(|fv| match fv {
+                                Value::Str(s) => Some(s.as_str().to_string()),
+                                _ => None,
+                            })
+                            .unwrap_or_else(|| interp.script_path.clone());
+                        let already = exc.tb.first().is_some_and(|(q, l, f)| {
+                            q == &frame.qualname && *l == line && f == &file
+                        });
+                        if !already {
+                            exc.tb.insert(0, (frame.qualname.clone(), line, file.clone()));
+                        }
+                        interp
+                            .tb_frames
+                            .borrow_mut()
+                            .insert(0, (frame.qualname.clone(), line, file));
+                    }
                     if let Some(name) = &h.name {
                         let exc_obj = exception_instance(&exc);
                         frame.store_local(name, exc_obj);
@@ -1626,19 +1691,36 @@ fn last_executed_line(interp: &Rc<Interpreter>) -> usize {
     line.unwrap_or_else(|| current_frame_line(interp))
 }
 
-/// T2: build a traceback chain Value from (qualname, lineno) entries
-/// (outermost first), for per-exception __traceback__ rendering.
-pub fn build_tb_chain(script: &str, entries: &[(String, usize)]) -> Value {
+/// T2 gate finding 2: the defining module's file for a function entry.
+/// FnEntry.globals IS the defining module's namespace dict, whose
+/// `__file__` the importer sets at load time; the driver module's globals
+/// carry the script path (exec_module binds __file__). Fallback: the
+/// interpreter's script path.
+pub fn fn_entry_file(interp: &Rc<Interpreter>, entry: &FnEntry) -> String {
+    if let Some(Value::Str(f)) = entry.globals.get(&Value::Str(PyString::new("__file__"))) {
+        return f.as_str().to_string();
+    }
+    interp.script_path.clone()
+}
+
+/// T2: build a traceback chain Value from (qualname, lineno, filename)
+/// entries (outermost first), for per-exception __traceback__ rendering.
+pub fn build_tb_chain(script: &str, entries: &[(String, usize, String)]) -> Value {
     let mut next: Value = Value::None;
-    for (qualname, line) in entries.iter().rev() {
+    for (qualname, line, file) in entries.iter().rev() {
         let line = (*line).max(1);
+        let file = if file.is_empty() {
+            script.to_string()
+        } else {
+            file.clone()
+        };
         let frame = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<frame>");
         let code = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<code>");
         {
             let mut cattrs = code.attrs.borrow_mut();
             let _ = cattrs.set(
                 Value::Str(PyString::new("co_filename")),
-                Value::Str(PyString::new(script)),
+                Value::Str(PyString::new(file.as_str())),
             );
             let _ = cattrs.set(
                 Value::Str(PyString::new("co_name")),
@@ -1723,10 +1805,11 @@ fn exception_instance(exc: &ExceptionValue) -> Value {
                 let entries: Vec<Value> = exc
                     .tb
                     .iter()
-                    .map(|(q, l)| {
+                    .map(|(q, l, f)| {
                         Value::Tuple(ap_obj::int::Gc::new(ap_obj::value::Tuple(vec![
                             Value::Str(PyString::new(q.as_str())),
                             Value::Int(ap_obj::Int::from_i64(*l as i64)),
+                            Value::Str(PyString::new(f.as_str())),
                         ])))
                     })
                     .collect();
@@ -2412,7 +2495,7 @@ pub(crate) fn eval_expr(
                         .tb_frames
                         .borrow()
                         .last()
-                        .map(|(q, l)| format!("{}:{}", q, l))
+                        .map(|(q, l, _f)| format!("{}:{}", q, l))
                         .unwrap_or_default();
                     eprintln!(
                         "APX_ATTRMISS: receiver={} name={} at {}",
@@ -3299,6 +3382,85 @@ pub(crate) fn eval_binop(a: &Value, op: BinOp, b: &Value) -> EResult {
             }
         }
     }
+
+/// T2 gate finding 3: build a union marker (both shapes) carrying the
+/// CPython types.UnionType surfaces: __args__ (tuple of the member types),
+/// __origin__ (typing.Union), and the `A | B` repr text. `args` are the
+/// flattened arms in source order.
+fn make_union(kind: ap_obj::ObjKind, name: &str, args: Vec<Value>) -> Value {
+    let u = ap_obj::PyObject::new(kind, name);
+    *u.slice_parts.borrow_mut() = args.clone();
+    // __args__: a real tuple of the arm values. CPython normalizes the
+    // None arm to the NoneType type object; keep the Value::None form in
+    // slice_parts (isinstance arms) but surface NoneType in __args__.
+    let arg_values: Vec<Value> = {
+        let interp = CURRENT_INTERP
+            .with(|c| c.borrow().clone())
+            .map(|i| i.rc());
+        args.iter()
+            .map(|v| match v {
+                Value::None => match &interp {
+                    Some(i) => crate::builtins::interned_type(i, "NoneType"),
+                    None => v.clone(),
+                },
+                other => other.clone(),
+            })
+            .collect()
+    };
+    {
+        let mut at = u.attrs.borrow_mut();
+        let _ = at.set(
+            Value::Str(PyString::new("__args__")),
+            Value::Tuple(ap_obj::int::Gc::new(ap_obj::value::Tuple(arg_values.clone()))),
+        );
+        // __origin__: CPython types.UnionType instances report
+        // typing.Union (getattr on the instance). The vendored typing
+        // module's Union marker is a BuiltinFn "Union".
+        if let Some(tv) = crate::importer::sys_modules_get("typing") {
+            if let Value::Obj(tm) = tv {
+                if let Some(uv) = tm
+                    .module_ns
+                    .borrow()
+                    .as_ref()
+                    .and_then(|ns| ns.get(&Value::Str(PyString::new("Union"))))
+                {
+                    let _ = at.set(Value::Str(PyString::new("__origin__")), uv.clone());
+                }
+            }
+        }
+    }
+    // repr: `A | B` (CPython types.UnionType repr).
+    let arm_repr = |v: &Value| -> String {
+        match v {
+            Value::None => "None".to_string(),
+            Value::Obj(o) => match o.kind {
+                ap_obj::ObjKind::Type => o.name.clone(),
+                ap_obj::ObjKind::UserClass => {
+                    let m = o
+                        .attrs
+                        .borrow()
+                        .get(&Value::Str(PyString::new("__module__")))
+                        .and_then(|mv| match mv {
+                            Value::Str(s) => Some(s.as_str().to_string()),
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| "__main__".to_string());
+                    format!("{}.{}", m, o.name)
+                }
+                _ => o.default_repr(ap_obj::value::addr_of(o)),
+            },
+            other => other.type_name().to_string(),
+        }
+    };
+    let txt = args
+        .iter()
+        .map(arm_repr)
+        .collect::<Vec<_>>()
+        .join(" | ");
+    *u.repr_text.borrow_mut() = Some(txt);
+    Value::Obj(u)
+}
+
     // 02.04a (interp bug #7b): PEP 604 union `int | str` — types.py reads
     // type(int | str) at import. T1: produce the SAME __union__ Opaque the
     // main interception builds (parts parked) so chains like
@@ -3335,15 +3497,15 @@ pub(crate) fn eval_binop(a: &Value, op: BinOp, b: &Value) -> EResult {
             } else {
                 parts.push(b.clone());
             }
-            let u = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "_Union");
-            *u.slice_parts.borrow_mut() = parts;
-            return Ok(Value::Obj(u));
+            return Ok(make_union(ap_obj::ObjKind::Namespace, "_Union", parts));
         }
         let is_type = |v: &Value| matches!(v, Value::Obj(o) if o.kind == ap_obj::ObjKind::Type);
         if is_type(a) && is_type(b) {
-            let u = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "_Union");
-            *u.slice_parts.borrow_mut() = vec![a.clone(), b.clone()];
-            return Ok(Value::Obj(u));
+            return Ok(make_union(
+                ap_obj::ObjKind::Namespace,
+                "_Union",
+                vec![a.clone(), b.clone()],
+            ));
         }
     }
     // 02.03 user operator slots (S-03-25) — before every builtin path.
@@ -3417,9 +3579,7 @@ pub(crate) fn eval_binop(a: &Value, op: BinOp, b: &Value) -> EResult {
                     }
                     arms.push(v.clone());
                 }
-                let u = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "__union__");
-                *u.slice_parts.borrow_mut() = arms;
-                return Ok(Value::Obj(u));
+                return Ok(make_union(ap_obj::ObjKind::Opaque, "__union__", arms));
             }
         }
         if let Some(r) = user_binop(&interp, op_name, rop_name, sym, a, b) {
@@ -5108,6 +5268,21 @@ fn call_value_inner_impl(
                                     if so.kind == ap_obj::ObjKind::Opaque && so.name == "super" {
                                         return Ok(builtins::interned_type(interp, "super"));
                                     }
+                                    // T2 gate finding 3: type(int | str) is
+                                    // types.UnionType, repr'd
+                                    // <class 'typing.Union'> in CPython.
+                                    if (so.kind == ap_obj::ObjKind::Namespace
+                                        && so.name == "_Union")
+                                        || (so.kind == ap_obj::ObjKind::Opaque
+                                            && so.name == "__union__")
+                                    {
+                                        let t = builtins::interned_type(interp, "UnionType");
+                                        if let Value::Obj(to) = &t {
+                                            *to.repr_text.borrow_mut() =
+                                                Some("<class 'typing.Union'>".to_string());
+                                        }
+                                        return Ok(t);
+                                    }
                                     // 02.08-full p2: type(re.Pattern-obj) etc.
                                     if so.kind == ap_obj::ObjKind::Opaque
                                         && (so.name == "re.Pattern" || so.name == "re.Match")
@@ -5924,9 +6099,23 @@ fn call_function(
     // Build the sentinel BEFORE borrowing super_stack: the literal's dict
     // alloc can trigger a GC auto-collect whose weakref callbacks re-enter
     // call_function (which borrows super_stack).
+    // CPython zero-arg super() resolves via the __class__ cell + the
+    // frame's FIRST local (self/cls). A nested non-method function has no
+    // such first arg, so super() there is RuntimeError("super(): no
+    // arguments") even when an enclosing method's ctx sits below on the
+    // stack. Mark the sentinel "__mcap__" when the callee looks like a
+    // method (first param self/cls) so builtin_super skips a sentinel ONLY
+    // for method frames (Wave-78 __delitem__ case keeps working; the
+    // classes_differential super_validation_errors nested-inner case now
+    // raises like CPython).
+    let mcap = entry
+        .def
+        .params
+        .first()
+        .is_some_and(|p| matches!(p.name.as_str(), "self" | "cls"));
     let plain_sentinel = std::rc::Rc::new(ap_obj::classes::TypeObject {
         name: "__plain_fn__".to_string(),
-        qualname: String::new(),
+        qualname: if mcap { "__mcap__".to_string() } else { String::new() },
         bases: vec![],
         mro: std::cell::RefCell::new(Vec::new()),
         dict: ap_obj::dict::PyDict::new(),
@@ -5984,17 +6173,21 @@ fn call_function(
         Err(Flow::Raise(mut exc)) => {
             // Frame exit with an exception: record THIS frame's line.
             let line = frame.last_line.get();
+            // T2 gate finding 2: the file is the DEFINING module's __file__
+            // (entry.globals), not the driver script — library frames used
+            // to render every File as the driver's path.
+            let file = crate::interp::fn_entry_file(interp, &entry);
             if std::env::var("APX_TBDBG").is_ok() {
-                eprintln!("[FEXIT2] fn={} line={}", entry.qualname, line);
+                eprintln!("[FEXIT2] fn={} line={} file={}", entry.qualname, line, file);
             }
             // T2: per-exception traceback - the exception carries its own
             // entries so a CAUGHT exception keeps a correct tb (the global
             // tb_frames table is truncated on catch).
-            exc.tb.insert(0, (entry.qualname.clone(), line.max(1)));
+            exc.tb.insert(0, (entry.qualname.clone(), line.max(1), file.clone()));
             interp
                 .tb_frames
                 .borrow_mut()
-                .insert(0, (entry.qualname.clone(), line.max(1)));
+                .insert(0, (entry.qualname.clone(), line.max(1), file));
             if exc.context.is_none() && exc.cause.is_none() {
                 if let Some(prev) = interp.current_exception.borrow().clone() {
                     exc.context = Some(Box::new((*prev).clone()));
@@ -8028,6 +8221,19 @@ fn class_protocol_builtin(
                         let t = crate::builtins::interned_type(interp, &o.name);
                         return Some(Ok(t));
                     }
+                    // T2 gate finding 3: type(int | str) is types.UnionType
+                    // — CPython reprs it <class 'typing.Union'> (vendored
+                    // types.py derives UnionType = type(int | str)).
+                    if (o.kind == ap_obj::ObjKind::Namespace && o.name == "_Union")
+                        || (o.kind == ap_obj::ObjKind::Opaque && o.name == "__union__")
+                    {
+                        let t = crate::builtins::interned_type(interp, "UnionType");
+                        if let Value::Obj(to) = &t {
+                            *to.repr_text.borrow_mut() =
+                                Some("<class 'typing.Union'>".to_string());
+                        }
+                        return Some(Ok(t));
+                    }
                     // 02.07: threading objects report their <class> attr
                     // (type(me).__name__ == "_MainThread" — T108).
                     if std::env::var("APX_TDEBUG").is_ok() {
@@ -8491,6 +8697,29 @@ fn class_isinstance(interp: &Rc<Interpreter>, args: &[Value]) -> EResult {
             if uo.kind == ap_obj::ObjKind::Namespace && uo.name == "_Union" {
                 let members: Vec<Value> = uo.slice_parts.borrow().clone();
                 for m in &members {
+                    if matches!(m, Value::None) {
+                        if matches!(v, Value::None) {
+                            return Ok(Value::Bool(true));
+                        }
+                        continue;
+                    }
+                    if crate::classes::value_isinstance(interp, v, m)? {
+                        return Ok(Value::Bool(true));
+                    }
+                }
+                return Ok(Value::Bool(false));
+            }
+            // T2 gate finding 1: the Opaque "__union__" shape joins the
+            // same recursion (executor-built unions over user classes).
+            if uo.kind == ap_obj::ObjKind::Opaque && uo.name == "__union__" {
+                let members: Vec<Value> = uo.slice_parts.borrow().clone();
+                for m in &members {
+                    if matches!(m, Value::None) {
+                        if matches!(v, Value::None) {
+                            return Ok(Value::Bool(true));
+                        }
+                        continue;
+                    }
                     if crate::classes::value_isinstance(interp, v, m)? {
                         return Ok(Value::Bool(true));
                     }
@@ -8757,7 +8986,13 @@ fn builtin_super(interp: &Rc<Interpreter>, args: &[Value], _kwargs: &[(String, V
                 let n = st.len();
                 let top = st.last().cloned();
                 match top {
-                    Some(t) if t.0.name == "__plain_fn__" && n >= 2 => {
+                    // Skip the sentinel only for a METHOD-CAPABLE frame
+                    // (first param self/cls, marked at push). A nested
+                    // plain function's zero-arg super() must NOT see the
+                    // enclosing method's ctx (CPython: RuntimeError
+                    // "super(): no arguments" — the nested frame has no
+                    // self/cls first local).
+                    Some(t) if t.0.name == "__plain_fn__" && t.0.qualname == "__mcap__" && n >= 2 => {
                         let below = st[n - 2].clone();
                         if below.0.name != "__plain_fn__" {
                             Some(below)
@@ -9577,6 +9812,30 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                     return Ok(Some(crate::builtins::make_function(fid, &o.name)));
                 }
                 "__name__" => return Ok(Some(Value::Str(PyString::new(o.name.clone())))),
+                // Wave-107: scrapy/utils/log.py reads reactor.__module__.
+                // CPython method objects delegate __module__ to __func__'
+                // __globals__["__name__"]; default "builtins" when no func.
+                "__module__" => {
+                    let f = o.func.borrow().clone().unwrap_or(Value::None);
+                    if let Value::Obj(fo) = &f {
+                        if fo.kind == ap_obj::ObjKind::Function {
+                            if let Some(Value::Obj(g)) = fo
+                                .attrs
+                                .borrow()
+                                .get(&Value::Str(PyString::new("__globals__")))
+                            {
+                                if let Some(v) = g
+                                    .attrs
+                                    .borrow()
+                                    .get(&Value::Str(PyString::new("__name__")))
+                                {
+                                    return Ok(Some(v.clone()));
+                                }
+                            }
+                        }
+                    }
+                    return Ok(Some(Value::Str(PyString::new("builtins"))));
+                }
                 // 02.03b-fix: bound-method __doc__ delegates to the function
                 // (unittest reads testMethod.__doc__ off the bound method).
                 "__doc__" => {
@@ -10247,7 +10506,11 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 let stack_len = interp2.frame_stack.borrow().len();
                 let outer_exists = ((depth + 1) as usize) < stack_len.max(32);
                 if !outer_exists {
-                    return Ok(None);
+                    // Wave-108: chain END must answer f_back=None (CPython
+                    // semantics). An attr MISS raises AttributeError here and
+                    // the logging/traceback stack walkers die mid-walk
+                    // ("'object' object has no attribute 'f_back'").
+                    return Ok(Some(Value::None));
                 }
                 let fb = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<frame>");
                 *fb.slice_parts.borrow_mut() = vec![Value::Int(Int::from_i64(depth + 1))];
@@ -10410,6 +10673,28 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 if let Some(v) = o.attrs.borrow().get(&Value::Str(PyString::new(name))) {
                     return Ok(Some(v));
                 }
+                // T2 gate finding 3: union __origin__ answers LAZILY — the
+                // typing module may not have been imported when the union
+                // was built (attr stored at construction would be missing).
+                if name == "__origin__" && o.name == "_Union" {
+                    if crate::importer::sys_modules_get("typing").is_none() {
+                        // CPython resolves typing.Union without a user-side
+                        // import — do it on demand (idempotent via cache).
+                        let _ = crate::importer::import_module(&_interp.rc(), "typing");
+                    }
+                    if let Some(tv) = crate::importer::sys_modules_get("typing") {
+                        if let Value::Obj(tm) = tv {
+                            if let Some(uv) = tm
+                                .module_ns
+                                .borrow()
+                                .as_ref()
+                                .and_then(|ns| ns.get(&Value::Str(PyString::new("Union"))))
+                            {
+                                return Ok(Some(uv.clone()));
+                            }
+                        }
+                    }
+                }
                 // T2 fix: frame-protocol attrs must never AttributeError -
                 // frame walkers read frame.f_back / frame.f_code during
                 // exception unwinds; a miss REPLACES the in-flight
@@ -10539,17 +10824,21 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                         .get(&Value::Str(PyString::new("__ap_tb__")))
                     {
                         if let Value::List(lst) = tbv {
-                            let entries: Vec<(String, usize)> = lst
+                            let entries: Vec<(String, usize, String)> = lst
                                 .items()
                                 .iter()
                                 .filter_map(|it| match it {
-                                    Value::Tuple(t) if t.0.len() == 2 => {
+                                    Value::Tuple(t) if t.0.len() >= 2 => {
                                         let q = match &t.0[0] {
                                             Value::Str(sv) => sv.as_str().to_string(),
                                             _ => return None,
                                         };
                                         let l = t.0[1].as_int()?.to_i64()? as usize;
-                                        Some((q, l))
+                                        let f = match t.0.get(2) {
+                                            Some(Value::Str(sv)) => sv.as_str().to_string(),
+                                            _ => String::new(),
+                                        };
+                                        Some((q, l, f))
                                     }
                                     _ => None,
                                 })
@@ -10563,6 +10852,18 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                     }
                     let interp = crate::interp::current_interp_handle();
                     return Ok(Some(crate::classes::traceback_value(&interp)));
+                }
+                // Wave-106: twisted Failure stores exc.value and later calls
+                // value.with_traceback(tb). Native raise() instances carry no
+                // methods, so answer with the same __ap_with_traceback__ marker
+                // the UserInstance arm uses (returns the exception itself).
+                "with_traceback" => {
+                    let m = ap_obj::PyObject::new(
+                        ap_obj::ObjKind::BuiltinFn,
+                        "__ap_with_traceback__",
+                    );
+                    *m.slice_parts.borrow_mut() = vec![Value::Obj(o.clone())];
+                    Ok(Some(Value::Obj(m)))
                 }
                 _ => Ok(None),
             },
@@ -10606,17 +10907,21 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                         .get(&Value::Str(PyString::new("__ap_tb__")))
                     {
                         if let Value::List(lst) = tb_val {
-                            let entries: Vec<(String, usize)> = lst
+                            let entries: Vec<(String, usize, String)> = lst
                                 .items()
                                 .iter()
                                 .filter_map(|it| match it {
-                                    Value::Tuple(t) if t.0.len() == 2 => {
+                                    Value::Tuple(t) if t.0.len() >= 2 => {
                                         let q = match &t.0[0] {
                                             Value::Str(s) => s.as_str().to_string(),
                                             _ => return None,
                                         };
                                         let l = t.0[1].as_int()?.to_i64()? as usize;
-                                        Some((q, l))
+                                        let f = match t.0.get(2) {
+                                            Some(Value::Str(s)) => s.as_str().to_string(),
+                                            _ => String::new(),
+                                        };
+                                        Some((q, l, f))
                                     }
                                     _ => None,
                                 })
@@ -10636,7 +10941,7 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                     let name = o.name.clone();
                     return Ok(Some(build_tb_chain(
                         &script,
-                        &[(name, 1)],
+                        &[(name, 1, script.clone())],
                     )));
                 }
                 // T2 (pytest Config.parse: copy.copy(self.option)): instances
@@ -11165,7 +11470,28 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
             // at call time. The old hand-written allowlist dropped names the
             // table handles (set.discard: methods.rs:527), turning method
             // calls into AttributeError.
-            if builtin_method_exists(name) || crate::methods::builtin_method_routed(name) {
+            // W110-FIX: type-gate the CONTAINER-FAMILY names. The flat
+            // allowlist answered "keys"/"items"/"values"/"update"/"get" for
+            // ANY builtin receiver (list.keys == True), so
+            // dict_like_mapping(list) mis-classified lists as mappings and
+            // d.update([(4,5)]) took the mapping branch → the `<list>.keys`
+            // marker had no call arm → TypeError NoneType-not-callable.
+            // CPython: list has no keys; set has no keys/values/items/update.
+            let dict_only = matches!(name, "keys" | "values" | "items" | "update"
+                | "setdefault" | "popitem" | "get" | "fromkeys" | "pop");
+            let set_only = matches!(name, "difference" | "difference_update"
+                | "intersection" | "union" | "issubset" | "issuperset"
+                | "symmetric_difference" | "symmetric_difference_update" | "add");
+            let list_only = matches!(name, "append" | "insert" | "sort" | "reverse"
+                | "extend" | "remove");
+            let family_ok = !dict_only && !set_only && !list_only
+                || matches!(obj, Value::Dict(_)) && dict_only
+                || matches!(obj, Value::Set(_) | Value::Frozen(_)) && set_only
+                || matches!(obj, Value::List(_)) && list_only;
+            if family_ok
+                && (builtin_method_exists(name)
+                    || crate::methods::builtin_method_routed(name))
+            {
                 let m =
                     ap_obj::PyObject::with_self(ap_obj::ObjKind::BoundMethod, name, obj.clone());
                 Ok(Some(Value::Obj(m)))
@@ -11238,6 +11564,15 @@ fn builtin_method_exists(name: &str) -> bool {
             | "encode"
             | "decode"
             | "append"
+            // Wave-108: list surface on derived instances (StackSummary.reverse
+            // in traceback.format paths; sort/insert/index/count/extend same
+            // surface family).
+            | "reverse"
+            | "sort"
+            | "insert"
+            | "index"
+            | "count"
+            | "extend"
             | "clear"
             | "keys"
             | "values"

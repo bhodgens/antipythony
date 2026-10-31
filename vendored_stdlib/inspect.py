@@ -2360,25 +2360,6 @@ def _signature_from_function(cls, func, skip_bound_arg=True,
     # trip state-dependent AttributeError during the annotations walk.
     # CPython never sees this. Degrade to a permissive signature so callers
     # (logging, scrapy init) proceed instead of dying.
-    import os as _os_w102
-    if _os_w102.environ.get("APX_NOSIGDEGRADE") != "1":
-        try:
-            return _signature_from_function_inner(cls, func, skip_bound_arg,
-                                                  globals, locals, eval_str,
-                                                  annotation_format=annotation_format)
-        except Exception as _e_w102:
-            import sys as _sys_w102
-            _mod = getattr(func, "__module__", "") or ""
-            _is_nonecall = (isinstance(_e_w102, TypeError)
-                            and "NoneType' object is not callable" in str(_e_w102))
-            if _mod.startswith("typing") or _is_nonecall or isinstance(_e_w102, (NameError, AttributeError)):
-                if _os_w102.environ.get("APX_SFCDBG"):
-                    _sys_w102.stderr.write("[W102] degrade %s (%s: %s)\n" % (
-                        getattr(func, "__qualname__", "?"), type(_e_w102).__name__, _e_w102))
-                return cls((), return_annotation=cls.empty,
-                           __validate_parameters__=False)
-            raise
-    # original body follows as _signature_from_function_inner
     def _signature_from_function_inner(cls, func, skip_bound_arg=True,
                                        globals=None, locals=None, eval_str=False,
                                        *, annotation_format=Format.VALUE):
@@ -2567,7 +2548,26 @@ def _signature_from_function(cls, func, skip_bound_arg=True,
             raise ValueError(
                 'no signature found for builtin function {!r}'.format(func))
 
-
+    import os as _os_w102
+    if _os_w102.environ.get("APX_NOSIGDEGRADE") != "1":
+        try:
+            return _signature_from_function_inner(cls, func, skip_bound_arg,
+                                                  globals, locals, eval_str,
+                                                  annotation_format=annotation_format)
+        except Exception as _e_w102:
+            import sys as _sys_w102
+            _mod = getattr(func, "__module__", "") or ""
+            _is_nonecall = (isinstance(_e_w102, TypeError)
+                            and "NoneType' object is not callable" in str(_e_w102))
+            if _mod.startswith("typing") or _is_nonecall or isinstance(_e_w102, (NameError, AttributeError)):
+                if _os_w102.environ.get("APX_SFCDBG"):
+                    _sys_w102.stderr.write("[W102] degrade %s (%s: %s)\n" % (
+                        getattr(func, "__qualname__", "?"), type(_e_w102).__name__, _e_w102))
+                return cls((), return_annotation=cls.empty,
+                           __validate_parameters__=False)
+            raise
+    # (inner defined above; wrapper must bind it BEFORE its try-block calls it -
+    # a def placed after the try never binds and degrades every signature to ().)
 def _descriptor_get(descriptor, obj):
     if isclass(descriptor):
         return descriptor

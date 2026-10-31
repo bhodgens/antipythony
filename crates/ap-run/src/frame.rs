@@ -295,7 +295,9 @@ pub struct Interpreter {
     pub stdout: RefCell<Vec<u8>>,
     /// Traceback frames of the propagating exception, OUTERMOST-FIRST
     /// (built by insert(0) at each frame exit; module frame pushes last).
-    pub tb_frames: RefCell<Vec<(String, usize)>>,
+    /// Entries: (qualname, lineno, filename) — the filename is the DEFINING
+    /// module's __file__ (T2 gate finding 2: per-frame file attribution).
+    pub tb_frames: RefCell<Vec<(String, usize, String)>>,
     /// Per-frame current-line trackers (top = innermost frame).
     pub frame_stack: RefCell<Vec<Rc<Cell<usize>>>>,
     /// Recursion depth + limit (RecursionError at ~1000, task brief §5).

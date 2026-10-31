@@ -818,14 +818,19 @@ fn render_thread_exc_report(
     // REFERENCE's bootstrap frames embed its own threading.py install path
     // and line numbers (G-1, documented gap); ours identify OUR bootstrap.
     let mut out = String::from("Traceback (most recent call last):\n");
-    for (qualname, line) in interp.tb_frames.borrow().iter() {
+    for (qualname, line, file) in interp.tb_frames.borrow().iter() {
+        let file = if file.is_empty() {
+            interp.script_path.as_str()
+        } else {
+            file.as_str()
+        };
         out.push_str(&format!(
             "  File \"{}\", line {}, in {}\n",
-            interp.script_path, line, qualname
+            file, line, qualname
         ));
         if let Some(src_line) = interp.source.lines().nth(line.saturating_sub(1)) {
             out.push_str("    ");
-            out.push_str(src_line.trim_end());
+            out.push_str(src_line.trim());
             out.push('\n');
         }
     }

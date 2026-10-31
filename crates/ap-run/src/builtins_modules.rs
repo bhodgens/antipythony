@@ -14839,9 +14839,31 @@ pub fn call_builtin_values(
             }
             ("pytuple", "index") => {
                 if let (Value::Tuple(t), Some(v)) = (&recv, a(1)) {
-                    for (idx, item) in t.0.iter().enumerate() {
+                    // CPython signature: index(value, start=0, stop=len).
+                    // Negative start/stop count from the end; out-of-range
+                    // clamps to [0, n] (same semantics as the sibling
+                    // pytuple dispatcher arm below).
+                    let n = t.0.len() as i64;
+                    let start = match a(2) {
+                        Some(sv) => {
+                            let sval = as_int_i64(&sv)?;
+                            if sval < 0 { (sval + n).max(0) } else { sval.min(n) }
+                        }
+                        None => 0,
+                    };
+                    let stop = match a(3) {
+                        Some(ev) => {
+                            let eval = as_int_i64(&ev)?;
+                            if eval < 0 { (eval + n).max(0) } else { eval.min(n) }
+                        }
+                        None => n,
+                    };
+                    let stop = stop.max(start);
+                    for (idx, item) in t.0[start as usize..stop as usize].iter().enumerate() {
                         if ap_obj::ops::eq(item, &v) {
-                            return Ok(Value::Int(ap_obj::Int::from_i64(idx as i64)));
+                            return Ok(Value::Int(ap_obj::Int::from_i64(
+                                (idx as i64 + start) as i64,
+                            )));
                         }
                     }
                     Err(raise("ValueError", "tuple.index(x): x not in tuple"))
