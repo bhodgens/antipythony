@@ -95,8 +95,12 @@ GIL, uv-backed deps at build time. Byte-exact differential conformance vs CPytho
   earlier "T1 DONE 2026-10-25" claim covered IMPORT + a harness-driven
   spider; the real CrawlerProcess crawl path is the current campaign.
   Current blocker (wave-109): twisted.conch chain imports cryptography
-  (dispatched: v0 shim or eager-import bypass, deleg_ab35563b). GC issue
-  #10 triage + corpus fence dispatched in parallel (deleg_071c7256).
+  (dispatched: v0 shim or eager-import bypass, deleg_ab35563b - RUNNING).
+  GC issue #10 CLOSED (764ad5b): gc013 was stale (passes), gc009 was an
+  unraisable source-echo indent bug (trim fix), gc015 was finalize-token
+  alive attr shadowing (token exemption at the Opaque early-return);
+  fence gc018-020 landed; gc family 20/20. Triage:
+  docs/gc-issue10-triage.md.
   Wave-110 salvage committed 98b2964: T2 union surfaces, per-frame tb
   file attribution, scrapy shims (urllib proxy/service_identity/
   tldextract/OpenSSL TLSv1/inspect degrade reorder); gates 417/0, corpus
