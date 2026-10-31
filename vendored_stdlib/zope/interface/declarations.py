@@ -35,6 +35,18 @@ class Invalid(Exception):
 
 # zope.interface.declarations — advisory stubs used by
 # twisted.python.components.
+def provider(iface):
+    """Wave-105: interface-conditional decorator (real zope API).
+
+    Returns a decorator that declares `iface` as provided by the decorated
+    object if it doesn't already. v0: records nothing (inert), matching the
+    rest of this shim's surface.
+    """
+    def _decorator(ob):
+        return ob
+    return _decorator
+
+
 def implementer(*ifaces):
     def _deco(cls):
         return cls
