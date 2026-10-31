@@ -94,12 +94,20 @@ GIL, uv-backed deps at build time. Byte-exact differential conformance vs CPytho
   (exit 0, ~190s; extension ladder + engine ctor + downloader pass). The
   earlier "T1 DONE 2026-10-25" claim covered IMPORT + a harness-driven
   spider; the real CrawlerProcess crawl path is the current campaign.
-  Current blocker (wave-109): twisted.conch chain imports cryptography
-  (dispatched: v0 shim or eager-import bypass, deleg_ab35563b - RUNNING).
-  GC issue #10 CLOSED (764ad5b): gc013 was stale (passes), gc009 was an
-  unraisable source-echo indent bug (trim fix), gc015 was finalize-token
-  alive attr shadowing (token exemption at the Opaque early-return);
-  fence gc018-020 landed; gc family 20/20. Triage:
+  Current blocker: W110-5 - plain `async def` bodies never execute
+  (interp.rs:5993 v0 stub; send() -> StopIteration('')), so
+  open_spider_async completes instantly and the spider never opens.
+  Wave-110 CLEARED the cryptography blocker (b6d6614): 28-file
+  vendored_stdlib/cryptography/ v0 shim (surface pinned vs live
+  CPython); also fixed time.localtime/gmtime float arms (logging was
+  eating all tracebacks since wave-100), zope Interface subclass
+  binding, asyncio Task counter + asyncgen-hook workarounds. Chain:
+  reactor spins Tasks, resolver installed, crawl Deferred fires.
+  Findings: docs/wave-110-crawl.md. GC issue #10 CLOSED (764ad5b):
+  gc013 was stale (passes), gc009 was an unraisable source-echo
+  indent bug (trim fix), gc015 was finalize-token alive attr
+  shadowing (token exemption at the Opaque early-return); fence
+  gc018-020 landed; gc family 20/20. Triage:
   docs/gc-issue10-triage.md.
   Wave-110 salvage committed 98b2964: T2 union surfaces, per-frame tb
   file attribution, scrapy shims (urllib proxy/service_identity/
