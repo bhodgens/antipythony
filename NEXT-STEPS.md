@@ -3774,3 +3774,31 @@ family) rather than import.
 7. Gates: corpus 15/0 (8 xf 9 xp), SCRAPY IMPORT OK, build 0 errors. W108 marker
    in vendored logging + probes in _contextvars.py still in tree (pre-commit
    cleanup pending; _contextvars W-CRD probe is env-safe but unconditional-write).
+
+
+## Wave-109 (2026-10-30) — ZipPath MRO conflict FIXED (byte-identical with CPython)
+
+1. **Root cause** (MRODBG diagnostics named it): twisted `class ZipPath(
+   Generic[_ZipStr, _ArchiveStr], AbstractFilePath[_ZipStr])` — our class builder
+   decomposed both aliases to origins → bases (Generic, AbstractFilePath). C3 merge
+   fails: Generic appears in the tail of AbstractFilePath's mro while also being a
+   base that must precede it.
+2. **CPython behavior** (verified empirically): CPython's alias __mro_entries__
+   drops the explicit Generic — ZipPath.__bases__ == (AFP,) — final MRO
+   [ZP, AFP, Generic, object].
+3. **Fix** (committed): classes.rs post-processing — drop an explicit Generic base
+   when a LATER base's class chain already contains Generic. MRO now byte-identical
+   with CPython 3.14.7 on the minimal repro (t2mro7.py). All 5 generic-regression
+   repros still pass. Also patched vendored typing.py __mro_entries__ (same rule,
+   for the Python-side path) — committed.
+4. Chain state: crawl exit 0 in ~190s; ZipPath conflict GONE. Newest blocker:
+   `ModuleNotFoundError: No module named 'cryptography'` — twisted.conch.ssh chain
+   (keys/common/transport/_kex import cryptography.hazmat.* broadly: dsa/ec/ed25519/
+   rsa/padding/ciphers/serialization). Likely reached via a lazy manhole/ssh import
+   inside the engine-open path. Next wave: v0 cryptography shim (import-success
+   surface; crypto ops NotImplementedError — same pattern as OpenSSL shim) OR trace
+   the exact conch entry point and bypass it (TELNET is disabled in our harness, so
+   the importer may be an accidental eager import worth naming first).
+5. Gates: corpus 15/0 (8 xf, 9 xp), SCRAPY IMPORT OK, build 0 errors. MRODBG/MRODBG-CLS
+   probes env-gated (APX_MRODBG), committed — acceptable per standing probe policy.
+   W108 marker in vendored logging + W-CRD in _contextvars.py still pending cleanup.
