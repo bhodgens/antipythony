@@ -9331,7 +9331,16 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
     // blanket early-return handed back the raw stored hex STR and the test's
     // `h.hexdigest()` died with "'str' object is not callable".
     if let Value::Obj(o) = obj {
-        if o.kind == ap_obj::ObjKind::Opaque && name != "hexdigest" && name != "digest" {
+        // gc015 (issue #10): _finalize_token/_weakref_token carry a seeded
+        // `alive` attr (gcsupport ctor) that would shadow the DYNAMIC
+        // finalize_alive() surface in builtins_modules — the token's alive
+        // read must go through the dispatch arm, not the frozen attr.
+        if o.kind == ap_obj::ObjKind::Opaque
+            && name != "hexdigest"
+            && name != "digest"
+            && !((o.name == "_finalize_token" || o.name == "_weakref_token")
+                && matches!(name, "alive" | "detach" | "__call__"))
+        {
             let hit = o
                 .attrs
                 .borrow()

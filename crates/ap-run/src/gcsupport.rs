@@ -410,7 +410,10 @@ fn report_unraisable(interp: &Rc<Interpreter>, del_f: &Value, exc: &ExceptionVal
     ));
     if let Some(src) = interp.source.lines().nth(line.saturating_sub(1)) {
         text.push_str("    ");
-        text.push_str(src.trim_end());
+        // CPython strips the source line and re-indents 4 spaces
+        // (sys.unraisablehook text shaping) — trim_end kept raw leading
+        // indent (gc009, issue #10).
+        text.push_str(src.trim());
         text.push('\n');
     }
     let msg = exc.py_str().unwrap_or_default();

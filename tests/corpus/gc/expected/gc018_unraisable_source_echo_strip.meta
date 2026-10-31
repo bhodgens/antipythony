@@ -1,0 +1,7 @@
+{
+  "date": "2026-10-31",
+  "family": "gc",
+  "generator": "tests/t07_gc/_gen_expected.py",
+  "generator_sha256": "288ce6186cc0b8f779e50e1f76f089fd5c89cba2dd08dedf687230c0fc26b917",
+  "sys_version": "3.14.7 (main, Aug  5 2026, 10:29:49) [Clang 21.0.0 (clang-2100.1.1.101)]"
+}

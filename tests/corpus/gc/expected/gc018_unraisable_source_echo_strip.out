@@ -1,0 +1,5 @@
+line_count: 5
+line0: Exception ignored while calling deallocator <function Outer.Inner.Deep.__del__ at 0xADDR>:
+frame slot: FRAME, line 22, in __del__
+source echo: '    raise ValueError("echo-strip-check")'
+last: ValueError: echo-strip-check
