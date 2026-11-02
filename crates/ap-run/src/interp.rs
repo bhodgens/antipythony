@@ -3207,9 +3207,20 @@ fn contains(a: &Value, b: &Value) -> Result<bool, Flow> {
                 }
                 return Ok(false);
             }
-            if crate::classes::special_lookup(&interp, b, "__iter__").is_some()
+            // W110: generators/iterators answer `in` via iteration
+            // (CPython falls back to __iter__ when __contains__ is
+            // missing). special_lookup only consults class-level tables,
+            // which Namespace-marked generators lack - route Value::Obj
+            // through attr_get before declaring not-iterable.
+            let has_iter = crate::classes::special_lookup(&interp, b, "__iter__").is_some()
                 || crate::classes::special_lookup(&interp, b, "__getitem__").is_some()
-            {
+                || matches!(b, Value::Obj(o) if matches!(
+                    o.kind,
+                    ap_obj::ObjKind::Generator | ap_obj::ObjKind::Iterator
+                ) || {
+                    matches!(crate::interp::attr_get(&interp, b, "__iter__"), Ok(Some(_)))
+                });
+            if has_iter {
                 let it = iterable_of(&b)?;
                 while let Some(item) = it.next() {
                     if eval_compare(a, CmpOp::Eq, &item)? {
@@ -3383,6 +3394,29 @@ fn contains(a: &Value, b: &Value) -> Result<bool, Flow> {
             format!("argument of type '{}' is not iterable", other.type_name()),
         )),
     }
+    .or_else(|flow| {
+        // W110: `in` over generators/iterators — the Obj arms above only
+        // cover Opaque; a Generator raises before reaching iterable_of.
+        // Fall back to iteration for any Value the error mentions.
+        match &flow {
+            crate::Flow::Raise(ev) if ev.class == "TypeError" => {
+                let it = iterable_of(b);
+                match it {
+                    Ok(it) => {
+                        let mut itc = it;
+                        while let Some(item) = itc.next() {
+                            if eval_compare(a, CmpOp::Eq, &item)? {
+                                return Ok(true);
+                            }
+                        }
+                        Ok(false)
+                    }
+                    Err(_) => Err(flow),
+                }
+            }
+            _ => Err(flow),
+        }
+    })
 }
 
 fn other_display_name(o: &ap_obj::PyObject) -> String {
@@ -4287,6 +4321,35 @@ fn call_value_inner_impl(
                                 return Err(crate::Flow::Raise(e));
                             }
                             None => return Err(stop_async_iteration_flow()),
+                        }
+                    }
+                    // W110: generator __iter__ returns the generator
+                    // itself; __next__ resumes it (CPython semantics).
+                    if o.name == "__ap_gen___iter____" {
+                        let Some(Value::Obj(g)) = args.first() else {
+                            return Err(raise("TypeError", "__iter__ needs self"));
+                        };
+                        return Ok(Value::Obj(g.clone()));
+                    }
+                    if o.name == "__ap_gen___next____" {
+                        let Some(Value::Obj(g)) = args.first() else {
+                            return Err(raise("StopIteration", ""));
+                        };
+                        let Some(id) = *g.gen_id.borrow() else {
+                            return Err(raise("StopIteration", ""));
+                        };
+                        match crate::interp::gen_send_pub(&interp, id, Value::None)? {
+                            Some(v) => return Ok(v),
+                            None => {
+                                let val =
+                                    interp.si_value.borrow_mut().take().unwrap_or(Value::None);
+                                let mut e =
+                                    crate::exc_hier::ExceptionValue::new("StopIteration", vec![]);
+                                if !matches!(val, Value::None) {
+                                    e.args.push(val);
+                                }
+                                return Err(crate::Flow::Raise(e));
+                            }
                         }
                     }
                     // s018/T2: generator close/send/throw — REAL PEP-342
@@ -11142,6 +11205,34 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                         *bm.func.borrow_mut() = Some(Value::Obj(ap_obj::PyObject::new(
                             ap_obj::ObjKind::BuiltinFn,
                             &format!("__ap_gen_{}__", name),
+                        )));
+                        Some(Value::Obj(bm))
+                    }
+                    // W110: generators answer `in` via the iteration
+                    // fallback (contains() probes __iter__); serve the
+                    // virtual iter/next dunders so membership tests and
+                    // any iter() consumer see a real iterator surface.
+                    "__iter__" => {
+                        let bm = ap_obj::PyObject::with_self(
+                            ap_obj::ObjKind::BoundMethod,
+                            "generator.__iter__",
+                            obj.clone(),
+                        );
+                        *bm.func.borrow_mut() = Some(Value::Obj(ap_obj::PyObject::new(
+                            ap_obj::ObjKind::BuiltinFn,
+                            "__ap_gen___iter____",
+                        )));
+                        Some(Value::Obj(bm))
+                    }
+                    "__next__" => {
+                        let bm = ap_obj::PyObject::with_self(
+                            ap_obj::ObjKind::BoundMethod,
+                            "generator.__next__",
+                            obj.clone(),
+                        );
+                        *bm.func.borrow_mut() = Some(Value::Obj(ap_obj::PyObject::new(
+                            ap_obj::ObjKind::BuiltinFn,
+                            "__ap_gen___next____",
                         )));
                         Some(Value::Obj(bm))
                     }

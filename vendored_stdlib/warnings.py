@@ -62,6 +62,15 @@ from _py_warnings import (
 try:
     # Try to use the C extension, this will replace some parts of the
     # _py_warnings implementation imported above.
+    #
+    # antipythany W110: our native `_warnings` surface is an INERT v0 stub
+    # (builtins_modules build__warnings) — its warn/warn_explicit return
+    # None without routing through _showwarnmsg, so catch_warnings(record)
+    # captured nothing and pytest's warnings plugin dead-ended. CPython's
+    # C warn() routes to the Python _showwarnmsg hook; ours does not.
+    # Prefer the _py_warnings implementations (the ImportError fallback
+    # path below) until the native module implements the hook protocol.
+    raise ImportError  # W110: native _warnings stub lacks the hook protocol
     from _warnings import (
         _acquire_lock,
         _defaultaction as defaultaction,
