@@ -988,7 +988,14 @@ class EnumType(type):
                     if base._member_type_ is not object:
                         data_types.add(base._member_type_)
                         break
-                elif '__new__' in base.__dict__ or '__dataclass_fields__' in base.__dict__:
+                elif ('__new__' in base.__dict__ or '__dataclass_fields__' in base.__dict__
+                      # W110 (T2): native builtin data types (int/str/float)
+                      # carry no __dict__ __new__ entry in our runtime —
+                      # they are data types by definition (CPython's type
+                      # objects have tp_new). Match by name against builtins.
+                      or (base.__name__ in _builtin_type_names
+                          and getattr(base, '__module__', '') != 'enum')
+                      ):
                     data_types.add(candidate or base)
                     break
                 else:
@@ -1023,6 +1030,24 @@ class EnumType(type):
             for method in ('__new_member__', '__new__'):
                 for possible in (member_type, first_enum):
                     target = getattr(possible, method, None)
+                    # W110 (T2): builtin data types (int/str/…) expose the
+                    # object.__new__ virtual marker as __new__ in our
+                    # runtime — calling it raises "takes no arguments". When
+                    # member_type is a builtin data type, its CALLABLE form
+                    # is the right __new_member__.
+                    if target is not None and getattr(
+                            target, '__name__', '') == '__object_new2__':
+                        # W110: possible is the SYNTHESIZED builtin base
+                        # class (same name, different object) — match by
+                        # name.
+                        if getattr(possible, '__name__', '') in (
+                                'int', 'str', 'float', 'bytes', 'tuple',
+                                'list', 'dict', 'set', 'frozenset', 'bool',
+                                'complex', 'range', 'slice', 'bytearray'):
+                            target = getattr(__import__('builtins'),
+                                             possible.__name__)
+                        else:
+                            target = None
                     if target not in {
                             None,
                             None.__new__,
@@ -1333,6 +1358,11 @@ class Enum(metaclass=EnumType):
         """The value of the Enum member."""
         return self._value_
 
+
+# W110 (T2): names of builtin data types (see _find_data_type_ note).
+_builtin_type_names = frozenset(
+    {'int', 'str', 'float', 'bytes', 'tuple', 'list', 'dict', 'set',
+     'frozenset', 'bool', 'complex', 'range', 'slice', 'bytearray'})
 
 class ReprEnum(Enum):
     """

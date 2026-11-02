@@ -54,7 +54,10 @@ except ImportError:
     WrapperDescriptorType = type(object.__init__)
     MethodWrapperType = type(object().__str__)
     MethodDescriptorType = type(str.join)
-    ClassMethodDescriptorType = type(dict.__dict__['fromkeys'])
+    # W110 (T2): our dict Type.__dict__ lacks 'fromkeys' (the native
+    # surface dispatches it without a class-dict entry) — fall back to
+    # MethodDescriptorType so the types.py import chain proceeds.
+    ClassMethodDescriptorType = MethodDescriptorType
 
     ModuleType = type(sys)
 

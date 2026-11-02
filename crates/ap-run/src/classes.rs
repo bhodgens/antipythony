@@ -256,9 +256,12 @@ pub fn dynamic_type(
                     })
             });
             if let Some(b) = marker {
+                // W110 (T2): int subclasses (enum.IntEnum(int, ...)) need
+                // the builtin-ctor fallback too — MyInt(1) must build from
+                // the arg like tuple/list subclasses do.
                 if matches!(
                     b.as_str(),
-                    "tuple" | "list" | "dict" | "set" | "str" | "property"
+                    "tuple" | "list" | "dict" | "set" | "str" | "property" | "int"
                 ) {
                     let _ = t.dict.set(
                         Value::Str(PyString::new("__ap_builtin_base__")),
@@ -1571,7 +1574,9 @@ pub fn base_type_ref(interp: &Interpreter, v: &Value) -> Result<Option<Rc<TypeRe
             // instantiate's tuple-storage path engages.
             if matches!(
                 o.name.as_str(),
-                "tuple" | "list" | "dict" | "set" | "str" | "property"
+                // W110 (T2): int subclasses (enum.IntEnum(int, Enum)) need
+                // the builtin-ctor fallback — MyInt(1) builds from args.
+                "tuple" | "list" | "dict" | "set" | "str" | "property" | "int"
             ) {
                 let _ = t.dict.set(
                     Value::Str(PyString::new("__ap_builtin_base__")),
@@ -2424,6 +2429,25 @@ pub fn special_lookup(interp: &Interpreter, v: &Value, name: &str) -> Option<(Va
         // (Version.__lt__ → _cmp → _Inf().__lt__/__gt__). UserClass elements
         // answer their class-level dunders bound to the class value.
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass => {
+            // W111: class-as-instance dunder PROTOCOL lookups (__bool__/
+            // __len__/__iter__...) on a USER class must NOT resolve from
+            // the class's own MRO — CPython only consults the METACLASS
+            // (no metaclass __len__ => assert SomeClass is always True).
+            // The MRO scan here made `assert self.pqclass` (pqclass = the
+            // DownloaderAwarePriorityQueue class) call its unbound __len__
+            // with self=the class -> AttributeError 'pqueues'.
+            if name.starts_with("__")
+                && name.ends_with("__")
+                && matches!(
+                    name,
+                    "__bool__" | "__len__" | "__iter__" | "__getitem__" | "__contains__"
+                        | "__call__" | "__next__" | "__enter__" | "__exit__" | "__eq__"
+                        | "__lt__" | "__le__" | "__gt__" | "__ge__" | "__hash__"
+                        | "__str__" | "__repr__"
+                )
+            {
+                return None;
+            }
             let t = o.class_ref.borrow().clone()?;
             t.lookup_with_owner(name)
         }
@@ -2567,6 +2591,29 @@ pub fn attr_get_opt(
                 return Ok(None);
             };
             class_attr_get(interp, obj, &t, name).map(Some)
+        }
+        // W110 (T2): interned builtin Type objects (dict.__bases__,
+        // dict.__init__, ...) have no class_ref payload but still answer
+        // through class_attr_get — synthesize a native TypeRef whose MRO
+        // ends in object (dict/int/etc bases are object in CPython too).
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::Type => {
+            let obj_t = object_class(interp);
+            let t = match TypeObject::create(
+                o.name.clone(),
+                o.name.clone(),
+                vec![obj_t.clone()],
+                PyDict::new(),
+                TypeFlags::default(),
+                None,
+            ) {
+                Ok(t) => t,
+                Err(_) => return Ok(None),
+            };
+            let cls_v = ap_obj::classes::make_class_value(t.clone());
+            match class_attr_get(interp, &cls_v, &t, name) {
+                Ok(v) => Ok(Some(v)),
+                Err(_) => Ok(None),
+            }
         }
         // Wave-58: stream-subclass instances (CaptureIO(TextIOWrapper) &
         // friends) are Opaque carrying a user class_ref. Resolve PYTHON
@@ -3622,7 +3669,16 @@ pub fn instantiate(
         if let Some(builtin) = builtin {
             // T1-d (namedtuple SplitResult(5 args)): ALL-positional args
             // become the tuple payload fields.
-            let payload = match args {
+            // W110 (T2): enum-style ctor calls int(cls, value) — CPython's
+            // int.__new__(cls, value) ignores the cls arg. Drop a leading
+            // class-valued arg so int(IE, 1) builds from 1.
+            let args_eff: Vec<Value> = match args {
+                [a, rest @ ..] if rest.len() == 1 && matches!(a, Value::Obj(ao) if ao.kind == ap_obj::ObjKind::UserClass || ao.kind == ap_obj::ObjKind::Type) => {
+                    rest.to_vec()
+                }
+                other => other.to_vec(),
+            };
+            let payload = match args_eff.as_slice() {
                 [one] => Some(one.clone()),
                 [a, b, c, d, e] if !kwargs.iter().any(|_| true) => {
                     Some(Value::Tuple(Gc::new(Tuple(vec![
@@ -3650,6 +3706,9 @@ pub fn instantiate(
                     "str" => crate::builtins::call_builtin(interp, "str", &[p.clone()], &[]).ok(),
                     // dict subclass: dict(mapping-or-iterable, **kw).
                     "dict" => crate::builtins::call_builtin(interp, "dict", &[p.clone()], &[]).ok(),
+                    // W110 (T2): int subclasses (enum members) construct
+                    // from the value arg like CPython int(x).
+                    "int" => crate::builtins::call_builtin(interp, "int", &[p.clone()], &[]).ok(),
                     // property(fget): the fget rides the descriptor.
                     "property" => {
                         let o = ap_obj::PyObject::new(ap_obj::ObjKind::Descriptor, "property");

@@ -1679,6 +1679,35 @@ pub fn call_method(
                 other => Some(other),
             }
         }
+        // W111: dunder surface on builtin VALUES — the 11895 attr arm binds
+        // BoundMethod "__len__"/"__iter__"/"__getitem__"/"__contains__" over
+        // the receiver; calling it needs a call arm. CPython: dict.__len__
+        // is the same slot len() uses.
+        (Value::Dict(d), "__len__") => Some(Ok(Value::Int(ap_obj::Int::from_i64(d.len() as i64)))),
+        (Value::Dict(d), "__getitem__") => {
+            let k = one_arg(args)?;
+            match d.get(k) {
+                Some(v) => Some(Ok(v)),
+                None => Some(Err(raise("KeyError", format!("{k:?}")))),
+            }
+        }
+        (Value::Dict(d), "__contains__") => {
+            let k = one_arg(args)?;
+            Some(Ok(Value::Bool(d.get(k).is_some())))
+        }
+        (Value::Dict(d), "get") => {
+            let k = one_arg(args)?;
+            let dv = args.get(1).cloned().unwrap_or(Value::None);
+            Some(Ok(d.get(k).unwrap_or(dv)))
+        }
+        (Value::List(l), "__len__") => Some(Ok(Value::Int(ap_obj::Int::from_i64(l.len() as i64)))),
+        (Value::Tuple(t), "__len__") => Some(Ok(Value::Int(ap_obj::Int::from_i64(t.0.len() as i64)))),
+        (Value::Str(s), "__len__") => Some(Ok(Value::Int(ap_obj::Int::from_i64(
+            s.as_str().chars().count() as i64,
+        )))),
+        (Value::Set(s), "__len__") | (Value::Frozen(s), "__len__") => {
+            Some(Ok(Value::Int(ap_obj::Int::from_i64(s.len() as i64))))
+        }
         _ => None,
     };
     r

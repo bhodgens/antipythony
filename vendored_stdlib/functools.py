@@ -29,8 +29,13 @@ from _thread import RLock
 # update_wrapper() and wraps() are tools to help write
 # wrapper functions that can handle naive introspection
 
+# W110 (T2): CPython 3.12+ WRAPPER_ASSIGNMENTS includes '__wrapped__'
+# (set separately below, but inspect.unwrap depends on it; pytest's
+# FixtureFunctionDefinition + get_real_func/inspect.unwrap chain breaks
+# without it). Our vendored copy drops it → fixture signature lookups
+# die with "no signature found for builtin".
 WRAPPER_ASSIGNMENTS = ('__module__', '__name__', '__qualname__', '__doc__',
-                       '__annotate__', '__type_params__')
+                       '__annotate__', '__type_params__', '__wrapped__')
 WRAPPER_UPDATES = ('__dict__',)
 def update_wrapper(wrapper,
                    wrapped,
@@ -935,7 +940,14 @@ def singledispatch(func):
                     f"Invalid first argument to `register()`. "
                     f"{cls!r} is not a class or union type."
                 )
+            # W111: PEP 749 __annotate__ callable. The vendored runtime parks
+            # SOURCE STRINGS in __annotations__ (no lazy annotate cell), so
+            # fall back to __annotations__ when __annotate__ is absent.
             ann = getattr(cls, '__annotate__', None)
+            if ann is None:
+                ann = getattr(cls, '__annotations__', None) or None
+                if ann == {}:
+                    ann = None
             if ann is None:
                 raise TypeError(
                     f"Invalid first argument to `register()`: {cls!r}. "

@@ -18,7 +18,11 @@ class ForwardRef:
 
     __forward__names__ = ()
 
-    def __init__(self, arg, *, module=None, owner=None, is_class=False):
+    def __init__(self, arg, *, module=None, owner=None, is_class=False,
+                 is_argument=True, **_w110_extra):
+        # W110 (T2): typing._make_forward_ref forwards is_argument= (CPython
+        # 3.14 signature). Accept and ignore it — our evaluate path doesn't
+        # distinguish argument vs non-argument forward refs.
         if isinstance(arg, types.FunctionType):
             arg = getattr(arg, "__name__", "")
         self.__forward_arg__ = arg
@@ -43,10 +47,27 @@ class ForwardRef:
     def __hash__(self):
         return hash(self.__forward_arg__)
 
-    def evaluate(self, *args, **kwargs):
-        raise NotImplementedError(
-            "annotationlib.ForwardRef.evaluate is not supported in v0"
-        )
+    def evaluate(self, globals=None, locals=None, owner=None, defaults=None,
+                 format=1, emit_values=None, **_kw):
+        # W110 (T2): get_type_hints(Format.FORWARDREF) evaluates simple
+        # string annotations via this path. Builtins resolve through the
+        # __forward_module__ (or the eval globals' builtins) — enough for
+        # singledispatch's register(func) annotation probe.
+        code = getattr(self, "__forward_code__", None)
+        if code is None:
+            raise NotImplementedError(
+                "annotationlib.ForwardRef.evaluate is not supported in v0"
+            )
+        g = dict(globals) if globals else {}
+        if "__builtins__" not in g:
+            import builtins as _b
+            g["__builtins__"] = _b
+        l = dict(locals) if locals else {}
+        val = eval(self.__forward_arg__, g, l)
+        if isinstance(val, str):
+            # unresolved string stays a ForwardRef under FORWARDREF format
+            return self
+        return val
 
     def __forward_evaluate__(self, *args, **kwargs):
         raise NotImplementedError(

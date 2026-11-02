@@ -1769,11 +1769,21 @@ pub(crate) fn augment_with_vendored(interp: &Rc<Interpreter>, name: &str, m: &Va
             "UserDict",
             "UserList",
             "UserString",
+            // W110 (T2 pytest): inspect.py calls
+            // new_params.move_to_end(...) on OrderedDict; the native
+            // interned Type stub lacks it. The vendored class is a real
+            // dict subclass with the full surface.
+            "OrderedDict",
         ];
+        // W110 (T2): functools augmentation must be wholesale — the native
+        // WRAPPER_ASSIGNMENTS stub lacks '__wrapped__' so a name-gated copy
+        // would keep the broken stub. Vendored names overwrite all.
+        let wholesale = name == "functools";
         if let Value::Obj(mo) = m {
             if let Some(cns) = &*mo.module_ns.borrow_mut() {
                 for (k, v) in loaded.ns.items() {
-                    let wins = matches!(&k, Value::Str(kv) if VENDORED_WINS.contains(&kv.as_str()));
+                    let wins = wholesale
+                        || matches!(&k, Value::Str(kv) if VENDORED_WINS.contains(&kv.as_str()));
                     if wins || cns.get(&k).is_none() {
                         let _ = cns.set(k, v);
                     }

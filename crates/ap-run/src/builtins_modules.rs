@@ -806,6 +806,10 @@ pub fn get_or_make_module(interp: &Rc<crate::frame::Interpreter>, name: &str) ->
     if matches!(
         name,
         "posixpath" | "genericpath" | "stat" | "keyword" | "linecache" | "collections" | "string"
+            // W110 (T2): functools.WRAPPER_ASSIGNMENTS must carry
+            // '__wrapped__' (vendored copy) or inspect.unwrap breaks on
+            // pytest's FixtureFunctionDefinition → signature lookups die.
+            | "functools"
     ) {
         crate::importer::augment_with_vendored(interp, name, &m);
     }

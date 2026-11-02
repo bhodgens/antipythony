@@ -3802,3 +3802,70 @@ family) rather than import.
 5. Gates: corpus 15/0 (8 xf, 9 xp), SCRAPY IMPORT OK, build 0 errors. MRODBG/MRODBG-CLS
    probes env-gated (APX_MRODBG), committed — acceptable per standing probe policy.
    W108 marker in vendored logging + W-CRD in _contextvars.py still pending cleanup.
+
+
+## Wave-111 (2026-11-02) — class-protocol truthiness, dict.__init__ chain, closure cell chain, singledispatch annotations
+
+1. **Class-truthiness bug class (root fix)**: `assert self.pqclass` (pqclass =
+   a USER CLASS) dispatched the class's own `__len__` unbound — AttributeError
+   'pqueues'. CPython consults the METACLASS for class-as-instance dunders,
+   never the class's own MRO. Fixed in BOTH lookup paths: special_lookup
+   (classes.rs UserClass arm) and attr_get (interp.rs Type|UserClass arm,
+   metaclass-only for user classes; interned builtin Types keep their MRO).
+   UserClass dunder list: __bool__/__len__/__iter__/__getitem__/__contains__/
+   __call__/__next__/__enter__/__exit__/__eq__/__lt__/__le__/__gt__/__ge__/
+   __hash__/__str__/__repr__. Metaclass __len__ DOES apply (probe verified).
+2. **dict.__init__(self) chain**: vendored OrderedDict ctor died with
+   'type' object has no attribute '__init__' then NoneType-not-callable.
+   Two arms: (a) attr_get Type+__init__ arm now returns the
+   __ap_base_<t>__init__ BuiltinFn marker (fresh instance in slice_parts +
+   self_value) for list/tuple/dict/set/frozenset — the existing ~4814 call
+   arm consumes it; (b) methods.rs call_method gained (Dict|List|Tuple|Str|
+   Set).__len__ + Dict.__getitem__/__contains__/get call arms (the 11895
+   attr arm binds BoundMethod markers that had no call path).
+3. **dict-derived len()**: vendored OrderedDict instances (dict subclass)
+   raise 'OrderedDict' has no len() — user_len (interp.rs) + builtin_len
+   (builtins.rs) now size dict-derived instances via their __ap_dict__
+   backing (dict_backing()).
+4. **structseq unpack**: `y,m,d,hh,... = time.localtime(t)` failed (opaque
+   struct_time not iterable). special_lookup Opaque arm + iterable_of now
+   treat struct_time/uname_result/stat_result/statvfs_result as sequences
+   over their <values> list. datetime.fromtimestamp byte-matches CPython.
+5. **Closure cell chain (W111 root)**: self-recursive nested defs (functools
+   register decorator pattern) died with NameError 'register'. Root: the
+   Wave-60 deferred-free resolution pinned `enclosing` to the nearest
+   function scope (the def ITSELF for self-recursion) and gave up when the
+   binding wasn't there — the binding lives in the def's PARENT. Fixes in
+   lowering.rs finish_scopes: (a) climb the scope-path prefix chain
+   (skipping bare "<locals>" tails) to the first scope that truly binds the
+   load; (b) PROPAGATE the free through intermediate scopes (CPython
+   transitive co_freevars) so the runtime cell chain
+   (defining.my_cells -> free_cells) passes through. functools.register
+   closure now resolves; singledispatch + recursive-decorator patterns work.
+6. **Function __annotations__**: attr blanket-empty-dict for Function kind
+   shadowed the parked source strings (eager def path writes them) — check
+   attrs FIRST. functools singledispatch register(func) falls back to
+   __annotations__ when the PEP-749 __annotate__ cell is absent (vendored
+   functools.py patch); typing.get_type_hints(FORWARDREF) resolves 'int'.
+7. **eval(src, globals[, locals])**: builtin_eval ignored the namespace
+   args (ForwardRef.evaluate got None for every name). New arm: module frame
+   over the GIVEN globals (locals entries merged in; eval never binds).
+8. **Sibling fixes landed in-tree (W110/W111, enum.py/types.py/
+   annotationlib.py/builtins_modules.rs/importer.rs)**: IntEnum data-type
+   classification by builtin name, __new_member__ callable selection,
+   types.ClassMethodDescriptorType fallback, aiohttp/web + brotli + sqlite3
+   vendored additions.
+9. **Chain state**: crawl marched PAST scheduler-open (the wave-110
+   blocker): Spider opened, engine constructs, downloader resumes. Newest
+   blocker: `AttributeError: 'int' object has no attribute 'phrase'` from
+   `http.client.responses = {v: v.phrase for v in HTTPStatus...}` — IntEnum
+   members DEGRADE TO PLAIN INT in our runtime (plain Enum members keep
+   their class), so class-body methods (.phrase/.description) are
+   unreachable. Next wave: IntEnum member-instance fidelity — members must
+   carry the defining class (UserInstance with int payload + class_ref, or
+   an int-with-class marker) so class-level methods resolve.
+10. Gates: corpus 7/0, stdlib_modules_differential 48/0,
+    classes_differential 29/0, method_surface_differential 34/0,
+    gc_differential 1/0. Crawl probes: scheduler chain green, singledispatch
+    green, struct_time unpack byte-identical, eval-namespace green.
+    W111DBG/DEFER probes env-gated (APX_W111DBG) — cleanup pending.

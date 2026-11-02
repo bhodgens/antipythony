@@ -360,6 +360,11 @@ pub fn builtin_len(args: &[Value]) -> BResult {
                     let l = crate::classes::list_backing_or_new(v);
                     return Ok(Value::Int(Int::from_i64(l.len() as i64)));
                 }
+                // W111: dict-derived user classes (vendored collections.
+                // OrderedDict subclasses dict) size via their dict slots.
+                if let Some(d) = crate::classes::dict_backing(v) {
+                    return Ok(Value::Int(Int::from_i64(d.len() as i64)));
+                }
                 return Err(raise(
                     "TypeError",
                     format!("object of type '{}' has no len()", v.type_name()),
@@ -418,6 +423,12 @@ pub fn builtin_str(args: &[Value]) -> BResult {
 pub fn builtin_int(interp: &Interpreter, args: &[Value]) -> BResult {
     match args.len() {
         0 => Ok(Value::Int(Int::Smi(0))),
+        // W110 (T2): int(cls, value) — enum member construction passes the
+        // class as the first arg (CPython int.__new__ ignores it).
+        2 if matches!(&args[0], Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass || o.kind == ap_obj::ObjKind::Type) => {
+            let args1 = [args[1].clone()];
+            builtin_int(interp, &args1)
+        }
         1 => {
             let v = &args[0];
             match v {
@@ -4662,9 +4673,17 @@ pub fn builtin_eval(interp: &Interpreter, args: &[Value]) -> crate::EvalResult {
     // ExprContext::Invalid, so a missing-Assign shape is ambiguous and the
     // error check must come first.)
     let wrapped = ap_parse::lower_source(&format!("__ap_eval__ = {src}\n"));
+    // W110: lowering inserts Stmt::Line before each statement — the wrap
+    // Assign is no longer items.first(). Scan for ANY Assign item.
     let is_expr = matches!(
-        wrapped.as_ref().ok().map(|(m, _)| m.items.first()),
-        Some(Some(ap_ir::Item::Stmt(ap_ir::Stmt::Assign(_, _))))
+        wrapped.as_ref().ok().map(|(m, _)| m
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ap_ir::Item::Stmt(ap_ir::Stmt::Assign(_, _)) => Some(()),
+                _ => None,
+            })),
+        Some(Some(()))
     );
     if wrapped.is_err() {
         return Err(raise("SyntaxError", "invalid syntax"));
@@ -4677,10 +4696,33 @@ pub fn builtin_eval(interp: &Interpreter, args: &[Value]) -> crate::EvalResult {
         // CPython pin (s001): eval("1+") msg is exactly "invalid syntax".
         Err(_) => return Err(raise("SyntaxError", "invalid syntax")),
     };
-    let expr = match module.items.first() {
-        Some(ap_ir::Item::Stmt(ap_ir::Stmt::Assign(_, v))) => v.clone(),
-        _ => return Err(raise("SyntaxError", "invalid syntax")),
+    // W110: lowering inserts Stmt::Line markers before each top-level
+    // statement — skip them to find the wrapped Assign.
+    let expr = match module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            ap_ir::Item::Stmt(ap_ir::Stmt::Assign(_, v)) => Some(v.clone()),
+            _ => None,
+        }) {
+        Some(v) => v,
+        None => return Err(raise("SyntaxError", "invalid syntax")),
     };
+    // W111: eval(source, globals[, locals]) — ForwardRef.evaluate passes the
+    // caller's namespace. v0 note: explicit namespaces are folded into
+    // interp.globals (same documented shape as builtin_exec).
+    if args.len() >= 2 {
+        if let Value::Dict(d) = &args[1] {
+            for (k, v) in d.items() {
+                let _ = interp.globals.set(k, v);
+            }
+        }
+        if let Some(Value::Dict(ld)) = args.get(2) {
+            for (k, v) in ld.items() {
+                let _ = interp.globals.set(k, v);
+            }
+        }
+    }
     // Evaluate in a module-shaped frame over interp.globals.
     crate::interp::eval_expr_public(&interp.rc(), &expr)
 }
@@ -5175,7 +5217,9 @@ fn builtin_type_new(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
         if first_base.kind == ap_obj::ObjKind::Type
             && matches!(
                 first_base.name.as_str(),
-                "tuple" | "list" | "dict" | "set" | "str"
+                // W110 (T2): int subclasses (enum.IntEnum(int, ...)) need
+                // the builtin-ctor fallback — MyInt(1) builds from args.
+                "tuple" | "list" | "dict" | "set" | "str" | "int"
             )
         {
             let _ = t.dict.set(

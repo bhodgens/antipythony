@@ -498,6 +498,41 @@ fn exec_module(
                 }
                 let id = reg.by_path.get(&f.name).copied().unwrap_or(0);
                 let func = builtins::make_function(id, &f.name);
+                // W110 (T2): park annotation source strings on the function
+                // (functools.singledispatch register(func) reads
+                // __annotations__ for the dispatch key). Same shape as the
+                // stmt-level def path below.
+                if let Value::Obj(fo) = &func {
+                    let mut ann_pairs: Vec<(Value, Value)> = Vec::new();
+                    for p in &f.params {
+                        if let Some(ann) = &p.ann {
+                            ann_pairs.push((
+                                Value::Str(PyString::new(p.name.clone())),
+                                Value::Str(PyString::new(ap_ir::dump_expr_inline(&ann.expr))),
+                            ));
+                        }
+                    }
+                    if !ann_pairs.is_empty() {
+                        let d = PyDict::new();
+                        for (k, v) in ann_pairs {
+                            let _ = d.set(k, v);
+                        }
+                        let _ = fo.attrs.borrow_mut().set(
+                            Value::Str(PyString::new("__annotations__")),
+                            Value::Dict(d),
+                        );
+                    }
+                    // W110 (PEP 649): functions carry __annotate__ (CPython
+                    // 3.14). functools.singledispatch register(func) reads
+                    // it before __annotations__.
+                    let _ = fo.attrs.borrow_mut().set(
+                        Value::Str(PyString::new("__annotate__")),
+                        Value::Obj(ap_obj::PyObject::new(
+                            ap_obj::ObjKind::BuiltinFn,
+                            "__ap_fn_annotate__",
+                        )),
+                    );
+                }
                 // Module bindings live in the GLOBALS dict (BUG-A fix): the
                 // module frame keeps `locals` empty and every nested frame
                 // resolves globals through frame.globals — store_local would
@@ -1326,6 +1361,15 @@ fn exec_stmt(
                         .attrs
                         .borrow_mut()
                         .set(Value::Str(PyString::new("__annotations__")), Value::Dict(d));
+                    // W110 (PEP 649): __annotate__ marker (CPython 3.14);
+                    // functools.singledispatch register(func) reads it.
+                    let _ = fo.attrs.borrow_mut().set(
+                        Value::Str(PyString::new("__annotate__")),
+                        Value::Obj(ap_obj::PyObject::new(
+                            ap_obj::ObjKind::BuiltinFn,
+                            "__ap_fn_annotate__",
+                        )),
+                    );
                 }
             }
             // Defaults + closures evaluate in the DEFINING frame (S-02-7).
@@ -4026,6 +4070,68 @@ fn call_value_inner_impl(
                             };
                         }
                     }
+                    // W111: structseq sequence protocol markers
+                    // (struct_time/uname_result/stat_result/statvfs_result)
+                    // — drive the Opaque's <values> list (CPython structseq
+                    // is tuple-like; datetime._fromtimestamp unpacks
+                    // time.localtime() 9-wide).
+                    if let Some(dunder) = o.name.strip_prefix("structseq.") {
+                        if matches!(dunder, "__len__" | "__getitem__" | "__iter__") {
+                            let recv = o
+                                .slice_parts
+                                .borrow()
+                                .first()
+                                .cloned()
+                                .unwrap_or(Value::None);
+                            let values = match &recv {
+                                Value::Obj(ro) => ro
+                                    .attrs
+                                    .borrow()
+                                    .get(&Value::Str(PyString::new("<values>")))
+                                    .map(|v| v.clone())
+                                    .unwrap_or(Value::None),
+                                _ => Value::None,
+                            };
+                            match (dunder, &values) {
+                                ("__len__", Value::List(l)) => {
+                                    return Ok(Value::Int(ap_obj::Int::from_i64(
+                                        l.len() as i64,
+                                    )));
+                                }
+                                ("__iter__", Value::List(l)) => {
+                                    let items = l.items().to_vec();
+                                    return crate::builtins::builtin_iter(&[Value::List(
+                                        PyList::from_vec(items),
+                                    )]);
+                                }
+                                ("__getitem__", Value::List(l)) => {
+                                    let idx = args.first().cloned().unwrap_or(Value::None);
+                                    let n = l.len() as i64;
+                                    let iv = match crate::builtins_modules::as_int_i64(&idx) {
+                                        Ok(v) => v,
+                                        Err(_) => {
+                                            return Err(raise(
+                                                "TypeError",
+                                                format!(
+                                                    "sequence index must be integer, not '{}'",
+                                                    idx.type_name()
+                                                ),
+                                            ));
+                                        }
+                                    };
+                                    let i = if iv < 0 { iv + n } else { iv };
+                                    if i < 0 || i >= n {
+                                        return Err(raise(
+                                            "IndexError",
+                                            "sequence index out of range",
+                                        ));
+                                    }
+                                    return Ok(l.items()[i as usize].clone());
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
                     if o.name == "type" {
                         if let Some(Value::Obj(so)) = args.first() {
                             if so.kind == ap_obj::ObjKind::Opaque && so.name == "thread" {
@@ -4471,6 +4577,26 @@ fn call_value_inner_impl(
                             .unwrap_or(Value::None);
                         return Ok(recv);
                     }
+                    // W110 (PEP 649): fn.__annotate__ → the function's
+                    // annotation dict (functools.singledispatch
+                    // register(func) probe). v0 returns __annotations__
+                    // (source-string values, get_type_hints resolves).
+                    if o.name == "__ap_fn_annotate__" {
+                        let recv = o
+                            .slice_parts
+                            .borrow()
+                            .first()
+                            .cloned()
+                            .unwrap_or(Value::None);
+                        if let Value::Obj(ro) = &recv {
+                            if let Some(v) = ro.attrs.borrow().get(&Value::Str(PyString::new(
+                                "__annotations__",
+                            ))) {
+                                return Ok(v.clone());
+                            }
+                        }
+                        return Ok(Value::Dict(PyDict::new()));
+                    }
                     // 02.04a fix pass (BUG-C): no-op RLock context protocol.
                     if o.name == "__ap_rlock_enter__" {
                         return Ok(args.first().cloned().unwrap_or(Value::None));
@@ -4851,6 +4977,12 @@ fn call_value_inner_impl(
                             }
                             "BytesIO" | "StringIO" => {
                                 let _ = it;
+                                return Ok(Value::None);
+                            }
+                            // W110 (T2): vendored collections.OrderedDict
+                            // ctor calls dict.__init__(self); a no-op init
+                            // is correct (v0 dict stores keys directly).
+                            "dict" => {
                                 return Ok(Value::None);
                             }
                             _ => {}
@@ -7661,6 +7793,23 @@ fn iterable_of(v: &Value) -> Result<Gc<PyIterator>, Flow> {
                 return Ok(PyIterator::new(IterState::Seq(items, 0)));
             }
         }
+        // W111: Opaque structseq records (struct_time/uname_result/
+        // stat_result/statvfs_result) iterate their <values> field list
+        // (CPython structseq is tuple-like; datetime._fromtimestamp
+        // unpacks time.localtime() 9-wide).
+        if o.kind == ap_obj::ObjKind::Opaque
+            && matches!(
+                o.name.as_str(),
+                "struct_time" | "uname_result" | "stat_result" | "statvfs_result"
+            )
+        {
+            if let Some(Value::List(l)) =
+                o.attrs.borrow().get(&Value::Str(PyString::new("<values>")))
+            {
+                let items: Vec<Value> = l.items().to_vec();
+                return Ok(PyIterator::new(IterState::Seq(items, 0)));
+            }
+        }
         // T2 (pytest collection): os.ScandirIterator parks its entries in
         // slice_parts (call_os "ScandirIterator.__iter__" returns the same
         // list); CPython iterates scandir's live iterator.
@@ -8351,6 +8500,11 @@ fn user_len(interp: &Rc<Interpreter>, v: &Value) -> Result<Option<i64>, Flow> {
     if crate::classes::is_tuple_derived_instance(v) {
         let t = crate::classes::tuple_backing_or_new(v);
         return Ok(Some(t.0.len() as i64));
+    }
+    // W111: dict-derived instances (vendored collections.OrderedDict
+    // subclasses dict) size via their __ap_dict__ backing store.
+    if let Some(d) = crate::classes::dict_backing(v) {
+        return Ok(Some(d.len() as i64));
     }
     match crate::classes::special_lookup(interp, v, "__len__") {
         Some((f, _)) => {
@@ -10074,7 +10228,14 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
             // T1-d (inspect.get_annotations / annotationlib): functions answer
             // __annotations__ with an EMPTY dict when no module-level
             // __annotations__ cell was recorded (CPython lazily creates it).
+            // W111: the EAGER def path parks real source strings on the
+            // function attrs (interp.rs ~497) — check the attrs FIRST, the
+            // blanket empty-dict shadowed them (singledispatch's
+            // register(func) annotation probe read {} -> TypeError).
             if name == "__annotations__" {
+                if let Some(v) = o.attrs.borrow().get(&Value::Str(PyString::new("__annotations__"))) {
+                    return Ok(Some(v.clone()));
+                }
                 return Ok(Some(Value::Dict(ap_obj::dict::PyDict::new())));
             }
             // T1 (w3lib.http/overload chain): identity shim — plain functions
@@ -11019,6 +11180,9 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                         cls.name.as_str(),
                         "list" | "tuple" | "set" | "frozenset" | "TextIOWrapper" | "BytesIO"
                                 | "StringIO" | "BufferedReader" | "BufferedWriter" | "FileIO"
+                                // W110 (T2): vendored collections.OrderedDict
+                                // ctor calls dict.__init__(self) explicitly.
+                                | "dict"
                     )
                         && name == "__init__"
                     {
@@ -11683,8 +11847,47 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 // T1 (scrapy fix pass): regular attr reads on UserClasses scan
                 // the MRO dicts (typing: cls.__protocol_attrs__ set by the
                 // metaclass __init__ then read back later).
+                // W111: dunder-PROTOCOL reads (__bool__/__len__/__iter__/...)
+                // on a USER CLASS must consult the METACLASS chain, not the
+                // MRO — those names are the instance protocol. Interned
+                // BUILTIN types (dict/list/...) are exempt: their dunders
+                // ARE the type-level methods CPython exposes on the type
+                // object (dict.__init__ etc), and there is no user
+                // metaclass to consult.
+                // those names are the instance protocol. This site returned
+                // the raw __len__ function for `assert scheduler.pqclass`,
+                // and user_truthiness called it unbound (scrapy crawl
+                // blocker; 'type' object has no attribute 'pqueues').
                 if o.kind == ap_obj::ObjKind::UserClass {
-                    if let Some(t) = o.class_ref.borrow().clone() {
+                    // W111: USER classes only. Interned BUILTIN types
+                    // (dict.__init__, list.append...) keep the MRO scan —
+                    // their dunders ARE the type-level methods CPython
+                    // exposes on the type object. The metaclass rule is
+                    // about USER classes where a same-named __len__ etc is
+                    // the instance protocol.
+                    let dunder_protocol = name.starts_with("__")
+                        && name.ends_with("__")
+                        && matches!(
+                            name,
+                            "__bool__" | "__len__" | "__iter__" | "__getitem__"
+                                | "__contains__" | "__call__" | "__next__" | "__enter__"
+                                | "__exit__" | "__eq__" | "__lt__" | "__le__" | "__gt__"
+                                | "__ge__" | "__hash__" | "__str__" | "__repr__"
+                        );
+                    if dunder_protocol {
+                        // W111: type_of(UserClass) returns the class's OWN
+                        // class_ref (the class, not its metaclass) — the
+                        // metaclass chain is the recorded `metaclass` field.
+                        // Plain class: no metaclass protocol → fall through.
+                        if let Some(t) = o.class_ref.borrow().clone() {
+                            if let Some(meta) = t.metaclass.borrow().clone() {
+                                if let Some(v) = meta.lookup(name) {
+                                    return Ok(Some(v));
+                                }
+                            }
+                        }
+                        // fall through to the non-dunder surfaces below
+                    } else if let Some(t) = o.class_ref.borrow().clone() {
                         if let Some(v) = t.lookup(name) {
                             return Ok(Some(v));
                         }
@@ -11763,6 +11966,32 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                     // _collections_abc._check_methods must see the type's
                     // native method surface (bound marker over an empty
                     // instance). Guarded tight: other names fall through.
+                    // W111: __init__ on interned container Types — vendored
+                    // collections.OrderedDict does dict.__init__(self).
+                    // Reuse the __ap_base_X__init__ marker (call arm exists
+                    // at ~4814) with the fresh-instance recipe the 11100
+                    // instantiate arm uses.
+                    "__init__"
+                        if o.kind == ap_obj::ObjKind::Type
+                            && matches!(
+                                o.name.as_str(),
+                                "list" | "tuple" | "dict" | "set" | "frozenset"
+                            ) =>
+                    {
+                        let inst: Value = match o.name.as_str() {
+                            "list" => Value::List(ap_obj::value::PyList::new()),
+                            "tuple" => Value::Tuple(Gc::new(Tuple(vec![]))),
+                            "dict" => Value::Dict(ap_obj::dict::PyDict::new()),
+                            _ => Value::Set(ap_obj::dict::PySet::new()),
+                        };
+                        let bm = ap_obj::PyObject::new(
+                            ap_obj::ObjKind::BuiltinFn,
+                            &format!("__ap_base_{}__init__", o.name),
+                        );
+                        *bm.slice_parts.borrow_mut() = vec![inst.clone()];
+                        *bm.self_value.borrow_mut() = Some(inst);
+                        return Ok(Some(Value::Obj(bm)));
+                    }
                     "__getitem__" | "__len__" | "__iter__" | "__contains__" | "__next__"
                     | "__call__" | "__hash__" | "__eq__" | "__enter__" | "__exit__"
                     | "__setitem__"

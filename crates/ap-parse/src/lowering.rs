@@ -267,19 +267,84 @@ impl<'s> Lowerer<'s> {
         // paths are strict prefixes with "<locals>." separators) that
         // bound the load; mark it as a cell there and add the load to
         // the deferred scope's frees.
+        // W111 fix: a SELF-RECURSIVE def's binding lives in the def's
+        // PARENT scope (def reg inside reg's own body reads its own
+        // binding from make2). The recorded `enclosing` (nearest function
+        // scope at def-time) is the def ITSELF — walk the enclosing chain
+        // outward until a scope that truly binds the load is found.
         let bounds = self.finished_bounds.clone();
         let deferred = std::mem::take(&mut self.deferred_frees);
         for (path, load, enclosing) in deferred {
-            // Only apply when the load is truly BOUND in the enclosing
-            // scope (def/assign). Builtin/global reads (e.g. `getattr`)
-            // must stay builtin — binding them as cells turns them into
-            // UnboundLocalError.
-            let truly_bound = bounds
-                .get(&enclosing)
-                .map(|b| b.iter().any(|n| n == &load))
-                .unwrap_or(false);
-            if !truly_bound {
+            let original_enclosing = enclosing.clone();
+            // Walk the prefix chain from the recorded enclosing scope
+            // outward: first scope that truly binds the load wins.
+            // W110: enclosing is a SCOPE-PATH VECTOR; the prefix chain is
+            // its own prefixes. Scope paths interleave "<locals>" marker
+            // segments (["make2","<locals>","reg"]) — climb by dropping
+            // trailing segments, skipping bare "<locals>" tails (a real
+            // scope never ENDS on the marker).
+            let mut chain: Vec<Vec<String>> = Vec::new();
+            let mut cur: Vec<String> = enclosing.clone();
+            chain.push(cur.clone());
+            while cur.len() > 1 {
+                cur.pop();
+                if cur.last().map(|s| s.as_str()) == Some("<locals>") {
+                    continue; // marker tail: not a real scope path
+                }
+                chain.push(cur.clone());
+            }
+            let mut resolved: Option<Vec<String>> = None;
+            for scope_path in &chain {
+                let truly_bound = bounds
+                    .get(scope_path)
+                    .map(|b| b.iter().any(|n| n == &load))
+                    .unwrap_or(false);
+                if truly_bound {
+                    resolved = Some(scope_path.clone());
+                    break;
+                }
+            }
+            let Some(enclosing_hit) = resolved else {
+                if std::env::var("APX_W111DBG").is_ok() {
+                    eprintln!("[W111-DEFER] UNRESOLVED load={load} path={path:?} enclosing={enclosing:?}");
+                }
                 continue;
+            };
+            if std::env::var("APX_W111DBG").is_ok() {
+                eprintln!("[W111-DEFER] load={load} path={path:?} hit={enclosing_hit:?}");
+            }
+            let enclosing = enclosing_hit.clone();
+            // W111: propagate the free through INTERMEDIATE scopes
+            // (CPython transitive co_freevars chain): every scope between
+            // the def and the binding scope carries the name as a free so
+            // the runtime cell chain (defining.my_cells -> free_cells)
+            // passes through. The binding scope itself gets the cell.
+            // Chain: original enclosing scope ... resolved binding scope.
+            {
+                // climb from the ORIGINAL enclosing to `resolved`, marking
+                // intermediates
+                let mut cur = original_enclosing.clone();
+                let mut intermediate: Vec<Vec<String>> = Vec::new();
+                while cur != enclosing {
+                    if cur != path {
+                        intermediate.push(cur.clone());
+                    }
+                    if cur.len() > 1 {
+                        cur.pop();
+                        if cur.last().map(|s| s.as_str()) == Some("<locals>") && cur.len() > 1 {
+                            cur.pop();
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                for scope_path in intermediate {
+                    if let Some(si) = self.finished.get_mut(&scope_path) {
+                        if !si.frees.iter().any(|f| f == &load) {
+                            si.frees.push(load.clone());
+                        }
+                    }
+                }
             }
             // The binding now exists in the enclosing scope's bound set —
             // but ScopeInfo doesn't carry `bound`; the runtime closure
