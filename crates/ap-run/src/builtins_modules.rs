@@ -9549,7 +9549,11 @@ pub fn call_time(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Opti
     let r: BResult = (|| -> BResult {
         match name {
             "monotonic" | "perf_counter" => {
-                Ok(f(std::time::Instant::now().elapsed().as_secs_f64()))
+                // W110-5 fix: Instant::now().elapsed() is time SINCE THIS
+                // Instant (always ~0.0) — the loop's call_later timers never
+                // fired. Use a process-start anchor so the value grows like
+                // CPython's monotonic clock.
+                Ok(f(crate::builtins_modules::monotonic_since_start()))
             }
             "monotonic_ns" | "perf_counter_ns" | "time_ns" => Ok(i(std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -9647,6 +9651,16 @@ fn now_epoch() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// Process-start anchor for time.monotonic/perf_counter (W110-5: the old
+/// Instant::now().elapsed() always returned ~0.0, which froze every
+/// call_later timer — asyncio futures never resolved).
+fn monotonic_since_start() -> f64 {
+    use std::sync::OnceLock;
+    static START: OnceLock<std::time::Instant> = OnceLock::new();
+    let start = START.get_or_init(std::time::Instant::now);
+    start.elapsed().as_secs_f64()
 }
 
 fn local_utc_offset() -> i64 {
@@ -11180,6 +11194,11 @@ fn select_poll_method(m: &str, args: &[Value]) -> Option<BResult> {
             Some(r)
         }
         "poll" => {
+            // W110-5 fix: select.poll's timeout is ALREADY in milliseconds
+            // (CPython poll(2) semantics; selectors.PollSelector passes
+            // math.ceil(timeout*1e3)). The old code multiplied by 1000
+            // AGAIN — poll(5ms) blocked 5s, freezing every asyncio timer
+            // behind a PollSelector-driven loop.
             let timeout_ms: i32 = match args.get(1) {
                 Some(v) if !matches!(v, Value::None) => {
                     let t = match as_f64(v) {
@@ -11189,7 +11208,7 @@ fn select_poll_method(m: &str, args: &[Value]) -> Option<BResult> {
                     if t < 0.0 {
                         -1
                     } else {
-                        (t * 1000.0).ceil() as i32
+                        t.ceil() as i32
                     }
                 }
                 _ => -1, // block

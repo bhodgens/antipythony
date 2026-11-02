@@ -504,6 +504,19 @@ impl<'s> Lowerer<'s> {
             + 1
     }
 
+    /// W110: line of any AST node's start (used for the def keyword line;
+    /// ruff's FunctionDef range begins at the first decorator, matching
+    /// CPython's co_firstlineno semantics).
+    fn line_of_stmt_start<T: ruff_text_size::Ranged>(&self, node: &T) -> usize {
+        use ruff_text_size::Ranged;
+        let off = node.start().to_u32() as usize;
+        self.src[..off.min(self.src.len())]
+            .bytes()
+            .filter(|&b| b == b'\n')
+            .count()
+            + 1
+    }
+
     fn lower_fn_body(&mut self, body: &[ast::Stmt]) -> Result<FnBody, LowerError> {
         let mut blocks = Vec::with_capacity(body.len());
         for stmt in body {
@@ -557,6 +570,11 @@ impl<'s> Lowerer<'s> {
                 let mut fndef =
                     self.b
                         .fn_def(f.name.id.as_str(), params, return_ann, decorators, body);
+                // W110: the def keyword's 1-based line (CPython
+                // co_firstlineno). ruff's FunctionDef range starts at the
+                // DECORATOR when present; CPython's co_firstlineno is the
+                // same (first decorator line) — ruff start() matches.
+                fndef.def_line = self.line_of_stmt_start(&f);
                 if f.is_async {
                     fndef = Builder::fn_async(fndef);
                 }

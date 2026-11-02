@@ -41,6 +41,10 @@ pub struct FnDef {
     pub is_async: bool,
     /// Static type guess seeded from annotations; `Unknown` unless annotated.
     pub ret_ty: TypeLattice,
+    /// 1-based source line of the `def` keyword (W110: CPython
+    /// co_firstlineno). Drives Function.__code__.co_firstlineno, which
+    /// pytest's Function._traceback_filter uses for traceback.cut().
+    pub def_line: usize,
 }
 
 /// One parameter. Clause: S-02-8 (kinds and order), S-02-10 (binding errors).

@@ -885,6 +885,48 @@ fn exec_stmt(
         }
         Stmt::For(target, iter, body, orelse) => {
             let iterable = eval_expr(interp, frame, iter, reg)?;
+            // W110-5: `async for` over an async generator. CPython lowers
+            // this to `await it.__anext__()` per step; the frontend shares
+            // the sync For IR shape, so recover the async protocol here:
+            // each pull drives the agen fiber, relaying inner yields
+            // (Futures etc.) out of the enclosing coroutine via gen_yield.
+            if is_asyncgen_obj(&iterable) {
+                if let Some(agen_id) = coro_gen_id(&iterable) {
+                    let mut broke = false;
+                    loop {
+                        // asend(None) semantics: resume the agen fiber; a
+                        // StopAsyncIteration ends the loop (CPython: the
+                        // awaited __anext__ raises it).
+                        coro_ensure(interp, agen_id)?;
+                        interp.si_value.borrow_mut().take();
+                        let r = crate::generators::resume_live(
+                            interp,
+                            agen_id,
+                            crate::generators::GenInput::Send(Value::None),
+                        );
+                        let next = match r {
+                            Ok(Some(y)) => y,
+                            Ok(None) => break,
+                            Err(Flow::Raise(e)) if e.class == "StopAsyncIteration" => break,
+                            Err(f) => return Ok(StmtOut::Unwind(f)),
+                        };
+                        assign_target(interp, frame, target, next, reg)?;
+                        match run_loop_body(interp, frame, body, reg)? {
+                            LoopOut::Normal | LoopOut::Continue => continue,
+                            LoopOut::Break => {
+                                broke = true;
+                                break;
+                            }
+                            LoopOut::Escape(f) => return Ok(StmtOut::Unwind(f)),
+                        }
+                    }
+                    if !broke {
+                        return exec_block(interp, frame, orelse, reg)
+                            .map(|_| StmtOut::Next);
+                    }
+                    return Ok(StmtOut::Next);
+                }
+            }
             let id = register_iter(interp, &iterable)?;
             let mut broke = false;
             loop {
@@ -1456,8 +1498,20 @@ fn exec_try(
                     // Handler body raised: the NEW exception's traceback owns
                     // only the handler-body frames; drop the original
                     // exception's frames ([tb_snapshot..body_tb_start)).
+                    //
+                    // W110 FIX: a Flow::Return/Break/Continue out of the
+                    // handler lands here too. The catch-record insert (the
+                    // catching-frame entry) happened BEFORE body_tb_start,
+                    // but body_tb_start was captured after it — the drain
+                    // covers it. HOWEVER the RETURN path left the caught
+                    // exception's instance bound as current_exception's
+                    // context and, critically, the handler-body's own
+                    // frame-exit records were truncated only on the
+                    // Some(Ok) path. For a non-Raise `f` the insert we must
+                    // undo is exactly [tb_snapshot..len]: drain everything
+                    // this try pushed.
                     {
-                        let end = body_tb_start.min(interp.tb_frames.borrow().len());
+                        let end = interp.tb_frames.borrow().len();
                         let mut tb = interp.tb_frames.borrow_mut();
                         tb.drain(tb_snapshot..end);
                     }
@@ -2658,6 +2712,7 @@ pub(crate) fn eval_expr(
                     is_generator: false,
                     is_async: false,
                     ret_ty: ap_ir::TypeLattice::Unknown,
+                    def_line: 1,
                 },
                 scope_path: format!("{}.<locals>.<lambda>", frame.scope_path),
                 qualname: "<lambda>".to_string(),
@@ -2806,10 +2861,10 @@ pub(crate) fn eval_expr(
             };
             Ok(result)
         }
-        Expr::Await(_) => Err(raise(
-            "NotImplementedError",
-            "async/await is out of the v1 corpus (S-05-13 area)",
-        )),
+        Expr::Await(inner) => {
+            let v = eval_expr(interp, frame, inner, reg)?;
+            eval_await(interp, v)
+        }
         Expr::FString(parts) => render_fstring(interp, frame, parts, reg),
         Expr::IfExp(c, t, e) => {
             let cv = eval_expr(interp, frame, c, reg)?;
@@ -4035,6 +4090,204 @@ fn call_value_inner_impl(
                         return crate::builtins::builtin_iter(&[Value::List(
                             PyList::from_vec(vec![Value::None]),
                         )]);
+                    }
+                    // W110-5: REAL coroutine protocol dispatch (async def
+                    // without yield). args[0] is the coroutine receiver
+                    // (BoundMethod prepends self). Completion maps to
+                    // StopIteration carrying the TRUE return value (si_value
+                    // path) — coroutine semantics, no PEP-479 remap.
+                    if o.name == "__ap_coro_send__" {
+                        let Some(Value::Obj(c)) = args.first() else {
+                            return Err(raise("StopIteration", ""));
+                        };
+                        let Some(id) = *c.gen_id.borrow() else {
+                            return Err(raise("StopIteration", ""));
+                        };
+                        let v = args.get(1).cloned().unwrap_or(Value::None);
+                        coro_ensure(interp, id)?;
+                        interp.si_value.borrow_mut().take();
+                        match crate::generators::resume_live(
+                            interp,
+                            id,
+                            crate::generators::GenInput::Send(v),
+                        )? {
+                            Some(y) => return Ok(y),
+                            None => return Err(stop_iteration_with_value(interp)),
+                        }
+                    }
+                    if o.name == "__ap_coro_close__" {
+                        let Some(Value::Obj(c)) = args.first() else {
+                            return Ok(Value::None);
+                        };
+                        if let Some(id) = *c.gen_id.borrow() {
+                            coro_close(interp, id)?;
+                        }
+                        return Ok(Value::None);
+                    }
+                    if o.name == "__ap_coro_throw__" {
+                        let Some(Value::Obj(c)) = args.first() else {
+                            return Err(raise(
+                                "TypeError",
+                                "exceptions must derive from BaseException",
+                            ));
+                        };
+                        let Some(id) = *c.gen_id.borrow() else {
+                            return Err(raise(
+                                "TypeError",
+                                "exceptions must derive from BaseException",
+                            ));
+                        };
+                        let rest = &args[1.min(args.len())..];
+                        let ev = match rest.first() {
+                            None => crate::exc_hier::ExceptionValue::msg(
+                                "TypeError",
+                                "throw() requires an exception",
+                            ),
+                            Some(Value::Obj(eo)) if eo.kind == ap_obj::ObjKind::Exception => {
+                                crate::exc_hier::ExceptionValue::new(
+                                    &eo.name,
+                                    eo.args.borrow().clone(),
+                                )
+                            }
+                            Some(Value::Obj(eo)) if eo.kind == ap_obj::ObjKind::UserInstance => {
+                                crate::interp::exception_value_of_instance_pub(&rest[0].clone())?
+                            }
+                            Some(Value::Obj(eo)) if eo.kind == ap_obj::ObjKind::UserClass => {
+                                crate::interp::raise_class_pub(&interp, eo)?
+                            }
+                            Some(Value::Obj(eo)) if eo.kind == ap_obj::ObjKind::Type => {
+                                if crate::interp::is_builtin_exc_name_pub(&eo.name) {
+                                    let argv = rest
+                                        .get(1)
+                                        .map(|v| vec![v.clone()])
+                                        .unwrap_or_default();
+                                    crate::exc_hier::ExceptionValue::new(&eo.name, argv)
+                                } else {
+                                    return Err(raise(
+                                        "TypeError",
+                                        "exceptions must derive from BaseException",
+                                    ));
+                                }
+                            }
+                            Some(_) => {
+                                return Err(raise(
+                                    "TypeError",
+                                    "exceptions must derive from BaseException",
+                                ));
+                            }
+                        };
+                        coro_ensure(interp, id)?;
+                        interp.si_value.borrow_mut().take();
+                        match crate::generators::resume_live(
+                            interp,
+                            id,
+                            crate::generators::GenInput::Throw(ev.clone()),
+                        )? {
+                            Some(y) => return Ok(y),
+                            None => return Err(stop_iteration_with_value(interp)),
+                        }
+                    }
+                    // W110-5: async-gen protocol (asend/athrow/aclose). The
+                    // BOUND method returns an awaitable handle (asend_handle
+                    // marker) that the await driver / async-for executor
+                    // drives; CPython's asend() returns an awaitable too.
+                    if o.name == "__ap_agen_asend__"
+                        || o.name == "__ap_agen_athrow__"
+                        || o.name == "__ap_agen_aclose__"
+                    {
+                        let Some(Value::Obj(agen)) = args.first() else {
+                            return Err(raise("TypeError", "asyncgen receiver missing"));
+                        };
+                        // aclose() drives immediately (it is not awaited in
+                        // common paths and must not leak a handle).
+                        if o.name == "__ap_agen_aclose__" {
+                            if let Some(id) = *agen.gen_id.borrow() {
+                                coro_close(interp, id)?;
+                            }
+                            return Ok(Value::None);
+                        }
+                        let h = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "asend_handle");
+                        let input = if o.name == "__ap_agen_asend__" {
+                            args.get(1).cloned().unwrap_or(Value::None)
+                        } else {
+                            // athrow: stage the exception via GenInput::Throw
+                            // on first drive — encode as a Tuple marker.
+                            let rest = &args[1.min(args.len())..];
+                            Value::Tuple(Gc::new(Tuple(
+                                rest.to_vec(),
+                            )))
+                        };
+                        *h.slice_parts.borrow_mut() =
+                            vec![Value::Obj(agen.clone()), input];
+                        // Python-side protocol: the handle is awaitable via
+                        // its own send() (Task.__step drives coro.send);
+                        // GET_AWAITABLE also recognizes the marker natively.
+                        let hs = ap_obj::PyObject::with_self(
+                            ap_obj::ObjKind::BoundMethod,
+                            "asend_handle.send",
+                            Value::Obj(h.clone()),
+                        );
+                        *hs.func.borrow_mut() = Some(Value::Obj(
+                            ap_obj::PyObject::new(
+                                ap_obj::ObjKind::BuiltinFn,
+                                "__ap_asend_send__",
+                            ),
+                        ));
+                        let _ = h.attrs.borrow_mut().set(
+                            Value::Str(PyString::new("send")),
+                            Value::Obj(hs),
+                        );
+                        return Ok(Value::Obj(h));
+                    }
+                    // W110-5: __await__()/__aiter__() on coroutine/
+                    // async-gen objects: a zero-arg method returning self
+                    // (CPython protocol; the ATTR must be callable).
+                    if o.name == "__ap_self_return__" {
+                        return Ok(args.first().cloned().unwrap_or(Value::None));
+                    }
+                    // W110-5: asend-handle .send(v) — drive the async-gen
+                    // fiber; a yield propagates to the caller, exhaustion
+                    // raises StopAsyncIteration (the async-gen protocol).
+                    if o.name == "__ap_asend_send__" {
+                        let Some(Value::Obj(h)) = args.first() else {
+                            return Err(stop_async_iteration_flow());
+                        };
+                        let parts = h.slice_parts.borrow().clone();
+                        let Some(Value::Obj(agen)) = parts.first() else {
+                            return Err(stop_async_iteration_flow());
+                        };
+                        let Some(id) = *agen.gen_id.borrow() else {
+                            return Err(stop_async_iteration_flow());
+                        };
+                        // First send uses the stashed input; later sends
+                        // pass the caller's value through.
+                        let first = parts.get(1).cloned().unwrap_or(Value::None);
+                        let v = if matches!(first, Value::None) {
+                            args.get(1).cloned().unwrap_or(Value::None)
+                        } else {
+                            first
+                        };
+                        coro_ensure(interp, id)?;
+                        interp.si_value.borrow_mut().take();
+                        match crate::generators::resume_live(
+                            interp,
+                            id,
+                            crate::generators::GenInput::Send(v),
+                        )? {
+                            // CPython (probed 3.14.7): the asend awaitable
+                            // RETURNS the yielded item — driving it with
+                            // .send() raises StopIteration(item), not a
+                            // yield-out.
+                            Some(y) => {
+                                let mut e =
+                                    ExceptionValue::new("StopIteration", vec![]);
+                                if !matches!(y, Value::None) {
+                                    e.args.push(y);
+                                }
+                                return Err(crate::Flow::Raise(e));
+                            }
+                            None => return Err(stop_async_iteration_flow()),
+                        }
                     }
                     // s018/T2: generator close/send/throw — REAL PEP-342
                     // dispatch (generators.rs fiber resume). args[0] is the
@@ -5982,23 +6235,40 @@ fn call_function(
         .ok_or_else(|| raise("SystemError", "function table miss"))?;
     let def = entry.def.clone();
 
-    if def.is_generator {
+    // W110-5: async-def wins over the generator route — an `async def`
+    // with yield is an ASYNC generator (asyncgen protocol surface), not a
+    // sync one. The plain async arm below handles both shapes.
+    if def.is_generator && !def.is_async {
         return start_generator(interp, entry, o, args, kwargs);
     }
-    // 02.04a (interp bug #3, vendored-stdlib stress): types.py does
-    // `async def _c(): pass; _c = _c(); _c.close()` at import. Coroutines
-    // are unsupported v0 — return a stub object with no-op close()/send()/
-    // throw() via the generic no-method path; the close() call itself is
-    // what types.py needs to NOT raise.
+    // W110-5: real coroutine frames. An async-def call registers the SAME
+    // lazy fiber a def-generator gets (generators.rs); the body runs on the
+    // first send(). The object keeps the CPython surface: repr
+    // '<coroutine object NAME at 0x…>', send/throw/close (coroutine
+    // semantics — completion maps to StopIteration(si_value), no PEP-479
+    // remap), and __await__ returning SELF (CPython protocol: the await
+    // driver drives the coroutine through its own send()).
     if def.is_async {
-        let co = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "coroutine");
-        // Wave-96: repr of a stub coroutine must be a plain
-        // '<coroutine ...>' — the default attr-walking repr
-        // invokes the __await__ marker and explodes Task error
-        // paths.
+        let is_agen = def.is_generator;
+        let fn_name = entry.def.name.clone();
+        let gen_id = interp.next_gen_id.get();
+        interp.next_gen_id.set(gen_id + 2); // odd ids only (iter ids are even)
+        interp.generators.borrow_mut().insert(
+            gen_id,
+            GenFrame::Fn {
+                entry,
+                func_obj: o.clone(),
+                args: args.to_vec(),
+                kwargs: kwargs.to_vec(),
+            },
+        );
+        let kind_name = if is_agen { "async_generator" } else { "coroutine" };
+        let co = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, kind_name);
+        *co.gen_id.borrow_mut() = Some(gen_id);
         *co.repr_text.borrow_mut() = Some(format!(
-            "<coroutine object {} at 0x{:x}>",
-            entry.def.name,
+            "<{} object {} at 0x{:x}>",
+            kind_name,
+            fn_name,
             (&*co as *const _) as usize
         ));
         {
@@ -6006,44 +6276,6 @@ fn call_function(
             let _ = attrs.set(
                 Value::Str(PyString::new("__ap_coroutine__")),
                 Value::Bool(true),
-            );
-            for m in ["close", "throw"] {
-                let _ = attrs.set(
-                    Value::Str(PyString::new(m)),
-                    Value::Obj(ap_obj::PyObject::new(
-                        ap_obj::ObjKind::BuiltinFn,
-                        "__ap_coroutine_noop__",
-                    )),
-                );
-            }
-            // Wave-96: coroutine objects must expose __await__
-            // (CPython always does) — the asyncio loop machinery
-            // (ensure_future/Task) calls coro.__await__(); without
-            // it the attr fallback resolved an iterator that the
-            // loop then CALLED ("'iterator' object is not
-            // callable"). v0: await completes immediately.
-            let _ = attrs.set(
-                Value::Str(PyString::new("send")),
-                Value::Obj(ap_obj::PyObject::new(
-                    ap_obj::ObjKind::BuiltinFn,
-                    "__ap_coroutine_send__",
-                )),
-            );
-            // Wave-96b: plain-attr __repr__ so error paths
-            // formatting the marker don't invoke __await__.
-            let _ = attrs.set(
-                Value::Str(PyString::new("__repr__")),
-                Value::Obj(ap_obj::PyObject::new(
-                    ap_obj::ObjKind::BuiltinFn,
-                    "__ap_coroutine_repr__",
-                )),
-            );
-            let _ = attrs.set(
-                Value::Str(PyString::new("__await__")),
-                Value::Obj(ap_obj::PyObject::new(
-                    ap_obj::ObjKind::BuiltinFn,
-                    "__ap_coroutine_await__",
-                )),
             );
         }
         return Ok(Value::Obj(co));
@@ -6886,8 +7118,267 @@ fn run_gen_body(
 }
 
 // ===========================================================================
-// Comprehensions (S-02-2/5: comp scope; first iterable in enclosing scope)
+// Coroutines (async def) — W110-5. Real coroutine frames on the SAME
+// corosensei fiber machinery as generators (generators.rs): an async-def
+// call starts a GenFrame::Fn; send(None) runs the body; a `return X` parks
+// X on interp.si_value and the resume maps it to StopIteration(X). The
+// object surface mirrors CPython's coroutine protocol:
+// send/throw/close/__await__ (send/throw in coroutine semantics — NO PEP-479
+// StopIteration→RuntimeError remap, which is generator-only).
+//
+// Async generators (async def + yield): the same fiber, but the surface is
+// asend/athrow/aclose/__aiter__/__anext__ and exhaustion maps to
+// StopAsyncIteration (the async protocol).
 // ===========================================================================
+
+/// True when `v` is our coroutine object (async-def instance).
+pub fn is_coroutine_obj(v: &Value) -> bool {
+    let Value::Obj(o) = v else {
+        return false;
+    };
+    if o.kind != ap_obj::ObjKind::Namespace || o.name != "coroutine" {
+        return false;
+    }
+    o.attrs
+        .borrow()
+        .get(&Value::Str(PyString::new("__ap_coroutine__")))
+        .is_some_and(|x| x.is_truthy())
+}
+
+/// True when `v` is our async-generator object (async def + yield).
+pub fn is_asyncgen_obj(v: &Value) -> bool {
+    let Value::Obj(o) = v else {
+        return false;
+    };
+    o.kind == ap_obj::ObjKind::Namespace && o.name == "async_generator"
+}
+
+/// The registered fiber id behind a coroutine or async-gen object.
+fn coro_gen_id(v: &Value) -> Option<u64> {
+    if let Value::Obj(o) = v {
+        return *o.gen_id.borrow();
+    }
+    None
+}
+
+/// Build the StopIteration Flow carrying the coroutine's TRUE return value
+/// (parked on si_value by the fiber body on Flow::Return).
+fn stop_iteration_with_value(interp: &Rc<Interpreter>) -> Flow {
+    let val = interp.si_value.borrow_mut().take().unwrap_or(Value::None);
+    let mut e = ExceptionValue::new("StopIteration", vec![]);
+    if !matches!(val, Value::None) {
+        e.args.push(val);
+    }
+    Flow::Raise(e)
+}
+
+/// Build the StopAsyncIteration exhaustion signal (async-gen protocol).
+fn stop_async_iteration_flow() -> Flow {
+    Flow::Raise(ExceptionValue::new("StopAsyncIteration", vec![]))
+}
+
+/// Prepare a coroutine/async-gen fiber for a direct resume: ensure the
+/// (still GenFrame::Fn) state got its fiber, and clear any stale si_value.
+fn coro_ensure(interp: &Rc<Interpreter>, id: u64) -> Result<(), Flow> {
+    ensure_fiber(interp, id)
+}
+
+/// close() on a coroutine: GeneratorExit at the suspension point; a coro
+/// that absorbs it (or never started) ends cleanly. CPython close() returns
+/// None and lets GeneratorExit/StopIteration pass silently.
+fn coro_close(interp: &Rc<Interpreter>, id: u64) -> Result<(), Flow> {
+    coro_ensure(interp, id)?;
+    let r = crate::generators::resume_live(interp, id, crate::generators::GenInput::Close);
+    match r {
+        Ok(_) => Ok(()),
+        Err(Flow::Raise(e)) => {
+            if e.class == "GeneratorExit" || e.class == "StopIteration" {
+                Ok(())
+            } else {
+                Err(Flow::Raise(e))
+            }
+        }
+        Err(other) => Err(other),
+    }
+}
+
+/// What we can drive for an `await` (PEP 492 GET_AWAITABLE).
+enum AwaitTarget {
+    /// A fiber-backed awaitable (our coroutine, a generator, or an
+    /// asend/__anext__ handle): (fiber id, first-send input).
+    Fiber(u64, Value),
+    /// A plain iterator from __await__(): registered iterator id.
+    Generic(u64),
+    /// Already resolved to a value (athrow that surfaced a yield).
+    Immediate(Value),
+}
+
+/// GET_AWAITABLE: resolve `v` to the thing we can drive.
+fn get_awaitable(interp: &Rc<Interpreter>, v: &Value) -> Result<AwaitTarget, Flow> {
+    // Our coroutine / async-gen objects drive directly (first send None).
+    if is_coroutine_obj(v) || is_asyncgen_obj(v) {
+        if let Some(id) = coro_gen_id(v) {
+            return Ok(AwaitTarget::Fiber(id, Value::None));
+        }
+    }
+    if let Value::Obj(o) = v {
+        // Sync generators are awaitable (types.coroutine shape).
+        if o.kind == ap_obj::ObjKind::Generator {
+            if let Some(id) = *o.gen_id.borrow() {
+                return Ok(AwaitTarget::Fiber(id, Value::None));
+            }
+        }
+        // asend/__anext__/athrow awaitable handles: marker carrying the
+        // agen obj + the input for the first send (a Tuple encodes an
+        // athrow: the throw args; resume_live retires unstarted fibers on
+        // throw per PEP-342, so the fiber never observes it directly — the
+        // async-gen's __anext__/asend drivers raise it before the body).
+        if o.kind == ap_obj::ObjKind::Namespace && o.name == "asend_handle" {
+            let parts = o.slice_parts.borrow().clone();
+            if let [Value::Obj(agen), input] = parts.as_slice() {
+                if let Some(id) = coro_gen_id(&Value::Obj(agen.clone())) {
+                    if let Value::Tuple(t) = input {
+                        // athrow handle: raise the exception at the
+                        // suspension point.
+                        let ev = match t.0.first() {
+                            Some(Value::Obj(eo))
+                                if eo.kind == ap_obj::ObjKind::Exception =>
+                            {
+                                crate::exc_hier::ExceptionValue::new(
+                                    &eo.name,
+                                    eo.args.borrow().clone(),
+                                )
+                            }
+                            Some(other) => crate::exc_hier::ExceptionValue::msg(
+                                "TypeError",
+                                format!("throw() argument must be an exception, got {}", other.type_name()),
+                            ),
+                            None => crate::exc_hier::ExceptionValue::msg(
+                                "TypeError",
+                                "throw() requires an exception",
+                            ),
+                        };
+                        let r = crate::generators::resume_live(
+                            interp,
+                            id,
+                            crate::generators::GenInput::Throw(ev.clone()),
+                        );
+                        return match r {
+                            Ok(Some(y)) => Ok(AwaitTarget::Immediate(y)),
+                            Ok(None) => Err(stop_async_iteration_flow()),
+                            Err(f) => Err(f),
+                        };
+                    }
+                    return Ok(AwaitTarget::Fiber(id, input.clone()));
+                }
+            }
+        }
+    }
+    // __await__ protocol (Futures etc.). CPython: TypeError without it.
+    let Some(f) = (match v {
+        Value::Obj(_) => crate::classes::attr_get_opt(interp, v, "__await__")?,
+        _ => None,
+    }) else {
+        return Err(raise(
+            "TypeError",
+            format!(
+                "object {} can't be used in 'await' expression",
+                v.type_name()
+            ),
+        ));
+    };
+    let awaited = call_value(interp, &module_frame_pub(), &f, &[], &[])?;
+    // The __await__ result is an ITERATOR. Fiber-backed (Future.__await__ is
+    // a Python generator fn) → fiber path. Otherwise generic iteration.
+    if let Value::Obj(o) = &awaited {
+        if o.kind == ap_obj::ObjKind::Generator {
+            if let Some(id) = *o.gen_id.borrow() {
+                return Ok(AwaitTarget::Fiber(id, Value::None));
+            }
+        }
+        if is_coroutine_obj(&awaited) {
+            if let Some(id) = coro_gen_id(&awaited) {
+                return Ok(AwaitTarget::Fiber(id, Value::None));
+            }
+        }
+    }
+    let it_id = register_iter(interp, &awaited)?;
+    Ok(AwaitTarget::Generic(it_id))
+}
+
+/// Await `v` INSIDE a running fiber (coroutine or generator): drive the
+/// awaitable to completion, relaying every inner yield out of THIS fiber
+/// (so the Task/loop or an outer send() sees it) and taking the resume input
+/// as the next send value. The awaitable's return value (si_value) is the
+/// expression's value.
+fn eval_await(interp: &Rc<Interpreter>, v: Value) -> EResult {
+    if !crate::generators::in_fiber() {
+        return Err(raise("SyntaxError", "'await' outside async function"));
+    }
+    let target = get_awaitable(interp, &v)?;
+    match target {
+        AwaitTarget::Immediate(v) => Ok(v),
+        AwaitTarget::Fiber(id, first_input) => {
+            // Map a fiber-completion to its protocol value: coroutine/generator
+            // completion reads si_value (StopIteration.value). Async-gen
+            // fibers never complete through here — asend handles raise
+            // StopAsyncIteration when exhausted (below).
+            let mut sent = first_input;
+            coro_ensure(interp, id)?;
+            loop {
+                let r =
+                    crate::generators::resume_live(interp, id, crate::generators::GenInput::Send(sent));
+                match r {
+                    Ok(Some(y)) => {
+                        // Relay the inner yield OUT of this fiber; whatever
+                        // comes back is the next value sent into the
+                        // awaitable.
+                        let line_cell = frame_stack_pop_pub(interp);
+                        let relay = crate::generators::gen_yield(y);
+                        if let Some(cell) = line_cell {
+                            frame_stack_push_pub(interp, cell);
+                        }
+                        sent = relay?;
+                    }
+                    Ok(None) => {
+                        return Ok(interp.si_value.borrow_mut().take().unwrap_or(Value::None));
+                    }
+                    Err(Flow::Raise(e)) if e.class == "StopAsyncIteration" => {
+                        // async-gen exhausted during __anext__.
+                        return Err(Flow::Raise(e));
+                    }
+                    Err(f) => return Err(f),
+                }
+            }
+        }
+        AwaitTarget::Generic(it_id) => {
+            // Plain-iterator awaitable: pull; on a raised StopIteration the
+            // si_value (if any) is the result; yields relay as above.
+            loop {
+                interp.si_value.borrow_mut().take();
+                let pulled = pull_iter(interp, it_id);
+                match pulled {
+                    Ok(Some(y)) => {
+                        let line_cell = frame_stack_pop_pub(interp);
+                        let relay = crate::generators::gen_yield(y);
+                        if let Some(cell) = line_cell {
+                            frame_stack_push_pub(interp, cell);
+                        }
+                        // sent unused for generic iterators but keep symmetric
+                        let _ = relay?;
+                    }
+                    Ok(None) => {
+                        return Ok(interp.si_value.borrow_mut().take().unwrap_or(Value::None));
+                    }
+                    Err(Flow::Raise(e)) if e.class == "StopIteration" => {
+                        return Ok(e.args.first().cloned().unwrap_or(Value::None));
+                    }
+                    Err(f) => return Err(f),
+                }
+            }
+        }
+    }
+}
 
 enum CompKind {
     List,
@@ -10054,9 +10545,9 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 // the old all-zero stub made every signature ().
                 "__code__" => {
                     let code = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<code>");
-                    let sig = _interp
-                        .fn_entry(o.fn_id.unwrap_or(u32::MAX))
-                        .map(|e| e.def.clone());
+                    let sig_entry = _interp
+                        .fn_entry(o.fn_id.unwrap_or(u32::MAX));
+                    let sig = sig_entry.as_ref().map(|e| e.def.clone());
                     let mut co_flags: i64 = 67; // OPTIMIZED|NEWLOCALS (stub default)
                     let mut posonly = 0i64;
                     let mut kwonly = 0i64;
@@ -10124,22 +10615,44 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                     // T2 (pluggy wrapper-hook validation:
                     // inspect.isgeneratorfunction): surface the def's
                     // generator flag in the stub code object (CO_GENERATOR).
+                    // W110-5: CO_COROUTINE (0x80) for async defs and
+                    // CO_ASYNC_GENERATOR (0x200) for async gens —
+                    // inspect.iscoroutinefunction/isasyncgenfunction read
+                    // these through _has_code_flag.
                     if let Some(def) = &sig {
+                        let mut flags = co_flags;
                         if def.is_generator {
-                            let _ = code.attrs.borrow_mut().set(
-                                Value::Str(PyString::new("co_flags")),
-                                Value::Int(ap_obj::Int::from_i64(co_flags | 0x20)),
-                            );
+                            flags |= 0x20;
                         }
+                        if def.is_async {
+                            flags |= if def.is_generator { 0x200 } else { 0x80 };
+                        }
+                        let _ = code.attrs.borrow_mut().set(
+                            Value::Str(PyString::new("co_flags")),
+                            Value::Int(ap_obj::Int::from_i64(flags)),
+                        );
                     }
                     let _ = code.attrs.borrow_mut().set(
                         Value::Str(PyString::new("co_name")),
                         Value::Str(PyString::new(o.name.clone())),
                     );
                     // T1 (logging stack-walk): co_filename for findsource.
+                    // W110: the DEFINING module's file (fn_entry_file),
+                    // not the driver script — pytest cuts tracebacks by
+                    // (path, firstlineno) from Code.from_function.
                     let _ = code.attrs.borrow_mut().set(
                         Value::Str(PyString::new("co_filename")),
-                        Value::Str(PyString::new(_interp.script_path.clone())),
+                        Value::Str(PyString::new(match &sig_entry {
+                            Some(e) => {
+                                let f = crate::interp::fn_entry_file(_interp, e);
+                                if f.is_empty() {
+                                    _interp.script_path.clone()
+                                } else {
+                                    f
+                                }
+                            }
+                            None => _interp.script_path.clone(),
+                        })),
                     );
                     let _ = code.attrs.borrow_mut().set(
                         Value::Str(PyString::new("co_freevars")),
@@ -10147,7 +10660,9 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                     );
                     let _ = code.attrs.borrow_mut().set(
                         Value::Str(PyString::new("co_firstlineno")),
-                        Value::Int(ap_obj::Int::from_i64(1)),
+                        Value::Int(ap_obj::Int::from_i64(
+                            sig.as_ref().map(|d| d.def_line).unwrap_or(1).max(1) as i64
+                        )),
                     );
                     // T1 (inspect.signature on builtin markers, e.g.
                     // xmlrpclib.dumps via scrapy get_func_args): signature
@@ -10658,6 +11173,11 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                                     ("co_firstlineno", 0i64),
                                     ("co_argcount", 0),
                                     ("co_varnames", 0),
+                                    // W110-5: types.coroutine's wrapper reads
+                                    // gi_code.co_flags & 0x100 — a missing
+                                    // flag raised NoneType-&-int TypeError
+                                    // inside every @types.coroutine call.
+                                    ("co_flags", 0x20i64),
                                 ] {
                                     let _ = code.attrs.borrow_mut().set(
                                         Value::Str(PyString::new(k2)),
@@ -10676,6 +11196,65 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 }
             }
             ap_obj::ObjKind::Namespace => {
+                // W110-5: REAL coroutine / async-gen objects (Namespace
+                // markers carrying __ap_coroutine__ + a fiber gen_id). Their
+                // method surface drives the fiber with CPython protocol
+                // semantics.
+                if o.name == "coroutine" || o.name == "async_generator" {
+                    if let Some(id) = *o.gen_id.borrow() {
+                        let m = match name {
+                            // Coroutine protocol (async def, no yield).
+                            "send" | "throw" | "close" if o.name == "coroutine" => {
+                                Some(format!("__ap_coro_{}__", name))
+                            }
+                            // __await__ returns SELF (CPython: the awaiting
+                            // driver iterates the coroutine object itself).
+                            "__await__" if o.name == "coroutine" => {
+                                Some("__ap_self_return__".to_string())
+                            }
+                            // Async-gen protocol (async def + yield).
+                            "asend" | "athrow" | "aclose" if o.name == "async_generator" => {
+                                Some(format!("__ap_agen_{}__", name))
+                            }
+                            "__anext__" if o.name == "async_generator" => {
+                                Some("__ap_agen_asend__".to_string())
+                            }
+                            "__aiter__" if o.name == "async_generator" => {
+                                Some("__ap_self_return__".to_string())
+                            }
+                            _ => None,
+                        };
+                        if let Some(marker_name) = m {
+                            let bm = ap_obj::PyObject::with_self(
+                                ap_obj::ObjKind::BoundMethod,
+                                &format!("{}.{}", o.name, name),
+                                obj.clone(),
+                            );
+                            *bm.func.borrow_mut() = Some(Value::Obj(ap_obj::PyObject::new(
+                                ap_obj::ObjKind::BuiltinFn,
+                                &marker_name,
+                            )));
+                            return Ok(Some(Value::Obj(bm)));
+                        }
+                        // Introspection surface (inspect/asyncio read these).
+                        match name {
+                            "cr_running" | "cr_suspended" | "ag_running" => {
+                                return Ok(Some(Value::Bool(false)))
+                            }
+                            "cr_frame" | "cr_code" | "ag_frame" | "ag_code" => {
+                                let code = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<code>");
+                                let _ = code.attrs.borrow_mut().set(
+                                    Value::Str(PyString::new("co_name")),
+                                    Value::Str(PyString::new(o.repr_text.borrow().clone().unwrap_or_default())),
+                                );
+                                return Ok(Some(Value::Obj(code)));
+                            }
+                            _ => {}
+                        }
+                        // Fall through to the generic Namespace arms below
+                        // (f_back safety etc.).
+                    }
+                }
                 // Generic namespace attr reads (coroutine stub close/send/
                 // throw markers, ModuleSpec surfaces) — creation-stored
                 // attrs answer by name.

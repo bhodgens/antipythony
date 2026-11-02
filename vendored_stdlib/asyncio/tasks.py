@@ -301,8 +301,6 @@ class Task(futures._PyFuture):  # Inherit Python Task implementation
             self = None  # Needed to break cycles when an exception occurs.
 
     def __step_run_and_handle_result(self, exc):
-        import sys as _sA7
-        _sA7.stderr.write("W-A7 task __step enter\n"); _sA7.stderr.flush()
         coro = self._coro
         try:
             if exc is None:

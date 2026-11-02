@@ -366,6 +366,7 @@ impl Builder {
             is_generator,
             is_async: false,
             ret_ty,
+            def_line: 1,
         }
     }
 

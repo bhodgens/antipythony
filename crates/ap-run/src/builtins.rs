@@ -2643,6 +2643,10 @@ pub fn make_sys_module(interp: &Interpreter) -> Value {
         builtin_marker("sys.getswitchinterval"),
     );
     let _ = ns.set(
+        Value::Str(PyString::new("is_finalizing")),
+        builtin_marker("sys.is_finalizing"),
+    );
+    let _ = ns.set(
         Value::Str(PyString::new("setswitchinterval")),
         builtin_marker("sys.setswitchinterval"),
     );
@@ -2714,6 +2718,10 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
         "sys.monitoring.set_local_events" => Some(Ok(Value::None)),
         "getswitchinterval" => Some(Ok(Value::Float(0.005))),
         "setswitchinterval" => Some(Ok(Value::None)),
+        // W110-5 (asyncio Runner.close → _UnixSelectorEventLoop.close reads
+        // it on every loop close): single-threaded v0 never finalizes during
+        // a run — False, matching CPython's pre-shutdown answer.
+        "is_finalizing" => Some(Ok(Value::Bool(false))),
         "getfilesystemencoding" => Some(Ok(Value::Str(PyString::new("utf-8")))),
         "getfilesystemencodeerrors" => Some(Ok(Value::Str(PyString::new("surrogateescape")))),
         _ if name.starts_with("sys.") => Some(Err(raise(

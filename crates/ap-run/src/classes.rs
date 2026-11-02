@@ -894,6 +894,41 @@ pub fn exec_class_def(
     CURRENT_CLASS_NS.with(|c| *c.borrow_mut() = None);
     body_res?;
 
+    // W110-5 fix (CPython private-name mangling): class-body names of the
+    // form `__x` (2+ leading underscores, at most 1 trailing) are stored
+    // MANGLED (`_<ClassName>__x`) by CPython. asyncio's Future relies on
+    // it: `__asyncio_awaited_by = None` in the class body must be readable
+    // as `fut._Future__asyncio_awaited_by` (future_add_to_awaited_by). We
+    // keep the UNMANGLED key too (existing readers/behavior intact) and add
+    // the mangled alias for each eligible name.
+    {
+        let cls_name = c.name.as_str();
+        let mut aliases: Vec<(String, Value)> = Vec::new();
+        for (k, v) in ns.items() {
+            let name = match &k {
+                Value::Str(s) => s.as_str().to_string(),
+                _ => continue,
+            };
+            // Mangling rule: starts with "__", does NOT start with "___"?
+            // CPython: strips at most ONE leading underscore for the count;
+            // names with 2+ leading underscores and NOT ending with 2+
+            // underscores are mangled. `__x__` (dunder) is exempt.
+            if !name.starts_with("__") || name.starts_with("___") {
+                continue;
+            }
+            if name.ends_with("__") {
+                continue;
+            }
+            let mangled = format!("_{}{}", cls_name, name);
+            aliases.push((mangled, v.clone()));
+        }
+        for (mangled, v) in aliases {
+            if ns.get(&Value::Str(PyString::new(mangled.clone()))).is_none() {
+                let _ = ns.set(Value::Str(PyString::new(mangled)), v);
+            }
+        }
+    }
+
     // 3. Resolve base TypeRefs (S-03-1: `class A:` == `class A(object):`).
     let mut base_types: Vec<Rc<TypeRef>> = Vec::new();
     for b in &bases_v {
