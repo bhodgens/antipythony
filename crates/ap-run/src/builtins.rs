@@ -451,6 +451,21 @@ pub fn builtin_int(interp: &Interpreter, args: &[Value]) -> BResult {
         1 => {
             let v = &args[0];
             match v {
+                // W111: int-derived instances (IntEnum members) int() to
+                // their __ap_int__ payload (CPython int.__int__).
+                Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
+                    match o
+                        .attrs
+                        .borrow()
+                        .get(&Value::Str(PyString::new("__ap_int__")))
+                    {
+                        Some(p @ Value::Int(_)) => Ok(p.clone()),
+                        _ => Err(raise(
+                            "TypeError",
+                            "int() argument must be a string, a bytes-like object or a real number, not 'object'",
+                        )),
+                    }
+                }
                 // 02.08-full p2: re.NOFLAG marker int()s to 0.
                 // 02.08-c: any Opaque carrying an <int_value> attr (lxml
                 // ErrorTypes members etc.) int()s to that stored value.
@@ -1289,7 +1304,17 @@ pub fn type_matches(v: &Value, want: &str) -> bool {
         // T1-d (attrs _create_slots_class cached_property probe): the v0
         // functools.cached_property is a pass-through fn — plain functions
         // (the decorated results) answer True against its marker.
-        (Value::Obj(o), "cached_property") if o.kind == ap_obj::ObjKind::Function => true,
+        // W111: the VENDORED functools now provides a real USER class
+        // named cached_property (with __get__/__set_name__). The v0 arm
+        // matched by NAME and answered True for every function — the attrs
+        // slots rebuild then read .func off RAW functions and died. CPython:
+        // a raw function is NOT a cached_property instance. A function
+        // answers True only when it was wrapped (marker attr).
+        (Value::Obj(o), "cached_property") if o.kind == ap_obj::ObjKind::Function => o
+            .attrs
+            .borrow()
+            .get(&Value::Str(PyString::new("__ap_cached_property__")))
+            .is_some_and(|x| x.is_truthy()),
         // T1-d (scrapy.http.Headers.update): CPython registers dict as a
         // MutableMapping/Collection/Iterable/etc at the C level; our ABC
         // registry can't see native dicts, so answer by name here.

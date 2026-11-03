@@ -8899,6 +8899,32 @@ fn class_protocol_builtin(
         }
         "hash" if is_user_instance => Some(
             match crate::classes::special_lookup(interp, subject.unwrap(), "__hash__") {
+                Some((f, owner))
+                    if owner.name == "object" || owner.name == "Enum" =>
+                {
+                    // W111: inherited hash (object/Enum.__hash__) on an
+                    // int-derived instance (IntEnum members) hashes by the
+                    // numeric payload — CPython int.__hash__ wins the MRO
+                    // (int.__dict__['__hash__'] exists there; our native
+                    // int Type lacks it).
+                    let subj = subject.unwrap();
+                    if let Value::Obj(o) = subj {
+                        if let Some(Value::Int(n)) = o
+                            .attrs
+                            .borrow()
+                            .get(&Value::Str(PyString::new("__ap_int__")))
+                        {
+                            return Some(Ok(Value::Int(n.clone())));
+                        }
+                    }
+                    call_value(
+                        interp,
+                        &module_frame_pub(),
+                        &f,
+                        &[subject.unwrap().clone()],
+                        &[],
+                    )
+                }
                 Some((f, _)) => call_value(
                     interp,
                     &module_frame_pub(),
