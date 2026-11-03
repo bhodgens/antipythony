@@ -2994,6 +2994,14 @@ fn eval_compare(left: &Value, op: CmpOp, right: &Value) -> Result<bool, Flow> {
                     {
                         return Some(n.clone());
                     }
+                    // W111: enum members built via a CUSTOM __new__ (inspect
+                    // _ParameterKind) write their own _value_ int attr;
+                    // CPython orders IntEnum members by value.
+                    if let Some(Value::Int(n)) =
+                        o.attrs.borrow().get(&Value::Str(PyString::new("_value_")))
+                    {
+                        return Some(n.clone());
+                    }
                 }
             }
             None

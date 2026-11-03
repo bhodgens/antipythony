@@ -452,8 +452,12 @@ pub fn builtin_int(interp: &Interpreter, args: &[Value]) -> BResult {
             let v = &args[0];
             match v {
                 // W111: int-derived instances (IntEnum members) int() to
-                // their __ap_int__ payload (CPython int.__int__).
-                Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
+                // their __ap_int__ payload (CPython int.__int__); WITHOUT a
+                // payload, fall through to the user __int__/__index__
+                // protocol below (vendored ipaddress IPv4Address etc).
+                Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance
+                    && o.attrs.borrow().get(&Value::Str(PyString::new("__ap_int__"))).is_some() =>
+                {
                     match o
                         .attrs
                         .borrow()
