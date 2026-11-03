@@ -79,6 +79,19 @@ pub fn py_hash(v: &Value) -> Result<i64, PyException> {
             if let Some(t) = crate::value::weakref_target_addr(o) {
                 return Ok(hash_i64(t as i64));
             }
+            // W111: int-payload instances (IntEnum members built through the
+            // int.__new__(cls, v) derived-instance shape) hash by PAYLOAD —
+            // CPython: hash(member) == hash(int value); dict keys keyed by
+            // the numeric value (http.client.responses[200]).
+            if o.kind == crate::object::ObjKind::UserInstance {
+                if let Some(crate::Value::Int(n)) = o
+                    .attrs
+                    .borrow()
+                    .get(&crate::Value::Str(crate::PyString::new("__ap_int__")))
+                {
+                    return hash_int(&n);
+                }
+            }
             let h = crate::value::addr_of(o) as i64;
             Ok(if h == -1 { -2 } else { h })
         }

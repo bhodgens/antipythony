@@ -425,7 +425,26 @@ pub fn builtin_int(interp: &Interpreter, args: &[Value]) -> BResult {
         0 => Ok(Value::Int(Int::Smi(0))),
         // W110 (T2): int(cls, value) — enum member construction passes the
         // class as the first arg (CPython int.__new__ ignores it).
-        2 if matches!(&args[0], Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass || o.kind == ap_obj::ObjKind::Type) => {
+        // W111: CPython int.__new__(F, 5) returns an INSTANCE OF F (class
+        // methods like .phrase stay reachable on the member). When cls is a
+        // USER class deriving int, allocate the derived instance
+        // (UserInstance + __ap_int__ payload + class_ref) — the same shape
+        // the __int__new__ marker arm produces (interp.rs ~4999).
+        2 if matches!(&args[0], Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass) => {
+            let cls_v = args[0].clone();
+            if let Some(t) = crate::classes::class_of_value(interp, &cls_v) {
+                if t.mro.borrow().iter().any(|m| m.name == "int") {
+                    let io =
+                        ap_obj::PyObject::new(ap_obj::ObjKind::UserInstance, t.name.clone());
+                    *io.type_ref.borrow_mut() = Some(std::rc::Rc::downgrade(&t));
+                    *io.class_ref.borrow_mut() = Some(t.clone());
+                    let _ = io
+                        .attrs
+                        .borrow_mut()
+                        .set(Value::Str(PyString::new("__ap_int__")), args[1].clone());
+                    return Ok(Value::Obj(io));
+                }
+            }
             let args1 = [args[1].clone()];
             builtin_int(interp, &args1)
         }

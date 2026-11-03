@@ -3665,6 +3665,24 @@ pub fn instantiate(
             .and_then(|v| match v {
                 Value::Str(s) => Some(s.as_str().to_string()),
                 _ => None,
+            })
+            // W111: enum member classes build via a SYNTHESIZED int/str base
+            // (a USER class named "int" without the dict marker). The mro
+            // names the builtin chain — detect it here so the member
+            // construction builds from the value arg instead of raising
+            // "takes no arguments" (http.client.responses .phrase chain).
+            .or_else(|| {
+                const BUILTIN_NAMES: &[&str] = &[
+                    "tuple", "list", "dict", "set", "str", "int", "float",
+                    "bytes", "frozenset",
+                ];
+                t.mro.borrow().iter().find_map(|m| {
+                    if BUILTIN_NAMES.contains(&m.name.as_str()) {
+                        Some(m.name.clone())
+                    } else {
+                        None
+                    }
+                })
             });
         if let Some(builtin) = builtin {
             // T1-d (namedtuple SplitResult(5 args)): ALL-positional args
@@ -3765,6 +3783,15 @@ pub fn instantiate(
                             .attrs
                             .borrow_mut()
                             .set(Value::Str(PyString::new("__ap_dict__")), v.clone());
+                    }
+                    // W111: int-derived instances park the numeric payload
+                    // under __ap_int__ — hash(member) == hash(value)
+                    // (IntEnum members key dicts by numeric value).
+                    if builtin == "int" {
+                        let _ = io
+                            .attrs
+                            .borrow_mut()
+                            .set(Value::Str(PyString::new("__ap_int__")), v.clone());
                     }
                     let _ = io
                         .attrs

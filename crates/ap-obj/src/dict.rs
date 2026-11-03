@@ -390,14 +390,31 @@ pub fn values_eq(a: &Value, b: &Value) -> bool {
         (Value::Set(x), Value::Set(y)) => x.set_eq(y),
         (Value::Frozen(x), Value::Frozen(y)) => x.set_eq(y),
         (Value::Ellipsis, Value::Ellipsis) => true,
+        // W111: int-payload instances (IntEnum members) equal their numeric
+        // value — HTTPStatus.OK == 200 (dict lookups by plain int).
+        (Value::Int(_), Value::Obj(_)) | (Value::Obj(_), Value::Int(_)) => {
+            let (p, i) = match (int_payload(a), int_payload(b), a.as_int(), b.as_int()) {
+                (Some(p), _, _, Some(i)) => (p, Some(i)),
+                (_, Some(p), Some(i), _) => (p, Some(i)),
+                _ => (ap_obj::Int::Smi(0), None),
+            };
+            match i {
+                Some(i) => p.eq_int(&i),
+                None => false,
+            }
+        }
         // Generic objects compare (and hash) by IDENTITY (default object
         // protocol); equality across different arms is always false.
         // Exception: weakref tokens compare BY TARGET (CPython: two refs to
         // the same object are ==; the WeakSet/WKD data model relies on it).
         (Value::Obj(x), Value::Obj(y)) => {
             // A-4 item 1: two bytearrays compare by buffer content.
+            // W111: int-payload instances (IntEnum members) compare by
+            // PAYLOAD — HTTPStatus.OK == HTTPStatus.OK (same value).
             if let (Some(a), Some(b)) = (bytearray_data(x), bytearray_data(y)) {
                 a == b
+            } else if let (Some(pa), Some(pb)) = (int_payload(a), int_payload(b)) {
+                pa.eq_int(&pb)
             } else if let (Some(a), Some(b)) = (
                 crate::value::weakref_target_addr(x),
                 crate::value::weakref_target_addr(y),
@@ -424,6 +441,19 @@ impl crate::int::Int {
 }
 
 /// A-4 item 1: the bytearray Opaque object's buffer (None for other Objs).
+/// W111: the numeric payload of an int-derived instance (IntEnum members
+/// park the value under __ap_int__). None for plain objects.
+pub(crate) fn int_payload(v: &Value) -> Option<ap_obj::Int> {
+    match v {
+        Value::Obj(o) if o.kind == crate::object::ObjKind::UserInstance => o
+            .attrs
+            .borrow()
+            .get(&Value::Str(crate::PyString::new("__ap_int__")))
+            .and_then(|p| p.as_int().cloned()),
+        _ => None,
+    }
+}
+
 pub(crate) fn bytearray_data(o: &crate::object::PyObject) -> Option<Gc<Vec<u8>>> {
     if o.kind == crate::object::ObjKind::Opaque && o.name == "bytearray" {
         let ab = o.attrs.borrow();
