@@ -1,10 +1,13 @@
-# ANTIPYTHANY
+# ANTIPYTHONY
+
+Pronounced like "antipathy" (/ænˈtɪpəθi/). An intentional homophone of the
+English word "antipathy", not a misspelling of it.
 
 A Python 3.14-compatible runtime and compiler, written in Rust.
 
-Antipythany compiles Python source to two artifacts:
+Antipythony compiles Python source to two artifacts:
 
-1. A single static native binary (Go-style UX: `antipythany build app.py -o app`).
+1. A single static native binary (Go-style UX: `antipythony build app.py -o app`).
 2. A WasmGC module (portable, sandboxed).
 
 Design choices that define the project:
@@ -14,7 +17,7 @@ Design choices that define the project:
 - **No GIL.** Python threads map to real OS threads.
 - **Byte-exact differential conformance is the exit gate for every phase.**
   Every observable behavior is tested by running the same script under
-  CPython 3.14 and under antipythany, then diffing stdout bytes, stderr
+  CPython 3.14 and under antipythony, then diffing stdout bytes, stderr
   bytes, and exit code. "Close enough" is a failure.
 - **uv-based dependency resolution at build time** (planned, Plan 04).
 - **No C extensions in v1.** An import that resolves to a C extension
@@ -25,7 +28,7 @@ License: Apache-2.0 WITH LLVM-exception. See `LICENSE`,
 
 ## Prior art and borrowed design
 
-**pon** (github.com/can1357/pon, Can Bölük) — antipythany's architecture
+**pon** (github.com/can1357/pon, Can Bölük) — antipythony's architecture
 overlaps pon's substantially (ruff-pinned frontend, shared IR, Cranelift
 tiered backend, differential conformance gating). Can Bölük granted this
 project a full code-donor license (MIT/Apache-2.0 dual, adapt and vendor
@@ -38,7 +41,7 @@ architecture); **no pon source code has been vendored into `crates/`
 yet.** When adaptation lands, each derived file carries an attribution
 header ("adapted from pon, Copyright Can Bölük, MIT/Apache-2.0") per
 `plans/antipythany/master.md`, and pon stays cited in `docs/attribution.md`.
-pon is not forked: antipythany diverges by design (WasmGC backend, MMTk
+pon is not forked: antipythony diverges by design (WasmGC backend, MMTk
 tracing GC, uv-integrated packaging, dual-backend IR contract).
 
 Other cited sources (full detail in `docs/attribution.md` and
@@ -113,7 +116,7 @@ crates/
   ap-codegen-native/ ap-ir -> Cranelift CLIF -> JIT / static binary (stub; leaf 02.05/02.06)
   ap-codegen-wasm/   ap-ir -> WasmGC module (hello-world skeleton landed, uncommitted; Plan 03)
   ap-host/           wasmtime host runner, WASI imports (skeleton, uncommitted; Plan 03)
-  ap-cli/            the `antipythany` binary: run/eval verbs (testability CLIs live here)
+  ap-cli/            the `antipythony` binary: run/eval verbs (testability CLIs live here)
   ap-pack/           uv pure-wheel fetch + content-addressed site-packages (Plan 04, in tree, uncommitted)
   ap-conform/        differential conformance runner (spawns CPython, diffs bytes)
   xtask/             build tasks: notices generation + drift check
