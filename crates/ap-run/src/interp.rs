@@ -1979,6 +1979,28 @@ fn raise_from_value(v: &Value) -> Result<ExceptionValue, Flow> {
             // filtered-empty traceback raised IndexError at code.py [-1]
             // (T2 shim blocker, y144 repro).
             let mut ev = exception_value_of_instance(v)?;
+            // W112: merge with the IN-FLIGHT tb. The instance's __ap_tb__
+            // snapshot was taken at materialization time (often BEFORE the
+            // remaining frames inserted their entries), while the in-flight
+            // EV keeps accumulating entries as the raise propagates. The
+            // longer chain wins — CPython semantics keep the full live
+            // chain on the instance across re-raises.
+            {
+                let inflight = current_interp_for_bindings()
+                    .current_exception
+                    .borrow()
+                    .clone();
+                if let Some(prev) = inflight {
+                    if std::env::var("APX_IDX_DEBUG").is_ok() {
+                        eprintln!("[W112-MERGE] inflight class={} tb_len={}", prev.class, prev.tb.len());
+                    }
+                    if prev.tb.len() > ev.tb.len() {
+                        ev.tb = prev.tb.clone();
+                    }
+                } else if std::env::var("APX_IDX_DEBUG").is_ok() {
+                    eprintln!("[W112-MERGE] inflight NONE");
+                }
+            }
             ev.instance = Some(v.clone());
             // W112: when the captured EV has no tb, derive entries from
             // the instance's LIVE __traceback__ chain (tb_next walk:
@@ -12008,7 +12030,22 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                     *m.slice_parts.borrow_mut() = vec![Value::Obj(o.clone())];
                     Ok(Some(Value::Obj(m)))
                 }
-                _ => Ok(None),
+                // W112: instance-stored attrs are readable. Python-level
+                // writes (attr_set_protocol's Exception arm) park values in
+                // o.attrs; the strict name match above returned None for
+                // everything else, so __ap_tb__ and user-assigned attrs
+                // were write-only. CPython exceptions carry __dict__ and
+                // answer getattr for anything stored there.
+                other => {
+                    if let Some(v) = o
+                        .attrs
+                        .borrow()
+                        .get(&Value::Str(PyString::new(other)))
+                    {
+                        return Ok(Some(v.clone()));
+                    }
+                    Ok(None)
+                }
             },
             ap_obj::ObjKind::UserInstance | ap_obj::ObjKind::UserClass => {
                 // 02.03 attribute protocol (S-03-09..12): MRO + descriptors.

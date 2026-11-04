@@ -118,6 +118,42 @@ NEW FACTS:
 - Trial A is CLEAN: call.excinfo.value is AssertionError (args=()).
   The corruption is purely in tb→summary extraction after the throw.
 
+## Live debugging round 4 (2026-11-04) — exception attr store fixed; last hop isolated
+
+Verified this round (all code-verified, y144/probe12-14 repros):
+1. Legacy Exception-kind instances REJECTED attribute writes:
+   `exc.__ap_tb__ = x` raised AttributeError (strict allow-list in
+   attr_set_protocol only permitted __context__/__cause__/
+   __suppress_context__/__traceback__). exception_instance's __ap_tb__
+   write was silently unreachable from Python. FIXED: allow-list widened
+   for `__ap_`-prefixed dunders (classes.rs attr_set_protocol).
+2. Exception-kind attr GET had a catch-all `_ => Ok(None)` that never
+   consulted o.attrs — instance-stored attrs were write-only. FIXED:
+   catch-all now reads o.attrs first (interp.rs Exception attr-get arm).
+3. sys.exc_info() arm now tags the materialized instance with __ap_tb__
+   from ev.tb (builtins.rs) — the excinfo.value instance carries the
+   full chain for later re-raise.
+4. raise_from_value RR arm merges with in-flight EV tb (longer wins).
+
+REMAINING HOP (precisely characterized):
+- exception_instance STILL never fires for the AssertionError: no
+  [APTB] line for it in any run. The AE crosses pluggy's teardown via
+  teardown.throw (the generator-resume fiber path), NOT via the
+  `except BaseException as exc` Python catch at _multicall:148 — probe12
+  (plain function chain) DOES print APTB; y144 (hook chain) does not.
+- Net effect at B: excinfo.traceback = 5 pluggy/runner-only frames, ALL
+  carrying __tracebackhide__=True → TracebackFilter empties it →
+  code.py:1170 `traceback[-1]` IndexError. CPython's equivalent tb
+  contains the USER test frame (never recorded in our chain — the
+  frame-insert FEXIT hooks skip the fiber-crossed impl frames).
+NEXT SESSION (single concrete step): instrument resume_live
+GenInput::Throw in crates/ap-run/src/interp.rs:7483 (and 4512/7711) to
+bind the except-as name at the CATCHING frame when the exception exits
+the fiber — i.e. make the fiber-crossing catch path call
+exception_instance exactly like exec_try does. Alternative equivalent:
+append the impl/test frames to exc.tb at the fiber crossing (the
+FEXIT-insert loop at interp.rs:1510 only runs for plain frames).
+
 ## Live debugging round 3 (2026-11-04, this session) — tb-carry fixes landed, relay hop still open
 
 Fixes COMMITTED in this round (interp.rs/methods.rs):

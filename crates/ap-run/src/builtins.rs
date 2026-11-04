@@ -3032,6 +3032,30 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
                             *i.args.borrow_mut() = ev.args.clone();
                             Value::Obj(i)
                         });
+                    // W112: record the in-flight tb entries onto the
+                    // materialized instance (__ap_tb__). from_call's
+                    // `except BaseException:` has no `as` name, so
+                    // exception_instance never fires for this flow; any
+                    // later instance->EV conversion (pluggy teardown
+                    // `raise exception`) reads __ap_tb__ to keep the
+                    // traceback chain intact across the re-raise.
+                    if let Value::Obj(io) = &inst {
+                        let entries: Vec<Value> = ev
+                            .tb
+                            .iter()
+                            .map(|(q, l, f)| {
+                                Value::Tuple(ap_obj::int::Gc::new(ap_obj::value::Tuple(vec![
+                                    Value::Str(PyString::new(q.as_str())),
+                                    Value::Int(ap_obj::Int::from_i64(*l as i64)),
+                                    Value::Str(PyString::new(f.as_str())),
+                                ])))
+                            })
+                            .collect();
+                        let _ = io.attrs.borrow_mut().set(
+                            Value::Str(PyString::new("__ap_tb__")),
+                            Value::List(PyList::from_vec(entries)),
+                        );
+                    }
                     let interp3 = interp2.rc();
                     // T2: prefer the exception's OWN tb entries (true raise
                     // site + frame chain); fall back to the global table.

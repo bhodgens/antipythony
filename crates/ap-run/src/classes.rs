@@ -3284,7 +3284,14 @@ pub fn attr_set_protocol(
             if matches!(
                 name,
                 "__context__" | "__cause__" | "__suppress_context__" | "__traceback__"
-            ) {
+            ) || name.starts_with("__ap_")
+            {
+                // W112: allow runtime bookkeeping dunders (__ap_tb__ and
+                // friends) on legacy Exception-kind instances. CPython
+                // exceptions carry a __dict__ and accept any attribute;
+                // the strict allow-list here silently broke the tb
+                // carry-back (exception_instance wrote __ap_tb__, the
+                // Python-visible setattr/read path rejected it).
                 let _ = o
                     .attrs
                     .borrow_mut()
