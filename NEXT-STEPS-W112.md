@@ -674,3 +674,21 @@ BEFORE the list storage! Traceback instances have __ap_dict__?
 No - only dict-DERIVED classes get it in alloc_instance. Traceback
 derives from list → different marker. Verify is_dict_derived
 covers list; if not, why would the Obj arm catch it...
+
+## FINAL VERIFICATION (round-10 close)
+
+drv14 re-run post-revert: full gate PASSES - all 3 verdicts correct
+(PASSED/FAILED/SKIPPED), MAIN_RC printed (ExitCode object;
+int(rc)=1 verified separately), 0 INTERNALERROR. Repo clean at
+894263d; ap-run suites 39/1 (pre-existing flake only).
+
+Session totals (2026-11-04): collection del-item crash FIXED
+(2412157+80d298d+2f33e1f); env regression root-caused (tree
+divergence + phantom shim); unraisable contract fixed (b89c4a3,
+e0d7264); raise-line markers fixed (9f598e3); instruments
+committed. 38 commits ahead of origin, unpushed per protocol.
+
+REMAINING (next session): (1) cacheprovider-enabled gate crash -
+needs either C-level base method resolution in super() (list.__
+getitem__) or slots-write persistence diagnosis (both documented);
+(2) scrapy crawl campaign resume per NEXT-STEPS.
