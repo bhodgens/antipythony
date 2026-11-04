@@ -94,23 +94,54 @@ places (pre-existing lint noise dominates this tree anyway).
 - T2 gate WITH shim: 1 failed / 1 passed / 1 skipped, rc=1 (unchanged)
 - T2 gate WITHOUT shim: still INTERNALERROR rc=3 (bug open)
 
-## Next session (concrete)
+## Next session (concrete) — UPDATED 2026-11-04 after live debugging
 
-1. Read importer.rs's module-compile path: how do fn_id / FnRegistry /
-   IR line tables get keyed for site-packages modules, and what does
-   the generator throw relay read from them? Compare an importer-loaded
-   function object vs an exec-compiled one (they already differ:
-   importer fns lack __globals__ surface).
-2. In the y144 repro, after B fails, the IndexError is a NEW instance —
-   find its creation site: it is NOT through methods::raise, interp::raise,
-   or the EXCS ctor (all instrumented, silent). Suspect the throw relay
-   in generators.rs/interp resume paths materializing an exception from
-   a stale/foreign ExceptionValue (e.g. reusing the LAST exception
-   class seen on the fiber). Dump `e.__traceback__` tb frames of the
-   surfaced IndexError and check whether its tb equals the AssertionError's
-   original tb (shared tb ⇒ instance rebuilt FROM a corrupted EV).
-3. The A-trial poison is specifically the pytest_runtest_call
-   wrapper-teardown THROW loop unwinding through sp-named frames —
-   breakpoint resume_live's GenInput::Throw when the resumed fiber's
-   entry file is an sp path and dump the EV class before/after.
+The prior session's step 2 was executed with the FRESH binary (the
+earlier "no instrumented site fires" finding was a stale-binary artifact).
+NEW FACTS:
+
+- The B-surfaced IndexError comes from _pytest/_code/code.py:1170
+  `last = traceback[-1]` (FormattedExcinfo.repr_excinfo) — `traceback`
+  is a list built by StackSummary.extract from the exception's tb chain.
+- The thrown AssertionError's tb chain EXISTS (5 frames, driver frames,
+  verified by walking tb_next manually in the repro except-handler) —
+  the relay does NOT lose the exception or its tb object.
+- StackSummary.extract produces an EMPTY list from that tb chain →
+  [-1] IndexError. Prime suspect: _get_code_position()
+  (traceback.py:424-428) — `code.co_positions()` on our synthetic code
+  object + islice(lasti//2, None) + next() → if co_positions yields
+  fewer entries than lasti//2 (or the gen is empty when tb_lasti is
+  stale/large), next() raises StopIteration inside the extract walk;
+  extract silently drops such frames → 0 frames → empty list.
+- Secondary symptom explained: traceback.print_exc() printed NOTHING in
+  the handler — same extract-yields-nothing defect.
+- Trial A is CLEAN: call.excinfo.value is AssertionError (args=()).
+  The corruption is purely in tb→summary extraction after the throw.
+
+CONCRETE FIX PLAN (updated 2026-11-04 late — hypothesis REVISED again):
+
+Live probe results (walk_tb / StackSummary / co_positions all verified
+in-repro): walk_tb yields all 5 frames with correct (frame, lineno);
+positions are (None,None,None,None) — handled; StackSummary.extract
+returns 5 entries. The tb→summary extraction is NOT the defect.
+ALSO: trial A's excinfo is CORRECT (AssertionError, args=()).
+
+REFINED: the corruption appears only in the real makereport flow's
+repr path: repr_traceback(code.py:1155, ExceptionInfoFormatter in this
+staged tree) → filter_excinfo_traceback → if the FILTERED Traceback is
+EMPTY → code.py:1170 `last = traceback[-1]` → our exact IndexError.
+So the thrown-in AssertionError's ExceptionInfo (built from the wrapper
+teardown relay) carries a tb whose entries are ALL hidden by
+TracebackEntry.ishidden (path under _pytest/* + is_pytest internals
+check), OR the tb_entries list is empty in the EV→instance rebuild.
+Next probe: after B fails, build ExceptionInfo.from_exception on the
+relayed error inside the makereport wrapper (not at driver level) and
+print per-entry path/ishidden — driver-level from_exception shows
+1 non-hidden entry (verified), so the divergence is in the relay-built
+excinfo, not the driver-level one.
+
+SIDE FINDING: staged _pytest/fixtures.py carried stale trace-probe
+scaffolding (TV/PRUNE/FILL/CFI loggers to /tmp/t2coll.log) — removed,
+pristine restored, kept only the legitimate finalizers-leak assert
+message. T2 gate re-verified green after cleanup.
 
