@@ -1116,3 +1116,14 @@ fixes). Remaining for next session: locate the int-None
 subtraction in the collector processing (suspect: warnings
 rendering of meta.exc_value with our synthetic tb, or the deque
 meta chain), then the full default-config gate is green.
+
+## CORRECTION to round-12 close
+
+After restoring code.py to the pre-probe state, the gate crash
+REVERTED to AttributeError 'type' has no '_rawentry' (not the
+timing-None). The timing-None error appeared ONLY while the
+mis-placed probe block was in code.py — that block accidentally
+masked the crash differently. Do NOT treat timing-None as the
+current bug. The current default-config blocker remains the
+_rawentry class-receiver miss. Both trees synced post-restore;
+gate state: 1F/1P correct, crash in collectors.
