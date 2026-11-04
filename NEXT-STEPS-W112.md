@@ -298,7 +298,19 @@ a 'type' suggests our runtime mis-binds self for __slots__-class
 methods (self = the class instead of the instance) somewhere in
 that flow.
 
-NEXT SESSION: (1) instrument interp attr-get Type arm for _rawentry;
-(2) check how our runtime binds self for __slots__-defined classes
-(TracebackEntry) in the collect_unraisable flow - suspect broken
-method binding producing a class-bound attribute read.
+NEXT SESSION (updated after round-6b instrumentation):
+- APRAW-I (interp Type-arm) DID fire: receiver is literally the
+  builtin `type`; pyloc = the driver trap frame (tb unreliable in
+  this flow - sibling collector frames merged into one chain).
+- NEW FACT: sys.unraisablehook is None in the script view (probe43)
+  and APUNR never fired in the full flow - report_unraisable reads a
+  runtime-internal sys namespace that differs from the Python-visible
+  one pytest mutates. Verify the plugin collector can ever be invoked;
+  fix the namespace bridge first.
+- _rawentry is read only via pytest TracebackEntry instances
+  (__slots__). Receiver `type` => either mis-bound self for
+  __slots__-class methods, or an instance whose attr lookup fell
+  through to its class (a type object). Check how our runtime binds
+  self for __slots__-defined classes.
+- probe35 del-item TypeError at collection_finish remains unlocated
+  (does not route through subscript_del).
