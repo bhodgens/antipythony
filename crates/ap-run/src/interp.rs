@@ -2884,6 +2884,20 @@ pub(crate) fn eval_expr(
                         name
                     );
                 }
+                if name == "_rawentry" && std::env::var("APX_TBDBG").is_ok() {
+                    let pyloc = interp
+                        .tb_frames
+                        .borrow()
+                        .last()
+                        .map(|(q, l, f)| format!("{}:{}:{}", q, l, f))
+                        .unwrap_or_default();
+                    eprintln!(
+                        "[APRAW-I] recv={} name={} pyloc={}",
+                        crate::classes::display_type_name(&o),
+                        name,
+                        pyloc
+                    );
+                }
                 raise(
                     "AttributeError",
                     format!(

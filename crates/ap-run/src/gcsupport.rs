@@ -403,6 +403,13 @@ fn report_unraisable(interp: &Rc<Interpreter>, del_f: &Value, exc: &ExceptionVal
             }
             let _ = a.set(s("object"), Value::None);
         }
+        if std::env::var("APX_TBDBG").is_ok() {
+            let evk = match &exc_value {
+                Value::Obj(o) => format!("obj:{}", o.name),
+                v => format!("{:?}", v).chars().take(24).collect(),
+            };
+            eprintln!("[APUNR] invoke unraisablehook class={} exc_value={}", exc.class, evk);
+        }
         let _ = crate::interp::call_value_pub(interp, &hook, &[Value::Obj(args_obj)], &[]);
         return;
     }
