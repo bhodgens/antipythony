@@ -1104,3 +1104,15 @@ may skip slot writes in our runtime).
   indentation error from round-11d's probe patch first: the
   current file has a SyntaxError from a mis-placed probe block at
   line 1218-1233).
+
+## Round-12 TRUE close (code.py restored to pre-probe state)
+
+Restored code.py from b4 (pre-probe ANY variant with the
+extract_tb fallback, no P758/G758 probes); syntax verified; trees
+synced. Final gate run before restore: 1F/1P correct, crash at
+collectors with timing-None TypeError (the _rawentry crash is
+GONE — replaced by the smaller timing bug after the round-8/9
+fixes). Remaining for next session: locate the int-None
+subtraction in the collector processing (suspect: warnings
+rendering of meta.exc_value with our synthetic tb, or the deque
+meta chain), then the full default-config gate is green.
