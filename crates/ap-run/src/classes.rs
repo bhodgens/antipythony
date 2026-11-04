@@ -2649,6 +2649,20 @@ pub fn attr_get_opt(
                 Err(other) => Err(other),
             }
         }
+        // W112: dict-backed legacy instances (attrs["__ap_dict__"],
+        // kind != UserInstance) answer attr reads from the backing dict
+        // before falling through - the 'object'-receiver AttributeError
+        // family in the pytest unraisable collector flow.
+        Value::Obj(o) => {
+            if let Some(Value::Dict(d)) =
+                o.attrs.borrow().get(&Value::Str(PyString::new("__ap_dict__")))
+            {
+                if let Some(v) = d.get(&Value::Str(PyString::new(name.to_string()))) {
+                    return Ok(Some(v));
+                }
+            }
+            Ok(None)
+        }
         _ => Ok(None),
     }
 }
