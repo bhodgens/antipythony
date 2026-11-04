@@ -1,8 +1,8 @@
 # Plan 10 case study: pydantic-core (REQUIRED by master.md tier table)
 
 Status: **research leaf 10.01 input — complete.** This is the "REQUIRED CASE STUDY"
-named in `plans/antipythany/10-c-extensions-stretch/orchestrator.md` (leaf 10.01) and
-the recurring T3/T4 blocker in `plans/antipythany/master.md` (tier table rows T3
+named in `plans/antipythony/10-c-extensions-stretch/orchestrator.md` (leaf 10.01) and
+the recurring T3/T4 blocker in `plans/antipythony/master.md` (tier table rows T3
 hermes-agent, T4 fastapi). It also discharges the "Decide at 10.01" note in
 `docs/path-to-targets.md` (lines 61–62).
 
@@ -18,8 +18,8 @@ machine — no guessing, no web-only claims. Artifacts:
 - Symbol scan: `nm -u` on the `.so` (237 unique undefined symbols, 173 of them
   CPython `Py*` imports); `strings(1)` for build metadata.
 - Live introspection under Homebrew CPython 3.14: `dir()`, `list_all_errors()`.
-- Repo files read: `plans/antipythany/10-c-extensions-stretch/orchestrator.md`,
-  `plans/antipythany/master.md`, `docs/lxml-shim.md`, `docs/path-to-targets.md`,
+- Repo files read: `plans/antipythony/10-c-extensions-stretch/orchestrator.md`,
+  `plans/antipythony/master.md`, `docs/lxml-shim.md`, `docs/path-to-targets.md`,
   `crates/ap-run/src/builtins_modules.rs` (registry), `crates/ap-run/src/lxml.rs`
   (3,002 lines), `crates/ap-obj/src/lib.rs` (object-model rationale).
 
@@ -74,7 +74,7 @@ Crucially, **most of the package is NOT native**. `pydantic_core/core_schema.py`
 - `__init__.py`: re-exports the 23 native members; the module has a custom
   `__getattr__` raising `AttributeError` for unknown names (observed live).
 
-Consequence for antipythany: `core_schema.py` needs **no Plan 10 work at all** — it
+Consequence for antipythony: `core_schema.py` needs **no Plan 10 work at all** — it
 runs on any interpreter whose `typing`/`TypedDict` machinery is faithful. Only the
 23 native members (and through them, the entire validation/serialization engine)
 require either a C-API path or a shim.
@@ -88,7 +88,7 @@ require either a C-API path or a shim.
   `_pydantic_core.cpython-314-darwin.so`; no `abi3` marker appears in the binary.
   Every CPython minor version needs a separate wheel — and per Plan 10's locked
   v2 policy ("Binary wheels built for CPython NEVER load"), this wheel is
-  unloadable by antipythany regardless.
+  unloadable by antipythony regardless.
 - 237 undefined symbols total: 173 CPython `Py*`, the rest libc/libunwind/
   libdispatch (`Unwind_RaiseException`, `dispatch_semaphore_*`, …) — the Rust
   panic-unwinding and std machinery rides along.
@@ -98,11 +98,11 @@ require either a C-API path or a shim.
 ## 2. CPython C-API features this surface requires
 
 `nm -u` gives the exact import list — 173 `Py*` symbols. Grouped into **19 feature
-rows**, each with what antipythany would have to provide for a *recompiled* PyO3
-extension (option a). "Present today?" refers to antipythany's native runtime
+rows**, each with what antipythony would have to provide for a *recompiled* PyO3
+extension (option a). "Present today?" refers to antipythony's native runtime
 (`crates/ap-run`, `crates/ap-obj`) as of this writing.
 
-| # | C-API feature (evidence: imported symbols) | What antipythany would need |
+| # | C-API feature (evidence: imported symbols) | What antipythony would need |
 | --- | --- | --- |
 | 1 | **Multi-phase module init**: `PyModuleDef_Init`, `PyModule_ExecDef`, `PyModule_FromDefAndSpec2`, `PyModule_GetNameObject` | A C-callable module bootstrap: `PyModuleDef` struct layout, spec-based exec, our importer invoking it. Our registry (`builtins_modules.rs`) is Rust-internal; nothing C-facing exists. |
 | 2 | **Heap type creation**: `PyType_FromSpec`, `PyType_GenericAlloc`, `PyType_Freeze`, plus `PyType_GetName/GetQualName/GetModuleName`, `PyType_IsSubtype` | Full `PyType_Slot` table semantics (tp_new/tp_dealloc/tp_getattro/tp_richcompare/tp_iter/traverse/clear flags), heap-type lifetime under a **tracing GC (MMTk)** — the object-layout conflict Plan 10's kill criteria explicitly name. |
@@ -119,7 +119,7 @@ extension (option a). "Present today?" refers to antipythany's native runtime
 | 13 | **Dict**: `PyDict_New/Copy/Clear/Contains/GetItemRef/SetItem/DelItem/Next/Keys/Update` | Our compact dict exists; `PyDict_Next` exposes insertion-order iteration positions — semantics we already honor (C-contract), needs C-facing cursors. |
 | 14 | **Containers**: `PyList_New/Append/AsTuple/GetSlice`, `PyTuple_New/GetItem`, `PySet_New/Add/Contains/Size`, `PyFrozenSet_New`, `PyBytes_FromStringAndSize/AsString/Size`, `PyByteArray_AsString/Size` | Mostly mechanical wrappers over existing ap-obj types. **Note: no buffer protocol** — `PyObject_GetBuffer` is *absent* from the import list; bytes access goes through `PyBytes_AsString` only. One classic hard feature we do NOT need. |
 | 15 | **Iteration/number protocol**: `PyIter_Check`, `PyIter_NextItem` (3.14-new), `PyObject_GetIter`, `PyMapping_Items`, `PySequence_Check/Contains`, `PyNumber_Index/Remainder/TrueDivide` | Wiring our `iter.rs` protocol to C entry points. |
-| 16 | **Thread/GIL state**: `PyGILState_Ensure/Release`, `PyEval_SaveThread/RestoreThread`, `PyInterpreterState_Get/GetID`, `Py_IsInitialized/IsFinalizing` | PyO3's `Python::attach`/`allow_threads` model assumes a GIL to release. antipythany is **no-GIL (locked decision, master.md)**: `PyGILState_Ensure` becomes a no-op and `SaveThread` a token — behaviorally fine for single-thread validation, but any PyO3 code path that infers thread-safety from the GIL is a latent hazard. |
+| 16 | **Thread/GIL state**: `PyGILState_Ensure/Release`, `PyEval_SaveThread/RestoreThread`, `PyInterpreterState_Get/GetID`, `Py_IsInitialized/IsFinalizing` | PyO3's `Python::attach`/`allow_threads` model assumes a GIL to release. antipythony is **no-GIL (locked decision, master.md)**: `PyGILState_Ensure` becomes a no-op and `SaveThread` a token — behaviorally fine for single-thread validation, but any PyO3 code path that infers thread-safety from the GIL is a latent hazard. |
 | 17 | **Capsule & import**: `PyCapsule_Import`, `PyImport_Import` | Needed by row 18; general C-level import of Python modules from Rust. |
 | 18 | **datetime C-API interop**: `PyCapsule_Import` + the PyO3 string `failed to import 'datetime' C API`; `TzInfo` subclasses `datetime.tzinfo`; validators construct `date`/`datetime`/`timedelta` objects | The `PyDateTime_*` capsule table (CPython's only sanctioned way for extensions to touch datetime) must exist and return objects that are `isinstance`-compatible with our stdlib `datetime` — i.e. C-created datetimes and Python-visible datetimes must be the *same* representation. |
 | 19 | **Panic/FFI boundary**: libunwind symbols (`Unwind_RaiseException`, `Unwind_Resume`, …), PyO3 `PanicException` strings | Rust panics converted to Python exceptions across the boundary — for a *recompiled* extension this means our loader must link the extension's unwinder to ours and provide a `PanicException` type. |
@@ -148,7 +148,7 @@ of C extension we could hope to face.
 ### Option (a): C-API compatibility layer sufficient for PyO3 output
 
 Implement the 19 rows above as a C-callable shim (headers + `contrib/ce-compat/`
-crate) so pydantic-core *recompiled from source* links against antipythany.
+crate) so pydantic-core *recompiled from source* links against antipythony.
 
 **Cost (honest):**
 - The mechanical half (~150 of 173 symbols: rows 1, 4, 6, 9, 12–15, 17) is what
@@ -236,7 +236,7 @@ stack target pydantic v2 semantics; `docs/path-to-targets.md` line 62 already
 flags "pydantic v1 pure-python fallback (slower but pure)" as the alternative.
 
 **Cost:** cheap in engineering, expensive in signal value — the tier table exists
-to prove antipythany runs *real, popular* software. Retargeting T3/T4 to
+to prove antipythony runs *real, popular* software. Retargeting T3/T4 to
 exotic-dependency-free software weakens exactly the claim the tiers make, and
 doesn't answer the T5 question at all.
 
@@ -319,9 +319,9 @@ SchemaValidator public methods          → 7; SchemaSerializer → 2
 
 ## Appendix B: sources cited
 
-- `plans/antipythany/10-c-extensions-stretch/orchestrator.md` — required case
+- `plans/antipythony/10-c-extensions-stretch/orchestrator.md` — required case
   study, v2 rebuild-required policy, kill criteria, isolation rule, 10.02 spike.
-- `plans/antipythany/master.md` — tier table (T3/T4 blockers), locked decisions
+- `plans/antipythony/master.md` — tier table (T3/T4 blockers), locked decisions
   (MMTk, no-GIL), donor list (monty line 53), Wasm pure-Rust constraint.
 - `docs/lxml-shim.md` — shim precedent, architecture, differential-test pattern.
 - `docs/path-to-targets.md` lines 61–62 — "Decide at 10.01".

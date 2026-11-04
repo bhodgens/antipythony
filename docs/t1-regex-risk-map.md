@@ -1,19 +1,19 @@
 # T1 regex risk map — scrapy closure vs unfixed re-engine bugs (RF-2/3/5/7)
 
 Read-only investigation 2026-10-22. Trees swept:
-- `~/.cache/antipythany/site-packages` (scrapy 2.19.0, w3lib, parsel, itemadapter,
+- `~/.cache/antipythony/site-packages` (scrapy 2.19.0, w3lib, parsel, itemadapter,
   itemloaders, protego, jmespath, cssselect, queuelib, six, pydispatch, zope)
 - `/private/tmp/gatecheck/cache/site-packages` (same + the **twisted 26.4.0**,
   attr/attrs, automat, constantly, incremental, hyperlink, idna, packaging,
   pyasn1(_modules), service_identity, setuptools tree the T1 gate actually runs —
   the `~/.cache` staging lacks twisted; both trees swept, results identical for
   the scrapy-tree packages)
-- `/Users/caimlas/git/antipythany/vendored_stdlib`
+- `/Users/caimlas/git/antipythony/vendored_stdlib`
 
 Method: full-text multiline call-shape sweep (`/tmp/rf2_sweep.py`,
 `/tmp/regex_sweep.py`, stdlib-only) + byte probes: CPython
 `/opt/homebrew/bin/python3.14` (3.14.7) vs
-`/Users/caimlas/git/antipythany/target/debug/ap-run-eval` on
+`/Users/caimlas/git/antipythony/target/debug/ap-run-eval` on
 `/tmp/probeA_rf2.py`, `/tmp/probeB_rf3.py`, `/tmp/probeC_rf5_rf7.py`,
 `/tmp/probeD_rf3_real.py`, `/tmp/probeE_htmlparser.py`. Raw outputs:
 `/tmp/probe_out.txt`.
@@ -42,7 +42,7 @@ are listed per-row below.
 
 ### Sites found
 - Module-level and pattern-method `count=` kwargs: **none** in
-  `~/.cache/antipythany/site-packages/**/*.py`,
+  `~/.cache/antipythony/site-packages/**/*.py`,
   `/private/tmp/gatecheck/cache/site-packages/**/*.py`, or
   `vendored_stdlib/**/*.py`. Sweep = paren-matched multiline call scan for
   `.sub(`/`.subn(` args containing `(?<![A-Za-z0-9_])count\s*=`

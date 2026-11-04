@@ -71,7 +71,7 @@ recorded here so the orchestrator expects it and the numbers reconcile.
 
 ### Gates run (leaf 02.01)
 1. `cargo clippy --workspace --all-targets` on PRISTINE HEAD + this leaf's
-   files only (isolated worktree /tmp/headcheck/antipythany-head,
+   files only (isolated worktree /tmp/headcheck/antipythony-head,
    f6c5ce4): **exit 0**, 0 errors. `cargo build --workspace` there: exit 0.
    `cargo fmt --all -- --check` there: **exit 0** - the leaf's own state is
    fully fmt-clean.

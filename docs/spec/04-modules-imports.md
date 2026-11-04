@@ -1,6 +1,6 @@
 # Spec 04 — Modules and Imports
 
-Part of the antipythany spec pack (plan 00.05). Normative source for test leaf T-01
+Part of the antipythony spec pack (plan 00.05). Normative source for test leaf T-01
 (parse diagnostics, import forms) and for module/import semantics in 01.x (lowering)
 and 02.x (runtime). Error strings quoted below were observed by running the pinned
 snippets on `/opt/homebrew/bin/python3.14` (3.14.7) and are part of the byte-exact
@@ -95,7 +95,7 @@ re-running module code (see S-04-16).
 
 ## 4.3 v1 import resolution order
 
-**S-04-12 (MUST)** For antipythany v1, resolution of an import name X proceeds in
+**S-04-12 (MUST)** For antipythony v1, resolution of an import name X proceeds in
 exactly two steps, in order: (1) the **built-in/registry namespace** — the static
 set of stdlib v1 modules enumerated in spec 05 plus `sys`, `builtins`, `__main__`
 machinery; (2) the **filesystem search** over the sys.path-equivalent list seeded

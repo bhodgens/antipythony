@@ -2,8 +2,8 @@
 
 Part of the spec pack (00.05). Source of truth for test agents (T-09 binary
 conformance gates 02.06; T-12 wasm parity cites the byte-identical rule; T-13
-host/WASI cites this doc). Derived from `plans/antipythany/master.md` (interface
-contract rule 3: "run script under CPython and antipythany, diff bytes on
+host/WASI cites this doc). Derived from `plans/antipythony/master.md` (interface
+contract rule 3: "run script under CPython and antipythony, diff bytes on
 stdout/stderr and exit code"), 00.03 compat contract, and CPython **3.14.7**
 behavior verified live on `/opt/homebrew/bin/python3.14`. Clause ids `S-06-NN`.
 
@@ -172,7 +172,7 @@ per payload type):
 | `KeyboardInterrupt` reaching top level — including a plain `raise KeyboardInterrupt` (verified rc **130** both ways) and real SIGINT (CPython rc 130 = 128+SIGINT via self-`os.kill`; OS-signal delivery itself is gated outside the corpus — `signal` is OUT-of-v1) | 130 |
 | CLI-level "file not found" (`python script` where script missing → rc 2, message `can't open file '<abs path>': [Errno 2] No such file or directory` prefixed by argv[0]-style runner name) | 2 |
 
-v1 runner (`antipythany run/build` verbs, ap-conform `--impl`) MUST mirror row for
+v1 runner (`antipythony run/build` verbs, ap-conform `--impl`) MUST mirror row for
 row. The CLI "can't open file" message's prefix is the impl's own argv[0]; ap-
 conform invokes scripts as `impl script.py` so the prefix is NOT diffed — only the
 rc 2 + suffix shape is (documented divergence: prefix text may name a different

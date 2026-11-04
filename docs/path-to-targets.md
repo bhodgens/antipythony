@@ -1,4 +1,4 @@
-# ANTIPYTHANY - Path to Target Projects (working doc, updated as plans evolve)
+# ANTIPYTHONY - Path to Target Projects (working doc, updated as plans evolve)
 
 Goal state per master.md tier table: run scrapy (T1), pytest (T2),
 hermes-agent (T3), fastapi (T4), comfyui (T5) as TEST DATA - internal

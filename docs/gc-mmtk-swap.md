@@ -26,7 +26,7 @@ It pairs with 02.05's root-map work (`docs/pon-study-tier1.md`, §GC roots shim)
 
 ## 2. The MMTk binding choice
 
-**Bind via `mmtk-rust` binding crate (mmtk-core + a tiny `mmtk-antipythany`
+**Bind via `mmtk-rust` binding crate (mmtk-core + a tiny `mmtk-antipythony`
 plan crate), V8-style semi-space initially.**
 
 Rationale (against the alternatives):

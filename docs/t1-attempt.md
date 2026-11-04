@@ -1,4 +1,4 @@
-# T1 attempt: scrapy under antipythany (2026-10-20)
+# T1 attempt: scrapy under antipythony (2026-10-20)
 
 Status: **NOT GATED.** `import typing` now succeeds; `import scrapy` still
 fails in `scrapy/__init__.py` at `importlib.resources.files()`. ~20
@@ -8,10 +8,10 @@ instructions); zero regressions (rust lib tests green, pytest 1912 passed /
 
 ## Packaging layer
 
-- `antipythany add scrapy` correctly fails loud (C-11): uv's transitive
+- `antipythony add scrapy` correctly fails loud (C-11): uv's transitive
   closure includes C wheels (`_brotli`, `lxml`, `cryptography`, `cffi`,
   `zope.interface` accel `.so`). By design — no change to the refusal.
-- NEW: `antipythany add --no-deps "<req> <req> ..."` installs exactly the
+- NEW: `antipythony add --no-deps "<req> <req> ..."` installs exactly the
   named requirements (uv `--no-deps`) with the purity filter still applied.
   The full pure-Python scrapy closure was staged pin-by-pin this way:
   scrapy 2.19.0, twisted 26.4.0, incremental 24.11.0, constantly 23.10.4,
@@ -149,16 +149,16 @@ run produces a correct items.jsonl:
 
 Spider: /tmp/t1/spider.py (file:// start URL, regex parse — no lxml —
 T1Pipeline uppercases titles, FEEDS jsonlines, TWISTED_REACTOR None).
-Once blockers 1-3 clear, the gate is: `antipythany run spider.py` in
+Once blockers 1-3 clear, the gate is: `antipythony run spider.py` in
 /tmp/t1/t1proj, `cmp items.jsonl /tmp/t1/ref/items.jsonl`.
 
 ## Repro commands
 
 ```
 cd /tmp/t1/t1proj
-antipythany run --no-cache probe37.py   # import typing -> OK
-antipythany run --no-cache probe51.py   # scrapy/twisted import depth
-antipythany run --no-cache spider.py    # current blocker: files() None
+antipythony run --no-cache probe37.py   # import typing -> OK
+antipythony run --no-cache probe51.py   # scrapy/twisted import depth
+antipythony run --no-cache spider.py    # current blocker: files() None
 ```
 
 (All changes uncommitted. The `--no-deps` add form, the 20 interpreter

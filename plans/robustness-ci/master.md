@@ -5,9 +5,9 @@ Implementation plan for every finding and recommendation in
 repo's opt-in, single-laptop gate stack into enforced CI + tooling, without
 disturbing the in-flight Plan 02 work.
 
-This is a SIBLING tree to `plans/antipythany/`. It does not change product
+This is a SIBLING tree to `plans/antipythony/`. It does not change product
 semantics; it hardens gates around them. Locked decisions in
-`plans/antipythany/master.md` remain binding here too (byte-exact conformance,
+`plans/antipythony/master.md` remain binding here too (byte-exact conformance,
 corpus-only-grows, file-ownership parallelism).
 
 ## Ground rules (binding for all leaves)
@@ -34,7 +34,7 @@ corpus-only-grows, file-ownership parallelism).
 | Reference python discovery | helper resolving `AP_CONFORM_REFERENCE_PYTHON` -> PATH `python3.14` -> version-string check (logic exists at `crates/ap-conform/src/lib.rs:90-96`); ALL Rust differential tests + pytest suites use it | 00/02, 01/*, 04/* |
 | Skip policy | `AP_REQUIRE_REFERENCE=1` converts reference-missing skips into hard failures; set in every CI job that runs differential tests | 00/02, 00/03 |
 | XPASS ceiling | committed integer in `tests/XPASS_CEILING`; CI fails when count exceeds it (monotone-decreasing) | 01/01 |
-| Impl binaries for CI pytest | env `APX_IMPL=target/debug/ap-run-eval`, `APX_CLI="target/debug/antipythany run"`; `cargo build` before `cargo test`/`pytest` (integration tests path-math into target/debug, e.g. `crates/ap-run/tests/re_differential.rs:24-29`) | 00/03 |
+| Impl binaries for CI pytest | env `APX_IMPL=target/debug/ap-run-eval`, `APX_CLI="target/debug/antipythony run"`; `cargo build` before `cargo test`/`pytest` (integration tests path-math into target/debug, e.g. `crates/ap-run/tests/re_differential.rs:24-29`) | 00/03 |
 | Lint policy | `[workspace.lints]` in root Cargo.toml; `clippy::unwrap_used = warn` allow-listed per crate; CI `cargo clippy -D warnings` | 02/01 |
 | Golden provenance | `tests/corpus/<fam>/expected/<case>.meta` with `sys.version` + date + generator hash, written by each `gen_expectations.py`; lint fails goldens without meta | 03/01 |
 | Vendored drift | `cargo run -p xtask -- stdlib-provenance --check` vs declared-deviations manifest `vendored_stdlib/DEVIATIONS.toml`; undeclared drift fails CI | 03/02 |
@@ -140,7 +140,7 @@ After each wave: the orchestrator (main model) checks:
 - THIRD_PARTY_NOTICES still drift-clean (`cargo run -p xtask -- notices
   --check`).
 - This tree adds no product-semantics changes: if a leaf needs one, it stops
-  and files it against the antipythany plan tree instead.
+  and files it against the antipythony plan tree instead.
 
 ## Test Gate
 

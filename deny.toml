@@ -1,4 +1,4 @@
-# cargo-deny configuration for antipythany.
+# cargo-deny configuration for antipythony.
 #
 # Run: `cargo deny check licenses` (or `cargo deny check` for everything).
 # The xtask notices gate (`cargo run -p xtask -- notices --check`) covers the

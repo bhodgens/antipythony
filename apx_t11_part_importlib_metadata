@@ -1,2 +1,2 @@
 #!/bin/sh
-exec antipythany run "$0.py" "$@"
+exec antipythony run "$0.py" "$@"

@@ -84,7 +84,7 @@ two renderers cannot drift again.
 ### gc013_get_objects_filtered — PASSES at 98b2964 (brief's claim stale)
 
 Re-run firsthand: `ap-conform run --corpus tests/corpus/gc/gc013... --impl
-target/debug/ap-run-eval` → PASS; also PASS via `antipythany run` impl and
+target/debug/ap-run-eval` → PASS; also PASS via `antipythony run` impl and
 byte-identical vs live python3.14 (`held count: 4 / after drop+collect: 0
 / cycle survivor count: 0`, rc 0). The registry retain + subtract-refs
 invariant holds for the filtered-get_objects projection. **If issue #10

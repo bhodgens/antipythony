@@ -48,7 +48,7 @@ Design notes:
 - `ec.SECP256R1` etc. are **callable singletons** — twisted keys.py does
   `ec.SECP256R1()` at module level.
 - All crypto ops raise `NotImplementedError` lazily (OpenSSL/SSL.py pattern).
-- 14/14 CPython probes + 8/8 antipythany probes green
+- 14/14 CPython probes + 8/8 antipythony probes green
   (`/tmp/probe_crypto_shim.py`, `/tmp/probe_crypto_ap.py`).
 
 ## Finding W110-2: `time.localtime/gmtime(float)` TypeError (logging blindness)

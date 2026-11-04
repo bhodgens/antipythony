@@ -1,10 +1,10 @@
-# ANTIPYTHANY Compatibility Contract (v1)
+# ANTIPYTHONY Compatibility Contract (v1)
 
-Leaf: 00.03 (`plans/antipythany/00-foundation-contract/orchestrator.md`).
+Leaf: 00.03 (`plans/antipythony/00-foundation-contract/orchestrator.md`).
 Status: **normative**. This document is the compatibility contract between
-antipythany and its reference implementation. It is an input to the spec pack
+antipythony and its reference implementation. It is an input to the spec pack
 (00.05) and one of the two documents test agents read together with `docs/spec/`
-(see `plans/antipythany/tests/README.md`). Where the spec pack elaborates a rule
+(see `plans/antipythony/tests/README.md`). Where the spec pack elaborates a rule
 stated here, this file wins on conflicts until corrected by PR (§11).
 
 Relaxation rule (locked): Plan 10 / v2 research leaves may relax a clause marked
@@ -61,14 +61,14 @@ other version, and that a mismatch-override run is visibly labeled non-normative
 in its output.
 
 ### C-02 — Tie-break rule for undefined or ambiguous behavior
-Where antipythany behavior is not fixed by this contract or the spec pack, the
+Where antipythony behavior is not fixed by this contract or the spec pack, the
 reference's observed behavior on the pinned 3.14.0 build is normative by
 default. A divergence from the reference is a bug UNLESS it is (a) listed as a
 documented divergence in §9 of this file, or (b) a timing-only difference
 explicitly sanctioned by a §9 entry. Any new divergence MUST be added here by PR
 before it may ship.
 
-**Verify:** for any corpus case, `assert antipythany_output == cpython_output`
+**Verify:** for any corpus case, `assert antipythony_output == cpython_output`
 holds byte-wise on all three channels (C-27) unless the case header cites a
 divergence clause id. A CI check scans corpus case headers: every cited
 divergence id exists in §9.
@@ -82,7 +82,7 @@ and MUST NOT accept future-version-only syntax. The runtime MUST report
 
 **Verify:** (1) a program using 3.15-or-later-only syntax (when such grammar
 exists to probe) fails to compile with a parse diagnostic naming the line and
-column; (2) `python -c "import sys; print(sys.version_info)"` under antipythany
+column; (2) `python -c "import sys; print(sys.version_info)"` under antipythony
 prints `sys.version_info(major=3, minor=14, micro=0, releaselevel='final',
 serial=0)` byte-identically to the reference; (3) the parser rejects CPython
 2-style `print "x"`.
@@ -105,7 +105,7 @@ test set of C-05.
 ### C-05 — v1 stdlib = stdlib modules whose import closure needs no C extension
 A standard-library module is in the v1 supported set iff its transitive import
 closure (static `import`/`from` analysis at compile time) contains only (a)
-pure-Python stdlib modules and (b) modules the antipythany runtime provides
+pure-Python stdlib modules and (b) modules the antipythony runtime provides
 natively as part of the v1 allow-list — including `builtins`, `sys`, `_thread`,
 and the internals they pull in. Pure-Python stdlib modules that CPython itself
 falls back to when their `_`-prefixed accelerator is missing (e.g. `functools`
@@ -157,7 +157,7 @@ module provided only as a CPython C extension (an `ExtensionFileLoader`-shipped
 binary, including accelerator submodules such as `_json` under `json`, or
 `_socket` under `socket`, when not native-provided), the compiler MUST stop with
 a compile-time error. There is no runtime fallback, no lazy "only errors if you
-actually run it", and no partial success: `antipythany build` exits nonzero and
+actually run it", and no partial success: `antipythony build` exits nonzero and
 emits no binary. Imports whose target cannot be resolved statically (dynamic
 `__import__` / `importlib.import_module` with a computed name) MUST fail at
 **import time** with the same diagnostic content (C-08, C-10) instead of
@@ -180,7 +180,7 @@ Every C-07 diagnostic MUST contain, verbatim: (1) the **full module name** that
 resolved to an extension (e.g. `_socket`, not "a C module"); (2) the literal
 phrase `C extension` (or the stable token `c-extension`); (3) a pointer to the
 extension policy — the path `docs/compat-contract.md` clause `C-07` and the v2
-plan location `plans/antipythany/10-c-extensions-stretch/orchestrator.md` — so a
+plan location `plans/antipythony/10-c-extensions-stretch/orchestrator.md` — so a
 user hitting the error is routed to the rebuild-required v2 story instead of
 guessing.
 
@@ -253,7 +253,7 @@ never a wrong number.
 
 **Verify:** boundary sweep around the tag width `B` (the test agent reads `B`
 from a documented constant in spec 05, not from code): for `k in (-2, -1, 0,
-1)` around `2**B`, assert `(2**B + k) + 1 == 2**B + k + 1` under antipythany and
+1)` around `2**B`, assert `(2**B + k) + 1 == 2**B + k + 1` under antipythony and
 equals the reference for the same expression; multiply/shift sweeps
 `[(2**B - i) * (2**B + i) for i in range(4)]` byte-diff against the reference.
 Any mismatch is a bug, not a divergence (no §9 id covers it).
@@ -358,7 +358,7 @@ their presence, absence, or return values are never gated.
 a case at load time.
 
 ### C-20 — `__del__` timing is NOT guaranteed (documented divergence D1)
-antipythany MUST run `__del__` for a collected object exactly when the
+antipythony MUST run `__del__` for a collected object exactly when the
 collector finalizes it, which is NOT necessarily when the last reference
 disappears. A program is NOT considered non-conformant if its `__del__` side
 effects appear later than they would under CPython — at a `gc.collect()`, or at
@@ -376,7 +376,7 @@ print("loop done")
 ```
 
 CPython 3.14 prints `make\ndel\n` interleaved three times, then `loop done`;
-antipythany MAY print all three `make` lines and defer some or all `del` lines
+antipythony MAY print all three `make` lines and defer some or all `del` lines
 until after `loop done` (or until shutdown). After an explicit `gc.collect()`
 before the final `print`, the `del` lines MUST all have appeared (finalization
 is forced by collection, so `make×3, del×3, loop done` becomes deterministic).
@@ -490,7 +490,7 @@ implementations regardless of hash seed.
 ### C-27 — What ap-conform diffs is the whole observable contract
 The conformance gate for every v1 behavior is: for each corpus script,
 `stdout`, `stderr` (each as a byte string) and `exit code` produced under
-antipythany MUST equal those produced under the C-01 reference. Stream bytes
+antipythony MUST equal those produced under the C-01 reference. Stream bytes
 are byte-exact: UTF-8 output matching the reference under the harness's pinned
 environment, reference newline translation, per-stream program order.
 Cross-stream interleaving is NOT compared (streams are captured separately),
@@ -645,7 +645,7 @@ PR.
 Spec pack sections consume this contract as follows: spec 01 (values) ←
 C-12..C-18; spec 02 (control-flow/exceptions) ← C-25, C-29; spec 04 (imports)
 ← C-04..C-11; spec 05 (builtins/stdlib list) ← C-05, C-06, C-13; spec 06
-(observable behavior) ← C-24..C-30. Test leaves (per `plans/antipythany/tests/`):
+(observable behavior) ← C-24..C-30. Test leaves (per `plans/antipythony/tests/`):
 T-01 ← C-07..C-11 + C-29; T-05 ← C-12..C-18; T-07 ← C-19..C-23 (D1); T-08 ←
 C-31; T-09 ← C-01..C-03, C-27..C-30; T-11 ← C-04..C-06; T-12 ← C-31. Where a
 spec-pack S-clause elaborates a C-clause, the C-clause is authoritative on

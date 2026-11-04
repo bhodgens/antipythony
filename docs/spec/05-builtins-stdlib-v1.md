@@ -1,9 +1,9 @@
 # Spec 05 — Builtins and Stdlib v1
 
 Part of the spec pack (00.05). Source of truth for test agents (T-11 stdlib-v1 gates
-02.08). Derived from `plans/antipythany/master.md` (locked decisions, ecosystem tier
-table), `plans/antipythany/00-foundation-contract/orchestrator.md` (00.03 compat
-contract, 00.05 spec pack), `plans/antipythany/02-native-backend/orchestrator.md`
+02.08). Derived from `plans/antipythony/master.md` (locked decisions, ecosystem tier
+table), `plans/antipythony/00-foundation-contract/orchestrator.md` (00.03 compat
+contract, 00.05 spec pack), `plans/antipythony/02-native-backend/orchestrator.md`
 (02.08), and CPython **3.14.7** behavior verified on
 `/opt/homebrew/bin/python3.14` (all name lists below were taken from live `-S` runs;
 where a fact was checked, the check is cited inline).

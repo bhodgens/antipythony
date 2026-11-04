@@ -109,7 +109,7 @@ Two coupled deliverables (branch-01 orchestrator + master.md contracts
   full-suite runs (mine /tmp/ap_pytest_0101.txt to ~63%, sibling waveA
   ~63%, sibling 00.03 ~60%) with ZERO 'X' chars through ~60-63% marks.
   The 74 t08 markers read as timeout-xfails TODAY because sibling 02.07
-  threading work hangs `antipythany run` (001_hello times out at 60s;
+  threading work hangs `antipythony run` (001_hello times out at 60s;
   t08 cross-mode legs burn their 120s APX_T08_TIMEOUT each). That is a
   broken-stack measurement, not a behavior improvement - tests/README
   forbids recording baselines from it. 74 stays the contract number;

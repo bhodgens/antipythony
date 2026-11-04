@@ -30,13 +30,13 @@ packages (__init__.py), namespace packages, relative imports.
   __package__ per CPython rules (cite S-04-*).
 
 ### sys.path bootstrap
-- [script_dir] + vendored_stdlib_dir + ANTPYTHANY_PATH env + site-packages
+- [script_dir] + vendored_stdlib_dir + ANTIPTYHONY_PATH env + site-packages
   dir when Plan 04 wheel-fetch lands. ap-conform/ap-run-eval set
   script_dir = the corpus case's directory.
 
 ### Compile cache
 - Same content-addressed cache as Plan 04 leaf 04.02 (key: source hash +
-  IR version): .apc files next to source or in ~/.cache/antipythany/.
+  IR version): .apc files next to source or in ~/.cache/antipythony/.
   v0 (this leaf): no cache, compile every import - measure first.
 
 ### Integration with ap-conform

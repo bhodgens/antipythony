@@ -1,5 +1,5 @@
 {
-  "scope": "READ-ONLY bughunt audit of commits 2057bf8, 3f1bb33, 71193a6, ebf5956 in the antipythany repo",
+  "scope": "READ-ONLY bughunt audit of commits 2057bf8, 3f1bb33, 71193a6, ebf5956 in the antipythony repo",
   "commits_reviewed": ["2057bf8", "3f1bb33", "71193a6", "ebf5956"],
   "findings": [
     {
@@ -65,9 +65,9 @@
     {
       "severity": "MEDIUM",
       "title": "GC corpus cases depend on collect-anchored observations — D1 timing-safety discipline required",
-      "file": "plans/antipythany/tests/T-07-gc-finalizer.md",
+      "file": "plans/antipythony/tests/T-07-gc-finalizer.md",
       "line": "37-35, 106-122 (case table)",
-      "evidence": "The T-07 gc/finalizer corpus (17 cases) explicitly follows D1 timing-safety discipline: all observations are sampled AFTER explicit `gc.collect()` calls. Case gc007 (is_tracked) notes CPython's temporary tuple tracking window is UNSPECIFIED for antipythany. Case gc011 (collect return) notes the raw count is a 'patch-level/build-level coincidence, not a contract value.'",
+      "evidence": "The T-07 gc/finalizer corpus (17 cases) explicitly follows D1 timing-safety discipline: all observations are sampled AFTER explicit `gc.collect()` calls. Case gc007 (is_tracked) notes CPython's temporary tuple tracking window is UNSPECIFIED for antipythony. Case gc011 (collect return) notes the raw count is a 'patch-level/build-level coincidence, not a contract value.'",
       "verified": true,
       "why_it_matters": "These cases are intentionally designed to avoid timing-sensitive assertions. If any case were to accidentally observe timing-sensitive state (e.g., pre-collect), it would flake. The suite's linting and 3-run determinism check mitigate this risk.",
       "suggested_fix": "Continue the existing D1 discipline; ensure the C-19 corpus lint (refcount-API ban) and C-23 (no print in __del__) are enforced."
@@ -105,7 +105,7 @@
     {
       "severity": "INFO",
       "title": "Tracking table (ebf5956) confirms 14 of 16 test leaves authored",
-      "file": "plans/antipythany/tests/TRACKING.md",
+      "file": "plans/antipythony/tests/TRACKING.md",
       "line": "1-40 (tracking table)",
       "evidence": "TRACKING.md lists T-01..T-16 with states: T-01..T-11 AUTHORED, T-12..T-13 BLOCKED, T-14..T-16 AUTHORED. 14 of 16 leaves authored as of commit ebf5956.",
       "verified": true,

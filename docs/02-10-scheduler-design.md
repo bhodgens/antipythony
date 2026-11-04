@@ -1,6 +1,6 @@
 # 02.10 — Go-style runtime scheduler (research design note)
 
-Status: RESEARCH ONLY (no code). Leaf: `plans/antipythany/02-native-backend/orchestrator.md`
+Status: RESEARCH ONLY (no code). Leaf: `plans/antipythony/02-native-backend/orchestrator.md`
 §02.10 — implementation only after 02.09 (no-GIL swap) lands; this note is the
 implementer brief for that future leaf. Every current-code claim cites a file:line
 read on the 2026-10-22 tree.

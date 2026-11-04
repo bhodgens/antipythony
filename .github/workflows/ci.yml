@@ -206,13 +206,13 @@ jobs:
         #               ap-conform --impl seam; target/debug/ap-run-eval
         #               accepts exactly the `--tier 0` ap-conform appends
         #               (crates/ap-cli/src/bin/ap_run_eval.rs:4-7).
-        #   APX_CLI   - t09:158 t14:80 t15:63 t16:126 - the `antipythany`
+        #   APX_CLI   - t09:158 t14:80 t15:63 t16:126 - the `antipythony`
         #               driver (build/run verbs).
         # Relative paths are safe: suites run subprocesses with
         # cwd=REPO_ROOT and pytest itself runs from the checkout root.
         env:
           APX_IMPL: "target/debug/ap-run-eval"
-          APX_CLI: "target/debug/antipythany run"
+          APX_CLI: "target/debug/antipythony run"
         run: |
           set -o pipefail
           python -m pytest tests/ -q --no-header -rX \

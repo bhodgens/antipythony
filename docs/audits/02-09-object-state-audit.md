@@ -9,7 +9,7 @@ Scope: `crates/ap-run/src/` and `crates/ap-obj/src/`.
 
 Purpose: classify the object-state mutability surface, decide what is
 already GIL-independent vs what blocks the 02.09 no-GIL swap (T121 >=3x
-scaling GREEN gate, `plans/antipythany/master.md` Design intent + F3 row).
+scaling GREEN gate, `plans/antipythony/master.md` Design intent + F3 row).
 
 ## Headline numbers (re-measured; old figure "300+ RefCell sites / 17 files")
 
@@ -153,7 +153,7 @@ hash.rs, lib.rs, list_repr.rs, ops.rs, str_repr.rs (ap-obj).
 6. **B6 — generators.rs raw-pointer fiber tables** (`*const FiberYielder`
    in thread_locals). Per-thread is fine, but the 02.09-pre generator
    rework (lazy suspension, in flight per
-   plans/antipythany/02-native-backend/leaves/02.09-pre-generators.md)
+   plans/antipythony/02-native-backend/leaves/02.09-pre-generators.md)
    will churn this; audit after it lands, not before.
 
 ## Recommended partition order for the no-GIL swap

@@ -11,7 +11,7 @@ The importer kept TWO path stores that had drifted apart:
 
 1. `SYS_PATH: RefCell<Vec<String>>` — the bootstrap snapshot written once by
    `bootstrap_sys_path()` ([script_dir, vendored_stdlib, site-packages,
-   ANTPYTHANY_PATH, extras]). Every importer lookup read THIS.
+   ANTIPTYHONY_PATH, extras]). Every importer lookup read THIS.
 2. The `PyList` object exposed as `sys.path` — rebuilt as a **fresh list
    snapshot on every `attach_sys_extras()`** call (`import sys`,
    `from sys import ...`).

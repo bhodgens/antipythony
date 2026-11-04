@@ -2,7 +2,7 @@
 
 Status: **partially complete — core shim landed and gated; gate probe still red.**
 
-The antipythany runtime cannot use real lxml (C extension; APX-CEXT policy
+The antipythony runtime cannot use real lxml (C extension; APX-CEXT policy
 forbids native wheels). This shim provides a pure-Rust `lxml`-compatible
 surface in `crates/ap-run/src/lxml.rs` with no libxml2 and no new Cargo
 dependencies.

@@ -2,7 +2,7 @@
 
 ## Result
 
-`scrapy 2.19.0` imports and runs under the antipythany runtime. The file://
+`scrapy 2.19.0` imports and runs under the antipythony runtime. The file://
 spider crawl produces items.jsonl byte-identical to CPython 3.14.0
 (4 items: ALPHA WIDGET / BETA GADGET / GAMMA GIZMO + SUMMARY count=3).
 

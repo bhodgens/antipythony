@@ -1,6 +1,6 @@
 # Spec 03 — Classes
 
-Part of the antipythany spec pack (plan 00.05). Normative source for test leaf T-06
+Part of the antipythony spec pack (plan 00.05). Normative source for test leaf T-06
 (classes) and implementation leaf 02.03 (ap-obj classes/protocols). Every behavior
 below is CPython 3.14.7 semantics; error-message strings quoted in this doc were
 observed by running the pinned snippets on `/opt/homebrew/bin/python3.14`

@@ -941,8 +941,8 @@ suites next session).
   Likely the documented import-order nondeterminism; not caused by
   the tb/instance changes. The T1 environment needs its original
   invocation context (the probe ran inside a project dir; /tmp
-  scripts lack the antipythany.lock that joins site-packages, and
-  ANTPYTHANY_PATH alone reproduces the failure).
+  scripts lack the antipythony.lock that joins site-packages, and
+  ANTIPTYHONY_PATH alone reproduces the failure).
 
 COMMITTED THIS TURN:
 - 5424f1b ev.instance fix (THE T2 root cause)
@@ -1047,7 +1047,7 @@ tests/corpus-style test_fix.py in /tmp/t2suite.
 
 1. Native importlib.metadata (build_importlib_metadata):
    version(name) reads <name>*.dist-info/METADATA from the runtime
-   site-packages roots ($ANTPYTHANY_PATH + default cache). Fixes the
+   site-packages roots ($ANTIPTYHONY_PATH + default cache). Fixes the
    pluggy version banner + PackageNotFoundError paths. distributions()
    /entry_points() degrade to empty (plugin autoload = no plugins).
 2. Native-stream subclass instantiation fixed: a python __init__ on

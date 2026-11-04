@@ -1,6 +1,6 @@
 # Conformance Methodology
 
-Antipythany's exit gate is not "passes a test suite". It is **byte-exact
+Antipythony's exit gate is not "passes a test suite". It is **byte-exact
 differential conformance against CPython 3.14**: for the same script, our
 output bytes, error bytes, and exit code must equal CPython's. This
 document explains the machinery that enforces that.

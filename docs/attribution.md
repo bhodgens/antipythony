@@ -1,4 +1,4 @@
-THIRD_PARTY_NOTICES generation for antipythany
+THIRD_PARTY_NOTICES generation for antipythony
 ==============================================
 
 Command surface (the supported path)

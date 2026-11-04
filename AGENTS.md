@@ -1,14 +1,14 @@
-# ANTIPYTHANY - Project Context (auto-loaded by Hermes from this repo)
+# ANTIPYTHONY - Project Context (auto-loaded by Hermes from this repo)
 
 ## What this project is
 Python 3.14-compatible runtime and compiler, written in Rust. Compiles Python to
 (1) single static native binaries and (2) WasmGC modules. Tracing GC (MMTk), no
 GIL, uv-backed deps at build time. Byte-exact differential conformance vs CPython
-3.14.0 is the exit gate for every phase. Working name: antipythany (repo dir:
+3.14.0 is the exit gate for every phase. Working name: antipythony (repo dir:
 ~/git/anticoagulant).
 
 ## Where the truth lives
-- Plan tree: `plans/antipythany/` - master.md is the contract; one orchestrator per
+- Plan tree: `plans/antipythony/` - master.md is the contract; one orchestrator per
   plan (00 foundation, 01 frontend/IR, 02 native, 03 wasm, 04 packaging,
   10 C-extensions hail mary); tests/README.md is the separate-authorship test track.
 - Locked decisions are in master.md. Do not re-litigate them in leaves.

@@ -233,7 +233,7 @@ byte-comparable. Exit codes for uncaught non-SystemExit exceptions are 1.
   SyntaxWarning at compile time for this pattern (observed stderr, two lines, no
   marker line):
   `<path>:<line>: SyntaxWarning: 'return' in a 'finally' block` then the source
-  line indented 2 spaces (`  return 2`); antipythany MUST implement the override
+  line indented 2 spaces (`  return 2`); antipythony MUST implement the override
   semantics and SHOULD emit the identical warning (warning text itself is NOT gated
   for byte-exactness in v1).
   A return/raise/break inside `try` defers until finally completes (observed: `F`

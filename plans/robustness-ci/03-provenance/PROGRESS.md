@@ -153,7 +153,7 @@ committed number plus this caveat rather than a guessed final line.
     `[[file]]` TOML-subset parser/renderer for DEVIATIONS.toml — xtask stays
     a single-dep crate (cargo_metadata), preserving ci.yml fast-lints'
     "no workspace compile" property. No new deps, Cargo.toml untouched.
-  - Upstream Lib/ resolution order: `$ANTIPYTHANY_CPYTHON_LIB` (CI / custom
+  - Upstream Lib/ resolution order: `$ANTIPYTHONY_CPYTHON_LIB` (CI / custom
     installs) -> `python3.14|python3|python -c "import sysconfig;
     print(sysconfig.get_paths()['stdlib'])"` (leaf 03.01's documented
     resolution) -> Homebrew Cellar glob `/opt/{homebrew,local}/Cellar/
@@ -185,7 +185,7 @@ committed number plus this caveat rather than a guessed final line.
   respectively — no single counterpart / package-dir counterpart), plus
   **3 files the license doc does NOT list**: re/__init__.py, unittest/case.py,
   unittest/result.py — byte-verified drift vs 3.14.7 at manifest build,
-  in-file notes are "antipythany v0 (vendored fork)" RegexFlag fallback and
+  in-file notes are "antipythony v0 (vendored fork)" RegexFlag fallback and
   "AP-CORRECTION (02.04)" _Outcome/_exc_info_to_string rewrites. Their notes
   in DEVIATIONS.toml say "Undeclared in LICENSES/README-vendored-stdlib.md —
   license doc needs an addendum".

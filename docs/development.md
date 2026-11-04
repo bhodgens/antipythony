@@ -1,6 +1,6 @@
 # Development Guide
 
-How to work on antipythany: environment, gates, workflow, and the
+How to work on antipythony: environment, gates, workflow, and the
 project's plan-tree execution protocol.
 
 ## Environment
@@ -31,7 +31,7 @@ cargo run -p xtask -- notices --check   # THIRD_PARTY_NOTICES drift gate
 ```
 
 Current baseline: rust 289/0, pytest 1272 passed / 0 failed (plus
-skips/xpasses tracked in `plans/antipythany/tests/TRACKING.md`).
+skips/xpasses tracked in `plans/antipythony/tests/TRACKING.md`).
 
 ### Why CI gates, not git hooks
 
@@ -63,7 +63,7 @@ actually fires. (robustness-review finding #15; documented by leaf 03.03.)
 ## Plan-tree execution protocol
 
 Work is organized as a hierarchical plan tree under
-`plans/antipythany/` (see `master.md` for the contract):
+`plans/antipythony/` (see `master.md` for the contract):
 
 1. Implementation leaves fit one 256K-context agent; split along a named
    expose/gate boundary when a leaf overruns.
@@ -93,7 +93,7 @@ Work is organized as a hierarchical plan tree under
 
 ## Useful paths
 
-- Plan tree: `plans/antipythany/{master.md, 00..04, 10, tests/}`
+- Plan tree: `plans/antipythony/{master.md, 00..04, 10, tests/}`
 - Design notes: `docs/` (gc-mmtk-swap, pon studies, import machinery,
   path-to-targets)
 - Audits/reports: `.hermes/audits/` (gitignored)

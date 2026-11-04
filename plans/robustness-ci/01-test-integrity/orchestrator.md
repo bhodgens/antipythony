@@ -19,8 +19,8 @@ Gate: ceiling file committed with measured number; lowering the file with
 fewer xpasses passes; adding a stale xfail that XPASSes above ceiling fails.
 
 ### 01.02 - STALE-XFAIL-LEDGER burn-down (ongoing protocol, not one agent)
-- Follow `plans/antipythany/02-native-backend/STALE-XFAIL-LEDGER.md`: each
-  owning antipythany leaf (01.02/01.03/01.04/02.05) flips its tests to
+- Follow `plans/antipythony/02-native-backend/STALE-XFAIL-LEDGER.md`: each
+  owning antipythony leaf (01.02/01.03/01.04/02.05) flips its tests to
   `strict=True` when it lands.
 - FIRST concrete flip: T-15 "CI runner config existence"
   (`tests/t15_release/test_t15_release.py:44-58`) - after 00/01 lands,

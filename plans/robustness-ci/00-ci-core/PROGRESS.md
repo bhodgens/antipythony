@@ -176,10 +176,10 @@ stub comment): `conformance-matrix` axis job + `conformance` matrix job.
   - `APX_IMPL="target/debug/ap-run-eval"` — read at t05:77, t07:117,
     t08:125, t10:77, t11:108-109. ap-run-eval accepts exactly the `--tier 0`
     ap-conform appends (crates/ap-cli/src/bin/ap_run_eval.rs:4-25).
-  - `APX_CLI="target/debug/antipythany run"` — read at t09:158, t14:80,
+  - `APX_CLI="target/debug/antipythony run"` — read at t09:158, t14:80,
     t15:63, t16:126. NOTE t09/t14/t15/t16 invoke `_cli_cmd() + ["build",...]`
     / `["--version"]` / `["new",...]` verbs; with APX_CLI ending in `run`
-    those become `<antipythany run build ...>` — wrong argv shape for those
+    those become `<antipythony run build ...>` — wrong argv shape for those
     suites, but they are all xfail(strict=False) awaiting 02.06/04.02, so
     CI stays green; master.md:37 mandates this exact value, so I kept it
     (gap noted below for when those xfails flip).
@@ -236,7 +236,7 @@ stub comment): `conformance-matrix` axis job + `conformance` matrix job.
    but bin/python3.14 may not; mkdir -p /opt/homebrew/bin as the runner
    user should work, unproven).
 3. t09/t14/t15/t16 suites append verbs to APX_CLI ("build", "new",
-   "--version"), which the brief's mandated `...antipythany run` value
+   "--version"), which the brief's mandated `...antipythony run` value
    breaks — they stay green only because every one is xfail(strict=False)
    today. When 02.06/04.02 flip them, the workflow needs an APX_CLI split
    (driver without `run`). Flagged in a workflow comment.

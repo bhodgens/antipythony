@@ -14,7 +14,7 @@ the worktree).
 
 Implementation remains gated: 02.10 code lands only after 02.09 (no-GIL swap)
 is green — orchestrator.md §02.09/§02.10 and "Dispatch notes"
-(plans/antipythany/02-native-backend/orchestrator.md:115-140).
+(plans/antipythony/02-native-backend/orchestrator.md:115-140).
 
 ## 0. What changed since v1 (the delta that forces this revision)
 
@@ -152,7 +152,7 @@ stack sizing, not on the scheduler (§5, risk R1).
 ## 2. Scheduler × MMTk safepoints
 
 The MMTk design (docs/gc-mmtk-swap.md) fixes: binding via `mmtk-rust` +
-`mmtk-antipythany` plan crate, **MarkSweep (non-moving) first**, roots via
+`mmtk-antipythony` plan crate, **MarkSweep (non-moving) first**, roots via
 `Scanning::scan_roots_in_mutator_thread` + `scan_vm_specific_roots`, frame
 locals via conservative shadow stack (or pon-style stackmaps later), weakrefs
 via `ReferenceProcessor` (§§2-5). The stage-1 collector's **contention-abort**
@@ -319,7 +319,7 @@ implementer (master.md test protocol).
 Dependency chain: 02.09 → a → b → c → d → e, strictly serial (each exit gate
 is the next entry gate). 02.10c may co-dispatch with the MMTk stage-2 swap
 leaf if the mmtk spike lands first, since both touch the binding's `Scanning`
-impl — coordinate file ownership (gcsupport.rs vs the new mmtk-antipythany
+impl — coordinate file ownership (gcsupport.rs vs the new mmtk-antipythony
 crate) before dispatch.
 
 ## 5. Risks (delta over v1 §5; v1's determinism/refactor/regression risks stand)
@@ -393,10 +393,10 @@ Ours (files read on the 2026-10-30 tree):
 - `docs/02-10-scheduler-design.md` (v1), `docs/gc-mmtk-swap.md`,
   `docs/pon-study-tier1.md` (safepoint/OSR/stackmap regions),
   `docs/t1-gate.md`, `NEXT-STEPS.md` (Wave-9 fiber thread-local notes,
-  asyncio two-drivers gap), `plans/antipythany/master.md` (Design intent,
+  asyncio two-drivers gap), `plans/antipythony/master.md` (Design intent,
   Amendment A-3, tier table, test protocol),
-  `plans/antipythany/02-native-backend/orchestrator.md` (:88-140),
-  `plans/antipythany/02-native-backend/PROGRESS.md` (02.07 GIL-v1 design +
+  `plans/antipythony/02-native-backend/orchestrator.md` (:88-140),
+  `plans/antipythony/02-native-backend/PROGRESS.md` (02.07 GIL-v1 design +
   deferred list, :741-801)
 - Vendored: `corosensei-0.3.4` crate source (`coroutine.rs` "# Send" docs +
   !Send test; `stack/unix.rs` mmap+guard page; `stack/mod.rs` guard contract)

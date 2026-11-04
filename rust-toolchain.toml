@@ -1,4 +1,4 @@
-# Pinned toolchain for antipythany - all agents and CI must build with this.
+# Pinned toolchain for antipythony - all agents and CI must build with this.
 # Installed via Homebrew (not rustup): this file is documentation + forward
 # pinning for rustup environments; Homebrew cargo ignores it but the version
 # below is the version CI must match.

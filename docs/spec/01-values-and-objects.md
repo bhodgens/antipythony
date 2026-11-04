@@ -1,7 +1,7 @@
 # Spec 01 — Values and Objects
 
 Clause prefix: `S-01-*`. Test cases cite these ids; normative keywords are **MUST**,
-**SHOULD**, and **UNSPECIFIED**. An UNSPECIFIED property is one antipythany may choose
+**SHOULD**, and **UNSPECIFIED**. An UNSPECIFIED property is one antipythony may choose
 freely but observable program behavior MUST NOT depend on it — corpus cases MUST NOT
 assert on it either.
 
@@ -9,7 +9,7 @@ Reference behavior: CPython 3.14 (all quoted outputs produced by
 `python3.14` 3.14.7, macOS arm64). This doc is written from the master plan, the
 compatibility contract (00.03), and CPython semantics — never from implementation
 code. Where this doc quotes byte-level output (repr, error text), the quote IS the
-requirement: antipythany output that differs byte-wise from CPython on any corpus
+requirement: antipythony output that differs byte-wise from CPython on any corpus
 case is a bug.
 
 Gate rule (from master.md): all observable behavior here is gated by `ap-conform`
@@ -145,7 +145,7 @@ byte-diff of stdout, stderr, and exit code.
   insertion order. Re-assigning an existing key keeps its original position
   (`{"b":1,"a":2}` then `d["b"]=3` → `['b', 'a']`); deleting then re-adding a key
   moves it to the end; dict display and `{**a, "k": v}` build in written order.
-  This ordering is language-mandated in 3.7+ and MUST hold in antipythany.
+  This ordering is language-mandated in 3.7+ and MUST hold in antipythony.
 - **S-01-22 (MUST)** `dict` equality is order-INdependent: `{"a":1,"b":2} ==
   {"b":2,"a":1}` is True (same length; every key present with `==` values).
 - **S-01-23 (MUST)** Dict keys collide by hash+equality, forming equivalence
@@ -204,7 +204,7 @@ byte-diff of stdout, stderr, and exit code.
   cases MUST NOT assert `is`/`is not` on any value other than `None`, sentinels, or a
   name compared to itself bound to the same object (`s = "x"; s is s` is legal).
   CPython 3.14 additionally emits a SyntaxWarning for `is`/`is not` with literal
-  operands; antipythany SHOULD warn identically on the corpus but MUST NOT change
+  operands; antipythony SHOULD warn identically on the corpus but MUST NOT change
   runtime semantics because of it.
 - **S-01-32 (MUST)** `None` is a singleton: `x is None` is THE identity test;
   `None == False` is False; `None == 0` is False. `True is 1` is False (distinct
@@ -235,7 +235,7 @@ byte-diff of stdout, stderr, and exit code.
   magnitude ≥ `2**61 - 1` (the modulus `sys.hash_info.modulus`) return
   `±(int mod (2**61 - 1))`, never -1. Observed: `hash(10**100) == 10**100 %
   (2**61-1)` is True; `hash(-(10**100)) == -(10**100 % (2**61-1))`;
-  `hash(2**61 - 1)` → 0. Antipythany MUST reproduce `hash(42) == 42`-style exact
+  `hash(2**61 - 1)` → 0. Antipythony MUST reproduce `hash(42) == 42`-style exact
   values for small ints and the -1/-2 exception; the modulus mapping MUST match
   for large ints on the corpus (64-bit modulus 2305843009213693951).
 - **S-01-37 (MUST)** `hash(float)`: integral floats hash as their int (`hash(2.0) ==
@@ -246,7 +246,7 @@ byte-diff of stdout, stderr, and exit code.
 - **S-01-38 (UNSPECIFIED)** `hash(str)` and `hash(bytes)` are salted per process
   (PYTHONHASHSEED; siphash13 in CPython 3.14). Observed across two runs of the same
   script: `hash("abcdef")` printed `1018421229137590393` then `-6975793468212893174`.
-  Antipythany MUST NOT promise any specific string-hash value across processes, and
+  Antipythony MUST NOT promise any specific string-hash value across processes, and
   corpus MUST NOT print `hash("…")` / `hash(bytes)` directly. In-process: equal
   strings hash equal (`hash("abc") == hash("abc")` True), and set/dict behavior keyed
   on strings MUST be internally consistent.

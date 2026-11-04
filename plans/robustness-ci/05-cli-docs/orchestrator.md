@@ -26,7 +26,7 @@ Gate: full pytest suite green with no golden edited; `--help` present on all
   CPython-format diagnostics (the surface Plan 01 already produces - this
   is a bin wrapper, not new semantics). Contract: the T-01 suite's
   expectations define the output shape; read
-  `plans/antipythany/tests/T-01-parse-diagnostics.md` first.
+  `plans/antipythony/tests/T-01-parse-diagnostics.md` first.
 - Wire into ci.yml fast-lints: T-01 suite flips xfail->run.
 Gate: T-01 suite green in real-run mode; zero xfail left for the seam
 reason.

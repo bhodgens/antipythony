@@ -77,8 +77,8 @@ write to it (merge, never overwrite) after each leaf commits.
    Deferred) - 00.01 step 0 resolves; record the answer here.
 2. ci.yml clippy -D warnings timing: 00.01 ships informational, 02.01 flips
    strict. Confirm no drift between them.
-3. Branch 06 is hard-gated on Plan 02 (antipythany tree) completion of
-   02.08-full p2 commit + review; check plans/antipythany/02-native-backend/
+3. Branch 06 is hard-gated on Plan 02 (antipythony tree) completion of
+   02.08-full p2 commit + review; check plans/antipythony/02-native-backend/
    PROGRESS.md before ANY dispatch here.
 4. Today's real pass counts (rust/pytest/XPASS ceiling baseline, corpus
    slice rates) were never re-run by the review agent - first leaf needing a

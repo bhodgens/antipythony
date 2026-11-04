@@ -1,7 +1,7 @@
 # Branch Protection - Recommended GitHub Settings (leaf 00.04)
 
 Human-facing doc: enabling branch protection is a GitHub UI/API action, not a
-code change. Apply these settings for `main` on the antipythany repo after
+code change. Apply these settings for `main` on the antipythony repo after
 `.github/workflows/ci.yml` runs green at least once remotely.
 
 ## Required status checks

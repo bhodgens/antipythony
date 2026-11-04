@@ -5,7 +5,7 @@ Status: DESIGN (main-model draft for leaf 03.01 to formalize into
 (`crates/ap-obj/src/value.rs`, spec 01) is represented inside a WasmGC module
 emitted by `ap-codegen-wasm`, and what `ap-host` (wasmtime) must provide.
 
-Port discipline (orchestrator, `plans/antipythany/03-wasm-backend/orchestrator.md`):
+Port discipline (orchestrator, `plans/antipythony/03-wasm-backend/orchestrator.md`):
 **same IR, same ap-obj semantics, new representation.** Any observable
 divergence found in the differential corpus is fixed in the shared layers
 (ap-obj / ap-ir), never papered over in wasm codegen.

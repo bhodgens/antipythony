@@ -1,6 +1,6 @@
 # Architecture
 
-Antipythany compiles Python 3.14 source through a layered Rust pipeline
+Antipythony compiles Python 3.14 source through a layered Rust pipeline
 to two targets: native (JIT + ahead-of-time static binary) and WasmGC.
 This document describes each layer and the rules that keep them clean.
 
@@ -87,7 +87,7 @@ ap-ir to WasmGC module; wasmtime host runner with WASI imports. Parity
 rule: a tier claim requires the corpus green in native AND wasm modes.
 
 ### ap-cli (planned)
-The `antipythany` binary: `run`, `build`, `new` verbs. Go-style UX -
+The `antipythony` binary: `run`, `build`, `new` verbs. Go-style UX -
 one command produces one static binary.
 
 ### ap-conform

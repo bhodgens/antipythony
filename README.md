@@ -40,7 +40,7 @@ been studied from pon** (see `docs/pon-study-lowering.md` and
 architecture); **no pon source code has been vendored into `crates/`
 yet.** When adaptation lands, each derived file carries an attribution
 header ("adapted from pon, Copyright Can Bölük, MIT/Apache-2.0") per
-`plans/antipythany/master.md`, and pon stays cited in `docs/attribution.md`.
+`plans/antipythony/master.md`, and pon stays cited in `docs/attribution.md`.
 pon is not forked: antipythony diverges by design (WasmGC backend, MMTk
 tracing GC, uv-integrated packaging, dual-backend IR contract).
 
@@ -54,7 +54,7 @@ never vendored or linked.
 ## Status (as of wave-110-5, 2026-10-31)
 
 The project is mid-build, executing a hierarchical plan tree
-(`plans/antipythany/`). Current state:
+(`plans/antipythony/`). Current state:
 
 | Plan | Scope | Status |
 | --- | --- | --- |
@@ -129,7 +129,7 @@ between tier-0 and tier-1 output is a bug.
 
 Key documents:
 
-- `plans/antipythany/master.md` - the contract. Locked decisions, crate
+- `plans/antipythony/master.md` - the contract. Locked decisions, crate
   layout, license table, ecosystem tiers.
 - `docs/compat-contract.md` - the CPython 3.14.0 compatibility contract:
   supported v1 subset, documented divergences, fail-loud rules.
@@ -196,7 +196,7 @@ Testability CLIs (each suite drives one; see `tests/README.md`):
 
 ```
 AGENTS.md                operational state + agent conventions (cross-session memory)
-plans/antipythany/       the plan tree: master.md, per-plan orchestrators + PROGRESS.md
+plans/antipythony/       the plan tree: master.md, per-plan orchestrators + PROGRESS.md
 crates/                  the Rust workspace (12 crates, above)
 docs/                    compat contract, spec pack, design notes, path-to-targets
 tests/                   pytest suites (t01..t16) + differential corpus + lints
