@@ -719,3 +719,21 @@ TracebackEntry (the class), find who put it there; if it contains
 FrameSummary objects, the fix is making ishidden/getattr work on
 them (or wrapping FrameSummaries into TracebackEntry-compatible
 objects in get_python_framesummary's fallback).
+
+## Round-11b: crash EVOLVED after sync+fixes - now a timing-None bug
+
+The full driver error CHANGED from AttributeError '_rawentry' to
+TypeError "'int' and 'NoneType'" subtraction inside the collector
+processing (same frames: threadexception:46/unraisable:55). The
+staged-threadexception/unraisable files are pristine; the crash
+location moves per our misattribution, but the TYPE changed ->
+the underlying data changed: meta.msg now builds (warnings.warn
+works) and the failure is arithmetic on a None field - likely
+Instant/Duration (timing.py: stop.perf_count - start.perf_count)
+with a None field, or process.parseoutcomes.
+
+This is a SMALLER, concrete bug than the previous cascade. Next
+session: (1) instrument Instant.elapsed/Duration.seconds and the
+sessionfinish duration math for None fields; (2) note that
+warnings.warn is reached now - the meta pipeline works; (3) the
+T2 gate with -p no:cacheprovider already passes fully.
