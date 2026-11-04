@@ -553,3 +553,22 @@ messages. Verify: print type(config.stash) and
 config.stash.__class__ in the driver BEFORE pytest.main - if the
 Stash instance is legacy 'object'-kind, that is the bug (early
 pytest_configure userclass construction).
+
+## Round-8 final-final
+
+Wrapping collect_thread_exception's stash access proved the
+AttributeError fires INSIDE `config.stash[thread_exceptions].pop`
+processing (the crash line number MOVED with the instrumentation -
+confirming Python-level raise-line misattribution in our runtime
+for this flow; the shown line is not the true raise site).
+
+State: T2 gate session completes with correct verdicts; the driver
+crashes in wrap_session teardown when the collectors run. This
+needs a fresh session with: (1) working raise-line attribution for
+native-raised exceptions, or (2) a bisect harness that calls
+config.stash[thread_exceptions] / .pop step-by-step in the FULL
+driver flow (probe40 showed it KeyError outside the flow - the
+stash key registration differs between pytest_configure-created
+stash and driver-created stash).
+
+All probes reverted; staged tree = pre-probe state; repo clean.
