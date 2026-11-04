@@ -1079,3 +1079,28 @@ built from OUR synthetic Namespace tb objects via
 get_python_framesummary's FrameSummary fallback - TracebackEntry
 (...) construction from a FrameSummary instead of a TracebackType
 may skip slot writes in our runtime).
+
+## FINAL SESSION STATE (clean)
+
+- Staged threadexception.py restored to PRISTINE (uv copy); code.py
+  probes removed from ANY tree; both trees = fallback variant, no
+  probes; repo clean at e5395f6 lineage (HEAD e5395f6 + probe
+  commits 605d64c..b0adce6 all committed earlier — working tree
+  clean).
+- Stable milestone: T2 gate passes fully with -p no:cacheprovider
+  (re-verified multiple times).
+- WITH cacheprovider + trap driver: crash persists — manifests as
+  timing-None TypeError in the collectors (misattributed frames
+  46/55). probe65d/65e: unraisable hook contract verified working
+  (instance exc_value, real tb, format_exception OK). probe71:
+  meta processing exonerated in isolation.
+- The crash needs the FULL pytest.main flow; all component probes
+  pass. Next session: drv7-style real-tb walk AT THE TypeError
+  (drv19 pattern) already gave: notify_exception:1264 ->
+  getrepr:756 -> format_exception... -> class-receiver _rawentry.
+  The next probe: repr(self.traceback[0]) and
+  type(self.traceback[0]) INSIDE getrepr native arm (staged
+  code.py:756-761, temporarily instrumented — MUST fix the
+  indentation error from round-11d's probe patch first: the
+  current file has a SyntaxError from a mis-placed probe block at
+  line 1218-1233).
