@@ -2943,13 +2943,20 @@ pub(crate) fn eval_expr(
                             Vec::new(),
                         ),
                     };
+                    let bt = std::backtrace::Backtrace::force_capture().to_string();
+                    let interesting: Vec<&str> = bt
+                        .lines()
+                        .filter(|l| l.contains("ap_run"))
+                        .take(14)
+                        .collect();
                     eprintln!(
-                        "[APRAW-I] recv-display={} kind={} name={} attrs={:?} last_py_loc={}",
+                        "[APRAW-I] recv-display={} kind={} name={} attrs={:?} last_py_loc={}\nbt:{}",
                         crate::classes::display_type_name(&o),
                         kind_dbg,
                         name_dbg,
                         attrs_dbg,
-                        pyloc
+                        pyloc,
+                        interesting.join("\n")
                     );
                 }
                 raise(
