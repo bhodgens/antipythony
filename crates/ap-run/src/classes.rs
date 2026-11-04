@@ -2665,8 +2665,14 @@ pub fn attr_get_opt(
         // W112: dict-backed legacy instances (attrs["__ap_dict__"],
         // kind != UserInstance) answer attr reads from the backing dict
         // before falling through - the 'object'-receiver AttributeError
-        // family in the pytest unraisable collector flow.
+        // family in the pytest unraisable collector flow. Also consult
+        // the receiver's own attrs first: slot writes land in o.attrs,
+        // and a class-receiver read (self mis-bound to the class in
+        // wrapper teardown) must find them.
         Value::Obj(o) => {
+            if let Some(v) = o.attrs.borrow().get(&Value::Str(PyString::new(name))) {
+                return Ok(Some(v));
+            }
             if let Some(Value::Dict(d)) =
                 o.attrs.borrow().get(&Value::Str(PyString::new("__ap_dict__")))
             {
