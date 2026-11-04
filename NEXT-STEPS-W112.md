@@ -692,3 +692,30 @@ REMAINING (next session): (1) cacheprovider-enabled gate crash -
 needs either C-level base method resolution in super() (list.__
 getitem__) or slots-write persistence diagnosis (both documented);
 (2) scrapy crawl campaign resume per NEXT-STEPS.
+
+## Round-11: collection-finish crash reproduced in isolation + root narrowed
+
+probe63 (no cacheprovider, no pytest.main): perform_collect crashes
+at pytest_make_collect_report with AttributeError 'type' object has
+no attribute 'ishidden' - the collection-report repr path iterating
+tb entries and calling entry.ishidden(ei).
+
+Isolation results:
+- Traceback(real_tb) round-trip works: entries wrapped as
+  TracebackEntry, ishidden returns False (probe64).
+- Slots instances work in finally/in-flight contexts (probe50).
+- The failing tb entries come from get_python_framesummary's
+  fallback (ANY code.py:219-231): FrameSummary objects built from
+  synthetic frame attrs. When the repr path builds
+  TracebackEntry(...) from THOSE - or when the tb list ends up
+  containing a CLASS (TracebackEntry class itself) as an element -
+  entry.ishidden() mis-binds self to the class, and our
+  display_type_name renders the class receiver as 'type'.
+
+NEXT SESSION: dump the tb list CONTENTS at the crash (patch the
+staged runner.py pytest_make_collect_report to print [type(e).
+__name__ for e in excinfo.traceback]) - if the list contains
+TracebackEntry (the class), find who put it there; if it contains
+FrameSummary objects, the fix is making ishidden/getattr work on
+them (or wrapping FrameSummaries into TracebackEntry-compatible
+objects in get_python_framesummary's fallback).
