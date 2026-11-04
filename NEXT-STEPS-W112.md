@@ -635,3 +635,42 @@ str() renders the object; cosmetic gap, low priority.
   their attr reads (not just subscripts) routed via the backing
   dict BEFORE the MRO/class fallthrough - i.e., extend the same
   treatment to attr_get for kind=PyObject legacy instances.
+
+## Round-10b: ishidden crash isolated to collection-finish in FULL driver
+
+probe60 (with -p no:cacheprovider): collection crash reproduces
+outside pytest.main - FixtureManager.pytest_make_collect_report
+wrapper (fixtures.py:1798 `result = yield`) raises AttributeError
+'type' object has no attribute 'ishidden' when pluggy teardown
+THROWS the collection exception into the wrapper generator. The
+FMCR probe print (after yield) never executed - the throw raised
+at the yield point. The exception ORIGINATED in _multicall's try
+(line 147) during the impl call - i.e., during the report BUILD
+reading a tb entry's ishidden in the repr path (code.py ishidden
+via our synthetic-tb entries).
+
+KEY CONTRAST: probe48 (getrepr short style) passes; the
+collection report builder path (which iterates tb entries and
+calls entry.ishidden) crashes. The ishidden call at code.py:330
+loops over f_locals/f_globals dicts - worked earlier (APT B2
+KeyError loop observed). The new failure mode appeared after
+round-10 get-arm changes (2f33e1f) - prime suspect: my catch-all
+__ap_dict__ read intercepts `entry["__tracebackhide__"]` lookups
+on entries whose __ap_dict__ exists but lacks the key - my code
+raises KeyError (correct) - BUT for TracebackEntry the f_locals
+dict lookups... the [APTB2] KeyError loop should catch them.
+
+NEXT: in the crash, ishidden is called via x.ishidden() method
+call on an entry - receiver 'type' means entry resolved to a
+class. TracebackEntry instances created inside the
+collection-error repr path (code.py:210 TracebackEntry(self.
+_rawentry)) - check whether OUR list-subclass [i] fast-path
+returns the CLASS for entries stored in __ap_dict__-backed
+UserInstance lists (Traceback is list-subclass; entries appended;
+reads go through our subscript_get list fast-path or the new
+__ap_dict__ arm - ORDER MATTERS: my new Obj-arm __ap_dict__ check
+in subscript_get may intercept Traceback(list-subclass) reads
+BEFORE the list storage! Traceback instances have __ap_dict__?
+No - only dict-DERIVED classes get it in alloc_instance. Traceback
+derives from list → different marker. Verify is_dict_derived
+covers list; if not, why would the Obj arm catch it...
