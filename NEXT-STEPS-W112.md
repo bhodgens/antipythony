@@ -143,3 +143,37 @@ pristine-staging rule). Restored from the uv-cache pristine copy
 cleared, both cache spellings synced. T2 gate re-verified green after
 restore (1F/1P/1S rc=1, zero INTERNALERROR). Before touching staged
 site-packages: diff against the uv-cache copy first.
+
+## Round-4 update (2026-11-04, commits d328a11 + f6ca150)
+
+Gen-throw traceback campaign state (full detail:
+docs/w112-gen-throw-rootcause.md):
+
+- Commit d328a11: tb carry-back across instance re-raise
+  (exception_value_of_instance / exception_instance / raise_from_value
+  instance arm + __traceback__-chain walk fallback).
+- Commit f6ca150: legacy Exception instances now accept `__ap_*` attr
+  writes and READ instance attrs (both were silent no-ops before);
+  sys.exc_info tags the materialized instance with __ap_tb__; RR path
+  merges with in-flight EV tb (longer wins).
+- Gates: T2 green with shim (1F/1P/1S, MAIN_RC=1, 0 INTERNALERROR);
+  ap-run green except pre-existing vendored_types_and_abc_import
+  (verified failing at pristine HEAD via git stash).
+
+LAST HOP (isolated, single concrete step next session):
+exception_instance never fires for the AssertionError because it
+crosses pluggy teardown via teardown.throw (generator-resume fiber
+path), not the Python `except BaseException as exc` catch. Evidence:
+probe12 (plain chain) prints [APTB]; y144 (hook chain) does not.
+Net: excinfo.traceback = 5 pluggy-only frames, all
+__tracebackhide__ -> TracebackFilter empties -> code.py:1170
+`traceback[-1]` IndexError. CPython's chain includes the USER test
+frame; ours never records fiber-crossed impl frames.
+NEXT STEP: instrument resume_live GenInput::Throw
+(crates/ap-run/src/interp.rs:7483, also 4512/7711) to run the
+frame-insert + exception_instance logic at the fiber-crossing catch,
+exactly like exec_try's handler does (interp.rs:1510). Alternative:
+append impl/test frames to exc.tb at the fiber crossing.
+
+Other campaigns unchanged: scrapy crawl blocked on Deferred<->Future
+bridge (deferred_from_coro repro) + engine._download:509 unpack error.
