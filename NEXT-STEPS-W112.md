@@ -618,3 +618,20 @@ subscript_SET/pop/get on __ap_dict__-backed objects too.
 int(ExitCode) works (RC-INT: 1). Note: plain `print(rc)` renders
 the object repr - int conversion support for ExitCode is fine, but
 str() renders the object; cosmetic gap, low priority.
+
+## Round-10 close-out (2026-11-04)
+
+- subscript_get Obj-arm + catch-all now route __ap_dict__ reads to
+  the backing dict (completes del/set/get coverage; commit 2f33e1f).
+- Verified stable: probe48 getrepr renders 1240 chars; drv14
+  (-p no:cacheprovider) full gate: 1F/1P/1S, zero INTERNALERROR;
+  ap-run suites 39/1 (vendored_types_and_abc_import pre-existing).
+- Repo: 36 commits ahead of origin, clean tree, all unpushed per
+  protocol.
+- REMAINING for next session: cacheprovider-enabled gate crash
+  (collector pop of an unraisable meta whose exc_value rendering
+  hits _rawentry on 'type'/'object' UserClass receiver). Candidate
+  runtime fix: legacy 'object'-kind instances with __ap_dict__ need
+  their attr reads (not just subscripts) routed via the backing
+  dict BEFORE the MRO/class fallthrough - i.e., extend the same
+  treatment to attr_get for kind=PyObject legacy instances.
