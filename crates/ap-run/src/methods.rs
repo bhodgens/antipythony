@@ -708,15 +708,51 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
                     }
                 }
             }
+            // W112: dict-backed legacy objects (attrs["__ap_dict__"]) -
+            // cacheprovider LF cache reads route through here.
+            if let Value::Obj(io) = obj {
+                if let Some(Value::Dict(d)) =
+                    io.attrs.borrow().get(&Value::Str(PyString::new("__ap_dict__")))
+                {
+                    match d.get(key) {
+                        Some(v) => return Ok(v),
+                        None => {
+                            return Err(raise(
+                                "KeyError",
+                                format!("{:?}", key),
+                            ));
+                        }
+                    }
+                }
+            }
             Err(raise(
                 "TypeError",
                 format!("'{}' object is not subscriptable", obj.type_name()),
             ))
         }
-        _ => Err(raise(
-            "TypeError",
-            format!("'{}' object is not subscriptable", obj.type_name()),
-        )),
+        _ => {
+            // W112: same fallback for the catch-all (Namespace/'object'
+            // -kind dict-backed legacy objects).
+            if let Value::Obj(io) = obj {
+                if let Some(Value::Dict(d)) =
+                    io.attrs.borrow().get(&Value::Str(PyString::new("__ap_dict__")))
+                {
+                    match d.get(key) {
+                        Some(v) => return Ok(v),
+                        None => {
+                            return Err(raise(
+                                "KeyError",
+                                format!("{:?}", key),
+                            ));
+                        }
+                    }
+                }
+            }
+            Err(raise(
+                "TypeError",
+                format!("'{}' object is not subscriptable", obj.type_name()),
+            ))
+        }
     }
 }
 
