@@ -24,7 +24,7 @@
 # ignorechars=) and binascii a2b_hqx/b2a_hqx/rle*, none of which exist in
 # 3.14).
 #
-# Harness: differential vs the antipythany tier-0 executor
+# Harness: differential vs the antipythony tier-0 executor
 # (target/debug/ap-run-eval, the documented T-05/T-06 testability seam),
 # resolved via AP_RUN_EVAL env override -> PATH -> target/{debug,release}.
 # Each case is one self-contained program; its stdout must equal the pinned
