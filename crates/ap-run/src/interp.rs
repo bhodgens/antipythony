@@ -1297,7 +1297,18 @@ fn exec_stmt(
                             Ok(()) => {}
                             Err(e) => {
                                 if dbg {
-                                    eprintln!("[APDEL3] DEL-FAIL {} key={:?}", o.type_name(), k);
+                                    let frames = interp.tb_frames.borrow();
+                                    let innermost: Vec<String> = frames
+                                        .iter()
+                                        .take(8)
+                                        .map(|(q, l, f)| format!("{}:{}:{}", q, l, f))
+                                        .collect();
+                                    eprintln!(
+                                        "[APDEL3] DEL-FAIL {} key={:?} stack=[{}]",
+                                        o.type_name(),
+                                        k,
+                                        innermost.join(" | ")
+                                    );
                                 }
                                 return Err(e);
                             }

@@ -400,3 +400,23 @@ Also verify: the SAME legacy object likely breaks .move_to_end/
 .pop on it (OrderedDict API) - consistent with collection-finish
 hooks (cacheprovider LF plugin uses lru_cache? pluggy uses
 functools.lru_cache on wrappers).
+
+## Round-7c final addendum
+
+APDEL3 stack at DEL-FAIL is EMPTY (tb_frames truncated per frame) -
+no caller info available that way. The del target is a legacy
+'object'-kind dict-like; key = pytest Item (Function UserInstance).
+Fixing requires either (a) frame-stack introspection at DEL-FAIL
+(call frames, not tb_frames) or (b) finding why a dict created in
+this flow is kind=PyObject-name='object' instead of kind=Dict.
+
+Strong lead: the argkey OrderedSets in fixtures.py reorder_items
+are PLAIN DICTS (OrderedSet = dict[..]) and items_by_argkey uses
+defaultdict(OrderedDict). One of these dicts materialized as a
+legacy 'object'. Probe next session: in the driver, walk
+config.stash/plugins is unnecessary - instead instrument
+subscript_set/print type_name of every dict CREATED during
+collection_finish, OR simpler: make subscript_del fall back to
+dict-like deletion when the object HAS a live _storage/data dict
+attr (check .attrs for _storage etc.) - or print obj.attrs KEYS at
+DEL-FAIL to identify the object's payload.
