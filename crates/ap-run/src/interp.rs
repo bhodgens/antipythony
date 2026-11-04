@@ -2920,10 +2920,21 @@ pub(crate) fn eval_expr(
                         let (f, l) = &*c.borrow();
                         format!("{}:{}", f, l)
                     });
+                    let (kind_dbg, name_dbg) = match &o {
+                        Value::Obj(io) => (
+                            format!("{:?}", io.kind),
+                            io.name.clone(),
+                        ),
+                        other => (
+                            format!("{:?}", other).chars().take(20).collect(),
+                            "-".to_string(),
+                        ),
+                    };
                     eprintln!(
-                        "[APRAW-I] recv={} name={} last_py_loc={}",
+                        "[APRAW-I] recv-display={} kind={} name={} last_py_loc={}",
                         crate::classes::display_type_name(&o),
-                        name,
+                        kind_dbg,
+                        name_dbg,
                         pyloc
                     );
                 }

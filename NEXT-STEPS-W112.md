@@ -484,3 +484,23 @@ extract_tb fallback variant; pluggy identical). Repo clean at
 Environment probes left in place: APDEL3/APRAW-I/APTB families
 (env-gated, off by default), staged threadexception/code.py back to
 pre-probe content.
+
+## Round-9: receiver identified
+
+APRAW-I extended with kind/name dump. The failing receiver is
+kind=UserClass, name="object" - the OBJECT BASE CLASS. So Python
+code read `object._rawentry`: an instance attr-read fell through
+the MRO to the object class, and our AttributeError names the
+receiver class. The instance whose read fell through is a
+TracebackEntry-like object created on the legacy path (same family
+as the __ap_dict__ del fix - instances of __slots__/dict-derived
+classes materialized as legacy PyObjects whose type_ref the
+runtime dropped).
+
+Root fix direction: TracebackEntry instances survive as legacy
+'object'-kind PyObjects; their slot _rawentry lives in attrs
+(written there), but the READ path for legacy 'object'-kind
+instances doesn't consult attrs before falling to the class MRO.
+Check interp attr-get for kind=PyObject instances: ensure o.attrs
+is consulted before the MRO/class fallthrough (same shape as the
+earlier Exception/Namespace arm fixes).
