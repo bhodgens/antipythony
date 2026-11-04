@@ -937,3 +937,15 @@ the object class as a value.
   cacheprovider ENABLED. cacheprovider's LF plugin stores
   lastfailed across runs in .pytest_cache - the cache RELOAD path
   (Cache.get) may feed stale None-lineno data.
+
+## Round-12 close-out (cache-rotation ruled out)
+
+Cleared .pytest_cache before the run - crash persists with
+cacheprovider enabled (and -p no:cacheprovider passes). Remaining
+difference between drv14 (pass) and trap driver (crash): the TRAP
+driver itself (PluginManager._hookexec = trap monkeypatch).
+probe72 had BOTH the trap and the monkeypatched Cache methods and
+crashed; drv12 had the ProbePlugin hookimpl and passed. Test next
+session: plain driver + trap only (no cacheprovider flag, no
+Cache monkeypatch, no ProbePlugin) to isolate which of the three
+factors triggers it. Then fix the identified interaction.
