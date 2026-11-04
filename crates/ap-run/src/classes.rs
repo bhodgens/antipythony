@@ -2603,7 +2603,20 @@ pub fn attr_get_opt(
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
             let t = match o.type_ref.borrow().as_ref().and_then(|w| w.upgrade()) {
                 Some(t) => t,
-                None => return Ok(None),
+                // W112: dead type_ref (dropped weakref) - the instance
+                // keeps its attrs; consult them before giving up so
+                // slot/attr reads survive class-weakref drops in
+                // long pytest flows (unraisable collector family).
+                None => {
+                    if let Some(v) = o
+                        .attrs
+                        .borrow()
+                        .get(&Value::Str(PyString::new(name)))
+                    {
+                        return Ok(Some(v));
+                    }
+                    return Ok(None);
+                }
             };
             instance_attr(interp, obj, o, &t, name).map(Some)
         }
