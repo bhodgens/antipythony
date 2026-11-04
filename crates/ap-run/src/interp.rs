@@ -1289,7 +1289,19 @@ fn exec_stmt(
                     Target::Subscript(obj, key) => {
                         let o = eval_expr(interp, frame, obj, reg)?;
                         let k = eval_expr(interp, frame, key, reg)?;
-                        methods::subscript_del(&o, &k)?;
+                        let dbg = std::env::var("APX_TBDBG").is_ok();
+                        if dbg {
+                            eprintln!("[APDEL3] del target={} key={:?}", o.type_name(), k);
+                        }
+                        match methods::subscript_del(&o, &k) {
+                            Ok(()) => {}
+                            Err(e) => {
+                                if dbg {
+                                    eprintln!("[APDEL3] DEL-FAIL {} key={:?}", o.type_name(), k);
+                                }
+                                return Err(e);
+                            }
+                        }
                     }
                     Target::Attribute(obj, name) => {
                         let o = eval_expr(interp, frame, obj, reg)?;

@@ -377,3 +377,26 @@ NOTE: APDEL silence is suspicious - verify the env var reaches the
 runtime (probe with a trivial eprintln under APX_TBDBG) and re-check
 whether the del goes through iter.rs Stmt::Del (instrument THERE,
 not methods.rs) before touching anything else.
+
+## Round-7c: del-item culprit pinned
+
+APDEL3 (Stmt::Del instrumentation) CAUGHT the failing del:
+target = 'object'-kind object, key = Function (UserInstance).
+Interpretation: `del cache[func]` where cache is an lru_cache
+wrapper / OrderedDict-like object that our runtime materialized as
+a legacy PyObject(kind=PyObject, name='object') instead of a
+UserInstance with __delitem__. The methods.rs Obj-arm tail has the
+__class__ dispatch but attr_get_protocol("__delitem__") on the
+legacy object returns Err (no class payload), so it fails.
+
+Root fix direction: find what creates this legacy object - likely
+functools.lru_cache's internal cache (vendored functools builds it
+via collections.OrderedDict; if some import resolves OrderedDict to
+the interned NATIVE type instead of the Python class, instances
+become legacy). grep how functools.py imports OrderedDict and how
+builtins_modules.rs:5667 maps the name.
+
+Also verify: the SAME legacy object likely breaks .move_to_end/
+.pop on it (OrderedDict API) - consistent with collection-finish
+hooks (cacheprovider LF plugin uses lru_cache? pluggy uses
+functools.lru_cache on wrappers).
