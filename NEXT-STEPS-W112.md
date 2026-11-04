@@ -914,3 +914,26 @@ NEXT SESSION: single instrument - patch interp attr-get to print a
 Rust backtrace when name="_rawentry" and receiver is UserClass
 name=object (APRAW-I site), to identify which code path returns
 the object class as a value.
+
+## Round-12 probe results (probe65d/65e)
+
+- UnraisableHookArgs works: hook invoked, exc_value is the
+  ValueError INSTANCE (gcsupport fix holding), exc_traceback is a
+  <traceback> object, format_exception succeeds (140 chars).
+- The failing 'int' - NoneType arithmetic inside pytest's
+  traceback[0]._rawentry rendering is therefore fed by pytest's OWN
+  traceback list built from OUR build_tb_chain Namespace products -
+  not the unraisable args.
+- Concrete suspect: FrameSummary.end_lineno/lineno built from
+  co_positions tuples that were all-None BEFORE commit e0d7264's
+  real-values fix; entries created BEFORE the fix (cached in
+  excinfo.traceback or in the WarningMessage) still hold None
+  lineno fields, and the arithmetic in traceback.py:573
+  (all_lines_original[end_lineno - lineno]) then computes None
+  subtraction. BUT the drv14 run (post-fix binary) passed fully,
+  so new entries are fine; only entries created before... every
+  run is a fresh process. Verify: rerun drv14 and confirm pass,
+  then run the plain trap driver - the failure is with
+  cacheprovider ENABLED. cacheprovider's LF plugin stores
+  lastfailed across runs in .pytest_cache - the cache RELOAD path
+  (Cache.get) may feed stale None-lineno data.
