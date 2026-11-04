@@ -967,3 +967,37 @@ function reassignment + closure call binding (the trap pattern is
 ubiquitous in test doubles), OR use a bound-method trap in the
 driver (PluginManager._hookexec = trap.__get__(None, object) or
 types.MethodType) as the workaround.
+
+## Round-13: root-cause chain consolidated (session close)
+
+The with-cacheprovider crash chain is now fully mapped:
+1. test_pass runs; an unraisable fires during its teardown
+   (report_unraisable -> hook -> UnraisableMeta with exc_value =
+   instance, exc_traceback = build_tb_chain product with
+   co_positions (line,line,0,0) after e0d7264).
+2. test_fail runs and fails correctly.
+3. wrap_session finally: collect_thread_exception /
+   collect_unraisable pop the meta and RENDER the warning/error;
+   the rendering walks meta.exc_value.__traceback__ = our
+   synthetic tb (Namespace frames, co_positions all-real now).
+4. Somewhere in that rendering a '_rawentry' read hits a
+   class-receiver ('type') and raises AttributeError; pytest
+   turns it into INTERNALERROR; Config.notify_exception renders
+   THE INTERNALERROR's excinfo via getrepr(native) -> code.py:758
+   self.traceback[0]._rawentry -> same class-receiver miss ->
+   propagates out of pytest.main (drv19 real-tb walk confirmed
+   frames through notify_exception -> getrepr:756).
+
+The double _rawentry appearance (raise site AND render site)
+indicates the class-receiver miss happens at the FIRST rendering
+of the synthetic tb, then poisons everything downstream.
+
+NEXT SESSION (single-focus): dump the tb list contents at the
+getrepr crash (drv19 + print [type(x).__name__ for x in
+ei.traceback] and repr of each entry) - if entries are RAW
+Namespace tb objects (not TracebackEntry instances), then
+Traceback.__init__ wrapping failed for synthetic tb input, and
+the fix is in our runtime's list-subclass construction from
+generators (Traceback.__init__ iterates a generator of
+TracebackEntry(...) objects - our runtime may drop the wrapping
+when the source is a Namespace iterator).
