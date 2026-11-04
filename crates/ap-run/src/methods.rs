@@ -617,6 +617,20 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
                         }
                     }
                 }
+                // W112: if the class defines its own __getitem__, the
+                // Python method must win (pytest Traceback.__getitem__
+                // wraps raw entries into TracebackEntry objects; the
+                // fast-path returned raw list items instead, so later
+                // entry.ishidden()/._rawentry reads crashed with a
+                // class receiver).
+                // W112 NOTE: list-subclass __getitem__ overrides are NOT
+                // dispatched here - calling them needs super() to resolve
+                // C-level list.__getitem__, which our super lookup
+                // (Python class dicts only) cannot do yet. The list
+                // fast-path below keeps Traceback/StackSummary functional
+                // (raw items instead of wrapped entries); the ishidden
+                // rendering gap in pytest's collection report is the
+                // documented remaining gap (NEXT-STEPS round-10).
                 return subscript_get(&Value::List(crate::classes::list_backing_or_new(obj)), key);
             }
             // T1-d (typing.NamedTuple): namedtuple instances ARE tuples —
