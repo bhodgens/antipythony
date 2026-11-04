@@ -441,3 +441,19 @@ staged unraisableexception.py is editable test data) to print
 meta.msg / meta.exc_value / type(meta) at push time. Then either
 fix the pushed payload (runtime) or confirm the collector should
 never fire at that point.
+
+## Round-8 narrowing (final)
+
+Instrumented the isinstance(meta, BaseException) branch - NEVER
+fires: meta IS an UnraisableMeta NamedTuple. The AttributeError is
+raised INSIDE `warnings.warn(pytest.PytestUnraisableExceptionWarning
+(msg))` at unraisableexception.py:66 - i.e., inside OUR warnings
+implementation (vendored warnings.py) or the filter machinery, when
+the warning category is pytest.PytestUnraisableExceptionWarning.
+The '_rawentry' receiver 'type' is likely the warning CLASS object
+(a UserClass rendering as 'type') whose attr chain is walked.
+
+NEXT SESSION: instrument vendored warnings.py (warn/warn_explicit)
+to print reads; find who walks to _rawentry - suspect our
+warnings.py consults the warning class's __dict__/MRO and falls
+into code.py's TracebackEntry handling via a stale registry entry.
