@@ -457,3 +457,21 @@ NEXT SESSION: instrument vendored warnings.py (warn/warn_explicit)
 to print reads; find who walks to _rawentry - suspect our
 warnings.py consults the warning class's __dict__/MRO and falls
 into code.py's TracebackEntry handling via a stale registry entry.
+
+## Round-8 final narrowing
+
+The receiver analysis: display_type_name for a UserClass value
+returns "type" (other.type_name() arm). So "'type' object has no
+attribute '_rawentry'" means: a USERCLASS was the receiver — i.e.
+`self._rawentry` was read with self = the CLASS (unbound), not an
+instance. The write in TracebackEntry.__init__ (self._rawentry =
+rawentry) went to an INSTANCE; a later read bound self=class.
+Suspect: property fget (lineno property, code.py:214) or a
+__getitem__/iter path invoking the unbound method with the class as
+self inside the collect_unraisable/warnings rendering flow.
+
+NEXT SESSION (single probe): patch staged code.py lineno property
+to print type(self) on entry — if it prints "type", the mis-binding
+is confirmed and the fix is in our bound-method/property dispatch
+for __slots__-defined classes (likely in the wrapper-resume path
+inside wrap_session's finally, since probes outside it pass).
