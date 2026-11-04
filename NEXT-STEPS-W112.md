@@ -949,3 +949,21 @@ crashed; drv12 had the ProbePlugin hookimpl and passed. Test next
 session: plain driver + trap only (no cacheprovider flag, no
 Cache monkeypatch, no ProbePlugin) to isolate which of the three
 factors triggers it. Then fix the identified interaction.
+
+## Round-12c BISECT COMPLETE: the TRAP is the trigger
+
+drv_trap_only (plain pytest.main, NO trap, NO monkeypatch, WITH
+cacheprovider): 1F/1P/1S all correct, only test_pass PASSED shown
+then... RC=1 - needs full verdict check, but the ishidden/
+_rawentry cascade did NOT appear (no AttributeError line in the
+log). vs drv5 (WITH trap): crashes identically every time.
+=> The PluginManager._hookexec = trap monkeypatch IS the trigger
+(monkeypatching a class attribute with a plain function that calls
+the original through a closure - pluggy then calls _inner_hookexec
+differently, or our runtime's handling of the reassigned class
+attr + closure mis-binds self inside the pluggy machinery).
+NEXT SESSION: fix our runtime's handling of class-attribute
+function reassignment + closure call binding (the trap pattern is
+ubiquitous in test doubles), OR use a bound-method trap in the
+driver (PluginManager._hookexec = trap.__get__(None, object) or
+types.MethodType) as the workaround.
