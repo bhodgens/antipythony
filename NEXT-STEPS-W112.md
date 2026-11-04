@@ -1001,3 +1001,29 @@ the fix is in our runtime's list-subclass construction from
 generators (Traceback.__init__ iterates a generator of
 TracebackEntry(...) objects - our runtime may drop the wrapping
 when the source is a Namespace iterator).
+
+## Round-13b: crash moved EARLIER - now during test_fail execution
+
+drv20 (catch INSIDE the driver): the AttributeError now raises
+DURING test_fail execution (test_fail DRV-CAUGHT immediately, no
+test_skip), i.e. the class-receiver _rawentry miss fires during
+the makereport/warning processing of the FAILING test itself -
+not at session teardown. The previous "sessionfinish" placement
+was the misattributed tb. This is BETTER news: it is the same
+crash probe60 reproduced in isolation (perform_collect → make_
+collect_report → ishidden), one flow earlier than believed.
+
+Confirmed crash site family: FixtureManager.pytest_make_collect_
+report wrapper (fixtures.py:1798 result = yield) raising
+AttributeError 'type' has no 'ishidden' - receiver a UserClass -
+during COLLECTION (probe60) - and now _rawentry during
+test_fail's makereport. Both are TracebackEntry-method reads with
+mis-bound self (class instead of instance) - the single root:
+bound-method self binding for __slots__-defined classes in
+wrapper-resume contexts.
+
+NEXT SESSION (single fix): probe our runtime's bound-method
+creation for __slots__-defined UserClasses inside wrapper resumes
+(instrument bind_function_owned + the wrapper resume path), find
+where self drops, fix, then re-run: expect collection + makereport
++ collectors all green WITHOUT -p no:cacheprovider.
