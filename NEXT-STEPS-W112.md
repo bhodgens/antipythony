@@ -598,3 +598,23 @@ dump obj.type_ref upgrade result. If upgrade fails (dead weakref),
 that confirms the type_ref-drop theory; fix = keep a strong ref to
 the class in the descriptor or route through instance_class()
 before fget.
+
+## MILESTONE (round-10): T2 gate PASSES with -p no:cacheprovider
+
+Bisect result: the crash trigger is the CACHEPROVIDER plugin.
+With `-p no:cacheprovider`:
+  test_pass PASSED / test_fail FAILED (AssertionError) / test_skip
+  SKIPPED; pytest.main returns ExitCode.TESTS_FAILED, int(rc) == 1,
+  rc == 1; zero INTERNALERROR; no driver crash.
+Without it: collection_finish del-item crash -> INTERNALERROR ->
+_rawentry cascade (partially fixed by 2412157; cacheprovider hits
+further unhandled dels/pops on legacy objects).
+
+cacheprovider LF plugin mechanics to fix next: its
+pytest_collection_finish / LF cache does `del cache[key]`-style
+ops and stores lastfailed - each op on legacy dict-backed objects
+needs the same treatment as 2412157 (subscript_del) - check
+subscript_SET/pop/get on __ap_dict__-backed objects too.
+int(ExitCode) works (RC-INT: 1). Note: plain `print(rc)` renders
+the object repr - int conversion support for ExitCode is fine, but
+str() renders the object; cosmetic gap, low priority.
