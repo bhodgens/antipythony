@@ -2808,6 +2808,24 @@ fn instance_attr(
                 // pathlib relies on it); the member descriptor has no real
                 // fget and descr_get would call None.
                 if t.is_slot(name) {
+                    if std::env::var("APX_TBDBG").is_ok() {
+                        let dict_keys: Vec<String> = t
+                            .dict
+                            .items()
+                            .iter()
+                            .map(|(k, _)| match k {
+                                Value::Str(s2) => s2.as_str().to_string(),
+                                _ => format!("{:?}", k).chars().take(20).collect(),
+                            })
+                            .collect();
+                        eprintln!(
+                            "[APSLOT-MISS] t.name={} t.qualname={} name={} dict-keys={:?}",
+                            t.name,
+                            t.qualname,
+                            name,
+                            dict_keys
+                        );
+                    }
                     return Err(raise(
                         "AttributeError",
                         format!("'{}' object has no attribute '{}'", t.name, name),
