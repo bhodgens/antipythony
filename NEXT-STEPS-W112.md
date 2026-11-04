@@ -273,3 +273,32 @@ NEXT SESSION ORDER:
 3. Locate the real del site for the collection-finish TypeError.
 4. Re-run T2 gate: expect 1F/1P/1S MAIN_RC=1 - then attempt the
    shim removal again (the original shim blocker is dead).
+
+## Round-6 addendum (2026-11-04 late)
+
+BREAKTHROUGH on the environment regression: the two staged trees
+differ ONLY in _pytest/_code/code.py. The antipythANY variant (the
+one the driver ACTUALLY loads via sys.path[0]) carries a T2
+fallback in get_python_framesummary: when
+extract_tb(self._rawentry, limit=1) raises IndexError (synthetic tb
+objects can't feed the C-level extract), it builds the
+FrameSummary from the frame's own attrs. The antipythONY tree was
+missing this fallback - the current gate failures were this file
+divergence all along. Both trees are now SYNCED to the variant with
+the fallback.
+
+Still failing: driver crash after pytest.main returns -
+AttributeError 'type' object has no attribute '_rawentry' raised in
+collect_thread_exception:46 / collect_unraisable:55 frames (our tb
+attribution). APRAW instrumentation added at classes.rs:2841
+(attr-get failure path for interned types) - does NOT fire, so the
+failing lookup bypasses that arm. Note _rawentry is accessed ONLY
+through pytest TracebackEntry instances (__slots__); receiver being
+a 'type' suggests our runtime mis-binds self for __slots__-class
+methods (self = the class instead of the instance) somewhere in
+that flow.
+
+NEXT SESSION: (1) instrument interp attr-get Type arm for _rawentry;
+(2) check how our runtime binds self for __slots__-defined classes
+(TracebackEntry) in the collect_unraisable flow - suspect broken
+method binding producing a class-bound attribute read.

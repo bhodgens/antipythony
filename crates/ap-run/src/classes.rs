@@ -2830,6 +2830,20 @@ fn instance_attr(
     if matches!(name, "__context__" | "__cause__" | "__suppress_context__") {
         return Ok(Value::None);
     }
+    if name == "_rawentry" && std::env::var("APX_TBDBG").is_ok() {
+        let bt = std::backtrace::Backtrace::force_capture().to_string();
+        let interesting: Vec<&str> = bt
+            .lines()
+            .filter(|l| l.contains("ap_run") || l.contains("site-packages"))
+            .take(10)
+            .collect();
+        eprintln!(
+            "[APRAW] receiver={} name={}\n{}",
+            t.name,
+            name,
+            interesting.join("\n")
+        );
+    }
     Err(raise(
         "AttributeError",
         format!("'{}' object has no attribute '{}'", t.name, name),
