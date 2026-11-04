@@ -1138,3 +1138,19 @@ proving the read reaches interp.rs's attr-miss arm directly).
 Next session: apply the same attrs-first fallback at the
 interp.rs attr-miss arm (APRAW-I site, ~2890), which is where the
 failing read actually lands. All other findings/probes stand.
+
+## SESSION CLOSE (round-12 exhaustive probes complete)
+
+probe81c: TracebackEntry on a plain FakeTb works perfectly (slot
+write+read, TE-OK, is-entry False). ALL component pieces verified
+working. The class-receiver crash is strictly a full-flow
+interaction bug that no component probe reproduces.
+
+NEXT SESSION (single-focus, high value): add APRAW-I-equivalent
+instrumentation INSIDE the staged _pytest/_code/code.py at the
+TracebackEntry.__init__ (print id(self) and repr(rawentry) on
+every construction), run the failing gate, and diff the entry
+IDs/contents against the entries read at code.py:761 — this
+directly reveals whether the read hits a DIFFERENT list (rebuilt
+Traceback containing the CLASS) or the same list with mutated
+items. Then fix at the identified site.
