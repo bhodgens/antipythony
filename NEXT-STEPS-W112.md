@@ -87,9 +87,18 @@ run_until_complete Task loop loses the wakeup) — keep both on the list.
 
 ## Also open (unchanged from prior handoffs)
 
-- pluggy shim (generator-throw through native bound method): subagent ran
-  3.6h, built first TRUE minimal repro (/tmp/w112gen_y144/145.py — prior
-  synthetic repros were invalid), root cause narrowed; fix NOT landed.
+- pluggy shim (generator-throw through native bound method): subagent
+  (3.6h, 585 calls) narrowed to a deterministic ~30-line repro
+  (/tmp/w112gen_y144.py + y145.py). KEY FINDING: the trigger is
+  co_filename — frame files under staged site-packages (_pytest/*,
+  pluggy/*) fail; identical source at /tmp/repo/other paths passes.
+  Implicates importer.rs per-module state (fn registries / IR tables
+  keyed by path) in the generator-throw relay. Eliminated: _multicall
+  code itself, results[0], list-subscript arms, tb_frames drain,
+  pending-gen-error slot. Full note + 3-step next-session plan:
+  docs/w112-gen-throw-rootcause.md. Env-gated probes left in tree
+  (APX_IDX_DEBUG / APX_GEN_DEBUG / APX_TB_DEBUG, zero-cost unset).
+  Fix NOT landed; shim still required (noshim run = INTERNALERROR rc=3).
 - remote_control ext: aiohttp.web AppRunner missing (shim or disable ext).
 - inline run_in_thread shim needed for the crawl (real threads lane):
   asyncio.to_thread -> loop.run_in_executor -> concurrent.futures
@@ -124,3 +133,13 @@ A copy of site-packages now exists at BOTH paths. Gate drivers insert the
 OLD path explicitly and pass. If imports of pluggy/_pytest metadata fail
 with PackageNotFoundError, refresh the copy:
   cp -R ~/.cache/antipythany/site-packages ~/.cache/antipythony/
+
+## Staged-tree pristine restore (this session)
+
+Found stale probe scaffolding in staged _pytest/tmpdir.py (_probe_os,
+tmppath_probe, guid_probe — earlier session's instruments, violating the
+pristine-staging rule). Restored from the uv-cache pristine copy
+(~/.cache/uv/archive-v0/2bu6F7ArekeHcOc9/_pytest/tmpdir.py), __pycache__
+cleared, both cache spellings synced. T2 gate re-verified green after
+restore (1F/1P/1S rc=1, zero INTERNALERROR). Before touching staged
+site-packages: diff against the uv-cache copy first.
