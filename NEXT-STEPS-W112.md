@@ -779,3 +779,29 @@ line itself - reading Config.stash.fget on a property whose value
 was stored... our property object may store fget in self_value
 and .fget read on the property may return None or break the
 object.
+
+## Round-9d: property fget read ELIMINATED as cause
+
+probe68: property re-assignment + .fget reads + multi property
+reads all work in isolation (FIRST/FGET/SECOND/MULTI all correct).
+probe67 (property replacement THEN pytest.main) crashes INSIDE
+pytest internals with "'object' object has no attribute 'action'".
+The crash is NOT caused by the property replacement itself.
+
+probe67's traceback: config/__init__.py:241 os.environ.pop ->
+contextlib __exit__ -> threadexception.py:46 -> unraisable:55 ->
+AttributeError 'object' object has no attribute 'action'.
+'action' is an argparse/pdb attribute - the crash is inside the
+unraisable/thread-exception collectors' processing of a meta whose
+exc_value is an argparse-related object (os.environ.pop during
+PYTEST_VERSION cleanup fires an unraisable? or the internal error
+notification path).
+
+CONSOLIDATED UNDERSTANDING: the collectors process a meta whose
+exc_value chain touches argparse internals; rendering/reading it
+hits legacy 'object' objects missing attributes. The SAME legacy
+object family as the __ap_dict__ fixes. Next session: instead of
+chasing attribute misses one by one, make legacy 'object'-kind
+instances (kind=PyObject, name='object') route ALL attribute reads
+through their __ap_dict__ backing dict before the class MRO -
+one change covering every member miss.
