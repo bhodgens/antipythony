@@ -475,3 +475,12 @@ to print type(self) on entry — if it prints "type", the mis-binding
 is confirmed and the fix is in our bound-method/property dispatch
 for __slots__-defined classes (likely in the wrapper-resume path
 inside wrap_session's finally, since probes outside it pass).
+
+## Cleanup complete
+
+Trees re-synced (SLOT-SET probe removed from ANY; both carry the
+extract_tb fallback variant; pluggy identical). Repo clean at
+9e5292a + docs. 22 commits ahead of origin, unpushed per protocol.
+Environment probes left in place: APDEL3/APRAW-I/APTB families
+(env-gated, off by default), staged threadexception/code.py back to
+pre-probe content.
