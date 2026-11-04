@@ -1154,3 +1154,28 @@ IDs/contents against the entries read at code.py:761 — this
 directly reveals whether the read hits a DIFFERENT list (rebuilt
 Traceback containing the CLASS) or the same list with mutated
 items. Then fix at the identified site.
+
+## Round-12 final probes (session close)
+
+- ISH probe: ishidden fired 3x with CORRECT self binding
+  (TracebackEntry instances, is-entry True) during the run - then
+  the crash 'type' has no 'ishidden' was THROWN INTO the wrapper
+  (fixtures.py:1798 result = yield) from _multicall:167
+  teardown.throw. So the AttributeError originates in NATIVE code
+  (our runtime) raised during the collection impl, then thrown
+  into the wrapper.
+- Both trees synced to the extract_tb-fallback variant; all probes
+  reverted; ONY code.py confirmed synced.
+- Receiver 'type' rendering: our display for a UserClass.
+  instrumented classes.rs 2759 raises "t.name object has no
+  attribute" — t.name for the failing class renders 'type' —
+  meaning the class is a TypeObject whose name == "type" OR our
+  display renders interned types as 'type'. The class is likely
+  `TracebackEntry` created through the metaclass path (NodeMeta)
+  whose TypeObject.name is 'type'.
+- NEXT SESSION: instrument classes.rs 2759 to fire on
+  name='ishidden' under APX_TBDBG printing t.name + t.qualname +
+  dict keys. If t.name == 'type', dump the full TypeObject to
+  identify which class creation produced a class literally named
+  'type' - that class shadows real instances in the unraisable
+  flow.
