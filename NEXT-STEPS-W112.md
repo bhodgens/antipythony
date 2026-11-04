@@ -849,3 +849,25 @@ collection-finish processing (lastfailed read/pop on legacy
 dict-backed objects) - the exact op needs the drv7 real-tb walk
 applied INSIDE cacheprovider's pytest_collection_finish next
 session.
+
+## Round-12: cacheprovider bisect result - monkeypatch NOT the trigger
+
+probe72 (Cache.__getitem__/set monkeypatched + traced) crashed
+identically. probe73: plain class-method replacement works fine in
+our runtime. The monkeypatch path is EXONERATED.
+The crash reproduces in probe72's driver (pytest.main with the
+monkeypatch active AND cacheprovider) but drv14 (-p
+no:cacheprovider, no monkeypatch) passes. Remaining difference:
+cacheprovider itself. Its pytest_collection_finish /
+warn_path / LF plugin ops run through paths that hit the
+'object'-kind legacy receivers documented in round-9.
+Next session: single-focus - run cacheprovider-enabled gate with
+APRAW-I + APROP instruments ON and dump the receiver chain at the
+first '_rawentry'/'ishidden' miss (the instruments exist; the
+crash run just needs to be repeated with APX_TBDBG=1 and the full
+log preserved - earlier runs showed APRAW-I firing with
+recv=UserClass name=object, confirming the object-class receiver).
+Then extend the legacy-instance attr read fallback (classes.rs
+attr_get_opt Obj arm, commit fa8ec7a-follow-up) to consult
+o.attrs BEFORE the MRO fallthrough - the merged fix for the whole
+family.
