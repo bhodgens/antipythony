@@ -1495,6 +1495,11 @@ fn exec_try(
                     // catches, so record the catching frame here —
                     // outermost-first, ahead of the raise-path frames.
                     let mut exc = exc.clone();
+                    if std::env::var("APX_TBDBG").is_ok() {
+                        eprintln!("[APTB2] catch-exc class={} frame={}:{} name={:?}",
+                            exc.class, frame.qualname, frame.last_line.get(),
+                            h.name.as_deref().unwrap_or("-"));
+                    }
                     {
                         let line = frame.last_line.get().max(1);
                         let file = frame
@@ -1962,6 +1967,33 @@ fn exception_instance(exc: &ExceptionValue) -> Value {
             }
         }
     }
+    // W112: fallback materialization (class-raised exceptions carry no
+    // .instance) must ALSO record the current chain. Every exec_try hop
+    // created a FRESH bare PyObject per catch before, so the instance
+    // pluggy later re-raised had NO __ap_tb__ — the relay rebuilt an
+    // empty-tb EV and repr_excinfo's filter emptied the traceback
+    // (y144: [APTB2] showed the named AE catches firing while [APTB]
+    // never did — the APTB/attach block only ran on the .instance arm).
+    {
+        if std::env::var("APX_TBDBG").is_ok() {
+            eprintln!("[APTB-FALLBACK] cls={} tb_len={}", exc.class, exc.tb.len());
+        }
+        let entries: Vec<Value> = exc
+            .tb
+            .iter()
+            .map(|(q, l, f)| {
+                Value::Tuple(ap_obj::int::Gc::new(ap_obj::value::Tuple(vec![
+                    Value::Str(PyString::new(q.as_str())),
+                    Value::Int(ap_obj::Int::from_i64(*l as i64)),
+                    Value::Str(PyString::new(f.as_str())),
+                ])))
+            })
+            .collect();
+        let _ = o.attrs.borrow_mut().set(
+            Value::Str(PyString::new("__ap_tb__")),
+            Value::List(PyList::from_vec(entries)),
+        );
+    }
     Value::Obj(o)
 }
 
@@ -1997,8 +2029,20 @@ fn raise_from_value(v: &Value) -> Result<ExceptionValue, Flow> {
                     if prev.tb.len() > ev.tb.len() {
                         ev.tb = prev.tb.clone();
                     }
-                } else if std::env::var("APX_IDX_DEBUG").is_ok() {
-                    eprintln!("[W112-MERGE] inflight NONE");
+                } else {
+                    // W112: no in-flight EV (current_exception already
+                    // consumed, e.g. pluggy teardown loop raising after
+                    // its catches). Seed from the global frame table —
+                    // the frame-exit hooks keep it populated across the
+                    // fiber crossing even when the per-EV chain was
+                    // lost at materialization time.
+                    let frames = interp.tb_frames.borrow().clone();
+                    if std::env::var("APX_IDX_DEBUG").is_ok() {
+                        eprintln!("[W112-MERGE] inflight NONE tb_frames_len={}", frames.len());
+                    }
+                    if frames.len() > ev.tb.len() {
+                        ev.tb = frames;
+                    }
                 }
             }
             ev.instance = Some(v.clone());
