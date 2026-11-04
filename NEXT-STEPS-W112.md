@@ -572,3 +572,29 @@ stash key registration differs between pytest_configure-created
 stash and driver-created stash).
 
 All probes reverted; staged tree = pre-probe state; repo clean.
+
+## Round-9b: receiver kind/name confirmed + new repro
+
+APRAW-I extended: receiver = kind=UserClass, name="object" (the
+object base class). Also reproduced a SECOND instance of the same
+bug family: probe54 replaced Config.stash with a traced property
+and pytest.main crashed with "'type' object has no attribute
+'stash'" - i.e., ANY property read on a pytest class instance can
+surface a class-receiver attr miss.
+
+Root cause (single, now precisely characterized): property/descr_get
+fget dispatch on UserClass instances sometimes binds self = the
+CLASS instead of the instance, when the call happens inside
+pluggy wrapper teardown / wrap_session finally contexts
+(fiber-adjacent). Isolated probes (probe50/51) pass; the full
+pytest flow fails. The failing read chain: property fget body
+reads an instance attr (self._rawentry / self._stash), self is the
+class, attr-get walks MRO to object, misses, raises with receiver
+'class-name-rendered-as-type'.
+
+NEXT SESSION: add a runtime check in descr_get property arm -
+when fget's self (obj) has kind == UserClass, print a warning +
+dump obj.type_ref upgrade result. If upgrade fails (dead weakref),
+that confirms the type_ref-drop theory; fix = keep a strong ref to
+the class in the descriptor or route through instance_class()
+before fget.
