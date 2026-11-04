@@ -1,4 +1,4 @@
-"""antipythany deviation shim — annotationlib (see docs/lxml-shim.md)."""
+"""antipythony deviation shim — annotationlib (see docs/lxml-shim.md)."""
 
 import types
 
@@ -92,7 +92,7 @@ def get_annotations(obj, *, globals=None, locals=None, eval_str=False,
         _sys_ga.stderr.write("[GA] enter %s\n" % type(obj).__name__)
     d = None
     if isinstance(obj, type):
-        # antipythany (wave-80): classes (esp. typing._ProtocolMeta
+        # antipythony (wave-80): classes (esp. typing._ProtocolMeta
         # instances) — read the OWN namespace via vars() to avoid
         # the general attr machinery (a None-descriptor call).
         try:

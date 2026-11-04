@@ -1,7 +1,7 @@
-"""antipythany deviation shim - compression.zstd (C-backed upstream)."""
+"""antipythony deviation shim - compression.zstd (C-backed upstream)."""
 
 def _unimplemented(*args, **kwargs):
-    raise NotImplementedError("zstd compression not supported by the antipythany v0 shim")
+    raise NotImplementedError("zstd compression not supported by the antipythony v0 shim")
 
 
 class ZstdFile:

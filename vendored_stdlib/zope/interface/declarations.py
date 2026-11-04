@@ -1,4 +1,4 @@
-"""antipythany deviation shim — zope.interface submodules used by
+"""antipythony deviation shim — zope.interface submodules used by
 twisted.python.components (the scrapy reactor wiring). v0 inert surfaces.
 
 See _shim.py, docs/lxml-shim.md.

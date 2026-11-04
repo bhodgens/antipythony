@@ -2,10 +2,10 @@
 #
 # Authorship: written from the spec pack ONLY (docs/spec/03-classes.md,
 # docs/spec/02-control-flow.md, docs/spec/06-observable-behavior.md,
-# docs/compat-contract.md, plans/antipythany/master.md,
-# plans/antipythany/02-native-backend/orchestrator.md 02.03 Expose/Gate).
+# docs/compat-contract.md, plans/antipythony/master.md,
+# plans/antipythony/02-native-backend/orchestrator.md 02.03 Expose/Gate).
 # No implementation source under crates/ was read. Per-case citations and
-# CONTRACT-GAPS: plans/antipythany/tests/T-06-classes.md.
+# CONTRACT-GAPS: plans/antipythony/tests/T-06-classes.md.
 #
 # The suite has two halves:
 #  1. FIXTURE RE-VERIFICATION (green today): every corpus script under
@@ -15,7 +15,7 @@
 #     nondeterministic-address leakage is checked (S-06-17 #4, C-24).
 #  2. ap-conform GATE (xfail, strict=False): the 02.03 gate — "corpus
 #     classes/exceptions slices green under tier-0" — is expressed as
-#     `ap-conform run --corpus <slice> --impl <antipythany> --tier 0`.
+#     `ap-conform run --corpus <slice> --impl <antipythony> --tier 0`.
 #     Neither the ap-conform binary seam nor the ap-obj implementation exists
 #     yet, so these XFAIL until 02.03 lands.
 
@@ -128,11 +128,11 @@ def _impl_cmd() -> list[str]:
     override = os.environ.get("APX_IMPL")
     if override:
         return shlex.split(override)
-    found = shutil.which("antipythany")
+    found = shutil.which("antipythony")
     if found:
         return [found, "run"]
     raise FileNotFoundError(
-        "antipythany impl command not found (set APX_IMPL=<cmdline> to override)"
+        "antipythony impl command not found (set APX_IMPL=<cmdline> to override)"
     )
 
 

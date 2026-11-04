@@ -1,4 +1,4 @@
-# antipythany deviation shim (DEVIATIONS.toml): the real socket module wraps
+# antipythony deviation shim (DEVIATIONS.toml): the real socket module wraps
 # the _socket C extension (docs/compat-contract.md C-07). The T1 gate crawls
 # file:// URLs only, so network calls never fire; this shim provides the
 # imported names (constants, error types, trivial helpers) that http.client

@@ -1,4 +1,4 @@
-"""antipythany deviation shim — ssl (v0: the file:// gate imports ssl for
+"""antipythony deviation shim — ssl (v0: the file:// gate imports ssl for
 constant surfaces; no TLS is performed)."""
 
 
@@ -53,7 +53,7 @@ HAS_SNI = True
 HAS_TLSv1_2 = True
 HAS_TLSv1_3 = True
 
-OPENSSL_VERSION = "OpenSSL 3.0.0 (antipythany shim)"
+OPENSSL_VERSION = "OpenSSL 3.0.0 (antipythony shim)"
 OPENSSL_VERSION_NUMBER = 0x30000000
 OPENSSL_VERSION_INFO = (3, 0, 0, 0, 0)
 

@@ -1,9 +1,9 @@
-"""antipythany deviation shim — serialization classes (single source)."""
+"""antipythony deviation shim — serialization classes (single source)."""
 
 
 def _nope(msg):
     def f(*a, **k):
-        raise NotImplementedError("antipythany cryptography shim: %s" % msg)
+        raise NotImplementedError("antipythony cryptography shim: %s" % msg)
 
     return f
 

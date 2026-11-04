@@ -1,4 +1,4 @@
-"""antipythany deviation shim — OpenSSL.crypto (v0: constant surfaces)."""
+"""antipythony deviation shim — OpenSSL.crypto (v0: constant surfaces)."""
 
 FILETYPE_PEM = 1
 FILETYPE_ASN1 = 2

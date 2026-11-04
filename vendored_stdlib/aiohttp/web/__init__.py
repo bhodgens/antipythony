@@ -1,4 +1,4 @@
-"""aiohttp.web — v0 import-success shim (antipythany).
+"""aiohttp.web — v0 import-success shim (antipythony).
 
 remote_control extension imports this at module level; never enabled in the
 crawl gate. Application/RouteTableDef constructors validate only; run() raises

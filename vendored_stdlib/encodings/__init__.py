@@ -1,6 +1,6 @@
 """Minimal encodings package shim (s037): the codec registry's lookup path
 needs `encodings` importable and `encodings.aliases.aliases` as the alias
-table. Antipythany's codec core lives in the native `_codecs` surface; this
+table. Antipythony's codec core lives in the native `_codecs` surface; this
 package only supplies the alias mapping and the search-path hook shape.
 """
 

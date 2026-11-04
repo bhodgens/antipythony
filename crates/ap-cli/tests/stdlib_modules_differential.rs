@@ -452,7 +452,7 @@ import hashlib
 for name in ("md5", "sha1", "sha256", "sha512"):
     h = getattr(hashlib, name)(b"")
     print(name, h.hexdigest())
-h = hashlib.sha256(b"antipythany")
+h = hashlib.sha256(b"antipythony")
 print(h.hexdigest(), h.digest_size, h.block_size)
 "#,
     );
@@ -750,7 +750,7 @@ print({"md5", "sha1", "sha256", "sha512", "sha224", "sha384", "sha3_224",
        "blake2b", "blake2s"} <= g)
 print(a >= g)
 # hexdigest-callable regression: .digest() on a fixed-size hash object
-h2 = hashlib.sha256(b"antipythany")
+h2 = hashlib.sha256(b"antipythony")
 print(h2.hexdigest(), h2.digest().hex())
 "#,
     );
@@ -1081,7 +1081,7 @@ except PermissionError as e:
     print(type(e).__name__, str(e), e.errno)
 
 try:
-    os.open("/tmp/definitely-missing-antipythany-a3", os.O_RDONLY)
+    os.open("/tmp/definitely-missing-antipythony-a3", os.O_RDONLY)
 except FileNotFoundError as e:
     print(type(e).__name__, str(e), e.errno)
 

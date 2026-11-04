@@ -1,4 +1,4 @@
-"""antipythany deviation shim — cryptography.hazmat.primitives.asymmetric.rsa (v0)."""
+"""antipythony deviation shim — cryptography.hazmat.primitives.asymmetric.rsa (v0)."""
 from cryptography import rsa as _r
 
 AsymmetricPadding = _r.AsymmetricPadding

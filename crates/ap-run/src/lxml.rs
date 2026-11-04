@@ -7,7 +7,7 @@
 //! lenient; XML mode stays strict for the well-formed documents our callers
 //! parse — sitemaps, Atom feeds).
 //!
-//! Surface (plans/antipythany/02-native-backend/leaves/02.08-c-lxml-shim.md):
+//! Surface (plans/antipythony/02-native-backend/leaves/02.08-c-lxml-shim.md):
 //! - lxml.etree: XMLParser, HTMLParser, fromstring, XMLSyntaxError, _Element,
 //!   XPath, XPathError/XPathEvalError, ErrorTypes, SubElement, tostring,
 //!   Element, LIBXML_VERSION/LXML_VERSION, cleanup_namespaces, iterparse

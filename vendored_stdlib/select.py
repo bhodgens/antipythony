@@ -1,4 +1,4 @@
-# antipythany deviation shim (DEVIATIONS.toml): select wraps the _select C
+# antipythony deviation shim (DEVIATIONS.toml): select wraps the _select C
 # extension (docs/compat-contract.md C-07). The T1 gate crawls file:// URLs
 # and never performs I/O multiplexing; import-time names only.
 class error(OSError):

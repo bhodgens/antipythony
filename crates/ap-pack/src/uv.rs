@@ -22,14 +22,14 @@ pub const UV_INSTALL_DOCS: &str = "https://docs.astral.sh/uv/getting-started/ins
 /// install docs — T-14 `test_add_without_uv_on_path_errors_helpfully`).
 pub fn find_uv() -> Result<String, String> {
     // Respect a UV env override (documented), else PATH.
-    if let Ok(v) = std::env::var("ANTPYTHANY_UV") {
+    if let Ok(v) = std::env::var("ANTIPTYHONY_UV") {
         if !v.is_empty() {
             let p = std::path::PathBuf::from(&v);
             if p.is_file() {
                 return Ok(v);
             }
             return Err(format!(
-                "antipythany: ANTPYTHANY_UV={v} is not an executable file"
+                "antipythony: ANTIPTYHONY_UV={v} is not an executable file"
             ));
         }
     }
@@ -46,8 +46,8 @@ pub fn find_uv() -> Result<String, String> {
         }
     }
     Err(format!(
-        "antipythany: `uv` was not found on PATH.\n  \
-         antipythany resolves and fetches dependencies by shelling out to uv \n  \
+        "antipythony: `uv` was not found on PATH.\n  \
+         antipythony resolves and fetches dependencies by shelling out to uv \n  \
          (never vendored). Install it first:\n  \
          {UV_INSTALL_DOCS}\n  \
          e.g. `curl -LsSf https://astral.sh/uv/install.sh | sh`"
@@ -61,18 +61,18 @@ pub fn uv_version() -> Result<String, String> {
     let out = Command::new(&uv)
         .arg("--version")
         .output()
-        .map_err(|e| format!("antipythany: cannot run {uv}: {e}"))?;
+        .map_err(|e| format!("antipythony: cannot run {uv}: {e}"))?;
     let text = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
     if !out.status.success() {
-        return Err(format!("antipythany: `{uv} --version` failed: {text}"));
+        return Err(format!("antipythony: `{uv} --version` failed: {text}"));
     }
     let first = text.lines().next().unwrap_or("").trim().to_string();
     if first.is_empty() {
-        return Err(format!("antipythany: `{uv} --version` printed nothing"));
+        return Err(format!("antipythony: `{uv} --version` printed nothing"));
     }
     check_min_version(&first)?;
     Ok(first)
@@ -85,10 +85,10 @@ fn check_min_version(version_line: &str) -> Result<(), String> {
         .split('.')
         .next()
         .and_then(|m| m.parse().ok())
-        .ok_or_else(|| format!("antipythany: cannot parse uv version from `{version_line}`"))?;
+        .ok_or_else(|| format!("antipythony: cannot parse uv version from `{version_line}`"))?;
     if major < UV_MIN_MAJOR {
         return Err(format!(
-            "antipythany: uv {version_line} is too old (minimum {UV_MIN_MAJOR}.x); \
+            "antipythony: uv {version_line} is too old (minimum {UV_MIN_MAJOR}.x); \
              see {UV_INSTALL_DOCS}"
         ));
     }
@@ -145,14 +145,14 @@ fn install_staged_opts(
     cmd.arg(spec);
     let out = cmd
         .output()
-        .map_err(|e| format!("antipythany: cannot run {uv}: {e}"))?;
+        .map_err(|e| format!("antipythony: cannot run {uv}: {e}"))?;
     if !out.status.success() {
         let mut msg = String::from_utf8_lossy(&out.stderr).into_owned();
         if msg.trim().is_empty() {
             msg = String::from_utf8_lossy(&out.stdout).into_owned();
         }
         return Err(format!(
-            "antipythany: `uv pip install --target {} {spec}` failed (exit {}):\n{}",
+            "antipythony: `uv pip install --target {} {spec}` failed (exit {}):\n{}",
             staging.display(),
             out.status.code().unwrap_or(-1),
             msg

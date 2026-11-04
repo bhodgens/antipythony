@@ -1,6 +1,6 @@
 [package]
 name = "ap-cli"
-description = "the antipythany binary (run/build/new verbs)"
+description = "the antipythony binary (run/build/new verbs)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -19,7 +19,7 @@ clap = { version = "4", features = ["derive"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [[bin]]
-name = "antipythany"
+name = "antipythony"
 path = "src/main.rs"
 
 [[bin]]

@@ -1,4 +1,4 @@
-"""antipythany deviation shim — ciphers.algorithms (v0).
+"""antipythony deviation shim — ciphers.algorithms (v0).
 
 Package so BOTH forms work:
   from cryptography.hazmat.primitives.ciphers import algorithms

@@ -1,4 +1,4 @@
-"""antipythany deviation shim — cryptography.hazmat.primitives.asymmetric.dsa (v0)."""
+"""antipythony deviation shim — cryptography.hazmat.primitives.asymmetric.dsa (v0)."""
 from cryptography import dsa as _d
 
 DSAParameterNumbers = _d.DSAParameterNumbers

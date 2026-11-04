@@ -31,7 +31,7 @@ Here are some of the useful functions provided by this module:
 __author__ = ('Ka-Ping Yee <ping@lfw.org>',
               'Yury Selivanov <yselivanov@sprymix.com>')
 
-# antipythany deviation (DEVIATIONS.toml): CPython exposes these via the
+# antipythony deviation (DEVIATIONS.toml): CPython exposes these via the
 # _inspect C accelerator; this runtime provides the constants inline.
 CO_OPTIMIZED = 1
 CO_NEWLOCALS = 2
@@ -1693,14 +1693,14 @@ def trace(context=1):
 # ------------------------------------------------ static version of getattr
 
 _sentinel = object()
-# antipythany correction (v0 value model): type.__dict__['__mro__'] is not a
+# antipythony correction (v0 value model): type.__dict__['__mro__'] is not a
 # materialized descriptor here; the mro read is expressed directly.
 def _static_getmro(klass):
     try:
         return klass.__mro__
     except AttributeError:
         return None
-# antipythany correction (v0 value model): type.__dict__['__dict__'] is not a
+# antipythony correction (v0 value model): type.__dict__['__dict__'] is not a
 # materialized descriptor here; the class-dict read is expressed directly.
 def _get_dunder_dict_of_class(klass):
     try:
@@ -1953,7 +1953,7 @@ def _signature_get_user_defined_method(cls, method_name, *, follow_wrapper_chain
         else:
             meth = getattr_static(cls, method_name, None)
     except NameError:
-        # antipythany (wave-82): getattr_static over MRO dicts can
+        # antipythony (wave-82): getattr_static over MRO dicts can
         # touch lazy attribute thunks (attrs attr_dict exec-globs)
         # that NameError in our runtime; CPython reads plain dict
         # entries. Degrade to "no user-defined method".
@@ -2356,7 +2356,7 @@ def _signature_from_function(cls, func, skip_bound_arg=True,
                              globals=None, locals=None, eval_str=False,
                              *, annotation_format=Format.VALUE):
     """Private helper: constructs Signature for the given python function."""
-    # antipythany (wave-102): typing-module functions (e.g. _type_check)
+    # antipythony (wave-102): typing-module functions (e.g. _type_check)
     # trip state-dependent AttributeError during the annotations walk.
     # CPython never sees this. Degrade to a permissive signature so callers
     # (logging, scrapy init) proceed instead of dying.
@@ -2365,7 +2365,7 @@ def _signature_from_function(cls, func, skip_bound_arg=True,
                                        *, annotation_format=Format.VALUE):
         """wave-102: original body, nested."""
 
-    # antipythany (wave-80, env-gated): entry marker before
+    # antipythony (wave-80, env-gated): entry marker before
     # ANY attribute machinery runs.
         import os as _os_sff0
         if _os_sff0.environ.get("APX_SFCDBG"):
@@ -2402,7 +2402,7 @@ def _signature_from_function(cls, func, skip_bound_arg=True,
         positional = arg_names[:pos_count]
         keyword_only_count = func_code.co_kwonlyargcount
         keyword_only = arg_names[pos_count:pos_count + keyword_only_count]
-        # antipythany (wave-80, env-gated): marker before each
+        # antipythony (wave-80, env-gated): marker before each
         # potentially-failing step of the function-signature build.
         import os as _os_sff
         _sff = _os_sff.environ.get("APX_SFCDBG")
@@ -2415,7 +2415,7 @@ def _signature_from_function(cls, func, skip_bound_arg=True,
             annotations = get_annotations(func, globals=globals, locals=locals, eval_str=eval_str,
                                           format=annotation_format)
         except NameError:
-            # antipythany (wave-82): some attrs-generated __init__ functions
+            # antipythony (wave-82): some attrs-generated __init__ functions
             # reference exec-globs names (attr_dict) from a defining env our
             # lazy paths can't reach; CPython resolves them at def time. Degrade
             # to empty annotations rather than killing the walk.
@@ -2429,7 +2429,7 @@ def _signature_from_function(cls, func, skip_bound_arg=True,
         except NameError as _e_d:
             if _sff:
                 _sys_sff.stderr.write("[SFF] %s DEFAULTS-NAMERR %r\n" % (getattr(func, "__qualname__", "?"), _e_d))
-            # antipythany (wave-82): parked default thunks referencing
+            # antipythony (wave-82): parked default thunks referencing
             # exec-globs names (attr_dict) can NameError on read in
             # states where CPython evaluated at def time. Degrade.
             defaults = None
@@ -2464,7 +2464,7 @@ def _signature_from_function(cls, func, skip_bound_arg=True,
                 parameters.append(Parameter(name, annotation=annotation,
                                             kind=kind))
             except TypeError:
-                # antipythany (wave-80): in degraded import states our
+                # antipythony (wave-80): in degraded import states our
                 # attr machinery can raise 'NoneType' object is not
                 # callable from inside Parameter.__init__; CPython
                 # would never see this. Degrade to CPython's outcome.
@@ -2490,7 +2490,7 @@ def _signature_from_function(cls, func, skip_bound_arg=True,
                                             kind=kind,
                                             default=defaults[offset]))
             except (TypeError, NameError):
-                # antipythany (wave-82): degraded-context Parameter
+                # antipythony (wave-82): degraded-context Parameter
                 # construction (enum _ParameterKind(kind) hitting a
                 # broken _missing_) — CPython never sees this. The
                 # walk degrades to CPython's "no signature" outcome.
@@ -2540,7 +2540,7 @@ def _signature_from_function(cls, func, skip_bound_arg=True,
                    return_annotation=annotations.get('return', _empty),
                    __validate_parameters__=is_duck_function)
         except NameError as _e_sc:
-            # antipythany (wave-82): degraded-context Signature
+            # antipythony (wave-82): degraded-context Signature
             # construction can NameError from lazy thunks; CPython never
             # sees this. Degrade to "no signature".
             if _sff:
@@ -2601,7 +2601,7 @@ def _signature_from_callable(obj, *,
     if not callable(obj):
         raise TypeError('{!r} is not a callable object'.format(obj))
 
-    # antipythany (wave-80, env-gated diagnostic): log each
+    # antipythony (wave-80, env-gated diagnostic): log each
     # _signature_from_callable entry so a dying walk names its
     # last object. SFC = signature-from-callable.
     import os as _os_sfc
@@ -2613,7 +2613,7 @@ def _signature_from_callable(obj, *,
         except Exception as _e_r:
             _sys_sfc.stderr.write("[SFC] obj=<unprintable %s> err=%r\n" % (type(obj).__name__, _e_r))
 
-    # antipythany (wave-65): our builtin-function markers don't
+    # antipythony (wave-65): our builtin-function markers don't
     # match types.BuiltinFunctionType, so the builtin ValueError
     # path below never fires and the walk falls into __getattr__
     # chains that raise. CPython raises ValueError("no signature
@@ -2653,7 +2653,7 @@ def _signature_from_callable(obj, *,
     except AttributeError:
         pass
     except BaseException as _e_sig:
-        # antipythany (wave-80, env-gated): our runtime's
+        # antipythony (wave-80, env-gated): our runtime's
         # attr-get on some objects raises non-AttributeError
         # (None-callable) where CPython raises AttributeError.
         if _os_sfc.environ.get("APX_SFCDBG"):
@@ -3251,7 +3251,7 @@ class Signature:
                                             globals=globals, locals=locals, eval_str=eval_str,
                                             annotation_format=annotation_format)
         except NameError as _e_fc:
-            # antipythany (wave-82): lazy default thunks referencing
+            # antipythony (wave-82): lazy default thunks referencing
             # attrs exec-globs names (attr_dict) can NameError mid-walk
             # in states where CPython evaluated at def time. CPython
             # never sees this; degrade to ValueError (same outcome as
@@ -3545,7 +3545,7 @@ def signature(obj, *, follow_wrapped=True, globals=None, locals=None, eval_str=F
                                        globals=globals, locals=locals, eval_str=eval_str,
                                        annotation_format=annotation_format)
     except AttributeError as e:
-        # antipythany (wave-66): attribute walks through runtime
+        # antipythony (wave-66): attribute walks through runtime
         # fallbacks can surface AttributeError where CPython raises
         # ValueError("no signature found..."). scrapy's
         # get_func_args_dict catches ValueError only.
@@ -3553,7 +3553,7 @@ def signature(obj, *, follow_wrapped=True, globals=None, locals=None, eval_str=F
             "no signature found for {!r} ({})".format(obj, e)) from e
     except TypeError as _e:
         if "list indices" in str(_e):
-            # antipythany (wave-70): same treatment — the walk indexes
+            # antipythony (wave-70): same treatment — the walk indexes
             # a runtime artifact list with a str; CPython raises
             # ValueError here for un-introspectable callables.
             import sys as _sys

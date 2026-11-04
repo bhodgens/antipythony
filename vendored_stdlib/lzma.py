@@ -1,4 +1,4 @@
-"""lzma — minimal stdlib-compatible surface (antipythany vendored).
+"""lzma — minimal stdlib-compatible surface (antipythony vendored).
 
 LZMA/xz compression. Used by feedexport postprocessing (test data).
 Imports succeed; compression ops raise (same contract as the bz2 shim).

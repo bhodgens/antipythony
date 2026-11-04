@@ -21,7 +21,7 @@ mod stdlib_provenance;
 
 const NOTICES_PATH: &str = "THIRD_PARTY_NOTICES";
 const HEADER: &str = "\
-THIRD_PARTY_NOTICES for antipythany
+THIRD_PARTY_NOTICES for antipythony
 ===================================
 
 This workspace is licensed Apache-2.0 WITH LLVM-exception (see LICENSE).

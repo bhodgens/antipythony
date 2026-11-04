@@ -1,4 +1,4 @@
-"""antipythany deviation shim — service_identity.hazmat (v0 inert)."""
+"""antipythony deviation shim — service_identity.hazmat (v0 inert)."""
 
 
 class DNS_ID:

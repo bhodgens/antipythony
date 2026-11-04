@@ -1,4 +1,4 @@
-# antipythany deviation shim — see package __init__.py.
+# antipythony deviation shim — see package __init__.py.
 class TranslatorMixin:
     pass
 

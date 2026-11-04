@@ -1,4 +1,4 @@
-"""antipythany deviation shim — cryptography.hazmat.decrepit.ciphers.algorithms (v0).
+"""antipythony deviation shim — cryptography.hazmat.decrepit.ciphers.algorithms (v0).
 
 Twisted common.py prefers the decrepit TripleDES when present.
 """

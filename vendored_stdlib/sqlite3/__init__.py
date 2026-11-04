@@ -1,4 +1,4 @@
-"""sqlite3 - v0 import-success shim (antipythany).
+"""sqlite3 - v0 import-success shim (antipythony).
 
 scrapy's disk queues import sqlite3 for persistence backends; the file://
 crawl gate never exercises them (JOBDIR unset -> memory queues). Real

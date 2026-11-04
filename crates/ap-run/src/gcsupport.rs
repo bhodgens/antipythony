@@ -91,13 +91,24 @@ fn weakrefable(v: &Value) -> bool {
         Value::Set(_) | Value::Frozen(_) => true,
         // Slotted instances (no __dict__, no __weakref__ slot) are NOT
         // weakrefable in CPython — gc005/s034's NonRef probe.
-        Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => o
-            .type_ref
-            .borrow()
-            .as_ref()
-            .and_then(|w| w.upgrade())
-            .map(|t| t.has_instance_dict())
-            .unwrap_or(true),
+        // W112: __slots__ DECLARING "__weakref__" makes the instance
+        // weakrefable (scrapy Request declares it; trackref's
+        // WeakKeyDictionary depends on it). An instance-dict or a
+        // dict-bearing base also weakrefables (existing behavior).
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
+            if let Some(t) = o.type_ref.borrow().as_ref().and_then(|w| w.upgrade()) {
+                if t.has_instance_dict() {
+                    return true;
+                }
+                return t.mro.borrow().iter().any(|c| {
+                    c.flags
+                        .slots
+                        .as_ref()
+                        .is_some_and(|s: &Vec<String>| s.iter().any(|x| x == "__weakref__"))
+                });
+            }
+            true
+        }
         Value::Obj(o) => !matches!(o.kind, ap_obj::ObjKind::Iterator),
     }
 }

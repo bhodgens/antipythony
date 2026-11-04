@@ -1,13 +1,13 @@
 # T-15 — release/install (gates implementation leaf 04.03 Release engineering).
 #
 # Authorship: written from the spec surfaces ONLY
-# (plans/antipythany/04-packaging-ecosystem/orchestrator.md 04.03 + CLI verb
-# table, plans/antipythany/master.md license & attribution contract,
-# plans/antipythany/00-foundation-contract/orchestrator.md 00.02,
+# (plans/antipythony/04-packaging-ecosystem/orchestrator.md 04.03 + CLI verb
+# table, plans/antipythony/master.md license & attribution contract,
+# plans/antipythony/00-foundation-contract/orchestrator.md 00.02,
 # docs/attribution.md notices command surface, docs/compat-contract.md C-26,
-# plans/antipythany/tests/README.md). No implementation source under crates/
+# plans/antipythony/tests/README.md). No implementation source under crates/
 # was read. Per-test citations and CONTRACT-GAPS:
-# plans/antipythany/tests/T-15-release-install.md.
+# plans/antipythony/tests/T-15-release-install.md.
 #
 # Structure:
 #   GREEN NOW   — repo-state static assertions that MUST hold at 04.03 gate
@@ -58,20 +58,20 @@ XFAIL_0403 = pytest.mark.xfail(
 
 
 def _cli_cmd() -> list:
-    """The `antipythany` driver (Plan 04 CLI surface). Resolution mirrors
+    """The `antipythony` driver (Plan 04 CLI surface). Resolution mirrors
     T-09: env APX_CLI (whitespace-split) -> PATH -> target/{debug,release}."""
     override = os.environ.get("APX_CLI")
     if override:
         return shlex.split(override)
-    found = shutil.which("antipythany")
+    found = shutil.which("antipythony")
     if found:
         return [found]
     for profile in ("release", "debug"):
-        cand = REPO_ROOT / "target" / profile / "antipythany"
+        cand = REPO_ROOT / "target" / profile / "antipythony"
         if cand.exists():
             return [str(cand)]
     raise FileNotFoundError(
-        "antipythany CLI not found (set APX_CLI=<cmdline> to override)"
+        "antipythony CLI not found (set APX_CLI=<cmdline> to override)"
     )
 
 
@@ -374,7 +374,7 @@ def test_install_script_exists_and_posix_parseable():
     for a committed install shell script (dist/install.sh or
     scripts/install.sh; override with APX_INSTALL_SH). The artifact must be
     POSIX-sh parseable — `sh -n` is the sh-level equivalent of `bash -n` —
-    and must reference the antipythany binary name so it actually installs it.
+    and must reference the antipythony binary name so it actually installs it.
     Today: no such file exists anywhere in the repo."""
     override = os.environ.get("APX_INSTALL_SH")
     cands = [Path(override)] if override else [
@@ -391,7 +391,7 @@ def test_install_script_exists_and_posix_parseable():
         f"install script fails POSIX-sh parse: {proc.stderr.decode(errors='replace')}"
     )
     body = script.read_text().lower()
-    assert "antipythany" in body, "install script never names the antipythany binary"
+    assert "antipythony" in body, "install script never names the antipythony binary"
     # checksum discipline in the installer is implied by 04.03 '+ checksums'
     # but its download URL/host is unpinned — assert only existence of SOME
     # verification hook (sha256 / checksum mention), not a specific URL (G-2).
@@ -408,7 +408,7 @@ def test_version_notices_embedding_matches_committed_file():
     distribution build via APX_DIST_BIN, else APX_CLI resolution) and require
     the emitted bytes to be EXACTLY the committed THIRD_PARTY_NOTICES bytes
     (after trailing-newline normalization — the exact trailing-newline policy
-    is unpinned, G-2). OBSERVED AT AUTHORING: scaffold `antipythany
+    is unpinned, G-2). OBSERVED AT AUTHORING: scaffold `antipythony
     --version --notices` prints nothing (silent stub), so this fails."""
     override = os.environ.get("APX_DIST_BIN")
     cmd = shlex.split(override) if override else _cli_cmd()
@@ -430,7 +430,7 @@ def test_version_notices_embedding_matches_committed_file():
 def test_fresh_machine_scripted_gate():
     """04.03 Gate verbatim: 'fresh-machine install -> new -> add rich -> run ->
     build, scripted, green.' One end-to-end test; step table lives in
-    plans/antipythany/tests/T-15-release-install.md. Fidelity notes:
+    plans/antipythony/tests/T-15-release-install.md. Fidelity notes:
     - 'fresh machine' is APPROXIMATED: stripped env (HOME=tmpdir, PATH kept
       only when uv is required), fresh temp cwd, fresh cache. Full VM-level
       freshness is a CI concern; runner image is unpinned (G-3).
@@ -463,23 +463,23 @@ def test_fresh_machine_scripted_gate():
     # installed binary in the stripped HOME env (install script path unpinned,
     # G-1; we settle for: the resolved CLI runs at all under fresh-HOME).
     step(["--version"], timeout=30)
-    # step 2 — new: scaffold myapp (Plan 04 surface: `antipythany new myapp`).
+    # step 2 — new: scaffold myapp (Plan 04 surface: `antipythony new myapp`).
     step(["new", "myapp"])
     proj = work / "myapp"
     assert proj.exists(), "`new myapp` exited 0 but created no myapp/ dir"
-    # step 3 — add rich: `antipythany add rich` per the verb table
-    # (`antipythany add requests`; 04.03 Gate names `rich`).
+    # step 3 — add rich: `antipythony add rich` per the verb table
+    # (`antipythony add requests`; 04.03 Gate names `rich`).
     spec = os.environ.get("APX_ADD_SPEC", "rich").split()
     step(["add"] + spec, cwd=proj, timeout=600)
-    lock = list(proj.glob("antipythany.lock*")) + list(proj.glob("*lock*"))
+    lock = list(proj.glob("antipythony.lock*")) + list(proj.glob("*lock*"))
     assert lock, "`add` recorded no lock file in the project"
-    # step 4 — run: scaffolded entry (verb table `antipythany run app.py`;
+    # step 4 — run: scaffolded entry (verb table `antipythony run app.py`;
     # the scaffolded main file name is 04.01 surface — glob for the .py).
     entry = next(iter(sorted(proj.glob("*.py"))), None)
     assert entry is not None, "scaffold produced no Python entry file"
     runp = step(["run", entry.name], cwd=proj)
     assert runp.stdout, "`run` produced no stdout for the scaffolded program"
-    # step 5 — build: verb table `antipythany build app.py` -> ./app.
+    # step 5 — build: verb table `antipythony build app.py` -> ./app.
     step(["build", entry.name], cwd=proj)
     app = proj / ("app" if sys.platform != "win32" else "app.exe")
     assert app.exists(), "`build` exited 0 but produced no ./app artifact"

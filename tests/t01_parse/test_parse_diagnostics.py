@@ -1,7 +1,7 @@
 """T-01 parse-diagnostic conformance suite (gates leaf 01.01, ap-parse).
 
 Authored from the spec pack ONLY (docs/spec/*, docs/compat-contract.md,
-plans/antipythany/tests/T-01-parse-diagnostics.md) by an agent that never read
+plans/antipythony/tests/T-01-parse-diagnostics.md) by an agent that never read
 crate sources. See the T-01 md for clause citations, hand-derived positions,
 expected-fail policy, and CONTRACT-GAPS.
 

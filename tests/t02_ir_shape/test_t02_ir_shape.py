@@ -1,8 +1,8 @@
 # T-02 — IR shape test suite (gates leaf 01.02).
 #
 # Authorship: written from the spec pack ONLY (docs/spec/01, docs/spec/02,
-# docs/compat-contract.md, plans/antipythany/master.md) — no implementation source
-# read. See plans/antipythany/tests/T-02-ir-shape.md for per-test citations.
+# docs/compat-contract.md, plans/antipythony/master.md) — no implementation source
+# read. See plans/antipythony/tests/T-02-ir-shape.md for per-test citations.
 #
 # Contract under test: bin `ap-ir-dump <file>` parses the Python file and prints an
 # indented IR dump, one node per line, `node-kind` + optional ` detail`.

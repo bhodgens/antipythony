@@ -7,7 +7,7 @@ work. One should use importlib as the public-facing version of this module.
 
 """
 
-# antipythany: CPython injects `sys` into the bootstrap module during
+# antipythony: CPython injects `sys` into the bootstrap module during
 # _setup; our loader execs this file raw, so import it here.
 import sys
 import _imp

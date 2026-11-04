@@ -1,4 +1,4 @@
-"""faulthandler stub (antipythany v0): the stdlib module dumps native
+"""faulthandler stub (antipythony v0): the stdlib module dumps native
 tracebacks; under our runtime that surface is inert. pytest imports it for
 its faulthandler plugin; provide the names it uses as no-ops."""
 

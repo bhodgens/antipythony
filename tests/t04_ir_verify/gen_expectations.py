@@ -24,7 +24,7 @@ from the observed error report:
 Output: tests/t04_ir_verify/fixtures/expected_t04.json (machine) and
         expected_t04.txt (human-readable, same data).
 Written by the T-04 test author; the values are the expect side of the
-differential generator described in plans/antipythany/tests/T-04-ir-verify.md.
+differential generator described in plans/antipythony/tests/T-04-ir-verify.md.
 """
 
 from __future__ import annotations

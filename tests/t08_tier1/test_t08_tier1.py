@@ -3,15 +3,15 @@
 # Authorship: written from the contract + spec pack ONLY (docs/compat-contract.md
 # C-31 tier-invisibility rule + C-29 exit-code/stream invariants + C-24/C-27
 # channel contract + C-28, docs/spec/01-values-and-objects.md,
-# docs/spec/02-control-flow.md, docs/spec/03-classes.md, plans/antipythany/master.md,
-# plans/antipythany/tests/README.md, and leaf 02.05's Expose/Gate in
-# plans/antipythany/02-native-backend/orchestrator.md). The author has NOT read any
+# docs/spec/02-control-flow.md, docs/spec/03-classes.md, plans/antipythony/master.md,
+# plans/antipythony/tests/README.md, and leaf 02.05's Expose/Gate in
+# plans/antipythony/02-native-backend/orchestrator.md). The author has NOT read any
 # implementation source under crates/.
 #
 # T-08 tests TRANSPARENCY, not speed. Two kinds of tests:
 #
 #  (A) FIXTURE RE-VERIFICATION (green today; they test the corpus, not
-#      antipythany): every program under tests/corpus/tier1-transparency/ (probes)
+#      antipythony): every program under tests/corpus/tier1-transparency/ (probes)
 #      and .../bench/ (speed-slice) has an expected .stdout/.stderr/.exit triple
 #      recorded from REAL python3.14 runs (run twice, byte-stable); re-running the
 #      program under the reference reproduces the pinned bytes; headers carry
@@ -19,11 +19,11 @@
 #      cited documents; probes stay within the 10k–100k iteration budget; probes
 #      use no timing/identity/refcount APIs (C-24, C-19, D3).
 #
-#  (B) ANTIPYTHANY-SIDE GATES (xfail(strict=False) until leaf 02.05 lands):
+#  (B) ANTIPYTHONY-SIDE GATES (xfail(strict=False) until leaf 02.05 lands):
 #      1. Cross-mode byte-identity over the ENTIRE tests/corpus tree (globbed at
 #         run time — corpus only grows, C-33): each script run under
-#         `antipythany run --tier 0`, `antipythany run --tier adaptive`, and
-#         `antipythany run --mode binary` must produce byte-identical stdout,
+#         `antipythony run --tier 0`, `antipythony run --tier adaptive`, and
+#         `antipythony run --mode binary` must produce byte-identical stdout,
 #         byte-identical stderr, and identical exit code (C-31 + C-29 + C-24/C-27).
 #      2. Specialization-probe differential: each tier1-transparency probe under
 #         each mode must match its pinned reference triple exactly — wrong deopt
@@ -34,12 +34,12 @@
 #         the arithmetic/string benchmark slice; emits a JSON report. Timing is
 #         NOT a conformance channel (C-24), so this is a report-and-threshold
 #         harness, xfail now, documented in CONTRACT-GAPS of
-#         plans/antipythany/tests/T-08-tier1-transparency.md.
+#         plans/antipythony/tests/T-08-tier1-transparency.md.
 #
 # CLI seam: no doc read by this author pins the tier/mode flag vocabulary
 # (00.04 ap-conform exposes --corpus/--impl/--filter/--json only). The suite
-# assumes `antipythany run --tier 0` / `antipythany run --tier adaptive` /
-# `antipythany run --mode binary` per the leaf gate text and the 02.05 conformance
+# assumes `antipythony run --tier 0` / `antipythony run --tier adaptive` /
+# `antipythony run --mode binary` per the leaf gate text and the 02.05 conformance
 # note, and every piece is overridable: APX_IMPL (impl command prefix),
 # APX_MODE_TIER0_CMD / APX_MODE_ADAPTIVE_CMD / APX_MODE_BINARY_CMD (full per-mode
 # command lines, script path appended), APX_T08_TIMEOUT (per-run seconds),
@@ -91,7 +91,7 @@ SPECS = {
 }
 CONTRACT = REPO_ROOT / "docs" / "compat-contract.md"
 
-XFAIL_REASON = "awaits 02.05 tier-1 (CLIF/IC/OSR/deopt) + antipythany run mode flags"
+XFAIL_REASON = "awaits 02.05 tier-1 (CLIF/IC/OSR/deopt) + antipythony run mode flags"
 
 RUN_TIMEOUT = int(os.environ.get("APX_T08_TIMEOUT", "120"))
 
@@ -125,19 +125,19 @@ def _expected_files(script: Path):
     return exp / (stem + ".stdout"), exp / (stem + ".stderr"), exp / (stem + ".exit")
 
 
-def _antipythany_prefix() -> list[str]:
+def _antipythony_prefix() -> list[str]:
     override = os.environ.get("APX_IMPL")
     if override:
         return shlex.split(override)
-    found = shutil.which("antipythany")
+    found = shutil.which("antipythony")
     if found:
         return [found, "run"]
     for profile in ("debug", "release"):
-        cand = REPO_ROOT / "target" / profile / "antipythany"
+        cand = REPO_ROOT / "target" / profile / "antipythony"
         if cand.is_file():
             return [str(cand), "run"]
     raise FileNotFoundError(
-        "no `antipythany` impl command found (set APX_IMPL=<cmdline> to override) "
+        "no `antipythony` impl command found (set APX_IMPL=<cmdline> to override) "
         "— 02.05 not landed"
     )
 
@@ -154,7 +154,7 @@ def mode_cmd(mode: str) -> list[str]:
     override = os.environ.get(env_key)
     if override:
         return shlex.split(override)
-    prefix = _antipythany_prefix()  # raises FileNotFoundError until the impl exists
+    prefix = _antipythony_prefix()  # raises FileNotFoundError until the impl exists
     if mode == "tier0":
         return prefix + ["--tier", "0"]
     if mode == "adaptive":
@@ -222,7 +222,7 @@ def test_header_cites_existing_clauses(script):
 @pytest.mark.parametrize("script", SLICE, ids=_ids(SLICE))
 def test_stresses_header_present(script):
     # Each program documents the tier-1 mechanism it forces (probe table in
-    # plans/antipythany/tests/T-08-tier1-transparency.md must match the files).
+    # plans/antipythony/tests/T-08-tier1-transparency.md must match the files).
     lines = script.read_text(encoding="utf-8").splitlines()[:6]
     assert any(l.startswith("# Stresses:") for l in lines), (
         f"{script.name}: missing '# Stresses:' annotation"
@@ -299,7 +299,7 @@ def test_iteration_budget_bound(script):
 
 def test_probe_table_sync():
     # The mechanism table in the T-08 doc lists exactly the probe files present.
-    doc = REPO_ROOT / "plans" / "antipythany" / "tests" / "T-08-tier1-transparency.md"
+    doc = REPO_ROOT / "plans" / "antipythony" / "tests" / "T-08-tier1-transparency.md"
     text = doc.read_text()
     for p in PROBES:
         assert p.name in text, f"{p.name} missing from probe table in {doc.name}"

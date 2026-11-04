@@ -1,4 +1,4 @@
-"""secrets — stdlib-compatible shim (antipythany vendored).
+"""secrets — stdlib-compatible shim (antipythony vendored).
 
 CPython 3.14 secrets is a thin wrapper over random.SystemRandom. Provide the
 common surface used by third-party packages (token_hex, token_bytes,

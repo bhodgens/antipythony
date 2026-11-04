@@ -1,7 +1,7 @@
 //! Cache layout (Plan 04 §Design):
 //!
 //! ```text
-//! ~/.cache/antipythany/
+//! ~/.cache/antipythony/
 //!   build/<hash>/          content-addressed build entries (04.02)
 //!   site-packages/         uv --target fetch dir (04.01)
 //! ```
@@ -13,14 +13,14 @@
 //! (`run.py.bin` marker today; the artifact itself when 02.06 AoT lands) —
 //! the tests only assert entry-set behaviour, never hash values.
 //!
-//! `ANTPYTHANY_CACHE` overrides the root (documented in docs/packaging.md).
+//! `ANTIPTYHONY_CACHE` overrides the root (documented in docs/packaging.md).
 
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-/// The cache root: `$ANTPYTHANY_CACHE` or `$HOME/.cache/antipythany`.
+/// The cache root: `$ANTIPTYHONY_CACHE` or `$HOME/.cache/antipythony`.
 pub fn cache_root() -> Option<PathBuf> {
-    if let Ok(v) = std::env::var("ANTPYTHANY_CACHE") {
+    if let Ok(v) = std::env::var("ANTIPTYHONY_CACHE") {
         if !v.is_empty() {
             return Some(PathBuf::from(v));
         }
@@ -29,7 +29,7 @@ pub fn cache_root() -> Option<PathBuf> {
     if home.is_empty() {
         return None;
     }
-    Some(PathBuf::from(home).join(".cache").join("antipythany"))
+    Some(PathBuf::from(home).join(".cache").join("antipythony"))
 }
 
 /// The uv fetch target: `<root>/site-packages`.

@@ -8,7 +8,7 @@
  "cpython_3147_rc": 1,
  "cpython_3147_stderr_normalized": "Traceback (most recent call last):\n  File \"tests/t03_lowering_semantics/corpus/c14_try_except_else_finally.py\", line 19, in <module>\n    print(h(True))\n          ~^^^^^^\n  File \"tests/t03_lowering_semantics/corpus/c14_try_except_else_finally.py\", line 10, in h\n    raise ValueError(\"boom\")\nValueError: boom\n",
  "cpython_3147_stdout": "fin\n",
- "derivation": "scope cell/free/global sets hand-derived from spec rules S-02-1/2/3/5/12/13 (+S-02-7/20/26/28/30/34/38, S-01-16, S-04-06/07/08) per the table in plans/antipythany/tests/T-03-lowering-semantics.md; stdout/rc are CPython 3.14.7 (/opt/homebrew/bin/python3.14) reference output for the corpus program",
+ "derivation": "scope cell/free/global sets hand-derived from spec rules S-02-1/2/3/5/12/13 (+S-02-7/20/26/28/30/34/38, S-01-16, S-04-06/07/08) per the table in plans/antipythony/tests/T-03-lowering-semantics.md; stdout/rc are CPython 3.14.7 (/opt/homebrew/bin/python3.14) reference output for the corpus program",
  "note": "rc 1 by design: bare raise re-raises the original ValueError (S-02-28). Path text normalized repo-relative per spec-02 convention. See leaf doc G-8.",
  "program": "c14_try_except_else_finally",
  "scopes": [

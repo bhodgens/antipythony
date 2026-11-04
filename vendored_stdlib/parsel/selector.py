@@ -1,4 +1,4 @@
-# antipythany deviation shim (DEVIATIONS policy — see docs/lxml-shim.md).
+# antipythony deviation shim (DEVIATIONS policy — see docs/lxml-shim.md).
 # 02.08-c: the native lxml shim provides real parse/xpath surfaces, so the
 # REAL parsel (site-packages) is fully usable. This vendored copy exists only
 # because vendored_stdlib precedes site-packages on sys.path: it re-execs the

@@ -1,6 +1,6 @@
-# T-14 EXPECTATION FILE — the shape antipythany.lock must have after
-# `antipythany add rich` (Plan 04 §Design: "antipythany.toml (project deps) +
-# antipythany.lock"; leaf 04.01: "uv subprocess wrapper ... resolve+lock").
+# T-14 EXPECTATION FILE — the shape antipythony.lock must have after
+# `antipythony add rich` (Plan 04 §Design: "antipythony.toml (project deps) +
+# antipythony.lock"; leaf 04.01: "uv subprocess wrapper ... resolve+lock").
 # Oracle file: parsed with tomllib by the schema test, compared key-path-wise
 # against the real lock once the CLI exists.
 #

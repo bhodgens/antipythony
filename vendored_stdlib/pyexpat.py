@@ -1,4 +1,4 @@
-# antipythany deviation shim (DEVIATIONS.toml): pyexpat is a C extension
+# antipythony deviation shim (DEVIATIONS.toml): pyexpat is a C extension
 # (docs/compat-contract.md C-07). xmlrpc.client needs ParserCreate for the
 # T1 gate; a full XML parser is out of scope, so the shim provides the name
 # surface with parse-time NotImplementedError.

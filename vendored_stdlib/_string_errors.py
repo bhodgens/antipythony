@@ -1,4 +1,4 @@
-# Vendored string error helpers (antipythany s027 fix pass).
+# Vendored string error helpers (antipythony s027 fix pass).
 #
 # Template.substitute raises KeyError for a missing placeholder. When the
 # raise happens inside vendored Python code the interp's exception object

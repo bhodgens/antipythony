@@ -1,4 +1,4 @@
-# antipythany deviation shim (see DEVIATIONS.toml): CPython's urllib/request.py
+# antipythony deviation shim (see DEVIATIONS.toml): CPython's urllib/request.py
 # pulls socket/email/http.client (C and heavy stdlib surfaces this runtime does
 # not serve yet). The T1 scrapy chain (w3lib.url) only needs the path conversion
 # helpers; they are copied verbatim from CPython 3.14 urllib/request.py
@@ -36,7 +36,7 @@ def url2pathname(pathname):
 def _parse_proxy(proxy):
     """Return (scheme, user, password, host/port) given a URL or an authority.
 
-    antipythany wave-110: ported from CPython 3.14 urllib.request with the
+    antipythony wave-110: ported from CPython 3.14 urllib.request with the
     _splittype/_splituser/_splitpasswd helpers inlined (our vendored copy
     predates those helpers).
     """
@@ -79,7 +79,7 @@ def _parse_proxy(proxy):
 
 
 def getproxies():
-    """antipythany wave-110: env-var proxies only (no system proxy lookup).
+    """antipythony wave-110: env-var proxies only (no system proxy lookup).
 
     Matches CPython getproxies_environment(): scans <scheme>_proxy for every
     scheme (lowercase + uppercase), returns a {scheme: url} dict; "no_proxy"

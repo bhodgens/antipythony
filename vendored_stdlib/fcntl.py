@@ -1,4 +1,4 @@
-"""antipythany deviation shim: minimal fcntl surface (DEVIATIONS.toml).
+"""antipythony deviation shim: minimal fcntl surface (DEVIATIONS.toml).
 The file:// gate never performs real descriptor control; twisted's _FDWaker
 calls fcntl.fcntl() at import to set non-blocking/close-on-exec flags."""
 F_GETFL = 3

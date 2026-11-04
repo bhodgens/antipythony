@@ -1,7 +1,7 @@
 //! IR verification pass (leaf 01.04).
 //!
 //! Static checks before codegen, per the orchestrator leaf 01.04, the T-04
-//! contract (`plans/antipythany/tests/T-04-ir-verify.md`), and the
+//! contract (`plans/antipythony/tests/T-04-ir-verify.md`), and the
 //! compat-contract clauses cited on each check. The T-04 fixtures
 //! (`tests/t04_ir_verify/fixtures/expected_t04.json`, pinned from CPython
 //! 3.14.7) are normative for which probes MUST flag and which MUST stay

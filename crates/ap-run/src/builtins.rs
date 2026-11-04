@@ -2360,7 +2360,7 @@ pub fn make_sys_module(interp: &Interpreter) -> Value {
     let _ = ns.set(
         Value::Str(PyString::new("version")),
         Value::Str(PyString::new(
-            "3.14.0 (antipythany v0 sys stub; provisional per leaf 02.02)",
+            "3.14.0 (antipythony v0 sys stub; provisional per leaf 02.02)",
         )),
     );
     // version_info: named-tuple-like namespace.
@@ -4291,7 +4291,29 @@ pub fn call_builtin(
         // returns the (sync) iterator; anext resumes it (StopIteration at
         // exhaustion matches the exhausted-anext CPython shape).
         "aiter" => builtin_iter(args),
-        "anext" => builtin_next(interp, args),
+        "anext" => {
+            // W112: `anext(agen)` drives the async-gen's __anext__ — an
+            // ASYNC protocol: the result is the yielded item, exhaustion
+            // raises StopAsyncIteration. Route through the same
+            // asend_handle machinery as `await agen.__anext__()` (the
+            // old builtin_next path raised "'object' object is not an
+            // iterator" — scrapy engine._process_start_next blocker).
+            let av = one(args, "anext")?;
+            if crate::interp::is_asyncgen_obj(&av) {
+                // Return the __anext__ AWAITABLE (CPython:
+                // async_generator_asend). The caller awaits it: the yielded
+                // item is the result, exhaustion raises StopAsyncIteration.
+                let m = crate::interp::attr_get_public(&interp.rc(), &av, "__anext__")?
+                    .ok_or_else(|| {
+                        raise(
+                            "TypeError",
+                            "'async_generator' object is not an async iterator",
+                        )
+                    })?;
+                return crate::interp::call_value_pub(&interp.rc(), &m, &[], &[]);
+            }
+            builtin_next(interp, args)
+        }
         "next" => builtin_next(interp, args),
         "range" => builtin_range(args),
         "sorted" => builtin_sorted(interp, args, kwargs),

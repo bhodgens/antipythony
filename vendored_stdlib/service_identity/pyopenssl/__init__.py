@@ -1,4 +1,4 @@
-# antipythany shim — service_identity (twisted _sslverify chain; v0 constant/method surfaces only)
+# antipythony shim — service_identity (twisted _sslverify chain; v0 constant/method surfaces only)
 def extract_from_certificate(*a, **kw):
     return []
 

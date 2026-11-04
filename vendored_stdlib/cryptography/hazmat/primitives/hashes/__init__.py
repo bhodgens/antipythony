@@ -1,4 +1,4 @@
-"""antipythany deviation shim — cryptography.hazmat.primitives.hashes (v0).
+"""antipythony deviation shim — cryptography.hazmat.primitives.hashes (v0).
 
 Package (not module) so BOTH forms work:
   from cryptography.hazmat.primitives import hashes   # submodule binding

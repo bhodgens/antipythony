@@ -1,4 +1,4 @@
-# antipythany deviation shim (docs/lxml-shim.md addendum): real jmespath's
+# antipythony deviation shim (docs/lxml-shim.md addendum): real jmespath's
 # functions.py builds its function table through a metaclass whose
 # _populate_function_table walks `inspect.getmembers(cls, isfunction)` and
 # reads closure cells of `@signature`-decorated methods — a runtime surface

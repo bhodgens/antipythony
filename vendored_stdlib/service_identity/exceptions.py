@@ -1,4 +1,4 @@
-"""service_identity.exceptions — v0 shim (antipythany wave-110).
+"""service_identity.exceptions — v0 shim (antipythony wave-110).
 
 Real exception classes so `except` clauses and imports in twisted's TLS
 verification path resolve. No actual verification is performed in v0.

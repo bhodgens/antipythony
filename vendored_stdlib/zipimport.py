@@ -1,4 +1,4 @@
-"""zipimport — minimal surface (antipythany vendored shim).
+"""zipimport — minimal surface (antipythony vendored shim).
 
 CPython exposes zipimport unconditionally. Our runtime reads .py sources
 directly from the filesystem, so zip-archive importing is out of scope; the
@@ -18,7 +18,7 @@ class zipimporter:
     importable contents."""
 
     def __init__(self, path):
-        raise ZipImportError("zipimport: no zip archive support in antipythany v0")
+        raise ZipImportError("zipimport: no zip archive support in antipythony v0")
 
     # CPython class attribute: archive inspection entry points exist even on
     # instances that failed; provide the names for introspection probes.

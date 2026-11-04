@@ -1,4 +1,4 @@
-"""antipythany deviation shim — OpenSSL._util (v0)."""
+"""antipythony deviation shim — OpenSSL._util (v0)."""
 
 
 class _Lib:

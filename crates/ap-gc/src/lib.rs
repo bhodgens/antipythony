@@ -1,4 +1,4 @@
-//! ap-gc — the antipythany cycle collector (leaf 02.04).
+//! ap-gc — the antipythony cycle collector (leaf 02.04).
 //!
 //! STAGE 1 (this leaf): a CPython-shaped Rc-cycle collector over the
 //! interpreter's object graph — allocation registry, subtract-refs

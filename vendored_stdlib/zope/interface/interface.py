@@ -1,4 +1,4 @@
-"""antipythany deviation shim — zope.interface.interface module surface.
+"""antipythony deviation shim — zope.interface.interface module surface.
 v0 inert (see _shim.py, docs/lxml-shim.md)."""
 
 

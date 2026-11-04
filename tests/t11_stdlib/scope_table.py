@@ -5,7 +5,7 @@ from spec 05 (the S-05-NN rows of §5.2/§5.3) with the citing clause kept next 
 it. The test suite (test_t11_stdlib.py) asserts (a) internal consistency of the
 table, (b) that the table's IN-subset names exist on the reference CPython
 3.14.7 (`/opt/homebrew/bin/python3.14 -S`, where the row claims -S verification),
-and (c) — xfail until leaf 02.08 lands — that the antipythany module registry
+and (c) — xfail until leaf 02.08 lands — that the antipythony module registry
 matches the table: IN modules import, OUT modules fail loud with the C-10 token
 for their class, and PARTIAL rows keep out-of-scope names unreachable (S-05-4).
 
@@ -17,7 +17,7 @@ Transcription rules used (filing deviations as GAPS, never silently re-scoping):
   live 3.14.7 -S `dir()` disagree, the spec text is transcribed into the table
   and the name is ALSO listed in KNOWN_REF_ABSENT so the reference-vs-table
   check stays honest about which mismatches are known (see GAP list in
-  plans/antipythany/tests/T-11-stdlib-v1.md).
+  plans/antipythony/tests/T-11-stdlib-v1.md).
 - Module-level status is IN / PARTIAL / OUT. Spec 05 literally labels rows
   "IN", "IN (…)", "IN-lite", "OUT-of-v1"; PARTIAL here = any IN row whose
   Notes/column names explicit out-of-scope names (subset-bounded rows). The
@@ -568,7 +568,7 @@ IN_MODULES = {
 # ---------------------------------------------------------------------------
 # PARTIAL rows — IN modules whose spec-05 row explicitly puts named
 # objects out of the v1 subset. Reading used (strictest per S-05-4): a name
-# the row marks OUT is UNREACHABLE on antipythany (AttributeError per
+# the row marks OUT is UNREACHABLE on antipythony (AttributeError per
 # S-05-4 first sentence; submodule import per S-05-2/C-10 token per second),
 # even though the CPython reference still has it — so the row's expected
 # bytes DIFFER from the reference (GAP-26/GAP-27 in the leaf doc).

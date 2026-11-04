@@ -1,4 +1,4 @@
-"""tldextract — v0 shim (antipythany wave-110).
+"""tldextract — v0 shim (antipythony wave-110).
 
 scrapy's cookies middleware instantiates TLDExtract at import time to split
 URL hostnames. v0 provides the class with a pure-suffix registrar heuristic:

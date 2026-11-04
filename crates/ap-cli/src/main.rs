@@ -1,13 +1,13 @@
-//! `antipythany` — the driver binary (Plan 04 CLI surface).
+//! `antipythony` — the driver binary (Plan 04 CLI surface).
 //!
 //! Verbs (04.01 + 04.02):
 //! ```text
-//! antipythany new <name>            # scaffold: <name>.py + antipythany.toml
-//! antipythany add <pkg|file:path>   # uv fetch (pure wheels only) + lock
-//! antipythany run <file.py>         # tier-0 execute (deps on sys.path)
-//! antipythany run --no-cache ...    # bypass the content-addressed cache
-//! antipythany build <file.py> [-o out]  # (04.02) cached compile artifact
-//! antipythany cache gc              # clear the build cache
+//! antipythony new <name>            # scaffold: <name>.py + antipythony.toml
+//! antipythony add <pkg|file:path>   # uv fetch (pure wheels only) + lock
+//! antipythony run <file.py>         # tier-0 execute (deps on sys.path)
+//! antipythony run --no-cache ...    # bypass the content-addressed cache
+//! antipythony build <file.py> [-o out]  # (04.02) cached compile artifact
+//! antipythony cache gc              # clear the build cache
 //! ```
 //!
 //! `--tier 0` is the only execution mode (this binary IS tier-0; other modes
@@ -31,10 +31,10 @@ fn main() {
 
 fn usage() -> i32 {
     eprintln!(
-        "usage: antipythany <verb> [args]\n\
+        "usage: antipythony <verb> [args]\n\
          \n\
          verbs:\n\
-         \x20 new <name>                  scaffold <name>/ with antipythany.toml + <name>.py\n\
+         \x20 new <name>                  scaffold <name>/ with antipythony.toml + <name>.py\n\
          \x20 add <pkg>                   fetch a pure-Python package via uv + lock it\n\
          \x20 run [--no-cache] <file.py>  execute (fetched deps join sys.path)\n\
          \x20 build <file.py> [-o out]    write the cached build artifact\n\
@@ -52,7 +52,7 @@ fn run(args: &[String]) -> Result<i32, String> {
             "--tier" => {
                 tier = Some(
                     args.get(i + 1)
-                        .ok_or("antipythany: --tier requires a mode (0 | adaptive)")?
+                        .ok_or("antipythony: --tier requires a mode (0 | adaptive)")?
                         .clone(),
                 );
                 i += 2;
@@ -67,7 +67,7 @@ fn run(args: &[String]) -> Result<i32, String> {
     if let Some(mode) = &tier {
         if mode != "0" {
             return Err(format!(
-                "antipythany: --tier {mode} is not implemented; this binary runs tier-0 only \
+                "antipythony: --tier {mode} is not implemented; this binary runs tier-0 only \
                  (pass --tier 0 or omit --tier)"
             ));
         }
@@ -82,7 +82,7 @@ fn run(args: &[String]) -> Result<i32, String> {
         Some("run") => cmd_run(&rest, false),
         Some("build") => cmd_build(&rest),
         Some("cache") => cmd_cache(&rest),
-        // Single-file legacy form: `antipythany file.py` (02.02 seam).
+        // Single-file legacy form: `antipythony file.py` (02.02 seam).
         Some(other) if other.ends_with(".py") => {
             let r2: Vec<&str> = vec![other];
             cmd_run(&r2, false)
@@ -93,7 +93,7 @@ fn run(args: &[String]) -> Result<i32, String> {
             cmd_run(&r2, false)
         }
         Some(other) => {
-            eprintln!("antipythany: unexpected argument '{other}'");
+            eprintln!("antipythony: unexpected argument '{other}'");
             Ok(usage())
         }
     }
@@ -104,9 +104,9 @@ fn run(args: &[String]) -> Result<i32, String> {
 // ---------------------------------------------------------------------------
 
 fn cmd_new(rest: &[&str]) -> Result<i32, String> {
-    let name = rest.first().ok_or("usage: antipythany new <name>")?;
+    let name = rest.first().ok_or("usage: antipythony new <name>")?;
     let dir = ap_pack::project::new_project(Path::new("."), name)?;
-    println!("created {} (antipythany.toml, {name}.py)", dir.display());
+    println!("created {} (antipythony.toml, {name}.py)", dir.display());
     Ok(0)
 }
 
@@ -115,10 +115,10 @@ fn cmd_new(rest: &[&str]) -> Result<i32, String> {
 // ---------------------------------------------------------------------------
 
 fn cmd_add(rest: &[&str]) -> Result<i32, String> {
-    // `--no-deps` form: `antipythany add --no-deps "<req> <req> ..."` installs
+    // `--no-deps` form: `antipythony add --no-deps "<req> <req> ..."` installs
     // exactly the named requirements (space-separated uv specs) without
     // transitive resolution. Escape hatch for ecosystems whose uv closure
-    // contains platform wheels antipythany must refuse (e.g. scrapy ->
+    // contains platform wheels antipythony must refuse (e.g. scrapy ->
     // lxml/brotli/cryptography): the caller pins the pure subset. The purity
     // filter still runs — anything C-flavored still fails loud (C-11).
     let (no_deps, rest) = match rest.first() {
@@ -127,14 +127,14 @@ fn cmd_add(rest: &[&str]) -> Result<i32, String> {
     };
     let spec = rest
         .first()
-        .ok_or("usage: antipythany add [--no-deps] <package | req-list | file:<path | .whl>>")?;
+        .ok_or("usage: antipythony add [--no-deps] <package | req-list | file:<path | .whl>>")?;
     // File-path argument forms: a bare path to a wheel/dir, or `file:<path>`
     // (G-6: the offline form the test track assumes; uv's own convention).
     let uv_spec: String = normalize_spec(spec);
 
     // Project dir: cwd must be one (or inside one). `new` creates it.
     let proj = ap_pack::manifest::find_project_dir(Path::new("."))
-        .ok_or("antipythany: no antipythany.toml here (run `antipythany new <name>` first)")?;
+        .ok_or("antipythony: no antipythony.toml here (run `antipythony new <name>` first)")?;
     let mut manifest = ap_pack::manifest::read_manifest(&proj)?.unwrap_or_default();
 
     // uv version probe FIRST so a uv-absent environment fails with the
@@ -157,10 +157,10 @@ fn cmd_add(rest: &[&str]) -> Result<i32, String> {
 
     // Promote into the live site-packages.
     let Some(sp) = ap_pack::cache::site_packages_dir() else {
-        return Err("antipythany: no cache root (HOME unset?)".to_string());
+        return Err("antipythony: no cache root (HOME unset?)".to_string());
     };
     std::fs::create_dir_all(&sp)
-        .map_err(|e| format!("antipythany: cannot create {}: {e}", sp.display()))?;
+        .map_err(|e| format!("antipythony: cannot create {}: {e}", sp.display()))?;
     // Merge staging contents into site-packages (uv itself is idempotent on
     // re-add; the merge keeps multiple adds of different packages working).
     merge_dirs(&staged.dir, &sp)?;
@@ -239,7 +239,7 @@ fn display_name(spec: &str) -> String {
 
 /// Staging dir: <cache>/staging-<pid>-<nanos> (unique per add, same volume).
 fn staging_dir() -> Result<PathBuf, String> {
-    let root = ap_pack::cache::cache_root().ok_or("antipythany: no cache root (HOME unset?)")?;
+    let root = ap_pack::cache::cache_root().ok_or("antipythony: no cache root (HOME unset?)")?;
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
@@ -278,20 +278,20 @@ fn cmd_run(rest: &[&str], _wasm: bool) -> Result<i32, String> {
             "--no-cache" => no_cache = true,
             "--wasm" => {
                 return Err(
-                    "antipythany: --wasm is not implemented (Plan 03 / leaf 04.04 territory)"
+                    "antipythony: --wasm is not implemented (Plan 03 / leaf 04.04 territory)"
                         .to_string(),
                 )
             }
             other if path.is_none() => path = Some(other.to_string()),
-            other => return Err(format!("antipythany: unexpected argument '{other}'")),
+            other => return Err(format!("antipythony: unexpected argument '{other}'")),
         }
         i += 1;
     }
     let Some(path) = path else {
-        return Err("usage: antipythany run [--no-cache] <file.py>".to_string());
+        return Err("usage: antipythony run [--no-cache] <file.py>".to_string());
     };
     let source = std::fs::read_to_string(&path)
-        .map_err(|e| format!("antipythany: cannot read {path}: {e}"))?;
+        .map_err(|e| format!("antipythony: cannot read {path}: {e}"))?;
 
     // Content-addressed cache (04.02): key = (input bytes, lockfile bytes,
     // toolchain, backend, opt level). `--no-cache` bypasses both read and
@@ -347,7 +347,7 @@ fn cmd_run(rest: &[&str], _wasm: bool) -> Result<i32, String> {
             let _ = err.flush();
             outcome.exit_code
         })
-        .map_err(|e| format!("antipythany: spawn interpreter thread: {e}"))?
+        .map_err(|e| format!("antipythony: spawn interpreter thread: {e}"))?
         .join()
         .unwrap_or(134); // match a crash exit if the thread panics
     Ok(exit_code)
@@ -366,7 +366,7 @@ fn cmd_build(rest: &[&str]) -> Result<i32, String> {
             "-o" => {
                 out = Some(PathBuf::from(
                     rest.get(i + 1)
-                        .ok_or("antipythany: -o requires a path")?
+                        .ok_or("antipythony: -o requires a path")?
                         .to_string(),
                 ));
                 i += 2;
@@ -374,7 +374,7 @@ fn cmd_build(rest: &[&str]) -> Result<i32, String> {
             }
             other => {
                 if path.is_some() {
-                    return Err(format!("antipythany: unexpected argument '{other}'"));
+                    return Err(format!("antipythony: unexpected argument '{other}'"));
                 }
                 path = Some(other.to_string());
             }
@@ -382,10 +382,10 @@ fn cmd_build(rest: &[&str]) -> Result<i32, String> {
         i += 1;
     }
     let Some(path) = path else {
-        return Err("usage: antipythany build <file.py> [-o out]".to_string());
+        return Err("usage: antipythony build <file.py> [-o out]".to_string());
     };
     let source = std::fs::read_to_string(&path)
-        .map_err(|e| format!("antipythany: cannot read {path}: {e}"))?;
+        .map_err(|e| format!("antipythony: cannot read {path}: {e}"))?;
     let script_dir = Path::new(&path)
         .parent()
         .map(|p| p.to_path_buf())
@@ -418,9 +418,9 @@ fn cmd_build(rest: &[&str]) -> Result<i32, String> {
     // the interpreter the launcher execs — resolved at run time).
     std::fs::write(
         &out_path,
-        format!("#!/bin/sh\nexec antipythany run \"$0.py\" \"$@\"\n"),
+        format!("#!/bin/sh\nexec antipythony run \"$0.py\" \"$@\"\n"),
     )
-    .map_err(|e| format!("antipythany: cannot write {}: {e}", out_path.display()))?;
+    .map_err(|e| format!("antipythony: cannot write {}: {e}", out_path.display()))?;
     println!("built {}", out_path.display());
     Ok(0)
 }
@@ -436,6 +436,6 @@ fn cmd_cache(rest: &[&str]) -> Result<i32, String> {
             println!("cache gc: removed {n} build entries");
             Ok(0)
         }
-        _ => Err("usage: antipythany cache gc".to_string()),
+        _ => Err("usage: antipythony cache gc".to_string()),
     }
 }

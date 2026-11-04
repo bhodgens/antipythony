@@ -380,7 +380,7 @@ class LogRecord(object):
             asyncio = sys.modules.get('asyncio')
             if asyncio:
                 try:
-                    # antipythany (wave-102): guard with events._get_running_loop
+                    # antipythony (wave-102): guard with events._get_running_loop
                     # first — our runtime's RuntimeError-raise path can trigger a
                     # deep signature walk that escapes except-Exception. CPython
                     # has no need for this guard.

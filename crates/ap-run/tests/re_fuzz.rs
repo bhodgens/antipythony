@@ -214,7 +214,7 @@ const SEEDS_PER_FAMILY: usize = 8;
 
 impl Recorder {
     fn new() -> Recorder {
-        let dir = std::env::temp_dir().join(format!("antipythany-re-fuzz-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("antipythony-re-fuzz-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create fuzz scratch dir");
         Recorder {

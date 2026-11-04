@@ -3,11 +3,11 @@
 # Authorship: written from the spec pack ONLY (docs/compat-contract.md
 # C-19..C-23 + divergence register D1/D3, docs/spec/01-values-and-objects.md,
 # docs/spec/02-control-flow.md, docs/spec/06-observable-behavior.md,
-# plans/antipythany/master.md, plans/antipythany/02-native-backend/
-# orchestrator.md 02.04 Expose/Gate, plans/antipythany/tests/README.md).
+# plans/antipythony/master.md, plans/antipythony/02-native-backend/
+# orchestrator.md 02.04 Expose/Gate, plans/antipythony/tests/README.md).
 # No implementation source under crates/ was read. Per-case citations,
 # D1-timing-safety analysis and CONTRACT-GAPS:
-# plans/antipythany/tests/T-07-gc-finalizer.md.
+# plans/antipythony/tests/T-07-gc-finalizer.md.
 #
 # Two halves:
 #  1. FIXTURE RE-VERIFICATION (green today): every corpus script under
@@ -20,7 +20,7 @@
 #  2. ap-conform GATE (xfail, strict=False): the 02.04 gate — "allocation-
 #     heavy corpus slice green; no leak across 10k iterations (heap
 #     growth bounded)" — plus the C-19 getrefcount-absent projection.
-#     Neither the antipythany binary nor the ap-conform --impl seam for
+#     Neither the antipythony binary nor the ap-conform --impl seam for
 #     this slice exists yet, so these XFAIL.
 #
 # sys.getrefcount note (C-19/D3): refcount APIs are CORPUS-PROHIBITED.
@@ -121,11 +121,11 @@ def _impl_cmd() -> list[str]:
     override = os.environ.get("APX_IMPL")
     if override:
         return shlex.split(override)
-    found = shutil.which("antipythany")
+    found = shutil.which("antipythony")
     if found:
         return [found, "run"]
     raise FileNotFoundError(
-        "antipythany impl command not found (set APX_IMPL=<cmdline> to override)"
+        "antipythony impl command not found (set APX_IMPL=<cmdline> to override)"
     )
 
 
@@ -299,7 +299,7 @@ def test_refcount_api_absent_or_stub_safe():
     # is cross-referenced because the probe runs on the integer-semantics
     # boundary objects (an int whose refcount CPython would expose).
     # The gate is the EXISTENCE projection from probes/refcount_probe.py:
-    # a conforming antipythany has no observable reference counts. Per D3
+    # a conforming antipythony has no observable reference counts. Per D3
     # presence-with-stub-safe-value is also allowed, so the assert accepts
     # (absent) OR (present-but-corpus-prohibited) — it fires only if the
     # probe cannot even run under the impl, or the impl reports
@@ -314,9 +314,9 @@ def test_refcount_api_absent_or_stub_safe():
     assert "has_getrefcount: False" in text or "has_getrefcount: True" in text, (
         f"probe shape unexpected: {text!r}"
     )
-    # The D3-sanctioned antipythany answer (no observable refcounts):
+    # The D3-sanctioned antipythony answer (no observable refcounts):
     assert "has_getrefcount: False" in text, (
-        f"getrefcount present under antipythany; allowed ONLY if stub-safe "
+        f"getrefcount present under antipythony; allowed ONLY if stub-safe "
         f"(D3) — values are never gated, but this gate asserts the "
         f"design-intended absence projection: {text!r}"
     )

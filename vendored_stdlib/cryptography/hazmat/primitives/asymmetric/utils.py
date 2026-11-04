@@ -1,4 +1,4 @@
-"""antipythany deviation shim — cryptography.hazmat.primitives.asymmetric.utils (v0)."""
+"""antipythony deviation shim — cryptography.hazmat.primitives.asymmetric.utils (v0)."""
 from cryptography import (
     Prehashed,
     decode_dss_signature,

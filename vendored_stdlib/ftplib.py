@@ -1,4 +1,4 @@
-"""ftplib — minimal stdlib-compatible surface (antipythany vendored).
+"""ftplib — minimal stdlib-compatible surface (antipythony vendored).
 
 FTP client used by scrapy's feedexport only for FTP URLs (test data);
 the FTP storages are not exercised in the file:// gate. Provide the class

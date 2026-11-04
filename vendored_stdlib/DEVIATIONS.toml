@@ -14,46 +14,45 @@
 # hand-declared from LICENSES/README-vendored-stdlib.md (commit 1cb6250).
 # Upstream: CPython 3.14.7 (PSF-2.0). Do not hand-edit pristine entries.
 
-
 [[file]]
 path = "OpenSSL/SSL.py"
 upstream_path = ""
 status = "deviated"
 upstream_sha256 = ""
-deviated_sha256 = "29ea94e02cadf30e778e03811f9f9cdcdb24c5861870d39da15bc699b245f38b"
-note = "antipythany shim with no CPython counterpart: pyOpenSSL.SSL constant surface (Error, TLS method/OP_* flags) for the twisted import chain; the file:// gate performs no TLS (4b228b8)."
+deviated_sha256 = "40673c10d48e9ffb679ed2e3f2b7b76d8f32af327567eea046dfecd0cf1783a2"
+note = "antipythony shim with no CPython counterpart: pyOpenSSL.SSL constant surface (Error, TLS method/OP_* flags) for the twisted import chain; the file:// gate performs no TLS (4b228b8)."
 
 [[file]]
 path = "OpenSSL/__init__.py"
 upstream_path = ""
 status = "deviated"
 upstream_sha256 = ""
-deviated_sha256 = "19372c9a9db53677cd577064dc93acb1da342d9834cb4abb3fd954af44d48419"
-note = "antipythany shim with no CPython counterpart: pyOpenSSL package namespace stub re-exporting the SSL/version/crypto/_util shim modules (4b228b8)."
+deviated_sha256 = "942d7f962bd2c03f8c30a92949cb8746ed05036ea04a60c34193c83cec890332"
+note = "antipythony shim with no CPython counterpart: pyOpenSSL package namespace stub re-exporting the SSL/version/crypto/_util shim modules (4b228b8)."
 
 [[file]]
 path = "OpenSSL/_util.py"
 upstream_path = ""
 status = "deviated"
 upstream_sha256 = ""
-deviated_sha256 = "85a499e026c348f408a7f44089fd682ca3a1df51b1fea24b2035e5e1832b26a5"
-note = "antipythany shim with no CPython counterpart: inert lib object and byte/text string helpers for the pyOpenSSL import chain (4b228b8)."
+deviated_sha256 = "622fd66cc41d898a742627f4e837e8242b74c58a40d5118fca38e2ee4a24c4b8"
+note = "antipythony shim with no CPython counterpart: inert lib object and byte/text string helpers for the pyOpenSSL import chain (4b228b8)."
 
 [[file]]
 path = "OpenSSL/crypto.py"
 upstream_path = ""
 status = "deviated"
 upstream_sha256 = ""
-deviated_sha256 = "20a69ced4cc6905d7ddddf18a4ff3ddac91918def25528b64563e0b28e8c56e9"
-note = "antipythany shim with no CPython counterpart: pyOpenSSL.crypto constant/inert surface (FILETYPE_*, X509/PKey stubs, load_certificate/load_privatekey); no certificate work happens in the gate (4b228b8)."
+deviated_sha256 = "d702c197268af3c6efe02fca97759597b36b2f8db7880973dad715d3c448af07"
+note = "antipythony shim with no CPython counterpart: pyOpenSSL.crypto constant/inert surface (FILETYPE_*, X509/PKey stubs, load_certificate/load_privatekey); no certificate work happens in the gate (4b228b8)."
 
 [[file]]
 path = "OpenSSL/version.py"
 upstream_path = ""
 status = "deviated"
 upstream_sha256 = ""
-deviated_sha256 = "6631183bb59b800924da3ca512c6038bdc64ada4ead6596b80515ec093e5cc48"
-note = "antipythany shim with no CPython counterpart: constant pyOpenSSL version strings ('23.0.0') for import-time probes (4b228b8)."
+deviated_sha256 = "d7f916abfa0823646ce4d66290456bbc48aa28aa9d9a2d54c2ee60b49ece90ff"
+note = "antipythony shim with no CPython counterpart: constant pyOpenSSL version strings ('23.0.0') for import-time probes (4b228b8)."
 
 [[file]]
 path = "__future__.py"
@@ -68,7 +67,7 @@ path = "_collections_abc.py"
 upstream_path = "_collections_abc.py"
 status = "deviated"
 upstream_sha256 = "50b68b76687edc29824e5d735914b9c9ebb5145b663ba4ab7fce273283356a1c"
-deviated_sha256 = "1d035149d20fe97bc81bb0e698a8d179b7f23568f9700108c0e65a1000df4d15"
+deviated_sha256 = "38466d74540d9e77f39c6dfd77d6a3c8e519e683d24a2327b32e626ddc2e7ed6"
 note = "Declared deviation (LICENSES/README-vendored-stdlib.md): ~80 lines - binding shims for registry/ABC machinery our runtime exposes differently. Re-declared 2026-10-25 (A-4 closeout): 4b228b8 wrapped the bare Set/MutableSet/Mapping/KeysView/ItemsView/ValuesView/MutableMapping concrete-register probes in try/except RuntimeError (legacy name-Type register probe mis-fires in our runtime)."
 
 [[file]]
@@ -77,7 +76,7 @@ upstream_path = ""
 status = "deviated"
 upstream_sha256 = ""
 deviated_sha256 = "8a9874ae92bed055bb69aad8394d7b0665bf06b6e197399ca80f7033955c65b6"
-note = "antipythany helper with no CPython counterpart: one-line T1-d patch marker file (4b228b8)."
+note = "antipythony helper with no CPython counterpart: one-line T1-d patch marker file (4b228b8)."
 
 [[file]]
 path = "_collections_userdict_shim.py"
@@ -85,7 +84,7 @@ upstream_path = ""
 status = "deviated"
 upstream_sha256 = ""
 deviated_sha256 = "2035e9792fd1a26442830decbac851737252e1ab83974e0051b87727229a42ba"
-note = "antipythany helper with no CPython counterpart: one-line placeholder superseded by the collections.py shim (4b228b8)."
+note = "antipythony helper with no CPython counterpart: one-line placeholder superseded by the collections.py shim (4b228b8)."
 
 [[file]]
 path = "_compat_pickle.py"
@@ -100,7 +99,7 @@ path = "_contextvars.py"
 upstream_path = ""
 status = "deviated"
 upstream_sha256 = ""
-deviated_sha256 = "8efb09caaf2aeab94c49e75e47fa9385d4cb1a7b3ba8ef52673fb56a499febad"
+deviated_sha256 = "5bf309436295ef72551e0b48ecf2258605c37455435f5c8b3513b8086be4d405"
 note = "Declared deviation (LICENSES/README-vendored-stdlib.md): runtime-binding shim with no single CPython counterpart file. Re-declared 2026-10-22 (wave-5 audit): 2619a0f extended the shim (Token/Context/copy_context surface); diff reviewed, shim-only."
 
 [[file]]
@@ -164,7 +163,7 @@ path = "_pydecimal.py"
 upstream_path = "_pydecimal.py"
 status = "deviated"
 upstream_sha256 = "b9da2f4c7c740b8ff0d9fa57a0c567898569e5ee740b83c8aef7222fe953e103"
-deviated_sha256 = "a41a4817539bbdafcc97c93211d90f9ed44590ce4b2bf85b1627d6196379b2d2"
+deviated_sha256 = "ba859245f9bb60e59e92d2bdc21b3c9a79ef74311d1bc26a889918054e75d2e5"
 note = "T1 chain: import-time surface adjustments"
 
 [[file]]
@@ -380,7 +379,7 @@ path = "_string_errors.py"
 upstream_path = ""
 status = "deviated"
 upstream_sha256 = ""
-deviated_sha256 = "4323069feca2327db1944f6ba4231da67c2f0b8cb8ca2fbb9ee87d3f3e5cc2d7"
+deviated_sha256 = "083ef75223823e404c6eef1d74e47746aa076c2147dd606606b14f737057e726"
 note = "runtime-side codecs error-handler helpers (no upstream counterpart); T1 chain"
 
 [[file]]
@@ -416,11 +415,27 @@ deviated_sha256 = "e558702a95cdce3febd289da021715d2b92bc43995b8a1bc58dfa1c3d8010
 note = ""
 
 [[file]]
+path = "aiohttp/__init__.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "26562a4d0ed97f2c9d86350e6b77208d849b7c934cfa4b4421a6e065bc4e4d0d"
+note = "antipythony shim with no CPython counterpart: aiohttp import-success surface for the remote_control extension (test data only); the crawl gate never issues HTTP requests and all request methods raise NotImplementedError lazily."
+
+[[file]]
+path = "aiohttp/web/__init__.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "32c3fce356f0a23e8cf2f9163ceeabb054aa7ee3e291bd25e45ea170a89941e3"
+note = "antipythony shim with no CPython counterpart: aiohttp.web v0 surface (Application/RouteTableDef validate-only, run() raises); remote_control imports it at module level but it is never enabled in the gate."
+
+[[file]]
 path = "annotationlib.py"
 upstream_path = "annotationlib.py"
 status = "deviated"
 upstream_sha256 = "1cce29393714b91e3f71571ffbedacc7f73f11ad26be10701debeb86ec059a32"
-deviated_sha256 = "383cba67960321092a78e4baba7a922aab8e1e0424e9d04600104411946c2d7e"
+deviated_sha256 = "cb720d3cec75d170fa7fdddcaa6b772f0505fb6ba4a2bbab2f453aa64ee8c47c"
 note = "Declared deviation (LICENSES/README-vendored-stdlib.md): REPLACED by a self-declared minimal shim (docstring says so); CPython's uses t-strings (PEP 750), outside the v1 grammar. Re-declared 2026-10-22 (wave-5 audit): 2619a0f added the callable-obj annotations branch; shim-only. Re-declared 2026-10-25 (A-4 closeout): b5ca2fd (in-flight sibling snapshot) extended the minimal shim's callable-object annotations branch."
 
 [[file]]
@@ -458,10 +473,10 @@ note = ""
 [[file]]
 path = "asyncio/base_events.py"
 upstream_path = "asyncio/base_events.py"
-status = "pristine"
+status = "deviated"
 upstream_sha256 = "0e1738510759762904a42e114eef136e57fda8cec0c0cb70d1341edf7c5fee79"
-deviated_sha256 = "0e1738510759762904a42e114eef136e57fda8cec0c0cb70d1341edf7c5fee79"
-note = ""
+deviated_sha256 = "582b502896c65742cac42a8687faf1e2359e24374b8422e619d76450a6f26b54"
+note = "antipythony copy of CPython asyncio.base_events with a 5-line deviation: no-op the sys.get/set_asyncgen_hooks calls (not implemented by the runtime yet, native sys surface, sibling-owned) - matches CPython defaults when unset (APX-W110)."
 
 [[file]]
 path = "asyncio/base_futures.py"
@@ -498,10 +513,10 @@ note = ""
 [[file]]
 path = "asyncio/coroutines.py"
 upstream_path = "asyncio/coroutines.py"
-status = "pristine"
+status = "deviated"
 upstream_sha256 = "c5b8563c88e343f3076630aa6545fc77c548ceefb76936a360d7895c13691753"
-deviated_sha256 = "c5b8563c88e343f3076630aa6545fc77c548ceefb76936a360d7895c13691753"
-note = ""
+deviated_sha256 = "8f648af53eeb5d34c6c85d2cbc19c294f02636426a399be3cfb99fb82c3c8f0e"
+note = "antipythony copy of CPython asyncio.coroutines with a 12-line deviation: iscoroutine also accepts the runtime's Namespace coroutine markers (checks the __ap_coroutine__ attr dict directly because getattr may misroute through marker dispatch) (wave-96)."
 
 [[file]]
 path = "asyncio/events.py"
@@ -594,10 +609,10 @@ note = ""
 [[file]]
 path = "asyncio/runners.py"
 upstream_path = "asyncio/runners.py"
-status = "pristine"
+status = "deviated"
 upstream_sha256 = "d3b0765c4bd022dac4d101a034ba8c16b6e9c598e44d7b9d82b3239f3106fe65"
-deviated_sha256 = "d3b0765c4bd022dac4d101a034ba8c16b6e9c598e44d7b9d82b3239f3106fe65"
-note = ""
+deviated_sha256 = "4f2dd5bedddf1b5623cc40c0bca2706a876b821373e87078c4d6ce4e44481748"
+note = "antipythony copy of CPython asyncio.runners with a 1-line deviation: adds an import sys inside the loop for the runtime's sys surface."
 
 [[file]]
 path = "asyncio/selector_events.py"
@@ -650,10 +665,10 @@ note = ""
 [[file]]
 path = "asyncio/tasks.py"
 upstream_path = "asyncio/tasks.py"
-status = "pristine"
+status = "deviated"
 upstream_sha256 = "a97ffdb60a42104a86f2ece781878b3371bd88e9eea8f1ac1fa8f397cc11cca5"
-deviated_sha256 = "a97ffdb60a42104a86f2ece781878b3371bd88e9eea8f1ac1fa8f397cc11cca5"
-note = ""
+deviated_sha256 = "2604152d41c01a0c38f2654e23d04500f8e8295ebc41f5a6afbccdace01a75c8"
+note = "antipythony copy of CPython asyncio.tasks with a 20-line deviation: replaces itertools.count with a local _TaskNameCounter class since the runtime's Iterator __next__ surface returns the object itself; behavior-identical Task-N names (APX-W110)."
 
 [[file]]
 path = "asyncio/threads.py"
@@ -728,12 +743,28 @@ deviated_sha256 = "ed54964aed0bb23931265607c3ef1e38ec09ccb681d298fd1b56e5ac1cd42
 note = ""
 
 [[file]]
+path = "brotli.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "c90c00bc27a78d09641670a85842099543d5c53c2af2d4ce4508595e3523d881"
+note = "antipythony deviation shim with no CPython counterpart: brotli/brotlicffi identity-storage codec (compress frames with a BRS1 marker, decompress strips it); the file:// gate never transfers brotli payloads."
+
+[[file]]
 path = "brotlicffi.py"
 upstream_path = ""
 status = "deviated"
 upstream_sha256 = ""
-deviated_sha256 = "890e2759d7170c202f74355b14412fa491eb908da34c4b2cfaa785cc14ee8120"
-note = "antipythany shim with no CPython counterpart: brotli identity codec (compress frames with a BRS1 marker, decompress strips it); the file:// gate never transfers brotli payloads (4b228b8)."
+deviated_sha256 = "c90c00bc27a78d09641670a85842099543d5c53c2af2d4ce4508595e3523d881"
+note = "antipythony shim with no CPython counterpart: brotli identity codec (compress frames with a BRS1 marker, decompress strips it); the file:// gate never transfers brotli payloads (4b228b8)."
+
+[[file]]
+path = "bz2.py"
+upstream_path = "bz2.py"
+status = "deviated"
+upstream_sha256 = "368b9ee55f0b6dbfc81b15e1a17c51cccddb009389eae8e9a7acf2402ca4109a"
+deviated_sha256 = "dd9b55431257fa30ec4785190f8e62c21ca0a95972e9ea0ee05e09a307d5099b"
+note = "antipythony copy of CPython bz2 rewritten as a minimal stdlib-compatible surface (65 lines vs 352): BZ2 for feedexport postprocessing (test data); imports always succeed, ops raise when the bzip2 CLI is unavailable."
 
 [[file]]
 path = "calendar.py"
@@ -860,7 +891,7 @@ path = "collections.py"
 upstream_path = "collections/__init__.py"
 status = "deviated"
 upstream_sha256 = "cb8367b8edd188662143ea2e3942d360c2deae51c72fd779ec898f5076d2c2b9"
-deviated_sha256 = "e01d3973529061dac46ab8a7cd11e72fafd05f8570b03886bf2efad33125b305"
+deviated_sha256 = "52025ae37e9a3bb070f00d9d759089d464a119faca9e7a7862aafadf73bc57c0"
 note = "Declared deviation (LICENSES/README-vendored-stdlib.md): runtime-binding shim with no single CPython counterpart file. Re-declared 2026-10-25 (A-4 closeout): 4b228b8 extended the shim (deque/UserDict seed for the T1 pickle/csv chain)."
 
 [[file]]
@@ -868,16 +899,16 @@ path = "compression/__init__.py"
 upstream_path = "compression/__init__.py"
 status = "deviated"
 upstream_sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-deviated_sha256 = "9f7ebd32d9ccb68627ff98bb08a152981b5a22731153b4a3449ddb5c86549c65"
-note = "antipythany shim replacing CPython's empty compression package __init__: import-level surface only for the C-backed 3.14 compression package (4b228b8)."
+deviated_sha256 = "50fada627b5cb6240509421f747b939926d56f37df8f91d3b22a78c88bbeacc6"
+note = "antipythony shim replacing CPython's empty compression package __init__: import-level surface only for the C-backed 3.14 compression package (4b228b8)."
 
 [[file]]
 path = "compression/zstd/__init__.py"
 upstream_path = "compression/zstd/__init__.py"
 status = "deviated"
 upstream_sha256 = "4575544839872594ad5c9be284d062384dd5abdd0ddcc0258f6d66dac2c51d60"
-deviated_sha256 = "26abb671908b399cb6b2261eced2d1d5fd5ffaa4acff84ee77d6666f53ab352b"
-note = "antipythany shim replacing CPython's C _zstd-backed compression.zstd (24 lines vs 244): compress/decompress/ZstdFile raise NotImplementedError; the gate uses no zstd (4b228b8)."
+deviated_sha256 = "82a2a16a3d46edf68322f5212f8ca14fe4576cdf1eaadcc7e6856ec2dac304b2"
+note = "antipythony shim replacing CPython's C _zstd-backed compression.zstd (24 lines vs 244): compress/decompress/ZstdFile raise NotImplementedError; the gate uses no zstd (4b228b8)."
 
 [[file]]
 path = "concurrent/__init__.py"
@@ -978,10 +1009,10 @@ note = ""
 [[file]]
 path = "copy.py"
 upstream_path = "copy.py"
-status = "pristine"
+status = "deviated"
 upstream_sha256 = "15154fde290d6e65b5007905689a47a9a5a724822c5e06eec35d9ffbb2a3aa69"
-deviated_sha256 = "15154fde290d6e65b5007905689a47a9a5a724822c5e06eec35d9ffbb2a3aa69"
-note = ""
+deviated_sha256 = "1538ab98d6a69a5062b245cd88e5979c7cf867a44b7255fede54380a2e014cf4"
+note = "antipythony copy of CPython copy with a 15-line deviation: env-gated (APX_SFCDBG) debug printfs pinning the first None-call in the deepcopy reconstruct chain (CrawlerProcess init) (wave-82)."
 
 [[file]]
 path = "copyreg.py"
@@ -992,35 +1023,259 @@ deviated_sha256 = "6376eb5722806396f5842997ac18add369ea9ac3ff4fcfe1460c41a088cac
 note = ""
 
 [[file]]
+path = "cryptography/__init__.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "9d39732091f47a7aec177543d53e1ace3c3d89c4f62ccfac078ad2c19d7758fa"
+note = "antipythony deviation shim with no CPython counterpart: cryptography import-success surface; twisted.conch.ssh imports cryptography.hazmat.* broadly at module level. Re-exports the hazmat package plus inert top-level classes/constants; real crypto raises NotImplementedError lazily."
+
+[[file]]
+path = "cryptography/exceptions.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "3ab009e7299ee61b2066cd906701ad8ca41094e1f21bb1ca8c0465ac80eb5ea8"
+note = "antipythony deviation shim with no CPython counterpart: cryptography.exceptions (v0) - real exception classes pinned vs CPython 3.14 so `except` clauses resolve (wave-110)."
+
+[[file]]
+path = "cryptography/hazmat/__init__.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "f725c720acd6fb949a3d781bfe73fc4972b7c86c4ec40a3904d5ef5b3ce32755"
+note = "antipythony deviation shim with no CPython counterpart: real package so `import cryptography.hazmat.X` resolves (no parent-package synthesis)."
+
+[[file]]
+path = "cryptography/hazmat/backends/__init__.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "3af1324129ae62d4d1cce1969831a88a78f6049d3861e2edc55d09c88c0230a4"
+note = "antipythony deviation shim with no CPython counterpart: re-exports default_backend."
+
+[[file]]
+path = "cryptography/hazmat/decrepit/__init__.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "74606c30bc5e8b5c8549e44e3815100edb0600dc99a6def21a699276c407077d"
+note = "antipythony deviation shim with no CPython counterpart: real package re-exporting the decrepit.ciphers subpackage."
+
+[[file]]
+path = "cryptography/hazmat/decrepit/ciphers/__init__.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "31d31d51c67d06945160fd4f5cad8e43f2f6c7a89e2327155091bcad749a5409"
+note = "antipythony deviation shim with no CPython counterpart: real package re-exporting algorithms."
+
+[[file]]
+path = "cryptography/hazmat/decrepit/ciphers/algorithms.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "d45d0fa268e3bc77cb2c922aacee921480e80a42bceff579f93827c7575d4e39"
+note = "antipythony deviation shim with no CPython counterpart: decrepit TripleDES surface (twisted common.py prefers it when present); inert."
+
+[[file]]
+path = "cryptography/hazmat/primitives/__init__.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "8d28febc9920b4f3cd03579c398f432c3b93a552cc757dee1d75bba7a3966842"
+note = "antipythony deviation shim with no CPython counterpart: real package so `from cryptography.hazmat.primitives import hashes, serialization` resolves (subpackages)."
+
+[[file]]
+path = "cryptography/hazmat/primitives/asymmetric/__init__.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "db1a55a535a157295c9f8a7f55e741e596da6090b2e338962d1ae59baf820978"
+note = "antipythony deviation shim with no CPython counterpart: real package re-exporting dsa/ec/ed25519/rsa/padding/dh/x25519/utils for twisted's SSH import chain."
+
+[[file]]
+path = "cryptography/hazmat/primitives/asymmetric/dh.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "d5a3ec92af3fd12312e4144d4863f73a37c60dcfeaf0f6240c897367fca4174f"
+note = "antipythony deviation shim with no CPython counterpart: re-exports DHParameterNumbers from the cryptography root; surface only, inert."
+
+[[file]]
+path = "cryptography/hazmat/primitives/asymmetric/dsa.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "d068be7fbeade207c77a0d357cb37dccb3e120d344eaa14c10ed228c4cc1b575"
+note = "antipythony deviation shim with no CPython counterpart: re-exports DSAParameterNumbers from the cryptography root; surface only, inert."
+
+[[file]]
+path = "cryptography/hazmat/primitives/asymmetric/ec.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "06b76f7b5b3b490f660fc437b4de121debe44eeab0cd7ed089f72dcdf5a5e1a6"
+note = "antipythony deviation shim with no CPython counterpart: re-exports ec curve classes (BrainpoolP256R1 etc.) from the cryptography root; surface only, inert."
+
+[[file]]
+path = "cryptography/hazmat/primitives/asymmetric/ed25519.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "f3719982faafaee3321bad0a57209139bd5c31d3b65ddec8eff1f8a8968b70f3"
+note = "antipythony deviation shim with no CPython counterpart: re-exports Ed25519 key classes from the cryptography root; surface only, inert."
+
+[[file]]
+path = "cryptography/hazmat/primitives/asymmetric/padding.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "8272fed7b91446a013766702bafc0b39042a86623e270a8ac08431e8ef86a0c4"
+note = "antipythony deviation shim with no CPython counterpart: re-exports AsymmetricPadding from the cryptography root; surface only, inert."
+
+[[file]]
+path = "cryptography/hazmat/primitives/asymmetric/rsa.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "eed1834ecc5756079ab180cd6bebba62ff4305a5547e26714432aac689dbbe0f"
+note = "antipythony deviation shim with no CPython counterpart: re-exports RSA surface from the cryptography root; surface only, inert."
+
+[[file]]
+path = "cryptography/hazmat/primitives/asymmetric/utils.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "cb8d80518056e9e7b04d431ab9b7ba57ddc22b954c9e8e39ae4e6a8eed623e9b"
+note = "antipythony deviation shim with no CPython counterpart: re-exports Prehashed etc. from the cryptography root; surface only, inert."
+
+[[file]]
+path = "cryptography/hazmat/primitives/asymmetric/x25519.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "6ddcdb06c8df577ffff3e32b4e8784888f568aff97c9864686bedeaa6402ddad"
+note = "antipythony deviation shim with no CPython counterpart: re-exports X25519 key classes from the cryptography root; surface only, inert."
+
+[[file]]
+path = "cryptography/hazmat/primitives/ciphers/__init__.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "3e16d47e4e1dd7dc24fcf2b3543cdfbfdab529f688730590e3b5fbc3e05e77be"
+note = "antipythony deviation shim with no CPython counterpart: real package so `from ...ciphers import Cipher, algorithms, modes` resolves; Cipher re-exported from the root."
+
+[[file]]
+path = "cryptography/hazmat/primitives/ciphers/algorithms/__init__.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "ce2e81d820ec26a0bb61a2d3083db0df78a3301e5f0221f90fd3ba2918366ad9"
+note = "antipythony deviation shim with no CPython counterpart: real package so both `import algorithms` and `from ...algorithms import X` forms resolve; re-exports from _mod."
+
+[[file]]
+path = "cryptography/hazmat/primitives/ciphers/algorithms/_mod.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "8c3d693935ca1bbddcf05b828182a15bdad36eeefbbb5c6e5c54cda40f39fb86"
+note = "antipythony deviation shim with no CPython counterpart: single source of cipher-algorithm classes (inert, surface only)."
+
+[[file]]
+path = "cryptography/hazmat/primitives/ciphers/modes.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "8decbcb3cb0ccf59ac2b5f492ed84b62dbad2c1ed8def2b1ff501f9b993617ed"
+note = "antipythony deviation shim with no CPython counterpart: re-exports cipher-mode classes (CBC etc.) from the cryptography root; surface only, inert."
+
+[[file]]
+path = "cryptography/hazmat/primitives/ciphers/modes/__init__.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "777b17daec97ce5894ca88017b23912f6472c651dbdd60c5ebe6c54753545017"
+note = "antipythony deviation shim with no CPython counterpart: real package so both import forms resolve; re-exports from _mod."
+
+[[file]]
+path = "cryptography/hazmat/primitives/ciphers/modes/_mod.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "7187ab940f464fb72dd4757b26575560207ef640c5eaad5eb9dd88f8d69cb9e0"
+note = "antipythony deviation shim with no CPython counterpart: single source of cipher-mode classes (inert, surface only)."
+
+[[file]]
+path = "cryptography/hazmat/primitives/hashes/__init__.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "bebce633ee66463787e730f7a9d8e14e5bb4f30704e79bd2d8028c10d6300b17"
+note = "antipythony deviation shim with no CPython counterpart: real package so both import forms resolve; re-exports from _mod."
+
+[[file]]
+path = "cryptography/hazmat/primitives/hashes/_mod.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "3bddb717267722c65d41985ef0780a7d1c94326006be2ea61c44475db9b8fbb8"
+note = "antipythony deviation shim with no CPython counterpart: single source of hash-algorithm classes (inert, surface only)."
+
+[[file]]
+path = "cryptography/hazmat/primitives/serialization/__init__.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "7d42ef18de89867e2f992e3b5bc6b4454a9669b44b24560c6b8c6a50b83824ab"
+note = "antipythony deviation shim with no CPython counterpart: real package so both import forms resolve; re-exports from _mod."
+
+[[file]]
+path = "cryptography/hazmat/primitives/serialization/_mod.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "6f5fb2520d2cb3ca9337c806e36db06e6a6ff75c1c4b9944a409bfc189bd6047"
+note = "antipythony deviation shim with no CPython counterpart: single source of serialization classes (inert, all ops raise)."
+
+[[file]]
+path = "cryptography/utils.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "8e0d9e3e3f5ac189b65c90fd3c6d96664809acfbac6429adfd69709ad40291d5"
+note = "antipythony deviation shim with no CPython counterpart: cryptography.utils (v0) - int_to_bytes does real work (twisted.conch.ssh SSH framing); everything else is surface, pinned vs CPython 3.14 (wave-110)."
+
+[[file]]
 path = "csv.py"
 upstream_path = "csv.py"
 status = "deviated"
 upstream_sha256 = "1919637c2fbec5a385774b0c7edace6139b3222295a0ba1ba2ea6da75bc28243"
-deviated_sha256 = "1b94ccf980e3cb33db1d9b58bd1377608bb7a431faf5311a0acdb1c21fad2fff"
-note = "antipythany shim replacing CPython's C _csv-backed csv (133 lines vs 527): reader/writer over line iterables plus dialect/QUOTE constants for the spider output writers (4b228b8)."
+deviated_sha256 = "ec60fed911a532eebf4567ec37326b52b718e4e3f2118383f49197c0bf82207b"
+note = "antipythony shim replacing CPython's C _csv-backed csv (133 lines vs 527): reader/writer over line iterables plus dialect/QUOTE constants for the spider output writers (4b228b8)."
 
 [[file]]
 path = "ctypes/__init__.py"
 upstream_path = "ctypes/__init__.py"
 status = "deviated"
 upstream_sha256 = "72f2df568380c275a5596944810953124ff2ee8d678c5f8ddcf50f0f77577eb3"
-deviated_sha256 = "2085575cc3268858c53b2e5d59533ef94cf5fda187403d148da1b32a2ed3267f"
-note = "antipythany shim replacing CPython's C _ctypes-backed ctypes (149 lines vs 683): inert CDLL/cdll loader whose attribute calls return 0; only scrapy.utils.display's libc terminal-width probe is exercised (4b228b8)."
+deviated_sha256 = "5b31b8e10eb4555b7a8cc9a388c549ae7e3c6f79f46102cedebb64ab5c7d2885"
+note = "antipythony shim replacing CPython's C _ctypes-backed ctypes (149 lines vs 683): inert CDLL/cdll loader whose attribute calls return 0; only scrapy.utils.display's libc terminal-width probe is exercised (4b228b8)."
 
 [[file]]
 path = "ctypes/util.py"
 upstream_path = "ctypes/util.py"
 status = "deviated"
 upstream_sha256 = "ca7a95e1850500f469d2a1b45b908163ead044d1ac1f156d68b973972cd793d6"
-deviated_sha256 = "456a85c8ab58ea856cca1bf272329445eb4a4fbe5557a0bd5295cba5ad409019"
-note = "antipythany shim replacing CPython's find_library machinery (5 lines vs 502): find_library always returns None since no real library loading occurs in the gate (4b228b8)."
+deviated_sha256 = "0a282c5b778f6c13a81dba3440dfaa2c5d5d42b609e647abf483f3f27b4cb4e7"
+note = "antipythony shim replacing CPython's find_library machinery (5 lines vs 502): find_library always returns None since no real library loading occurs in the gate (4b228b8)."
 
 [[file]]
 path = "dataclasses.py"
 upstream_path = "dataclasses.py"
 status = "deviated"
 upstream_sha256 = "e8439c8b111856645a8b31e0dbbba532b494426399bad456079c0e5730ad322e"
-deviated_sha256 = "243dec663c3dbac5d7941f3016c18cd9ee0c69ec3e684f533087901624ce89c9"
+deviated_sha256 = "f97c51f80cba06ecbfd3ea0be6c8f43d2bf5180eefd88d5147359434fa7b18f7"
 note = "T1 chain: __dataclass_HAS_DEFAULT_FACTORY__ sentinel + name fixes"
 
 [[file]]
@@ -1036,7 +1291,7 @@ path = "decimal.py"
 upstream_path = "decimal.py"
 status = "deviated"
 upstream_sha256 = "af29fa99aa720a68cab5a6384c7beba4c8e9480a6c1d53a512efeeb5a7e5c781"
-deviated_sha256 = "f95c1c17e685891e2286d1dcda5a0e5ab526c7dc087a5318da5646b1138a3e66"
+deviated_sha256 = "073a27ffbf59e60e985b8218bb12c31c50d3e222cdc0a23f9552f8c63ba6597d"
 note = "T1 chain: Context attribute surface"
 
 [[file]]
@@ -1388,7 +1643,7 @@ path = "encodings/__init__.py"
 upstream_path = "encodings/__init__.py"
 status = "deviated"
 upstream_sha256 = "2b708410495acf12a6fad9d2de928dd89e567537c253eaa2b51aaae578e96c59"
-deviated_sha256 = "79b73e4535a30d8ce975f821383507108bb2d7635c6dcdc2b10ae5ad1d45315c"
+deviated_sha256 = "87663a691ee141814c31fc7e225a1e8a27bd9a7964cb0867273e8dbbad05c84c"
 note = "T1 chain: codec registry adjustments for runtime search path"
 
 [[file]]
@@ -2372,16 +2627,24 @@ path = "enum.py"
 upstream_path = "enum.py"
 status = "deviated"
 upstream_sha256 = "fd23a7598fa1104ef892abcd4154d3627283e6361eb7a91cd11dc4a7b6fb3a93"
-deviated_sha256 = "b450d8dc6614df844de4d02476b33db30e5aac92b3419c7614f9d600373cb5f7"
+deviated_sha256 = "d5a8ebae6de409faaf074c767476ad60e191f56c2aaffd12f0331c362a31d26b"
 note = "Declared deviation (LICENSES/README-vendored-stdlib.md): 1 line - classdict._member_names read via getattr(..., []) fallback; our class-dict instance may lack the attr during partial metaclass construction."
+
+[[file]]
+path = "faulthandler.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "9ea6ae79a17075bd4d88ba2bc5531c83910f01a37202b2500d01c6325f1a3f93"
+note = "antipythony deviation shim with no CPython counterpart: faulthandler stub (v0); native traceback dump is inert under our runtime. pytest imports it for the faulthandler plugin; names provided as no-ops."
 
 [[file]]
 path = "fcntl.py"
 upstream_path = ""
 status = "deviated"
 upstream_sha256 = ""
-deviated_sha256 = "cf734d8607f57b800f0f2ac6c0edc918723caa0600ddcd13c3bad515a44c9e31"
-note = "antipythany shim with no CPython counterpart (fcntl is a C module): fcntl/ioctl/flock flag constants plus an inert fcntl() for twisted's non-blocking fd setup (4b228b8)."
+deviated_sha256 = "b91cfb4f70395f8d0aaad5b7308a96b19f854d3c428c988d0b643568e9edc34e"
+note = "antipythony shim with no CPython counterpart (fcntl is a C module): fcntl/ioctl/flock flag constants plus an inert fcntl() for twisted's non-blocking fd setup (4b228b8)."
 
 [[file]]
 path = "fnmatch.py"
@@ -2392,12 +2655,20 @@ deviated_sha256 = "ce582bc266922e4c682e2a85d72095124430a6bf58716c6f2537103480eae
 note = ""
 
 [[file]]
+path = "ftplib.py"
+upstream_path = "ftplib.py"
+status = "deviated"
+upstream_sha256 = "8cdd78b6090b1e6a98af349ff156e11837e2600fb54d3f415a854d0ac0915e9c"
+deviated_sha256 = "e7038d97c4e13b4d4bf945b2380b37b0b69ce5309d73b23ac7afb386a894a271"
+note = "antipythony copy of CPython ftplib rewritten as a minimal stdlib-compatible surface (76 lines vs 975): import-level surface for the network import chain; no FTP is performed in the gate."
+
+[[file]]
 path = "functools.py"
 upstream_path = "functools.py"
-status = "pristine"
+status = "deviated"
 upstream_sha256 = "9db56d38172c4c9e689b21cc58c8538008b09d86b682faf4dd193b529cdd79d5"
-deviated_sha256 = "9db56d38172c4c9e689b21cc58c8538008b09d86b682faf4dd193b529cdd79d5"
-note = ""
+deviated_sha256 = "1593d82c46ac8c350df8e5fa50f6338ef5a013a3dce30f83d38373fcc093e5e7"
+note = "antipythony copy of CPython functools with a 13-line deviation: WRAPPER_ASSIGNMENTS adds '__wrapped__' (CPython 3.12+, needed by inspect.unwrap + pytest fixture signature lookups) and an __annotate__ fallback to __annotations__ for PEP 749 lazy-annotate strings (W110/W111, T2)."
 
 [[file]]
 path = "genericpath.py"
@@ -2410,10 +2681,10 @@ note = ""
 [[file]]
 path = "gettext.py"
 upstream_path = "gettext.py"
-status = "pristine"
+status = "deviated"
 upstream_sha256 = "54c00df11915aafb017ed23860dcb5197ed063f7ee07e5612625ec86afadcaf5"
-deviated_sha256 = "54c00df11915aafb017ed23860dcb5197ed063f7ee07e5612625ec86afadcaf5"
-note = ""
+deviated_sha256 = "cb6905bbb4ddd9a881792ee4b96c94448aee4a53715674c092d14ad9714ec615"
+note = "antipythony copy of CPython gettext with a 4-line deviation: env-gated stderr trace lines (TR copied / TR returning) for the translation-load diagnostic."
 
 [[file]]
 path = "glob.py"
@@ -2428,8 +2699,8 @@ path = "gzip.py"
 upstream_path = "gzip.py"
 status = "deviated"
 upstream_sha256 = "bc3f00153a2cfdf28ae0cb41f2dde3ee2e39d88efc220c1e47de87fc58e970cb"
-deviated_sha256 = "72e069883d449231a5415fe9355b95160e8fcc3588472f2de9998c0b99779f29"
-note = "antipythany shim replacing CPython's gzip (57 lines vs 719): GZS1-framed storage pseudo-compression built on the zlib shim (real DEFLATE is a documented v0 gap) (4b228b8)."
+deviated_sha256 = "fb33f2550adb5d9a6ef7d61c8c06d8a4172bcfb776363ba7d6660dc7bcca8979"
+note = "antipythony shim replacing CPython's gzip (57 lines vs 719): GZS1-framed storage pseudo-compression built on the zlib shim (real DEFLATE is a documented v0 gap) (4b228b8)."
 
 [[file]]
 path = "hmac.py"
@@ -2437,7 +2708,7 @@ upstream_path = "hmac.py"
 status = "deviated"
 upstream_sha256 = "10e8952ae06300f63a1a8f4898f7f828e8e5ad17bf29240d4e2d106418f0226b"
 deviated_sha256 = "204e3d00519395178be0a46aed59a7b5ba8a39882dcb8ffe11aa15298ff1666b"
-note = "antipythany copy of CPython hmac.py with a 6-line deviation: when the _operator C accelerator is absent, compare_digest falls back to a plain str/bytes equality function (4b228b8, T1-d)."
+note = "antipythony copy of CPython hmac.py with a 6-line deviation: when the _operator C accelerator is absent, compare_digest falls back to a plain str/bytes equality function (4b228b8, T1-d)."
 
 [[file]]
 path = "html/__init__.py"
@@ -2468,7 +2739,7 @@ path = "http/__init__.py"
 upstream_path = "http/__init__.py"
 status = "deviated"
 upstream_sha256 = "ff5f3d443b9174909975e1c9c67573cf2ffd5fbff9fc2e28529c0601cd17ed9b"
-deviated_sha256 = "17e3cba4070b663e661ae9538ca0d951716fcd74446478ac8e1e4ea34331225b"
+deviated_sha256 = "a28be1781e01419218a862abf871aa7f6bf9bae173cbe6722f4071728c9c79b3"
 note = "T1 chain: import surface adjustments"
 
 [[file]]
@@ -2492,7 +2763,7 @@ path = "http/cookies.py"
 upstream_path = "http/cookies.py"
 status = "deviated"
 upstream_sha256 = "d1165ad2e38352b3ca654ef5cc3dbb01233d590f1bed7fc7d1d7c1451a5a11ab"
-deviated_sha256 = "21c16738c66c55ac4f619dabbcac9eecdc431c203adfb0eb7f1538431cb211d7"
+deviated_sha256 = "a89b94bd7bea42e2231e65678136ffba4fadfb9a73957c4b6b535cce7b756a8a"
 note = "T1 chain: import surface adjustments"
 
 [[file]]
@@ -2506,10 +2777,10 @@ note = ""
 [[file]]
 path = "importlib/__init__.py"
 upstream_path = "importlib/__init__.py"
-status = "pristine"
+status = "deviated"
 upstream_sha256 = "72b07de4133a7e39b2f6a7920465669aa04626f217e800779587bc0713fe002e"
-deviated_sha256 = "72b07de4133a7e39b2f6a7920465669aa04626f217e800779587bc0713fe002e"
-note = ""
+deviated_sha256 = "dfcc7d4ace36dc4419d495f603c946b06cc3f412de2842752ccc1855a2beb1b5"
+note = "antipythony copy of CPython importlib with a 9-line deviation: calls _bootstrap_external._install(_bootstrap) in a try/except because the Rust importer aliases _frozen_importlib_external so CPython's frozen-bootstrap _setup never runs _install; without it sys.path_hooks stays empty and PathFinder finds nothing (T2)."
 
 [[file]]
 path = "importlib/_abc.py"
@@ -2524,7 +2795,7 @@ path = "importlib/_bootstrap.py"
 upstream_path = "importlib/_bootstrap.py"
 status = "deviated"
 upstream_sha256 = "e50d35b1191ecbc5f7faecc73f54efd242bcf24c510e4ea5eb64bfba9458c0e3"
-deviated_sha256 = "d99d56d15a13a1958566d24afd41f4db3b9c1635eb291d83ddff285adca15427"
+deviated_sha256 = "b67954888d755b905897e5747037cf0dc36ae138030798a12f022bfdd7f87c2d"
 note = "T1 chain: sys/_warnings module seeding"
 
 [[file]]
@@ -2541,7 +2812,7 @@ upstream_path = "importlib/abc.py"
 status = "deviated"
 upstream_sha256 = "66da663909ac110b77d89d4402589574308aac2a5b524bba014fabd65f34cc99"
 deviated_sha256 = "4d77bc24507fa498b1b53898ceebd19c79bb76163c8033bfefef74c006fd7b07"
-note = "antipythany copy of CPython importlib.abc with a 9-line deviation: _register inlines ABC registration into _abc_registry and skips frozen-class twin registration, working around the runtime's bound-method self handling (4b228b8, T1-d)."
+note = "antipythony copy of CPython importlib.abc with a 9-line deviation: _register inlines ABC registration into _abc_registry and skips frozen-class twin registration, working around the runtime's bound-method self handling (4b228b8, T1-d)."
 
 [[file]]
 path = "importlib/machinery.py"
@@ -2645,7 +2916,7 @@ upstream_path = "importlib/resources/_common.py"
 status = "deviated"
 upstream_sha256 = "fcfb97ce807c692b36ac1b224379b455d64937a210c48c5ae60369bcaabe6456"
 deviated_sha256 = "08533905729cac456106f62fa15a9818a83d1788bb59f5be9a09faa334abd6a8"
-note = "antipythany copy of CPython importlib.resources._common with a 14-line deviation: as_file for str anchors imports the module and returns its on-disk package dir as a Path, supporting scrapy's files('scrapy') VERSION read (4b228b8, T1-d)."
+note = "antipythony copy of CPython importlib.resources._common with a 14-line deviation: as_file for str anchors imports the module and returns its on-disk package dir as a Path, supporting scrapy's files('scrapy') VERSION read (4b228b8, T1-d)."
 
 [[file]]
 path = "importlib/resources/_functional.py"
@@ -2708,7 +2979,7 @@ path = "inspect.py"
 upstream_path = "inspect.py"
 status = "deviated"
 upstream_sha256 = "7a2878507255eb568a6ecfa04e051009f197513aa052eebc9e7e60d667d78cb4"
-deviated_sha256 = "daa0d38d4b7c39e03ef1dcd8b5743409002c8d8ab4d2dd8f2847e712ea04fa0f"
+deviated_sha256 = "144b9bc100fd19cc001e4de287b2877025c6c6103c0af189e025c852bc2d557d"
 note = "Declared deviation (LICENSES/README-vendored-stdlib.md): ~16 lines - annotation/FrameInfo shims. Re-declared 2026-10-22 (wave-5 audit): 2619a0f extended the shim (+15 lines, T1 get_annotations path); diff reviewed, shim-only. Re-declared 2026-10-25 (A-4 closeout): 4b228b8 (T1-d) added CO_* flag constants (replacing the _inspect C accelerator reads), a depth-aware currentframe, and direct mro/__dict__ readers for twisted's frame walking."
 
 [[file]]
@@ -2724,7 +2995,7 @@ path = "jmespath/__init__.py"
 upstream_path = ""
 status = "deviated"
 upstream_sha256 = ""
-deviated_sha256 = "4f75d9137c79631e00dd5e0db1ec4bbb14c19413df2d00b472f5bc521c4b35b1"
+deviated_sha256 = "70a2b5b0143dba269ee80c2812ba3be5bd0fb269ce28852744363a46dfa81f94"
 note = "third-party jmespath vendored (MIT); T1 chain"
 
 [[file]]
@@ -2746,10 +3017,10 @@ note = ""
 [[file]]
 path = "logging/__init__.py"
 upstream_path = "logging/__init__.py"
-status = "pristine"
+status = "deviated"
 upstream_sha256 = "e525bc1ea1744fca8d5a3d1639082eac53eaced7a8543691ceeae71649be0975"
-deviated_sha256 = "e525bc1ea1744fca8d5a3d1639082eac53eaced7a8543691ceeae71649be0975"
-note = ""
+deviated_sha256 = "2b3db76e8530f3ce6616b1abeeb5d3601b8dae3ee6346bbda4b343e20c4fe531"
+note = "antipythony copy of CPython logging with a 9-line deviation: guard self.taskName assignment with events._get_running_loop first - the runtime's RuntimeError-raise path can trigger a deep signature walk that escapes except-Exception (wave-102)."
 
 [[file]]
 path = "logging/config.py"
@@ -2766,6 +3037,14 @@ status = "pristine"
 upstream_sha256 = "e9a472ab09e87f2d9fff5c775047dd9dd9d82cd2be01ef169fd621537976d4e5"
 deviated_sha256 = "e9a472ab09e87f2d9fff5c775047dd9dd9d82cd2be01ef169fd621537976d4e5"
 note = ""
+
+[[file]]
+path = "lzma.py"
+upstream_path = "lzma.py"
+status = "deviated"
+upstream_sha256 = "b01a78a04c6a9ba6c645758cace78ed53a53871ea3ff88744e23f6263613d507"
+deviated_sha256 = "eb9b8a8a99914dc780c40ec8def46da467908af34880cba80411ea592bf04b1a"
+note = "antipythony copy of CPython lzma rewritten as a minimal stdlib-compatible surface (69 lines vs 364): LZMA/xz for feedexport postprocessing (test data); imports succeed, compression ops raise (same contract as the bz2 shim)."
 
 [[file]]
 path = "mimetypes.py"
@@ -2804,7 +3083,7 @@ path = "parsel/__init__.py"
 upstream_path = ""
 status = "deviated"
 upstream_sha256 = ""
-deviated_sha256 = "3ceb9e3c8fbf670a2be5bf7129942d1afe2fb8170827043444e0ab5a77ad6139"
+deviated_sha256 = "00b49ed976bad91290ef16d97c3ace0308456cd3e50b5446fcfb692a71167995"
 note = "shim re-exec of site-packages parsel (T1 chain; see docs/lxml-shim.md)"
 
 [[file]]
@@ -2812,7 +3091,7 @@ path = "parsel/csstranslator/__init__.py"
 upstream_path = ""
 status = "deviated"
 upstream_sha256 = ""
-deviated_sha256 = "f4b6334e0f576a620003b9b5201707632b7c731d83da5a7823031394482b892a"
+deviated_sha256 = "493b2b6b440cea6f802859ac8376e75b71706df801c9b44eaba0b407893d65fa"
 note = "shim re-exec of site-packages parsel (T1 chain; see docs/lxml-shim.md)"
 
 [[file]]
@@ -2820,7 +3099,7 @@ path = "parsel/selector.py"
 upstream_path = ""
 status = "deviated"
 upstream_sha256 = ""
-deviated_sha256 = "e7bc9df58c04a5fb2e92cd190ea02d247590c54f045fd8becb0092d6f1c8e883"
+deviated_sha256 = "e22d13f33950c3cdaa9d021fd71908df376584e0a3a896220dec348745dd165e"
 note = "shim re-exec of site-packages parsel (T1 chain; see docs/lxml-shim.md)"
 
 [[file]]
@@ -2828,8 +3107,8 @@ path = "pathlib/__init__.py"
 upstream_path = "pathlib/__init__.py"
 status = "deviated"
 upstream_sha256 = "042a4d0a5e1ef66778daa86dc269af205bd42d06e793e53d8b99dff4c45928ca"
-deviated_sha256 = "cbb5dc697fb83048ed1e32ebf2c09101c0ba289b91739769c4051883dd36affe"
-note = "antipythany copy of CPython pathlib with an 18-line deviation: PurePath parsing falls back to as_posix() when isinstance checks mis-fire, and read_text joins _raw_paths and reads directly, working around v0 with_segments round-trip loss (4b228b8, T1-d)."
+deviated_sha256 = "bb999babc27b35c196c9e7e7913b905628a5ea9e3cc6a9dc1ed68dfe196dfc43"
+note = "antipythony copy of CPython pathlib with an 18-line deviation: PurePath parsing falls back to as_posix() when isinstance checks mis-fire, and read_text joins _raw_paths and reads directly, working around v0 with_segments round-trip loss (4b228b8, T1-d)."
 
 [[file]]
 path = "pathlib/_local.py"
@@ -2854,6 +3133,14 @@ status = "pristine"
 upstream_sha256 = "723afad22b9629a513c815240644e6312056144efd3f61f66d4f9ec320fdd124"
 deviated_sha256 = "723afad22b9629a513c815240644e6312056144efd3f61f66d4f9ec320fdd124"
 note = ""
+
+[[file]]
+path = "pdb.py"
+upstream_path = "pdb.py"
+status = "deviated"
+upstream_sha256 = "5956fe273910bd6a7496eed2543a16cdd1c17fb5bf49290e90474f2629c62118"
+deviated_sha256 = "f2b8360056f71dd2087b3e034cc995bcafeb33a84570cc367d7659099851cd00"
+note = "antipythony copy of CPython pdb rewritten as an import-success stub (41 lines vs 3682): pytest's --pdb support imports pdb; under our runtime an interactive debugger is inert, so only the names callers touch are provided."
 
 [[file]]
 path = "pickle.py"
@@ -2948,7 +3235,7 @@ path = "pyexpat.py"
 upstream_path = ""
 status = "deviated"
 upstream_sha256 = ""
-deviated_sha256 = "e09ab0e665cdcc13532d151f84f754ff96bf2330e5125b0f93e194bd9769e7db"
+deviated_sha256 = "5aa53e96ef6a6c12d588dc324d7d66d6b5cf56879c7aca4c9b79a6bbc24e4bc7"
 note = "runtime-side pyexpat surface stub (upstream is a C module); T1 chain"
 
 [[file]]
@@ -2964,8 +3251,8 @@ path = "re/__init__.py"
 upstream_path = "re/__init__.py"
 status = "deviated"
 upstream_sha256 = "741a9de729ed8207bfa19db990f8826f1bf3661f33d0970a80c08cd1338ebc35"
-deviated_sha256 = "d0b5f8b9d93d8cf7cea92c8526d72610ca88a5741f85ae71b5dd5ee19b324515"
-note = "Undeclared in LICENSES/README-vendored-stdlib.md - deviation observed by xtask stdlib-provenance at manifest v1 build (2026-10-20): RegexFlag IntFlag construction wrapped in a try/except fallback to plain-int constants (in-file note: 'antipythany v0 (vendored fork)'). Orphaned by leaf 02.08 work; license doc needs an addendum. Re-declared 2026-10-25 (A-4 closeout): 4b228b8 adjusted the RegexFlag try/except fallback tail (flag-constant layout) in the vendored fork."
+deviated_sha256 = "e084210f2c36504592d52ca70719ece1b4ebfe6693cd46a924b84860337670b4"
+note = "Undeclared in LICENSES/README-vendored-stdlib.md - deviation observed by xtask stdlib-provenance at manifest v1 build (2026-10-20): RegexFlag IntFlag construction wrapped in a try/except fallback to plain-int constants (in-file note: 'antipythony v0 (vendored fork)'). Orphaned by leaf 02.08 work; license doc needs an addendum. Re-declared 2026-10-25 (A-4 closeout): 4b228b8 adjusted the RegexFlag try/except fallback tail (flag-constant layout) in the vendored fork."
 
 [[file]]
 path = "re/_casefix.py"
@@ -3016,11 +3303,19 @@ deviated_sha256 = "56588f00a68ef953014f41baf36e0dbb7ed7793f8aa883ebcb1a8bd3787c0
 note = ""
 
 [[file]]
+path = "secrets.py"
+upstream_path = "secrets.py"
+status = "deviated"
+upstream_sha256 = "277000574358a6ecda4bb40e73332ae81a3bc1c8e1fa36f50e5c6a7d4d3f0f17"
+deviated_sha256 = "18c5d755879a4d2a2dc0de069fb8ff0316155a0aaa1c8b002823ff336342c734"
+note = "antipythony copy of CPython secrets rewritten as a stdlib-compatible shim (43 lines vs 71): os.urandom-backed token_hex/token_bytes/token_urlsafe/choice/randbelow + hmac.compare_digest; used by third-party packages."
+
+[[file]]
 path = "select.py"
 upstream_path = ""
 status = "deviated"
 upstream_sha256 = ""
-deviated_sha256 = "b61de784ffe4c2e6b6d766b98700178c55baad99dd9a75ba52f0a932ee040c69"
+deviated_sha256 = "a44291c6daad8b5a1eb0a0ceffcd3c3dd50019dc6d11a057a21876a4b203017b"
 note = "runtime-side select surface stub (upstream is a C module); T1 chain Re-declared 2026-10-25 (A-4 closeout): 4b228b8 extended the select surface stub (additional poll/epoll constants for the twisted reactor import chain)."
 
 [[file]]
@@ -3036,16 +3331,40 @@ path = "service_identity/__init__.py"
 upstream_path = ""
 status = "deviated"
 upstream_sha256 = ""
-deviated_sha256 = "e763ffb8b3d76b3f4fede95fd28b3fbeda7a66b2314302104afda4ec82dd776b"
-note = "antipythany shim with no CPython counterpart: service_identity stub whose verify_hostname/verify_ip_address always pass; the gate performs no TLS (4b228b8)."
+deviated_sha256 = "056f47e0b61df15ae7b6c7fa224dcf610b1bbbd81833bf497372d43220f56668"
+note = "antipythony shim with no CPython counterpart: service_identity stub whose verify_hostname/verify_ip_address always pass; the gate performs no TLS (4b228b8)."
+
+[[file]]
+path = "service_identity/exceptions.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "9d247e6e6b70a733a8787a9b5b9f537df851cce6d3f0639c20fd057ca8d756a5"
+note = "antipythony deviation shim with no CPython counterpart: service_identity.exceptions (v0 wave-110) - real exception classes so `except`/imports in twisted's TLS path resolve; no verification performed."
 
 [[file]]
 path = "service_identity/hazmat.py"
 upstream_path = ""
 status = "deviated"
 upstream_sha256 = ""
-deviated_sha256 = "fc4783ced7d9f56efbf7a6c448aebca81a57ca8086ccb60b2cb384aa4ae0fc86"
-note = "antipythany shim with no CPython counterpart: inert service_identity.hazmat ID classes and verify_service_identity passthrough (4b228b8)."
+deviated_sha256 = "2365f8461b894ce6d10d3810dd0b351d04c7b3a3ada14d37c7ba611f3890aca3"
+note = "antipythony shim with no CPython counterpart: inert service_identity.hazmat ID classes and verify_service_identity passthrough (4b228b8)."
+
+[[file]]
+path = "service_identity/hazmat/__init__.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "643984601747090bb723872fa61581ebdb8f121619a0123a5ad5b8e394ea4c37"
+note = "antipythony deviation shim with no CPython counterpart: inert service_identity.hazmat ID classes (DNS_ID etc.) + verify_service_identity passthrough (wave-110)."
+
+[[file]]
+path = "service_identity/pyopenssl/__init__.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "a0815d3f23dc95d534a6d8558c3a9164c73466ef9b722a0cd8204b718b2ec90b"
+note = "antipythony deviation shim with no CPython counterpart: inert service_identity.pyopenssl extract_from_certificate (returns []); twisted _sslverify chain (wave-110)."
 
 [[file]]
 path = "shlex.py"
@@ -3061,14 +3380,14 @@ upstream_path = "signal.py"
 status = "deviated"
 upstream_sha256 = "0363c964c90ac0b3e515de5749205e6e6454051a1211058375d84d91eab6071a"
 deviated_sha256 = "04a18339a27358090d34df35b5fce4ee7627f4bbae33584a73df74687d0528bb"
-note = "antipythany copy of CPython signal.py with a 9-line deviation: keeps set_wakeup_fd/siginterrupt as module-level passthrough wrappers (twisted's installHandler wakeup-fd plumbing) instead of deleting them with the _globals cleanup (4b228b8, T1-d)."
+note = "antipythony copy of CPython signal.py with a 9-line deviation: keeps set_wakeup_fd/siginterrupt as module-level passthrough wrappers (twisted's installHandler wakeup-fd plumbing) instead of deleting them with the _globals cleanup (4b228b8, T1-d)."
 
 [[file]]
 path = "socket.py"
 upstream_path = "socket.py"
 status = "deviated"
 upstream_sha256 = "4a8747dc77383df192b22bb95f4620cadafeffe6b621c61b1f3b8c386393643c"
-deviated_sha256 = "48bcdc57a943f158d0a71033d7a55e0538cf2c5df99f51b288337e91aa5e2fbd"
+deviated_sha256 = "d8a9495ecc3143cdb2b1306410ef7ba5e1a0ef2b5dc91893044743538c733c45"
 note = "T1 chain: socket surface stub adjustments Re-declared 2026-10-25 (A-4 closeout): 4b228b8 extended the socket shim (error types, address-family/IPPROTO/MSG constants, trivial helpers used by http.client/urllib at import)."
 
 [[file]]
@@ -3080,12 +3399,20 @@ deviated_sha256 = "ecbbe1a633801460399a8f10b39007aa0e13cdbdad507e39414000f097b76
 note = ""
 
 [[file]]
+path = "sqlite3/__init__.py"
+upstream_path = "sqlite3/__init__.py"
+status = "deviated"
+upstream_sha256 = "24b0d5e0b2c2ddee085bc316a71164a8f40b84d3f173cfecbdcc7787fb0e1d83"
+deviated_sha256 = "4de08224aac6e81899c994ad5e736ae111c88c99c121e3acec47ee10dd6b04a1"
+note = "antipythony copy of CPython sqlite3 rewritten as a v0 import-success shim (71 lines vs 57): scrapy's disk queues import sqlite3 for persistence backends; the file:// crawl gate never exercises them (JOBDIR unset -> memory queues); connect raises NotImplementedError lazily."
+
+[[file]]
 path = "ssl.py"
 upstream_path = "ssl.py"
 status = "deviated"
 upstream_sha256 = "21d28174e953bcfd042b328676c52584fcd8b4f0457a4db582b7f0acd78854d5"
-deviated_sha256 = "66c6b164902310ac9a373becca6cdae040946383dcf5563b6291d5c26819ba3d"
-note = "antipythany shim replacing CPython's C _ssl-backed ssl (107 lines): error classes, CERT_/PROTOCOL_/OP_ constants and a stubbed SSLContext for import-time constant reads; no TLS is performed (4b228b8)."
+deviated_sha256 = "b7727765a65bd1f860fcc8008ed036c8f266f80f23fdd59d050c0d457fedec44"
+note = "antipythony shim replacing CPython's C _ssl-backed ssl (107 lines): error classes, CERT_/PROTOCOL_/OP_ constants and a stubbed SSLContext for import-time constant reads; no TLS is performed (4b228b8)."
 
 [[file]]
 path = "stat.py"
@@ -3100,7 +3427,7 @@ path = "string.py"
 upstream_path = ""
 status = "deviated"
 upstream_sha256 = ""
-deviated_sha256 = "ed77eaa9cd86d02e3ada8c9ff0a5cc8666c764b77317c7d54cbf841bd2a248a0"
+deviated_sha256 = "a2447a342d1167b9c2344b5577999d0dd7e57af6b508362bcccfd87038d9e3e1"
 note = "runtime-side Template/Formatter restoration (upstream 3.14 string is a package); s027 fix pass"
 
 [[file]]
@@ -3132,8 +3459,16 @@ path = "threading.py"
 upstream_path = "threading.py"
 status = "deviated"
 upstream_sha256 = "5323909624ec2165e70b6d31333e4191b63d383d2dc5a7d7d516a3475ea2b7e3"
-deviated_sha256 = "12ef17f7dcb41e7746e37c622319b519bbd8d3fac578ae855f3d5d4b888a926c"
-note = "antipythany shim replacing CPython's C _thread-backed threading (96 lines vs 849): inert lock/RLock/Event/Thread primitives since twisted's synchronize and logging paths only need LOCK TYPES to exist (4b228b8)."
+deviated_sha256 = "5cae847d52cd192322c02072278c3be3f9df391c7bf5f47b19915e4a5f055f5c"
+note = "antipythony shim replacing CPython's C _thread-backed threading (96 lines vs 849): inert lock/RLock/Event/Thread primitives since twisted's synchronize and logging paths only need LOCK TYPES to exist (4b228b8)."
+
+[[file]]
+path = "tldextract.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "263501f0840908aef439e7f4ea69ecf9894c0c399727ca55640cbaaced8bf849"
+note = "antipythony deviation shim with no CPython counterpart: tldextract (v0 wave-110) - TLDExtract with a pure-suffix registrar heuristic so scrapy's cookies middleware import-time instantiation succeeds."
 
 [[file]]
 path = "token.py"
@@ -3162,18 +3497,18 @@ note = ""
 [[file]]
 path = "types.py"
 upstream_path = "types.py"
-status = "pristine"
+status = "deviated"
 upstream_sha256 = "8c54d3d5ffc1d1204237e6c69b25c27c7b05b483128f185eeed9ba7ef2229ac2"
-deviated_sha256 = "8c54d3d5ffc1d1204237e6c69b25c27c7b05b483128f185eeed9ba7ef2229ac2"
-note = ""
+deviated_sha256 = "b5ceafe827dfb5b3de5f5021da25e42964d768aeb189ee592239532b8191d849"
+note = "antipythony copy of CPython types with a 7-line deviation: MappingProxyType aliases to dict (type(type.__dict__) resolved to a bare type whose instances answered no mapping methods) and ClassMethodDescriptorType falls back to MethodDescriptorType (our dict Type.__dict__ lacks 'fromkeys') (wave-70, W110)."
 
 [[file]]
 path = "typing.py"
 upstream_path = "typing.py"
-status = "pristine"
+status = "deviated"
 upstream_sha256 = "de569368c2c4958b7aaddbe755056860a89b1d313f69d437177864f37cb2503b"
-deviated_sha256 = "de569368c2c4958b7aaddbe755056860a89b1d313f69d437177864f37cb2503b"
-note = ""
+deviated_sha256 = "cc383d1e0a3ea689011cce75dd8a81bc065305257b82b1a8181db6142bc6dce1"
+note = "antipythony copy of CPython typing with a 16-line deviation: when a later base resolves to a Generic subclass, drop the resolved origin entirely (the subclass already pulls Generic into the MRO; bases-order C3 contradiction, twisted ZipPath) (wave-109)."
 
 [[file]]
 path = "unittest/__init__.py"
@@ -3308,7 +3643,7 @@ path = "urllib/request.py"
 upstream_path = "urllib/request.py"
 status = "deviated"
 upstream_sha256 = "f3464032de00c1fbc839f4657577065ea6efb30d99e5a86e204b1aefdcb77430"
-deviated_sha256 = "6fb4784ff39b2b5fdfda1025f7a99f5dec322133cfbe5455a3bdd03a56945075"
+deviated_sha256 = "8b21c296e46fbdd20237d389c8d51acac2c3de87a8c9a7de5eb96395f4a53c95"
 note = "T1 chain: import surface adjustments"
 
 [[file]]
@@ -3332,16 +3667,16 @@ path = "uuid.py"
 upstream_path = "uuid.py"
 status = "deviated"
 upstream_sha256 = "915321474fa4b27c3e289751e8ffc86e6a134b1244a37ca9053aeb2bf3c7e150"
-deviated_sha256 = "a2384083ab8f28d8aabcf111bf86c223064262c2c260d896b289ea7a61c33416"
-note = "antipythany shim replacing CPython's uuid (94 lines vs 714): uuid4-only surface (os.urandom-based UUID with RFC_4122 variant) for request fingerprints; uuid1/3/5 are absent (4b228b8)."
+deviated_sha256 = "bb991cb61fa6430def101a287053951f5d21b0d0bfef9e6229c9d0a6f5a6393a"
+note = "antipythony shim replacing CPython's uuid (94 lines vs 714): uuid4-only surface (os.urandom-based UUID with RFC_4122 variant) for request fingerprints; uuid1/3/5 are absent (4b228b8)."
 
 [[file]]
 path = "warnings.py"
 upstream_path = "warnings.py"
-status = "pristine"
+status = "deviated"
 upstream_sha256 = "142225786de63c593f1c9abdacf5b4fc0b05dd847f6bed0ebb4b4aa2d4d93b02"
-deviated_sha256 = "142225786de63c593f1c9abdacf5b4fc0b05dd847f6bed0ebb4b4aa2d4d93b02"
-note = ""
+deviated_sha256 = "b4174774cea009257396be05a9dc889a1d100f6d2eca37a3955053cc2fa9322f"
+note = "antipythony copy of CPython warnings with a 9-line deviation: prefer the _py_warnings implementations over the native _warnings (an inert v0 stub that never routes through _showwarnmsg, so catch_warnings(record) captured nothing); raise ImportError to force the fallback (W110)."
 
 [[file]]
 path = "weakref.py"
@@ -3592,19 +3927,27 @@ deviated_sha256 = "d84da9b313d40544a87657a0ea2f9cf719416fd3c3450724c5d2dde5b475d
 note = ""
 
 [[file]]
+path = "zipimport.py"
+upstream_path = "zipimport.py"
+status = "deviated"
+upstream_sha256 = "4de64633a484e16c39fdb46a3f939ce7c577b14a6e9ee49b79871ec1880b4597"
+deviated_sha256 = "11061f68b88b81a354b1f46f8cc2bdeb7cc3649fce01617f990ec881f885b37e"
+note = "antipythony copy of CPython zipimport rewritten as a minimal surface (38 lines vs 822): our runtime reads .py sources directly from the filesystem so zip-archive importing is out of scope; the module exists so `import zipimport` and pkgutil/PyInstaller feature probes succeed."
+
+[[file]]
 path = "zlib.py"
 upstream_path = ""
 status = "deviated"
 upstream_sha256 = ""
-deviated_sha256 = "4a209086ad01cdd4e86565ebd6bb881bf017230afb8a4f2d72726e42266b6cab"
-note = "antipythany shim with no CPython counterpart (zlib is a C module): zlib constants, error, and a GZS1-framed storage compress/decompress; real DEFLATE raises NotImplementedError lazily (4b228b8)."
+deviated_sha256 = "17a170a91615e7b2564d18d24952a26563d7d4cfcde6da7b20c356a3de60dfb7"
+note = "antipythony shim with no CPython counterpart (zlib is a C module): zlib constants, error, and a GZS1-framed storage compress/decompress; real DEFLATE raises NotImplementedError lazily (4b228b8)."
 
 [[file]]
 path = "zope/__init__.py"
 upstream_path = ""
 status = "deviated"
 upstream_sha256 = ""
-deviated_sha256 = "aa352d867af16f44f81a63c89bbd62f44d682329be020b3278d87f06f1873216"
+deviated_sha256 = "7e0b6e6912cb836a86569158d48f914fe8ac84a22412a611a75853fae84d030e"
 note = "advisory-only zope.interface shim package (T1 chain; see docs/lxml-shim.md)"
 
 [[file]]
@@ -3612,7 +3955,7 @@ path = "zope/interface/__init__.py"
 upstream_path = ""
 status = "deviated"
 upstream_sha256 = ""
-deviated_sha256 = "c19eea998aa6c2446a29b084f9088f0387fa3e4c8798b129c55fd45ffd0fa779"
+deviated_sha256 = "d2ad61aa4399ce71c9b62346f476d7b2aae46d2250df8389179a2e96ea232ead"
 note = "advisory-only zope.interface shim package (T1 chain; see docs/lxml-shim.md) Re-declared 2026-10-25 (A-4 closeout): 4b228b8 added direct submodule imports (declarations, adapter, interface) for twisted.python.components."
 
 [[file]]
@@ -3620,7 +3963,7 @@ path = "zope/interface/_shim.py"
 upstream_path = ""
 status = "deviated"
 upstream_sha256 = ""
-deviated_sha256 = "1da49e94a99c400d7d3e9ca79b06a9560a4c173f0f787ea16318e47de83cdba3"
+deviated_sha256 = "7ab704798b43301bbd27bf759423a6cec94398c95e00d19bc22267f393dca890"
 note = "advisory-only zope.interface shim package (T1 chain; see docs/lxml-shim.md) Re-declared 2026-10-25 (A-4 closeout): 4b228b8 extended the shim (Interface submodule surface, AdapterRegistry, Declaration iterable) per the lxml-shim wave."
 
 [[file]]
@@ -3628,22 +3971,21 @@ path = "zope/interface/adapter.py"
 upstream_path = ""
 status = "deviated"
 upstream_sha256 = ""
-deviated_sha256 = "1bafeb0e769ec6e93168d2fd4a3b2e3ee66f08308958395ef2cb1921e02887d0"
-note = "antipythany shim with no CPython counterpart (zope.interface is a third-party project): inert AdapterRegistry whose lookups always miss; the gate never routes real adapters (4b228b8)."
+deviated_sha256 = "8083652bf2d4c626b89f76caf698c8246b0a8b20ddfa5d2e20c45033cf8bc81a"
+note = "antipythony shim with no CPython counterpart (zope.interface is a third-party project): inert AdapterRegistry whose lookups always miss; the gate never routes real adapters (4b228b8)."
 
 [[file]]
 path = "zope/interface/declarations.py"
 upstream_path = ""
 status = "deviated"
 upstream_sha256 = ""
-deviated_sha256 = "ca5d91c189c0add21f12c5d8628ee3e0fc8bdf88971d1e7838be5e657c1a9b57"
-note = "antipythany shim with no CPython counterpart (zope.interface is third-party): inert InterfaceClass/Attribute/implementer declaration surfaces for twisted.python.components (4b228b8)."
+deviated_sha256 = "30dd49baa3468801293cabda14f45ac9f9bc4927a296e1c596145ea12f74a074"
+note = "antipythony shim with no CPython counterpart (zope.interface is third-party): inert InterfaceClass/Attribute/implementer declaration surfaces for twisted.python.components (4b228b8)."
 
 [[file]]
 path = "zope/interface/interface.py"
 upstream_path = ""
 status = "deviated"
 upstream_sha256 = ""
-deviated_sha256 = "de37673dc0b88f1c0434b0618e888b00ba6c490433c02ef25a1136c2903cd331"
-note = "antipythany shim with no CPython counterpart (zope.interface is third-party): minimal InterfaceClass/SpecificationBase token surface backing the advisory-only zope shim (4b228b8)."
-
+deviated_sha256 = "235ac04794e6237d9b32aba5571776867adeda06dffe419d794374b91faa2e91"
+note = "antipythony shim with no CPython counterpart (zope.interface is third-party): minimal InterfaceClass/SpecificationBase token surface backing the advisory-only zope shim (4b228b8)."

@@ -60,7 +60,7 @@ class _PathParents(Sequence):
     def __len__(self):
         return len(self._tail)
 
-    # antipythany T2: ABC-mixin __iter__ doesn't reach instances whose ABC
+    # antipythony T2: ABC-mixin __iter__ doesn't reach instances whose ABC
     # registration is virtual; list()/reversed() then see an empty sequence.
     # Provide the concrete iterator CPython synthesizes from __getitem__.
     def __iter__(self):

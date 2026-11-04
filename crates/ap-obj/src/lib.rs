@@ -1,7 +1,7 @@
 // grandfathered by robustness-ci 02.01 - burn down in leaf work, no NEW sites
 // should add to this; see plans/robustness-ci/02-lint-gates/PROGRESS.md tally.
 #![allow(clippy::unwrap_used)]
-//! # ap-obj — the antipythany Python object model (leaf 02.01)
+//! # ap-obj — the antipythony Python object model (leaf 02.01)
 //!
 //! The core value layer: a tagged `Value`, Python-exact integers (small-int
 //! fast path + arbitrary precision), IEEE-754 floats with CPython's shortest

@@ -1,4 +1,4 @@
-"""antipythany deviation shim — cryptography (v0: import-success surface only).
+"""antipythony deviation shim — cryptography (v0: import-success surface only).
 
 WHY: twisted.conch.ssh (keys/common/transport/_kex) imports
 cryptography.hazmat.* broadly at module level, and scrapy's ExtensionManager
@@ -21,7 +21,7 @@ import types as _types
 
 def _nope(msg):
     def f(*a, **k):
-        raise NotImplementedError("antipythany cryptography shim: %s" % msg)
+        raise NotImplementedError("antipythony cryptography shim: %s" % msg)
 
     return f
 
@@ -30,7 +30,7 @@ class _CryptoOp:
     """Base for op classes: any call raises NotImplementedError."""
 
     def __call__(self, *a, **k):
-        raise NotImplementedError("antipythany cryptography shim: op unsupported")
+        raise NotImplementedError("antipythony cryptography shim: op unsupported")
 
 
 # ------------------------------------------------------- cryptography (root)
@@ -155,7 +155,7 @@ class HashAlgorithm:
 
 class Hash:
     def __init__(self, algorithm=None, backend=None, *a, **k):
-        raise NotImplementedError("antipythany cryptography shim: hashing")
+        raise NotImplementedError("antipythony cryptography shim: hashing")
 
 
 HashContext = _CryptoOp
@@ -676,10 +676,10 @@ class Cipher:
         self.mode = mode
 
     def encryptor(self):
-        raise NotImplementedError("antipythany cryptography shim: encryption")
+        raise NotImplementedError("antipythony cryptography shim: encryption")
 
     def decryptor(self):
-        raise NotImplementedError("antipythany cryptography shim: decryption")
+        raise NotImplementedError("antipythony cryptography shim: decryption")
 
 
 class ciphers:

@@ -1,4 +1,4 @@
-"""aiohttp — minimal import-success surface (antipythany vendored).
+"""aiohttp — minimal import-success surface (antipythony vendored).
 
 Third-party async HTTP client used by some scrapy components (remote_control
 extension, test data only). The crawl gate never issues HTTP requests, so all

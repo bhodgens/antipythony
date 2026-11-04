@@ -139,7 +139,7 @@ __all__ = [
 
 __version__ = "2.2.1"
 
-# antipythany v0 (vendored fork): the full IntFlag enum machinery needs
+# antipythony v0 (vendored fork): the full IntFlag enum machinery needs
 # metaclass __prepare__/EnumDict semantics the runtime doesn't provide yet;
 # fall back to plain-int constants (arithmetic + isinstance(int) still work;
 # RegexFlag-typed introspection is a documented gap).

@@ -2,10 +2,10 @@
 #
 # Authorship: written from the contract + spec pack + leaf gate text ONLY
 # (docs/compat-contract.md C-01..C-03/C-23..C-31, docs/spec/06 §6.4-6.5,
-# plans/antipythany/master.md, 02-native-backend/orchestrator.md 02.06,
+# plans/antipythony/master.md, 02-native-backend/orchestrator.md 02.06,
 # 00-foundation-contract/orchestrator.md 00.04, 04-packaging-ecosystem/
 # orchestrator.md verbs + 04.02). No implementation source under crates/ was
-# read. Per-test citations and CONTRACT-GAPS: plans/antipythany/tests/
+# read. Per-test citations and CONTRACT-GAPS: plans/antipythony/tests/
 # T-09-binary-conformance.md.
 #
 # Structure:
@@ -157,19 +157,19 @@ def _ap_conform_base() -> list:
 
 
 def _cli_cmd() -> list:
-    """The `antipythany` driver (build verb per Plan 04 surface + 02.06 Expose)."""
+    """The `antipythony` driver (build verb per Plan 04 surface + 02.06 Expose)."""
     override = os.environ.get("APX_CLI")
     if override:
         return shlex.split(override)
-    found = shutil.which("antipythany")
+    found = shutil.which("antipythony")
     if found:
         return [found]
     for profile in ("debug", "release"):
-        cand = REPO_ROOT / "target" / profile / "antipythany"
+        cand = REPO_ROOT / "target" / profile / "antipythony"
         if cand.exists():
             return [str(cand)]
     raise FileNotFoundError(
-        "antipythany CLI not found (set APX_CLI=<cmdline> to override)"
+        "antipythony CLI not found (set APX_CLI=<cmdline> to override)"
     )
 
 
@@ -184,7 +184,7 @@ def _build_root() -> Path:
 
 
 def build_binary(script: Path, tag: str) -> Path:
-    """`antipythany build <script> -o <tmp>/<tag>` (02.06 Expose verbatim), then
+    """`antipythony build <script> -o <tmp>/<tag>` (02.06 Expose verbatim), then
     require the artifact to EXIST and be executable — a zero-exit build that
     produces no artifact is a seam failure (GAP-6), not a pass."""
     out = _build_root() / tag
@@ -336,7 +336,7 @@ def test_ap_conform_self_comparison_green_on_slice(rel):
 
 @XFAIL_0206
 def test_build_hello_succeeds():
-    """02.06 Expose: `antipythany build app.py -o app` emits an executable."""
+    """02.06 Expose: `antipythony build app.py -o app` emits an executable."""
     app = build_binary(CORPUS / "001_hello.py", "hello_app")
     assert app.exists()
 

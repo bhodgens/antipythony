@@ -115,6 +115,13 @@ pub fn build_threading_module(interp: &crate::frame::Interpreter) -> Value {
     for cls in ["BrokenBarrierError", "ThreadError"] {
         let _ = ns.set(s(cls), threading_exc_class(interp, cls));
     }
+    // W112: threading._register_atexit — twisted's reactor cleanup and
+    // concurrent.futures register interpreter-exit hooks; the name must
+    // exist and accept the callable (v0: parked, never fired).
+    let _ = ns.set(
+        s("_register_atexit"),
+        crate::builtins_modules::marker("threading._register_atexit"),
+    );
     // excepthook / ExceptHookArgs.
     let _ = ns.set(
         s("excepthook"),
@@ -200,6 +207,13 @@ pub fn call_threading(
                     let _ = f64_arg(v)?; // validated, then ignored (64MB fixed)
                 }
                 Ok(smi(64 << 20))
+            }
+            // W112: park exit hooks (twisted reactor cleanup registers here;
+            // v0 never fires them — cleanup paths only need the call to exist).
+            "_register_atexit" => {
+                let f = args.first().cloned().unwrap_or(Value::None);
+                let _ = f;
+                Ok(Value::None)
             }
             "Lock" | "allocate_lock" => lock_ctor(args),
             "RLock" => rlock_ctor(args),

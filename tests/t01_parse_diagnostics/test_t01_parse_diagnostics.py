@@ -1,9 +1,9 @@
 # T-01 — Parse diagnostics test suite (gates leaf 01.01 ap-parse wrapper).
 #
 # Authorship: written from the spec pack ONLY (docs/spec/04, docs/spec/06,
-# docs/compat-contract.md, plans/antipythany/master.md, 01-frontend-ir
+# docs/compat-contract.md, plans/antipythony/master.md, 01-frontend-ir
 # orchestrator 01.01 Expose/Gate) — no implementation source read. See
-# plans/antipythany/tests/T-01-parse-diagnostics.md for purpose, citations and
+# plans/antipythony/tests/T-01-parse-diagnostics.md for purpose, citations and
 # CONTRACT-GAPS.
 #
 # Contract under test (proposed seam — see CONTRACT-GAPS G-1 in the leaf doc;
@@ -87,7 +87,7 @@ def _ap_parse_check_cmd() -> list[str]:
             return [str(cand)]
     raise FileNotFoundError(
         "ap-parse-check not built yet (leaf 01.01; seam proposed in "
-        "plans/antipythany/tests/T-01-parse-diagnostics.md CONTRACT-GAPS G-1)"
+        "plans/antipythony/tests/T-01-parse-diagnostics.md CONTRACT-GAPS G-1)"
     )
 
 

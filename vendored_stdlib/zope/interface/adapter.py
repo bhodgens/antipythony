@@ -1,4 +1,4 @@
-"""antipythany deviation shim — zope.interface.adapter (AdapterRegistry).
+"""antipythony deviation shim — zope.interface.adapter (AdapterRegistry).
 v0 inert: registration is a no-op, lookup always misses (the file:// gate
 never routes real adapters)."""
 

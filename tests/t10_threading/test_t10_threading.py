@@ -2,15 +2,15 @@
 #
 # Authorship: written from the spec pack ONLY (docs/spec/02-control-flow.md,
 # docs/spec/05-builtins-stdlib-v1.md — the threading row of §5.3.2,
-# docs/compat-contract.md C-14/C-19/C-28/D1, plans/antipythany/master.md,
-# plans/antipythany/tests/README.md, and leaf 02.07's Expose/Gate in
-# plans/antipythany/02-native-backend/orchestrator.md). The author has not read
+# docs/compat-contract.md C-14/C-19/C-28/D1, plans/antipythony/master.md,
+# plans/antipythony/tests/README.md, and leaf 02.07's Expose/Gate in
+# plans/antipythony/02-native-backend/orchestrator.md). The author has not read
 # any implementation source under crates/.
 #
 # This file has THREE kinds of tests:
 #
 #  (A) FIXTURE self-checks (must be GREEN today; they test the corpus, not
-#      antipythany): every tests/corpus/threading/T1*.py has an expected
+#      antipythony): every tests/corpus/threading/T1*.py has an expected
 #      .stdout/.stderr/.exit triple produced by real /opt/homebrew/bin/python3.14
 #      runs; each case is run THREE times here and all three runs must be
 #      byte-identical on all channels (determinism is the enemy — a 3-run drift
@@ -21,9 +21,9 @@
 #      refcount-API lint (C-19/D3); and the reference-vs-reference differential
 #      through `ap-conform run --impl <python3.14>` over the whole slice.
 #
-#  (B) ANTIPYTHANY-side gate tests (xfail(strict=False) until leaf 02.07
+#  (B) ANTIPYTHONY-side gate tests (xfail(strict=False) until leaf 02.07
 #      lands): `ap-conform run --corpus tests/corpus/threading/*.py --impl
-#      <antipythany>` must go green on the whole slice (leaf Gate part 1), plus
+#      <antipythony>` must go green on the whole slice (leaf Gate part 1), plus
 #      per-channel spot gates against pinned triples, plus the GIL-free
 #      correctness differential (T120: parallel CPU results == sequential
 #      baseline bytes).
@@ -33,10 +33,10 @@
 #      runs T121 through serial/parallel modes on the reference and only RECORDS
 #      timings (CPython with GIL is expected near 1.0x — asserting on that would
 #      be asserting CPython's own GIL away). The >=3x gate itself is an xfail
-#      test over the antipythany impl, guarded by a core-count skip (>= 4
+#      test over the antipythony impl, guarded by a core-count skip (>= 4
 #      logical cores; this authoring host reports 24).
 #
-# See plans/antipythany/tests/T-10-threading.md for the case table, per-case
+# See plans/antipythony/tests/T-10-threading.md for the case table, per-case
 # determinism rules, and CONTRACT-GAPS.
 
 import json
@@ -78,9 +78,9 @@ from _ref_python import reference_or_skip  # noqa: E402
 AP_CONFORM = os.environ.get(
     "AP_CONFORM", str(REPO_ROOT / "target" / "debug" / "ap-conform")
 )
-APX_IMPL = os.environ.get("APX_IMPL", "")  # e.g. "target/debug/antipythany run"
+APX_IMPL = os.environ.get("APX_IMPL", "")  # e.g. "target/debug/antipythony run"
 
-XFAIL_REASON = "awaits 02.07 native threading (antipythany impl side)"
+XFAIL_REASON = "awaits 02.07 native threading (antipythony impl side)"
 
 CORES = os.cpu_count() or 1
 
@@ -286,7 +286,7 @@ def test_apconform_self_comparison_green():
 
 
 # ---------------------------------------------------------------------------
-# (B) Antipythany-side gates — xfail(strict=False) until 02.07 lands.
+# (B) Antipythony-side gates — xfail(strict=False) until 02.07 lands.
 # ---------------------------------------------------------------------------
 
 xfail_ap = pytest.mark.xfail(strict=False, reason=XFAIL_REASON)
@@ -299,7 +299,7 @@ def _ap_conform_available():
 def _impl_cmd():
     if APX_IMPL:
         return shlex.split(APX_IMPL)
-    runner = REPO_ROOT / "target" / "debug" / "antipythany"
+    runner = REPO_ROOT / "target" / "debug" / "antipythony"
     if runner.is_file():
         return [str(runner), "run"]
     return None
@@ -307,10 +307,10 @@ def _impl_cmd():
 
 @pytest.mark.skipif(not _ap_conform_available(), reason="ap-conform bin missing")
 @xfail_ap
-def test_apconform_antipythany_full_slice():
+def test_apconform_antipythony_full_slice():
     # Leaf 02.07 Gate part 1: "corpus threading slice green".
     impl = _impl_cmd()
-    assert impl is not None, "no antipythany runner; set APX_IMPL"
+    assert impl is not None, "no antipythony runner; set APX_IMPL"
     proc = subprocess.run(
         [AP_CONFORM, "run", "--corpus", "tests/corpus/threading/*.py",
          "--impl", *impl, "--timeout", "60"],
@@ -336,7 +336,7 @@ def test_apconform_spot_cases_against_pinned_bytes(stem):
     # shape inside threads), Barrier + BrokenBarrierError, SystemExit-in-thread
     # (C-28), no-refcount-visibility (C-19/D1/D3).
     impl = _impl_cmd()
-    assert impl is not None, "no antipythany runner; set APX_IMPL"
+    assert impl is not None, "no antipythony runner; set APX_IMPL"
     case = CORPUS_DIR / (stem + ".py")
     proc = subprocess.run([*impl, str(case)], capture_output=True, timeout=120,
                           cwd=str(REPO_ROOT))
@@ -347,7 +347,7 @@ def test_apconform_spot_cases_against_pinned_bytes(stem):
     ), stem
     # NOTE: T109's pinned stderr contains the reference's own threading.py
     # bootstrap frames with absolute lib paths — see CONTRACT-GAPS G-1 in
-    # plans/antipythany/tests/T-10-threading.md. This spot gate stays xfail
+    # plans/antipythony/tests/T-10-threading.md. This spot gate stays xfail
     # until that gap is resolved by spec/impl, not by re-pinning.
 
 
@@ -358,7 +358,7 @@ def test_gil_free_correctness_differential():
     # reference triple (sequential == parallel). SPEED is not asserted here
     # (D4); the scaling harness below measures it.
     impl = _impl_cmd()
-    assert impl is not None, "no antipythany runner; set APX_IMPL"
+    assert impl is not None, "no antipythony runner; set APX_IMPL"
     case = CORPUS_DIR / "T120-gil-free-cpu-probe.py"
     proc = subprocess.run([*impl, str(case)], capture_output=True, timeout=300,
                           cwd=str(REPO_ROOT))
@@ -372,7 +372,7 @@ def test_gil_free_correctness_differential():
 
 # ---------------------------------------------------------------------------
 # (C) Scaling harness — measured-not-asserted for the reference; the >=3x
-#     gate over antipythany is xfail until 02.07 lands.
+#     gate over antipythony is xfail until 02.07 lands.
 # ---------------------------------------------------------------------------
 
 
@@ -396,12 +396,12 @@ def _measure(mode, cmd_runner):
 
 
 def test_scaling_harness_plumbing_records_reference_timings():
-    # GREEN plumbing check (tests the harness, not antipythany): T121 runs in
+    # GREEN plumbing check (tests the harness, not antipythony): T121 runs in
     # both modes under the reference and the harness records finite positive
     # timings. We PRINT the speedup and assert nothing about its magnitude —
     # CPython 3.14 here is GIL-enabled (sys._is_gil_enabled() is True), so its
     # speedup is ~1.0x and pinning that would contradict "measured-not-
-    # asserted". The >=3x gate is only over the GIL-free antipythany impl.
+    # asserted". The >=3x gate is only over the GIL-free antipythony impl.
     ref = reference_or_skip()
     serial = _measure("serial", [ref])
     parallel = _measure("parallel", [ref])
@@ -414,14 +414,14 @@ def test_scaling_harness_plumbing_records_reference_timings():
 
 @pytest.mark.skipif(CORES < 4, reason=f"scaling gate needs >=4 cores (host has {CORES})")
 @xfail_ap
-def test_scaling_gate_3x_on_4cores_antipythany():
+def test_scaling_gate_3x_on_4cores_antipythony():
     # Leaf 02.07 Gate part 2: "scaling case >= 3x on 4 cores". Run T121 in
-    # serial and parallel modes under the antipythany impl, best-of-3 wall
+    # serial and parallel modes under the antipythony impl, best-of-3 wall
     # times, and assert speedup >= 3.0. Guarded by machine core count: this
     # authoring host has 24 logical cores; CI boxes with <4 cores SKIP
     # (annotated above) rather than false-fail.
     impl = _impl_cmd()
-    assert impl is not None, "no antipythany runner; set APX_IMPL"
+    assert impl is not None, "no antipythony runner; set APX_IMPL"
     serial = _measure("serial", impl)
     parallel = _measure("parallel", impl)
     speedup = serial / parallel

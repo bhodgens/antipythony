@@ -6097,7 +6097,7 @@ ExtendedContext = Context(
 # lookahead expression '(?=\d|\.\d)' checks this.
 
 import re
-# antipythany deviation (DEVIATIONS.toml): CPython's VERBOSE multi-line
+# antipythony deviation (DEVIATIONS.toml): CPython's VERBOSE multi-line
 # form trips this runtime's sre parser (whitespace/group interaction).
 # Single-line equivalent: same groups, same semantics ('\\z' strict end).
 _parser = re.compile(

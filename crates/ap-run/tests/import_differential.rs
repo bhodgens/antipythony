@@ -39,7 +39,7 @@ fn ap_run_eval_dyn() -> String {
 }
 
 /// Run `src` under both interpreters with the fixture dir prepended to the
-/// path (ANTPYTHANY_PATH for us, PYTHONPATH for the reference); assert
+/// path (ANTIPTYHONY_PATH for us, PYTHONPATH for the reference); assert
 /// identical stdout + exit code.
 fn assert_differential_with_path(src: &str, fixture: &std::path::Path) {
     let py = match common::reference_or_skip() {
@@ -62,7 +62,7 @@ fn assert_differential_with_path(src: &str, fixture: &std::path::Path) {
         .expect("spawn python3.14");
     let actual = Command::new(ap_run_eval())
         .arg(&tmp)
-        .env("ANTPYTHANY_PATH", fixture)
+        .env("ANTIPTYHONY_PATH", fixture)
         .output()
         .expect("spawn ap-run-eval");
     std::fs::remove_file(&tmp).ok();
@@ -166,7 +166,7 @@ fn import_error_texts_byte_exact() {
             .expect("spawn python3.14");
         let actual = Command::new(ap_run_eval())
             .arg(&tmp)
-            .env("ANTPYTHANY_PATH", &root)
+            .env("ANTIPTYHONY_PATH", &root)
             .output()
             .expect("spawn ap-run-eval");
         std::fs::remove_file(&tmp).ok();

@@ -1,4 +1,4 @@
-"""antipythany deviation shim — zope (namespace package placeholder).
+"""antipythony deviation shim — zope (namespace package placeholder).
 
 vendored_stdlib precedes site-packages on sys.path, so this package SHADOWS
 the real zope.interface for the runtime. See docs/lxml-shim.md

@@ -454,10 +454,10 @@ class Morsel(dict):
 
 _LegalKeyChars  = r"\w\d!#%&'~_`><@,:/\$\*\+\-\.\^\|\)\(\?\}\{\="
 _LegalValueChars = _LegalKeyChars + r'\[\]'
-# antipythany deviation (DEVIATIONS.toml): the CPython VERBOSE multi-line
+# antipythony deviation (DEVIATIONS.toml): the CPython VERBOSE multi-line
 # form trips this runtime's sre whitespace handling after a lazy quantifier
 # ('+?' across a newline). Single-line equivalent, same semantics.
-# antipythany deviation (DEVIATIONS.toml): the CPython VERBOSE multi-line
+# antipythony deviation (DEVIATIONS.toml): the CPython VERBOSE multi-line
 # form trips this runtime's sre whitespace handling after a lazy quantifier
 # ('+?' across a newline). Single-line equivalent, same semantics.
 _CookiePattern = re.compile(

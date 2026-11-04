@@ -1,4 +1,4 @@
-"""antipythany deviation shim - zlib (upstream is a C module; docs/lxml-shim.md).
+"""antipythony deviation shim - zlib (upstream is a C module; docs/lxml-shim.md).
 Import-level surface only for the T1 file:// gate (no network compression fires).
 Real compression raises NotImplementedError lazily."""
 
@@ -29,7 +29,7 @@ class error(Exception):
 
 
 def _unimplemented(*args, **kwargs):
-    raise NotImplementedError("zlib compression not supported by the antipythany v0 shim")
+    raise NotImplementedError("zlib compression not supported by the antipythony v0 shim")
 
 
 compress = _unimplemented

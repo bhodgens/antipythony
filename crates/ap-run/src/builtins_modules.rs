@@ -130,7 +130,15 @@ pub(crate) fn truthy(v: &Value) -> bool {
 }
 
 pub(crate) fn py_lt(a: &Value, b: &Value) -> Result<bool, Flow> {
-    ap_obj::ops::lt(a, b).map_err(Flow::from_py)
+    // W112: user ordering slots FIRST (heapq sift on TimerHandle.__lt__,
+    // asyncio call_at heap). values_cmp TypeErrors on user instances;
+    // user_lt_public dispatches __lt__/reflected __gt__ and returns None
+    // when no slot exists (then the builtin path keeps its exact errors).
+    let user_hit = crate::interp::user_lt_public(a, b);
+    match user_hit {
+        Some(r) => r,
+        None => ap_obj::ops::lt(a, b).map_err(Flow::from_py),
+    }
 }
 
 pub(crate) fn py_eq(a: &Value, b: &Value) -> bool {
@@ -9383,7 +9391,7 @@ pub fn call_platform(name: &str, args: &[Value], _kwargs: &[(String, Value)]) ->
             "node" => Ok(s(hostname())),
             "processor" => Ok(s("")),
             "python_version" => Ok(s("3.14.0")),
-            "python_implementation" => Ok(s("antipythany")),
+            "python_implementation" => Ok(s("antipythony")),
             "uname" => {
                 let u = uname_tuple();
                 let obj = PyObject::new(ap_obj::ObjKind::NamedTuple, "uname_result");
@@ -10892,7 +10900,7 @@ pub fn call_zlib(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opt
             // previous vendored shim (zipfile deflate path).
             "compressobj" | "decompressobj" => Err(raise(
                 "NotImplementedError",
-                "zlib streaming objects (compressobj/decompressobj) are not supported by the antipythany v1 runtime",
+                "zlib streaming objects (compressobj/decompressobj) are not supported by the antipythony v1 runtime",
             )),
             _ => Err(raise("SystemError", format!("zlib fn {name} unbound"))),
         }
@@ -17885,11 +17893,11 @@ fn build_importlib_metadata(_i: &crate::frame::Interpreter) -> Value {
 
 
 /// T2: scan the runtime site-packages roots for `<name>*.dist-info/
-/// METADATA` and return the Version. Roots: $ANTPYTHANY_PATH entries
+/// METADATA` and return the Version. Roots: $ANTIPTYHONY_PATH entries
 /// plus the default cache site-packages.
 fn find_dist_version(name: &str) -> Option<String> {
     let mut roots: Vec<std::path::PathBuf> = Vec::new();
-    if let Ok(env) = std::env::var("ANTPYTHANY_PATH") {
+    if let Ok(env) = std::env::var("ANTIPTYHONY_PATH") {
         for p in env.split(':') {
             if !p.is_empty() {
                 roots.push(std::path::PathBuf::from(p));

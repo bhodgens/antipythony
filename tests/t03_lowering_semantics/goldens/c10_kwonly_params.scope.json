@@ -6,7 +6,7 @@
  ],
  "cpython_3147_rc": 0,
  "cpython_3147_stdout": "7\n13\n",
- "derivation": "scope cell/free/global sets hand-derived from spec rules S-02-1/2/3/5/12/13 (+S-02-7/20/26/28/30/34/38, S-01-16, S-04-06/07/08) per the table in plans/antipythany/tests/T-03-lowering-semantics.md; stdout/rc are CPython 3.14.7 (/opt/homebrew/bin/python3.14) reference output for the corpus program",
+ "derivation": "scope cell/free/global sets hand-derived from spec rules S-02-1/2/3/5/12/13 (+S-02-7/20/26/28/30/34/38, S-01-16, S-04-06/07/08) per the table in plans/antipythony/tests/T-03-lowering-semantics.md; stdout/rc are CPython 3.14.7 (/opt/homebrew/bin/python3.14) reference output for the corpus program",
  "program": "c10_kwonly_params",
  "scopes": [
   {

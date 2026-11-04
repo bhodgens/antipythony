@@ -18,7 +18,7 @@
 //! nested-function table. Traceback source echo for imported frames reuses
 //! the main module's source table (documented divergence).
 //!
-//! sys.path bootstrap: [script_dir, vendored_stdlib] + ANTPYTHANY_PATH env
+//! sys.path bootstrap: [script_dir, vendored_stdlib] + ANTIPTYHONY_PATH env
 //! entries. `--path` on ap-run-eval appends extra entries.
 
 use std::cell::RefCell;
@@ -90,7 +90,7 @@ thread_local! {
 }
 
 /// sys.path bootstrap: [script_dir] + vendored_stdlib + **fetched
-/// site-packages** + ANTPYTHANY_PATH (04.01/04.02 integration: the uv fetch
+/// site-packages** + ANTIPTYHONY_PATH (04.01/04.02 integration: the uv fetch
 /// dir joins AFTER vendored_stdlib so a fetched package can never shadow a
 /// stdlib module, and BEFORE env/extra entries — env wins for dev overrides).
 /// Idempotent (re-running clears and rebuilds — tests spawn fresh processes).
@@ -106,7 +106,7 @@ pub fn bootstrap_sys_path(script_dir: &str, extra: &[String]) {
     if let Some(sp) = site_packages_for_script(script_dir) {
         path.push(sp);
     }
-    if let Ok(env) = std::env::var("ANTPYTHANY_PATH") {
+    if let Ok(env) = std::env::var("ANTIPTYHONY_PATH") {
         for e in env.split(':') {
             if !e.is_empty() {
                 path.push(e.to_string());
@@ -138,10 +138,10 @@ pub fn bootstrap_sys_path(script_dir: &str, extra: &[String]) {
 /// (04.02 `run` integration; used by BOTH ap-cli `run` and ap-run-eval).
 ///
 /// Resolution: walk up from script_dir for a project manifest. Found AND
-/// recording at least one dependency (antipythany.toml `[[dependency]]`, or
-/// a non-empty antipythany.lock) -> the fetched site-packages dir
-/// (`$ANTPYTHANY_CACHE/site-packages`, default
-/// `~/.cache/antipythany/site-packages`). No manifest / no deps -> None (a
+/// recording at least one dependency (antipythony.toml `[[dependency]]`, or
+/// a non-empty antipythony.lock) -> the fetched site-packages dir
+/// (`$ANTIPTYHONY_CACHE/site-packages`, default
+/// `~/.cache/antipythony/site-packages`). No manifest / no deps -> None (a
 /// dep-free run must not put a random cache on sys.path — cache content is
 /// only meaningful when the project fetched something).
 pub fn site_packages_for_script(script_dir: &str) -> Option<String> {
@@ -168,9 +168,9 @@ pub fn site_packages_for_script(script_dir: &str) -> Option<String> {
 }
 
 /// The vendored_stdlib/ dir at the repo root (resolved relative to this
-/// crate's manifest; also overridable via ANTPYTHANY_STDLIB for installs).
+/// crate's manifest; also overridable via ANTIPTYHONY_STDLIB for installs).
 pub fn vendored_stdlib_dir() -> Option<String> {
-    if let Ok(v) = std::env::var("ANTPYTHANY_STDLIB") {
+    if let Ok(v) = std::env::var("ANTIPTYHONY_STDLIB") {
         if std::path::Path::new(&v).is_dir() {
             return Some(v);
         }
@@ -1003,8 +1003,15 @@ pub(crate) fn import_file_module(interp: &Rc<Interpreter>, name: &str) -> EResul
         if let (Some((parent_name, child_name)), Value::Obj(po)) = (full.rsplit_once('.'), &m) {
             if let Some(pv) = sys_modules_get(parent_name) {
                 if let Value::Obj(pp) = pv {
-                    if let Some(pns) = &*pp.module_ns.borrow_mut() {
-                        let _ = pns.set(s(child_name), m.clone());
+                    // W112: try_borrow_mut — a re-entrant import (module body
+                    // importing a sibling while the parent link is already
+                    // held) panics the whole run on a plain borrow_mut; the
+                    // link is idempotent so skipping a contended write is
+                    // safe (the winner sets the same value).
+                    if let Ok(mut pns_ref) = pp.module_ns.try_borrow_mut() {
+                        if let Some(pns) = &*pns_ref {
+                            let _ = pns.set(s(child_name), m.clone());
+                        }
                     }
                 }
             }

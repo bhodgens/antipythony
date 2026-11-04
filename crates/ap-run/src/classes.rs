@@ -2526,7 +2526,7 @@ pub fn attr_get_protocol(interp: &Rc<Interpreter>, obj: &Value, name: &str) -> E
                 let mut cattrs = code.attrs.borrow_mut();
                 let _ = cattrs.set(
                     Value::Str(PyString::new("co_filename")),
-                    Value::Str(PyString::new("<antipythany>")),
+                    Value::Str(PyString::new("<antipythony>")),
                 );
                 let oname = match obj {
                     Value::Obj(o) => o.name.clone(),

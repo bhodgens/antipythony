@@ -1,4 +1,4 @@
-# Vendored string extensions (antipythany s027 fix pass).
+# Vendored string extensions (antipythony s027 fix pass).
 #
 # Template/Formatter are pure Python in CPython 3.14 (Lib/string.py,
 # PSF-2.0); a hand-rolled scanner replaces the CPython regex engine here —

@@ -1,4 +1,4 @@
-"""antipythany deviation shim — gzip (v0: zlib-shim storage framing)."""
+"""antipythony deviation shim — gzip (v0: zlib-shim storage framing)."""
 
 import struct
 import zlib

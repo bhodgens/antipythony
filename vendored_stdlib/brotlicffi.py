@@ -1,4 +1,4 @@
-"""antipythany deviation shim — brotli/brotlicffi (v0: identity storage
+"""antipythony deviation shim — brotli/brotlicffi (v0: identity storage
 codec; the file:// gate never transfers brotli-encoded payloads)."""
 
 

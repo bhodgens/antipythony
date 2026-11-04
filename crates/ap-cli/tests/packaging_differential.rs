@@ -1,6 +1,6 @@
 //! packaging_differential — leaves 04.01 + 04.02 end-to-end gates.
 //!
-//! Real PyPI packages through the REAL CLI: `antipythany add <pkg>` (uv
+//! Real PyPI packages through the REAL CLI: `antipythony add <pkg>` (uv
 //! subprocess, pure-wheel filter) -> `import <pkg>` -> use -> byte-exact
 //! stdout/stderr/exit vs CPython 3.14 running the same package version.
 //! Also gates the fail-loud paths: native-component add (APX-CEXT
@@ -18,8 +18,8 @@ mod common;
 
 use std::process::Command;
 
-fn antipythany() -> String {
-    bin_path("antipythany")
+fn antipythony() -> String {
+    bin_path("antipythony")
 }
 
 fn ap_run_eval() -> String {
@@ -73,18 +73,18 @@ fn run_cli_in(
     cwd: &std::path::Path,
     args: &[&str],
 ) -> std::process::Output {
-    Command::new(antipythany())
+    Command::new(antipythony())
         .args(args)
         .current_dir(cwd)
         .env("HOME", scratch.join("home"))
-        .env("ANTPYTHANY_CACHE", scratch.join("cache"))
+        .env("ANTIPTYHONY_CACHE", scratch.join("cache"))
         .env("LANG", "C")
         .output()
-        .expect("spawn antipythany")
+        .expect("spawn antipythony")
 }
 
 /// Execute `src` under BOTH interpreters with the fetched site-packages on
-/// the path (ANTPYTHANY_CACHE env for ap-run-eval; PYTHONPATH for CPython).
+/// the path (ANTIPTYHONY_CACHE env for ap-run-eval; PYTHONPATH for CPython).
 /// Asserts byte-identical stdout/stderr + exit code.
 fn assert_byte_exact(
     py: &str,
@@ -103,7 +103,7 @@ fn assert_byte_exact(
         .expect("spawn python3.14");
     let actual = Command::new(ap_run_eval())
         .arg(&case)
-        .env("ANTPYTHANY_CACHE", cache_root)
+        .env("ANTIPTYHONY_CACHE", cache_root)
         .env("HOME", scratch.join("home"))
         .env("LANG", "C")
         .output()
@@ -180,7 +180,7 @@ print(six.iteritems({'k': 1}) is not None or True)
     std::fs::write(proj.join("app.py"), src).unwrap();
     // The CPython reference needs the SAME package version: read the pin
     // from our lock and install into a scratch venv-target for the py side.
-    let lock = std::fs::read_to_string(proj.join("antipythany.lock")).unwrap();
+    let lock = std::fs::read_to_string(proj.join("antipythony.lock")).unwrap();
     assert!(
         lock.contains("created_by = \"uv\""),
         "lock must record uv provenance"
@@ -291,7 +291,7 @@ fn add_native_wheel_fails_with_cext_diagnostic() {
     );
     assert!(err.contains("native_demo"), "module name missing: {err}");
     // C-11: nothing entered the lock.
-    let lock = proj.join("antipythany.lock");
+    let lock = proj.join("antipythony.lock");
     if lock.exists() {
         let text = std::fs::read_to_string(&lock).unwrap();
         assert!(
@@ -309,14 +309,14 @@ fn add_without_uv_errors_helpfully() {
     let _ = run_cli(&d, &["new", "myapp"]);
     let emptybin = d.join("emptybin");
     std::fs::create_dir_all(&emptybin).unwrap();
-    let out = Command::new(antipythany())
+    let out = Command::new(antipythony())
         .args(["add", "six"])
         .current_dir(&proj)
         .env("HOME", d.join("home"))
-        .env("ANTPYTHANY_CACHE", d.join("cache"))
+        .env("ANTIPTYHONY_CACHE", d.join("cache"))
         .env("PATH", emptybin.to_string_lossy().into_owned())
         .output()
-        .expect("spawn antipythany");
+        .expect("spawn antipythony");
     let text = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
@@ -363,7 +363,7 @@ fn run_populates_and_reuses_cache_entries() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(
-        out.stdout.windows(18).any(|w| w == b"hello, antipythany"),
+        out.stdout.windows(18).any(|w| w == b"hello, antipythony"),
         "run must execute the program: {}",
         String::from_utf8_lossy(&out.stdout)
     );
@@ -433,14 +433,14 @@ fn sys_path_ordering_proof() {
         "import sys\n[print(p) for p in sys.path]\n",
     )
     .unwrap();
-    let out = Command::new(antipythany())
+    let out = Command::new(antipythony())
         .args(["run", "dump.py"])
         .current_dir(&proj)
         .env("HOME", d.join("home"))
-        .env("ANTPYTHANY_CACHE", d.join("cache"))
+        .env("ANTIPTYHONY_CACHE", d.join("cache"))
         .env("LANG", "C")
         .output()
-        .expect("spawn antipythany");
+        .expect("spawn antipythony");
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
     let lines: Vec<&str> = text.lines().map(str::trim).collect();
     assert!(out.status.success(), "{text}");

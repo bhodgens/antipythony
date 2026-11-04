@@ -1,4 +1,4 @@
-"""antipythany deviation shim — OpenSSL package namespace (v0)."""
+"""antipythony deviation shim — OpenSSL package namespace (v0)."""
 from . import SSL  # noqa: F401
 from . import version  # noqa: F401
 from . import crypto  # noqa: F401

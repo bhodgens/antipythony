@@ -1,7 +1,7 @@
 # A-1 — RustPython leaf-donor adaptations, wave 1: SPEC-SIDE differential suite.
 #
 # Authorship: written from the leaf brief ONLY
-# (plans/antipythany/05-ecosystem-t2/leaves/a-1-rustpython-adaptations-w1.md)
+# (plans/antipythony/05-ecosystem-t2/leaves/a-1-rustpython-adaptations-w1.md)
 # plus live probing of the reference interpreter /opt/homebrew/bin/python3.14
 # (3.14.7 — the spec made executable, per the separate-authorship test-track
 # rule in tests/README.md). The author has NOT read any implementation source
@@ -26,7 +26,7 @@
 #      BYTE-EXACTLY. The pins are the CPython 3.14 contract; they also
 #      self-check this suite against interpreter drift.
 #
-#  (B) ANTIPYTHANY face (xfail, strict=False, until leaf A-1 lands): each
+#  (B) ANTIPYTHONY face (xfail, strict=False, until leaf A-1 lands): each
 #      probe run under the implementation seam (`ap-run-eval <file>`, the
 #      T-05/T-06 testability bin; APX_RUN_EVAL overrides) must produce the
 #      same stdout bytes and exit code 0. The impl is landing in a sibling

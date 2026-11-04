@@ -2,7 +2,7 @@
 
 This directory holds the differential-conformance track: Python corpus
 cases with pinned expected output, plus pytest suites that run them
-against live CPython 3.14 and the antipythany executor.
+against live CPython 3.14 and the antipythony executor.
 
 ## Corpus layout
 

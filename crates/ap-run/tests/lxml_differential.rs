@@ -1,4 +1,4 @@
-//! 02.08-c differential gates: the antipythany native lxml shim vs
+//! 02.08-c differential gates: the antipythony native lxml shim vs
 //! CPython 3.14 + real lxml. Byte-exact comparison on a fixed corpus.
 //!
 //! Reference interpreter: CPython 3.14 with lxml installed in a uv venv at
@@ -8,9 +8,9 @@
 use std::process::Command;
 
 fn ap_bin() -> String {
-    std::env::var("CARGO_BIN_EXE_antipythany").unwrap_or_else(|_| {
+    std::env::var("CARGO_BIN_EXE_antipythony").unwrap_or_else(|_| {
         format!(
-            "{}/../../target/debug/antipythany",
+            "{}/../../target/debug/antipythony",
             env!("CARGO_MANIFEST_DIR")
         )
     })
@@ -51,14 +51,14 @@ fn diff_check_main(body: &str) {
     let bin = ap_bin();
     assert!(
         std::path::Path::new(&bin).exists(),
-        "antipythany binary missing at {}",
+        "antipythony binary missing at {}",
         bin
     );
     let out_ap = Command::new(&bin)
         .args(["run", "--no-cache"])
         .arg(&ap_py)
         .output()
-        .unwrap_or_else(|e| panic!("antipythany failed to spawn ({}): {}", bin, e));
+        .unwrap_or_else(|e| panic!("antipythony failed to spawn ({}): {}", bin, e));
     let _ = std::fs::remove_file(&ref_py);
     let _ = std::fs::remove_file(&ap_py);
 
@@ -66,7 +66,7 @@ fn diff_check_main(body: &str) {
     let ap_out = String::from_utf8_lossy(&out_ap.stdout).to_string();
     assert!(
         out_ap.status.success(),
-        "antipythany exited with failure\n--- code ---\n{}\n--- stderr ---\n{}",
+        "antipythony exited with failure\n--- code ---\n{}\n--- stderr ---\n{}",
         body,
         String::from_utf8_lossy(&out_ap.stderr)
     );

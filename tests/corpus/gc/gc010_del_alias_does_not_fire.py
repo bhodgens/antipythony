@@ -6,7 +6,7 @@
 # total count is asserted only after an explicit gc.collect() (assert on
 # total, not order — C-23). Under CPython refcounting the final __del__
 # lands at `del keeper` (prompt, before the marker print); under
-# antipythany it MAY land only at the following gc.collect() — both
+# antipythony it MAY land only at the following gc.collect() — both
 # produce identical bytes because the marker print sits BEFORE the collect
 # and the count is sampled AFTER it.
 import gc

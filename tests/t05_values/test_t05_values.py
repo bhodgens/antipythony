@@ -2,14 +2,14 @@
 #
 # Authorship: written from the spec pack ONLY (docs/spec/01-values-and-objects.md,
 # docs/spec/06-observable-behavior.md, docs/compat-contract.md,
-# plans/antipythany/master.md, plans/antipythany/tests/README.md, and leaf 02.01's
-# Expose/Gate in plans/antipythany/02-native-backend/orchestrator.md). The author
+# plans/antipythony/master.md, plans/antipythony/tests/README.md, and leaf 02.01's
+# Expose/Gate in plans/antipythony/02-native-backend/orchestrator.md). The author
 # has not read any implementation source under crates/.
 #
 # This file has TWO kinds of tests:
 #
 #  (A) FIXTURE self-checks (must be GREEN today; they test the corpus, not
-#      antipythany): every tests/corpus/values/V*.py has an expected
+#      antipythony): every tests/corpus/values/V*.py has an expected
 #      .stdout/.stderr/.exit triple; re-running the case under
 #      /opt/homebrew/bin/python3.14 reproduces the pinned bytes exactly; all
 #      triples exist and stdout is non-empty for every case; the reference-vs-
@@ -18,12 +18,12 @@
 #      three channels byte-exactly; a green self-comparison proves the harness
 #      contract holds on this slice).
 #
-#  (B) ANTIPYTHANY-side gate tests (xfail(strict=False) until leaf 02.01 lands):
-#      `ap-conform run --corpus tests/corpus/values/*.py --impl <antipythany>`
+#  (B) ANTIPYTHONY-side gate tests (xfail(strict=False) until leaf 02.01 lands):
+#      `ap-conform run --corpus tests/corpus/values/*.py --impl <antipythony>`
 #      must go green on the whole slice; plus two per-channel spot gates against
 #      the pinned expected triples (stdout bytes, exit code).
 #
-# See plans/antipythany/tests/T-05-values.md for the case table and citations.
+# See plans/antipythony/tests/T-05-values.md for the case table and citations.
 
 import glob
 import os
@@ -81,9 +81,9 @@ def _pinned_env() -> dict:
 AP_CONFORM = os.environ.get(
     "AP_CONFORM", str(REPO_ROOT / "target" / "debug" / "ap-conform")
 )
-APX_IMPL = os.environ.get("APX_IMPL", "")  # e.g. "target/debug/antipythany run"
+APX_IMPL = os.environ.get("APX_IMPL", "")  # e.g. "target/debug/antipythony run"
 
-XFAIL_REASON = "awaits 02.01 ap-obj core values (antipythany impl side)"
+XFAIL_REASON = "awaits 02.01 ap-obj core values (antipythony impl side)"
 
 
 def cases():
@@ -225,7 +225,7 @@ def test_apconform_self_comparison_green():
 
 
 # ---------------------------------------------------------------------------
-# (B) Antipythany-side gates — xfail(strict=False) until 02.01 lands.
+# (B) Antipythony-side gates — xfail(strict=False) until 02.01 lands.
 # ---------------------------------------------------------------------------
 
 xfail_ap = pytest.mark.xfail(strict=False, reason=XFAIL_REASON)
@@ -240,7 +240,7 @@ def _impl_cmd():
         import shlex
 
         return shlex.split(APX_IMPL)
-    runner = REPO_ROOT / "target" / "debug" / "antipythany"
+    runner = REPO_ROOT / "target" / "debug" / "antipythony"
     if runner.is_file():
         return [str(runner), "run"]
     return None
@@ -248,10 +248,10 @@ def _impl_cmd():
 
 @pytest.mark.skipif(not _ap_conform_available(), reason="ap-conform bin missing")
 @xfail_ap
-def test_apconform_antipythany_full_slice():
+def test_apconform_antipythony_full_slice():
     # Leaf 02.01 Gate: "ap-conform green on the values corpus slice".
     impl = _impl_cmd()
-    assert impl is not None, "no antipythany runner; set APX_IMPL"
+    assert impl is not None, "no antipythony runner; set APX_IMPL"
     proc = subprocess.run(
         [AP_CONFORM, "run", "--corpus", "tests/corpus/values/*.py",
          "--impl", *impl, "--timeout", "60"],
@@ -274,7 +274,7 @@ def test_apconform_spot_cases_against_pinned_bytes(stem):
     # bigint exactness, float shortest repr, dict order, truthiness, hash
     # invariant, container repr+cycle.
     impl = _impl_cmd()
-    assert impl is not None, "no antipythany runner; set APX_IMPL"
+    assert impl is not None, "no antipythony runner; set APX_IMPL"
     case = CORPUS_DIR / (stem + ".py")
     proc = subprocess.run([*impl, str(case)], capture_output=True, timeout=120,
                           cwd=str(REPO_ROOT))

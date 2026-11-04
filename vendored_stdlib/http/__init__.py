@@ -1,4 +1,4 @@
-# antipythany deviation shim (DEVIATIONS.toml): CPython's http/__init__.py
+# antipythony deviation shim (DEVIATIONS.toml): CPython's http/__init__.py
 # defines HTTPStatus(IntEnum) whose members carry multi-argument values
 # (200, 'OK', '...') fed to a custom __new__ — enum-member creation with
 # custom __new__ is a documented v0 gap in this runtime. The T1 scrapy chain

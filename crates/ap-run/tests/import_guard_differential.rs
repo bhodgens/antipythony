@@ -30,7 +30,7 @@
 //!   name = 'a'+chr(92)+'b' -> ModuleNotFoundError: No module named 'a\\b' (repr)
 //!   name = "a'q"          -> ModuleNotFoundError: No module named "a'q"  (repr)
 //!
-//! Pre-guard antipythany behavior (fixed here): '__import__("")==OK' with
+//! Pre-guard antipythony behavior (fixed here): '__import__("")==OK' with
 //! __path__ = [sys.path base dir] (empty segment joined the base dir and
 //! matched it as a namespace package), '__import__("/etc/..")' imported
 //! /etc/ as a namespace, '__import__("../../evil")' walked OUT of sys.path
@@ -88,7 +88,7 @@ fn check_guard_case(tag: &str, src: &str, fixture: Option<&std::path::Path>) {
     ap_cmd.arg(&tmp);
     if let Some(f) = fixture {
         ref_cmd.env("PYTHONPATH", f);
-        ap_cmd.env("ANTPYTHANY_PATH", f);
+        ap_cmd.env("ANTIPTYHONY_PATH", f);
     }
     let expected = ref_cmd.output().expect("spawn python3.14");
     let actual = ap_cmd.output().expect("spawn ap-run-eval");

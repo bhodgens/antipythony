@@ -1,4 +1,4 @@
-"""antipythany deviation shim: threading.
+"""antipythony deviation shim: threading.
 
 The T1 (scrapy file://) gate never spawns threads; twisted's
 threadable.synchronize and logging QueuedLogging paths only need the
@@ -91,6 +91,17 @@ def setprofile(func):
 
 def stack_size(size=None):
     return 0
+
+
+def _register_atexit(func):
+    # W112: CPython threading._register_atexit — concurrent.futures/thread.py
+    # and twisted's reactor cleanup register interpreter-exit hooks here.
+    # v0: collect and never run (the crawl's cleanup paths only require the
+    # name to exist; real exit-hook firing lands with the scheduler lane).
+    _ATEXIT_HOOKS.append(func)
+
+
+_ATEXIT_HOOKS = []
 
 
 TIMEOUT_MAX = 4294967.0

@@ -98,7 +98,7 @@ NaN
 >>>
 """
 
-# antipythany deviation (DEVIATIONS.toml): CPython prefers the _decimal C
+# antipythony deviation (DEVIATIONS.toml): CPython prefers the _decimal C
 # accelerator and only falls back to _pydecimal on ImportError. This runtime
 # has no _decimal module AND its import machinery does not honor the
 # sys.modules[__name__] rebinding this wrapper performs on fallback, so the

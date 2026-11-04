@@ -1,4 +1,4 @@
-"""antipythany deviation shim — ctypes (v0: the file:// gate's
+"""antipythony deviation shim — ctypes (v0: the file:// gate's
 scrapy.utils.display only probes libc for terminal width; everything else
 is inert)."""
 

@@ -1,4 +1,4 @@
-"""antipythany deviation shim — hashes classes (single source of truth)."""
+"""antipythony deviation shim — hashes classes (single source of truth)."""
 
 
 class HashAlgorithm:
@@ -7,12 +7,12 @@ class HashAlgorithm:
 
 class HashContext:
     def __init__(self, *a, **k):
-        raise NotImplementedError("antipythany cryptography shim: hashing")
+        raise NotImplementedError("antipythony cryptography shim: hashing")
 
 
 class Hash(HashContext):
     def __init__(self, algorithm=None, backend=None, *a, **k):
-        raise NotImplementedError("antipythany cryptography shim: hashing")
+        raise NotImplementedError("antipythony cryptography shim: hashing")
 
 
 class SHA1(HashAlgorithm):

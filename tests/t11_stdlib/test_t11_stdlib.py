@@ -2,11 +2,11 @@
 #
 # Authorship: written from the spec pack ONLY (docs/spec/05-builtins-stdlib-v1.md,
 # docs/spec/06-observable-behavior.md, docs/compat-contract.md C-04..C-10,
-# plans/antipythany/master.md, plans/antipythany/tests/README.md, and leaf 02.08's
-# Expose/Gate in plans/antipythany/02-native-backend/orchestrator.md). The author
+# plans/antipythony/master.md, plans/antipythony/tests/README.md, and leaf 02.08's
+# Expose/Gate in plans/antipythony/02-native-backend/orchestrator.md). The author
 # has not read any implementation source under crates/.
 #
-# THREE test faces (see plans/antipythany/tests/T-11-stdlib-v1.md):
+# THREE test faces (see plans/antipythony/tests/T-11-stdlib-v1.md):
 #
 #  (A) ALLOW-LIST face, table half (GREEN today): static assertions over
 #      scope_table.py — the IN/PARTIAL/OUT transcription of spec 05 §5.2/§5.3.
@@ -14,8 +14,8 @@
 #      transcription honesty (names spec 05 claims but the 3.14.7 -S reference
 #      lacks are EXACTLY the whitelisted KNOWN_REF_ABSENT set), and the
 #      reference-side premise of the divergence (every OUT module imports fine
-#      on the reference — so antipythany's fail-loud refusal is testable only
-#      against antipythany, per S-05-22 "not byte-gated vs CPython").
+#      on the reference — so antipythony's fail-loud refusal is testable only
+#      against antipythony, per S-05-22 "not byte-gated vs CPython").
 #
 #  (B) BEHAVIOR face (GREEN today): fixture re-verification of
 #      tests/corpus/stdlib/ — 48 differential cases, one+ per IN module row,
@@ -26,7 +26,7 @@
 #      salted hashes, bare-set prints). Plus the 00.04 harness self-comparison
 #      over the slice.
 #
-#  (C) ANTIPYTHANY-side gates (xfail, strict=False, until 02.08 lands):
+#  (C) ANTIPYTHONY-side gates (xfail, strict=False, until 02.08 lands):
 #      - leaf 02.08's verbatim gate: ap-conform stdlib slice green in tier-0
 #        AND adaptive AND binary modes (C-31 tri-mode rule).
 #      - allow-list enforcement: each IN module imports and smokes; each OUT
@@ -38,7 +38,7 @@
 #        fail loud (importlib.metadata).
 #
 # Resolution seams copied from T-06: harness via env AP_CONFORM, PATH, then
-# target/{debug,release}/; impl via env APX_IMPL else `antipythany run` / the
+# target/{debug,release}/; impl via env APX_IMPL else `antipythony run` / the
 # local debug binary; reference via AP_CONFORM_REFERENCE_PYTHON, default
 # /opt/homebrew/bin/python3.14.
 
@@ -105,20 +105,20 @@ AP_CONFORM, AP_CONFORM_CMD = _find_bin("ap-conform")
 def _impl_cmd(mode):
     """(argv, needs_build) for one of the three 02.08 gate modes.
 
-    tier-0 / adaptive use the runner (`antipythany run`); binary mode builds
+    tier-0 / adaptive use the runner (`antipythony run`); binary mode builds
     then executes the artifact. Returns None when no impl seam exists yet.
     """
     if os.environ.get("APX_IMPL"):
         return shlex.split(os.environ["APX_IMPL"])
-    runner = REPO_ROOT / "target" / "debug" / "antipythany"
+    runner = REPO_ROOT / "target" / "debug" / "antipythony"
     if not runner.is_file():
-        runner = Path(shutil.which("antipythany") or "")
+        runner = Path(shutil.which("antipythony") or "")
     if runner.is_file():
         return [str(runner), "run"]
     return None
 
 
-XFAIL_REASON = "awaits 02.08 v1 stdlib subset (antipythany registry side)"
+XFAIL_REASON = "awaits 02.08 v1 stdlib subset (antipythony registry side)"
 xfail_ap = pytest.mark.xfail(strict=False, reason=XFAIL_REASON)
 
 
@@ -212,7 +212,7 @@ def test_known_ref_absent_fully_cited():
 @pytest.mark.parametrize("mod", sorted(scope_table.OUT_MODULES))
 def test_out_modules_import_fine_on_reference(mod):
     # The divergence premise (S-05-22): the reference IMPORTS these; the
-    # fail-loud refusal is an antipythany-only behavior, gated against the
+    # fail-loud refusal is an antipythony-only behavior, gated against the
     # diagnostic format, not against CPython bytes.
     proc = subprocess.run([reference_or_skip(), "-S", "-c", f"import {mod}"],
                           capture_output=True, timeout=60, cwd=str(REPO_ROOT))
@@ -368,20 +368,20 @@ def test_apconform_self_comparison_green():
 
 
 # ---------------------------------------------------------------------------
-# (C) ANTIPYTHANY-side gates — xfail(strict=False) until 02.08 lands.
+# (C) ANTIPYTHONY-side gates — xfail(strict=False) until 02.08 lands.
 # ---------------------------------------------------------------------------
 
 def _require_impl():
     impl = _impl_cmd("run")
     if impl is None:
-        pytest.skip("no antipythany runner; set APX_IMPL")
+        pytest.skip("no antipythony runner; set APX_IMPL")
     return impl
 
 
 @xfail_ap
 @pytest.mark.skipif(AP_CONFORM is None, reason="ap-conform bin missing")
 @pytest.mark.parametrize("mode", ["tier-0", "adaptive"])
-def test_apconform_antipythany_stdlib_slice(mode):
+def test_apconform_antipythony_stdlib_slice(mode):
     # Leaf 02.08 Gate (verbatim): "ap-conform stdlib slice green in tier-0
     # AND adaptive AND binary modes" (C-31 behavioral invisibility).
     impl = _require_impl()
@@ -398,16 +398,16 @@ def test_apconform_antipythany_stdlib_slice(mode):
 @xfail_ap
 @pytest.mark.parametrize("case", ALL_CASES[:6] + ALL_CASES[-2:], ids=[p.stem for p in (ALL_CASES[:6] + ALL_CASES[-2:])])
 def test_binary_mode_matches_expected(case):
-    # Third leg of the 02.08 gate: `antipythany build <case> -o <art>` then
+    # Third leg of the 02.08 gate: `antipythony build <case> -o <art>` then
     # run the artifact; stdout/stderr/rc must equal the pinned expected
     # triple (C-31: AoT binary invisible vs interpreter modes). Binary seam
     # per leaf 04 build verb as exercised by T-09; no ap-conform seam for
     # built artifacts is documented, so this asserts directly on the triple.
-    runner = REPO_ROOT / "target" / "debug" / "antipythany"
+    runner = REPO_ROOT / "target" / "debug" / "antipythony"
     if not runner.is_file():
-        runner = shutil.which("antipythany")
+        runner = shutil.which("antipythony")
     if not runner:
-        pytest.skip("no antipythany build seam; set APX_BUILD")
+        pytest.skip("no antipythony build seam; set APX_BUILD")
     art = Path("/tmp") / f"apx_t11_bin_{case.stem}"
     proc = subprocess.run([str(runner), "build", str(case), "-o", str(art)],
                           capture_output=True, text=True, timeout=300,
@@ -423,7 +423,7 @@ def test_binary_mode_matches_expected(case):
 
 @xfail_ap
 @pytest.mark.parametrize("mod", sorted(scope_table.IN_MODULES))
-def test_in_module_imports_and_smokes_on_antipythany(mod):
+def test_in_module_imports_and_smokes_on_antipythony(mod):
     # C-05 Verify: compiling `import m; print(m.__name__)` succeeds and the
     # output matches the reference.
     if AP_CONFORM is None:
@@ -453,11 +453,11 @@ def test_out_module_build_fails_loud_with_token(mod):
     # APX-NOV1 for scope-excluded — plus the module name and file:line:col.
     cls, _cite = scope_table.OUT_MODULES[mod]
     token = "APX-CEXT" if cls == "cext" else "APX-NOV1"
-    runner = REPO_ROOT / "target" / "debug" / "antipythany"
+    runner = REPO_ROOT / "target" / "debug" / "antipythony"
     if not runner.is_file():
-        runner = shutil.which("antipythany")
+        runner = shutil.which("antipythony")
     if not runner:
-        pytest.skip("no antipythany build seam; set APX_BUILD")
+        pytest.skip("no antipythony build seam; set APX_BUILD")
     probe = Path("/tmp") / f"apx_t11_out_{mod}.py"
     probe.write_text(f"import {mod}\n", encoding="utf-8")
     proc = subprocess.run([str(runner), "build", str(probe), "-o",
@@ -476,13 +476,13 @@ def test_out_module_build_fails_loud_with_token(mod):
 @xfail_ap
 @pytest.mark.parametrize("row", scope_table.PARTIAL_ROWS,
                          ids=[f"{r['mod']}.{r['name']}" for r in scope_table.PARTIAL_ROWS])
-def test_partial_row_enforcement_on_antipythany(row):
+def test_partial_row_enforcement_on_antipythony(row):
     # S-05-4: names NOT in the v1 subset MUST NOT be reachable (attribute
     # access raises AttributeError matching CPython's message shape; missing
     # submodule import obeys S-05-2). "registry-out" rows assert unreach-
     # ability; "keep-present" rows assert the in-scope surface exists (the
     # prohibition is corpus-level, GAP-28). NOTE: these expectations are
-    # written on the ANTIPYTHANY side only — on the reference the OUT names
+    # written on the ANTIPYTHONY side only — on the reference the OUT names
     # exist, so these can never be ap-conform byte cases (GAP-26/GAP-27).
     if AP_CONFORM is None:
         pytest.skip("ap-conform bin missing")
@@ -511,9 +511,9 @@ def test_partial_row_enforcement_on_antipythany(row):
         want = None  # refusal-only: build must fail with the token
     if want is None:
         token = "APX-NOV1"
-        runner = REPO_ROOT / "target" / "debug" / "antipythany"
+        runner = REPO_ROOT / "target" / "debug" / "antipythony"
         if not runner.is_file():
-            pytest.skip("no antipythany build seam")
+            pytest.skip("no antipythony build seam")
         probe = Path("/tmp") / f"apx_t11_part_{row['mod']}_{row['name']}.py"
         probe.write_text(src, encoding="utf-8")
         proc = subprocess.run([str(runner), "build", str(probe)],
@@ -523,7 +523,7 @@ def test_partial_row_enforcement_on_antipythany(row):
             f"{row['mod']}.{row['name']}: expected {token} refusal")
         return
     # attribute-surface probe runs through the harness: expected file pins
-    # the antipythany-side behavior, which by construction DIFFERS from the
+    # the antipythony-side behavior, which by construction DIFFERS from the
     # reference for registry-out rows (GAP-26). Run directly instead of
     # ap-conform (a ref-vs-impl diff on this probe is expected to FAIL the
     # byte gate by design; the assert below is the spec-05 contract):

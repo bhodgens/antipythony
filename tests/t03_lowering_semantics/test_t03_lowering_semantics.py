@@ -1,9 +1,9 @@
 # T-03 — lowering semantics test suite (gates leaf 01.03).
 #
 # Authorship: written from the spec pack ONLY (docs/spec/01, docs/spec/02,
-# docs/spec/04, docs/compat-contract.md, plans/antipythany/master.md) — no
+# docs/spec/04, docs/compat-contract.md, plans/antipythony/master.md) — no
 # implementation source read. See
-# plans/antipythany/tests/T-03-lowering-semantics.md for the scope-classification
+# plans/antipythony/tests/T-03-lowering-semantics.md for the scope-classification
 # derivation table, per-test citations, and CONTRACT-GAPS G-1..G-8.
 #
 # Contract under test (leaf 01.03 Expose + this leaf's seam extension):

@@ -1,18 +1,18 @@
-# T-14 EXPECTATION FILE — the shape `antipythany new` + `antipythany add` must
-# produce for antipythany.toml (Plan 04 §Design "Dependency model", leaf 04.01
+# T-14 EXPECTATION FILE — the shape `antipythony new` + `antipythony add` must
+# produce for antipythony.toml (Plan 04 §Design "Dependency model", leaf 04.01
 # "toml+lock schema"). This file is the oracle: the test parses it with
 # tomllib, asserts it is valid TOML, and later compares the real file's
 # REQUIRED key paths (see REQUIRED_TOML_PATHS in test_t14_cli.py) against it.
 #
 # CONTRACT-GAP G-1: the leaf says "toml+lock schema" but never pins field names.
 # Every name below is DERIVED from the orchestrator's CLI surface (deps enter
-# antipythany.toml via `add <name>`, e.g. `add requests`) and is the minimal
+# antipythony.toml via `add <name>`, e.g. `add requests`) and is the minimal
 # set a schema test can assert without inventing semantics. Field names here
 # are normative expectations the implementation must satisfy; if the impl
 # chose different names, that is a contract miss to reconcile, NOT a test bug.
 
 [project]
-name = "myapp"          # `antipythany new myapp` -> scaffold names the project
+name = "myapp"          # `antipythony new myapp` -> scaffold names the project
 version = "0.1.0"       # new scaffolds a version; unpinned by leaf (G-1)
 requires_python = ">=3.14"  # master.md/C-01: project is 3.14-locked
 

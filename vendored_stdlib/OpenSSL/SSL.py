@@ -1,4 +1,4 @@
-"""antipythany deviation shim — OpenSSL.SSL (v0: constant surfaces only;
+"""antipythony deviation shim — OpenSSL.SSL (v0: constant surfaces only;
 the file:// gate performs no TLS)."""
 
 
@@ -140,8 +140,8 @@ def SSLeay_version(t: int = SSLEAY_VERSION) -> bytes:
     # CPython pyOpenSSL returns bytes (scrapy decodes with
     # .decode("ascii", errors="replace")).
     if t == SSLEAY_VERSION:
-        return b"OpenSSL 3.0.0 (antipythany shim)"
-    return b"antipythany shim"
+        return b"OpenSSL 3.0.0 (antipythony shim)"
+    return b"antipythony shim"
 
 
 def OPENSSL_version(*args: object) -> str:

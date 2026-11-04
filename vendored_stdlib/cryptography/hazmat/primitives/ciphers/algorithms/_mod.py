@@ -1,4 +1,4 @@
-"""antipythany deviation shim — cipher algorithms (single source)."""
+"""antipythony deviation shim — cipher algorithms (single source)."""
 
 
 class CipherAlgorithm:

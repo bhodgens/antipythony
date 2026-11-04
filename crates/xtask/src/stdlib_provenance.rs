@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 use std::process::{exit, Command};
 
 pub const MANIFEST_NAME: &str = "DEVIATIONS.toml";
-pub const UPSTREAM_LIB_ENV: &str = "ANTIPYTHANY_CPYTHON_LIB";
+pub const UPSTREAM_LIB_ENV: &str = "ANTIPYTHONY_CPYTHON_LIB";
 
 const MANIFEST_HEADER: &str = "\
 # Provenance manifest for vendored_stdlib/ (robustness-ci 03.02).

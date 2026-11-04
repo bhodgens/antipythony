@@ -1,4 +1,4 @@
-# Vendored collections extensions (antipythany fix pass).
+# Vendored collections extensions (antipythony fix pass).
 #
 # Augments the native `collections` module (deque) with the dict subclasses
 # the stdlib import surface needs (typing.py: `from collections import

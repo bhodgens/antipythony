@@ -12,7 +12,11 @@ use ap_obj::value::{PyList, PyString, Tuple, Value};
 pub type MResult = Result<Value, Flow>;
 
 fn raise(class: &str, msg: impl Into<String>) -> Flow {
-    Flow::Raise(ExceptionValue::msg(class, msg.into()))
+    let m = msg.into();
+    if class == "IndexError" && std::env::var("APX_IDX_DEBUG").is_ok() {
+        eprintln!("APX-IDX-RAISE: IndexError {:?} at methods::raise", m);
+    }
+    Flow::Raise(ExceptionValue::msg(class, m))
 }
 
 /// Slice-index algorithm (S-01-15): negative bounds, clamping, step.
@@ -197,8 +201,16 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
             Ok(Value::Bytes(Gc::new(out)))
         }
         (Value::List(l), Key::Index(i)) => {
-            let idx = normalize_index(*i, l.len() as i64)
-                .ok_or_else(|| raise("IndexError", "list index out of range"))?;
+            let idx = normalize_index(*i, l.len() as i64).ok_or_else(|| {
+                if std::env::var("APX_IDX_DEBUG").is_ok() {
+                    eprintln!(
+                        "APX-IDX-DEBUG: list len={} idx={} (list index out of range)",
+                        l.len(),
+                        *i
+                    );
+                }
+                raise("IndexError", "list index out of range")
+            })?;
             Ok(l.get(idx as usize).unwrap_or(Value::None))
         }
         (Value::List(l), Key::Slice { lo, hi, step }) => {
@@ -1019,8 +1031,12 @@ pub fn subscript_del(obj: &Value, key: &Value) -> Result<(), Flow> {
                     return Err(raise("TypeError", "list indices must be integers"));
                 }
             };
-            let idx = normalize_index(i, l.len() as i64)
-                .ok_or_else(|| raise("IndexError", "list index out of range"))?;
+            let idx = normalize_index(i, l.len() as i64).ok_or_else(|| {
+                if std::env::var("APX_IDX_DEBUG").is_ok() {
+                    eprintln!("APX-IDX-DEBUG-DEL: list len={} idx={}", l.len(), i);
+                }
+                raise("IndexError", "list index out of range")
+            })?;
             l.remove_at(idx as usize);
             Ok(())
         }

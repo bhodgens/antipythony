@@ -1,4 +1,4 @@
-"""antipythany deviation shim — cryptography.hazmat.primitives.ciphers.modes (v0)."""
+"""antipythony deviation shim — cryptography.hazmat.primitives.ciphers.modes (v0)."""
 from cryptography import ciphers as _c
 
 CBC = _c.modes.CBC

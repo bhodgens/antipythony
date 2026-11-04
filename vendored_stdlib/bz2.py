@@ -1,4 +1,4 @@
-"""bz2 — minimal stdlib-compatible surface (antipythany vendored).
+"""bz2 — minimal stdlib-compatible surface (antipythony vendored).
 
 BZ2 compression. Used by feedexport postprocessing (test data). If the
 `bzip2` CLI tool is unavailable the functions raise, matching the module's

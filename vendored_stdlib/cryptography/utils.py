@@ -1,4 +1,4 @@
-"""antipythany deviation shim — cryptography.utils (v0).
+"""antipythony deviation shim — cryptography.utils (v0).
 
 Surface pinned vs CPython 3.14 (wave-110). int_to_bytes does real work
 (twisted.conch.ssh.common SSH framing); everything else is surface.

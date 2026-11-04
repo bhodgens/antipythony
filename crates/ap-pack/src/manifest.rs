@@ -1,5 +1,5 @@
-//! `antipythany.toml` + `antipythany.lock` — the T-14 G-1 derived schema
-//! (fixtures `tests/t14_cli/fixtures/expected_antipythany.{toml,lock}` are
+//! `antipythony.toml` + `antipythony.lock` — the T-14 G-1 derived schema
+//! (fixtures `tests/t14_cli/fixtures/expected_antipythony.{toml,lock}` are
 //! the oracle: field names there are normative expectations, "the impl
 //! choosing different names is a contract miss").
 //!
@@ -39,7 +39,7 @@
 //! exactly the subset we emit (plus comments/whitespace) and errors loudly
 //! otherwise — fail-loud per C-06's spirit, never silently misread.
 
-/// Parsed `antipythany.toml` (the subset we emit).
+/// Parsed `antipythony.toml` (the subset we emit).
 #[derive(Debug, Default, Clone)]
 pub struct Manifest {
     pub project_name: String,
@@ -57,7 +57,7 @@ pub struct Dep {
     pub source: String,
 }
 
-/// Parsed `antipythany.lock`.
+/// Parsed `antipythony.lock`.
 #[derive(Debug, Default, Clone)]
 pub struct Lockfile {
     pub lock_version: u32,
@@ -71,8 +71,8 @@ pub struct LockedPkg {
     pub version: String,
 }
 
-pub const MANIFEST_FILE: &str = "antipythany.toml";
-pub const LOCK_FILE: &str = "antipythany.lock";
+pub const MANIFEST_FILE: &str = "antipythony.toml";
+pub const LOCK_FILE: &str = "antipythony.lock";
 
 // ---------------------------------------------------------------------------
 // Emit
@@ -297,7 +297,7 @@ fn v_u32(v: &str, file: &str, ln: usize) -> Result<u32, String> {
 // File I/O + discovery
 // ---------------------------------------------------------------------------
 
-/// Read+parse `<dir>/antipythany.toml`. `Ok(None)` when the file is absent.
+/// Read+parse `<dir>/antipythony.toml`. `Ok(None)` when the file is absent.
 pub fn read_manifest(dir: &std::path::Path) -> Result<Option<Manifest>, String> {
     let p = dir.join(MANIFEST_FILE);
     let text = match std::fs::read_to_string(&p) {
@@ -308,7 +308,7 @@ pub fn read_manifest(dir: &std::path::Path) -> Result<Option<Manifest>, String> 
     manifest_from_toml(&text).map(Some)
 }
 
-/// Read+parse `<dir>/antipythany.lock`. `Ok(None)` when absent.
+/// Read+parse `<dir>/antipythony.lock`. `Ok(None)` when absent.
 pub fn read_lock(dir: &std::path::Path) -> Result<Option<Lockfile>, String> {
     let p = dir.join(LOCK_FILE);
     let text = match std::fs::read_to_string(&p) {
@@ -332,7 +332,7 @@ pub fn write_lock(dir: &std::path::Path, l: &Lockfile) -> Result<(), String> {
     std::fs::write(&p, lock_to_toml(l)).map_err(|e| format!("cannot write {}: {e}", p.display()))
 }
 
-/// Walk up from `start` looking for a directory holding `antipythany.toml`.
+/// Walk up from `start` looking for a directory holding `antipythony.toml`.
 /// Used by the runtime (importer sys.path bootstrap) AND the CLI (`add` from
 /// a subdirectory of the project).
 pub fn find_project_dir(start: &std::path::Path) -> Option<std::path::PathBuf> {

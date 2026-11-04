@@ -687,7 +687,7 @@ class Set(Collection):
 try:
     Set.register(frozenset)
 except RuntimeError:
-    pass  # antipythany v0: legacy name-Type register probe mis-fires
+    pass  # antipythony v0: legacy name-Type register probe mis-fires
 
 
 class MutableSet(Set):
@@ -773,7 +773,7 @@ class MutableSet(Set):
 try:
     MutableSet.register(set)
 except RuntimeError:
-    pass  # antipythany v0: legacy name-Type register probe mis-fires
+    pass  # antipythony v0: legacy name-Type register probe mis-fires
 
 
 ### MAPPINGS ###
@@ -832,11 +832,11 @@ class Mapping(Collection):
 try:
     Mapping.register(mappingproxy)
 except RuntimeError:
-    pass  # antipythany v0: legacy name-Type register probe mis-fires
+    pass  # antipythony v0: legacy name-Type register probe mis-fires
 try:
     Mapping.register(framelocalsproxy)
 except RuntimeError:
-    pass  # antipythany v0: legacy name-Type register probe mis-fires
+    pass  # antipythony v0: legacy name-Type register probe mis-fires
 
 
 class MappingView(Sized):
@@ -873,7 +873,7 @@ class KeysView(MappingView, Set):
 try:
     KeysView.register(dict_keys)
 except RuntimeError:
-    pass  # antipythany v0: legacy name-Type register probe mis-fires
+    pass  # antipythony v0: legacy name-Type register probe mis-fires
 
 
 class ItemsView(MappingView, Set):
@@ -901,7 +901,7 @@ class ItemsView(MappingView, Set):
 try:
     ItemsView.register(dict_items)
 except RuntimeError:
-    pass  # antipythany v0: legacy name-Type register probe mis-fires
+    pass  # antipythony v0: legacy name-Type register probe mis-fires
 
 
 class ValuesView(MappingView, Collection):
@@ -923,7 +923,7 @@ class ValuesView(MappingView, Collection):
 try:
     ValuesView.register(dict_values)
 except RuntimeError:
-    pass  # antipythany v0: legacy name-Type register probe mis-fires
+    pass  # antipythony v0: legacy name-Type register probe mis-fires
 
 
 class MutableMapping(Mapping):
@@ -1015,7 +1015,7 @@ class MutableMapping(Mapping):
 try:
     MutableMapping.register(dict)
 except RuntimeError:
-    pass  # antipythany v0: legacy name-Type register probe mis-fires
+    pass  # antipythony v0: legacy name-Type register probe mis-fires
 
 
 ### SEQUENCES ###
@@ -1086,23 +1086,23 @@ class Sequence(Reversible, Collection):
 try:
     Sequence.register(tuple)
 except RuntimeError:
-    pass  # antipythany v0: legacy name-Type register probe mis-fires
+    pass  # antipythony v0: legacy name-Type register probe mis-fires
 try:
     Sequence.register(str)
 except RuntimeError:
-    pass  # antipythany v0: legacy name-Type register probe mis-fires
+    pass  # antipythony v0: legacy name-Type register probe mis-fires
 try:
     Sequence.register(bytes)
 except RuntimeError:
-    pass  # antipythany v0: legacy name-Type register probe mis-fires
+    pass  # antipythony v0: legacy name-Type register probe mis-fires
 try:
     Sequence.register(range)
 except RuntimeError:
-    pass  # antipythany v0: legacy name-Type register probe mis-fires
+    pass  # antipythony v0: legacy name-Type register probe mis-fires
 try:
     Sequence.register(memoryview)
 except RuntimeError:
-    pass  # antipythany v0: legacy name-Type register probe mis-fires
+    pass  # antipythony v0: legacy name-Type register probe mis-fires
 
 class _DeprecateByteStringMeta(ABCMeta):
     def __new__(cls, name, bases, namespace, **kwargs):
@@ -1139,11 +1139,11 @@ class ByteString(Sequence, metaclass=_DeprecateByteStringMeta):
 try:
     ByteString.register(bytes)
 except RuntimeError:
-    pass  # antipythany v0: legacy name-Type register probe mis-fires
+    pass  # antipythony v0: legacy name-Type register probe mis-fires
 try:
     ByteString.register(bytearray)
 except RuntimeError:
-    pass  # antipythany v0: legacy name-Type register probe mis-fires
+    pass  # antipythony v0: legacy name-Type register probe mis-fires
 
 
 class MutableSequence(Sequence):
@@ -1217,7 +1217,7 @@ MutableSequence.register(list)
 try:
     MutableSequence.register(bytearray)
 except RuntimeError:
-    pass  # antipythany v0: legacy name-Type register probe mis-fires
+    pass  # antipythony v0: legacy name-Type register probe mis-fires
 
 # T1-d (scrapy.http.Headers.update: `isinstance(seq, Mapping)` with a plain
 # dict value). CPython registers dict as a MutableMapping in C; our v0

@@ -2,7 +2,7 @@
 
 Authored from the spec pack ONLY (docs/spec/02-control-flow.md,
 docs/spec/01-values-and-objects.md S-01-31, docs/compat-contract.md,
-plans/antipythany/tests/T-04-ir-verify.md) by an agent that never read crate
+plans/antipythony/tests/T-04-ir-verify.md) by an agent that never read crate
 sources. See the T-04 md for clause citations and CONTRACT-GAPS.
 
 Two halves:
@@ -25,7 +25,7 @@ Two halves:
    -> pytest.xfail with the leaf-01.04 reason (missing-bin safety net only).
 
 UnboundLocalError clause citation for every flagged probe lives in
-plans/antipythany/tests/T-04-ir-verify.md's per-test table; probes themselves
+plans/antipythony/tests/T-04-ir-verify.md's per-test table; probes themselves
 carry header comments.
 """
 

@@ -1,1 +1,1 @@
-//! the antipythany binary (run/build/new verbs)
+//! the antipythony binary (run/build/new verbs)

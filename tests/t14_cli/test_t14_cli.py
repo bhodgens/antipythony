@@ -1,13 +1,13 @@
 # T-14 — cli/cache (gates leaves 04.01 uv integration + 04.02 ap-cli verbs/build cache).
 #
 # Authorship: written from the spec pack + plan text ONLY —
-# plans/antipythany/04-packaging-ecosystem/orchestrator.md (CLI surface block,
+# plans/antipythony/04-packaging-ecosystem/orchestrator.md (CLI surface block,
 # Dependency model, Build cache key schema, 04.01 Expose/Gate, 04.02 Expose/
 # Gate), docs/compat-contract.md (C-06..C-10 fail-loud + APX tokens; C-26),
 # docs/spec/05-builtins-stdlib-v1.md (purity rules S-05-1..3), plans/
-# antipythany/master.md (uv from v0; 3.14 pin), plans/antipythany/tests/
+# antipythony/master.md (uv from v0; 3.14 pin), plans/antipythony/tests/
 # README.md. No implementation source under crates/ was read.
-# Per-test citations + CONTRACT-GAPS: plans/antipythany/tests/T-14-cli-cache.md.
+# Per-test citations + CONTRACT-GAPS: plans/antipythony/tests/T-14-cli-cache.md.
 #
 # Structure:
 #   GREEN NOW     — expectation-file validation (fixture toml/lock are valid
@@ -31,7 +31,7 @@
 #
 # uv availability at authoring time: uv 0.11.29 present at
 # /Users/caimlas/.local/bin/uv (measured, green test below). CLI-absence
-# policy: tests that invoke the `antipythany` binary xfail on its
+# policy: tests that invoke the `antipythony` binary xfail on its
 # FileNotFoundError (like T-09's _cli_cmd); uv itself is a real external
 # tool that IS present, so uv-subprocess tests are NOT pre-skipped.
 
@@ -58,7 +58,7 @@ FIXTURES = HERE / "fixtures"
 TINY_PURE = FIXTURES / "tiny_pure"
 
 # Cache layout given verbatim by Plan 04 §Design "Build cache" line.
-CACHE_ROOT = Path.home() / ".cache" / "antipythany" / "build"
+CACHE_ROOT = Path.home() / ".cache" / "antipythony" / "build"
 
 XFAIL_0401 = pytest.mark.xfail(
     strict=False, reason="awaits 04.01 uv integration (new/add verbs, toml+lock, add-time filter)"
@@ -73,22 +73,22 @@ XFAIL_0402 = pytest.mark.xfail(
 
 
 def _cli_cmd() -> list:
-    """The `antipythany` driver (Plan 04 §Design CLI surface). Resolution
+    """The `antipythony` driver (Plan 04 §Design CLI surface). Resolution
     order mirrors T-09: APX_CLI override, PATH, target/{debug,release}.
     FileNotFoundError before the xfail marker turns the whole CLI half into
     expected-failure until the binary exists (tests/README.md step 2)."""
     override = os.environ.get("APX_CLI")
     if override:
         return shlex_split(override)
-    found = shutil.which("antipythany")
+    found = shutil.which("antipythony")
     if found:
         return [found]
     for profile in ("debug", "release"):
-        cand = REPO_ROOT / "target" / profile / "antipythany"
+        cand = REPO_ROOT / "target" / profile / "antipythony"
         if cand.exists():
             return [str(cand)]
     raise FileNotFoundError(
-        "antipythany CLI not found (set APX_CLI=<cmdline> to override)"
+        "antipythony CLI not found (set APX_CLI=<cmdline> to override)"
     )
 
 
@@ -100,7 +100,7 @@ def shlex_split(s: str) -> list:
 
 def _clean_env(home: Path, path_value: str | None = None) -> dict:
     """Minimal env: HOME points at an isolated temp home so the real
-    ~/.cache/antipythany is never touched and cache state is per-test
+    ~/.cache/antipythony is never touched and cache state is per-test
     (04.01 Gate 'on a clean cache'). PATH keeps uv reachable (uv is the
     plan-04 mechanism; stripping it is its own test)."""
     env = {
@@ -185,7 +185,7 @@ _LOCATION_RE = re.compile(r"\S+:\d+:\d+")  # file:line:col (C-08/C-10)
 
 
 def _cache_entries(home: Path) -> set:
-    root = home / ".cache" / "antipythany" / "build"
+    root = home / ".cache" / "antipythony" / "build"
     if not root.exists():
         return set()
     return {str(p.relative_to(root)) for p in root.rglob("*") if p.is_file()}
@@ -199,10 +199,10 @@ def _cache_entries(home: Path) -> set:
 
 def test_expected_toml_fixture_parses():
     """04.01 Expose 'toml+lock schema': our expectation file for
-    antipythany.toml must itself be valid TOML carrying the key paths the
+    antipythony.toml must itself be valid TOML carrying the key paths the
     schema test demands ([project] name/version/requires_python, [build]
     backend/opt_level, [[dependency]] name). Cites: Plan 04 §Design, G-1."""
-    data = _parse_toml(FIXTURES / "expected_antipythany.toml")
+    data = _parse_toml(FIXTURES / "expected_antipythony.toml")
     assert data["project"]["name"] == "myapp"
     assert data["project"]["version"] == "0.1.0"
     assert data["project"]["requires_python"] == ">=3.14"  # C-01 / master.md 3.14 pin
@@ -216,7 +216,7 @@ def test_expected_lock_fixture_parses():
     """04.01 'toml+lock schema': the lock expectation is valid TOML with a
     uv-provenance marker and a pinned-version [[package]] entry. Cites:
     Plan 04 §Design 'resolve+lock via uv', G-1."""
-    data = _parse_toml(FIXTURES / "expected_antipythany.lock")
+    data = _parse_toml(FIXTURES / "expected_antipythony.lock")
     assert data["metadata"]["created_by"] == "uv"
     assert isinstance(data["metadata"]["lock_version"], int)
     pkgs = data["package"]
@@ -239,7 +239,7 @@ def test_fixture_tiny_pure_is_self_contained_package():
 def test_app_seed_only_imports_fixture_dep():
     """Scaffold app source imports tiny_pure so an add/run e2e proves the
     lock closure reaches compilation (04.01 Gate). Cites: Plan 04 §Design
-    'scaffold: myapp.py + antipythany.toml'."""
+    'scaffold: myapp.py + antipythony.toml'."""
     imports = re.findall(r"^(?:import|from)\s+([\w.]+)",
                          (FIXTURES / "app_seed.py").read_text(), re.M)
     assert imports == ["tiny_pure"]
@@ -264,7 +264,7 @@ def test_cext_diagnostic_expectation_matches_c08_regex():
     regex. If this test fails, our expectations, not the CLI, are wrong."""
     sample = (
         "APX-CEXT: native_demo._native is a C extension module; v1 refuses it. "
-        "See docs/compat-contract.md C-07 and plans/antipythany/10-c-extensions-"
+        "See docs/compat-contract.md C-07 and plans/antipythony/10-c-extensions-"
         "stretch/orchestrator.md (app.py:1:1)"
     )
     assert "APX-CEXT" in sample
@@ -273,10 +273,10 @@ def test_cext_diagnostic_expectation_matches_c08_regex():
 
 
 def test_cache_root_layout_constant():
-    """Plan 04 §Design verbatim: 'Build cache: ~/.cache/antipythany/build/
+    """Plan 04 §Design verbatim: 'Build cache: ~/.cache/antipythony/build/
     <hash>'. Asserts the layout we will look entries under; the <hash> INPUT
     RECIPE is unpinned (G-2) so this stops at the directory shape."""
-    assert str(CACHE_ROOT).endswith("/.cache/antipythany/build")
+    assert str(CACHE_ROOT).endswith("/.cache/antipythony/build")
     assert CACHE_ROOT.is_absolute()
 
 
@@ -299,8 +299,8 @@ def test_uv_availability_report():
 
 @XFAIL_0401
 def test_new_scaffolds_project_files(tmp_path):
-    """Plan 04 surface: `antipythany new myapp` -> scaffold: myapp.py +
-    antipythany.toml. Both files must exist; the toml must carry the schema
+    """Plan 04 surface: `antipythony new myapp` -> scaffold: myapp.py +
+    antipythony.toml. Both files must exist; the toml must carry the schema
     keys (G-1: names are normative expectations from the fixture oracle)."""
     home = tmp_path / "home"
     home.mkdir()
@@ -308,8 +308,8 @@ def test_new_scaffolds_project_files(tmp_path):
     proj.mkdir()
     proc = _run_cli(["new", "myapp"], home, proj)
     assert proc.returncode == 0, proc.stderr.decode(errors="replace")
-    app_toml = proj / "myapp" / "antipythany.toml"
-    assert app_toml.exists(), "new must write antipythany.toml"
+    app_toml = proj / "myapp" / "antipythony.toml"
+    assert app_toml.exists(), "new must write antipythony.toml"
     assert (proj / "myapp" / "myapp.py").exists(), "new must scaffold myapp.py"
     data = _parse_toml(app_toml)
     for path in (["project", "name"], ["project", "version"],
@@ -324,8 +324,8 @@ def test_new_scaffolds_project_files(tmp_path):
 def test_add_local_pure_dep_writes_lock(tmp_path):
     """04.01 Gate: add flow with one pure-Python dep, run END-TO-END OFFLINE
     via local file: path (tiny-pure fixture; registry fetch would need network
-    — G-7). Adds must record the dep in antipythany.toml and pin it in
-    antipythany.lock; lock must be valid TOML with a non-empty version pin."""
+    — G-7). Adds must record the dep in antipythony.toml and pin it in
+    antipythony.lock; lock must be valid TOML with a non-empty version pin."""
     home = tmp_path / "home"
     home.mkdir()
     proj = tmp_path / "myapp"
@@ -341,13 +341,13 @@ def test_add_local_pure_dep_writes_lock(tmp_path):
         # packages (setuptools) is network-bound: skip-with-reason, G-7.
         pytest.skip("uv local-file add required network fetch — self-contained run impossible (G-7)")
     assert proc.returncode == 0, proc.stderr.decode(errors="replace")
-    lock = proj / "antipythany.lock"
-    assert lock.exists(), "add must write antipythany.lock (Plan 04 §Design)"
+    lock = proj / "antipythony.lock"
+    assert lock.exists(), "add must write antipythony.lock (Plan 04 §Design)"
     data = _parse_toml(lock)
     blob = repr(data).lower()
     assert "tiny" in blob, "lock must record tiny-pure"
-    toml_data = _parse_toml(proj / "antipythany.toml")
-    assert "tiny" in repr(toml_data).lower(), "add must record dep in antipythany.toml"
+    toml_data = _parse_toml(proj / "antipythony.toml")
+    assert "tiny" in repr(toml_data).lower(), "add must record dep in antipythony.toml"
 
 
 @XFAIL_0401
@@ -369,8 +369,8 @@ def test_add_native_wheel_rejected_at_add_time_with_cext_diag(tmp_path):
     assert "APX-CEXT" in err, f"C-10 token missing: {err}"
     assert re.search(r"(?i)native_demo.*C extension|c-extension", err), err
     assert re.search(r"compat-contract|10-c-extensions", err), f"C-08 policy pointer missing: {err}"
-    if (proj / "antipythany.lock").exists():
-        assert "native" not in repr(_parse_toml(proj / "antipythany.lock")).lower(), (
+    if (proj / "antipythony.lock").exists():
+        assert "native" not in repr(_parse_toml(proj / "antipythony.lock")).lower(), (
             "refused dep must not enter the lock (C-09/C-11)"
         )
 
@@ -395,7 +395,7 @@ def test_add_uv_registry_flow_pypi_offline_skip(tmp_path):
     _run_cli(["new", "myapp"], home, tmp_path)
     proc = _run_cli(["add", "rich"], home, proj)
     assert proc.returncode == 0, proc.stderr.decode(errors="replace")
-    assert (proj / "antipythany.lock").exists()
+    assert (proj / "antipythony.lock").exists()
 
 
 @XFAIL_0401
@@ -446,12 +446,12 @@ def test_run_cold_then_warm_same_cache_entry(tmp_path):
     home, proj = _warm_project(tmp_path)
     cold = _run_cli(["run", "myapp.py"], home, proj)
     assert cold.returncode == 0, cold.stderr.decode(errors="replace")
-    assert b"hello, antipythany" in cold.stdout, "run must execute the program"
+    assert b"hello, antipythony" in cold.stdout, "run must execute the program"
     entries_after_cold = _cache_entries(home)
-    assert entries_after_cold, "run must populate ~/.cache/antipythany/build (G-2 layout)"
+    assert entries_after_cold, "run must populate ~/.cache/antipythony/build (G-2 layout)"
     warm = _run_cli(["run", "myapp.py"], home, proj)
     assert warm.returncode == 0
-    assert b"hello, antipythany" in warm.stdout
+    assert b"hello, antipythony" in warm.stdout
     assert warm.stdout == cold.stdout, "warm run output bytes differ from cold (C-26)"
     entries_after_warm = _cache_entries(home)
     assert entries_after_warm == entries_after_cold, (
@@ -469,12 +469,12 @@ def test_run_no_cache_bypasses_cache(tmp_path):
     home, proj = _warm_project(tmp_path)
     cold = _run_cli(["run", "myapp.py"], home, proj)
     assert cold.returncode == 0, cold.stderr.decode(errors="replace")
-    assert b"hello, antipythany" in cold.stdout, "run must execute the program"
+    assert b"hello, antipythony" in cold.stdout, "run must execute the program"
     before = _cache_entries(home)
     assert before, "cold run must populate the cache (baseline for bypass check)"
     proc = _run_cli(["run", "--no-cache", "myapp.py"], home, proj)
     assert proc.returncode == 0, proc.stderr.decode(errors="replace")
-    assert b"hello, antipythany" in proc.stdout, "--no-cache must still run the program"
+    assert b"hello, antipythony" in proc.stdout, "--no-cache must still run the program"
     after = _cache_entries(home)
     assert after == before, f"--no-cache touched the cache: {after ^ before}"
 
@@ -505,12 +505,12 @@ def test_warm_run_timing_is_measured_and_reported(tmp_path):
     home, proj = _warm_project(tmp_path)
     cold = _run_cli(["run", "myapp.py"], home, proj)
     assert cold.returncode == 0
-    assert b"hello, antipythany" in cold.stdout, "cold run must execute the program"
+    assert b"hello, antipythony" in cold.stdout, "cold run must execute the program"
     t0 = time.monotonic()
     warm = _run_cli(["run", "myapp.py"], home, proj)
     ms = (time.monotonic() - t0) * 1000
     assert warm.returncode == 0
-    assert b"hello, antipythany" in warm.stdout, "warm run must execute the program"
+    assert b"hello, antipythony" in warm.stdout, "warm run must execute the program"
     print(f"T-14 WARM-RUN REPORT: second `run` to completion = {ms:.0f} ms "
           f"(gate text says <200ms to execution; report-only, G-3)")
 
@@ -543,7 +543,7 @@ def test_cache_key_changes_with_opt_level(tmp_path):
     _run_cli(["run", "myapp.py"], home, proj)
     before = _cache_entries(home)
     assert before
-    toml_path = proj / "antipythany.toml"
+    toml_path = proj / "antipythony.toml"
     if toml_path.exists():
         # G-2 fallback: mutate the toml opt_level field (schema name unpinned).
         text = toml_path.read_text()
@@ -560,7 +560,7 @@ def test_cache_key_changes_with_opt_level(tmp_path):
 
 @XFAIL_0402
 def test_cache_gc_verb(tmp_path):
-    """04.02 Expose: 'cache GC subcommand'. `antipythany cache gc` must exist
+    """04.02 Expose: 'cache GC subcommand'. `antipythony cache gc` must exist
     and exit 0 after a warm project, on the documented cache root, and must
     not break subsequent real execution. (Entry eviction policy itself is
     unspecced — G-8; only verb existence + clean exit + a subsequent run that
@@ -568,12 +568,12 @@ def test_cache_gc_verb(tmp_path):
     home, proj = _warm_project(tmp_path)
     cold = _run_cli(["run", "myapp.py"], home, proj)
     assert cold.returncode == 0
-    assert b"hello, antipythany" in cold.stdout
+    assert b"hello, antipythony" in cold.stdout
     proc = _run_cli(["cache", "gc"], home, proj)
     assert proc.returncode == 0, proc.stderr.decode(errors="replace")
     r2 = _run_cli(["run", "myapp.py"], home, proj)
     assert r2.returncode == 0, "gc must not break subsequent runs"
-    assert b"hello, antipythany" in r2.stdout, "post-gc run must execute the program"
+    assert b"hello, antipythony" in r2.stdout, "post-gc run must execute the program"
 
 
 @XFAIL_0402
@@ -600,7 +600,7 @@ def test_build_reproducible_byte_identical_across_clean_caches(tmp_path):
 
 @XFAIL_0402
 def test_run_wasm_verb_plumbing(tmp_path):
-    """Plan 04 surface: `antipythany run --wasm app.py` (compile to wasm +
+    """Plan 04 surface: `antipythony run --wasm app.py` (compile to wasm +
     execute via ap-host). Plumbing verb exists per surface; full parity is
     Plan 03/04.04 territory — here only the native-surface contract: exit 0
     and the program's bytes. Marked 04.02: the verb+cache half is gated here
@@ -608,8 +608,8 @@ def test_run_wasm_verb_plumbing(tmp_path):
     home, proj = _warm_project(tmp_path)
     proc = _run_cli(["run", "--wasm", "myapp.py"], home, proj)
     assert proc.returncode == 0, proc.stderr.decode(errors="replace")
-    assert b"hello, antipythany" in proc.stdout
+    assert b"hello, antipythony" in proc.stdout
 
 
 # Network/build-backend caveat for the whole CLI half is documented in
-# plans/antipythany/tests/T-14-cli-cache.md CONTRACT-GAPS G-7.
+# plans/antipythony/tests/T-14-cli-cache.md CONTRACT-GAPS G-7.

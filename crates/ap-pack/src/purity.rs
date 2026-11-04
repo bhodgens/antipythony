@@ -15,7 +15,7 @@
 //! the offending top-level package name (the "full module name" of the
 //! binary component), the literal phrase `C extension`, the policy pointers
 //! (`docs/compat-contract.md` clause C-07 and
-//! `plans/antipythany/10-c-extensions-stretch/orchestrator.md`), a
+//! `plans/antipythony/10-c-extensions-stretch/orchestrator.md`), a
 //! `file:line:col` location shape (the offending file path with `:1:1` —
 //! add-time refusals have no source line; the C-10 family requires the
 //! triple shape), and the Plan-10 pointer the leaf text asks for.
@@ -31,10 +31,10 @@ pub const NATIVE_EXTS: [&str; 6] = [".so", ".pyd", ".dylib", ".dll", ".a", ".o"]
 pub fn cext_diagnostic(module: &str, package: &str) -> String {
     format!(
         "APX-CEXT: `{package}` ships a native component (`{module}` is a C extension \
-         module); antipythany v1 refuses it. Pure-Python wheels only — native \
+         module); antipythony v1 refuses it. Pure-Python wheels only — native \
          components require Plan 10 (not yet implemented), see \
          docs/compat-contract.md C-07 and \
-         plans/antipythany/10-c-extensions-stretch/orchestrator.md \
+         plans/antipythony/10-c-extensions-stretch/orchestrator.md \
          ({module}:1:1)"
     )
 }
@@ -48,7 +48,7 @@ pub fn check_pure(dir: &Path) -> Result<(), String> {
             Ok(e) => e,
             Err(err) => {
                 return Err(format!(
-                    "antipythany: cannot inspect {}: {err}",
+                    "antipythony: cannot inspect {}: {err}",
                     d.display()
                 ))
             }

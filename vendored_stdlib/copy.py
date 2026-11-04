@@ -228,7 +228,7 @@ def _keep_alive(x, memo):
 def _reconstruct(x, memo, func, args,
                  state=None, listiter=None, dictiter=None,
                  *, deepcopy=deepcopy):
-    # antipythany (wave-82, env-gated): pin the first None-call
+    # antipythony (wave-82, env-gated): pin the first None-call
     # in the deepcopy reconstruct chain (CrawlerProcess init).
     import os as _os_rc
     _rc = _os_rc.environ.get("APX_SFCDBG")

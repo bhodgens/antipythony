@@ -1,4 +1,4 @@
-# antipythany v0 stub: the ContextVar surface _py_warnings uses.
+# antipythony v0 stub: the ContextVar surface _py_warnings uses.
 # Real context-isolation semantics are a documented v0 gap — a single global
 # slot backs every ContextVar.
 

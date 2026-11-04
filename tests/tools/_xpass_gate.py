@@ -112,7 +112,7 @@ def main(argv=None) -> int:
         print(f"XPASS CEILING BREACH: {n} xpassed > ceiling {ceiling} "
               f"(tests/XPASS_CEILING). Stale xfail markers went XPASS above "
               f"the recorded baseline — un-xfail them per "
-              f"plans/antipythany/02-native-backend/STALE-XFAIL-LEDGER.md, "
+              f"plans/antipythony/02-native-backend/STALE-XFAIL-LEDGER.md, "
               f"then lower the ceiling only as part of that flip.")
         return 1
     print(f"xpass gate OK: {n} xpassed <= ceiling {ceiling}"

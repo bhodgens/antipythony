@@ -1,4 +1,4 @@
-"""antipythany deviation shim: minimal uuid surface (DEVIATIONS.toml).
+"""antipythony deviation shim: minimal uuid surface (DEVIATIONS.toml).
 The v1 gate (file:// scrapy) uses uuid4 for request fingerprints only."""
 import os
 

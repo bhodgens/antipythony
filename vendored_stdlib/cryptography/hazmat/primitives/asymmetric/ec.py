@@ -1,4 +1,4 @@
-"""antipythany deviation shim — cryptography.hazmat.primitives.asymmetric.ec (v0)."""
+"""antipythony deviation shim — cryptography.hazmat.primitives.asymmetric.ec (v0)."""
 from cryptography import ec as _e
 
 BrainpoolP256R1 = _e.BrainpoolP256R1

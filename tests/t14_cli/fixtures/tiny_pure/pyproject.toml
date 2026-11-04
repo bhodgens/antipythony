@@ -1,5 +1,5 @@
 # tiny-pure: fixture package for T-14 (gates 04.01). A minimal PURE-Python
-# distribution used to exercise `antipythany add file:<this dir>` (or an
+# distribution used to exercise `antipythony add file:<this dir>` (or an
 # equivalent local path form) without any network fetch. If the CLI's `add`
 # cannot install from a local path, that is recorded as CONTRACT-GAP G-6 —
 # the spec's `add <name>` example is registry-only.

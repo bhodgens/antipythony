@@ -36,7 +36,11 @@ type EResult = Result<Value, Flow>;
 use crate::Flow;
 
 fn raise(class: &str, msg: impl Into<String>) -> Flow {
-    Flow::Raise(ExceptionValue::msg(class, msg.into()))
+    let m = msg.into();
+    if class == "IndexError" && std::env::var("APX_IDX_DEBUG").is_ok() {
+        eprintln!("APX-IDX-RAISE(interp): IndexError {:?} at interp::raise", m);
+    }
+    Flow::Raise(ExceptionValue::msg(class, m))
 }
 
 // ===========================================================================
@@ -103,7 +107,7 @@ pub fn run_module(
     interp.stmt_ordinal.set(0);
 
     // 02.04a: sys.path bootstrap ([script_dir] + vendored_stdlib +
-    // ANTPYTHANY_PATH) and a clean sys.modules for this run.
+    // ANTIPTYHONY_PATH) and a clean sys.modules for this run.
     importer::reset_import_state();
     // `app.py` (no dir component) parents to "" — treat as "." so upward
     // project-manifest discovery (04.01 site-packages) walks real dirs.
@@ -1556,6 +1560,14 @@ fn exec_try(
                     // this try pushed.
                     {
                         let end = interp.tb_frames.borrow().len();
+                        if std::env::var("APX_TB_DEBUG").is_ok() && tb_snapshot > end {
+                            eprintln!(
+                                "APX-TB-DEBUG: drain INVERTED snapshot={} end={} (frame {})",
+                                tb_snapshot,
+                                end,
+                                frame.qualname
+                            );
+                        }
                         let mut tb = interp.tb_frames.borrow_mut();
                         tb.drain(tb_snapshot..end);
                     }
@@ -6159,6 +6171,45 @@ fn call_value_inner_impl(
                     }
                     Err(raise("TypeError", "'_GenericAlias' object is not callable"))
                 }
+                // W112: asend_handle called as a plain function (h(None)) —
+                // the `anext(agen)` builtin drives __anext__ handles this way.
+                // Drive the wrapped agen fiber: yielded item is the result,
+                // exhaustion is StopAsyncIteration (async-gen protocol).
+                ap_obj::ObjKind::Namespace if o.name == "asend_handle" => {
+                    let parts = o.slice_parts.borrow().clone();
+                    let Some(Value::Obj(agen)) = parts.first() else {
+                        return Err(stop_async_iteration_flow());
+                    };
+                    let Some(id) = coro_gen_id(&Value::Obj(agen.clone())) else {
+                        return Err(stop_async_iteration_flow());
+                    };
+                    let first = parts.get(1).cloned().unwrap_or(Value::None);
+                    let v = if matches!(first, Value::None) {
+                        args.first().cloned().unwrap_or(Value::None)
+                    } else {
+                        first
+                    };
+                    coro_ensure(interp, id)?;
+                    interp.si_value.borrow_mut().take();
+                    match crate::generators::resume_live(
+                        interp,
+                        id,
+                        crate::generators::GenInput::Send(v),
+                    )? {
+                        // CPython (probed 3.14.7): the asend awaitable
+                        // RETURNS the yielded item — driving it with
+                        // .send() raises StopIteration(item), not a
+                        // yield-out.
+                        Some(y) => {
+                            let mut e = ExceptionValue::new("StopIteration", vec![]);
+                            if !matches!(y, Value::None) {
+                                e.args.push(y);
+                            }
+                            return Err(crate::Flow::Raise(e));
+                        }
+                        None => return Err(stop_async_iteration_flow()),
+                    }
+                }
                 _ => {
                     if std::env::var("APX_ASSERTDBG").is_ok() && f.type_name() == "NoneType" {
                         eprintln!("[NONECALL] callee=None");
@@ -6354,6 +6405,12 @@ fn call_type_ctor(
         "SystemExit",
     ];
     if EXCS.contains(&name) {
+        if name == "IndexError" && std::env::var("APX_IDX_DEBUG").is_ok() {
+            eprintln!(
+                "APX-IDX-RAISE(ctor): IndexError created via EXCS ctor with {} args",
+                args.len()
+            );
+        }
         let o = ap_obj::PyObject::new(ap_obj::ObjKind::Exception, name);
         *o.args.borrow_mut() = args.to_vec();
         // T1-d: OSError family instances carry errno/strerror/filename as
@@ -6959,11 +7016,30 @@ thread_local! {
 }
 
 pub(crate) fn set_pending_generator_error(f: Flow) {
+    if let Flow::Raise(e) = &f {
+        if std::env::var("APX_GEN_DEBUG").is_ok() {
+            eprintln!(
+                "APX-GEN-DEBUG: pending SET class={} args={:?} (thread_local!)",
+                e.class,
+                e.args.iter().map(|v| v.type_name().to_string()).collect::<Vec<_>>()
+            );
+        }
+    }
     PENDING_GEN_ERROR.with(|p| *p.borrow_mut() = Some(f));
 }
 
 pub(crate) fn take_pending_generator_error() -> Option<Flow> {
-    PENDING_GEN_ERROR.with(|p| p.borrow_mut().take())
+    let taken = PENDING_GEN_ERROR.with(|p| p.borrow_mut().take());
+    if let Some(Flow::Raise(e)) = &taken {
+        if std::env::var("APX_GEN_DEBUG").is_ok() {
+            eprintln!(
+                "APX-GEN-DEBUG: pending TAKE class={} args={:?}",
+                e.class,
+                e.args.iter().map(|v| v.type_name().to_string()).collect::<Vec<_>>()
+            );
+        }
+    }
+    taken
 }
 
 // ---- narrow shims for generators.rs (private interp helpers) ----
@@ -7519,6 +7595,13 @@ fn eval_await(interp: &Rc<Interpreter>, v: Value) -> EResult {
         return Err(raise("SyntaxError", "'await' outside async function"));
     }
     let target = get_awaitable(interp, &v)?;
+    // W112: async-GEN drives (asend/__anext__ asend_handle markers) map the
+    // async-gen's yield to the await expression's VALUE (CPython: anext()
+    // returns the yielded item; the awaiting frame never suspends on it).
+    // Plain coroutine/generator awaits still relay inner yields (PEP-492).
+    let is_agen_drive = matches!(&target, AwaitTarget::Fiber(..))
+        && matches!(&v, Value::Obj(o)
+            if o.kind == ap_obj::ObjKind::Namespace && o.name == "asend_handle");
     match target {
         AwaitTarget::Immediate(v) => Ok(v),
         AwaitTarget::Fiber(id, first_input) => {
@@ -7529,10 +7612,19 @@ fn eval_await(interp: &Rc<Interpreter>, v: Value) -> EResult {
             let mut sent = first_input;
             coro_ensure(interp, id)?;
             loop {
-                let r =
-                    crate::generators::resume_live(interp, id, crate::generators::GenInput::Send(sent));
+                let r = crate::generators::resume_live(
+                    interp,
+                    id,
+                    crate::generators::GenInput::Send(sent),
+                );
                 match r {
                     Ok(Some(y)) => {
+                        if is_agen_drive {
+                            // The async-gen yielded: this IS the __anext__
+                            // result. Return it as the await's value; the
+                            // agen stays suspended for the next __anext__.
+                            return Ok(y);
+                        }
                         // Relay the inner yield OUT of this fiber; whatever
                         // comes back is the next value sent into the
                         // awaitable.
@@ -7544,6 +7636,12 @@ fn eval_await(interp: &Rc<Interpreter>, v: Value) -> EResult {
                         sent = relay?;
                     }
                     Ok(None) => {
+                        if is_agen_drive {
+                            // Exhausted async-gen: the async-gen protocol
+                            // signals StopAsyncIteration (NOT StopIteration's
+                            // value read — an exhausted agen has no result).
+                            return Err(stop_async_iteration_flow());
+                        }
                         return Ok(interp.si_value.borrow_mut().take().unwrap_or(Value::None));
                     }
                     Err(Flow::Raise(e)) if e.class == "StopAsyncIteration" => {
@@ -11315,7 +11413,7 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                     let mut cattrs = code2.attrs.borrow_mut();
                     let _ = cattrs.set(
                         Value::Str(PyString::new("co_filename")),
-                        Value::Str(PyString::new("<antipythany>")),
+                        Value::Str(PyString::new("<antipythony>")),
                     );
                     let _ = cattrs.set(
                         Value::Str(PyString::new("co_name")),
@@ -11609,7 +11707,7 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                         let mut cattrs = code.attrs.borrow_mut();
                         let _ = cattrs.set(
                             Value::Str(PyString::new("co_filename")),
-                            Value::Str(PyString::new("<antipythany>")),
+                            Value::Str(PyString::new("<antipythony>")),
                         );
                         let _ = cattrs.set(
                             Value::Str(PyString::new("co_name")),
@@ -12459,7 +12557,7 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 let mut cattrs = code.attrs.borrow_mut();
                 let _ = cattrs.set(
                     Value::Str(PyString::new("co_filename")),
-                    Value::Str(PyString::new("<antipythany>")),
+                    Value::Str(PyString::new("<antipythony>")),
                 );
                 let oname = match obj {
                     Value::Obj(o) => o.name.clone(),
@@ -12488,6 +12586,19 @@ pub fn attr_get_public(
     name: &str,
 ) -> Result<Option<Value>, Flow> {
     attr_get(interp, obj, name)
+}
+
+/// `a < b` through the FULL compare protocol (user `__lt__`/reflected
+/// `__gt__` included). Native heap algorithms (heapq sift_up/down) and
+/// other call_interior sites must dispatch user ordering slots — plain
+/// `values_cmp` TypeErrors on user instances ("'<' not supported between
+/// instances of 'object' and 'object'" at asyncio call_at heap push,
+/// W112: TimerHandle.__lt__ exists and CPython's heapq honors it).
+/// Returns None when neither side has any ordering slot (caller falls
+/// back to the builtin path with its exact TypeError messages).
+pub fn user_lt_public(a: &Value, b: &Value) -> Option<Result<bool, Flow>> {
+    let interp = current_interp_for_bindings();
+    user_compare(&interp, CmpOp::Lt, a, b)
 }
 
 /// Does this name exist in the v0 builtin-method surface? Permissive by

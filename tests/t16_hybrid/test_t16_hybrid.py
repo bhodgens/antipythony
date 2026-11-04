@@ -1,15 +1,15 @@
 # T-16 — hybrid artifact (gates implementation leaf 04.05 hybrid artifact).
 #
 # Authorship: written from the plan/contract documents ONLY
-# (plans/antipythany/04-packaging-ecosystem/orchestrator.md 04.05 Expose/Gate +
-# the CLI verb surface, plans/antipythany/03-wasm-backend/orchestrator.md
+# (plans/antipythony/04-packaging-ecosystem/orchestrator.md 04.05 Expose/Gate +
+# the CLI verb surface, plans/antipythony/03-wasm-backend/orchestrator.md
 # semantics-invariance rule + ap-host runner form 'ap-host run' (03.02 harness
 # flag) + the D4 tier-1 note (03.04), docs/compat-contract.md C-24/C-27/C-29/C-30/C-31
-# + §9 D4, plans/antipythany/master.md (Two-artifact decision, test-tree
-# protocol), plans/antipythany/tests/README.md, exemplars tests/t09_binary/ +
+# + §9 D4, plans/antipythony/master.md (Two-artifact decision, test-tree
+# protocol), plans/antipythony/tests/README.md, exemplars tests/t09_binary/ +
 # tests/t08_tier1/ cross-mode-equality pattern). No implementation source under
 # crates/ was read. Per-test citations and CONTRACT-GAPS:
-# plans/antipythany/tests/T-16-hybrid-artifact.md.
+# plans/antipythony/tests/T-16-hybrid-artifact.md.
 #
 # What is gated (04.05, verbatim Expose): "Native binary with the wasm module
 # embedded (payload section / include_bytes at link time); `app --emit-wasm`
@@ -20,9 +20,9 @@
 # C-30/C-31 citation note, G-1): for each pinned corpus program, the same
 # (stdout, stderr, rc) triple must hold on every execution leg, compared as
 # PAIRWISE equalities exactly like T-08's cross-mode pattern:
-#   native  = `antipythany build app.py -o app`          -> ./app
-#   hybrid  = `antipythany build --hybrid app.py -o app` -> ./app (native + payload)
-#   wasm    = `antipythany build --wasm app.py` output, and the .wasm EXTRACTED
+#   native  = `antipythony build app.py -o app`          -> ./app
+#   hybrid  = `antipythony build --hybrid app.py -o app` -> ./app (native + payload)
+#   wasm    = `antipythony build --wasm app.py` output, and the .wasm EXTRACTED
 #             from the hybrid via `app --emit-wasm`, both executed by `ap-host run`.
 # Per-program artifacts ride on the EXISTING monotonic corpus (C-33; read-only):
 # one values case + one classes case, both inside T-09's pinned 30-case slice.
@@ -32,7 +32,7 @@
 #                 their expected triples re-measure green against the reference
 #                 CPython, headers cite clause ids, and the triples are clean
 #                 exits (rc 0, empty stderr — the C-30 anchor every leg must hit).
-#   XFAIL (04.05) — everything antipythany-side: hybrid build seam, native-green
+#   XFAIL (04.05) — everything antipythony-side: hybrid build seam, native-green
 #                 run of the hybrid binary, `--emit-wasm` extraction, embedded-
 #                 payload byte identity vs a fresh `build --wasm` artifact
 #                 (separately-marked repro gap, G-3), the pairwise legs
@@ -110,7 +110,7 @@ def _clean_env(path_value=None) -> dict:
 def _find_binary(name: str, env_var: str) -> str:
     """Documented resolution order (mirrors T-09): env override -> PATH ->
     target/{debug,release}/<name>. FileNotFoundError until the artifact exists,
-    which lands inside the XFAIL envelope for antipythany-side tests."""
+    which lands inside the XFAIL envelope for antipythony-side tests."""
     override = os.environ.get(env_var)
     if override:
         return shlex.split(override)[0]
@@ -125,11 +125,11 @@ def _find_binary(name: str, env_var: str) -> str:
 
 
 def _cli_cmd() -> list:
-    """The `antipythany` driver (build verbs per the Plan 04 surface table)."""
+    """The `antipythony` driver (build verbs per the Plan 04 surface table)."""
     override = os.environ.get("APX_CLI")
     if override:
         return shlex.split(override)
-    return [_find_binary("antipythany", "APX_CLI")]
+    return [_find_binary("antipythony", "APX_CLI")]
 
 
 def _ap_host_cmd() -> list:
@@ -158,7 +158,7 @@ def _run(cmd: list, cwd=None, path_env=None) -> subprocess.CompletedProcess:
 
 
 def _build(script: Path, tag: str, extra_flags=()) -> Path:
-    """`antipythany build [flags] <script> -o <tmp>/<tag>` (04.05/02.06 Expose);
+    """`antipythony build [flags] <script> -o <tmp>/<tag>` (04.05/02.06 Expose);
     a zero-exit build with no artifact is a seam failure (same rule as T-09 G-6),
     never a vacuous pass."""
     root = Path(tempfile.mkdtemp(prefix=f"t16_{tag}_"))
@@ -236,7 +236,7 @@ def _case_id(p: Path) -> str:
 
 # ---------------------------------------------------------------------------
 # HALF 1 — GREEN NOW: fixture validation. These test the corpus and the
-# reference, not antipythany; they must STAY green (a break = C-01/GAP drift).
+# reference, not antipythony; they must STAY green (a break = C-01/GAP drift).
 # ---------------------------------------------------------------------------
 
 
@@ -304,7 +304,7 @@ def test_case_pair_is_one_values_one_classes():
 
 @XFAIL_0405
 def test_hybrid_build_produces_executable():
-    """04.05 Expose: `antipythany build --hybrid` -> one executable native
+    """04.05 Expose: `antipythony build --hybrid` -> one executable native
     binary with the wasm payload embedded (master.md: the hybrid is the third
     distribution shape over 'native binary + separate .wasm')."""
     app = _build_hybrid(CASES[0], "hyb_app")
@@ -341,7 +341,7 @@ def test_emit_wasm_extracts_module(script):
 @pytest.mark.parametrize("script", CASES, ids=[_case_id(c) for c in CASES])
 def test_embedded_payload_byte_matches_wasm_build(script):
     """Reproducibility of the EMBEDDED PAYLOAD: the extracted .wasm must be
-    byte-identical to a separately built `antipythany build --wasm` artifact of
+    byte-identical to a separately built `antipythony build --wasm` artifact of
     the same source — otherwise the hybrid silently ships a different program
     than the portable distribution. GAP G-3: no doc pins wasm-output
     reproducibility (04.02's gate text covers native build output only), so

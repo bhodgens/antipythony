@@ -1,4 +1,4 @@
-"""antipythany deviation shim — csv (v0: the file:// gate's spider output
+"""antipythony deviation shim — csv (v0: the file:// gate's spider output
 writers only need reader/writer over line iterables)."""
 
 import re

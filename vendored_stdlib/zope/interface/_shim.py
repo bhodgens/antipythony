@@ -1,4 +1,4 @@
-"""antipythany deviation shim — zope.interface implementation (see docs/lxml-shim.md).
+"""antipythony deviation shim — zope.interface implementation (see docs/lxml-shim.md).
 
 Minimal advisory-only surface for the T1 chain (twisted.python.components,
 scrapy.interfaces deprecation shim, itemadapter): Interface tokens,

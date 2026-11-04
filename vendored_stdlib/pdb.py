@@ -1,4 +1,4 @@
-"""pdb stub (antipythany v0): pytest's debugging support imports pdb for
+"""pdb stub (antipythony v0): pytest's debugging support imports pdb for
 --pdb; under our runtime an interactive debugger is inert. Provide the
 minimal names CPython's pdb module exposes that callers may touch."""
 

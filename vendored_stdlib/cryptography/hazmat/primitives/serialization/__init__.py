@@ -1,4 +1,4 @@
-"""antipythany deviation shim — cryptography.hazmat.primitives.serialization (v0).
+"""antipythony deviation shim — cryptography.hazmat.primitives.serialization (v0).
 
 Package so BOTH forms work:
   from cryptography.hazmat.primitives import serialization

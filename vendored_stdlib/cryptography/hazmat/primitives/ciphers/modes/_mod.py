@@ -1,4 +1,4 @@
-"""antipythany deviation shim — cipher modes (single source)."""
+"""antipythony deviation shim — cipher modes (single source)."""
 
 
 class Mode:

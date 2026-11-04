@@ -1,4 +1,4 @@
-"""antipythany deviation shim — cryptography.exceptions (v0).
+"""antipythony deviation shim — cryptography.exceptions (v0).
 
 Surface pinned vs CPython 3.14 (wave-110).
 """
