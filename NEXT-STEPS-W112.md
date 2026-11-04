@@ -213,3 +213,28 @@ shim-removal experiment broke the T2 gate and it has NOT recovered:
 - Shim status: still REQUIRED (pristine FormattedExcinfo run rc=3),
   but the shim-blocker itself (IndexError on empty filtered tb) is
   FIXED at the source; dropping the shim now fails on OTHER gaps.
+
+## Round-5 addendum (same session, after 100edc2)
+
+Probe26 (decisive): the tb chain for trial A now contains TEN
+entries INCLUDING the user frame (/tmp/...py) and the real assert
+site (capture.py:860/861) - the fallback-__ap_tb__ fix works; the
+chain is no longer pluggy-only. str(tbobj) renders without crash.
+
+Remaining defect for the shim repr path: tb line numbers are
+off-by-one low for several frames (369 vs 370, 193 vs 194, 145 vs
+146, 860 vs 861). Root: raise-line attribution uses frame.last_line
+which lags one statement marker under nested-if/try constructs
+(probe27: raise at line 5, tb shows line 3). The shim formatter
+indexes source lines with the shifted number and hits a None
+lookup -> TypeError('NoneType' object is not subscriptable) inside
+the makereport repr. Gate errors vary ('object' item deletion /
+NoneType / _rawentry) because different cache/flow paths surface
+the same underlying misattribution at different points.
+
+NEXT SESSION STEP: fix raise-line attribution - raise_from_value
+sets e.raise_line = frame.last_line; ensure Stmt::Line markers
+flush before raise/assert statement execution (or read the raise
+expression's own line from the AST node instead of last_line).
+Then re-run probe24/26 (expect lineno 370/194/146/861) and the
+T2 gate.
