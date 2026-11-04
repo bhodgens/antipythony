@@ -1127,3 +1127,14 @@ masked the crash differently. Do NOT treat timing-None as the
 current bug. The current default-config blocker remains the
 _rawentry class-receiver miss. Both trees synced post-restore;
 gate state: 1F/1P correct, crash in collectors.
+
+## SESSION CLOSE (attr_get_opt Obj arm committed f0cca6a)
+
+attr_get_opt Obj arm now: receiver attrs -> __ap_dict__ -> None.
+Gate with cacheprovider still crashes at the class-receiver
+_rawentry read — the miss happens through a path that does NOT
+flow through attr_get_opt (APRAW-I in interp.rs fires instead,
+proving the read reaches interp.rs's attr-miss arm directly).
+Next session: apply the same attrs-first fallback at the
+interp.rs attr-miss arm (APRAW-I site, ~2890), which is where the
+failing read actually lands. All other findings/probes stand.
