@@ -377,7 +377,7 @@ fn report_unraisable(interp: &Rc<Interpreter>, del_f: &Value, exc: &ExceptionVal
         {
             let mut a = args_obj.attrs.borrow_mut();
             let _ = a.set(s("exc_type"), exc_type);
-            let _ = a.set(s("exc_value"), exc_value);
+            let _ = a.set(s("exc_value"), exc_value.clone());
             // W112: real tb chain (was a BuiltinFn marker object -
             // pytest's unraisable collector stores it and later walks
             // it as a traceback, AttributeError-ing on missing attrs).
@@ -391,11 +391,15 @@ fn report_unraisable(interp: &Rc<Interpreter>, del_f: &Value, exc: &ExceptionVal
             // CLASS (a type object), and pytest reads
             // exc_value.__traceback__ - without the pinned attr the
             // lookup failed on the class.
-            if let Some(Value::Obj(iov)) = exc.instance.clone() {
+            if let Value::Obj(iov) = &exc_value {
                 let _ = iov
                     .attrs
                     .borrow_mut()
-                    .set(Value::Str(PyString::new("__traceback__")), exc_tb);
+                    .set(Value::Str(PyString::new("__traceback__")), exc_tb.clone());
+                let _ = iov
+                    .attrs
+                    .borrow_mut()
+                    .set(Value::Str(PyString::new("__ap_tb__")), Value::List(PyList::from_vec(Vec::new())));
             }
             let _ = a.set(s("object"), Value::None);
         }
