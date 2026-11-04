@@ -1085,6 +1085,9 @@ fn exec_stmt(
             // both mis-attributed nested raises and double-counted
             // the module frame.
             e.raise_line = frame.last_line.get();
+            if std::env::var("APX_TBDBG").is_ok() {
+                eprintln!("[APTB4] raise {} set raise_line={} (last_line={}) frame={}", e.class, e.raise_line, frame.last_line.get(), frame.qualname);
+            }
             Err(Flow::Raise(e))
         }
         Stmt::Assert(test, msg) => {
@@ -1501,7 +1504,22 @@ fn exec_try(
                             h.name.as_deref().unwrap_or("-"));
                     }
                     {
-                        let line = frame.last_line.get().max(1);
+                        // W112: CPython's tb entry for the frame that
+                        // raised-and-caught in the same frame shows the
+                        // RAISE line, not the try-statement line. At catch
+                        // time frame.last_line points at the try stmt;
+                        // exc.raise_line holds the true raise line.
+                        let line = if exc.tb.is_empty() && exc.raise_line > 0 {
+                            if std::env::var("APX_TBDBG").is_ok() {
+                                eprintln!("[APTB3] use raise_line={} frame={}", exc.raise_line, frame.qualname);
+                            }
+                            exc.raise_line.max(1)
+                        } else {
+                            if std::env::var("APX_TBDBG").is_ok() {
+                                eprintln!("[APTB3] use last_line={} tb_len={} raise_line={} frame={}", frame.last_line.get(), exc.tb.len(), exc.raise_line, frame.qualname);
+                            }
+                            frame.last_line.get().max(1)
+                        };
                         let file = frame
                             .globals
                             .get(&Value::Str(PyString::new("__file__")))
@@ -1877,6 +1895,31 @@ pub fn build_tb_chain(script: &str, entries: &[(String, usize, String)]) -> Valu
                 .collect();
             *cp.slice_parts.borrow_mut() = vec![Value::Tuple(Gc::new(ap_obj::value::Tuple(positions)))];
             let _ = cattrs.set(Value::Str(PyString::new("co_positions")), Value::Obj(cp));
+            // W112: pytest's formatter calls Frame.getargs ->
+            // inspect.getargs for repr_args on every tb entry;
+            // inspect.getargs reads co_varnames / co_argcount /
+            // co_kwonlyargcount — absent on this synthetic code they
+            // read as None and None[0:argcount] raised
+            // TypeError('NoneType' object is not subscriptable),
+            // killing every repr path through the shim.
+            let _ = cattrs.set(
+                Value::Str(PyString::new("co_varnames")),
+                Value::Tuple(Gc::new(Tuple(Vec::new()))),
+            );
+            let _ = cattrs.set(
+                Value::Str(PyString::new("co_argcount")),
+                Value::Int(ap_obj::Int::from_i64(0)),
+            );
+            let _ = cattrs.set(
+                Value::Str(PyString::new("co_kwonlyargcount")),
+                Value::Int(ap_obj::Int::from_i64(0)),
+            );
+            // inspect.getargs also reads co_flags (& CO_VARARGS) —
+            // None made the next hop fail with NoneType-&-int.
+            let _ = cattrs.set(
+                Value::Str(PyString::new("co_flags")),
+                Value::Int(ap_obj::Int::from_i64(0)),
+            );
         }
         {
             let mut attrs = frame.attrs.borrow_mut();
@@ -12067,19 +12110,17 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 // were write-only. CPython exceptions carry __dict__ and
                 // answer getattr for anything stored there.
                 other => {
-                    // W112: instance-stored attrs are readable, but ONLY
-                    // dunder-bookkeeping names. Exposing arbitrary stored
-                    // attrs changed hasattr() outcomes for pluggy/pytest
-                    // probe code and broke the runtestloop wrapper relay
-                    // (caller_kwargs became None mid-chain, t2g11-g14).
-                    if other.starts_with("__ap_") {
-                        if let Some(v) = o
-                            .attrs
-                            .borrow()
-                            .get(&Value::Str(PyString::new(other)))
-                        {
-                            return Ok(Some(v.clone()));
-                        }
+                    // W112: instance-stored attrs are readable. CPython
+                    // exceptions carry __dict__ and answer getattr for
+                    // anything stored there. The shim's formatter reads
+                    // bookkeeping attrs via getattr; restricting this to
+                    // __ap_ names made its lookups return None mid-repr.
+                    if let Some(v) = o
+                        .attrs
+                        .borrow()
+                        .get(&Value::Str(PyString::new(other)))
+                    {
+                        return Ok(Some(v.clone()));
                     }
                     Ok(None)
                 }

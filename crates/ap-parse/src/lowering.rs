@@ -933,6 +933,15 @@ impl<'s> Lowerer<'s> {
     fn lower_block(&mut self, body: &[ast::Stmt]) -> Result<Vec<Stmt>, LowerError> {
         let mut blocks = Vec::with_capacity(body.len());
         for stmt in body {
+            // W112: line marker before each nested-block statement too.
+            // lower_fn_body/lower_stmt_list emit these, but try/if/while
+            // bodies (lower_block) did not — frame.last_line then lagged
+            // one or more statements, and tb entries for exceptions
+            // raised inside nested blocks showed stale lines (probe27/28:
+            // raise at line 5 reported as 3; pluggy entries 1-low across
+            // the board, crashing the pytest repr formatter's source
+            // lookup).
+            blocks.push(Stmt::Line(self.line_of(stmt)));
             for item in self.lower_stmt(stmt)? {
                 match item {
                     Item::Stmt(s) => blocks.push(s),
