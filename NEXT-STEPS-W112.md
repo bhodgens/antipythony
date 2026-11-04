@@ -329,3 +329,33 @@ copy is the only real local divergence (now synced to both trees).
 Current single T2 blocker: the unraisable/thread-exception collector
 crash (AttributeError 'type' object has no attribute '_rawentry')
 after pytest.main returns. Everything else in the T2 flow works.
+
+## Round-7 addendum (2026-11-04)
+
+- Namespace bridge VERIFIED WORKING: sys.unraisablehook set from
+  Python IS invoked by report_unraisable (probe44/45: hook called,
+  exc_type/exc_value readable). Added err_msg=None to the unraisable
+  args object (CPython contract; pytest reads unraisable.err_msg
+  first - it was missing and raised AttributeError before).
+- Shim theory fully retired: with pristine upstream code.py in both
+  trees the gate behaves identically - we always ran upstream
+  pytest 9.1.1.
+- Confirmed the failing read: `_rawentry` accessed on a receiver
+  whose display name is literally 'type' (APRAW-I with
+  LAST_PY_LOC). TracebackEntry is a __slots__ class; probe39 proves
+  slots round-trip works for entries built on the main flow. The
+  crash happens when entries are built INSIDE hook-wrapper fibers
+  (sessionfinish teardown). Working theory: slots attr storage for
+  instances created inside fiber-driven code is dropped or keyed
+  differently, so the read falls through to the class (rendered as
+  'type' in the AttributeError).
+- Also confirmed: the crash is NOT logging-related (-p no:logging
+  still fails) and NOT shim-related (pristine code.py identical
+  behavior).
+
+NEXT SESSION: test slots-instance attr storage inside a fiber:
+create a __slots__ class, instantiate it inside a generator wrapper
+resumed via pluggy-style teardown, read the slot. If it fails,
+fix the slots attr store/read path in classes.rs (suspect per-fiber
+attr isolation or weakref keying on the instance). Then re-run the
+T2 gate.

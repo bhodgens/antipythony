@@ -402,6 +402,9 @@ fn report_unraisable(interp: &Rc<Interpreter>, del_f: &Value, exc: &ExceptionVal
                     .set(Value::Str(PyString::new("__ap_tb__")), Value::List(PyList::from_vec(Vec::new())));
             }
             let _ = a.set(s("object"), Value::None);
+            // CPython unraisable objects carry err_msg (may be None);
+            // pytest's collector reads unraisable.err_msg first.
+            let _ = a.set(s("err_msg"), Value::None);
         }
         if std::env::var("APX_TBDBG").is_ok() {
             let evk = match &exc_value {

@@ -2885,14 +2885,12 @@ pub(crate) fn eval_expr(
                     );
                 }
                 if name == "_rawentry" && std::env::var("APX_TBDBG").is_ok() {
-                    let pyloc = interp
-                        .tb_frames
-                        .borrow()
-                        .last()
-                        .map(|(q, l, f)| format!("{}:{}:{}", q, l, f))
-                        .unwrap_or_default();
+                    let pyloc = crate::interp::LAST_PY_LOC.with(|c| {
+                        let (f, l) = &*c.borrow();
+                        format!("{}:{}", f, l)
+                    });
                     eprintln!(
-                        "[APRAW-I] recv={} name={} pyloc={}",
+                        "[APRAW-I] recv={} name={} last_py_loc={}",
                         crate::classes::display_type_name(&o),
                         name,
                         pyloc
