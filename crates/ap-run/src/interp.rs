@@ -1303,11 +1303,19 @@ fn exec_stmt(
                                         .take(8)
                                         .map(|(q, l, f)| format!("{}:{}:{}", q, l, f))
                                         .collect();
+                                    let mut attr_keys: Vec<String> = Vec::new();
+                                    if let Value::Obj(io) = &o {
+                                        for (kk, _) in io.attrs.borrow().items() {
+                                            attr_keys
+                                                .push(format!("{:?}", kk).chars().take(40).collect());
+                                        }
+                                    }
                                     eprintln!(
-                                        "[APDEL3] DEL-FAIL {} key={:?} stack=[{}]",
+                                        "[APDEL3] DEL-FAIL {} key={:?} stack=[{}] attrs={:?}",
                                         o.type_name(),
                                         k,
-                                        innermost.join(" | ")
+                                        innermost.join(" | "),
+                                        attr_keys
                                     );
                                 }
                                 return Err(e);
