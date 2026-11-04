@@ -896,3 +896,21 @@ mis-bound to the class. Next session single probe: patch staged
 code.py:758 to print repr(traceback[0]) before the _rawentry read
 (staged file is editable test data), run the gate, and identify
 what traceback[0] actually is. Then fix at the true site.
+
+## Round-11d: attrs dump - receiver is the object CLASS itself
+
+APRAW-I attrs dump: the receiver has attrs=[] and is the `object`
+UserClass - literally `object._rawentry`. Python code evaluated
+`<expr>._rawentry` where <expr> evaluated to the object CLASS.
+Most likely site: code.py:758 `self.traceback[0]._rawentry` where
+traceback[0] returned the object class - OR a chained fallback
+where our runtime's attr resolution returned the `object` class
+object as a "fallback value" for a missing attribute (i.e., some
+arm returned Value = object class instead of raising AttributeError
+- check our Type-arm attr-get fallbacks for value-returning
+misbehavior on attribute names ending in anything, or pytest code
+doing `getattr(x, '_rawentry', object)`? unlikely).
+NEXT SESSION: single instrument - patch interp attr-get to print a
+Rust backtrace when name="_rawentry" and receiver is UserClass
+name=object (APRAW-I site), to identify which code path returns
+the object class as a value.
