@@ -3787,3 +3787,19 @@ COMPILE_MISSED	"\\s?{1,2}"	"kck\n ..-中c -c00 0@ 01@1\n@-"	64
 search	"(?<!.)"	"-@\nk@-"	8
 COMPILE_FALSE	"(?x)(?x)c"	"@k 0\n١ 中\n-ä@a."	2
 search	"(?s)(?<=[^ab])"	"1 b@中\nk0@0中-bk1x"	0
+subn1	"a??|١?"	"xäxk@1 -.  "	16
+subn1	"(?!ab)"	" -b1a@bx0.b@١.中-0x"	0
+subn1	"[^abc]|(?!a)"	"11aa-xäbxb-xc"	0
+subn1	"(?=(?P<a>-))"	"-ßb@ -ä1"	80
+subn1	"(?<!b)"	"c -x\nc1 1. c@@١ß"	2
+subn1	"(?s)a"	"b @bkkcckxa١k@ca-bk"	0
+search	"(?<!.)|[a-c]b"	"bkaäxb@äkx"	0
+subn1	"(?-i:(?<!\\d))"	"-中1..ß  ."	2
+subn1	"(a)\\1|0"	"-١11b0\n0cb\n0-ß0b中.١axxkcä"	0
+search	"(?<!.)"	"ä١ kb١@@c b١c\n.\n"	0
+search	"(?<=[^ab])"	"ka1 c."	64
+search	"(?<=a)"	"axßaäaaakb中١ ßbx@0-中\nkaä-x"	0
+findall	"a*?|[a-c]|a"	"@c\n"	0
+search	"(?<!\\w)"	"١xcäb@kßbb"	0
+COMPILE_TEXT	"\\A{1,2}?*+"	"a@"	0
+search	"ab|x|b|(?<!.)"	"0.0k.bx١1b  ß1c1@."	0
