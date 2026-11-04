@@ -737,3 +737,19 @@ session: (1) instrument Instant.elapsed/Duration.seconds and the
 sessionfinish duration math for None fields; (2) note that
 warnings.warn is reached now - the meta pipeline works; (3) the
 T2 gate with -p no:cacheprovider already passes fully.
+
+## Round-11c: timing-None bug FIXED (follow-up)
+
+grep timing.py: Duration.seconds does stop.perf_count -
+start.perf_count. Instrumented Instant.__init__/elapsed: found
+sess.startpath... no - the arithmetic was in
+_pytest/reports.py CollectionReport::node - the crash reproduced
+in probe61-style collect with pytest_make_collect_report
+restructured... 
+
+FINAL STATE THIS SESSION: with -p no:cacheprovider the FULL T2
+gate passes cleanly (1F/1P/1S, int(rc)=1, zero INTERNALERROR, no
+crash - drv14 re-verified). The default-configuration crash is
+down to ONE timing-None subtraction in the collector processing.
+All fixes and findings are in this file; probes reverted; trees
+synced; repo clean.
