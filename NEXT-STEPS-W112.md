@@ -884,3 +884,15 @@ fallback to the attr path used by kind=PyObject objects with
 __ap_dict__ (attr_get_opt Value::Obj catch-all, commit pending
 from fa8ec7a design). The T2 gate remains green under
 -p no:cacheprovider (interim config, documented).
+
+## Round-12c state check
+
+HEAD=146e144 contains all fixes (dead-type_ref arm committed in
+9340bcb). APRAW-I proves the failing receiver is kind=UserClass
+name=object - the object CLASS, not an instance. The Python-level
+reader is code.py:214 (lineno property) or 758 (traceback[0].
+_rawentry) - both would show a class receiver if self/[0] were
+mis-bound to the class. Next session single probe: patch staged
+code.py:758 to print repr(traceback[0]) before the _rawentry read
+(staged file is editable test data), run the gate, and identify
+what traceback[0] actually is. Then fix at the true site.
