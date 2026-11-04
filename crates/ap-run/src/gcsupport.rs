@@ -381,10 +381,14 @@ fn report_unraisable(interp: &Rc<Interpreter>, del_f: &Value, exc: &ExceptionVal
             // W112: real tb chain (was a BuiltinFn marker object -
             // pytest's unraisable collector stores it and later walks
             // it as a traceback, AttributeError-ing on missing attrs).
-            let exc_tb = crate::interp::build_tb_chain(
-                &interp.script_path,
-                &exc.tb,
-            );
+            let exc_tb = if exc.tb.is_empty() {
+                // CPython allows exc_traceback = None; pytest's
+                // format_exception handles it. A None from
+                // build_tb_chain leaked into arithmetic downstream.
+                Value::None
+            } else {
+                crate::interp::build_tb_chain(&interp.script_path, &exc.tb)
+            };
             let _ = a.set(s("exc_traceback"), exc_tb.clone());
             // Also pin __traceback__ on the instance itself: class-tree
             // exception instances route missing-attr lookups to the
