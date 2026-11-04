@@ -1179,3 +1179,30 @@ items. Then fix at the identified site.
   identify which class creation produced a class literally named
   'type' - that class shadows real instances in the unraisable
   flow.
+
+## Round-13 (session close): APSLOT-MISS findings
+
+APSLOT-MISS fired only on PosixPath slots (pathlib internals,
+harmless lazy-slot pattern) - the failing '_rawentry' read does
+NOT route through the unset-slot arm. The AttributeError 'type'
+has no _rawentry is raised by a DIFFERENT arm: our runtime's
+attr-get for a UserClass receiver named/rendered 'type' where the
+read lands on a TypeObject whose name is 'type'. The most likely
+candidate: `type.__repr__`-shaped synth or the
+`ReprTracebackNative(format_exception(self.type, ...))` call
+passing `self.type` (the exception CLASS, a 'type'-kind object)
+into format_exception, which then reads attributes on it -
+_traceback/format_exception internally iterates the tb and reads
+tb_frame attrs, NOT class attrs - so the 'type'-receiver read is
+most plausibly `self.type._rawentry`?? - pytest's own
+ExceptionInfo.type property returns the exc CLASS. code.py:758
+reads self.traceback[0]._rawentry (correct). The 'type'
+receiver with a _rawentry READ means the tb LIST contains the
+exception CLASS object as an entry - i.e., our build_tb_chain
+produced a chain whose tb_next terminates in/contains the class,
+or pytest's Traceback(iterable) got the class as an item.
+NEXT SESSION: instrument build_tb_chain (and filter paths) to
+assert every produced entry is a Namespace tb object, never a
+class - and dump tb_next chains. Also dump repr of
+self.traceback items at code.py:758 (staged probe already shows
+entry type = 'type' - the list contains the CLASS as entry 0).
