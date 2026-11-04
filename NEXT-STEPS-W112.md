@@ -1042,3 +1042,21 @@ frame dump at the APRAW-I site (walk interp call frames or
 tb_frames at the moment of the miss) to see the exact Python
 functions executing when object._rawentry is read. That pinpoints
 the flow directly.
+
+## BISECT MATRIX COMPLETE (round-12 final)
+
+| trap | cacheprovider | result |
+|------|---------------|--------|
+| YES  | YES           | CRASH (_rawentry on type) |
+| YES  | NO            | PASS |
+| NO   | YES           | PASS |
+| NO   | NO            | PASS |
+
+Interaction bug: trap+cacheprovider TOGETHER trigger it. The trap
+assigns a plain function to PluginManager._hookexec (class attr);
+pluggy then calls it via _inner_hookexec... The interplay with
+cacheprovider's hooks (which use lru_cache and stash) is the
+failure surface. NEXT SESSION: instrument INSIDE _multicall when
+both are active (dump hook_name + methods at entry of each impl
+call), find the impl whose execution raises, and apply the
+__ap_dict__/legacy-obj treatment at that exact site.
