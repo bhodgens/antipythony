@@ -825,3 +825,14 @@ NEXT SESSIONS: (1) fix cacheprovider legacy-object ops (same
 __ap_dict__ family: subscript_get/contains on 'object'-kind
 already done; remaining: whatever cacheprovider's LF plugin still
 hits), then restore the plain gate command; (2) scrapy campaign.
+
+## Round-11d: isolated repro rules out metas; next = drv7-style walk at the TypeError
+
+probe71: manually pushing both old-shape (exc_value=str) and
+new-shape (exc_value=instance) UnraisableMeta objects through the
+EXACT collect_unraisable processing works cleanly (warnings shown,
+no crash). The crash needs the full pytest.main context.
+Next session: run the gate with a driver that wraps pytest.main in
+try/except and walks the TypeError's REAL tb chain (drv7 pattern -
+proven to give true frames) at the exact failure, then fix the
+identified line.
