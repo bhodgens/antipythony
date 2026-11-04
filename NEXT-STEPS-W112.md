@@ -314,3 +314,18 @@ NEXT SESSION (updated after round-6b instrumentation):
   self for __slots__-defined classes.
 - probe35 del-item TypeError at collection_finish remains unlocated
   (does not route through subscript_del).
+
+## ROUND-6 CORRECTION (critical mental-model fix)
+
+The "ExceptionInfoFormatter shim" NEVER EXISTED as a staged
+modification: pytest 9.1.1 upstream RENAMED FormattedExcinfo to
+ExceptionInfoFormatter. The uv pristine code.py (58426 bytes) and
+both staged copies are byte-identical and contain 4
+ExceptionInfoFormatter refs. All prior "staged variant / shim
+removal" reasoning was chasing a phantom - we have ALWAYS run the
+upstream formatter, and the extraction fallback in the antipythANY
+copy is the only real local divergence (now synced to both trees).
+
+Current single T2 blocker: the unraisable/thread-exception collector
+crash (AttributeError 'type' object has no attribute '_rawentry')
+after pytest.main returns. Everything else in the T2 flow works.
