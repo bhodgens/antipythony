@@ -1786,6 +1786,19 @@ fn current_frame_line(interp: &Rc<Interpreter>) -> usize {
 /// counter advanced past it, so the raise's own line is table[ordinal - 1].
 /// (current_frame_line alone reflects the mapped value written to THIS
 /// frame's cell, which for GC-bridge frames can lag to the caller's line.)
+thread_local! {
+    /// W112: last executed (file, line) for native-site diagnostics.
+    pub static LAST_PY_LOC: std::cell::RefCell<(String, usize)> =
+        std::cell::RefCell::new((String::new(), 0));
+}
+
+/// Record the current python location (call at eval_expr entry).
+pub fn note_py_loc(interp: &Rc<Interpreter>) {
+    let f = interp.script_path.clone();
+    let l = last_executed_line(interp);
+    LAST_PY_LOC.with(|c| *c.borrow_mut() = (f, l));
+}
+
 fn last_executed_line(interp: &Rc<Interpreter>) -> usize {
     let ordinal = interp.stmt_ordinal.get();
     if ordinal == 0 {
@@ -1907,7 +1920,14 @@ fn exception_instance(exc: &ExceptionValue) -> Value {
         // T2: attach the per-exception tb as a hidden attr so
         // __traceback__ on THIS instance renders ITS chain, not the
         // interpreter-wide table.
-        if !exc.tb.is_empty() {
+        // W112: write __ap_tb__ UNCONDITIONALLY (even empty). Skipping
+        // the write on empty tb broke tb continuity across relay hops:
+        // a later re-throw rebuilds the EV from the instance (see
+        // exception_value_of_instance's __ap_tb__ carry-back) and an
+        // absent attr means the fresh EV has no tb at all, so pluggy's
+        // teardown `raise exception` surfaces a 1-frame/filtered-empty
+        // chain and repr_excinfo raises IndexError at code.py [-1].
+        {
             if std::env::var("APX_TBDBG").is_ok() {
                 eprintln!("[APTB] cls={} tb={:?}", exc.class, exc.tb);
             }
@@ -1951,7 +1971,115 @@ fn raise_from_value(v: &Value) -> Result<ExceptionValue, Flow> {
     let interp = current_interp_for_bindings();
     match v {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::Exception => {
-            Ok(ExceptionValue::new(&o.name, o.args.borrow().clone()))
+            // W112: re-raising a materialized exception instance (pluggy
+            // teardown `raise exception`) must preserve identity and the
+            // recorded tb (__ap_tb__) — the old path built a FRESH EV
+            // with empty tb and no instance, so every relay hop reset
+            // the traceback to a single frame and repr_excinfo's
+            // filtered-empty traceback raised IndexError at code.py [-1]
+            // (T2 shim blocker, y144 repro).
+            let mut ev = exception_value_of_instance(v)?;
+            ev.instance = Some(v.clone());
+            // W112: when the captured EV has no tb, derive entries from
+            // the instance's LIVE __traceback__ chain (tb_next walk:
+            // tb_lineno + f_code.co_filename are Python-visible on our
+            // synthetic tb objects). CPython keeps the full chain on the
+            // instance across re-raises; losing it here made pluggy's
+            // teardown `raise exception` surface pluggy-only frames that
+            // repr_excinfo's filter hides entirely → IndexError at
+            // _code/code.py [-1] (y144 repro, T2 shim blocker).
+            if ev.tb.is_empty() {
+                if let Value::Obj(io) = v {
+                    let mut cur = io
+                        .attrs
+                        .borrow()
+                        .get(&Value::Str(PyString::new("__traceback__")))
+                        ;
+                    let mut guard = 0;
+                    while let Some(Value::Obj(tbo)) = cur {
+                        if guard > 64 {
+                            break;
+                        }
+                        guard += 1;
+                        let line = tbo
+                            .attrs
+                            .borrow()
+                            .get(&Value::Str(PyString::new("tb_lineno")))
+                            .and_then(|v| v.as_int())
+                            .and_then(|i| i.to_i64())
+                            .unwrap_or(1)
+                            .max(1) as usize;
+                        let file = tbo
+                            .attrs
+                            .borrow()
+                            .get(&Value::Str(PyString::new("tb_frame")))
+                            .and_then(|fv| {
+                                if let Value::Obj(fo) = fv {
+                                    fo.attrs
+                                        .borrow()
+                                        .get(&Value::Str(PyString::new("f_code")))
+                                        .and_then(|cv| {
+                                            if let Value::Obj(co) = cv {
+                                                co.attrs
+                                                    .borrow()
+                                                    .get(&Value::Str(PyString::new("co_filename")))
+                                                    .and_then(|s| match s {
+                                                        Value::Str(sv) => {
+                                                            Some(sv.as_str().to_string())
+                                                        }
+                                                        _ => None,
+                                                    })
+                                            } else {
+                                                None
+                                            }
+                                        })
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or_default();
+                        let name = tbo
+                            .attrs
+                            .borrow()
+                            .get(&Value::Str(PyString::new("tb_frame")))
+                            .and_then(|fv| {
+                                if let Value::Obj(fo) = fv {
+                                    fo.attrs
+                                        .borrow()
+                                        .get(&Value::Str(PyString::new("f_code")))
+                                        .and_then(|cv| {
+                                            if let Value::Obj(co) = cv {
+                                                co.attrs
+                                                    .borrow()
+                                                    .get(&Value::Str(PyString::new("co_name")))
+                                                    .and_then(|s| match s {
+                                                        Value::Str(sv) => {
+                                                            Some(sv.as_str().to_string())
+                                                        }
+                                                        _ => None,
+                                                    })
+                                            } else {
+                                                None
+                                            }
+                                        })
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or_else(|| "?".to_string());
+                        ev.tb.push((name, line, file));
+                        cur = tbo
+                            .attrs
+                            .borrow()
+                            .get(&Value::Str(PyString::new("tb_next")))
+                            ;
+                    }
+                }
+            }
+            if std::env::var("APX_IDX_DEBUG").is_ok() {
+                eprintln!("[W112-RR] re-raised instance class={} tb_len={}", ev.class, ev.tb.len());
+            }
+            Ok(ev)
         }
         Value::Obj(o) if o.kind == ap_obj::ObjKind::Type && is_builtin_exc_name(&o.name) => {
             Ok(ExceptionValue::new(&o.name, vec![]))
@@ -2034,6 +2162,45 @@ fn exception_value_of_instance(v: &Value) -> Result<ExceptionValue, Flow> {
     // fails to match and the exception escapes every handler -
     // exactly the pytest runtest-protocol vanishing act.
     ev.instance = Some(v.clone());
+    // W112: carry the instance's RECORDED tb (__ap_tb__, written by
+    // exception_instance at every materialization) back into the EV.
+    // Without this, re-throwing a captured exception instance (pluggy's
+    // teardown `raise exception` -> gen.throw(exc) relay) loses the
+    // original tb chain: the fresh EV has empty tb, downstream
+    // repr_excinfo filters it to nothing, and code.py:1170
+    // `traceback[-1]` raises the IndexError that pluggy surfaces
+    // instead of the original error (y144 repro, T2 shim blocker).
+    if let Value::Obj(_) = v {
+        if let Some(Value::List(lst)) = o
+            .attrs
+            .borrow()
+            .get(&Value::Str(PyString::new("__ap_tb__")))
+        {
+            let mut tb: Vec<(String, usize, String)> = Vec::new();
+            for it in lst.items().iter() {
+                if let Value::Tuple(t) = it {
+                    if t.0.len() >= 2 {
+                        let q = match &t.0[0] {
+                            Value::Str(s) => s.as_str().to_string(),
+                            _ => continue,
+                        };
+                        let l = match t.0[1].as_int().and_then(|i| i.to_i64()) {
+                            Some(i64v) => (i64v.max(1)) as usize,
+                            None => continue,
+                        };
+                        let f = match t.0.get(2) {
+                            Some(Value::Str(s)) => s.as_str().to_string(),
+                            _ => String::new(),
+                        };
+                        tb.push((q, l, f));
+                    }
+                }
+            }
+            if !tb.is_empty() {
+                ev.tb = tb;
+            }
+        }
+    }
     // User __str__ override: pickle the rendering into args so py_str
     // (which joins args) reproduces it byte-exactly. class_of_value reads
     // the class_ref back-ref first (user exception classes).
@@ -2352,6 +2519,7 @@ pub(crate) fn eval_expr(
     e: &Expr,
     reg: &Rc<FnRegistry>,
 ) -> EResult {
+    note_py_loc(interp);
     match e {
         Expr::LitInt(v) => Ok(Value::Int(int_from_i128(*v))),
         Expr::LitBigInt(digits) => Ok(Value::Int(

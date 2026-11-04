@@ -208,6 +208,12 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
                         l.len(),
                         *i
                     );
+                    let bt = std::backtrace::Backtrace::force_capture();
+                    eprintln!("APX-IDX-BACKTRACE:\n{bt}");
+                    crate::interp::LAST_PY_LOC.with(|c| {
+                        let (f, l) = &*c.borrow();
+                        eprintln!("APX-IDX-PYLOC: {f}:{l}");
+                    });
                 }
                 raise("IndexError", "list index out of range")
             })?;

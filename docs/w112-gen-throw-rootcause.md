@@ -118,7 +118,47 @@ NEW FACTS:
 - Trial A is CLEAN: call.excinfo.value is AssertionError (args=()).
   The corruption is purely in tb→summary extraction after the throw.
 
-CONCRETE FIX PLAN (updated 2026-11-04 late — hypothesis REVISED again):
+## Live debugging round 3 (2026-11-04, this session) — tb-carry fixes landed, relay hop still open
+
+Fixes COMMITTED in this round (interp.rs/methods.rs):
+1. raise_from_value ObjKind::Exception arm: re-raising a materialized
+   instance now routes through exception_value_of_instance (preserves
+   identity + __ap_tb__ carry-back) instead of building a fresh EV with
+   empty tb.
+2. exception_value_of_instance: carries the instance's recorded
+   __ap_tb__ entries back into ev.tb (was: dropped on every rebuild).
+3. exception_instance: writes __ap_tb__ UNCONDITIONALLY (was skipped on
+   empty tb), so once any hop has entries, continuity holds.
+4. raise_from_value: when ev.tb is STILL empty, derives entries from the
+   instance's live __traceback__ chain (tb_next walk over tb_lineno /
+   f_code.co_filename / co_name; guard 64 frames).
+5. methods.rs subscript_get: backtrace + pyloc debug under APX_IDX_DEBUG.
+
+NEW FACTS from round 3:
+- The prior "no instrumented site fires" finding was a STALE-BINARY
+  artifact. With a fresh binary, methods::raise DOES fire:
+  `list len=0 idx=-1` — a Python-level [-1] on an EMPTY list.
+- The B-surfaced IndexError's origin: _pytest/_code/code.py:1170
+  `last = traceback[-1]` in repr_traceback AFTER filter_excinfo_traceback
+  produced an empty Traceback for the relayed AssertionError.
+- Trial A's AssertionError instance carries NO __ap_tb__ (probe8) and
+  its __traceback__ renders the 1-frame fallback (probe10: driver line 1).
+  exc.tb was empty at the from_call-catch materialization — the 5-entry
+  rendering in excinfo.traceback comes from the excinfo's OWN retained
+  EV.tb copy (5 entries captured earlier), NOT from the instance attr.
+- So tb continuity breaks at the FIRST exception_instance call for the
+  AssertionError: exc.tb is empty at that point. The 5 entries existed
+  in the EV DURING propagation (frame-exit hooks insert wrapper frames)
+  but were gone by the from_call catch. The loss site is the hop(s)
+  between the wrapper teardown catches and the from_call handler — most
+  likely the fiber-crossing at pending_generator_error / resume_live
+  ret, or a wrapper teardown that rebuilds the EV. Next probe: APX_TBDBG
+  (APTB lines) around trial A + instrument resume_live ret for
+  GenInput::Throw outcomes printing ev.tb.len().
+
+Verdict: NOT FIXED yet; shim still required. The tb-carry mechanism is
+now correct end-to-end; the remaining hole is the single hop that
+empties ev.tb before from_call's catch. Next session: find that hop.
 
 Live probe results (walk_tb / StackSummary / co_positions all verified
 in-repro): walk_tb yields all 5 frames with correct (frame, lineno);
