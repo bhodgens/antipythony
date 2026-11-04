@@ -504,3 +504,32 @@ instances doesn't consult attrs before falling to the class MRO.
 Check interp attr-get for kind=PyObject instances: ensure o.attrs
 is consulted before the MRO/class fallthrough (same shape as the
 earlier Exception/Namespace arm fixes).
+
+## Round-9: REAL innermost frame found (drv7 driver catches + walks)
+
+Running pytest.main under try/except in the driver and walking
+e.__traceback__ with our runtime gives the REAL chain:
+  f0 <module> drv7.py:12 (pytest.main call)
+  f1 config/__init__.py:201 main
+  f2 config/__init__.py:241 _main
+  f3 pluggy _caller.py:197
+  f4 trap drv7.py:8
+  f5 _execution.py:195 (raise exception)
+  f6 _execution.py:147
+  f7 main.py:377 pytest_cmdline_main
+  f8 main.py:365 wrap_session
+  f9 config/__init__.py:1264 Config.notify_exception
+  f10 _code/code.py:756 ExceptionInfo.getrepr
+CRASH SITE: code.py:756-761 - getrepr(style="native") ->
+ReprTracebackNative(format_exception(self.type, self.value,
+self.traceback[0]._rawentry ...)) - the _rawentry read on
+traceback[0] (TracebackEntry slot) fails with the CLASS (rendered
+'type') as receiver, i.e. the slot write in TracebackEntry.__init__
+did not persist for entries created in the INTERNALERROR
+notification path (the excinfo here wraps the INTERNALERROR raised
+during pytest_collection - the del-item crash we FIXED this round!
+The internal error excinfo's tb contains the OLD collection crash).
+So this driver crash is a SECOND-ORDER symptom: once the original
+collection crash is fully fixed, this path may stop firing. The
+slots-write-fails-in-this-context question remains open but may
+become moot.
