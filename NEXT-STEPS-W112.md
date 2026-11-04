@@ -836,3 +836,16 @@ Next session: run the gate with a driver that wraps pytest.main in
 try/except and walks the TypeError's REAL tb chain (drv7 pattern -
 proven to give true frames) at the exact failure, then fix the
 identified line.
+
+## ROUND-10 FINAL BISECT RESULT
+
+cacheprovider CONFIRMED as the sole remaining trigger: identical
+driver runs with and without `-p no:cacheprovider` split cleanly -
+without: full pass (1F/1P/1S, int(rc)=1, 0 INTERNALERROR); with:
+AttributeError 'type' has no '_rawentry' right after test_pass
+(during collection of remaining items). co_positions real-value
+fix did not affect it. The trigger is cacheprovider's LF-plugin
+collection-finish processing (lastfailed read/pop on legacy
+dict-backed objects) - the exact op needs the drv7 real-tb walk
+applied INSIDE cacheprovider's pytest_collection_finish next
+session.
