@@ -952,6 +952,17 @@ pub fn subscript_set(obj: &Value, key: &Value, v: Value) -> Result<(), Flow> {
                     }
                 }
             }
+            // W112: dict-backed legacy objects (attrs["__ap_dict__"]).
+            if let Value::Obj(io) = obj {
+                if let Some(Value::Dict(d)) = io
+                    .attrs
+                    .borrow()
+                    .get(&Value::Str(PyString::new("__ap_dict__")))
+                {
+                    let _ = d.set(key.clone(), v);
+                    return Ok(());
+                }
+            }
             Err(raise(
                 "TypeError",
                 format!(
