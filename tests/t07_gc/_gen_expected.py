@@ -7,7 +7,7 @@ import hashlib, json, os, subprocess, sys
 from datetime import date
 from pathlib import Path
 
-GC = Path("/Users/caimlas/git/antipythany/tests/corpus/gc")
+GC = Path("/Users/caimlas/git/antipythony/tests/corpus/gc")
 PY = "/opt/homebrew/bin/python3.14"
 env = {k: os.environ[k] for k in ("PATH", "HOME", "LANG") if k in os.environ}
 
@@ -16,7 +16,7 @@ for script in sorted(GC.glob("gc*.py")):
     runs = []
     for _ in range(3):
         p = subprocess.run([PY, str(script)], capture_output=True, env=env,
-                           cwd="/Users/caimlas/git/antipythany", timeout=120)
+                           cwd="/Users/caimlas/git/antipythony", timeout=120)
         runs.append((p.stdout, p.stderr, p.returncode))
     if not (runs[0] == runs[1] == runs[2]):
         failed.append(script.name)

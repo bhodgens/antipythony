@@ -1,4 +1,4 @@
-  File "/Users/caimlas/git/antipythany/tests/corpus/fstrings/cases/f33_bytes_adjacent_error.py", line 3
+  File "/Users/caimlas/git/antipythony/tests/corpus/fstrings/cases/f33_bytes_adjacent_error.py", line 3
     print(f"{x}" b"tail")
                         ^
 SyntaxError: cannot mix bytes and nonbytes literals
