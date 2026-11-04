@@ -10477,6 +10477,23 @@ fn user_compare_value(
     }
     None
 }
+/// W112: dict-backed legacy objects and slot-written instances -
+/// consult o.attrs / the __ap_dict__ backing dict before the caller
+/// turns the miss into an AttributeError.
+fn w112_attr_fallback(o: &Value, name: &str) -> Option<Value> {
+    if let Value::Obj(io) = o {
+        if let Some(v) = io.attrs.borrow().get(&Value::Str(PyString::new(name))) {
+            return Some(v.clone());
+        }
+        if let Some(Value::Dict(d)) =
+            io.attrs.borrow().get(&Value::Str(PyString::new("__ap_dict__")))
+        {
+            return d.get(&Value::Str(PyString::new(name)));
+        }
+    }
+    None
+}
+
 fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option<Value>, Flow> {
     // T1 (email._policybase._extend_docstrings iterates cls.__dict__ and
     // reads attr.__doc__ on ANY value — bools, frozensets, weaksets):
