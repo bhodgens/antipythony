@@ -70,6 +70,21 @@ interp.rs Task/future wakeup (vendored tasks.py __wakeup or the native
 future-resume bridge). First action next session: instrument
 futures.py Future.__await__ yield + Task.__wakeup for this repro.
 
+## Crawl next-blocker refinement (added late this session)
+
+The "too many values to unpack (expected 2)" is NOT the deferred_from_coro
+wakeup relay: the full engine chain (inlineCallbacks nests, send_catch_log
+arity=2, maybe_deferred_to_future, deferred_from_coro nesting) all pass in
+isolated probes (/tmp/w112_nest.py, /tmp/w112_nest3.py, /tmp/w112_sig.py,
+/tmp/w112_unpack3.py). The ValueError is thrown INTO engine._download /
+_process_start_next as a Failure and its true origin frame is masked by
+Failure.throwExceptionIntoGenerator. First diagnostic next session: run
+the crawl with APX_TBDBG=1 or patch scrapy's Failure.raiseException
+temporarily to print the FULL stored tb list, revealing the real origin
+frame of the unpack. The deferred_from_coro repro (/tmp/w112_dfc2.py)
+remains a REAL separate hang (await of dfc'd coroutine inside a
+run_until_complete Task loop loses the wakeup) — keep both on the list.
+
 ## Also open (unchanged from prior handoffs)
 
 - pluggy shim (generator-throw through native bound method): subagent ran
