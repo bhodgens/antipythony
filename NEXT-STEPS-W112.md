@@ -871,3 +871,16 @@ Then extend the legacy-instance attr read fallback (classes.rs
 attr_get_opt Obj arm, commit fa8ec7a-follow-up) to consult
 o.attrs BEFORE the MRO fallthrough - the merged fix for the whole
 family.
+
+## Round-12b: attr_get_opt dead-type_ref fix committed (9340bcb)
+
+ap-run suites green (39/1 pre-existing flake). Gate with
+cacheprovider STILL crashes - the dead-type_ref read arm was not
+the failing path. Next session, the ONE remaining hypothesis from
+round-9d: instances materialized as kind=PyObject legacy objects
+(NOT UserInstance) whose attrs contain the data - those skip the
+UserInstance arm entirely. Extend the same dead-weakref/attrs
+fallback to the attr path used by kind=PyObject objects with
+__ap_dict__ (attr_get_opt Value::Obj catch-all, commit pending
+from fa8ec7a design). The T2 gate remains green under
+-p no:cacheprovider (interim config, documented).
