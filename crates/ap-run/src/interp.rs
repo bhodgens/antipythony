@@ -1914,13 +1914,19 @@ pub fn build_tb_chain(script: &str, entries: &[(String, usize, String)]) -> Valu
             // mid-unwind. Mirror the builtins.rs:2660 stub (1024 x
             // (None,None,None,None) so islice indexing always lands).
             let cp = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "__ap_code_positions__");
+            // W112: positions must carry REAL values (line, line, 0, 0)
+            // - all-None tuples made traceback.py FrameSummary arithmetic
+            // raise TypeError int-minus-NoneType during INTERNALERROR
+            // rendering (pytest collect_unraisable path).
+            let line_v = Value::Int(ap_obj::Int::from_i64(line as i64));
+            let zero_v = Value::Int(ap_obj::Int::from_i64(0));
             let positions: Vec<Value> = (0..1024)
                 .map(|_| {
                     Value::Tuple(Gc::new(ap_obj::value::Tuple(vec![
-                        Value::None,
-                        Value::None,
-                        Value::None,
-                        Value::None,
+                        line_v.clone(),
+                        line_v.clone(),
+                        zero_v.clone(),
+                        zero_v.clone(),
                     ])))
                 })
                 .collect();
