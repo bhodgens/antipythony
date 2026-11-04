@@ -1027,3 +1027,18 @@ creation for __slots__-defined UserClasses inside wrapper resumes
 (instrument bind_function_owned + the wrapper resume path), find
 where self drops, fix, then re-run: expect collection + makereport
 + collectors all green WITHOUT -p no:cacheprovider.
+
+## Round-14: component probes all pass - bug is flow-specific
+
+probe74: PluginManager._hookexec monkeypatch binds correctly.
+probe76: class-method replacement + teardown-exception-in-flight:
+self binds to Target correctly.
+probe77: __slots__ Entry created inside a generator wrapper
+(pluggy teardown-throw shape): slot write + read work.
+=> Every component probe passes; the class-receiver _rawentry/
+ishidden misses only manifest in the full pytest flow. Next
+session: instead of component probes, add a Rust-side Python
+frame dump at the APRAW-I site (walk interp call frames or
+tb_frames at the moment of the miss) to see the exact Python
+functions executing when object._rawentry is read. That pinpoints
+the flow directly.
