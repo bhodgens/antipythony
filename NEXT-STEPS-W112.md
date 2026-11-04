@@ -232,9 +232,44 @@ the makereport repr. Gate errors vary ('object' item deletion /
 NoneType / _rawentry) because different cache/flow paths surface
 the same underlying misattribution at different points.
 
-NEXT SESSION STEP: fix raise-line attribution - raise_from_value
-sets e.raise_line = frame.last_line; ensure Stmt::Line markers
-flush before raise/assert statement execution (or read the raise
-expression's own line from the AST node instead of last_line).
-Then re-run probe24/26 (expect lineno 370/194/146/861) and the
-T2 gate.
+NEXT SESSION STEP (DONE same session): lower_block Line markers +
+synthetic-code co_* attrs fixed (commit 9f598e3). probe26 now shows
+TEN tb entries including user frames + capture.py; str(tbobj)
+renders; probe24 makereport outcome 'failed'.
+
+## Round-5 final state (commits 9f598e3, 5fc99fd)
+
+FIXED this round:
+- lower_block Line markers (tb linenos now exact; probe29/30: f:5,
+  g:7 vs CPython).
+- build_tb_chain synthetic code: co_varnames/co_argcount/
+  co_kwonlyargcount/co_flags - the shim repr crash root cause
+  (inspect.getargs read None attrs). probe32 repr_failure now
+  returns ExceptionChainRepr.
+- T2 gate session RUNS TO COMPLETION with correct verdicts
+  (test_pass PASSED, test_fail fails as expected), zero
+  INTERNALERROR, rc=1.
+
+LAST BLOCKER (driver crash after pytest.main returns):
+collect_unraisable -> pop_unraisable() -> AttributeError 'type'
+object has no attribute '_rawentry'. Committed WIP diagnostics in
+5fc99fd (unraisable hook now passes the exception instance + real
+tb chain; del-item __delitem__ dispatch widened) - crash persists.
+Note the tb frames in the driver crash are OUR synthetic chain with
+known misattribution, so the shown line numbers (46/55) may not be
+the true raise site. Also: probe35's del-item TypeError at
+pytest_collection_finish does NOT route through
+methods::subscript_del (APDEL/APDEL2 instruments silent) - find the
+actual del site first (suspect: a native-path deletion in the
+collection hooks, or the error text originating from a re-raise of
+a stale pending error).
+
+NEXT SESSION ORDER:
+1. Diff antipythANY vs antipythONY staged trees for pluggy/_pytest
+   (driver sys.path[0] shadows one of them).
+2. Fix the unraisable meta-object attribute chain (UnraisableMeta
+   processing in staged unraisableexception.py vs what our hook
+   provides).
+3. Locate the real del site for the collection-finish TypeError.
+4. Re-run T2 gate: expect 1F/1P/1S MAIN_RC=1 - then attempt the
+   shim removal again (the original shim blocker is dead).
