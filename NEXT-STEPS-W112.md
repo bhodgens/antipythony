@@ -1060,3 +1060,22 @@ failure surface. NEXT SESSION: instrument INSIDE _multicall when
 both are active (dump hook_name + methods at entry of each impl
 call), find the impl whose execution raises, and apply the
 __ap_dict__/legacy-obj treatment at that exact site.
+
+## Round-12 final state
+
+probe82 (perform_collect, -p no:cacheprovider, no trap, NO extra
+probes) reproduces cleanly: FixtureManager.pytest_make_collect_
+report wrapper crashes with 'type' has no 'ishidden' when pluggy
+teardown-throws into `result = yield` (fixtures.py:1798). The
+exception ORIGINATED in the report-builder repr path reading
+entry.ishidden on our synthetic-tb entries.
+
+Single next probe: instrument staged code.py TracebackEntry.
+ishidden (~line 317) to print type(self) on entry — if the
+failing call shows self = the TracebackEntry CLASS, the slot
+write/instance creation for these entries failed somewhere in the
+collection-error repr path, and the fix is there (likely: entries
+built from OUR synthetic Namespace tb objects via
+get_python_framesummary's FrameSummary fallback - TracebackEntry
+(...) construction from a FrameSummary instead of a TracebackType
+may skip slot writes in our runtime).
