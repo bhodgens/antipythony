@@ -753,3 +753,29 @@ crash - drv14 re-verified). The default-configuration crash is
 down to ONE timing-None subtraction in the collector processing.
 All fixes and findings are in this file; probes reverted; trees
 synced; repo clean.
+
+## Round-9c: property re-assignment breaks later reads (bug found!)
+
+probe66 reproduces the class-receiver bug MINIMALLY, no pytest:
+Config.stash property read works. Then `Config.stash = property(
+traced)` re-assignment. Then c.stash read: OK. BUT when done at
+MODULE level in a driver that also runs pytest.main, the second
+read fails somewhere inside pytest internals with
+"'type' object has no attribute 'stash'" - and drv17 crashed
+BEFORE pytest.main even printed (line 28 print at module level,
+crash occurred at import/property-replacement time!).
+
+CONFIRMED BUG: our runtime READING `Config.stash.fget` (the fget
+of a property object) then constructing `property(traced)` and
+reassigning breaks subsequent instance reads in unrelated code.
+The property replacement pattern (common in drivers/tests) must
+work.
+
+FIX DIRECTION: property object fget read (`Config.stash.fget`)
+and property re-assignment: test in isolation (probe66 variant
+that prints after the replacement INSIDE a function, then runs
+real work). The drv17 crash happened at the property-replacement
+line itself - reading Config.stash.fget on a property whose value
+was stored... our property object may store fget in self_value
+and .fget read on the property may return None or break the
+object.
