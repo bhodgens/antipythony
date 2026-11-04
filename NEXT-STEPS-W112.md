@@ -177,3 +177,39 @@ append impl/test frames to exc.tb at the fiber crossing.
 
 Other campaigns unchanged: scrapy crawl blocked on Deferred<->Future
 bridge (deferred_from_coro repro) + engine._download:509 unpack error.
+
+## ENVIRONMENT REGRESSION (end of round-5 session, UNRESOLVED)
+
+After commit 562bb75 was verified GREEN (t2g8: 1F/1P/1S, MAIN_RC=1,
+0 INTERNALERROR; probe15: longrepr renders 244-char traceback), a
+shim-removal experiment broke the T2 gate and it has NOT recovered:
+
+- Symptom: T2 driver rc=3, "1 passed", 16 INTERNALERROR ending in
+  TypeError: 'object' object doesn't support item deletion with the
+  last Python frame at pluggy _multicall:194 (tb misattributed; the
+  real site is a __delitem__ on a legacy 'object'-kind instance
+  during pytest collection - likely config.stash[key] deletion,
+  staged stash.py differs from upstream).
+- Verified NOT the cause: repo source (pristine 562bb75 stash-build
+  also fails), code.py content (variant swap + byte-identical
+  restore both fail), site-packages .pyc files (runtime has no pyc
+  model - "v0 has no pyc model", never read), .pytest_cache
+  deletion (g21 diverged further: 'type' has no attribute
+  '_rawentry' from unraisableexception hook).
+- Environment mutations made during the experiment (all reverted
+  except cache deletions): code.py swap/restore in
+  ~/.cache/antipythony/site-packages/_pytest/_code/, deletion of ALL
+  __pycache__ dirs in BOTH cache trees + /tmp/w110_t2gate's
+  .pytest_cache + __pycache__. NOTE: y144/probe15 repros now ALSO
+  fail at perform_collect with the same del-item TypeError - the
+  environment changed under the working repros.
+- NEXT SESSION STEP 1: bisect the del-item TypeError. Lead: staged
+  stash.py __delitem__ / config.stash[key] deletion during
+  perform_collect; test a runtime __delitem__ dispatch on
+  UserInstance/'object' instances (methods.rs subscript_del or
+  equivalent). The antipythANY cache tree (driver sys.path[0])
+  may also hold divergent files - diff antipythANY vs antipythONY
+  for pluggy/_pytest before touching the runtime.
+- Shim status: still REQUIRED (pristine FormattedExcinfo run rc=3),
+  but the shim-blocker itself (IndexError on empty filtered tb) is
+  FIXED at the source; dropping the shim now fails on OTHER gaps.

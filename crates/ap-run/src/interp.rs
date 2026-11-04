@@ -2029,20 +2029,6 @@ fn raise_from_value(v: &Value) -> Result<ExceptionValue, Flow> {
                     if prev.tb.len() > ev.tb.len() {
                         ev.tb = prev.tb.clone();
                     }
-                } else {
-                    // W112: no in-flight EV (current_exception already
-                    // consumed, e.g. pluggy teardown loop raising after
-                    // its catches). Seed from the global frame table —
-                    // the frame-exit hooks keep it populated across the
-                    // fiber crossing even when the per-EV chain was
-                    // lost at materialization time.
-                    let frames = interp.tb_frames.borrow().clone();
-                    if std::env::var("APX_IDX_DEBUG").is_ok() {
-                        eprintln!("[W112-MERGE] inflight NONE tb_frames_len={}", frames.len());
-                    }
-                    if frames.len() > ev.tb.len() {
-                        ev.tb = frames;
-                    }
                 }
             }
             ev.instance = Some(v.clone());
@@ -12081,12 +12067,19 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 // were write-only. CPython exceptions carry __dict__ and
                 // answer getattr for anything stored there.
                 other => {
-                    if let Some(v) = o
-                        .attrs
-                        .borrow()
-                        .get(&Value::Str(PyString::new(other)))
-                    {
-                        return Ok(Some(v.clone()));
+                    // W112: instance-stored attrs are readable, but ONLY
+                    // dunder-bookkeeping names. Exposing arbitrary stored
+                    // attrs changed hasattr() outcomes for pluggy/pytest
+                    // probe code and broke the runtestloop wrapper relay
+                    // (caller_kwargs became None mid-chain, t2g11-g14).
+                    if other.starts_with("__ap_") {
+                        if let Some(v) = o
+                            .attrs
+                            .borrow()
+                            .get(&Value::Str(PyString::new(other)))
+                        {
+                            return Ok(Some(v.clone()));
+                        }
                     }
                     Ok(None)
                 }
