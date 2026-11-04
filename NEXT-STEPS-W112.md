@@ -359,3 +359,21 @@ resumed via pluggy-style teardown, read the slot. If it fails,
 fix the slots attr store/read path in classes.rs (suspect per-fiber
 attr isolation or weakref keying on the instance). Then re-run the
 T2 gate.
+
+## Round-7b addendum
+
+probe48 nailed the crash ORDER: pytest_collection_finish fails FIRST
+(del-item TypeError at main.py:879, before getrepr ever runs).
+So the T2 driver crash sequence is:
+1. collection_finish hook raises del-item TypeError (unlocated - NOT
+   via methods::subscript_del; APDEL/APDEL2 silent even with
+   APX_TBDBG set - contradiction unresolved).
+2. The failed collection leaves pytest state dirty; sessionfinish
+   collectors then crash with the _rawentry AttributeError.
+Fixing (1) likely fixes (2).
+Also: slots round-trip works inside generator wrappers (probe47) -
+the fiber-slots theory is dead too.
+NOTE: APDEL silence is suspicious - verify the env var reaches the
+runtime (probe with a trivial eprintln under APX_TBDBG) and re-check
+whether the del goes through iter.rs Stmt::Del (instrument THERE,
+not methods.rs) before touching anything else.
