@@ -1108,13 +1108,59 @@ pub fn subscript_del(obj: &Value, key: &Value) -> Result<(), Flow> {
                 interp.super_stack.borrow_mut().pop();
                 return r.map(|_| ());
             }
-            Err(raise(
-                "TypeError",
-                format!(
-                    "'{}' object doesn't support item deletion",
-                    obj.type_name()
-                ),
-            ))
+            {
+                // W112: last-chance __delitem__ dispatch. Instances whose
+                // type_ref was dropped (weakref upgrade failed) report
+                // type_name 'object' but still carry a live __class__ —
+                // OrderedDict.move_to_end's `del self[key]` (functools
+                // lru_cache / pluggy internals) crashed every failing
+                // test's collection-finish hook with "'object' object
+                // doesn't support item deletion".
+                let interp = crate::builtins_modules::current_interp();
+                if let Some(interp) = interp {
+                    // W112: direct attr lookup on the object first -
+                    // covers instances whose type_ref was dropped but
+                    // whose class payload (and __delitem__) survives via
+                    // the attribute chain.
+                    if let Ok(dv) =
+                        crate::classes::attr_get_protocol(&interp, obj, "__delitem__")
+                    {
+                        let r = crate::interp::call_value_pub(
+                            &interp,
+                            &dv,
+                            &[obj.clone(), key.clone()],
+                            &[],
+                        );
+                        return r.map(|_| ());
+                    }
+                    if let Value::Obj(io) = obj {
+                        let cls = io
+                            .attrs
+                            .borrow()
+                            .get(&Value::Str(PyString::new("__class__")));
+                        if let Some(cls_v) = cls {
+                            if let Ok(dv) =
+                                crate::classes::attr_get_protocol(&interp, &cls_v, "__delitem__")
+                            {
+                                let r = crate::interp::call_value_pub(
+                                    &interp,
+                                    &dv,
+                                    &[obj.clone(), key.clone()],
+                                    &[],
+                                );
+                                return r.map(|_| ());
+                            }
+                        }
+                    }
+                }
+                Err(raise(
+                    "TypeError",
+                    format!(
+                        "'{}' object doesn't support item deletion",
+                        obj.type_name()
+                    ),
+                ))
+            }
         }
         Value::Tuple(_) => Err(raise(
             "TypeError",
@@ -1124,10 +1170,31 @@ pub fn subscript_del(obj: &Value, key: &Value) -> Result<(), Flow> {
             "TypeError",
             "'str' object doesn't support item deletion",
         )),
-        _ => Err(raise(
-            "TypeError",
-            format!("'{}' object doesn't support item deletion", obj.type_name()),
-        )),
+        _ => {
+            // W112: non-UserInstance objects (Namespace/'object'-kind
+            // instances with a live __class__) also answer __delitem__.
+            let interp = crate::builtins_modules::current_interp();
+            if let Some(interp) = interp {
+                if let Ok(dv) =
+                    crate::classes::attr_get_protocol(&interp, obj, "__delitem__")
+                {
+                    let r = crate::interp::call_value_pub(
+                        &interp,
+                        &dv,
+                        &[obj.clone(), key.clone()],
+                        &[],
+                    );
+                    return r.map(|_| ());
+                }
+            }
+            if std::env::var("APX_TBDBG").is_ok() {
+                eprintln!("[APDEL2] target={} key={:?}", obj.type_name(), key);
+            }
+            Err(raise(
+                "TypeError",
+                format!("'{}' object doesn't support item deletion", obj.type_name()),
+            ))
+        }
     }
 }
 

@@ -365,12 +365,38 @@ fn report_unraisable(interp: &Rc<Interpreter>, del_f: &Value, exc: &ExceptionVal
             let t = ap_obj::PyObject::new(ap_obj::ObjKind::Type, exc.class.clone());
             Value::Obj(t)
         };
-        let exc_value = exc.args.first().cloned().unwrap_or(Value::None);
+        // W112: exc_value must be the exception INSTANCE (CPython
+        // sys.unraisablehook contract). The first constructor ARG is a
+        // plain value (often a str); pytest's unraisable collector
+        // stores it and later reads traceback attrs off it, crashing
+        // with AttributeError on _rawentry after every failing test.
+        let exc_value = exc
+            .instance
+            .clone()
+            .unwrap_or_else(|| crate::interp::exception_instance_value(exc));
         {
             let mut a = args_obj.attrs.borrow_mut();
             let _ = a.set(s("exc_type"), exc_type);
             let _ = a.set(s("exc_value"), exc_value);
-            let _ = a.set(s("exc_traceback"), marker("__ap_traceback__"));
+            // W112: real tb chain (was a BuiltinFn marker object -
+            // pytest's unraisable collector stores it and later walks
+            // it as a traceback, AttributeError-ing on missing attrs).
+            let exc_tb = crate::interp::build_tb_chain(
+                &interp.script_path,
+                &exc.tb,
+            );
+            let _ = a.set(s("exc_traceback"), exc_tb.clone());
+            // Also pin __traceback__ on the instance itself: class-tree
+            // exception instances route missing-attr lookups to the
+            // CLASS (a type object), and pytest reads
+            // exc_value.__traceback__ - without the pinned attr the
+            // lookup failed on the class.
+            if let Some(Value::Obj(iov)) = exc.instance.clone() {
+                let _ = iov
+                    .attrs
+                    .borrow_mut()
+                    .set(Value::Str(PyString::new("__traceback__")), exc_tb);
+            }
             let _ = a.set(s("object"), Value::None);
         }
         let _ = crate::interp::call_value_pub(interp, &hook, &[Value::Obj(args_obj)], &[]);
