@@ -1153,6 +1153,18 @@ pub fn subscript_del(obj: &Value, key: &Value) -> Result<(), Flow> {
                         }
                     }
                 }
+                // W112: dict-backed legacy objects - same fallback as
+                // the catch-all arm below.
+                if let Value::Obj(io) = obj {
+                    if let Some(Value::Dict(d)) = io
+                        .attrs
+                        .borrow()
+                        .get(&Value::Str(PyString::new("__ap_dict__")))
+                    {
+                        let _ = d.pop(key);
+                        return Ok(());
+                    }
+                }
                 Err(raise(
                     "TypeError",
                     format!(
@@ -1171,6 +1183,19 @@ pub fn subscript_del(obj: &Value, key: &Value) -> Result<(), Flow> {
             "'str' object doesn't support item deletion",
         )),
         _ => {
+            // W112: dict-backed legacy objects (attrs["__ap_dict__"]) -
+            // collection-finish hooks del from these (fixtures.py
+            // argkey OrderedSets keyed by Items).
+            if let Value::Obj(io) = obj {
+                if let Some(Value::Dict(d)) = io
+                    .attrs
+                    .borrow()
+                    .get(&Value::Str(PyString::new("__ap_dict__")))
+                {
+                    let _ = d.pop(key);
+                    return Ok(());
+                }
+            }
             // W112: non-UserInstance objects (Namespace/'object'-kind
             // instances with a live __class__) also answer __delitem__.
             let interp = crate::builtins_modules::current_interp();

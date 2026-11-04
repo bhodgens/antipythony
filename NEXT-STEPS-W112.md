@@ -420,3 +420,24 @@ collection_finish, OR simpler: make subscript_del fall back to
 dict-like deletion when the object HAS a live _storage/data dict
 attr (check .attrs for _storage etc.) - or print obj.attrs KEYS at
 DEL-FAIL to identify the object's payload.
+
+## Round-8 (2026-11-04): collection_finish FIXED; collector crash remains
+
+- subscript_del now handles dict-backed legacy objects
+  (attrs["__ap_dict__"]): both the Obj-arm tail and the catch-all.
+  probe48: collection_finish no longer crashes; getrepr returns a
+  1240-char ExceptionChainRepr (full render!).
+- T2 gate: session completes with correct verdicts (test_pass
+  PASSED, test_fail fails correctly, rc=1, 0 INTERNALERROR) - but
+  the driver still crashes in collect_thread_exception/collect_
+  unraisable (_rawentry AttributeError on 'type') AFTER test_pass -
+  i.e., the crash is in the collectors' pop/processing of a meta
+  pushed by an unraisable fired during collection/first-test.
+
+NEXT SESSION (single focus): find what pushes the offending meta.
+probe33/probe41-style: instrument the staged collector's hook
+(add a print in the pytest unraisable hook wrapper itself - the
+staged unraisableexception.py is editable test data) to print
+meta.msg / meta.exc_value / type(meta) at push time. Then either
+fix the pushed payload (runtime) or confirm the collector should
+never fire at that point.
