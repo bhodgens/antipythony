@@ -1831,6 +1831,27 @@ pub fn descr_get(interp: &Rc<Interpreter>, v: &Value, obj: &Value, owner: &Value
                         // C.p -> the property object itself (S-03-21).
                         Ok(v.clone())
                     } else {
+                        // W112: if obj is a UserInstance whose type_ref
+                        // upgrade fails (dropped weakref), fget binds
+                        // self = the class - the suspected source of
+                        // '_rawentry'/'stash' class-receiver misses.
+                        if let Value::Obj(io) = obj {
+                            if io.kind == ap_obj::ObjKind::UserInstance {
+                                let upgrade_ok = io
+                                    .type_ref
+                                    .borrow()
+                                    .as_ref()
+                                    .map(|w| w.upgrade().is_some())
+                                    .unwrap_or(false);
+                                if !upgrade_ok && std::env::var("APX_TBDBG").is_ok() {
+                                    eprintln!(
+                                        "[APROP] fget self type_ref DEAD: inst={} class={}",
+                                        io.name,
+                                        o.name
+                                    );
+                                }
+                            }
+                        }
                         let fget = o.self_value.borrow().clone().unwrap_or(Value::None);
                         call_value(interp, &module_frame(interp), &fget, &[obj.clone()], &[])
                     }
