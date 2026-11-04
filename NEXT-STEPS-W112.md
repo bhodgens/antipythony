@@ -533,3 +533,23 @@ So this driver crash is a SECOND-ORDER symptom: once the original
 collection crash is fully fixed, this path may stop firing. The
 slots-write-fails-in-this-context question remains open but may
 become moot.
+
+## Round-8 close-out
+
+UE-META probe result: the collect loop never reaches msg
+processing - the AttributeError fires at/before the pop calls
+(threadexception:46 / unraisable:55 lines, though our tb
+misattribution makes exact lines untrustworthy). The staged files
+were restored to pre-probe state (backups: /tmp/w112_ue_backup2.py,
+/tmp/w112_code_bak2.py, /tmp/w112_te_backup.py).
+
+Suspicion for next session: the AttributeError '_rawentry' on
+'type' may originate in the STASH pop path itself - config.stash
+is a Stash USERCLASS instance created early in pytest_configure;
+if OUR runtime materialized the Stash instance (or its _storage
+dict) as a legacy object, `config.stash[key]` reads route
+incorrectly and unrelated attribute misses surface with stale
+messages. Verify: print type(config.stash) and
+config.stash.__class__ in the driver BEFORE pytest.main - if the
+Stash instance is legacy 'object'-kind, that is the bug (early
+pytest_configure userclass construction).
