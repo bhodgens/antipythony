@@ -1636,3 +1636,13 @@ asyncio.wait in _parallel_asyncio (scrapy utils asyncio) - the
 parse callback's Deferred-returning items need
 maybe_deferred_to_future wrapping or the ensure_future path.
 That is scrapy-internal, one targeted probe away.
+
+## Workspace re-verified post-0438281: 418 passed / 0 failed /
+1 ignored (the dict item-dunder virtuals commit included). All
+gates green with the PARSE-dispatch fix in tree. Remaining
+scrapy items (next session): (1) 'Passing coroutines is
+forbidden' in _parallel_asyncio/wait for the parse callback's
+Deferred-returning coroutines; (2) minor unraisable noise
+(Task.__del__ super(): no arguments / __del__ attribute
+degradation - low priority). Then the file:// crawl gate
+(items scraped, byte-identical items.jsonl) can be re-run.
