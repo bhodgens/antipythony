@@ -980,19 +980,23 @@ fn type_param_node(
     line_col: &dyn Fn(usize) -> (usize, usize),
 ) -> R {
     let mut f = pos_fields(rng(tp), line_col);
-    let (kind, name) = match tp {
+    let (kind, name, bound) = match tp {
         ruff_python_ast::TypeParam::TypeVar(tv) => {
-            ("TypeVar", tv.name.as_str())
+            ("TypeVar", tv.name.as_str(), &tv.bound)
         }
         ruff_python_ast::TypeParam::ParamSpec(ps) => {
-            ("ParamSpec", ps.name.as_str())
+            ("ParamSpec", ps.name.as_str(), &None)
         }
         ruff_python_ast::TypeParam::TypeVarTuple(tvt) => {
-            ("TypeVarTuple", tvt.name.as_str())
+            ("TypeVarTuple", tvt.name.as_str(), &tvt.default)
         }
     };
     f.push(("_type", s(kind)));
     f.push(("name", s(name)));
+    if let Some(b) = bound {
+        // ruff TypeVar.bound is Box<Expr> (single) or Tuple of exprs
+        f.push(("bound", expr_node(b, line_col)?));
+    }
     Ok(dict_of(f))
 }
 

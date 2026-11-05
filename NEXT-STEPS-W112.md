@@ -1858,3 +1858,17 @@ T2 gate: MAIN_RC=1, zero INTERNALERROR. ap-run 184/0; workspace
   /tmp shadows when AST probe results look stale.
 Gates: T2 MAIN_RC=1 zero INTERNALERROR; ap-run 184/0; workspace
 418/0/1.
+
+## Round 33 (W114f): typing.py AST parity delta 2->0 - EXACT MATCH
+
+Per-statement walk-row diff isolated the 2-node delta to ONE
+FunctionDef (override, line 3780): ruff TypeParam.bound (Box<Expr>
+e.g. [F: _Func]) was not emitted. FIX: type_param_node now emits
+"bound" via expr_node (TypeVar/TypeVarTuple; ParamSpec has no
+bound field - uses default).
+typing.py: total abs delta 0 (every node type identical, 13386
+walk nodes). functools.py: delta 0. Gates: T2 MAIN_RC=1 zero
+INTERNALERROR; ap-run 184/0; workspace 418/0/1.
+Method note: per-statement walk-row diff (lineno+count rows,
+diffed CPython vs ours) pinpoints diverging statements fast -
+use this pattern for future AST conformance work.
