@@ -1646,3 +1646,26 @@ Deferred-returning coroutines; (2) minor unraisable noise
 (Task.__del__ super(): no arguments / __del__ attribute
 degradation - low priority). Then the file:// crawl gate
 (items scraped, byte-identical items.jsonl) can be re-run.
+
+## Round-25 (session close): PARSE dispatch hangs AFTER successful download
+
+With the parallel session's tasks.py Deferred-bridge stashed
+(and with it - both states identical), the crawl now reliably:
+downloads the file (FH read body 60), response 200, response
+received count 1 - then IDLES: the scraper's PARSE dispatch
+(Scraper._scrape -> call_spider_async -> PARSE CALLED) never
+runs, engine stays in the FIRE loop until the 4-minute timeout
+kills it. No error is logged - the scraper coroutine is stuck
+awaiting something that never resolves (spidermw
+scrape_response_async chain). In earlier rounds (pre-len fix)
+this chain RAN and errored inside; now it silently doesn't
+start. Suspect: an asyncio primitive created on the wrong loop
+or a Future awaited that the reactor-side never resolves
+(spidermw scrape_response_async uses queue-based _scrape with
+idle close interplay). NEXT SESSION: instrument
+Scraper._scrape/call_spider_async with entry prints to find
+where the dispatch stalls; check whether the callback Deferred
+output queue put/get pair completes. Note stash:
+'parallel-session WIP stash' holds the parallel session's
+tasks.py Deferred-bridge (restore with git stash pop when
+working on that WIP).

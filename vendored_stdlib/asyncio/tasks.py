@@ -369,10 +369,40 @@ class Task(futures._PyFuture):  # Inherit Python Task implementation
                 self._loop.call_soon(
                     self.__step, new_exc, context=self._context)
             else:
-                # Yielding something else is an error.
-                new_exc = RuntimeError(f'Task got bad yield: {result!r}')
-                self._loop.call_soon(
-                    self.__step, new_exc, context=self._context)
+                # APX-W113 bridge: Twisted Deferred <-> asyncio Task.
+                # Deferred.__await__ is __iter__, which yields the Deferred
+                # itself while it is pending. CPython's Task raises
+                # "Task got bad yield" for that (verified: python3.14 +
+                # twisted 26.4 does the same). Scrapy in asyncio-reactor
+                # mode hands Deferreds to Task-awaiting harnesses (e.g.
+                # `await process.crawl(...)` returns the raw Deferred of an
+                # @inlineCallbacks method), so bridge it the way Twisted
+                # does everywhere else: adapt to a Future on THIS loop via
+                # Deferred.asFuture and wait on that, exactly like the
+                # blocking-Future arm above.
+                bridged = None
+                _mod = getattr(type(result), "__module__", "") or ""
+                if (_mod.startswith("twisted.")
+                        and not isinstance(result, futures.Future)
+                        and callable(getattr(result, "asFuture", None))):
+                    try:
+                        bridged = result.asFuture(self._loop)
+                    except Exception:
+                        bridged = None
+                if bridged is not None:
+                    futures.future_add_to_awaited_by(bridged, self)
+                    bridged.add_done_callback(
+                        self.__wakeup, context=self._context)
+                    self._fut_waiter = bridged
+                    if self._must_cancel:
+                        if self._fut_waiter.cancel(
+                                msg=self._cancel_message):
+                            self._must_cancel = False
+                else:
+                    # Yielding something else is an error.
+                    new_exc = RuntimeError(f'Task got bad yield: {result!r}')
+                    self._loop.call_soon(
+                        self.__step, new_exc, context=self._context)
         finally:
             self = None  # Needed to break cycles when an exception occurs.
 
