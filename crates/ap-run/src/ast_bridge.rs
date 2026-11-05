@@ -426,9 +426,116 @@ fn match_case_node(
 ) -> R {
     let mut f = pos_fields(rng(c), line_col);
     f.push(("_type", s("match_case")));
-    f.push(("pattern", s("<pattern>")));
+    f.push(("pattern", pattern_node(&c.pattern, line_col)?));
+    f.push((
+        "guard",
+        opt(&c.guard, line_col, |g| expr_node(g, line_col))?,
+    ));
     f.push(("body", stmts_node(&c.body, line_col)?));
     Ok(dict_of(f))
+}
+
+fn pattern_node(p: &ruff_python_ast::Pattern, line_col: &dyn Fn(usize) -> (usize, usize)) -> R {
+    let mut f = pos_fields(rng(p), line_col);
+    match p {
+        ruff_python_ast::Pattern::MatchValue(x) => {
+            f.push(("_type", s("MatchValue")));
+            f.push(("value", expr_node(&x.value, line_col)?));
+            Ok(dict_of(f))
+        }
+        ruff_python_ast::Pattern::MatchSingleton(x) => {
+            f.push(("_type", s("MatchSingleton")));
+            let v = match x.value {
+                ruff_python_ast::Singleton::None => Value::None,
+                ruff_python_ast::Singleton::True => Value::Bool(true),
+                ruff_python_ast::Singleton::False => Value::Bool(false),
+            };
+            f.push(("value", v));
+            Ok(dict_of(f))
+        }
+        ruff_python_ast::Pattern::MatchSequence(x) => {
+            f.push(("_type", s("MatchSequence")));
+            f.push(("patterns", pattern_list(&x.patterns, line_col)?));
+            Ok(dict_of(f))
+        }
+        ruff_python_ast::Pattern::MatchMapping(x) => {
+            f.push(("_type", s("MatchMapping")));
+            let mut keys = Vec::new();
+            for k in x.keys.iter() {
+                keys.push(expr_node(k, line_col)?);
+            }
+            f.push(("keys", list_of(keys)));
+            f.push(("patterns", pattern_list(&x.patterns, line_col)?));
+            f.push((
+                "rest",
+                match &x.rest {
+                    Some(n) => s(n.as_str()),
+                    None => Value::None,
+                },
+            ));
+            Ok(dict_of(f))
+        }
+        ruff_python_ast::Pattern::MatchClass(x) => {
+            f.push(("_type", s("MatchClass")));
+            f.push(("cls", expr_node(&x.cls, line_col)?));
+            let mut patterns = Vec::new();
+            for pt in x.arguments.patterns.iter() {
+                patterns.push(pattern_node(pt, line_col)?);
+            }
+            f.push(("patterns", list_of(patterns)));
+            let mut kwd_attrs = Vec::new();
+            let mut kwd_patterns = Vec::new();
+            for k in x.arguments.keywords.iter() {
+                kwd_attrs.push(s(k.attr.as_str()));
+                kwd_patterns.push(pattern_node(&k.pattern, line_col)?);
+            }
+            f.push(("kwd_attrs", list_of(kwd_attrs)));
+            f.push(("kwd_patterns", list_of(kwd_patterns)));
+            Ok(dict_of(f))
+        }
+        ruff_python_ast::Pattern::MatchStar(x) => {
+            f.push(("_type", s("MatchStar")));
+            f.push((
+                "name",
+                match &x.name {
+                    Some(n) => s(n.as_str()),
+                    None => Value::None,
+                },
+            ));
+            Ok(dict_of(f))
+        }
+        ruff_python_ast::Pattern::MatchAs(x) => {
+            f.push(("_type", s("MatchAs")));
+            f.push((
+                "pattern",
+                opt(&x.pattern, line_col, |p2| pattern_node(p2, line_col))?,
+            ));
+            f.push((
+                "name",
+                match &x.name {
+                    Some(n) => s(n.as_str()),
+                    None => Value::None,
+                },
+            ));
+            Ok(dict_of(f))
+        }
+        ruff_python_ast::Pattern::MatchOr(x) => {
+            f.push(("_type", s("MatchOr")));
+            f.push(("patterns", pattern_list(&x.patterns, line_col)?));
+            Ok(dict_of(f))
+        }
+    }
+}
+
+fn pattern_list(
+    ps: &[ruff_python_ast::Pattern],
+    line_col: &dyn Fn(usize) -> (usize, usize),
+) -> R {
+    let mut out = Vec::new();
+    for p in ps {
+        out.push(pattern_node(p, line_col)?);
+    }
+    Ok(list_of(out))
 }
 
 fn arg_node(a: &ruff_python_ast::Parameter, line_col: &dyn Fn(usize) -> (usize, usize)) -> R {

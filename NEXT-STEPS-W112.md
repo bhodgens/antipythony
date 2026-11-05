@@ -1799,3 +1799,20 @@ when probes act oddly (this cost 3 probe cycles this round).
 Gates: T2 1F/1P/1S MAIN_RC=1 zero INTERNALERROR; ap-run 184/0
 (one parallel tmp-file race flake, passes in isolation);
 workspace 418/0/1.
+
+## Round 30 (W114c): match_case patterns - AST coverage complete
+
+ast_bridge.rs: full pattern walker (MatchValue/MatchSingleton/
+MatchSequence/MatchMapping/MatchClass/MatchStar/MatchAs/MatchOr);
+MatchClass follows CPython shape (cls/patterns/kwd_attrs/
+kwd_patterns - ruff's PatternKeyword attr/pattern split mapped);
+MatchCase now emits pattern+guard+body.
+_ast.py: pattern base class + 8 concrete Match* classes, wired
+into _NODE_TABLE; ast.py bind list extended.
+PARITY: match probe (or/class/sequence/mapping/as-with-guard/
+wildcard) walk=56 EXACTLY matching CPython 3.14; pattern types,
+kwd_attrs/kwd_patterns counts, star name, guard type all
+byte-identical.
+Remaining known divergence: FunctionDef._fields lacks
+type_comment (cosmetic; source.py does not read it).
+Gates: ap-run 184/0; workspace 418/0/1.

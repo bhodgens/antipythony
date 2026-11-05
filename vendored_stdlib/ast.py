@@ -48,6 +48,8 @@ for _n in (
     "In", "NotIn",
     "ExceptHandler", "arguments", "arg", "keyword", "alias",
     "withitem", "match_case", "comprehension", "FormattedValue",
+    "pattern", "MatchValue", "MatchSingleton", "MatchSequence",
+    "MatchMapping", "MatchClass", "MatchStar", "MatchAs", "MatchOr",
     "NodeVisitor", "NodeTransformer",
     "PyCF_ONLY_AST", "PyCF_ALLOW_TOP_LEVEL_AWAIT",
     "PyCF_TYPE_COMMENTS", "PyCF_OPTIMIZED_AST",

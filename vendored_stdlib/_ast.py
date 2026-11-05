@@ -467,6 +467,42 @@ class comprehension(AST):
     _fields = ("target", "iter", "ifs", "is_async")
 
 
+class pattern(AST):
+    pass
+
+
+class MatchValue(pattern):
+    _fields = ("value",)
+
+
+class MatchSingleton(pattern):
+    _fields = ("value",)
+
+
+class MatchSequence(pattern):
+    _fields = ("patterns",)
+
+
+class MatchMapping(pattern):
+    _fields = ("keys", "patterns", "rest")
+
+
+class MatchClass(pattern):
+    _fields = ("cls", "patterns", "kwd_attrs", "kwd_patterns")
+
+
+class MatchStar(pattern):
+    _fields = ("name",)
+
+
+class MatchAs(pattern):
+    _fields = ("pattern", "name")
+
+
+class MatchOr(pattern):
+    _fields = ("patterns",)
+
+
 class FormattedValue(expr):
     _fields = ("value", "conversion", "format_spec")
 
@@ -582,6 +618,8 @@ for _name in (
     "arguments", "arg", "keyword", "alias", "withitem",
     "comprehension", "FormattedValue", "JoinedStr",
     "match_case",
+    "pattern", "MatchValue", "MatchSingleton", "MatchSequence",
+    "MatchMapping", "MatchClass", "MatchStar", "MatchAs", "MatchOr",
 ):
     _NODE_TABLE[_name] = globals()[_name]
 
