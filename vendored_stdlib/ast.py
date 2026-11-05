@@ -48,6 +48,7 @@ for _n in (
     "In", "NotIn",
     "ExceptHandler", "arguments", "arg", "keyword", "alias",
     "withitem", "match_case", "comprehension", "FormattedValue",
+    "TemplateStr", "Interpolation",
     "pattern", "MatchValue", "MatchSingleton", "MatchSequence",
     "MatchMapping", "MatchClass", "MatchStar", "MatchAs", "MatchOr",
     "NodeVisitor", "NodeTransformer",

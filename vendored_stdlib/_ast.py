@@ -542,6 +542,19 @@ class TypeVarTuple(AST):
 
 class FormattedValue(expr):
     _fields = ("value", "conversion", "format_spec")
+    # CPython: format_spec defaults to None; dump() omits it then
+    format_spec = None
+
+
+# PEP 750 (Python 3.14): t"..." template strings
+class TemplateStr(expr):
+    _fields = ("values",)
+
+
+class Interpolation(expr):
+    _fields = ("value", "str", "conversion", "format_spec")
+    # CPython: format_spec defaults to None; dump() omits it then
+    format_spec = None
 
 
 class match_case(AST):
@@ -655,6 +668,7 @@ for _name in (
     "ExceptHandler",
     "arguments", "arg", "keyword", "alias", "withitem",
     "comprehension", "FormattedValue", "JoinedStr",
+    "TemplateStr", "Interpolation",
     "match_case",
     "pattern", "MatchValue", "MatchSingleton", "MatchSequence",
     "MatchMapping", "MatchClass", "MatchStar", "MatchAs", "MatchOr",
@@ -711,7 +725,7 @@ def _convert(d):
     inst = cls(**kwargs)
     # JoinedStr: merge adjacent Constant values (CPython folds
     # adjacent literal parts of implicitly concatenated f-strings)
-    if tname == "JoinedStr" and "values" in kwargs:
+    if tname in ("JoinedStr", "TemplateStr") and "values" in kwargs:
         vals = kwargs["values"]
         if isinstance(vals, list):
             merged = []

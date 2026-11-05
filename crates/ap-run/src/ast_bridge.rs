@@ -25,6 +25,14 @@ fn s(v: &str) -> Value {
     Value::Str(PyString::new(v.to_string()))
 }
 
+thread_local! {
+    /// Source text of the module currently being bridged; needed to
+    /// recover raw interpolation source text (CPython 3.14
+    /// Interpolation.str) for t-strings.
+    static BRIDGE_SOURCE: std::cell::RefCell<String> =
+        const { std::cell::RefCell::new(String::new()) };
+}
+
 fn i(v: usize) -> Value {
     Value::Int(Int::from_i64(v as i64))
 }
@@ -76,6 +84,7 @@ fn rng(node: &impl ruff_text_size::Ranged) -> (usize, usize) {
 
 /// Entry point: source text -> generic node dict tree (Module root).
 pub fn native_parse_tree(source: &str) -> Result<Value, String> {
+    BRIDGE_SOURCE.with(|src| *src.borrow_mut() = source.to_string());
     let parsed = ap_parse::parse(source).map_err(|e| e.message)?;
     let line_col = |off: usize| parsed.line_col(off);
     let module = parsed.module();
@@ -968,7 +977,24 @@ fn expr_node(e: &ruff_python_ast::Expr, line_col: &dyn Fn(usize) -> (usize, usiz
             f.push(("values", list_of(values)));
             Ok(dict_of(f))
         }
-        ruff_python_ast::Expr::TString(_) | ruff_python_ast::Expr::IpyEscapeCommand(_) => {
+        ruff_python_ast::Expr::TString(x) => {
+            // PEP 750 (CPython 3.14) shape:
+            // TemplateStr(values=[Constant(literal) |
+            // Interpolation(value, str, conversion, format_spec), ...])
+            f.push(("_type", s("TemplateStr")));
+            let mut values: Vec<Value> = Vec::new();
+            for tstr in x.value.as_slice() {
+                for el in tstr.elements.iter() {
+                    match tstring_element_node(el, &mut values, line_col)? {
+                        Value::None => {} // skip empty literal parts
+                        v => values.push(v),
+                    }
+                }
+            }
+            f.push(("values", list_of(values)));
+            Ok(dict_of(f))
+        }
+        ruff_python_ast::Expr::IpyEscapeCommand(_) => {
             f.push(("_type", s("UnimplementedExpr")));
             Ok(dict_of(f))
         }
@@ -1082,6 +1108,95 @@ fn fstring_element_node(
                     None => Value::None,
                 },
             ));
+            Ok(dict_of(f))
+        }
+    }
+}
+
+/// One element of a t-string -> CPython 3.14 Interpolation or Constant.
+/// Empty literal parts return Value::None; self-documenting
+/// interpolations additionally push a debug-text Constant into
+/// `values` (CPython 3.14 emits it before the Interpolation).
+fn tstring_element_node(
+    el: &ruff_python_ast::InterpolatedStringElement,
+    values: &mut Vec<Value>,
+    line_col: &dyn Fn(usize) -> (usize, usize),
+) -> R {
+    match el {
+        ruff_python_ast::InterpolatedStringElement::Literal(lit) => {
+            if lit.value.is_empty() {
+                return Ok(Value::None);
+            }
+            let mut f = pos_fields(rng(lit), line_col);
+            f.push(("_type", s("Constant")));
+            f.push(("value", s(&lit.value)));
+            Ok(dict_of(f))
+        }
+        ruff_python_ast::InterpolatedStringElement::Interpolation(ip) => {
+            let mut f = pos_fields(rng(ip), line_col);
+            f.push(("_type", s("Interpolation")));
+            // CPython 3.14: "str" holds the raw source text of the
+            // expression inside the braces (leading whitespace kept,
+            // nothing after the expression). For self-documenting
+            // interpolations (t"{x=}") ruff stores the full text in
+            // debug_text; CPython also emits a Constant holding that
+            // debug text ("x=" / "x = ") before the Interpolation.
+            let (estart, eend) = rng(ip.expression.as_ref());
+            let (istart, iend) = rng(ip);
+            let raw = match &ip.debug_text {
+                Some(dt) => {
+                    let dbg = dt.as_str().to_string();
+                    let mut cf = pos_fields(rng(ip), line_col);
+                    cf.push(("_type", s("Constant")));
+                    cf.push(("value", s(&dbg)));
+                    values.push(dict_of(cf));
+                    format!("{}{}", dt.leading(), dt.expression())
+                }
+                None => BRIDGE_SOURCE.with(|src| {
+                    let src = src.borrow();
+                    src.get(istart + 1..estart.min(iend))
+                        .unwrap_or("")
+                        .to_string()
+                        + src.get(estart..eend).unwrap_or("")
+                }),
+            };
+            f.push(("str", s(&raw)));
+            // conversion: -1 (none) or the ord of the conversion char.
+            // Self-documenting interpolations without an explicit
+            // conversion or format spec report repr (!r, 114) in
+            // CPython 3.14; with a format spec they stay -1.
+            let mut conv: i64 = match ip.conversion {
+                ruff_python_ast::ConversionFlag::None => -1,
+                ruff_python_ast::ConversionFlag::Str => 115,
+                ruff_python_ast::ConversionFlag::Ascii => 97,
+                ruff_python_ast::ConversionFlag::Repr => 114,
+            };
+            if conv == -1 && ip.debug_text.is_some() && ip.format_spec.is_none() {
+                conv = 114;
+            }
+            f.push(("conversion", Value::Int(ap_obj::int::Int::from_i64(conv))));
+            f.push((
+                "format_spec",
+                match &ip.format_spec {
+                    Some(spec) => {
+                        // CPython: JoinedStr of the spec elements
+                        // (nested FormattedValue shape for interpolations)
+                        let mut spec_values: Vec<Value> = Vec::new();
+                        for el2 in spec.elements.iter() {
+                            match fstring_element_node(el2, line_col)? {
+                                Value::None => {}
+                                v => spec_values.push(v),
+                            }
+                        }
+                        dict_of(vec![
+                            ("_type", s("JoinedStr")),
+                            ("values", list_of(spec_values)),
+                        ])
+                    }
+                    None => Value::None,
+                },
+            ));
+            f.push(("value", expr_node(&ip.expression, line_col)?));
             Ok(dict_of(f))
         }
     }
