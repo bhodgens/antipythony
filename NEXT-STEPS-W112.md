@@ -1958,3 +1958,18 @@ Post-d91eaf8 verification: functools walk 5170 vs CPython 5171
 GREEN at HEAD (re-verified MAIN_RC=1, 0 INTERNALERROR after
 their commit). The AGENTS.md "T2 REGRESSION OPEN" note (fa2912a)
 is STALE - superseded by d91eaf8.
+
+## Round 36 (W114i): PEP 750 t-strings - AST coverage COMPLETE
+
+Subagent landed 15f7c58: Expr::TString bridges to CPython 3.14
+TemplateStr(values=[Constant|Interpolation]) (verified against
+python3.14 ast ground truth: Interpolation._fields =
+(value, str, conversion, format_spec); conversion -1/115/97/114;
+format_spec always a JoinedStr). Probe:
+tests/probes/tstring_ast_probe.py. Gates: ap-run 184/0,
+workspace 418/0/1 (re-verified post-commit; working tree kept
+the parallel session's W112-T1 edits intact via temp-index
+commit).
+AST bridge coverage now COMPLETE for all realistic Python
+source: the only remaining placeholder is IpyEscapeCommand
+(IPython-only, unreachable from .py files).
