@@ -295,7 +295,25 @@ pub fn builtin_len(args: &[Value]) -> BResult {
                     }
                 }
             }
+            ap_obj::ObjKind::Opaque
+                if matches!(o.name.as_str(), "dict_keys" | "dict_values" | "dict_items") =>
+            {
+                // T2 (dict view objects): len(view) = payload count
+                // (P139: len(ks) corrupted the later dict-subclass
+                // setitem through the len error path).
+                let n = o
+                    .attrs
+                    .borrow()
+                    .get(&Value::Str(PyString::new("<payload>")))
+                    .map(|pv| match pv {
+                        Value::List(l) => l.len(),
+                        _ => 0,
+                    })
+                    .unwrap_or(0);
+                n as usize
+            }
             ap_obj::ObjKind::Opaque if o.name == "bytearray" => {
+                let _ = 0;
                 // A-4 item 1: len(bytearray) over the <data> buffer.
                 match o.attrs.borrow().get(&Value::Str(PyString::new("<data>"))) {
                     Some(Value::Bytes(b)) => b.len(),
