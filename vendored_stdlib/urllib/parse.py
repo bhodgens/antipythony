@@ -530,7 +530,7 @@ def _urlsplit(url, scheme=None, allow_fragments=True):
     if '?' in url:
         url, query = url.split('?', 1)
     _checknetloc(netloc)
-    return (scheme, netloc, url, query, fragment)
+    return SplitResult(scheme, netloc, url, query, fragment)
 
 def urlunparse(components):
     """Put a parsed URL back together again.  This may result in a
