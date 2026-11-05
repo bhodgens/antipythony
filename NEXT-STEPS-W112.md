@@ -1617,3 +1617,10 @@ object. Likely in the super_stack push logic for the structural
 setitem arm (methods.rs ~986-995) or classes.rs zero-arg super
 base resolution skipping classes that lack the attr.
 Once fixed: expect PARSE CALLED.
+
+## Workspace verification (post-14c1f0a): 418 passed / 0 failed /
+1 ignored - all gates green. Crawl state: download + response 200
++ body 60B read + scraper dispatch reached; single remaining
+blocker = zero-arg super() in dict-derived LocalWeakReferencedCache
+resolving to object (runtime super() MRO walk bug). All context in
+the rounds above.
