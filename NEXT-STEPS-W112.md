@@ -1512,3 +1512,18 @@ machine. NOT the T2/T1 core gates. NEXT SESSION: bisect against
 commit 4423789 (pre-os-fixes) by checking out and rerunning
 these two tests; root-cause the fresh-cache sys.path builder if
 new. Core gates remain GREEN.
+
+## ROUND-20 (session close): STALE BINARY ROOT - packaging tests green, workspace 418/0/1
+
+The two 'newly failing' packaging_differential tests were NOT code
+regressions: they run target/DEBUG/antipythony, whose baked
+CARGO_MANIFEST_DIR path pointed at the PRE-RENAME repo dir
+(/Users/caimlas/git/antipythany/... - gone since the rename).
+cargo build (debug) refreshed it -> sys_path_ordering_proof PASS.
+Same family: harness_selfcheck + xtask_gates test binaries held
+env-dep/manifest paths from the old dir - touch + rebuild fixed
+all. FINAL GATES: workspace 418 passed / 0 failed / 1 ignored
+(packaging_differential 7/7); T2 default-config gate green
+(1F/1P/1S, MAIN_RC=1, zero INTERNALERROR); FUZZ_SEEDS growth
+committed per corpus-only-grows. Stale-binary GOTCHA recorded in
+AGENTS.md status block (touch tests + rebuild before debugging).

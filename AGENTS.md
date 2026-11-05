@@ -89,6 +89,22 @@ GIL, uv-backed deps at build time. Byte-exact differential conformance vs CPytho
   tuple.index start/stop, union __args__/__origin__/isinstance surfaces.
   Remaining Tier-2 polish: capsys fixture teardown int-None (tracked in
   NEXT-STEPS waves 50-57), traceback frame linenos imprecise (degrades).
+- T2 PYTEST FULL GATE (GREEN 2026-11-04, W112 campaign ee4239e..a6b84ac):
+  DEFAULT-CONFIG gate (cacheprovider ENABLED, no -p no:cacheprovider)
+  verdict-identical with CPython: 1 failed / 1 passed / 1 skipped,
+  MAIN_RC=1, zero INTERNALERROR (t2g104/t2g105/t2g106). The interim
+  -p no:cacheprovider config is RETIRED. Root causes fixed: iter.rs
+  swallowed generator-body errors as exhaustion (degenerate tracebacks
+  -> _rawentry/ishidden crashes); gen.throw dropped instance __ap_tb__;
+  os.umask returned None instead of the previous mask (cacheprovider
+  _make_cachedir 0o777 - umask); open('wb') was a text stream;
+  shutil.rmtree was a v1 stub. Known residual: compile(PyCF_ONLY_AST)
+  is a name-surface stub (no real AST tree) - staged source.py
+  degrades to full-range (A-3 works-best-effort). GOTCHA: the repo
+  rename left STALE test binaries with pre-rename baked paths
+  (target/debug/antipythony, harness_selfcheck, xtask_gates) - if
+  gates fail with missing vendored_stdlib/NotFound, touch the test
+  files and rebuild before debugging.
 - T1 SCRAPY CRAWL (in progress 2026-10-31, waves 90-109 in NEXT-STEPS.md):
   the wave-100..109 march took the crawl from "clean no-op" to RUNNING
   (exit 0, ~190s; extension ladder + engine ctor + downloader pass). The
