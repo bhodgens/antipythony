@@ -266,6 +266,33 @@ fn gen_fiber_body(
                 if fl > 0 { fl } else { line_track.get() }
             };
             let file = crate::interp::fn_entry_file(&interp, &entry);
+            if std::env::var("APX_GEN_DEBUG").is_ok() {
+                let msg = e
+                    .args
+                    .first()
+                    .map(|v| {
+                        crate::builtins::py_str_of(v)
+                            .map(|s| s.as_str().to_string())
+                            .unwrap_or_default()
+                    })
+                    .unwrap_or_default();
+                let tbtxt: Vec<String> = e
+                    .tb
+                    .iter()
+                    .map(|(q, l, f)| format!("  {}:{} ({})", q, l, f))
+                    .collect();
+                eprintln!(
+                    "[GEN-RAISE] fiber={} class={} msg={} at {}:{} ({}) tb_len={}\n{}",
+                    current_running_fiber_id(),
+                    e.class,
+                    msg,
+                    entry.qualname,
+                    line,
+                    file,
+                    e.tb.len(),
+                    tbtxt.join("\n")
+                );
+            }
             e.tb.insert(0, (entry.qualname.clone(), line, file.clone()));
             interp
                 .tb_frames
