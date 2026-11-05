@@ -2277,50 +2277,35 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
             // a target with a custom metaclass hook is handled via
             // class_isinstance's target-metaclass arm.
             if matches!(x, Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance) {
-                // Target metaclass __instancecheck__ (proper spelling):
-                // only when the TARGET carries a custom hook.
-                if let Some(meta) = tc.metaclass.borrow().clone() {
-                    {
-                        if std::env::var("APX_GEN_DEBUG").is_ok() {
-                            let hookshape = meta
-                                .lookup("__instancecheck__")
-                                .map(|h| match &h {
-                                    Value::Obj(f) => format!("Obj kind={:?}", f.kind),
-                                    other => format!("other {}", other.type_name()),
-                                })
-                                .unwrap_or_else(|| "MISSING".to_string());
-                            eprintln!(
-                                "[ICHECK] meta={} hook={}",
-                                meta.name.as_str(),
-                                hookshape
-                            );
-                        }
-                        if let Some(hook) = meta.lookup("__instancecheck__") {
-                            // W112: ABCMeta.__instancecheck__ is a
-                            // classmethod (a descr marker, not a raw
-                            // Function) - the kind check skipped it and
-                            // every ABC isinstance on a dict SUBCLASS
-                            // (scrapy Headers) answered False. Call
-                            // through whatever shape the hook has.
-                            let is_callable = matches!(&hook, Value::Obj(f) if matches!(
-                                f.kind,
-                                ap_obj::ObjKind::Function
-                                    | ap_obj::ObjKind::BuiltinFn
-                                    | ap_obj::ObjKind::Descriptor
-                            )) || matches!(hook, Value::Obj(ref f) if f.kind == ap_obj::ObjKind::BoundMethod)
-                                || !matches!(hook, Value::None);
-                            if is_callable {
-                                let interp_rc = crate::interp::current_interp_handle();
-                                let r = crate::interp::call_value_pub(
-                                    &interp_rc,
-                                    &hook,
-                                    &[t.clone(), x.clone()],
-                                    &[],
-                                )?;
-                                return Ok(r.is_truthy());
-                            }
-                        }
-                    }
+                // W112: resolve __instancecheck__ at the PYTHON level via
+                // attr_get on the target class - CPython semantics are
+                // type(C).__instancecheck__(C, x), and the metaclass
+                // pointer path misses user-metaclass classes whose stored
+                // meta degenerated to 'type' (collections.abc Mapping in
+                // the _collections_abc import flow). ABCMeta.__instance
+                // check__ does the structural hook + registration walk.
+                let rc = crate::interp::current_interp_handle();
+                // CPython consults type(C).__instancecheck__ ONLY (the
+                // metaclass), never the class's own MRO - looking up the
+                // attr on C itself pulls unrelated hooks (typing
+                // _GenericAlias) and breaks their call convention.
+                if let Some(meta_v) = (|| {
+                    let tcls = crate::interp::attr_get_public(&rc, t, "__class__").ok()??;
+                    crate::interp::attr_get_public(
+                        &rc,
+                        &tcls,
+                        "__instancecheck__",
+                    )
+                    .ok()
+                    .flatten()
+                })() {
+                    let r = crate::interp::call_value_pub(
+                        &rc,
+                        &meta_v,
+                        &[t.clone(), x.clone()],
+                        &[],
+                    )?;
+                    return Ok(r.is_truthy());
                 }
                 return Ok(false);
             }

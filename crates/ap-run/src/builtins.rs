@@ -1131,6 +1131,13 @@ fn check_isinstance(v: &Value, t: &Value) -> Result<Value, Flow> {
             // Headers.update took the non-Mapping branch ('too many
             // values to unpack' in RetryMiddleware). Delegate.
             if o.kind == ap_obj::ObjKind::UserClass {
+                if std::env::var("APX_GEN_DEBUG").is_ok() {
+                    let vkind = match v {
+                        Value::Obj(vo) => format!("{:?}", vo.kind),
+                        _ => "prim".to_string(),
+                    };
+                    eprintln!("[UC-DELEGATE] target={} vkind={}", want, vkind);
+                }
                 let interp_rc = crate::interp::current_interp_handle();
                 if let Ok(true) =
                     crate::classes::value_isinstance(&interp_rc, v, t)
