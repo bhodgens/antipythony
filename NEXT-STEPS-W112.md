@@ -1973,3 +1973,27 @@ commit).
 AST bridge coverage now COMPLETE for all realistic Python
 source: the only remaining placeholder is IpyEscapeCommand
 (IPython-only, unreachable from .py files).
+
+## Round 37 (W114j): 198-file dump() harness - scorecard
+
+Subagent harness complete: 198 vendored_stdlib files, ast.dump()
+text compared antipythony vs CPython 3.14:
+- 86 byte-identical, 112 diverge, 1 timeout (_pydecimal.py,
+  retried separately).
+Divergence families (all bridge-level, none compiler-level):
+1. comprehension.is_async emitted bool False vs CPython int 0
+   (12+ files) - _convert maps is_async to bool.
+2. bytes literal Constant dumped as str '__bytes__:[..]'
+   placeholder instead of b'..' repr (27+ files) - the bytes
+   bridge emits a __bytes__ marker string; needs real bytes.
+3. With/AsyncWith mislabel where is_async semantics differ.
+4. uuid.py int mask BitAnd constant divergence (0xffffffffffff0fff
+   renders differently - int width handling in Constant).
+Harness also fixed (workaround committed in its own commits
+15f7c58 lineage + working tree): ast.dump closure poisoning
+(renamed dump->_dump_impl); underlying compiler bug (def dump
+after compile -> NameError) is OPEN, repro tW2, needs
+interp/compiler fix.
+Baseline 9 files earlier verified identical per-node-type; the
+new dump()-text check is stricter and surfaced the families
+above.
