@@ -3835,6 +3835,14 @@ fn other_display_name(o: &ap_obj::PyObject) -> String {
 
 pub(crate) fn eval_binop(a: &Value, op: BinOp, b: &Value) -> EResult {
     use ap_obj::ops::BinOp as OB;
+    // W112: Python-loc capture for int - NoneType failures.
+    if std::env::var("APX_GEN_DEBUG").is_ok()
+        && matches!(op, BinOp::Sub)
+        && crate::classes::display_type_name(b) == "NoneType"
+    {
+        let (f, l) = LAST_PY_LOC.with(|c| c.borrow().clone());
+        eprintln!("[SUB-NONE-PY] a={} loc={}:{}", crate::classes::display_type_name(a), f, l);
+    }
     // 02.08-full part 1: complex arithmetic (s029: 3 + 4j). The Opaque
     // complex pair supports + - * and comparisons for equality only.
     {
@@ -4881,10 +4889,24 @@ fn call_value_inner_impl(
                                 "throw() requires an exception",
                             ),
                             Some(Value::Obj(eo)) if eo.kind == ap_obj::ObjKind::Exception => {
-                                crate::exc_hier::ExceptionValue::new(
-                                    &eo.name,
-                                    eo.args.borrow().clone(),
-                                )
+                                // W112: carry the instance's recorded tb
+                                // (via __ap_tb__) into the EV; the old
+                                // ExceptionValue::new dropped the chain so
+                                // teardown.thrown errors surfaced with
+                                // wrapper-only tracebacks and the raise
+                                // site was lost (pytest int-None hunt).
+                                match crate::interp::exception_value_of_instance_pub(
+                                    &Value::Obj(eo.clone()),
+                                ) {
+                                    Ok(mut ev2) => {
+                                        ev2.args = eo.args.borrow().clone();
+                                        ev2
+                                    }
+                                    Err(_) => crate::exc_hier::ExceptionValue::new(
+                                        &eo.name,
+                                        eo.args.borrow().clone(),
+                                    ),
+                                }
                             }
                             Some(Value::Obj(eo)) if eo.kind == ap_obj::ObjKind::UserInstance => {
                                 crate::interp::exception_value_of_instance_pub(&rest[0].clone())?
@@ -7696,6 +7718,20 @@ pub(crate) fn gen_throw(
     id: u64,
     ev: ExceptionValue,
 ) -> Result<Option<Value>, Flow> {
+    if std::env::var("APX_GEN_DEBUG").is_ok() {
+        let tbtxt: Vec<String> = ev
+            .tb
+            .iter()
+            .map(|(q, l, f)| format!("  {}:{} ({})", q, l, f))
+            .collect();
+        eprintln!(
+            "[GTHROW] id={} class={} tb_len={}\n{}",
+            id,
+            ev.class,
+            ev.tb.len(),
+            tbtxt.join("\n")
+        );
+    }
     ensure_fiber(interp, id)?;
     interp.si_value.borrow_mut().take();
     let r =
@@ -9111,6 +9147,24 @@ fn user_binop(
     // Both deferred/absent: only raise when at least one USER slot exists
     // (otherwise the builtin path raises its own message).
     if a_slot.is_some() || b_slot.is_some() {
+        // W112: when the RHS is NoneType on a Sub, log the Python-level
+        // tb so the failing subtraction site is visible.
+        if sym == "-"
+            && std::env::var("APX_GEN_DEBUG").is_ok()
+            && crate::classes::display_type_name(b) == "NoneType"
+        {
+            let bt = std::backtrace::Backtrace::force_capture().to_string();
+            let frames: Vec<&str> = bt
+                .lines()
+                .filter(|l| l.contains("ap_run::"))
+                .take(14)
+                .collect();
+            eprintln!(
+                "[SUB-NONE] lhs={} rhs=NoneType\n{}",
+                crate::classes::display_type_name(a),
+                frames.join("\n")
+            );
+        }
         return Some(Err(raise(
             "TypeError",
             format!(

@@ -1440,3 +1440,35 @@ the 3-entry tb on fiber 396 shows contextlib.__exit__ frames
 but the REAL subtraction site is deeper (misattribution).
 Also: T2-gate hint - the driver difference (trap vs plain) is
 the _hookexec trap raising IndexError paths.
+
+## Round-19 (session close): int-None ROOT FOUND - missing AST + two more layers exposed
+
+BREAKTHROUGH CHAIN (all instruments committed):
+1. GTHROW (gen_throw dump) + carry-tb fix in the __ap_gen_
+   throw__ Exception arm (was ExceptionValue::new dropping the
+   instance __ap_tb__ - the thrown error's tb was DESTROYED).
+2. With tb carried, the int-None's REAL origin surfaced:
+   _pytest/_code/source.py getstatementrange_ast:195 ->
+   ast.walk -> node._fields is None on our compile(PyCF_ONLY_
+   AST) nodes - our runtime's compile() does NOT build a real
+   AST tree (the _ast module is a name-surface stub; P109).
+   The 'NoneType object is not iterable' error = ast.walk on
+   the bogus tree; the int-None = downstream lineno arithmetic.
+3. Staged workaround landed (A-3 works-best-effort):
+   source.py getstatementrange_ast catches TypeError/
+   AttributeError and degrades to full-range.
+4. NEXT error exposed: traceback.py extract_tb 'cannot unpack
+   non-iterable type object' during INTERNALERROR rendering -
+   P111 proves islice/walk/unpack fine on real tbs; the failing
+   tb comes from the thrown-in TypeError rebuilt chain - the
+   entries were rebuilt from __ap_tb__ through the CLASS-
+   fallback path (ev.tb may contain garbage entries from a
+   class-attr walk). Walker hardening landed (try/except in
+   _walk_tb_with_full_positions) - insufficient; the items are
+   TYPES at the extract loop.
+NEXT SESSION: (1) probe ev.tb content of the thrown TypeError
+post-carry (GTHROW already dumps it - rerun and read); (2) the
+int-None is FIXED for the runtest flow (test_pass PASSED, error
+caught); remaining = rendering-path tb rebuild from __ap_tb__
+(verify exception_value_of_instance's class-fallback doesn't
+inject class objects as entries); (3) rerun trap2 gate.

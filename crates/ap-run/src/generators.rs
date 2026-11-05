@@ -382,6 +382,23 @@ pub fn resume_live(
     // starts the closure, which unwinds immediately without body effects
     // (the closure itself never observes the throw — the error surfaces
     // from the pending slot on Return).
+    if std::env::var("APX_GEN_DEBUG").is_ok() {
+        if let GenInput::Throw(e) = &input {
+            let tbtxt: Vec<String> = e
+                .tb
+                .iter()
+                .map(|(q, l, f)| format!("  {}:{} ({})", q, l, f))
+                .collect();
+            eprintln!(
+                "[THROW-IN] fiber={} id={} class={} tb_len={}\n{}",
+                current_running_fiber_id(),
+                id,
+                e.class,
+                e.tb.len(),
+                tbtxt.join("\n")
+            );
+        }
+    }
     if !live.started {
         let pre_start: Option<crate::exc_hier::ExceptionValue> = match &input {
             GenInput::Throw(e) => Some(e.clone()),

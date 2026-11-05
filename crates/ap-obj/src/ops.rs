@@ -468,6 +468,25 @@ pub fn int_to_f64_exact(i: &Int) -> Result<f64, PyException> {
 }
 
 fn unsupported_binop(a: &Value, op: BinOp, b: &Value) -> PyException {
+    // W112: int - NoneType capture - identify the Python caller via
+    // the raising exception's msg alone is ambiguous; keep a marker
+    // env-gated at the Rust level (frame data is not reachable here).
+    if std::env::var("APX_GEN_DEBUG").is_ok() {
+        if matches!(op, BinOp::Sub) {
+            let bt = std::backtrace::Backtrace::force_capture().to_string();
+            let frames: Vec<&str> = bt
+                .lines()
+                .filter(|l| l.contains("ap_run::"))
+                .take(16)
+                .collect();
+            eprintln!(
+                "[SUB-NONE-OBJ] a={} b={}\n{}",
+                a.type_name(),
+                b.type_name(),
+                frames.join("\n")
+            );
+        }
+    }
     let is_sequence = matches!(
         a,
         Value::Str(_) | Value::Bytes(_) | Value::List(_) | Value::Tuple(_)

@@ -410,13 +410,18 @@ def _walk_tb_with_full_positions(tb):
     # Internal version of walk_tb that yields full code positions including
     # end line and column information.
     while tb is not None:
-        positions = _get_code_position(tb.tb_frame.f_code, tb.tb_lasti)
-        # Yield tb_lineno when co_positions does not have a line number to
-        # maintain behavior with walk_tb.
-        if positions[0] is None:
-            yield tb.tb_frame, (tb.tb_lineno, ) + positions[1:]
-        else:
-            yield tb.tb_frame, positions
+        try:
+            positions = _get_code_position(tb.tb_frame.f_code, tb.tb_lasti)
+            # Yield tb_lineno when co_positions does not have a line number
+            # to maintain behavior with walk_tb.
+            if positions[0] is None:
+                yield tb.tb_frame, (tb.tb_lineno, ) + positions[1:]
+            else:
+                yield tb.tb_frame, positions
+        except TypeError:
+            # W112: native-stub code objects can yield non-iterable
+            # positions - degrade to tb_lineno (works-best-effort).
+            yield tb.tb_frame, (tb.tb_lineno, None, None, None)
         tb = tb.tb_next
 
 
@@ -478,7 +483,15 @@ class StackSummary(list):
 
         result = klass()
         fnames = set()
-        for f, (lineno, end_lineno, colno, end_colno) in frame_gen:
+        for f, pos in frame_gen:
+            # W112: synthetic tb nodes can yield a non-iterable position
+            # payload (native-stub code objects) - degrade to None-based
+            # extraction instead of failing the whole extraction
+            # (works-best-effort, Amendment A-3).
+            try:
+                lineno, end_lineno, colno, end_colno = pos
+            except TypeError:
+                lineno = end_lineno = colno = end_colno = None
             co = f.f_code
             filename = co.co_filename
             name = co.co_name
