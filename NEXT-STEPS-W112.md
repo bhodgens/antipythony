@@ -1499,3 +1499,16 @@ ENABLED): 1 failed / 1 passed / 1 skipped, MAIN_RC 1, ZERO
 INTERNALERROR. The -p no:cacheprovider interim config is RETIRED.
 ap-run suites: 39 passed / 1 failed (known flake). NEXT: rerun
 full workspace gates, commit, resume scrapy campaign.
+
+## Round-19 follow-up: two packaging_differential tests newly failing
+
+sys_path_ordering_proof (fresh ANTIPTYHONY_CACHE run lacks
+vendored_stdlib on sys.path) and add_six_import_use_byte_exact
+(No module named __future__ in the same sandbox flow) - both in
+crates/ap-cli/tests/packaging_differential.rs. Possibly caused
+by the os.umask/open(wb)/rmtree changes rippling into the CLI
+pack-fetch sandbox, or a stale-scratch-cache artifact of this
+machine. NOT the T2/T1 core gates. NEXT SESSION: bisect against
+commit 4423789 (pre-os-fixes) by checking out and rerunning
+these two tests; root-cause the fresh-cache sys.path builder if
+new. Core gates remain GREEN.
