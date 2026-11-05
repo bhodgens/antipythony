@@ -147,12 +147,30 @@ class BrokenThreadPool(_base.BrokenExecutor):
     """
 
 
+class _CounterNext:
+    # APX-W113: `itertools.count().__next__` as a class attr is not callable
+    # on antipythony (iterator-bound __next__ attr surface gap, same family
+    # as the tasks.py _TaskNameCounter workaround). Local counter with
+    # __call__ alias so `self._counter()` behaves like CPython's.
+    __slots__ = ("_n",)
+
+    def __init__(self, start=0):
+        self._n = start
+
+    def __next__(self):
+        n = self._n
+        self._n = n + 1
+        return n
+
+    __call__ = __next__
+
+
 class ThreadPoolExecutor(_base.Executor):
 
     BROKEN = BrokenThreadPool
 
     # Used to assign unique thread names when thread_name_prefix is not supplied.
-    _counter = itertools.count().__next__
+    _counter = _CounterNext()
 
     @classmethod
     def prepare_context(cls, initializer, initargs):
