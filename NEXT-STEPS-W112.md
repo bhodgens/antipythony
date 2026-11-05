@@ -1836,3 +1836,25 @@ REMAINING: 6 statements with +1/+2/+3 over-counts on functools.py
 ClassDef subtrees; investigate next session.
 T2 gate: MAIN_RC=1, zero INTERNALERROR. ap-run 184/0; workspace
 418/0/1.
+
+## Round 32 (W114e): typing.py delta 7->2; TypeVar/ParamSpec/TypeVarTuple
+
+- stmt-33 (functools) node-by-node brief() diff found JoinedStr
+  values containing an extra adjacent Constant: implicitly
+  concatenated f-string literal parts were emitted as separate
+  Constants; CPython folds adjacent string Constants. FIX
+  (_ast.py _convert): merge adjacent str Constants in
+  JoinedStr.values.
+- functools.py after fix: stmt-33 brief dump IDENTICAL to
+  CPython; per-node-type delta 592->0 (total abs delta = 0).
+- TypeAlias/ClassDef/FunctionDef/AsyncFunctionDef now emit
+  type_params (TypeVar/ParamSpec/TypeVarTuple nodes); classes
+  added to _ast.py; ClassDef/FunctionDef/AsyncFunctionDef
+  _fields extended with type_params.
+- typing.py per-node delta 7->2 (single missing Name+Load pair
+  somewhere in 13k nodes - hunt next session).
+- GOTCHA: /tmp/ast.py + /tmp/_ast.py reappeared (copy-back from
+  an earlier probe generation); removed again. ALWAYS check for
+  /tmp shadows when AST probe results look stale.
+Gates: T2 MAIN_RC=1 zero INTERNALERROR; ap-run 184/0; workspace
+418/0/1.

@@ -63,15 +63,24 @@ class stmt(AST):
 
 
 class FunctionDef(stmt):
-    _fields = ("name", "args", "body", "decorator_list", "returns")
+    _fields = (
+        "name", "args", "body", "decorator_list", "returns",
+        "type_params",
+    )
 
 
 class AsyncFunctionDef(stmt):
-    _fields = ("name", "args", "body", "decorator_list", "returns")
+    _fields = (
+        "name", "args", "body", "decorator_list", "returns",
+        "type_params",
+    )
 
 
 class ClassDef(stmt):
-    _fields = ("name", "bases", "keywords", "body", "decorator_list")
+    _fields = (
+        "name", "bases", "keywords", "body", "decorator_list",
+        "type_params",
+    )
 
 
 class Return(stmt):
@@ -507,6 +516,30 @@ class MatchOr(pattern):
     _fields = ("patterns",)
 
 
+class TypeVar(AST):
+    _fields = ("name", "bound", "default_value")
+
+
+class ParamSpec(AST):
+    _fields = ("name", "default_value")
+
+
+class TypeVarTuple(AST):
+    _fields = ("name", "default_value")
+
+
+class ParamSpecArgs(AST):
+    _fields = ()
+
+
+class ParamSpecKwargs(AST):
+    _fields = ()
+
+
+class TypeVarTuple(AST):
+    _fields = ()
+
+
 class FormattedValue(expr):
     _fields = ("value", "conversion", "format_spec")
 
@@ -625,6 +658,7 @@ for _name in (
     "match_case",
     "pattern", "MatchValue", "MatchSingleton", "MatchSequence",
     "MatchMapping", "MatchClass", "MatchStar", "MatchAs", "MatchOr",
+    "TypeVar", "ParamSpec", "TypeVarTuple",
 ):
     _NODE_TABLE[_name] = globals()[_name]
 
@@ -675,6 +709,25 @@ def _convert(d):
                 converted.append(entry)
         kwargs["ops"] = converted
     inst = cls(**kwargs)
+    # JoinedStr: merge adjacent Constant values (CPython folds
+    # adjacent literal parts of implicitly concatenated f-strings)
+    if tname == "JoinedStr" and "values" in kwargs:
+        vals = kwargs["values"]
+        if isinstance(vals, list):
+            merged = []
+            for v in vals:
+                if (
+                    isinstance(v, Constant)
+                    and isinstance(getattr(v, "value", None), str)
+                    and merged
+                    and isinstance(merged[-1], Constant)
+                    and isinstance(getattr(merged[-1], "value", None), str)
+                ):
+                    merged[-1].value = merged[-1].value + v.value
+                else:
+                    merged.append(v)
+            kwargs["values"] = merged
+            inst.values = merged
     return inst
 
 

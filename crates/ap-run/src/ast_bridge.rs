@@ -227,6 +227,9 @@ fn stmt_node(st: &ruff_python_ast::Stmt, line_col: &dyn Fn(usize) -> (usize, usi
                 decorators.push(expr_node(&d.expression, line_col)?);
             }
             f.push(("decorator_list", list_of(decorators)));
+            if let Some(tp) = &fd.type_params {
+                f.push(("type_params", type_params_list(tp, line_col)?));
+            }
             f.push(("args", params_node(&fd.parameters, line_col)?));
             f.push((
                 "returns",
@@ -255,6 +258,9 @@ fn stmt_node(st: &ruff_python_ast::Stmt, line_col: &dyn Fn(usize) -> (usize, usi
             }
             f.push(("bases", list_of(bases)));
             f.push(("keywords", list_of(keywords)));
+            if let Some(tp) = &cd.type_params {
+                f.push(("type_params", type_params_list(tp, line_col)?));
+            }
             Ok(dict_of(f))
         }
         ruff_python_ast::Stmt::Raise(x) => {
@@ -357,6 +363,9 @@ fn stmt_node(st: &ruff_python_ast::Stmt, line_col: &dyn Fn(usize) -> (usize, usi
         ruff_python_ast::Stmt::TypeAlias(x) => {
             f.push(("_type", s("TypeAlias")));
             f.push(("name", expr_node(&x.name, line_col)?));
+            if let Some(tp) = &x.type_params {
+                f.push(("type_params", type_params_list(tp, line_col)?));
+            }
             f.push(("value", expr_node(&x.value, line_col)?));
             Ok(dict_of(f))
         }
@@ -940,10 +949,14 @@ fn expr_node(e: &ruff_python_ast::Expr, line_col: &dyn Fn(usize) -> (usize, usiz
             for part in x.value.as_slice() {
                 match part {
                     ruff_python_ast::FStringPart::Literal(lit) => {
-                        let mut pf = pos_fields(rng(lit), line_col);
-                        pf.push(("_type", s("Constant")));
-                        pf.push(("value", s(&lit.value)));
-                        values.push(dict_of(pf));
+                        // CPython drops empty-string literals when
+                        // building JoinedStr values
+                        if !lit.value.is_empty() {
+                            let mut pf = pos_fields(rng(lit), line_col);
+                            pf.push(("_type", s("Constant")));
+                            pf.push(("value", s(&lit.value)));
+                            values.push(dict_of(pf));
+                        }
                     }
                     ruff_python_ast::FStringPart::FString(fs) => {
                         for el in fs.elements.iter() {
@@ -960,6 +973,38 @@ fn expr_node(e: &ruff_python_ast::Expr, line_col: &dyn Fn(usize) -> (usize, usiz
             Ok(dict_of(f))
         }
     }
+}
+
+fn type_param_node(
+    tp: &ruff_python_ast::TypeParam,
+    line_col: &dyn Fn(usize) -> (usize, usize),
+) -> R {
+    let mut f = pos_fields(rng(tp), line_col);
+    let (kind, name) = match tp {
+        ruff_python_ast::TypeParam::TypeVar(tv) => {
+            ("TypeVar", tv.name.as_str())
+        }
+        ruff_python_ast::TypeParam::ParamSpec(ps) => {
+            ("ParamSpec", ps.name.as_str())
+        }
+        ruff_python_ast::TypeParam::TypeVarTuple(tvt) => {
+            ("TypeVarTuple", tvt.name.as_str())
+        }
+    };
+    f.push(("_type", s(kind)));
+    f.push(("name", s(name)));
+    Ok(dict_of(f))
+}
+
+fn type_params_list(
+    tp: &ruff_python_ast::TypeParams,
+    line_col: &dyn Fn(usize) -> (usize, usize),
+) -> R {
+    let mut out = Vec::new();
+    for t in tp.type_params.iter() {
+        out.push(type_param_node(t, line_col)?);
+    }
+    Ok(list_of(out))
 }
 
 fn comprehension_node(
@@ -996,6 +1041,9 @@ fn fstring_element_node(
 ) -> R {
     match el {
         ruff_python_ast::InterpolatedStringElement::Literal(lit) => {
+            if lit.value.is_empty() {
+                return Ok(Value::None);
+            }
             let mut f = pos_fields(rng(lit), line_col);
             f.push(("_type", s("Constant")));
             f.push(("value", s(&lit.value)));
