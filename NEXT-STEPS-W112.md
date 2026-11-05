@@ -1349,3 +1349,23 @@ expected - fix not yet applied). Repo: clean tree, ap-run 39/1
 the BASEINIT collect() generator-resume path (interp.rs
 ~5246-5285) to survive unwinding state, then default-config
 gate should go green; then scrapy campaign.
+
+## Round-15: root cause REVISED - GC drops suspended generator frames
+
+GPULL outcome tracing (517 pulls: 336 Some / 178 None / 3 Err)
+caught generator id=1677 receiving 3 Somes then None for the
+7-node chain - and repeated rounds gave DIFFERENT counts
+(1, then 3): NON-DETERMINISTIC truncation.
+Isolation matrix: 7-node standalone PASS (P98), in-except PASS,
+post-contextmanager-exit PASS (P99), real TracebackEntry+real
+tb consistent 4/4 (P101). The failing flow's unique state:
+suspended-generator frames holding tb nodes between yields.
+HYPOTHESIS (strong): the tracing GC does NOT treat suspended
+generator frame locals as roots - tb nodes die between yields,
+shrinking the chain mid-iteration (matches nondeterminism:
+count varies with GC timing; the while-walk survives because
+`cur` lives in the ACTIVE frame, not a suspended one).
+NEXT SESSION: (1) verify by forcing gc.collect() inside the
+generator between yields on the 7-node repro - expect <7;
+(2) fix: trace suspended GenFrame::Live fibers' frames/locals
+as GC roots; (3) rerun default-config T2 gate.
