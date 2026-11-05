@@ -3803,3 +3803,28 @@ findall	"a*?|[a-c]|a"	"@c\n"	0
 search	"(?<!\\w)"	"١xcäb@kßbb"	0
 COMPILE_TEXT	"\\A{1,2}?*+"	"a@"	0
 search	"ab|x|b|(?<!.)"	"0.0k.bx١1b  ß1c1@."	0
+subn1	"(\\d)\\1*"	".0xß١cckxc"	0
+subn1	"(.)\\1?"	".a.a.\nk-b@b\nß@ "	80
+subn1	"(a)\\1*"	".a1kß0\n.١a 中00cb\n000ä.11"	0
+subn1	"(?=b)"	"0kk0ßk\nb c bk1中bc . xc "	0
+subn1	"(?>[\\w.])"	"@ c0kß0bk-١ 中-\na.cßcß\nk0"	64
+subn1	"(?s:x)?"	"-1"	10
+subn1	"(?:\\D)|(?>a)"	"1x  x -"	0
+subn1	"\\D"	"1-ak.acäx١-1"	0
+COMPILE_TEXT	"\\b{1,2}?"	"c"	8
+search	"(?<=\\d)|\\d"	"11k1 ..aßa1١.a@-äk.1\n١١"	0
+findall	"(?P<a>\\b)|(?:\\W)|\\S"	" -x\nk@kß@k.0kc"	8
+COMPILE_MISSED	"(ä0){1,2}{1,2}"	"\n"	0
+search	"((中))"	" b0x \nßb0中"	0
+search	"(?<!\\w)"	"käb中x"	0
+findall	"[\\w.]*?"	"ß"	8
+COMPILE_TEXT	"(?<=\\s|(?P<grp>a)(?:x*)?(?P=grp)+)x"	"c.\n.١\n"	0
+findall	"[-a]??|\\S"	"@b١"	0
+search	"(?i:(?<=\\w))"	"b"	0
+findall	"((?<!b)a)*?"	"-ßa"	0
+search	"(?<!.)"	"c@ä"	10
+COMPILE_TEXT	"(?P<b>(?P<b>a)(?:x*)?(?P=b))"	""	0
+search	"(?<=[^ab])"	"kcx01axb١x\nb.١xbxx"	0
+search	"(?<![abc])"	"c-x-@ßx-1-"	10
+COMPILE_MISSED	"a|a|[0-9]|x?{2,1}"	"@\nßc x"	0
+search	"((?P<a>[\\w.]))"	".0@\näk0 xx中x1 xcbb 1b@"	0
