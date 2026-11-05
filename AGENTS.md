@@ -98,21 +98,41 @@ GIL, uv-backed deps at build time. Byte-exact differential conformance vs CPytho
   -> _rawentry/ishidden crashes); gen.throw dropped instance __ap_tb__;
   os.umask returned None instead of the previous mask (cacheprovider
   _make_cachedir 0o777 - umask); open('wb') was a text stream;
-  shutil.rmtree was a v1 stub. Known residual: compile(PyCF_ONLY_AST)
-  is a name-surface stub (no real AST tree) - staged source.py
-  degrades to full-range (A-3 works-best-effort). GOTCHA: the repo
+  shutil.rmtree was a v1 stub. (Was: compile(PyCF_ONLY_AST) a name-surface
+  stub - now a REAL tree since the W114 AST campaign; see the T2
+  REGRESSION item below.) Known residual: the staged-source degradation
+  path may interact with real AST trees (see T2 regression). GOTCHA: the
   rename left STALE test binaries with pre-rename baked paths
   (target/debug/antipythony, harness_selfcheck, xtask_gates) - if
   gates fail with missing vendored_stdlib/NotFound, touch the test
   files and rebuild before debugging.
-- T1 SCRAPY CRAWL (in progress 2026-10-31, waves 90-109 in NEXT-STEPS.md):
-  the wave-100..109 march took the crawl from "clean no-op" to RUNNING
-  (exit 0, ~190s; extension ladder + engine ctor + downloader pass). The
-  earlier "T1 DONE 2026-10-25" claim covered IMPORT + a harness-driven
-  spider; the real CrawlerProcess crawl path is the current campaign.
-  Current blocker: start-request scheduling downstream of spider-open -
-  the engine constructs scheduler/dupefilter then goes idle (no PARSE
-  yet; instrument _start_request_schedulling/_next_request next wave).
+- T1 SCRAPY CRAWL (in progress; campaign doc NEXT-STEPS-W112.md rounds
+  20-26): CRAWL COMPLETES END-TO-END 2026-11-05 (bridge-e6.py: Spider
+  opened -> PARSE CALLED -> Spider closed (finished) -> HARNESS-DONE
+  RC=0). Root fixes a7ff45b: async-for over user async-iterators
+  (Stmt::For async arm + aiter/anext protocol), fiber super-context
+  relay (pending_super_ctx rode GenFrame/GenState through resume_live -
+  zero-arg super() inside async-gen methods worked again), staged
+  scrapy LocalWeakReferencedCache __contains__ shim (membership fell
+  to __getitem__ sequence scan -> infinite loop). Bad-yield bridge:
+  vendored tasks.py Task.__step recognizes twisted Deferred ->
+  asFuture(loop) (leaf-verified: CPython raises the same 'bad yield'
+  on raw-Deferred-await; ours now bridges). PREMISS CORRECTION:
+  "install_reactor HANGS" (HANDOFF-2026-11-03) was NOT a hang - the
+  scrapy+twisted import chain legitimately takes 70-120s in DEBUG
+  builds (~270 modules re-parsed per process); probes need timeout
+  >=300s. Current blocker (leaf running): response.text crashes in
+  w3lib/encoding.py resolve_encoding -> blocks the items.jsonl
+  byte-compare gate (docs/t1-gate.md standard).
+- T2 REGRESSION OPEN 2026-11-05 (leaf running): AST campaign commits
+  125f205..cba6036 (compile(PyCF_ONLY_AST) real tree, walk parity vs
+  CPython 3.14) broke the default-config T2 gate: INTERNALERROR
+  IndexError stack_summary[0] at _pytest/_code/code.py:223
+  get_python_framesummary (leaf's staged source.py full-range
+  degradation no longer fires now that real AST flows). Fix must keep
+  AST parity (W114 scorecard green) - do NOT revert ast_bridge.
+- T1 CRAWL history (waves 90-110, pre-round-20 state - superseded by
+  the block above, kept for fix provenance):
   W110-5 LANDED (85432c9): real coroutine frames - async def bodies
   execute, send() runs to completion with true StopIteration values,
   await binds (PEP-492 drive loop with gen_yield relay), async-gen
