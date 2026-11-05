@@ -2675,6 +2675,19 @@ pub(crate) fn eval_expr(
                 eval_expr(interp, frame, a, reg)?,
                 eval_expr(interp, frame, b, reg)?,
             );
+            // W112: name-dump for int - NoneType Subs (frame carries the
+            // real qualname; LAST_PY_LOC is stale across unwinds).
+            if std::env::var("APX_GEN_DEBUG").is_ok()
+                && matches!(op, BinOp::Sub)
+                && crate::classes::display_type_name(&bv) == "NoneType"
+            {
+                eprintln!(
+                    "[SUB-NONE-FRAME] a={} frame={} line={}",
+                    crate::classes::display_type_name(&av),
+                    frame.qualname,
+                    frame.last_line.get()
+                );
+            }
             eval_binop(&av, *op, &bv)
         }
         Expr::UnaryOp(op, x) => {

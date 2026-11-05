@@ -1472,3 +1472,30 @@ int-None is FIXED for the runtest flow (test_pass PASSED, error
 caught); remaining = rendering-path tb rebuild from __ap_tb__
 (verify exception_value_of_instance's class-fallback doesn't
 inject class objects as entries); (3) rerun trap2 gate.
+
+## ROUND-19 VICTORY: FULL DEFAULT-CONFIG T2 GATE GREEN
+
+The cacheprovider blocker chain, root causes (all fixed this
+session):
+1. iter.rs swallowed generator-body errors as exhaustion ->
+   degenerate tracebacks -> _rawentry/ishidden crashes.
+   FIXED (error re-staged per fiber, [ITER-GEN-ERR] visible).
+2. gen.throw dropped the instance __ap_tb__ (ExceptionValue::new)
+   -> wrapper-only tracebacks. FIXED (carry via exception_value_
+   of_instance_pub).
+3. int - None ROOT: os.umask(mask) returned None instead of the
+   PREVIOUS mask; cacheprovider._make_cachedir:72 does
+   path.chmod(0o777 - umask). FIXED (returns previous mask).
+4. open('wb') returned a text stream -> write(bytes) TypeError.
+   FIXED (<binary> attr + bytes write arm).
+5. shutil.rmtree was a v1 stub -> NotImplementedError in the
+   cache-dir cleanup finally. FIXED (real remove_dir_all with
+   ignore_errors).
+6. Missing AST tree (compile PyCF_ONLY_AST stub): staged
+   source.py degradation (A-3 works-best-effort) + walker
+   hardening in traceback.py.
+FINAL GATE (t2g104, trap driver, DEFAULT CONFIG - cacheprovider
+ENABLED): 1 failed / 1 passed / 1 skipped, MAIN_RC 1, ZERO
+INTERNALERROR. The -p no:cacheprovider interim config is RETIRED.
+ap-run suites: 39 passed / 1 failed (known flake). NEXT: rerun
+full workspace gates, commit, resume scrapy campaign.

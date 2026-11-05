@@ -7455,17 +7455,19 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                     .and_then(|n| n.to_i64())
                     .unwrap_or(-1);
                 if mask >= 0 {
+                    // W112: os.umask(mask) must return the PREVIOUS mask
+                    // (CPython contract) - cacheprovider._make_cachedir
+                    // does 0o777 - os.umask(0o022) and needs the int.
                     #[cfg(unix)]
                     {
-                        unsafe {
-                            libc::umask(mask as libc::mode_t);
-                        }
+                        let old = unsafe { libc::umask(mask as libc::mode_t) };
+                        Ok(i(old as i64))
                     }
                     #[cfg(not(unix))]
                     {
                         let _ = mask;
+                        Ok(i(0o022))
                     }
-                    Ok(Value::None)
                 } else {
                     #[cfg(unix)]
                     {
@@ -12367,6 +12369,19 @@ pub fn call_io(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option
                 };
                 if mode.contains('w') {
                     std::fs::write(&path, b"").map_err(|e| os_error(&path, &e))?;
+                    // W112: 'wb'/'bw' families produce a BINARY stream -
+                    // write() must accept bytes (pathlib.write_bytes via
+                    // pytest cacheprovider CACHEDIR_FILES).
+                    if mode.contains('b') {
+                        let st = make_stream("TextIOWrapper", vec![], Some("binary".into()));
+                        if let Value::Obj(o) = &st {
+                            let mut attrs = o.attrs.borrow_mut();
+                            let _ = attrs.set(s("<path>"), s(path.clone()));
+                            let _ = attrs.set(s("<binary>"), Value::Bool(true));
+                            let _ = attrs.set(s("<not-readable>"), Value::Bool(true));
+                        }
+                        return Ok(st);
+                    }
                     let st = make_stream("TextIOWrapper", vec![], Some("utf-8".into()));
                     if let Value::Obj(o) = &st {
                         let mut attrs = o.attrs.borrow_mut();
@@ -12514,7 +12529,18 @@ pub fn call_io(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option
             "write" => {
                 let v = required(args, "write")?;
                 if let Value::Obj(o) = v {
-                    let is_bytes_stream = o.name != "StringIO" && o.name != "TextIOWrapper";
+                    // W112: a <binary> stream (open(..., 'wb')) must accept
+                    // bytes writes - pathlib.write_bytes via pytest
+                    // cacheprovider CACHEDIR_FILES.
+                    let is_bytes_stream = {
+                        let binary_flag = o
+                            .attrs
+                            .borrow()
+                            .get(&s("<binary>"))
+                            .map(|v| v.is_truthy())
+                            .unwrap_or(false);
+                        binary_flag || (o.name != "StringIO" && o.name != "TextIOWrapper")
+                    };
                     let payload = if is_bytes_stream {
                         bytes_arg(args.get(1).ok_or_else(|| {
                             raise("TypeError", "write() missing required argument")
@@ -13282,6 +13308,28 @@ pub fn call_native(
                     Ok(Value::Obj(o))
                 }
                 "which" => Ok(Value::None),
+                // W112 (pytest cacheprovider): shutil.rmtree(path,
+                // ignore_errors=True) in the temp-dir cleanup finally.
+                "rmtree" => {
+                    let path = args
+                        .first()
+                        .map(crate::builtins::py_str_of)
+                        .and_then(|r| r.ok())
+                        .unwrap_or_default();
+                    let ignore_errors = args
+                        .get(1)
+                        .map(|v| v.is_truthy())
+                        .unwrap_or(false);
+                    let result = std::fs::remove_dir_all(&path);
+                    match result {
+                        Ok(()) => Ok(Value::None),
+                        Err(_) if ignore_errors => Ok(Value::None),
+                        Err(e) => Err(raise(
+                            "OSError",
+                            format!("shutil.rmtree failed for {}: {}", path, e),
+                        )),
+                    }
+                }
                 _ => Err(raise(
                     "NotImplementedError",
                     format!("shutil.{fname} is out of the v1 surface"),
