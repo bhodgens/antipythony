@@ -49,6 +49,14 @@ def iscoroutine(obj):
             return True
     except Exception:
         pass
+    # W112: an asyncio.Task is NOT a coroutine - the old cache
+    # arm above (populated by earlier iscoroutine(coro) calls on
+    # the type) wrongly returned True for Tasks, making
+    # asyncio.wait raise 'Passing coroutines is forbidden' for
+    # plain task lists (scrapy _parallel_asyncio). Tasks are
+    # Futures, never coroutines.
+    if isinstance(obj, sys.modules['asyncio'].Task):
+        return False
     try:
         if type(obj) in _iscoroutine_typecache:
             return True
