@@ -2075,6 +2075,20 @@ fn run_set_name_hooks(interp: &Rc<Interpreter>, cls: &Value, t: &Rc<TypeRef>) ->
 /// isinstance(x, T): T a class, tuple, or union-type shape (X|Y lowers to a
 /// call in v1 — unions only surface via tuple form).
 pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bool, Flow> {
+    if std::env::var("APX_GEN_DEBUG").is_ok() {
+        if let Value::Obj(xo) = x {
+            let has_cr = xo.class_ref.borrow().is_some();
+            eprintln!(
+                "[VI] xkind={:?} xname={} has_cr={} tname={}",
+                xo.kind,
+                xo.name,
+                has_cr,
+                type_name_of_check(t)
+            );
+        } else {
+            eprintln!("[VI] xprim={} tname={}", x.type_name(), type_name_of_check(t));
+        }
+    }
     // Union marker (X | Y lowered by the executor): any arm matches.
     if let Value::Obj(o) = t {
         // Both union shapes: the executor's Opaque "__union__" marker AND
@@ -2209,6 +2223,81 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
             }
             let Some(xc) = type_for_check(interp, x) else {
                 // Builtin values: fall back to the name table (S-01 types).
+                // W112: Obj subjects created by INSTANTIATING a user class
+                // over a native base (class Headers(dict) -> dict-backed
+                // instance, not UserInstance) carry class_ref — walk its
+                // MRO: CPython answers isinstance via Mapping's structural
+                // __subclasshook__, and scrapy Headers.update's Mapping
+                // branch died on the miss ('too many values to unpack').
+                if let Value::Obj(xo) = x {
+                    if let Some(cr) = xo.class_ref.borrow().as_ref() {
+                        let want = type_name_of_check(t);
+                        let mro_names: Vec<String> = cr
+                            .mro
+                            .borrow()
+                            .iter()
+                            .map(|m| m.name.clone())
+                            .collect();
+                        // Structural protocol: a dict-rooted class is a
+                        // Mapping/MutableMapping/Collection/Iterable/
+                        // Sized/Container/Hashable (CPython ABCMeta
+                        // __subclasshook__ + registration equivalents).
+                        if mro_names.iter().any(|n| n == "dict") {
+                            if matches!(
+                                want,
+                                "Mapping"
+                                    | "MutableMapping"
+                                    | "Collection"
+                                    | "Iterable"
+                                    | "Container"
+                                    | "Sized"
+                                    | "Hashable"
+                            ) {
+                                return Ok(true);
+                            }
+                        }
+                        if mro_names.iter().any(|n| n == "list") {
+                            if matches!(
+                                want,
+                                "MutableSequence"
+                                    | "Sequence"
+                                    | "Collection"
+                                    | "Iterable"
+                                    | "Container"
+                                    | "Sized"
+                            ) {
+                                return Ok(true);
+                            }
+                        }
+                        if mro_names.iter().any(|n| n == "tuple") {
+                            if matches!(
+                                want,
+                                "Sequence"
+                                    | "Collection"
+                                    | "Iterable"
+                                    | "Container"
+                                    | "Sized"
+                                    | "Hashable"
+                            ) {
+                                return Ok(true);
+                            }
+                        }
+                        if mro_names.iter().any(|n| n == "str") {
+                            if matches!(
+                                want,
+                                "Sequence"
+                                    | "Collection"
+                                    | "Iterable"
+                                    | "Container"
+                                    | "Sized"
+                                    | "Hashable"
+                                    | "ByteString"
+                            ) {
+                                return Ok(true);
+                            }
+                        }
+                    }
+                }
                 return Ok(builtins::type_matches(x, type_name_of_check(t)));
             };
             let Some(tc) = base_type_ref(interp, t)? else {
@@ -2307,6 +2396,80 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
                     )?;
                     return Ok(r.is_truthy());
                 }
+                // W112: ABC structural fallback - ABC classes carry
+                // __subclasshook__ classmethods (Mapping:
+                // _check_methods('__getitem__', ...)) that answer TRUE
+                // for any class whose MRO supplies the protocol methods
+                // (dict subclasses -> Mapping). Our runtime has no
+                // C-level _abc registry, so run the hook directly:
+                // t.__subclasshook__(type(x)); NotImplemented -> False.
+                // Only for genuine ABCs: the target's metaclass chain
+                // must be ABCMeta (a plain class with an unrelated
+                // __subclasshook__ must not be consulted).
+                let is_abc = base_type_ref(interp, t)?.map(|tc| {
+                    let meta_name = tc
+                        .metaclass
+                        .borrow()
+                        .as_ref()
+                        .map(|m| m.name.clone())
+                        .unwrap_or_else(|| "<none>".to_string());
+                    if std::env::var("APX_GEN_DEBUG").is_ok() {
+                        eprintln!("[SUBHOOK] t={} meta={}", tc.name, meta_name);
+                    }
+                    meta_name == "ABCMeta"
+                });
+                if is_abc == Some(true) {
+                    if let Ok(Some(subhook)) =
+                        crate::interp::attr_get_public(&rc, t, "__subclasshook__")
+                    {
+                        let xcls = crate::interp::attr_get_public(&rc, x, "__class__")?;
+                        if let Some(xcls) = xcls {
+                            // The classmethod descr binds cls=t; call the
+                            // UNBOUND function with (t, type(x)) via the
+                            // descriptor protocol the same way __prepare__
+                            // unwraps classmethods.
+                            let hook_fn = match &subhook {
+                                Value::Obj(o)
+                                    if o.kind == ap_obj::ObjKind::Descriptor
+                                        && matches!(
+                                            o.descr_kind.borrow().as_deref(),
+                                            Some("classmethod")
+                                        ) =>
+                                {
+                                    o.func.borrow().clone()
+                                        .unwrap_or_else(|| subhook.clone())
+                                    }
+                                    _ => subhook.clone(),
+                            };
+                            let r = crate::interp::call_value_pub(
+                                &rc,
+                                &hook_fn,
+                                &[t.clone(), xcls],
+                                &[],
+                            )?;
+                            if r.is_truthy() {
+                                return Ok(true);
+                            }
+                        }
+                    }
+                }
+                // W112 (structural): a dict/list-derived subject class
+                // satisfies Mapping/MutableMapping/Sequence/etc via the
+                // ABC __subclasshook__ in CPython (dict has __getitem__).
+                // Our runtime lost the ABCMeta pointer in the
+                // _collections_abc import flow, so run the equivalent
+                // structural check directly.
+                if let Some(xct) = crate::classes::type_of(interp, x) {
+                    if crate::classes::is_dict_derived(&xct)
+                        && matches!(
+                            type_name_of_check(t),
+                            "Mapping" | "MutableMapping" | "Collection" | "Iterable"
+                                | "Container" | "Sized" | "Hashable"
+                        )
+                    {
+                        return Ok(true);
+                    }
+                }
                 return Ok(false);
             }
             // Custom metaclass __instancecheck__ (S-03-31; c033 Weird).
@@ -2337,7 +2500,7 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
 }
 
 /// Type name a check-target reports (class objects report their name).
-fn type_name_of_check(t: &Value) -> &str {
+pub fn type_name_of_check(t: &Value) -> &str {
     match t {
         Value::Obj(o) => o.name.as_str(),
         _ => "",

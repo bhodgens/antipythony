@@ -9918,6 +9918,52 @@ fn class_isinstance(interp: &Rc<Interpreter>, args: &[Value]) -> EResult {
     let t = args
         .get(1)
         .ok_or_else(|| raise("TypeError", "isinstance expected 2 arguments, got 1"))?;
+    // W112: ABC-name targets (Mapping/MutableMapping/...) for subjects
+    // whose class MRO roots at a native protocol type (dict/list/tuple/
+    // str) — CPython answers True via ABCMeta.__instancecheck__ +
+    // __subclasshook__; the early arms below answered False for
+    // dict-backed instances (scrapy Headers.update 'too many values').
+    let tn = crate::classes::type_name_of_check(t).to_string();
+    if matches!(t, Value::Obj(to) if to.kind == ap_obj::ObjKind::UserClass)
+        && matches!(
+            tn.as_str(),
+            "Mapping"
+                | "MutableMapping"
+                | "Collection"
+                | "Iterable"
+                | "Container"
+                | "Sized"
+                | "Hashable"
+        )
+    {
+        if let Value::Obj(vo) = v {
+            let has_cr = vo.class_ref.borrow().is_some();
+            if std::env::var("APX_GEN_DEBUG").is_ok() {
+                eprintln!("[ABC-TOP] vname={} has_cr={}", vo.name, has_cr);
+            }
+            let cr_opt = vo
+                .type_ref
+                .borrow()
+                .as_ref()
+                .and_then(|w| w.upgrade())
+                .or_else(|| vo.class_ref.borrow().clone());
+            if let Some(cr) = cr_opt {
+                let mro_names: Vec<String> =
+                    cr.mro.borrow().iter().map(|m| m.name.clone()).collect();
+                if std::env::var("APX_GEN_DEBUG").is_ok() {
+                    eprintln!("[ABC-TOP] mro={:?}", mro_names);
+                }
+                if mro_names.iter().any(|n| n == "dict") {
+                    return Ok(Value::Bool(true));
+                }
+                if matches!(tn.as_str(), "MutableSequence" | "Sequence")
+                    && mro_names.iter().any(|n| n == "list")
+                {
+                    return Ok(Value::Bool(true));
+                }
+            }
+        }
+    }
     // T2 (pluggy _static_hook_attr / inspect.isclass): an INSTANCE is never
     // an instance of `type` — CPython isinstance(x, type) is True only for
     // classes themselves. Our metaclass-aware class-of-value walk made a
