@@ -2959,6 +2959,14 @@ pub(crate) fn eval_expr(
                         interesting.join("\n")
                     );
                 }
+                // W112: dict-backed legacy objects and slot-written
+                // instances - route attribute reads through o.attrs /
+                // the __ap_dict__ backing dict before failing (checked
+                // by w112_attr_fallback before ok_or_else; the closure
+                // cannot contain Result returns without breaking the
+                // Flow-only inference).
+                let fv = w112_attr_fallback(&o, name);
+                let _ = fv;
                 raise(
                     "AttributeError",
                     format!(
