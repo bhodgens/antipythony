@@ -8,8 +8,6 @@
 //! delegation, dict-view reprs/dynamism, set ops, int.from_bytes classmethod
 //! forms, float.as_integer_ratio/hex/is_integer).
 
-use std::io::Write;
-
 // Reference discovery is shared (leaf 00.02): env AP_CONFORM_REFERENCE_PYTHON
 // -> PATH python3.14, version-string checked; AP_REQUIRE_REFERENCE=1 turns a
 // missing reference into a hard failure instead of a silent green.
@@ -26,21 +24,11 @@ fn run_reference(py: &str, src: &str) -> Vec<u8> {
 }
 
 fn run_aprun(src: &str) -> Vec<u8> {
-    // Respect CARGO_TARGET_DIR (shared-target builds) - wave-1 P1 class.
-    let bin = match std::env::var("CARGO_TARGET_DIR") {
-        Ok(d) => std::path::Path::new(&d).join("debug/ap-run-eval"),
-        Err(_) => std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("target/debug/ap-run-eval"),
-    };
-    let out = std::process::Command::new(&bin)
-        .arg(src)
-        .output()
-        .expect("ap-run-eval");
-    out.stdout
+    // Shared helper: subprocess-per-probe via ap-run-probe, bin-fresh
+    // (CARGO_BIN_EXE_), serialized by the heavy-gate flock (see
+    // tests/common/mod.rs).
+    let (out, _err, _code) = common::run_aprun_eval(src);
+    out
 }
 
 fn check(name: &str, src: &str) {
@@ -51,7 +39,7 @@ fn check(name: &str, src: &str) {
     let src_file = std::env::temp_dir().join(format!("ms_differential_{name}.py"));
     std::fs::write(&src_file, src).expect("write probe");
     let reference = run_reference(py, src);
-    let ours = run_aprun(&src_file.to_string_lossy());
+    let ours = run_aprun(src); // helper takes SOURCE, not the path
     assert_eq!(
         reference,
         ours,

@@ -3,7 +3,6 @@
 //! must match byte-exactly (S-06-1/S-06-2). Probes cite the S-03 clause they
 //! pin (docs/spec/03-classes.md).
 
-use std::io::Write;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -32,18 +31,11 @@ fn run_reference(py: &str, src: &str) -> (Vec<u8>, i32) {
 }
 
 fn run_aprun(src: &str) -> (Vec<u8>, i32) {
-    let src = src.to_string();
-    let handle = std::thread::Builder::new()
-        .stack_size(256 * 1024 * 1024)
-        .spawn(move || {
-            let mut out: Vec<u8> = Vec::new();
-            let mut err: Vec<u8> = Vec::new();
-            let outcome = ap_run::run_module(&src, "probe.py", &mut out, &mut err);
-            let _ = Write::flush(&mut out);
-            (out, outcome.exit_code)
-        })
-        .expect("spawn worker thread");
-    handle.join().expect("worker thread")
+    // Subprocess-per-probe (OOM mitigation): spawn ap-run-probe so the
+    // interpreter heap dies with the probe's process, serialized by the
+    // shared heavy-gate flock (see tests/common/mod.rs).
+    let (out, _err, code) = common::run_aprun_eval(src);
+    (out, code)
 }
 
 fn assert_differential(name: &str, src: &str) {

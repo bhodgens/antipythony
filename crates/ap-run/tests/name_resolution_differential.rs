@@ -11,7 +11,6 @@
 //! Plus the nine original gate probes, re-asserted so the fix does not
 //! regress them.
 
-use std::io::Write;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -42,23 +41,13 @@ fn run_reference(py: &str, src: &str) -> (Vec<u8>, i32) {
     (out.stdout, out.status.code().unwrap_or(-1))
 }
 
-/// Run a probe under ap-run; returns (stdout, exit). The tree walk recurses
-/// through large debug-build Rust frames, so the module runs on a dedicated
-/// big-stack thread (the test harness' default stack is tighter than the
-/// main thread's).
+/// Run a probe under ap-run; returns (stdout, exit). Subprocess-per-probe
+/// (OOM mitigation): the interpreter runs in a fresh ap-run-probe process,
+/// so the tree walk's big Rust frames and the GC heap die with the probe —
+/// no dedicated in-process thread stack needed anymore.
 fn run_aprun(src: &str) -> (Vec<u8>, i32) {
-    let src = src.to_string();
-    let handle = std::thread::Builder::new()
-        .stack_size(256 * 1024 * 1024)
-        .spawn(move || {
-            let mut out: Vec<u8> = Vec::new();
-            let mut err: Vec<u8> = Vec::new();
-            let outcome = ap_run::run_module(&src, "probe.py", &mut out, &mut err);
-            let _ = Write::flush(&mut out);
-            (out, outcome.exit_code)
-        })
-        .expect("spawn worker thread");
-    handle.join().expect("worker thread")
+    let (out, _err, code) = common::run_aprun_eval(src);
+    (out, code)
 }
 
 fn assert_differential(name: &str, src: &str) {

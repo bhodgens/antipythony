@@ -8,6 +8,15 @@ license.workspace = true
 [lib]
 path = "src/lib.rs"
 
+# Per-probe executor for the differential test suites (OOM mitigation,
+# 2026-11-05): suites spawn this bin via CARGO_BIN_EXE_ instead of running
+# the interpreter in-process, so each probe's GC heap dies with its process.
+# Mirrors crates/ap-cli/src/bin/ap_run_eval.rs (kept separate so ap-run's
+# tests do not depend on ap-cli and vice versa).
+[[bin]]
+name = "ap-run-probe"
+path = "src/bin/ap_run_probe.rs"
+
 [dependencies]
 ap-gc = { path = "../ap-gc" }
 ap-ir = { path = "../ap-ir" }

@@ -33,6 +33,38 @@ cargo run -p xtask -- notices --check   # THIRD_PARTY_NOTICES drift gate
 Current baseline: rust 289/0, pytest 1272 passed / 0 failed (plus
 skips/xpasses tracked in `plans/antipythony/tests/TRACKING.md`).
 
+### Heavy-suite memory discipline (2026-11-05 OOM mitigation)
+
+The ap-run differential suites run each probe in a SUBPROCESS
+(`ap-run-probe` bin, spawned via `CARGO_BIN_EXE_` from
+`crates/ap-run/tests/common/mod.rs`), never in-process: a suite's GC heap
+previously accumulated across probes inside one test binary (~10 GB RSS
+for the gc suite alone in a debug build). Three layers now keep the box
+safe:
+
+1. Subprocess-per-probe: each probe's interpreter heap dies with its
+   process; nothing accumulates across probes.
+2. Cross-process serialization: every probe takes an exclusive flock on
+   `/tmp/aprun_heavy_gate.lock`, so two overlapping `cargo test`
+   invocations of these suites WAIT instead of running two ~10 GB
+   interpreters at once (two concurrent gate scripts caused the 2026-11-05
+   OOM). Do not delete the lock file while a suite runs.
+3. Hard fence per probe: the helper SIGKILLs a probe at a 6 GB RSS cap
+   (`AP_PROBE_MAX_RSS_GB`, 0 disables) or a 240s deadline
+   (`AP_PROBE_TIMEOUT_SECS`), whichever comes first, and fails the test
+   with a "killed by fence: memory/deadline" message. A pathological
+   probe (one was observed growing to ~44 GB on this path) dies alone;
+   unrelated processes survive.
+
+Manual gate-launch discipline: before launching a heavy gate by hand,
+check for a live copy (`pgrep -f 'cargo test.*gc_differential'`) - the
+flock makes overlap safe (serialized) but a forgotten background run
+still delays every later gate by its full runtime. Workspace-wide runs:
+`cargo test --workspace` under default parallelism still builds many
+suites at once; on a memory-pressured box use `-j 2` (this rule predates
+the mitigation - the GC differential was SIGKILLed under default
+parallelism once before).
+
 ### Why CI gates, not git hooks
 
 These gates run in CI, not as local git hooks, on purpose: this machine

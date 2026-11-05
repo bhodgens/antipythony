@@ -24,32 +24,11 @@ fn run_reference(py: &str, src: &str) -> Vec<u8> {
 }
 
 fn run_aprun(src: &str) -> Vec<u8> {
-    // Respect CARGO_TARGET_DIR (shared-target builds); fall back to the
-    // in-tree target/debug. NOTE: still not CARGO_BIN_EXE-fresh — the bin
-    // must be built before running this suite (same caveat as the other
-    // differential suites; wave-1 P1 class).
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf();
-    let bin = match std::env::var("CARGO_TARGET_DIR") {
-        Ok(d) => std::path::Path::new(&d).join("debug/ap-run-eval"),
-        Err(_) => root.join("target/debug/ap-run-eval"),
-    };
-    static PROBE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let src_file = std::env::temp_dir().join(format!(
-        "re_differential_{}_{}.py",
-        std::process::id(),
-        PROBE_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-    ));
-    std::fs::write(&src_file, src).expect("write probe");
-    let out = std::process::Command::new(&bin)
-        .arg(src_file)
-        .output()
-        .expect("ap-run-eval");
-    out.stdout
+    // Shared helper: subprocess-per-probe via ap-run-probe, bin-fresh
+    // (CARGO_BIN_EXE_ — replaces the old prebuilt-ap-run-eval caveat),
+    // serialized by the heavy-gate flock (see tests/common/mod.rs).
+    let (out, _err, _code) = common::run_aprun_eval(src);
+    out
 }
 
 fn check(name: &str, src: &str) {
