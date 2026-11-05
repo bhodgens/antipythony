@@ -1396,3 +1396,24 @@ makereport flow; standalone repros P95-P104 all pass). Suspect:
 class-call machinery state under unwinding (interp.
 current_exception / contextlib frames) - instrument our
 class-call path for __slots__ classes with APX_GEN_DEBUG.
+
+## Round-17 (session close): _rawentry crash ELIMINATED - next defect exposed
+
+With d9faec0 (no-swallow + per-fiber pending) the with-
+cacheprovider crash CHANGED: '_type' has no '_rawentry' is GONE.
+The now-visible error: TypeError int - None at
+LoggingPlugin.pytest_sessionfinish `return (yield)` (logging.py
+888) - the error the degenerate traceback had been MASKING all
+along (exactly as hypothesized: excinfo for a sessionfinish
+TypeError got the degenerate tb, whose getrepr crashed).
+ROOT MECHANISM CONFIRMED: generator body errors inside
+super().__init__ were silently eaten by iter.rs.
+NEXT DEFECT (next session): int - None in the sessionfinish
+wrapper teardown - candidates: catching_logs.__exit__
+setLevel(self.orig_level) with orig_level never set (level None
+enter) - our slot-missing read raising vs None needs one probe;
+or vendored logging findCaller stacklevel arithmetic. The trap2
+driver (/tmp/w110_t2drv_trap2.py) + traceback.print_exc now
+gives REAL tracebacks for this flow - first instrument to use.
+NOTE: full traceback printing now WORKS (probe trap2 shows
+complete chains) - the tb machinery is healthy end-to-end.
