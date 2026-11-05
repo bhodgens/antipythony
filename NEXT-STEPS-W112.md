@@ -1732,3 +1732,17 @@ CRAWL STATE (file:// harness, APX probes reverted from staged caches):
 Probe hygiene: all probe markers ([SC*],[PA*],[FQ],[WK],[AAG],
 [MAC],[AE*],[IDLE],[SLOT],[ENG],scraprobe,engprobe) stripped from
 both caches; both caches parse-clean and md5-identical (verified).
+
+## Round 27: typing-alias isinstance FIX
+
+isinstance(inst, typing.AsyncIterator/List/...) raised TypeError
+"isinstance() arg 2 must be a type..." (alias targets are
+UserInstance _SpecialGenericAlias objects, not types). FIX
+(classes.rs value_isinstance): a target with __origin__ delegates
+to isinstance(x, origin) - CPython _BaseGenericAlias semantics.
+Verified: isinstance(MAC(), typing.AsyncIterator) == True (was
+TypeError); CPython 3.14 ground truth True. Also removed a
+broken probe-strip artifact in the staged scrapy caches
+(engine.py _schedule_request else-block, scraper.py is_idle);
+both caches parse-clean, md5-synced, zero residual probe markers.
+Gates: ap-run 184/0; workspace 418/0/1.

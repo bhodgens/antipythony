@@ -2123,6 +2123,27 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
             }
             Ok(false)
         }
+        // typing alias objects (typing.AsyncIterator etc): CPython
+        // answers isinstance(x, alias) via the alias __origin__
+        // (_BaseGenericAlias.__instancecheck__ -> __subclasscheck__
+        // -> issubclass(type(x), origin)). Our alias targets are
+        // UserInstances (not types), which the generic path below
+        // rejects with TypeError; delegate to the origin instead.
+        _ if {
+            let rc = crate::interp::current_interp_handle();
+            crate::interp::attr_get_public(&rc, t, "__origin__")
+                .ok()
+                .flatten()
+                .is_some()
+        } => {
+            let rc = crate::interp::current_interp_handle();
+            if let Ok(Some(origin)) =
+                crate::interp::attr_get_public(&rc, t, "__origin__")
+            {
+                return value_isinstance(interp, x, &origin);
+            }
+            return Ok(false);
+        }
         _ => {
             // s014: namedtuple instances ARE tuples (class carries the
             // __tupleclass__ marker set at class creation).
