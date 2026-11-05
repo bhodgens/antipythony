@@ -74,6 +74,14 @@ thread_local! {
 }
 
 /// Run the fiber body with its identity established as the ACTIVE top.
+/// The fiber id of the generator body CURRENTLY executing on this
+/// thread (0 = none). Used to key pending generator errors per fiber
+/// so a nested resume (unraisable hook during alloc) cannot steal the
+/// outer body's staged error.
+pub fn current_running_fiber_id() -> u64 {
+    CURRENT.with(|c| c.borrow().last().copied().unwrap_or(0))
+}
+
 fn run_fiber_body<R>(fiber_id: u64, y: *const FiberYielder, f: impl FnOnce() -> R) -> R {
     CURRENT.with(|c| c.borrow_mut().push(fiber_id));
     ACTIVE.with(|a| a.borrow_mut().push((fiber_id, y)));
@@ -263,7 +271,10 @@ fn gen_fiber_body(
                 .tb_frames
                 .borrow_mut()
                 .insert(0, (entry.qualname.clone(), line, file));
-            crate::interp::set_pending_generator_error(Flow::Raise(e));
+            // fiber_id is owned by run_fiber_body's closure scope; the
+            // CURRENT stack still holds it while the body executes.
+            let fid = current_running_fiber_id();
+            crate::interp::set_pending_generator_error_for(fid, Flow::Raise(e));
         }
         Err(_) => {}
     }

@@ -158,7 +158,35 @@ impl PyIterator {
                 match crate::builtins_modules::current_interp() {
                     Some(ic) => match crate::interp::gen_pull_public(&ic, *id) {
                         Ok(Some(v)) => Some(v),
-                        _ => None,
+                        Ok(None) => None,
+                        Err(f) => {
+                            // W112: do NOT swallow body errors as
+                            // exhaustion - log the class so the failing
+                            // attr read is visible; the error surfaces
+                            // via pending staging on the next explicit
+                            // pull of this generator.
+                            if let crate::Flow::Raise(e) = &f {
+                                if std::env::var("APX_GEN_DEBUG").is_ok() {
+                                    let msg = e
+                                        .args
+                                        .first()
+                                        .map(|v| {
+                                            crate::builtins::py_str_of(v)
+                                                .map(|s| s.as_str().to_string())
+                                                .unwrap_or_default()
+                                        })
+                                        .unwrap_or_default();
+                                    eprintln!(
+                                        "[ITER-GEN-ERR] id={} class={} msg={}",
+                                        id, e.class, msg
+                                    );
+                                }
+                            }
+                            crate::interp::set_pending_generator_error_for(
+                                *id, f,
+                            );
+                            None
+                        }
                     },
                     None => None,
                 }

@@ -1372,3 +1372,27 @@ early. NEXT SESSION: (1) add a reentrancy guard/serialization
 to gen_pull/resume_live (queue nested pulls or detect and
 defer); (2) rerun the 7-chain repro INSIDE the unraisable-hook
 flow; (3) rerun default-config T2 gate.
+
+## Round-16 (session close): error-in-generator CONFIRMED and partially fixed
+
+NEW INSTRUMENTS LANDED (kept):
+1. iter.rs Generator arm no longer swallows body errors as
+   exhaustion - errors re-stage per fiber + APX_GEN_DEBUG logs
+   [ITER-GEN-ERR] id/class/msg.
+2. PENDING_GEN_ERROR keyed per fiber (map) + DEFAULT slot -
+   nested resumes can no longer steal a body's staged error.
+3. generators.rs current_running_fiber_id() exported.
+
+CAPTURED: [ITER-GEN-ERR] id=1667 class=TypeError msg=
+'NoneType' object is not iterable - the tb-walk generator dies
+deterministically while constructing the 3rd TracebackEntry
+(TE-CALL init fired exactly 2x before the error). The error was
+SILENTLY SWALLOWED by the old iter.rs arm - the direct cause of
+the 1-of-7 truncation (and previously invisible).
+REMAINING (next session): why TracebackEntry construction
+raises 'NoneType not iterable' on the 3rd call inside the
+exit-hook unwind flow (same class constructs 10x fine in the
+makereport flow; standalone repros P95-P104 all pass). Suspect:
+class-call machinery state under unwinding (interp.
+current_exception / contextlib frames) - instrument our
+class-call path for __slots__ classes with APX_GEN_DEBUG.

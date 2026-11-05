@@ -7358,24 +7358,65 @@ pub enum GenFrame {
 thread_local! {
     /// Error raised inside a generator fiber awaiting pickup by the resumer
     /// (resume_live returns it exactly once when the body terminates).
-    static PENDING_GEN_ERROR: RefCell<Option<Flow>> = const { RefCell::new(None) };
+    // W112: keyed by fiber id - a single slot let a nested generator
+    // resume (unraisable hook python code during an alloc inside a
+    // generator body) consume the OUTER generator's staged error,
+    // turning a body raise into a silent Ok(None) (pytest
+    // Traceback(list) 7-chain walked as 1-3 items, nondeterministic).
+    static PENDING_GEN_ERROR: RefCell<std::collections::HashMap<u64, Flow>> =
+        RefCell::new(std::collections::HashMap::new());
+    static PENDING_GEN_ERROR_DEFAULT: RefCell<Option<Flow>> =
+        const { RefCell::new(None) };
 }
 
 pub(crate) fn set_pending_generator_error(f: Flow) {
+    set_pending_generator_error_for(current_fiber_id_for_pending(), f);
+}
+
+pub(crate) fn set_pending_generator_error_for(fiber_id: u64, f: Flow) {
     if let Flow::Raise(e) = &f {
         if std::env::var("APX_GEN_DEBUG").is_ok() {
             eprintln!(
-                "APX-GEN-DEBUG: pending SET class={} args={:?} (thread_local!)",
+                "APX-GEN-DEBUG: pending SET fiber={} class={} args={:?} (thread_local!)",
+                fiber_id,
                 e.class,
                 e.args.iter().map(|v| v.type_name().to_string()).collect::<Vec<_>>()
             );
         }
     }
-    PENDING_GEN_ERROR.with(|p| *p.borrow_mut() = Some(f));
+    if fiber_id == 0 {
+        PENDING_GEN_ERROR_DEFAULT.with(|p| *p.borrow_mut() = Some(f));
+    } else {
+        PENDING_GEN_ERROR.with(|p| {
+            p.borrow_mut().insert(fiber_id, f);
+        });
+    }
+}
+
+/// Fiber id of the CURRENTLY RUNNING generator body (0 = none).
+fn current_fiber_id_for_pending() -> u64 {
+    crate::generators::current_running_fiber_id()
 }
 
 pub(crate) fn take_pending_generator_error() -> Option<Flow> {
-    let taken = PENDING_GEN_ERROR.with(|p| p.borrow_mut().take());
+    // Legacy entry point: take the DEFAULT slot (pre-start staging from
+    // resume_live, whose target fiber is not on the CURRENT stack).
+    let mut taken = PENDING_GEN_ERROR_DEFAULT.with(|p| p.borrow_mut().take());
+    if taken.is_none() {
+        // No default entry: drain ANY staged body error (single nested
+        // level is the only shape today; deeper nesting re-enters the
+        // hook which cannot itself be inside a generator body).
+        let any = PENDING_GEN_ERROR.with(|p| {
+            let mut m = p.borrow_mut();
+            if m.is_empty() {
+                None
+            } else {
+                let key = *m.keys().next().unwrap();
+                m.remove(&key)
+            }
+        });
+        taken = any;
+    }
     if let Some(Flow::Raise(e)) = &taken {
         if std::env::var("APX_GEN_DEBUG").is_ok() {
             eprintln!(
