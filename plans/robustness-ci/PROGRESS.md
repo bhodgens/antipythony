@@ -94,6 +94,38 @@ All fail/skip/env-ladder gates green (details: 00-ci-core/PROGRESS.md
 "wave-A-gap followup"). Rust differential suites are now uniformly on the
 seam; pytest-track Homebrew-hardcode env conversion remains 01-branch work.
 
+## HELD state - orchestrator decision 2026-11-05 (reconciliation; supersedes 2026-10-20 hold)
+
+- T1/T2 campaign state moved a lot since 2026-10-20: T1 crawl reaches
+  PARSE + HARNESS-DONE RC=0 (a7ff45b), T2 default-config gate re-green
+  after the AST-campaign regression (d91eaf8, verified independently by
+  orchestrator worktree build). Items live in the repo; the ~187-file
+  vendoring wave HAS been declared over time (check now reports 10
+  problems, not 187).
+- Held-queue item 2 (02.09 sub-leaf p1 object-state audit): DISPATCHED
+  2026-11-05 (deleg_e8b74b75, sa-0-583c502c) as a read-only worktree
+  audit leaf -> docs/0209-object-state-audit.md + one pathspec commit.
+- Held-queue item 3 (02.10 research note): LANDED earlier
+  (docs/02-10-scheduler-design.md, 2026-11-03).
+- Held-queue item 1 (stdlib-provenance --fix): RE-MEASURED 2026-11-05
+  at fa2912a + live sibling WIP: FAIL (498 files, 10 problems) — stale
+  declarations for vendored_stdlib/codecs.py + encodings/__init__.py +
+  encodings/aliases.py + _ast.py (the T1 items leaf and the W114 AST
+  sibling are editing those VERY files right now, uncommitted).
+  BLOCKED-ON: T1-items leaf + W114 sibling commits. Do NOT re-declare
+  before they land (the hashes churn under you; declaration goes stale
+  by construction). Once both commit: `cargo run -p xtask --
+  stdlib-provenance --fix`, hand-declare the drifted files
+  (deviated_sha256 refresh), `--check` to OK, commit in one pathspec
+  pass. This is the orchestrator's own task, sequenced into the
+  post-wave integration pass.
+- Items 4 unchanged (push-gated CI green — still awaits user push
+  decision; attribution retirement; clippy -D burn-down 49 errors).
+- Branch 06 (decomposition): still gated on Plan 02 completion per
+  open-decision 3; Plan 02 has 02.05/02.06/02.08/02.09 open.
+- Wave E not dispatched (06/* gate); no other robustness-ci leaves
+  dispatchable this session (A-D committed 2026-10-20, queue above).
+
 ## HELD state - orchestrator decision 2026-10-20 (user directive)
 
 - WAITING for the Plan 02 / T1 scrapy agent (other session) to FINISH
