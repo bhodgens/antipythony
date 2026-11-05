@@ -1254,3 +1254,21 @@ apply the fallback at the identified native caller. After that,
 the default-config T2 gate goes green and the scrapy campaign
 resumes. Repo: clean tree at 87f8547, 79 commits ahead of origin
 (unpushed per protocol).
+
+## Round-13 (probe85d decisive): crash receiver is an instance of a class NAMED 'type'
+
+probe85d (traced TE-INIT3 + ISH-TRACE): 16 TracebackEntry
+constructions all correct (real TracebackType rawentries, slots
+persist), 3 traced ishidden calls with correct self - then the
+'ishidden' AttributeError fires with a receiver whose class name
+is literally 'type'. Conclusion: somewhere a TracebackEntry-like
+construction resolved the class name through the interned NATIVE
+type registry (interned_type_pub("type")) instead of the calling
+module's TracebackEntry class - producing a legacy instance of
+the native 'type' typeobject, which has no ishidden/_rawentry.
+NEXT SESSION: (1) add a debug print in our runtime's class-name
+resolution (call_type_ctor / interned_type path) when a class
+named 'TracebackEntry' resolves to the interned 'type'; (2) fix
+the resolution to prefer the calling module's namespace; (3) rerun
+the gate - the ishidden/_rawentry family should vanish and the
+FULL default-config T2 gate goes green.
