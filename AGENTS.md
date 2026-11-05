@@ -21,8 +21,10 @@ GIL, uv-backed deps at build time. Byte-exact differential conformance vs CPytho
   attribution. BEFORE first pon-derived commit: (1) LICENSES/ entries (standard
   MIT + Apache texts), (2) attribution headers on adapted files. Levers
   01.03 (pon-ir lowering study) and 02.05 (pon tier-1 inline-cache/OSR/deopt
-  study) - the 01.03 pre-task was skipped when no pon clone existed; dispatch a
-  standalone pon-study task before Plan 02 dispatch.
+  study) - DONE: both study docs landed (docs/pon-study-lowering.md +
+  docs/pon-study-tier1.md @ 1237c75, clone d0a1717, ongoing updates
+  7238cc5). LICENSES/ entries + attribution headers still required
+  before first pon-DERIVED CODE commit (studies cite, don't vendor).
 - Nuitka: AGPL - subprocess tool only, never vendor/link.
 - p2w: design reference only (wrong language).
 
