@@ -58,6 +58,13 @@ pub struct GenState {
     /// unstarted close()/throw() early-retire). All later resumes are
     /// StopIteration — the fiber must never be started after retirement.
     pub retired: bool,
+    /// W112-T1 (scrapy DepthMiddleware async-gen super()): the bound-method
+    /// zero-arg super() context staged when the (async) generator function
+    /// was CALLED. The fiber body runs on the DRIVER's stack (Task.__step /
+    /// gen_pull), where no method ctx sits — CPython keeps __class__ + self
+    /// on the generator's OWN frame across resumes, so resume_live pushes
+    /// this ctx around every resume slice and pops it after.
+    pub super_ctx: Option<(std::rc::Rc<ap_obj::classes::TypeObject>, Value, bool)>,
 }
 
 thread_local! {
@@ -427,7 +434,23 @@ pub fn resume_live(
             return Ok(None);
         }
     }
-    let out = fiber.resume(input);
+    let out = {
+        // W112-T1: a generator method's zero-arg super() context rides the
+        // fiber, not the driver stack. Push it just for this resume slice
+        // (the body runs to the next yield or completion), then pop. A
+        // nested plain call inside the body pushes/pops its own sentinel
+        // above/below within the slice, leaving our ctx on top when the
+        // body finally suspends — the pop below restores parity.
+        let ctx = live.super_ctx.clone();
+        if let Some(c) = &ctx {
+            interp.super_stack.borrow_mut().push(c.clone());
+        }
+        let r = fiber.resume(input);
+        if ctx.is_some() {
+            interp.super_stack.borrow_mut().pop();
+        }
+        r
+    };
     interp.exit_call();
     live.running = false;
     if fiber.done() {

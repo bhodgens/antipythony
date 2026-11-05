@@ -966,6 +966,57 @@ fn exec_stmt(
                     return Ok(StmtOut::Next);
                 }
             }
+            // W112-T1 (scrapy crawl scraper chain): `async for` over a USER
+            // async iterator (__aiter__/__anext__, no sync __iter__) — scrapy's
+            // MutableAsyncChain and the aiter_errback wrappers ride this
+            // shape. CPython lowers `async for` to `await it.__anext__()` per
+            // step; the frontend shares the sync For IR shape, so recover the
+            // async protocol here. Guarded by in_fiber(): a sync `for` outside
+            // a coroutine keeps CPython's TypeError 'not iterable'.
+            let user_async_iter = matches!(&iterable, Value::Obj(o)
+                if (o.kind == ap_obj::ObjKind::UserInstance
+                    || (o.kind == ap_obj::ObjKind::Opaque
+                        && o.class_ref.borrow().is_some())))
+                && crate::classes::special_lookup(interp, &iterable, "__aiter__").is_some()
+                && crate::classes::special_lookup(interp, &iterable, "__iter__").is_none()
+                && crate::classes::special_lookup(interp, &iterable, "__next__").is_none();
+            if user_async_iter && crate::generators::in_fiber() {
+                let (af, _owner) = crate::classes::special_lookup(interp, &iterable, "__aiter__")
+                    .expect("guarded above");
+                let it = call_value(interp, frame, &af, &[iterable.clone()], &[])?;
+                let mut broke = false;
+                loop {
+                    let (nf, _no) = crate::classes::special_lookup(interp, &it, "__anext__")
+                        .ok_or_else(|| {
+                            raise(
+                                "TypeError",
+                                format!(
+                                    "'{}' object is not an async iterator",
+                                    crate::classes::display_type_name(&it)
+                                ),
+                            )
+                        })?;
+                    let awaitable = call_value(interp, frame, &nf, &[it.clone()], &[])?;
+                    let next = match eval_await(interp, awaitable) {
+                        Ok(v) => v,
+                        Err(Flow::Raise(e)) if e.class == "StopAsyncIteration" => break,
+                        Err(f) => return Ok(StmtOut::Unwind(f)),
+                    };
+                    assign_target(interp, frame, target, next, reg)?;
+                    match run_loop_body(interp, frame, body, reg)? {
+                        LoopOut::Normal | LoopOut::Continue => continue,
+                        LoopOut::Break => {
+                            broke = true;
+                            break;
+                        }
+                        LoopOut::Escape(f) => return Ok(StmtOut::Unwind(f)),
+                    }
+                }
+                if !broke {
+                    return exec_block(interp, frame, orelse, reg).map(|_| StmtOut::Next);
+                }
+                return Ok(StmtOut::Next);
+            }
             let id = register_iter(interp, &iterable)?;
             let mut broke = false;
             loop {
@@ -6981,6 +7032,16 @@ fn call_function(
         let fn_name = entry.def.name.clone();
         let gen_id = interp.next_gen_id.get();
         interp.next_gen_id.set(gen_id + 2); // odd ids only (iter ids are even)
+        // W112-T1: the bound-method pending ctx (staged by BoundMethod
+        // dispatch just above this call) must ride the coroutine/agen fiber
+        // — zero-arg super() inside `async def ... yield` methods (scrapy
+        // DepthMiddleware.process_spider_output_async) resolves against the
+        // fiber's resume-time stack, NOT the driver's.
+        let super_ctx = interp
+            .pending_super_ctx
+            .try_borrow_mut()
+            .ok()
+            .and_then(|mut b| b.take());
         interp.generators.borrow_mut().insert(
             gen_id,
             GenFrame::Fn {
@@ -6988,6 +7049,7 @@ fn call_function(
                 func_obj: o.clone(),
                 args: args.to_vec(),
                 kwargs: kwargs.to_vec(),
+                super_ctx,
             },
         );
         let kind_name = if is_agen { "async_generator" } else { "coroutine" };
@@ -7467,11 +7529,17 @@ pub enum GenFrame {
     },
     /// def-generator: resumable fiber state (PEP-342). The fiber is created
     /// at call time but NOT started — the body runs on first resume.
+    /// W112-T1: super_ctx is the bound-method zero-arg super() context
+    /// staged at CALL time (DepthMiddleware.process_spider_output_async's
+    /// `super()` inside an async gen — scrapy). CPython keeps the ctx on the
+    /// generator's own frame; our fiber body runs on the driver stack, so the
+    /// resumer pushes it around each resume slice.
     Fn {
         entry: FnEntry,
         func_obj: Gc<ap_obj::PyObject>,
         args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
+        super_ctx: Option<(Rc<ap_obj::classes::TypeObject>, Value, bool)>,
     },
     /// def-generator past ensure_fiber: live resumable state.
     Live(crate::generators::GenState),
@@ -7607,6 +7675,15 @@ fn start_generator(
 ) -> EResult {
     let gen_id = interp.next_gen_id.get();
     interp.next_gen_id.set(gen_id + 2); // odd ids only (iter ids are even)
+    // W112-T1: bound-method calls stage pending_super_ctx right before
+    // call_value; a GENERATOR function returns here without the sentinel
+    // path ever consuming it. Take it for the fiber (zero-arg super()
+    // inside a sync generator method, e.g. DepthMiddleware).
+    let super_ctx = interp
+        .pending_super_ctx
+        .try_borrow_mut()
+        .ok()
+        .and_then(|mut b| b.take());
     interp.generators.borrow_mut().insert(
         gen_id,
         GenFrame::Fn {
@@ -7614,6 +7691,7 @@ fn start_generator(
             func_obj: o.clone(),
             args: args.to_vec(),
             kwargs: kwargs.to_vec(),
+            super_ctx,
         },
     );
     let obj = ap_obj::PyObject::new(ap_obj::ObjKind::Generator, "generator");
@@ -7763,6 +7841,7 @@ fn ensure_fiber(interp: &Rc<Interpreter>, id: u64) -> Result<(), Flow> {
         func_obj,
         args,
         kwargs,
+        super_ctx,
     }) = interp.generators.borrow_mut().remove(&id)
     else {
         return Ok(());
@@ -7781,6 +7860,7 @@ fn ensure_fiber(interp: &Rc<Interpreter>, id: u64) -> Result<(), Flow> {
             started: false,
             running: false,
             retired: false,
+            super_ctx,
         }),
     );
     Ok(())

@@ -4353,10 +4353,22 @@ pub fn call_builtin(
         "bin" => builtin_bin(args),
         "format" => builtin_format(args),
         "iter" => builtin_iter(args),
-        // s001: async-iteration builtins. v0 has no async iterators — aiter
-        // returns the (sync) iterator; anext resumes it (StopIteration at
-        // exhaustion matches the exhausted-anext CPython shape).
-        "aiter" => builtin_iter(args),
+        // W112-T1 (scrapy): aiter() honors the ASYNC protocol — user objects
+        // with __aiter__ (and no sync __iter__, e.g. scrapy's
+        // MutableAsyncChain) must NOT fall to the sync iterator path
+        // ("'MutableAsyncChain' object is not iterable" killed
+        // aiter_errback's iterator). CPython: aiter(o) -> type(o).__aiter__(o).
+        "aiter" => {
+            let av = one(args, "aiter")?;
+            if crate::classes::special_lookup(&interp.rc(), &av, "__aiter__").is_some()
+                && crate::classes::special_lookup(&interp.rc(), &av, "__iter__").is_none()
+            {
+                let (f, _o) =
+                    crate::classes::special_lookup(&interp.rc(), &av, "__aiter__").expect("above");
+                return crate::interp::call_value_pub(&interp.rc(), &f, &[av.clone()], &[]);
+            }
+            builtin_iter(args)
+        }
         "anext" => {
             // W112: `anext(agen)` drives the async-gen's __anext__ — an
             // ASYNC protocol: the result is the yielded item, exhaustion
@@ -4377,6 +4389,17 @@ pub fn call_builtin(
                         )
                     })?;
                 return crate::interp::call_value_pub(&interp.rc(), &m, &[], &[]);
+            }
+            // W112-T1 (scrapy): user async iterators (MutableAsyncChain etc)
+            // — anext(o) calls o.__anext__(), returning the coroutine the
+            // caller awaits (CPython shape). Only when there is NO sync
+            // __next__ (otherwise builtin_next handles it).
+            if crate::classes::special_lookup(&interp.rc(), &av, "__anext__").is_some()
+                && crate::classes::special_lookup(&interp.rc(), &av, "__next__").is_none()
+            {
+                let (m, _o) = crate::classes::special_lookup(&interp.rc(), &av, "__anext__")
+                    .expect("guarded above");
+                return crate::interp::call_value_pub(&interp.rc(), &m, &[av.clone()], &[]);
             }
             builtin_next(interp, args)
         }
