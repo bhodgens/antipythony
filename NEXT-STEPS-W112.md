@@ -1872,3 +1872,11 @@ INTERNALERROR; ap-run 184/0; workspace 418/0/1.
 Method note: per-statement walk-row diff (lineno+count rows,
 diffed CPython vs ours) pinpoints diverging statements fast -
 use this pattern for future AST conformance work.
+
+## Round 34 (W114g): enum.py + inspect.py parity 0 - corpus clean
+
+Post-TypeVar-bound fix verification: enum.py delta 0, inspect.py
+delta 0 (15870+ nodes). AST conformance scorecard (per-node-type
+walk counts vs CPython 3.14): typing 0, functools 0, enum 0,
+inspect 0, dataclasses 0, _collections_abc 0, traceback 0,
+contextlib 0, warnings 0 - all EXACT.
