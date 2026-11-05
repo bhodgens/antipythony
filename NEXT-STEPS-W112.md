@@ -1317,3 +1317,23 @@ siblings map/sorted) - push the callback's code frame onto the
 tb before propagating. All staged probes REVERTED and caches
 synced (terminal.py byte-identical to uv pristine; code.py
 differs only by the intentional T2 hunks).
+
+## Round-14 (precision instrument set): generator-in-super().__init__ undercount during exit-hook
+
+Instruments on Traceback.__init__ (staged code.py, all REVERTED):
+  [TBINIT-TB] chain: 7 (pre-walk via while+tb_next works)
+  [TBINIT-TB] len: 1  (super().__init__(f(tb)) filled ONE)
+The generator f(tb) yields all 7 in a standalone while-loop
+walk (probe95/96/97: 3/3, 4/4 incl. __slots__ entries and real
+exc_info chains). ONLY during the exit-hook unwinding flow
+(contextlib __exit__ -> pluggy _multicall -> collect_unraisable,
+with the IndexError in-flight) does super().__init__(gen)
+consume exactly ONE item from the generator. Standalone
+super().__init__(generator) via the BASEINIT native arm works.
+FAMILY: generator resumed from the BASEINIT dispatch path while
+frame-unwind state is active consumes only the first item.
+FIX SITE (next session): the native iterable-collect used by the
+BASEINIT list arm (interp.rs ~5246-5285) - compare its generator
+resume path vs exec-side; the unwinding state (current_exception/
+tb_frames truncate) likely poisons the resume loop's completion
+check. Also reverted: APRAW-ANY widened trace (kept APRAW-N).

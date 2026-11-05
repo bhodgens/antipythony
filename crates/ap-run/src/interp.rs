@@ -10506,6 +10506,23 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
     // W112: log native _rawentry reads on UserClass receivers -
     // identifies the non-Expr::Attribute caller of the failing
     // class-receiver read in the unraisable collector flow.
+    if std::env::var("APX_TBDBG").is_ok() {
+        if let Value::Obj(io) = obj {
+            if io.kind == ap_obj::ObjKind::UserClass && io.name == "object" {
+                let bt = std::backtrace::Backtrace::force_capture().to_string();
+                let frames: Vec<&str> = bt
+                    .lines()
+                    .filter(|l| l.contains("ap_run::"))
+                    .take(12)
+                    .collect();
+                eprintln!(
+                    "[APRAW-ANY] name={}\nbt:\n{}",
+                    name,
+                    frames.join("\n")
+                );
+            }
+        }
+    }
     if name == "_rawentry" {
         if let Value::Obj(io) = obj {
             if io.kind == ap_obj::ObjKind::UserClass && io.name == "object" {
