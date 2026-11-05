@@ -1697,3 +1697,38 @@ a runtime module snapshot or pyc reuse), then re-instrument
 Scraper._scrape. Also: 'super(): no arguments' at Task.__del__
 deallocator noise. All other gates green: workspace 418/0/1,
 ap-run 184/0.
+
+## Round 26 (2026-11-05, session 2): exc_info-in-__exit__ FIX landed
+
+RUNTIME FIX (crates/ap-run/src/interp.rs, with-statement unwind path
+~line 1022): __exit__ during exception propagation now installs the
+propagating exception as interp.current_exception for the duration
+of the __exit__ call (restored after). CPython semantics; twisted's
+Failure() (failure.py:288 reads sys.exc_info() inside
+_FastFailCtxMgr.__exit__) depended on this - NoCurrentExceptionError
+is GONE from the crawl. Verified: /tmp/w112_probe_ec.py returns the
+propagating ValueError inside __exit__ (was None before).
+
+GATES: ap-run 184/0; workspace 418/0/1 (both --release).
+
+CRAWL STATE (file:// harness, APX probes reverted from staged caches):
+- START-YIELD + PARSE 200 both fire now (parallel session's
+  ThreadPoolExecutor._counter fix 5fca48d un-hung run_in_executor).
+- Remaining stall pinned by probes (all reverted): scraper.slot
+  stays active=1 forever because _scrape never returns:
+  handle_spider_output_async -> _parallel_asyncio (scrapy/utils/
+  asyncio.py:106) -> asyncio.wait([fill_task, *work_tasks]) never
+  resolves. aiter_errback's aiter(aiterable) on MutableAsyncChain
+  hangs inside the reactor loop (works in isolation).
+- COLLISION WARNING: the parallel Hermes session edits the same
+  staged cache files (~/.cache/antipyth{any,ony}/site-packages/
+  scrapy/...). Probe scripts must sync BOTH cache copies and
+  re-verify md5s immediately before each run; single-file probes
+  go stale mid-session.
+- KNOWN SECONDARY BUG (isolation repro): isinstance(MAC(),
+  typing.AsyncIterator) raises TypeError 'MAC' object is not
+  iterable (should be True). typing/ABC machinery in value_isinstance.
+
+Probe hygiene: all probe markers ([SC*],[PA*],[FQ],[WK],[AAG],
+[MAC],[AE*],[IDLE],[SLOT],[ENG],scraprobe,engprobe) stripped from
+both caches; both caches parse-clean and md5-identical (verified).

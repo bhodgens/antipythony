@@ -1019,12 +1019,28 @@ fn exec_stmt(
                     ),
                     Err(_) => (Value::None, Value::None, Value::None),
                 };
-                let suppress = match special_call(interp, mgr, "__exit__", &[a, b, c]) {
-                    Ok(v) => truthy(interp, &v)?,
-                    Err(f) => {
-                        // __exit__ itself raising replaces the outcome.
-                        exit_err = Some(f);
-                        false
+                let suppress = {
+                    // CPython installs the propagating exception as the
+                    // "current" exception for the duration of __exit__:
+                    // sys.exc_info() inside __exit__ must return it
+                    // (twisted Failure() depends on this). Restore after.
+                    let inflight = match &result {
+                        Err(Flow::Raise(e)) => Some(Rc::new(e.clone())),
+                        _ => None,
+                    };
+                    let prev = interp.current_exception.borrow().clone();
+                    if let Some(ev) = inflight {
+                        *interp.current_exception.borrow_mut() = Some(ev);
+                    }
+                    let out = special_call(interp, mgr, "__exit__", &[a, b, c]);
+                    *interp.current_exception.borrow_mut() = prev;
+                    match out {
+                        Ok(v) => truthy(interp, &v)?,
+                        Err(f) => {
+                            // __exit__ itself raising replaces the outcome.
+                            exit_err = Some(f);
+                            false
+                        }
                     }
                 };
                 if exit_err.is_some() {
