@@ -1669,3 +1669,14 @@ output queue put/get pair completes. Note stash:
 'parallel-session WIP stash' holds the parallel session's
 tasks.py Deferred-bridge (restore with git stash pop when
 working on that WIP).
+
+
+## Round-25b: iscoroutine(Task) fix committed (37961e0)
+
+asyncio.coroutines.iscoroutine now returns False for asyncio.
+Task instances (the stale _iscoroutine_typecache entry had
+poisoned every Task check, which is what tripped 'Passing
+coroutines is forbidden' in asyncio.wait). Committed; ap-run
+184/0. Remaining dirty files (plans FUZZ_SEEDS growth +
+concurrent/futures/thread.py tweak) belong to the parallel
+session - do not commit.
