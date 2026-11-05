@@ -10503,6 +10503,25 @@ fn w112_attr_fallback(o: &Value, name: &str) -> Option<Value> {
 }
 
 fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option<Value>, Flow> {
+    // W112: log native _rawentry reads on UserClass receivers -
+    // identifies the non-Expr::Attribute caller of the failing
+    // class-receiver read in the unraisable collector flow.
+    if name == "_rawentry" {
+        if let Value::Obj(io) = obj {
+            if io.kind == ap_obj::ObjKind::UserClass && io.name == "object" {
+                let bt = std::backtrace::Backtrace::force_capture().to_string();
+                let interesting: Vec<&str> = bt
+                    .lines()
+                    .filter(|l| l.contains("ap_run"))
+                    .take(20)
+                    .collect();
+                eprintln!(
+                    "[APRAW-N] native attr_get _rawentry on object UserClass\nbt:\n{}",
+                    interesting.join("\n")
+                );
+            }
+        }
+    }
     // T1 (email._policybase._extend_docstrings iterates cls.__dict__ and
     // reads attr.__doc__ on ANY value — bools, frozensets, weaksets):
     // every CPython object exposes __doc__; primitives carry None. Handled
