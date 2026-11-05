@@ -1337,3 +1337,15 @@ BASEINIT list arm (interp.rs ~5246-5285) - compare its generator
 resume path vs exec-side; the unwinding state (current_exception/
 tb_frames truncate) likely poisons the resume loop's completion
 check. Also reverted: APRAW-ANY widened trace (kept APRAW-N).
+
+## Session close (round-14): caches synced, milestone stable
+
+Both cache trees byte-identical (code.py/terminal.py/
+unraisableexception.py). `-p no:cacheprovider` milestone green
+(1F/1P/1S, MAIN_RC=1, zero INTERNALERROR). With-cacheprovider
+still crashes at the same generator-1-of-7 site (unchanged, as
+expected - fix not yet applied). Repo: clean tree, ap-run 39/1
+(known flake), 85 commits ahead of origin. NEXT SESSION: fix
+the BASEINIT collect() generator-resume path (interp.rs
+~5246-5285) to survive unwinding state, then default-config
+gate should go green; then scrapy campaign.
