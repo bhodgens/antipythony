@@ -1223,3 +1223,16 @@ entry type = 'type' - the list contains the CLASS as entry 0).
   Bisect matrix: trap+cacheprovider TOGETHER trigger it.
 - Component probes (10+) all pass. The bug is strictly a
   full-flow interaction.
+
+## Round-11e: attr-miss fallback committed at eval site (fb02340)
+
+Expr::Attribute miss arm now consults o.attrs / __ap_dict__ before
+raising. Verified: probe48 getrepr renders 1240 chars; ap-run
+suites green. The with-cacheprovider gate STILL crashes at the
+_rawentry class-receiver read - meaning the failing read happens
+in a DIFFERENT code path than Expr::Attribute (likely a native
+attr_get call from our Rust code, or a different Expr variant).
+NEXT SESSION: run drv14/drv15 with cacheprovider + APX_TBDBG and
+capture APDEL3/APRAW-I output at the exact failing op - the
+receiver is UserClass(name=object) per APRAW-I, so the read goes
+through interp attr paths; instrument native attr_get callers.
