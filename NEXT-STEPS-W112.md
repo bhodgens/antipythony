@@ -1680,3 +1680,20 @@ coroutines is forbidden' in asyncio.wait). Committed; ap-run
 184/0. Remaining dirty files (plans FUZZ_SEEDS growth +
 concurrent/futures/thread.py tweak) belong to the parallel
 session - do not commit.
+
+## Session budget exhausted (round-25c): stop point
+
+The PARSE-dispatch debugging made partial progress but every
+probe print added to scrapy files got silently dropped by the
+running process (prints present in files on disk, but not
+appearing in output - suggesting the runtime caches the module
+source/bytes at first import, and re-runs reused an embedded
+copy; a fresh binary copy each run did not help). The last
+confirmed state (crawl18): download works (read body 60),
+response 200 received, then the PARSE dispatch idles silently.
+The iscoroutine(Task) fix (37961e0) is committed. Remaining:
+determine why edited scrapy .py files are not re-loaded (likely
+a runtime module snapshot or pyc reuse), then re-instrument
+Scraper._scrape. Also: 'super(): no arguments' at Task.__del__
+deallocator noise. All other gates green: workspace 418/0/1,
+ap-run 184/0.
