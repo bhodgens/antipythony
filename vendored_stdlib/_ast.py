@@ -154,6 +154,10 @@ class Nonlocal(stmt):
     _fields = ("names",)
 
 
+class TypeAlias(stmt):
+    _fields = ("name", "type_params", "value")
+
+
 class Expr(stmt):
     _fields = ("value",)
 
@@ -602,6 +606,7 @@ for _name in (
     "For", "AsyncFor", "While", "If", "With", "AsyncWith", "Match",
     "Raise", "Try", "TryStar", "Assert", "Import", "ImportFrom",
     "Global", "Nonlocal", "Expr", "Pass", "Break", "Continue",
+    "TypeAlias",
     "BoolOp", "NamedExpr", "BinOp", "UnaryOp", "Lambda", "IfExp",
     "Dict", "Set", "ListComp", "SetComp", "DictComp", "GeneratorExp",
     "Await", "Yield", "YieldFrom", "Compare", "Call", "JoinedStr",
@@ -655,6 +660,20 @@ def _convert(d):
                 kwargs[opfield] = _OP_INSTANCES.setdefault(
                     kwargs[opfield], opcls()
                 )
+    # Compare.ops arrives as a LIST of op-name strings
+    if "ops" in kwargs and isinstance(kwargs["ops"], list):
+        converted = []
+        for entry in kwargs["ops"]:
+            if isinstance(entry, str):
+                opcls = _NODE_TABLE.get(entry)
+                converted.append(
+                    _OP_INSTANCES.setdefault(entry, opcls())
+                    if opcls is not None
+                    else entry
+                )
+            else:
+                converted.append(entry)
+        kwargs["ops"] = converted
     inst = cls(**kwargs)
     return inst
 

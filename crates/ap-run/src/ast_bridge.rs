@@ -165,10 +165,35 @@ fn stmt_node(st: &ruff_python_ast::Stmt, line_col: &dyn Fn(usize) -> (usize, usi
             f.push(("_type", s("If")));
             f.push(("test", expr_node(&x.test, line_col)?));
             f.push(("body", stmts_node(&x.body, line_col)?));
-            // ruff collapses elif chains into ElifElseClause list.
+            // ruff collapses elif chains into a FLAT ElifElseClause
+            // list: [elif(test), elif(test), else]. Rebuild the
+            // CPython nested shape right-to-left: the LAST else
+            // clause's body becomes orelse; each preceding elif
+            // becomes an If whose orelse holds the next.
+            let clauses = &x.elif_else_clauses;
             let mut orelse: Vec<Value> = Vec::new();
-            for clause in &x.elif_else_clauses {
-                orelse.push(elif_clause_node(clause, line_col)?);
+            if let Some(last) = clauses.last() {
+                if last.test.is_none() {
+                    orelse = match stmts_node(&last.body, line_col)? {
+                        Value::List(l) => l.items().to_vec(),
+                        other => vec![other],
+                    };
+                }
+            }
+            let elifs: Vec<&ruff_python_ast::ElifElseClause> = clauses
+                .iter()
+                .filter(|c| c.test.is_some())
+                .collect();
+            for clause in elifs.iter().rev() {
+                let mut cf = pos_fields(rng(clause), line_col);
+                cf.push(("_type", s("If")));
+                cf.push((
+                    "test",
+                    expr_node(clause.test.as_ref().unwrap(), line_col)?,
+                ));
+                cf.push(("body", stmts_node(&clause.body, line_col)?));
+                cf.push(("orelse", list_of(orelse)));
+                orelse = vec![dict_of(cf)];
             }
             f.push(("orelse", list_of(orelse)));
             Ok(dict_of(f))
@@ -203,6 +228,10 @@ fn stmt_node(st: &ruff_python_ast::Stmt, line_col: &dyn Fn(usize) -> (usize, usi
             }
             f.push(("decorator_list", list_of(decorators)));
             f.push(("args", params_node(&fd.parameters, line_col)?));
+            f.push((
+                "returns",
+                opt(&fd.returns, line_col, |v| expr_node(v, line_col))?,
+            ));
             Ok(dict_of(f))
         }
         ruff_python_ast::Stmt::ClassDef(cd) => {
@@ -325,32 +354,14 @@ fn stmt_node(st: &ruff_python_ast::Stmt, line_col: &dyn Fn(usize) -> (usize, usi
             f.push(("cases", list_of(cases)));
             Ok(dict_of(f))
         }
-        ruff_python_ast::Stmt::TypeAlias(_) | ruff_python_ast::Stmt::IpyEscapeCommand(_) => {
+        ruff_python_ast::Stmt::TypeAlias(x) => {
+            f.push(("_type", s("TypeAlias")));
+            f.push(("name", expr_node(&x.name, line_col)?));
+            f.push(("value", expr_node(&x.value, line_col)?));
+            Ok(dict_of(f))
+        }
+        ruff_python_ast::Stmt::IpyEscapeCommand(_) => {
             f.push(("_type", s("UnimplementedStmt")));
-            Ok(dict_of(f))
-        }
-    }
-}
-
-/// ruff collapses elif chains: `elif` clauses carry a test, the bare
-/// `else` does not. Represent elif as a nested If (CPython shape);
-/// a bare else becomes a marker the Python side inlines.
-fn elif_clause_node(
-    c: &ruff_python_ast::ElifElseClause,
-    line_col: &dyn Fn(usize) -> (usize, usize),
-) -> R {
-    let mut f = pos_fields(rng(c), line_col);
-    match &c.test {
-        Some(test) => {
-            f.push(("_type", s("If")));
-            f.push(("test", expr_node(test, line_col)?));
-            f.push(("body", stmts_node(&c.body, line_col)?));
-            f.push(("orelse", list_of(Vec::new())));
-            Ok(dict_of(f))
-        }
-        None => {
-            f.push(("_type", s("__ElseBlock__")));
-            f.push(("body", stmts_node(&c.body, line_col)?));
             Ok(dict_of(f))
         }
     }
@@ -542,6 +553,10 @@ fn arg_node(a: &ruff_python_ast::Parameter, line_col: &dyn Fn(usize) -> (usize, 
     let mut f = pos_fields(rng(a), line_col);
     f.push(("_type", s("arg")));
     f.push(("arg", s(a.name.as_str())));
+    f.push((
+        "annotation",
+        opt(&a.annotation, line_col, |v| expr_node(v, line_col))?,
+    ));
     Ok(dict_of(f))
 }
 
@@ -549,6 +564,8 @@ fn param_with_default_node(
     p: &ruff_python_ast::ParameterWithDefault,
     line_col: &dyn Fn(usize) -> (usize, usize),
 ) -> R {
+    // the default itself is emitted via arguments.defaults
+    // (CPython shape); do NOT duplicate it on the arg node.
     arg_node(&p.parameter, line_col)
 }
 
@@ -573,6 +590,23 @@ fn params_node(p: &ruff_python_ast::Parameters, line_col: &dyn Fn(usize) -> (usi
         "kwarg",
         opt(&p.kwarg, line_col, |a| arg_node(a, line_col))?,
     ));
+    // CPython arguments._fields carries defaults (right-aligned
+    // over posonly+args) and kw_defaults (None-padded per kwonly)
+    let mut defaults = Vec::new();
+    for a in p.posonlyargs.iter().chain(p.args.iter()) {
+        if let Some(d) = &a.default {
+            defaults.push(expr_node(d, line_col)?);
+        }
+    }
+    f.push(("defaults", list_of(defaults)));
+    let mut kw_defaults = Vec::new();
+    for a in p.kwonlyargs.iter() {
+        kw_defaults.push(match &a.default {
+            Some(d) => expr_node(d, line_col)?,
+            None => Value::None,
+        });
+    }
+    f.push(("kw_defaults", list_of(kw_defaults)));
     Ok(dict_of(f))
 }
 
@@ -844,12 +878,19 @@ fn expr_node(e: &ruff_python_ast::Expr, line_col: &dyn Fn(usize) -> (usize, usiz
         }
         ruff_python_ast::Expr::Lambda(x) => {
             f.push(("_type", s("Lambda")));
-            let lambda_params = x
-                .parameters
-                .as_ref()
-                .map(|p| p.as_ref())
-                .expect("lambda parameters");
-            f.push(("args", params_node(lambda_params, line_col)?));
+            match x.parameters.as_ref() {
+                Some(p) => f.push(("args", params_node(p, line_col)?)),
+                None => f.push((
+                    "args",
+                    dict_of(vec![
+                        ("_type", s("arguments")),
+                        ("args", list_of(Vec::new())),
+                        ("vararg", Value::None),
+                        ("kwonlyargs", list_of(Vec::new())),
+                        ("kwarg", Value::None),
+                    ]),
+                )),
+            }
             f.push(("body", expr_node(&x.body, line_col)?));
             Ok(dict_of(f))
         }

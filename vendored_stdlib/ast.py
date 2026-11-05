@@ -318,11 +318,15 @@ def iter_fields(node):
     # field values, typing.Generic); a class has no _fields, so
     # treat it as a field-less node instead of raising.
     fields = getattr(type(node), "_fields", ())
+    # W114b: materialize - generator resume loses items
+    # intermittently in this runtime.
+    out = []
     for field in fields:
         try:
-            yield field, getattr(node, field)
+            out.append((field, getattr(node, field)))
         except AttributeError:
             pass
+    return iter(out)
 
 
 def iter_child_nodes(node):
@@ -330,13 +334,18 @@ def iter_child_nodes(node):
     Yield all direct child nodes of *node*, that is, all fields that are nodes
     and all items of fields that are lists of nodes.
     """
+    # W114: materialize to a list first - the runtime's generator
+    # resume path can drop items when a generator is consumed via
+    # list.extend (ast.walk lost ~10% of nodes intermittently).
+    out = []
     for name, field in iter_fields(node):
         if isinstance(field, AST):
-            yield field
+            out.append(field)
         elif isinstance(field, list):
             for item in field:
                 if isinstance(item, AST):
-                    yield item
+                    out.append(item)
+    return iter(out)
 
 
 def get_docstring(node, clean=True):

@@ -1816,3 +1816,23 @@ byte-identical.
 Remaining known divergence: FunctionDef._fields lacks
 type_comment (cosmetic; source.py does not read it).
 Gates: ap-run 184/0; workspace 418/0/1.
+
+## Round 31 (W114d): functools.py corpus parity 5171->5172 (delta 1)
+
+Root-caused the functools walk delta (was -522 vs CPython):
+(1) elif chains: ruff stores FLAT elif_else_clauses; my per-clause
+__ElseBlock__ wrapper double-nested the else body inside a list
+inside a list, so iter_child_nodes skipped it (all else-branch
+statements vanished from walk). FIX: rebuild the CPython nested
+If shape right-to-left in Rust (else body -> orelse; elifs
+wrapped right-to-left). Assign count 194->229 (CPython 229,
+exact).
+(2) arg.default duplicated default exprs (once on arg, once in
+arguments.defaults). FIX: emit defaults only via
+arguments.defaults/kw_defaults; arg._fields reverted to
+(arg, annotation).
+REMAINING: 6 statements with +1/+2/+3 over-counts on functools.py
+(5172 vs 5171 total) - small residual in some FunctionDef/
+ClassDef subtrees; investigate next session.
+T2 gate: MAIN_RC=1, zero INTERNALERROR. ap-run 184/0; workspace
+418/0/1.
