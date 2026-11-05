@@ -1596,3 +1596,24 @@ Gates to rerun after the file-handler fix: T2 default + workspace.
    thread: scrapy's Request imported before string module ready,
    or the dual-instance root in importer) and ensure a single
    instance; then the crawl reaches PARSE.
+
+## Round-23b: crawl now REACHES PARSE dispatch; runtime zero-arg super() bug exposed
+
+Progress this round: FH downloads body (60B), response 200,
+scraper dispatches to callback chain. NEW runtime bug exposed at
+Scraper.call_spider_async -> warn_on_generator_with_return_value
+-> is_generator_with_return_value -> LocalWeakReferencedCache
+(dict-derived weak cache) __setitem__/__getitem__:
+zero-arg super() inside these dict-derived methods resolves to
+'object' instead of walking the MRO to dict -> 'object' object
+has no __setitem__ / RuntimeError super(): no arguments.
+Staged suppression (datatypes.py suppress TypeError+RuntimeError)
+reduces it to AttributeError from object.__setitem__ - still
+kills the callback. NEXT SESSION (single task): fix zero-arg
+super() resolution for dict-derived classes in the runtime -
+the super() called from LocalWeakReferencedCache.__setitem__
+must resolve the next-attr-holder in the MRO (dict), not
+object. Likely in the super_stack push logic for the structural
+setitem arm (methods.rs ~986-995) or classes.rs zero-arg super
+base resolution skipping classes that lack the attr.
+Once fixed: expect PARSE CALLED.
