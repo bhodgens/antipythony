@@ -199,6 +199,8 @@ dependencies = [
  "num-integer",
  "num-traits",
  "proptest",
+ "ruff_python_ast",
+ "ruff_text_size",
  "sha1",
  "sha2",
  "sha3",

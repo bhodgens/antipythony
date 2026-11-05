@@ -1746,3 +1746,27 @@ broken probe-strip artifact in the staged scrapy caches
 (engine.py _schedule_request else-block, scraper.py is_idle);
 both caches parse-clean, md5-synced, zero residual probe markers.
 Gates: ap-run 184/0; workspace 418/0/1.
+
+## Round 28 (W114): REAL compile(PyCF_ONLY_AST) - native AST stub RETIRED
+
+Feature: ast_bridge.rs (new) walks the ap_parse/ruff tree and emits a
+generic dict node tree ({_type, lineno, col_offset, end_lineno,
+end_col_offset, fields}); vendored_stdlib/_ast.py (NEW, replaces the
+native name-surface builder for the _ast module via an importer
+special-case) defines the real class hierarchy and converts the dicts
+into instances; compile() builtin's PyCF_ONLY_AST (0x400) arm now
+returns the real tree via _ast.from_native.
+- Coverage: core stmt/expr set; unknown variants degrade to
+  Unimplemented* nodes (never crash). Known minor divergences:
+  walk counts ctx objects differently (CPython 13 vs ours 9 on the
+  probe), no type_comment fields, comprehension/FString nodes are
+  Unimplemented placeholders.
+- GOTCHAS found en route: (1) star-import and from-import CLONE
+  class objects in this runtime (identity breaks isinstance across
+  modules) - ast.py binds _ast names via getattr loop instead;
+  (2) /tmp/ast.py copy shadowed the real module for /tmp-cwd runs;
+  (3) classes leak into tree walks (iter_fields now treats a class
+  as field-less instead of raising).
+- T2 DEFAULT-CONFIG GATE: 1 failed / 1 passed / 1 skipped,
+  MAIN_RC=1, zero INTERNALERROR - WITH the real AST live.
+- Gates: ap-run 184/0; workspace 418/0/1.

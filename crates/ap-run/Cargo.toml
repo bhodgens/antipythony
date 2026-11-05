@@ -14,6 +14,8 @@ ap-ir = { path = "../ap-ir" }
 ap-obj = { path = "../ap-obj" }
 ap-pack = { path = "../ap-pack" }
 ap-parse = { path = "../ap-parse" }
+ruff_python_ast = "0.0.4"
+ruff_text_size = "0.0.4"
 # bigint base conversion fallbacks (hex/oct/bin beyond u128)
 num-bigint = "0.4"
 num-integer = "0.1"

@@ -26,6 +26,7 @@ pub mod generators;
 pub mod importer;
 pub mod interp;
 pub mod iter;
+pub mod ast_bridge;
 pub mod lxml;
 pub mod methods;
 pub mod sre;

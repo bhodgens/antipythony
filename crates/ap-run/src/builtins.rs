@@ -4570,6 +4570,23 @@ pub fn call_builtin(
                 Some(Value::Str(x)) => x.as_str().to_string(),
                 _ => "<string>".to_string(),
             };
+            // W114: PyCF_ONLY_AST (0x400) -> real AST tree via the
+            // ast_bridge + vendored _ast.from_native.
+            let flags = match args.get(3) {
+                Some(Value::Int(v)) => v.to_i64().unwrap_or(0),
+                _ => 0,
+            };
+            if flags & 0x400 != 0 {
+                let tree = crate::ast_bridge::native_parse_tree(&src)
+                    .map_err(|m| raise("SyntaxError", m))?;
+                let interp = crate::builtins_modules::current_interp()
+                    .ok_or_else(|| raise("RuntimeError", "no interpreter"))?;
+                let interp = std::rc::Rc::new(interp);
+                let ast_mod = crate::importer::import_module(&interp, "_ast")?;
+                let conv = crate::interp::attr_get_public(&interp, &ast_mod, "from_native")?
+                    .ok_or_else(|| raise("RuntimeError", "_ast.from_native missing"))?;
+                return crate::interp::call_value_pub(&interp, &conv, &[tree], &[]);
+            }
             let code = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<code>");
             {
                 let mut attrs = code.attrs.borrow_mut();

@@ -20,7 +20,49 @@ that work tightly with the python syntax (template engines for example).
 :copyright: Copyright 2008 by Armin Ronacher.
 :license: Python License.
 """
-from _ast import *
+import _ast as _ast_mod
+
+import sys
+# W114: `from _ast import *` clones class objects in this runtime
+# (identity breaks isinstance across modules). Bind every _ast
+# name by attribute access instead - attribute reads are stable.
+for _n in (
+    "AST", "mod", "stmt", "expr", "expr_context", "boolop",
+    "operator", "unaryop", "cmpop", "excepthandler", "type_ignore",
+    "Module", "Interactive", "Expression", "FunctionType",
+    "FunctionDef", "AsyncFunctionDef", "ClassDef", "Return",
+    "Delete", "Assign", "AugAssign", "AnnAssign", "TypeAlias",
+    "For", "AsyncFor", "While", "If", "With", "AsyncWith", "Match",
+    "Raise", "Try", "TryStar", "Assert", "Import", "ImportFrom",
+    "Global", "Nonlocal", "Expr", "Pass", "Break", "Continue",
+    "BoolOp", "NamedExpr", "BinOp", "UnaryOp", "Lambda", "IfExp",
+    "Dict", "Set", "ListComp", "SetComp", "DictComp",
+    "GeneratorExp", "Await", "Yield", "YieldFrom", "Compare",
+    "Call", "JoinedStr", "Constant", "Attribute", "Subscript",
+    "Starred", "Name", "List", "Tuple", "Slice",
+    "Load", "Store", "Del", "And", "Or",
+    "Add", "Sub", "Mult", "MatMult", "Div", "Mod", "Pow",
+    "LShift", "RShift", "BitOr", "BitXor", "BitAnd", "FloorDiv",
+    "Invert", "Not", "UAdd", "USub",
+    "Eq", "NotEq", "Lt", "LtE", "Gt", "GtE", "Is", "IsNot",
+    "In", "NotIn",
+    "ExceptHandler", "arguments", "arg", "keyword", "alias",
+    "withitem", "match_case",
+    "NodeVisitor", "NodeTransformer",
+    "PyCF_ONLY_AST", "PyCF_ALLOW_TOP_LEVEL_AWAIT",
+    "PyCF_TYPE_COMMENTS", "PyCF_OPTIMIZED_AST",
+):
+    try:
+        globals()[_n] = getattr(_ast_mod, _n)
+    except AttributeError:
+        pass
+
+# W114: the runtime star-import may skip plain-int module attrs;
+# pin the compile-flag constants locally (values are ABI-stable).
+PyCF_ONLY_AST = 0x400
+PyCF_ALLOW_TOP_LEVEL_AWAIT = 0x1000
+PyCF_TYPE_COMMENTS = 0x2000
+PyCF_OPTIMIZED_AST = 0x4000
 
 
 def parse(source, filename='<unknown>', mode='exec', *,
@@ -270,7 +312,11 @@ def iter_fields(node):
     Yield a tuple of ``(fieldname, value)`` for each field in ``node._fields``
     that is present on *node*.
     """
-    for field in node._fields:
+    # W114: classes may leak into tree walks (op singletons as
+    # field values, typing.Generic); a class has no _fields, so
+    # treat it as a field-less node instead of raising.
+    fields = getattr(type(node), "_fields", ())
+    for field in fields:
         try:
             yield field, getattr(node, field)
         except AttributeError:

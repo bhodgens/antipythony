@@ -647,6 +647,35 @@ pub fn import_module_inner(interp: &Rc<Interpreter>, name: &str) -> EResult {
             return Ok(m);
         }
     }
+    // W114: _ast with REAL classes - exec the vendored _ast.py
+    // (class hierarchy + from_native converter over the ast_bridge
+    // generic dicts). compile()'s ONLY_AST arm calls
+    // _ast.from_native(ast_bridge::native_parse_tree(..)).
+    if name == "_ast" {
+        for base in sys_path_entries() {
+            let f = std::path::Path::new(&base).join("_ast.py");
+            if f.is_file() {
+                if let Ok(compiled) = compile_file(&f.to_string_lossy(), false, String::new()) {
+                    if let Ok(loaded) =
+                        load_into(interp, &compiled, name, &f.to_string_lossy(), name)
+                    {
+                        let stmts = module_stmts(interp, &compiled, &loaded.reg, &loaded.frame);
+                        if run_loaded(interp, &loaded, &stmts).is_ok() {
+                            let (m, mns) = builtins_modules::new_module(name);
+                            let _ = mns.set(s("__name__"), s(name));
+                            for (k, v) in loaded.ns.items() {
+                                let _ = mns.set(k, v);
+                            }
+                            *m.module_ns.borrow_mut() = Some(std::rc::Rc::new((*mns).clone()));
+                            let mv = Value::Obj(m);
+                            sys_modules_insert(name, &mv);
+                            return Ok(mv);
+                        }
+                    }
+                }
+            }
+        }
+    }
     // 3. Native registry (02.08-lite continued).
     // T1 (scrapy fix pass): collections.abc — exec the vendored
     // _collections_abc.py INTO a "collections.abc" module (CPython's
