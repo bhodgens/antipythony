@@ -514,6 +514,16 @@ fn unaryop_name(op: &ruff_python_ast::UnaryOp) -> &'static str {
     }
 }
 
+fn ctx_name(ctx: &ruff_python_ast::ExprContext) -> &'static str {
+    use ruff_python_ast::ExprContext as C;
+    match ctx {
+        C::Load => "Load",
+        C::Store => "Store",
+        C::Del => "Del",
+        C::Invalid => "Load",
+    }
+}
+
 fn boolop_name(op: &ruff_python_ast::BoolOp) -> &'static str {
     use ruff_python_ast::BoolOp as B;
     match op {
@@ -528,6 +538,7 @@ fn expr_node(e: &ruff_python_ast::Expr, line_col: &dyn Fn(usize) -> (usize, usiz
         ruff_python_ast::Expr::Name(n) => {
             f.push(("_type", s("Name")));
             f.push(("id", s(n.id.as_str())));
+            f.push(("ctx", s(ctx_name(&n.ctx))));
             Ok(dict_of(f))
         }
         ruff_python_ast::Expr::NumberLiteral(n) => {
@@ -633,16 +644,19 @@ fn expr_node(e: &ruff_python_ast::Expr, line_col: &dyn Fn(usize) -> (usize, usiz
             f.push(("_type", s("Attribute")));
             f.push(("value", expr_node(&x.value, line_col)?));
             f.push(("attr", s(x.attr.as_str())));
+            f.push(("ctx", s(ctx_name(&x.ctx))));
             Ok(dict_of(f))
         }
         ruff_python_ast::Expr::Subscript(x) => {
             f.push(("_type", s("Subscript")));
             f.push(("value", expr_node(&x.value, line_col)?));
             f.push(("slice", expr_node(&x.slice, line_col)?));
+            f.push(("ctx", s(ctx_name(&x.ctx))));
             Ok(dict_of(f))
         }
         ruff_python_ast::Expr::List(x) => {
             f.push(("_type", s("List")));
+            f.push(("ctx", s(ctx_name(&x.ctx))));
             let mut elts = Vec::new();
             for e2 in &x.elts {
                 elts.push(expr_node(e2, line_col)?);
@@ -652,6 +666,7 @@ fn expr_node(e: &ruff_python_ast::Expr, line_col: &dyn Fn(usize) -> (usize, usiz
         }
         ruff_python_ast::Expr::Tuple(x) => {
             f.push(("_type", s("Tuple")));
+            f.push(("ctx", s(ctx_name(&x.ctx))));
             let mut elts = Vec::new();
             for e2 in &x.elts {
                 elts.push(expr_node(e2, line_col)?);
@@ -686,6 +701,7 @@ fn expr_node(e: &ruff_python_ast::Expr, line_col: &dyn Fn(usize) -> (usize, usiz
         ruff_python_ast::Expr::Starred(x) => {
             f.push(("_type", s("Starred")));
             f.push(("value", expr_node(&x.value, line_col)?));
+            f.push(("ctx", s(ctx_name(&x.ctx))));
             Ok(dict_of(f))
         }
         ruff_python_ast::Expr::If(x) => {
@@ -730,17 +746,142 @@ fn expr_node(e: &ruff_python_ast::Expr, line_col: &dyn Fn(usize) -> (usize, usiz
             f.push(("body", expr_node(&x.body, line_col)?));
             Ok(dict_of(f))
         }
-        ruff_python_ast::Expr::FString(_) | ruff_python_ast::Expr::TString(_) => {
+        ruff_python_ast::Expr::ListComp(x) => {
+            f.push(("_type", s("ListComp")));
+            f.push(("elt", expr_node(&x.elt, line_col)?));
+            f.push(("generators", comprehension_list(&x.generators, line_col)?));
+            Ok(dict_of(f))
+        }
+        ruff_python_ast::Expr::SetComp(x) => {
+            f.push(("_type", s("SetComp")));
+            f.push(("elt", expr_node(&x.elt, line_col)?));
+            f.push(("generators", comprehension_list(&x.generators, line_col)?));
+            Ok(dict_of(f))
+        }
+        ruff_python_ast::Expr::DictComp(x) => {
+            f.push(("_type", s("DictComp")));
+            f.push((
+                "key",
+                match &x.key {
+                    Some(k) => expr_node(k, line_col)?,
+                    None => Value::None,
+                },
+            ));
+            f.push(("value", expr_node(&x.value, line_col)?));
+            f.push(("generators", comprehension_list(&x.generators, line_col)?));
+            Ok(dict_of(f))
+        }
+        ruff_python_ast::Expr::Generator(x) => {
+            f.push(("_type", s("GeneratorExp")));
+            f.push(("elt", expr_node(&x.elt, line_col)?));
+            f.push(("generators", comprehension_list(&x.generators, line_col)?));
+            Ok(dict_of(f))
+        }
+        ruff_python_ast::Expr::Slice(x) => {
+            f.push(("_type", s("Slice")));
+            f.push(("lower", opt(&x.lower, line_col, |v| expr_node(v, line_col))?));
+            f.push(("upper", opt(&x.upper, line_col, |v| expr_node(v, line_col))?));
+            f.push(("step", opt(&x.step, line_col, |v| expr_node(v, line_col))?));
+            Ok(dict_of(f))
+        }
+        ruff_python_ast::Expr::FString(x) => {
+            // CPython shape: JoinedStr(values=[Constant(literal) |
+            // FormattedValue(value, conversion, format_spec), ...])
+            f.push(("_type", s("JoinedStr")));
+            let mut values: Vec<Value> = Vec::new();
+            for part in x.value.as_slice() {
+                match part {
+                    ruff_python_ast::FStringPart::Literal(lit) => {
+                        let mut pf = pos_fields(rng(lit), line_col);
+                        pf.push(("_type", s("Constant")));
+                        pf.push(("value", s(&lit.value)));
+                        values.push(dict_of(pf));
+                    }
+                    ruff_python_ast::FStringPart::FString(fs) => {
+                        for el in fs.elements.iter() {
+                            values.push(fstring_element_node(el, line_col)?);
+                        }
+                    }
+                }
+            }
+            f.push(("values", list_of(values)));
+            Ok(dict_of(f))
+        }
+        ruff_python_ast::Expr::TString(_) | ruff_python_ast::Expr::IpyEscapeCommand(_) => {
             f.push(("_type", s("UnimplementedExpr")));
             Ok(dict_of(f))
         }
-        ruff_python_ast::Expr::ListComp(_)
-        | ruff_python_ast::Expr::SetComp(_)
-        | ruff_python_ast::Expr::DictComp(_)
-        | ruff_python_ast::Expr::Generator(_)
-        | ruff_python_ast::Expr::Slice(_)
-        | ruff_python_ast::Expr::IpyEscapeCommand(_) => {
-            f.push(("_type", s("UnimplementedExpr")));
+    }
+}
+
+fn comprehension_node(
+    c: &ruff_python_ast::Comprehension,
+    line_col: &dyn Fn(usize) -> (usize, usize),
+) -> R {
+    let mut f = pos_fields(rng(c), line_col);
+    f.push(("_type", s("comprehension")));
+    f.push(("target", expr_node(&c.target, line_col)?));
+    f.push(("iter", expr_node(&c.iter, line_col)?));
+    let mut ifs = Vec::new();
+    for e in &c.ifs {
+        ifs.push(expr_node(e, line_col)?);
+    }
+    f.push(("ifs", list_of(ifs)));
+    f.push(("is_async", Value::Bool(c.is_async)));
+    Ok(dict_of(f))
+}
+
+fn comprehension_list(
+    gens: &[ruff_python_ast::Comprehension],
+    line_col: &dyn Fn(usize) -> (usize, usize),
+) -> R {
+    let mut out = Vec::new();
+    for c in gens {
+        out.push(comprehension_node(c, line_col)?);
+    }
+    Ok(list_of(out))
+}
+
+fn fstring_element_node(
+    el: &ruff_python_ast::InterpolatedStringElement,
+    line_col: &dyn Fn(usize) -> (usize, usize),
+) -> R {
+    match el {
+        ruff_python_ast::InterpolatedStringElement::Literal(lit) => {
+            let mut f = pos_fields(rng(lit), line_col);
+            f.push(("_type", s("Constant")));
+            f.push(("value", s(&lit.value)));
+            Ok(dict_of(f))
+        }
+        ruff_python_ast::InterpolatedStringElement::Interpolation(ip) => {
+            let mut f = pos_fields(rng(ip), line_col);
+            f.push(("_type", s("FormattedValue")));
+            f.push(("value", expr_node(&ip.expression, line_col)?));
+            // conversion: -1 (none) or the ord of the conversion char
+            let conv: i64 = match ip.conversion {
+                ruff_python_ast::ConversionFlag::None => -1,
+                ruff_python_ast::ConversionFlag::Str => 115,
+                ruff_python_ast::ConversionFlag::Ascii => 97,
+                ruff_python_ast::ConversionFlag::Repr => 114,
+            };
+            f.push(("conversion", Value::Int(ap_obj::int::Int::from_i64(conv))));
+            f.push((
+                "format_spec",
+                match &ip.format_spec {
+                    Some(spec) => {
+                        // CPython: JoinedStr of the spec elements
+                        let mut spec_values: Vec<Value> = Vec::new();
+                        for el2 in spec.elements.iter() {
+                            spec_values.push(fstring_element_node(el2, line_col)?);
+                        }
+                        dict_of(vec![
+                            ("_type", s("JoinedStr")),
+                            ("values", list_of(spec_values)),
+                        ])
+                    }
+                    None => Value::None,
+                },
+            ));
             Ok(dict_of(f))
         }
     }

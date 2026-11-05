@@ -1770,3 +1770,32 @@ returns the real tree via _ast.from_native.
 - T2 DEFAULT-CONFIG GATE: 1 failed / 1 passed / 1 skipped,
   MAIN_RC=1, zero INTERNALERROR - WITH the real AST live.
 - Gates: ap-run 184/0; workspace 418/0/1.
+
+## Round 29 (W114b): AST walk parity with CPython 3.14
+
+Coverage expansion in ast_bridge.rs + _ast.py:
+- comprehensions (ListComp/SetComp/DictComp/GeneratorExp with
+  comprehension nodes: target/iter/ifs/is_async)
+- Slice (lower/upper/step)
+- f-strings -> JoinedStr(values=[Constant(literal) |
+  FormattedValue(value, conversion, format_spec=JoinedStr)])
+  (conversion -1/115/97/114)
+- ctx fields emitted for Name/Attribute/Subscript/List/Tuple/
+  Starred
+- op/ctx converted to singleton INSTANCES (walk visits them as
+  children, matching CPython)
+- _ast.py: comprehension/FormattedValue/match_case classes +
+  _NODE_TABLE entries; tolerant table loop
+- iter_fields: classes treated as field-less (classes leak into
+  walks via op singletons; upstream guards expect tolerance)
+PARITY: probe source (comprehensions + f-string + slice) walk
+count 46->68 EXACTLY matching CPython 3.14 (counts dict identical:
+Module/Assign/Name/ListComp/DictComp/GeneratorExp/JoinedStr/
+Subscript/Store/BinOp/comprehension/Constant/FormattedValue/Slice/
+Load/Mult/Call/Tuple).
+GOTCHA rediscovered: /tmp/_ast.py + /tmp/ast.py stale copies
+shadow the vendored modules for /tmp-adjacent runs - delete them
+when probes act oddly (this cost 3 probe cycles this round).
+Gates: T2 1F/1P/1S MAIN_RC=1 zero INTERNALERROR; ap-run 184/0
+(one parallel tmp-file race flake, passes in isolation);
+workspace 418/0/1.

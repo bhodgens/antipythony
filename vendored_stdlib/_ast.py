@@ -463,6 +463,18 @@ class withitem(AST):
     _fields = ("context_expr", "optional_vars")
 
 
+class comprehension(AST):
+    _fields = ("target", "iter", "ifs", "is_async")
+
+
+class FormattedValue(expr):
+    _fields = ("value", "conversion", "format_spec")
+
+
+class match_case(AST):
+    _fields = ("pattern", "guard", "body")
+
+
 class type_ignore(AST):
     pass
 
@@ -546,6 +558,7 @@ def dump(node, annotate_fields=True, include_attributes=False):
 
 
 _NODE_TABLE = {}
+_OP_INSTANCES = {}
 for _name in (
     "Module", "Interactive", "Expression",
     "FunctionDef", "AsyncFunctionDef", "ClassDef",
@@ -567,6 +580,8 @@ for _name in (
     "In", "NotIn",
     "ExceptHandler",
     "arguments", "arg", "keyword", "alias", "withitem",
+    "comprehension", "FormattedValue", "JoinedStr",
+    "match_case",
 ):
     _NODE_TABLE[_name] = globals()[_name]
 
@@ -591,12 +606,17 @@ def _convert(d):
         if key.startswith("_"):
             continue
         kwargs[key] = _convert(value)
-    # op fields: the native side emits the op NAME; map to the class
+    # op/ctx fields: the native side emits the op NAME; map to a
+    # singleton INSTANCE (CPython: node.op is ast.Add() etc). The
+    # instance is cached per class; walk visits it as a child node
+    # matching CPython walk counts.
     for opfield in ("op", "ctx"):
         if opfield in kwargs and isinstance(kwargs[opfield], str):
             opcls = _NODE_TABLE.get(kwargs[opfield])
             if opcls is not None:
-                kwargs[opfield] = opcls
+                kwargs[opfield] = _OP_INSTANCES.setdefault(
+                    kwargs[opfield], opcls()
+                )
     inst = cls(**kwargs)
     return inst
 
