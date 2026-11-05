@@ -2428,23 +2428,37 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
                             // UNBOUND function with (t, type(x)) via the
                             // descriptor protocol the same way __prepare__
                             // unwraps classmethods.
-                            let hook_fn = match &subhook {
-                                Value::Obj(o)
-                                    if o.kind == ap_obj::ObjKind::Descriptor
-                                        && matches!(
-                                            o.descr_kind.borrow().as_deref(),
-                                            Some("classmethod")
-                                        ) =>
-                                {
-                                    o.func.borrow().clone()
-                                        .unwrap_or_else(|| subhook.clone())
+                            // W112: attr_get may return a BOUND method
+                            // (cls already inside) or a raw function. A
+                            // bound method takes only (xcls); a raw fn
+                            // takes (t, xcls).
+                            let (hook_fn, hook_args): (Value, Vec<Value>) =
+                                match &subhook {
+                                    Value::Obj(f)
+                                        if f.kind == ap_obj::ObjKind::BoundMethod =>
+                                    {
+                                        (subhook.clone(), vec![xcls.clone()])
                                     }
-                                    _ => subhook.clone(),
-                            };
+                                    Value::Obj(o)
+                                        if o.kind == ap_obj::ObjKind::Descriptor
+                                            && matches!(
+                                                o.descr_kind.borrow().as_deref(),
+                                                Some("classmethod")
+                                            ) =>
+                                    {
+                                        (
+                                            o.func.borrow().clone().unwrap_or_else(
+                                                || subhook.clone(),
+                                            ),
+                                            vec![t.clone(), xcls.clone()],
+                                        )
+                                    }
+                                    _ => (subhook.clone(), vec![t.clone(), xcls.clone()]),
+                                };
                             let r = crate::interp::call_value_pub(
                                 &rc,
                                 &hook_fn,
-                                &[t.clone(), xcls],
+                                &hook_args,
                                 &[],
                             )?;
                             if r.is_truthy() {

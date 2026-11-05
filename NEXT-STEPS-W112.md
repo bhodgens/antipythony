@@ -1624,3 +1624,15 @@ Once fixed: expect PARSE CALLED.
 blocker = zero-arg super() in dict-derived LocalWeakReferencedCache
 resolving to object (runtime super() MRO walk bug). All context in
 the rounds above.
+
+
+## ROUND-24: PARSE CALLED - the file:// crawl reaches the spider callback
+
+The __subclasshook__/__instancecheck__ binding fix (BoundMethod
+vs raw classmethod dispatch) cleared the Coroutine arity error
+after PARSE CALLED fired. Remaining (isolated, next session):
+'Passing coroutines is forbidden, use tasks explicitly' from
+asyncio.wait in _parallel_asyncio (scrapy utils asyncio) - the
+parse callback's Deferred-returning items need
+maybe_deferred_to_future wrapping or the ensure_future path.
+That is scrapy-internal, one targeted probe away.
