@@ -1997,3 +1997,22 @@ interp/compiler fix.
 Baseline 9 files earlier verified identical per-node-type; the
 new dump()-text check is stricter and surfaced the families
 above.
+
+## Round 38 (W114k): harness divergence families FIXED
+
+All three families from the Round-37 harness scorecard fixed in
+ast_bridge.rs:
+1. comprehension.is_async: bool False -> Int 0/1 (CPython emits
+   int).
+2. bytes literals: real Value::Bytes (dump renders b'GZS1') -
+   was a __bytes__:[..] marker string.
+3. With/For: is_async flag now selects AsyncWith/AsyncFor
+   (ruff collapses the variants).
+4. (bonus) BigInt literals: Number::Int built via
+   Int::parse_base10(decimal digits) - 0xffffffffffff0fff now
+   dumps as 18446744073709490175 (was -61441 via i64 cast).
+Verified identical vs CPython: bytes probe, AsyncWith probe,
+bigint mask probe. Gates: ap-run 184/0; workspace 418/0/1; T2
+MAIN_RC=1 zero INTERNALERROR.
+NOTE: uuid.py remains with a small delta pending re-run (mask
+probe now identical, so expected 0).

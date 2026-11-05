@@ -16,7 +16,7 @@
 //! range (never a crash).
 
 use ap_obj::dict::PyDict;
-use ap_obj::int::Int;
+use ap_obj::int::{Gc, Int};
 use ap_obj::value::{PyList, PyString, Value};
 
 type R = Result<Value, String>;
@@ -215,7 +215,10 @@ fn stmt_node(st: &ruff_python_ast::Stmt, line_col: &dyn Fn(usize) -> (usize, usi
             Ok(dict_of(f))
         }
         ruff_python_ast::Stmt::For(x) => {
-            f.push(("_type", s("For")));
+            f.push((
+                "_type",
+                if x.is_async { s("AsyncFor") } else { s("For") },
+            ));
             f.push(("target", expr_node(&x.target, line_col)?));
             f.push(("iter", expr_node(&x.iter, line_col)?));
             f.push(("body", stmts_node(&x.body, line_col)?));
@@ -350,7 +353,10 @@ fn stmt_node(st: &ruff_python_ast::Stmt, line_col: &dyn Fn(usize) -> (usize, usi
             Ok(dict_of(f))
         }
         ruff_python_ast::Stmt::With(x) => {
-            f.push(("_type", s("With")));
+            f.push((
+                "_type",
+                if x.is_async { s("AsyncWith") } else { s("With") },
+            ));
             let mut items = Vec::new();
             for it in &x.items {
                 items.push(with_item_node(it, line_col)?);
@@ -704,7 +710,14 @@ fn expr_node(e: &ruff_python_ast::Expr, line_col: &dyn Fn(usize) -> (usize, usiz
             f.push(("_type", s("Constant")));
             match &n.value {
                 ruff_python_ast::Number::Int(v) => {
-                    f.push(("value", i(v.as_u64().unwrap_or(0) as usize)));
+                    // BigInt literals (e.g. 0xffffffffffff0fff) do
+                    // not fit i64 - build via decimal parse so the
+                    // full magnitude survives
+                    let digits = v.to_string();
+                    match ap_obj::int::Int::parse_base10(&digits) {
+                        Ok(big) => f.push(("value", Value::Int(big))),
+                        Err(()) => f.push(("value", i(v.as_u64().unwrap_or(0) as usize))),
+                    }
                 }
                 ruff_python_ast::Number::Float(v) => {
                     f.push(("value", Value::Float(*v)));
@@ -737,13 +750,11 @@ fn expr_node(e: &ruff_python_ast::Expr, line_col: &dyn Fn(usize) -> (usize, usiz
         }
         ruff_python_ast::Expr::BytesLiteral(v) => {
             f.push(("_type", s("Constant")));
-            // best-effort: join the byte parts into a repr string the
-            // Python side can decode
             let mut all: Vec<u8> = Vec::new();
             for part in v.value.as_slice() {
                 all.extend_from_slice(part.as_slice());
             }
-            f.push(("value", s(&format!("__bytes__:{:?}", all))));
+            f.push(("value", Value::Bytes(Gc::new(all))));
             Ok(dict_of(f))
         }
         ruff_python_ast::Expr::BinOp(x) => {
@@ -1050,7 +1061,7 @@ fn comprehension_node(
         ifs.push(expr_node(e, line_col)?);
     }
     f.push(("ifs", list_of(ifs)));
-    f.push(("is_async", Value::Bool(c.is_async)));
+    f.push(("is_async", Value::Int(Int::from_i64(c.is_async as i64))));
     Ok(dict_of(f))
 }
 
