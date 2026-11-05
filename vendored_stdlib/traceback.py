@@ -477,7 +477,29 @@ class StackSummary(list):
                 frame_gen = tuple(frame_gen)
                 frame_gen = frame_gen[len(frame_gen) - limit:]
             elif limit >= 0:
-                frame_gen = itertools.islice(frame_gen, limit)
+                # W112 (T2 regression at 125f205+): do NOT drive the
+                # walk generator through native itertools.islice here.
+                # islice's Rust lazy_iter falls back to snapshot() ->
+                # collect(), which drains a SUSPENDED Python generator
+                # (the traceback.py _walk_tb_with_full_positions gen,
+                # created inside pluggy hook-wrapper fibers on the
+                # post-fiber/AST-wave resume paths) from native code.
+                # That drain reads the generator's frame state wrong
+                # (tb entries arrive as None), yielding zero items, so
+                # extract_tb(tb, limit=1) returns an EMPTY StackSummary
+                # and pytest's TracebackEntry.get_python_framesummary
+                # dies on stack_summary[0] (IndexError -> INTERNALERROR
+                # cascade). Slicing with a Python-level for-loop keeps
+                # generator resumption on the interpreter path, which
+                # reads the frames correctly (works-best-effort,
+                # Amendment A-3, same pattern as the TypeError guards
+                # above).
+                sliced = []
+                for item in frame_gen:
+                    if len(sliced) >= limit:
+                        break
+                    sliced.append(item)
+                frame_gen = iter(sliced)
             else:
                 frame_gen = collections.deque(frame_gen, maxlen=-limit)
 
