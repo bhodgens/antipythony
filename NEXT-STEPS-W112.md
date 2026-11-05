@@ -1527,3 +1527,31 @@ all. FINAL GATES: workspace 418 passed / 0 failed / 1 ignored
 (1F/1P/1S, MAIN_RC=1, zero INTERNALERROR); FUZZ_SEEDS growth
 committed per corpus-only-grows. Stale-binary GOTCHA recorded in
 AGENTS.md status block (touch tests + rebuild before debugging).
+
+## Round-21: scrapy unpack ROOT FOUND - Headers MRO drops ABC base
+
+The int-None->unpack chain resolved end-to-end (real tracebacks
+now work): downloader exception -> RetryMiddleware._retry ->
+request.copy() -> Headers.update -> 'for k, v in seq' ValueError.
+ROOT: isinstance(Headers(), Mapping) = False because class
+Headers(dict, MutableMapping) is created with MRO [Headers,
+dict, object] - the MutableMapping ABC BASE IS DROPPED at class
+creation (not the Generic-drop arm; an earlier __mro_entries_/
+ABC-base handling drops it). With MutableMapping absent from the
+mro, the structural check correctly answers False and update()
+takes the pairs branch, iterating keys ('too many values').
+Also: deferred_from_coro 'hang' repro is INVALID - CPython 3.14
++ twisted raises the identical 'Task got bad yield: Deferred'
+(w112_dfc_cpy.py ground truth); our runtime is
+behavior-identical. Scrapy's real code path never awaits a
+Deferred directly inside an asyncio Task.
+Landed: b415c61 metaclass-only __instancecheck__ lookup (CPython
+type(C).__instancecheck__ semantics; the earlier mro-attr lookup
+pulled typing _GenericAlias hooks and broke classmethod call
+convention - caught by the NamedTuple creation probe).
+NEXT SESSION: fix the ABC-base drop (Headers mro must be
+[Headers, dict, MutableMapping, Collection, ...]); then the
+crawl should pass RetryMiddleware and reach first PARSE.
+NOTE: a parallel agent session is active in this repo (APX_OSDBG
+WIP in builtins_modules.rs/importer.rs + FUZZ_SEEDS growth - do
+not revert; commit explicit paths only).
