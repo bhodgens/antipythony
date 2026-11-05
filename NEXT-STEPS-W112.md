@@ -1360,12 +1360,15 @@ Isolation matrix: 7-node standalone PASS (P98), in-except PASS,
 post-contextmanager-exit PASS (P99), real TracebackEntry+real
 tb consistent 4/4 (P101). The failing flow's unique state:
 suspended-generator frames holding tb nodes between yields.
-HYPOTHESIS (strong): the tracing GC does NOT treat suspended
-generator frame locals as roots - tb nodes die between yields,
-shrinking the chain mid-iteration (matches nondeterminism:
-count varies with GC timing; the while-walk survives because
-`cur` lives in the ACTIVE frame, not a suspended one).
-NEXT SESSION: (1) verify by forcing gc.collect() inside the
-generator between yields on the 7-node repro - expect <7;
-(2) fix: trace suspended GenFrame::Live fibers' frames/locals
-as GC roots; (3) rerun default-config T2 gate.
+HYPOTHESIS REVISED (P102): forced gc.collect() between yields
+keeps the chain intact (4/4) - suspended generator frames ARE
+GC-rooted. The nondeterminism (same flow yields 1 vs 3 across
+runs) points to REENTRANCY: TracebackEntry(cur_) allocates
+inside the generator; allocation can trigger GC -> the
+unraisable hook -> pytest hook python code -> ITS OWN
+gen_pull/resume_live re-enters while fiber 1677 is mid-resume,
+clobbering fiber state; the outer resume then returns Ok(None)
+early. NEXT SESSION: (1) add a reentrancy guard/serialization
+to gen_pull/resume_live (queue nested pulls or detect and
+defer); (2) rerun the 7-chain repro INSIDE the unraisable-hook
+flow; (3) rerun default-config T2 gate.
