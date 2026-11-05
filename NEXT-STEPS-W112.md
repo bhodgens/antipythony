@@ -1943,3 +1943,18 @@ Probe artifacts: /tmp/w111_crawl/stall-* (e6 runs: stall-clean.log = green;
 stall-items.py = item-spider probe; stall-tb/sel/weak/aiter/chain/pa =
 isolated repros; stall-5fca-bin / stall-head-bin / stall-mine-bin = base
 comparators).
+
+## Round 35 (W114h): parallel-session d91eaf8 confirms generator-drain family
+
+The parallel session's d91eaf8 ("traceback extract_tb must not
+drain the walk generator through native itertools.islice") is the
+SAME root-cause family as my Round-32 iter_fields/
+iter_child_nodes materialization (ast.walk lost ~10% of nodes
+intermittently via list.extend over a generator). Their fix is
+native-side (itertools.islice), mine Python-side (materialize to
+list). Both live; no conflict.
+Post-d91eaf8 verification: functools walk 5170 vs CPython 5171
+(residual -1: the 6-stmt over/under mix), typing delta 0. T2 gate
+GREEN at HEAD (re-verified MAIN_RC=1, 0 INTERNALERROR after
+their commit). The AGENTS.md "T2 REGRESSION OPEN" note (fa2912a)
+is STALE - superseded by d91eaf8.
