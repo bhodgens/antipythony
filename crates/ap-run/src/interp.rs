@@ -5276,6 +5276,77 @@ fn call_value_inner_impl(
                     // T2: builtin-base __init__ via super() — extend the
                     // receiver's backing collection from the iterable arg
                     // (pytest Traceback(list): super().__init__(gen)).
+                    // W112: dict item-dunder virtuals for super() walks
+                    // through dict-derived classes (scrapy
+                    // LocalWeakReferencedCache.__setitem__ ->
+                    // super().__setitem__ -> dict.__setitem__): operate on
+                    // the subject's backing dict (__ap_dict__ or dict_
+                    // backing).
+                    if o.name.starts_with("__ap_base_dict_")
+                        && !o.name.ends_with("__init__")
+                    {
+                        let subject = o
+                            .slice_parts
+                            .borrow()
+                            .first()
+                            .cloned()
+                            .unwrap_or(Value::None);
+                        let op = o
+                            .name
+                            .trim_start_matches("__ap_base_dict_")
+                            .trim_end_matches("__")
+                            .to_string();
+                        let key = args.first().cloned().unwrap_or(Value::None);
+                        let backing = crate::classes::dict_backing(&subject);
+                        let backing = backing.or_else(|| {
+                            if let Value::Obj(so) = &subject {
+                                if let Some(Value::Dict(d)) = so
+                                    .attrs
+                                    .borrow()
+                                    .get(&Value::Str(PyString::new("__ap_dict__")))
+                                {
+                                    return Some(d.clone());
+                                }
+                            }
+                            None
+                        });
+                        let d = match backing {
+                            Some(d) => d,
+                            None => {
+                                // No backing dict yet (first write): create one.
+                                let d = PyDict::new();
+                                if let Value::Obj(so) = &subject {
+                                    let _ = so.attrs.borrow_mut().set(
+                                        Value::Str(PyString::new("__ap_dict__")),
+                                        Value::Dict(d.clone()),
+                                    );
+                                }
+                                d
+                            }
+                        };
+                        return match op.as_str() {
+                            "setitem" => {
+                                let v = args.get(1).cloned().unwrap_or(Value::None);
+                                d.set(key, v).map_err(Flow::from_py)?;
+                                Ok(Value::None)
+                            }
+                            "getitem" => match d.get(&key) {
+                                Some(v) => Ok(v),
+                                None => Err(raise(
+                                    "KeyError",
+                                    format!("{:?}", key),
+                                )),
+                            },
+                            "delitem" => {
+                                let _ = d.pop(&key);
+                                Ok(Value::None)
+                            }
+                            _ => Err(raise(
+                                "SystemError",
+                                format!("bad dict virtual {}", op),
+                            )),
+                        };
+                    }
                     if o.name.starts_with("__ap_base_") && o.name.ends_with("__init__") {
                         if std::env::var("APX_TBDBG").is_ok() {
                             eprintln!("[BASEINIT] dispatch {} args={}", o.name, args.len());
@@ -11885,6 +11956,27 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                     // T1 (scrapy fix pass): virtual object.__init_subclass__
                     // (typing: super().__init_subclass__() in hooks) — the
                     // default accepts **kwds and returns None.
+                    // W112 (scrapy LocalWeakReferencedCache /
+                    // weakref.WeakKeyDictionary chain): dict.__setitem__/
+                    // __getitem__/__delitem__ virtuals for super() walks
+                    // through dict-derived classes. The existing
+                    // __ap_base_dict__init__ pattern extended: item dunders
+                    // route to the subject's backing dict (__ap_dict__ or
+                    // dict_backing) — zero-arg super() in dict-derived
+                    // methods resolved to object ('object' object has no
+                    // __setitem__) because the walk had no dict arm.
+                    if cls.name == "dict"
+                        && (name == "__setitem__"
+                            || name == "__getitem__"
+                            || name == "__delitem__")
+                    {
+                        let f = ap_obj::PyObject::new(
+                            ap_obj::ObjKind::BuiltinFn,
+                            &format!("__ap_base_dict_{}", name),
+                        );
+                        *f.slice_parts.borrow_mut() = vec![subject.clone()];
+                        return Ok(Some(Value::Obj(f)));
+                    }
                     if cls.name == "object" && name == "__init_subclass__" {
                         let f = ap_obj::PyObject::new(
                             ap_obj::ObjKind::BuiltinFn,
