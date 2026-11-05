@@ -1206,3 +1206,20 @@ assert every produced entry is a Namespace tb object, never a
 class - and dump tb_next chains. Also dump repr of
 self.traceback items at code.py:758 (staged probe already shows
 entry type = 'type' - the list contains the CLASS as entry 0).
+
+## SESSION FINAL STATE (budget exhausted)
+
+- Staged trees restored to the CORRECT state: both trees carry the
+  b4 fallback variant of code.py (no probes), threadexception.py
+  pristine, unraisableexception.py pristine. Repo clean at
+  69c3124 lineage + probe-revert commits; release build green;
+  ap-run suites 39/1 (known flake).
+- STABLE MILESTONE: T2 gate PASSES with -p no:cacheprovider
+  (1F/1P/1S, int(rc)=1, zero INTERNALERROR) - re-verified multiple
+  times across the session.
+- WITH cacheprovider: the _rawentry class-receiver crash persists.
+  The failing read receiver = the OBJECT UserClass (confirmed by
+  APRAW-I attrs dump: attrs=[], kind=UserClass, name=object).
+  Bisect matrix: trap+cacheprovider TOGETHER trigger it.
+- Component probes (10+) all pass. The bug is strictly a
+  full-flow interaction.
