@@ -1574,3 +1574,25 @@ in the file handler) — suspect the request.url at download time
 is the DIRECTORY or a mangled url. Also: 2 unraisable 'super():
 no arguments' + 'no attribute __del__' in Task.__del__ (minor).
 Gates to rerun after the file-handler fix: T2 default + workspace.
+
+## Round-23 (session close): the crawl blocker chain fully mapped
+
+1. urllib.parse._urlsplit returned a PLAIN TUPLE (w3lib needs
+   SplitResult attr access) -> parts.path lost -> safe_url_string
+   ('file:///...') -> 'file://' -> Request url truncated ->
+   download opened cwd (a directory) -> OSError x3 retries.
+   FIXED: _urlsplit now returns SplitResult (vendored urllib/
+   parse.py).
+2. REMAINING: duplicate module instances. In the crawl process,
+   scrapy's w3lib._url module instance has a BROKEN _quote_table
+   (all entries b'' — RFC3986_UNRESERVED appears EMPTY there,
+   i.e. string.ascii_letters resolves empty in that instance),
+   while a fresh probe instance works. Two module instances of
+   w3lib._url exist (P129 proved w3lib._urlsplit is not
+   urllib.parse._urlsplit). Scrapy's Request.__init__ binds the
+   STALE instance -> safe_url_string mangles every URL to
+   'file://'. NEXT SESSION: find why the early-import instance
+   gets an empty string.ascii_letters (likely import-order/
+   thread: scrapy's Request imported before string module ready,
+   or the dual-instance root in importer) and ensure a single
+   instance; then the crawl reaches PARSE.
