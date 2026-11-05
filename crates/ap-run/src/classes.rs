@@ -2280,10 +2280,36 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
                 // Target metaclass __instancecheck__ (proper spelling):
                 // only when the TARGET carries a custom hook.
                 if let Some(meta) = tc.metaclass.borrow().clone() {
-                    if !Rc::ptr_eq(&meta, &type_class(interp)) {
+                    {
+                        if std::env::var("APX_GEN_DEBUG").is_ok() {
+                            let hookshape = meta
+                                .lookup("__instancecheck__")
+                                .map(|h| match &h {
+                                    Value::Obj(f) => format!("Obj kind={:?}", f.kind),
+                                    other => format!("other {}", other.type_name()),
+                                })
+                                .unwrap_or_else(|| "MISSING".to_string());
+                            eprintln!(
+                                "[ICHECK] meta={} hook={}",
+                                meta.name.as_str(),
+                                hookshape
+                            );
+                        }
                         if let Some(hook) = meta.lookup("__instancecheck__") {
-                            if matches!(&hook, Value::Obj(f) if f.kind == ap_obj::ObjKind::Function)
-                            {
+                            // W112: ABCMeta.__instancecheck__ is a
+                            // classmethod (a descr marker, not a raw
+                            // Function) - the kind check skipped it and
+                            // every ABC isinstance on a dict SUBCLASS
+                            // (scrapy Headers) answered False. Call
+                            // through whatever shape the hook has.
+                            let is_callable = matches!(&hook, Value::Obj(f) if matches!(
+                                f.kind,
+                                ap_obj::ObjKind::Function
+                                    | ap_obj::ObjKind::BuiltinFn
+                                    | ap_obj::ObjKind::Descriptor
+                            )) || matches!(hook, Value::Obj(ref f) if f.kind == ap_obj::ObjKind::BoundMethod)
+                                || !matches!(hook, Value::None);
+                            if is_callable {
                                 let interp_rc = crate::interp::current_interp_handle();
                                 let r = crate::interp::call_value_pub(
                                     &interp_rc,

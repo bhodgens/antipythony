@@ -1121,7 +1121,24 @@ fn check_isinstance(v: &Value, t: &Value) -> Result<Value, Flow> {
             if o.kind == ap_obj::ObjKind::Type || o.kind == ap_obj::ObjKind::UserClass =>
         {
             let want: &str = &o.name;
-            Ok(Value::Bool(type_matches(v, want)))
+            if type_matches(v, want) {
+                return Ok(Value::Bool(true));
+            }
+            // W112: a UserClass target whose metaclass defines
+            // __instancecheck__ (ABCMeta in _collections_abc) must route
+            // through the ABC hook - a dict SUBCLASS instance (scrapy
+            // Headers) failed the name arm and then answered False, so
+            // Headers.update took the non-Mapping branch ('too many
+            // values to unpack' in RetryMiddleware). Delegate.
+            if o.kind == ap_obj::ObjKind::UserClass {
+                let interp_rc = crate::interp::current_interp_handle();
+                if let Ok(true) =
+                    crate::classes::value_isinstance(&interp_rc, v, t)
+                {
+                    return Ok(Value::Bool(true));
+                }
+            }
+            Ok(Value::Bool(false))
         }
         // Constructor builtins (int/float/str/...) double as type objects in
         // the v0 namespace; isinstance accepts them.
