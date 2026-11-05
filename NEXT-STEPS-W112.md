@@ -1272,3 +1272,24 @@ named 'TracebackEntry' resolves to the interned 'type'; (2) fix
 the resolution to prefer the calling module's namespace; (3) rerun
 the gate - the ishidden/_rawentry family should vanish and the
 FULL default-config T2 gate goes green.
+
+## Round-13b: TE-INIT-BADCLASS never fired - construction is fine
+
+probe85e with TracebackEntry.__init__ class-identity probe:
+TE-INIT-BADCLASS count = 0 - every TracebackEntry construction
+produces a proper instance. The '_rawentry' on 'type' crash
+happens at test_fail makereport WITHOUT any misconstructed entry.
+CONCLUSION SHIFTED: the read is not entry._rawentry on a bad
+instance - it is a CLASS-LEVEL read: `TracebackEntry._rawentry`-
+style access, meaning pytest/unraisable code holds the TracebackEntry
+CLASS where it expects an instance, then reads ._rawentry on it.
+CPython would raise the same AttributeError on the class! Unless
+CPython's flow never reaches that read - the difference is in the
+CONTROL FLOW: our unraisable collection fires the warning/error
+path where CPython doesn't (no unraisable in CPython for this
+flow). The runtime bug: OUR unraisablehook fires for an event
+CPython doesn't fire for - creating the meta and the downstream
+crash. NEXT SESSION: find what event fires the unraisable during
+test_fail makereport (add a print in report_unraisable showing
+the del-frame name and exception), and either fix that finalizer
+or suppress the specific benign unraisable like CPython does.
