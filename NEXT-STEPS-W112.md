@@ -1880,3 +1880,66 @@ delta 0 (15870+ nodes). AST conformance scorecard (per-node-type
 walk counts vs CPython 3.14): typing 0, functools 0, enum 0,
 inspect 0, dataclasses 0, _collections_abc 0, traceback 0,
 contextlib 0, warnings 0 - all EXACT.
+
+## Round-26 (T1 leaf): PARSE STALL ROOT-CAUSED AND FIXED - crawl reaches PARSE + closes cleanly (a7ff45b)
+
+T1 bridge-e6.py stall (after START-GEN exhausted, PARSE never fires):
+THREE stacked root causes, all runtime-side, all in the scraper chain:
+
+1. `in` on scrapy's LocalWeakReferencedCache (weakref.WeakKeyDictionary
+   subclass) HANGS: native container dunders (WeakKeyDictionary.__contains__)
+   are not visible through a user subclass's synthesized MRO (empty class
+   dicts) -> special_lookup misses __contains__ -> contains() falls into the
+   __iter__/__getitem__ fallback -> our LWRC.__getitem__ SWALLOWS KeyError
+   (returns None) so the iteration never terminates. Infinite loop inside
+   warn_on_generator_with_return_value in Scraper.call_spider_async -
+   exactly where the crawl stalled. FIXED (staged data only, APX-W113
+   precedent): explicit __contains__ shim in scrapy/utils/datatypes.py in
+   BOTH cache trees (~/.cache/antipythany AND ~/.cache/antipythony),
+   RESTORE-comment included. Real runtime gap worth fixing later: native
+   dunder inheritance into user subclasses.
+2. `async for` had NO user async-iterator arm (only asyncgens). Scrapy's
+   MutableAsyncChain / as_async_generator / aiter_errback ride
+   __aiter__/__anext__ user classes: 'async for' raised/fell to sync iter
+   protocol and the _parallel_asyncio fill_task died -> scraper slot never
+   drained -> idle-close never fired. FIXED in interp.rs Stmt::For: drives
+   await it.__anext__() per step when __aiter__ present, no sync
+   __iter__/__next__, and only inside a fiber (sync-for TypeError parity
+   kept). aiter()/anext() builtins now honor the async protocol too
+   (builtins.rs) - aiter_errback's aiter(it) was the direct failure.
+3. pending_super_ctx LEAKED past (async) generator/coroutine creation:
+   BoundMethod dispatch stages the ctx, but def.is_async /
+   start_generator return before call_function's sentinel consumes it ->
+   zero-arg super() inside async-gen METHODS (DepthMiddleware
+   .process_spider_output_async) hit 'super(): no arguments' AND the stale
+   ctx poisoned unrelated frames. FIXED: ctx now captured into
+   GenFrame::Fn -> GenState.super_ctx and resume_live pushes/pops it around
+   every resume slice (CPython keeps it on the gen frame).
+
+RESULT: bridge-e6.py: PARSE CALLED + AWAIT-TASK returned + HARNESS-DONE,
+RC=0, 'Spider closed (finished)', stats clean (1 response 200, no
+spider_exceptions), ~60s debug-build wall (import time, not a hang).
+item-yield spiders ALSO reach the callback; the items wave now unblocked:
+NEXT BLOCKER: response.text -> w3lib/encoding.py resolve_encoding crashes
+(AttributeError 'HtmlResponse' object has no attribute 'selector' shadow;
+real raise is inside w3lib _c18n_encoding/resolve_encoding path - probe
+stall-sel.py has the tb). Then items.jsonl byte-parity vs CPython 3.14.
+
+GATES (all green with these changes): ap-run scoped 29/34/1/6; ap-cli
+48+7; workspace 418/0/1. T2 trap2: GREEN on my base (3ac7105 + my 3 files:
+MAIN_RC 1, zero INTERNALERROR) - but RED at current HEAD WITHOUT my
+changes: sibling commit 125f205 (ast walk parity) broke pytest traceback
+extraction - INTERNALERROR TypeError 'cannot unpack non-iterable type
+object' at traceback.py _walk_tb_with_full_positions ('for f, pos in
+frame_gen' - the TypeError-guard arm yields (frame,(lineno,)) 2-shape and
+something downstream unpacks a bare type; first bad = 125f205, last good =
+3ac7105). FLAG TO ORCHESTRATOR: T2 regression owner = W114 AST campaign.
+
+Staged-data notes: round-25c's "edits not re-loaded" was the wrong-tree
+edit (probes load ~/.cache/antipythany/... per the probe's sys.path.insert;
+the ~/.cache/antipythony/... tree is the ap-pack default). Edits to the
+loaded tree DO take effect immediately (no pyc caching in the importer).
+Probe artifacts: /tmp/w111_crawl/stall-* (e6 runs: stall-clean.log = green;
+stall-items.py = item-spider probe; stall-tb/sel/weak/aiter/chain/pa =
+isolated repros; stall-5fca-bin / stall-head-bin / stall-mine-bin = base
+comparators).
