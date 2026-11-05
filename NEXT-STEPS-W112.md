@@ -1236,3 +1236,21 @@ NEXT SESSION: run drv14/drv15 with cacheprovider + APX_TBDBG and
 capture APDEL3/APRAW-I output at the exact failing op - the
 receiver is UserClass(name=object) per APRAW-I, so the read goes
 through interp attr paths; instrument native attr_get callers.
+
+## SESSION CLOSE (round-11f): eval-site fallback verified committed
+
+fb02340 (Expr::Attribute miss arm consults o.attrs / __ap_dict__)
+plus the closure-inference restructure (hoisted fallback via
+w112_attr_fallback before ok_or_else) are COMMITTED and VERIFIED:
+build 0 errors; probe48 getrepr renders 1240-char
+ExceptionChainRepr; the with-cacheprovider gate still crashes at
+the SAME class-receiver _rawentry read - confirming the failing
+read arrives via a NON-Expr::Attribute path (native attr_get
+callers from Rust code). NEXT SESSION: add an env-gated trace at
+attr_get (interp.rs ~10465+) logging receiver kind/name when
+name == "_rawentry" and receiver is UserClass, run the
+with-cacheprovider gate, and read the logged call chain - then
+apply the fallback at the identified native caller. After that,
+the default-config T2 gate goes green and the scrapy campaign
+resumes. Repo: clean tree at 87f8547, 79 commits ahead of origin
+(unpushed per protocol).
