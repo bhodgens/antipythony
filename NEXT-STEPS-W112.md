@@ -1555,3 +1555,22 @@ crawl should pass RetryMiddleware and reach first PARSE.
 NOTE: a parallel agent session is active in this repo (APX_OSDBG
 WIP in builtins_modules.rs/importer.rs + FUZZ_SEEDS growth - do
 not revert; commit explicit paths only).
+
+## Round-22 (session close): isinstance(Headers, Mapping) FIXED - crawl advances again
+
+b415c61+patch: metaclass-only __instancecheck__ + type_ref/class_
+ref mro walk in the fallback arm + dict-derived structural arm.
+isinstance(Headers(), Mapping) == True (matches CPython).
+CRAWL RESULT (current binary): the unpack ValueError is GONE.
+RetryMiddleware now works: retry/count 2, retried twice, gave up
+after 3 attempts, finish_reason finished, clean stats dump.
+REMAINING (isolated, one probe away): all 3 download attempts
+fail with "OSError: Is a directory (os error 21)" from
+Path.open->io.open in the file handler — yet direct probes
+(probe119/120: Path.open, io.open full-args, url2pathname) all
+read /tmp/w111_crawl/page.html fine. Next: instrument
+file_uri_to_path(request.url) inside the crawl (print filepath
+in the file handler) — suspect the request.url at download time
+is the DIRECTORY or a mangled url. Also: 2 unraisable 'super():
+no arguments' + 'no attribute __del__' in Task.__del__ (minor).
+Gates to rerun after the file-handler fix: T2 default + workspace.
