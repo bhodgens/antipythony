@@ -1417,3 +1417,26 @@ driver (/tmp/w110_t2drv_trap2.py) + traceback.print_exc now
 gives REAL tracebacks for this flow - first instrument to use.
 NOTE: full traceback printing now WORKS (probe trap2 shows
 complete chains) - the tb machinery is healthy end-to-end.
+
+## Round-18 (session close): int-None origin narrowed to catch_warnings_for_item teardown throw
+
+Instruments (CLE/SFIN/SS-ERR/WRECORD - all REVERTED, caches
+synced):
+- catching_logs always runs with level=None (orig_level MISSING
+  on every exit) - NOT the site.
+- summary_stats NOT the site (SS-ERR never fired).
+- call_historic loop NOT the site (WRECORD-ERR never fired).
+- GEN-RAISE capture: TypeError 'int - None' originates in fiber
+  397 = catch_warnings_for_item (warnings.py:63, the finally
+  block) DURING pluggy's teardown.throw resume - tb_len=0.
+  Propagates: 396 (warnings.py:119, tb_len=3) -> 395
+  (terminal.py:961) -> 394 (logging.py:896).
+Isolation: P106 (generator + catch_warnings + throw) PASSES.
+The failure needs the full ihook.pytest_warning_recorded chain
+under the trap driver. NEXT SESSION: extend the GEN-RAISE print
+to dump e.tb ENTRIES (name:line:file per entry - commit has the
+format ready), rerun trap2, and read the true innermost frames -
+the 3-entry tb on fiber 396 shows contextlib.__exit__ frames
+but the REAL subtraction site is deeper (misattribution).
+Also: T2-gate hint - the driver difference (trap vs plain) is
+the _hookexec trap raising IndexError paths.
