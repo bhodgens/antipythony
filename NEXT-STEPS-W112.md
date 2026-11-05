@@ -1293,3 +1293,27 @@ crash. NEXT SESSION: find what event fires the unraisable during
 test_fail makereport (add a print in report_unraisable showing
 the del-frame name and exception), and either fix that finalizer
 or suppress the specific benign unraisable like CPython does.
+
+## Round-13c (DECISIVE): from_current() reveals the crash excinfo
+
+Instruments on from_current() during the with-cacheprovider gate:
+  [FC] exc_info types: type AssertionError <traceback>   (test_fail makereport - renders OK)
+  [FC] exc_info types: type IndexError <traceback>       (THE CRASHER)
+SECOND from_current = the code.py:1170 IndexError (`last =
+traceback[-1]`) raised INSIDE TracebackFilter.filter's `fn`
+lambda, which runs as a Python callback INSIDE the native
+filter() builtin. wrap_session catches it, from_current() builds
+the excinfo, notify_exception renders with getrepr(style=
+"native") -> traceback[0]._rawentry -> class receiver -> crash.
+Isolated from_exception + getrepr(native) probe PASSES (2
+entries, 361 chars) - the divergence is specific to exceptions
+raised in Python callbacks invoked by NATIVE builtins: our tb
+chain there lacks proper frame entries.
+ROOT CAUSE (final): native builtin callback invocations (filter/
+map/sorted-key) that raise do not push the callback frame onto
+the tb chain, producing degenerate tracebacks (entry[0] = class).
+FIX SITE: the native filter() builtin's callback error path (and
+siblings map/sorted) - push the callback's code frame onto the
+tb before propagating. All staged probes REVERTED and caches
+synced (terminal.py byte-identical to uv pristine; code.py
+differs only by the intentional T2 hunks).
