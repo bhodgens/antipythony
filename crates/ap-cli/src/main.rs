@@ -18,6 +18,11 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 fn main() {
+    // 2026-11-06 OOM mitigation: in-process RSS self-guard on EVERY
+    // interpreter process, so an unbounded-growth runtime bug aborts the
+    // process instead of OOMing the machine (macOS has no OOM killer).
+    // AP_MAX_RSS_GB overrides; default = 25% of physical RAM.
+    ap_run::rss_guard::start();
     let args: Vec<String> = std::env::args().collect();
     let code = match run(&args) {
         Ok(c) => c,

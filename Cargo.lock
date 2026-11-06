@@ -101,6 +101,7 @@ dependencies = [
  "ap-pack",
  "ap-run",
  "clap",
+ "libc",
  "zip",
 ]
 

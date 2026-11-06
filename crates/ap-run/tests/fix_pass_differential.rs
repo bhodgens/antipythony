@@ -56,10 +56,8 @@ fn assert_differential(src: &str) {
         .arg(&tmp)
         .output()
         .expect("spawn python3.14");
-    let actual = Command::new(ap_run_eval())
-        .arg(&tmp)
-        .output()
-        .expect("spawn ap-run-eval");
+    // Interpreter side runs under the OOM fence (2026-11-06 mitigation 2).
+    let actual = common::fenced_output(Command::new(ap_run_eval()).arg(&tmp));
     std::fs::remove_file(&tmp).ok();
     assert!(
         actual.status.success(),
@@ -75,6 +73,7 @@ fn assert_differential(src: &str) {
 
 #[test]
 fn bugb_set_dict_list_method_battery() {
+    common::interpreter_gate();
     // Set iteration order is hash-seed dependent → sort before comparing.
     assert_differential(
         r#"s = {1, 2, 3}
@@ -97,6 +96,7 @@ print(lst)
 
 #[test]
 fn bugb_printf_style_percent_format() {
+    common::interpreter_gate();
     // _py_warnings depends on this surface.
     assert_differential(
         r#"print("  %s\n" % "line")

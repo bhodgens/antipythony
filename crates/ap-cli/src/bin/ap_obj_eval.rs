@@ -20,6 +20,9 @@ struct Args {
 }
 
 fn main() {
+    // 2026-11-06 OOM mitigation: in-process RSS self-guard (see
+    // ap_run::rss_guard). AP_MAX_RSS_GB overrides; default = 25% of RAM.
+    ap_run::rss_guard::start();
     let Args { expr } = Args::parse();
     let expr_src = if expr.is_empty() {
         let mut buf = String::new();

@@ -1,0 +1,286 @@
+use std::time::{Duration, Instant};
+
+// ast_getattr_fence — residual (d) of the 2026-11-05 OOM campaign
+// (1648a72): an RSS-gated regression fence for OOM-campaign residual (a),
+// the native `_ast` getattr path that materializes ~110 fresh class
+// clones per attribute access OUTSIDE the GC heap (ast_bridge/TypeRef
+// owner; the vendored `_ast.py` bulk-getattr shim landed in W114
+// round-38/363600e avoids it, the core bug remains).
+//
+// The pre-fix leak OOMed this 64GB box at 9-44GB RSS on import-heavy
+// probes. This suite runs the interpreter (target/debug/ap-run-probe,
+// built by `cargo test -p ap-cli`) on a probe that does heavy native
+// `_ast` getattr work (ast.parse of a 200-def module, then 1000 walks
+// x getattr across the node class hierarchy) as a fenced subprocess:
+//
+//   * RSS cap   : AP_AST_FENCE_RSS_MB, default 512MB — measured HEAD
+//                 peak is ~51MB (flat across the full 1000-iteration
+//                 run; the pre-fix leak grew unbounded), so 512MB is a
+//                 10x headroom tripwire.
+//   * Deadline  : AP_AST_FENCE_DEADLINE_SECS, default 600s — measured
+//                 HEAD wall time is ~170s on the debug build.
+//   * Sampling  : `ps -o rss=` every 100ms (same seam as the ap-run
+//                 differential harness fence, dea6c03); breach = SIGKILL
+//                 + distinctive assert.
+//
+// Fence self-test (fence_kill_path_is_live): a plain Rust child burns
+// memory until the fence must fire (8MB cap vs a 4GB allocation target).
+// A fence that cannot fire is not a fence — if the kill path ever goes
+// green, the sampler or cap plumbing broke and this suite must go red.
+//
+// CI: runs as part of `cargo test --workspace` in .github/workflows/
+// ci.yml (job `rust`). Env overrides keep it runnable on slower boxes:
+// set AP_AST_FENCE_RSS_MB=0 to disable the cap (deadline still applies).
+
+/// Dump probe source + run it under ap-run-probe as a fenced subprocess.
+/// Returns (outcome, peak_rss_bytes). `cap_override_mb`/`deadline_override`
+/// shrink the fence for the kill-path self-test.
+fn run_fenced(
+    cap_override_mb: Option<u64>,
+    deadline_override: Option<u64>,
+) -> (Result<(std::process::Output, i32), String>, u64) {
+    let rss_cap_mb = cap_override_mb
+        .or_else(|| {
+            std::env::var("AP_AST_FENCE_RSS_MB")
+                .ok()
+                .and_then(|v| v.parse().ok())
+        })
+        .unwrap_or(512);
+    let deadline_secs = deadline_override
+        .or_else(|| {
+            std::env::var("AP_AST_FENCE_DEADLINE_SECS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+        })
+        .unwrap_or(600);
+
+    let src = include_str!("../../../plans/robustness-ci/probe_ast_getattr.py");
+    let dir = std::env::temp_dir().join(format!(
+        "apx_ast_getattr_probe_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("probe_ast_getattr.py");
+    std::fs::write(&path, src).unwrap();
+
+    let bin =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/ap-run-probe");
+
+    let mut child = std::process::Command::new(&bin)
+        .arg(&path)
+        .current_dir(&dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn ap-run-probe");
+
+    let pid = child.id();
+    let deadline = Instant::now() + Duration::from_secs(deadline_secs);
+    let mut peak_rss_bytes: u64 = 0;
+    let outcome = loop {
+        match child.try_wait().expect("wait probe") {
+            Some(status) => {
+                if let Some(kb) = rss_kb_of(pid) {
+                    let b = kb.saturating_mul(1024);
+                    if b > peak_rss_bytes {
+                        peak_rss_bytes = b;
+                    }
+                }
+                let out = child.wait_with_output().expect("collect probe output");
+                break Ok((out, status.code().unwrap_or(-1)));
+            }
+            None => {
+                if let Some(kb) = rss_kb_of(pid) {
+                    let b = kb.saturating_mul(1024);
+                    if b > peak_rss_bytes {
+                        peak_rss_bytes = b;
+                    }
+                    if rss_cap_mb > 0 && b > rss_cap_mb * 1024 * 1024 {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        break Err(format!(
+                            "memory: probe RSS reached {}MB, over the {}MB fence",
+                            b / (1024 * 1024),
+                            rss_cap_mb
+                        ));
+                    }
+                }
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break Err(format!(
+                        "deadline: probe exceeded {deadline_secs}s (hang or pathological growth)"
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+    };
+    let _ = std::fs::remove_dir_all(&dir);
+    (outcome, peak_rss_bytes)
+}
+
+/// Burn memory until killed: allocation target is 256 MiB — 32x the 8MB
+/// self-test cap, so the sampler/cap plumbing proof is unchanged, while an
+/// accidental UNFENCED hog (fence broken) peaks at 256MB instead of the old
+/// 4GB. Never raise this back toward gigabytes: this child can run without
+/// a fence when invoked manually.
+fn memory_hog() {
+    let mut v: Vec<u8> = Vec::new();
+    loop {
+        v.extend_from_slice(&vec![0u8; 1 << 20]);
+        if v.len() > 256 << 20 {
+            // Only reachable with the cap disabled — the self-test treats
+            // this as a fence failure.
+            println!("HOG-SURVIVED");
+            return;
+        }
+    }
+}
+
+/// Fenced-subprocess driver shared by both tests: spawns a prepared
+/// Command, applies the (cap, deadline) fence, returns outcome + peak.
+fn fenced_child_cmd(
+    cmd: &mut std::process::Command,
+    cap_mb: u64,
+    deadline_secs: u64,
+) -> (Result<(std::process::Output, i32), String>, u64) {
+    cmd.stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn fenced child");
+
+    let pid = child.id();
+    let deadline = Instant::now() + Duration::from_secs(deadline_secs);
+    let mut peak_rss_bytes: u64 = 0;
+    let outcome = loop {
+        match child.try_wait().expect("wait fenced child") {
+            Some(status) => {
+                if let Some(kb) = rss_kb_of(pid) {
+                    let b = kb.saturating_mul(1024);
+                    if b > peak_rss_bytes {
+                        peak_rss_bytes = b;
+                    }
+                }
+                let out = child.wait_with_output().expect("collect fenced child");
+                break Ok((out, status.code().unwrap_or(-1)));
+            }
+            None => {
+                if let Some(kb) = rss_kb_of(pid) {
+                    let b = kb.saturating_mul(1024);
+                    if b > peak_rss_bytes {
+                        peak_rss_bytes = b;
+                    }
+                    if cap_mb > 0 && b > cap_mb * 1024 * 1024 {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        break Err(format!(
+                            "memory: child RSS reached {}MB, over the {}MB fence",
+                            b / (1024 * 1024),
+                            cap_mb
+                        ));
+                    }
+                }
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break Err(format!(
+                        "deadline: child exceeded {deadline_secs}s (hang or pathological growth)"
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+    };
+    (outcome, peak_rss_bytes)
+}
+
+#[test]
+fn ast_getattr_leak_fence() {
+    let rss_cap_mb: u64 = std::env::var("AP_AST_FENCE_RSS_MB")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(512);
+    let deadline_secs: u64 = std::env::var("AP_AST_FENCE_DEADLINE_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(600);
+
+    let (outcome, peak) = run_fenced(None, None);
+    match outcome {
+        Ok((out, code)) => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert_eq!(code, 0, "probe exited {code}; stderr:\n{stderr}");
+            assert!(
+                stdout.contains("FIELDS-TOTAL"),
+                "probe did not reach its completion marker; stdout:\n{stdout}"
+            );
+            let cap = rss_cap_mb * 1024 * 1024;
+            assert!(
+                peak <= cap,
+                "probe completed but peak RSS {}MB exceeds the {}MB fence (leak regression)",
+                peak / (1024 * 1024),
+                rss_cap_mb
+            );
+            println!(
+                "ok: peak RSS {}MB <= {}MB cap; stdout marker present",
+                peak / (1024 * 1024),
+                rss_cap_mb
+            );
+        }
+        Err(why) => panic!("ap-run-probe killed by fence: {why}"),
+    }
+}
+
+#[test]
+fn fence_kill_path_is_live() {
+    // HOG MODE: when re-executed BY this test (below), the child detects
+    // AP_AST_FENCE_HOG=1 and burns memory instead of running the suite.
+    // This gate is what makes the re-exec SAFE: without it the child would
+    // run the full test suite INCLUDING this very test, re-spawning
+    // exponentially (a fork bomb — this is exactly what happened on
+    // 2026-11-06 when the self-test ran unfixed).
+    if std::env::var("AP_AST_FENCE_HOG").is_ok() {
+        memory_hog();
+        return;
+    }
+    // The hog is this test binary re-executed with HOG env + a test filter,
+    // so the child runs ONLY this test (which hogs and is fenced). The fence
+    // must SIGKILL it before it reaches the (now modest) 256MB hog target.
+    let hog = std::env::current_exe().expect("current_exe");
+    let mut hog_cmd = std::process::Command::new(&hog);
+    hog_cmd
+        .args(["fence_kill_path_is_live", "--exact"])
+        .env("AP_AST_FENCE_HOG", "1");
+    let (outcome, _peak) = fenced_child_cmd(&mut hog_cmd, 8, 120);
+    match outcome {
+        Ok((out, _)) => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            panic!(
+                "FENCE DID NOT FIRE: hog survived at cap=8MB (stdout: {stdout}) — \
+                 sampler or cap plumbing is broken"
+            );
+        }
+        Err(why) => {
+            assert!(
+                why.starts_with("memory:"),
+                "expected the MEMORY arm to fire, got: {why}"
+            );
+            println!("ok: kill path fired ({why})");
+        }
+    }
+}
+
+/// Resident set size of `pid` in KiB via `ps -o rss=` (macOS + Linux).
+fn rss_kb_of(pid: u32) -> Option<u64> {
+    let out = std::process::Command::new("ps")
+        .args(["-o", "rss=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    text.parse().ok()
+}

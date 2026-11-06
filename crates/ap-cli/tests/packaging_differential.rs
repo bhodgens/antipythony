@@ -73,14 +73,15 @@ fn run_cli_in(
     cwd: &std::path::Path,
     args: &[&str],
 ) -> std::process::Output {
-    Command::new(antipythony())
-        .args(args)
-        .current_dir(cwd)
-        .env("HOME", scratch.join("home"))
-        .env("ANTIPTYHONY_CACHE", scratch.join("cache"))
-        .env("LANG", "C")
-        .output()
-        .expect("spawn antipythony")
+    // antipythony runs under the OOM fence (2026-11-06 mitigation 2).
+    common::fenced_output(
+        Command::new(antipythony())
+            .args(args)
+            .current_dir(cwd)
+            .env("HOME", scratch.join("home"))
+            .env("ANTIPTYHONY_CACHE", scratch.join("cache"))
+            .env("LANG", "C"),
+    )
 }
 
 /// Execute `src` under BOTH interpreters with the fetched site-packages on
@@ -101,13 +102,14 @@ fn assert_byte_exact(
         .env("LANG", "C")
         .output()
         .expect("spawn python3.14");
-    let actual = Command::new(ap_run_eval())
-        .arg(&case)
-        .env("ANTIPTYHONY_CACHE", cache_root)
-        .env("HOME", scratch.join("home"))
-        .env("LANG", "C")
-        .output()
-        .expect("spawn ap-run-eval");
+    // Interpreter side runs under the OOM fence (2026-11-06 mitigation 2).
+    let actual = common::fenced_output(
+        Command::new(ap_run_eval())
+            .arg(&case)
+            .env("ANTIPTYHONY_CACHE", cache_root)
+            .env("HOME", scratch.join("home"))
+            .env("LANG", "C"),
+    );
     assert_eq!(
         actual.status.code(),
         expected.status.code(),
@@ -144,6 +146,7 @@ fn pypi_reachable() -> bool {
 
 #[test]
 fn add_six_import_use_byte_exact() {
+    common::interpreter_gate();
     let py = reference_or_skip();
     let Some(py) = py else { return };
     if !pypi_reachable() {
@@ -195,6 +198,7 @@ print(six.iteritems({'k': 1}) is not None or True)
 
 #[test]
 fn add_packaging_import_use_byte_exact() {
+    common::interpreter_gate();
     let py = reference_or_skip();
     let Some(py) = py else { return };
     if !pypi_reachable() {
@@ -235,6 +239,7 @@ print(Version('1.2.3') < Version('1.10'))
 
 #[test]
 fn add_native_wheel_fails_with_cext_diagnostic() {
+    common::interpreter_gate();
     let d = scratch("nativewheel");
     let proj = d.join("myapp");
     let _ = run_cli(&d, &["new", "myapp"]);
@@ -304,19 +309,21 @@ fn add_native_wheel_fails_with_cext_diagnostic() {
 
 #[test]
 fn add_without_uv_errors_helpfully() {
+    common::interpreter_gate();
     let d = scratch("nouv");
     let proj = d.join("myapp");
     let _ = run_cli(&d, &["new", "myapp"]);
     let emptybin = d.join("emptybin");
     std::fs::create_dir_all(&emptybin).unwrap();
-    let out = Command::new(antipythony())
-        .args(["add", "six"])
-        .current_dir(&proj)
-        .env("HOME", d.join("home"))
-        .env("ANTIPTYHONY_CACHE", d.join("cache"))
-        .env("PATH", emptybin.to_string_lossy().into_owned())
-        .output()
-        .expect("spawn antipythony");
+    // antipythony runs under the OOM fence (2026-11-06 mitigation 2).
+    let out = common::fenced_output(
+        Command::new(antipythony())
+            .args(["add", "six"])
+            .current_dir(&proj)
+            .env("HOME", d.join("home"))
+            .env("ANTIPTYHONY_CACHE", d.join("cache"))
+            .env("PATH", emptybin.to_string_lossy().into_owned()),
+    );
     let text = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
@@ -340,6 +347,7 @@ fn add_without_uv_errors_helpfully() {
 
 #[test]
 fn run_populates_and_reuses_cache_entries() {
+    common::interpreter_gate();
     let d = scratch("cache");
     let proj = d.join("myapp");
     let _ = run_cli(&d, &["new", "myapp"]);
@@ -392,6 +400,7 @@ fn run_populates_and_reuses_cache_entries() {
 
 #[test]
 fn cache_gc_clears_entries() {
+    common::interpreter_gate();
     let d = scratch("gc");
     let proj = d.join("myapp");
     let _ = run_cli(&d, &["new", "myapp"]);
@@ -414,6 +423,7 @@ fn cache_gc_clears_entries() {
 
 #[test]
 fn sys_path_ordering_proof() {
+    common::interpreter_gate();
     // sys.path dump from inside a run of a project WITH deps: script_dir,
     // vendored_stdlib, fetched site-packages — in that order.
     let py = reference_or_skip();
@@ -433,14 +443,15 @@ fn sys_path_ordering_proof() {
         "import sys\n[print(p) for p in sys.path]\n",
     )
     .unwrap();
-    let out = Command::new(antipythony())
-        .args(["run", "dump.py"])
-        .current_dir(&proj)
-        .env("HOME", d.join("home"))
-        .env("ANTIPTYHONY_CACHE", d.join("cache"))
-        .env("LANG", "C")
-        .output()
-        .expect("spawn antipythony");
+    // antipythony runs under the OOM fence (2026-11-06 mitigation 2).
+    let out = common::fenced_output(
+        Command::new(antipythony())
+            .args(["run", "dump.py"])
+            .current_dir(&proj)
+            .env("HOME", d.join("home"))
+            .env("ANTIPTYHONY_CACHE", d.join("cache"))
+            .env("LANG", "C"),
+    );
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
     let lines: Vec<&str> = text.lines().map(str::trim).collect();
     assert!(out.status.success(), "{text}");

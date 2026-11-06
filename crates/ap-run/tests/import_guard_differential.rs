@@ -84,6 +84,7 @@ fn check_guard_case(tag: &str, src: &str, fixture: Option<&std::path::Path>) {
     let tmp = write_case(tag, src);
     let mut ref_cmd = Command::new(py);
     ref_cmd.arg("-S").arg(&tmp);
+    // Interpreter side runs under the OOM fence (2026-11-06 mitigation 2).
     let mut ap_cmd = Command::new(ap_run_eval());
     ap_cmd.arg(&tmp);
     if let Some(f) = fixture {
@@ -91,7 +92,7 @@ fn check_guard_case(tag: &str, src: &str, fixture: Option<&std::path::Path>) {
         ap_cmd.env("ANTIPTYHONY_PATH", f);
     }
     let expected = ref_cmd.output().expect("spawn python3.14");
-    let actual = ap_cmd.output().expect("spawn ap-run-eval");
+    let actual = common::fenced_output(&mut ap_cmd);
     std::fs::remove_file(&tmp).ok();
 
     let exp_out = String::from_utf8_lossy(&expected.stdout).to_string();
@@ -157,6 +158,7 @@ fn q(s: &str) -> String {
 
 #[test]
 fn empty_name_is_value_error() {
+    common::interpreter_gate();
     // CPython _sanity_check fires BEFORE any path lookup; pre-guard ap
     // "succeeded" and returned the sys.path base dir as a namespace pkg.
     check_guard_case("empty", &catch_probe(&[q("")]), None);
@@ -164,6 +166,7 @@ fn empty_name_is_value_error() {
 
 #[test]
 fn dot_and_dotdot_prefix_family() {
+    common::interpreter_gate();
     check_guard_case(
         "dots",
         &catch_probe(&[
@@ -180,6 +183,7 @@ fn dot_and_dotdot_prefix_family() {
 
 #[test]
 fn leading_dot_single_name() {
+    common::interpreter_gate();
     // '.x': unresolvable head -> ModuleNotFoundError with leading dot;
     // resolvable head ('.os', '.json', '.keyword') -> CPython's
     // Empty-module-name ValueError (empty partition head). Each shape runs
@@ -206,6 +210,7 @@ fn leading_dot_single_name() {
 
 #[test]
 fn empty_and_separating_interior_segments() {
+    common::interpreter_gate();
     // Dotted names with empty interior/trailing segments — CPython reports
     // the failing parent prefix chain.
     check_guard_case(
@@ -217,6 +222,7 @@ fn empty_and_separating_interior_segments() {
 
 #[test]
 fn slash_backslash_segments_and_traversal() {
+    common::interpreter_gate();
     // Segments containing path separators: pre-guard these joined/escaped
     // sys.path dirs ('/etc/..' imported /etc as a namespace pkg). CPython
     // reports the name truncated at the first offending separator.
@@ -243,6 +249,7 @@ fn slash_backslash_segments_and_traversal() {
 
 #[test]
 fn name_repr_escaping_byte_exact() {
+    common::interpreter_gate();
     // CPython embeds repr(name) in ModuleNotFoundError: backslash doubled,
     // quote-containing names switch to double quotes. Built with chr() so
     // identical source bytes reach both interpreters.
@@ -268,6 +275,7 @@ fn fixture_root(tag: &str) -> std::path::PathBuf {
 
 #[test]
 fn traversal_under_real_package_dirs() {
+    common::interpreter_gate();
     // With pkg/ on the path: 'pkg/..' must NOT resolve the sys.path parent
     // dir as a namespace package (pre-guard ap could walk out of sys.path
     // entries). CPython reports the name truncated at 'pkg/'.
@@ -290,6 +298,7 @@ fn traversal_under_real_package_dirs() {
 
 #[test]
 fn valid_imports_still_resolve() {
+    common::interpreter_gate();
     // The guard must not change any parser-reachable import.
     let root = fixture_root("valid");
     let src = "\
@@ -320,6 +329,7 @@ print('os.path' in sys.modules, 'pkg' in sys.modules)
 
 #[test]
 fn uncaught_traceback_tail_and_exit_code() {
+    common::interpreter_gate();
     // Exception-line bytes + exit status for the two headline shapes,
     // matching the import_differential.rs precedent (stderr LAST line).
     let py = match common::reference_or_skip() {

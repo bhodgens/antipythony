@@ -47,10 +47,8 @@ fn assert_differential(src: &str) {
         n
     ));
     std::fs::write(&tmp, src).expect("write temp case");
-    let actual = Command::new(bin)
-        .arg(&tmp)
-        .output()
-        .expect("spawn ap-run-eval");
+    // Interpreter side runs under the OOM fence (2026-11-06 mitigation 2).
+    let actual = common::fenced_output(Command::new(bin).arg(&tmp));
 
     let expected_out = String::from_utf8_lossy(&expected.stdout).to_string();
     let actual_out = String::from_utf8_lossy(&actual.stdout).to_string();
@@ -75,6 +73,7 @@ fn assert_differential(src: &str) {
 
 #[test]
 fn math_basics_differential() {
+    common::interpreter_gate();
     assert_differential(
         r#"
 import math
@@ -104,6 +103,7 @@ print(math.isqrt(2**100), math.comb(100, 50) == 100891344545564193334812497256)
 
 #[test]
 fn math_errors_differential() {
+    common::interpreter_gate();
     assert_differential(
         r#"
 import math
@@ -134,6 +134,7 @@ print(math.isqrt(2**100) == 2**50, math.gcd(2**64, 2**32))
 
 #[test]
 fn itertools_differential() {
+    common::interpreter_gate();
     assert_differential(
         r#"
 import itertools, operator
@@ -170,6 +171,7 @@ print(list(itertools.islice(itertools.chain.from_iterable(
 
 #[test]
 fn operator_differential() {
+    common::interpreter_gate();
     assert_differential(
         r#"
 import operator
@@ -202,6 +204,7 @@ print(operator.caller_check if False else "ok")
 
 #[test]
 fn heapq_bisect_differential() {
+    common::interpreter_gate();
     assert_differential(
         r#"
 import heapq, bisect
@@ -231,6 +234,7 @@ print(bisect.bisect(a, 4, lo=1))
 
 #[test]
 fn functools_differential() {
+    common::interpreter_gate();
     assert_differential(
         r#"
 import functools
@@ -253,6 +257,7 @@ print(addk())
 
 #[test]
 fn os_path_differential() {
+    common::interpreter_gate();
     assert_differential(
         r#"
 import os
@@ -279,6 +284,7 @@ print(posixpath.join is os.path.join, os.path.__name__ == "posixpath")
 
 #[test]
 fn stat_errno_keyword_differential() {
+    common::interpreter_gate();
     assert_differential(
         r#"
 import errno, stat, keyword
@@ -308,6 +314,7 @@ print(sorted(keyword.kwlist)[:4])
 
 #[test]
 fn string_textwrap_differential() {
+    common::interpreter_gate();
     assert_differential(
         r#"
 import string, textwrap
@@ -331,6 +338,7 @@ print(textwrap.dedent("\nshared\nindent\n").strip().split())
 
 #[test]
 fn json_dumps_loads_differential() {
+    common::interpreter_gate();
     assert_differential(
         r#"
 import json
@@ -357,6 +365,7 @@ print(json.detect_encoding(b'{"a":1}'))
 
 #[test]
 fn json_errors_differential() {
+    common::interpreter_gate();
     assert_differential(
         r#"
 import json
@@ -397,6 +406,7 @@ print(json.dumps({"emoji": "\U0001F600"}, ensure_ascii=False))
 
 #[test]
 fn atexit_differential() {
+    common::interpreter_gate();
     assert_differential(
         r#"
 import atexit, sys
@@ -425,6 +435,7 @@ sys.exit(3)
 
 #[test]
 fn random_mt19937_differential() {
+    common::interpreter_gate();
     assert_differential(
         r#"
 import random
@@ -446,6 +457,7 @@ print(random.choice("abcdef"), random.uniform(1.0, 2.0))
 
 #[test]
 fn hashlib_differential() {
+    common::interpreter_gate();
     assert_differential(
         r#"
 import hashlib
@@ -464,6 +476,7 @@ print(h.hexdigest(), h.digest_size, h.block_size)
 
 #[test]
 fn base64_binascii_differential() {
+    common::interpreter_gate();
     assert_differential(
         r#"
 import base64, binascii
@@ -483,6 +496,7 @@ print(binascii.crc32(b"hello"))
 
 #[test]
 fn time_utc_differential() {
+    common::interpreter_gate();
     assert_differential(
         r#"
 import time
@@ -505,6 +519,7 @@ print(time.gmtime(86400 * 365).tm_year)
 
 #[test]
 fn linecache_differential() {
+    common::interpreter_gate();
     assert_differential(
         r#"
 import linecache, tempfile, os
@@ -529,6 +544,7 @@ os.unlink(path)
 
 #[test]
 fn deque_differential() {
+    common::interpreter_gate();
     assert_differential(
         r#"
 import collections
@@ -556,6 +572,7 @@ print(list(e))
 
 #[test]
 fn platform_shapes_differential() {
+    common::interpreter_gate();
     assert_differential(
         r#"
 import platform
@@ -579,6 +596,7 @@ print(sorted(u._fields) == sorted(["system", "node", "release", "version",
 
 #[test]
 fn errno_full_table_differential() {
+    common::interpreter_gate();
     assert_differential(
         r#"
 import errno
@@ -593,6 +611,7 @@ print(len(errno.errorcode) >= 100)
 
 #[test]
 fn binascii_qp_uu_hqx_differential() {
+    common::interpreter_gate();
     assert_differential(
         r#"
 import binascii
@@ -618,6 +637,7 @@ except binascii.Error as e:
 
 #[test]
 fn bytes_hex_sep_fromhex_differential() {
+    common::interpreter_gate();
     assert_differential(
         r#"
 print(b"hello".hex())
@@ -642,6 +662,7 @@ print(binascii.hexlify(b"abc"))
 
 #[test]
 fn stat_imode_ifmt_differential() {
+    common::interpreter_gate();
     assert_differential(
         r#"
 import stat
@@ -654,6 +675,7 @@ print(stat.S_ISREG(0o100644), stat.S_ISDIR(0o040755))
 
 #[test]
 fn os_pipe_kill_utime_differential() {
+    common::interpreter_gate();
     assert_differential(
         r#"
 import os
@@ -683,6 +705,7 @@ os.unlink(p)
 
 #[test]
 fn bytearray_fromhex_error_position_differential() {
+    common::interpreter_gate();
     assert_differential(
         r#"
 try:
@@ -707,6 +730,7 @@ except ValueError as e:
 
 #[test]
 fn hashlib_sha3_blake2_shake_differential() {
+    common::interpreter_gate();
     assert_differential(
         r#"
 import hashlib
@@ -758,6 +782,7 @@ print(h2.hexdigest(), h2.digest().hex())
 
 #[test]
 fn zlib_oneshot_differential() {
+    common::interpreter_gate();
     assert_differential(
         r#"
 import zlib
@@ -796,6 +821,7 @@ print(zlib.MAX_WBITS, zlib.DEFLATED, zlib.Z_DEFAULT_COMPRESSION)
 
 #[test]
 fn os_dup_dup2_fstat_differential() {
+    common::interpreter_gate();
     assert_differential(
         r#"
 import os
@@ -843,6 +869,7 @@ print(exc(os.fstat, 9999))
 
 #[test]
 fn os_uname_structseq_differential() {
+    common::interpreter_gate();
     assert_differential(
         r#"
 import os
@@ -868,6 +895,7 @@ print(sorted(pu._fields) == sorted(["system", "node", "release",
 
 #[test]
 fn realpath_symlink_chain_differential() {
+    common::interpreter_gate();
     assert_differential(
         r#"
 import os, os.path, tempfile
@@ -915,6 +943,7 @@ os.unlink(p + "_target")
 
 #[test]
 fn select_unsupported_platform_errors_differential() {
+    common::interpreter_gate();
     assert_differential(
         r#"
 import select, os
@@ -959,6 +988,7 @@ os.close(pw2)
 
 #[test]
 fn utime_ns_precision_regression_differential() {
+    common::interpreter_gate();
     assert_differential(
         r#"
 import os
@@ -988,6 +1018,7 @@ os.unlink(p)
 
 #[test]
 fn kill_eperm_taxonomy_regression_differential() {
+    common::interpreter_gate();
     assert_differential(
         r#"
 import os
@@ -1011,6 +1042,7 @@ except OSError as e:
 
 #[test]
 fn bytearray_fromhex_type_regression_differential() {
+    common::interpreter_gate();
     // KNOWN DIVERGENCE (reported, not fixed in A-2): the Value model has no
     // distinct bytearray type, so bytearray.fromhex returns a bytes-typed
     // object. That case cannot be differential-pinned until the object model
@@ -1028,6 +1060,7 @@ print(len(ba) == 2)
 
 #[test]
 fn a3_except_exception_catches_native_module_errors_differential() {
+    common::interpreter_gate();
     // A-3 item 2: zlib.Error / binascii.Error are real exception TypeObjects;
     // bare `except Exception` must walk the MRO and catch them (previously
     // the except matcher skipped them and the traceback escaped, rc=1).
@@ -1068,6 +1101,7 @@ except Exception as e:
 
 #[test]
 fn a3_oserror_str_format_differential() {
+    common::interpreter_gate();
     // A-3 item 3: str(OSError(errno, strerror)) is "[Errno N] msg" like
     // CPython, not the tuple repr; with a filename arg it appends ": 'path'".
     assert_differential(
@@ -1092,6 +1126,7 @@ print(str(e))
 
 #[test]
 fn a3_opaque_type_naming_differential() {
+    common::interpreter_gate();
     // A-3 item 5: type(os.uname()) reports uname_result (not object).
     assert_differential(
         r#"
@@ -1103,6 +1138,7 @@ print(type(os.uname()).__name__)
 
 #[test]
 fn a3_stat_result_sequence_differential() {
+    common::interpreter_gate();
     // A-3 item 5: stat_result is indexable and sized like a plain sequence
     // (st[0] == st.st_mode, len(st) >= 10).
     assert_differential(
@@ -1117,6 +1153,7 @@ print(len(st) >= 10)
 
 #[test]
 fn a3_symlink_readlink_roundtrip_differential() {
+    common::interpreter_gate();
     // A-3 item 1 verify: os.symlink real arm + os.readlink roundtrip.
     assert_differential(
         r#"
@@ -1136,6 +1173,7 @@ print(os.path.exists(p))
 
 #[test]
 fn a3_utime_three_tuple_typeerror_differential() {
+    common::interpreter_gate();
     // A-3 item 4 verify: utime(p, (1, 2, 3)) raises the pinned TypeError.
     assert_differential(
         r#"
@@ -1164,6 +1202,7 @@ print("pair ok")
 
 #[test]
 fn a4_bytearray_representation_differential() {
+    common::interpreter_gate();
     // A-4 item 1: bytearray is a distinct type with repr bytearray(b'..'),
     // mutable via append/extend/insert/pop/remove/reverse/clear/+=/item
     // assign, == -comparable with bytes, UNHASHABLE (mutable buffer).
@@ -1208,6 +1247,7 @@ print(repr(bytearray(b"hi").copy()))
 
 #[test]
 fn a4_binascii_base64_surface_differential() {
+    common::interpreter_gate();
     // A-4 item 2: a2b_base64(strict_mode=)/b2a_base64(newline=) — exact
     // binascii.c port. The 3.14-REMOVED b64decode/b16* alias names are
     // asserted ABSENT; the pre-3.14 validate=/altchars= kwargs raise TypeError.
@@ -1276,6 +1316,7 @@ print(binascii.a2b_base64(binascii.b2a_base64(b"roundtrip \x00\xff")))
 
 #[test]
 fn a4_blake2_keyed_params_differential() {
+    common::interpreter_gate();
     // A-4 item 3: key/salt/person via the RustCrypto Mac cores; error texts
     // pinned vs python3.14. fanout/depth are validated byte-exact but their
     // digest-level tree semantics (non-default values changing the param
@@ -1307,6 +1348,7 @@ for kw in [{"key": b"k" * 33}, {"salt": b"s" * 17}, {"person": b"p" * 9}]:
 
 #[test]
 fn a4_filemode_special_bits_differential() {
+    common::interpreter_gate();
     // A-4 item 4: setuid/setgid/sticky blend into the x positions; the 'l'
     // symlink kind letter; sticky-without-exec 'T'.
     assert_differential(
@@ -1323,6 +1365,7 @@ print(stat.filemode(stat.S_IFCHR | 0o4620))
 
 #[test]
 fn a4_uname_structseq_subscript_differential() {
+    common::interpreter_gate();
     // A-4 item 5b: u[0]/u[4] must work (the A-3 residual) and slices are
     // tuples; stat_result slices stay tuple-typed too.
     assert_differential(
@@ -1344,6 +1387,7 @@ print(st[0] == st.st_mode, st[:2] == (st[0], st[1]))
 
 #[test]
 fn t2_union_isinstance_differential() {
+    common::interpreter_gate();
     // T2 gate finding 1: isinstance(x, A|B) must answer (never TypeError)
     // for builtin subjects, user-class subjects, union-of-unions
     // flattening, and `X | None` arms (None matches NoneType only).
@@ -1366,6 +1410,7 @@ print(isinstance(3, int | None))
 
 #[test]
 fn t2_union_introspection_differential() {
+    common::interpreter_gate();
     // T2 gate finding 3: union namespaces expose __args__ (tuple of the
     // arms) and the `A | B` repr; typing.get_args/get_origin agree.
     assert_differential(
@@ -1385,6 +1430,7 @@ print(len(v.__args__))
 
 #[test]
 fn t2_traceback_frame_file_differential() {
+    common::interpreter_gate();
     // T2 gate finding 2: a traceback through an imported module's frames
     // shows THAT module's file (not the driver's) per frame, with the
     // per-frame source echo. Compared as: raise across a module boundary,

@@ -7,6 +7,8 @@
 
 use std::process::Command;
 
+mod common;
+
 fn ap_bin() -> String {
     std::env::var("CARGO_BIN_EXE_antipythony").unwrap_or_else(|_| {
         format!(
@@ -54,11 +56,9 @@ fn diff_check_main(body: &str) {
         "antipythony binary missing at {}",
         bin
     );
-    let out_ap = Command::new(&bin)
-        .args(["run", "--no-cache"])
-        .arg(&ap_py)
-        .output()
-        .unwrap_or_else(|e| panic!("antipythony failed to spawn ({}): {}", bin, e));
+    // Interpreter side runs under the OOM fence (2026-11-06 mitigation 2).
+    // fenced_output panics on spawn failure itself, so no unwrap_or_else.
+    let out_ap = common::fenced_output(Command::new(&bin).args(["run", "--no-cache"]).arg(&ap_py));
     let _ = std::fs::remove_file(&ref_py);
     let _ = std::fs::remove_file(&ap_py);
 
@@ -79,6 +79,7 @@ fn diff_check_main(body: &str) {
 
 #[test]
 fn diff_etree_fromstring_tostring_roundtrip() {
+    common::interpreter_gate();
     diff_check_main(
         r#"
 from lxml import etree
@@ -90,6 +91,7 @@ print(etree.tostring(r, encoding='unicode'))
 
 #[test]
 fn diff_etree_xpath_child_text() {
+    common::interpreter_gate();
     diff_check_main(
         r#"
 from lxml import etree
@@ -102,6 +104,7 @@ print(r.xpath('item/@id'))
 
 #[test]
 fn diff_etree_xpath_predicates() {
+    common::interpreter_gate();
     diff_check_main(
         r#"
 from lxml import etree
@@ -114,6 +117,7 @@ print(r.xpath("//li[@class='c']/text()"))
 
 #[test]
 fn diff_etree_tag_attrib_text_tail() {
+    common::interpreter_gate();
     diff_check_main(
         r#"
 from lxml import etree
@@ -127,6 +131,7 @@ print(dict(a.attrib))
 
 #[test]
 fn diff_etree_subelement() {
+    common::interpreter_gate();
     diff_check_main(
         r#"
 from lxml import etree
@@ -139,6 +144,7 @@ print(etree.tostring(r, encoding='unicode'))
 
 #[test]
 fn diff_etree_element_ctor() {
+    common::interpreter_gate();
     diff_check_main(
         r#"
 from lxml import etree
@@ -150,6 +156,7 @@ print(e.tag, e.get('k'))
 
 #[test]
 fn diff_etree_iter() {
+    common::interpreter_gate();
     diff_check_main(
         r#"
 from lxml import etree
@@ -162,6 +169,7 @@ print([e.tag for e in r.iter('b')])
 
 #[test]
 fn diff_etree_find_findall() {
+    common::interpreter_gate();
     diff_check_main(
         r#"
 from lxml import etree
@@ -173,6 +181,7 @@ print(len(r.findall('a')), r.find('b').tag, r.find('.').tag)
 
 #[test]
 fn diff_etree_xml_parser() {
+    common::interpreter_gate();
     diff_check_main(
         r#"
 from lxml import etree
@@ -185,6 +194,7 @@ print(r.tag)
 
 #[test]
 fn diff_etree_error_types() {
+    common::interpreter_gate();
     diff_check_main(
         r#"
 from lxml import etree
@@ -196,6 +206,7 @@ print(int(etree.ErrorTypes.ERR_INVALID_ENCODING))
 
 #[test]
 fn diff_etree_xpatheval_class() {
+    common::interpreter_gate();
     diff_check_main(
         r#"
 from lxml import etree
@@ -208,6 +219,7 @@ print(xp(r))
 
 #[test]
 fn diff_html_fromstring_basic() {
+    common::interpreter_gate();
     diff_check_main(
         r#"
 from lxml import html
@@ -220,6 +232,7 @@ print(r.xpath('//a/text()'))
 
 #[test]
 fn diff_html_tostring_method_html() {
+    common::interpreter_gate();
     diff_check_main(
         r#"
 from lxml import html, etree
@@ -231,6 +244,7 @@ print(etree.tostring(r, method='html', encoding='unicode', with_tail=False))
 
 #[test]
 fn diff_html_attribute_lowercasing() {
+    common::interpreter_gate();
     diff_check_main(
         r#"
 from lxml import html
@@ -242,6 +256,7 @@ print(r.xpath('//div/@data-x'))
 
 #[test]
 fn diff_html_text_content() {
+    common::interpreter_gate();
     diff_check_main(
         r#"
 from lxml import html
@@ -253,6 +268,7 @@ print(r.xpath('//p/text()'))
 
 #[test]
 fn diff_html_void_elements() {
+    common::interpreter_gate();
     diff_check_main(
         r#"
 from lxml import html, etree
@@ -264,6 +280,7 @@ print(etree.tostring(r, method='html', encoding='unicode'))
 
 #[test]
 fn diff_html_parser_class() {
+    common::interpreter_gate();
     diff_check_main(
         r#"
 from lxml import html
@@ -276,6 +293,7 @@ print(r.tag)
 
 #[test]
 fn diff_html_document_fromstring() {
+    common::interpreter_gate();
     diff_check_main(
         r#"
 from lxml import html
@@ -287,6 +305,7 @@ print(d.tag)
 
 #[test]
 fn diff_html_fragment_wrap() {
+    common::interpreter_gate();
     diff_check_main(
         r#"
 from lxml import html
@@ -298,6 +317,7 @@ print(r.tag, r.text)
 
 #[test]
 fn diff_parsel_style_selector_path() {
+    common::interpreter_gate();
     // The parsel 1.12.1 selector idiom: fromstring + xpath + text extraction.
     diff_check_main(
         r#"
@@ -311,6 +331,7 @@ print(r.xpath('//ul/li[2]/text()'))
 
 #[test]
 fn diff_xpath_contains_predicate() {
+    common::interpreter_gate();
     diff_check_main(
         r#"
 from lxml import html
@@ -322,6 +343,7 @@ print(r.xpath("//p[contains(@class, 'x')]/text()"))
 
 #[test]
 fn diff_xpath_attr_paths() {
+    common::interpreter_gate();
     diff_check_main(
         r#"
 from lxml import html
@@ -334,6 +356,7 @@ print(r.xpath('//a/@name'))
 
 #[test]
 fn diff_tostring_with_tail_false() {
+    common::interpreter_gate();
     diff_check_main(
         r#"
 from lxml import etree
@@ -345,6 +368,7 @@ print(etree.tostring(r[0], encoding='unicode', with_tail=False))
 
 #[test]
 fn diff_tostring_bytes_and_unicode() {
+    common::interpreter_gate();
     diff_check_main(
         r#"
 from lxml import etree

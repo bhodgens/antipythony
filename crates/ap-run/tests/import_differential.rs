@@ -68,11 +68,12 @@ fn assert_differential_with_path(src: &str, fixture: &std::path::Path) {
         .env("PYTHONPATH", fixture)
         .output()
         .expect("spawn python3.14");
-    let actual = Command::new(ap_run_eval())
-        .arg(&tmp)
-        .env("ANTIPTYHONY_PATH", fixture)
-        .output()
-        .expect("spawn ap-run-eval");
+    // Interpreter side runs under the OOM fence (2026-11-06 mitigation 2).
+    let actual = common::fenced_output(
+        Command::new(ap_run_eval())
+            .arg(&tmp)
+            .env("ANTIPTYHONY_PATH", fixture),
+    );
     std::fs::remove_file(&tmp).ok();
 
     let expected_out = String::from_utf8_lossy(&expected.stdout).to_string();
@@ -95,6 +96,7 @@ fn fixture_root(tag: &str) -> std::path::PathBuf {
 
 #[test]
 fn package_import_and_relative() {
+    common::interpreter_gate();
     let root = fixture_root("pkg");
     std::fs::create_dir_all(root.join("pkg")).unwrap();
     std::fs::write(
@@ -129,6 +131,7 @@ print(X)
 
 #[test]
 fn circular_imports_partial_visibility() {
+    common::interpreter_gate();
     let root = fixture_root("circ");
     std::fs::write(root.join("a.py"), "import b\nX = b.Y + 1\n").unwrap();
     std::fs::write(root.join("b.py"), "import a\nY = 10\n").unwrap();
@@ -145,6 +148,7 @@ print(sys.modules["a"] is a, sys.modules["b"] is b)
 
 #[test]
 fn import_error_texts_byte_exact() {
+    common::interpreter_gate();
     let py = match common::reference_or_skip() {
         Some(py) => py,
         None => return, // no reference + AP_REQUIRE_REFERENCE unset: skip
@@ -172,11 +176,12 @@ fn import_error_texts_byte_exact() {
             .env("PYTHONPATH", &root)
             .output()
             .expect("spawn python3.14");
-        let actual = Command::new(ap_run_eval())
-            .arg(&tmp)
-            .env("ANTIPTYHONY_PATH", &root)
-            .output()
-            .expect("spawn ap-run-eval");
+        // Interpreter side runs under the OOM fence (2026-11-06 mitigation 2).
+        let actual = common::fenced_output(
+            Command::new(ap_run_eval())
+                .arg(&tmp)
+                .env("ANTIPTYHONY_PATH", &root),
+        );
         std::fs::remove_file(&tmp).ok();
         let exp_last = String::from_utf8_lossy(&expected.stderr)
             .lines()
@@ -195,6 +200,7 @@ fn import_error_texts_byte_exact() {
 
 #[test]
 fn sys_modules_identity() {
+    common::interpreter_gate();
     let root = fixture_root("ident");
     std::fs::write(root.join("onemod.py"), "Q = 1\n").unwrap();
     assert_differential_with_path(
@@ -211,6 +217,7 @@ print(again is onemod)
 
 #[test]
 fn vendored_types_and_abc_import() {
+    common::interpreter_gate();
     // The vendored tree (vendored_stdlib/) is on sys.path by bootstrap.
     // types.py + _py_abc + _collections_abc are the deepest chains that work
     // without metaclass __new__.
@@ -225,10 +232,8 @@ fn vendored_types_and_abc_import() {
         .arg(&tmp)
         .output()
         .expect("spawn python3.14");
-    let actual = Command::new(ap_run_eval())
-        .arg(&tmp)
-        .output()
-        .expect("spawn ap-run-eval");
+    // Interpreter side runs under the OOM fence (2026-11-06 mitigation 2).
+    let actual = common::fenced_output(Command::new(ap_run_eval()).arg(&tmp));
     std::fs::remove_file(&tmp).ok();
     // Our execution diverges at the ABC register(coroutine) interplay —
     // documented v0 gap (metaclass __new__). Assert we get PAST the imports
@@ -243,6 +248,7 @@ fn vendored_types_and_abc_import() {
 
 #[test]
 fn script_dir_on_sys_path() {
+    common::interpreter_gate();
     // A script imports a module sitting NEXT TO it (script_dir bootstrap).
     let root = fixture_root("scriptdir");
     std::fs::write(root.join("neighbor.py"), "N = 5\n").unwrap();
@@ -256,10 +262,8 @@ fn script_dir_on_sys_path() {
         .arg(&main)
         .output()
         .expect("spawn python3.14");
-    let actual = Command::new(ap_run_eval())
-        .arg(&main)
-        .output()
-        .expect("spawn ap-run-eval");
+    // Interpreter side runs under the OOM fence (2026-11-06 mitigation 2).
+    let actual = common::fenced_output(Command::new(ap_run_eval()).arg(&main));
     assert_eq!(
         String::from_utf8_lossy(&expected.stdout),
         String::from_utf8_lossy(&actual.stdout)

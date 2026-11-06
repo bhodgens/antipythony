@@ -29,6 +29,7 @@ pub mod interp;
 pub mod iter;
 pub mod lxml;
 pub mod methods;
+pub mod rss_guard;
 pub mod sre;
 pub mod sre_tables;
 pub mod structmod;

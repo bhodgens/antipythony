@@ -17,6 +17,8 @@ clap = { version = "4", features = ["derive"] }
 # packaging_differential: fixture wheel construction (native-component add
 # refusal probe). Built as a zip in-test, never committed.
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# 2026-11-06 OOM mitigation: tests/common fence (proc_pid_rusage + flock).
+libc = "0.2"
 
 [[bin]]
 name = "antipythony"
