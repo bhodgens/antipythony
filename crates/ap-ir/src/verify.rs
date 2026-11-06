@@ -832,7 +832,7 @@ impl Verifier {
             Stmt::ExprStmt(e) => self.nested_expr(e, &qual_of(path), enclosing),
             Stmt::Global(_) | Stmt::Nonlocal(_) | Stmt::Import(_) | Stmt::ImportFrom(..) => {}
             Stmt::Pass | Stmt::Break | Stmt::Continue => {}
-        Stmt::Line(_) => {}
+            Stmt::Line(_) => {}
             Stmt::Line(_) => {}
         }
     }

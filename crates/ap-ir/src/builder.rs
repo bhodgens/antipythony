@@ -344,7 +344,7 @@ impl Builder {
             .as_ref()
             .map(|a| a.ty.clone())
             .unwrap_or(TypeLattice::Unknown);
-        
+
         // Assign default indices to parameters that have defaults
         let mut params = params;
         let mut default_idx = 0usize;
@@ -356,7 +356,7 @@ impl Builder {
                 p.default_index = None;
             }
         }
-        
+
         FnDef {
             name: name.into(),
             params,

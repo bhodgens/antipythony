@@ -25,6 +25,337 @@ def encode(input, encoding='utf-8', errors='strict'):
 def decode(input, encoding='utf-8', errors='strict'):
     return lookup(encoding).decode(input, errors)
 
+### W113: CPython-compatible codec registry (native fast path + registered
+### Python search functions + encodings-package alias resolution) and pure-
+### Python stateless codec primitives. Antipythony's native `_codecs.lookup`
+### only knows a handful of names ('utf-8','ascii','latin1',...) and does NOT
+### consult Python-side search functions or the alias table, so
+### codecs.lookup('utf_8'/'cp1252'/...) raised LookupError and w3lib's
+### resolve_encoding (scrapy response.text chain) returned None/crashed.
+### This block shadows the star-imported native lookup/register with the
+### CPython algorithm; `_codecs.lookup` stays as the native fast path.
+
+import _codecs as _native_codecs
+
+_builtin_lookup = _native_codecs.lookup
+_registry = []
+_lookup_cache = {}
+
+
+def register(searchfunction):
+    """Register a codec search function (CPython semantics)."""
+    if searchfunction not in _registry:
+        _registry.append(searchfunction)
+    _lookup_cache.clear()
+
+
+def _alias_import(encoding_name):
+    """CPython's alias-import step: encodings.<name>[.<alias>] getregentry()."""
+    import sys as _sys
+    import encodings as _enc_pkg
+    aliases = getattr(_enc_pkg, "aliases", None)
+    if aliases is not None:
+        alias_table = getattr(aliases, "aliases", {})
+    else:
+        import encodings.aliases as _aliases_mod
+        alias_table = _aliases_mod.aliases
+    fullname = "encodings." + (alias_table.get(encoding_name) or encoding_name)
+    try:
+        __import__(fullname, globals(), locals(), ['getregentry'])
+    except ImportError:
+        fullname = "encodings." + encoding_name.replace('.', '_')
+        try:
+            __import__(fullname, globals(), locals(), ['getregentry'])
+        except ImportError:
+            return None
+    except Exception:
+        # APX-W113: multibyte codecs (cp932/gb18030/big5/...) import the
+        # native _multibytecodec module, which antipythony does not provide;
+        # utf_7 needs the native utf_7 codec primitives. Surface those as
+        # LookupError ('unknown encoding') like an absent codec module, not
+        # as a raw AttributeError from module exec.
+        return None
+    mod = _sys.modules.get(fullname)
+    if mod is None:
+        return None
+    try:
+        entry = mod.getregentry
+    except AttributeError:
+        return None
+    return entry()
+
+
+def lookup(encoding):
+    """Look up an encoding in the registry and return its CodecInfo.
+
+    Shadows the native `_codecs.lookup` import: tries the native table
+    first (covers utf-8/ascii/latin1 fast paths), then registered Python
+    search functions, then the encodings-package alias import — the exact
+    CPython resolution chain, so names like 'utf_8', 'latin_1', 'cp1252',
+    'cp932' resolve identically.
+    """
+    _orig = encoding
+    encoding = _normalize_encoding(encoding)
+    try:
+        info = _lookup_cache[encoding]
+        if info is not None:
+            return info
+    except KeyError:
+        pass
+    # W113: try the Python search functions FIRST — the native _codecs
+    # registry ignores the errors argument (utf-8/ascii/latin-1 decode/
+    # encode are strict-only there), and the pure-Python codec primitives
+    # defined in this module implement the non-strict modes. The native
+    # table remains the fallback for names the Python chain can't build.
+    for searchfunction in _registry:
+        info = searchfunction(encoding)
+        if info is not None:
+            break
+    else:
+        info = _alias_import(encoding)
+    if info is None:
+        try:
+            return _builtin_lookup(encoding)
+        except LookupError:
+            raise LookupError('unknown encoding: %s' % _orig)
+    if info is None:
+        raise LookupError('unknown encoding: %s' % _orig)
+    _lookup_cache[encoding] = info
+    return info
+
+
+def _normalize_encoding(encoding):
+    """encodings.normalize_encoding, with an inline fallback for the
+    bootstrap window where `encodings` imports `codecs` at module exec."""
+    try:
+        import encodings as _enc
+        f = getattr(_enc, "normalize_encoding", None)
+        if f is not None:
+            return f(encoding)
+    except ImportError:
+        pass
+    if isinstance(encoding, bytes):
+        encoding = str(encoding, "ascii")
+    chars = []
+    punct = False
+    for c in encoding:
+        if c.isalnum() or c == '.':
+            if punct and chars:
+                chars.append('_')
+            if c.isascii():
+                chars.append(c)
+            punct = False
+        else:
+            punct = True
+    return ''.join(chars)
+
+
+### Pure-Python stateless codec primitives (the CPython `_codecs` functions
+### the vendored encodings/*.py modules import as codecs.<name>_encode/decode
+### and codecs.charmap_*). Native str.encode/bytes.decode work here, but the
+### runtime IGNORES the errors argument, so non-strict modes fall back to a
+### per-unit loop. (APX-W113: errors-handling native gap, same family as the
+### documented bytearray += gap.)
+
+def utf_8_encode(unicode, errors='strict'):
+    try:
+        return unicode.encode('utf-8'), len(unicode)
+    except UnicodeError:
+        if errors == 'strict':
+            raise
+        out = []
+        for ch in unicode:
+            try:
+                out.append(ch.encode('utf-8'))
+            except UnicodeError:
+                if errors == 'replace':
+                    out.append(b'?')
+                elif errors != 'ignore':
+                    raise
+        return b''.join(out), len(unicode)
+
+
+def utf_8_decode(data, errors='strict', final=True):
+    try:
+        return bytes(data).decode('utf-8'), len(data)
+    except UnicodeError:
+        if errors == 'strict':
+            raise
+        buf = bytes(data)
+        out = []
+        i = 0
+        n = len(buf)
+        while i < n:
+            advanced = False
+            for l in (1, 2, 3, 4):
+                j = i + l
+                if j > n:
+                    # Truncated multi-byte sequence at end of input: no
+                    # slice fits. Do NOT rely on for/else here — the bounds
+                    # break would skip it and stall the while loop forever
+                    # (W113 runaway-allocation bug).
+                    break
+                try:
+                    out.append(buf[i:j].decode('utf-8'))
+                    i = j
+                    advanced = True
+                    break
+                except UnicodeError:
+                    continue
+            if not advanced:
+                if errors == 'strict':
+                    raise UnicodeDecodeError('utf-8', buf, i, i + 1,
+                                             'invalid continuation byte')
+                if errors == 'replace':
+                    out.append('\ufffd')
+                elif errors == 'backslashreplace':
+                    out.append('\\x%02x' % buf[i])
+                elif errors not in ('ignore',):
+                    raise UnicodeDecodeError('utf-8', buf, i, i + 1,
+                                             'invalid continuation byte')
+                i += 1
+        return ''.join(out), n
+
+
+def ascii_encode(unicode, errors='strict'):
+    try:
+        return unicode.encode('ascii'), len(unicode)
+    except UnicodeError:
+        if errors == 'strict':
+            raise
+        out = []
+        for ch in unicode:
+            try:
+                out.append(ch.encode('ascii'))
+            except UnicodeError:
+                if errors == 'replace':
+                    out.append(b'?')
+                elif errors == 'backslashreplace':
+                    out.append(ch.encode('ascii', 'backslashreplace'))
+                elif errors != 'ignore':
+                    raise
+        return b''.join(out), len(unicode)
+
+
+def ascii_decode(data, errors='strict', final=True):
+    try:
+        return bytes(data).decode('ascii'), len(data)
+    except UnicodeError:
+        if errors == 'strict':
+            raise
+        buf = bytes(data)
+        out = []
+        for i, b in enumerate(buf):
+            if b < 128:
+                out.append(chr(b))
+            elif errors == 'replace':
+                out.append('\ufffd')
+            elif errors not in ('ignore', 'backslashreplace'):
+                raise UnicodeDecodeError('ascii', buf, i, i + 1,
+                                         'byte value out of range')
+        return ''.join(out), len(buf)
+
+
+def latin_1_encode(unicode, errors='strict'):
+    try:
+        return unicode.encode('latin-1'), len(unicode)
+    except UnicodeError:
+        if errors == 'strict':
+            raise
+        out = []
+        for ch in unicode:
+            try:
+                out.append(ch.encode('latin-1'))
+            except UnicodeError:
+                if errors == 'replace':
+                    out.append(b'?')
+                elif errors != 'ignore':
+                    raise
+        return b''.join(out), len(unicode)
+
+
+def latin_1_decode(data, errors='strict', final=True):
+    buf = bytes(data)
+    return ''.join(chr(b) for b in buf), len(buf)
+
+
+def charmap_encode(unicode, errors='strict', mapping={}):
+    out = []
+    for i, ch in enumerate(unicode):
+        try:
+            v = mapping[ch]
+        except KeyError:
+            if errors == 'strict':
+                raise UnicodeEncodeError('charmap', unicode, i, i + 1,
+                                         'character maps to <undefined>')
+            if errors == 'replace':
+                out.append(b'?')
+            elif errors == 'backslashreplace':
+                out.append(ch.encode('ascii', 'backslashreplace'))
+            elif errors != 'ignore':
+                raise UnicodeEncodeError('charmap', unicode, i, i + 1,
+                                         'character maps to <undefined>')
+            continue
+        if isinstance(v, int):
+            out.append(bytes([v]))
+        elif isinstance(v, bytes):
+            out.append(v)
+        else:
+            out.append(str(v).encode('latin-1'))
+    return b''.join(out), len(unicode)
+
+
+def charmap_decode(data, errors='strict', mapping=''):
+    if isinstance(mapping, dict):
+        buf = bytes(data)
+        out = []
+        for i, b in enumerate(buf):
+            try:
+                out.append(mapping[b])
+            except KeyError:
+                if errors == 'strict':
+                    raise UnicodeDecodeError('charmap', buf, i, i + 1,
+                                             'byte value out of range')
+                if errors == 'replace':
+                    out.append('\ufffd')
+                elif errors != 'ignore':
+                    raise UnicodeDecodeError('charmap', buf, i, i + 1,
+                                             'byte value out of range')
+        return ''.join(out), len(buf)
+    buf = bytes(data)
+    out = []
+    for i, b in enumerate(buf):
+        if b < len(mapping):
+            ch = mapping[b]
+            if ch in '\ufffe\uffff':
+                if errors == 'strict':
+                    raise UnicodeDecodeError('charmap', buf, i, i + 1,
+                                             'byte value out of range')
+                if errors == 'replace':
+                    out.append('\ufffd')
+                continue
+            out.append(ch)
+        else:
+            if errors == 'strict':
+                raise UnicodeDecodeError('charmap', buf, i, i + 1,
+                                         'byte value out of range')
+            if errors == 'replace':
+                out.append('\ufffd')
+    return ''.join(out), len(buf)
+
+
+def charmap_build(map):
+    """Build an encoding map (character -> byte value) from a 256-char
+    decoding table, like CPython's _codecs.charmap_build."""
+    encoding_map = {}
+    for i, ch in enumerate(map):
+        if ch in '\ufffe\uffff':
+            continue
+        if ch not in encoding_map:
+            encoding_map[ch] = i
+    return encoding_map
+
+
 __all__ = ["register", "lookup", "open", "EncodedFile", "BOM", "BOM_BE",
            "BOM_LE", "BOM32_BE", "BOM32_LE", "BOM64_BE", "BOM64_LE",
            "BOM_UTF8", "BOM_UTF16", "BOM_UTF16_LE", "BOM_UTF16_BE",

@@ -15,6 +15,7 @@
 )]
 //! The tier-0 tree-walking executor (leaf 02.02).
 
+pub mod ast_bridge;
 pub mod builtins;
 pub mod builtins_modules;
 pub mod classes;
@@ -26,7 +27,6 @@ pub mod generators;
 pub mod importer;
 pub mod interp;
 pub mod iter;
-pub mod ast_bridge;
 pub mod lxml;
 pub mod methods;
 pub mod sre;

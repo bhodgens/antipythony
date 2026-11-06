@@ -785,8 +785,7 @@ pub fn import_module_inner(interp: &Rc<Interpreter>, name: &str) -> EResult {
             if name == "_frozen_importlib_external" {
                 let frozen = SYS_MODULES.with(|m| m.borrow().get("_frozen_importlib").cloned());
                 let ext = SYS_MODULES.with(|m| m.borrow().get(name).cloned());
-                if let (Some(Value::Obj(frozen_m)), Some(Value::Obj(ext_m))) = (frozen, ext)
-                {
+                if let (Some(Value::Obj(frozen_m)), Some(Value::Obj(ext_m))) = (frozen, ext) {
                     let install = ext_m
                         .module_ns
                         .borrow()
@@ -794,10 +793,7 @@ pub fn import_module_inner(interp: &Rc<Interpreter>, name: &str) -> EResult {
                         .and_then(|ns| ns.get(&s("_install")));
                     if let Some(install) = install {
                         let frozen_v = Value::Obj(frozen_m);
-                        let _ = crate::interp::call_value_pub3(
-                            &install,
-                            &[frozen_v],
-                        );
+                        let _ = crate::interp::call_value_pub3(&install, &[frozen_v]);
                     }
                 }
             }

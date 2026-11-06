@@ -520,10 +520,7 @@ fn unsupported_binop(a: &Value, op: BinOp, b: &Value) -> PyException {
                 )
             }
         }
-        BinOp::Mul => format!(
-            "can't multiply sequence by non-int of type '{}'",
-            b_name
-        ),
+        BinOp::Mul => format!("can't multiply sequence by non-int of type '{}'", b_name),
         _ => format!(
             "unsupported operand type(s) for {}: '{}' and '{}'",
             match op {
@@ -1061,7 +1058,6 @@ mod tests {
             .starts_with("10000000000000000525047602552"));
     }
 }
-
 
 // A-4 item 1: bytearray helpers for the binop layer (mirrors dict::bytearray_data;
 // local because ap-run owns the public constructors).

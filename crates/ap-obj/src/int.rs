@@ -16,7 +16,7 @@
 //!   limit for `str(int)` (default 4300, matching `sys.get_int_max_str_digits`).
 
 use num_bigint::BigInt as Big;
-use num_traits::{Signed, ToPrimitive, Zero, One};
+use num_traits::{One, Signed, ToPrimitive, Zero};
 use std::cmp::Ordering;
 
 /// Documented conformance constant (C-13 boundary sweep reads THIS value):

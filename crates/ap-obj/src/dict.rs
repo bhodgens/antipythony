@@ -267,10 +267,7 @@ impl PyDict {
     /// pair (CPython 3.7+ LIFO); None when empty.
     pub fn popitem(&self) -> Option<(Value, Value)> {
         let mut state = self.state.borrow_mut();
-        let slot = state
-            .entries
-            .iter()
-            .rposition(|e| e.is_some())?;
+        let slot = state.entries.iter().rposition(|e| e.is_some())?;
         let entry = state.entries[slot].take();
         // Find the index slot pointing at this entry and mark it dummy.
         if let Some(h) = entry.as_ref().map(|e| Self::hash_of(&e.key).ok()) {

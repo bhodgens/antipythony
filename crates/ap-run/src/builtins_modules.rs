@@ -2005,7 +2005,28 @@ pub fn re_dispatch(fname: &str, args: &[Value], kwargs: &[(String, Value)]) -> B
             let pat = crate::sre::pattern_of(&args[0])
                 .ok_or_else(|| raise("TypeError", format!("bad receiver for {}", fname)))?;
             let short = fname.split('.').nth(1).unwrap();
-            re_op(&pat, short, &args[1..], pat.compiled.flags)
+            // W113 (cssselect tokenizer: pattern.match(s, pos=N)): CPython's
+            // Pattern.match/search/fullmatch take pos/endpos as keywords too;
+            // splice them into the positional slots re_op reads (string,
+            // pos, endpos), filling holes with None sentinels the slot
+            // getters treat as absent. sub/split keep their own kwarg paths.
+            let mut rest: Vec<Value> = args[1..].to_vec();
+            if matches!(short, "match" | "fullmatch" | "search") {
+                for (k, v) in kwargs {
+                    let slot = match k.as_str() {
+                        "pos" => 1usize,
+                        "endpos" => 2usize,
+                        _ => continue,
+                    };
+                    while rest.len() <= slot {
+                        rest.push(Value::None);
+                    }
+                    if matches!(rest[slot], Value::None) {
+                        rest[slot] = v.clone();
+                    }
+                }
+            }
+            re_op(&pat, short, &rest, pat.compiled.flags)
         }
         // --- Match methods (self is args[0]) ---
         "Match.group" | "Match.groups" | "Match.groupdict" | "Match.start" | "Match.end"
@@ -3292,13 +3313,10 @@ fn callable_name(v: &Value) -> Result<String, Flow> {
         {
             Ok(name_callable(v))
         }
-        other => {
-
-            Err(raise(
-                "TypeError",
-                format!("'{}' object is not callable", other.type_name()),
-            ))
-        }
+        other => Err(raise(
+            "TypeError",
+            format!("'{}' object is not callable", other.type_name()),
+        )),
     }
 }
 
@@ -5506,9 +5524,8 @@ pub(crate) fn str_arg(v: &Value, fname: &str) -> Result<String, Flow> {
         // T2 (pytest safe_exists -> os.path.exists(Path)): path-like objects
         // coerce via __fspath__ (CPython os.fspath protocol).
         Value::Obj(_) => {
-            let interp = current_interp().ok_or_else(|| {
-                raise("TypeError", format!("{fname}() argument must be str"))
-            })?;
+            let interp = current_interp()
+                .ok_or_else(|| raise("TypeError", format!("{fname}() argument must be str")))?;
             match crate::interp::attr_get_public(&interp, v, "__fspath__") {
                 Ok(Some(f)) => {
                     // The marker may be BOUND (receiver parked in
@@ -5522,10 +5539,7 @@ pub(crate) fn str_arg(v: &Value, fname: &str) -> Result<String, Flow> {
                         Value::Str(s) => Ok(s.as_str().to_string()),
                         other => Err(raise(
                             "TypeError",
-                            format!(
-                                "{fname}() argument must be str, not {}",
-                                other.type_name()
-                            ),
+                            format!("{fname}() argument must be str, not {}", other.type_name()),
                         )),
                     }
                 }
@@ -5886,19 +5900,25 @@ pub fn make_bytearray(data: Vec<u8>) -> Value {
 }
 
 /// A-4 item 1: bytearray bound-method dispatch (receiver = args[0]).
-fn call_bytearray_method(fname: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option<BResult> {
+fn call_bytearray_method(
+    fname: &str,
+    args: &[Value],
+    kwargs: &[(String, Value)],
+) -> Option<BResult> {
     // UNBOUND classmethod form: bytearray.fromhex(s) — args[0] is the string
     // (the type-object BoundMethod's receiver is an inert empty Bytes and is
     // dropped here, mirroring the pybytes.fromhex UNBOUND detection).
     if fname == "fromhex" {
         let arg = args
-            .get(if matches!(args.first(), Some(Value::Bytes(_)) | Some(Value::Str(_)))
-                && args.len() >= 2
-            {
-                1
-            } else {
-                0
-            })
+            .get(
+                if matches!(args.first(), Some(Value::Bytes(_)) | Some(Value::Str(_)))
+                    && args.len() >= 2
+                {
+                    1
+                } else {
+                    0
+                },
+            )
             .cloned()
             .unwrap_or(Value::None);
         let txt: Vec<u8> = match &arg {
@@ -5914,12 +5934,10 @@ fn call_bytearray_method(fname: &str, args: &[Value], kwargs: &[(String, Value)]
                 )))
             }
         };
-        return Some(
-            bytes_fromhex(&txt).map(|v| match v {
-                Value::Bytes(b) => make_bytearray(b.as_ref().clone()),
-                other => other,
-            }),
-        );
+        return Some(bytes_fromhex(&txt).map(|v| match v {
+            Value::Bytes(b) => make_bytearray(b.as_ref().clone()),
+            other => other,
+        }));
     }
     let recv = match args.first() {
         Some(v) => v.clone(),
@@ -5942,9 +5960,7 @@ fn call_bytearray_method(fname: &str, args: &[Value], kwargs: &[(String, Value)]
                 let src_v = required(rest, "extend")?;
                 let more = match src_v {
                     Value::Bytes(b) => b.as_ref().clone(),
-                    Value::Obj(o)
-                        if o.kind == ap_obj::ObjKind::Opaque && o.name == "bytearray" =>
-                    {
+                    Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque && o.name == "bytearray" => {
                         bytearray_state(src_v)?
                     }
                     other => {
@@ -5955,14 +5971,12 @@ fn call_bytearray_method(fname: &str, args: &[Value], kwargs: &[(String, Value)]
                         let items = crate::interp::collect_iter_public(&it);
                         let mut out = Vec::with_capacity(items.len());
                         for x in items {
-                            let b = x.as_int().and_then(|n| n.to_i64()).ok_or_else(|| {
-                                raise("TypeError", "an integer is required")
-                            })?;
+                            let b = x
+                                .as_int()
+                                .and_then(|n| n.to_i64())
+                                .ok_or_else(|| raise("TypeError", "an integer is required"))?;
                             if !(0..=255).contains(&b) {
-                                return Err(raise(
-                                    "ValueError",
-                                    "byte must be in range(0, 256)",
-                                ));
+                                return Err(raise("ValueError", "byte must be in range(0, 256)"));
                             }
                             out.push(b as u8);
                         }
@@ -5975,14 +5989,19 @@ fn call_bytearray_method(fname: &str, args: &[Value], kwargs: &[(String, Value)]
             }
             "insert" => {
                 let idx = as_int_i64(required(rest, "insert")?)?;
-                let b = as_int_i64(rest.get(1).ok_or_else(|| {
-                    raise("TypeError", "insert() missing required argument")
-                })?)?;
+                let b =
+                    as_int_i64(rest.get(1).ok_or_else(|| {
+                        raise("TypeError", "insert() missing required argument")
+                    })?)?;
                 if !(0..=255).contains(&b) {
                     return Err(raise("ValueError", "byte must be in range(0, 256)"));
                 }
                 let len = data.len() as i64;
-                let pos = if idx < 0 { (idx + len).max(0) } else { idx.min(len) };
+                let pos = if idx < 0 {
+                    (idx + len).max(0)
+                } else {
+                    idx.min(len)
+                };
                 data.insert(pos as usize, b as u8);
                 bytearray_set(&recv, data)?;
                 Ok(Value::None)
@@ -6024,8 +6043,8 @@ fn call_bytearray_method(fname: &str, args: &[Value], kwargs: &[(String, Value)]
             // Read-only shared surface: delegate to the pybytes arms over a
             // snapshot, then re-wrap bytearray-typed results (CPython: bytes
             // -returning methods return bytearray on a bytearray receiver).
-            "hex" | "decode" | "find" | "rfind" | "index" | "rindex" | "count"
-            | "startswith" | "endswith" => {
+            "hex" | "decode" | "find" | "rfind" | "index" | "rindex" | "count" | "startswith"
+            | "endswith" => {
                 let mut a2: Vec<Value> = vec![Value::Bytes(Gc::new(data))];
                 a2.extend_from_slice(rest);
                 call_builtin_values("pybytes", fname, &a2, kwargs)
@@ -7222,10 +7241,7 @@ fn build_os(_i: &crate::frame::Interpreter) -> Value {
         let _ = ns.set(s("supports_follow_symlinks"), Value::List(sup.clone()));
         let _ = ns.set(s("supports_effective_ids"), Value::List(sup.clone()));
         let _ = ns.set(s("supports_dir_fd"), Value::List(sup));
-        let _ = ns.set(
-            s("supports_bytes_environ"),
-            Value::Bool(true),
-        );
+        let _ = ns.set(s("supports_bytes_environ"), Value::Bool(true));
     }
     // os.path submodule link + os.error is OSError (SAME object as the
     // builtin OSError name — pull it from the builtins dict so identity
@@ -7540,18 +7556,11 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
             "fdopen" => {
                 let fd = match args.first() {
                     Some(v) if matches!(v, Value::Int(_)) => as_int_i64(v)? as i32,
-                    Some(Value::Obj(o))
-                        if o.kind == ap_obj::ObjKind::Opaque && o.name == "fd" =>
-                    {
+                    Some(Value::Obj(o)) if o.kind == ap_obj::ObjKind::Opaque && o.name == "fd" => {
                         // python-level int-like wrapper (not used today)
                         0
                     }
-                    _ => {
-                        return Err(raise(
-                            "TypeError",
-                            "fdopen() argument must be int, not str",
-                        ))
-                    }
+                    _ => return Err(raise("TypeError", "fdopen() argument must be int, not str")),
                 };
                 let mode = args
                     .get(1)
@@ -7581,7 +7590,11 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                     }
                 }
                 let v = make_stream(
-                    if mode.contains('b') { "BufferedWriter" } else { "TextIOWrapper" },
+                    if mode.contains('b') {
+                        "BufferedWriter"
+                    } else {
+                        "TextIOWrapper"
+                    },
                     data,
                     Some("utf-8".into()),
                 );
@@ -7897,13 +7910,14 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                 // O_CREAT requires the mode argument; without it new
                 // files get 0o000 (sandbox reads then EACCES - the
                 // '.lock'/log-file ghosts).
-                let mode = if flags & libc::O_CREAT != 0 { py_mode } else { 0 };
+                let mode = if flags & libc::O_CREAT != 0 {
+                    py_mode
+                } else {
+                    0
+                };
                 let fd = unsafe { libc::openat(dfd, c_path.as_ptr(), flags, mode) };
                 if fd < 0 {
-                    return Err(io_flow_path(
-                        std::io::Error::last_os_error(),
-                        &fd_path,
-                    ));
+                    return Err(io_flow_path(std::io::Error::last_os_error(), &fd_path));
                 }
                 Ok(i(fd as i64))
             }
@@ -8050,7 +8064,8 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                 };
                 let c_path = std::ffi::CString::new(p.as_str())
                     .map_err(|_| raise("ValueError", "embedded null byte"))?;
-                let rc = unsafe { libc::chown(c_path.as_ptr(), uid as libc::uid_t, gid as libc::gid_t) };
+                let rc =
+                    unsafe { libc::chown(c_path.as_ptr(), uid as libc::uid_t, gid as libc::gid_t) };
                 if rc != 0 {
                     return Err(io_flow(std::io::Error::last_os_error()));
                 }
@@ -8498,7 +8513,12 @@ pub fn call_posixpath(
                     .map_err(|_| raise("ValueError", "embedded null byte"))?;
                 let mut st: libc::stat = unsafe { std::mem::zeroed() };
                 let rc = unsafe {
-                    libc::fstatat(libc::AT_FDCWD, c_path.as_ptr(), &mut st, libc::AT_SYMLINK_NOFOLLOW)
+                    libc::fstatat(
+                        libc::AT_FDCWD,
+                        c_path.as_ptr(),
+                        &mut st,
+                        libc::AT_SYMLINK_NOFOLLOW,
+                    )
                 };
                 if rc != 0 {
                     Ok(Value::Bool(false))
@@ -9443,9 +9463,19 @@ pub fn call_platform(name: &str, args: &[Value], _kwargs: &[(String, Value)]) ->
             }
             "platform" => {
                 let u = uname_tuple();
-                let (system, _node, release, version, _machine, _proc) =
-                    (u[0].clone(), u[1].clone(), u[2].clone(), u[3].clone(), u[4].clone(), u[5].clone());
-                let system_c = if system == "Darwin" { "Darwin" } else { system.as_str() };
+                let (system, _node, release, version, _machine, _proc) = (
+                    u[0].clone(),
+                    u[1].clone(),
+                    u[2].clone(),
+                    u[3].clone(),
+                    u[4].clone(),
+                    u[5].clone(),
+                );
+                let system_c = if system == "Darwin" {
+                    "Darwin"
+                } else {
+                    system.as_str()
+                };
                 Ok(s(format!(
                     "{}-{}-{}",
                     system_c,
@@ -10777,10 +10807,10 @@ fn build_zlib(_i: &crate::frame::Interpreter) -> Value {
         .expect("zlib.error MRO");
         // A-3 item 2: intern under the raised name so bare `except Exception`
         // resolves the MRO through exc_matches' class-payload walk.
-        interp
-            .exc_classes
-            .borrow_mut()
-            .insert("error".to_string(), ap_obj::classes::make_class_value(t.clone()));
+        interp.exc_classes.borrow_mut().insert(
+            "error".to_string(),
+            ap_obj::classes::make_class_value(t.clone()),
+        );
         let _ = t
             .dict
             .set(Value::Str(PyString::new("__module__")), s("zlib"));
@@ -11336,18 +11366,15 @@ fn build_binascii(_i: &crate::frame::Interpreter) -> Value {
         )
         .expect("binascii.Error MRO");
         // A-3 item 2: intern under the raised name (same walk as zlib.error).
-        interp
-            .exc_classes
-            .borrow_mut()
-            .insert("Error".to_string(), ap_obj::classes::make_class_value(t.clone()));
+        interp.exc_classes.borrow_mut().insert(
+            "Error".to_string(),
+            ap_obj::classes::make_class_value(t.clone()),
+        );
         // The call arms raise under the dotted spelling "binascii.Error".
-        interp
-            .exc_classes
-            .borrow_mut()
-            .insert(
-                "binascii.Error".to_string(),
-                ap_obj::classes::make_class_value(t.clone()),
-            );
+        interp.exc_classes.borrow_mut().insert(
+            "binascii.Error".to_string(),
+            ap_obj::classes::make_class_value(t.clone()),
+        );
         let _ = t
             .dict
             .set(Value::Str(PyString::new("__module__")), s("binascii"));
@@ -12573,11 +12600,8 @@ pub fn call_io(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option
                             let mut off = 0usize;
                             let buf = payload.as_ptr();
                             while off < payload.len() {
-                                let w = libc::write(
-                                    fd,
-                                    buf.add(off) as *const _,
-                                    payload.len() - off,
-                                );
+                                let w =
+                                    libc::write(fd, buf.add(off) as *const _, payload.len() - off);
                                 if w <= 0 {
                                     break;
                                 }
@@ -12629,9 +12653,12 @@ pub fn call_io(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option
             "fileno" => {
                 let v = required(args, "fileno")?;
                 if let Value::Obj(o) = &v {
-                    if let Some(fd) = o.attrs.borrow().get(&s("<fd>")).and_then(|x| {
-                        x.as_int().and_then(|n| n.to_i64())
-                    }) {
+                    if let Some(fd) = o
+                        .attrs
+                        .borrow()
+                        .get(&s("<fd>"))
+                        .and_then(|x| x.as_int().and_then(|n| n.to_i64()))
+                    {
                         return Ok(i(fd));
                     }
                 }
@@ -12655,7 +12682,10 @@ pub fn call_io(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option
                 nd.resize(size.min(nd.len()).max(size), 0);
                 nd.truncate(size);
                 if let Value::Obj(o) = v {
-                    let _ = o.attrs.borrow_mut().set(s("<buf>"), Value::Bytes(Gc::new(nd.clone())));
+                    let _ = o
+                        .attrs
+                        .borrow_mut()
+                        .set(s("<buf>"), Value::Bytes(Gc::new(nd.clone())));
                 }
                 Ok(i(nd.len() as i64))
             }
@@ -13126,9 +13156,8 @@ pub fn call_tempfile(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> 
                     // unbuffered; our <buf> stays the in-memory content).
                     let cpath = std::ffi::CString::new(path.clone())
                         .map_err(|_| raise("ValueError", "embedded null byte in temp path"))?;
-                    let fd = unsafe {
-                        libc::open(cpath.as_ptr(), libc::O_RDWR | libc::O_CREAT, 0o600)
-                    };
+                    let fd =
+                        unsafe { libc::open(cpath.as_ptr(), libc::O_RDWR | libc::O_CREAT, 0o600) };
                     let _ = fa.set(s("<fd>"), i(fd as i64));
                 }
                 Ok(Value::Obj(f))
@@ -13316,10 +13345,7 @@ pub fn call_native(
                         .map(crate::builtins::py_str_of)
                         .and_then(|r| r.ok())
                         .unwrap_or_default();
-                    let ignore_errors = args
-                        .get(1)
-                        .map(|v| v.is_truthy())
-                        .unwrap_or(false);
+                    let ignore_errors = args.get(1).map(|v| v.is_truthy()).unwrap_or(false);
                     let result = std::fs::remove_dir_all(&path);
                     match result {
                         Ok(()) => Ok(Value::None),
@@ -13537,10 +13563,10 @@ fn builtins_modules_stream_bytesio_alias(wrapper: &Value) -> Value {
         // either name hit the same storage (one buffer, two spellings).
         *alias.attrs.borrow_mut() = w.attrs.borrow().clone();
         if let Value::Obj(wrc) = wrapper {
-            let _ = alias.attrs.borrow_mut().set(
-                s("<ap_buffer_of>"),
-                Value::Obj(wrc.clone()),
-            );
+            let _ = alias
+                .attrs
+                .borrow_mut()
+                .set(s("<ap_buffer_of>"), Value::Obj(wrc.clone()));
         }
         return Value::Obj(alias);
     }
@@ -13874,16 +13900,19 @@ pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
                 // dispatch via "bytearray.<n>".
                 "bytearray" => {
                     let mname = match name {
-                        "append" | "extend" | "insert" | "pop" | "remove" | "reverse"
-                        | "clear" | "copy" | "hex" | "decode" | "upper" | "lower" | "strip"
-                        | "lstrip" | "rstrip" | "replace" | "split" | "join" | "startswith"
-                        | "endswith" | "find" | "rfind" | "index" | "count" => {
+                        "append" | "extend" | "insert" | "pop" | "remove" | "reverse" | "clear"
+                        | "copy" | "hex" | "decode" | "upper" | "lower" | "strip" | "lstrip"
+                        | "rstrip" | "replace" | "split" | "join" | "startswith" | "endswith"
+                        | "find" | "rfind" | "index" | "count" => {
                             format!("bytearray.{name}")
                         }
                         _ => return None,
                     };
-                    let bm =
-                        PyObject::with_self(ap_obj::ObjKind::BoundMethod, mname.clone(), obj.clone());
+                    let bm = PyObject::with_self(
+                        ap_obj::ObjKind::BoundMethod,
+                        mname.clone(),
+                        obj.clone(),
+                    );
                     *bm.func.borrow_mut() = Some(marker(&mname));
                     Some(Value::Obj(bm))
                 }
@@ -14031,17 +14060,17 @@ pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
                     // the raw file IS the buffer; reads/writes see the same
                     // <buf> storage).
                     if matches!(name, "buffer" | "raw") {
-                    // T2 (CaptureIO.getvalue asserts
-                    // isinstance(self.buffer, io.BytesIO)): return a REAL
-                    // BytesIO-kind stream sharing the wrapper's <buf>
-                    // storage, memoized in <buffer_obj>.
-                    if let Some(v) = o.attrs.borrow().get(&s("<buffer_obj>")) {
-                        return Some(v.clone());
+                        // T2 (CaptureIO.getvalue asserts
+                        // isinstance(self.buffer, io.BytesIO)): return a REAL
+                        // BytesIO-kind stream sharing the wrapper's <buf>
+                        // storage, memoized in <buffer_obj>.
+                        if let Some(v) = o.attrs.borrow().get(&s("<buffer_obj>")) {
+                            return Some(v.clone());
+                        }
+                        let io_v = builtins_modules_stream_bytesio_alias(obj);
+                        let _ = o.attrs.borrow_mut().set(s("<buffer_obj>"), io_v.clone());
+                        return Some(io_v);
                     }
-                    let io_v = builtins_modules_stream_bytesio_alias(obj);
-                    let _ = o.attrs.borrow_mut().set(s("<buffer_obj>"), io_v.clone());
-                    return Some(io_v);
-                }
                     let mname = match name {
                         "read" | "readline" | "write" | "tell" | "seek" | "getvalue" | "close"
                         | "peek" | "read1" | "decode" | "__enter__" | "__exit__" | "fileno"
@@ -14917,7 +14946,14 @@ pub fn call_builtin_values(
                         None => Err(raise("ValueError", "list.remove(x): x not in list")),
                     }
                 } else {
-                    Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                    Err(raise(
+                        "SystemError",
+                        format!(
+                            "bad receiver for pydict fn {} (recv={}",
+                            fname,
+                            recv.type_name()
+                        ),
+                    ))
                 }
             }
             ("pytuple", "index") => {
@@ -14930,14 +14966,22 @@ pub fn call_builtin_values(
                     let start = match a(2) {
                         Some(sv) => {
                             let sval = as_int_i64(&sv)?;
-                            if sval < 0 { (sval + n).max(0) } else { sval.min(n) }
+                            if sval < 0 {
+                                (sval + n).max(0)
+                            } else {
+                                sval.min(n)
+                            }
                         }
                         None => 0,
                     };
                     let stop = match a(3) {
                         Some(ev) => {
                             let eval = as_int_i64(&ev)?;
-                            if eval < 0 { (eval + n).max(0) } else { eval.min(n) }
+                            if eval < 0 {
+                                (eval + n).max(0)
+                            } else {
+                                eval.min(n)
+                            }
                         }
                         None => n,
                     };
@@ -14951,7 +14995,14 @@ pub fn call_builtin_values(
                     }
                     Err(raise("ValueError", "tuple.index(x): x not in tuple"))
                 } else {
-                    Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                    Err(raise(
+                        "SystemError",
+                        format!(
+                            "bad receiver for pydict fn {} (recv={}",
+                            fname,
+                            recv.type_name()
+                        ),
+                    ))
                 }
             }
             ("pydict", "get") => {
@@ -14960,7 +15011,14 @@ pub fn call_builtin_values(
                 if let Value::Dict(d) = &recv {
                     return Ok(d.get(&k).unwrap_or_else(|| a(2).unwrap_or(Value::None)));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pydict", "setdefault") => {
                 let k = a(1)
@@ -14973,7 +15031,14 @@ pub fn call_builtin_values(
                     let _ = d.set(k, dflt.clone());
                     return Ok(dflt);
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pydict", "pop") => {
                 let k =
@@ -14988,10 +15053,21 @@ pub fn call_builtin_values(
                     }
                 } else {
                     if std::env::var("APX_SCOPE_DEBUG").is_ok() {
-                        let k2 = if let Value::Obj(ob) = &recv { format!("Obj kind={:?} name={} attrs={:?} backing={:?}", ob.kind, ob.name, ob.attrs.borrow().items().iter().map(|(k,_k)| crate::builtins::py_str_of(k).unwrap_or_default()).collect::<Vec<_>>(), crate::classes::dict_backing(&recv).is_some()) } else { format!("{}", recv.type_name()) };
+                        let k2 = if let Value::Obj(ob) = &recv {
+                            format!("Obj kind={:?} name={} attrs={:?} backing={:?}", ob.kind, ob.name, ob.attrs.borrow().items().iter().map(|(k,_k)| crate::builtins::py_str_of(k).unwrap_or_default()).collect::<Vec<_>>(), crate::classes::dict_backing(&recv).is_some())
+                        } else {
+                            format!("{}", recv.type_name())
+                        };
                         eprintln!("POPMISS k2={}", k2);
                     }
-                    Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                    Err(raise(
+                        "SystemError",
+                        format!(
+                            "bad receiver for pydict fn {} (recv={}",
+                            fname,
+                            recv.type_name()
+                        ),
+                    ))
                 }
             }
             ("pydict", "update") => {
@@ -15000,7 +15076,16 @@ pub fn call_builtin_values(
                 // + kwargs is legal (d.update(x=1)).
                 let d = match &recv {
                     Value::Dict(d) => d,
-                    _ => return Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name()))),
+                    _ => {
+                        return Err(raise(
+                            "SystemError",
+                            format!(
+                                "bad receiver for pydict fn {} (recv={}",
+                                fname,
+                                recv.type_name()
+                            ),
+                        ))
+                    }
                 };
                 match a(1) {
                     Some(Value::Dict(o)) => {
@@ -15008,8 +15093,7 @@ pub fn call_builtin_values(
                             let _ = d.set(k, v);
                         }
                     }
-                    Some(other) if dict_like_mapping(&other) =>
-                    {
+                    Some(other) if dict_like_mapping(&other) => {
                         // CPython update(mapping): keys() + __getitem__
                         let interp = match crate::builtins_modules::current_interp() {
                             Some(i) => i,
@@ -15032,25 +15116,21 @@ pub fn call_builtin_values(
                         let keys_v = crate::interp::call_value_pub2(&keys_f, &[], &[])?;
                         let it = crate::interp::iterable_of_public(&keys_v)?;
                         for k in crate::iter::collect(&it) {
-                            let getitem = match
-                                crate::builtins::attr_get_pub(&interp, &other, "__getitem__")
-                            {
-                                Ok(Some(f)) => f,
-                                _ => {
-                                    return Err(raise(
-                                        "TypeError",
-                                        format!(
-                                            "'{}' object is not a mapping",
-                                            other.type_name()
-                                        ),
-                                    ))
-                                }
-                            };
-                            let v = crate::interp::call_value_pub2(
-                                &getitem,
-                                &[k.clone()],
-                                &[],
-                            )?;
+                            let getitem =
+                                match crate::builtins::attr_get_pub(&interp, &other, "__getitem__")
+                                {
+                                    Ok(Some(f)) => f,
+                                    _ => {
+                                        return Err(raise(
+                                            "TypeError",
+                                            format!(
+                                                "'{}' object is not a mapping",
+                                                other.type_name()
+                                            ),
+                                        ))
+                                    }
+                                };
+                            let v = crate::interp::call_value_pub2(&getitem, &[k.clone()], &[])?;
                             let _ = d.set(k, v);
                         }
                     }
@@ -15087,7 +15167,14 @@ pub fn call_builtin_values(
                     }
                     return Ok(Value::Dict(nd));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pystr", "isupper")
             | ("pystr", "islower")
@@ -15098,7 +15185,16 @@ pub fn call_builtin_values(
             | ("pystr", "istitle") => {
                 let v = match &recv {
                     Value::Str(x) => x.as_str().to_string(),
-                    _ => return Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name()))),
+                    _ => {
+                        return Err(raise(
+                            "SystemError",
+                            format!(
+                                "bad receiver for pydict fn {} (recv={}",
+                                fname,
+                                recv.type_name()
+                            ),
+                        ))
+                    }
                 };
                 let cs: Vec<char> = v.chars().collect();
                 let r = match fname {
@@ -15149,7 +15245,16 @@ pub fn call_builtin_values(
                 let order = sa(2, "byteorder").unwrap_or_else(|_| "big".to_string());
                 let i64v = match &recv {
                     Value::Int(n) => n.to_i64().unwrap_or(0),
-                    _ => return Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name()))),
+                    _ => {
+                        return Err(raise(
+                            "SystemError",
+                            format!(
+                                "bad receiver for pydict fn {} (recv={}",
+                                fname,
+                                recv.type_name()
+                            ),
+                        ))
+                    }
                 };
                 let mut out = Vec::with_capacity(len);
                 match order.as_str() {
@@ -15169,7 +15274,16 @@ pub fn call_builtin_values(
             ("pyint", "bit_length") => {
                 let i64v = match &recv {
                     Value::Int(n) => n.to_i64().unwrap_or(0).unsigned_abs(),
-                    _ => return Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name()))),
+                    _ => {
+                        return Err(raise(
+                            "SystemError",
+                            format!(
+                                "bad receiver for pydict fn {} (recv={}",
+                                fname,
+                                recv.type_name()
+                            ),
+                        ))
+                    }
                 };
                 Ok(Value::Int(ap_obj::Int::from_i64(
                     64 - i64v.leading_zeros() as i64,
@@ -15178,7 +15292,16 @@ pub fn call_builtin_values(
             ("pystr", "startswith") | ("pystr", "endswith") => {
                 let v = match &recv {
                     Value::Str(x) => x.as_str().to_string(),
-                    _ => return Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name()))),
+                    _ => {
+                        return Err(raise(
+                            "SystemError",
+                            format!(
+                                "bad receiver for pydict fn {} (recv={}",
+                                fname,
+                                recv.type_name()
+                            ),
+                        ))
+                    }
                 };
                 let pv = a(1).ok_or_else(|| raise("TypeError", "expected prefix argument"))?;
                 // Optional [start[, end]] — slice semantics on the subject.
@@ -15227,7 +15350,16 @@ pub fn call_builtin_values(
             ("pystr", "strip") | ("pystr", "lstrip") | ("pystr", "rstrip") => {
                 let v = match &recv {
                     Value::Str(x) => x.as_str().to_string(),
-                    _ => return Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name()))),
+                    _ => {
+                        return Err(raise(
+                            "SystemError",
+                            format!(
+                                "bad receiver for pydict fn {} (recv={}",
+                                fname,
+                                recv.type_name()
+                            ),
+                        ))
+                    }
                 };
                 let chars: Option<Vec<char>> = match a(1) {
                     Some(Value::Str(x)) => Some(x.as_str().chars().collect()),
@@ -15253,7 +15385,16 @@ pub fn call_builtin_values(
             ("pystr", "split") | ("pystr", "rsplit") => {
                 let v = match &recv {
                     Value::Str(x) => x.as_str().to_string(),
-                    _ => return Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name()))),
+                    _ => {
+                        return Err(raise(
+                            "SystemError",
+                            format!(
+                                "bad receiver for pydict fn {} (recv={}",
+                                fname,
+                                recv.type_name()
+                            ),
+                        ))
+                    }
                 };
                 let sep = match a(1) {
                     Some(Value::Str(x)) => Some(x.as_str().to_string()),
@@ -15365,7 +15506,14 @@ pub fn call_builtin_values(
                 if let Value::Str(x) = &recv {
                     return Ok(s(x.as_str().replace(&old_s, &new_s)));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pystr", "find") | ("pystr", "rfind") | ("pystr", "index") => {
                 let sub = sa(1, fname)?;
@@ -15407,7 +15555,14 @@ pub fn call_builtin_values(
                         }
                     });
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pystr", "count") => {
                 let sub = sa(1, fname)?;
@@ -15435,7 +15590,14 @@ pub fn call_builtin_values(
                     let cnt = src[lo..hi].matches(&sub).count();
                     return Ok(i(cnt as i64));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pystr", "isdigit")
             | ("pystr", "isalpha")
@@ -15455,7 +15617,14 @@ pub fn call_builtin_values(
                     };
                     return Ok(Value::Bool(out));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pystr", "splitlines") => {
                 if let Value::Str(x) = &recv {
@@ -15490,7 +15659,14 @@ pub fn call_builtin_values(
                     }
                     return Ok(list(out.into_iter().map(s).collect()));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pystr", "title") | ("pystr", "capitalize") => {
                 if let Value::Str(x) = &recv {
@@ -15520,7 +15696,14 @@ pub fn call_builtin_values(
                     };
                     return Ok(s(out));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pystr", "removeprefix") | ("pystr", "removesuffix") => {
                 let p = sa(1, fname)?;
@@ -15532,7 +15715,14 @@ pub fn call_builtin_values(
                     };
                     return Ok(s(out));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pybytes", "hex") => {
                 if let Value::Bytes(b) = &recv {
@@ -15591,7 +15781,14 @@ pub fn call_builtin_values(
                     }
                     return Ok(s(bytes_to_hex_str(&**b, sep, bytes_per_sep)));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pybytes", "fromhex") => {
                 // A-1 item 3: bytes.fromhex / bytearray.fromhex classmethod
@@ -15742,7 +15939,14 @@ pub fn call_builtin_values(
                     }
                     return Ok(Value::None);
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pylist", "index") => {
                 let v =
@@ -15755,7 +15959,14 @@ pub fn call_builtin_values(
                     }
                     return Err(raise("ValueError", format!("{v:?} is not in list")));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pylist", "count") => {
                 let v =
@@ -15763,7 +15974,14 @@ pub fn call_builtin_values(
                 if let Value::List(l) = &recv {
                     return Ok(i(l.items().iter().filter(|x| py_eq(x, &v)).count() as i64));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pylist", "insert") => {
                 let idx = a(1)
@@ -15782,7 +16000,14 @@ pub fn call_builtin_values(
                     }
                     return Ok(Value::None);
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pylist", "pop") => {
                 if let Value::List(l) = &recv {
@@ -15803,7 +16028,14 @@ pub fn call_builtin_values(
                     }
                     return Ok(out);
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pylist", "remove") => {
                 let v =
@@ -15823,7 +16055,14 @@ pub fn call_builtin_values(
                     }
                     return Err(raise("ValueError", "list.remove(x): x not in list"));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pylist", "extend") => {
                 let v =
@@ -15834,7 +16073,14 @@ pub fn call_builtin_values(
                     }
                     return Ok(Value::None);
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pylist", "reverse") => {
                 if let Value::List(l) = &recv {
@@ -15846,13 +16092,27 @@ pub fn call_builtin_values(
                     }
                     return Ok(Value::None);
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pylist", "copy") => {
                 if let Value::List(l) = &recv {
                     return Ok(list(l.items().to_vec()));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             // ==== 02.08-full part 1: str extras ====
             ("pystr", "casefold") => {
@@ -15873,7 +16133,14 @@ pub fn call_builtin_values(
                         .collect();
                     return Ok(s(folded));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pystr", "swapcase") => {
                 if let Value::Str(x) = &recv {
@@ -15890,7 +16157,14 @@ pub fn call_builtin_values(
                         .collect();
                     return Ok(s(out));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pystr", "center") => {
                 if let Value::Str(x) = &recv {
@@ -15917,7 +16191,14 @@ pub fn call_builtin_values(
                     };
                     return Ok(s(out));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pystr", "zfill") => {
                 if let Value::Str(x) = &recv {
@@ -15943,7 +16224,14 @@ pub fn call_builtin_values(
                     };
                     return Ok(s(out));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pystr", "ljust") | ("pystr", "rjust") => {
                 if let Value::Str(x) = &recv {
@@ -15963,7 +16251,14 @@ pub fn call_builtin_values(
                         format!("{}{}", pad_s, x.as_str())
                     }));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pystr", "rpartition") => {
                 let sep = sa(1, fname)?;
@@ -15980,7 +16275,14 @@ pub fn call_builtin_values(
                     };
                     return Ok(tuple(vec![s(triple.0), s(triple.1), s(triple.2)]));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pystr", "expandtabs") => {
                 if let Value::Str(x) = &recv {
@@ -16007,7 +16309,14 @@ pub fn call_builtin_values(
                     }
                     return Ok(s(out));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pystr", "translate") => {
                 if let Value::Str(x) = &recv {
@@ -16042,13 +16351,27 @@ pub fn call_builtin_values(
                     }
                     return Ok(s(out));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pystr", "isascii") => {
                 if let Value::Str(x) = &recv {
                     return Ok(Value::Bool(x.as_str().is_ascii()));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pystr", "isidentifier") => {
                 if let Value::Str(x) = &recv {
@@ -16058,7 +16381,14 @@ pub fn call_builtin_values(
                         && cs.iter().all(|c| c.is_alphanumeric() || *c == '_');
                     return Ok(Value::Bool(ok));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pystr", "isprintable") => {
                 if let Value::Str(x) = &recv {
@@ -16068,7 +16398,14 @@ pub fn call_builtin_values(
                     let ok = x.as_str().chars().all(|c| !c.is_control() || c == ' ');
                     return Ok(Value::Bool(ok));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pystr", "isnumeric") | ("pystr", "isdecimal") => {
                 if let Value::Str(x) = &recv {
@@ -16082,7 +16419,14 @@ pub fn call_builtin_values(
                         });
                     return Ok(Value::Bool(ok));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pystr", "rindex") => {
                 let sub = sa(1, fname)?;
@@ -16092,13 +16436,27 @@ pub fn call_builtin_values(
                         None => Err(raise("ValueError", "substring not found")),
                     };
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pystr", "__len__") => {
                 if let Value::Str(x) = &recv {
                     return Ok(i(x.as_str().chars().count() as i64));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             // ==== bytes surface ====
             ("pybytes", "strip") | ("pybytes", "lstrip") | ("pybytes", "rstrip") => {
@@ -16127,7 +16485,14 @@ pub fn call_builtin_values(
                     }
                     return Ok(Value::Bytes(Gc::new(out.to_vec())));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pybytes", "split") | ("pybytes", "rsplit") => {
                 if let Value::Bytes(b) = &recv {
@@ -16253,7 +16618,14 @@ pub fn call_builtin_values(
                     }
                     return Ok(mk(parts));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pybytes", "join") => {
                 if let (Value::Bytes(sep), Some(seq)) = (&recv, a(1)) {
@@ -16282,7 +16654,14 @@ pub fn call_builtin_values(
                     }
                     return Ok(Value::Bytes(Gc::new(out)));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pybytes", "replace") => {
                 if let Value::Bytes(b) = &recv {
@@ -16315,7 +16694,14 @@ pub fn call_builtin_values(
                     out.extend_from_slice(rest);
                     return Ok(Value::Bytes(Gc::new(out)));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pybytes", "find")
             | ("pybytes", "rfind")
@@ -16342,7 +16728,14 @@ pub fn call_builtin_values(
                         }
                     };
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pybytes", "count") => {
                 if let Value::Bytes(b) = &recv {
@@ -16357,7 +16750,14 @@ pub fn call_builtin_values(
                         b.windows(sub.len()).filter(|w| *w == &sub[..]).count() as i64
                     ));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pybytes", "startswith") | ("pybytes", "endswith") => {
                 if let Value::Bytes(b) = &recv {
@@ -16383,7 +16783,14 @@ pub fn call_builtin_values(
                     };
                     return Ok(Value::Bool(hit));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pybytes", "center") | ("pybytes", "zfill") => {
                 if let Value::Bytes(b) = &recv {
@@ -16416,7 +16823,14 @@ pub fn call_builtin_values(
                     };
                     return Ok(Value::Bytes(Gc::new(out)));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pybytes", "title") | ("pybytes", "upper") | ("pybytes", "lower") => {
                 if let Value::Bytes(b) = &recv {
@@ -16442,7 +16856,14 @@ pub fn call_builtin_values(
                     }
                     return Ok(Value::Bytes(Gc::new(out)));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pybytes", "decode") => {
                 let codec = match a(1) {
@@ -16461,13 +16882,27 @@ pub fn call_builtin_values(
                     )
                     .unwrap_or_else(|| Ok(Value::Bytes(Gc::new(b.to_vec()))));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pybytes", "__len__") => {
                 if let Value::Bytes(b) = &recv {
                     return Ok(i(b.len() as i64));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             // T1: bytes.maketrans(from, to) — full 256-entry int map.
             ("pybytes", "maketrans") if false => {
@@ -16591,7 +17026,14 @@ pub fn call_builtin_values(
                     };
                     return Ok(make_dict_view_of(kind, payload, Some(recv.clone())));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pydict", "clear") => {
                 if let Value::Dict(d) = &recv {
@@ -16600,7 +17042,14 @@ pub fn call_builtin_values(
                     }
                     return Ok(Value::None);
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             // ==== set / frozenset surface ====
             ("pyset", "add") => {
@@ -16611,7 +17060,14 @@ pub fn call_builtin_values(
                     st.add(v).map_err(Flow::from_py)?;
                     return Ok(Value::None);
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pyset", "discard") => {
                 if let Value::Set(st) = &recv {
@@ -16620,7 +17076,14 @@ pub fn call_builtin_values(
                     }
                     return Ok(Value::None);
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pyset", "remove") => {
                 if let Value::Set(st) = &recv {
@@ -16636,7 +17099,14 @@ pub fn call_builtin_values(
                     let _ = st.pop_discard(&v);
                     return Ok(Value::None);
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pyset", "pop") => {
                 if let Value::Set(st) = &recv {
@@ -16647,7 +17117,14 @@ pub fn call_builtin_values(
                     let _ = st.pop_discard(&first);
                     return Ok(first);
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pyset", "clear") => {
                 if let Value::Set(st) = &recv {
@@ -16656,7 +17133,14 @@ pub fn call_builtin_values(
                     }
                     return Ok(Value::None);
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pyset", "copy") => {
                 if let Value::Set(st) = &recv {
@@ -16670,7 +17154,14 @@ pub fn call_builtin_values(
                     let items: Vec<Value> = st.iter().collect();
                     return Ok(Value::Frozen(frozenset_of(items)));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pyset", "union")
             | ("pyset", "update")
@@ -16685,7 +17176,16 @@ pub fn call_builtin_values(
                 let base: Vec<Value> = match &recv {
                     Value::Set(st) => st.iter().collect(),
                     Value::Frozen(st) => st.iter().collect(),
-                    _ => return Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name()))),
+                    _ => {
+                        return Err(raise(
+                            "SystemError",
+                            format!(
+                                "bad receiver for pydict fn {} (recv={}",
+                                fname,
+                                recv.type_name()
+                            ),
+                        ))
+                    }
                 };
                 let is_frozen = matches!(&recv, Value::Frozen(_));
                 // CPython union/intersection/difference/symmetric_difference
@@ -16758,7 +17258,16 @@ pub fn call_builtin_values(
                 let base: Vec<Value> = match &recv {
                     Value::Set(st) => st.iter().collect(),
                     Value::Frozen(st) => st.iter().collect(),
-                    _ => return Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name()))),
+                    _ => {
+                        return Err(raise(
+                            "SystemError",
+                            format!(
+                                "bad receiver for pydict fn {} (recv={}",
+                                fname,
+                                recv.type_name()
+                            ),
+                        ))
+                    }
                 };
                 let other = match a(1) {
                     Some(v) => snapshot(&v)?,
@@ -16775,7 +17284,16 @@ pub fn call_builtin_values(
                 let base: Vec<Value> = match &recv {
                     Value::Set(st) => st.iter().collect(),
                     Value::Frozen(st) => st.iter().collect(),
-                    _ => return Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name()))),
+                    _ => {
+                        return Err(raise(
+                            "SystemError",
+                            format!(
+                                "bad receiver for pydict fn {} (recv={}",
+                                fname,
+                                recv.type_name()
+                            ),
+                        ))
+                    }
                 };
                 let other = match a(1) {
                     Some(v) => snapshot(&v)?,
@@ -16788,7 +17306,14 @@ pub fn call_builtin_values(
             ("pyset", "__len__") => match &recv {
                 Value::Set(st) => Ok(i(st.len() as i64)),
                 Value::Frozen(st) => Ok(i(st.len() as i64)),
-                _ => Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name()))),
+                _ => Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                )),
             },
             // ==== tuple surface ====
             ("pytuple", "count") => {
@@ -16796,7 +17321,14 @@ pub fn call_builtin_values(
                     let v = a(1).ok_or_else(|| raise("TypeError", "count expected 1 argument"))?;
                     return Ok(i(t.0.iter().filter(|x| py_eq(x, &v)).count() as i64));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pytuple", "index") => {
                 if let Value::Tuple(t) = &recv {
@@ -16843,13 +17375,27 @@ pub fn call_builtin_values(
                         format!("tuple.index(x): {txt} not in tuple"),
                     ));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pytuple", "__len__") => {
                 if let Value::Tuple(t) = &recv {
                     return Ok(i(t.0.len() as i64));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             // ==== float surface ====
             ("pyfloat", "as_integer_ratio") => {
@@ -16896,19 +17442,40 @@ pub fn call_builtin_values(
                     }
                     return Ok(tuple(vec![big_or_int(num), big_or_int(den)]));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pyfloat", "hex") => {
                 if let Value::Float(x) = &recv {
                     return Ok(s(float_hex(*x)));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pyfloat", "is_integer") => {
                 if let Value::Float(x) = &recv {
                     return Ok(Value::Bool(x.fract() == 0.0 && x.is_finite()));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             // ==== int extras ====
             ("pyint", "from_bytes") => {
@@ -16975,7 +17542,14 @@ pub fn call_builtin_values(
                     let v = n.to_i64().unwrap_or(0);
                     return Ok(i(v.count_ones() as i64));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             ("pyint", "__len__") => Err(raise("TypeError", "object of type 'int' has no len()")),
             ("pystr", "format") => {
@@ -17103,7 +17677,14 @@ pub fn call_builtin_values(
                     }
                     return Ok(s(out));
                 }
-                Err(raise("SystemError", format!("bad receiver for pydict fn {} (recv={}", fname, recv.type_name())))
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
             }
             _ => {
                 // 02.08-full part 1: unbound names the tagged surface doesn't
@@ -17127,7 +17708,10 @@ pub fn call_builtin_values(
                         .map(|sv| Value::Str(ap_obj::PyString::new(sv)))
                         .map_err(Flow::from_py);
                 }
-                return Err(raise("SystemError", format!("unbound builtin-value method: {}", fname)));
+                return Err(raise(
+                    "SystemError",
+                    format!("unbound builtin-value method: {}", fname),
+                ));
             }
         }
     })();
@@ -17550,8 +18134,7 @@ fn call_importlib(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Opt
                 let sub = &n["metadata.".len()..];
                 match sub {
                     "version" => {
-                        let name_v =
-                            args.first().cloned().unwrap_or(Value::None);
+                        let name_v = args.first().cloned().unwrap_or(Value::None);
                         let name = str_arg(&name_v, "name")?;
                         match find_dist_version(&name) {
                             Some(v) => Ok(Value::Str(PyString::new(v.as_str()))),
@@ -17564,13 +18147,8 @@ fn call_importlib(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Opt
                     // T2: entry_points()/distributions() return an
                     // empty selectable so plugin discovery degrades to
                     // "no plugins" instead of crashing.
-                    "entry_points" | "distributions" => {
-                        Ok(Value::List(PyList::from_vec(vec![])))
-                    }
-                    _ => Err(raise(
-                        "SystemError",
-                        format!("importlib fn {name} unbound"),
-                    )),
+                    "entry_points" | "distributions" => Ok(Value::List(PyList::from_vec(vec![]))),
+                    _ => Err(raise("SystemError", format!("importlib fn {name} unbound"))),
                 }
             }
             _ => Err(raise("SystemError", format!("importlib fn {name} unbound"))),
@@ -17916,7 +18494,6 @@ fn general_category(c: char) -> String {
 
 // ===========================================================================
 
-
 /// T2: native importlib.metadata - version(name) (+ PackageNotFound)
 /// backed by scanning the runtime site-packages for *.dist-info
 /// directories. The vendored stdlib metadata relies on
@@ -17938,7 +18515,6 @@ fn build_importlib_metadata(_i: &crate::frame::Interpreter) -> Value {
     );
     finish(m, ns)
 }
-
 
 /// T2: scan the runtime site-packages roots for `<name>*.dist-info/
 /// METADATA` and return the Version. Roots: $ANTIPTYHONY_PATH entries

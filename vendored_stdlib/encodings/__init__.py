@@ -1,29 +1,53 @@
 """Minimal encodings package shim (s037): the codec registry's lookup path
 needs `encodings` importable and `encodings.aliases.aliases` as the alias
 table. Antipythony's codec core lives in the native `_codecs` surface; this
-package only supplies the alias mapping and the search-path hook shape.
+package supplies the alias mapping and the search-path hook shape.
+
+W113: `normalize_encoding` ported verbatim from CPython 3.14 — w3lib's
+`_c18n_encoding` (via scrapy's resolve_encoding chain for response.text)
+calls it, and the aliases table is now the full CPython table so
+latin_1/gb_2312_80/etc. canonicalize identically to CPython.
 """
 
-_alias_table = {
-    "latin_1": "latin_1",
-    "latin1": "latin_1",
-    "iso_8859_1": "latin_1",
-    "iso8859_1": "latin_1",
-    "ascii": "ascii",
-    "us_ascii": "ascii",
-    "utf_16": "utf_16",
-    "u16": "utf_16",
-    "utf_32": "utf_32",
-    "u32": "utf_32",}
+
+def normalize_encoding(encoding):
+
+    """ Normalize an encoding name.
+
+        Normalization works as follows: all non-alphanumeric
+        characters except the dot used for Python package names are
+        collapsed and replaced with a single underscore, e.g. '  -;#'
+        becomes '_'. Leading and trailing underscores are removed.
+
+        Note that encoding names should be ASCII only.
+
+    """
+    if isinstance(encoding, bytes):
+        encoding = str(encoding, "ascii")
+
+    chars = []
+    punct = False
+    for c in encoding:
+        if c.isalnum() or c == '.':
+            if punct and chars:
+                chars.append('_')
+            if c.isascii():
+                chars.append(c)
+            punct = False
+        else:
+            punct = True
+    return ''.join(chars)
 
 
 def search_function(encoding):
-    norm = encoding.replace(" ", "_").replace("-", "_").lower()
-    name = _alias_table.get(norm) or _alias_table.get(encoding)
-    if name is None:
+    norm = normalize_encoding(encoding).lower()
+    import encodings.aliases as _al
+    name = _al.aliases.get(norm, norm)
+    try:
+        mod = __import__("encodings." + name, globals(), locals(), ["getregentry"])
+    except Exception:
         return None
-    import encodings.aliases  # noqa: F401
-    return None  # v0: native _codecs registry answers before this hook
+    return mod.getregentry()
 
 
 # CPython registers this via codecs.register at import.

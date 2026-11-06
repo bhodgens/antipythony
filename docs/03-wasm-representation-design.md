@@ -1,7 +1,7 @@
 # Plan 03 — WasmGC representation design (pyobj → wasm structs)
 
-Status: DESIGN (main-model draft for leaf 03.01 to formalize into
-`docs/spec/07-wasm-repr.md`). Scope: how the ap-obj value model
+Status: FORMALIZED — normative spec is `docs/spec/07-wasm-repr.md` (leaf 03.01,
+S-07-* clauses). Where this draft and the spec disagree, the spec wins. Scope: how the ap-obj value model
 (`crates/ap-obj/src/value.rs`, spec 01) is represented inside a WasmGC module
 emitted by `ap-codegen-wasm`, and what `ap-host` (wasmtime) must provide.
 

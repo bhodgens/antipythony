@@ -399,10 +399,10 @@ fn report_unraisable(interp: &Rc<Interpreter>, del_f: &Value, exc: &ExceptionVal
                     .attrs
                     .borrow_mut()
                     .set(Value::Str(PyString::new("__traceback__")), exc_tb.clone());
-                let _ = iov
-                    .attrs
-                    .borrow_mut()
-                    .set(Value::Str(PyString::new("__ap_tb__")), Value::List(PyList::from_vec(Vec::new())));
+                let _ = iov.attrs.borrow_mut().set(
+                    Value::Str(PyString::new("__ap_tb__")),
+                    Value::List(PyList::from_vec(Vec::new())),
+                );
             }
             let _ = a.set(s("object"), Value::None);
             // CPython unraisable objects carry err_msg (may be None);
@@ -414,7 +414,10 @@ fn report_unraisable(interp: &Rc<Interpreter>, del_f: &Value, exc: &ExceptionVal
                 Value::Obj(o) => format!("obj:{}", o.name),
                 v => format!("{:?}", v).chars().take(24).collect(),
             };
-            eprintln!("[APUNR] invoke unraisablehook class={} exc_value={}", exc.class, evk);
+            eprintln!(
+                "[APUNR] invoke unraisablehook class={} exc_value={}",
+                exc.class, evk
+            );
         }
         let _ = crate::interp::call_value_pub(interp, &hook, &[Value::Obj(args_obj)], &[]);
         return;

@@ -182,9 +182,7 @@ impl PyIterator {
                                     );
                                 }
                             }
-                            crate::interp::set_pending_generator_error_for(
-                                *id, f,
-                            );
+                            crate::interp::set_pending_generator_error_for(*id, f);
                             None
                         }
                     },

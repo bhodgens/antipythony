@@ -244,8 +244,7 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
             // outer key type + the offending member type (CPython scans
             // tuples for the first unhashable element).
             if ap_obj::ops::hash(key).is_err() {
-                let inner =
-                    first_unhashable_type(key).unwrap_or_else(|| key_type_name(key));
+                let inner = first_unhashable_type(key).unwrap_or_else(|| key_type_name(key));
                 return Err(raise(
                     "TypeError",
                     format!(
@@ -611,9 +610,18 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
             if crate::classes::is_list_derived_instance(obj) {
                 if let Value::Str(sk) = key {
                     if std::env::var("APX_SCOPE_DEBUG").is_ok() {
-                        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/t1listidx.txt") {
+                        if let Ok(mut f) = std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open("/tmp/t1listidx.txt")
+                        {
                             use std::io::Write;
-                            let _ = writeln!(f, "LISTIDX str key={} recv={}", sk.as_str(), obj.type_name());
+                            let _ = writeln!(
+                                f,
+                                "LISTIDX str key={} recv={}",
+                                sk.as_str(),
+                                obj.type_name()
+                            );
                         }
                     }
                 }
@@ -674,7 +682,10 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
                             // Wave-78: direct ctx push — CID.__getitem__ calls
                             // super().__getitem__ (same as the set/del paths).
                             if let Some(interp) = crate::builtins_modules::current_interp() {
-                                interp.super_stack.borrow_mut().push((gowner, obj.clone(), false));
+                                interp
+                                    .super_stack
+                                    .borrow_mut()
+                                    .push((gowner, obj.clone(), false));
                                 let r = crate::interp::call_value_pub3(
                                     &gf,
                                     &[obj.clone(), key.clone()],
@@ -725,16 +736,15 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
             // W112: dict-backed legacy objects (attrs["__ap_dict__"]) -
             // cacheprovider LF cache reads route through here.
             if let Value::Obj(io) = obj {
-                if let Some(Value::Dict(d)) =
-                    io.attrs.borrow().get(&Value::Str(PyString::new("__ap_dict__")))
+                if let Some(Value::Dict(d)) = io
+                    .attrs
+                    .borrow()
+                    .get(&Value::Str(PyString::new("__ap_dict__")))
                 {
                     match d.get(key) {
                         Some(v) => return Ok(v),
                         None => {
-                            return Err(raise(
-                                "KeyError",
-                                format!("{:?}", key),
-                            ));
+                            return Err(raise("KeyError", format!("{:?}", key)));
                         }
                     }
                 }
@@ -748,16 +758,15 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
             // W112: same fallback for the catch-all (Namespace/'object'
             // -kind dict-backed legacy objects).
             if let Value::Obj(io) = obj {
-                if let Some(Value::Dict(d)) =
-                    io.attrs.borrow().get(&Value::Str(PyString::new("__ap_dict__")))
+                if let Some(Value::Dict(d)) = io
+                    .attrs
+                    .borrow()
+                    .get(&Value::Str(PyString::new("__ap_dict__")))
                 {
                     match d.get(key) {
                         Some(v) => return Ok(v),
                         None => {
-                            return Err(raise(
-                                "KeyError",
-                                format!("{:?}", key),
-                            ));
+                            return Err(raise("KeyError", format!("{:?}", key)));
                         }
                     }
                 }
@@ -901,14 +910,19 @@ pub fn subscript_set(obj: &Value, key: &Value, v: Value) -> Result<(), Flow> {
                         Value::Obj(ob) => format!("{:?}", ob.kind),
                         _ => "prim".to_string(),
                     };
-                    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/t1listidx.txt") {
+                    if let Ok(mut f) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open("/tmp/t1listidx.txt")
+                    {
                         use std::io::Write;
                         let key_repr = match other {
                             Key::Other(v) => format!("Other({})", v.type_name()),
                             Key::Index(i) => format!("Index({})", i),
                             _ => "other".to_string(),
                         };
-                        let _ = writeln!(f, "LISTIDX-SET-OTHER other={} objkind={}", key_repr, tname);
+                        let _ =
+                            writeln!(f, "LISTIDX-SET-OTHER other={} objkind={}", key_repr, tname);
                     }
                     return Err(raise("TypeError", "list indices must be integers"));
                 }
@@ -984,7 +998,10 @@ pub fn subscript_set(obj: &Value, key: &Value, v: Value) -> Result<(), Flow> {
                     // contention, leaving it for the next nested call to
                     // steal. Direct push + builtin_super's skip-sentinel
                     // makes the ctx visible to super() inside __setitem__.
-                    interp.super_stack.borrow_mut().push((owner, obj.clone(), false));
+                    interp
+                        .super_stack
+                        .borrow_mut()
+                        .push((owner, obj.clone(), false));
                     let r = crate::interp::call_value(
                         &interp,
                         &caller,
@@ -1139,14 +1156,8 @@ pub fn subscript_del(obj: &Value, key: &Value) -> Result<(), Flow> {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
             let interp = crate::builtins_modules::current_interp()
                 .ok_or_else(|| raise("TypeError", "no interpreter for __delitem__"))?;
-            let t = o
-                .type_ref
-                .borrow()
-                .as_ref()
-                .and_then(|w| w.upgrade());
-            let entry = t
-                .as_ref()
-                .and_then(|t| t.lookup_with_owner("__delitem__"));
+            let t = o.type_ref.borrow().as_ref().and_then(|w| w.upgrade());
+            let entry = t.as_ref().and_then(|t| t.lookup_with_owner("__delitem__"));
             if let Some((f, owner)) = entry {
                 // Wave-78: push the defining-class super ctx DIRECTLY
                 // onto super_stack around the __delitem__ call — scrapy
@@ -1159,13 +1170,12 @@ pub fn subscript_del(obj: &Value, key: &Value) -> Result<(), Flow> {
                 if std::env::var("APX_SUPERDBG").is_ok() {
                     eprintln!("SUPER-DELSTAGE owner={}", owner.name);
                 }
-                interp.super_stack.borrow_mut().push((owner, obj.clone(), false));
-                let r = crate::interp::call_value_pub(
-                    &interp,
-                    &f,
-                    &[obj.clone(), key.clone()],
-                    &[],
-                );
+                interp
+                    .super_stack
+                    .borrow_mut()
+                    .push((owner, obj.clone(), false));
+                let r =
+                    crate::interp::call_value_pub(&interp, &f, &[obj.clone(), key.clone()], &[]);
                 interp.super_stack.borrow_mut().pop();
                 return r.map(|_| ());
             }
@@ -1183,9 +1193,7 @@ pub fn subscript_del(obj: &Value, key: &Value) -> Result<(), Flow> {
                     // covers instances whose type_ref was dropped but
                     // whose class payload (and __delitem__) survives via
                     // the attribute chain.
-                    if let Ok(dv) =
-                        crate::classes::attr_get_protocol(&interp, obj, "__delitem__")
-                    {
+                    if let Ok(dv) = crate::classes::attr_get_protocol(&interp, obj, "__delitem__") {
                         let r = crate::interp::call_value_pub(
                             &interp,
                             &dv,
@@ -1228,10 +1236,7 @@ pub fn subscript_del(obj: &Value, key: &Value) -> Result<(), Flow> {
                 }
                 Err(raise(
                     "TypeError",
-                    format!(
-                        "'{}' object doesn't support item deletion",
-                        obj.type_name()
-                    ),
+                    format!("'{}' object doesn't support item deletion", obj.type_name()),
                 ))
             }
         }
@@ -1261,9 +1266,7 @@ pub fn subscript_del(obj: &Value, key: &Value) -> Result<(), Flow> {
             // instances with a live __class__) also answer __delitem__.
             let interp = crate::builtins_modules::current_interp();
             if let Some(interp) = interp {
-                if let Ok(dv) =
-                    crate::classes::attr_get_protocol(&interp, obj, "__delitem__")
-                {
+                if let Ok(dv) = crate::classes::attr_get_protocol(&interp, obj, "__delitem__") {
                     let r = crate::interp::call_value_pub(
                         &interp,
                         &dv,
@@ -1571,6 +1574,10 @@ pub fn call_method(
             Some(Ok(Value::Bytes(Gc::new(out))))
         }
         (Value::Bytes(b), "decode") => {
+            if std::env::var("APX_DECDBG").is_ok() {
+                let kinds: Vec<String> = args.iter().map(|v| v.type_name().to_string()).collect();
+                eprintln!("[DECDBG] args={} kinds={:?}", args.len(), kinds);
+            }
             let codec = args
                 .first()
                 .and_then(|v| match v {
@@ -1578,7 +1585,14 @@ pub fn call_method(
                     _ => None,
                 })
                 .unwrap_or_else(|| "utf-8".to_string());
-            Some(decode_bytes(b, &codec))
+            let errors = args
+                .get(1)
+                .and_then(|v| match v {
+                    Value::Str(x) => Some(x.as_str().to_string()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| "strict".to_string());
+            Some(decode_bytes_err(b, &codec, &errors))
         }
         (Value::List(l), "append") => {
             l.append(one_arg(args)?.clone());
@@ -1603,15 +1617,17 @@ pub fn call_method(
         (Value::List(l), "sort") => {
             // v0: homogeneous int/str sort; other item types left as-is
             // (full __lt__ dispatch arrives with the cmp pass).
-            let all_int = l.items().iter().all(|v| matches!(v, Value::Int(_) | Value::Bool(_)));
+            let all_int = l
+                .items()
+                .iter()
+                .all(|v| matches!(v, Value::Int(_) | Value::Bool(_)));
             let all_str = l.items().iter().all(|v| matches!(v, Value::Str(_)));
             if all_int || all_str {
                 let mut items = l.items().to_vec();
                 items.sort_by(|a, b| match (a, b) {
-                    (Value::Int(x), Value::Int(y)) => x
-                        .to_i64()
-                        .unwrap_or(0)
-                        .cmp(&y.to_i64().unwrap_or(0)),
+                    (Value::Int(x), Value::Int(y)) => {
+                        x.to_i64().unwrap_or(0).cmp(&y.to_i64().unwrap_or(0))
+                    }
                     (Value::Str(x), Value::Str(y)) => x.as_str().cmp(y.as_str()),
                     _ => std::cmp::Ordering::Equal,
                 });
@@ -1813,10 +1829,7 @@ pub fn call_method(
             // KeyError on an empty dict.
             match d.popitem() {
                 Some((k, v)) => Some(Ok(Value::Tuple(Gc::new(Tuple(vec![k, v]))))),
-                None => Some(Err(raise(
-                    "KeyError",
-                    "popitem(): dictionary is empty",
-                ))),
+                None => Some(Err(raise("KeyError", "popitem(): dictionary is empty"))),
             }
         }
         (Value::Set(s), "clear") => {
@@ -1876,7 +1889,9 @@ pub fn call_method(
             Some(Ok(d.get(k).unwrap_or(dv)))
         }
         (Value::List(l), "__len__") => Some(Ok(Value::Int(ap_obj::Int::from_i64(l.len() as i64)))),
-        (Value::Tuple(t), "__len__") => Some(Ok(Value::Int(ap_obj::Int::from_i64(t.0.len() as i64)))),
+        (Value::Tuple(t), "__len__") => {
+            Some(Ok(Value::Int(ap_obj::Int::from_i64(t.0.len() as i64))))
+        }
         (Value::Str(s), "__len__") => Some(Ok(Value::Int(ap_obj::Int::from_i64(
             s.as_str().chars().count() as i64,
         )))),
@@ -1915,7 +1930,74 @@ fn super_user_method(
 
 /// bytes.decode(codec).
 fn decode_bytes(b: &[u8], codec: &str) -> MResult {
+    decode_bytes_err(b, codec, "strict")
+}
+
+/// bytes.decode(codec, errors). W113: the native arms below are strict-only
+/// (the runtime ignores `errors`); non-strict modes route through the
+/// codec registry so w3lib's errors="replace" decodes like CPython.
+fn decode_bytes_err(b: &[u8], codec: &str, errors: &str) -> MResult {
     let codec_l = codec.to_ascii_lowercase();
+    // W113: the native arms below are strict-only. utf-8/ascii non-strict
+    // modes are implemented here directly (CPython semantics) — the codec
+    // registry route would recurse, since the Python utf_8 codec itself
+    // calls bytes.decode.
+    if errors != "strict" && matches!(codec_l.as_str(), "utf-8" | "utf8") {
+        let mut out = String::new();
+        let mut rest: &[u8] = b;
+        while !rest.is_empty() {
+            match std::str::from_utf8(rest) {
+                Ok(s) => {
+                    out.push_str(s);
+                    break;
+                }
+                Err(e) => {
+                    let err = e;
+                    let valid = err.valid_up_to();
+                    let bad = err
+                        .error_len()
+                        .unwrap_or_else(|| rest.len().saturating_sub(valid).max(1));
+                    out.push_str(std::str::from_utf8(&rest[..valid]).unwrap_or(""));
+                    match errors {
+                        "replace" => out.push('\u{fffd}'),
+                        "ignore" | "backslashreplace" => {}
+                        _ => {
+                            return Err(raise(
+                                "UnicodeDecodeError",
+                                format!(
+                                    "'utf-8' codec can't decode bytes: invalid continuation byte"
+                                ),
+                            ))
+                        }
+                    }
+                    rest = &rest[(valid + bad).min(rest.len())..];
+                }
+            }
+        }
+        return Ok(Value::Str(PyString::new(out)));
+    }
+    if errors != "strict" && matches!(codec_l.as_str(), "ascii" | "us_ascii" | "us-ascii") {
+        let mut out = String::new();
+        for &x in b {
+            if x < 0x80 {
+                out.push(x as char);
+            } else if errors == "replace" {
+                out.push('\u{fffd}');
+            } else if errors != "ignore" && errors != "backslashreplace" {
+                return Err(raise(
+                    "UnicodeDecodeError",
+                    format!("'ascii' codec can't decode byte 0x{:02x}", x),
+                ));
+            }
+        }
+        return Ok(Value::Str(PyString::new(out)));
+    }
+    if errors != "strict" {
+        return match fallback_decode(b, codec, errors) {
+            Ok(v) => Ok(v),
+            Err(e) => Err(Flow::Raise(e)),
+        };
+    }
     match codec_l.as_str() {
         "utf-8" | "utf8" => match std::str::from_utf8(b) {
             Ok(s) => Ok(Value::Str(PyString::new(s))),
@@ -1945,7 +2027,59 @@ fn decode_bytes(b: &[u8], codec: &str) -> MResult {
             let s: String = b.iter().map(|&x| x as char).collect();
             Ok(Value::Str(PyString::new(s)))
         }
-        other => Err(raise("LookupError", format!("unknown encoding: {other}"))),
+        other => match fallback_decode(b, codec, errors) {
+            Ok(v) => Ok(v),
+            Err(e) => Err(Flow::Raise(e)),
+        },
+    }
+}
+
+/// W113: bytes.decode of a codec the native arms don't know (cp1252,
+/// utf-16, mac_roman, ...). CPython consults the codec registry; route
+/// through the vendored `codecs` module's lookup(). Returns the decoded
+/// str, or the LookupError CPython would raise for an unknown codec.
+fn fallback_decode(b: &[u8], codec: &str, errors: &str) -> Result<Value, ExceptionValue> {
+    let unknown = || ExceptionValue::msg("LookupError", format!("unknown encoding: {}", codec));
+    let interp = crate::interp::current_interp_handle();
+    let codecs_v = match crate::importer::import_module(&interp, "codecs") {
+        Ok(v) => v,
+        Err(Flow::Raise(e)) => return Err(e),
+        Err(_) => return Err(unknown()),
+    };
+    let lookup = crate::interp::attr_get_public(&interp, &codecs_v, "lookup")
+        .ok()
+        .flatten()
+        .ok_or_else(unknown)?;
+    let info = match crate::interp::call_value_pub(
+        &interp,
+        &lookup,
+        &[Value::Str(PyString::new(codec))],
+        &[],
+    ) {
+        Ok(v) => v,
+        Err(Flow::Raise(e)) => return Err(e),
+        Err(_) => return Err(unknown()),
+    };
+    let dec = crate::interp::attr_get_public(&interp, &info, "decode")
+        .ok()
+        .flatten()
+        .ok_or_else(unknown)?;
+    let data = Value::Bytes(Gc::new(b.to_vec()));
+    match crate::interp::call_value_pub(
+        &interp,
+        &dec,
+        &[data, Value::Str(PyString::new(errors))],
+        &[],
+    ) {
+        Ok(r) => {
+            // CodecInfo.decode returns (str, consumed).
+            match &r {
+                Value::Tuple(t) if t.0.len() == 2 => Ok(t.0[0].clone()),
+                other => Ok(other.clone()),
+            }
+        }
+        Err(Flow::Raise(e)) => Err(e),
+        Err(_) => Err(unknown()),
     }
 }
 /// str.encode(codec) — lives here (method surface) not in builtins.
@@ -1985,7 +2119,7 @@ pub fn encode_str(s: &str, codec: &str) -> MResult {
                 ))
             }
         }
-                "unicode_escape" | "raw_unicode_escape" => {
+        "unicode_escape" | "raw_unicode_escape" => {
             let mut out = String::with_capacity(s.len());
             for c in s.chars() {
                 match c {
@@ -2007,7 +2141,7 @@ pub fn encode_str(s: &str, codec: &str) -> MResult {
             }
             Ok(Value::Bytes(Gc::new(out.into_bytes())))
         }
-"latin-1" | "latin1" | "iso-8859-1" | "iso8859-1" => {
+        "latin-1" | "latin1" | "iso-8859-1" | "iso8859-1" => {
             // 04.01 (six.b: s.encode("latin-1")): latin-1 maps U+0000..U+00FF
             // to the identical byte values.
             let mut out = Vec::with_capacity(s.len());

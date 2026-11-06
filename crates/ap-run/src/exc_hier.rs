@@ -189,7 +189,12 @@ impl ExceptionValue {
                 "[EV-AE] cls={} args={} bt={}",
                 class,
                 args.len(),
-                interesting.iter().take(8).cloned().collect::<Vec<_>>().join(" <- ")
+                interesting
+                    .iter()
+                    .take(8)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(" <- ")
             );
             if !bt_full.is_empty() {
                 eprintln!("[EV-AE-BT] {}", bt_full);

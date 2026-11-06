@@ -188,7 +188,8 @@ fn gen_fiber_body(
         .borrow()
         .get(&func_obj.fn_id.unwrap_or(u32::MAX))
         .cloned();
-    let bound = crate::interp::bind_params_for_generator(&interp, &entry, &def, &func_obj, &args, &kwargs);
+    let bound =
+        crate::interp::bind_params_for_generator(&interp, &entry, &def, &func_obj, &args, &kwargs);
     let (locals, my_cells, free_cells) = match bound {
         Ok(b) => b,
         Err(f) => {
@@ -270,7 +271,11 @@ fn gen_fiber_body(
             // ordinal mapping — prefer the real one, fall back to it.
             let line = {
                 let fl = frame.last_line.get();
-                if fl > 0 { fl } else { line_track.get() }
+                if fl > 0 {
+                    fl
+                } else {
+                    line_track.get()
+                }
             };
             let file = crate::interp::fn_entry_file(&interp, &entry);
             if std::env::var("APX_GEN_DEBUG").is_ok() {
@@ -283,11 +288,10 @@ fn gen_fiber_body(
                             .unwrap_or_default()
                     })
                     .unwrap_or_default();
-                let tbtxt: Vec<String> = e
-                    .tb
-                    .iter()
-                    .map(|(q, l, f)| format!("  {}:{} ({})", q, l, f))
-                    .collect();
+                let tbtxt: Vec<String> =
+                    e.tb.iter()
+                        .map(|(q, l, f)| format!("  {}:{} ({})", q, l, f))
+                        .collect();
                 eprintln!(
                     "[GEN-RAISE] fiber={} class={} msg={} at {}:{} ({}) tb_len={}\n{}",
                     current_running_fiber_id(),
@@ -391,11 +395,10 @@ pub fn resume_live(
     // from the pending slot on Return).
     if std::env::var("APX_GEN_DEBUG").is_ok() {
         if let GenInput::Throw(e) = &input {
-            let tbtxt: Vec<String> = e
-                .tb
-                .iter()
-                .map(|(q, l, f)| format!("  {}:{} ({})", q, l, f))
-                .collect();
+            let tbtxt: Vec<String> =
+                e.tb.iter()
+                    .map(|(q, l, f)| format!("  {}:{} ({})", q, l, f))
+                    .collect();
             eprintln!(
                 "[THROW-IN] fiber={} id={} class={} tb_len={}\n{}",
                 current_running_fiber_id(),
@@ -409,9 +412,7 @@ pub fn resume_live(
     if !live.started {
         let pre_start: Option<crate::exc_hier::ExceptionValue> = match &input {
             GenInput::Throw(e) => Some(e.clone()),
-            GenInput::Close => {
-                Some(crate::exc_hier::ExceptionValue::msg("GeneratorExit", ""))
-            }
+            GenInput::Close => Some(crate::exc_hier::ExceptionValue::msg("GeneratorExit", "")),
             GenInput::Send(_) => None,
         };
         if let Some(e) = pre_start {

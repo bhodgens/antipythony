@@ -63,6 +63,14 @@ deviated_sha256 = "981d4c398849f9ebcab72300d9c1fe288fd6d7f28957b3b3fa3a493a5836d
 note = ""
 
 [[file]]
+path = "_ast.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "4fc16e8045e38a552753c06068ce36bc877c940dd76e6270646545223623c2fd"
+note = "antipythony shim: native bridge module (class hierarchy + from_native dict→AST converter consumed by compile(PyCF_ONLY_AST)). W114: adds AST._field_types (ASDL list-typed fields) and per-class _optional_fields (ASDL `?` fields) so ast.dump matches CPython omit semantics; no CPython Lib/_ast.py counterpart to hash."
+
+[[file]]
 path = "_collections_abc.py"
 upstream_path = "_collections_abc.py"
 status = "deviated"
@@ -455,14 +463,6 @@ deviated_sha256 = "9f874b5f433c0b96df56845d72309a7dceddd129567a1f4405d52694a6d8c
 note = "W114 round-38: bytes/bytearray source decode in parse() (utf-8-sig, latin-1 fallback per PEP 263-lite); dump omits None-optional and empty-list fields via _optional_fields/_field_types (native _ast classes carry no typing annotations); dump/_dump_impl alias."
 
 [[file]]
-path = "_ast.py"
-upstream_path = ""
-status = "deviated"
-upstream_sha256 = ""
-deviated_sha256 = "4fc16e8045e38a552753c06068ce36bc877c940dd76e6270646545223623c2fd"
-note = "antipythony shim: native bridge module (class hierarchy + from_native dict→AST converter consumed by compile(PyCF_ONLY_AST)). W114: adds AST._field_types (ASDL list-typed fields) and per-class _optional_fields (ASDL `?` fields) so ast.dump matches CPython omit semantics; no CPython Lib/_ast.py counterpart to hash."
-
-[[file]]
 path = "asyncio/__init__.py"
 upstream_path = "asyncio/__init__.py"
 status = "pristine"
@@ -523,7 +523,7 @@ path = "asyncio/coroutines.py"
 upstream_path = "asyncio/coroutines.py"
 status = "deviated"
 upstream_sha256 = "c5b8563c88e343f3076630aa6545fc77c548ceefb76936a360d7895c13691753"
-deviated_sha256 = "8f648af53eeb5d34c6c85d2cbc19c294f02636426a399be3cfb99fb82c3c8f0e"
+deviated_sha256 = "cbf44ed7f5d43e14971e86a4de7436682ca17b6f2f78a4f69a7c8945821f081b"
 note = "antipythony copy of CPython asyncio.coroutines with a 12-line deviation: iscoroutine also accepts the runtime's Namespace coroutine markers (checks the __ap_coroutine__ attr dict directly because getattr may misroute through marker dispatch) (wave-96)."
 
 [[file]]
@@ -675,7 +675,7 @@ path = "asyncio/tasks.py"
 upstream_path = "asyncio/tasks.py"
 status = "deviated"
 upstream_sha256 = "a97ffdb60a42104a86f2ece781878b3371bd88e9eea8f1ac1fa8f397cc11cca5"
-deviated_sha256 = "2604152d41c01a0c38f2654e23d04500f8e8295ebc41f5a6afbccdace01a75c8"
+deviated_sha256 = "e2661185a7f9af3871d01fd7cb6547df75147a3cff3224094d5405a6753698f6"
 note = "antipythony copy of CPython asyncio.tasks with a 20-line deviation: replaces itertools.count with a local _TaskNameCounter class since the runtime's Iterator __next__ surface returns the object itself; behavior-identical Task-N names (APX-W110)."
 
 [[file]]
@@ -891,7 +891,7 @@ path = "codecs.py"
 upstream_path = "codecs.py"
 status = "deviated"
 upstream_sha256 = "718f39b3ea68fe934214d789c5bce3005fa828040b03a72d2f715fc5e2647b7e"
-deviated_sha256 = "ca2b1968f37dd56a04b2c96755c95cb20a8150a10b778deb5eecab5d05db6a0c"
+deviated_sha256 = "6db69cd0fb10a7e01e46b784384850c33553bad6ab1cd680610e1c212d6c80a1"
 note = "T1 chain: encode/decode helper unwrap"
 
 [[file]]
@@ -956,14 +956,6 @@ upstream_path = "concurrent/futures/process.py"
 status = "pristine"
 upstream_sha256 = "5cecee12ee88255899e980a68d2706442b3fc510ccb9c4a1e0b2c6585ff79aef"
 deviated_sha256 = "5cecee12ee88255899e980a68d2706442b3fc510ccb9c4a1e0b2c6585ff79aef"
-note = ""
-
-[[file]]
-path = "concurrent/futures/thread.py"
-upstream_path = "concurrent/futures/thread.py"
-status = "pristine"
-upstream_sha256 = "7f95079dda8064cd372c9c0ea60c7e172b34c8f2aa0c3d9213e85b8584aa033c"
-deviated_sha256 = "7f95079dda8064cd372c9c0ea60c7e172b34c8f2aa0c3d9213e85b8584aa033c"
 note = ""
 
 [[file]]
@@ -1651,7 +1643,7 @@ path = "encodings/__init__.py"
 upstream_path = "encodings/__init__.py"
 status = "deviated"
 upstream_sha256 = "2b708410495acf12a6fad9d2de928dd89e567537c253eaa2b51aaae578e96c59"
-deviated_sha256 = "87663a691ee141814c31fc7e225a1e8a27bd9a7964cb0867273e8dbbad05c84c"
+deviated_sha256 = "c259cc24f7bcb6f0d08314e36857a8ba2a1b8236fc696f9639ab3f13c501aefc"
 note = "T1 chain: codec registry adjustments for runtime search path"
 
 [[file]]
@@ -3495,14 +3487,6 @@ deviated_sha256 = "65ba1bacdc42e768382208ff27f3001ee77d9d61aafba686c67652d22b84b
 note = ""
 
 [[file]]
-path = "traceback.py"
-upstream_path = "traceback.py"
-status = "pristine"
-upstream_sha256 = "a8fbeea470aa4e29691560de889de136570bead76d9c8a2b6a891849c047a3b3"
-deviated_sha256 = "a8fbeea470aa4e29691560de889de136570bead76d9c8a2b6a891849c047a3b3"
-note = ""
-
-[[file]]
 path = "types.py"
 upstream_path = "types.py"
 status = "deviated"
@@ -3636,14 +3620,6 @@ upstream_path = "urllib/error.py"
 status = "pristine"
 upstream_sha256 = "d12b3cc66af3f42a8ebe63e1c91d24f92c6237b6a93a3702938dffabd812d77b"
 deviated_sha256 = "d12b3cc66af3f42a8ebe63e1c91d24f92c6237b6a93a3702938dffabd812d77b"
-note = ""
-
-[[file]]
-path = "urllib/parse.py"
-upstream_path = "urllib/parse.py"
-status = "pristine"
-upstream_sha256 = "484b633b81d024da52649c7ff775c81b338de9f60585c94e5adfe335a27d9509"
-deviated_sha256 = "484b633b81d024da52649c7ff775c81b338de9f60585c94e5adfe335a27d9509"
 note = ""
 
 [[file]]
@@ -3997,3 +3973,27 @@ status = "deviated"
 upstream_sha256 = ""
 deviated_sha256 = "235ac04794e6237d9b32aba5571776867adeda06dffe419d794374b91faa2e91"
 note = "antipythony shim with no CPython counterpart (zope.interface is third-party): minimal InterfaceClass/SpecificationBase token surface backing the advisory-only zope shim (4b228b8)."
+
+[[file]]
+path = "traceback.py"
+upstream_path = "traceback.py"
+status = "deviated"
+upstream_sha256 = "a8fbeea470aa4e29691560de889de136570bead76d9c8a2b6a891849c047a3b3"
+deviated_sha256 = "1cac2a8eb6241b9c0f3292fd0d3dd9c944ed760ac67a2bd8a53954475591008e"
+note = "antipythony copy of CPython traceback.py with an APX-W113 deviation in _walk_tb_with_full_positions: co_positions() is not exposed on this runtime's code objects, so the shim falls back to tb_lineno for every frame (positions tuple keeps the None shape upstream emits when the line number is unknown). Line numbers on frames degrade toward tb_lineno precision; tracked residual (AGENTS.md T2: traceback frame linenos imprecise)."
+
+[[file]]
+path = "urllib/parse.py"
+upstream_path = "urllib/parse.py"
+status = "deviated"
+upstream_sha256 = "484b633b81d024da52649c7ff775c81b338de9f60585c94e5adfe335a27d9509"
+deviated_sha256 = "1bb180f547d741705714094eed575191c9fe2a9c7a1021c83a89c7b4ead75fe5"
+note = "antipythony copy of CPython urllib/parse.py, one-line APX-W113 deviation in urlsplit(): returns SplitResult(...) instead of the bare tuple (tuple subclass identity so isinstance(x, tuple) and field access both hold under this runtime's tuple-marker surface; CPython 3.14 returns the SplitResult too - the local upstream snapshot predates it). Parity restored to upstream shape; declaration records the bytes."
+
+[[file]]
+path = "concurrent/futures/thread.py"
+upstream_path = "concurrent/futures/thread.py"
+status = "deviated"
+upstream_sha256 = "7f95079dda8064cd372c9c0ea60c7e172b34c8f2aa0c3d9213e85b8584aa033c"
+deviated_sha256 = "ed22106d5d4cff49fbd0eb832c1e5824e4a95aa7e2daa08a728e5d0f90e0a4a6"
+note = "antipythony copy of CPython concurrent/futures/thread.py with an APX-W113 deviation: _CounterNext class replaces the itertools.count().__next__ counter binding (iterator-bound __next__ as a class attr is not callable on this runtime - same family as the asyncio/tasks.py _TaskNameCounter workaround). Behavior-identical Thread-N names."

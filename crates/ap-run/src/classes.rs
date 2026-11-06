@@ -308,9 +308,7 @@ pub fn type_of(_interp: &Interpreter, v: &Value) -> Option<Rc<TypeRef>> {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass => o.class_ref.borrow().clone(),
         // T2 (wave-39): stream-derived instances are Opaque carrying the
         // user class ref; super()/isinstance must see the user class.
-        Value::Obj(o)
-            if o.kind == ap_obj::ObjKind::Opaque && o.class_ref.borrow().is_some() =>
-        {
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque && o.class_ref.borrow().is_some() => {
             o.class_ref.borrow().clone()
         }
         _ => None,
@@ -336,9 +334,7 @@ pub fn class_of_value(interp: &Interpreter, v: &Value) -> Option<Rc<TypeRef>> {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass => o.class_ref.borrow().clone(),
         // T2 (wave-39): stream-derived instances are Opaque carrying the
         // user class ref; super()/isinstance must see the user class.
-        Value::Obj(o)
-            if o.kind == ap_obj::ObjKind::Opaque && o.class_ref.borrow().is_some() =>
-        {
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque && o.class_ref.borrow().is_some() => {
             o.class_ref.borrow().clone()
         }
         _ => None,
@@ -737,7 +733,11 @@ pub fn exec_class_def(
                         Ok(Some(t)) => format!(
                             "{}[mro={:?}]",
                             t.name,
-                            t.mro.borrow().iter().map(|m| m.name.clone()).collect::<Vec<_>>()
+                            t.mro
+                                .borrow()
+                                .iter()
+                                .map(|m| m.name.clone())
+                                .collect::<Vec<_>>()
                         ),
                         _ => "<none>".to_string(),
                     })
@@ -926,7 +926,10 @@ pub fn exec_class_def(
             aliases.push((mangled, v.clone()));
         }
         for (mangled, v) in aliases {
-            if ns.get(&Value::Str(PyString::new(mangled.clone()))).is_none() {
+            if ns
+                .get(&Value::Str(PyString::new(mangled.clone())))
+                .is_none()
+            {
                 let _ = ns.set(Value::Str(PyString::new(mangled)), v);
             }
         }
@@ -1217,8 +1220,9 @@ pub fn exec_class_def(
         // stream-base marker so instantiate() routes construction through
         // the native stream ctor.
         for bt in &base_types {
-            if let Some(Value::Str(b)) =
-                bt.dict.get(&Value::Str(PyString::new("__ap_stream_base__")))
+            if let Some(Value::Str(b)) = bt
+                .dict
+                .get(&Value::Str(PyString::new("__ap_stream_base__")))
             {
                 let _ = t.dict.set(
                     Value::Str(PyString::new("__ap_stream_base__")),
@@ -1846,8 +1850,7 @@ pub fn descr_get(interp: &Rc<Interpreter>, v: &Value, obj: &Value, owner: &Value
                                 if !upgrade_ok && std::env::var("APX_TBDBG").is_ok() {
                                     eprintln!(
                                         "[APROP] fget self type_ref DEAD: inst={} class={}",
-                                        io.name,
-                                        o.name
+                                        io.name, o.name
                                     );
                                 }
                             }
@@ -2086,7 +2089,11 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
                 type_name_of_check(t)
             );
         } else {
-            eprintln!("[VI] xprim={} tname={}", x.type_name(), type_name_of_check(t));
+            eprintln!(
+                "[VI] xprim={} tname={}",
+                x.type_name(),
+                type_name_of_check(t)
+            );
         }
     }
     // Union marker (X | Y lowered by the executor): any arm matches.
@@ -2135,11 +2142,10 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
                 .ok()
                 .flatten()
                 .is_some()
-        } => {
+        } =>
+        {
             let rc = crate::interp::current_interp_handle();
-            if let Ok(Some(origin)) =
-                crate::interp::attr_get_public(&rc, t, "__origin__")
-            {
+            if let Ok(Some(origin)) = crate::interp::attr_get_public(&rc, t, "__origin__") {
                 return value_isinstance(interp, x, &origin);
             }
             return Ok(false);
@@ -2253,12 +2259,8 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
                 if let Value::Obj(xo) = x {
                     if let Some(cr) = xo.class_ref.borrow().as_ref() {
                         let want = type_name_of_check(t);
-                        let mro_names: Vec<String> = cr
-                            .mro
-                            .borrow()
-                            .iter()
-                            .map(|m| m.name.clone())
-                            .collect();
+                        let mro_names: Vec<String> =
+                            cr.mro.borrow().iter().map(|m| m.name.clone()).collect();
                         // Structural protocol: a dict-rooted class is a
                         // Mapping/MutableMapping/Collection/Iterable/
                         // Sized/Container/Hashable (CPython ABCMeta
@@ -2366,6 +2368,19 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
                         && vo.name.starts_with("<partial:"));
                     return Ok(is_partial);
                 }
+                // W113 (parsel Selector._get_root_type): lxml's element
+                // CLASSES are dotted call markers in the shim; real lxml
+                // isinstance(x, etree._Element) checks the element types.
+                // Answer against the shim's element Opaque names.
+                if matches!(t, Value::Obj(to) if to.kind == ap_obj::ObjKind::BuiltinFn
+                    && matches!(to.name.as_str(), "_Element" | "lxml.etree._Element" | "HtmlElement" | "lxml.html.HtmlElement"))
+                {
+                    let is_elem = matches!(x, Value::Obj(xo)
+                        if xo.kind == ap_obj::ObjKind::Opaque
+                            && (xo.name == "lxml.etree._Element"
+                                || xo.name == "lxml.html.HtmlElement"));
+                    return Ok(is_elem);
+                }
                 return Err(raise(
                     "TypeError",
                     "isinstance() arg 2 must be a type, a tuple of types, or a union",
@@ -2401,20 +2416,12 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
                 // _GenericAlias) and breaks their call convention.
                 if let Some(meta_v) = (|| {
                     let tcls = crate::interp::attr_get_public(&rc, t, "__class__").ok()??;
-                    crate::interp::attr_get_public(
-                        &rc,
-                        &tcls,
-                        "__instancecheck__",
-                    )
-                    .ok()
-                    .flatten()
+                    crate::interp::attr_get_public(&rc, &tcls, "__instancecheck__")
+                        .ok()
+                        .flatten()
                 })() {
-                    let r = crate::interp::call_value_pub(
-                        &rc,
-                        &meta_v,
-                        &[t.clone(), x.clone()],
-                        &[],
-                    )?;
+                    let r =
+                        crate::interp::call_value_pub(&rc, &meta_v, &[t.clone(), x.clone()], &[])?;
                     return Ok(r.is_truthy());
                 }
                 // W112: ABC structural fallback - ABC classes carry
@@ -2453,35 +2460,25 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
                             // (cls already inside) or a raw function. A
                             // bound method takes only (xcls); a raw fn
                             // takes (t, xcls).
-                            let (hook_fn, hook_args): (Value, Vec<Value>) =
-                                match &subhook {
-                                    Value::Obj(f)
-                                        if f.kind == ap_obj::ObjKind::BoundMethod =>
-                                    {
-                                        (subhook.clone(), vec![xcls.clone()])
-                                    }
-                                    Value::Obj(o)
-                                        if o.kind == ap_obj::ObjKind::Descriptor
-                                            && matches!(
-                                                o.descr_kind.borrow().as_deref(),
-                                                Some("classmethod")
-                                            ) =>
-                                    {
-                                        (
-                                            o.func.borrow().clone().unwrap_or_else(
-                                                || subhook.clone(),
-                                            ),
-                                            vec![t.clone(), xcls.clone()],
-                                        )
-                                    }
-                                    _ => (subhook.clone(), vec![t.clone(), xcls.clone()]),
-                                };
-                            let r = crate::interp::call_value_pub(
-                                &rc,
-                                &hook_fn,
-                                &hook_args,
-                                &[],
-                            )?;
+                            let (hook_fn, hook_args): (Value, Vec<Value>) = match &subhook {
+                                Value::Obj(f) if f.kind == ap_obj::ObjKind::BoundMethod => {
+                                    (subhook.clone(), vec![xcls.clone()])
+                                }
+                                Value::Obj(o)
+                                    if o.kind == ap_obj::ObjKind::Descriptor
+                                        && matches!(
+                                            o.descr_kind.borrow().as_deref(),
+                                            Some("classmethod")
+                                        ) =>
+                                {
+                                    (
+                                        o.func.borrow().clone().unwrap_or_else(|| subhook.clone()),
+                                        vec![t.clone(), xcls.clone()],
+                                    )
+                                }
+                                _ => (subhook.clone(), vec![t.clone(), xcls.clone()]),
+                            };
+                            let r = crate::interp::call_value_pub(&rc, &hook_fn, &hook_args, &[])?;
                             if r.is_truthy() {
                                 return Ok(true);
                             }
@@ -2498,8 +2495,13 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
                     if crate::classes::is_dict_derived(&xct)
                         && matches!(
                             type_name_of_check(t),
-                            "Mapping" | "MutableMapping" | "Collection" | "Iterable"
-                                | "Container" | "Sized" | "Hashable"
+                            "Mapping"
+                                | "MutableMapping"
+                                | "Collection"
+                                | "Iterable"
+                                | "Container"
+                                | "Sized"
+                                | "Hashable"
                         )
                     {
                         return Ok(true);
@@ -2670,10 +2672,23 @@ pub fn special_lookup(interp: &Interpreter, v: &Value, name: &str) -> Option<(Va
                 && name.ends_with("__")
                 && matches!(
                     name,
-                    "__bool__" | "__len__" | "__iter__" | "__getitem__" | "__contains__"
-                        | "__call__" | "__next__" | "__enter__" | "__exit__" | "__eq__"
-                        | "__lt__" | "__le__" | "__gt__" | "__ge__" | "__hash__"
-                        | "__str__" | "__repr__"
+                    "__bool__"
+                        | "__len__"
+                        | "__iter__"
+                        | "__getitem__"
+                        | "__contains__"
+                        | "__call__"
+                        | "__next__"
+                        | "__enter__"
+                        | "__exit__"
+                        | "__eq__"
+                        | "__lt__"
+                        | "__le__"
+                        | "__gt__"
+                        | "__ge__"
+                        | "__hash__"
+                        | "__str__"
+                        | "__repr__"
                 )
             {
                 return None;
@@ -2724,10 +2739,8 @@ pub fn special_lookup(interp: &Interpreter, v: &Value, name: &str) -> Option<(Va
                 && o.name == "os.ScandirIterator"
                 && name == "__iter__" =>
         {
-            let marker = ap_obj::PyObject::new(
-                ap_obj::ObjKind::BuiltinFn,
-                "os.ScandirIterator.__iter__",
-            );
+            let marker =
+                ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "os.ScandirIterator.__iter__");
             *marker.slice_parts.borrow_mut() = vec![v.clone()];
             Some((Value::Obj(marker), object_class(interp)))
         }
@@ -2817,11 +2830,7 @@ pub fn attr_get_opt(
                 // slot/attr reads survive class-weakref drops in
                 // long pytest flows (unraisable collector family).
                 None => {
-                    if let Some(v) = o
-                        .attrs
-                        .borrow()
-                        .get(&Value::Str(PyString::new(name)))
-                    {
+                    if let Some(v) = o.attrs.borrow().get(&Value::Str(PyString::new(name))) {
                         return Ok(Some(v));
                     }
                     return Ok(None);
@@ -2882,8 +2891,10 @@ pub fn attr_get_opt(
             if let Some(v) = o.attrs.borrow().get(&Value::Str(PyString::new(name))) {
                 return Ok(Some(v));
             }
-            if let Some(Value::Dict(d)) =
-                o.attrs.borrow().get(&Value::Str(PyString::new("__ap_dict__")))
+            if let Some(Value::Dict(d)) = o
+                .attrs
+                .borrow()
+                .get(&Value::Str(PyString::new("__ap_dict__")))
             {
                 if let Some(v) = d.get(&Value::Str(PyString::new(name.to_string()))) {
                     return Ok(Some(v));
@@ -3029,10 +3040,7 @@ fn instance_attr(
                             .collect();
                         eprintln!(
                             "[APSLOT-MISS] t.name={} t.qualname={} name={} dict-keys={:?}",
-                            t.name,
-                            t.qualname,
-                            name,
-                            dict_keys
+                            t.name, t.qualname, name, dict_keys
                         );
                     }
                     return Err(raise(
@@ -3205,6 +3213,35 @@ fn class_attr_get(interp: &Rc<Interpreter>, cls_v: &Value, t: &Rc<TypeRef>, name
     // 2. Plain class-dict entry: non-data descriptors invoke
     //    __get__(None, C); functions stay unbound (S-03-12(3)).
     if let Some((entry, _)) = t.lookup_with_owner(name) {
+        // W113 (scrapy SelectorList(list, object_ref)): CPython resolves
+        // `cls.__new__` by MRO ORDER — list's slot (tp_new) sits BEFORE a
+        // plain user __new__ found lower in the MRO (object_ref.__new__).
+        // Our synthesized list/tuple bases carry no dict entry, so the MRO
+        // scan lands on the user function and allocation drops the payload
+        // (SelectorList(["a","b"]) -> len 0). When a container base precedes
+        // the found owner in the MRO and the owner is not itself the
+        // container, serve the container marker instead.
+        if name == "__new__" {
+            if let Some(owner_t) = t.lookup_with_owner(name).map(|(_, o)| o) {
+                let mro = t.mro.borrow();
+                let owner_idx = mro.iter().position(|m| Rc::ptr_eq(m, &owner_t));
+                let cont_idx = mro
+                    .iter()
+                    .position(|m| m.name == "list" || m.name == "tuple");
+                if let (Some(oi), Some(ci)) = (owner_idx, cont_idx) {
+                    if ci < oi {
+                        let marker = if mro[ci].name == "list" {
+                            "__list__new__"
+                        } else {
+                            "__tuple__new__"
+                        };
+                        drop(mro);
+                        let f = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, marker);
+                        return Ok(Value::Obj(f));
+                    }
+                }
+            }
+        }
         return match descriptor_kind(interp, &entry) {
             Some(DescrKind::StaticMethod) => match &entry {
                 Value::Obj(o) => Ok(o.func.borrow().clone().unwrap_or(Value::None)),
@@ -3249,6 +3286,16 @@ fn class_attr_get(interp: &Rc<Interpreter>, cls_v: &Value, t: &Rc<TypeRef>, name
                     .take(mro_len.saturating_sub(1))
                     .any(|c| c.dict.get(&Value::Str(PyString::new("__new__"))).is_some());
                 if !mro_has_own_new {
+                    // W113 (scrapy cssselect Token(tuple)): tuple/list-derived
+                    // classes resolve __new__ to the CONTAINER marker, not the
+                    // plain object allocator — CPython returns tuple.__new__
+                    // (which builds the payload tuple), and the marker path in
+                    // interp allocates a derived instance carrying the payload
+                    // under __ap_tuple__ (len/getitem/iter then work).
+                    if let Some(marker) = container_new_marker(t) {
+                        let f = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, marker);
+                        return Ok(Value::Obj(f));
+                    }
                     let f = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "__object_new2__");
                     return Ok(Value::Obj(f));
                 }
@@ -3852,6 +3899,33 @@ pub fn instantiate(
     let new_lookup = t
         .lookup_with_owner("__new__")
         .filter(|(v, _)| !matches!(v, Value::None));
+    // W113 (scrapy SelectorList(list, object_ref)): CPython's type_call
+    // uses tp_new from the MRO — list's allocator sits BEFORE a plain
+    // user __new__ inherited from a lower base (object_ref.__new__), and
+    // object_ref.__new__ is never called. When a container base precedes
+    // the found __new__ owner, treat __new__ as absent so the builtin-
+    // base fast path below builds the backing list/tuple from the ctor
+    // args (payload was previously dropped -> SelectorList([...]) len 0).
+    let new_lookup = match new_lookup {
+        Some((nv, owner)) => {
+            let shadowed = matches!(&nv, Value::Obj(fo)
+                if fo.kind == ap_obj::ObjKind::Function)
+                && {
+                    let mro = t.mro.borrow();
+                    let owner_idx = mro.iter().position(|m| std::rc::Rc::ptr_eq(m, &owner));
+                    let cont_idx = mro
+                        .iter()
+                        .position(|m| m.name == "list" || m.name == "tuple");
+                    matches!(owner_idx.zip(cont_idx), Some((oi, ci)) if ci < oi)
+                };
+            if shadowed {
+                None
+            } else {
+                Some((nv, owner))
+            }
+        }
+        None => None,
+    };
     let init_lookup = t
         .lookup_with_owner("__init__")
         .filter(|(v, _)| !matches!(v, Value::None));
@@ -3975,8 +4049,15 @@ pub fn instantiate(
             // "takes no arguments" (http.client.responses .phrase chain).
             .or_else(|| {
                 const BUILTIN_NAMES: &[&str] = &[
-                    "tuple", "list", "dict", "set", "str", "int", "float",
-                    "bytes", "frozenset",
+                    "tuple",
+                    "list",
+                    "dict",
+                    "set",
+                    "str",
+                    "int",
+                    "float",
+                    "bytes",
+                    "frozenset",
                 ];
                 t.mro.borrow().iter().find_map(|m| {
                     if BUILTIN_NAMES.contains(&m.name.as_str()) {
@@ -3993,7 +4074,10 @@ pub fn instantiate(
             // int.__new__(cls, value) ignores the cls arg. Drop a leading
             // class-valued arg so int(IE, 1) builds from 1.
             let args_eff: Vec<Value> = match args {
-                [a, rest @ ..] if rest.len() == 1 && matches!(a, Value::Obj(ao) if ao.kind == ap_obj::ObjKind::UserClass || ao.kind == ap_obj::ObjKind::Type) => {
+                [a, rest @ ..]
+                    if rest.len() == 1
+                        && matches!(a, Value::Obj(ao) if ao.kind == ap_obj::ObjKind::UserClass || ao.kind == ap_obj::ObjKind::Type) =>
+                {
                     rest.to_vec()
                 }
                 other => other.to_vec(),
@@ -4163,7 +4247,11 @@ pub fn instantiate(
         if let Value::Obj(old_o) = &obj {
             let fresh = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, kind.clone());
             *fresh.type_ref.borrow_mut() = old_o.type_ref.borrow().clone();
-            let cr = old_o.class_ref.borrow().clone().unwrap_or_else(|| t.clone());
+            let cr = old_o
+                .class_ref
+                .borrow()
+                .clone()
+                .unwrap_or_else(|| t.clone());
             *fresh.class_ref.borrow_mut() = Some(cr);
             {
                 let mut attrs = fresh.attrs.borrow_mut();
@@ -4187,7 +4275,7 @@ pub fn instantiate(
             obj = Value::Obj(fresh);
         }
     }
-if let Some(inf) = &init_f {
+    if let Some(inf) = &init_f {
         if is_user_function(inf) {
             let mut a = vec![obj.clone()];
             a.extend_from_slice(args);
@@ -4310,6 +4398,24 @@ pub fn is_list_derived_instance(v: &Value) -> bool {
 /// UserInstance whose class MRO carries a synthesized `tuple` base? CPython
 /// tuple subclasses ARE tuples: len/index/slice/iter/contains/eq/`+` all
 /// behave tuple-wise. The dict/list twins above key the same model.
+/// W113 (scrapy cssselect Token(tuple)): when a user class derives from
+/// tuple/list and its MRO has no own __new__, class attribute lookup must
+/// serve the CONTAINER allocation marker (handled in interp's BuiltinFn
+/// dispatch, `__tuple__new__` / `__list__new__`) instead of the plain
+/// object allocator — CPython resolves `cls.__new__` to tuple.__new__
+/// there, which materializes the payload the derived instance carries.
+/// Returns 'static marker name or None (no container base in MRO).
+fn container_new_marker(t: &Rc<TypeRef>) -> Option<&'static str> {
+    let has = |n: &str| t.mro.borrow().iter().any(|m| m.name == n);
+    if has("tuple") {
+        Some("__tuple__new__")
+    } else if has("list") {
+        Some("__list__new__")
+    } else {
+        None
+    }
+}
+
 pub fn is_tuple_derived_instance(v: &Value) -> bool {
     match v {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {

@@ -51,6 +51,19 @@ pub fn py_str_of(v: &Value) -> Result<String, ap_obj::exc::PyException> {
                 if !owner_is_object {
                     if let Value::Obj(fo) = &f {
                         if fo.kind == ap_obj::ObjKind::Function {
+                            // W113: native str()/f-string dispatch calls the
+                            // RAW function, bypassing the bound-method path
+                            // that stages pending_super_ctx — a user __str__
+                            // with zero-arg super() (parsel XPathExpr.__str__)
+                            // died with "super(): no arguments". Stage the
+                            // (owner, receiver) context like the BoundMethod
+                            // call site does; call_function's sentinel
+                            // consumes it on entry.
+                            *interp.pending_super_ctx.borrow_mut() =
+                                Some((owner.clone(), v.clone(), false));
+                            if std::env::var("APX_SUPERDBG").is_ok() {
+                                eprintln!("[W113-STRSTAGE] pending set for owner={}", owner.name);
+                            }
                             let r = crate::interp::call_value_pub(&interp, &f, &[v.clone()], &[])
                                 .map_err(|f| match f {
                                 Flow::Raise(e) => ap_obj::exc::PyException::new(
@@ -99,16 +112,20 @@ pub fn print(interp: &Interpreter, args: &[Value], kwargs: &[(String, Value)]) -
     let mut end = "\n".to_string();
     // redirect_stdout support: print writes to sys.stdout's .write() when the
     // attribute holds a non-default stream (io.StringIO in tests/corpus s018).
-    let sys_stdout: Option<Value> = crate::builtins_modules::current_interp().as_ref().and_then(
-        |ic| {
-            let sys_v = ic.sys_module.borrow().clone()?;
-            match sys_v {
-                Value::Obj(o) if o.kind == ap_obj::ObjKind::Module => o.module_ns.borrow().as_ref(
-                ).and_then(|ns| ns.get(&Value::Str(PyString::new("stdout")))),
-                _ => None,
-            }
-        },
-    );
+    let sys_stdout: Option<Value> =
+        crate::builtins_modules::current_interp()
+            .as_ref()
+            .and_then(|ic| {
+                let sys_v = ic.sys_module.borrow().clone()?;
+                match sys_v {
+                    Value::Obj(o) if o.kind == ap_obj::ObjKind::Module => o
+                        .module_ns
+                        .borrow()
+                        .as_ref()
+                        .and_then(|ns| ns.get(&Value::Str(PyString::new("stdout")))),
+                    _ => None,
+                }
+            });
     let redirected: Option<Value> = match &sys_stdout {
         Some(v @ Value::Obj(o))
             if !(o.kind == ap_obj::ObjKind::Namespace && o.name == "stdout") =>
@@ -162,11 +179,7 @@ pub fn print(interp: &Interpreter, args: &[Value], kwargs: &[(String, Value)]) -
     out.push_str(&end);
     if let Some(stream) = redirected {
         // Call stream.write(out) through the interpreter's method dispatch.
-        let r = call_method_pub(
-            &stream,
-            "write",
-            &[Value::Str(PyString::new(out.clone()))],
-        );
+        let r = call_method_pub(&stream, "write", &[Value::Str(PyString::new(out.clone()))]);
         if r.is_ok() {
             return Ok(Value::None);
         }
@@ -178,13 +191,7 @@ pub fn print(interp: &Interpreter, args: &[Value], kwargs: &[(String, Value)]) -
 /// print(file=...): write through any object with .write() (wave-107).
 /// sys.stdout/ns-stdout goes to the interpreter console; other writers get
 /// write() calls via method dispatch (scrapy logging does print(file=sys.stderr)).
-fn print_to_file(
-    interp: &Interpreter,
-    v: &Value,
-    args: &[Value],
-    sep: &str,
-    end: &str,
-) -> BResult {
+fn print_to_file(interp: &Interpreter, v: &Value, args: &[Value], sep: &str, end: &str) -> BResult {
     let is_stdout = matches!(v, Value::Obj(o) if o.kind == ap_obj::ObjKind::Namespace
         && o.name == "stdout");
     let mut out = String::new();
@@ -242,8 +249,7 @@ pub fn builtin_len(args: &[Value]) -> BResult {
         // - len reads the backing slice_parts filled via
         // __ap_base_<base>__init__.
         Value::Obj(o)
-            if o.kind == ap_obj::ObjKind::UserInstance
-                && !o.slice_parts.borrow().is_empty() =>
+            if o.kind == ap_obj::ObjKind::UserInstance && !o.slice_parts.borrow().is_empty() =>
         {
             // T2: builtin-derived instances - len reads the backing
             // slice_parts (filled via __ap_base_<base>__init__).
@@ -254,7 +260,11 @@ pub fn builtin_len(args: &[Value]) -> BResult {
                     .as_ref()
                     .map(|t| t.mro.borrow().iter().map(|c| c.name.clone()).collect())
                     .unwrap_or_default();
-                eprintln!("[LEN-USER] n={} mro={:?}", o.slice_parts.borrow().len(), mro_names);
+                eprintln!(
+                    "[LEN-USER] n={} mro={:?}",
+                    o.slice_parts.borrow().len(),
+                    mro_names
+                );
             }
             o.slice_parts.borrow().len()
         }
@@ -452,8 +462,7 @@ pub fn builtin_int(interp: &Interpreter, args: &[Value]) -> BResult {
             let cls_v = args[0].clone();
             if let Some(t) = crate::classes::class_of_value(interp, &cls_v) {
                 if t.mro.borrow().iter().any(|m| m.name == "int") {
-                    let io =
-                        ap_obj::PyObject::new(ap_obj::ObjKind::UserInstance, t.name.clone());
+                    let io = ap_obj::PyObject::new(ap_obj::ObjKind::UserInstance, t.name.clone());
                     *io.type_ref.borrow_mut() = Some(std::rc::Rc::downgrade(&t));
                     *io.class_ref.borrow_mut() = Some(t.clone());
                     let _ = io
@@ -758,9 +767,7 @@ pub fn builtin_tuple(args: &[Value]) -> BResult {
                 // sig.parameters.values())): dict-values views park their
                 // snapshot in <payload> — drain it like list().
                 _ => match attrs.get(&Value::Str(PyString::new("<payload>"))) {
-                    Some(Value::List(l)) => {
-                        Ok(Value::Tuple(Gc::new(Tuple(l.items().to_vec()))))
-                    }
+                    Some(Value::List(l)) => Ok(Value::Tuple(Gc::new(Tuple(l.items().to_vec())))),
                     _ => Err(raise(
                         "TypeError",
                         format!("'{}' object is not iterable", o.type_name()),
@@ -792,13 +799,9 @@ pub fn builtin_dict(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
                 if crate::builtins_modules::dict_like_mapping(other) {
                     let interp = match crate::builtins_modules::current_interp() {
                         Some(i) => i,
-                        None => {
-                            return Err(raise("SystemError", "no interpreter for dict ctor"))
-                        }
+                        None => return Err(raise("SystemError", "no interpreter for dict ctor")),
                     };
-                    let keys_f = match
-                        crate::builtins::attr_get_pub(&interp, other, "keys")
-                    {
+                    let keys_f = match crate::builtins::attr_get_pub(&interp, other, "keys") {
                         Ok(Some(f)) => f,
                         _ => {
                             return Err(raise(
@@ -810,17 +813,16 @@ pub fn builtin_dict(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
                     let keys_v = crate::interp::call_value_pub2(&keys_f, &[], &[])?;
                     let it = crate::interp::iterable_of_public(&keys_v)?;
                     for k in crate::iter::collect(&it) {
-                        let getitem = match
-                            crate::builtins::attr_get_pub(&interp, other, "__getitem__")
-                        {
-                            Ok(Some(f)) => f,
-                            _ => {
-                                return Err(raise(
-                                    "TypeError",
-                                    format!("'{}' object is not a mapping", other.type_name()),
-                                ))
-                            }
-                        };
+                        let getitem =
+                            match crate::builtins::attr_get_pub(&interp, other, "__getitem__") {
+                                Ok(Some(f)) => f,
+                                _ => {
+                                    return Err(raise(
+                                        "TypeError",
+                                        format!("'{}' object is not a mapping", other.type_name()),
+                                    ))
+                                }
+                            };
                         let v = crate::interp::call_value_pub2(&getitem, &[k.clone()], &[])?;
                         d.set(k, v).map_err(Flow::from_py)?;
                     }
@@ -956,7 +958,10 @@ fn min_max(args: &[Value], kwargs: &[(String, Value)], is_min: bool) -> BResult 
         if let Some(d) = default_val {
             return Ok(d);
         }
-        return Err(raise("ValueError", format!("{name}() arg is an empty sequence")));
+        return Err(raise(
+            "ValueError",
+            format!("{name}() arg is an empty sequence"),
+        ));
     }
     let first = candidates
         .first()
@@ -1008,8 +1013,7 @@ pub fn builtin_sum(args: &[Value]) -> BResult {
             None => Value::Int(Int::Smi(0)),
         };
         for item in &items {
-            acc = ap_obj::ops::binop(&acc, ap_obj::ops::BinOp::Add, item)
-                .map_err(Flow::from_py)?;
+            acc = ap_obj::ops::binop(&acc, ap_obj::ops::BinOp::Add, item).map_err(Flow::from_py)?;
         }
         return Ok(acc);
     }
@@ -1157,9 +1161,7 @@ fn check_isinstance(v: &Value, t: &Value) -> Result<Value, Flow> {
                     eprintln!("[UC-DELEGATE] target={} vkind={}", want, vkind);
                 }
                 let interp_rc = crate::interp::current_interp_handle();
-                if let Ok(true) =
-                    crate::classes::value_isinstance(&interp_rc, v, t)
-                {
+                if let Ok(true) = crate::classes::value_isinstance(&interp_rc, v, t) {
                     return Ok(Value::Bool(true));
                 }
             }
@@ -1445,8 +1447,7 @@ pub fn builtin_type(interp: &Interpreter, args: &[Value], kwargs: &[(String, Val
                 {
                     let t = interned_type(interp, "UnionType");
                     if let Value::Obj(to) = &t {
-                        *to.repr_text.borrow_mut() =
-                            Some("<class 'typing.Union'>".to_string());
+                        *to.repr_text.borrow_mut() = Some("<class 'typing.Union'>".to_string());
                     }
                     return Ok(t);
                 }
@@ -1473,9 +1474,8 @@ pub fn builtin_type(interp: &Interpreter, args: &[Value], kwargs: &[(String, Val
                 // A-3 item 5: opaque native result records report their own
                 // name (type(os.uname()) == "uname_result"; stat_result too).
                 Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque => match o.name.as_str() {
-                    "uname_result" | "stat_result" | "statvfs_result" | "struct_time" | "bytearray" => {
-                        o.name.clone()
-                    }
+                    "uname_result" | "stat_result" | "statvfs_result" | "struct_time"
+                    | "bytearray" => o.name.clone(),
                     _ => o.type_name(),
                 },
                 Value::Obj(o) => o.type_name(),
@@ -2782,9 +2782,7 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
         "stderr.fileno" => Some(Ok(Value::Int(Int::from_i64(2)))),
         "stdin.fileno" => Some(Ok(Value::Int(Int::from_i64(0)))),
         // T2 (pytest terminal _TerminalWriter: `file.isatty()`):
-        "stdout.isatty" | "stderr.isatty" | "stdin.isatty" => {
-            Some(Ok(Value::Bool(false)))
-        }
+        "stdout.isatty" | "stderr.isatty" | "stdin.isatty" => Some(Ok(Value::Bool(false))),
         // T1 (vendored dataclasses): inert (see make_sys_module).
         "_clear_type_descriptors" => Some(Ok(Value::None)),
         // T2 (pytest collection): CPython audit hooks — no-op sink; the
@@ -2944,10 +2942,10 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
                             Value::Str(PyString::new("<module>")),
                         );
                     }
-                    let _ = fb.attrs.borrow_mut().set(
-                        Value::Str(PyString::new("f_code")),
-                        Value::Obj(code),
-                    );
+                    let _ = fb
+                        .attrs
+                        .borrow_mut()
+                        .set(Value::Str(PyString::new("f_code")), Value::Obj(code));
                     Value::Obj(fb)
                 } else {
                     Value::None
@@ -3063,17 +3061,11 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
                         });
                     // T2: prefer the REAL instance when the raise carried
                     // one (identity + user-class isinstance preserved).
-                    let inst = ev
-                        .instance
-                        .clone()
-                        .unwrap_or_else(|| {
-                            let i = ap_obj::PyObject::new(
-                                ap_obj::ObjKind::Exception,
-                                ev.class.clone(),
-                            );
-                            *i.args.borrow_mut() = ev.args.clone();
-                            Value::Obj(i)
-                        });
+                    let inst = ev.instance.clone().unwrap_or_else(|| {
+                        let i = ap_obj::PyObject::new(ap_obj::ObjKind::Exception, ev.class.clone());
+                        *i.args.borrow_mut() = ev.args.clone();
+                        Value::Obj(i)
+                    });
                     // W112: record the in-flight tb entries onto the
                     // materialized instance (__ap_tb__). from_call's
                     // `except BaseException:` has no `as` name, so
@@ -3102,18 +3094,19 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
                     // T2: prefer the exception's OWN tb entries (true raise
                     // site + frame chain); fall back to the global table.
                     if std::env::var("APX_TBDBG").is_ok() {
-                        eprintln!("[EXCINFO] class={} tb_len={} tb={:?}", ev.class, ev.tb.len(), ev.tb);
+                        eprintln!(
+                            "[EXCINFO] class={} tb_len={} tb={:?}",
+                            ev.class,
+                            ev.tb.len(),
+                            ev.tb
+                        );
                     }
                     let tb = if !ev.tb.is_empty() {
                         crate::interp::build_tb_chain(&interp3.script_path, &ev.tb)
                     } else {
                         crate::classes::traceback_value(&interp3)
                     };
-                    return Some(Ok(Value::Tuple(Gc::new(Tuple(vec![
-                        cls,
-                        inst,
-                        tb,
-                    ])))));
+                    return Some(Ok(Value::Tuple(Gc::new(Tuple(vec![cls, inst, tb])))));
                 }
                 None => {}
             }
@@ -3135,10 +3128,7 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
             match inflight {
                 Some(ev) => {
                     let inst = ev.instance.clone().unwrap_or_else(|| {
-                        let i = ap_obj::PyObject::new(
-                            ap_obj::ObjKind::Exception,
-                            ev.class.clone(),
-                        );
+                        let i = ap_obj::PyObject::new(ap_obj::ObjKind::Exception, ev.class.clone());
                         *i.args.borrow_mut() = ev.args.clone();
                         Value::Obj(i)
                     });
@@ -4685,8 +4675,7 @@ pub fn call_builtin(
                 {
                     let t = crate::builtins::interned_type(&interp, "UnionType");
                     if let Value::Obj(to) = &t {
-                        *to.repr_text.borrow_mut() =
-                            Some("<class 'typing.Union'>".to_string());
+                        *to.repr_text.borrow_mut() = Some("<class 'typing.Union'>".to_string());
                     }
                     return Ok(t);
                 }
@@ -4852,10 +4841,10 @@ pub fn builtin_eval(interp: &Interpreter, args: &[Value]) -> crate::EvalResult {
     // W110: lowering inserts Stmt::Line before each statement — the wrap
     // Assign is no longer items.first(). Scan for ANY Assign item.
     let is_expr = matches!(
-        wrapped.as_ref().ok().map(|(m, _)| m
-            .items
-            .iter()
-            .find_map(|item| match item {
+        wrapped
+            .as_ref()
+            .ok()
+            .map(|(m, _)| m.items.iter().find_map(|item| match item {
                 ap_ir::Item::Stmt(ap_ir::Stmt::Assign(_, _)) => Some(()),
                 _ => None,
             })),
@@ -4874,13 +4863,10 @@ pub fn builtin_eval(interp: &Interpreter, args: &[Value]) -> crate::EvalResult {
     };
     // W110: lowering inserts Stmt::Line markers before each top-level
     // statement — skip them to find the wrapped Assign.
-    let expr = match module
-        .items
-        .iter()
-        .find_map(|item| match item {
-            ap_ir::Item::Stmt(ap_ir::Stmt::Assign(_, v)) => Some(v.clone()),
-            _ => None,
-        }) {
+    let expr = match module.items.iter().find_map(|item| match item {
+        ap_ir::Item::Stmt(ap_ir::Stmt::Assign(_, v)) => Some(v.clone()),
+        _ => None,
+    }) {
         Some(v) => v,
         None => return Err(raise("SyntaxError", "invalid syntax")),
     };
@@ -5410,8 +5396,12 @@ fn builtin_type_new(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
         if first_base.kind == ap_obj::ObjKind::Type
             && matches!(
                 first_base.name.as_str(),
-                "TextIOWrapper" | "BytesIO" | "StringIO" | "BufferedReader"
-                    | "BufferedWriter" | "FileIO"
+                "TextIOWrapper"
+                    | "BytesIO"
+                    | "StringIO"
+                    | "BufferedReader"
+                    | "BufferedWriter"
+                    | "FileIO"
             )
         {
             let _ = t.dict.set(

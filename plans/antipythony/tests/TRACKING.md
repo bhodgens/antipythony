@@ -19,7 +19,7 @@ final run, re-verified by the orchestrator full-tree run: 1164 passed,
 | T-09 binary conformance | 02.06 | AUTHORED (committed 2057bf8) | tests/t09_binary | 30-case slice + exit-code cases |
 | T-10 threading | 02.07 | AUTHORED (absorbed d75c0a4) | tests/corpus/threading | 18 cases, 3-run deterministic pins |
 | T-11 stdlib-v1 | 02.08 | AUTHORED (committed 2057bf8) | tests/corpus/stdlib | 48 cases + scope table; ~30 spec-05 wording gaps filed |
-| T-12 wasm parity | 03.02-03.04 | BLOCKED | - | needs docs/spec/07-wasm-repr.md (lands with leaf 03.01) |
+| T-12 wasm parity | 03.02-03.04 | BLOCKED | - | needs docs/spec/07-wasm-repr.md (lands with leaf 03.01) — spec 07 authored (S-07-*), unblocking T-12/T-13 authoring per leaf 03.01 exit gate |
 | T-13 host/wasi | 03.05 | BLOCKED | - | same dependency |
 | T-14 cli/cache | 04.01-04.02 | AUTHORED (committed 71193a6) | tests/t14_cli | 22 tests; uv 0.11.29 present |
 | T-15 release/install | 04.03 | AUTHORED (committed 71193a6) | tests/t15_release | 19 tests |
