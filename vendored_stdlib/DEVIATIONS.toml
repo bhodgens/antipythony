@@ -449,10 +449,18 @@ note = ""
 [[file]]
 path = "ast.py"
 upstream_path = "ast.py"
-status = "pristine"
+status = "deviated"
 upstream_sha256 = "5ea9a796353544bea0d706153516f04ef3d92be305d15a73238403837d77e34c"
-deviated_sha256 = "5ea9a796353544bea0d706153516f04ef3d92be305d15a73238403837d77e34c"
-note = ""
+deviated_sha256 = "9f874b5f433c0b96df56845d72309a7dceddd129567a1f4405d52694a6d8ccb1"
+note = "W114 round-38: bytes/bytearray source decode in parse() (utf-8-sig, latin-1 fallback per PEP 263-lite); dump omits None-optional and empty-list fields via _optional_fields/_field_types (native _ast classes carry no typing annotations); dump/_dump_impl alias."
+
+[[file]]
+path = "_ast.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "4fc16e8045e38a552753c06068ce36bc877c940dd76e6270646545223623c2fd"
+note = "antipythony shim: native bridge module (class hierarchy + from_native dict→AST converter consumed by compile(PyCF_ONLY_AST)). W114: adds AST._field_types (ASDL list-typed fields) and per-class _optional_fields (ASDL `?` fields) so ast.dump matches CPython omit semantics; no CPython Lib/_ast.py counterpart to hash."
 
 [[file]]
 path = "asyncio/__init__.py"

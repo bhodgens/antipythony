@@ -75,6 +75,13 @@ def parse(source, filename='<unknown>', mode='exec', *,
     Equivalent to compile(source, filename, mode, PyCF_ONLY_AST).
     Pass type_comments=True to get back type comments where the syntax allows.
     """
+    # W114: the native compile path needs str; decode bytes
+    # input (PEP 263-lite: utf-8-sig, falling back to latin-1)
+    if isinstance(source, (bytes, bytearray)):
+        try:
+            source = bytes(source).decode("utf-8-sig")
+        except UnicodeDecodeError:
+            source = bytes(source).decode("latin-1")
     flags = PyCF_ONLY_AST
     if optimize > 0:
         flags |= PyCF_OPTIMIZED_AST
@@ -151,7 +158,7 @@ def literal_eval(node_or_string):
     return _convert(node_or_string)
 
 
-def dump(
+def _dump_impl(
     node, annotate_fields=True, include_attributes=False,
     *,
     indent=None, show_empty=False,
@@ -189,13 +196,17 @@ def dump(
                 except AttributeError:
                     keywords = True
                     continue
-                if value is None and getattr(cls, name, ...) is None:
+                if value is None and name in getattr(
+                    cls, "_optional_fields", ()
+                ):
                     keywords = True
                     continue
                 if not show_empty:
                     if value == []:
-                        field_type = cls._field_types.get(name, object)
-                        if getattr(field_type, '__origin__', ...) is list:
+                        field_type = getattr(cls, "_field_types", {}).get(name, object)
+                        # plain `list` (our _ast.py table) or typing.List[...]
+                        # (CPython's annotation objects, __origin__ == list)
+                        if field_type is list or getattr(field_type, '__origin__', ...) is list:
                             if not keywords:
                                 args_buffer.append(repr(value))
                             continue
@@ -214,7 +225,9 @@ def dump(
                         value = getattr(node, name)
                     except AttributeError:
                         continue
-                    if value is None and getattr(cls, name, ...) is None:
+                    if value is None and name in getattr(
+                        cls, "_optional_fields", ()
+                    ):
                         continue
                     value, simple = _format(value, level)
                     allsimple = allsimple and simple
@@ -233,6 +246,14 @@ def dump(
     if indent is not None and not isinstance(indent, str):
         indent = ' ' * indent
     return _format(node)[0]
+
+
+# W-similar: a runtime compiler bug gives `def dump(...)` at module level a broken
+# closure cell for the `indent` parameter once compile() has run in the module
+# (repro: any module calling compile() then defining+calling a function named
+# 'dump' with a nested function reading a parameter). Defining the implementation
+# under another name and aliasing avoids the poisoned name.
+dump = _dump_impl
 
 
 def copy_location(new_node, old_node):

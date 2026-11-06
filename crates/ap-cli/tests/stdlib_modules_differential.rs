@@ -1026,7 +1026,6 @@ print(len(ba) == 2)
     );
 }
 
-
 #[test]
 fn a3_except_exception_catches_native_module_errors_differential() {
     // A-3 item 2: zlib.Error / binascii.Error are real exception TypeObjects;

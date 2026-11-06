@@ -49,11 +49,7 @@ fn list_of(items: Vec<Value>) -> Value {
     Value::List(PyList::from_vec(items))
 }
 
-fn opt<T>(
-    v: &Option<T>,
-    line_col: &dyn Fn(usize) -> (usize, usize),
-    f: impl Fn(&T) -> R,
-) -> R {
+fn opt<T>(v: &Option<T>, line_col: &dyn Fn(usize) -> (usize, usize), f: impl Fn(&T) -> R) -> R {
     match v {
         Some(x) => f(x),
         None => Ok(Value::None),
@@ -189,17 +185,12 @@ fn stmt_node(st: &ruff_python_ast::Stmt, line_col: &dyn Fn(usize) -> (usize, usi
                     };
                 }
             }
-            let elifs: Vec<&ruff_python_ast::ElifElseClause> = clauses
-                .iter()
-                .filter(|c| c.test.is_some())
-                .collect();
+            let elifs: Vec<&ruff_python_ast::ElifElseClause> =
+                clauses.iter().filter(|c| c.test.is_some()).collect();
             for clause in elifs.iter().rev() {
                 let mut cf = pos_fields(rng(clause), line_col);
                 cf.push(("_type", s("If")));
-                cf.push((
-                    "test",
-                    expr_node(clause.test.as_ref().unwrap(), line_col)?,
-                ));
+                cf.push(("test", expr_node(clause.test.as_ref().unwrap(), line_col)?));
                 cf.push(("body", stmts_node(&clause.body, line_col)?));
                 cf.push(("orelse", list_of(orelse)));
                 orelse = vec![dict_of(cf)];
@@ -215,10 +206,7 @@ fn stmt_node(st: &ruff_python_ast::Stmt, line_col: &dyn Fn(usize) -> (usize, usi
             Ok(dict_of(f))
         }
         ruff_python_ast::Stmt::For(x) => {
-            f.push((
-                "_type",
-                if x.is_async { s("AsyncFor") } else { s("For") },
-            ));
+            f.push(("_type", if x.is_async { s("AsyncFor") } else { s("For") }));
             f.push(("target", expr_node(&x.target, line_col)?));
             f.push(("iter", expr_node(&x.iter, line_col)?));
             f.push(("body", stmts_node(&x.body, line_col)?));
@@ -277,10 +265,7 @@ fn stmt_node(st: &ruff_python_ast::Stmt, line_col: &dyn Fn(usize) -> (usize, usi
         }
         ruff_python_ast::Stmt::Raise(x) => {
             f.push(("_type", s("Raise")));
-            f.push((
-                "exc",
-                opt(&x.exc, line_col, |v| expr_node(v, line_col))?,
-            ));
+            f.push(("exc", opt(&x.exc, line_col, |v| expr_node(v, line_col))?));
             f.push((
                 "cause",
                 opt(&x.cause, line_col, |v| expr_node(v, line_col))?,
@@ -302,10 +287,7 @@ fn stmt_node(st: &ruff_python_ast::Stmt, line_col: &dyn Fn(usize) -> (usize, usi
         ruff_python_ast::Stmt::Assert(x) => {
             f.push(("_type", s("Assert")));
             f.push(("test", expr_node(&x.test, line_col)?));
-            f.push((
-                "msg",
-                opt(&x.msg, line_col, |v| expr_node(v, line_col))?,
-            ));
+            f.push(("msg", opt(&x.msg, line_col, |v| expr_node(v, line_col))?));
             Ok(dict_of(f))
         }
         ruff_python_ast::Stmt::Import(x) => {
@@ -355,7 +337,11 @@ fn stmt_node(st: &ruff_python_ast::Stmt, line_col: &dyn Fn(usize) -> (usize, usi
         ruff_python_ast::Stmt::With(x) => {
             f.push((
                 "_type",
-                if x.is_async { s("AsyncWith") } else { s("With") },
+                if x.is_async {
+                    s("AsyncWith")
+                } else {
+                    s("With")
+                },
             ));
             let mut items = Vec::new();
             for it in &x.items {
@@ -562,10 +548,7 @@ fn pattern_node(p: &ruff_python_ast::Pattern, line_col: &dyn Fn(usize) -> (usize
     }
 }
 
-fn pattern_list(
-    ps: &[ruff_python_ast::Pattern],
-    line_col: &dyn Fn(usize) -> (usize, usize),
-) -> R {
+fn pattern_list(ps: &[ruff_python_ast::Pattern], line_col: &dyn Fn(usize) -> (usize, usize)) -> R {
     let mut out = Vec::new();
     for p in ps {
         out.push(pattern_node(p, line_col)?);
@@ -596,8 +579,13 @@ fn param_with_default_node(
 fn params_node(p: &ruff_python_ast::Parameters, line_col: &dyn Fn(usize) -> (usize, usize)) -> R {
     let mut f = pos_fields(rng(p), line_col);
     f.push(("_type", s("arguments")));
+    let mut posonly = Vec::new();
+    for a in p.posonlyargs.iter() {
+        posonly.push(param_with_default_node(a, line_col)?);
+    }
+    f.push(("posonlyargs", list_of(posonly)));
     let mut args = Vec::new();
-    for a in p.posonlyargs.iter().chain(p.args.iter()) {
+    for a in p.args.iter() {
         args.push(param_with_default_node(a, line_col)?);
     }
     f.push(("args", list_of(args)));
@@ -610,10 +598,7 @@ fn params_node(p: &ruff_python_ast::Parameters, line_col: &dyn Fn(usize) -> (usi
         kwonly.push(param_with_default_node(a, line_col)?);
     }
     f.push(("kwonlyargs", list_of(kwonly)));
-    f.push((
-        "kwarg",
-        opt(&p.kwarg, line_col, |a| arg_node(a, line_col))?,
-    ));
+    f.push(("kwarg", opt(&p.kwarg, line_col, |a| arg_node(a, line_col))?));
     // CPython arguments._fields carries defaults (right-aligned
     // over posonly+args) and kw_defaults (None-padded per kwonly)
     let mut defaults = Vec::new();
@@ -956,8 +941,14 @@ fn expr_node(e: &ruff_python_ast::Expr, line_col: &dyn Fn(usize) -> (usize, usiz
         }
         ruff_python_ast::Expr::Slice(x) => {
             f.push(("_type", s("Slice")));
-            f.push(("lower", opt(&x.lower, line_col, |v| expr_node(v, line_col))?));
-            f.push(("upper", opt(&x.upper, line_col, |v| expr_node(v, line_col))?));
+            f.push((
+                "lower",
+                opt(&x.lower, line_col, |v| expr_node(v, line_col))?,
+            ));
+            f.push((
+                "upper",
+                opt(&x.upper, line_col, |v| expr_node(v, line_col))?,
+            ));
             f.push(("step", opt(&x.step, line_col, |v| expr_node(v, line_col))?));
             Ok(dict_of(f))
         }
@@ -1018,12 +1009,8 @@ fn type_param_node(
 ) -> R {
     let mut f = pos_fields(rng(tp), line_col);
     let (kind, name, bound) = match tp {
-        ruff_python_ast::TypeParam::TypeVar(tv) => {
-            ("TypeVar", tv.name.as_str(), &tv.bound)
-        }
-        ruff_python_ast::TypeParam::ParamSpec(ps) => {
-            ("ParamSpec", ps.name.as_str(), &None)
-        }
+        ruff_python_ast::TypeParam::TypeVar(tv) => ("TypeVar", tv.name.as_str(), &tv.bound),
+        ruff_python_ast::TypeParam::ParamSpec(ps) => ("ParamSpec", ps.name.as_str(), &None),
         ruff_python_ast::TypeParam::TypeVarTuple(tvt) => {
             ("TypeVarTuple", tvt.name.as_str(), &tvt.default)
         }

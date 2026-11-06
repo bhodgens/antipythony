@@ -11,6 +11,41 @@ isinstance, _fields, and ast.walk behave like upstream.
 
 class AST:
     _fields = ()
+    # W114: list-typed fields per the CPython ASDL grammar (Parser/Python.asdl,
+    # `field*` = zero-or-more = Python list). ast.dump omits empty-list fields
+    # when annotate_fields is off; the bridge leaves them as [] (no None class
+    # defaults), so dump needs the type table to know which empties to skip.
+    _field_types = {
+        "body": list,
+        "targets": list,
+        "bases": list,
+        "keywords": list,
+        "decorator_list": list,
+        "type_params": list,
+        "orelse": list,
+        "items": list,
+        "handlers": list,
+        "finalbody": list,
+        "names": list,
+        "values": list,
+        "ops": list,
+        "comparators": list,
+        "args": list,
+        "posonlyargs": list,
+        "kwonlyargs": list,
+        "kw_defaults": list,
+        "defaults": list,
+        "elts": list,
+        "generators": list,
+        "ifs": list,
+        "cases": list,
+        "patterns": list,
+        "keys": list,
+        "kwd_attrs": list,
+        "kwd_patterns": list,
+        "argtypes": list,
+        "type_ignores": list,
+    }
 
     def __init__(self, *args, **kwargs):
         fields = type(self)._fields
@@ -63,6 +98,9 @@ class stmt(AST):
 
 
 class FunctionDef(stmt):
+    # W114: optional (ASDL `?`) fields; None values are
+    # omitted by ast.dump without field-name annotation.
+    _optional_fields = ("returns", "type_comment", )
     _fields = (
         "name", "args", "body", "decorator_list", "returns",
         "type_params",
@@ -70,6 +108,9 @@ class FunctionDef(stmt):
 
 
 class AsyncFunctionDef(stmt):
+    # W114: optional (ASDL `?`) fields; None values are
+    # omitted by ast.dump without field-name annotation.
+    _optional_fields = ("returns", "type_comment", )
     _fields = (
         "name", "args", "body", "decorator_list", "returns",
         "type_params",
@@ -84,6 +125,9 @@ class ClassDef(stmt):
 
 
 class Return(stmt):
+    # W114: optional (ASDL `?`) fields; None values are
+    # omitted by ast.dump without field-name annotation.
+    _optional_fields = ("value", )
     _fields = ("value",)
 
 
@@ -92,6 +136,9 @@ class Delete(stmt):
 
 
 class Assign(stmt):
+    # W114: optional (ASDL `?`) fields; None values are
+    # omitted by ast.dump without field-name annotation.
+    _optional_fields = ("type_comment", )
     _fields = ("targets", "value")
 
 
@@ -100,14 +147,23 @@ class AugAssign(stmt):
 
 
 class AnnAssign(stmt):
+    # W114: optional (ASDL `?`) fields; None values are
+    # omitted by ast.dump without field-name annotation.
+    _optional_fields = ("value", )
     _fields = ("target", "annotation", "value", "simple")
 
 
 class For(stmt):
+    # W114: optional (ASDL `?`) fields; None values are
+    # omitted by ast.dump without field-name annotation.
+    _optional_fields = ("type_comment", )
     _fields = ("target", "iter", "body", "orelse")
 
 
 class AsyncFor(stmt):
+    # W114: optional (ASDL `?`) fields; None values are
+    # omitted by ast.dump without field-name annotation.
+    _optional_fields = ("type_comment", )
     _fields = ("target", "iter", "body", "orelse")
 
 
@@ -120,10 +176,16 @@ class If(stmt):
 
 
 class With(stmt):
+    # W114: optional (ASDL `?`) fields; None values are
+    # omitted by ast.dump without field-name annotation.
+    _optional_fields = ("type_comment", )
     _fields = ("items", "body")
 
 
 class AsyncWith(stmt):
+    # W114: optional (ASDL `?`) fields; None values are
+    # omitted by ast.dump without field-name annotation.
+    _optional_fields = ("type_comment", )
     _fields = ("items", "body")
 
 
@@ -132,6 +194,9 @@ class Match(stmt):
 
 
 class Raise(stmt):
+    # W114: optional (ASDL `?`) fields; None values are
+    # omitted by ast.dump without field-name annotation.
+    _optional_fields = ("exc", "cause", )
     _fields = ("exc", "cause")
 
 
@@ -144,6 +209,9 @@ class TryStar(Try):
 
 
 class Assert(stmt):
+    # W114: optional (ASDL `?`) fields; None values are
+    # omitted by ast.dump without field-name annotation.
+    _optional_fields = ("msg", )
     _fields = ("test", "msg")
 
 
@@ -152,6 +220,9 @@ class Import(stmt):
 
 
 class ImportFrom(stmt):
+    # W114: optional (ASDL `?`) fields; None values are
+    # omitted by ast.dump without field-name annotation.
+    _optional_fields = ("module", "level", )
     _fields = ("module", "names", "level")
 
 
@@ -236,14 +307,23 @@ class GeneratorExp(expr):
 
 
 class Await(expr):
+    # W114: optional (ASDL `?`) fields; None values are
+    # omitted by ast.dump without field-name annotation.
+    _optional_fields = ("value", )
     _fields = ("value",)
 
 
 class Yield(expr):
+    # W114: optional (ASDL `?`) fields; None values are
+    # omitted by ast.dump without field-name annotation.
+    _optional_fields = ("value", )
     _fields = ("value",)
 
 
 class YieldFrom(expr):
+    # W114: optional (ASDL `?`) fields; None values are
+    # omitted by ast.dump without field-name annotation.
+    _optional_fields = ("value", )
     _fields = ("value",)
 
 
@@ -260,6 +340,9 @@ class JoinedStr(expr):
 
 
 class Constant(expr):
+    # W114: optional (ASDL `?`) fields; None values are
+    # omitted by ast.dump without field-name annotation.
+    _optional_fields = ("kind", )
     _fields = ("value", "kind")
 
 
@@ -288,6 +371,9 @@ class Tuple(expr):
 
 
 class Slice(expr):
+    # W114: optional (ASDL `?`) fields; None values are
+    # omitted by ast.dump without field-name annotation.
+    _optional_fields = ("lower", "upper", "step", )
     _fields = ("lower", "upper", "step")
 
 
@@ -445,10 +531,16 @@ class excepthandler(AST):
 
 
 class ExceptHandler(excepthandler):
+    # W114: optional (ASDL `?`) fields; None values are
+    # omitted by ast.dump without field-name annotation.
+    _optional_fields = ("type", "name", )
     _fields = ("type", "name", "body")
 
 
 class arguments(AST):
+    # W114: optional (ASDL `?`) fields; None values are
+    # omitted by ast.dump without field-name annotation.
+    _optional_fields = ("vararg", "kwarg", )
     _fields = (
         "posonlyargs",
         "args",
@@ -461,18 +553,30 @@ class arguments(AST):
 
 
 class arg(AST):
+    # W114: optional (ASDL `?`) fields; None values are
+    # omitted by ast.dump without field-name annotation.
+    _optional_fields = ("annotation", "type_comment", )
     _fields = ("arg", "annotation")
 
 
 class keyword(AST):
+    # W114: optional (ASDL `?`) fields; None values are
+    # omitted by ast.dump without field-name annotation.
+    _optional_fields = ("arg", )
     _fields = ("arg", "value")
 
 
 class alias(AST):
+    # W114: optional (ASDL `?`) fields; None values are
+    # omitted by ast.dump without field-name annotation.
+    _optional_fields = ("asname", )
     _fields = ("name", "asname")
 
 
 class withitem(AST):
+    # W114: optional (ASDL `?`) fields; None values are
+    # omitted by ast.dump without field-name annotation.
+    _optional_fields = ("optional_vars", )
     _fields = ("context_expr", "optional_vars")
 
 
@@ -497,6 +601,9 @@ class MatchSequence(pattern):
 
 
 class MatchMapping(pattern):
+    # W114: optional (ASDL `?`) fields; None values are
+    # omitted by ast.dump without field-name annotation.
+    _optional_fields = ("rest", )
     _fields = ("keys", "patterns", "rest")
 
 
@@ -505,10 +612,16 @@ class MatchClass(pattern):
 
 
 class MatchStar(pattern):
+    # W114: optional (ASDL `?`) fields; None values are
+    # omitted by ast.dump without field-name annotation.
+    _optional_fields = ("name", )
     _fields = ("name",)
 
 
 class MatchAs(pattern):
+    # W114: optional (ASDL `?`) fields; None values are
+    # omitted by ast.dump without field-name annotation.
+    _optional_fields = ("pattern", "name", )
     _fields = ("pattern", "name")
 
 
@@ -517,14 +630,23 @@ class MatchOr(pattern):
 
 
 class TypeVar(AST):
+    # W114: optional (ASDL `?`) fields; None values are
+    # omitted by ast.dump without field-name annotation.
+    _optional_fields = ("bound", "default_value", )
     _fields = ("name", "bound", "default_value")
 
 
 class ParamSpec(AST):
+    # W114: optional (ASDL `?`) fields; None values are
+    # omitted by ast.dump without field-name annotation.
+    _optional_fields = ("default_value", )
     _fields = ("name", "default_value")
 
 
 class TypeVarTuple(AST):
+    # W114: optional (ASDL `?`) fields; None values are
+    # omitted by ast.dump without field-name annotation.
+    _optional_fields = ("default_value", )
     _fields = ("name", "default_value")
 
 
@@ -537,10 +659,16 @@ class ParamSpecKwargs(AST):
 
 
 class TypeVarTuple(AST):
+    # W114: optional (ASDL `?`) fields; None values are
+    # omitted by ast.dump without field-name annotation.
+    _optional_fields = ("default_value", )
     _fields = ()
 
 
 class FormattedValue(expr):
+    # W114: optional (ASDL `?`) fields; None values are
+    # omitted by ast.dump without field-name annotation.
+    _optional_fields = ("conversion", "format_spec", )
     _fields = ("value", "conversion", "format_spec")
     # CPython: format_spec defaults to None; dump() omits it then
     format_spec = None
@@ -552,12 +680,18 @@ class TemplateStr(expr):
 
 
 class Interpolation(expr):
+    # W114: optional (ASDL `?`) fields; None values are
+    # omitted by ast.dump without field-name annotation.
+    _optional_fields = ("conversion", "format_spec", )
     _fields = ("value", "str", "conversion", "format_spec")
     # CPython: format_spec defaults to None; dump() omits it then
     format_spec = None
 
 
 class match_case(AST):
+    # W114: optional (ASDL `?`) fields; None values are
+    # omitted by ast.dump without field-name annotation.
+    _optional_fields = ("guard", )
     _fields = ("pattern", "guard", "body")
 
 
