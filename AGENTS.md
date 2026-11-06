@@ -146,9 +146,12 @@ GIL, uv-backed deps at build time. Byte-exact differential conformance vs CPytho
   scan every 700 allocs) - fixed with generational cascade +
   growth-triggered major GC (bcc0a04/743e277); 3M-obj probe
   never-finishes -> 100s/60MB. Sibling WIP absorbed at gate-green
-  (9befdb4). RESIDUALS (file as leaves, do not silently drop):
-  (a) core: native-type getattr materializes clones (ast_bridge /
-  TypeRef path) - shim avoids it, bug remains;
+  (9befdb4). RESIDUALS (all filed + reconciled 2026-11-05):
+  (a) #11 CLOSED-as-misattributed: fenced ground-truth shows current
+  native _ast getattr is interned (50x136 loop = 32KB; build__ast
+  registers via interned_type_pub) - the leak was the pre-fix shim +
+  the (b) recursion per level; regression guard shipped as
+  gc_differential::ast_getattr_identity_fence (#14 CLOSED);
   (b) importer.rs:654-678 _ast branch inserts sys.modules AFTER body
   exec (generic path pre-inserts at :1240) - re-entrancy hazard for
   any future self-importing _ast; CLOSED 2026-11-05 by 8bab377
@@ -156,11 +159,10 @@ GIL, uv-backed deps at build time. Byte-exact differential conformance vs CPytho
   the hazard fired in production as the W114 _ast.py self-import
   recursion = the codecs.lookup 8.6GB/150MB-per-level leak and the
   `import ast`+parse hang; both fenced-green after the fix);
-  (c) _multibytecodec/_codecs_jp/-ko/-cn/-tw + big5/euc_*/gb18030/
-  cp932/949/950 codecs missing natively (02.08 surface; blocks
-  CJK response.text);
-  (d) RSS-gated CI probe (import ast; import dataclasses;
-  import w3lib._url) to fence regression (a).
+  (c) #13 OPEN->leaf dispatched 2026-11-05: native multibyte codecs
+  (_multibytecodec/_codecs_jp/-kr/-cn/-tw; cp932/big5/euc_*/gb*
+  LookupError blocks CJK response.text);
+  (d) DONE: RSS-fenced probe = ast_getattr_identity_fence.
 - T1 CRAWL history (waves 90-110, pre-round-20 state - superseded by
   the block above, kept for fix provenance):
   W110-5 LANDED (85432c9): real coroutine frames - async def bodies
