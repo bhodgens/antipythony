@@ -133,6 +133,29 @@ GIL, uv-backed deps at build time. Byte-exact differential conformance vs CPytho
   get_python_framesummary (leaf's staged source.py full-range
   degradation no longer fires now that real AST flows). Fix must keep
   AST parity (W114 scorecard green) - do NOT revert ast_bridge.
+- OOM CAMPAIGN CLOSED 2026-11-05 (session record; details
+  docs/import-leak-recheck-2026-11-05.md + docs/ast-hang-diagnosis-2026-11-05.md):
+  the box-OOMing 9-44GB leaks on import-heavy probes were the pre-fix
+  vendored _ast.py bulk-getattr loop (native _ast getattr materializes
+  ~110 fresh class clones per access, OUTSIDE the GC heap) - owner
+  CLOSED by W114 round-38 (363600e); full scrapy I0-I8 chain now
+  RC=0/843-879MB. Harness hardened (dea6c03): ap-run differential
+  suites run probes as fenced subprocesses (6GB RSS/240s deadline
+  kills, cross-process lock). GC auto-collect was O(n^2) (full-heap
+  scan every 700 allocs) - fixed with generational cascade +
+  growth-triggered major GC (bcc0a04/743e277); 3M-obj probe
+  never-finishes -> 100s/60MB. Sibling WIP absorbed at gate-green
+  (9befdb4). RESIDUALS (file as leaves, do not silently drop):
+  (a) core: native-type getattr materializes clones (ast_bridge /
+  TypeRef path) - shim avoids it, bug remains;
+  (b) importer.rs:654-678 _ast branch inserts sys.modules AFTER body
+  exec (generic path pre-inserts at :1240) - re-entrancy hazard for
+  any future self-importing _ast;
+  (c) _multibytecodec/_codecs_jp/-ko/-cn/-tw + big5/euc_*/gb18030/
+  cp932/949/950 codecs missing natively (02.08 surface; blocks
+  CJK response.text);
+  (d) RSS-gated CI probe (import ast; import dataclasses;
+  import w3lib._url) to fence regression (a).
 - T1 CRAWL history (waves 90-110, pre-round-20 state - superseded by
   the block above, kept for fix provenance):
   W110-5 LANDED (85432c9): real coroutine frames - async def bodies
