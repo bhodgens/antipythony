@@ -305,8 +305,19 @@ pub struct Interpreter {
     pub stdout: RefCell<Vec<u8>>,
     /// G6: bytes already drained to fd 1 by the mid-run threshold flush —
     /// re-prepended into RunOutcome.stdout at the end-of-run flush so the
-    /// outcome is byte-identical to the unbuffered behavior.
+    /// outcome is byte-identical to the unbuffered behavior. G6-repair:
+    /// appended ONLY when `stdout_capture` is set (opt-in) — the drained
+    /// bytes are already on fd 1, and no production caller reads
+    /// RunOutcome.stdout, so the unconditional copy kept ~2x the full
+    /// output resident.
     pub stdout_flushed_prefix: RefCell<Vec<u8>>,
+    /// G6-repair: opt-in RunOutcome.stdout capture (prefix + tail). Set
+    /// only by embedders that actually consume RunOutcome.stdout (none of
+    /// the production binaries do — they read exit_code and write to fd 1
+    /// directly); unset = the drained prefix is NOT retained, and
+    /// RunOutcome.stdout comes back EMPTY (only the final <1MB tail when
+    /// no mid-run drain happened).
+    pub stdout_capture: bool,
     /// Traceback frames of the propagating exception, OUTERMOST-FIRST
     /// (built by insert(0) at each frame exit; module frame pushes last).
     /// Entries: (qualname, lineno, filename) — the filename is the DEFINING
@@ -436,6 +447,7 @@ impl Interpreter {
             next_gen_id: Cell::new(1),
             stdout: RefCell::new(Vec::new()),
             stdout_flushed_prefix: RefCell::new(Vec::new()),
+            stdout_capture: false,
             tb_frames: RefCell::new(Vec::new()),
             frame_stack: RefCell::new(Vec::new()),
             depth: Cell::new(0),
@@ -474,16 +486,21 @@ impl Interpreter {
         // end-of-run flush). Past a threshold, drain the buffer to the REAL
         // stdout (fd 1) — both production callers (ap-cli, ap_run_probe) pass
         // std::io::stdout(), and differential suites consume the subprocess's
-        // fd 1, so byte-order is preserved. RunOutcome.stdout correctness for
-        // capture consumers: the drained prefix is ALSO kept in
-        // stdout_flushed_prefix, re-prepended at the end-of-run flush, so the
-        // outcome bytes are identical to the unbuffered behavior.
+        // fd 1, so byte-order is preserved. G6-repair: the drained prefix is
+        // retained in stdout_flushed_prefix ONLY when stdout_capture is on
+        // (an embedder that consumes RunOutcome.stdout); the default keeps
+        // nothing — fd 1 already has the bytes and the production callers
+        // never read RunOutcome.stdout (verifier: 2x full output resident).
         if buf.len() >= STDOUT_FLUSH_THRESHOLD {
             use std::io::Write as _;
             let n = buf.len();
             let ok = unsafe { libc::write(1, buf.as_ptr() as *const libc::c_void, n) };
             if ok == n as isize {
-                self.stdout_flushed_prefix.borrow_mut().extend_from_slice(&buf[..]);
+                if self.stdout_capture {
+                    self.stdout_flushed_prefix
+                        .borrow_mut()
+                        .extend_from_slice(&buf[..]);
+                }
                 buf.clear();
             }
             // A short/failed write keeps the bytes buffered; the end-of-run

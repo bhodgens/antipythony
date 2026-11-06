@@ -146,13 +146,21 @@ pub fn run_module(
         crate::threading::acquire_gil();
     }
     let _ = stdout.write_all(&interp.stdout.borrow());
-    let out_bytes = {
-        // G6: outcome bytes = the mid-run-drained prefix + the final tail
-        // (byte-identical to the unbuffered behavior; the prefix was also
-        // already written to the real stdout above if fd 1 is the sink).
+    // G6-repair: RunOutcome.stdout is opt-in (stdout_capture). The default
+    // path hands back an EMPTY Vec: the mid-run drains already went to fd 1
+    // (written above + the threshold flush), the tail is the buffer just
+    // written, and no production caller (ap-run-eval / ap-run-probe /
+    // ap-obj-eval / ap CLI) reads RunOutcome.stdout — only exit_code. The
+    // old unconditional prefix-keep + exit clone held ~2x the full output
+    // resident at exit (verifier: 2M print lines = 147MB). Embedders that
+    // consume RunOutcome.stdout set interp.stdout_capture = true and get
+    // the byte-identical prefix + tail result.
+    let out_bytes = if interp.stdout_capture {
         let mut full = interp.stdout_flushed_prefix.borrow().clone();
         full.extend_from_slice(&interp.stdout.borrow());
         full
+    } else {
+        Vec::new()
     };
     // 02.04: weakref.finalize atexit path (C-22) drains before GCSTATS.
     // G7: final worker-registration drain (a thread that allocated right up
