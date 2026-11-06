@@ -169,9 +169,17 @@ pub fn gc_register(v: &Value) {
         // carries (t0, t1, t2) = (700, 10, 10).
         let g0 = GEN0_COUNT.get();
         let g1 = GEN1_COUNT.get();
-        if g1 >= t2.max(1) {
+        let reg_len = REGISTRY.with(|r| r.borrow().len());
+        let last_full = LAST_FULL_LEN.get();
+        // Growth-triggered major GC: registry doubled since the last full
+        // pass (floor 100k entries so small heaps keep the cheap ladder).
+        // Amortized O(1): a doubling epoch pays one full scan, the same
+        // bound real-time collectors use.
+        let growth_major = reg_len > 100_000 && reg_len > last_full.saturating_mul(2);
+        if growth_major || g1 >= t2.max(1) {
             GEN1_COUNT.set(0);
             GEN0_COUNT.set(0);
+            LAST_FULL_LEN.set(reg_len);
             collect_gen(2); // full: reclaims old garbage + re-seeds YOUNG
         } else if g0 >= t1.max(1) {
             GEN1_COUNT.set(g1 + 1);
@@ -597,6 +605,12 @@ thread_local! {
     /// Completed gen-1 (or higher) passes since the last full pass
     /// (gc.generations[1].count). At t2, a full gen-2 pass fires.
     static GEN1_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Registry length at the last growth-triggered or ladder full pass.
+    /// When the registry DOUBLES since then (and is large), the next
+    /// auto-fire escalates to a full pass regardless of the count ladder:
+    /// a heap-growth-triggered major GC (browser-style). This bounds
+    /// memory under slow-leak workloads without scanning on every fire.
+    static LAST_FULL_LEN: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// One FULL collection (explicit gc.collect()). Returns the number of
