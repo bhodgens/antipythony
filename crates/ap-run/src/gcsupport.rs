@@ -64,14 +64,13 @@ struct FinalizerEntry {
     detached: bool,
 }
 
-static mut FINALIZER_SEQ: u64 = 0;
+static FINALIZER_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn next_finalizer_index() -> u64 {
-    // Single-threaded v0: static mut under an exclusive interpreter thread.
-    unsafe {
-        FINALIZER_SEQ += 1;
-        FINALIZER_SEQ
-    }
+    // 02.09 audit P1 (docs/0209-object-state-audit.md finding 4): was
+    // `static mut u64` — a true data race once finalizer minting goes
+    // concurrent. AtomicU64 fetch_add is the whole fix; behavior identical.
+    FINALIZER_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
 }
 
 /// Can this value be weak-referenced? (gc005 matrix: int/str/float/bytes/
