@@ -75,13 +75,10 @@ def parse(source, filename='<unknown>', mode='exec', *,
     Equivalent to compile(source, filename, mode, PyCF_ONLY_AST).
     Pass type_comments=True to get back type comments where the syntax allows.
     """
-    # W114: the native compile path needs str; decode bytes
-    # input (PEP 263-lite: utf-8-sig, falling back to latin-1)
+    # W-bridge: the runtime parser returns an empty Module for bytes source;
+    # decode to str first (CPython accepts both).
     if isinstance(source, (bytes, bytearray)):
-        try:
-            source = bytes(source).decode("utf-8-sig")
-        except UnicodeDecodeError:
-            source = bytes(source).decode("latin-1")
+        source = bytes(source).decode("utf-8", "replace")
     flags = PyCF_ONLY_AST
     if optimize > 0:
         flags |= PyCF_OPTIMIZED_AST
@@ -196,17 +193,13 @@ def _dump_impl(
                 except AttributeError:
                     keywords = True
                     continue
-                if value is None and name in getattr(
-                    cls, "_optional_fields", ()
-                ):
+                if value is None and getattr(cls, name, ...) is None:
                     keywords = True
                     continue
                 if not show_empty:
                     if value == []:
-                        field_type = getattr(cls, "_field_types", {}).get(name, object)
-                        # plain `list` (our _ast.py table) or typing.List[...]
-                        # (CPython's annotation objects, __origin__ == list)
-                        if field_type is list or getattr(field_type, '__origin__', ...) is list:
+                        field_type = cls._field_types.get(name, object)
+                        if getattr(field_type, '__origin__', ...) is list:
                             if not keywords:
                                 args_buffer.append(repr(value))
                             continue
@@ -225,9 +218,7 @@ def _dump_impl(
                         value = getattr(node, name)
                     except AttributeError:
                         continue
-                    if value is None and name in getattr(
-                        cls, "_optional_fields", ()
-                    ):
+                    if value is None and getattr(cls, name, ...) is None:
                         continue
                     value, simple = _format(value, level)
                     allsimple = allsimple and simple

@@ -579,6 +579,7 @@ fn param_with_default_node(
 fn params_node(p: &ruff_python_ast::Parameters, line_col: &dyn Fn(usize) -> (usize, usize)) -> R {
     let mut f = pos_fields(rng(p), line_col);
     f.push(("_type", s("arguments")));
+    // W114 round-38: posonlyargs emitted separately (CPython 3.14 shape).
     let mut posonly = Vec::new();
     for a in p.posonlyargs.iter() {
         posonly.push(param_with_default_node(a, line_col)?);
