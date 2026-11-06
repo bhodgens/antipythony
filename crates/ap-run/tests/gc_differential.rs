@@ -90,6 +90,32 @@ fn check(name: &str, src: &str) {
 }
 
 #[test]
+fn ast_getattr_identity_fence() {
+    // Issue #14 (OOM campaign residual (d)): bulk getattr over native
+    // module attributes must return INTERNED objects. The pre-2b78e41
+    // leak class materialized a fresh GC-immune class clone per access
+    // (~110 x 150MB per `import ast` + shim loop; fenced runs peaked
+    // 9-44GB and OOM'd the dev box 2026-11-05). This probe runs through
+    // the common::run_aprun_eval fence (6GB RSS / 240s): if the clone
+    // behavior returns, the probe is killed at the cap and this test
+    // fails loudly with 'killed by fence' before any crawl/target run
+    // can multiply it. Identity assertions match CPython semantics.
+    check(
+        "ast-getattr-identity",
+        r#"
+import _ast
+names = [n for n in dir(_ast) if not n.startswith('_')]
+d = {}
+for n in names:
+    d[n] = getattr(_ast, n)
+assert d["Module"] is _ast.Module
+assert len(d) > 50
+print("getattr ok")
+"#,
+    );
+}
+
+#[test]
 fn gc_weakref_unittest_battery() {
     // 1. Cycle collection: collect() returns an OBJECT count (>= the cycle
     //    members) and a second collect reclaims nothing new.
