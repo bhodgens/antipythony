@@ -539,13 +539,48 @@ fn name_callable(v: &Value) -> String {
             }
         }
     }
+    // M5 (oom-bughunt 2026-11-06): the fallback path minted a FRESH
+    // `<ap-named-{counter}>` entry per call for bound methods/partials —
+    // an immortal NAMED_CALLABLES entry per iteration in a loop
+    // (encode_arg/itertools over bound methods). Key the synthetic name by
+    // the object's ADDRESS instead so repeat registrations of the SAME
+    // callable dedupe; dead entries can't be detected safely (the name is
+    // looked up later), but the per-call mint is gone, which is the growth
+    // class that mattered (bounded by distinct live callables used in
+    // native-dispatch positions).
+    thread_local! {
+        static NAMED_BY_ADDR: RefCell<HashMap<usize, String>> = RefCell::new(HashMap::new());
+    }
+    let obj_addr = if let Value::Obj(o) = &v {
+        std::rc::Rc::as_ptr(o) as *const u8 as usize
+    } else {
+        0
+    };
+    if obj_addr != 0 {
+        let existing = NAMED_BY_ADDR.with(|t| t.borrow().get(&obj_addr).cloned());
+        if let Some(name) = existing {
+            // Refresh the stored value (the callable may have been re-bound
+            // attrs-wise; same identity, cheapest correct answer).
+            NAMED_CALLABLES.with(|t| {
+                t.borrow_mut().insert(name.clone(), v.clone());
+            });
+            return name;
+        }
+    }
     let id = NAMED_COUNTER.with(|c| {
         let n = c.get() + 1;
         c.set(n);
         n
     });
     let name = format!("<ap-named-{id}>");
-    NAMED_CALLABLES.with(|t| t.borrow_mut().insert(name.clone(), v.clone()));
+    NAMED_CALLABLES.with(|t| {
+        t.borrow_mut().insert(name.clone(), v.clone());
+    });
+    if obj_addr != 0 {
+        NAMED_BY_ADDR.with(|t| {
+            t.borrow_mut().insert(obj_addr, name.clone());
+        });
+    }
     name
 }
 
@@ -1989,7 +2024,17 @@ pub fn re_dispatch(fname: &str, args: &[Value], kwargs: &[(String, Value)]) -> B
             };
             let (pat, _) = compile_arg_flags(&pat_v, flags, fname)?;
             match fname {
-                "compile" => Ok(crate::sre::pattern_object_patbox(pat)),
+                // OOM-wave-2 G2: module-level re.compile consults the
+                // CPython-style bounded RE_CACHE keyed by (pattern, flags) —
+                // `re.compile(p) is re.compile(p)` for identical args, and
+                // distinct patterns no longer accumulate unbounded compiled
+                // engines + registry entries.
+                "compile" => match &pat_v {
+                    Value::Str(sv) => Ok(crate::sre::cached_pattern_object(
+                        crate::sre::compile_pattern(sv.as_str(), flags)?,
+                    )),
+                    _ => Ok(crate::sre::pattern_object_patbox(pat)),
+                },
                 _ => re_op_form(&pat, fname, &rest_args[1..], flags, false),
             }
         }
@@ -9991,8 +10036,22 @@ pub fn drain_atexit() {
 // ===========================================================================
 
 thread_local! {
-    static LINECACHE: RefCell<HashMap<String, Vec<String>>> = RefCell::new(HashMap::new());
+    /// OOM-wave-2 M6: values are `Rc<Vec<String>>` so `getline` hands out a
+    /// cheap Rc clone instead of deep-copying every line on EACH call; the
+    /// total cache is byte-capped (LINECACHE_MAX_BYTES) — beyond the cap the
+    /// whole cache clears (traceback-heavy runs stay bounded; CPython
+    /// grows linecache without bound but also runs short-lived). Cap chosen
+    /// at 64MB: dozens of vendored stdlib files fit comfortably.
+    static LINECACHE: RefCell<HashMap<String, std::rc::Rc<Vec<String>>>> = RefCell::new(HashMap::new());
+    /// Insertion order for cap eviction (oldest file evicted first).
+    static LINECACHE_ORDER: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    /// Approximate total cached bytes.
+    static LINECACHE_BYTES: Cell<usize> = const { Cell::new(0) };
 }
+
+/// 64MB cache ceiling (M6: traceback-heavy runs over many files stay
+/// bounded; CPython's linecache is unbounded but runs short-lived).
+const LINECACHE_MAX_BYTES: usize = 64 * 1024 * 1024;
 
 fn build_linecache(_i: &crate::frame::Interpreter) -> Value {
     let (m, ns) = new_module("linecache");
@@ -10024,7 +10083,7 @@ pub fn call_linecache(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -
             }
             "getlines" => {
                 let p = str_arg(required(args, "getlines")?, "getlines")?;
-                Ok(list(cache_lines(&p).into_iter().map(s).collect()))
+                Ok(list(cache_lines(&p).iter().cloned().map(s).collect()))
             }
             "updatecache" => {
                 let p = str_arg(required(args, "updatecache")?, "updatecache")?;
@@ -10038,9 +10097,44 @@ pub fn call_linecache(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -
                     Err(_) => Ok(s("")),
                 }
             }
-            "checkcache" => Ok(Value::None),
+            "checkcache" => {
+                // M6: mtime/size validation — a file that changed (or
+                // shrank/vanished) since caching is dropped, so the next
+                // getline re-reads it (CPython semantics; the no-op answer
+                // pinned stale content forever).
+                let changed: Vec<String> = LINECACHE.with(|c| {
+                    c.borrow()
+                        .iter()
+                        .filter(|(p, lines)| match std::fs::metadata(p.as_str()) {
+                            Ok(md) => {
+                                let cached = lines.iter().map(|l| l.len()).sum::<usize>();
+                                md.len() as usize != cached
+                            }
+                            Err(_) => true,
+                        })
+                        .map(|(p, _)| p.clone())
+                        .collect()
+                });
+                if !changed.is_empty() {
+                    LINECACHE.with(|c| {
+                        let mut m = c.borrow_mut();
+                        for p in &changed {
+                            if let Some(v) = m.remove(p) {
+                                let bytes = v.iter().map(|l| l.len()).sum::<usize>();
+                                LINECACHE_BYTES.with(|b| b.set(b.get().saturating_sub(bytes)));
+                            }
+                        }
+                    });
+                    LINECACHE_ORDER.with(|o| {
+                        o.borrow_mut().retain(|p| !changed.contains(p));
+                    });
+                }
+                Ok(Value::None)
+            }
             "clearcache" => {
                 LINECACHE.with(|c| c.borrow_mut().clear());
+                LINECACHE_ORDER.with(|o| o.borrow_mut().clear());
+                LINECACHE_BYTES.with(|b| b.set(0));
                 Ok(Value::None)
             }
             "lazycache" => Ok(Value::Bool(false)),
@@ -10053,16 +10147,39 @@ pub fn call_linecache(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -
     }
 }
 
-fn cache_lines(path: &str) -> Vec<String> {
+fn cache_lines(path: &str) -> std::rc::Rc<Vec<String>> {
     LINECACHE.with(|c| {
         let mut m = c.borrow_mut();
         if let Some(v) = m.get(path) {
             return v.clone();
         }
-        let lines: Vec<String> = std::fs::read_to_string(path)
-            .map(|txt| txt.lines().map(|l| format!("{l}\n")).collect::<Vec<_>>())
-            .unwrap_or_default();
+        let lines: std::rc::Rc<Vec<String>> = std::rc::Rc::new(
+            std::fs::read_to_string(path)
+                .map(|txt| txt.lines().map(|l| format!("{l}\n")).collect::<Vec<_>>())
+                .unwrap_or_default(),
+        );
+        let bytes = lines.iter().map(|l| l.len()).sum::<usize>();
         m.insert(path.to_string(), lines.clone());
+        LINECACHE_BYTES.with(|b| b.set(b.get() + bytes));
+        LINECACHE_ORDER.with(|o| o.borrow_mut().push(path.to_string()));
+        // Cap enforcement: once past the ceiling, drop the OLDEST files
+        // until back under it (M6: bounded cache; traceback frames re-read
+        // their file on the next access, never wrong, just re-cached).
+        if LINECACHE_BYTES.with(|b| b.get()) > LINECACHE_MAX_BYTES {
+            LINECACHE_ORDER.with(|o| {
+                let mut ord = o.borrow_mut();
+                while LINECACHE_BYTES.with(|b| b.get()) > LINECACHE_MAX_BYTES {
+                    let Some(oldest) = ord.first().cloned() else {
+                        break;
+                    };
+                    if let Some(v) = m.remove(&oldest) {
+                        let removed = v.iter().map(|l| l.len()).sum::<usize>();
+                        LINECACHE_BYTES.with(|b| b.set(b.get().saturating_sub(removed)));
+                    }
+                    ord.remove(0);
+                }
+            });
+        }
         lines
     })
 }
@@ -12582,20 +12699,61 @@ pub fn call_io(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option
                         .into_bytes()
                     };
                     let mut attrs = o.attrs.borrow_mut();
-                    let data = match attrs.get(&s("<buf>")) {
-                        Some(Value::Bytes(b)) => b.to_vec(),
-                        _ => vec![],
-                    };
-                    let mut nd = data;
-                    nd.extend_from_slice(&payload);
+                    // F3 (oom-bughunt 2026-11-06): write() used to clone the
+                    // ENTIRE buffer per call (b.to_vec() + extend + replace),
+                    // O(n²) bytes copied and ~2x peak transient memory —
+                    // measured ~2.3KB RSS per 33-byte write (481MB RSS for
+                    // 6.9MB content). Fast path: when the stream's dict is
+                    // the ONLY holder of the buffer Gc, take the Vec out
+                    // (Rc::try_unwrap), extend in place (Vec's own geometric
+                    // growth = amortized O(1) per byte), and put it back —
+                    // zero copies while appending. Aliased buffers (a live
+                    // getvalue() result snapshot holds the same Gc? — no:
+                    // getvalue returns a str; the only other holder would be
+                    // a captured attrs iteration) fall back to clone+extend.
                     let n = payload.len();
-                    let total = nd.len();
-                    let _ = attrs.set(s("<buf>"), Value::Bytes(Gc::new(nd)));
+                    // F3: POP the old buffer out (dict refcount drops to 1 —
+                    // ours), take the Vec via try_unwrap, extend IN PLACE
+                    // (Vec geometric growth = amortized O(1)/byte), re-set.
+                    // The old get()+clone kept the dict ref alive through the
+                    // call, so try_unwrap NEVER fired and every write cloned
+                    // the whole buffer (the O(n²) this fix targets). Between
+                    // pop and set the stream has no <buf>; single-threaded
+                    // write semantics make that window unobservable.
+                    let popped = attrs.pop(&s("<buf>"));
+                    let total = match popped {
+                        Some(Value::Bytes(b)) => match std::rc::Rc::try_unwrap(b) {
+                            Ok(mut v) => {
+                                v.extend_from_slice(&payload);
+                                let t = v.len();
+                                let _ = attrs.set(s("<buf>"), Value::Bytes(Gc::new(v)));
+                                t
+                            }
+                            Err(_b) => {
+                                // Genuinely aliased (>=2 holders even after
+                                // the pop — a snapshot escaped): pre-fix
+                                // clone+extend+replace.
+                                let mut nd = (*_b).clone();
+                                nd.extend_from_slice(&payload);
+                                let t = nd.len();
+                                let _ = attrs.set(s("<buf>"), Value::Bytes(Gc::new(nd)));
+                                t
+                            }
+                        },
+                        _ => {
+                            let _ = attrs.set(s("<buf>"), Value::Bytes(Gc::new(payload.clone())));
+                            payload.len()
+                        }
+                    };
                     let _ = attrs.set(s("<pos>"), i(total as i64));
                     // T2 (capsys): fd-backed streams write through to
-                    // the real fd (the buffer stays for readback).
-                    if let Some(fdv) = attrs.get(&s("<fd>")) {
-                        let fd = as_int_i64(&fdv.clone())? as i32;
+                    // the real fd (the buffer stays for readback). Note the
+                    // fast path may have MOVED payload into the buffer —
+                    // the fd write reads len from the pre-computed n.
+                    let fdv = attrs.get(&s("<fd>")).map(|v| v.clone());
+                    drop(attrs);
+                    if let Some(fdv) = fdv {
+                        let fd = as_int_i64(&fdv)? as i32;
                         unsafe {
                             let mut off = 0usize;
                             let buf = payload.as_ptr();
@@ -12900,9 +13058,15 @@ pub fn lru_wrapper_call_id(id: &str, args: &[Value], kwargs: &[(String, Value)])
     LRU_STATE.with(|t| {
         if let Some(s) = t.borrow_mut().get_mut(id) {
             let maxsize = s.maxsize;
-            s.cache.insert(key.clone(), val.clone());
-            s.order.push(key.clone());
-            if maxsize.map(|m| m > 0).unwrap_or(false) {
+            // G9 (oom-bughunt 2026-11-06): `maxsize=0` means DO NOT CACHE
+            // (CPython lru_cache: `if maxsize == 0: ... don't insert`). The
+            // old gate `maxsize.map(|m| m > 0).unwrap_or(false)` still
+            // inserted unconditionally and only skipped EVICTION — an
+            // unbounded pin of every distinct result. Some(0) and any
+            // negative maxsize insert nothing; maxsize=None stays unbounded.
+            if matches!(maxsize, Some(m) if m > 0) {
+                s.cache.insert(key.clone(), val.clone());
+                s.order.push(key.clone());
                 let limit = maxsize.unwrap_or(0);
                 while s.order.len() as i64 > limit {
                     let oldest = s.order.remove(0);
