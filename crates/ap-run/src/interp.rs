@@ -23,7 +23,7 @@ thread_local! {
     pub static CELL_BACKING: std::cell::RefCell<std::collections::HashMap<usize, crate::frame::CellSlot>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
 }
-use crate::frame::{CellSlot, FnEntry, Frame, Interpreter, Loc};
+use crate::frame::{CellSlot, FnEntry, Frame, Interpreter, Loc, NESTED_DEDUPE};
 use crate::generators;
 use crate::iter::{IterState, PyIterator};
 use crate::{builtins, builtins_modules, importer, methods, RunOutcome};
@@ -1469,12 +1469,19 @@ fn exec_stmt(
                     format!("{}.<locals>.{}", sp, f.name),
                 )
             };
-            let id = interp.register_nested(FnEntry {
-                def: (**f).clone(),
-                scope_path,
-                qualname: qual,
-                globals: frame.globals.clone(),
-            });
+            // G4: dedupe re-executions of the SAME def statement in the same
+            // frame (AST-node address = Box payload identity — stable per
+            // AST node; the defining frame Rc is the instance identity).
+            let id = interp.register_nested_for(
+                FnEntry {
+                    def: (**f).clone(),
+                    scope_path,
+                    qualname: qual,
+                    globals: frame.globals.clone(),
+                },
+                std::ptr::addr_of!(**f) as usize,
+                frame,
+            );
             let func = builtins::make_function(id, &f.name);
             // Wave-75: record the defining module's __name__ so
             // func.__module__ doesn't fall back to the "builtins"
@@ -3253,27 +3260,43 @@ pub(crate) fn eval_expr(
             Ok(Value::Dict(d))
         }
         Expr::Lambda(sig, body) => {
-            let id = interp.register_nested(FnEntry {
-                def: FnDef {
-                    name: "<lambda>".to_string(),
-                    params: sig.params.clone(),
-                    return_ann: None,
-                    decorators: Vec::new(),
-                    body: ap_ir::item::FnBody { blocks: Vec::new() },
-                    is_generator: false,
-                    is_async: false,
-                    ret_ty: ap_ir::TypeLattice::Unknown,
-                    def_line: 1,
-                },
-                scope_path: format!("{}.<locals>.<lambda>", frame.scope_path),
-                qualname: "<lambda>".to_string(),
-                globals: frame.globals.clone(),
-            });
-            // Lambdas evaluate their body expression directly; stash it.
-            interp
-                .lambda_bodies
-                .borrow_mut()
-                .insert(id, (**body).clone());
+            // G4: dedupe per (lambda AST node, defining frame) — the Box
+            // payload address of the body expression is the node identity.
+            let node_addr = std::ptr::addr_of!(**body) as usize;
+            let dedupe_key = (node_addr, Rc::as_ptr(frame) as *const u8 as usize);
+            let id = match NESTED_DEDUPE.with(|d| d.borrow().get(&dedupe_key).copied()) {
+                Some(existing) => {
+                    interp.defining_frames.borrow_mut().insert(existing, frame.clone());
+                    existing
+                }
+                None => {
+                    let id = interp.register_nested(FnEntry {
+                        def: FnDef {
+                            name: "<lambda>".to_string(),
+                            params: sig.params.clone(),
+                            return_ann: None,
+                            decorators: Vec::new(),
+                            body: ap_ir::item::FnBody { blocks: Vec::new() },
+                            is_generator: false,
+                            is_async: false,
+                            ret_ty: ap_ir::TypeLattice::Unknown,
+                            def_line: 1,
+                        },
+                        scope_path: format!("{}.<locals>.<lambda>", frame.scope_path),
+                        qualname: "<lambda>".to_string(),
+                        globals: frame.globals.clone(),
+                    });
+                    // Lambdas evaluate their body expression directly; stash it.
+                    interp
+                        .lambda_bodies
+                        .borrow_mut()
+                        .insert(id, (**body).clone());
+                    NESTED_DEDUPE.with(|d| {
+                        d.borrow_mut().insert(dedupe_key, id);
+                    });
+                    id
+                }
+            };
             let obj = ap_obj::PyObject::with_fn_id(ap_obj::ObjKind::Function, "<lambda>", id);
             // Closure capture: remember the defining frame for cell wiring
             // (keyed by fn id; the object's closure_slot points there).

@@ -367,6 +367,17 @@ impl Interpreter {
 /// are small; the offset avoids id collisions between the two tables).
 pub const NESTED_BASE: u32 = 1_000_000;
 
+thread_local! {
+    /// G4 (oom-bughunt-2026-11-06): (AST-node addr, defining-frame addr) ->
+    /// registered nested-fn id. Dedupes re-executions of the same def/lambda
+    /// statement in the same frame so nested_functions/lambda_bodies/
+    /// defining_frames stop growing per call in hot loops. Entries live for
+    /// the interpreter's life — bounded by distinct (node, frame) pairs
+    /// (CPython shares code objects the same way), NOT by executions.
+    pub static NESTED_DEDUPE: std::cell::RefCell<HashMap<(usize, usize), u32>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
 impl Interpreter {
     pub fn new(source: String, script_path: String) -> Interpreter {
         let globals = PyDict::new();
@@ -432,6 +443,35 @@ impl Interpreter {
     }
 
     /// Register a nested def/lambda; returns its id (NESTED_BASE-offset).
+    /// G4 (oom-bughunt-2026-11-06): re-registrations of the SAME def
+    /// statement in the SAME defining frame (a hot function defining a
+    /// helper per call, `sorted(x, key=lambda ...)` in a loop) used to
+    /// append a fresh FnEntry (full FnDef AST clone) + defining_frames Rc
+    /// entry PER EXECUTION — an unbounded per-call leak. Dedupe by
+    /// (AST-node address, defining-frame address): CPython likewise mints
+    /// a new function OBJECT per execution but shares one CODE object; the
+    /// (node, frame) pair is our code-object identity.
+    pub fn register_nested_for(&self, entry: FnEntry, ast_node: usize, defining: &Rc<Frame>) -> u32 {
+        let key = (ast_node, Rc::as_ptr(defining) as *const u8 as usize);
+        let existing = NESTED_DEDUPE.with(|d| d.borrow().get(&key).copied());
+        if let Some(id) = existing {
+            // The AST entry is already registered; keep the defining_frames
+            // slot fresh (it points at THIS execution's frame — same Rc for
+            // re-execution in one frame instance, so the insert is idempotent
+            // but refresh guards frame-identity reuse).
+            self.defining_frames.borrow_mut().insert(id, defining.clone());
+            return id;
+        }
+        let id = self.register_nested(entry);
+        NESTED_DEDUPE.with(|d| {
+            d.borrow_mut().insert(key, id);
+        });
+        self.defining_frames
+            .borrow_mut()
+            .insert(id, defining.clone());
+        id
+    }
+
     pub fn register_nested(&self, entry: FnEntry) -> u32 {
         let mut t = self.nested_functions.borrow_mut();
         let id = NESTED_BASE + t.len() as u32;
