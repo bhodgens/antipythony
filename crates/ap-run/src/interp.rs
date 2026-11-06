@@ -779,6 +779,10 @@ fn exec_stmt(
                 top.set(*n);
             }
             frame.last_line.set(*n);
+            // G4-repair: the current def/lambda source line rides the frame
+            // (used as the dedupe-key line component). Free (one Cell write);
+            // read only when a LocalDef/Lambda registration needs a key.
+            frame.def_line.set(*n);
             Ok(StmtOut::Next)
         }
         Stmt::Pass => Ok(StmtOut::Next),
@@ -1489,19 +1493,47 @@ fn exec_stmt(
                     format!("{}.<locals>.{}", sp, f.name),
                 )
             };
-            // G4: dedupe re-executions of the SAME def statement in the same
-            // frame (AST-node address = Box payload identity — stable per
-            // AST node; the defining frame Rc is the instance identity).
-            let id = interp.register_nested_for(
-                FnEntry {
-                    def: (**f).clone(),
-                    scope_path,
-                    qualname: qual,
-                    globals: frame.globals.clone(),
-                },
-                std::ptr::addr_of!(**f) as usize,
-                frame,
-            );
+            // G4-repair: dedupe by CODE-OBJECT identity via
+            // register_nested_for — the key uses the frame's CURRENT def
+            // source line (set by the Stmt::Line marker preceding this
+            // LocalDef) instead of the runtime frame pointer (fresh per
+            // call, deduped nothing). AST-node address stays as the
+            // tie-breaker for same-line edge cases. Safety gate: sharing
+            // ONE FnEntry across calls is only correct when the def has
+            // NO per-call closure/def-time state — no frees, no
+            // nonlocals, no default exprs, no decorators (a closure
+            // captures THIS call's cells; sharing would merge distinct
+            // activations' cells — caught by the nested-closure
+            // differential). Such defs bypass the dedupe (fresh id +
+            // defining_frames entry per call, wave-1 semantics).
+            let mut deduped = false;
+            let id = {
+                let needs_own_entry = !f.decorators.is_empty()
+                    || f.params.iter().any(|p| p.default.is_some())
+                    || current_registry(interp)
+                        .scope_of(&scope_path)
+                        .is_some_and(|s| !s.frees.is_empty() || !s.nonlocals.is_empty());
+                deduped = !needs_own_entry;
+                if needs_own_entry {
+                    interp.register_nested(FnEntry {
+                        def: (**f).clone(),
+                        scope_path: scope_path.clone(),
+                        qualname: qual.clone(),
+                        globals: frame.globals.clone(),
+                    })
+                } else {
+                    interp.register_nested_for(
+                        FnEntry {
+                            def: (**f).clone(),
+                            scope_path: scope_path.clone(),
+                            qualname: qual.clone(),
+                            globals: frame.globals.clone(),
+                        },
+                        std::ptr::addr_of!(**f) as usize,
+                        frame,
+                    )
+                }
+            };
             let func = builtins::make_function(id, &f.name);
             // Wave-75: record the defining module's __name__ so
             // func.__module__ doesn't fall back to the "builtins"
@@ -1552,10 +1584,19 @@ fn exec_stmt(
                 }
             }
             // Defaults + closures evaluate in the DEFINING frame (S-02-7).
-            interp
-                .defining_frames
-                .borrow_mut()
-                .insert(id, frame.clone());
+            // G4-repair: skip the defining_frames pin for DEDUPED entries
+            // (shared id, closure/default-free — nothing reads the frame;
+            // re-inserting per call would churn the map entry but keep the
+            // entry count flat, and dropping it entirely avoids pinning the
+            // first registration's frame). Non-deduped (own-entry) ids keep
+            // the insert: their id is fresh per call, so the map stays flat
+            // per live function object (wave-1 semantics).
+            if !deduped {
+                interp
+                    .defining_frames
+                    .borrow_mut()
+                    .insert(id, frame.clone());
+            }
             if let Value::Obj(o) = &func {
                 *o.closure_slot.borrow_mut() = Some(id as u64);
             }
@@ -3280,41 +3321,74 @@ pub(crate) fn eval_expr(
             Ok(Value::Dict(d))
         }
         Expr::Lambda(sig, body) => {
-            // G4: dedupe per (lambda AST node, defining frame) — the Box
-            // payload address of the body expression is the node identity.
+            // G4-repair: dedupe per code-object identity — the lambda AST
+            // node address (Box payload) + the frame's CURRENT def source
+            // line (set by the Stmt::Line marker; the wave-2 frame-pointer
+            // component was fresh every call and deduped nothing). The
+            // fresh per-call function OBJECT is still minted below
+            // (CPython semantics); only the body/entry preparation is
+            // shared. Safety gate (nested-closure differential): a lambda
+            // that CAPTURES enclosing names (frees) or carries default
+            // exprs must NOT share its FnEntry across activations — its
+            // defining_frames wiring is per-call (cells of THIS call).
+            // Such lambdas take the fresh-entry path (wave-1 semantics).
             let node_addr = std::ptr::addr_of!(**body) as usize;
-            let dedupe_key = (node_addr, Rc::as_ptr(frame) as *const u8 as usize);
-            let id = match NESTED_DEDUPE.with(|d| d.borrow().get(&dedupe_key).copied()) {
-                Some(existing) => {
-                    interp.defining_frames.borrow_mut().insert(existing, frame.clone());
-                    existing
-                }
-                None => {
-                    let id = interp.register_nested(FnEntry {
-                        def: FnDef {
-                            name: "<lambda>".to_string(),
-                            params: sig.params.clone(),
-                            return_ann: None,
-                            decorators: Vec::new(),
-                            body: ap_ir::item::FnBody { blocks: Vec::new() },
-                            is_generator: false,
-                            is_async: false,
-                            ret_ty: ap_ir::TypeLattice::Unknown,
-                            def_line: 1,
-                        },
-                        scope_path: format!("{}.<locals>.<lambda>", frame.scope_path),
-                        qualname: "<lambda>".to_string(),
-                        globals: frame.globals.clone(),
-                    });
-                    // Lambdas evaluate their body expression directly; stash it.
-                    interp
-                        .lambda_bodies
-                        .borrow_mut()
-                        .insert(id, (**body).clone());
-                    NESTED_DEDUPE.with(|d| {
-                        d.borrow_mut().insert(dedupe_key, id);
-                    });
-                    id
+            let lambda_scope = format!("{}.<locals>.<lambda>", frame.scope_path);
+            let captures = sig.params.iter().any(|p| p.default.is_some())
+                || current_registry(interp)
+                    .scope_of(&lambda_scope)
+                    .is_some_and(|s| !s.frees.is_empty() || !s.nonlocals.is_empty());
+            let id = if captures {
+                let id = interp.register_nested(FnEntry {
+                    def: FnDef {
+                        name: "<lambda>".to_string(),
+                        params: sig.params.clone(),
+                        return_ann: None,
+                        decorators: Vec::new(),
+                        body: ap_ir::item::FnBody { blocks: Vec::new() },
+                        is_generator: false,
+                        is_async: false,
+                        ret_ty: ap_ir::TypeLattice::Unknown,
+                        def_line: 1,
+                    },
+                    scope_path: lambda_scope.clone(),
+                    qualname: "<lambda>".to_string(),
+                    globals: frame.globals.clone(),
+                });
+                interp
+                    .lambda_bodies
+                    .borrow_mut()
+                    .insert(id, (**body).clone());
+                id
+            } else {
+                let dedupe_key = (frame.scope_path.clone(), frame.def_line.get(), node_addr);
+                match NESTED_DEDUPE.with(|d| d.borrow().get(&dedupe_key).copied()) {
+                    Some(existing) => existing,
+                    None => {
+                        let id = interp.register_nested(FnEntry {
+                            def: FnDef {
+                                name: "<lambda>".to_string(),
+                                params: sig.params.clone(),
+                                return_ann: None,
+                                decorators: Vec::new(),
+                                body: ap_ir::item::FnBody { blocks: Vec::new() },
+                                is_generator: false,
+                                is_async: false,
+                                ret_ty: ap_ir::TypeLattice::Unknown,
+                                def_line: 1,
+                            },
+                            scope_path: lambda_scope.clone(),
+                            qualname: "<lambda>".to_string(),
+                            globals: frame.globals.clone(),
+                        });
+                        // Lambdas evaluate their body expression directly; stash it.
+                        interp
+                            .lambda_bodies
+                            .borrow_mut()
+                            .insert(id, (**body).clone());
+                        crate::frame::nested_dedupe_insert(dedupe_key, id);
+                        id
+                    }
                 }
             };
             let obj = ap_obj::PyObject::with_fn_id(ap_obj::ObjKind::Function, "<lambda>", id);

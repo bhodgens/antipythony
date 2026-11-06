@@ -39,6 +39,12 @@ pub struct Frame {
     /// fs.last() writes), so traceback entries recorded the caller's
     /// line. Per-frame cell is written only by this frame's exec_stmt.
     pub last_line: Cell<usize>,
+    /// G4-repair: the source line of the def/lambda statement currently
+    /// being executed (written by the Stmt::Line marker preceding it in
+    /// the lowered block). Joins the nested-def dedupe key as the
+    /// "which def in this body" component — stable across calls of the
+    /// SAME enclosing function (fresh frames carry the same lines).
+    pub def_line: Cell<usize>,
     pub is_module: bool,
     /// Class-body frames: the dotted qualname prefix nested classes extend
     /// (S-03-04 `Outer.Inner`); empty elsewhere.
@@ -78,6 +84,7 @@ impl Frame {
             qualname: "<module>".to_string(),
             is_module: true,
             last_line: std::cell::Cell::new(0),
+            def_line: std::cell::Cell::new(0),
             class_qual_prefix: String::new(),
             class_cell: std::cell::RefCell::new(None),
             class_ns: None,
@@ -107,6 +114,7 @@ impl Frame {
             qualname: qualname.to_string(),
             is_module: false,
             last_line: std::cell::Cell::new(0),
+            def_line: std::cell::Cell::new(0),
             class_qual_prefix: String::new(),
             class_cell: std::cell::RefCell::new(None),
             class_ns: None,
@@ -128,6 +136,7 @@ impl Frame {
             qualname: parent.qualname.clone(),
             is_module: false,
             last_line: std::cell::Cell::new(0),
+            def_line: std::cell::Cell::new(0),
             class_qual_prefix: String::new(),
             class_cell: std::cell::RefCell::new(None),
             class_ns: None,
@@ -151,6 +160,7 @@ impl Frame {
             qualname: parent.qualname.clone(),
             is_module: false,
             last_line: std::cell::Cell::new(0),
+            def_line: std::cell::Cell::new(0),
             class_qual_prefix: String::new(),
             class_cell: std::cell::RefCell::new(None),
             class_ns: Some(ns),
@@ -372,14 +382,43 @@ impl Interpreter {
 pub const NESTED_BASE: u32 = 1_000_000;
 
 thread_local! {
-    /// G4 (oom-bughunt-2026-11-06): (AST-node addr, defining-frame addr) ->
-    /// registered nested-fn id. Dedupes re-executions of the same def/lambda
-    /// statement in the same frame so nested_functions/lambda_bodies/
-    /// defining_frames stop growing per call in hot loops. Entries live for
-    /// the interpreter's life — bounded by distinct (node, frame) pairs
-    /// (CPython shares code objects the same way), NOT by executions.
-    pub static NESTED_DEDUPE: std::cell::RefCell<HashMap<(usize, usize), u32>> =
+    /// G4 (oom-bughunt-2026-11-06): nested-def/lambda dedupe,
+    /// CODE-OBJECT identity -> registered nested-fn id. Key =
+    /// (defining scope_path, def/lambda source line, AST-node addr) —
+    /// stable across calls of the same enclosing function, so hot loops
+    /// re-executing a def statement register ONCE (CPython shares one
+    /// code object the same way). Bounded: FIFO eviction past
+    /// NESTED_DEDUPE_CAP entries (eviction only costs re-registration of
+    /// a long-cold def — semantics unchanged).
+    pub static NESTED_DEDUPE:
+        std::cell::RefCell<HashMap<(String, usize, usize), u32>> =
         std::cell::RefCell::new(HashMap::new());
+    /// Insertion-order ledger for the NESTED_DEDUPE cap (sre.rs style).
+    static NESTED_DEDUPE_ORDER: std::cell::RefCell<Vec<(String, usize, usize)>> =
+        std::cell::RefCell::new(Vec::new());
+}
+
+/// G4-repair table cap (mirrors SRE_TABLE_CAP, sre.rs).
+const NESTED_DEDUPE_CAP: usize = 1024;
+
+/// FIFO-capped insert into NESTED_DEDUPE (oldest key evicted past cap).
+pub fn nested_dedupe_insert(key: (String, usize, usize), id: u32) {
+    NESTED_DEDUPE.with(|d| {
+        let mut map = d.borrow_mut();
+        if map.contains_key(&key) {
+            map.insert(key, id);
+            return;
+        }
+        NESTED_DEDUPE_ORDER.with(|l| {
+            let mut ledger = l.borrow_mut();
+            ledger.push(key.clone());
+            if ledger.len() > NESTED_DEDUPE_CAP {
+                let oldest = ledger.remove(0);
+                map.remove(&oldest);
+            }
+        });
+        map.insert(key, id);
+    });
 }
 
 impl Interpreter {
@@ -471,31 +510,35 @@ impl Interpreter {
 
     /// Register a nested def/lambda; returns its id (NESTED_BASE-offset).
     /// G4 (oom-bughunt-2026-11-06): re-registrations of the SAME def
-    /// statement in the SAME defining frame (a hot function defining a
-    /// helper per call, `sorted(x, key=lambda ...)` in a loop) used to
-    /// append a fresh FnEntry (full FnDef AST clone) + defining_frames Rc
-    /// entry PER EXECUTION — an unbounded per-call leak. Dedupe by
-    /// (AST-node address, defining-frame address): CPython likewise mints
-    /// a new function OBJECT per execution but shares one CODE object; the
-    /// (node, frame) pair is our code-object identity.
-    pub fn register_nested_for(&self, entry: FnEntry, ast_node: usize, defining: &Rc<Frame>) -> u32 {
-        let key = (ast_node, Rc::as_ptr(defining) as *const u8 as usize);
+    /// statement (a hot function defining a helper per call,
+    /// `sorted(x, key=lambda ...)` in a loop) used to append a fresh
+    /// FnEntry (full FnDef AST clone) + defining_frames Rc entry PER
+    /// EXECUTION — an unbounded per-call leak. G4-repair: the dedupe key
+    /// is the CODE-OBJECT identity — (defining frame's scope_path,
+    /// def/lambda source line, AST-node address) — all STABLE across
+    /// calls of the same enclosing function (the wave-2 fix's frame
+    /// pointer was fresh every call and deduped nothing). CPython mints
+    /// a new function OBJECT per execution but shares one CODE object;
+    /// this key is that code-object identity. The call-site refreshes
+    /// defining_frames[id] per call (fresh per-call closure target), so
+    /// no stale frame pins here.
+    pub fn register_nested_for(
+        &self,
+        entry: FnEntry,
+        ast_node: usize,
+        defining: &Rc<Frame>,
+    ) -> u32 {
+        let key = (
+            defining.scope_path.clone(),
+            defining.def_line.get(),
+            ast_node,
+        );
         let existing = NESTED_DEDUPE.with(|d| d.borrow().get(&key).copied());
         if let Some(id) = existing {
-            // The AST entry is already registered; keep the defining_frames
-            // slot fresh (it points at THIS execution's frame — same Rc for
-            // re-execution in one frame instance, so the insert is idempotent
-            // but refresh guards frame-identity reuse).
-            self.defining_frames.borrow_mut().insert(id, defining.clone());
             return id;
         }
         let id = self.register_nested(entry);
-        NESTED_DEDUPE.with(|d| {
-            d.borrow_mut().insert(key, id);
-        });
-        self.defining_frames
-            .borrow_mut()
-            .insert(id, defining.clone());
+        nested_dedupe_insert(key, id);
         id
     }
 
