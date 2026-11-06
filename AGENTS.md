@@ -150,7 +150,11 @@ GIL, uv-backed deps at build time. Byte-exact differential conformance vs CPytho
   TypeRef path) - shim avoids it, bug remains;
   (b) importer.rs:654-678 _ast branch inserts sys.modules AFTER body
   exec (generic path pre-inserts at :1240) - re-entrancy hazard for
-  any future self-importing _ast;
+  any future self-importing _ast; CLOSED 2026-11-05 by 8bab377
+  (W117: pre-insert partial module before exec, drop-on-failed-body;
+  the hazard fired in production as the W114 _ast.py self-import
+  recursion = the codecs.lookup 8.6GB/150MB-per-level leak and the
+  `import ast`+parse hang; both fenced-green after the fix);
   (c) _multibytecodec/_codecs_jp/-ko/-cn/-tw + big5/euc_*/gb18030/
   cp932/949/950 codecs missing natively (02.08 surface; blocks
   CJK response.text);
