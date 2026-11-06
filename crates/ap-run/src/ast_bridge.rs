@@ -155,6 +155,15 @@ fn stmt_node(st: &ruff_python_ast::Stmt, line_col: &dyn Fn(usize) -> (usize, usi
                 "value",
                 opt(&a.value, line_col, |v| expr_node(v, line_col))?,
             ));
+            // CPython simple: 1 when the target is a plain unparenthesized
+            // Name (`x: int` and `x: int = 1` are both simple=1); 0 for
+            // attribute/subscript/tuple targets. ruff computes this exact
+            // flag; it dumps as int 0/1 (native AST stores ints).
+            let simple = a.simple;
+            f.push((
+                "simple",
+                Value::Int(ap_obj::int::Int::from_i64(simple as i64)),
+            ));
             Ok(dict_of(f))
         }
         ruff_python_ast::Stmt::Delete(d) => {
@@ -708,7 +717,12 @@ fn expr_node(e: &ruff_python_ast::Expr, line_col: &dyn Fn(usize) -> (usize, usiz
                     f.push(("value", Value::Float(*v)));
                 }
                 ruff_python_ast::Number::Complex { real, imag } => {
-                    f.push(("value", s(&format!("{}j{}", real, imag))));
+                    // CPython AST: complex literals are Constant nodes whose
+                    // value is a real complex object (repr "1j", "(1+2j)").
+                    f.push((
+                        "value",
+                        crate::builtins_modules::make_complex_value(*real, *imag),
+                    ));
                 }
             }
             Ok(dict_of(f))
@@ -725,7 +739,7 @@ fn expr_node(e: &ruff_python_ast::Expr, line_col: &dyn Fn(usize) -> (usize, usiz
         }
         ruff_python_ast::Expr::EllipsisLiteral(_) => {
             f.push(("_type", s("Constant")));
-            f.push(("value", s("Ellipsis")));
+            f.push(("value", Value::Ellipsis));
             Ok(dict_of(f))
         }
         ruff_python_ast::Expr::StringLiteral(v) => {
@@ -971,7 +985,9 @@ fn expr_node(e: &ruff_python_ast::Expr, line_col: &dyn Fn(usize) -> (usize, usiz
                     }
                     ruff_python_ast::FStringPart::FString(fs) => {
                         for el in fs.elements.iter() {
-                            values.push(fstring_element_node(el, line_col)?);
+                            let v =
+                                fstring_element_node(el, &mut values, line_col)?;
+                            values.push(v);
                         }
                     }
                 }
@@ -1065,6 +1081,7 @@ fn comprehension_list(
 
 fn fstring_element_node(
     el: &ruff_python_ast::InterpolatedStringElement,
+    values: &mut Vec<Value>,
     line_col: &dyn Fn(usize) -> (usize, usize),
 ) -> R {
     match el {
@@ -1078,16 +1095,31 @@ fn fstring_element_node(
             Ok(dict_of(f))
         }
         ruff_python_ast::InterpolatedStringElement::Interpolation(ip) => {
+            // Self-documenting f-string interpolations ({x=}): CPython 3.14
+            // emits the debug text ("x=" / "x = ") as a Constant BEFORE the
+            // FormattedValue, same as the t-string arm.
+            if let Some(dt) = &ip.debug_text {
+                let mut cf = pos_fields(rng(ip), line_col);
+                cf.push(("_type", s("Constant")));
+                cf.push(("value", s(dt.as_str())));
+                values.push(dict_of(cf));
+            }
             let mut f = pos_fields(rng(ip), line_col);
             f.push(("_type", s("FormattedValue")));
             f.push(("value", expr_node(&ip.expression, line_col)?));
             // conversion: -1 (none) or the ord of the conversion char
-            let conv: i64 = match ip.conversion {
+            let mut conv: i64 = match ip.conversion {
                 ruff_python_ast::ConversionFlag::None => -1,
                 ruff_python_ast::ConversionFlag::Str => 115,
                 ruff_python_ast::ConversionFlag::Ascii => 97,
                 ruff_python_ast::ConversionFlag::Repr => 114,
             };
+            // Self-documenting f-string interpolations ({x=}) without an
+            // explicit conversion or format spec report repr (!r, 114) in
+            // CPython 3.14 — same rule as the t-string arm below.
+            if conv == -1 && ip.debug_text.is_some() && ip.format_spec.is_none() {
+                conv = 114;
+            }
             f.push(("conversion", Value::Int(ap_obj::int::Int::from_i64(conv))));
             f.push((
                 "format_spec",
@@ -1096,7 +1128,11 @@ fn fstring_element_node(
                         // CPython: JoinedStr of the spec elements
                         let mut spec_values: Vec<Value> = Vec::new();
                         for el2 in spec.elements.iter() {
-                            spec_values.push(fstring_element_node(el2, line_col)?);
+                            spec_values.push(fstring_element_node(
+                                el2,
+                                values,
+                                line_col,
+                            )?);
                         }
                         dict_of(vec![
                             ("_type", s("JoinedStr")),
@@ -1181,7 +1217,7 @@ fn tstring_element_node(
                         // (nested FormattedValue shape for interpolations)
                         let mut spec_values: Vec<Value> = Vec::new();
                         for el2 in spec.elements.iter() {
-                            match fstring_element_node(el2, line_col)? {
+                            match fstring_element_node(el2, values, line_col)? {
                                 Value::None => {}
                                 v => spec_values.push(v),
                             }

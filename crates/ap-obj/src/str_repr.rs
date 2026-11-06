@@ -24,7 +24,9 @@ pub fn str_repr(s: &str) -> String {
             '\t' => out.push_str("\\t"),
             '\'' if needs_escape_apostrophe => out.push_str("\\'"),
             '"' if quote == '"' => out.push_str("\\\""),
-            c if (c as u32) < 0x20 || (c as u32) == 0x7f => {
+            c if (c as u32) < 0x20 || (0x7f..=0x9f).contains(&(c as u32)) => {
+                // CPython repr escapes Cc control chars: C0 (< 0x20), DEL,
+                // and the C1 range 0x80-0x9f (e.g. repr('\x8a') -> '\x8a').
                 out.push_str(&format!("\\x{:02x}", c as u32));
             }
             c => out.push(c),
