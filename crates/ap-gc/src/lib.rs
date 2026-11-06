@@ -17,7 +17,8 @@ pub use gcmod::{
     collect, collect_gen, disable, enable, freeze, gc_register, gc_tracked_len, get_count,
     get_objects, get_threshold, is_enabled, is_tracked, set_threshold, stats, unfreeze,
     weakref_add, weakref_alive, weakref_count_for, weakref_entry_count, weakref_is_dead,
-    weakref_take_dead, weakref_tokens_for, GcStats, WeakEntry,
+    weakref_next_seq, weakref_prune_fired, weakref_take_dead, weakref_tokens_for, GcStats,
+    WeakEntry,
 };
 
 /// The bridge module path (ap-run installs via weakbridge::set_bridge).

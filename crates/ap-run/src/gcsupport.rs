@@ -45,6 +45,9 @@ struct WeakToken {
     callback: Option<Value>,
     /// Registration index of the ap-gc WeakEntry (for dead-flag queries).
     entry_index: usize,
+    /// F2: the ap-gc weakref-registration seq this token was minted for.
+    /// Pruning a fired ap-gc entry prunes the matching token here by seq.
+    seq: u64,
 }
 
 thread_local! {
@@ -148,6 +151,7 @@ pub fn weakref_ref(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
     };
     let token = PyObject::new(ap_obj::ObjKind::Opaque, token_name);
     let entry_index = ap_gc::weakref_entry_count();
+    let wseq = ap_gc::weakref_next_seq();
     {
         let mut tattrs = token.attrs.borrow_mut();
         let _ = tattrs.set(s("<target_addr>"), i(target_addr as i64));
@@ -159,6 +163,7 @@ pub fn weakref_ref(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
             callback,
             dead: false,
             fired: false,
+            seq: wseq,
         });
         WEAK_TOKENS.with(|w| {
             w.borrow_mut().push(WeakToken {
@@ -166,6 +171,7 @@ pub fn weakref_ref(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
                 target_addr,
                 callback: None, // callback lives in the ap-gc entry
                 entry_index,
+                seq: wseq,
             });
         });
     }
@@ -202,12 +208,14 @@ pub fn weakref_proxy(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
         let mut tattrs = token.attrs.borrow_mut();
         let _ = tattrs.set(s("<target_addr>"), i(target_addr as i64));
     }
+    let wseq = ap_gc::weakref_next_seq();
     ap_gc::weakref_add(ap_gc::WeakEntry {
         target: target_addr,
         token: Value::Obj(token.clone()),
         callback,
         dead: false,
         fired: false,
+        seq: wseq,
     });
     WEAK_TOKENS.with(|w| {
         w.borrow_mut().push(WeakToken {
@@ -215,6 +223,7 @@ pub fn weakref_proxy(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
             target_addr,
             callback: None,
             entry_index: ap_gc::weakref_entry_count(),
+            seq: wseq,
         });
     });
     Ok(Value::Obj(token))
@@ -273,9 +282,44 @@ fn target_addr_of_token(token: &Gc<PyObject>) -> usize {
 }
 
 /// Drain dead weakrefs: fire callbacks exactly once (ap-gc bridge).
+///
+/// F2 rewrite (was: linear `WEAK_TOKENS.iter().find(target_addr == …)` per
+/// dead entry on every collect — O(entries²) cumulative; 100k dead refs =
+/// 163s, 200k never finished). Now: ONE pass builds a target→token index,
+/// each dead entry is an O(1) lookup, and after the drain both sides of the
+/// pair are pruned:
+/// - no-callback entries are dropped inside ap-gc's weakref_take_dead;
+/// - fired-callback entries are pruned (ap-gc WEAKREFS + our WEAK_TOKENS)
+///   by registration seq once the callback ran — CPython drops the entry
+///   after the callback fires; keeping it pinned the token and its attrs
+///   forever (~1.4KB/dead ref measured).
 pub fn fire_dead_weakrefs() {
+    // Snapshot the token index BEFORE take_dead prunes no-callback entries:
+    // the map holds (target -> [(seq, token)]) so a multi-ref target fires
+    // every callback without rescanning the Vec.
+    let mut index: std::collections::HashMap<usize, Vec<(u64, Gc<PyObject>)>> =
+        std::collections::HashMap::new();
+    WEAK_TOKENS.with(|w| {
+        for t in w.borrow().iter() {
+            index
+                .entry(t.target_addr)
+                .or_default()
+                .push((t.seq, t.token.clone()));
+        }
+    });
     let dead = ap_gc::weakref_take_dead();
+    if dead.is_empty() {
+        return;
+    }
+    // EVERY drained dead entry gets pruned this pass — with or without a
+    // callback, with or without a WEAK_TOKENS twin (finalize dispatches
+    // have none). Liveness is per-target: all refs to a dead target die
+    // together, and the index holds every seq per target address.
+    let mut fired_seqs: Vec<u64> = Vec::new();
     for (target_addr, callback) in dead {
+        if let Some(seqs) = index.get(&target_addr) {
+            fired_seqs.extend(seqs.iter().map(|(s, _)| *s));
+        }
         let Some(cb) = callback else { continue };
         // weakref.finalize entries carry a native dispatch marker as the
         // callback; their tokens live in FINALIZERS, not WEAK_TOKENS, so
@@ -297,14 +341,22 @@ pub fn fire_dead_weakrefs() {
             }
         }
         // The callback receives the ref token (CPython passes the ref).
-        let token_val = WEAK_TOKENS.with(|w| {
-            w.borrow()
-                .iter()
-                .find(|t| t.target_addr == target_addr)
-                .map(|t| Value::Obj(t.token.clone()))
-        });
+        let token_val = index
+            .get(&target_addr)
+            .and_then(|v| v.first())
+            .map(|(_, t)| Value::Obj(t.clone()));
         let Some(token_val) = token_val else { continue };
         let _ = invoke_callback(&cb, &[token_val]);
+    }
+    // Prune fired entries: ap-gc side (by seq) + our WEAK_TOKENS (by seq).
+    // Note: a dead entry whose callback THREW still gets pruned (CPython
+    // semantics: the callback ran; errors were reported as unraisable).
+    if !fired_seqs.is_empty() {
+        let gone: std::collections::HashSet<u64> = fired_seqs.iter().copied().collect();
+        ap_gc::weakref_prune_fired(&fired_seqs);
+        WEAK_TOKENS.with(|w| {
+            w.borrow_mut().retain(|t| !gone.contains(&t.seq));
+        });
     }
 }
 
@@ -834,6 +886,7 @@ pub fn call_weakref_finalize(args: &[Value], kwargs: &[(String, Value)]) -> Opti
         let _ = tattrs.set(s("alive"), Value::Bool(true));
     }
     let rest: Vec<Value> = args[2..].to_vec();
+    let wseq = ap_gc::weakref_next_seq();
     FINALIZERS.with(|f| {
         f.borrow_mut().push(FinalizerEntry {
             token: token.clone(),
@@ -854,11 +907,16 @@ pub fn call_weakref_finalize(args: &[Value], kwargs: &[(String, Value)]) -> Opti
         callback: Some(marker("__ap_finalize_dispatch__")),
         dead: false,
         fired: false,
+        seq: wseq,
     });
     Some(Ok(Value::Obj(token)))
 }
 
 /// Call a finalize token: run func(*args, **kwargs) once; None afterwards.
+/// F2: once detached (by call OR detach()), the entry's func/args/kwargs —
+/// arbitrary user Values that pin closures — are released: the entry keeps
+/// only the token + target addr so `alive`/`detach` keep answering False.
+/// CPython's finalize object keeps NO references after the call either.
 pub fn finalize_call(token: &Gc<PyObject>) -> Value {
     let entry = FINALIZERS.with(|f| {
         let mut f = f.borrow_mut();
@@ -868,14 +926,20 @@ pub fn finalize_call(token: &Gc<PyObject>) -> Value {
             return None;
         }
         e.detached = true;
-        Some((e.func.clone(), e.args.clone(), e.kwargs.clone()))
+        let out = Some((e.func.clone(), e.args.clone(), e.kwargs.clone()));
+        // F2 prune: release the pinned Values (CPython: after __call__ the
+        // finalize registry no longer keeps func/args/kwargs alive).
+        e.func = Value::None;
+        e.args = Vec::new();
+        e.kwargs = Vec::new();
+        e.atexit = false;
+        out
     });
     match entry {
-        Some((func, args, kwargs)) => {
+        Some((func, args, _kwargs)) => {
             if let Ok(r) = invoke_callback(&func, &args) {
                 return r;
             }
-            let _ = kwargs;
             Value::None
         }
         None => Value::None,
@@ -887,6 +951,8 @@ fn alive_bookkeeping(_e: &FinalizerEntry) -> bool {
 }
 
 /// detach(): returns (obj, func, args, kwargs) and cancels.
+/// F2: after detach the entry's pinned Values are released (same shape as
+/// finalize_call).
 pub fn finalize_detach(token: &Gc<PyObject>) -> Option<Value> {
     FINALIZERS.with(|f| {
         let mut f = f.borrow_mut();
@@ -905,12 +971,17 @@ pub fn finalize_detach(token: &Gc<PyObject>) -> Option<Value> {
         } else {
             Value::None
         };
-        Some(Value::Tuple(Gc::new(Tuple(vec![
+        let out = Some(Value::Tuple(Gc::new(Tuple(vec![
             obj,
             e.func.clone(),
             Value::Tuple(Gc::new(Tuple(e.args.clone()))),
             dict_of(e.kwargs.clone()),
-        ]))))
+        ]))));
+        e.func = Value::None;
+        e.args = Vec::new();
+        e.kwargs = Vec::new();
+        e.atexit = false;
+        out
     })
 }
 
@@ -943,6 +1014,10 @@ pub fn finalize_atexit_drain() {
                 e.detached = true;
                 out.push((e.func.clone(), e.args.clone(), e.kwargs.clone()));
             }
+            // F2 prune: drained/detached entries release their Values here.
+            e.func = Value::None;
+            e.args = Vec::new();
+            e.kwargs = Vec::new();
         }
         out
     });
@@ -1573,6 +1648,7 @@ pub fn weakmethod_ctor(args: &[Value]) -> BResult {
         callback,
         dead: false,
         fired: false,
+        seq: ap_gc::weakref_next_seq(),
     });
     Ok(Value::Obj(token))
 }

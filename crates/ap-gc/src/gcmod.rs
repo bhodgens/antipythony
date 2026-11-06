@@ -84,6 +84,8 @@ thread_local! {
     /// Registration sequence (creation order for finalizer ordering, gc002).
     static SEQ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static SEQ_OF: RefCell<HashMap<usize, u64>> = RefCell::new(HashMap::new());
+    /// F2: monotonically increasing weakref-registration id (per thread).
+    static WEAK_SEQ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 
     /// Root dicts (module globals, builtins) wired by ap-run at entry.
     static ROOT_DICTS: RefCell<Vec<Gc<PyDict>>> = RefCell::new(Vec::new());
@@ -100,6 +102,12 @@ pub struct WeakEntry {
     pub callback: Option<Value>,
     pub dead: bool,
     pub fired: bool,
+    /// OOM-wave-1 (F2): identity of this registration = (registration seq,
+    /// registration thread) — weakref_count_for/weakref_tokens_for index by
+    /// creation order per target, and ap-run's WEAK_TOKENS carry the same
+    /// seq so dead pairs can be pruned on both sides. Stable even while
+    /// earlier entries are swap-removed out of the Vec.
+    pub seq: u64,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -1054,8 +1062,38 @@ pub fn weakref_entry_count() -> usize {
     WEAKREFS.with(|w| w.borrow().len())
 }
 
-/// Take (target_addr, callback) pairs of dead-but-unfired entries; marks
-/// them fired. ap-run invokes the callbacks (it owns call semantics).
+/// F2: the next weakref-registration seq (per-thread monotonic; ap-run's
+/// WEAK_TOKENS store the same value so the pair can be pruned together).
+pub fn weakref_next_seq() -> u64 {
+    WEAK_SEQ.with(|n| {
+        let id = n.get() + 1;
+        n.set(id);
+        id
+    })
+}
+
+/// F2: prune (a) entries whose target is gone AND whose callback already
+/// fired — the ref object keeps its dead state via weakref_is_dead reads on
+/// WEAK_TOKENS side; once fired, CPython drops the entry, and (b) entries
+/// whose token was explicitly dropped by ap-run (dead && fired && pruned).
+/// Called from fire_dead_weakrefs after the drain. The linear pass is
+/// bounded by the live-entry count, not cumulative registrations.
+pub fn weakref_prune_fired(seq_list: &[u64]) {
+    if seq_list.is_empty() {
+        return;
+    }
+    use std::collections::HashSet;
+    let gone: HashSet<u64> = seq_list.iter().copied().collect();
+    WEAKREFS.with(|w| {
+        w.borrow_mut().retain(|e| !gone.contains(&e.seq));
+    });
+}
+
+/// Take (target_addr, callback, seq) pairs of dead-but-unfired entries;
+/// marks them fired. ap-run invokes the callbacks (it owns call semantics)
+/// and prunes BOTH sides of each drained pair by seq (weakref_prune_fired
+/// + its own WEAK_TOKENS) — no-callback entries included: CPython drops a
+/// dead ref immediately when no callback exists.
 pub fn weakref_take_dead() -> Vec<(usize, Option<Value>)> {
     WEAKREFS.with(|w| {
         let mut w = w.borrow_mut();

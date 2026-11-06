@@ -341,6 +341,7 @@ fn weakref_never_false_collects_and_dies_in_the_same_pass_it_fires() {
         callback: Some(Value::Str(PyString::new("cb"))),
         dead: false,
         fired: false,
+        seq: 0,
     });
     assert_eq!(weakref_entry_count(), 1);
     assert_eq!(weakref_count_for(addr), 1);
@@ -393,6 +394,7 @@ fn weakref_bridge_orders_del_then_fire_before_registry_retain() {
         callback: Some(Value::Str(PyString::new("cb"))),
         dead: false,
         fired: false,
+        seq: 0,
     });
     PROBE_TARGET.with(|t| t.set(addr));
     drop(target);
@@ -443,6 +445,7 @@ fn resurrecting_del_keeps_weakref_alive_and_never_refires() {
         callback: Some(Value::Str(PyString::new("cb"))),
         dead: false,
         fired: false,
+        seq: 0,
     });
     drop(target);
 
