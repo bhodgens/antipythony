@@ -46,13 +46,21 @@ fn assert_differential_with_path(src: &str, fixture: &std::path::Path) {
         Some(py) => py,
         None => return, // no reference + AP_REQUIRE_REFERENCE unset: skip
     };
+    // Stamp = pid + (nanos XOR per-process counter). macOS clock
+    // granularity (~1us) can hand two parallel test threads the SAME
+    // nanos; without the counter one thread's remove_file deletes the
+    // other's fixture mid-run (workspace-gate flake 2026-11-05:
+    // 'cannot read ap_import_diff_*.py: No such file').
+    static CASE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as u64;
+    let stamp = nanos ^ CASE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let tmp = std::env::temp_dir().join(format!(
         "ap_import_diff_{}_{}.py",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        stamp
     ));
     std::fs::write(&tmp, src).expect("write temp case");
     let expected = Command::new(py)
