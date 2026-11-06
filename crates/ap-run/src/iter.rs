@@ -71,7 +71,13 @@ thread_local! {
 impl Drop for PyIterator {
     fn drop(&mut self) {
         if let Some(id) = self.table_id.get() {
-            DEAD_ITER_IDS.with(|d| d.borrow_mut().push(id));
+            // try_with: iterators living in the interpreter's own teardown
+            // (registry maps dropping at process exit) fire this hook AFTER
+            // TLS destruction began — a plain .with panics AccessError and
+            // aborts (observed: classes_differential iter_in_for, rc=133
+            // AFTER correct stdout). A dead TLS means the registry prune
+            // list is going away too — the entry dies with the process.
+            let _ = DEAD_ITER_IDS.try_with(|d| d.borrow_mut().push(id));
         }
     }
 }

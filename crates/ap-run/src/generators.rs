@@ -333,7 +333,12 @@ pub fn resume_live(
         match gens.remove(&id) {
             Some(crate::interp::GenFrame::Live(st)) => st,
             other => {
-                // Not live (shouldn't happen: ensure_fiber ran). Put back.
+                // G8: entry absent after exhaustion-retire (or a bare
+                // ensure_fiber miss). CPython semantics for a finished
+                // generator: send/next -> StopIteration(StopIteration.value
+                // path), throw(e) -> re-raise e AT the exhaustion point
+                // (G001 pins "exhausted-throw late": the thrown ValueError
+                // propagates), close() -> Ok.
                 if let Some(g) = other {
                     interp.generators.borrow_mut().insert(id, g);
                 }
@@ -456,9 +461,31 @@ pub fn resume_live(
     live.running = false;
     if fiber.done() {
         live.fiber = None;
-    } else {
-        live.fiber = Some(fiber);
+        // G8 (oom-bughunt-2026-11-06 static audit): an exhausted generator
+        // used to stay in interp.generators as a Live entry with
+        // fiber=None, pinning func_obj/args/kwargs/super_ctx forever. The
+        // StopIteration protocol state (a `return X` value) lives in
+        // interp.si_value (interp-level, not the GenFrame), so dropping
+        // the entry here loses nothing: later resumes find no entry and
+        // resume_live's callers answer None / StopIteration exactly as
+        // the fiber:None re-insert path did (verify: gen_send/gen_throw/
+        // gen_close look up the entry — absent = already-exhausted arm).
+        interp
+            .generators
+            .borrow_mut()
+            .remove(&id);
+        live.retired = true;
+        return match out {
+            CoroutineResult::Yield(GenOutput::Yield(v)) => Ok(Some(v)),
+            CoroutineResult::Return(()) => {
+                if let Some(f) = crate::interp::take_pending_generator_error() {
+                    return Err(f);
+                }
+                Ok(None)
+            }
+        };
     }
+    live.fiber = Some(fiber);
     live.started = true;
     interp
         .generators
