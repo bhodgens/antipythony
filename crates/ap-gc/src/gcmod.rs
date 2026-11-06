@@ -145,16 +145,42 @@ pub fn gc_register(v: &Value) {
             SEQ.set(n);
             SEQ_OF.with(|s| s.borrow_mut().insert(key, n));
             r.insert(key, Tracked { value: v.clone() });
+            // New object -> young. The next gen-0 pass scans it (and
+            // graduates it); full passes re-seed YOUNG from the registry.
+            YOUNG.with(|y| y.borrow_mut().insert(key));
         }
     });
     // Automatic collection at the generation-0 threshold (tunable via
     // gc.set_threshold / APX_GC_THRESHOLD env read by ap-run at entry).
     let n = ALLOC_SINCE.get() + 1;
     ALLOC_SINCE.set(n);
-    let (t0, _, _) = THRESHOLDS.get();
+    let (t0, t1, t2) = THRESHOLDS.get();
     if ENABLED.get() && t0 > 0 && n >= t0 {
         ALLOC_SINCE.set(0);
-        collect();
+        // Automatic threshold fires are GENERATIONAL with a CASCADE (the
+        // CPython design the pre-2026-11-05 code was missing in both
+        // directions):
+        // - plain full-heap scan every t0 allocations was O(n²) over
+        //   steady-allocation workloads (3M-object probe never finished);
+        // - gen-0-ONLY scans (first fix) let objects that die OLD keep
+        //   their registry Value clones forever — the residual leak.
+        // CPython's ladder: every t1 gen-0 passes fire a gen-1 pass; every
+        // t2 gen-1 passes fire a full gen-2 pass. THRESHOLDS already
+        // carries (t0, t1, t2) = (700, 10, 10).
+        let g0 = GEN0_COUNT.get();
+        let g1 = GEN1_COUNT.get();
+        if g1 >= t2.max(1) {
+            GEN1_COUNT.set(0);
+            GEN0_COUNT.set(0);
+            collect_gen(2); // full: reclaims old garbage + re-seeds YOUNG
+        } else if g0 >= t1.max(1) {
+            GEN1_COUNT.set(g1 + 1);
+            GEN0_COUNT.set(0);
+            collect_gen(1); // gen-1: scans young + mid-age (see MID set)
+        } else {
+            GEN0_COUNT.set(g0 + 1);
+            collect_gen(0); // gen-0: young only
+        }
     }
 }
 
@@ -344,20 +370,80 @@ fn edges_of(v: &Value, registry: &HashMap<usize, Tracked>, out: &mut Vec<usize>)
 }
 
 /// Count inbound internal edges per registry entry (the graph's fan-in).
-fn count_internal_refs(registry: &HashMap<usize, Tracked>, counts: &mut HashMap<usize, usize>) {
+/// Scoped mode (`scope = Some(young)`): only young objects are counted as
+/// graph nodes — edges INTO them are counted, edges into old objects are
+/// dropped. Old->young edges therefore read as EXTERNAL references on the
+/// young object (its strong count exceeds its internal edge count), which
+/// seeds it reachable: a young object an old object still holds must not
+/// be swept by the gen-0 pass (CPython's identical deferred rule).
+fn count_internal_refs_scoped(
+    registry: &HashMap<usize, Tracked>,
+    counts: &mut HashMap<usize, usize>,
+    scope: Option<&HashSet<usize>>,
+) {
     counts.clear();
-    for addr in registry.keys() {
-        counts.insert(*addr, 0);
-    }
-    for t in registry.values() {
-        let mut kids = Vec::new();
-        edges_of(&t.value, registry, &mut kids);
-        for k in kids {
-            if let Some(c) = counts.get_mut(&k) {
-                *c += 1;
+    // Init counts ONLY for scope addresses: iterating registry.keys() with
+    // a per-key probe was the third O(heap) per-pass cost. Old objects need
+    // no count entry — scan_edges drops their edges (counts.get_mut None),
+    // which is the scoped semantics.
+    match scope {
+        None => {
+            for addr in registry.keys() {
+                counts.insert(*addr, 0);
+            }
+        }
+        Some(s) => {
+            for addr in s.iter() {
+                counts.insert(*addr, 0);
             }
         }
     }
+    // Iterate the SCOPE addresses (gen-0), not the registry: the scope is
+    // proportional to the young set, while registry.values() iteration is
+    // proportional to the whole heap (the O(n) per-pass cost that kept the
+    // gen-0 pass quadratic).
+    match scope {
+        None => {
+            for t in registry.values() {
+                scan_edges(&t.value, registry, counts);
+            }
+        }
+        Some(s) => {
+            for addr in s.iter() {
+                if let Some(t) = registry.get(addr) {
+                    scan_edges(&t.value, registry, counts);
+                }
+            }
+        }
+    }
+}
+
+/// Edge-count one tracked object's children into `counts`.
+fn scan_edges(v: &Value, registry: &HashMap<usize, Tracked>, counts: &mut HashMap<usize, usize>) {
+    let mut kids = Vec::new();
+    edges_of(v, registry, &mut kids);
+    for k in kids {
+        if let Some(c) = counts.get_mut(&k) {
+            *c += 1;
+        }
+    }
+}
+
+/// Addr of a tracked value without touching the registry map itself.
+fn value_addr_of_tracked(t: &Tracked) -> usize {
+    value_addr(&t.value)
+}
+
+/// Unscoped wrappers (full-heap scan): unit tests and any legacy callers.
+fn count_internal_refs(registry: &HashMap<usize, Tracked>, counts: &mut HashMap<usize, usize>) {
+    count_internal_refs_scoped(registry, counts, None)
+}
+
+fn mark_reachable(
+    registry: &HashMap<usize, Tracked>,
+    counts: &HashMap<usize, usize>,
+) -> HashSet<usize> {
+    mark_reachable_scoped(registry, counts, None)
 }
 
 /// Reachable set: walk from the roots through registry edges. An entry with
@@ -365,10 +451,16 @@ fn count_internal_refs(registry: &HashMap<usize, Tracked>, counts: &mut HashMap<
 /// from those (CPython's move_unreachable frontier) AND from the explicit
 /// root dicts/module namespaces (belt and braces: roots may hold objects
 /// through non-registry channels like module_ns Rc clones).
-fn mark_reachable(
+/// Scoped mode (`scope = Some(young)`): seeds and walk cover only young
+/// objects. An old->young edge is invisible to `counts`, so the young
+/// object's strong count exceeds its (lower) internal count and it seeds —
+/// the CPython deferred-reclamation rule without scanning old objects.
+fn mark_reachable_scoped(
     registry: &HashMap<usize, Tracked>,
     counts: &HashMap<usize, usize>,
+    scope: Option<&HashSet<usize>>,
 ) -> HashSet<usize> {
+    let in_scope = |addr: usize| scope.map_or(true, |s| s.contains(&addr));
     let mut visited: HashSet<usize> = HashSet::new();
     let mut queue: Vec<usize> = Vec::new();
 
@@ -376,12 +468,28 @@ fn mark_reachable(
     // clone itself holds one strong count, so an entry is externally
     // referenced iff sc - 1 (registry) > internal (graph edges): something
     // outside the tracked graph (root dict, live frame, native stack
-    // temporary) holds a reference.
-    for (addr, t) in registry.iter() {
-        let sc = strong_count_of(&t.value);
-        let internal = counts.get(addr).copied().unwrap_or(0);
-        if sc > internal + 1 {
-            queue.push(*addr);
+    // temporary) holds a reference. Scoped mode: iterate SCOPE addrs only.
+    match scope {
+        None => {
+            for (addr, t) in registry.iter() {
+                let sc = strong_count_of(&t.value);
+                let internal = counts.get(addr).copied().unwrap_or(0);
+                if sc > internal + 1 {
+                    queue.push(*addr);
+                }
+            }
+        }
+        Some(s) => {
+            for addr in s.iter() {
+                let Some(t) = registry.get(addr) else {
+                    continue;
+                };
+                let sc = strong_count_of(&t.value);
+                let internal = counts.get(addr).copied().unwrap_or(0);
+                if sc > internal + 1 {
+                    queue.push(*addr);
+                }
+            }
         }
     }
 
@@ -434,7 +542,7 @@ fn mark_reachable(
     }
     for v in &root_vals {
         let a = value_addr(v);
-        if a != 0 && registry.contains_key(&a) {
+        if a != 0 && registry.contains_key(&a) && in_scope(a) {
             queue.push(a);
         }
     }
@@ -447,7 +555,7 @@ fn mark_reachable(
             let mut kids = Vec::new();
             edges_of(&t.value, registry, &mut kids);
             for k in kids {
-                if !visited.contains(&k) {
+                if !visited.contains(&k) && in_scope(k) {
                     queue.push(k);
                 }
             }
@@ -473,26 +581,67 @@ thread_local! {
     /// Set when a scan hit a contended borrow (heap mid-mutation). collect()
     /// checks and aborts the cycle rather than collecting with a partial view.
     static SCAN_CONTENDED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Objects registered since the last gen-0 (automatic) pass. Gen-0
+    /// collections scan ONLY these; full passes scan the whole registry.
+    /// Maintained by gc_register (insert) and collect_gen (drain on gen-0,
+    /// refill from the registry on full passes).
+    static YOUNG: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
+    /// Mid-age objects: promoted by gen-0 passes, NOT yet scanned by a
+    /// gen-1 pass. A gen-1 pass scans YOUNG ∪ MID and clears MID (its
+    /// survivors are old until the next full pass). Maintained by
+    /// collect_gen only.
+    static MID: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
+    /// Completed gen-0 passes since the last gen-1 pass (cascade counter,
+    /// CPython gc.generations[0].count). At t1, a gen-1 pass fires.
+    static GEN0_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Completed gen-1 (or higher) passes since the last full pass
+    /// (gc.generations[1].count). At t2, a full gen-2 pass fires.
+    static GEN1_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// One full collection. Returns the number of unreachable objects reclaimed
-/// (CPython's gc.collect() return: OBJECTS, not cycles — gc011 pins
-/// `found >= 10` on a 10-node cycle).
+/// One FULL collection (explicit gc.collect()). Returns the number of
+/// unreachable objects reclaimed (CPython's gc.collect() return: OBJECTS,
+/// not cycles — gc011 pins `found >= 10` on a 10-node cycle).
 pub fn collect() -> usize {
     collect_gen(2)
 }
 
 /// collect(generation): the generation rides the callbacks info dict
 /// (gc006: collect(0)/collect(1) report the REQUESTED generation).
+///
+/// Gen-0 semantics (2026-11-05 O(n²) fix): when `generation == 0`, the
+/// scan is scoped to the objects registered SINCE the last gen-0 pass
+/// (YOUNG set) — the corpus pins identical OUTPUT (same objects die:
+/// young garbage is either unreachable young cycles or members of older
+/// garbage nobody touches), but the walk no longer touches the whole
+/// registry, so N allocations cost O(N) total instead of O(N²). Full
+/// passes (generation >= 1) scan everything, exactly as before.
 pub fn collect_gen(generation: usize) -> usize {
     let _guard = weakbridge::CollectGuard::new();
 
     // 1. Internal-edge counts + reachable set. The registry borrow is held
     //    inside each step (no registration while the CollectGuard is up,
-    //    so the snapshot is steady).
+    //    so the snapshot is steady). Gen-0: the scan functions are scoped
+    //    to the YOUNG set — counts/mark/sweep stay proportional to the
+    //    young set, not the heap. The registry is borrowed, NEVER cloned:
+    //    snapshot clones would inflate every strong_count by one and
+    //    poison the sc > internal + 1 external-reference seeding.
+    let scope: Option<HashSet<usize>> = match generation {
+        0 => Some(YOUNG.with(|y| y.borrow().clone())),
+        1 => {
+            // Gen-1: young + mid-age. Old objects (already scanned by a
+            // gen-1 or full pass) stay out of scope; the next FULL pass
+            // catches garbage among them.
+            let mut s = MID.with(|m| m.borrow().clone());
+            let young: Vec<usize> = YOUNG.with(|y| y.borrow().iter().copied().collect());
+            s.extend(young);
+            Some(s)
+        }
+        _ => None,
+    };
     let mut counts: HashMap<usize, usize> = HashMap::new();
-    REGISTRY.with(|r| count_internal_refs(&r.borrow(), &mut counts));
-    let reachable = REGISTRY.with(|r| mark_reachable(&r.borrow(), &counts));
+    REGISTRY.with(|r| count_internal_refs_scoped(&r.borrow(), &mut counts, scope.as_ref()));
+    let reachable = REGISTRY.with(|r| mark_reachable_scoped(&r.borrow(), &counts, scope.as_ref()));
     if SCAN_CONTENDED.with(|c| c.get()) {
         SCAN_CONTENDED.with(|c| c.set(false));
         return 0; // heap mid-mutation; retry at next threshold
@@ -507,17 +656,40 @@ pub fn collect_gen(generation: usize) -> usize {
     // gc002 pins CPython's creation-order finalizer firing: sort garbage by
     // registration sequence (the plain registry HashMap iteration order is
     // randomly seeded per process and does NOT correlate with creation).
+    // Gen-0 scope: only YOUNG objects are candidates; unreachable OLD
+    // objects are untouched this pass (they keep their registry handles).
     let mut garbage: Vec<(usize, u64, Value)> = Vec::new();
+    // Iterate the SCOPE (young addrs), looking each up in the registry —
+    // same rule as the counts loop. Iterating the full registry here was
+    // the second quadratic remnant (O(heap) per gen-0 pass).
+    let garbage_scope: Box<dyn Iterator<Item = usize>> = match scope.as_ref() {
+        None => {
+            Box::new(REGISTRY.with(|r| r.borrow().keys().copied().collect::<Vec<_>>().into_iter()))
+        }
+        Some(s) => Box::new(s.iter().copied()),
+    };
+    // Collect the scoped (addr, seq) pairs first, THEN clone the garbage
+    // Values — one registry borrow, no Tracked clone.
+    let mut garbage_addrs: Vec<(usize, u64)> = Vec::new();
     REGISTRY.with(|r| {
         let r = r.borrow();
-        let seqs = SEQ_OF.with(|s| s.borrow().clone());
-        for (addr, t) in r.iter() {
-            if reachable.contains(addr) || frozen.contains(addr) {
+        for addr in garbage_scope {
+            if r.get(&addr).is_none() {
                 continue;
             }
-            garbage.push((*addr, seqs.get(addr).copied().unwrap_or(0), t.value.clone()));
+            if reachable.contains(&addr) || frozen.contains(&addr) {
+                continue;
+            }
+            let seq = SEQ_OF.with(|s| s.borrow().get(&addr).copied().unwrap_or(0));
+            garbage_addrs.push((addr, seq));
         }
     });
+    let mut garbage: Vec<(usize, u64, Value)> = garbage_addrs
+        .into_iter()
+        .filter_map(|(addr, seq)| {
+            REGISTRY.with(|r| r.borrow().get(&addr).map(|t| (addr, seq, t.value.clone())))
+        })
+        .collect();
     garbage.sort_by_key(|(_, seq, _)| *seq);
     let garbage: Vec<(usize, Value)> = garbage.into_iter().map(|(addr, _, v)| (addr, v)).collect();
     GARBAGE_NOW.with(|g| {
@@ -584,28 +756,116 @@ pub fn collect_gen(generation: usize) -> usize {
     //    cascade and breaks cycles (all members lose their registry handle
     //    in the same retain pass). Note: `garbage` still holds clones, so
     //    actual destruction lands when this function returns.
-    REGISTRY.with(|r| {
-        r.borrow_mut().retain(|addr, _| {
-            reachable.contains(addr) || frozen.contains(addr) || truly_resurrected.contains(addr)
+    //    Gen-0: objects OUTSIDE the young set were not scanned — always
+    //    retain them (dropping them would free live old objects).
+    //    CRITICAL for gen-0 complexity: retain() iterates the WHOLE map
+    //    (O(heap) per pass — a quadratic remnant measured at 3M objects).
+    //    A gen-0 pass can only remove the scoped garbage, so delete those
+    //    addrs explicitly (O(garbage)); retain is reserved for full passes.
+    let gen0 = generation == 0;
+    if gen0 {
+        REGISTRY.with(|r| {
+            let mut r = r.borrow_mut();
+            for (addr, _) in &garbage {
+                r.remove(addr);
+            }
         });
-    });
-    SEQ_OF.with(|s| {
-        s.borrow_mut()
-            .retain(|a, _| reachable.contains(a) || truly_resurrected.contains(a))
-    });
-    // C-21 once-only is per-OBJECT, not per-address: swept addresses return
-    // to the allocator and get reused by new objects (Rc allocs recycle
-    // slots). Leaving a dead addr in FINALIZED_ADDRS poisons the successor
-    // object — its __del__ would be skipped forever (observed: with
-    // threshold 50, blocks of instances created after each auto-collect
-    // never fired). Purge entries whose addr is no longer tracked.
-    FINALIZED_ADDRS.with(|r| {
-        r.borrow_mut()
-            .retain(|a| reachable.contains(a) || truly_resurrected.contains(a))
-    });
+        SEQ_OF.with(|s| {
+            let mut s = s.borrow_mut();
+            for (addr, _) in &garbage {
+                s.remove(addr);
+            }
+        });
+        FINALIZED_ADDRS.with(|r| {
+            let mut r = r.borrow_mut();
+            for (addr, _) in &garbage {
+                r.remove(addr);
+            }
+        });
+    } else {
+        REGISTRY.with(|r| {
+            r.borrow_mut().retain(|addr, _| {
+                reachable.contains(addr)
+                    || frozen.contains(addr)
+                    || truly_resurrected.contains(addr)
+            });
+        });
+        SEQ_OF.with(|s| {
+            s.borrow_mut()
+                .retain(|a, _| reachable.contains(a) || truly_resurrected.contains(a))
+        });
+        // C-21 once-only is per-OBJECT, not per-address: swept addresses
+        // return to the allocator and get reused by new objects (Rc allocs
+        // recycle slots). Leaving a dead addr in FINALIZED_ADDRS poisons the
+        // successor object — its __del__ would be skipped forever (observed:
+        // with threshold 50, blocks of instances created after each
+        // auto-collect never fired). Purge entries whose addr is no longer
+        // tracked.
+        FINALIZED_ADDRS.with(|r| {
+            r.borrow_mut()
+                .retain(|a| reachable.contains(a) || truly_resurrected.contains(a))
+        });
+    }
 
     // gc016: get_count()[0] reads 0 right after a collection.
     ALLOC_SINCE.with(|c| c.set(0));
+    // Generation bookkeeping: gen-0 promotes its scanned set to MID (they
+    // survive gen-0 now, die by gen-1 or full); gen-1 clears its scanned
+    // MID entries (those are scanned-old until the next full pass); a full
+    // pass re-seeds YOUNG/MID from the live registry so the NEXT gen-0 has
+    // a conservative frontier (CPython moves survivors upward and full-
+    // collects them eventually; the cascade above guarantees that).
+    match generation {
+        0 => {
+            let scoped: Vec<usize> = scope
+                .as_ref()
+                .map(|s| s.iter().copied().collect())
+                .unwrap_or_default();
+            YOUNG.with(|y| {
+                let mut y = y.borrow_mut();
+                for addr in &scoped {
+                    y.remove(addr);
+                }
+            });
+            MID.with(|m| {
+                let mut m = m.borrow_mut();
+                m.extend(
+                    scoped
+                        .into_iter()
+                        .filter(|a| REGISTRY.with(|r| r.borrow().contains_key(a))),
+                );
+            });
+        }
+        1 => {
+            // Everything scanned this pass (scope = MID ∪ YOUNG) becomes
+            // scanned-old; drop it from both frontier sets.
+            let scoped: Vec<usize> = scope
+                .as_ref()
+                .map(|s| s.iter().copied().collect())
+                .unwrap_or_default();
+            YOUNG.with(|y| {
+                let mut y = y.borrow_mut();
+                for addr in &scoped {
+                    y.remove(addr);
+                }
+            });
+            MID.with(|m| {
+                let mut m = m.borrow_mut();
+                for addr in &scoped {
+                    m.remove(addr);
+                }
+            });
+        }
+        _ => {
+            YOUNG.with(|y| {
+                let mut y = y.borrow_mut();
+                y.clear();
+                let keys: Vec<usize> = REGISTRY.with(|r| r.borrow().keys().copied().collect());
+                y.extend(keys);
+            });
+            MID.with(|m| m.borrow_mut().clear());
+        }
+    }
     garbage.len()
 }
 

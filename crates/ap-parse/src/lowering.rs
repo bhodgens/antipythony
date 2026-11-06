@@ -227,10 +227,22 @@ struct Lowerer<'s> {
     /// Wave-60: bound names per finished scope path, for the deferred-free
     /// retry to verify the load was truly bound (vs a builtin/global).
     finished_bounds: BTreeMap<Vec<String>, Vec<String>>,
+    /// Byte offsets of every line start, built once in new(). line_of used
+    /// to rescan src from byte 0 per node — O(file) per call, O(file^2)
+    /// per module (profiled: dominated the unittest-import probe's samples
+    /// at 3M+ newline-count iterations).
+    line_starts: Vec<usize>,
 }
 
 impl<'s> Lowerer<'s> {
     fn new(src: &'s str) -> Self {
+        let mut line_starts = Vec::with_capacity(64);
+        line_starts.push(0usize);
+        for (i, byte) in src.bytes().enumerate() {
+            if byte == b'\n' {
+                line_starts.push(i + 1);
+            }
+        }
         Lowerer {
             src,
             b: Builder::new(),
@@ -238,6 +250,7 @@ impl<'s> Lowerer<'s> {
             finished: BTreeMap::new(),
             deferred_frees: Vec::new(),
             finished_bounds: BTreeMap::new(),
+            line_starts,
         }
     }
 
@@ -306,7 +319,9 @@ impl<'s> Lowerer<'s> {
             }
             let Some(enclosing_hit) = resolved else {
                 if std::env::var("APX_W111DBG").is_ok() {
-                    eprintln!("[W111-DEFER] UNRESOLVED load={load} path={path:?} enclosing={enclosing:?}");
+                    eprintln!(
+                        "[W111-DEFER] UNRESOLVED load={load} path={path:?} enclosing={enclosing:?}"
+                    );
                 }
                 continue;
             };
@@ -485,11 +500,7 @@ impl<'s> Lowerer<'s> {
         if std::env::var("APX_SCOPE_DEBUG").is_ok() {
             eprintln!(
                 "[SCOPE] {:?} loads={:?} bound={:?} frees={:?} cells={:?}",
-                new_info.path,
-                data.loads,
-                data.bound,
-                new_info.frees,
-                new_info.cells
+                new_info.path, data.loads, data.bound, new_info.frees, new_info.cells
             );
         }
         // T1-d fix: two scopes can finish with the SAME path when a nested
@@ -562,11 +573,7 @@ impl<'s> Lowerer<'s> {
     fn line_of(&self, stmt: &ast::Stmt) -> usize {
         use ruff_text_size::Ranged;
         let off = stmt.start().to_u32() as usize;
-        self.src[..off.min(self.src.len())]
-            .bytes()
-            .filter(|&b| b == b'\n')
-            .count()
-            + 1
+        self.line_at(off)
     }
 
     /// W110: line of any AST node's start (used for the def keyword line;
@@ -575,11 +582,17 @@ impl<'s> Lowerer<'s> {
     fn line_of_stmt_start<T: ruff_text_size::Ranged>(&self, node: &T) -> usize {
         use ruff_text_size::Ranged;
         let off = node.start().to_u32() as usize;
-        self.src[..off.min(self.src.len())]
-            .bytes()
-            .filter(|&b| b == b'\n')
-            .count()
-            + 1
+        self.line_at(off)
+    }
+
+    /// Binary search over the one-shot line-start index: O(log lines)
+    /// instead of the old O(offset) newline count per node.
+    fn line_at(&self, off: usize) -> usize {
+        let off = off.min(self.src.len());
+        match self.line_starts.binary_search(&off) {
+            Ok(i) => i + 1,
+            Err(i) => i, // off is inside line i-1 (line_starts[i-1] < off)
+        }
     }
 
     fn lower_fn_body(&mut self, body: &[ast::Stmt]) -> Result<FnBody, LowerError> {
