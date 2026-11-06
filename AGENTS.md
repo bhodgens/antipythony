@@ -163,6 +163,33 @@ GIL, uv-backed deps at build time. Byte-exact differential conformance vs CPytho
   (_multibytecodec/_codecs_jp/-kr/-cn/-tw; cp932/big5/euc_*/gb*
   LookupError blocks CJK response.text);
   (d) DONE: RSS-fenced probe = ast_getattr_identity_fence.
+- OOM CAMPAIGN #2 CLOSED 2026-11-06 (growth-class sweep; incident + fix
+  record docs/oom-bughunt-2026-11-06-{rss-fiber-weakreg,static-growth-class}.md,
+  verdicts docs/oom-fix-verification-2026-11-06.md, harnesses
+  docs/harness-review-2026-11-06.md): the 11:40 fork-bomb stall was
+  ast_getattr_fence re-exec'ing the test binary unargued (fixed
+  0676439); harness hardening sweep 9f7e191 (gate+bounded-wait on every
+  interpreter-spawning suite, zero unbounded Command waits). 15 growth
+  findings fixed in waves: 7eb65a4 F2 weakref prune+O(n) drain,
+  9ee848c F1 fiber reservation 64->8MB (AP_GEN_STACK_MB; 2MB SIGBUSes
+  pluggy debug chain), 090ad43 G1 iterator registry prune + no container
+  clone (1.63GB@1k breaks -> 11.7MB flat), eb6f7b4 G3 lxml DOCS LRU,
+  72b6fb5 F3 StringIO in-place extend (485->33MB @200k), eece027 G2 sre
+  tables SRE_TABLE_CAP 1024 + wired 512-entry RE_CACHE (re.compile(p)
+  is re.compile(p) now holds), c80550c G4 (superseded), c96f41c G8
+  exhausted-gen retire, 67d3e09 G5 cell cache + G6 (superseded),
+  86c4cdc G7 drain + G10 tb_frames resume-depth + F4 recursionlimit
+  backstop (SIGABRT -> RecursionError). ADVERSARIAL VERIFY (76cebda)
+  FAILED G4 (dedupe key was per-call frame ptr) + G6 (prefix+exit clone
+  2x output resident); REPAIRED 44c016a/5a633ed (code-object-identity
+  key w/ closure-bypass gate - shared-entry closure corruption caught
+  mid-repair; stdout_capture opt-in, fd-1 bytes sha256-identical);
+  304674b docs. Zero regressions: 898 pytest + 165 differential.
+  RESIDUALS: closure-carrying nested defs in hot loops ~3MB/1k calls
+  (per-object cell storage, filed); M1-M4 threading tables + M11 lxml
+  XPATH open; pre-existing pdb NameError in pluggy hook (bisect
+  pending, present @4709a20); metaclass __init__ kwargs + super_stack
+  double-pop blocked on sibling stash@{0} pop.
 - T1 CRAWL history (waves 90-110, pre-round-20 state - superseded by
   the block above, kept for fix provenance):
   W110-5 LANDED (85432c9): real coroutine frames - async def bodies
