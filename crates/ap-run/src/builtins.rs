@@ -1616,6 +1616,17 @@ fn stop_iter_flow() -> Flow {
 /// Pull one value from a registered iterator (plain table only; generator
 /// pulls route through the executor).
 fn next_registered(interp: &Interpreter, id: u64) -> Option<Value> {
+    // F5/M9: prune dropped iterators' entries on the same cadence as
+    // pull_iter (abandoned iter()/next() chains no longer pin state).
+    let dead = crate::iter::take_dead_iter_ids();
+    if !dead.is_empty() {
+        let mut its = interp.iterators.borrow_mut();
+        for d in dead {
+            if d % 2 == 0 {
+                its.remove(&d);
+            }
+        }
+    }
     // Generators route through the executor (materialize + advance).
     if interp.generators.borrow().contains_key(&id) {
         let rc = interp.rc();
@@ -2793,12 +2804,26 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
         "intern" => {
             // Canonical-instance table keyed by content: intern(a + "") is
             // intern(a) (s002 identity pin).
+            // M8 (oom-bughunt 2026-11-06): type-gate to str BEFORE any table
+            // work — the old path accepted non-str values, stringified them
+            // for the key, and pinned the arbitrary object forever under a
+            // string key (CPython raises TypeError: intern() argument must
+            // be str).
             use std::collections::HashMap;
             thread_local! {
                 static INTERNED: std::cell::RefCell<HashMap<String, Value>> =
                     std::cell::RefCell::new(HashMap::new());
             }
             let v = args.first().cloned().unwrap_or(Value::None);
+            if !matches!(v, Value::Str(_)) {
+                return Some(Err(raise(
+                    "TypeError",
+                    format!(
+                        "intern() argument must be str, not {}",
+                        v.type_name()
+                    ),
+                )));
+            }
             let text = crate::builtins::py_str_of(&v).unwrap_or_default();
             let canon = INTERNED.with(|c| {
                 let mut m = c.borrow_mut();

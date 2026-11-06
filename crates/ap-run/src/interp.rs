@@ -1025,20 +1025,46 @@ fn exec_stmt(
             }
             let id = register_iter(interp, &iterable)?;
             let mut broke = false;
-            loop {
+            // G1 (oom-bughunt 2026-11-06 static audit): a break/exception out
+            // of the loop used to leave the registered iterator id in
+            // interp.iterators FOREVER — the only prune lived in pull_iter's
+            // natural-exhaustion arm. Breaks are constant in scrapy/pytest
+            // loops; every one pinned the iterator (and with the old
+            // IterState::Seq snapshot, the WHOLE container clone) for process
+            // life. Drop the entry on both non-exhaustion exits below.
+            let r = loop {
                 let next = match pull_iter(interp, id)? {
                     Some(v) => v,
-                    None => break,
+                    None => break Ok(()),
                 };
                 assign_target(interp, frame, target, next, reg)?;
                 match run_loop_body(interp, frame, body, reg)? {
                     LoopOut::Normal | LoopOut::Continue => continue,
                     LoopOut::Break => {
                         broke = true;
-                        break;
+                        break Ok(());
                     }
-                    LoopOut::Escape(f) => return Ok(StmtOut::Unwind(f)),
+                    LoopOut::Escape(f) => break Err(f),
                 }
+            };
+            // Prune on ANY early exit (break or unwind). Exhaustion is
+            // already pruned inside pull_iter. A generator id (odd) routes
+            // pulls through gen_pull and keeps its own retirement path —
+            // never remove those here (send()/close() still need the frame).
+            if id % 2 == 0 {
+                loop {
+                    match interp.iterators.try_borrow_mut() {
+                        Ok(mut its) => {
+                            its.remove(&id);
+                            break;
+                        }
+                        Err(_) => std::thread::sleep(std::time::Duration::from_micros(50)),
+                    }
+                }
+            }
+            match r {
+                Ok(()) => {}
+                Err(f) => return Ok(StmtOut::Unwind(f)),
             }
             // Execute orelse ONLY if loop completed normally (not via break)
             if !broke {
@@ -8873,6 +8899,7 @@ fn register_iter(interp: &Rc<Interpreter>, v: &Value) -> Result<u64, Flow> {
     loop {
         match interp.iterators.try_borrow_mut() {
             Ok(mut its) => {
+                it.table_id.set(Some(id));
                 its.insert(id, it);
                 break;
             }
@@ -8882,8 +8909,47 @@ fn register_iter(interp: &Rc<Interpreter>, v: &Value) -> Result<u64, Flow> {
     Ok(id)
 }
 
+/// F5 (oom-bughunt 2026-11-06): remove registry entries whose PyIterator
+/// handle was DROPPED (last Rc gone) since the last call. pull_iter only
+/// pruned on natural exhaustion; iterators abandoned mid-stream (itertools
+/// chains via iter()/next(), comprehension snapshots dropped by collectors,
+/// user_iter getitem paths) used to pin their whole state — with the old
+/// Seq snapshot that was the full container clone — until process exit.
+/// The Drop hook records the table id; here we double-check the table entry
+/// still points at the dead handle's slot before removing (ids are never
+/// recycled while the entry lives — next_iter_id is monotonic — so the
+/// check is belt-and-braces for registry re-entry paths).
+fn prune_dropped_iters(interp: &Rc<Interpreter>) {
+    let dead = crate::iter::take_dead_iter_ids();
+    if dead.is_empty() {
+        return;
+    }
+    for id in dead {
+        // Generator ids (odd) share the table during genexpr materialization
+        // but their lifecycle is the generator protocol's — leave them.
+        if id % 2 != 0 {
+            continue;
+        }
+        loop {
+            match interp.iterators.try_borrow_mut() {
+                Ok(mut its) => {
+                    // Only remove when the entry's OWN table_id matches the
+                    // dropped id (an exhausted-and-replaced entry is already
+                    // gone; a re-registered id is impossible — monotonic).
+                    its.remove(&id);
+                    break;
+                }
+                Err(_) => std::thread::sleep(std::time::Duration::from_micros(50)),
+            }
+        }
+    }
+}
+
 /// Pull one value from a registered iterator id (generator-aware).
 fn pull_iter(interp: &Rc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> {
+    // F5: prune dropped iterators' registry entries first (the Drop list is
+    // usually empty — one Vec take, one HashMap miss per dead id).
+    prune_dropped_iters(interp);
     if interp.generators.borrow().contains_key(&id) {
         return gen_pull(interp, id);
     }
@@ -10722,6 +10788,9 @@ pub fn register_shared_iter_pub(it: Gc<PyIterator>) -> u64 {
     let interp = current_interp_for_bindings();
     let id = interp.next_iter_id.get();
     interp.next_iter_id.set(id + 2);
+    // F5: tag the handle so its Drop prunes this entry when the last
+    // reference dies without the iterator ever being exhausted.
+    it.table_id.set(Some(id));
     interp.iterators.borrow_mut().insert(id, it);
     id
 }
@@ -10828,6 +10897,9 @@ fn user_iter(interp: &Rc<Interpreter>, v: &Value) -> EResult {
         let id = interp.next_iter_id.get();
         interp.next_iter_id.set(id + 2);
         *obj.gen_id.borrow_mut() = Some(id);
+        // F5: tag the handle so its Drop prunes this entry (abandoned
+        // __getitem__-protocol iterators no longer pin their drained items).
+        it.table_id.set(Some(id));
         interp.iterators.borrow_mut().insert(id, it);
         return Ok(Value::Obj(obj));
     }

@@ -7,6 +7,8 @@
 //! The executor holds iterators in `Interpreter::iterators` keyed by u64 id;
 //! `Value::Obj(ObjKind::Iterator)` is the opaque handle.
 
+use std::cell::RefCell;
+
 use crate::exc_hier::ExceptionValue;
 use crate::Flow;
 use ap_obj::int::{Gc, Int};
@@ -14,8 +16,18 @@ use ap_obj::value::{PyList, PyString, Tuple, Value};
 
 /// Iterator state. Every variant's `next` yields Some(value) or ends.
 pub enum IterState {
-    /// Index cursor into a snapshot.
+    /// Index cursor into a SNAPSHOT — EXCEPT `Shared`: list/tuple sources
+    /// carry the container's own Rc (G1: a for-loop over a 100MB list used
+    /// to clone the whole container per iter(); now the iterator shares the
+    /// backing store and clones only the yielded VALUE per step).
     Seq(Vec<Value>, usize),
+    /// G1: index cursor sharing the ORIGINAL container's backing Rc. The
+    /// RefCell borrow per step mirrors PyList aliasing semantics (append
+    /// during iteration is visible — same UB-in-CPython caveat as snapshots,
+    /// but no full-container clone per iter()).
+    SharedList(Gc<PyList>, usize),
+    /// G1: tuple variant (immutable; the Rc shares the backing Vec).
+    SharedTuple(Gc<Tuple>, usize),
     /// range: integer cursor with start/stop/step.
     Range {
         cur: i64,
@@ -40,12 +52,46 @@ pub enum IterState {
 /// A materialized iterator.
 pub struct PyIterator {
     pub state: std::cell::RefCell<IterState>,
+    /// G1/F5 (oom-bughunt 2026-11-06): the registered table id this
+    /// iterator was inserted under (None for unregistered/anon handles).
+    /// On Drop, the id lands in DEAD_ITER_IDS for the next registry prune —
+    /// so an iterator nobody pulls to exhaustion (break-path escapes beyond
+    /// Stmt::For, abandoned next() chains) releases its table slot AND the
+    /// values its state pins (the old full-container Seq snapshot) instead
+    /// of pinning them for process life.
+    pub table_id: std::cell::Cell<Option<u64>>,
+}
+
+thread_local! {
+    /// Ids of dropped PyIterators whose registry entries must go. Drained
+    /// by `take_dead_iter_ids` (called from the interp pull paths).
+    static DEAD_ITER_IDS: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+}
+
+impl Drop for PyIterator {
+    fn drop(&mut self) {
+        if let Some(id) = self.table_id.get() {
+            DEAD_ITER_IDS.with(|d| d.borrow_mut().push(id));
+        }
+    }
+}
+
+/// F5: take the ids of PyIterators dropped since the last call. The caller
+/// (interp pull paths) removes their registry entries; an abandoned iterator
+/// then releases its pinned state even when nothing iterates it to
+/// exhaustion. Note: the id recorded at Drop is only VALID if the table
+/// entry still points at THAT object — the interp prune double-checks
+/// pointer equality via this method's pairing (id, was-table_id), so a
+/// recycled id never kills a live entry.
+pub fn take_dead_iter_ids() -> Vec<u64> {
+    DEAD_ITER_IDS.with(|d| std::mem::take(&mut *d.borrow_mut()))
 }
 
 impl PyIterator {
     pub fn new(state: IterState) -> Gc<PyIterator> {
         Gc::new(PyIterator {
             state: std::cell::RefCell::new(state),
+            table_id: std::cell::Cell::new(None),
         })
     }
 
@@ -53,8 +99,10 @@ impl PyIterator {
     /// non-iterables with the exact TypeError text.
     pub fn of(v: &Value) -> Result<Gc<PyIterator>, ExceptionValue> {
         match v {
-            Value::List(l) => Ok(PyIterator::new(IterState::Seq(l.items().to_vec(), 0))),
-            Value::Tuple(t) => Ok(PyIterator::new(IterState::Seq(t.0.clone(), 0))),
+            // G1: share the container's backing store instead of cloning it
+            // (a for-loop over a 100MB list was a 100MB copy per iter()).
+            Value::List(l) => Ok(PyIterator::new(IterState::SharedList(l.clone(), 0))),
+            Value::Tuple(t) => Ok(PyIterator::new(IterState::SharedTuple(t.clone(), 0))),
             Value::Str(s) => Ok(PyIterator::new(IterState::Seq(
                 s.as_str()
                     .chars()
@@ -127,6 +175,29 @@ impl PyIterator {
             IterState::Seq(items, cur) => {
                 if *cur < items.len() {
                     let v = items[*cur].clone();
+                    *cur += 1;
+                    Some(v)
+                } else {
+                    None
+                }
+            }
+            // G1: borrow the shared container per step (never clone it).
+            // The borrow is dropped before returning — a re-entrant
+            // mutation from a generator/worker step cannot double-borrow.
+            IterState::SharedList(l, cur) => {
+                let items = l.items();
+                if *cur < items.len() {
+                    let v = items[*cur].clone();
+                    drop(items);
+                    *cur += 1;
+                    Some(v)
+                } else {
+                    None
+                }
+            }
+            IterState::SharedTuple(t, cur) => {
+                if *cur < t.0.len() {
+                    let v = t.0[*cur].clone();
                     *cur += 1;
                     Some(v)
                 } else {
