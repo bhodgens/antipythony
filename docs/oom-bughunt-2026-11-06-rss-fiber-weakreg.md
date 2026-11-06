@@ -398,3 +398,54 @@ section: commits 090ad43 (G1+F5 iterators), eb6f7b4 (G3 lxml DOCS).
 - /tmp/oomhunt/*.py (19 probe files), /tmp/oomhunt/sweep*.sh (7 sweep
   drivers), /tmp/oomhunt/results*.txt (raw measurements).
 - NOTHING else: no product code touched, no git commit.
+
+---
+
+# WAVE 2 FIX (2026-11-06, later same day)
+
+FINDING 4 fixed (plus static-doc findings G2/G4/G5/G6/G7/G8/G10 — see the
+WAVE 2 FIX section in docs/oom-bughunt-2026-11-06-static-growth-class.md).
+Probes /tmp/oomwave2/, same measure_rss.py harness, same 2GB caps.
+
+## WAVE 2 FIX — FINDING 4 (setrecursionlimit native-stack backstop)
+
+Commit: 86c4cdc (fix(run): G7+G10+F4).
+Approach: Frame::enter_call derives a hard depth cap from the
+interpreter-thread stack budget (256MB reservation; 256KB/frame debug,
+50KB/frame release — matching the thread-spawn contract) and raises
+RecursionError when the depth exceeds it. sys.setrecursionlimit still
+lowers the limit freely; it can no longer raise it past the native stack.
+
+Before/after (p7 probe re-run — setrecursionlimit(5100), recurse):
+
+| depth | before (this doc's FINDING 4) | after             |
+|-------|-------------------------------|-------------------|
+| 5,000 | SIGABRT rc=-6 "stack overflow"| clean RecursionError |
+| 1,300 | SIGABRT (measured wave 2)     | clean RecursionError |
+| 1,020 | —                             | ok                |
+| default (1000) | RecursionError       | RecursionError (unchanged, byte-identical) |
+
+Tests: t_f4 vs CPython 3.14 (both print RecursionError + "still alive");
+classes_differential 29/29; re_differential 42/42.
+
+## WAVE 2 carried verifications (fixes landed in wave-1 commits, verified here)
+
+- FINDING 3 (StringIO write): 72b6fb5 amortized growth — p6_stringio
+  re-run within the wave-2 serial sweep window: bounded.
+- FINDING 1/5 companion (generator registry lifetime): G8 retirement
+  (c96f41c) — g8_churn 200k create+exhaust generators FLAT 11.5MB
+  (was 359MB linear; the per-gen fiber pages + registry entry no longer
+  accumulate). See the static doc's WAVE 2 G8 section for the table.
+- G001-pep342-generators byte-identical vs CPython after both G8 and G10
+  changes (full protocol: close/throw/send/PEP-479/exhausted-throw).
+
+## Wave-2 environment notes
+
+- All cargo runs strictly serial: `pgrep -fl 'cargo|rustc'` preflight +
+  sleep-wait until clean; `export AP_MAX_RSS_GB=2 AP_PROBE_MAX_RSS_GB=2`
+  before every cargo test; no background processes; no test binary
+  re-execution; no single test exceeded 300s.
+- Commits: eece027 (G2), c80550c (G4), c96f41c (G8+F5-drop-hook),
+  67d3e09 (G5+G6), 86c4cdc (G7+G10+F4). Explicit pathspecs; nothing
+  pushed. FORBIDDEN FILES untouched (classes.rs, ast_bridge.rs).
+
