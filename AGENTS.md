@@ -126,13 +126,14 @@ GIL, uv-backed deps at build time. Byte-exact differential conformance vs CPytho
   >=300s. Current blocker (leaf running): response.text crashes in
   w3lib/encoding.py resolve_encoding -> blocks the items.jsonl
   byte-compare gate (docs/t1-gate.md standard).
-- T2 REGRESSION OPEN 2026-11-05 (leaf running): AST campaign commits
-  125f205..cba6036 (compile(PyCF_ONLY_AST) real tree, walk parity vs
-  CPython 3.14) broke the default-config T2 gate: INTERNALERROR
-  IndexError stack_summary[0] at _pytest/_code/code.py:223
-  get_python_framesummary (leaf's staged source.py full-range
-  degradation no longer fires now that real AST flows). Fix must keep
-  AST parity (W114 scorecard green) - do NOT revert ast_bridge.
+- T2 REGRESSION CLOSED 2026-11-05 (W117 verify): default-config plain
+  driver (/tmp/w112_t2fix/plain_driver.py) on final tree = 1F/1P/1S,
+  MAIN_RC=1, zero INTERNALERROR — verdict-identical with CPython 3.14.
+  Residual (NOT the gate): the old trap-driver variant
+  (/tmp/w110_t2drv_trap.py, pluggy _multicall monkeypatch) hits a
+  different INTERNALERROR: fixtures.py _matchfactories
+  AttributeError 'type' object has no attribute 'nodeid' on the skip
+  path — file as a leaf if it ever blocks wave work.
 - OOM CAMPAIGN CLOSED 2026-11-05 (session record; details
   docs/import-leak-recheck-2026-11-05.md + docs/ast-hang-diagnosis-2026-11-05.md):
   the box-OOMing 9-44GB leaks on import-heavy probes were the pre-fix
