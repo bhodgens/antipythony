@@ -68,6 +68,14 @@ pub struct GenState {
 }
 
 thread_local! {
+    /// G10 (oom-bughunt-2026-11-06): tb_frames depth at resume_live entry.
+    /// The generator-raise arm inserts the fiber frame AT this index instead
+    /// of 0 — an index-0 insert lands BELOW the driver's pre-resume snapshot,
+    /// so the try/except cleanup (truncate to snapshot) never removed it
+    /// (leak + O(n) shift per event = O(n^2)). Inserting AT the resume depth
+    /// keeps the frame inside the snapshot window: cleanup removes it, and
+    /// the Vec no longer grows per caught generator exception.
+    static GEN_TB_BASE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// Stack of (fiber_id, yielder) for fibers whose body is executing on
     /// this thread. TOP = the fiber that executes the next statement.
     static ACTIVE: RefCell<Vec<(u64, *const FiberYielder)>> = RefCell::new(Vec::new());
@@ -305,10 +313,12 @@ fn gen_fiber_body(
                 );
             }
             e.tb.insert(0, (entry.qualname.clone(), line, file.clone()));
+            let base = GEN_TB_BASE.get();
+            let idx = base.min(interp.tb_frames.borrow().len());
             interp
                 .tb_frames
                 .borrow_mut()
-                .insert(0, (entry.qualname.clone(), line, file));
+                .insert(idx, (entry.qualname.clone(), line, file));
             // fiber_id is owned by run_fiber_body's closure scope; the
             // CURRENT stack still holds it while the body executes.
             let fid = current_running_fiber_id();
@@ -393,6 +403,10 @@ pub fn resume_live(
     }
     live.running = true;
     interp.enter_call()?;
+    // G10: record the tb_frames depth AT resume entry — the fiber-raise arm
+    // inserts its frame here (not at 0), keeping it inside the driver's
+    // cleanup window (see GEN_TB_BASE docs).
+    GEN_TB_BASE.with(|b| b.set(interp.tb_frames.borrow().len()));
     // PEP-342: a throw()/close() into a NOT-YET-STARTED generator never
     // runs the body. Stage the error for the resumer; the single resume
     // starts the closure, which unwinds immediately without body effects

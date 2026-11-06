@@ -155,6 +155,9 @@ pub fn run_module(
         full
     };
     // 02.04: weakref.finalize atexit path (C-22) drains before GCSTATS.
+    // G7: final worker-registration drain (a thread that allocated right up
+    // to exit leaves channel contents that would otherwise be lost/leaked).
+    let _ = crate::gcsupport::drain_worker_registrations();
     crate::gcsupport::finalize_atexit_drain();
     // 02.04: GCSTATS instrumentation at exit.
     if std::env::var("GCSTATS").is_ok() {

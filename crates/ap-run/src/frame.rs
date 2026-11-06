@@ -509,7 +509,21 @@ impl Interpreter {
     /// Advance depth for a call; Err when over the recursion limit.
     pub fn enter_call(&self) -> Result<(), crate::Flow> {
         let d = self.depth.get() + 1;
-        if d > self.recursion_limit.get() {
+        // F4 (oom-bughunt-2026-11-06 RSS doc): the Python limit is
+        // user-settable (setrecursionlimit(5000)) but the interpreter thread
+        // has a FIXED stack (256MB reservation; ~50KB native per Python
+        // frame in RELEASE, ~4x in debug). Depth beyond the native budget
+        // SIGABRTs (rc=-6) instead of raising RecursionError. Backstop:
+        // derive the hard cap from the same budget the thread spawn uses;
+        // setrecursionlimit still lowers it freely, but a raised limit can
+        // no longer push past the stack.
+        const FRAME_STACK_BYTES: usize = 256 << 20;
+        #[cfg(debug_assertions)]
+        const BYTES_PER_FRAME: usize = 256 * 1024; // debug frames ~5x release
+        #[cfg(not(debug_assertions))]
+        const BYTES_PER_FRAME: usize = 50 * 1024;
+        let hard_cap = (FRAME_STACK_BYTES / BYTES_PER_FRAME).max(1000);
+        if d > self.recursion_limit.get() || d > hard_cap {
             return Err(crate::Flow::Raise(ExceptionValue::msg(
                 "RecursionError",
                 "maximum recursion depth exceeded",

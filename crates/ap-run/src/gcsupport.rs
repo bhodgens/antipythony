@@ -630,6 +630,12 @@ pub fn call_gc(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option
             "collect" => {
                 // Optional generation arg (0/1/2) — stage 1 is generationless;
                 // the arg only pins the generation field gc006 observes.
+                // G7 (oom-bughunt-2026-11-06): drain worker registrations on
+                // every collect — a spawned-then-working thread's allocations
+                // forward through the channel and used to sit there undrained
+                // until the next threading dispatch (unbounded growth for
+                // spawn-once workloads).
+                let _ = crate::gcsupport::drain_worker_registrations();
                 let gen = ap_gc_arg(args, 0, 2)?;
                 let found = ap_gc::collect_gen(gen);
                 Ok(i(found as i64))
