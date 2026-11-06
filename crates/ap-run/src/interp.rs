@@ -20,6 +20,16 @@ use crate::exc_hier::{is_subclass, ExceptionValue};
 thread_local! {
     /// T1-d: live cell storage for __closure__ cell namespace objects
     /// (ptr -> CellSlot). cell_contents writes update the live cell.
+    /// G5 (oom-bughunt-2026-11-06): wrapper-cache keyed (closure_slot,
+    /// cell name) — the doc's "cache the cell-wrapper object on the
+    /// function object itself (stable per function)" arm. __closure__
+    /// re-uses the wrapper instead of minting a fresh PyObject + registry
+    /// entry per access (inspect-heavy loops grew the table linearly).
+    /// Values are GC-registered PyObjects; sweep on insert drops entries
+    /// whose wrapper died (weakref_alive = registry membership).
+    pub static CELL_WRAPPER_CACHE:
+        std::cell::RefCell<std::collections::HashMap<(u64, String), Gc<ap_obj::PyObject>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
     pub static CELL_BACKING: std::cell::RefCell<std::collections::HashMap<usize, crate::frame::CellSlot>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
 }
@@ -136,7 +146,14 @@ pub fn run_module(
         crate::threading::acquire_gil();
     }
     let _ = stdout.write_all(&interp.stdout.borrow());
-    let out_bytes = interp.stdout.borrow().clone();
+    let out_bytes = {
+        // G6: outcome bytes = the mid-run-drained prefix + the final tail
+        // (byte-identical to the unbuffered behavior; the prefix was also
+        // already written to the real stdout above if fd 1 is the sink).
+        let mut full = interp.stdout_flushed_prefix.borrow().clone();
+        full.extend_from_slice(&interp.stdout.borrow());
+        full
+    };
     // 02.04: weakref.finalize atexit path (C-22) drains before GCSTATS.
     crate::gcsupport::finalize_atexit_drain();
     // 02.04: GCSTATS instrumentation at exit.
@@ -11840,6 +11857,25 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                                 if let Some(cell) =
                                     df.my_cells.get(cname).or_else(|| df.free_cells.get(cname))
                                 {
+                                    // G5: reuse the cached wrapper when the
+                                    // same (fn, cell) was already minted;
+                                    // sweep dead wrappers on the way.
+                                    let slot_id = o
+                                        .closure_slot
+                                        .borrow()
+                                        .unwrap_or(0);
+                                    let cache_key = (slot_id, cname.clone());
+                                    let cached = CELL_WRAPPER_CACHE.with(|reg| {
+                                        let mut m = reg.borrow_mut();
+                                        m.retain(|_, w| ap_gc::weakref_alive(std::rc::Rc::as_ptr(
+                                            w,
+                                        ) as *const u8 as usize));
+                                        m.get(&cache_key).cloned()
+                                    });
+                                    if let Some(c) = cached {
+                                        cells.push(Value::Obj(c));
+                                        continue;
+                                    }
                                     let c =
                                         ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "cell");
                                     let cur = cell.borrow().clone().unwrap_or(Value::None);
@@ -11854,6 +11890,9 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                                     let ckey = std::rc::Rc::as_ptr(&c) as usize;
                                     CELL_BACKING.with(|reg| {
                                         reg.borrow_mut().insert(ckey, cell.clone());
+                                    });
+                                    CELL_WRAPPER_CACHE.with(|reg| {
+                                        reg.borrow_mut().insert(cache_key, c.clone());
                                     });
                                     cells.push(Value::Obj(c));
                                 }

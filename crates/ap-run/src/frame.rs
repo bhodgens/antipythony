@@ -293,6 +293,10 @@ pub struct Interpreter {
     pub next_gen_id: Cell<u64>,
     /// stdout accumulation (S-06-2 byte gate).
     pub stdout: RefCell<Vec<u8>>,
+    /// G6: bytes already drained to fd 1 by the mid-run threshold flush —
+    /// re-prepended into RunOutcome.stdout at the end-of-run flush so the
+    /// outcome is byte-identical to the unbuffered behavior.
+    pub stdout_flushed_prefix: RefCell<Vec<u8>>,
     /// Traceback frames of the propagating exception, OUTERMOST-FIRST
     /// (built by insert(0) at each frame exit; module frame pushes last).
     /// Entries: (qualname, lineno, filename) — the filename is the DEFINING
@@ -392,6 +396,7 @@ impl Interpreter {
             next_iter_id: Cell::new(2),
             next_gen_id: Cell::new(1),
             stdout: RefCell::new(Vec::new()),
+            stdout_flushed_prefix: RefCell::new(Vec::new()),
             tb_frames: RefCell::new(Vec::new()),
             frame_stack: RefCell::new(Vec::new()),
             depth: Cell::new(0),
@@ -422,7 +427,29 @@ impl Interpreter {
     }
 
     pub fn write_out(&self, s: &str) {
-        self.stdout.borrow_mut().extend_from_slice(s.as_bytes());
+        const STDOUT_FLUSH_THRESHOLD: usize = 1 << 20; // 1MB (G6)
+        let mut buf = self.stdout.borrow_mut();
+        buf.extend_from_slice(s.as_bytes());
+        // G6 (oom-bughunt-2026-11-06 static audit): the buffer used to grow
+        // for the WHOLE run (1GB of print output = 1GB RSS before the single
+        // end-of-run flush). Past a threshold, drain the buffer to the REAL
+        // stdout (fd 1) — both production callers (ap-cli, ap_run_probe) pass
+        // std::io::stdout(), and differential suites consume the subprocess's
+        // fd 1, so byte-order is preserved. RunOutcome.stdout correctness for
+        // capture consumers: the drained prefix is ALSO kept in
+        // stdout_flushed_prefix, re-prepended at the end-of-run flush, so the
+        // outcome bytes are identical to the unbuffered behavior.
+        if buf.len() >= STDOUT_FLUSH_THRESHOLD {
+            use std::io::Write as _;
+            let n = buf.len();
+            let ok = unsafe { libc::write(1, buf.as_ptr() as *const libc::c_void, n) };
+            if ok == n as isize {
+                self.stdout_flushed_prefix.borrow_mut().extend_from_slice(&buf[..]);
+                buf.clear();
+            }
+            // A short/failed write keeps the bytes buffered; the end-of-run
+            // flush still writes them (correctness over peak RSS).
+        }
     }
 
     /// Function entry lookup (module table or nested table by id offset).
