@@ -46,6 +46,12 @@ Orchestrator-run UNFENCED probes (`target/debug/ap-run-probe` launched
 bare in background sampler jobs) on the sibling's leaky unittest path.
 STANDING RULE: manual probes go through a fenced wrapper, never bare.
 
+## Pending decision (user gate, timed out 2026-11-05 22:30)
+- main is ~13 commits ahead of origin (dea6c03..AGENTS reconcile); NOT
+  pushed. Unlock command: `cd ~/git/antipythony && git push origin main`
+- Issue #11/#14 reconciliation comments reference local shas; they
+  resolve on GitHub once pushed.
+
 ## Resume queue
 1. When the sibling leaf commits: re-run fenced
    `AP_PROBE_MAX_RSS_GB=6 AP_PROBE_TIMEOUT_SECS=240 cargo test -p ap-run
