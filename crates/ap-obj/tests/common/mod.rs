@@ -100,3 +100,94 @@ pub fn reference_or_skip() -> Option<&'static str> {
     eprintln!("SKIP: python3.14 not found");
     None
 }
+
+// ---------------------------------------------------------------------------
+// 2026-11-06 harness review: resource fencing for the CPython-reference
+// probes this crate's suites spawn (ref_batch in repr_fuzz.rs, cpython()
+// in cpython_differential.rs). Reference side only (megabytes), but the
+// SAME single-tenancy + memory-pressure preflight + deadline discipline
+// applies: no unbounded waits, no overlap with other interpreter-spawning
+// suites, no probe start while the box is saturated.
+// ---------------------------------------------------------------------------
+
+/// Exclusive whole-invocation single-tenancy lock (same lock file + seam as
+/// crates/ap-run + crates/ap-cli `interpreter_gate`). Taken once per
+/// test-binary process, held to exit; cheap (one atomic load) after first.
+pub fn interpreter_gate() {
+    static DONE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    use std::os::fd::AsFd as _;
+    use std::os::fd::AsRawFd as _;
+    use std::sync::atomic::Ordering;
+    if DONE.swap(1, Ordering::SeqCst) == 1 {
+        return;
+    }
+    let path = std::env::temp_dir().join("aprun_gate_global.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .expect("open interpreter-gate lock file");
+    let rc = unsafe { libc::flock(file.as_fd().as_raw_fd(), libc::LOCK_EX) };
+    assert_eq!(rc, 0, "flock on interpreter-gate lock failed");
+    // Deliberately leak `file` (no Drop): the lock must live until process
+    // exit. One File per test-binary process, bounded.
+    std::mem::forget(file);
+}
+
+/// True when the machine is NOT under critical memory pressure (same
+/// metrics + open-on-unreadable policy as ap-run's common::memory_pressure_ok).
+#[cfg(target_os = "macos")]
+fn memory_pressure_ok() -> bool {
+    let mut level: libc::c_int = 0;
+    let mut size = std::mem::size_of::<libc::c_int>();
+    let rc = unsafe {
+        libc::sysctlbyname(
+            "kern.memorystatus_vm_pressure_level\0".as_ptr() as *const libc::c_char,
+            (&mut level as *mut libc::c_int).cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc != 0 {
+        return true; // metric unreadable: gate open
+    }
+    level <= 2
+}
+
+#[cfg(not(target_os = "macos"))]
+fn memory_pressure_ok() -> bool {
+    if let Ok(avail) = std::fs::read_to_string("/proc/meminfo") {
+        for line in avail.lines() {
+            if let Some(rest) = line.strip_prefix("MemAvailable:") {
+                if let Ok(kb) = rest.trim().trim_end_matches(" kB").trim().parse::<u64>() {
+                    return kb > 4 * 1024 * 1024; // > 4GB available
+                }
+            }
+        }
+    }
+    true // metric unreadable: gate open
+}
+
+/// Panic with a distinctive message when the machine is already under
+/// critical memory pressure.
+pub fn preflight_or_panic() {
+    assert!(
+        memory_pressure_ok(),
+        "memory-pressure preflight: machine under critical memory pressure; \
+         reference-interpreter probe REFUSED to start — free the machine and rerun"
+    );
+}
+
+/// Wall-clock deadline for one reference probe. Env-overridable, never
+/// unbounded: `ref_batch`/`cpython` are megabyte-scale CPython runs, so
+/// 60s is generous headroom (2026-11-06 harness review: no bare
+/// wait_with_output() may remain in any harness).
+pub fn reference_deadline() -> std::time::Duration {
+    let secs: u64 = std::env::var("AP_REF_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(60);
+    std::time::Duration::from_secs(secs)
+}

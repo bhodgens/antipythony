@@ -64,6 +64,7 @@ fn check(name: &str, src: &str) {
 
 #[test]
 fn metaclass_new_arity_battery() {
+    common::interpreter_gate();
     // 1. Simple metaclass, zero-arg super() chain (0 bases).
     check(
         "meta-0base",

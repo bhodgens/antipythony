@@ -113,6 +113,7 @@ print("100%%")
 #[test]
 #[ignore = "BUG-C partially fixed: warnings import reaches the enum chain (RegexFlag/EnumDict class-ns semantics) — follow-up leaf 02.04b"]
 fn bugc_import_warnings_succeeds() {
+    common::interpreter_gate();
     assert_differential(
         r#"import warnings
 print(warnings.__name__)

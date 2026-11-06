@@ -70,6 +70,7 @@ fn check(name: &str, src: &str) {
 /// members carry .name/.value; iteration yields members in definition order.
 #[test]
 fn enum_member_gate() {
+    common::interpreter_gate();
     check(
         "enum_member_gate",
         r#"
@@ -85,6 +86,7 @@ print(Color.RED.name, Color.RED.value, list(Color))
 /// 02.03b: enum FunctionalAPI-lite + membership + lookup by value.
 #[test]
 fn enum_call_and_contains() {
+    common::interpreter_gate();
     check(
         "enum_call_and_contains",
         r#"
@@ -101,6 +103,7 @@ print(Color(1).name, Color["GREEN"].value)
 /// honored — a minimal hand-rolled EnumType clone (leaf clause 1 core).
 #[test]
 fn metaclass_new_dict_class() {
+    common::interpreter_gate();
     check(
         "metaclass_new_dict_class",
         r#"
@@ -124,6 +127,7 @@ print(B.y, type(B).__name__)
 /// lands on stderr; we compare stdout only (both empty) and require exit 0.
 #[test]
 fn warnings_warn_runs() {
+    common::interpreter_gate();
     // Note: compared on STDOUT ONLY (stderr has the CPython warning text,
     // which our gate formats with the caller line — a documented v0 line-
     // attribution gap; the category/message/filter path is exercised).
@@ -164,6 +168,7 @@ print("warned")
 /// 02.03b: the warnings module surface resolves (no None callables).
 #[test]
 fn warnings_surface() {
+    common::interpreter_gate();
     check(
         "warnings_surface",
         r#"
@@ -179,6 +184,7 @@ print(callable(warnings.warn), callable(warnings.warn_explicit),
 /// __setitem__ (the EnumDict member-tracking model, minimally).
 #[test]
 fn dict_subclass_namespace() {
+    common::interpreter_gate();
     check(
         "dict_subclass_namespace",
         r#"

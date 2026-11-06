@@ -124,6 +124,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "glob",
+ "libc",
  "serde",
  "serde_json",
 ]
@@ -156,6 +157,7 @@ dependencies = [
 name = "ap-obj"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "num-bigint",
  "num-integer",
  "num-traits",
@@ -3250,6 +3252,7 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "cargo_metadata",
+ "libc",
 ]
 
 [[package]]

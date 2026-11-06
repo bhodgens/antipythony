@@ -62,6 +62,7 @@ fn assert_differential(name: &str, src: &str) {
 
 #[test]
 fn lookup_data_descriptor_shadows_instance_dict() {
+    common::interpreter_gate();
     assert_differential(
         "data descriptor priority",
         concat!(
@@ -79,6 +80,7 @@ fn lookup_data_descriptor_shadows_instance_dict() {
 
 #[test]
 fn lookup_nondata_shadowed_by_instance_dict() {
+    common::interpreter_gate();
     assert_differential(
         "non-data descriptor shadowing",
         concat!(
@@ -99,6 +101,7 @@ fn lookup_nondata_shadowed_by_instance_dict() {
 
 #[test]
 fn getattr_fallback_and_miss_message() {
+    common::interpreter_gate();
     assert_differential(
         "__getattr__ fallback",
         concat!(
@@ -120,6 +123,7 @@ fn getattr_fallback_and_miss_message() {
 
 #[test]
 fn property_setter_and_readonly() {
+    common::interpreter_gate();
     assert_differential(
         "property setter routing",
         concat!(
@@ -147,6 +151,7 @@ fn property_setter_and_readonly() {
 
 #[test]
 fn delete_rules() {
+    common::interpreter_gate();
     assert_differential(
         "del priority",
         concat!(
@@ -180,6 +185,7 @@ fn delete_rules() {
 
 #[test]
 fn mro_diamond() {
+    common::interpreter_gate();
     assert_differential(
         "C3 diamond",
         concat!(
@@ -195,6 +201,7 @@ fn mro_diamond() {
 
 #[test]
 fn super_diamond_chase() {
+    common::interpreter_gate();
     assert_differential(
         "diamond chase",
         concat!(
@@ -222,6 +229,7 @@ fn super_diamond_chase() {
 
 #[test]
 fn super_classmethod_chain() {
+    common::interpreter_gate();
     assert_differential(
         "classmethod super",
         concat!(
@@ -242,6 +250,7 @@ fn super_classmethod_chain() {
 
 #[test]
 fn super_validation_errors() {
+    common::interpreter_gate();
     assert_differential(
         "super validation",
         concat!(
@@ -271,6 +280,7 @@ fn super_validation_errors() {
 
 #[test]
 fn new_skips_init_on_noninstance() {
+    common::interpreter_gate();
     assert_differential(
         "__new__ skips __init__",
         concat!(
@@ -288,6 +298,7 @@ fn new_skips_init_on_noninstance() {
 
 #[test]
 fn newinit_arity_errors() {
+    common::interpreter_gate();
     assert_differential(
         "arity cross-check",
         concat!(
@@ -309,6 +320,7 @@ fn newinit_arity_errors() {
 
 #[test]
 fn init_return_nonnone_raises() {
+    common::interpreter_gate();
     assert_differential(
         "__init__ return check",
         concat!(
@@ -329,6 +341,7 @@ fn init_return_nonnone_raises() {
 
 #[test]
 fn binop_reflected_priority() {
+    common::interpreter_gate();
     assert_differential(
         "reflected priority",
         concat!(
@@ -359,6 +372,7 @@ fn binop_reflected_priority() {
 
 #[test]
 fn augmented_rebinds() {
+    common::interpreter_gate();
     assert_differential(
         "augmented rebind",
         concat!(
@@ -381,6 +395,7 @@ fn augmented_rebinds() {
 
 #[test]
 fn unary_slots() {
+    common::interpreter_gate();
     assert_differential(
         "unary dunders",
         concat!(
@@ -401,6 +416,7 @@ fn unary_slots() {
 
 #[test]
 fn iter_in_for_and_in_operator() {
+    common::interpreter_gate();
     assert_differential(
         "__iter__ + __contains__",
         concat!(
@@ -422,6 +438,7 @@ fn iter_in_for_and_in_operator() {
 
 #[test]
 fn call_protocol() {
+    common::interpreter_gate();
     assert_differential(
         "__call__",
         concat!(
@@ -440,6 +457,7 @@ fn call_protocol() {
 
 #[test]
 fn len_bool_len_fallback() {
+    common::interpreter_gate();
     assert_differential(
         "len/bool protocols",
         concat!(
@@ -460,6 +478,7 @@ fn len_bool_len_fallback() {
 
 #[test]
 fn user_exception_hierarchy_str() {
+    common::interpreter_gate();
     assert_differential(
         "user exception hierarchy",
         concat!(
@@ -483,6 +502,7 @@ fn user_exception_hierarchy_str() {
 
 #[test]
 fn identity_preserved_at_handler() {
+    common::interpreter_gate();
     assert_differential(
         "raise instance identity",
         concat!(
@@ -498,6 +518,7 @@ fn identity_preserved_at_handler() {
 
 #[test]
 fn except_tuple_and_nonclass_rejected() {
+    common::interpreter_gate();
     assert_differential(
         "except targets",
         concat!(
@@ -523,6 +544,7 @@ fn except_tuple_and_nonclass_rejected() {
 
 #[test]
 fn slots_restriction_messages() {
+    common::interpreter_gate();
     assert_differential(
         "__slots__ messages",
         concat!(
@@ -549,6 +571,7 @@ fn slots_restriction_messages() {
 
 #[test]
 fn dunder_bypasses_instance_dict() {
+    common::interpreter_gate();
     assert_differential(
         "dunder type lookup",
         concat!(
@@ -564,6 +587,7 @@ fn dunder_bypasses_instance_dict() {
 
 #[test]
 fn classmethod_staticmethod_binding() {
+    common::interpreter_gate();
     assert_differential(
         "descriptor kinds",
         concat!(
@@ -586,6 +610,7 @@ fn classmethod_staticmethod_binding() {
 
 #[test]
 fn repr_vs_str_semantics() {
+    common::interpreter_gate();
     assert_differential(
         "__repr__/__str__ divergence",
         concat!(
@@ -605,6 +630,7 @@ fn repr_vs_str_semantics() {
 
 #[test]
 fn classcell_zero_arg_super_validation() {
+    common::interpreter_gate();
     assert_differential(
         "__class__ cell",
         concat!(
@@ -625,6 +651,7 @@ fn classcell_zero_arg_super_validation() {
 
 #[test]
 fn enter_exit_context_manager() {
+    common::interpreter_gate();
     assert_differential(
         "__enter__/__exit__",
         concat!(
@@ -650,6 +677,7 @@ fn enter_exit_context_manager() {
 
 #[test]
 fn metaclass_attribute_chain() {
+    common::interpreter_gate();
     assert_differential(
         "metaclass attr fallback",
         concat!(
@@ -669,6 +697,7 @@ fn metaclass_attribute_chain() {
 
 #[test]
 fn isinstance_union_and_tuple() {
+    common::interpreter_gate();
     assert_differential(
         "isinstance tuple + union",
         concat!(

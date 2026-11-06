@@ -91,6 +91,7 @@ fn check(name: &str, src: &str) {
 
 #[test]
 fn ast_getattr_identity_fence() {
+    common::interpreter_gate();
     // Issue #14 (OOM campaign residual (d)): bulk getattr over native
     // module attributes must return INTERNED objects. The pre-2b78e41
     // leak class materialized a fresh GC-immune class clone per access
@@ -117,6 +118,7 @@ print("getattr ok")
 
 #[test]
 fn gc_weakref_unittest_battery() {
+    common::interpreter_gate();
     // 1. Cycle collection: collect() returns an OBJECT count (>= the cycle
     //    members) and a second collect reclaims nothing new.
     check(

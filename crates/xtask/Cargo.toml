@@ -9,5 +9,10 @@ publish = false
 [dependencies]
 cargo_metadata = "0.22"
 
+[dev-dependencies]
+# 2026-11-06 harness review: flock single-tenancy gate in xtask_gates
+# (same seam/lock file as ap-run/ap-cli/ap-obj tests/common).
+libc = "0.2"
+
 [lints]
 workspace = true  # robustness-ci 02.01 - see root Cargo.toml [workspace.lints]

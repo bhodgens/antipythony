@@ -6,9 +6,60 @@
 //!  2. it must never accept a non-3.14 interpreter as the reference.
 
 use std::process::Command;
+use std::time::{Duration, Instant};
+
+/// 2026-11-06 harness review: this suite spawns the ap-conform binary,
+/// which itself spawns impl+reference interpreter processes. Serialize
+/// against every other interpreter-spawning suite (same lock file as the
+/// ap-run/ap-cli/ap-obj `interpreter_gate` seams) and bound every wait —
+/// ap-conform defaults to a 10s per-process timeout, so 120s covers a
+/// small corpus with headroom.
+fn interpreter_gate() {
+    static DONE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    use std::os::fd::AsFd as _;
+    use std::os::fd::AsRawFd as _;
+    use std::sync::atomic::Ordering;
+    if DONE.swap(1, Ordering::SeqCst) == 1 {
+        return;
+    }
+    let path = std::env::temp_dir().join("aprun_gate_global.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .expect("open interpreter-gate lock file");
+    let rc = unsafe { libc::flock(file.as_fd().as_raw_fd(), libc::LOCK_EX) };
+    assert_eq!(rc, 0, "flock on interpreter-gate lock failed");
+    std::mem::forget(file); // hold to process exit
+}
+
+/// Run `cmd` capturing Output with a hard wall-clock deadline; a child
+/// that outlives it is SIGKILLed and the test fails distinctly. No bare
+/// unbounded `.output()` may remain in any harness.
+fn bounded_output(mut cmd: Command, what: &str) -> std::process::Output {
+    cmd.stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().unwrap_or_else(|e| panic!("spawn {what}: {e}"));
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        match child.try_wait().expect("wait child") {
+            Some(_) => return child.wait_with_output().expect("collect output"),
+            None => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("{what}: exceeded the 120s deadline");
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+}
 
 #[test]
 fn harness_reports_fail_on_divergent_impl() {
+    interpreter_gate();
     // Negative control: /bin/echo can never reproduce `print("A")`.
     // If this ever passes, the comparator is broken and every green gate
     // in the project is worthless.
@@ -17,16 +68,15 @@ fn harness_reports_fail_on_divergent_impl() {
     let case = dir.join("negcase.py");
     std::fs::write(&case, "print(\"A\")\n").unwrap();
 
-    let out = Command::new(env!("CARGO_BIN_EXE_ap-conform"))
-        .args([
-            "run",
-            "--corpus",
-            &case.to_string_lossy(),
-            "--impl",
-            "/bin/echo",
-        ])
-        .output()
-        .expect("spawn ap-conform");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_ap-conform"));
+    cmd.args([
+        "run",
+        "--corpus",
+        &case.to_string_lossy(),
+        "--impl",
+        "/bin/echo",
+    ]);
+    let out = bounded_output(cmd, "ap-conform negative control");
     let _ = std::fs::remove_dir_all(&dir);
 
     assert_eq!(out.status.code(), Some(1), "negative control must exit 1");
@@ -39,11 +89,11 @@ fn harness_reports_fail_on_divergent_impl() {
 
 #[test]
 fn reference_interpreter_is_actually_314() {
+    interpreter_gate();
     let found = ap_conform::find_reference_interpreter().expect("host must have a 3.14 reference");
-    let out = Command::new(&found)
-        .arg("--version")
-        .output()
-        .expect("spawn reference");
+    let mut cmd = Command::new(&found);
+    cmd.arg("--version");
+    let out = bounded_output(cmd, "reference --version");
     let text = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
@@ -57,6 +107,7 @@ fn reference_interpreter_is_actually_314() {
 
 #[test]
 fn tier_flag_is_accepted_and_forwarded() {
+    interpreter_gate();
     // C-31 / 02.03 gate seam: `--tier 0` must be accepted and forwarded to
     // the impl (never to the reference). A reference-only impl (python3.14)
     // would choke on --tier, so we point at a tiny shim that echoes its argv
@@ -67,18 +118,17 @@ fn tier_flag_is_accepted_and_forwarded() {
     std::fs::write(&case, "print(1)\n").unwrap();
 
     // Bad tier value must be rejected (exit 2), not silently ignored.
-    let bad = Command::new(env!("CARGO_BIN_EXE_ap-conform"))
-        .args([
-            "run",
-            "--corpus",
-            &case.to_string_lossy(),
-            "--impl",
-            "/bin/echo",
-            "--tier",
-            "7",
-        ])
-        .output()
-        .expect("spawn ap-conform");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_ap-conform"));
+    cmd.args([
+        "run",
+        "--corpus",
+        &case.to_string_lossy(),
+        "--impl",
+        "/bin/echo",
+        "--tier",
+        "7",
+    ]);
+    let bad = bounded_output(cmd, "ap-conform bad-tier check");
     assert_eq!(bad.status.code(), Some(2), "bad --tier must exit 2");
     let _ = std::fs::remove_dir_all(&dir);
 }

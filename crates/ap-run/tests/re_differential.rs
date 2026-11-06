@@ -51,6 +51,7 @@ fn check(name: &str, src: &str) {
 
 #[test]
 fn literals_dot_charset() {
+    common::interpreter_gate();
     check(
         "literals-dot-charset",
         r#"
@@ -73,6 +74,7 @@ print(re.search('x$y', 'x'))
 
 #[test]
 fn escapes_categories() {
+    common::interpreter_gate();
     check(
         "escapes-categories",
         r#"
@@ -93,6 +95,7 @@ print(re.split(r'[\t ]+', 'a b\tc'))
 
 #[test]
 fn unicode_categories() {
+    common::interpreter_gate();
     check(
         "unicode-categories",
         r#"
@@ -107,6 +110,7 @@ print(re.findall(r'\d', '١٢٣', re.A))
 
 #[test]
 fn anchors_bA() {
+    common::interpreter_gate();
     check(
         "anchors",
         r#"
@@ -125,6 +129,7 @@ print([m.span() for m in re.finditer(r'^', 'a\nb', re.M)])
 
 #[test]
 fn quantifiers_greedy_lazy() {
+    common::interpreter_gate();
     check(
         "quantifiers",
         r#"
@@ -147,6 +152,7 @@ print(re.match(r'x{,2}y', 'y').group())
 
 #[test]
 fn quantifiers_backtrack_order() {
+    common::interpreter_gate();
     check(
         "quantifiers-backtrack",
         r#"
@@ -163,6 +169,7 @@ print(re.match(r'(a?)(a?)a', 'aaa').groups())
 
 #[test]
 fn alternation_order() {
+    common::interpreter_gate();
     check(
         "alternation",
         r#"
@@ -178,6 +185,7 @@ print(re.match(r'x(?:one|two)', 'xtwo').group())
 
 #[test]
 fn groups_basic() {
+    common::interpreter_gate();
     check(
         "groups-basic",
         r#"
@@ -194,6 +202,7 @@ print(m3.groups(), m3.lastindex, m3.group(1))
 
 #[test]
 fn groups_nested_optional() {
+    common::interpreter_gate();
     check(
         "groups-nested",
         r#"
@@ -212,6 +221,7 @@ print(m4.groups())
 
 #[test]
 fn named_groups() {
+    common::interpreter_gate();
     check(
         "named-groups",
         r#"
@@ -229,6 +239,7 @@ print(p.match('ab ab').group(), p.match('ab cd'))
 
 #[test]
 fn backrefs() {
+    common::interpreter_gate();
     check(
         "backrefs",
         r#"
@@ -247,6 +258,7 @@ print(m2.groups() if m2 else None)
 
 #[test]
 fn conditional_groups() {
+    common::interpreter_gate();
     check(
         "conditional",
         r#"
@@ -261,6 +273,7 @@ print(re.match(r'(a)?b(?(1)c)', 'ab').group())
 
 #[test]
 fn lookahead() {
+    common::interpreter_gate();
     check(
         "lookahead",
         r#"
@@ -277,6 +290,7 @@ print(m.group(1), m.group())
 
 #[test]
 fn lookbehind() {
+    common::interpreter_gate();
     check(
         "lookbehind",
         r#"
@@ -291,6 +305,7 @@ print(re.match(r'(?<=a)b', 'ab').span())
 
 #[test]
 fn lookbehind_variable_width_error() {
+    common::interpreter_gate();
     check(
         "lookbehind-varwidth",
         r#"
@@ -309,6 +324,7 @@ except Exception as e:
 
 #[test]
 fn atomic_possessive() {
+    common::interpreter_gate();
     check(
         "atomic-possessive",
         r#"
@@ -323,6 +339,7 @@ print(re.match(r'a++b', 'aab').group())
 
 #[test]
 fn flag_ignorecase() {
+    common::interpreter_gate();
     check(
         "flag-i",
         r#"
@@ -338,6 +355,7 @@ print(re.compile('x', re.I).pattern)
 
 #[test]
 fn flag_multiline_dotall() {
+    common::interpreter_gate();
     check(
         "flag-ms",
         r#"
@@ -354,6 +372,7 @@ print(re.findall(r'(?s)a.b', 'axb'))
 
 #[test]
 fn flag_verbose() {
+    common::interpreter_gate();
     check(
         "flag-x",
         r#"
@@ -368,6 +387,7 @@ print(p.match('42 koala').groups())
 
 #[test]
 fn flag_ascii_inline() {
+    common::interpreter_gate();
     check(
         "flag-inline",
         r#"
@@ -382,6 +402,7 @@ print(re.findall(r'\w+', 'ä', re.A))
 
 #[test]
 fn match_object_surface() {
+    common::interpreter_gate();
     check(
         "match-object",
         r#"
@@ -401,6 +422,7 @@ print(m.lastindex, m.lastgroup)
 
 #[test]
 fn match_repr_edge() {
+    common::interpreter_gate();
     check(
         "match-repr",
         r#"
@@ -417,6 +439,7 @@ print(repr(m3))
 
 #[test]
 fn module_compile_api() {
+    common::interpreter_gate();
     check(
         "module-compile",
         r#"
@@ -434,6 +457,7 @@ print(bool(re.compile('')), re.compile('ab', 0).pattern)
 
 #[test]
 fn module_search_match_fullmatch() {
+    common::interpreter_gate();
     check(
         "module-anchors",
         r#"
@@ -450,6 +474,7 @@ print(re.search('^b', 'ab', re.M).span())
 
 #[test]
 fn sub_repl_forms() {
+    common::interpreter_gate();
     check(
         "sub-repl",
         r#"
@@ -468,6 +493,7 @@ print(re.sub(r'a', r'\\', 'aa'))
 
 #[test]
 fn split_semantics() {
+    common::interpreter_gate();
     check(
         "split",
         r#"
@@ -483,6 +509,7 @@ print(re.split(r'', 'ab'))
 
 #[test]
 fn findall_group_forms() {
+    common::interpreter_gate();
     check(
         "findall-groups",
         r#"
@@ -497,6 +524,7 @@ print(re.findall(r'(a)(b)(c)', 'abc'))
 
 #[test]
 fn escape_fn() {
+    common::interpreter_gate();
     check(
         "escape",
         r#"
@@ -511,6 +539,7 @@ print(re.escape('()[]{}?*+-|^$\\.&~# \t\n'))
 
 #[test]
 fn purge_and_cache() {
+    common::interpreter_gate();
     check(
         "purge",
         r#"
@@ -526,6 +555,7 @@ print(p1.pattern == p2.pattern)
 
 #[test]
 fn types_and_names() {
+    common::interpreter_gate();
     check(
         "types-names",
         r#"
@@ -545,6 +575,7 @@ print(issubclass(re.error, Exception))
 
 #[test]
 fn error_texts() {
+    common::interpreter_gate();
     check(
         "errors",
         r#"
@@ -571,6 +602,7 @@ print(show(re.compile, 'a)'))
 
 #[test]
 fn zero_width_semantics() {
+    common::interpreter_gate();
     check(
         "zero-width",
         r#"
@@ -586,6 +618,7 @@ print(re.match(r'(a?)*b', 'b').groups())
 
 #[test]
 fn pos_endpos() {
+    common::interpreter_gate();
     check(
         "pos-endpos",
         r#"
@@ -602,6 +635,7 @@ print(p.match('ab', 5))
 
 #[test]
 fn warnings_style_patterns() {
+    common::interpreter_gate();
     check(
         "warnings-patterns",
         r#"
@@ -621,6 +655,7 @@ print(bool(re.match(r'(-*[A-]*)', 'AO')))
 
 #[test]
 fn pattern_object_methods() {
+    common::interpreter_gate();
     check(
         "pattern-methods",
         r#"
@@ -638,6 +673,7 @@ print(p.split('a1b2'))
 
 #[test]
 fn misc_api() {
+    common::interpreter_gate();
     check(
         "misc-api",
         r#"
@@ -650,6 +686,7 @@ print(hasattr(re, 'purge'), hasattr(re, 'escape'))
 
 #[test]
 fn nested_quantifier_groups() {
+    common::interpreter_gate();
     check(
         "nested-quant",
         r#"
@@ -666,6 +703,7 @@ print(re.match(r'((a)|b)+', 'aba').groups())
 
 #[test]
 fn casefold_edge() {
+    common::interpreter_gate();
     check(
         "casefold",
         r#"
@@ -681,6 +719,7 @@ print(re.match(r'[A-Z]', 'a', re.I).group())
 
 #[test]
 fn multiline_dollar() {
+    common::interpreter_gate();
     check(
         "multiline-dollar",
         r#"
@@ -696,6 +735,7 @@ print(re.findall(r'^', 'a\nb\nc', re.M))
 
 #[test]
 fn groupref_in_repeat() {
+    common::interpreter_gate();
     check(
         "groupref-repeat",
         r#"
@@ -710,6 +750,7 @@ print(re.match(r'(x?)(y?)\1\2', 'xy').groups())
 
 #[test]
 fn template_errors() {
+    common::interpreter_gate();
     check(
         "template-errors",
         r#"
@@ -728,6 +769,7 @@ print(show(lambda: re.sub('(a)', r'\q', 'a')))
 
 #[test]
 fn dot_newline_edge() {
+    common::interpreter_gate();
     check(
         "dot-newline",
         r#"

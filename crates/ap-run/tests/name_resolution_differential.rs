@@ -74,6 +74,7 @@ fn assert_differential(name: &str, src: &str) {
 
 #[test]
 fn bug_a_self_recursion_fact() {
+    common::interpreter_gate();
     assert_differential(
         "self-recursion fact(5)",
         "def fact(n):\n    return 1 if n <= 1 else n * fact(n-1)\nprint(fact(5))\n",
@@ -82,6 +83,7 @@ fn bug_a_self_recursion_fact() {
 
 #[test]
 fn bug_a_recursion_depth_3() {
+    common::interpreter_gate();
     assert_differential(
         "recursion depth 3",
         "def d3(k):\n    return 0 if k == 0 else 1 + d3(k-1)\nprint(d3(3))\nprint(d3(7))\n",
@@ -90,6 +92,7 @@ fn bug_a_recursion_depth_3() {
 
 #[test]
 fn bug_a_mutual_recursion_three_fns() {
+    common::interpreter_gate();
     assert_differential(
         "mutual 3 fns (forward reference)",
         concat!(
@@ -111,6 +114,7 @@ fn bug_a_mutual_recursion_three_fns() {
 
 #[test]
 fn bug_a_def_after_use_in_call_order() {
+    common::interpreter_gate();
     // The def executes at module time before any call; a fn defined LATER
     // in the module must still be visible to an earlier-defined fn.
     assert_differential(
@@ -125,6 +129,7 @@ fn bug_a_def_after_use_in_call_order() {
 
 #[test]
 fn bug_a_global_value_read_still_works() {
+    common::interpreter_gate();
     assert_differential(
         "global value read from fn",
         "G = 42\ndef f():\n    return G\nprint(f())\n",
@@ -133,6 +138,7 @@ fn bug_a_global_value_read_still_works() {
 
 #[test]
 fn bug_a_module_fn_reassigned_read_from_fn() {
+    common::interpreter_gate();
     // Name resolution must see the CURRENT global binding at call time.
     assert_differential(
         "module fn rebinding",
@@ -153,6 +159,7 @@ fn bug_a_module_fn_reassigned_read_from_fn() {
 
 #[test]
 fn bug_b_curried_closure_escapes() {
+    common::interpreter_gate();
     assert_differential(
         "curried closure",
         "def mk(n):\n    def inner(x):\n        return x + n\n    return inner\nprint(mk(10)(5))\n",
@@ -161,6 +168,7 @@ fn bug_b_curried_closure_escapes() {
 
 #[test]
 fn bug_b_closure_factory_two_closures_share_cell() {
+    common::interpreter_gate();
     assert_differential(
         "two closures share one cell",
         concat!(
@@ -185,6 +193,7 @@ fn bug_b_closure_factory_two_closures_share_cell() {
 
 #[test]
 fn bug_b_closure_direct_call_still_works() {
+    common::interpreter_gate();
     assert_differential(
         "closure called inside maker",
         "def mk():\n    x = 5\n    def inner():\n        return x\n    return inner()\nprint(mk())\n",
@@ -193,6 +202,7 @@ fn bug_b_closure_direct_call_still_works() {
 
 #[test]
 fn bug_b_param_cell_two_levels() {
+    common::interpreter_gate();
     // The closed-over variable is a PARAMETER of the maker, captured two
     // levels deep (the exact mk(10)(5) shape, plus rebinding through a cell).
     assert_differential(
@@ -211,6 +221,7 @@ fn bug_b_param_cell_two_levels() {
 
 #[test]
 fn bug_b_factory_loop_closure_captures_cell() {
+    common::interpreter_gate();
     // Classic late-binding: all closures share ONE cell per iteration scope.
     assert_differential(
         "factory loop shares cell",
@@ -232,6 +243,7 @@ fn bug_b_factory_loop_closure_captures_cell() {
 
 #[test]
 fn bug_c_yield_from_range() {
+    common::interpreter_gate();
     assert_differential(
         "yield from range",
         concat!(
@@ -244,6 +256,7 @@ fn bug_c_yield_from_range() {
 
 #[test]
 fn bug_c_yield_from_list_and_str() {
+    common::interpreter_gate();
     assert_differential(
         "yield from list + str",
         concat!(
@@ -258,6 +271,7 @@ fn bug_c_yield_from_list_and_str() {
 
 #[test]
 fn bug_c_yield_from_generator() {
+    common::interpreter_gate();
     // Sub-iterable is itself a generator (delegation through delegation).
     assert_differential(
         "yield from generator",
@@ -275,6 +289,7 @@ fn bug_c_yield_from_generator() {
 
 #[test]
 fn bug_c_yield_from_mixed_with_plain_yields() {
+    common::interpreter_gate();
     assert_differential(
         "yield from mixed with plain yields",
         concat!(
@@ -294,6 +309,7 @@ fn bug_c_yield_from_mixed_with_plain_yields() {
 
 #[test]
 fn gate_gen_list() {
+    common::interpreter_gate();
     assert_differential(
         "gen list",
         concat!(
@@ -308,6 +324,7 @@ fn gate_gen_list() {
 
 #[test]
 fn gate_gen_comp_via_yield_from() {
+    common::interpreter_gate();
     assert_differential(
         "gen comp via yield from",
         concat!(
@@ -320,6 +337,7 @@ fn gate_gen_comp_via_yield_from() {
 
 #[test]
 fn gate_gen_next() {
+    common::interpreter_gate();
     assert_differential(
         "gen next",
         concat!(
@@ -339,6 +357,7 @@ fn gate_gen_next() {
 
 #[test]
 fn gate_closure_direct() {
+    common::interpreter_gate();
     assert_differential(
         "closure direct",
         concat!(
@@ -357,6 +376,7 @@ fn gate_closure_direct() {
 
 #[test]
 fn gate_closure_curried() {
+    common::interpreter_gate();
     assert_differential(
         "closure curried",
         concat!(
@@ -371,6 +391,7 @@ fn gate_closure_curried() {
 
 #[test]
 fn gate_unpack() {
+    common::interpreter_gate();
     assert_differential(
         "unpack",
         concat!(
@@ -388,6 +409,7 @@ fn gate_unpack() {
 
 #[test]
 fn gate_match() {
+    common::interpreter_gate();
     assert_differential(
         "match",
         concat!(
@@ -411,6 +433,7 @@ fn gate_match() {
 
 #[test]
 fn gate_try_finally() {
+    common::interpreter_gate();
     assert_differential(
         "try/finally",
         concat!(
@@ -437,6 +460,7 @@ fn gate_try_finally() {
 
 #[test]
 fn gate_recursion() {
+    common::interpreter_gate();
     // Depth kept below ~90 per chain: the tier-0 tree-walk recurses through
     // large Rust stack frames (deep recursion overflow-aborts at ~93 chained
     // calls in a debug build with the default 8MB main-thread stack) — the

@@ -862,6 +862,10 @@ fn run_case(pattern: &str, subject: &str, flags: u32) -> Result<(), String> {
 /// shrinking is fully under our control.
 #[test]
 fn re_engine_matches_cpython() {
+    // Single-tenancy: this suite spawns the interpreter (ap-run-eval) and
+    // CPython per case — serialize against every other interpreter-spawning
+    // suite across processes (2026-11-06 harness review).
+    common::interpreter_gate();
     let skip = common::reference_or_skip().is_none();
     if skip {
         return; // SKIP line already printed by the shared seam
@@ -914,6 +918,7 @@ fn re_fuzz_lane_banner() {
 /// (fuzz finding SUBN1 below) cannot perturb this anchor.
 #[test]
 fn harness_smoke_case() {
+    common::interpreter_gate(); // serialize vs other interpreter-spawning suites
     if common::reference_or_skip().is_none() {
         return;
     }

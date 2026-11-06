@@ -12,6 +12,54 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, Instant};
+
+/// 2026-11-06 harness review: this suite runs the xtask binary, whose
+/// `notices` path invokes `cargo metadata` (a cargo/rustc subprocess tree)
+/// inside a fixture workspace. Bounded waits + participation in the
+/// repo-wide single-tenancy gate keep it from ever stacking with a build.
+fn interpreter_gate() {
+    static DONE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    use std::os::fd::AsFd as _;
+    use std::os::fd::AsRawFd as _;
+    use std::sync::atomic::Ordering;
+    if DONE.swap(1, Ordering::SeqCst) == 1 {
+        return;
+    }
+    let path = std::env::temp_dir().join("aprun_gate_global.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .expect("open interpreter-gate lock file");
+    let rc = unsafe { libc::flock(file.as_fd().as_raw_fd(), libc::LOCK_EX) };
+    assert_eq!(rc, 0, "flock on interpreter-gate lock failed");
+    std::mem::forget(file); // hold to process exit
+}
+
+/// Run `cmd` with a hard 180s wall-clock deadline (cargo metadata can
+/// compile nothing but still takes tens of seconds cold); a child that
+/// outlives the deadline is SIGKILLed. No unbounded `.output()`.
+fn bounded_output(mut cmd: Command, what: &str) -> std::process::Output {
+    cmd.stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().unwrap_or_else(|e| panic!("spawn {what}: {e}"));
+    let deadline = Instant::now() + Duration::from_secs(180);
+    loop {
+        match child.try_wait().expect("wait child") {
+            Some(_) => return child.wait_with_output().expect("collect output"),
+            None => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("{what}: exceeded the 180s deadline");
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+}
 
 /// Unique tempdir per test (pid + test name), created fresh, removed at end.
 fn fixture_dir(name: &str) -> PathBuf {
@@ -51,12 +99,12 @@ fn write_fixture(root: &Path) {
 /// Run the compiled xtask binary with CWD (and CARGO_MANIFEST_DIR) inside the
 /// fixture workspace.
 fn run_xtask(root: &Path, args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_xtask"))
-        .args(args)
+    interpreter_gate();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_xtask"));
+    cmd.args(args)
         .current_dir(root)
-        .env("CARGO_MANIFEST_DIR", root.join("crates").join("sample"))
-        .output()
-        .expect("spawn xtask binary")
+        .env("CARGO_MANIFEST_DIR", root.join("crates").join("sample"));
+    bounded_output(cmd, "xtask fixture run")
 }
 
 fn cleanup(root: &Path) {
@@ -147,11 +195,9 @@ fn repo_notices_gate_is_in_sync() {
         .expect("workspace root above crates/xtask")
         .to_path_buf();
 
-    let check = Command::new(env!("CARGO_BIN_EXE_xtask"))
-        .args(["notices", "--check"])
-        .current_dir(&repo_root)
-        .output()
-        .expect("spawn xtask binary");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_xtask"));
+    cmd.args(["notices", "--check"]).current_dir(&repo_root);
+    let check = bounded_output(cmd, "repo notices gate");
     assert_eq!(
         check.status.code(),
         Some(0),

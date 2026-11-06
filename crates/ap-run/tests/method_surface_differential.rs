@@ -53,6 +53,7 @@ fn check(name: &str, src: &str) {
 
 #[test]
 fn str_split_rsplit_family() {
+    common::interpreter_gate();
     check(
         "str-split-rsplit",
         r#"
@@ -67,6 +68,7 @@ print("a,b,,c".split(","))
 
 #[test]
 fn str_case_casefold_swapcase() {
+    common::interpreter_gate();
     check(
         "str-case",
         r#"
@@ -77,6 +79,7 @@ print("Hello".casefold(), "aBc".swapcase(), "ß".casefold())
 
 #[test]
 fn str_zfill_center_ljust_rjust() {
+    common::interpreter_gate();
     check(
         "str-pad",
         r#"
@@ -88,6 +91,7 @@ print("a".ljust(3), "a".rjust(3), "ab".ljust(1))
 
 #[test]
 fn str_partition_rpartition() {
+    common::interpreter_gate();
     check(
         "str-partition",
         r#"
@@ -99,6 +103,7 @@ print("abc".rpartition(","))
 
 #[test]
 fn str_splitlines_universal() {
+    common::interpreter_gate();
     check(
         "str-splitlines",
         r#"
@@ -113,6 +118,7 @@ print("a\n".splitlines())
 
 #[test]
 fn str_predicates() {
+    common::interpreter_gate();
     check(
         "str-predicates",
         r#"
@@ -124,6 +130,7 @@ print("ab ".isprintable(), "12".isnumeric(), "12".isdecimal())
 
 #[test]
 fn str_maketrans_translate() {
+    common::interpreter_gate();
     check(
         "str-translate",
         r#"
@@ -136,6 +143,7 @@ print("abc".translate(str.maketrans("a", "b", "c")))
 
 #[test]
 fn str_expandtabs() {
+    common::interpreter_gate();
     check(
         "str-expandtabs",
         "print(\"a\\tb\".expandtabs(), \"a\\tb\".expandtabs(4))",
@@ -144,6 +152,7 @@ fn str_expandtabs() {
 
 #[test]
 fn str_startswith_endargs() {
+    common::interpreter_gate();
     check(
         "str-startend",
         r#"
@@ -155,6 +164,7 @@ print("abc".endswith("c", 0, 3))
 
 #[test]
 fn str_format_full() {
+    common::interpreter_gate();
     check(
         "str-format",
         r#"
@@ -166,6 +176,7 @@ print("{!r}".format("s"), "{:>5}|{:.2f}|{:#x}|{:,}".format(7, 3.14159, 255, 1234
 
 #[test]
 fn str_rindex() {
+    common::interpreter_gate();
     check(
         "str-rindex",
         r#"
@@ -182,6 +193,7 @@ except ValueError as e:
 
 #[test]
 fn bytes_strip_split() {
+    common::interpreter_gate();
     check(
         "bytes-strip-split",
         r#"
@@ -192,6 +204,7 @@ print(b" ab ".strip(), b"a,b".split(b","), b"a,b".rsplit(b",", 1))
 
 #[test]
 fn bytes_find_replace_join() {
+    common::interpreter_gate();
     check(
         "bytes-find-replace-join",
         r#"
@@ -203,6 +216,7 @@ print(b"a".join([b"x", b"y"]), b"ab".hex())
 
 #[test]
 fn bytes_startswith_tuple() {
+    common::interpreter_gate();
     check(
         "bytes-startswith",
         r#"
@@ -213,6 +227,7 @@ print(b"ab".startswith((b"x", b"a")), b"abc".endswith(b"bc"))
 
 #[test]
 fn bytes_ctor_forms() {
+    common::interpreter_gate();
     check(
         "bytes-ctor",
         r#"
@@ -225,6 +240,7 @@ print(bytes(3), bytes([1, 2]), bytes("ab", "utf-8"))
 
 #[test]
 fn dict_update_forms() {
+    common::interpreter_gate();
     check(
         "dict-update",
         r#"
@@ -239,6 +255,7 @@ print(d)
 
 #[test]
 fn dict_fromkeys() {
+    common::interpreter_gate();
     check(
         "dict-fromkeys",
         r#"
@@ -249,6 +266,7 @@ print(dict.fromkeys([1, 2], 0), {1: 2}.fromkeys([3], 9))
 
 #[test]
 fn dict_view_repr_iter() {
+    common::interpreter_gate();
     check(
         "dict-views",
         r#"
@@ -260,6 +278,7 @@ print(list({1: 2, 3: 4}.items()))
 
 #[test]
 fn dict_view_dynamic() {
+    common::interpreter_gate();
     check(
         "dict-view-dynamic",
         r#"
@@ -275,6 +294,7 @@ print(list(v))
 
 #[test]
 fn set_ops_surface() {
+    common::interpreter_gate();
     check(
         "set-ops",
         r#"
@@ -287,6 +307,7 @@ print({1}.symmetric_difference({2}))
 
 #[test]
 fn set_update_diff_update() {
+    common::interpreter_gate();
     check(
         "set-update",
         r#"
@@ -302,6 +323,7 @@ print(s)
 
 #[test]
 fn set_remove_keyerror() {
+    common::interpreter_gate();
     check(
         "set-remove",
         r#"
@@ -318,6 +340,7 @@ except KeyError as e:
 
 #[test]
 fn tuple_count_index() {
+    common::interpreter_gate();
     check(
         "tuple-count-index",
         r#"
@@ -331,6 +354,7 @@ print((1, 2, 3).index(3))
 
 #[test]
 fn int_from_bytes_classmethod() {
+    common::interpreter_gate();
     check(
         "int-from-bytes",
         r#"
@@ -343,11 +367,13 @@ print(int.from_bytes([1, 0], "little"))
 
 #[test]
 fn int_bit_count() {
+    common::interpreter_gate();
     check("int-bit-count", "print((255).bit_count(), (0).bit_count())");
 }
 
 #[test]
 fn float_as_integer_ratio() {
+    common::interpreter_gate();
     check(
         "float-ratio",
         r#"
@@ -358,6 +384,7 @@ print((3.5).as_integer_ratio(), (2.0).as_integer_ratio(), (0.1).as_integer_ratio
 
 #[test]
 fn float_hex_is_integer() {
+    common::interpreter_gate();
     check(
         "float-hex",
         r#"
@@ -371,6 +398,7 @@ print((3.0).is_integer(), (2.5).is_integer())
 
 #[test]
 fn unbound_builtin_type_methods() {
+    common::interpreter_gate();
     check(
         "unbound-methods",
         r#"
@@ -384,6 +412,7 @@ print(set.union({1}, {2}))
 
 #[test]
 fn complex_repr_and_real() {
+    common::interpreter_gate();
     check(
         "complex",
         r#"
@@ -398,6 +427,7 @@ print(operator.attrgetter("real")(3 + 4j))
 
 #[test]
 fn regress_enumerate_start_kwarg() {
+    common::interpreter_gate();
     check(
         "enumerate-start",
         r#"
@@ -408,6 +438,7 @@ print(list(enumerate("ab", start=10)))
 
 #[test]
 fn regress_syntaxerror_msg() {
+    common::interpreter_gate();
     check(
         "syntaxerror-msg",
         r#"
@@ -421,6 +452,7 @@ except SyntaxError as e:
 
 #[test]
 fn regress_ioerror_alias() {
+    common::interpreter_gate();
     check(
         "ioerror-alias",
         r#"
@@ -431,6 +463,7 @@ print(IOError is OSError, EnvironmentError is OSError)
 
 #[test]
 fn regress_version_info_slice() {
+    common::interpreter_gate();
     check(
         "version-info",
         r#"
@@ -443,6 +476,7 @@ print(sys.getfilesystemencoding(), sys.getfilesystemencodeerrors())
 
 #[test]
 fn regress_stringio_text_mode() {
+    common::interpreter_gate();
     check(
         "stringio-text",
         r#"

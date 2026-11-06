@@ -1,4 +1,68 @@
+use std::os::fd::AsFd as _;
+use std::os::fd::AsRawFd as _;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+
+/// 2026-11-06 harness review: single-tenancy + memory-pressure preflight
+/// for this suite (same lock file / metrics as the other suites' common
+/// helpers — this target has no `mod common`, so the seam is local).
+fn interpreter_gate() {
+    static DONE: AtomicU64 = AtomicU64::new(0);
+    if DONE.swap(1, Ordering::SeqCst) == 1 {
+        return;
+    }
+    let path = std::env::temp_dir().join("aprun_gate_global.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .expect("open interpreter-gate lock file");
+    let rc = unsafe { libc::flock(file.as_fd().as_raw_fd(), libc::LOCK_EX) };
+    assert_eq!(rc, 0, "flock on interpreter-gate lock failed");
+    std::mem::forget(file); // hold to process exit
+}
+
+#[cfg(target_os = "macos")]
+fn memory_pressure_ok() -> bool {
+    let mut level: libc::c_int = 0;
+    let mut size = std::mem::size_of::<libc::c_int>();
+    let rc = unsafe {
+        libc::sysctlbyname(
+            "kern.memorystatus_vm_pressure_level\0".as_ptr() as *const libc::c_char,
+            (&mut level as *mut libc::c_int).cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc != 0 {
+        return true; // metric unreadable: gate open
+    }
+    level <= 2
+}
+
+#[cfg(not(target_os = "macos"))]
+fn memory_pressure_ok() -> bool {
+    if let Ok(avail) = std::fs::read_to_string("/proc/meminfo") {
+        for line in avail.lines() {
+            if let Some(rest) = line.strip_prefix("MemAvailable:") {
+                if let Ok(kb) = rest.trim().trim_end_matches(" kB").trim().parse::<u64>() {
+                    return kb > 4 * 1024 * 1024;
+                }
+            }
+        }
+    }
+    true
+}
+
+fn preflight_or_panic() {
+    assert!(
+        memory_pressure_ok(),
+        "memory-pressure preflight: machine under critical memory pressure; \
+         ast-getattr fence probe REFUSED to start — free the machine and rerun"
+    );
+}
 
 // ast_getattr_fence — residual (d) of the 2026-11-05 OOM campaign
 // (1648a72): an RSS-gated regression fence for OOM-campaign residual (a),
@@ -200,6 +264,8 @@ fn fenced_child_cmd(
 
 #[test]
 fn ast_getattr_leak_fence() {
+    interpreter_gate();
+    preflight_or_panic();
     let rss_cap_mb: u64 = std::env::var("AP_AST_FENCE_RSS_MB")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -238,16 +304,24 @@ fn ast_getattr_leak_fence() {
 
 #[test]
 fn fence_kill_path_is_live() {
+    // HOG MODE must be checked FIRST, before any lock acquisition: when
+    // re-executed BY this test (below), the child must burn memory
+    // immediately — taking the interpreter gate here would deadlock against
+    // the parent's held flock (2026-11-06 harness review follow-up).
+    if std::env::var("AP_AST_FENCE_HOG").is_ok() {
+        memory_hog();
+        return;
+    }
+    // 2026-11-06 harness review: single-tenancy + preflight (the hog child
+    // is itself fenced at 8MB, so the footprint is bounded regardless).
+    interpreter_gate();
+    preflight_or_panic();
     // HOG MODE: when re-executed BY this test (below), the child detects
     // AP_AST_FENCE_HOG=1 and burns memory instead of running the suite.
     // This gate is what makes the re-exec SAFE: without it the child would
     // run the full test suite INCLUDING this very test, re-spawning
     // exponentially (a fork bomb — this is exactly what happened on
     // 2026-11-06 when the self-test ran unfixed).
-    if std::env::var("AP_AST_FENCE_HOG").is_ok() {
-        memory_hog();
-        return;
-    }
     // The hog is this test binary re-executed with HOG env + a test filter,
     // so the child runs ONLY this test (which hogs and is fenced). The fence
     // must SIGKILL it before it reaches the (now modest) 256MB hog target.

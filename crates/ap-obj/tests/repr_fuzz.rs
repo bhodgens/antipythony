@@ -206,6 +206,10 @@ fn ref_batch(
     tokens: &[String],
     lines_per_token: usize,
 ) -> Vec<String> {
+    // 2026-11-06 harness review: single-tenancy + preflight + bounded wait —
+    // a reference run must never hang the suite unboundedly.
+    common::interpreter_gate();
+    common::preflight_or_panic();
     let mut child = Command::new(program)
         .arg("-c")
         .arg(script)
@@ -220,6 +224,25 @@ fn ref_batch(
             writeln!(stdin, "{t}").expect("write token");
         }
     }
+    let deadline = std::time::Instant::now() + common::reference_deadline();
+    let timed_out = loop {
+        match child.try_wait().expect("wait reference") {
+            Some(_) => break false,
+            None => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+    };
+    assert!(
+        !timed_out,
+        "reference python3.14 exceeded the {}s deadline (AP_REF_TIMEOUT_SECS)",
+        common::reference_deadline().as_secs()
+    );
     let out = child.wait_with_output().expect("wait reference");
     assert!(
         out.status.success(),

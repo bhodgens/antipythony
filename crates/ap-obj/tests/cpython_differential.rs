@@ -29,12 +29,37 @@ fn cpython(expr: &str) -> String {
     // Callers gate on reference_or_skip(); the seam panics under
     // AP_REQUIRE_REFERENCE=1 when no reference exists.
     let py = common::reference_or_skip().expect("reference interpreter resolved");
-    let out = Command::new(py)
+    // 2026-11-06 harness review: single-tenancy + preflight + bounded wait.
+    common::interpreter_gate();
+    common::preflight_or_panic();
+    let mut child = Command::new(py)
         .env("PYTHONHASHSEED", "0")
         .arg("-c")
         .arg(expr)
-        .output()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .expect("spawn python3.14");
+    let deadline = std::time::Instant::now() + common::reference_deadline();
+    let timed_out = loop {
+        match child.try_wait().expect("wait reference") {
+            Some(_) => break false,
+            None => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+    };
+    assert!(
+        !timed_out,
+        "reference python3.14 exceeded the {}s deadline (AP_REF_TIMEOUT_SECS) on: {expr}",
+        common::reference_deadline().as_secs()
+    );
+    let out = child.wait_with_output().expect("wait reference");
     assert!(
         out.status.success(),
         "python3.14 failed on {expr}: {}",
