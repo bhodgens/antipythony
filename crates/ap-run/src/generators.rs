@@ -475,11 +475,32 @@ pub fn resume_live(
     }
 }
 
+/// Fiber stack sizes (F1, oom-bughunt-2026-11-06). The original single
+/// 64MB-per-generator stack made every suspended def-generator pin its full
+/// reservation and risked VA exhaustion (8k held generators = 512GB VA).
+/// Two shapes need depth:
+/// - plain generator bodies: vendored-stdlib nesting (genexpr/listcomp inside
+///   a generator) costs real Rust stack — measured: the T2 pytest gate
+///   (pluggy plugin chain) SIGBUSes below 4MB in debug builds, so the floor
+///   is 8MB (debug-frame overhead is ~4x release);
+/// - deep recursion THROUGH a generator chain (rare): opt-in via
+///   AP_GEN_STACK_MB. AP_GEN_STACK_MB=64 restores the old size exactly.
+/// Committed RSS is UNCHANGED by this knob for shallow generators (a fiber
+/// commits only its touched pages, ~330KB measured); the knob bounds the
+/// RESERVATION, which is what compounds across simultaneously-held fibers.
+pub fn gen_stack_size() -> usize {
+    let mb = std::env::var("AP_GEN_STACK_MB")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(8);
+    mb.max(1) * 1024 * 1024
+}
+
 /// Build the fiber for a def-generator (does NOT start it — corosensei runs
-/// the closure lazily on first resume). The fiber stack is 64MB: nested
-/// genexpr/listcomp evaluation inside a generator body costs real Rust
-/// stack, and the default 1MB corosensei stack overflows on
-/// vendored-stdlib shapes.
+/// the closure lazily on first resume). The stack is bounded (gen_stack_size):
+/// nested genexpr/listcomp evaluation inside a generator body costs real Rust
+/// stack, and the 1MB corosensei default overflows on vendored-stdlib shapes,
+/// so the floor is 2MB — but a per-generator 64MB was the F1 leak class.
 pub fn make_fiber(
     interp: std::rc::Rc<crate::frame::Interpreter>,
     entry: FnEntry,
@@ -493,7 +514,7 @@ pub fn make_fiber(
         id
     });
     Coroutine::with_stack(
-        corosensei::stack::DefaultStack::new(64 * 1024 * 1024).expect("generator fiber stack"),
+        corosensei::stack::DefaultStack::new(gen_stack_size()).expect("generator fiber stack"),
         move |y, _first_input| {
             let yptr: *const FiberYielder = y;
             run_fiber_body(fiber_id, yptr, || {
