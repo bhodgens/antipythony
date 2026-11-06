@@ -659,18 +659,42 @@ pub fn import_module_inner(interp: &Rc<Interpreter>, name: &str) -> EResult {
                     if let Ok(loaded) =
                         load_into(interp, &compiled, name, &f.to_string_lossy(), name)
                     {
+                        // W117 leak fix: CPython circular-import semantics —
+                        // the module object enters sys.modules BEFORE its
+                        // body runs (same contract as exec_compiled). The
+                        // W114 _ast.py self-imports (`import _ast as
+                        // _ast_mod`); with the old insert-AFTER-exec order
+                        // the self-import missed sys.modules, re-entered
+                        // this branch, and re-ran the whole ~100-class
+                        // module body one level deeper — unbounded
+                        // recursion, each level cloning the FnRegistry and
+                        // Box::leak-ing a merged scope table (GC-immune
+                        // ~150MB/level, fenced at 8.6GB). Pre-inserting the
+                        // partial module makes the self-import a
+                        // sys.modules hit; body writes are visible because
+                        // module_ns SHARES loaded.ns (not a snapshot).
+                        let m = PyObject::new(ap_obj::ObjKind::Module, name);
+                        let mv = Value::Obj(m.clone());
+                        *m.module_ns.borrow_mut() = Some(loaded.ns.clone());
+                        sys_modules_insert(name, &mv);
                         let stmts = module_stmts(interp, &compiled, &loaded.reg, &loaded.frame);
-                        if run_loaded(interp, &loaded, &stmts).is_ok() {
-                            let (m, mns) = builtins_modules::new_module(name);
-                            let _ = mns.set(s("__name__"), s(name));
-                            for (k, v) in loaded.ns.items() {
-                                let _ = mns.set(k, v);
-                            }
-                            *m.module_ns.borrow_mut() = Some(std::rc::Rc::new((*mns).clone()));
-                            let mv = Value::Obj(m);
-                            sys_modules_insert(name, &mv);
+                        let outcome = run_loaded(interp, &loaded, &stmts);
+                        // Refresh the ns view post-body (share, like
+                        // exec_compiled) and drop the partial module on a
+                        // failed body so the native/next-base fallback
+                        // re-imports cleanly.
+                        *m.module_ns.borrow_mut() = Some(loaded.ns.clone());
+                        if outcome.is_ok() {
                             return Ok(mv);
                         }
+                        SYS_MODULES.with(|sm| {
+                            sm.borrow_mut().remove(name);
+                        });
+                        SYS_MODULES_VIEW.with(|v| {
+                            if let Some(d) = v.borrow().as_ref() {
+                                let _ = d.pop(&s(name.to_string()));
+                            }
+                        });
                     }
                 }
             }
