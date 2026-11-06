@@ -272,3 +272,70 @@ worker-thread TLS freed on thread exit (`threading.rs:604`).
 5. G7/G6 — drain hook + stdout flush policy (G6 needs a design check against
    the S-06-2 byte gate).
 6. G9/G10 and the MB table, then the two correctness bugs.
+
+---
+
+# WAVE 1 FIX (2026-11-06, same day)
+
+Scope: G1 (+F5/M9 pull-path family) and G3. Probes run via
+`plans/robustness-ci/measure_rss.py`, env caps
+`AP_MAX_RSS_GB=2 AP_PROBE_MAX_RSS_GB=2`, serial. BEFORE = tree @ 4709a20,
+AFTER = wave-1 commits below. Raw logs /tmp/oomwave1/results_*.txt.
+
+## WAVE 1 FIX — G1 + F5/M9 (iterator registry)
+
+Commit: 090ad43 (fix(run): G1+F5 iterator registry).
+Approach: (a) Stmt::For Break/Escape arms now drop the registered id
+(generator ids excluded — their lifecycle is the protocol's); (b)
+PyIterator gains `table_id` + a Drop hook recording dead ids;
+`prune_dropped_iters` (pull_iter) and `next_registered` drain them, so
+abandoned iter()/next() chains no longer pin state; (c) iter.rs stops
+cloning containers: `IterState::SharedList`/`SharedTuple` hold the
+container's own Rc and clone only the yielded Value per step.
+
+Before/after (p_break_list: for+break over a 1000-element list, N loops):
+
+| N     | before maxrss_kb | after maxrss_kb |
+|-------|------------------|-----------------|
+| 5,000 | 93,421           | 10,207          |
+| 20,000| 342,409          | 10,158          |
+| 50,000| 839,614          | 10,125          |
+
+(+16.6KB/iteration growing -> FLAT at interpreter baseline.)
+Tests: t05 192P/1x/6x, t06 194P/50x, t04 44P/3s, t08 154P/323x, t07
+131P/23x, t11 284P — zero regressions (the Shared borrow-per-step keeps
+PyList RefCell semantics; mutation-during-iteration caveat unchanged).
+
+## WAVE 1 FIX — G3 (lxml DOCS registry)
+
+Commit: eb6f7b4 (fix(run): G3 lxml DOCS registry).
+Approach: registry slots hold `Weak<RefCell<LxDoc>>`; strong refs live in
+a bounded LRU pin window (`DOC_PIN_WINDOW` = 64 docs, oldest evicted when
+a new parse lands). A crawl that parses-uses-drops pages keeps ~1 DOM
+resident instead of every DOM it ever parsed; table-heavy scripts (<=64
+live documents) are unaffected. Freed slots are reused so the slot Vec
+itself stays bounded. Stale doc_ids (pin evicted + no live handles)
+resolve None cleanly (attribute-miss), never alias a newer document.
+
+Before/after (p_lxml_docs: 500-element doc parsed and dropped per loop):
+
+| N      | before maxrss_kb | before note    | after maxrss_kb |
+|--------|------------------|----------------|-----------------|
+| 2,000  | 333,529          | —              | 23,543          |
+| 10,000 | 1,621,442        | —              | 30,081          |
+| 30,000 | 2,167,111        | RSS-GUARD ABORT| 38,027 (rc 0)   |
+
+(~45x/54x reduction; the 30k case went from 2GB-cap kill to flat.)
+Tests: t11 stdlib lxml arms green (284 passed).
+
+## WAVE 1 co-fixes landed by the parallel wave-2 agent (same bughunt docs)
+
+- sre.rs G2 (PAT_TABLE/MATCH_TABLE): wave-2 initially stored `Weak` with
+  nothing holding the strong Rc — re.Pattern/re.Match surfaces broke
+  immediately ("bad receiver for Pattern.match" on any pattern-object
+  call; verified against a clean HEAD worktree). Wave-1 corrected the
+  storage back to strong Rc + a 1024-entry FIFO eviction ledger
+  (uncommitted — left in the wave-2 agent's working set with their
+  sre.rs commit).
+- builtins_modules.rs M5/G9/M6 + the G2 dispatch arm: landed inside the
+  wave-1 F3 commit 72b6fb5 (shared file; co-landing documented there).

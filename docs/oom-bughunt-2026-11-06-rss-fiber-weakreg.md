@@ -273,6 +273,125 @@ generators registry once StopIteration is delivered.
 - lxml / scrapy chain RSS beyond the documented 0.8-1.4GB baseline.
 - WASM tier (memory behavior there is a different embedding story).
 
+---
+
+# WAVE 1 FIX (2026-11-06, same day)
+
+Scope: findings 1-3 of this doc. All probes re-run with
+`plans/robustness-ci/measure_rss.py` (wait4 rusage maxrss), env caps
+`AP_MAX_RSS_GB=2 AP_PROBE_MAX_RSS_GB=2`, serial. BEFORE = tree @ 4709a20,
+AFTER = wave-1 commits (see SHAs per finding). Raw logs:
+/tmp/oomwave1/results_{before,after}.txt, probes /tmp/oomwave1/*.py.
+
+## WAVE 1 FIX — FINDING 1 (fiber stack)
+
+Commit: 9ee848c (fix(run): F1 generator fiber stack).
+Approach: make_fiber stack size 64MB -> gen_stack_size() = 8MB default,
+`AP_GEN_STACK_MB=<n>` override (64 = old behavior byte-identical). Floor
+justified by measurement: the T2 pytest gate (pluggy chain) SIGBUSes at
+2MB and runs at 4MB+ in debug builds; 8MB chosen with 2x headroom.
+Committed RSS is page-backed, so the slope for shallow suspended
+generators is unchanged (~310KB/gen — that part of the doc was
+mis-attributed: it is committed interpreter frames, not the reservation);
+what compounds unbounded was the RESERVATION (8k gens = 512GB VA), now
+capped at 64GB worst-case (8k x 8MB), and 0.5GB with the default probe mix.
+
+Before/after (p19b_suspended_touch, committed RSS — expected unchanged):
+
+| N   | before maxrss_kb | after maxrss_kb |
+|-----|------------------|-----------------|
+| 50  | 28,197           | 28,213          |
+| 200 | 81,281           | 81,330          |
+| 400 | 152,125          | 152,125         |
+
+Reservation per gen: 64MB -> 8MB (8x). VA sample: 400 held gens mid-run
+vsize = 436GB with env AP_GEN_STACK_MB=64 NOT set... correction: the
+measured vsize at 400 gens (default) = 426GB-equivalent BEFORE including
+64MB stacks; AFTER default the same run fits the same committed RSS with
+8MB reservations (the sleep-probe vsize check: 436,408,032 KB vsize /
+115,184 KB rss BEFORE-commit-binary at 64MB stacks vs default-run rss
+identical) — the authoritative comparison is the knob itself:
+AP_GEN_STACK_MB=64 p19b N=400 = 152,403,968 KB maxrss (identical
+committed), default 8MB = 152,125,440 KB maxrss.
+Tests: cargo test -p ap-run --lib 4/0; t05/t06/t07/t11 suites green.
+
+## WAVE 1 FIX — FINDING 2 (weakref registries)
+
+Commit: 7eb65a4 (fix(gc): F2 weakref/finalizer registries).
+Approach: (a) ap-gc WEAKREFS entries carry a monotonic `seq`;
+weakref_take_dead returns dead no-callback entries for immediate prune and
+weakref_prune_fired(seq_list) removes fired entries; (b) ap-run
+WEAK_TOKENS carry the same seq — fire_dead_weakrefs prunes both sides of
+each drained pair once the callback ran (CPython semantics: entry dies
+after the callback; token keeps answering dead via weakref_alive);
+(c) finalize_call/finalize_detach/finalize_atexit_drain release
+func/args/kwargs (arbitrary user Values pinning closures) once detached;
+(d) fire_dead_weakrefs builds ONE target->[(seq, token)] index per drain,
+replacing the per-dead-entry linear WEAK_TOKENS scan (the O(n^2)).
+
+Before/after (p17_weakcb, N refs with callbacks to dropped targets):
+
+| N     | before maxrss_kb | before wall_s | after maxrss_kb | after wall_s |
+|-------|------------------|---------------|-----------------|--------------|
+| 20k   | 48,529           | 7.2           | 13,680          | 1.6          |
+| 100k  | 187,727          | 176.9         | 13,598          | 8.1          |
+
+(+1.76KB/ref growing -> FLAT; 20k never-collected p17 wall 176.9s -> 8.1s,
+21x.) No-callback churn (p12-class) also prunes now.
+Tests: cargo test -p ap-gc (14 unit + 9 gc_invariants) all pass;
+t07_gc 131 passed / 23 xfailed — the weakref callback/dead corpus arms
+(gc004/gc005/gc008/gc015) all still green, so firing semantics preserved.
+
+## WAVE 1 FIX — FINDING 3 (StringIO write)
+
+Commit: 72b6fb5 (fix(run): F3 StringIO write amortized growth).
+Approach: write() pops the stream's <buf> Gc out of the attrs dict
+(dropping the dict refcount to sole ownership), Rc::try_unwrap -> Vec,
+extend_from_slice IN PLACE (Vec geometric growth = amortized O(1) per
+byte), Gc::new the grown Vec back. Genuinely-aliased buffers (>=2 holders
+after the pop) take the old clone+extend+replace path. The pre-fix code
+never dropped the dict ref during the call, so EVERY write cloned the
+whole buffer (O(n^2) bytes copied, 2x transient peak).
+Diagnostic note: the doc's suspected owner was right, with one correction
+— the amplification measured in p6 was NOT just the buffer copy; the
+pop-in-place change is what actually collapses it (get()+clone-based
+attempts showed no improvement; see /tmp/oomwave1/p6e/p6h probes).
+
+Before/after (p6_stringio, 33-byte writes):
+
+| N     | content | before maxrss_kb | after maxrss_kb | before wall_s | after wall_s |
+|-------|---------|------------------|-----------------|---------------|--------------|
+| 20k   | 0.67MB  | 24,313           | 13,025          | 1.1           | 0.9          |
+| 100k  | 3.4MB   | 258,867          | 23,248          | 19.9          | 4.4          |
+| 200k  | 6.9MB   | 485,392          | 33,734          | 96.1          | 8.9          |
+
+(200k: 14x RSS reduction, 10.8x faster; amplification ~70x -> ~5x of live
+content.) Isolation probes: p6e (constant line) and p6h (1KB lines x N
+writes) confirm the slope followed write COUNT via the buffer replacement,
+not payload churn. p6j (fresh StringIO per write) was flat before and
+after.
+Tests: t11 stdlib 284 passed (io/capsys/capture arms green).
+
+## WAVE 1 FIX — cross-cutting (G1+F5/G3 live in the static-audit doc)
+
+See docs/oom-bughunt-2026-11-06-static-growth-class.md "WAVE 1 FIX"
+section: commits 090ad43 (G1+F5 iterators), eb6f7b4 (G3 lxml DOCS).
+
+## WAVE 1 residual / notes for wave 2+
+
+- T2 minimal-gate invocation (pytest.main on a trivial suite) hits a
+  PRE-EXISTING `NameError: name 'pdb' is not defined` from a pluggy hook
+  on THIS tree (verified identical on a clean HEAD worktree @4709a20 —
+  NOT introduced by wave 1). Environment: ANTIPTYHONY_PATH pointing at a
+  3.14 site-packages with pytest 9.1.1. Needs its own bisect (closure
+  capture of function-local `import pdb` in _pytest.debugging's cleanup
+  is the suspect shape).
+- FINDING 4 (setrecursionlimit SIGABRT) and FINDING 5 (genexp single-pull
+  registry growth, ~200KB/1k iter) are NOT fixed in wave 1 (scope was
+  findings 1-3 here + G1/G3 of the static audit). F5's probe (p16) is
+  unchanged as expected (20k: 15.8->16.0MB, 200k: 55.9->58.5MB — the
+  genexp materialize path still accumulates; wave 2 candidate).
+
 ## Changed on disk
 
 - docs/oom-bughunt-2026-11-06-rss-fiber-weakreg/ (this file).
