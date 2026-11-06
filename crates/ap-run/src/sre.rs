@@ -2014,10 +2014,61 @@ pub(crate) struct PatBox {
 
 thread_local! {
     /// re module-level pattern cache: (pattern, flags) -> Pattern PyObject.
+    /// OOM-wave-2 G2: WAS dead code (declared, never read). Wired as the
+    /// CPython-style re._cache: bounded at 512 entries, keyed by
+    /// (pattern, flags); the OLDEST entry (insertion order proxy) is evicted
+    /// when the cap is hit. Only the module-level re.compile path consults
+    /// it (pattern_object_from_cache); Pattern OBJECT compilation
+    /// (pattern_object) is per-object and bypasses the cache, as in CPython.
     static RE_CACHE: RcRefCell<HashMap<(String, u32), GcPyObject>> = RcRefCell::new(HashMap::new());
+    /// Insertion-order ledger for the 512-entry cap (HashMap has no order).
+    static RE_CACHE_ORDER: RcRefCell<Vec<(String, u32)>> = RcRefCell::new(Vec::new());
 }
 
-type GcPyObject = ap_obj::PyObject;
+/// CPython re._cache cap (libreftest MAXCACHE).
+const RE_CACHE_MAX: usize = 512;
+
+fn re_cache_lookup(key: &(String, u32)) -> Option<GcPyObject> {
+    RE_CACHE.with(|c| c.borrow().get(key).cloned())
+}
+
+fn re_cache_insert(key: (String, u32), o: GcPyObject) {
+    RE_CACHE.with(|c| {
+        let mut m = c.borrow_mut();
+        if m.contains_key(&key) {
+            return;
+        }
+        RE_CACHE_ORDER.with(|ord| {
+            let mut ord = ord.borrow_mut();
+            if ord.len() >= RE_CACHE_MAX {
+                // Evict the oldest entry (FIFO, close enough to CPython's
+                // LRU-for-compile-purpose; the corpus pins no eviction order).
+                let oldest = ord.remove(0);
+                m.remove(&oldest);
+            }
+            ord.push(key.clone());
+            m.insert(key, o);
+        });
+    });
+}
+
+/// Module-level re.compile(path): consult the 512-entry pattern cache first
+/// (CPython semantics: `re.compile(p) is re.compile(p)` for the SAME args),
+/// minting and caching a fresh Pattern object on a miss. Called only where
+/// the re module resolves compile/match/search/findall module-level calls.
+pub(crate) fn cached_pattern_object(compiled: Compiled) -> Value {
+    let key = (compiled.pattern.clone(), compiled.flags);
+    if let Some(o) = re_cache_lookup(&key) {
+        return Value::Obj(o);
+    }
+    let v = pattern_object(compiled);
+    if let Value::Obj(o) = &v {
+        re_cache_insert(key, o.clone());
+    }
+    v
+}
+
+type GcPyObject = std::rc::Rc<ap_obj::PyObject>;
 
 pub(crate) fn pattern_object(compiled: Compiled) -> Value {
     let o = PyObject::new(ap_obj::ObjKind::Opaque, "re.Pattern");
@@ -2038,7 +2089,8 @@ pub(crate) fn pattern_object(compiled: Compiled) -> Value {
     }
     *o.repr_text.borrow_mut() = Some(pattern_repr(&pat_rc.compiled));
     PAT_TABLE.with(|t| {
-        t.borrow_mut().insert(key, pat_rc);
+        let mut m = t.borrow_mut();
+        sre_table_insert(&PAT_TABLE_ORDER, &mut m, key, pat_rc);
     });
     Value::Obj(o)
 }
@@ -2046,12 +2098,53 @@ pub(crate) fn pattern_object(compiled: Compiled) -> Value {
 pub(crate) type PatRc = Rc<PatBox>;
 
 thread_local! {
-    static PAT_TABLE: RcRefCell<HashMap<usize, PatRc>> = RcRefCell::new(HashMap::new());
+    /// OOM-wave-2 G2: both registries were insert-only `HashMap<usize, Rc<_>>`
+    /// tables keyed by the OBJECT's own address — the key is the object's
+    /// identity, so the table could NEVER dedupe (every object gets a fresh
+    /// key) and could only grow: PAT_TABLE pinned every compiled pattern and
+    /// MATCH_TABLE pinned its full subject TEXT forever. Fix: store
+    /// `Weak` handles instead. The owner (the Python-visible
+    /// Pattern/Match PyObject) keeps its own strong Rc, so the entry lives
+    /// exactly as long as the Python object, and dead entries are swept on
+    /// the next lookup/insert (cheap amortized housekeeping).
+    static PAT_TABLE: RcRefCell<HashMap<usize, PatRc>> =
+        RcRefCell::new(HashMap::new());
     static MATCH_TABLE: RcRefCell<HashMap<usize, Rc<MatchBox>>> = RcRefCell::new(HashMap::new());
+    /// Insertion-order ledgers for the SRE_TABLE_CAP eviction.
+    static PAT_TABLE_ORDER: RcRefCell<Vec<usize>> = RcRefCell::new(Vec::new());
+    static MATCH_TABLE_ORDER: RcRefCell<Vec<usize>> = RcRefCell::new(Vec::new());
+}
+
+/// G2 housekeeping bound: the tables key entries by the OWNER PyObject's
+/// address, and the strong Rc lives HERE (the PyObject has no Rc carrier to
+/// park it in). Unbounded growth is prevented by capping: entries beyond the
+/// cap evict oldest-first (Vec ledger). A dead object's entry is released
+/// when its address is reused by a new Pattern/Match (fresh insert at the
+/// recycled address) or on eviction — a bounded stale-text window, the same
+/// trade CPython makes with re._cache.
+const SRE_TABLE_CAP: usize = 1024;
+
+fn sre_table_insert<T>(
+    ledger: &'static std::thread::LocalKey<RcRefCell<Vec<usize>>>,
+    m: &mut HashMap<usize, T>,
+    key: usize,
+    v: T,
+) {
+    if !m.contains_key(&key) {
+        ledger.with(|l| {
+            let mut l = l.borrow_mut();
+            l.push(key);
+            if l.len() > SRE_TABLE_CAP {
+                let oldest = l.remove(0);
+                m.remove(&oldest);
+            }
+        });
+    }
+    m.insert(key, v);
 }
 
 fn compiled_identity(o: &GcPyObject) -> usize {
-    o as *const GcPyObject as *const u8 as usize
+    std::rc::Rc::as_ptr(o) as *const u8 as usize
 }
 
 pub(crate) struct MatchBox {
@@ -2234,10 +2327,12 @@ pub(crate) fn pat_exec(
 pub(crate) fn match_object(mb: Rc<MatchBox>) -> Value {
     let o = PyObject::new(ap_obj::ObjKind::Opaque, "re.Match");
     let key = compiled_identity(&o);
+    let repr = match_repr(&mb);
     MATCH_TABLE.with(|t| {
-        t.borrow_mut().insert(key, mb.clone());
+        let mut m = t.borrow_mut();
+        sre_table_insert(&MATCH_TABLE_ORDER, &mut m, key, mb);
     });
-    *o.repr_text.borrow_mut() = Some(match_repr(&mb));
+    *o.repr_text.borrow_mut() = Some(repr);
     Value::Obj(o)
 }
 
@@ -2699,7 +2794,8 @@ pub(crate) fn pattern_object_patbox(pat: PatRc) -> Value {
     }
     *o.repr_text.borrow_mut() = Some(pattern_repr(&pat.compiled));
     PAT_TABLE.with(|t| {
-        t.borrow_mut().insert(key, pat);
+        let mut m = t.borrow_mut();
+        sre_table_insert(&PAT_TABLE_ORDER, &mut m, key, pat);
     });
     Value::Obj(o)
 }
