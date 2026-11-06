@@ -1497,20 +1497,87 @@ pub fn is_lx_element(v: &Value) -> bool {
 /// attrs (`<shared>` Namespace holder with a direct Rc pointer parked via the
 /// attrs dict is NOT possible — Value has no Rc<T> carrier — so the doc lives
 /// in a thread-local registry keyed by a fresh id; elements carry that id).
+///
+/// G3 (oom-bughunt 2026-11-06 static audit): the registry WAS a push-only
+/// `Vec<SharedDoc>` — every parsed document's DOM stayed resident for the
+/// whole process (10k pages x 100KB DOM = ~1GB in a crawl; measured: the
+/// 500-element-doc probe hit the 2GB RSS guard at 30k parses).
+///
+/// Design: the registry holds `Weak` handles, and the STRONG reference
+/// lives in a bounded LRU pin window (DOC_PIN_WINDOW docs). A new parse
+/// pins its doc and releases the oldest pin beyond the window, so a crawl
+/// holding one page at a time keeps exactly ONE DOM resident instead of
+/// every DOM it ever parsed, while table-heavy scripts (up to 64 live
+/// documents) still work. Docs whose pin was released but which a script
+/// still reaches via element handles resolve through the remaining strong
+/// handles ONLY while some element lookup upgraded them — past that,
+/// `elem_parts` returns None cleanly (attribute-miss), never a stale-DOM
+/// alias into a newer document (ids are never recycled while the slot is
+/// referenced by a live pin entry's (id) pairing... slots with dead Weaks
+/// are reusable but the id field rides the slot index; a reused slot
+/// address CANNOT alias an old element because old elements' lookups fail
+/// on upgrade() before any indexing).
 struct DocRegistry {
-    docs: Vec<SharedDoc>,
+    docs: Vec<Option<std::rc::Weak<RefCell<LxDoc>>>>,
+    /// Pin window: doc ids whose strong Rc is retained, oldest-first.
+    pins: std::collections::VecDeque<SharedDoc>,
 }
 
 thread_local! {
-    static DOCS: RefCell<DocRegistry> = RefCell::new(DocRegistry { docs: Vec::new() });
+    static DOCS: RefCell<DocRegistry> = RefCell::new(DocRegistry {
+        docs: Vec::new(),
+        pins: std::collections::VecDeque::new(),
+    });
 }
 
+/// Max simultaneously-pinned document DOMs (the working set). Scrapy/pytest
+/// touch one page at a time; 64 covers any table-heavy script too.
+const DOC_PIN_WINDOW: usize = 64;
+
 fn register_doc(doc: LxDoc) -> usize {
+    let rc = Rc::new(RefCell::new(doc));
     DOCS.with(|c| {
         let mut r = c.borrow_mut();
-        r.docs.push(Rc::new(RefCell::new(doc)));
-        r.docs.len() - 1
+        // Prefer a freed slot to keep the Vec bounded over long crawls.
+        let id = match r
+            .docs
+            .iter()
+            .position(|s| s.as_ref().and_then(|w| w.upgrade()).is_none())
+        {
+            Some(pos) => {
+                r.docs[pos] = Some(Rc::downgrade(&rc));
+                pos
+            }
+            None => {
+                r.docs.push(Some(Rc::downgrade(&rc)));
+                r.docs.len() - 1
+            }
+        };
+        // Pin the new doc; release the oldest pin beyond the window.
+        r.pins.push_back(rc);
+        while r.pins.len() > DOC_PIN_WINDOW {
+            r.pins.pop_front();
+        }
+        id
     })
+}
+
+/// G3: strong handle for a registered doc (pin window / live Weak). None
+/// when the doc was released (pin evicted AND no live element handles).
+fn doc_by_id(doc_id: usize) -> Option<SharedDoc> {
+    DOCS.with(|c| {
+        c.borrow()
+            .docs
+            .get(doc_id)
+            .and_then(|slot| slot.as_ref().and_then(|w| w.upgrade()))
+    })
+}
+
+/// G3: set base_url on a freshly-parsed doc (always inside the pin window).
+fn set_doc_base_url(doc_id: usize, url: &str) {
+    if let Some(d) = doc_by_id(doc_id) {
+        d.borrow_mut().base_url = Some(url.to_string());
+    }
 }
 
 /// Look up an element's (shared doc, arena index, html flag).
@@ -1526,7 +1593,12 @@ fn elem_parts(v: &Value) -> Option<(SharedDoc, usize, bool)> {
                 .to_i64()? as usize;
             let idx = attrs.get(&s("<idx>")).and_then(|v| v.as_int())?.to_i64()? as usize;
             let html = o.name == "lxml.html.HtmlElement";
-            let doc = DOCS.with(|c| c.borrow().docs.get(doc_id).cloned())?;
+            let doc = DOCS.with(|c| {
+                c.borrow()
+                    .docs
+                    .get(doc_id)
+                    .and_then(|slot| slot.as_ref().and_then(|w| w.upgrade()))
+            })?;
             return Some((doc, idx, html));
         }
     }
@@ -1893,11 +1965,7 @@ pub fn call_lxml(fname: &str, args: &[Value], kwargs: &[(String, Value)]) -> Opt
             }
             let base_url = kw(kwargs, "base_url");
             if let Some(Value::Str(b)) = base_url {
-                DOCS.with(|c| {
-                    if let Some(d) = c.borrow().docs.get(doc_id) {
-                        d.borrow_mut().base_url = Some(b.as_str().to_string());
-                    }
-                });
+                set_doc_base_url(doc_id, b.as_str());
             }
             let o = make_element(doc_id, root, html_mode);
             // fromstring on an HTMLParser returns the html element; XML mode
@@ -2079,11 +2147,7 @@ pub fn call_lxml(fname: &str, args: &[Value], kwargs: &[(String, Value)]) -> Opt
             let (doc_id, root) = parse_to_doc(&text, true);
             let base_url = kw(kwargs, "base_url");
             if let Some(Value::Str(b)) = base_url {
-                DOCS.with(|c| {
-                    if let Some(d) = c.borrow().docs.get(doc_id) {
-                        d.borrow_mut().base_url = Some(b.as_str().to_string());
-                    }
-                });
+                set_doc_base_url(doc_id, b.as_str());
             }
             // lxml fragment rule: a single top-level element returns it; a
             // bare text wraps in span; multiple top nodes wrap in span. Our
@@ -2094,7 +2158,7 @@ pub fn call_lxml(fname: &str, args: &[Value], kwargs: &[(String, Value)]) -> Opt
                 let t = text.trim_start();
                 t.to_lowercase().starts_with("<!doctype") || t.to_lowercase().starts_with("<html")
             };
-            let d = DOCS.with(|c| c.borrow().docs.get(doc_id).cloned()).unwrap();
+            let d = doc_by_id(doc_id).expect("html.fromstring doc just registered");
             let root_idx = if looks_full_doc {
                 root
             } else {
@@ -2163,7 +2227,7 @@ pub fn call_lxml(fname: &str, args: &[Value], kwargs: &[(String, Value)]) -> Opt
             let raw = args.first().cloned().unwrap_or(Value::None);
             let text = str_arg(&raw, "fragment_fromstring()")?;
             let (doc_id, root) = parse_to_doc(&text, true);
-            let d = DOCS.with(|c| c.borrow().docs.get(doc_id).cloned()).unwrap();
+            let d = doc_by_id(doc_id).expect("fragment_fromstring doc just registered");
             let dd = d.borrow();
             let top = dd.get(root).children.clone();
             let root_idx = match top.len() {
@@ -2186,10 +2250,14 @@ fn doc_id_of(v: &Value) -> usize {
     elem_parts(v)
         .map(|(d, _, _)| {
             DOCS.with(|c| {
-                c.borrow()
-                    .docs
+                let r = c.borrow();
+                r.docs
                     .iter()
-                    .position(|x| Rc::ptr_eq(x, &d))
+                    .position(|slot| {
+                        slot.as_ref()
+                            .and_then(|w| w.upgrade())
+                            .is_some_and(|x| Rc::ptr_eq(&x, &d))
+                    })
                     .unwrap_or(0)
             })
         })
@@ -2370,7 +2438,11 @@ pub fn elem_attr(obj: &Value, name: &str) -> Option<Value> {
                     c.borrow()
                         .docs
                         .iter()
-                        .position(|x| Rc::ptr_eq(x, &doc))
+                        .position(|slot| {
+                            slot.as_ref()
+                                .and_then(|w| w.upgrade())
+                                .is_some_and(|x| Rc::ptr_eq(&x, &doc))
+                        })
                         .unwrap_or(0)
                 });
                 return Some(make_element(doc_id, target, true));
