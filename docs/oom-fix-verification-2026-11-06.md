@@ -110,3 +110,117 @@ fresh from the bughunt doc descriptions; sources in `/tmp/oomverify/`).
   design keeps ~2× full output resident; residual 64B/line slope)
 - Regression: **0 failures** across 5 pytest suites + 8 differential suites.
 - Skipped (disclosed): M1-M4 threading tables; M10/M11/M12 follow-ups.
+
+## REPAIR (post-verification) — 2026-11-06, same day
+
+Repairs of the two FAILED-VERIFICATION verdicts above, per this doc's own
+fix directions. Env caps on every run: `AP_MAX_RSS_GB=2 AP_PROBE_MAX_RSS_GB=2
+AP_PROBE_TIMEOUT_SECS=240`; serial cargo (pgrep preflight); forbidden files
+(crates/ap-run/src/classes.rs, crates/ap-run/src/ast_bridge.rs) untouched;
+no push.
+
+### G4-repair — nested-def dedupe keyed on code-object identity (44c016a)
+
+**Approach.** `NESTED_DEDUPE` key is now
+`(defining frame scope_path, def/lambda source line, AST-node addr)` — all
+stable across calls of the same enclosing function, i.e. our code-object
+identity (the wave-2 fix keyed on the runtime frame `Rc` pointer, fresh
+every call, so it deduped nothing). The def source line rides the frame in
+a new `Frame.def_line: Cell<usize>`, written by the `Stmt::Line` marker
+that precedes every LocalDef/lambda in lowered blocks. Table bounded FIFO
+at 1024 entries (`NESTED_DEDUPE_CAP`, mirrors `SRE_TABLE_CAP`) with an
+insertion-order ledger. Per-call function OBJECTS are still minted fresh
+(CPython semantics — only the code/AST preparation is shared).
+
+**Safety gate.** A def/lambda with frees, nonlocals, default exprs, or
+decorators BYPASSES the dedupe (fresh `FnEntry` + `defining_frames` entry
+per call = exact wave-1 semantics). Rationale: sharing one entry across
+activations would merge distinct calls' closure cells — found empirically
+during repair (make-returned closures read the wrong cell after later
+calls; `[make(i) for i in range(4)]` produced `0 3 2 3` instead of
+`0 1 2 3`) and fixed by the gate. DEDUPED (closure/default-free) entries
+skip the `defining_frames` re-pin — nothing reads the frame for them.
+
+**Before/after slope** (repro `/tmp/oomverify/g4c_freshframe.py`, the
+verifier's own probe, `probe_rss.py` fork+wait4, debug build):
+
+| Probe | pre-repair | post-repair |
+|---|---|---|
+| g4c_freshframe @100k | 372MB (rising) | **11.0MB** |
+| g4c_freshframe @200k | 551MB | **11.2MB** |
+| g4c_freshframe @400k | — (would exceed caps) | **11.1MB** FLAT |
+| g4_nesteddef @100k/200k | rising | 11.7 / 11.6MB FLAT |
+| g4b_sameframe @200k (control) | flat | 10.8MB flat (unchanged) |
+| g4d_lambda_sameframe @200k (control) | flat | 10.7MB flat (unchanged) |
+
+**Tests**: classes_differential 29/29, name_resolution_differential 24/24;
+closure differential probes vs CPython byte-identical (comp-frame closure
+factories, nonlocal counters, two-level nesting, N=100 instance list).
+
+**Interaction with other findings**: none (touches only the nested-def
+registration path; G2's SRE tables, G5 cell cache, G8 generator registry
+untouched).
+
+**Residual (disclosed)**: `g4e_closure_hot.py` (closure-CARRYING nested
+def in a hot loop) is unchanged vs pre-repair (~3.0MB/1k calls) — the
+bypass path keeps wave-1 per-call `FnEntry` semantics. NOT the doc's
+trigger shape (the doc's trigger, `g4c_freshframe.py`, is closure-free
+and flat); fixing the closure path needs per-object closure-cell storage
+(a `PyObject` field or def-time cell snapshot) — filed as follow-up.
+
+**Verdict: PASS** (the FAILED-VERIFICATION trigger shape is flat at 3
+sizes; the dedupe table is bounded; closure semantics proven unchanged by
+differential).
+
+### G6-repair — stdout capture opt-in, exit-path clone dropped (5a633ed)
+
+**Approach.** `Interpreter.stdout_capture: bool` (new, default **false**):
+- `write_out` keeps the 1MB threshold drain to fd 1 unchanged, but appends
+  the drained bytes to `stdout_flushed_prefix` ONLY when `stdout_capture`
+  is set.
+- End-of-run: `RunOutcome.stdout` = prefix + tail when capture is on
+  (byte-identical to the old behavior for embedders that opt in), else an
+  **empty Vec** — no prefix copy, no exit-time `clone()` of the drained
+  bytes. fd-1 output is bit-for-bit unchanged in both modes.
+- Consumer audit (grep): no crate outside ap-run touches `RunOutcome`;
+  ap-run-eval / ap-run-probe / ap-obj-eval / ap CLI read only
+  `exit_code`; all differential suites consume the subprocess's fd 1;
+  in-run readers (traceback rendering, import machinery) use
+  `interp.stdout` / `write_out` directly. Nobody needed opt-in for the
+  production paths — the flag exists for future embedders.
+
+**Before/after slope** (repro `/tmp/oomverify/g6_stdout.py`):
+
+| Probe | pre-repair | post-repair |
+|---|---|---|
+| g6_stdout @500k lines | 46.3MB (rising) | **11.2MB** |
+| g6_stdout @2M lines | 147.6MB | **11.3MB FLAT** (64B/line slope eliminated) |
+
+**Byte-identical stdout**:
+- Small program vs CPython 3.14: stdout, stderr, rc all identical.
+- 2.5MB output (60k lines, crosses the threshold drain) vs the PRE-repair
+  tree (76cebda worktree build): sha256-identical fd-1 bytes
+  (`473aad003960147d…`, 2,568,890 bytes both).
+
+**Tests**: fix_pass_differential 2/2, harness_selfcheck 3/3,
+import_differential 6/6, pytest tests/t14_cli 8 passed / 2 xpassed
+(pre-existing xfail markers), `cargo check -p ap-run -p ap-cli` 0 errors.
+
+**Interaction with other findings**: none (write_out drain mechanics and
+all byte paths unchanged; G7's worker drain order untouched).
+
+**Verdict: PASS** (2M-line probe flat; fd-1 bytes proven identical vs both
+CPython and the pre-repair tree; the only behavior change — empty
+`RunOutcome.stdout` by default — has zero consumers on this tree, verified
+by grep).
+
+### Repair commits
+
+| Repair | SHA | Pathspecs |
+|---|---|---|
+| G4-repair | **44c016a** | `crates/ap-run/src/frame.rs`, `crates/ap-run/src/interp.rs` |
+| G6-repair | **5a633ed** | `crates/ap-run/src/frame.rs`, `crates/ap-run/src/interp.rs` |
+| this section | (this commit) | `docs/oom-fix-verification-2026-11-06.md` |
+
+Updated bottom line: FAILED-VERIFICATION count 2 → **0** (G4 and G6 both
+PASS post-repair); all other verdicts untouched.
