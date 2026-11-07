@@ -37,12 +37,11 @@
 
 use crate::builtins_modules::{list, s};
 use crate::frame::{Frame, Interpreter};
-use crate::gcsupport::GilSendPub;
 use crate::{EvalResult, Flow};
 use ap_obj::dict::PyDict;
 use ap_obj::int::Gc;
 use ap_obj::object::{ObjKind, PyObject};
-use ap_obj::value::{PyString, Tuple, Value};
+use ap_obj::value::{Tuple, Value};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
@@ -177,7 +176,11 @@ pub struct ThreadEntry {
     pub daemon: bool,
     pub started: bool,
     /// True once the run() body finished (join waits on this).
-    pub done: bool,
+    /// E-safety (stress probe): a SHARED ATOMIC mirrored on the ThreadSlot.
+    /// The worker's completion mark goes through the slot (mark_done) —
+    /// never via borrow_mut on the entry RefCell — so it can never panic
+    /// against a peer's legitimate borrow of the same cell.
+    pub done: Arc<std::sync::atomic::AtomicBool>,
     pub ident: Option<i64>,
     pub native_id: Option<i64>,
 }
@@ -207,6 +210,12 @@ pub struct ThreadEntry {
 /// corpus only compares tid equality/self-consistency).
 pub struct ThreadSlot {
     pub entry: crate::gcsupport::GilSendPub<Rc<RefCell<ThreadEntry>>>,
+    /// E-safety: clone of the entry's done atom — the worker marks
+    /// completion through the table index WITHOUT borrowing the RefCell.
+    pub done: Arc<std::sync::atomic::AtomicBool>,
+    /// Mirror of ThreadEntry.daemon (immutable after push; lets
+    /// wait_for_non_daemons filter via atomics — zero Rc clones).
+    pub daemon: bool,
     /// Mirror of ThreadEntry.obj_addr (the MainThread lazy-bind path
     /// refreshes it via reindex_addr).
     pub addr: usize,
@@ -262,7 +271,12 @@ impl ThreadsTable {
     /// mirror changed; refresh mirrors + rebuild. At most once per process.
     fn reindex_addr(&mut self) {
         for s in self.entries.iter_mut() {
-            s.addr = s.entry.0.borrow().obj_addr;
+            // try_borrow: a worker may hold its entry mutably mid-stamp
+            // (native thread, no GIL); that path never changes obj_addr,
+            // so the mirrored value stays correct for a skipped slot.
+            if let Ok(b) = s.entry.0.try_borrow() {
+                s.addr = b.obj_addr;
+            }
         }
         self.rebuild_indexes();
     }
@@ -345,6 +359,44 @@ fn stamp_worker_identity(self_addr: usize) {
         }
     }
 }
+/// E-safety (stress probe): worker closures carry Rc payload clones (the
+/// Thread target/args/kwargs + interp handle) whose natural Drop runs AFTER
+/// release_gil — decrementing a shared non-atomic strong_count while the
+/// GIL holder mutates the same graphs is the debug-runtime UB class the
+/// 300-thread churn exposes (baseline crashes the same probe). Workers now
+/// MOVE their tail payloads into this queue (a plain Vec push, zero Rc
+/// traffic) and the MAIN thread drops them at a GIL-held safe point
+/// (drain_worker_reclaim, called from evict_stale_tables at the major-GC
+/// drain hook). Mirrors the gc-registration forward-channel design.
+static WORKER_RECLAIM: std::sync::LazyLock<
+    Mutex<Vec<crate::gcsupport::GilSendPub<Box<dyn std::any::Any>>>>,
+> = std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
+
+/// The boxed payload is !Send (Rc graph) — the audited GIL-protocol
+/// crossing used by every registry table in this module (GilSendPub).
+fn reclaim_worker_payload<T: std::any::Any>(vals: T) {
+    WORKER_RECLAIM
+        .lock()
+        .unwrap()
+        .push(crate::gcsupport::GilSendPub(Box::new(vals)));
+}
+
+/// Drain + drop reclaimed worker payloads. Call ONLY on the main thread
+/// with the GIL held — non-main callers must not steal the drop queue (the
+/// payloads are main-heap Rc clones; a worker-side drop defeats the point).
+pub fn drain_worker_reclaim() -> usize {
+    if !is_main_os_thread() {
+        return 0;
+    }
+    let batches: Vec<Box<dyn std::any::Any>> = {
+        let mut q = WORKER_RECLAIM.lock().unwrap();
+        q.drain(..).map(|b| b.0).collect()
+    };
+    let n = batches.len();
+    drop(batches);
+    n
+}
+
 /// The interpreter the WORKER threads evaluate through (set by the main
 /// thread at spawn; read by workers — the interp object itself is only
 /// touched under the GIL).
@@ -388,6 +440,7 @@ pub fn bootstrap_main(interp: &Rc<Interpreter>) {
         Value::Obj(mo) => Rc::as_ptr(mo).addr(),
         _ => 0,
     };
+    let main_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
     THREADS.lock().unwrap().push_slot(ThreadSlot {
         entry: crate::gcsupport::GilSendPub(Rc::new(RefCell::new(ThreadEntry {
             obj_addr: maddr,
@@ -395,14 +448,55 @@ pub fn bootstrap_main(interp: &Rc<Interpreter>) {
             name: "MainThread".to_string(),
             daemon: false,
             started: true,
-            done: false,
+            done: main_done.clone(),
             ident: Some(ident),
             native_id: Some(mtid),
         }))),
         addr: maddr,
         serial: -1,
         tid: std::sync::atomic::AtomicI64::new(mtid),
+        done: main_done,
+        daemon: false,
     });
+}
+
+/// E-safety: mark an entry done THROUGH THE SLOT atom — zero RefCell
+/// borrows (the old `entry.borrow_mut().done = true` panicked against a
+/// peer's stamp-time borrow of the same cell under addr-recycling).
+/// The exit rendezvous marks the MainThread slot done (serial -1, slot
+/// order stable) without borrowing the entry RefCell off-lock.
+fn mark_done_main() {
+    let t = THREADS.lock().unwrap();
+    for s in t.entries.iter() {
+        if s.serial == -1 {
+            s.done.store(true, std::sync::atomic::Ordering::SeqCst);
+            break;
+        }
+    }
+}
+
+fn mark_done(addr: usize) {
+    {
+        let t = THREADS.lock().unwrap();
+        if let Some(&idx) = t.by_addr.get(&addr).and_then(|v| v.last()) {
+            if let Some(s) = t.entries.get(idx) {
+                s.done.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+    }
+    // E7: the done ATOM is the join predicate — wake every parked joiner
+    // (lock-then-notify: a joiner that checks under JOIN_MU right before
+    // we take it either sees the flag or blocks and receives this wake).
+    let _g = JOIN_MU.lock().unwrap();
+    JOIN_CV.notify_all();
+}
+
+/// E-safety: completion read — never panics (try_borrow-based).
+fn entry_done(entry: &Rc<RefCell<ThreadEntry>>) -> bool {
+    entry
+        .try_borrow()
+        .map(|b| b.done.load(std::sync::atomic::Ordering::SeqCst))
+        .unwrap_or(false)
 }
 
 fn new_ident_pub() -> i64 {
@@ -598,9 +692,9 @@ fn thread_state(o: &Gc<PyObject>) -> (&'static str, bool) {
         None => "initial",
         Some(e) => {
             let b = e.borrow();
-            if b.started && !b.done {
+            if b.started && !b.done.load(std::sync::atomic::Ordering::SeqCst) {
                 "started"
-            } else if b.done {
+            } else if b.done.load(std::sync::atomic::Ordering::SeqCst) {
                 "stopped"
             } else {
                 "initial"
@@ -737,6 +831,7 @@ pub fn thread_start(interp: &Rc<Interpreter>, o: &Gc<PyObject>) -> EvalResult {
             my_serial, addr, name
         );
     }
+    let wdone = Arc::new(std::sync::atomic::AtomicBool::new(false));
     THREADS.lock().unwrap().push_slot(ThreadSlot {
         entry: crate::gcsupport::GilSendPub(Rc::new(RefCell::new(ThreadEntry {
             obj_addr: addr,
@@ -744,15 +839,25 @@ pub fn thread_start(interp: &Rc<Interpreter>, o: &Gc<PyObject>) -> EvalResult {
             name: name.clone(),
             daemon,
             started: true,
-            done: false,
+            done: wdone.clone(),
             ident: Some(ident),
             native_id: Some(native),
         }))),
         addr,
         serial: my_serial.unwrap_or(-2),
         tid: std::sync::atomic::AtomicI64::new(native),
+        done: wdone,
+        daemon,
     });
 
+    // E-safety: reclaim drained at owner-side safe points (pure drops,
+    // zero registration traffic — unlike the sweep, cannot fire an
+    // auto-collect mid-flight).
+    drain_worker_reclaim();
+    // E-safety: publish the worker-interp handle HERE (main side, GIL
+    // held) — the clone is a GIL-ordered refcount write; workers only
+    // read the Rc pointer under the GIL afterwards.
+    *WORKER_INTERP.lock().unwrap() = Some(crate::gcsupport::GilSendPub(interp.clone()));
     // E1-E4 parity: pin the mirror while the thread runs — enumerate()/
     // active_count()/excepthook must see a RUNNING thread even when the
     // script dropped its reference (CPython's _active holds it). The
@@ -813,41 +918,54 @@ fn worker_bootstrap(
     // Fresh thread-local slots for THIS OS thread (gc registry view).
     GIL_HELD.with(|h| h.set(false));
     GIL_DEPTH.with(|d| d.set(0));
-    crate::builtins_modules::set_current_interp(&interp);
-    crate::interp::install_current_interp(&interp);
-    *WORKER_INTERP.lock().unwrap() = Some(crate::gcsupport::GilSendPub(interp.clone()));
+    // WORKER_INTERP is (re)installed by the SPAWNER under the GIL (see
+    // thread_start): a worker-side interp.clone() is off-lock Rc traffic.
     crate::gcsupport::install_worker_thread();
-    // Stamp THIS OS thread's identity into its registry entry (the spawner
-    // could only record a placeholder — the worker tid exists only here).
-    // E7: bounded wait + explicit index refresh (was a 2000x50us retry
-    // chain with no bound on the wake path).
-    stamp_worker_identity(self_addr);
+    // E-safety: the identity stamp is deferred to AFTER acquire_gil
+    // (below) — pre-GIL it cloned/dropped entry Rc's, racing main-side
+    // mutation (the stress-probe UB class; baseline had the same hole).
+    // Nothing between here and acquire_gil touches Rc counts.
 
     // Timer semantics: wait BEFORE the target (finished.wait(interval)).
     if let Some(dur) = interval {
-        let my_serial = entry_for(self_addr)
-            .map(|e| e.borrow().serial)
-            .unwrap_or(-2);
+        // E-safety: read the serial from the SLOT MIRROR under the table
+        // lock — entry_for() clones an Rc, and pre-GIL Rc traffic is the
+        // stress-probe UB class (see WORKER_RECLAIM).
+        let my_serial = {
+            let t = THREADS.lock().unwrap();
+            t.by_addr
+                .get(&self_addr)
+                .and_then(|v| v.last())
+                .and_then(|&i| t.entries.get(i))
+                .map(|s| s.serial)
+        }
+        .unwrap_or(-2);
         wait_cancellable(Duration::from_secs_f64(dur.max(0.0)), self_addr, my_serial);
         let cancelled = timer_cancelled(self_addr, my_serial);
         if cancelled {
             acquire_gil();
-            if let Some(e) = entry_for(self_addr) {
-                e.borrow_mut().done = true;
-            }
-            // E7: brief JOIN_MU acquisition before notifying — joiners
-            // re-check `done` under that mutex, so a lock-then-notify here
-            // closes the lost-wakeup window (set done -> notify before any
-            // waiter parks).
-            let _g = JOIN_MU.lock().unwrap();
-            JOIN_CV.notify_all();
-            drop(_g);
+            stamp_worker_identity(self_addr);
+            mark_done(self_addr);
+            // E-safety: move the Rc payloads to the main thread's reclaim
+            // queue instead of dropping them at the post-release_gil tail
+            // (see WORKER_RECLAIM).
+            reclaim_worker_payload((interp, target, args, kwargs));
             release_gil();
             return;
         }
     }
 
     acquire_gil();
+    // E-safety: the TLS interp handles (each holds an Rc clone) install
+    // AFTER the GIL is held — their strong_count writes then serialize
+    // with every main-side mutation (baseline installed them pre-GIL).
+    crate::builtins_modules::set_current_interp(&interp);
+    crate::interp::install_current_interp(&interp);
+    // Stamp THIS OS thread's identity into its registry entry (the spawner
+    // could only record a placeholder — the worker tid exists only here).
+    // GIL-held now: the entry Rc clone/drop inside is serialized like
+    // every other graph mutation.
+    stamp_worker_identity(self_addr);
     let outcome = if matches!(target, Value::None) {
         Ok(Value::None)
     } else {
@@ -864,15 +982,11 @@ fn worker_bootstrap(
         }
         Err(_) => {}
     }
-    if let Some(e) = entry_for(self_addr) {
-        e.borrow_mut().done = true;
-    }
-    // E7: lock-then-notify (see the cancel arm) — a joiner checking `done`
-    // under JOIN_MU either sees it or is parked and gets this wakeup;
-    // notifying while holding the lock closes the lost-wakeup window.
-    let _g = JOIN_MU.lock().unwrap();
-    JOIN_CV.notify_all();
-    drop(_g);
+    mark_done(self_addr);
+    // E-safety: the tail payloads move to the main thread's reclaim queue
+    // (dropping them here or after release_gil — the baseline pattern —
+    // mutates shared non-atomic refcounts off-lock; see WORKER_RECLAIM).
+    reclaim_worker_payload((interp, target, args, kwargs));
     release_gil();
 }
 
@@ -929,28 +1043,47 @@ static JOIN_MU: Mutex<()> = Mutex::new(());
 /// tiny race (mark done -> notify) is covered by the initial check inside
 /// the lock and by the notify-while-notified protocol on JOIN_CV.
 pub fn join_wait(entry: Rc<RefCell<ThreadEntry>>, timeout: Option<f64>) -> bool {
-    if entry.try_borrow().map(|b| b.done).unwrap_or(false) {
+    join_wait_flag(entry_done_flag(&entry), timeout)
+}
+
+/// Resolve an entry's shared done flag. Call while the GIL is HELD (the
+/// joiner does exactly that before releasing) — the borrow is then
+/// uncontended, and the returned Arc<AtomicBool> lets the parked joiner
+/// observe completion with atomics ONLY (no borrow-flag reads, no
+/// non-atomic refcount traffic off-lock).
+pub fn entry_done_flag(entry: &Rc<RefCell<ThreadEntry>>) -> Arc<std::sync::atomic::AtomicBool> {
+    match entry.try_borrow() {
+        Ok(b) => b.done.clone(),
+        // Contended (only reachable from a non-GIL caller): the done flag
+        // is process-stable once set; fall back to a bounded poll then an
+        // atomically-seeded fresh flag — the worker's JOIN_CV notify still
+        // wakes a waiter parked on a false snapshot (the loop re-checks).
+        Err(_) => {
+            for _ in 0..2000 {
+                if let Ok(b) = entry.try_borrow() {
+                    return b.done.clone();
+                }
+                std::thread::sleep(Duration::from_micros(50));
+            }
+            Arc::new(std::sync::atomic::AtomicBool::new(entry_done(entry)))
+        }
+    }
+}
+
+/// E7/E-safety (memperf audit 2026-11-06): condvar join on the done
+/// PREDICATE — the flag is an Arc<AtomicBool> (atomics are safe to read
+/// while parked; the baseline polled the entry's RefCell every 200us,
+/// racing the borrow flag against worker borrow_mut). Callers grab the
+/// flag BEFORE releasing the GIL and park here.
+pub fn join_wait_flag(flag: Arc<std::sync::atomic::AtomicBool>, timeout: Option<f64>) -> bool {
+    if flag.load(std::sync::atomic::Ordering::SeqCst) {
         return true;
     }
     let deadline = timeout.map(|t| Instant::now() + Duration::from_secs_f64(t.max(0.0)));
-    let guard = JOIN_MU.lock().unwrap();
-    let mut guard = guard;
+    let mut guard = JOIN_MU.lock().unwrap();
     loop {
-        // Re-check under the lock: if the borrow contends, the worker is
-        // mid-stamp (it flips done + notifies holding no lock we need to
-        // interleave with), so a short bounded sleep is the fallback for
-        // that rare window only.
-        match entry.try_borrow() {
-            Ok(b) if b.done => return true,
-            Ok(_) => {}
-            Err(_) => {
-                // Contended borrow (a main-side op holds the entry under the
-                // GIL). Drop the condvar guard, brief bounded sleep, retake.
-                drop(guard);
-                std::thread::sleep(Duration::from_micros(50));
-                guard = JOIN_MU.lock().unwrap();
-                continue;
-            }
+        if flag.load(std::sync::atomic::Ordering::SeqCst) {
+            return true;
         }
         match deadline {
             None => {
@@ -959,12 +1092,12 @@ pub fn join_wait(entry: Rc<RefCell<ThreadEntry>>, timeout: Option<f64>) -> bool 
             Some(d) => {
                 let left = d.saturating_duration_since(Instant::now());
                 if left.is_zero() {
-                    return entry.try_borrow().map(|b| b.done).unwrap_or(false);
+                    return flag.load(std::sync::atomic::Ordering::SeqCst);
                 }
-                let (g, timeout_res) = JOIN_CV.wait_timeout(guard, left).unwrap();
+                let (g, res) = JOIN_CV.wait_timeout(guard, left).unwrap();
                 guard = g;
-                if timeout_res.timed_out() {
-                    return entry.try_borrow().map(|b| b.done).unwrap_or(false);
+                if res.timed_out() {
+                    return flag.load(std::sync::atomic::Ordering::SeqCst);
                 }
             }
         }
@@ -976,26 +1109,26 @@ pub fn join_wait(entry: Rc<RefCell<ThreadEntry>>, timeout: Option<f64>) -> bool 
 /// thread's own entry is marked done FIRST (it is the thread performing the
 /// wait and must not join itself).
 pub fn wait_for_non_daemons() {
-    if let Some(me) = entry_for_current() {
-        me.borrow_mut().done = true;
-    }
+    // E-safety: mark main done via the SLOT atom (no entry borrow).
+    mark_done_main();
     loop {
-        let pending: Vec<Rc<RefCell<ThreadEntry>>> = THREADS
-            .lock()
-            .unwrap()
-            .entries
-            .iter()
-            .filter(|s| {
-                let b = s.entry.0.borrow();
-                b.started && !b.done && !b.daemon
-            })
-            .map(|s| s.entry.0.clone())
-            .collect();
+        // E-safety: collect FLAGS ONLY (Arc — atomic refcount, safe to
+        // clone while parked). The baseline cloned entry Rc's here without
+        // the GIL while workers cloned/dropped the same pointers under it
+        // (non-atomic strong_count race — the stress-probe UB class).
+        let pending: Vec<Arc<std::sync::atomic::AtomicBool>> = {
+            let t = THREADS.lock().unwrap();
+            t.entries
+                .iter()
+                .filter(|s| !s.daemon && !s.done.load(std::sync::atomic::Ordering::SeqCst))
+                .map(|s| s.done.clone())
+                .collect()
+        };
         if pending.is_empty() {
-            return;
+            break;
         }
         for p in pending {
-            let _ = join_wait(p, None);
+            let _ = join_wait_flag(p, None);
         }
     }
 }
@@ -1289,7 +1422,7 @@ pub fn active_count() -> usize {
         .iter()
         .filter(|s| {
             let b = s.entry.0.borrow();
-            b.started && !b.done
+            b.started && !b.done.load(std::sync::atomic::Ordering::SeqCst)
         })
         .count()
 }
@@ -1302,7 +1435,7 @@ pub fn enumerate_values() -> Vec<Value> {
         .iter()
         .filter(|s| {
             let b = s.entry.0.borrow();
-            b.started && !b.done
+            b.started && !b.done.load(std::sync::atomic::Ordering::SeqCst)
         })
         .map(|s| s.addr)
         .collect();
@@ -1404,6 +1537,9 @@ pub fn evict_stale_tables() -> usize {
     if !is_main_os_thread() {
         return 0;
     }
+    // E-safety: drop reclaimed worker payloads FIRST (main thread, GIL
+    // held — the only safe place for these Rc clones to die).
+    drain_worker_reclaim();
     // Worker-allocated objects live in the forward channel until drained —
     // sweep after a drain or a live thread-local dict reads "absent".
     let drained = crate::gcsupport::drain_worker_registrations();
@@ -1423,7 +1559,9 @@ pub fn evict_stale_tables() -> usize {
                 (
                     s.addr,
                     s.serial,
-                    s.entry.0.try_borrow().map(|b| b.done).ok(),
+                    // E-safety: read the SLOT atom — no entry borrow, so a
+                    // peer's stamp window can never skew the snapshot.
+                    Some(s.done.load(std::sync::atomic::Ordering::SeqCst)),
                     s.tid.load(std::sync::atomic::Ordering::Relaxed),
                 )
             })
@@ -1528,15 +1666,17 @@ pub fn evict_stale_tables() -> usize {
             OWN_RLOCKS.lock().unwrap().iter().copied().collect();
         let mut p = PRIMS.lock().unwrap();
         let before = p.len();
+        let dbg = std::env::var("APX_TDEBUG").is_ok();
         p.retain(|addr, _| {
-            if owned.contains(addr) {
+            let keep_it = if owned.contains(addr) {
                 // cond addr = key - 1
                 ap_gc::get_object_by_addr(addr.saturating_sub(1)).is_some()
             } else {
                 ap_gc::get_object_by_addr(*addr).is_some()
-            }
+            };
+            let _ = dbg;
+            keep_it
         });
-        freed += before - p.len();
         let mut or = OWN_RLOCKS.lock().unwrap();
         let live_keys: std::collections::HashSet<usize> = p.keys().copied().collect();
         let before2 = or.len();
