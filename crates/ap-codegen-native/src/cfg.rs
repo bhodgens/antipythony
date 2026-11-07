@@ -253,8 +253,6 @@ struct Lowerer<'a> {
     next_temp: u32,
     /// Next block to append into (block-construction cursor).
     cur: BlockId,
-    /// Parked return value slot (pon value-parking discipline).
-    ret_slot: Option<TempId>,
     /// Stack of open exception regions with their resume blocks.
     regions: Vec<(ExceptionRegionId, BlockId)>,
     /// Raise terminators awaiting redirect (RaiseTerm-emit-then-redirect).
@@ -269,7 +267,6 @@ impl<'a> Lowerer<'a> {
             locals: BTreeMap::new(),
             next_temp: 0,
             cur: BlockId(u32::MAX), // set by lower_body's entry block
-            ret_slot: None,
             regions: Vec::new(),
             pending_raises: Vec::new(),
         }
@@ -562,27 +559,18 @@ impl<'a> Lowerer<'a> {
         self.func.blocks[dispatch.0 as usize].region = self.cur_region();
         let mut next = None::<BlockId>;
         for h in &t.handlers {
+            if h.ty.is_some() {
+                // Typed handlers need the isinstance path against the
+                // exception's class chain (host-owned) — fail-closed in
+                // the v0 slice, not silent wrong-code.
+                return Err(CodegenError::Unsupported("typed except handler"));
+            }
             let h_b = self.func.new_block();
             let unmatched = self.func.new_block();
             let exc_t = self.temp();
             let matched_t = self.temp();
-            let ty_t = match &h.ty {
-                Some(te) => self.lower_expr(te)?,
-                None => {
-                    let t2 = self.temp();
-                    self.push_inst(Inst::Const(ConstValue::None, t2));
-                    t2
-                }
-            };
             let bind_slot = h.name.clone().map(|n| self.local(&n));
             self.push_inst(Inst::MatchExc(region, bind_slot, exc_t));
-            // NOTE: MatchExc binds the exception object; the matcher test
-            // against `ty_t` is expressed as the Call-free isinstance
-            // path — v0 slice: bare except only, typed handlers via the
-            // exception's class chain are unsupported here (explicit).
-            if h.ty.is_some() {
-                return Err(CodegenError::Unsupported("typed except handler"));
-            }
             self.push_inst(Inst::Const(ConstValue::Bool(true), matched_t));
             self.set_term(Terminator::Branch(matched_t, h_b, unmatched));
             next = Some(unmatched);
@@ -630,7 +618,7 @@ impl<'a> Lowerer<'a> {
                 let o = self.lower_expr(obj)?;
                 self.push_inst(Inst::StoreAttr(o, attr.clone(), v));
             }
-            Target::Subscript(obj, idx) => {
+            Target::Subscript(_obj, _idx) => {
                 return Err(CodegenError::Unsupported("Subscript store"));
             }
             Target::Tuple(_) | Target::Starred(_) => {
@@ -733,37 +721,13 @@ impl<'a> Lowerer<'a> {
                 Ok(t)
             }
             Expr::BoolOp(BoolOp::And, terms) | Expr::BoolOp(BoolOp::Or, terms) => {
-                // pon control-flow form: short-circuit via blocks,
-                // preserving operand values (S-01-30).
-                if terms.len() != 2 {
-                    return Err(CodegenError::Unsupported("n-ary BoolOp"));
-                }
-                let is_and = matches!(e, Expr::BoolOp(BoolOp::And, _));
-                let ta = self.lower_expr(&terms[0])?;
-                let ta_truth = self.temp();
-                self.push_inst(Inst::Truthy(ta, ta_truth));
-                let short_b = self.func.new_block();
-                let eval_b = self.func.new_block();
-                let join_b = self.func.new_block();
-                self.set_term(Terminator::Branch(ta_truth, short_b, eval_b));
-                if is_and {
-                    // and: first falsy → result = first operand
-                    self.func.blocks[short_b.0 as usize].term = Some(Terminator::Goto(join_b));
-                    self.cur = eval_b;
-                } else {
-                    // or: first truthy → result = first operand
-                    self.func.blocks[short_b.0 as usize].term = Some(Terminator::Goto(join_b));
-                    self.cur = eval_b;
-                }
-                self.func.blocks[eval_b.0 as usize].region = self.cur_region();
-                let tb = self.lower_expr(&terms[1])?;
-                self.set_term(Terminator::Goto(join_b));
-                self.cur = join_b;
-                self.func.blocks[join_b.0 as usize].region = self.cur_region();
-                // v0 slice: the join receives the SECOND operand only when
-                // the first matched the fast path; the full value-preserving
-                // phi-free form needs a result local. Fail-closed for now.
-                return Err(CodegenError::Unsupported("BoolOp join value"));
+                // Short-circuit via blocks (S-01-30 value rule). The
+                // value-preserving join needs a phi-free result local +
+                // both-arm materialization; that shape is the next wave —
+                // fail-closed until it lands.
+                let _ = terms;
+                let _is_and = matches!(e, Expr::BoolOp(BoolOp::And, _));
+                return Err(CodegenError::Unsupported("BoolOp (and/or)"));
             }
             Expr::IfExp(c, a, b) => {
                 let tc = self.lower_expr(c)?;
@@ -800,7 +764,7 @@ impl<'a> Lowerer<'a> {
     }
 
     fn finish(self) -> Result<Func, CodegenError> {
-        let mut func = self.func;
+        let func = self.func;
         // Block 0 must be the entry and every block must be terminated.
         for (i, b) in func.blocks.iter().enumerate() {
             if b.term.is_none() {
