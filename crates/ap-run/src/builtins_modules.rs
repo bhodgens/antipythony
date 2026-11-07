@@ -4710,40 +4710,44 @@ pub fn call_functools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
                 }
             }
         }
-        let (default, impls) = SD_REGISTRY.with(|t| {
-            t.borrow()
-                .get(&id)
-                .map(|r| (Some(r.default.clone()), r.impls.clone()))
-                .unwrap_or((None, HashMap::new()))
+        // D4 (memperf audit 2026-11-06): choose INSIDE the borrow — the old
+        // path cloned the entire impls HashMap per dispatch call (pathlib/
+        // json/pytest plugin hot path).
+        let chosen = SD_REGISTRY.with(|t| {
+            let t = t.borrow();
+            let Some(r) = t.get(&id) else {
+                return None;
+            };
+            let mut chosen = r.default.clone();
+            if let Some(first) = args.first() {
+                // s013b: dispatch by the receiver's FULL MRO (exact type first,
+                // then bases) — pathlib.Path-registered impls must catch PosixPath
+                // instances (importlib.resources._common as_file).
+                let mut keys: Vec<String> = vec![first.type_name().to_string()];
+                if let Some(interp) = CURRENT.with(|c| c.borrow().clone()) {
+                    if let Some(ct) = crate::classes::class_of_value(&interp, first) {
+                        for m in ct.mro.borrow().iter() {
+                            if !keys.iter().any(|k| k == &m.name) {
+                                keys.push(m.name.clone());
+                            }
+                        }
+                    }
+                }
+                for key in &keys {
+                    if let Some(f) = r.impls.get(key) {
+                        chosen = f.clone();
+                        break;
+                    }
+                }
+            }
+            Some(chosen)
         });
-        let Some(default) = default else {
+        let Some(chosen) = chosen else {
             return Some(Err(raise(
                 "RuntimeError",
                 "singledispatch registry lost its default impl",
             )));
         };
-        let mut chosen = default;
-        if let Some(first) = args.first() {
-            // s013b: dispatch by the receiver's FULL MRO (exact type first,
-            // then bases) — pathlib.Path-registered impls must catch PosixPath
-            // instances (importlib.resources._common as_file).
-            let mut keys: Vec<String> = vec![first.type_name().to_string()];
-            if let Some(interp) = CURRENT.with(|c| c.borrow().clone()) {
-                if let Some(ct) = crate::classes::class_of_value(&interp, first) {
-                    for m in ct.mro.borrow().iter() {
-                        if !keys.iter().any(|k| k == &m.name) {
-                            keys.push(m.name.clone());
-                        }
-                    }
-                }
-            }
-            for key in &keys {
-                if let Some(f) = impls.get(key) {
-                    chosen = f.clone();
-                    break;
-                }
-            }
-        }
         return Some(crate::interp::call_value_pub2(&chosen, args, kwargs));
     }
     let r: BResult = (|| -> BResult {
