@@ -808,21 +808,26 @@ pub fn subscript_set(obj: &Value, key: &Value, v: Value) -> Result<(), Flow> {
         // replacement (ba[1:2] = b"x", equal-length only at v0).
         Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque && o.name == "bytearray" => {
             let k = subscript_key(key)?;
-            let mut data = crate::builtins_modules::bytearray_state(obj)?;
+            // D1 (memperf audit 2026-11-06): in-place item/slice write —
+            // validate first against the snapshot length, then mutate the
+            // unique buffer without the 3x round trip.
+            let snap = crate::builtins_modules::bytearray_state(obj)?;
             match (&k, &v) {
                 (Key::Index(i), Value::Int(n)) => {
-                    let idx = normalize_index(*i, data.len() as i64).ok_or_else(|| {
+                    let idx = normalize_index(*i, snap.len() as i64).ok_or_else(|| {
                         raise("IndexError", "bytearray assignment index out of range")
                     })?;
                     let b = n.to_i64().unwrap_or(0);
                     if !(0..=255).contains(&b) {
                         return Err(raise("ValueError", "byte must be in range(0, 256)"));
                     }
-                    data[idx as usize] = b as u8;
-                    crate::builtins_modules::bytearray_set(obj, data)
+                    crate::builtins_modules::bytearray_mutate(obj, |data| {
+                        data[idx as usize] = b as u8;
+                        Ok(())
+                    })
                 }
                 (Key::Slice { lo, hi, step }, Value::Bytes(nb)) if *step == 1 => {
-                    let len = data.len() as i64;
+                    let len = snap.len() as i64;
                     let clamp = |x: i64| -> i64 {
                         let x = if x < 0 { x + len } else { x };
                         x.clamp(0, len)
@@ -836,8 +841,10 @@ pub fn subscript_set(obj: &Value, key: &Value, v: Value) -> Result<(), Flow> {
                             "bytearray slice resize unsupported (v0)",
                         ));
                     }
-                    data[start as usize..stop as usize].copy_from_slice(nb);
-                    crate::builtins_modules::bytearray_set(obj, data)
+                    crate::builtins_modules::bytearray_mutate(obj, |data| {
+                        data[start as usize..stop as usize].copy_from_slice(nb);
+                        Ok(())
+                    })
                 }
                 _ => Err(raise("TypeError", "an integer is required (got type str)")),
             }

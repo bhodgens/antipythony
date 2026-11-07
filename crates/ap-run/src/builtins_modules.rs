@@ -5912,6 +5912,47 @@ pub fn bytearray_state(v: &Value) -> Result<Vec<u8>, Flow> {
     }
 }
 
+/// D1 (memperf audit 2026-11-06): in-place mutation over the bytearray's
+/// `Gc<Vec<u8>>` buffer. Runs `f` on the unique buffer (Rc::get_mut — the
+/// ctor hands out count-1 buffers) and refreshes the cached repr from the
+/// mutated buffer. Errors short-circuit BEFORE any mutation (f returns
+/// Err before touching the tail it would invalidate... callers validate
+/// args first). Aliased buffers (count > 1) fall back to the old
+/// clone-modify-set round trip — byte-identical results either way.
+pub fn bytearray_mutate<F>(v: &Value, f: F) -> Result<(), Flow>
+where
+    F: FnOnce(&mut Vec<u8>) -> Result<(), Flow>,
+{
+    let o = match v {
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque && o.name == "bytearray" => o,
+        other => {
+            return Err(raise(
+                "TypeError",
+                format!("expected bytearray, not {}", other.type_name()),
+            ))
+        }
+    };
+    let buf = match o.attrs.borrow().get(&s("<data>")) {
+        Some(Value::Bytes(b)) => b.clone(),
+        _ => return Err(raise("SystemError", "bytearray without buffer")),
+    };
+    let mut b = buf;
+    match std::rc::Rc::get_mut(&mut b) {
+        Some(data) => {
+            f(data)?;
+            let repr = format!("bytearray({})", ap_obj::str_repr::bytes_repr(data));
+            *o.repr_text.borrow_mut() = Some(repr);
+            Ok(())
+        }
+        None => {
+            // Aliased buffer: clone-modify-set (pre-D1 behavior).
+            let mut data = b.as_ref().clone();
+            f(&mut data)?;
+            bytearray_set(v, data)
+        }
+    }
+}
+
 /// Write the buffer back (repr refresh rides along).
 pub fn bytearray_set(v: &Value, data: Vec<u8>) -> Result<(), Flow> {
     if let Value::Obj(o) = v {
@@ -5990,15 +6031,19 @@ fn call_bytearray_method(
     };
     let rest = &args[1.min(args.len())..];
     let r: BResult = (|| -> BResult {
-        let mut data = bytearray_state(&recv)?;
+        // Read-only arms need the snapshot; mutation arms use
+        // bytearray_mutate (D1: no full-buffer round trip per op).
+        let data = bytearray_state(&recv)?;
         match fname {
             "append" => {
                 let b = as_int_i64(required(rest, "append")?)?;
                 if !(0..=255).contains(&b) {
                     return Err(raise("ValueError", "byte must be in range(0, 256)"));
                 }
-                data.push(b as u8);
-                bytearray_set(&recv, data)?;
+                bytearray_mutate(&recv, |data| {
+                    data.push(b as u8);
+                    Ok(())
+                })?;
                 Ok(Value::None)
             }
             "extend" => {
@@ -6028,8 +6073,10 @@ fn call_bytearray_method(
                         out
                     }
                 };
-                data.extend_from_slice(&more);
-                bytearray_set(&recv, data)?;
+                bytearray_mutate(&recv, |data| {
+                    data.extend_from_slice(&more);
+                    Ok(())
+                })?;
                 Ok(Value::None)
             }
             "insert" => {
@@ -6047,8 +6094,10 @@ fn call_bytearray_method(
                 } else {
                     idx.min(len)
                 };
-                data.insert(pos as usize, b as u8);
-                bytearray_set(&recv, data)?;
+                bytearray_mutate(&recv, |data| {
+                    data.insert(pos as usize, b as u8);
+                    Ok(())
+                })?;
                 Ok(Value::None)
             }
             "pop" => {
@@ -6061,27 +6110,39 @@ fn call_bytearray_method(
                 if pos < 0 || pos >= len {
                     return Err(raise("IndexError", "pop index out of range"));
                 }
-                let b = data.remove(pos as usize);
-                bytearray_set(&recv, data)?;
+                let b = data[pos as usize];
+                bytearray_mutate(&recv, |data| {
+                    data.remove(pos as usize);
+                    Ok(())
+                })?;
                 Ok(i(b as i64))
             }
             "remove" => {
                 let b = as_int_i64(required(rest, "remove")?)?;
-                if let Some(pos) = data.iter().position(|&x| x as i64 == b) {
-                    data.remove(pos);
-                    bytearray_set(&recv, data)?;
-                    Ok(Value::None)
-                } else {
-                    Err(raise("ValueError", "value not found in bytearray"))
+                let pos = data.iter().position(|&x| x as i64 == b);
+                match pos {
+                    Some(p) => {
+                        bytearray_mutate(&recv, |data| {
+                            data.remove(p);
+                            Ok(())
+                        })?;
+                        Ok(Value::None)
+                    }
+                    None => Err(raise("ValueError", "value not found in bytearray")),
                 }
             }
             "reverse" => {
-                data.reverse();
-                bytearray_set(&recv, data)?;
+                bytearray_mutate(&recv, |data| {
+                    data.reverse();
+                    Ok(())
+                })?;
                 Ok(Value::None)
             }
             "clear" => {
-                bytearray_set(&recv, Vec::new())?;
+                bytearray_mutate(&recv, |data| {
+                    data.clear();
+                    Ok(())
+                })?;
                 Ok(Value::None)
             }
             "copy" => Ok(make_bytearray(data)),
