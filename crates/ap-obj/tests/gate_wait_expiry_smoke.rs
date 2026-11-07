@@ -33,23 +33,11 @@ fn gate_wait_expiry_panics_with_actionable_message() {
         std::process::exit(8);
     }
 
-    // Parent mode: only run when the real gate is free (never contend
-    // with a live suite).
-    let probe = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(&path)
-        .expect("open");
-    let free = unsafe { libc::flock(probe.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0;
-    if free {
-        unsafe { libc::flock(probe.as_raw_fd(), libc::LOCK_UN) };
-    } else {
-        eprintln!("SKIP: gate held by live suite");
-        return;
-    }
-    drop(probe);
-
+    // Parent mode: acquire the real gate with ONE non-blocking flock.
+    // (A probe-then-reacquire sequence had a TOCTOU window: a suite
+    // starting in the gap made the second flock fail with "gate was free
+    // but flock failed" — the 2026-11-07 workspace-gate failure.) Skip
+    // cleanly whenever the gate is held — never contend a live suite.
     let mut holder = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -57,10 +45,11 @@ fn gate_wait_expiry_panics_with_actionable_message() {
         .write(true)
         .open(&path)
         .expect("open holder");
-    assert!(
-        unsafe { libc::flock(holder.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0,
-        "gate was free but flock failed"
-    );
+    let acquired = unsafe { libc::flock(holder.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0;
+    if !acquired {
+        eprintln!("SKIP: gate held by live suite");
+        return;
+    }
     let record = format!(
         "AP_GATE_HOLDER pid={} start={}\n",
         std::process::id(),
