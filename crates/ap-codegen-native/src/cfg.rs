@@ -347,7 +347,7 @@ impl<'a> Lowerer<'a> {
             .map(|r| r.and_then(|rid| self.func.regions.get(rid.0 as usize).map(|ri| ri.dispatch)))
             .collect();
         for (b, target) in self.pending_raises.drain(..).zip(targets) {
-            if let Some(Terminator::Raise(t, slot)) = &mut self.func.blocks[b.0 as usize].term {
+            if let Some(Terminator::Raise(_t, slot)) = &mut self.func.blocks[b.0 as usize].term {
                 *slot = target;
             }
         }
