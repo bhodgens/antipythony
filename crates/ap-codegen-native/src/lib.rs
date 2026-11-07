@@ -20,11 +20,13 @@
 //!
 //! SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
+pub mod audit_probe;
 pub mod cfg;
 pub mod clif;
 pub mod feedback;
 pub mod osr;
 pub mod runtime;
+pub mod worker_stack;
 
 /// Codegen failure. Every unsupported construct is explicit — fail-closed,
 /// never silent wrong-code (leaf gate).
