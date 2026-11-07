@@ -1557,7 +1557,16 @@ pub fn base_type_ref(interp: &Interpreter, v: &Value) -> Result<Option<Rc<TypeRe
         // (enum.py: `class IntEnum(int, Enum)`) — synthesize an object-derived
         // TypeObject carrying the builtin's name (isinstance/issubclass
         // against it stays a documented v0 gap).
+        //
+        // OOM campaign residual (a) (1648a72): the synthesized base payload
+        // is CACHED in the Type PyObject's class_ref slot — a module that
+        // subclasses native types in a loop (or a class hierarchy deep in
+        // native bases) reuses ONE TypeRef per base type instead of
+        // allocating a fresh object-derived clone per resolution.
         Value::Obj(o) if o.kind == ap_obj::ObjKind::Type => {
+            if let Some(t) = o.class_ref.borrow().clone() {
+                return Ok(Some(t));
+            }
             let flags = TypeFlags {
                 slots: None,
                 is_exception: false,
@@ -1587,6 +1596,7 @@ pub fn base_type_ref(interp: &Interpreter, v: &Value) -> Result<Option<Rc<TypeRe
                     Value::Str(PyString::new(o.name.clone())),
                 );
             }
+            *o.class_ref.borrow_mut() = Some(t.clone());
             Ok(Some(t))
         }
         // T1 (scrapy fix pass): `class Foo(Generic[T])` - the Generic alias
@@ -2848,6 +2858,19 @@ pub fn attr_get_opt(
         // dict.__init__, ...) have no class_ref payload but still answer
         // through class_attr_get — synthesize a native TypeRef whose MRO
         // ends in object (dict/int/etc bases are object in CPython too).
+        //
+        // NO CACHE HERE (reverted 2026-11-06 sibling WIP): caching the
+        // synthesized TypeRef in o.class_ref poisons interned builtin
+        // types PERMANENTLY — a later getattr that reaches this arm with
+        // a name the synthesized object-only MRO cannot answer silently
+        // degrades real class surfaces (repro: `import inspect` then
+        // `raise SystemExit(0)` died in enum.py __set_name__ with
+        // `_flag_mask_ |= object`; gc_differential unittest-runner
+        // failed). The leak this aimed at is covered by the base_type_ref
+        // cache arm (classes.rs:1561) for class-creation paths; per-access
+        // attr synthesis stays uncached by design — it allocates one
+        // throwaway TypeRef per miss, which is MB-scale transient garbage
+        // under the GC heap, not the GB-scale permanent-pin class.
         Value::Obj(o) if o.kind == ap_obj::ObjKind::Type => {
             let obj_t = object_class(interp);
             let t = match TypeObject::create(

@@ -985,8 +985,7 @@ fn expr_node(e: &ruff_python_ast::Expr, line_col: &dyn Fn(usize) -> (usize, usiz
                     }
                     ruff_python_ast::FStringPart::FString(fs) => {
                         for el in fs.elements.iter() {
-                            let v =
-                                fstring_element_node(el, &mut values, line_col)?;
+                            let v = fstring_element_node(el, &mut values, line_col)?;
                             values.push(v);
                         }
                     }
@@ -1128,11 +1127,7 @@ fn fstring_element_node(
                         // CPython: JoinedStr of the spec elements
                         let mut spec_values: Vec<Value> = Vec::new();
                         for el2 in spec.elements.iter() {
-                            spec_values.push(fstring_element_node(
-                                el2,
-                                values,
-                                line_col,
-                            )?);
+                            spec_values.push(fstring_element_node(el2, values, line_col)?);
                         }
                         dict_of(vec![
                             ("_type", s("JoinedStr")),
