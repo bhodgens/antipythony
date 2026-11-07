@@ -2201,6 +2201,8 @@ pub fn builtin_zip(interp: &Interpreter, args: &[Value]) -> BResult {
         let it = crate::iter::PyIterator::new(crate::iter::IterState::Seq(Vec::new(), 0));
         let id = interp.next_iter_id.get();
         interp.next_iter_id.set(id + 2);
+        // Fence-perf fix 2026-11-06: tag for Drop-prune (F5 contract).
+        it.table_id.set(Some(id));
         interp.iterators.borrow_mut().insert(id, it);
         let obj = ap_obj::PyObject::new(ap_obj::ObjKind::Iterator, "zip");
         *obj.gen_id.borrow_mut() = Some(id);
@@ -2232,6 +2234,8 @@ pub fn register_iter(interp: &Interpreter, v: &Value) -> Result<u64, Flow> {
     let it = iterable_of(v)?;
     let id = interp.next_iter_id.get();
     interp.next_iter_id.set(id + 1);
+    // Fence-perf fix 2026-11-06: tag for Drop-prune (F5 contract).
+    it.table_id.set(Some(id));
     interp.iterators.borrow_mut().insert(id, it);
     Ok(id)
 }
@@ -5219,6 +5223,8 @@ pub fn py_float_repr_pub(x: f64) -> String {
 /// Register a native iterator into the CURRENT interpreter's table.
 pub fn interp_register_iter(id: u64, it: std::rc::Rc<crate::iter::PyIterator>) {
     if let Some(interp) = crate::builtins_modules::current_interp() {
+        // Fence-perf fix 2026-11-06: tag for Drop-prune (F5 contract).
+        it.table_id.set(Some(id));
         interp.iterators.borrow_mut().insert(id, it);
     }
 }

@@ -652,6 +652,11 @@ pub(crate) fn make_iter(state: NativeIterState) -> Value {
         n
     });
     if let Some(interp) = CURRENT.with(|c| c.borrow().clone()) {
+        // Fence-perf fix 2026-11-06: tag the handle so its Drop prunes this
+        // table entry (same F5 contract as register_shared_iter_pub). Untagged
+        // entries pinned the table forever on native-drain workloads —
+        // ast.walk's eager-sink iterators grew the table ~400B/call.
+        it.table_id.set(Some(id));
         interp.iterators.borrow_mut().insert(id, it);
     }
     *obj.gen_id.borrow_mut() = Some(id);

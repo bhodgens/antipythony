@@ -224,3 +224,94 @@ by grep).
 
 Updated bottom line: FAILED-VERIFICATION count 2 → **0** (G4 and G6 both
 PASS post-repair); all other verdicts untouched.
+
+
+---
+
+# FENCE PERF FIX — ast_getattr_leak_fence superlinear growth (2026-11-06/07)
+
+Root-cause + fix of the `ast_getattr_leak_fence` regression-guard perf regression
+(superlinear ast.walk probe growth; bisect-clean: present at e62db1c, NOT from the
+2026-11-06 OOM waves). Three stacked owners, one per symptom:
+
+## 1. deque.popleft O(n^2) — the superlinear cliff (FIXED)
+
+`ast.walk` (vendored_stdlib/ast.py) drains a `collections.deque` with `popleft()`.
+The native deque (builtins_modules.rs) stored items as a plain `Vec` and
+implemented every op as clone-whole-Vec → mutate → rewrite + re-render the FULL
+repr string: `popleft` = `Vec::remove(0)` O(n) per pop, O(n^2) per drain, plus an
+O(n) repr re-render per mutation. Measured drain cost: 0.23s/0.73s/2.7s/10.6s at
+size 1000/2000/4000/8000 (quadratic; ~1.3ms/pop at 8k).
+
+**Fix** (builtins_modules.rs): deque mutation ops (append/appendleft/pop/
+popleft/extend/rotate/clear) now mutate the backing PyList IN PLACE via the Gc
+handle (`PyList::append/insert_at/remove_take/clear`) — no clone round-trip —
+and the repr moved to a LAZY render (ap-obj/src/object.rs `default_repr` deque
+arm renders from live `<items>` at repr time; `update_deque_repr` deleted).
+Post-fix drain: 0.53/0.80/0.16/0.32s at 1000/2000/4000/8000 (flat per-pop).
+`ast.walk` per-iteration: **11.3s → 2.0s (debug), 5.6x**; walk-variant sweeps
+(dq/list/pop(0)) now all identical.
+
+## 2. Eager-sink "iterator" leak — ~400B/call RSS growth (FIXED)
+
+ast.py's generator functions (iter_fields/iter_child_nodes/walk — nested ids
+>= NESTED_BASE, is_generator=false, body_yields=false: the ast module's defs
+are registered from a stub WITHOUT scope info; the real parsed defs sit in
+nested[5]/reg[17] with is_gen=true) run through the eager `Flow::YieldBack`
+sink path. Each call returns a bare `iterator` object (no send/throw) whose
+drain goes through the NATIVE collect path — which never calls pull_iter, so
+F5's `prune_dropped_iters` never ran, and the interpreter's iterator table
+held a strong `Rc<PyIterator>` per call forever (the Drop hook cannot fire
+while the table pins the handle — a design deadlock for native drains).
+
+**Fix** (iter.rs + 5 insert sites): `PyIterator::next` on exhaustion now
+queues its own table id via the F5 `DEAD_ITER_IDS` channel (deferred — inline
+removal races the caller's registry borrow) and every table insertion
+(make_iter, interp_register_iter, register_iter tail, both GenExpr
+materialize arms, zip empty) tags `table_id` so the Drop/prune contract holds.
+`prune_dropped_iters` now also prunes odd (generator-protocol) ids once the
+generator entry is gone from interp.generators (materialized GenExpr handles).
+Verified: 1.2M generator drains → iters table FLAT at 1 (was 400k entries,
+~195MB); fence RSS growth eliminated (below).
+
+Residual (NOT fixed here, filed for a follow-up leaf): the stub-shadowing
+itself — ast.py's namespace binds the yield-less stub instead of the parsed
+def, so ast.walk results are bare iterators without send/throw. Semantics
+match for plain iteration (all corpus/gate probes green), but CPython
+`isinstance(f(), types.GeneratorType)` would diverge.
+
+## 3. Fence harness: release binary + hog self-test race (FIXED)
+
+The fence ran `target/debug/ap-run-probe`. The W114 real-AST landing made the
+probe workload ~13x heavier than the stub-tree era the 170s baseline was
+measured on (debug: 2.3s/iter → 1000 iters ≈ 2300s >> 600s deadline). The
+fence now prefers `target/release/ap-run-probe` (measured 0.24s/iter) and
+falls back to debug with a warning if the release binary is absent.
+Additionally `memory_hog` could FINISH (256MB HOG-SURVIVED exit) before the
+parent's 100ms RSS sample tick on a release build (~30ms) — the kill-path
+self-test went red on a healthy fence. The hog now commits every page (the
+old `vec![0u8; N]` chunks are calloc-backed — zero pages never committed, RSS
+never crossed the 8MB cap; observed as a 120s deadline arm) up to a 512MB
+self-guard and then HOLDS, so the fence MUST fire.
+
+## Before/after (probe_ast_getattr.py, 200-def module, ast.parse once)
+
+| Iterations | Pre-fix (HEAD~3, debug) | Post-fix, debug | Post-fix, release | RSS post-fix (release) |
+|-----------|--------------------------|-----------------|-------------------|------------------------|
+| 10  | 150s+ (est., superlinear) | ~23s  | 3.7s  | 48.7MB  |
+| 30  | (would hang)              | ~76s  | 8s    | ~30MB   |
+| 60  | (would hang)              | ~140s | ~16s  | ~31MB   |
+| 100 | HUNG past 150s+ (deadline kill) | ~234s | 25.5s | 31.8MB |
+| 1000| HUNG (fence deadline-kill, RSS on track for ~1.4GB) | ~2300s (est.) | **231.0s** | **31.3MB FLAT** |
+
+Debug-build numbers include the sibling-session contention caveat (a parallel
+probe ran during the 10/30/60 characterization); release numbers are clean
+serial runs.
+
+## Fence run (final)
+
+`cargo test -p ap-cli --test ast_getattr_fence --release`:
+`test result: ok. 2 passed; 0 failed` — ast_getattr_leak_fence
+"ok: peak RSS 29MB <= 512MB cap; stdout marker present" (231s of probe,
+fence deadline 600s untouched) + fence_kill_path_is_live
+"ok: kill path fired (memory: child RSS reached 514MB, over the 8MB fence)".

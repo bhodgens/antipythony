@@ -8111,6 +8111,8 @@ fn gen_pull(interp: &Rc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> {
             })?;
             let values: Vec<Value> = sink.borrow().clone();
             let it = PyIterator::new(IterState::Seq(values, 0));
+            // Fence-perf fix 2026-11-06: tag for Drop-prune (F5 contract).
+            it.table_id.set(Some(id));
             interp.iterators.borrow_mut().insert(id, it);
             if let Some(it) = interp.iterators.borrow().get(&id) {
                 return Ok(it.next());
@@ -8294,6 +8296,8 @@ fn gen_materialize(interp: &Rc<Interpreter>, id: u64) -> Result<(), Flow> {
         run_comp_clauses_into(interp, cf, &elt, None, &clauses, &reg, &mut sink)
     })?;
     let it = PyIterator::new(IterState::Seq(sink, 0));
+    // Fence-perf fix 2026-11-06: tag for Drop-prune (F5 contract).
+    it.table_id.set(Some(id));
     interp.iterators.borrow_mut().insert(id, it);
     Ok(())
 }
@@ -8806,6 +8810,13 @@ fn assign_comp_target(frame: &Rc<Frame>, target: &Expr, v: Value) -> Result<(), 
 // ===========================================================================
 
 fn iterable_of(v: &Value) -> Result<Gc<PyIterator>, Flow> {
+    // Fence-perf fix 2026-11-06: native drain paths (list()/extend()/collect
+    // over generators) never went through pull_iter, so dead iterator-table
+    // entries accumulated forever on eager-sink workloads (vendored ast.py
+    // generator functions run through the eager Flow::YieldBack path).
+    if let Some(ic) = CURRENT_INTERP.with(|c| c.borrow().clone()) {
+        prune_dropped_iters(&ic);
+    }
     // T2 (os/shutil.get_terminal_size): native NamedTuple payloads iterate
     // their <values> field list.
     if let Value::Obj(o) = v {
@@ -9102,15 +9113,26 @@ fn register_iter(interp: &Rc<Interpreter>, v: &Value) -> Result<u64, Flow> {
 /// still points at the dead handle's slot before removing (ids are never
 /// recycled while the entry lives — next_iter_id is monotonic — so the
 /// check is belt-and-braces for registry re-entry paths).
-fn prune_dropped_iters(interp: &Rc<Interpreter>) {
+///
+/// Fence-perf fix 2026-11-06: also reachable from the NATIVE drain paths
+/// (iterable_of/collect) — the eager-sink path for mis-flagged generator
+/// functions (vendored ast.py iter_fields/walk...) creates an iterator-table
+/// entry per call and drains it natively; with pruning only on pull_iter the
+/// table grew ~400B/call forever (ast_getattr fence RSS 1.4MB/walk).
+pub(crate) fn prune_dropped_iters(interp: &Rc<Interpreter>) {
     let dead = crate::iter::take_dead_iter_ids();
     if dead.is_empty() {
         return;
     }
     for id in dead {
-        // Generator ids (odd) share the table during genexpr materialization
-        // but their lifecycle is the generator protocol's — leave them.
-        if id % 2 != 0 {
+        // Odd ids are the generator-protocol id space. A def-generator's
+        // entry must survive (its lifecycle is the generator protocol's) —
+        // but a MATERIALIZED GenExpr's entry was already removed from
+        // interp.generators at materialization, so its odd id is a plain
+        // dead handle and must prune (fence-perf fix 2026-11-06: the eager
+        // sink path for vendored-module generators lives entirely on odd
+        // ids; without this the table grew ~400B/call forever).
+        if id % 2 != 0 && interp.generators.borrow().contains_key(&id) {
             continue;
         }
         loop {

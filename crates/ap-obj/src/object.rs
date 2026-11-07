@@ -215,6 +215,43 @@ impl PyObject {
         if let Some(t) = &*self.repr_text.borrow() {
             return t.clone();
         }
+        // collections.deque: render from live state at REPR time (D-fix
+        // 2026-11-06). The old eager path re-rendered the full repr after
+        // every mutation — O(n) per append/popleft, O(n²) for drain loops
+        // (ast.walk's deque.popleft-heavy BFS at 6401 nodes/walk spent
+        // seconds in repr rendering alone). Lazy keeps repr() semantics
+        // identical while mutations become O(1)-ish.
+        if self.kind == ObjKind::Opaque && self.name == "deque" {
+            let items = self
+                .attrs
+                .borrow()
+                .get(&crate::value::Value::Str(crate::PyString::new("<items>")))
+                .unwrap_or(Value::None);
+            let maxlen = self
+                .attrs
+                .borrow()
+                .get(&crate::value::Value::Str(crate::PyString::new("<maxlen>")))
+                .unwrap_or(Value::None);
+            let mut out = String::from("deque([");
+            let mut active = std::collections::HashSet::new();
+            match &items {
+                crate::value::Value::List(l) => {
+                    for (i, item) in l.items().iter().enumerate() {
+                        if i > 0 {
+                            out.push_str(", ");
+                        }
+                        item.fmt_repr(&mut out, &mut active);
+                    }
+                }
+                _ => {}
+            }
+            out.push(']');
+            if let crate::value::Value::Int(n) = &maxlen {
+                out.push_str(&format!(", maxlen={}", n.to_i64().unwrap_or(0)));
+            }
+            out.push(')');
+            return out;
+        }
         match self.kind {
             ObjKind::UserInstance => {
                 format!(

@@ -93,6 +93,13 @@ pub fn take_dead_iter_ids() -> Vec<u64> {
     DEAD_ITER_IDS.with(|d| std::mem::take(&mut *d.borrow_mut()))
 }
 
+/// Fence-perf fix 2026-11-06: queue an exhausted iterator's table id for the
+/// next prune without touching the registry inline (next() can run while the
+/// caller holds an interp.iterators borrow — inline removal panics).
+pub fn queue_dead_iter_id(id: u64) {
+    DEAD_ITER_IDS.with(|d| d.borrow_mut().push(id));
+}
+
 impl PyIterator {
     pub fn new(state: IterState) -> Gc<PyIterator> {
         Gc::new(PyIterator {
@@ -177,7 +184,7 @@ impl PyIterator {
     /// Pull the next value: None = exhausted.
     pub fn next(&self) -> Option<Value> {
         let mut st = self.state.borrow_mut();
-        match &mut *st {
+        let out = match &mut *st {
             IterState::Seq(items, cur) => {
                 if *cur < items.len() {
                     let v = items[*cur].clone();
@@ -274,7 +281,25 @@ impl PyIterator {
                 None
             }
             IterState::Native(n) => n.next(),
+        };
+        if out.is_none() {
+            // Fence-perf fix 2026-11-06: exhausted iterator — detach own
+            // table entry NOW. The table holds a STRONG handle, so the F5
+            // Drop hook can never fire for table-inserted iterators; a
+            // native drain (list()/collect()/extend — no pull_iter on the
+            // path) left the entry pinned forever (~400B/call on the
+            // ast.walk eager-sink path: 1.6GB at the fence's 1000
+            // iterations). Removing at exhaustion is safe: a later pull on
+            // an exhausted iterator is None either way; pulls for def-gens
+            // route through gen_pull (generator registry), not this table.
+            if let Some(id) = self.table_id.get() {
+                // Defer via DEAD_ITER_IDS (inline removal here can race the
+                // caller's interp.iterators borrow). The next iterable_of /
+                // pull_iter prune removes the entry.
+                crate::iter::queue_dead_iter_id(id);
+            }
         }
+        out
     }
 }
 

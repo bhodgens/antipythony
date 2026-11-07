@@ -132,7 +132,22 @@ fn run_fenced(
     std::fs::write(&path, src).unwrap();
 
     let bin =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/ap-run-probe");
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/release/ap-run-probe");
+    let bin = if bin.exists() {
+        bin
+    } else {
+        // Release build missing (developer ran only `cargo test`): fall back
+        // to the debug binary but scale the deadline — debug frames make the
+        // probe ~10x slower (measured 2026-11-06: 0.24s/iter release vs
+        // 2.3s/iter debug on the W114 real-AST tree).
+        let dbg = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/debug/ap-run-probe");
+        eprintln!(
+            "ast_getattr_fence: release probe binary missing; using debug \
+             (deadline x10 internally not applied — set AP_AST_FENCE_DEADLINE_SECS)"
+        );
+        dbg
+    };
 
     let mut child = std::process::Command::new(&bin)
         .arg(&path)
@@ -188,20 +203,38 @@ fn run_fenced(
     (outcome, peak_rss_bytes)
 }
 
-/// Burn memory until killed: allocation target is 256 MiB — 32x the 8MB
-/// self-test cap, so the sampler/cap plumbing proof is unchanged, while an
-/// accidental UNFENCED hog (fence broken) peaks at 256MB instead of the old
-/// 4GB. Never raise this back toward gigabytes: this child can run without
-/// a fence when invoked manually.
+/// Burn memory until killed: allocation climbs to a 512 MiB self-guard
+/// (64x the 8MB self-test cap) and then HOLDS — the fence must SIGKILL the
+/// child before the guard; an accidental UNFENCED hog (fence broken) peaks
+/// at 512MB and spins visibly instead of exiting like a passing test.
+/// Never raise this back toward gigabytes: this child can run without a
+/// fence when invoked manually.
 fn memory_hog() {
-    let mut v: Vec<u8> = Vec::new();
+    // Fence-perf fix 2026-11-06: the old shape (1MB extends to a 256MB
+    // HOG-SURVIVED exit) could FINISH before the parent's 100ms RSS sample
+    // tick on a release build (~30ms total) — the fence never sampled a
+    // breach and the kill-path self-test went red. New shape: allocate 16MB
+    // chunks up to a 512MB self-guard, then HOLD the memory and spin until
+    // the fence SIGKILLs us. An unfenced manual run now tops out at 512MB
+    // instead of exiting early — the fence must fire; if the sampler/cap
+    // plumbing is broken the hog spins (visible, bounded) rather than
+    // passing silently.
+    let mut chunks: Vec<Vec<u8>> = Vec::new();
     loop {
-        v.extend_from_slice(&vec![0u8; 1 << 20]);
-        if v.len() > 256 << 20 {
-            // Only reachable with the cap disabled — the self-test treats
-            // this as a fence failure.
-            println!("HOG-SURVIVED");
-            return;
+        let mut c = vec![0u8; 16 << 20];
+        // Commit EVERY page: vec![0u8; N] is calloc-backed (zero pages stay
+        // uncommitted — RSS never crosses the cap and the sampler misses the
+        // breach; observed on release 2026-11-06). Writing one byte per 16MB
+        // chunk commits one PAGE only — same problem. A full pass commits all.
+        for b in c.iter_mut() {
+            *b = 1;
+        }
+        chunks.push(c);
+        if chunks.len() * 16 >= 512 {
+            // Self-guard reached: hold and wait for the fence (or a human).
+            loop {
+                std::thread::sleep(Duration::from_millis(100));
+            }
         }
     }
 }
