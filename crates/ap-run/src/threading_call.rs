@@ -350,8 +350,11 @@ fn cond_ctor(args: &[Value]) -> BResult {
         _ => (addr + 1, true),
     };
     if own_lock {
-        prim_put(
-            lock_addr,
+        // M4: the implicit backing RLock lives at the PHANTOM key (cond
+        // addr + 1); register it as condition-owned so the eviction sweep
+        // keeps it exactly as long as the Condition object is alive.
+        crate::threading::prim_put_owned_rlock(
+            addr,
             RLockPrim {
                 st: Mutex::new((crate::threading::RLockOwner::None, 0usize)),
                 cv: std::sync::Condvar::new(),
@@ -605,7 +608,13 @@ fn thread_method(
         "start" => crate::threading::thread_start(interp, o),
         "cancel" => {
             // Timer.cancel: flag the parked pre-run wait to bail out.
-            crate::threading::cancel_timer(Rc::as_ptr(o).addr());
+            // E-key: the (addr, serial) pair — serial blocks addr-recycling
+            // aliasing on the cancel flag.
+            let serial = attr_v(o, "<serial>")
+                .and_then(|v| v.as_int())
+                .and_then(|i| i.to_i64())
+                .unwrap_or(-2);
+            crate::threading::cancel_timer_serial(Rc::as_ptr(o).addr(), serial);
             Ok(Value::None)
         }
         "interval" | "function" => {
