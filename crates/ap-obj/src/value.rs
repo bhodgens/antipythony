@@ -6,6 +6,57 @@ use crate::int::{Gc, Int};
 use crate::object::ObjKind;
 use crate::object::PyObject;
 
+// ---------------------------------------------------------------------------
+// A4 (memperf audit 2026-11-06): per-thread interned name handles.
+//
+// The object model historically minted a fresh `Gc<PyString>` (one heap alloc)
+// for every magic/dunder name probe on hot paths: MRO attribute lookups,
+// weakref target reads (`<target_addr>`), `values_eq` object arms, the GC
+// support layer. The names are a small fixed set of `&'static str` constants,
+// so a per-thread cache turns every probe into a HashMap hit + Rc bump
+// (content-equal handles are reused; dict probing compares by content, so
+// identity of the handle is an optimization, never a semantic).
+//
+// Thread-local by construction: `Gc<T> = Rc<T>` refcounts must not be shared
+// across threads outside the GIL protocol, and a per-thread cache hands each
+// thread its own Rc clone. (Under 02.07's GIL v1 the main-thread cache holds
+// every handle the collector probes.)
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    static INTERNED_NAMES: std::cell::RefCell<std::collections::HashMap<String, Gc<PyString>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// The interned `Gc<PyString>` handle for a process-static name. Same
+/// content as `PyString::new(name)`, cached hash included (PyString caches
+/// its hash lazily on first use, so a shared handle amortizes the siphash
+/// across every probe of that name).
+pub fn interned_str(name: &'static str) -> Gc<PyString> {
+    interned_str_ref(name)
+}
+
+/// A4: interned handle for a BORROWED name — hot-path attr/dict probes
+/// (MRO lookups take `&str` of runtime lifetime) get one Rc bump + the
+/// handle's CACHED hash, replacing the per-probe `PyString::new` alloc and
+/// full siphash. A miss allocates once per distinct name per thread.
+pub fn interned_str_ref(name: &str) -> Gc<PyString> {
+    INTERNED_NAMES.with(|c| {
+        if let Some(s) = c.borrow().get(name) {
+            return s.clone();
+        }
+        let s = PyString::new(name);
+        c.borrow_mut().insert(name.to_string(), s.clone());
+        s
+    })
+}
+
+/// The interned handle wrapped as a dict-key `Value` (spares callers the
+/// `Value::Str(PyString::new(..))` allocation per probe).
+pub fn interned_key(name: &'static str) -> Value {
+    Value::Str(interned_str(name))
+}
+
 /// The weak target address of a weakref token object (`_weakref_token` /
 /// `_weakref_proxy` carry `<target_addr>`), or None for other objects.
 /// Tokens hash and compare BY TARGET (CPython: two refs to the same object
@@ -19,7 +70,7 @@ pub fn weakref_target_addr(o: &PyObject) -> Option<usize> {
     }
     o.attrs
         .borrow()
-        .get(&Value::Str(PyString::new("<target_addr>")))
+        .get_str("<target_addr>")
         .and_then(|v| v.as_int())
         .and_then(|i| i.to_i64())
         .map(|n| n.max(0) as usize)
@@ -49,9 +100,16 @@ pub(crate) fn obj_static_type_name(kind: ObjKind) -> &'static str {
 
 /// A Python value (v1 core object model; classes/user types are 02.03).
 ///
-/// Size: 16 bytes. Immediates (smi int, float, bool, None) are inline; every
-/// reference-valued object (str, bytes, list, dict, tuple, set, bigint) sits
-/// behind `Gc<T>` — a handle that 02.04 turns into the MMTk-managed pointer.
+/// Size: 16 bytes — C10 (memperf audit 2026-11-06) claimed "≥24: the Int
+/// arm embeds a 16-byte enum", which the compiler disproves by niche
+/// packing: `Int` (tag word + payload word) leaves spare tag bit-patterns,
+/// and the outer `Value` tag reuses that niche instead of widening the
+/// layout. `unit_tests::value_size_is_16_bytes_doc_pinned` measures the
+/// real size every test run, so this doc can never silently rot again.
+/// Immediates (smi int, float, bool, None) are inline; every
+/// reference-valued object (str, bytes, list, dict, tuple, set, bigint)
+/// sits behind `Gc<T>` — a handle that 02.04 turns into the MMTk-managed
+/// pointer.
 #[derive(Debug, Clone)]
 pub enum Value {
     None,
@@ -392,8 +450,13 @@ impl PyList {
     }
 
     /// `xs.clear()`.
+    ///
+    /// C7 (memperf audit 2026-11-06): releases the backing buffer. The old
+    /// body kept `items`' Vec capacity alive while setting `allocated` to 0
+    /// — a lie (capacity != 0) that also pinned the whole peak buffer
+    /// forever. CPython's `list_clear` frees the item array; match it.
     pub fn clear(&self) {
-        self.items.borrow_mut().clear();
+        *self.items.borrow_mut() = Vec::new();
         self.allocated.set(0);
     }
 
@@ -501,5 +564,34 @@ pub fn addr_of_value(v: &Value) -> usize {
         Value::Set(x) | Value::Frozen(x) => addr_of(x),
         Value::Obj(x) => addr_of(x),
         _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod unit_tests {
+    use super::*;
+
+    #[test]
+    fn value_size_is_16_bytes_doc_pinned() {
+        // C10 (memperf audit 2026-11-06): the audit claimed Value >= 24
+        // because the Int arm embeds a 16-byte enum. MEASURED: niche
+        // packing keeps it 16 (Int's spare tag patterns carry the outer
+        // discriminant). The doc says 16; THIS test makes the doc and the
+        // layout agree permanently — a future arm that breaks the packing
+        // fails here instead of silently invalidating the doc.
+        assert_eq!(std::mem::size_of::<Int>(), 16);
+        assert_eq!(std::mem::size_of::<Value>(), 16);
+    }
+
+    #[test]
+    fn interned_str_handles_are_reused_and_content_equal() {
+        // A4: interning returns content-equal handles (dict probes compare
+        // by content — identity reuse is pure allocation optimization).
+        let a = interned_str("<<intern_test_name>>");
+        let b = interned_str("<<intern_test_name>>");
+        assert!(std::rc::Rc::ptr_eq(&a, &b), "same handle for same name");
+        assert_eq!(a.as_str(), b.as_str());
+        let c = PyString::new("<<intern_test_name>>");
+        assert_eq!(&*a, &*c, "interned == fresh (content)");
     }
 }
