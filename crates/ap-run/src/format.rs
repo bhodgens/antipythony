@@ -62,91 +62,91 @@ pub struct Spec {
 }
 
 fn parse_spec(spec: &str) -> Result<Spec, ap_obj::exc::PyException> {
+    // D9 (memperf audit 2026-11-06): byte-cursor walk over the &str
+    // (was: Vec<char> materialization + a String rebuild per numeric run).
+    // Semantics identical: same acceptance/error behaviour per char index.
     let mut p = Spec::default();
-    let chars: Vec<char> = spec.chars().collect();
-    let mut i = 0;
-
-    // fill+align: align is one of <^>=; fill is any char before it.
-    if chars.len() >= 2 && matches!(chars[1], '<' | '^' | '>' | '=') {
-        p.fill = Some(chars[0]);
-        p.align = Some(chars[1]);
-        i = 2;
-    } else if !chars.is_empty() && matches!(chars[0], '<' | '^' | '>' | '=') {
-        p.align = Some(chars[0]);
-        i = 1;
-    }
+    let mut ci = spec.char_indices();
+    let c0 = ci.next();
+    let c1 = ci.next();
+    let mut rest = match (c0, c1) {
+        (Some((i0, ca)), Some((i1, cb))) if matches!(cb, '<' | '^' | '>' | '=') => {
+            p.fill = Some(ca);
+            p.align = Some(cb);
+            &spec[i1 + cb.len_utf8()..]
+        }
+        (Some((i0, ca)), _) if matches!(ca, '<' | '^' | '>' | '=') => {
+            p.align = Some(ca);
+            &spec[i0 + ca.len_utf8()..]
+        }
+        (Some((i0, _)), _) => &spec[i0..],
+        (None, _) => &spec[spec.len()..],
+    };
     // sign
-    if i < chars.len() && matches!(chars[i], '+' | '-' | ' ') {
-        p.sign = Some(chars[i]);
-        i += 1;
+    if let Some(c) = rest.chars().next() {
+        if matches!(c, '+' | '-' | ' ') {
+            p.sign = Some(c);
+            rest = &rest[c.len_utf8()..];
+        }
     }
     // z (3.11+ float nan/inf coercion) — tolerated, no-op for our corpus.
-    if i < chars.len() && chars[i] == 'z' {
-        i += 1;
+    if rest.starts_with('z') {
+        rest = &rest[1..];
     }
     // alternate form
-    if i < chars.len() && chars[i] == '#' {
+    if rest.starts_with('#') {
         p.alt = true;
-        i += 1;
+        rest = &rest[1..];
     }
     // zero-pad
-    if i < chars.len() && chars[i] == '0' {
+    if rest.starts_with('0') {
         p.zero = true;
-        i += 1;
+        rest = &rest[1..];
     }
-    // width (digits, may contain '_' grouping for width in 3.6+? no — width
-    // digits only)
-    let wstart = i;
-    while i < chars.len() && chars[i].is_ascii_digit() {
-        i += 1;
-    }
-    if i > wstart {
-        p.width = Some(
-            chars[wstart..i]
-                .iter()
-                .collect::<String>()
-                .parse()
-                .unwrap_or(0),
-        );
+    // width (digits only)
+    let wend = digit_run_len(rest);
+    if wend > 0 {
+        p.width = Some(rest[..wend].parse().unwrap_or(0));
+        rest = &rest[wend..];
     }
     // grouping (',' or '_')
-    if i < chars.len() && (chars[i] == ',' || chars[i] == '_') {
-        p.grouping = Some(chars[i]);
-        i += 1;
+    if rest.starts_with(',') || rest.starts_with('_') {
+        p.grouping = Some(rest.as_bytes()[0] as char);
+        rest = &rest[1..];
     }
     // precision
-    if i < chars.len() && chars[i] == '.' {
-        i += 1;
-        let dstart = i;
-        while i < chars.len() && chars[i].is_ascii_digit() {
-            i += 1;
-        }
-        if i == dstart {
+    if rest.starts_with('.') {
+        rest = &rest[1..];
+        let dlen = digit_run_len(rest);
+        if dlen == 0 {
             return Err(ap_obj::exc::PyException::new(
                 "ValueError",
                 "Format specifier missing precision",
             ));
         }
-        p.precision = Some(
-            chars[dstart..i]
-                .iter()
-                .collect::<String>()
-                .parse()
-                .unwrap_or(0),
-        );
+        p.precision = Some(rest[..dlen].parse().unwrap_or(0));
+        rest = &rest[dlen..];
     }
     // type
-    if i < chars.len() {
-        p.type_char = Some(chars[i]);
-        i += 1;
+    if let Some(c) = rest.chars().next() {
+        p.type_char = Some(c);
+        rest = &rest[c.len_utf8()..];
     }
-    if i != chars.len() {
+    if !rest.is_empty() {
         return Err(ap_obj::exc::PyException::new(
             "ValueError",
             format!("Invalid format specifier: '{spec}'"),
         ));
     }
     Ok(p)
+}
+
+/// Byte length of the leading ASCII-digit run in `s`.
+fn digit_run_len(s: &str) -> usize {
+    s.as_bytes()
+        .iter()
+        .position(|b| !b.is_ascii_digit())
+        .unwrap_or(s.len())
 }
 
 // ---------------------------------------------------------------------------
@@ -185,23 +185,33 @@ fn pad_str(body: &str, p: &Spec) -> String {
     let fill = p.fill.unwrap_or(' ');
     let align = p.align.unwrap_or('<');
     let pad = width - len;
+    // D9 (memperf audit 2026-11-06): write into ONE pre-sized String (was:
+    // fill_str alloc + format! chain per branch — 2-3 buffers per pad).
+    let mut out = String::with_capacity(body.len() + fill.len_utf8() * pad);
     match align {
-        '<' => format!("{body}{}", fill_str(fill, pad)),
-        '>' => format!("{}{body}", fill_str(fill, pad)),
+        '>' => {
+            push_fill(&mut out, fill, pad);
+            out.push_str(body);
+        }
         '^' => {
             let left = pad / 2;
-            format!(
-                "{}{body}{}",
-                fill_str(fill, left),
-                fill_str(fill, pad - left)
-            )
+            push_fill(&mut out, fill, left);
+            out.push_str(body);
+            push_fill(&mut out, fill, pad - left);
         }
-        _ => format!("{body}{}", fill_str(fill, pad)), // '=' treated as '<' for str
+        // '<', '=' (treated as '<' for str), and any other align: right pad
+        // — exactly the old match's '<' arm + '_' fallback.
+        _ => {
+            out.push_str(body);
+            push_fill(&mut out, fill, pad);
+        }
     }
+    out
 }
 
-fn fill_str(fill: char, n: usize) -> String {
-    std::iter::repeat(fill).take(n).collect()
+/// Append `n` copies of `fill` to `out` (no intermediate String).
+fn push_fill(out: &mut String, fill: char, n: usize) {
+    out.extend(std::iter::repeat(fill).take(n));
 }
 
 // ---------------------------------------------------------------------------
@@ -277,34 +287,60 @@ fn format_int(i: &Int, p: &Spec) -> Result<String, ap_obj::exc::PyException> {
     }
 
     let prefix = if p.alt { prefix_full(t) } else { "" };
-    let body_len = sign_str.chars().count() + prefix.len() + digits.chars().count();
+    // D9 (memperf audit 2026-11-06): the sign is at most one char; body_len
+    // via cached char counts on the pieces (sign_str is "+"/"-"/" ", prefix
+    // is ASCII). One pre-sized String for every padding branch (was:
+    // fill_str alloc + format! chain per branch).
+    let sign_len = sign_str.chars().count();
+    let body_len = sign_len + prefix.len() + digits.chars().count();
     let width = p.width.unwrap_or(0);
+    let fill = p.fill.unwrap_or(' ');
 
     // zero-padding: '0' flag or align '=' pads AFTER sign/alt prefix.
     if p.zero && width > body_len && p.align != Some('<') && p.align != Some('^') {
         let pad = width - body_len;
-        return Ok(format!("{sign_str}{prefix}{}{digits}", fill_str('0', pad)));
+        let mut out = String::with_capacity(digits.len() + prefix.len() + sign_len + pad);
+        out.push_str(&sign_str);
+        out.push_str(prefix);
+        push_fill(&mut out, '0', pad);
+        out.push_str(&digits);
+        return Ok(out);
     }
 
-    let body = format!("{sign_str}{prefix}{digits}");
     if width <= body_len {
-        return Ok(body);
+        let mut out = String::with_capacity(digits.len() + prefix.len() + sign_len);
+        out.push_str(&sign_str);
+        out.push_str(prefix);
+        out.push_str(&digits);
+        return Ok(out);
     }
     let pad = width - body_len;
-    let fill = p.fill.unwrap_or(' ');
     let align = p.align.unwrap_or('>');
+    let mut out =
+        String::with_capacity(digits.len() + prefix.len() + sign_len + fill.len_utf8() * pad);
     match align {
-        '<' => Ok(format!("{body}{}", fill_str(fill, pad))),
+        '<' => {
+            out.push_str(&sign_str);
+            out.push_str(prefix);
+            out.push_str(&digits);
+            push_fill(&mut out, fill, pad);
+        }
         '^' => {
             let left = pad / 2;
-            Ok(format!(
-                "{}{body}{}",
-                fill_str(fill, left),
-                fill_str(fill, pad - left)
-            ))
+            push_fill(&mut out, fill, left);
+            out.push_str(&sign_str);
+            out.push_str(prefix);
+            out.push_str(&digits);
+            push_fill(&mut out, fill, pad - left);
         }
-        _ => Ok(format!("{}{body}", fill_str(fill, pad))),
+        _ => {
+            push_fill(&mut out, fill, pad);
+            out.push_str(&sign_str);
+            out.push_str(prefix);
+            out.push_str(&digits);
+        }
     }
+    Ok(out)
 }
 
 fn prefix_full(t: Option<char>) -> &'static str {
@@ -444,7 +480,11 @@ fn format_float(f: f64, p: &Spec) -> Result<String, ap_obj::exc::PyException> {
         } else {
             0
         });
-        return Ok(format!("{sign}{}{rest}", fill_str('0', width - body_len)));
+        let mut out = String::with_capacity(full.len() + (width - body_len));
+        out.push_str(sign);
+        push_fill(&mut out, '0', width - body_len);
+        out.push_str(rest);
+        return Ok(out);
     }
     if width <= body_len {
         return Ok(full);
@@ -452,18 +492,26 @@ fn format_float(f: f64, p: &Spec) -> Result<String, ap_obj::exc::PyException> {
     let pad = width - body_len;
     let fill = p.fill.unwrap_or(' ');
     let align = p.align.unwrap_or('>');
-    Ok(match align {
-        '<' => format!("{full}{}", fill_str(fill, pad)),
+    // D9 (memperf audit 2026-11-06): one pre-sized String (was: fill_str
+    // alloc + format! chain per branch).
+    let mut out = String::with_capacity(full.len() + fill.len_utf8() * pad);
+    match align {
+        '<' => {
+            out.push_str(&full);
+            push_fill(&mut out, fill, pad);
+        }
         '^' => {
             let left = pad / 2;
-            format!(
-                "{}{full}{}",
-                fill_str(fill, left),
-                fill_str(fill, pad - left)
-            )
+            push_fill(&mut out, fill, left);
+            out.push_str(&full);
+            push_fill(&mut out, fill, pad - left);
         }
-        _ => format!("{}{full}", fill_str(fill, pad)),
-    })
+        _ => {
+            push_fill(&mut out, fill, pad);
+            out.push_str(&full);
+        }
+    }
+    Ok(out)
 }
 
 /// Group the integer part of a rendered float string (sign allowed).

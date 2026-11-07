@@ -1384,10 +1384,17 @@ pub fn call_method(
                 Err(other) => return Some(Err(other)),
             };
             let parts = crate::iter::collect(&it);
-            let mut strs = Vec::with_capacity(parts.len());
-            for p in parts {
+            // D9 (memperf audit 2026-11-06): collect borrowed pieces + one
+            // pre-sized String (was: Vec<String> full copies, then strs.join
+            // which materialized a THIRD buffer internally).
+            let mut strs: Vec<&str> = Vec::with_capacity(parts.len());
+            let mut total = 0usize;
+            for p in &parts {
                 match p {
-                    Value::Str(x) => strs.push(x.as_str().to_string()),
+                    Value::Str(x) => {
+                        total += x.as_str().len();
+                        strs.push(x.as_str());
+                    }
                     other => {
                         return Some(Err(raise(
                             "TypeError",
@@ -1403,7 +1410,15 @@ pub fn call_method(
                     }
                 }
             }
-            Some(Ok(Value::Str(PyString::new(strs.join(s.as_str())))))
+            let sep = s.as_str();
+            let mut out = String::with_capacity(total + sep.len() * strs.len().saturating_sub(1));
+            for (n, piece) in strs.iter().enumerate() {
+                if n > 0 {
+                    out.push_str(sep);
+                }
+                out.push_str(piece);
+            }
+            Some(Ok(Value::Str(PyString::new(out))))
         }
         // 02.03b-fix: str.format(*args, **kwargs) — literal {}/`{name}`/
         // `{field!r}`/`{field!s}` template expansion (the pathlib __repr__
@@ -1412,10 +1427,9 @@ pub fn call_method(
             let mut pos: Vec<Value> = Vec::new();
             let mut kw: Vec<(String, Value)> = Vec::new();
             for a in args {
-                match a {
-                    Value::Str(k2) if false => {}
-                    other => pos.push(other.clone()),
-                }
+                // L2 (memperf audit 2026-11-06): the old `Value::Str(k2) if
+                // false => {}` arm was dead code — every arg is positional.
+                pos.push(a.clone());
             }
             let _ = &kw;
             // kwargs arrive via the args tail convention? call_method only
@@ -1547,24 +1561,20 @@ pub fn call_method(
         }
         (Value::Str(s), "partition") => {
             let sep = match one_arg(args)? {
-                Value::Str(x) => x.as_str().to_string(),
+                Value::Str(x) => x,
                 _ => return Some(Err(raise("TypeError", "must be str"))),
             };
-            if sep.is_empty() {
+            if sep.as_str().is_empty() {
                 return Some(Err(raise("ValueError", "empty separator")));
             }
-            let (head, found, tail) = match s.as_str().split_once(&sep) {
-                Some((h, t)) => (h.to_string(), true, t.to_string()),
-                None => (s.as_str().to_string(), false, String::new()),
+            // D9 (memperf audit 2026-11-06): single split_once pass. The old
+            // code ran split_once, discarded it, then contains() + a SECOND
+            // split_once + unwrap, plus dead head/tail String copies.
+            let src = s.as_str();
+            let triple: (&str, &str, &str) = match src.split_once(sep.as_str()) {
+                Some((h, t)) => (h, sep.as_str(), t),
+                None => (src, "", ""),
             };
-            let _ = found;
-            let triple = if s.as_str().contains(&sep) {
-                let (h, t) = s.as_str().split_once(&sep).unwrap();
-                (h.to_string(), sep.clone(), t.to_string())
-            } else {
-                (s.as_str().to_string(), String::new(), String::new())
-            };
-            let _ = (head, tail);
             Some(Ok(Value::Tuple(Gc::new(Tuple(vec![
                 Value::Str(PyString::new(triple.0)),
                 Value::Str(PyString::new(triple.1)),
@@ -1597,15 +1607,17 @@ pub fn call_method(
                 }
                 Some(_) => None,
             };
-            let mut delete: Vec<u8> = Vec::new();
+            let mut delete: [bool; 256] = [false; 256];
+            // D6 (memperf audit 2026-11-06): bitmap membership (was a Vec
+            // with `delete.contains(&byte)` — O(n·m) per translate). The old
+            // dead `for (k, kw) in [("delete", true)]` self-loop dropped too.
             if let Some(Value::Bytes(dl)) = args.get(1) {
-                delete = (**dl).clone();
-            }
-            for (k, kw) in [("delete", true)] {
-                let _ = (k, kw);
+                for &x in dl.iter() {
+                    delete[x as usize] = true;
+                }
             }
             for &byte in b.iter() {
-                if delete.contains(&byte) {
+                if delete[byte as usize] {
                     continue;
                 }
                 match &table {

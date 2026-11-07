@@ -180,11 +180,19 @@ pub fn print(interp: &Interpreter, args: &[Value], kwargs: &[(String, Value)]) -
     }
     out.push_str(&end);
     if let Some(stream) = redirected {
-        // Call stream.write(out) through the interpreter's method dispatch.
-        let r = call_method_pub(&stream, "write", &[Value::Str(PyString::new(out.clone()))]);
+        // D9 (memperf audit 2026-11-06): move the built String into the
+        // PyString handle the stream receives (was: clone the whole output
+        // into the write arg on every redirected print). The fallback
+        // console write recovers the same text from the handle.
+        let handle = Value::Str(PyString::new(std::mem::take(&mut out)));
+        let r = call_method_pub(&stream, "write", std::slice::from_ref(&handle));
         if r.is_ok() {
             return Ok(Value::None);
         }
+        if let Value::Str(x) = &handle {
+            interp.write_out(x.as_str());
+        }
+        return Ok(Value::None);
     }
     interp.write_out(&out);
     Ok(Value::None)

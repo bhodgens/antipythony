@@ -1204,26 +1204,47 @@ fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opti
             };
             let buf_key = s("<buf>");
             if fname == "Incremental.decode" {
-                let chunk: Vec<u8> = match args.get(1) {
-                    Some(Value::Bytes(b)) => b.iter().cloned().collect(),
-                    _ => Vec::new(),
+                // D8 (memperf audit 2026-11-06): drain the valid UTF-8
+                // prefix, buffer only the incomplete tail (CPython's
+                // buffered-decoder shape). The old path did
+                // `String::from_utf8(acc.clone())` per chunk — a full-buffer
+                // clone every call, O(n·k), and it withheld the valid prefix
+                // (returned "" while a complete prefix was decodable; the
+                // pinned corpus case has a zero-length prefix so bytes stay
+                // identical there).
+                let chunk: &[u8] = match args.get(1) {
+                    Some(Value::Bytes(b)) => b,
+                    _ => &[],
                 };
                 let mut acc: Vec<u8> = match recv_attr_get(&recv, &buf_key) {
                     Some(Value::Bytes(b)) => b.iter().cloned().collect(),
                     _ => Vec::new(),
                 };
-                acc.extend_from_slice(&chunk);
-                match String::from_utf8(acc.clone()) {
-                    Ok(txt) => {
-                        let _ = recv_attr_set(&recv, &buf_key, Value::Bytes(Gc::new(Vec::new())));
-                        return Some(Ok(s(txt)));
-                    }
-                    Err(_) => {
-                        // Incomplete sequence: keep buffering, return "".
-                        let _ = recv_attr_set(&recv, &buf_key, Value::Bytes(Gc::new(acc)));
-                        return Some(Ok(s("")));
-                    }
+                if acc.len() + chunk.len() > acc.capacity() {
+                    acc.reserve(chunk.len());
                 }
+                acc.extend_from_slice(chunk);
+                // D8 (memperf audit 2026-11-06): drain the valid UTF-8
+                // prefix, buffer only the incomplete tail (CPython's
+                // buffered-decoder shape). The old path did
+                // `String::from_utf8(acc.clone())` per chunk — a full-buffer
+                // clone every call, O(n·k).
+                let txt: String = match std::str::from_utf8(&acc) {
+                    Ok(_) => {
+                        let emit = std::mem::take(&mut acc);
+                        let _ = recv_attr_set(&recv, &buf_key, Value::Bytes(Gc::new(acc)));
+                        String::from_utf8(emit).unwrap_or_default()
+                    }
+                    Err(e) => {
+                        let v = e.valid_up_to();
+                        // Reuse `acc`'s allocation: drain the decodable head
+                        // out in place, retain the incomplete tail.
+                        let head: Vec<u8> = acc.drain(..v).collect();
+                        let _ = recv_attr_set(&recv, &buf_key, Value::Bytes(Gc::new(acc)));
+                        String::from_utf8(head).unwrap_or_default()
+                    }
+                };
+                return Some(Ok(s(txt)));
             }
             // encode
             let txt = match args.get(1) {
@@ -2396,25 +2417,40 @@ fn re_sub_literal(pat: &str, repl: &str, text: &str, count: i64) -> String {
     if pat.is_empty() {
         return text.to_string();
     }
+    // D9 (memperf audit 2026-11-06): operate on &str slices (was: two full
+    // Vec<char> materializations per call + a dead char_indices peekable).
     let mut out = String::with_capacity(text.len());
     let mut remaining = count;
-    let mut chars = text.char_indices().peekable();
-    let pat_c: Vec<char> = pat.chars().collect();
-    let text_c: Vec<char> = text.chars().collect();
-    let mut i = 0usize;
-    while i < text_c.len() {
-        if remaining != 0 && text_c[i..].starts_with(&pat_c) {
+    let mut rest = text;
+    while !rest.is_empty() {
+        if remaining != 0 && rest.starts_with(pat) {
             out.push_str(repl);
-            i += pat_c.len();
+            rest = &rest[pat.len()..];
             if remaining > 0 {
                 remaining -= 1;
             }
         } else {
-            out.push(text_c[i]);
-            i += 1;
+            // Copy the run up to the next match in one slice push. Skip
+            // the current char by its UTF-8 length (byte-slicing [1..]
+            // would panic on a multibyte lead char).
+            let skip = rest.chars().next().map_or(1, |c| c.len_utf8());
+            let next = if remaining == 0 {
+                None
+            } else {
+                rest[skip..].find(pat).map(|p| p + skip)
+            };
+            match next {
+                Some(n) => {
+                    out.push_str(&rest[..n]);
+                    rest = &rest[n..];
+                }
+                None => {
+                    out.push_str(rest);
+                    break;
+                }
+            }
         }
     }
-    let _ = chars;
     out
 }
 
@@ -3970,9 +4006,20 @@ pub fn call_operator(name: &str, args: &[Value], _kwargs: &[(String, Value)]) ->
     };
     let r: BResult = (|| -> BResult {
         match name {
-            "eq" => Ok(Value::Bool(py_eq(&two()?.0, &two()?.1))),
-            "ne" => Ok(Value::Bool(!py_eq(&two()?.0, &two()?.1))),
-            "lt" => Ok(Value::Bool(py_lt(&two()?.0, &two()?.1)?)),
+            // D9 (memperf audit 2026-11-06): destructure once (was: two()
+            // called twice per comparison, cloning both args on each pass).
+            "eq" => {
+                let (a, b) = two()?;
+                Ok(Value::Bool(py_eq(&a, &b)))
+            }
+            "ne" => {
+                let (a, b) = two()?;
+                Ok(Value::Bool(!py_eq(&a, &b)))
+            }
+            "lt" => {
+                let (a, b) = two()?;
+                Ok(Value::Bool(py_lt(&a, &b)?))
+            }
             "le" => {
                 let (a, b) = two()?;
                 Ok(Value::Bool(py_lt(&a, &b)? || py_eq(&a, &b)))
@@ -3985,8 +4032,14 @@ pub fn call_operator(name: &str, args: &[Value], _kwargs: &[(String, Value)]) ->
                 let (a, b) = two()?;
                 Ok(Value::Bool(!py_lt(&a, &b)?))
             }
-            "is_" => Ok(Value::Bool(value_is(&two()?.0, &two()?.1))),
-            "is_not" => Ok(Value::Bool(!value_is(&two()?.0, &two()?.1))),
+            "is_" => {
+                let (a, b) = two()?;
+                Ok(Value::Bool(value_is(&a, &b)))
+            }
+            "is_not" => {
+                let (a, b) = two()?;
+                Ok(Value::Bool(!value_is(&a, &b)))
+            }
             "truth" => Ok(Value::Bool(truthy(required(args, "truth")?))),
             "not_" => Ok(Value::Bool(!truthy(required(args, "not_")?))),
             "neg" => {
@@ -5613,16 +5666,23 @@ pub(crate) fn str_arg(v: &Value, fname: &str) -> Result<String, Flow> {
 fn wrap_text(text: &str, width: usize) -> Vec<String> {
     let mut lines = Vec::new();
     let mut cur = String::new();
+    // D7 (memperf audit 2026-11-06): running char-count of `cur` instead of
+    // `cur.chars().count()` re-count per word (O(chars×words)).
+    let mut cur_len = 0usize;
     for word in text.split_whitespace() {
         let wlen = word.chars().count();
         if cur.is_empty() {
             cur = word.to_string();
-        } else if cur.chars().count() + 1 + wlen <= width {
+            cur_len = wlen;
+        } else if cur_len + 1 + wlen <= width {
             cur.push(' ');
             cur.push_str(word);
+            cur_len += 1 + wlen;
         } else {
             lines.push(std::mem::take(&mut cur));
+            cur_len = 0;
             cur = word.to_string();
+            cur_len = wlen;
         }
     }
     if !cur.is_empty() {
@@ -6848,14 +6908,19 @@ impl<'a> JsonParser<'a> {
 }
 
 fn json_loads(v: &Value, kwargs: &[(String, Value)]) -> BResult {
-    let doc = match v {
-        Value::Str(x) => x.as_str().to_string(),
-        Value::Bytes(b) => String::from_utf8((**b).clone()).map_err(|_| {
-            raise(
-                "UnicodeDecodeError",
-                "'utf-8' codec can't decode byte in position: invalid continuation byte",
-            )
-        })?,
+    // D9 (memperf audit 2026-11-06): the str path borrows the receiver
+    // (was: full String copy per loads — the doc itself is only re-copied
+    // into LAST_JSON_ERR on the error path).
+    let doc: std::borrow::Cow<'_, str> = match v {
+        Value::Str(x) => std::borrow::Cow::Borrowed(x.as_str()),
+        Value::Bytes(b) => {
+            std::borrow::Cow::Owned(String::from_utf8(b.to_vec()).map_err(|_| {
+                raise(
+                    "UnicodeDecodeError",
+                    "'utf-8' codec can't decode byte in position: invalid continuation byte",
+                )
+            })?)
+        }
         other => {
             return Err(raise(
                 "TypeError",
@@ -13072,7 +13137,13 @@ pub(crate) fn lru_wrapper_of_typed(f: &Value, maxsize: Option<i64>, typed: bool)
                 maxsize,
                 typed,
                 cache: std::collections::HashMap::new(),
-                order: Vec::new(),
+                nodes: std::collections::HashMap::new(),
+                node_key: Vec::new(),
+                node_prev: Vec::new(),
+                node_next: Vec::new(),
+                head: LRU_NIL,
+                tail: LRU_NIL,
+                free: Vec::new(),
                 hits: 0,
                 misses: 0,
             },
@@ -13092,10 +13163,104 @@ struct LruState {
     typed: bool,
     /// encoded-key -> cached return Value
     cache: std::collections::HashMap<String, Value>,
-    /// LRU order (oldest first), keys mirror the cache table.
-    order: Vec<String>,
+    // D9 (memperf audit 2026-11-06): LRU recency is an intrusive doubly
+    // linked list over `node_prev`/`node_next` (indices into `node_key`),
+    // keyed O(1) via `nodes`. The old `order: Vec<String>` was linear-
+    // scanned per hit (string compares), O(cache). Eviction pops the head
+    // (oldest); hit-refresh moves to the tail — identical ordering
+    // semantics, all operations O(1).
+    nodes: std::collections::HashMap<String, usize>,
+    node_key: Vec<Option<String>>,
+    node_prev: Vec<usize>,
+    node_next: Vec<usize>,
+    head: usize,
+    tail: usize,
+    free: Vec<usize>,
     hits: u64,
     misses: u64,
+}
+
+const LRU_NIL: usize = usize::MAX;
+
+impl LruState {
+    fn new_lru_slot(&mut self, key: String) -> usize {
+        if let Some(f) = self.free.pop() {
+            self.node_key[f] = Some(key);
+            self.node_prev[f] = LRU_NIL;
+            self.node_next[f] = LRU_NIL;
+            return f;
+        }
+        self.node_key.push(Some(key));
+        self.node_prev.push(LRU_NIL);
+        self.node_next.push(LRU_NIL);
+        self.node_key.len() - 1
+    }
+
+    fn lru_unlink(&mut self, n: usize) {
+        let (p, nx) = (self.node_prev[n], self.node_next[n]);
+        if p != LRU_NIL {
+            self.node_next[p] = nx;
+        } else {
+            self.head = nx;
+        }
+        if nx != LRU_NIL {
+            self.node_prev[nx] = p;
+        } else {
+            self.tail = p;
+        }
+        self.node_prev[n] = LRU_NIL;
+        self.node_next[n] = LRU_NIL;
+    }
+
+    fn lru_link_tail(&mut self, n: usize) {
+        self.node_next[n] = LRU_NIL;
+        self.node_prev[n] = self.tail;
+        if self.tail != LRU_NIL {
+            self.node_next[self.tail] = n;
+        } else {
+            self.head = n;
+        }
+        self.tail = n;
+    }
+
+    fn lru_touch(&mut self, key: &str) {
+        if let Some(&n) = self.nodes.get(key) {
+            self.lru_unlink(n);
+            self.lru_link_tail(n);
+        }
+    }
+
+    fn lru_push_new(&mut self, key: String) {
+        let n = self.new_lru_slot(key.clone());
+        self.nodes.insert(key, n);
+        self.lru_link_tail(n);
+    }
+
+    fn lru_evict_oldest(&mut self) -> Option<String> {
+        let h = self.head;
+        if h == LRU_NIL {
+            return None;
+        }
+        let key = self.node_key[h].take()?;
+        self.lru_unlink(h);
+        self.nodes.remove(&key);
+        self.free.push(h);
+        Some(key)
+    }
+
+    fn lru_clear_all(&mut self) {
+        self.nodes.clear();
+        self.node_key.clear();
+        self.node_prev.clear();
+        self.node_next.clear();
+        self.free.clear();
+        self.head = LRU_NIL;
+        self.tail = LRU_NIL;
+    }
+
+    fn lru_len(&self) -> usize {
+        self.nodes.len()
+    }
 }
 
 /// s014 core: call an lru wrapper with real memoization (state keyed by the
@@ -13132,13 +13297,11 @@ pub fn lru_wrapper_call_id(id: &str, args: &[Value], kwargs: &[(String, Value)])
                     ));
                 }
                 let key = key_parts.join("\u{1f}");
-                if let Some(pos) = s.order.iter().position(|k| *k == key) {
-                    // Hit: LRU refresh + counter.
+                if s.nodes.contains_key(&key) {
+                    // Hit: LRU refresh + counter (O(1); was a linear
+                    // `order.iter().position` scan + O(n) Vec shift).
                     s.hits += 1;
-                    if s.maxsize.map(|m| m > 0).unwrap_or(false) {
-                        let k2 = s.order.remove(pos);
-                        s.order.push(k2);
-                    }
+                    s.lru_touch(&key);
                     Some(s.cache.get(&key).cloned().unwrap_or(Value::None))
                 } else {
                     s.misses += 1;
@@ -13170,11 +13333,14 @@ pub fn lru_wrapper_call_id(id: &str, args: &[Value], kwargs: &[(String, Value)])
             // negative maxsize insert nothing; maxsize=None stays unbounded.
             if matches!(maxsize, Some(m) if m > 0) {
                 s.cache.insert(key.clone(), val.clone());
-                s.order.push(key.clone());
+                s.lru_push_new(key);
                 let limit = maxsize.unwrap_or(0);
-                while s.order.len() as i64 > limit {
-                    let oldest = s.order.remove(0);
-                    s.cache.remove(&oldest);
+                while s.lru_len() as i64 > limit {
+                    if let Some(oldest) = s.lru_evict_oldest() {
+                        s.cache.remove(&oldest);
+                    } else {
+                        break;
+                    }
                 }
             }
         }
@@ -13234,7 +13400,7 @@ pub(crate) fn lru_cache_clear_id(id: &str) {
     LRU_STATE.with(|t| {
         if let Some(s) = t.borrow_mut().get_mut(id) {
             s.cache.clear();
-            s.order.clear();
+            s.lru_clear_all();
             s.hits = 0;
             s.misses = 0;
         }
@@ -15175,18 +15341,23 @@ pub fn call_builtin_values(
     // Wave-72: dict-subclass instances (logging ConvertingDict etc.)
     // arriving with tag=pydict — re-point args[0] at the instance's
     // dict backing so the (Value::Dict, fn) arms match.
+    // D9 (memperf audit 2026-11-06): local receiver swap instead of the
+    // recursive call + fresh cloned Vec (the tail indices are unchanged,
+    // so the arms below see the same args either way — single pass).
+    let mut recv_override: Option<Value> = None;
     if tag == "pydict" {
-        if let Some(Value::Obj(io)) = args.first() {
+        if let Some(first @ Value::Obj(io)) = args.first() {
             if io.kind == ap_obj::ObjKind::UserInstance {
-                if let Some(d) = crate::classes::dict_backing(args.first().unwrap()) {
-                    let mut a2: Vec<Value> = vec![Value::Dict(d)];
-                    a2.extend(args.iter().skip(1).cloned());
-                    return call_builtin_values(tag, fname, &a2, kwargs);
+                if let Some(d) = crate::classes::dict_backing(first) {
+                    recv_override = Some(Value::Dict(d));
                 }
             }
         }
     }
-    let recv = args.first()?.clone();
+    let recv = match recv_override {
+        Some(v) => v,
+        None => args.first()?.clone(),
+    };
     let a = |i: usize| args.get(i).cloned();
     // owned-arg str helper (str_arg takes &Value)
     let sa = |i: usize, fname: &str| -> Result<String, Flow> {
@@ -15457,8 +15628,9 @@ pub fn call_builtin_values(
             | ("pystr", "isalnum")
             | ("pystr", "isspace")
             | ("pystr", "istitle") => {
-                let v = match &recv {
-                    Value::Str(x) => x.as_str().to_string(),
+                // D9 (memperf audit 2026-11-06): borrow the receiver.
+                let v: &str = match &recv {
+                    Value::Str(x) => x.as_str(),
                     _ => {
                         return Err(raise(
                             "SystemError",
@@ -15470,24 +15642,25 @@ pub fn call_builtin_values(
                         ))
                     }
                 };
-                let cs: Vec<char> = v.chars().collect();
+                // D9 (memperf audit 2026-11-06): iterator passes over the
+                // borrowed &str (was: Vec<char> materialization per call).
                 let r = match fname {
                     "isupper" => {
-                        cs.iter().any(|c| c.is_uppercase()) && !cs.iter().any(|c| c.is_lowercase())
+                        v.chars().any(|c| c.is_uppercase()) && !v.chars().any(|c| c.is_lowercase())
                     }
                     "islower" => {
-                        cs.iter().any(|c| c.is_lowercase()) && !cs.iter().any(|c| c.is_uppercase())
+                        v.chars().any(|c| c.is_lowercase()) && !v.chars().any(|c| c.is_uppercase())
                     }
-                    "isalpha" => !cs.is_empty() && cs.iter().all(|c| c.is_alphabetic()),
-                    "isdigit" => !cs.is_empty() && cs.iter().all(|c| c.is_ascii_digit()),
-                    "isalnum" => !cs.is_empty() && cs.iter().all(|c| c.is_alphanumeric()),
-                    "isspace" => !cs.is_empty() && cs.iter().all(|c| c.is_whitespace()),
+                    "isalpha" => !v.is_empty() && v.chars().all(|c| c.is_alphabetic()),
+                    "isdigit" => !v.is_empty() && v.chars().all(|c| c.is_ascii_digit()),
+                    "isalnum" => !v.is_empty() && v.chars().all(|c| c.is_alphanumeric()),
+                    "isspace" => !v.is_empty() && v.chars().all(|c| c.is_whitespace()),
                     _ => {
                         // istitle: each word starts uppercase, rest lowercase
                         let mut prev_alpha_upper = false;
                         let mut has_cased = false;
                         let mut ok = true;
-                        for c in cs {
+                        for c in v.chars() {
                             if c.is_uppercase() {
                                 if prev_alpha_upper {
                                     ok = false;
@@ -15564,8 +15737,9 @@ pub fn call_builtin_values(
                 )))
             }
             ("pystr", "startswith") | ("pystr", "endswith") => {
-                let v = match &recv {
-                    Value::Str(x) => x.as_str().to_string(),
+                // D9 (memperf audit 2026-11-06): borrow the receiver.
+                let v: &str = match &recv {
+                    Value::Str(x) => x.as_str(),
                     _ => {
                         return Err(raise(
                             "SystemError",
@@ -15637,30 +15811,49 @@ pub fn call_builtin_values(
                         ))
                     }
                 };
-                let chars: Option<Vec<char>> = match a(1) {
-                    Some(Value::Str(x)) => Some(x.as_str().chars().collect()),
+                // D6 (memperf audit 2026-11-06): 256-entry bitmap membership
+                // (was: `cs.contains(&c)` linear scan per char — O(n·m)).
+                // Non-ASCII chars stay a small fallback Vec (rare).
+                let strip_set: Option<([bool; 256], Vec<char>)> = match a(1) {
+                    Some(Value::Str(x)) => {
+                        let mut bitmap = [false; 256];
+                        let mut rest: Vec<char> = Vec::new();
+                        for c in x.as_str().chars() {
+                            if c.is_ascii() {
+                                bitmap[c as usize] = true;
+                            } else {
+                                rest.push(c);
+                            }
+                        }
+                        Some((bitmap, rest))
+                    }
                     Some(Value::None) | None => None,
                     _ => None,
                 };
+                let in_set = |c: char| -> bool {
+                    match &strip_set {
+                        Some((bitmap, rest)) => {
+                            if c.is_ascii() {
+                                bitmap[c as usize]
+                            } else {
+                                rest.contains(&c)
+                            }
+                        }
+                        None => c.is_whitespace(),
+                    }
+                };
                 let out = match fname {
-                    "strip" => match chars {
-                        Some(cs) => v.trim_matches(|c| cs.contains(&c)).to_string(),
-                        None => v.trim().to_string(),
-                    },
-                    "lstrip" => match chars {
-                        Some(cs) => v.trim_start_matches(|c| cs.contains(&c)).to_string(),
-                        None => v.trim_start().to_string(),
-                    },
-                    _ => match chars {
-                        Some(cs) => v.trim_end_matches(|c| cs.contains(&c)).to_string(),
-                        None => v.trim_end().to_string(),
-                    },
+                    "strip" => v.trim_matches(in_set).to_string(),
+                    "lstrip" => v.trim_start_matches(in_set).to_string(),
+                    _ => v.trim_end_matches(in_set).to_string(),
                 };
                 Ok(s(out))
             }
             ("pystr", "split") | ("pystr", "rsplit") => {
-                let v = match &recv {
-                    Value::Str(x) => x.as_str().to_string(),
+                // D9 (memperf audit 2026-11-06): borrow receiver + separator
+                // (was: both copied in full before splitting).
+                let v: &str = match &recv {
+                    Value::Str(x) => x.as_str(),
                     _ => {
                         return Err(raise(
                             "SystemError",
@@ -15672,18 +15865,18 @@ pub fn call_builtin_values(
                         ))
                     }
                 };
-                let sep = match a(1) {
-                    Some(Value::Str(x)) => Some(x.as_str().to_string()),
-                    Some(Value::None) | None => None,
+                let sep_v = a(1);
+                let sep: Option<&str> = match &sep_v {
+                    Some(Value::Str(x)) => Some(x.as_str()),
                     _ => None,
                 };
                 let maxsplit = a(2).map(|v| as_int_i64(&v)).transpose()?.unwrap_or(-1);
-                let parts: Vec<String> = match (&sep, fname) {
+                let parts: Vec<String> = match (sep, fname) {
                     (None, "split") => {
                         // CPython: whitespace split with maxsplit keeps the
                         // remainder as the last element (leading ws skipped).
                         let mut out: Vec<String> = Vec::new();
-                        let mut rest = v.as_str();
+                        let mut rest = v;
                         let mut left = maxsplit;
                         loop {
                             rest = rest.trim_start();
@@ -15712,7 +15905,7 @@ pub fn call_builtin_values(
                         // Right-side whitespace split with maxsplit: the
                         // remainder (unsplit head) comes first.
                         let mut out: Vec<String> = Vec::new();
-                        let mut rest = v.as_str();
+                        let mut rest = v;
                         let mut left = maxsplit;
                         loop {
                             rest = rest.trim_end();
@@ -15743,9 +15936,9 @@ pub fn call_builtin_values(
                             return Err(raise("ValueError", "empty separator"));
                         }
                         if maxsplit < 0 {
-                            v.split(sp.as_str()).map(String::from).collect()
+                            v.split(sp).map(String::from).collect()
                         } else {
-                            v.splitn(maxsplit as usize + 1, sp.as_str())
+                            v.splitn(maxsplit as usize + 1, sp)
                                 .map(String::from)
                                 .collect()
                         }
@@ -15757,9 +15950,9 @@ pub fn call_builtin_values(
                         // Rust rsplitn yields right-to-left; CPython keeps
                         // left-to-right order, so reverse.
                         let mut parts: Vec<String> = if maxsplit < 0 {
-                            v.rsplit(sp.as_str()).map(String::from).collect()
+                            v.rsplit(sp).map(String::from).collect()
                         } else {
-                            v.rsplitn(maxsplit as usize + 1, sp.as_str())
+                            v.rsplitn(maxsplit as usize + 1, sp)
                                 .map(String::from)
                                 .collect()
                         };
@@ -15880,15 +16073,17 @@ pub fn call_builtin_values(
             | ("pystr", "isalnum")
             | ("pystr", "isspace") => {
                 if let Value::Str(x) = &recv {
-                    let cs: Vec<char> = x.as_str().chars().collect();
-                    let out = if cs.is_empty() {
+                    // D9 (memperf audit 2026-11-06): iterator passes over the
+                    // borrowed &str (was: Vec<char> materialization per call).
+                    let src = x.as_str();
+                    let out = if src.is_empty() {
                         false
                     } else {
                         match fname {
-                            "isdigit" => cs.iter().all(|c| c.is_ascii_digit()),
-                            "isalpha" => cs.iter().all(|c| c.is_alphabetic()),
-                            "isalnum" => cs.iter().all(|c| c.is_alphanumeric()),
-                            _ => cs.iter().all(|c| c.is_whitespace()),
+                            "isdigit" => src.chars().all(|c| c.is_ascii_digit()),
+                            "isalpha" => src.chars().all(|c| c.is_alphabetic()),
+                            "isalnum" => src.chars().all(|c| c.is_alphanumeric()),
+                            _ => src.chars().all(|c| c.is_whitespace()),
                         }
                     };
                     return Ok(Value::Bool(out));
@@ -16385,17 +16580,18 @@ pub fn call_builtin_values(
                     // CPython casefold = full case folding; lowercase covers
                     // the v1 corpus (ß -> ss via to_lowercase? No: Rust
                     // to_lowercase leaves ß. Use the ß special case + fold).
-                    let folded: String = x
-                        .as_str()
-                        .chars()
-                        .flat_map(|c| {
-                            if c == 'ß' {
-                                "ss".chars().collect::<Vec<_>>()
-                            } else {
-                                c.to_lowercase().collect::<Vec<_>>()
-                            }
-                        })
-                        .collect();
+                    // D9 (memperf audit 2026-11-06): extend a pre-sized
+                    // String (was: a Vec<char> alloc per char via
+                    // flat_map(...collect())).
+                    let src = x.as_str();
+                    let mut folded = String::with_capacity(src.len());
+                    for c in src.chars() {
+                        if c == 'ß' {
+                            folded.push_str("ss");
+                        } else {
+                            folded.extend(c.to_lowercase());
+                        }
+                    }
                     return Ok(s(folded));
                 }
                 Err(raise(
@@ -16409,17 +16605,17 @@ pub fn call_builtin_values(
             }
             ("pystr", "swapcase") => {
                 if let Value::Str(x) = &recv {
-                    let out: String = x
-                        .as_str()
-                        .chars()
-                        .flat_map(|c| {
-                            if c.is_uppercase() {
-                                c.to_lowercase().collect::<Vec<_>>()
-                            } else {
-                                c.to_uppercase().collect::<Vec<_>>()
-                            }
-                        })
-                        .collect();
+                    // D9 (memperf audit 2026-11-06): extend a pre-sized
+                    // String (was: Vec<char> alloc per char).
+                    let src = x.as_str();
+                    let mut out = String::with_capacity(src.len());
+                    for c in src.chars() {
+                        if c.is_uppercase() {
+                            out.extend(c.to_lowercase());
+                        } else {
+                            out.extend(c.to_uppercase());
+                        }
+                    }
                     return Ok(s(out));
                 }
                 Err(raise(
@@ -16440,20 +16636,21 @@ pub fn call_builtin_values(
                         }
                         _ => ' ',
                     };
-                    let txt: Vec<char> = x.as_str().chars().collect();
-                    let len = txt.len();
-                    let out: String = if width <= len {
-                        txt.into_iter().collect()
-                    } else {
-                        let total = width - len;
-                        let left = total / 2;
-                        let right = total - left;
-                        let mut out: Vec<char> = Vec::with_capacity(width);
-                        out.extend(std::iter::repeat(fill).take(left));
-                        out.extend(txt);
-                        out.extend(std::iter::repeat(fill).take(right));
-                        out.into_iter().collect()
-                    };
+                    // D9 (memperf audit 2026-11-06): cached code-point count
+                    // + push into a pre-sized String (was: Vec<char> copy of
+                    // the receiver, then a second Vec<char>, then collect).
+                    let len = x.len();
+                    let src = x.as_str();
+                    if width <= len {
+                        return Ok(s(src.to_string()));
+                    }
+                    let total = width - len;
+                    let left = total / 2;
+                    let right = total - left;
+                    let mut out = String::with_capacity(src.len() + fill.len_utf8() * total);
+                    out.extend(std::iter::repeat(fill).take(left));
+                    out.push_str(src);
+                    out.extend(std::iter::repeat(fill).take(right));
                     return Ok(s(out));
                 }
                 Err(raise(
@@ -16468,25 +16665,26 @@ pub fn call_builtin_values(
             ("pystr", "zfill") => {
                 if let Value::Str(x) = &recv {
                     let width = a(1).map(|v| as_int_i64(&v)).transpose()?.unwrap_or(0) as usize;
-                    let chars: Vec<char> = x.as_str().chars().collect();
-                    let out: String = if width <= chars.len() {
-                        chars.into_iter().collect()
-                    } else {
-                        // Sign stays at position 0: "-5".zfill(3) = "-05".
-                        let (sign, rest): (String, Vec<char>) = match chars.first() {
-                            Some(c) if *c == '+' || *c == '-' => {
-                                (c.to_string(), chars[1..].to_vec())
-                            }
-                            _ => (String::new(), chars),
-                        };
-                        let pad = width - sign.chars().count() - rest.len();
-                        format!(
-                            "{}{}{}",
-                            sign,
-                            "0".repeat(pad),
-                            rest.into_iter().collect::<String>()
-                        )
+                    // D9 (memperf audit 2026-11-06): cached len + borrowed
+                    // str slices (was: Vec<char> copy of the receiver plus
+                    // sign/rest Vec copies plus collect-to-String rebuilds).
+                    let src = x.as_str();
+                    if width <= x.len() {
+                        return Ok(s(src.to_string()));
+                    }
+                    // Sign stays at position 0: "-5".zfill(3) = "-05".
+                    let (sign, rest): (&str, &str) = match src.as_bytes().first() {
+                        Some(b'+') | Some(b'-') => src.split_at(1),
+                        _ => ("", src),
                     };
+                    // sign.chars().count() + rest.chars().count() == x.len().
+                    let pad = width - x.len();
+                    let mut out = String::with_capacity(src.len() + pad);
+                    out.push_str(sign);
+                    for _ in 0..pad {
+                        out.push('0');
+                    }
+                    out.push_str(rest);
                     return Ok(s(out));
                 }
                 Err(raise(
@@ -16507,16 +16705,21 @@ pub fn call_builtin_values(
                         }
                         _ => ' ',
                     };
-                    // D9 (memperf audit 2026-11-06): cached count (was:
-                    // chars().count() walk per ljust/rjust/center call).
+                    // D9 (memperf audit 2026-11-06): cached count + one
+                    // pre-sized String (was: chars().count() walk, then a
+                    // separate pad_s alloc + format! concat buffer).
                     let len = x.len();
                     let pad = if width > len { width - len } else { 0 };
-                    let pad_s: String = std::iter::repeat(fill).take(pad).collect();
-                    return Ok(s(if fname == "ljust" {
-                        format!("{}{}", x.as_str(), pad_s)
-                    } else {
-                        format!("{}{}", pad_s, x.as_str())
-                    }));
+                    let src = x.as_str();
+                    let mut out = String::with_capacity(src.len() + fill.len_utf8() * pad);
+                    if fname != "ljust" {
+                        out.extend(std::iter::repeat(fill).take(pad));
+                    }
+                    out.push_str(src);
+                    if fname == "ljust" {
+                        out.extend(std::iter::repeat(fill).take(pad));
+                    }
+                    return Ok(s(out));
                 }
                 Err(raise(
                     "SystemError",
@@ -16533,12 +16736,16 @@ pub fn call_builtin_values(
                     return Err(raise("ValueError", "empty separator"));
                 }
                 if let Value::Str(x) = &recv {
-                    let triple = match x.as_str().rfind(&sep) {
+                    // D9 (memperf audit 2026-11-06): no-match case reuses
+                    // one receiver copy (was: full copy inside the triple).
+                    let src = x.as_str();
+                    let sep_len = sep.len();
+                    let triple = match src.rfind(&sep) {
                         Some(p) => {
-                            let (h, t) = x.as_str().split_at(p);
-                            (h.to_string(), sep.clone(), t[sep.len()..].to_string())
+                            let (h, t) = src.split_at(p);
+                            (h.to_string(), sep, t[sep_len..].to_string())
                         }
-                        None => (String::new(), String::new(), x.as_str().to_string()),
+                        None => (String::new(), String::new(), src.to_string()),
                     };
                     return Ok(tuple(vec![s(triple.0), s(triple.1), s(triple.2)]));
                 }
@@ -16590,18 +16797,36 @@ pub fn call_builtin_values(
                     let table = a(1).ok_or_else(|| {
                         raise("TypeError", "translate() missing required argument")
                     })?;
-                    let del = match a(2) {
-                        Some(Value::Str(d)) => d.as_str().chars().collect::<Vec<char>>(),
-                        _ => Vec::new(),
+                    // D6 (memperf audit 2026-11-06): delete-set membership
+                    // via 256-entry bitmap (was Vec<char> + contains per char).
+                    let (del_bitmap, del_rest): ([bool; 256], Vec<char>) = match a(2) {
+                        Some(Value::Str(d)) => {
+                            let mut bm = [false; 256];
+                            let mut rest: Vec<char> = Vec::new();
+                            for c in d.as_str().chars() {
+                                if c.is_ascii() {
+                                    bm[c as usize] = true;
+                                } else {
+                                    rest.push(c);
+                                }
+                            }
+                            (bm, rest)
+                        }
+                        _ => ([false; 256], Vec::new()),
                     };
                     let empty = PyDict::new();
                     let tbl = match &table {
                         Value::Dict(d) => d,
                         _ => &empty,
                     };
-                    let mut out = String::new();
+                    let mut out = String::with_capacity(x.as_str().len());
                     for c in x.as_str().chars() {
-                        if del.contains(&c) {
+                        let deleted = if c.is_ascii() {
+                            del_bitmap[c as usize]
+                        } else {
+                            del_rest.contains(&c)
+                        };
+                        if deleted {
                             continue;
                         }
                         match tbl.get(&Value::Int(Int::from_i64(c as i64))) {
@@ -16642,10 +16867,15 @@ pub fn call_builtin_values(
             }
             ("pystr", "isidentifier") => {
                 if let Value::Str(x) = &recv {
-                    let cs: Vec<char> = x.as_str().chars().collect();
-                    let ok = !cs.is_empty()
-                        && (cs[0].is_alphabetic() || cs[0] == '_')
-                        && cs.iter().all(|c| c.is_alphanumeric() || *c == '_');
+                    // D9 (memperf audit 2026-11-06): iterator pass (was:
+                    // Vec<char> materialization per call).
+                    let src = x.as_str();
+                    let ok = !src.is_empty()
+                        && src
+                            .chars()
+                            .next()
+                            .map_or(false, |c| c.is_alphabetic() || c == '_')
+                        && src.chars().all(|c| c.is_alphanumeric() || c == '_');
                     return Ok(Value::Bool(ok));
                 }
                 Err(raise(
@@ -16676,9 +16906,10 @@ pub fn call_builtin_values(
             }
             ("pystr", "isnumeric") | ("pystr", "isdecimal") => {
                 if let Value::Str(x) = &recv {
-                    let cs: Vec<char> = x.as_str().chars().collect();
-                    let ok = !cs.is_empty()
-                        && cs.iter().all(|c| match fname {
+                    // D9 (memperf audit 2026-11-06): iterator pass.
+                    let src = x.as_str();
+                    let ok = !src.is_empty()
+                        && src.chars().all(|c| match fname {
                             "isdecimal" => {
                                 c.is_numeric() && c.is_alphanumeric() && c.to_digit(10).is_some()
                             }
@@ -16729,14 +16960,24 @@ pub fn call_builtin_values(
             // ==== bytes surface ====
             ("pybytes", "strip") | ("pybytes", "lstrip") | ("pybytes", "rstrip") => {
                 if let Value::Bytes(b) = &recv {
-                    let pad: Option<Vec<u8>> = match a(1) {
-                        Some(Value::Bytes(p)) => Some(p.to_vec()),
+                    // D6 (memperf audit 2026-11-06): bitmap membership (was
+                    // `pad.contains(&byte)` linear scan per byte).
+                    let pad: Option<[bool; 256]> = match a(1) {
+                        Some(Value::Bytes(p)) => {
+                            let mut bm = [false; 256];
+                            for &x in p.iter() {
+                                bm[x as usize] = true;
+                            }
+                            Some(bm)
+                        }
                         Some(Value::None) | None => None,
                         _ => None,
                     };
-                    let is_pad = |byte: u8| match &pad {
-                        Some(p) => p.contains(&byte),
-                        None => byte.is_ascii_whitespace(),
+                    let is_pad = |byte: u8| -> bool {
+                        match &pad {
+                            Some(bm) => bm[byte as usize],
+                            None => byte.is_ascii_whitespace(),
+                        }
                     };
                     let mut out: &[u8] = b;
                     if fname != "rstrip" {
@@ -16764,9 +17005,11 @@ pub fn call_builtin_values(
             }
             ("pybytes", "split") | ("pybytes", "rsplit") => {
                 if let Value::Bytes(b) = &recv {
-                    let sep: Option<Vec<u8>> = match a(1) {
-                        Some(Value::Bytes(p)) => Some(p.to_vec()),
-                        Some(Value::None) | None => None,
+                    // D9 (memperf audit 2026-11-06): borrow sep + receiver
+                    // (was: two full byte copies up front).
+                    let sep_v = a(1);
+                    let sep: Option<&[u8]> = match &sep_v {
+                        Some(Value::Bytes(p)) => Some(&**p),
                         _ => None,
                     };
                     let maxsplit = a(2).map(|v| as_int_i64(&v)).transpose()?.unwrap_or(-1);
@@ -16778,7 +17021,7 @@ pub fn call_builtin_values(
                                 .collect(),
                         )
                     };
-                    let data: Vec<u8> = b.to_vec();
+                    let data: &[u8] = b;
                     if let Some(sp) = &sep {
                         if sp.is_empty() {
                             return Err(raise("ValueError", "empty separator"));
@@ -16898,10 +17141,16 @@ pub fn call_builtin_values(
             ("pybytes", "join") => {
                 if let (Value::Bytes(sep), Some(seq)) = (&recv, a(1)) {
                     let items = snapshot(&seq)?;
-                    let mut parts: Vec<Vec<u8>> = Vec::new();
+                    // D9 (memperf audit 2026-11-06): borrow the parts (was:
+                    // Vec<Vec<u8>> full copies) + pre-size the out buffer.
+                    let mut parts: Vec<&[u8]> = Vec::with_capacity(items.len());
+                    let mut total = 0usize;
                     for (n, p) in items.iter().enumerate() {
                         match p {
-                            Value::Bytes(x) => parts.push(x.to_vec()),
+                            Value::Bytes(x) => {
+                                total += x.len();
+                                parts.push(&**x);
+                            }
                             other => {
                                 return Err(raise(
                                     "TypeError",
@@ -16913,7 +17162,8 @@ pub fn call_builtin_values(
                             }
                         }
                     }
-                    let mut out: Vec<u8> = Vec::new();
+                    let mut out: Vec<u8> =
+                        Vec::with_capacity(total + sep.len() * parts.len().saturating_sub(1));
                     for (n, p) in parts.iter().enumerate() {
                         if n > 0 {
                             out.extend_from_slice(sep);
@@ -16933,24 +17183,28 @@ pub fn call_builtin_values(
             }
             ("pybytes", "replace") => {
                 if let Value::Bytes(b) = &recv {
-                    let old = match a(1) {
-                        Some(Value::Bytes(p)) => p.to_vec(),
+                    // D9 (memperf audit 2026-11-06): borrow old/new/receiver
+                    // (was: three full byte copies) + pre-size out.
+                    let old_v = a(1);
+                    let new_v = a(2);
+                    let old: &[u8] = match &old_v {
+                        Some(Value::Bytes(p)) => p,
                         _ => return Err(raise("TypeError", "replace expected bytes arguments")),
                     };
-                    let new = match a(2) {
-                        Some(Value::Bytes(p)) => p.to_vec(),
+                    let new: &[u8] = match &new_v {
+                        Some(Value::Bytes(p)) => p,
                         _ => return Err(raise("TypeError", "replace expected bytes arguments")),
                     };
                     let cnt = a(3).map(|v| as_int_i64(&v)).transpose()?.unwrap_or(-1);
-                    let data: Vec<u8> = b.to_vec();
-                    let mut out: Vec<u8> = Vec::new();
-                    let mut rest: &[u8] = &data;
+                    let data: &[u8] = b;
+                    let mut out: Vec<u8> = Vec::with_capacity(data.len());
+                    let mut rest: &[u8] = data;
                     let mut left = cnt;
                     while left != 0 {
-                        match rest.windows(old.len().max(1)).position(|w| w == &old[..]) {
+                        match rest.windows(old.len().max(1)).position(|w| w == old) {
                             Some(p) if !old.is_empty() => {
                                 out.extend_from_slice(&rest[..p]);
-                                out.extend_from_slice(&new);
+                                out.extend_from_slice(new);
                                 rest = &rest[p + old.len()..];
                                 if left > 0 {
                                     left -= 1;
@@ -16976,14 +17230,16 @@ pub fn call_builtin_values(
             | ("pybytes", "index")
             | ("pybytes", "rindex") => {
                 if let Value::Bytes(b) = &recv {
-                    let sub = match a(1) {
-                        Some(Value::Bytes(p)) => p.to_vec(),
+                    // D9 (memperf audit 2026-11-06): borrow the needle.
+                    let sub_v = a(1);
+                    let sub: &[u8] = match &sub_v {
+                        Some(Value::Bytes(p)) => p,
                         _ => return Err(raise("TypeError", "expected a bytes argument")),
                     };
                     let pos = if fname.starts_with("r") {
-                        b.windows(sub.len().max(1)).rposition(|w| w == &sub[..])
+                        b.windows(sub.len().max(1)).rposition(|w| w == sub)
                     } else {
-                        b.windows(sub.len().max(1)).position(|w| w == &sub[..])
+                        b.windows(sub.len().max(1)).position(|w| w == sub)
                     };
                     return match pos {
                         Some(p) => Ok(i(p as i64)),
@@ -17007,16 +17263,16 @@ pub fn call_builtin_values(
             }
             ("pybytes", "count") => {
                 if let Value::Bytes(b) = &recv {
-                    let sub = match a(1) {
-                        Some(Value::Bytes(p)) => p.to_vec(),
+                    // D9 (memperf audit 2026-11-06): borrow the needle.
+                    let sub_v = a(1);
+                    let sub: &[u8] = match &sub_v {
+                        Some(Value::Bytes(p)) => p,
                         _ => return Err(raise("TypeError", "expected a bytes argument")),
                     };
                     if sub.is_empty() {
                         return Ok(i(b.len() as i64 + 1));
                     }
-                    return Ok(i(
-                        b.windows(sub.len()).filter(|w| *w == &sub[..]).count() as i64
-                    ));
+                    return Ok(i(b.windows(sub.len()).filter(|w| *w == sub).count() as i64));
                 }
                 Err(raise(
                     "SystemError",
