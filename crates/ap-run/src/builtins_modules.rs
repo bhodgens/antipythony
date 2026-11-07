@@ -15532,9 +15532,25 @@ pub fn call_builtin_values(
                         // entries under one borrow — `items()` cloned every
                         // pair (2n clones per update; loops calling .update()
                         // were O(n^2)).
-                        o.foreach(|k, v| {
-                            let _ = d.set(k.clone(), v.clone());
-                        });
+                        // SELF-UPDATE GUARD (2026-11-07): foreach holds the
+                        // source's state borrow while the callback calls
+                        // d.set(); when source == target, set()'s
+                        // try_borrow_mut contention retry sleeps forever —
+                        // a hard deadlock. d.update(d) (and any alias of the
+                        // same dict) takes the items() snapshot path instead.
+                        // This was the hang behind `import enum` (enum.py
+                        // updates module __dict__ with a members dict that
+                        // can alias it) and every unittest/mock/inspect/
+                        // dataclasses probe timing out at 240s.
+                        if std::ptr::eq(Rc::as_ptr(&o), Rc::as_ptr(&d)) {
+                            for (k, v) in o.items() {
+                                let _ = d.set(k, v);
+                            }
+                        } else {
+                            o.foreach(|k, v| {
+                                let _ = d.set(k.clone(), v.clone());
+                            });
+                        }
                     }
                     Some(other) if dict_like_mapping(&other) => {
                         // CPython update(mapping): keys() + __getitem__
