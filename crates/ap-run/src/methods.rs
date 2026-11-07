@@ -173,7 +173,18 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
     let k = subscript_key(key)?;
     match (obj, &k) {
         (Value::Str(s), Key::Index(i)) => {
-            let chars: Vec<char> = s.as_str().chars().collect();
+            // D3 (memperf audit 2026-11-06): ASCII fast path — byte index,
+            // no Vec<char> materialization per access. `for i in
+            // range(len(s)): s[i]` was O(n) per access (O(n^2) per loop);
+            // non-ASCII strings fall back to the char walk.
+            let text = s.as_str();
+            if text.is_ascii() {
+                let idx = normalize_index(*i, text.len() as i64)
+                    .ok_or_else(|| raise("IndexError", "string index out of range"))?;
+                let byte = text.as_bytes()[idx as usize] as char;
+                return Ok(Value::Str(PyString::new(byte.to_string())));
+            }
+            let chars: Vec<char> = text.chars().collect();
             let idx = normalize_index(*i, chars.len() as i64)
                 .ok_or_else(|| raise("IndexError", "string index out of range"))?;
             Ok(Value::Str(PyString::new(chars[idx as usize].to_string())))
@@ -182,7 +193,28 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
             if *step == 0 {
                 return Err(raise("ValueError", "slice step cannot be zero"));
             }
-            let chars: Vec<char> = s.as_str().chars().collect();
+            let text = s.as_str();
+            // D3: ASCII fast path — slice over bytes (same chars), and the
+            // common step==1 case borrows the byte range with no per-char
+            // collect at all.
+            if text.is_ascii() {
+                let bytes = text.as_bytes();
+                if *step == 1 {
+                    let (start, stop, _) = slice_indices(bytes.len() as i64, *lo, *hi, *step)
+                        .map_err(|_| raise("IndexError", "string index out of range"))?;
+                    let start = start.max(0) as usize;
+                    let stop = (stop.max(0) as usize).min(bytes.len());
+                    if start >= stop {
+                        return Ok(Value::Str(PyString::new(String::new())));
+                    }
+                    return Ok(Value::Str(PyString::new(text[start..stop].to_string())));
+                }
+                let out: Vec<u8> = slice_seq(bytes, *lo, *hi, *step);
+                return Ok(Value::Str(PyString::new(
+                    String::from_utf8_lossy(&out).into_owned(),
+                )));
+            }
+            let chars: Vec<char> = text.chars().collect();
             let out: String = slice_seq(&chars, *lo, *hi, *step).into_iter().collect();
             Ok(Value::Str(PyString::new(out)))
         }
