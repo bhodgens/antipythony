@@ -1009,7 +1009,12 @@ pub fn subscript_set(obj: &Value, key: &Value, v: Value) -> Result<(), Flow> {
                         &[obj.clone(), key.clone(), v],
                         &[],
                     );
-                    interp.super_stack.borrow_mut().pop();
+                    // Bug fix (2026-11-06 static audit, correctness bug 2):
+                    // this was a DOUBLE pop — the second pop ate the
+                    // CALLER's super ctx, corrupting any outer zero-arg
+                    // super() chain running while a dict-subclass
+                    // __setitem__ override dispatches (EnumDict pattern).
+                    // One push pairs with exactly one pop.
                     interp.super_stack.borrow_mut().pop();
                     return r.map(|_| ());
                 }

@@ -1403,18 +1403,26 @@ pub fn exec_class_def(
             )?;
         }
     }
-    CLASS_KWARGS.with(|c| c.borrow_mut().clear());
 
     // T1 (scrapy fix pass): invoke the user metaclass __init__ (CPython calls
     // type.__new__ -> metaclass __init__(cls, name, bases, dict, **kwds)
     // during class creation; typing's _ProtocolMeta.__init__ sets
     // cls.__protocol_attrs__ here).
+    //
+    // Bug fix (2026-11-06 static-growth audit, correctness bug 1): the
+    // class kwargs must be captured BEFORE the CLASS_KWARGS clear below —
+    // the old order cleared the thread-local first, so the metaclass
+    // __init__ always observed EMPTY kwargs (CPython passes the full
+    // class-statement kwargs here; repro meta_kwargs6: CPython
+    // [('Thing', {'flag': 7})], ours [('Thing', {})]).
+    let meta_init_kwargs: Vec<(String, Value)> = CLASS_KWARGS.with(|c| c.borrow().clone());
+    CLASS_KWARGS.with(|c| c.borrow_mut().clear());
     {
         let meta = t.metaclass.borrow().clone();
         if let Some(mt) = meta {
             if mt.name != "type" {
                 if let Some((minit, minit_owner)) = mt.lookup_with_owner("__init__") {
-                    let kwargs: Vec<(String, Value)> = CLASS_KWARGS.with(|c| c.borrow().clone());
+                    let kwargs: Vec<(String, Value)> = meta_init_kwargs.clone();
                     // Stage the super context: zero-arg super() inside the
                     // metaclass __init__ (typing: super().__init__()).
                     *interp.pending_super_ctx.borrow_mut() =
