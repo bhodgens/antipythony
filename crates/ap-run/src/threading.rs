@@ -1529,14 +1529,36 @@ pub fn build_queue_module(interp: &Interpreter) -> Value {
 // sweep uses try_borrow so a contended entry is conservatively kept.
 // ===========================================================================
 
+thread_local! {
+    /// Re-entrancy guard: the sweep's own registration drain can push the
+    /// allocator past the gen-0 threshold and fire an auto-collect; when
+    /// the orchestrator wires this fn into that collect's drain hook, the
+    /// nested hook call must NOT re-enter (the inner sweep would race the
+    /// outer one's half-updated tables and recurse on every threshold
+    /// tick). A nested call is a cheap no-op — the outer sweep continues
+    /// with a freshly-accurate registry anyway.
+    static SWEEPING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 pub fn evict_stale_tables() -> usize {
-    // The GC registry is a MAIN-thread thread_local (workers forward their
-    // allocations through the registration channel); the liveness oracle is
-    // only meaningful on the main thread's view. A non-main caller must not
-    // even drain (that would steal registrations from the main registry).
+    // The GC registry is the interpreter thread's thread_local (workers
+    // forward their allocations through the registration channel); the
+    // liveness oracle is only meaningful on that thread's view. A non-main
+    // caller must not even drain (that would steal registrations).
     if !is_main_os_thread() {
         return 0;
     }
+    // Re-entrancy gate (see SWEEPING): a nested call is a no-op, and ONLY
+    // the owner that set the flag clears it.
+    if SWEEPING.with(|s| s.replace(true)) {
+        return 0;
+    }
+    let n = evict_stale_tables_inner();
+    SWEEPING.with(|s| s.set(false));
+    n
+}
+
+fn evict_stale_tables_inner() -> usize {
     // E-safety: drop reclaimed worker payloads FIRST (main thread, GIL
     // held — the only safe place for these Rc clones to die).
     drain_worker_reclaim();
@@ -1691,12 +1713,25 @@ pub fn evict_stale_tables() -> usize {
     // pinned by a running thread). A waiter holds its Arc clone, so pruning
     // the map row cannot break an in-flight wait. ----
     {
-        let mut c = CANCELLED.lock().unwrap();
-        let before = c.len();
-        c.retain(|(addr, serial), _| {
-            mirror_alive_with_serial(*addr, *serial) || ap_gc::get_object_by_addr(*addr).is_some()
-        });
-        freed += before - c.len();
+        // Snapshot keys OUTSIDE the map lock, evaluate liveness (which
+        // takes OBJ_MIRROR via mirror_alive_with_serial), then prune —
+        // CANCELLED is never held across another table's lock (ABBA).
+        let keys: Vec<(usize, i64)> = CANCELLED.lock().unwrap().keys().copied().collect();
+        let doomed: Vec<(usize, i64)> = keys
+            .into_iter()
+            .filter(|(addr, serial)| {
+                !(mirror_alive_with_serial(*addr, *serial)
+                    || ap_gc::get_object_by_addr(*addr).is_some())
+            })
+            .collect();
+        if !doomed.is_empty() {
+            let mut c = CANCELLED.lock().unwrap();
+            let before = c.len();
+            for k in &doomed {
+                c.remove(k);
+            }
+            freed += before - c.len();
+        }
     }
 
     let _ = drained;
@@ -1777,6 +1812,9 @@ pub fn cancel_timer(addr: usize) {
     // (the <serial> attr is minted at construction, so a NOT-yet-started
     // Timer cancel lands on the same (addr, serial) key thread_start will
     // register — cancel-before-start suppresses the fire, CPython parity).
+    // NOTE: mirror_get takes OBJ_MIRROR — call it BEFORE any CANCELLED
+    // section; CANCELLED must never be held across an OBJ_MIRROR/THREADS
+    // lock (ABBA with the eviction sweep's phase ordering).
     let serial = match mirror_get(addr) {
         Some(Value::Obj(o)) => o
             .attrs
