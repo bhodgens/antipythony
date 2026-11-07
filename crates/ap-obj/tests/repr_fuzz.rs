@@ -218,12 +218,16 @@ fn ref_batch(
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn reference python3.14");
+    // take() (not as_mut): the handle must DROP after the token loop so the
+    // child sees EOF on stdin. Scripts read to EOF (read()/read().split()),
+    // so a still-open pipe blocks them forever and every batch burned the
+    // full reference deadline (2026-11-07: shrink-loop / gate-hold root cause).
     {
-        let stdin = child.stdin.as_mut().expect("stdin");
+        let mut stdin = child.stdin.take().expect("stdin");
         for t in tokens {
             writeln!(stdin, "{t}").expect("write token");
         }
-    }
+    } // stdin dropped here -> EOF delivered
     let deadline = std::time::Instant::now() + common::reference_deadline();
     let timed_out = loop {
         match child.try_wait().expect("wait reference") {
