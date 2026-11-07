@@ -5843,7 +5843,6 @@ fn collections_namedtuple(
 
 fn make_deque(items: Vec<Value>, maxlen: Option<i64>) -> Value {
     let obj = PyObject::new(ap_obj::ObjKind::Opaque, "deque");
-    let items_copy = items.clone();
     {
         let mut attrs = obj.attrs.borrow_mut();
         let _ = attrs.set(s("<items>"), list(items));
@@ -5855,22 +5854,43 @@ fn make_deque(items: Vec<Value>, maxlen: Option<i64>) -> Value {
             },
         );
     }
-    update_deque_repr(&obj, &items_copy, maxlen);
     Value::Obj(obj)
 }
 
-/// Refresh the precomputed repr after any deque mutation.
-pub fn update_deque_repr(obj: &Gc<PyObject>, items: &[Value], maxlen: Option<i64>) {
-    let inner: Vec<String> = items
-        .iter()
-        .map(|v| ap_obj::ops::repr(v).unwrap_or_else(|_| "?".to_string()))
-        .collect();
-    let mut text = format!("deque([{}]", inner.join(", "));
-    if let Some(ml) = maxlen {
-        text.push_str(&format!(", maxlen={ml}"));
+/// The deque's LIVE backing list handle (in-place mutation target; the old
+/// clone-snapshot -> mutate -> rewrite path made every deque op O(n) and
+/// op-loops O(n²) — ast.walk's drain at 6401 nodes was seconds per walk).
+/// Returns None for non-deque receivers (callers raise their own TypeError).
+fn deque_items_list(v: &Value) -> Option<Gc<ap_obj::value::PyList>> {
+    match v {
+        Value::Obj(o) if o.name == "deque" => match o.attrs.borrow().get(&s("<items>")) {
+            Some(Value::List(l)) => Some(l.clone()),
+            _ => None,
+        },
+        _ => None,
     }
-    text.push(')');
-    *obj.repr_text.borrow_mut() = Some(text);
+}
+
+/// The stored `<maxlen>` bound (None = unbounded).
+fn deque_maxlen_of(v: &Value) -> Option<i64> {
+    match v {
+        Value::Obj(o) => o
+            .attrs
+            .borrow()
+            .get(&s("<maxlen>"))
+            .and_then(|m| m.as_int())
+            .and_then(|i| i.to_i64()),
+        _ => None,
+    }
+}
+
+/// Trim the RIGHT end to maxlen (append overflow drops from the right).
+fn deque_trim_maxlen(l: &Gc<ap_obj::value::PyList>, maxlen: Option<i64>) {
+    if let Some(ml) = maxlen {
+        while ml >= 0 && l.len() as i64 > ml {
+            l.remove_take(l.len() - 1);
+        }
+    }
 }
 
 fn deque_state<'a>(v: &'a Value) -> Result<(Vec<Value>, Option<i64>), Flow> {
@@ -6229,7 +6249,6 @@ fn set_deque_items(v: &Value, mut items: Vec<Value>, maxlen: Option<i64>) -> Res
         }
     }
     if let Value::Obj(o) = v {
-        let items_copy = items.clone();
         // maxlen=None here means "already trimmed" — preserve the stored bound.
         let ml = if maxlen.is_some() {
             maxlen
@@ -6244,7 +6263,7 @@ fn set_deque_items(v: &Value, mut items: Vec<Value>, maxlen: Option<i64>) -> Res
             let mut attrs = o.attrs.borrow_mut();
             let _ = attrs.set(s("<items>"), list(items));
         }
-        update_deque_repr(o, &items_copy, ml);
+        // repr is rendered lazily from live state (default_repr deque arm).
     }
     Ok(())
 }
@@ -6271,9 +6290,11 @@ pub fn call_collections(name: &str, args: &[Value], kwargs: &[(String, Value)]) 
                     args.get(1)
                         .ok_or_else(|| raise("TypeError", "missing argument"))?,
                 );
-                let (mut items, maxlen) = deque_state(recv)?;
-                items.push(v.clone());
-                set_deque_items(recv, items, maxlen)?;
+                let l = deque_items_list(recv)
+                    .ok_or_else(|| raise("TypeError", "expected deque, not receiver"))?;
+                let maxlen = deque_maxlen_of(recv);
+                l.append(v.clone());
+                deque_trim_maxlen(&l, maxlen);
                 Ok(Value::None)
             }
             "deque.appendleft" => {
@@ -6283,39 +6304,35 @@ pub fn call_collections(name: &str, args: &[Value], kwargs: &[(String, Value)]) 
                     args.get(1)
                         .ok_or_else(|| raise("TypeError", "missing argument"))?,
                 );
-                let (mut items, maxlen) = deque_state(recv)?;
-                items.insert(0, v.clone());
+                let l = deque_items_list(recv)
+                    .ok_or_else(|| raise("TypeError", "expected deque, not receiver"))?;
+                let maxlen = deque_maxlen_of(recv);
+                l.insert_at(0, v.clone());
                 // appendleft overflow drops from the RIGHT (opposite of append).
-                if let Some(ml) = maxlen {
-                    while items.len() as i64 > ml {
-                        items.pop();
-                    }
-                }
-                set_deque_items(recv, items, maxlen)?;
+                deque_trim_maxlen(&l, maxlen);
                 Ok(Value::None)
             }
             "deque.pop" => {
                 let recv = args
                     .first()
                     .ok_or_else(|| raise("TypeError", "missing receiver argument"))?;
-                let (mut items, maxlen) = deque_state(recv)?;
-                let out = items
-                    .pop()
-                    .ok_or_else(|| raise("IndexError", "pop from an empty deque"))?;
-                set_deque_items(recv, items, maxlen)?;
-                Ok(out)
+                let l = deque_items_list(recv)
+                    .ok_or_else(|| raise("TypeError", "expected deque, not receiver"))?;
+                if l.len() == 0 {
+                    return Err(raise("IndexError", "pop from an empty deque"));
+                }
+                Ok(l.remove_take(l.len() - 1))
             }
             "deque.popleft" => {
                 let recv = args
                     .first()
                     .ok_or_else(|| raise("TypeError", "missing receiver argument"))?;
-                let (mut items, maxlen) = deque_state(recv)?;
-                if items.is_empty() {
+                let l = deque_items_list(recv)
+                    .ok_or_else(|| raise("TypeError", "expected deque, not receiver"))?;
+                if l.len() == 0 {
                     return Err(raise("IndexError", "pop from an empty deque"));
                 }
-                let out = items.remove(0);
-                set_deque_items(recv, items, maxlen)?;
-                Ok(out)
+                Ok(l.remove_take(0))
             }
             "deque.extend" => {
                 let (recv, v) = (
@@ -6324,29 +6341,40 @@ pub fn call_collections(name: &str, args: &[Value], kwargs: &[(String, Value)]) 
                     args.get(1)
                         .ok_or_else(|| raise("TypeError", "missing argument"))?,
                 );
-                let (mut items, maxlen) = deque_state(recv)?;
-                items.extend(snapshot(v)?);
-                set_deque_items(recv, items, maxlen)?;
+                let l = deque_items_list(recv)
+                    .ok_or_else(|| raise("TypeError", "expected deque, not receiver"))?;
+                let maxlen = deque_maxlen_of(recv);
+                for item in snapshot(v)? {
+                    l.append(item);
+                }
+                deque_trim_maxlen(&l, maxlen);
                 Ok(Value::None)
             }
             "deque.rotate" => {
                 let recv = args
                     .first()
-                    .ok_or_else(|| raise("TypeError", "missing receiver argument"))?;
+                    .ok_or_else(|| raise("TypeError", "missing receiver argument"))?
+                    .clone();
                 let n = args
                     .get(1)
                     .map(|v| as_int_i64(&v))
                     .transpose()?
                     .unwrap_or(1);
-                let (mut items, maxlen) = deque_state(recv)?;
-                if !items.is_empty() {
-                    let len = items.len() as i64;
-                    let k = n.rem_euclid(len) as usize;
+                let l = deque_items_list(&recv)
+                    .ok_or_else(|| raise("TypeError", "expected deque, not receiver"))?;
+                let len = l.len();
+                if len > 0 {
+                    let k = n.rem_euclid(len as i64) as usize;
                     if k > 0 {
+                        // Rare op: single read + write cycle (still O(n), once).
+                        let mut items: Vec<Value> = l.items().to_vec();
                         items.rotate_right(k);
+                        l.clear();
+                        for it in items {
+                            l.append(it);
+                        }
                     }
                 }
-                set_deque_items(recv, items, maxlen)?;
                 Ok(Value::None)
             }
             "deque.index" => {
@@ -6368,8 +6396,9 @@ pub fn call_collections(name: &str, args: &[Value], kwargs: &[(String, Value)]) 
                 let recv = args
                     .first()
                     .ok_or_else(|| raise("TypeError", "missing receiver argument"))?;
-                let (_, maxlen) = deque_state(recv)?;
-                set_deque_items(recv, vec![], maxlen)?;
+                let l = deque_items_list(recv)
+                    .ok_or_else(|| raise("TypeError", "expected deque, not receiver"))?;
+                l.clear();
                 Ok(Value::None)
             }
             "deque.__iter__" => {
@@ -16176,10 +16205,13 @@ pub fn call_builtin_values(
                             ord
                         }
                     });
-                    items = keyed.into_iter().map(|(_, v)| v).collect();
+                    keyed.reverse();
                     l.clear();
-                    for x in items {
-                        l.append(x);
+                    // D2/F1-adjacent (memperf audit 2026-11-06): reverse the
+                    // keyed vec once and pop from the tail — appends land in
+                    // order without a second items Vec. Same ordering bytes.
+                    for (_, v) in keyed.into_iter().rev() {
+                        l.append(v);
                     }
                     return Ok(Value::None);
                 }
