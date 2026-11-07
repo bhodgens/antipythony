@@ -561,9 +561,29 @@ pub fn gen_stack_size() -> usize {
 /// Per-thread pool of freed stack regions, keyed by the exact mmap length.
 const STACK_POOL_CLASS_CAP: usize = 16;
 
+/// Per-thread pool of freed regions. On THREAD EXIT the map's Drop munmaps
+/// everything still pooled (munmap is VA bookkeeping — no interpreter Rc
+/// involved, so running it from the TLS destructor outside the GIL is
+/// safe); without this, every short-lived worker that pooled a stack would
+/// leak up to class-cap x region-size of address space per size class.
+pub struct StackPool(std::collections::HashMap<usize, Vec<usize>>);
+
+impl Drop for StackPool {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        for (len, regions) in self.0.iter() {
+            for raw in regions {
+                unsafe {
+                    libc::munmap(*raw as *mut libc::c_void, *len);
+                }
+            }
+        }
+    }
+}
+
 thread_local! {
-    static STACK_POOL: RefCell<std::collections::HashMap<usize, Vec<usize>>> =
-        RefCell::new(std::collections::HashMap::new());
+    static STACK_POOL: RefCell<StackPool> =
+        RefCell::new(StackPool(std::collections::HashMap::new()));
 }
 
 /// A stack region compatible with corosensei's Stack contract: one guard
@@ -621,8 +641,9 @@ impl PooledStack {
         // directly under the base, which would fault the fresh frame.
         let usable = (usable + page - 1) & !(page - 1);
         let mmap_len = usable + page;
-        let raw = match STACK_POOL.with(|p| p.borrow_mut().get_mut(&mmap_len).and_then(|v| v.pop()))
-        {
+        let raw = match STACK_POOL.with(|p| {
+            p.borrow_mut().0.get_mut(&mmap_len).and_then(|v| v.pop())
+        }) {
             Some(raw) => raw,
             None => Self::map_region(mmap_len, usable)?,
         };
@@ -657,7 +678,7 @@ impl Drop for PooledStack {
         // one-off deep-nesting burst cannot grow the pool unboundedly.
         let keep = STACK_POOL.with(|p| {
             let mut pool = p.borrow_mut();
-            let v = pool.entry(self.mmap_len).or_default();
+            let v = pool.0.entry(self.mmap_len).or_default();
             if v.len() < STACK_POOL_CLASS_CAP {
                 // Drop the resident pages (RSS) while keeping the mapping
                 // (VA + no mmap churn). Usable range ONLY — the low guard
