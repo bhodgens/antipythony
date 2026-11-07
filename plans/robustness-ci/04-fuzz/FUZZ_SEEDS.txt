@@ -4725,3 +4725,42 @@ search	"(?<=[^ab])"	"cx@1@-١@. -cß١1c0xcx中\nbß."	2
 COMPILE_TEXT	"(?ai-a)"	"ßßßkkcb0xä0a0中@"	8
 COMPILE_TEXT	"\\b(?i:\\B{2})"	"----中\n0ääkxßa١c@ka"	80
 COMPILE_MISSED	"(b)\\1*{2,}?"	"ä"	8
+subn1	"(?<!b)"	"中ß١akc.ä-kß中中.@0b"	0
+subn1	"\\W|a|(?=a)"	"x-1@@ak"	0
+subn1	".{2}"	"ßx١kbc١a١- 1-١@cc -b-0"	8
+subn1	"(?<!\\d)"	"ß١xäb1\n١"	0
+subn1	"(?=[a-c])"	"-bbk-١a.\n中中kax١."	0
+subn1	"(?P<grp>a)"	"cäßa0ßba中\n\na@\n"	0
+subn1	"(?<!\\d)\\D"	"c  0k"	2
+COMPILE_TEXT	"(?<=(?P<a>b)(?:x*)?(?P=a)+)x"	"١"	0
+subn1	"(\\w)\\1"	"a\n ß10b0kka中 中kk@k\nkbxx@"	16
+search	"(?P<grp>(\\d))"	" -xbckß\na  k\nx 0.xa中"	0
+COMPILE_TEXT	"\\A{2,}?"	"ä"	0
+search	"(?<!\\w)"	"b@001kk中..@-@.1-.a"	0
+search	"(?<=.)"	" ä.١"	0
+findall	"c*?"	"--1١cb1.k١-c0\nß中 @1"	2
+findall	"(?<!b)|(?P<b>c)"	"١1x\nb0.-c\nc 中b.中x0"	0
+search	"(?<=\\w){2}"	"0中ßcßax"	2
+search	"(?<!\\d)|-"	"0aß@ a .kßäkck١ä \n中--k"	80
+subn1	"(?P<a>ß{1,2})"	".0ß0-ß.-x"	0
+subn1	"(x\\s(?P<b>c)){0,2}"	"\n11kcc中000.kk"	2
+subn1	"(?!\\d)"	"0bä\nk0"	0
+subn1	"(?<![abc])"	"xc中c-x-"	0
+subn1	"[a-c]"	"bba-xb.b@"	2
+subn1	"(b中){0,2}"	".0ß0@ 1@-中 0xk.x0"	80
+subn1	"(?!(?=\\A))"	"\nb١c1 c1"	0
+subn1	"1a|\\Z|[abc]"	"١a-ä"	0
+findall	"\\d??"	"xc١0c@-x\nb١x11ä.b@\n..."	0
+search	"(?<!.)"	".a0.a @k中"	0
+search	"(?<!.)"	".0 -00k"	80
+search	"(?<!\\w)"	"中b@1\nkc@"	64
+findall	"a*?|[^abc]"	"@ak-١a-1k@xä k\nc١äk "	0
+findall	"b*?|x"	"ac- @bx x.x cbxb @\n"	0
+findall	"[^a-c0-9]??"	"ka1k١ää١c1ä\nabä"	0
+COMPILE_TEXT	"(?P<b>\\A{2,})"	".-١\n c1kä-.-a@äax\n@中\n@k\n"	24
+findall	"(?:[0-9])|(?!c)|x"	"cx0ß1@@.kc0中1xb1b١0-@"	0
+search	"(?<=.)"	"a-x中a"	0
+findall	"c??|0|[-a]"	"0中"	2
+COMPILE_TEXT	"(?>\\b{1,2})"	"\n@.@@١中cä-\nxab.中bß中a@0-c0-"	10
+findall	"\\S|\\b|\\D++"	"١\näkb\n١a١@aä中k "	0
+findall	"(?!a)|\\D"	"١b-中x"	0
