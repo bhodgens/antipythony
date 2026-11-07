@@ -188,8 +188,20 @@ GIL, uv-backed deps at build time. Byte-exact differential conformance vs CPytho
   RESIDUALS: closure-carrying nested defs in hot loops ~3MB/1k calls
   (per-object cell storage, filed); M1-M4 threading tables + M11 lxml
   XPATH open; pre-existing pdb NameError in pluggy hook (bisect
-  pending, present @4709a20); metaclass __init__ kwargs + super_stack
-  double-pop blocked on sibling stash@{0} pop.
+  pending, present @4709a20). SIBLING RECOVERY (5c07b9f/59426db/
+  16507e0): session 20261106_095004_5de0d7 (bughunt wave, idle) WIP
+  landed - classes.rs base_type_ref TypeRef cache KEPT, attr_get_opt
+  cache arm DROPPED (poisoned interned types: import inspect +
+  SystemExit died in enum.py __set_name__ _flag_mask_ |= object;
+  documented in commit). Correctness bugs 1+2 FIXED (c553a64):
+  metaclass __init__ now receives class kwargs; super_stack
+  __setitem__ dispatch is single-pop. OPEN: ast_getattr_leak_fence
+  perf regression (superlinear ast.walk probe growth, ~1.5s/it at
+  100it; bisect: reproduces at e62db1c start-of-day, NOT from the
+  OOM waves; attr_get_opt per-access TypeRef synthesis is the
+  suspected N^2 owner - needs bounded side-table fix, NOT the
+  class_ref slot); wave-3 memperf campaign (.hermes/audits/
+  2026-11-06-memperf-bughunt.md, W1-W4 plan) dispatched.
 - T1 CRAWL history (waves 90-110, pre-round-20 state - superseded by
   the block above, kept for fix provenance):
   W110-5 LANDED (85432c9): real coroutine frames - async def bodies
