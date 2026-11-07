@@ -603,6 +603,16 @@ pub fn call_named_kw(
         return crate::builtins::call_builtin_ctor(ctor, args)
             .unwrap_or_else(|| Err(raise("NameError", format!("name '{ctor}' is not defined"))));
     }
+    // Issue #13: the mbc mixin method markers (`__ap_mbc__.encode` over the
+    // wrapper instance riding args[0]) — the class-dict marker arrives here
+    // via the BoundMethod dotted route before the generic name lookup.
+    if let Some(rest) = name.strip_prefix("__ap_mbc__.") {
+        if let Some(recv) = args.first() {
+            if let Some(r) = crate::mbc::mbc_incremental_method_pub(recv, rest, &args[1..]) {
+                return r;
+            }
+        }
+    }
     if let Some(v) = NAMED_CALLABLES.with(|t| t.borrow().get(name).cloned()) {
         let interp = CURRENT.with(|c| c.borrow().clone());
         let interp = match interp {
@@ -1278,7 +1288,9 @@ fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opti
         "incrementalencoder" | "incrementaldecoder" => {
             // s037: getincrementaldecoder("utf-8")() — a stateful stub whose
             // decode() concatenates bytes then decodes UTF-8 (chunked-decode
-            // pins rely on buffering).
+            // pins rely on buffering). Issue #13: the CJK incremental classes
+            // come from the WRAPPER (mbc.MultibyteIncrementalDecoder with a
+            // `codec` class attr) — here only the utf-8 fast path is built.
             let o = PyObject::new(ap_obj::ObjKind::Opaque, "_codecs.Incremental");
             {
                 let mut a = o.attrs.borrow_mut();
@@ -13710,8 +13722,11 @@ pub fn call_native(
             }
         }
         "_multibytecodec" => {
-            // __getstate__ and friends are inert in the v0 engine.
-            Some(Ok(Value::None))
+            // Issue #13: the engine BRIDGE surface (encode_bridge /
+            // encode_bridge_prefix / decode_bridge / decode_bridge_prefix)
+            // over the codec namespace in args. The mixin classes live in
+            // the vendored _multibytecodec.py (importer augmentation).
+            crate::mbc::call_bridge(fname, args, kwargs)
         }
         "_tokenize" => call_tokenize(fname, args, kwargs),
         // 02.03b-fix: _signal — no-op stubs.
@@ -14940,6 +14955,12 @@ pub fn call_native_marker(full: &str, args: &[Value]) -> Option<BResult> {
     // over the getcodec namespace receiver riding args[0]).
     if let Some(rest) = full.strip_prefix("_mbc.") {
         return crate::mbc::call_mbc(rest, args, &[]);
+    }
+    // Issue #13: the mbc mixin method markers (`__ap_mbc__.encode` over the
+    // wrapper instance riding args[0]); the codec name comes from the
+    // instance's class attr `codec`.
+    if let Some(rest) = full.strip_prefix("__ap_mbc__.") {
+        return crate::mbc::mbc_incremental_method_pub(args.first()?, rest, &args[1..]);
     }
     // 02.08-c: lxml element bound methods (`__ap_lxml__.<name>` over the
     // element receiver riding args[0]).
@@ -17470,6 +17491,12 @@ pub fn call_builtin_values(
                     Some(Value::None) | None => "utf-8".to_string(),
                     _ => "utf-8".to_string(),
                 };
+                // Issue #13: pass the errors handler through (b.decode(codec,
+                // errors) must honor replace/ignore on the CJK codecs).
+                let errors = match a(2) {
+                    Some(Value::Str(x)) => x.as_str().to_string(),
+                    _ => "strict".to_string(),
+                };
                 let interp = crate::builtins_modules::current_interp()
                     .ok_or_else(|| raise("RuntimeError", "no interpreter"))?;
                 if let Value::Bytes(b) = &recv {
@@ -17477,7 +17504,10 @@ pub fn call_builtin_values(
                         &interp,
                         &recv.clone(),
                         "decode",
-                        &[Value::Str(PyString::new(codec))],
+                        &[
+                            Value::Str(PyString::new(codec)),
+                            Value::Str(PyString::new(errors)),
+                        ],
                     )
                     .unwrap_or_else(|| Ok(Value::Bytes(Gc::new(b.to_vec()))));
                 }

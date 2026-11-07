@@ -1075,6 +1075,144 @@ pub fn tables_for_pub(name: &str) -> Option<&'static CodecTables> {
     tables_for(name)
 }
 
+/// The `_multibytecodec.<bridge>` markers (vendored _multibytecodec.py mixin
+/// calls). Codec namespace rides args[0]; payload args[1]; errors args[2].
+/// Returns:
+///   encode_bridge          -> bytes
+///   encode_bridge_prefix   -> (bytes, pending_str)
+///   decode_bridge          -> str
+///   decode_bridge_prefix   -> (str, pending_bytes)
+#[allow(dead_code)]
+pub fn call_bridge(fname: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option<BResult> {
+    let codec_v = match args.first() {
+        Some(v) => v.clone(),
+        None => {
+            return Some(Err(raise(
+                "TypeError",
+                format!("{fname}() missing codec argument"),
+            )))
+        }
+    };
+    let codec_name = match &codec_v {
+        Value::Obj(o) => o
+            .attrs
+            .borrow()
+            .get(&s("name"))
+            .and_then(|v| match v {
+                Value::Str(x) => Some(x.as_str().to_string()),
+                _ => None,
+            })
+            .unwrap_or_default(),
+        _ => String::new(),
+    };
+    if codec_name.is_empty() {
+        return Some(Err(raise(
+            "LookupError",
+            "bridge without a codec namespace",
+        )));
+    }
+    let errors = match args.get(2) {
+        Some(Value::Str(x)) => x.as_str().to_string(),
+        _ => match kwargs.iter().find(|(k, _)| k == "errors") {
+            Some((_, Value::Str(x))) => x.as_str().to_string(),
+            _ => "strict".to_string(),
+        },
+    };
+    let r: BResult = (|| match fname {
+        "encode_bridge" => {
+            let text = match args.get(1) {
+                Some(Value::Str(x)) => x.as_str().to_string(),
+                _ => String::new(),
+            };
+            Ok(Value::Bytes(Gc::new(encode(&codec_name, &text, &errors)?)))
+        }
+        "encode_bridge_prefix" => {
+            // Encode the longest clean prefix; return (bytes, pending_str).
+            let text = match args.get(1) {
+                Some(Value::Str(x)) => x.as_str().to_string(),
+                _ => String::new(),
+            };
+            let mut out = Vec::new();
+            let mut consumed = 0usize; // CHAR count
+            let mut chars = text.chars();
+            let mut pending = String::new();
+            loop {
+                pending.clear();
+                let ch = match chars.next() {
+                    Some(c) => c,
+                    None => break,
+                };
+                pending.push(ch);
+                // try to encode the tail starting at this char
+                let tail: String = pending.clone();
+                match encode(&codec_name, &tail, &errors) {
+                    Ok(bs) => {
+                        out.extend_from_slice(&bs);
+                        consumed += 1;
+                    }
+                    Err(_) => {
+                        // keep this char + everything after as pending
+                        consumed += 1; // the failing char itself was not emitted
+                        pending = tail;
+                        for c in chars.by_ref() {
+                            pending.push(c);
+                        }
+                        break;
+                    }
+                }
+            }
+            let remaining: String = text.chars().skip(consumed.saturating_sub(0)).collect();
+            let _ = remaining;
+            // pending holds chars from the first failing char onward (may be "")
+            Ok(tuple(vec![
+                Value::Bytes(Gc::new(out)),
+                s(pending_str_of(&text, consumed)),
+            ]))
+        }
+        "decode_bridge" => {
+            let b: Vec<u8> = match args.get(1) {
+                Some(Value::Bytes(bb)) => bb.iter().cloned().collect(),
+                _ => Vec::new(),
+            };
+            Ok(s(decode(&codec_name, &b, &errors)?))
+        }
+        "decode_bridge_prefix" => {
+            // Decode the longest clean prefix; return (str, pending_bytes).
+            let b: Vec<u8> = match args.get(1) {
+                Some(Value::Bytes(bb)) => bb.iter().cloned().collect(),
+                _ => Vec::new(),
+            };
+            // find the largest prefix that decodes with errors=ignore
+            let mut best = 0usize;
+            for end in (0..=b.len()).rev() {
+                if let Ok(txt) = decode(&codec_name, &b[..end], "ignore") {
+                    // verify strict-clean: re-decode strictly would raise on
+                    // errors; the prefix contract only needs decodability.
+                    let _ = txt;
+                    best = end;
+                    break;
+                }
+            }
+            let txt = decode(&codec_name, &b[..best], "strict").unwrap_or_default();
+            let rest: Vec<u8> = b[best..].to_vec();
+            Ok(tuple(vec![s(txt), Value::Bytes(Gc::new(rest))]))
+        }
+        _ => {
+            let _ = errors;
+            Err(raise(
+                "AttributeError",
+                format!("module '_multibytecodec' has no attribute '{fname}'"),
+            ))
+        }
+    })();
+    Some(r)
+}
+
+/// Chars at index >= consumed (pending tail for the encoder).
+fn pending_str_of(text: &str, consumed_chars: usize) -> String {
+    text.chars().skip(consumed_chars).collect()
+}
+
 // ===========================================================================
 // Native module builders (registration pattern per builtins_modules.rs)
 // ===========================================================================
@@ -1151,10 +1289,19 @@ pub fn build_codecs_iso2022(_i: &crate::frame::Interpreter) -> Value {
 
 /// `_multibytecodec`: the shared engine surface. The vendored wrappers use
 /// MultibyteIncrementalEncoder/Decoder + StreamReader/Writer mixin classes;
-/// we provide the same names as interned types whose instances answer
-/// encode/decode through the `<codec>` attr the wrapper classes set.
+/// the mixin BODIES live in the vendored _multibytecodec.py (importer
+/// augmentation); this native surface carries the engine BRIDGES the
+/// mixin calls + the interned type names.
 pub fn build_multibytecodec(_i: &crate::frame::Interpreter) -> Value {
     let (m, ns) = new_module("_multibytecodec");
+    for f in [
+        "encode_bridge",
+        "encode_bridge_prefix",
+        "decode_bridge",
+        "decode_bridge_prefix",
+    ] {
+        let _ = ns.set(s(f), marker(&format!("_multibytecodec.{f}")));
+    }
     let _ = ns.set(
         s("MultibyteIncrementalEncoder"),
         crate::threading::interned_type_pub("MultibyteIncrementalEncoder"),
@@ -1297,6 +1444,11 @@ pub fn call_mbc(fname: &str, args: &[Value], kwargs: &[(String, Value)]) -> Opti
         }
     })();
     Some(r)
+}
+
+/// Public entry for the mbc incremental instances (methods.rs dispatch).
+pub fn mbc_incremental_method_pub(recv: &Value, method: &str, args: &[Value]) -> Option<BResult> {
+    mbc_incremental_method(recv, method, args)
 }
 
 /// The `_multibytecodec` incremental/stream mixin methods on instances whose

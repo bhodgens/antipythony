@@ -1920,6 +1920,17 @@ pub fn call_method(
             "AttributeError",
             format!("'{}' object has no attribute '{}'", obj.type_name(), name),
         ))),
+        (Value::Obj(o), _) if o.kind == ap_obj::ObjKind::Opaque
+            && matches!(
+                o.name.as_str(),
+                "MultibyteIncrementalEncoder" | "MultibyteIncrementalDecoder"
+            ) =>
+        {
+            // Issue #13: the mbc incremental instances' encode/decode ride
+            // the codec attr (the wrapper class sets it); route to the mbc
+            // engine's buffered incremental surface.
+            crate::mbc::mbc_incremental_method_pub(obj, name, args)
+        }
         (Value::Obj(o), _) if o.kind == ap_obj::ObjKind::UserInstance => {
             // 02.03: instances dispatch through the class MRO; the v0
             // attrs-only path stays as fallback for legacy shapes.

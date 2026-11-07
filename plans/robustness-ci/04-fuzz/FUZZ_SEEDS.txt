@@ -4825,3 +4825,20 @@ search	"(^(\\B)|\\w\\S)"	"-a\n@1@.0-0 .0 "	0
 findall	"(?=b)|b|\\B"	"x中.中akx@b0x.x@0akbak"	0
 COMPILE_TEXT	"\\b{0,2}"	"cß-xb\nk\n0b-k."	10
 COMPILE_TEXT	"\\Z{0,2}"	"c١ab\nßx-kck١-"	2
+subn1	"(?=\\d)"	"bxa١k00axkkb.0k@\n1k"	0
+subn1	"([^ab])\\1?"	"11kx .@caak中中kaäk1xcax"	8
+subn1	"(?-i:x)*"	"x\nx..x . \nbß0\nb- a\ncä0 "	0
+subn1	"(\\w)\\1+"	"--bc@01bkkc1١.abb.b.-k."	0
+subn1	"(\\w)\\1"	"x.@-\n0b@00kk.1١"	0
+search	"(?<!\\d)"	"1ca-k中b011ak\n0bxxbk0"	0
+subn1	"a*"	"b\nx.١\n\nacx cbk١kk"	10
+subn1	"0*"	"1ßk11\n-0@\n\n@ - x0kca xb"	2
+subn1	"(ax)*?"	" äka."	10
+search	"(?<=\\w)"	"b @kkk中x\nx0.1-ä1-ßak"	0
+COMPILE_MISSED	"(.a)*{2,}"	"b.١x١ä0\n@bcß"	0
+search	"(?<!\\d)"	"101.\nä1a"	0
+search	"(?=(?<!.))"	"..0@1-xa@0\nx\na-x١b.\nß\nßk1."	8
+search	"(?<![abc])"	"c1x  \nßß"	0
+COMPILE_TEXT	"(?<=(a)?b(?(1)c|d)+)x"	"\n1-@x0.--kb1中-中xb-١.0k10aß"	0
+findall	"-*?|\\S"	"\n中.\näßak  x.@ \nab .中c中"	10
+COMPILE_TEXT	"\\A{2,}*"	"..\n-kx@\n0c中"	16

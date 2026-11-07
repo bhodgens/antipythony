@@ -7298,6 +7298,38 @@ fn call_type_ctor(
         let o = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, &format!("string.{name}"));
         return Ok(Value::Obj(o));
     }
+    // Issue #13: _multibytecodec mixin types — an Opaque instance whose
+    // `codec` class attr (set by the encodings wrappers) carries the codec
+    // namespace; encode/decode route through mbc_incremental_method.
+    if matches!(
+        name,
+        "MultibyteIncrementalEncoder"
+            | "MultibyteIncrementalDecoder"
+            | "MultibyteStreamReader"
+            | "MultibyteStreamWriter"
+    ) {
+        let o = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, name);
+        {
+            let mut a = o.attrs.borrow_mut();
+            let errors = match args.first() {
+                Some(Value::Str(x)) => x.as_str().to_string(),
+                _ => "strict".to_string(),
+            };
+            let _ = a.set(Value::Str(PyString::new("errors")), Value::Str(PyString::new(errors)));
+            if name == "MultibyteIncrementalDecoder" || name == "MultibyteStreamReader" {
+                let _ = a.set(
+                    Value::Str(PyString::new("<buf>")),
+                    Value::Bytes(Gc::new(Vec::new())),
+                );
+            } else {
+                let _ = a.set(
+                    Value::Str(PyString::new("<sbuf>")),
+                    Value::Str(PyString::new(String::new())),
+                );
+            }
+        }
+        return Ok(Value::Obj(o));
+    }
     // contextlib.ExitStack (via types.MethodType = type(C()._m)): the
     // interned "method" Type CALLS as MethodType(func, obj) — build a real
     // BoundMethod carrying func + receiver (the call path binds them).

@@ -25,7 +25,7 @@ REF = "/opt/homebrew/bin/python3.14"
 # (rust const name, getcodec key, kind)
 JP = [
     ("cp932", "cp932", "double"),
-    ("euc_jp", "euc_jp", "double"),
+    ("euc_jp", "euc_jp", "eucjp"),
     ("shift_jis", "shift_jis", "double"),
     ("shift_jisx0213", "shift_jisx0213", "double2000"),
     ("shift_jis_2004", "shift_jis_2004", "double2000"),
@@ -62,76 +62,32 @@ for b in range(0x100):
                 pass
     except UnicodeDecodeError:
         pass
-# 2) double-byte: lead/trail ranges by family
-def leads(kind):
-    if kind in ("double", "double2000"):
-        return range(0x81, 0xA1)
-    if kind == "euc2000":
-        return [0x8F]
-    if kind in ("euckr", "cp949", "gb2312", "gbk", "big5", "cp950", "johab"):
-        return range(0x81 if kind == "cp949" else 0xA1, 0xFF)
-    return []
-# Generic double enumeration per family: (lead_lo, lead_hi, trail_lo, trail_hi) pairs.
-all_ranges = []
-if kind == "double":  # cp932 / shift_jis: leads 0x81-0x9F + 0xE0-0xEA (+0xEF cp932 NEC row 0x87 is inside 81-9F)
-    all_ranges = [
-        (0x81, 0x9F, 0x40, 0x7E),
-        (0x81, 0x9F, 0x80, 0xFC),
-        (0xE0, 0xEA, 0x40, 0x7E),
-        (0xE0, 0xEA, 0x80, 0xFC),
-    ]
-    if key == 'cp932':
-        all_ranges.append((0xEF, 0xEF, 0x40, 0xFC))
-elif kind == "double2000":  # shift_jisx0213/2004 adds 0xF0-0xFC rows
-    all_ranges = [
-        (0x81, 0x9F, 0x40, 0x7E),
-        (0x81, 0x9F, 0x80, 0xFC),
-        (0xE0, 0xFC, 0x40, 0x7E),
-        (0xE0, 0xFC, 0x80, 0xFC),
-    ]
-elif kind == "euc2000":  # euc_jisx0213/euc_jis_2004: 2-byte rows + 0x8F 3-byte
-    all_ranges = [(0xA1, 0xFE, 0xA1, 0xFE)]
-elif kind in ("euckr", "gb2312"):
-    all_ranges = [(0xA1, 0xF7, 0xA1, 0xFE), (0xA1, 0xF7, 0xA1, 0xFE)]
-elif kind == "cp949":
-    all_ranges = [(0x81, 0xFD, 0x41, 0x5A), (0x81, 0xFD, 0x61, 0x7A), (0x81, 0xFD, 0x81, 0xFE)]
-elif kind == "johab":
-    all_ranges = [(0x84, 0xD3, 0x31, 0x7E), (0x84, 0xD3, 0x81, 0xFE)]
-elif kind in ("gbk", "hz"):
-    all_ranges = [(0x81, 0xFE, 0x40, 0x7E), (0x81, 0xFE, 0x80, 0xFE)]
-elif kind in ("big5", "cp950"):
-    all_ranges = [(0x81, 0xFE, 0x40, 0x7E), (0x81, 0xFE, 0xA1, 0xFC)]
-for lead_lo, lead_hi, trail_lo, trail_hi in all_ranges:
-    for lead in range(lead_lo, lead_hi + 1):
-        for trail in range(trail_lo, trail_hi + 1):
-            bs = bytes([lead, trail])
-            try:
-                ch = bs.decode(key)
-            except UnicodeDecodeError:
-                continue
-            except Exception:
-                continue
-            try:
-                if ch.encode(key) == bs:
-                    out[bs.hex()] = ord(ch)
-            except Exception:
-                pass
-# euc2000: 2-byte A1A1..FEFE (JIS X 0213 rows 1-2) + 3-byte 0x8F-prefixed
-if kind == "euc2000":
-    for m2 in range(0xA1, 0xFF):
-        for t2 in range(0xA1, 0xFF):
-            bs = bytes([m2, t2])
-            try:
-                ch = bs.decode(key)
-            except Exception:
-                continue
-            try:
-                if ch.encode(key) == bs:
-                    out[bs.hex()] = ord(ch)
-            except Exception:
-                pass
-    for m in range(0xA1, 0xFF):
-        for t in range(0xA1, 0xFF):
+# 2) double-byte: EXHAUSTIVE sweep of every lead/trail pair. The reference
+#    interpreter rejects invalid sequences, and the re-encode check drops
+#    sequences that decode but do not round-trip. Hand-written per-family
+#    lead/trail ranges are what mis-generated MAP_EUC_JP (Shift-JIS ranges
+#    were applied: the whole JIS X 0208 block was lost) and MAP_JOHAB
+#    (the 0xD9-0xF9 hanja rows were lost); exhaustive enumeration removes
+#    the entire range-table mistake class.
+for lead in range(0x00, 0x100):
+    for trail in range(0x00, 0x100):
+        bs = bytes([lead, trail])
+        try:
+            ch = bs.decode(key)
+        except UnicodeDecodeError:
+            continue
+        except Exception:
+            continue
+        try:
+            if ch.encode(key) == bs:
+                out[bs.hex()] = ord(ch)
+        except Exception:
+            pass
+# 3) three-byte forms: euc_jp (JIS X 0212 via 0x8F prefix) and the
+#    euc2000 family (JIS X 0213 planes 1/2 via 0x8F prefix).
+if kind in ("eucjp", "euc2000"):
+    for m in range(0x00, 0x100):
+        for t in range(0x00, 0x100):
             bs = bytes([0x8F, m, t])
             try:
                 ch = bs.decode(key)

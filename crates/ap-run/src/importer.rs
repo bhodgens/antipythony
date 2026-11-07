@@ -647,6 +647,11 @@ pub fn import_module_inner(interp: &Rc<Interpreter>, name: &str) -> EResult {
         // T1-d (packaging._elffile etc read functools._unwrap_partialmethod
         // — private CPython-stdlib names the native surface lacks).
         | "functools"
+        // Issue #13: the mbc MIXIN classes (MultibyteIncrementalEncoder/
+        // Decoder, StreamReader/Writer) live in the vendored _multibytecodec.py
+        // over the native engine bridges; the vendored file must exec INTO the
+        // native module so wrapper class bases resolve.
+        | "_multibytecodec"
     ) {
         if let Some(m) = builtins_modules::get_or_make_module(interp, name) {
             augment_with_vendored(interp, name, &m);

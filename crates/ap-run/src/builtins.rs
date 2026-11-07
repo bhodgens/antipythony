@@ -3356,6 +3356,54 @@ pub fn interned_type(interp: &Interpreter, name: &str) -> Value {
     if let Some(t) = interp.type_objects.borrow().get(name) {
         return t.clone();
     }
+    // Issue #13: the _multibytecodec mixin types need REAL class payloads
+    // whose dict carries encode/decode/reset/getstate/setstate markers (the
+    // wrapper subclasses sit BETWEEN this type and codecs.IncrementalDecoder,
+    // so a missing attr here falls through to the NotImplementedError base).
+    // Build object-derived TypeObjects; method calls on instances route via
+    // methods.rs's mbc arm (the instance is bound into the call).
+    if matches!(
+        name,
+        "MultibyteIncrementalEncoder"
+            | "MultibyteIncrementalDecoder"
+            | "MultibyteStreamReader"
+            | "MultibyteStreamWriter"
+    ) {
+        let t = ap_obj::classes::TypeObject::create(
+            name.to_string(),
+            name.to_string(),
+            vec![crate::classes::object_class(interp)],
+            PyDict::new(),
+            ap_obj::classes::TypeFlags {
+                slots: None,
+                is_exception: false,
+                builtin_exc: false,
+            },
+            None,
+        )
+        .expect("mbc mixin MRO");
+        let methods: &[&str] = match name {
+            "MultibyteIncrementalEncoder" => &["encode", "reset", "getstate", "setstate"],
+            "MultibyteIncrementalDecoder" => &["decode", "reset", "getstate", "setstate"],
+            "MultibyteStreamReader" => &["readline"],
+            _ => &["write"],
+        };
+        for m in methods {
+            let _ = t.dict.set(
+                Value::Str(PyString::new(*m)),
+                Value::Obj(ap_obj::PyObject::new(
+                    ap_obj::ObjKind::BuiltinFn,
+                    &format!("__ap_mbc__.{m}"),
+                )),
+            );
+        }
+        let v = ap_obj::classes::make_class_value(t);
+        interp
+            .type_objects
+            .borrow_mut()
+            .insert(name.to_string(), v.clone());
+        return v;
+    }
     let t = Value::Obj(ap_obj::PyObject::new(ap_obj::ObjKind::Type, name));
     interp
         .type_objects
