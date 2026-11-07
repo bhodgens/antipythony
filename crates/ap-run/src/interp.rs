@@ -7489,6 +7489,30 @@ fn call_function(
             // T2: per-exception traceback - the exception carries its own
             // entries so a CAUGHT exception keeps a correct tb (the global
             // tb_frames table is truncated on catch).
+            // A5-partial (memperf audit 2026-11-06): bare StopIteration from
+            // a plain function call is the "function returned" signal the
+            // iterator protocol checks by CLASS NAME — it is caught by the
+            // for-loop machinery and discarded (tb never rendered). Building
+            // the tb entry + O(depth) head-inserts + the deep context clone
+            // per frame was pure waste in every hot loop that iterates a
+            // non-generator. Fast path: skip tb AND context wiring entirely
+            // for a bare StopIteration leaving a non-generator frame.
+            // Byte-exactness: any StopIteration that REACHES user code
+            // (raised inside a generator body, or re-raised by user code)
+            // still gets its tb entries at the same sites as before; a
+            // user except StopIteration as e handler sees tb via the SAME
+            // handler arm that catches it (interp.rs try arm inserts there
+            // using frame data, not this exit path) — differential suites
+            // confirm identical output.
+            let is_bare_stopiteration = exc.class == "StopIteration"
+                && exc.args.is_empty()
+                && exc.tb.is_empty()
+                && exc.cause.is_none()
+                && exc.instance.is_none()
+                && !entry.def.is_generator;
+            if is_bare_stopiteration {
+                return Err(Flow::Raise(exc));
+            }
             exc.tb
                 .insert(0, (entry.qualname.clone(), line.max(1), file.clone()));
             interp
