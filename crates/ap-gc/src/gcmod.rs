@@ -76,7 +76,10 @@ thread_local! {
     /// Addresses judged unreachable in the CURRENT collection (swept at the
     /// retain below). sweep_weakrefs needs this because it runs before the
     /// retain: registry membership alone can't see this cycle's deaths.
-    static GARBAGE_NOW: RefCell<Vec<usize>> = RefCell::new(Vec::new());
+    /// C5 (memperf audit 2026-11-06): HashSet, not Vec — the sweep probes
+    /// every weakref entry against it (the Vec made it O(WEAKREFS × deaths)
+    /// per collect and was fully cloned per pass).
+    static GARBAGE_NOW: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
 
     /// Instrumentation totals (GCSTATS env / stress report).
     static STATS: std::cell::Cell<GcStats> = const { std::cell::Cell::new(GcStats::EMPTY) };
@@ -128,6 +131,57 @@ impl GcStats {
         self.objects_reclaimed += reclaimed;
         self.cycles_collected += cycles;
     }
+}
+
+/// C6 (memperf audit 2026-11-06): per-collection scratch buffers. ONE
+/// thread-local slot holds the buffers; `collect_gen` swaps them out for
+/// the duration of the pass (owned struct — no RefCell guard held across
+/// finalizer/callback user code) and swaps them back at the end, so every
+/// steady-state pass reuses the previous pass's capacity and hash buckets.
+/// A re-entrant collect (a `__del__` that calls gc.collect()) finds the
+/// slot empty and runs on fresh locals; at restore time the slot wins by
+/// first-writer (the outer pass restores last and simply drops its own).
+#[derive(Default)]
+struct Scratch {
+    /// Edge counts for the scoped objects (rebuilt per pass, buckets kept).
+    counts: HashMap<usize, usize>,
+    /// The reachable-set DFS: visited + worklist.
+    visited: HashSet<usize>,
+    queue: Vec<usize>,
+    /// Edge buffer handed to `edges_of` per scanned object.
+    kids: Vec<usize>,
+    /// The generation scope set (gen-0: YOUNG; gen-1: MID ∪ YOUNG).
+    scope: HashSet<usize>,
+    /// Addresses swept as garbage this pass (registry lookup staging).
+    garbage: Vec<(usize, u64, Value)>,
+    garbage_addrs: Vec<(usize, u64)>,
+}
+
+thread_local! {
+    /// C6: the scratch slot (see `Scratch`).
+    static SCRATCH: RefCell<Option<Scratch>> = const { RefCell::new(None) };
+}
+
+/// Borrow-or-own a scratch slot for one collection pass.
+fn take_scratch() -> Scratch {
+    SCRATCH.with(|s| s.borrow_mut().take()).unwrap_or_default()
+}
+
+/// Return the slot; if a nested pass already refilled it, drop ours.
+fn restore_scratch(mut scratch: Scratch) {
+    scratch.counts.clear();
+    scratch.visited.clear();
+    scratch.queue.clear();
+    scratch.kids.clear();
+    scratch.scope.clear();
+    scratch.garbage.clear();
+    scratch.garbage_addrs.clear();
+    SCRATCH.with(|s| {
+        let mut b = s.borrow_mut();
+        if b.is_none() {
+            *b = Some(scratch);
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -235,6 +289,8 @@ pub fn add_root_dict(d: &Gc<PyDict>) {
         let mut r = r.borrow_mut();
         if !r.iter().any(|x| rc_addr(x) == rc_addr(d)) {
             r.push(d.clone());
+            // C3: the root set changed — stale every seed cache entry.
+            ROOT_GEN.with(|g| g.set(g.get() + 1));
         }
     });
 }
@@ -249,6 +305,8 @@ pub fn add_root_module_ns(ns: &std::rc::Rc<PyDict>) {
             .any(|x| std::rc::Rc::as_ptr(x) as *const u8 as usize == ptr)
         {
             r.push(ns.clone());
+            // C3: the root set changed — stale every seed cache entry.
+            ROOT_GEN.with(|g| g.set(g.get() + 1));
         }
     });
 }
@@ -256,53 +314,136 @@ pub fn add_root_module_ns(ns: &std::rc::Rc<PyDict>) {
 pub fn clear_roots() {
     ROOT_DICTS.with(|r| r.borrow_mut().clear());
     ROOT_MODULE_NS.with(|r| r.borrow_mut().clear());
+    // C3: drop the seed cache and bump the generation (re-run entry).
+    ROOT_SEEDS.with(|c| c.borrow_mut().clear());
+    ROOT_GEN.with(|g| g.set(g.get() + 1));
 }
 
 // ---------------------------------------------------------------------------
 // The collector
 // ---------------------------------------------------------------------------
 
+thread_local! {
+    /// C3 (memperf audit 2026-11-06): persistent root-dict seed cache.
+    /// Key: root dict payload address. Value: (dict mutation epoch,
+    /// addresses of every scalar-shaped child the dict held at that
+    /// epoch). Replayed (registry + scope probes only) while the epoch
+    /// is unchanged; rebuilt on any set/pop/popitem of the dict. See
+    /// the C3 note in `mark_reachable_scoped` for the address-reuse
+    /// safety argument. Bounded by the root count (modules + builtins).
+    static ROOT_SEEDS: RefCell<HashMap<usize, (u64, u64, Vec<usize>)>> =
+        RefCell::new(HashMap::new());
+    /// Bumped whenever the ROOT LIST itself changes (add/clear): guards
+    /// against a freed root dict's address being recycled onto a fresh
+    /// dict that happens to start at epoch 1 with a stale cache entry.
+    static ROOT_GEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// C3: seed one root dict's tracked children into the DFS queue.
+///
+/// Fast path: cache entry matches (root generation, dict mutation epoch)
+/// -> replay the stored addresses (registry + scope probes, no dict walk,
+/// no Value clones). Slow path: walk entries under the borrow once,
+/// collect the child addresses, stash them for later passes, and push the
+/// same set. Both paths push exactly the addresses the pre-C3 `foreach`
+/// walk pushed (the reachable SET — and therefore the collection verdict —
+/// is queue-order-independent).
+/// Address-reuse safety: the cache key is the dict's payload address, so
+/// a stale entry could only mislead if a NEW dict took that address AND
+/// reproduced (gen, epoch). A cached root dict cannot die while listed
+/// (the list holds a strong clone); removal happens only via
+/// `clear_roots`, which bumps `ROOT_GEN` — every entry is then invalid.
+/// Between generations, a dict's child set is a pure function of its
+/// mutation history (epoch), because entries change only through
+/// set/pop/popitem, each of which bumps the epoch.
+fn seed_root_dict(
+    key: usize,
+    d: &PyDict,
+    root_gen: u64,
+    registry: &HashMap<usize, Tracked>,
+    scope: Option<&HashSet<usize>>,
+    queue: &mut Vec<usize>,
+    root_hits: &mut usize,
+) {
+    // NOTE: callers hold the root-list Rc/Gc clone; `d` is pinned alive.
+    let epoch = d.mutation_epoch();
+    let in_and_push = |a: usize, queue: &mut Vec<usize>, root_hits: &mut usize| {
+        if a != 0 && registry.contains_key(&a) && scope.map_or(true, |s| s.contains(&a)) {
+            queue.push(a);
+            *root_hits += 1;
+        }
+    };
+    let replayed = ROOT_SEEDS.with(|c| {
+        let c = c.borrow();
+        match c.get(&key) {
+            Some((g, e, addrs)) if *g == root_gen && *e == epoch => {
+                for &a in addrs {
+                    in_and_push(a, queue, root_hits);
+                }
+                true
+            }
+            _ => false,
+        }
+    });
+    if replayed {
+        return;
+    }
+    let mut seen: HashSet<usize> = HashSet::new();
+    let mut addrs: Vec<usize> = Vec::new();
+    d.foreach(|k, v| {
+        for val in [k, v] {
+            let a = value_addr(val);
+            if a == 0 || !seen.insert(a) {
+                continue;
+            }
+            addrs.push(a);
+            in_and_push(a, queue, root_hits);
+        }
+    });
+    ROOT_SEEDS.with(|c| c.borrow_mut().insert(key, (root_gen, epoch, addrs)));
+}
+
 /// Outbound edges of a value: every registry-tracked child it holds.
+///
+/// C2 (memperf audit 2026-11-06): every container arm iterates UNDER the
+/// existing borrow via a ref-yielding iterator (`PyDict::foreach`,
+/// `PySet::foreach_ref`, `PyList::items` Ref) instead of snapshotting.
+/// The old code deep-cloned each traced container per pass (`clone()` +
+/// `items()` double-clone for instance `__dict__`s) even though `edges_of`
+/// only pushes `usize` addresses — pure waste, paid twice (counts pass +
+/// mark pass). No user code runs inside the borrows (the closure body is a
+/// registry probe + Vec push), so the held borrow cannot re-enter the
+/// collector; contention where a field is borrowed ELSEWHERE still aborts
+/// the pass via SCAN_CONTENDED exactly as before.
 fn edges_of(v: &Value, registry: &HashMap<usize, Tracked>, out: &mut Vec<usize>) {
-    fn tracked_addr(val: &Value, registry: &HashMap<usize, Tracked>) -> Option<usize> {
+    #[inline]
+    fn push_tracked(val: &Value, registry: &HashMap<usize, Tracked>, out: &mut Vec<usize>) {
         let a = value_addr(val);
         if a != 0 && registry.contains_key(&a) {
-            Some(a)
-        } else {
-            None
+            out.push(a);
         }
     }
     match v {
         Value::List(l) => {
             for item in l.items().iter() {
-                if let Some(a) = tracked_addr(item, registry) {
-                    out.push(a);
-                }
+                push_tracked(item, registry, out);
             }
         }
         Value::Tuple(t) => {
             for item in t.0.iter() {
-                if let Some(a) = tracked_addr(item, registry) {
-                    out.push(a);
-                }
+                push_tracked(item, registry, out);
             }
         }
         Value::Dict(d) => {
-            for (k, val) in d.items() {
-                if let Some(a) = tracked_addr(&k, registry) {
-                    out.push(a);
-                }
-                if let Some(a) = tracked_addr(&val, registry) {
-                    out.push(a);
-                }
-            }
+            d.foreach(|k, val| {
+                push_tracked(k, registry, out);
+                push_tracked(val, registry, out);
+            });
         }
         Value::Set(s) | Value::Frozen(s) => {
-            for e in s.iter() {
-                if let Some(a) = tracked_addr(&e, registry) {
-                    out.push(a);
-                }
-            }
+            s.foreach_ref(|e| {
+                push_tracked(e, registry, out);
+            });
         }
         Value::Obj(o) => {
             // attrs dict (identity per object) + payload values.
@@ -329,56 +470,40 @@ fn edges_of(v: &Value, registry: &HashMap<usize, Tracked>, out: &mut Vec<usize>)
             if registry.contains_key(&a) {
                 out.push(a);
             }
-            let attrs = attrs_guard.clone();
-            for (k, v) in attrs.items() {
-                if let Some(a) = tracked_addr(&k, registry) {
-                    out.push(a);
-                }
-                if let Some(a) = tracked_addr(&v, registry) {
-                    out.push(a);
-                }
-            }
+            attrs_guard.foreach(|k, v| {
+                push_tracked(k, registry, out);
+                push_tracked(v, registry, out);
+            });
+            drop(attrs_guard);
             // try_borrow: GC can trigger while another borrow is live
             // (class-body exec mid-__setitem__); contended => skip (the
             // object is reachable from a live frame anyway).
             if let Ok(f_guard) = o.func.try_borrow() {
                 if let Some(f) = f_guard.as_ref() {
-                    if let Some(a) = tracked_addr(f, registry) {
-                        out.push(a);
-                    }
+                    push_tracked(f, registry, out);
                 }
             }
             if let Ok(s_guard) = o.self_value.try_borrow() {
                 if let Some(s) = s_guard.as_ref() {
-                    if let Some(a) = tracked_addr(s, registry) {
-                        out.push(a);
-                    }
+                    push_tracked(s, registry, out);
                 }
             }
             if let Ok(c_guard) = o.cause.try_borrow() {
                 if let Some(c) = c_guard.as_ref() {
-                    if let Some(a) = tracked_addr(c, registry) {
-                        out.push(a);
-                    }
+                    push_tracked(c, registry, out);
                 }
             }
             if let Ok(cx_guard) = o.context.try_borrow() {
                 if let Some(c) = cx_guard.as_ref() {
-                    if let Some(a) = tracked_addr(c, registry) {
-                        out.push(a);
-                    }
+                    push_tracked(c, registry, out);
                 }
             }
             // UserClass method table (dunders dict).
             if let Ok(dunders) = o.dunders.try_borrow() {
-                for (k, v) in dunders.items() {
-                    if let Some(a) = tracked_addr(&k, registry) {
-                        out.push(a);
-                    }
-                    if let Some(a) = tracked_addr(&v, registry) {
-                        out.push(a);
-                    }
-                }
+                dunders.foreach(|k, v| {
+                    push_tracked(k, registry, out);
+                    push_tracked(v, registry, out);
+                });
             }
         }
         _ => {}
@@ -396,6 +521,7 @@ fn count_internal_refs_scoped(
     registry: &HashMap<usize, Tracked>,
     counts: &mut HashMap<usize, usize>,
     scope: Option<&HashSet<usize>>,
+    kids: &mut Vec<usize>,
 ) {
     counts.clear();
     // Init counts ONLY for scope addresses: iterating registry.keys() with
@@ -421,24 +547,30 @@ fn count_internal_refs_scoped(
     match scope {
         None => {
             for t in registry.values() {
-                scan_edges(&t.value, registry, counts);
+                scan_edges(&t.value, registry, counts, kids);
             }
         }
         Some(s) => {
             for addr in s.iter() {
                 if let Some(t) = registry.get(addr) {
-                    scan_edges(&t.value, registry, counts);
+                    scan_edges(&t.value, registry, counts, kids);
                 }
             }
         }
     }
 }
 
-/// Edge-count one tracked object's children into `counts`.
-fn scan_edges(v: &Value, registry: &HashMap<usize, Tracked>, counts: &mut HashMap<usize, usize>) {
-    let mut kids = Vec::new();
-    edges_of(v, registry, &mut kids);
-    for k in kids {
+/// Edge-count one tracked object's children into `counts`. C6: the edge
+/// buffer rides the per-pass scratch (no fresh Vec allocation per object).
+fn scan_edges(
+    v: &Value,
+    registry: &HashMap<usize, Tracked>,
+    counts: &mut HashMap<usize, usize>,
+    kids: &mut Vec<usize>,
+) {
+    kids.clear();
+    edges_of(v, registry, kids);
+    for k in kids.drain(..) {
         if let Some(c) = counts.get_mut(&k) {
             *c += 1;
         }
@@ -452,14 +584,19 @@ fn value_addr_of_tracked(t: &Tracked) -> usize {
 
 /// Unscoped wrappers (full-heap scan): unit tests and any legacy callers.
 fn count_internal_refs(registry: &HashMap<usize, Tracked>, counts: &mut HashMap<usize, usize>) {
-    count_internal_refs_scoped(registry, counts, None)
+    let mut kids = Vec::new();
+    count_internal_refs_scoped(registry, counts, None, &mut kids)
 }
 
 fn mark_reachable(
     registry: &HashMap<usize, Tracked>,
     counts: &HashMap<usize, usize>,
 ) -> HashSet<usize> {
-    mark_reachable_scoped(registry, counts, None)
+    let mut visited = HashSet::new();
+    let mut queue = Vec::new();
+    let mut kids = Vec::new();
+    mark_reachable_scoped(registry, counts, None, &mut visited, &mut queue, &mut kids);
+    visited
 }
 
 /// Reachable set: walk from the roots through registry edges. An entry with
@@ -475,10 +612,13 @@ fn mark_reachable_scoped(
     registry: &HashMap<usize, Tracked>,
     counts: &HashMap<usize, usize>,
     scope: Option<&HashSet<usize>>,
-) -> HashSet<usize> {
+    visited: &mut HashSet<usize>,
+    queue: &mut Vec<usize>,
+    kids: &mut Vec<usize>,
+) {
     let in_scope = |addr: usize| scope.map_or(true, |s| s.contains(&addr));
-    let mut visited: HashSet<usize> = HashSet::new();
-    let mut queue: Vec<usize> = Vec::new();
+    visited.clear();
+    queue.clear();
 
     // Externally-referenced seeds (subtract-refs invariant). The registry
     // clone itself holds one strong count, so an entry is externally
@@ -510,37 +650,74 @@ fn mark_reachable_scoped(
     }
 
     // Explicit roots (globals dicts, module namespaces, sys.modules).
-    let mut root_vals: Vec<Value> = Vec::new();
+    // C3 (memperf audit 2026-11-06): the old path cloned every (key,
+    // value) pair of every root dict into a `Vec<Value>` snapshot per
+    // pass (x2 Rc bumps per pair through `items()`), then probed each
+    // clone — on gen-0 too, ~every 700 allocations. Now: a persistent
+    // per-dict seed cache maps the dict's payload address to
+    // (mutation epoch, child addresses). PyDict bumps its epoch on every
+    // set/pop/popitem; add_root_*/clear_roots bump ROOT_GEN. An
+    // unchanged dict replays its cached address vec — no entry walk and
+    // no Value clones. The replay still probes registry membership and
+    // scope per pass (both legitimately change between passes).
+    // Address-reuse safety: a live root dict holds a STRONG reference to
+    // every cached child address, and the ROOT_DICTS list holds a strong
+    // clone of every root dict — so neither the dict nor its cached
+    // children can be freed (and their addresses recycled) while the
+    // epoch entry stands. Children replaced in the dict force a `set`
+    // (epoch bump, cache rebuild) — the cache can never name a dead slot.
+    // sys.modules still clones (the bridge seam + importer's exposed
+    // getter are Vec-returning; importer.rs is a sibling's live edit —
+    // the O(#modules) Rc bumps stay until it exposes a borrow-based read).
+    let mut root_hits = 0usize;
+    let root_gen = ROOT_GEN.with(|g| g.get());
     ROOT_DICTS.with(|r| {
-        for d in r.borrow().iter() {
-            for (k, v) in d.items() {
-                root_vals.push(k);
-                root_vals.push(v);
-            }
+        let r = r.borrow();
+        for d in r.iter() {
+            seed_root_dict(
+                rc_addr(d),
+                d,
+                root_gen,
+                registry,
+                scope,
+                queue,
+                &mut root_hits,
+            );
         }
     });
     ROOT_MODULE_NS.with(|r| {
-        for ns in r.borrow().iter() {
-            for (k, v) in ns.items() {
-                root_vals.push(k);
-                root_vals.push(v);
-            }
+        let r = r.borrow();
+        for ns in r.iter() {
+            seed_root_dict(
+                std::rc::Rc::as_ptr(ns) as *const u8 as usize,
+                ns,
+                root_gen,
+                registry,
+                scope,
+                queue,
+                &mut root_hits,
+            );
         }
     });
     if let Some(mods) = weakbridge::sys_modules_values() {
-        root_vals.extend(mods);
-    }
-    if let Some(frames) = weakbridge::frame_values_roots() {
-        root_vals.extend(frames);
-    }
-    if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::GcDump) {
-        let mut root_src = 0;
-        for v in &root_vals {
+        for v in &mods {
             let a = value_addr(v);
-            if a != 0 && registry.contains_key(&a) {
-                root_src += 1;
+            if a != 0 && registry.contains_key(&a) && in_scope(a) {
+                queue.push(a);
+                root_hits += 1;
             }
         }
+    }
+    if let Some(frames) = weakbridge::frame_values_roots() {
+        for v in &frames {
+            let a = value_addr(v);
+            if a != 0 && registry.contains_key(&a) && in_scope(a) {
+                queue.push(a);
+                root_hits += 1;
+            }
+        }
+    }
+    if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::GcDump) {
         let sc_seeds = registry
             .iter()
             .filter(|(addr, t)| {
@@ -550,17 +727,11 @@ fn mark_reachable_scoped(
             })
             .count();
         eprintln!(
-            "GC ROOTS: root_hits={root_src} sc_seeds={sc_seeds} sys_modules={}",
+            "GC ROOTS: root_hits={root_hits} sc_seeds={sc_seeds} sys_modules={}",
             weakbridge::sys_modules_values()
                 .map(|v| v.len())
                 .unwrap_or(0)
         );
-    }
-    for v in &root_vals {
-        let a = value_addr(v);
-        if a != 0 && registry.contains_key(&a) && in_scope(a) {
-            queue.push(a);
-        }
     }
 
     while let Some(addr) = queue.pop() {
@@ -568,16 +739,15 @@ fn mark_reachable_scoped(
             continue;
         }
         if let Some(t) = registry.get(&addr) {
-            let mut kids = Vec::new();
-            edges_of(&t.value, registry, &mut kids);
-            for k in kids {
+            kids.clear();
+            edges_of(&t.value, registry, kids);
+            for &k in kids.iter() {
                 if !visited.contains(&k) && in_scope(k) {
                     queue.push(k);
                 }
             }
         }
     }
-    visited
 }
 
 fn strong_count_of(v: &Value) -> usize {
@@ -640,7 +810,15 @@ pub fn collect() -> usize {
 /// passes (generation >= 1) scan everything, exactly as before.
 pub fn collect_gen(generation: usize) -> usize {
     let _guard = weakbridge::CollectGuard::new();
+    // C6: pull the reused per-pass scratch (fresh default on a re-entrant
+    // collect). Restored (cleared, capacity retained) before every return.
+    let mut scratch = take_scratch();
+    let n = collect_gen_inner(generation, &mut scratch);
+    restore_scratch(scratch);
+    n
+}
 
+fn collect_gen_inner(generation: usize, scratch: &mut Scratch) -> usize {
     // 1. Internal-edge counts + reachable set. The registry borrow is held
     //    inside each step (no registration while the CollectGuard is up,
     //    so the snapshot is steady). Gen-0: the scan functions are scoped
@@ -648,22 +826,40 @@ pub fn collect_gen(generation: usize) -> usize {
     //    young set, not the heap. The registry is borrowed, NEVER cloned:
     //    snapshot clones would inflate every strong_count by one and
     //    poison the sc > internal + 1 external-reference seeding.
-    let scope: Option<HashSet<usize>> = match generation {
-        0 => Some(YOUNG.with(|y| y.borrow().clone())),
+    //
+    //    C6: the scope set rides the scratch (`scope`) — copied out of
+    //    YOUNG/MID with `extend(iter().copied())` instead of a full
+    //    HashSet clone per pass. Fields are destructured so the disjoint
+    //    borrows (scope vs counts/kids/visited/queue) are per-field and
+    //    never alias.
+    let Scratch {
+        counts,
+        visited,
+        queue,
+        kids,
+        scope,
+        garbage,
+        garbage_addrs,
+    } = scratch;
+    scope.clear();
+    let scope_opt: Option<&HashSet<usize>> = match generation {
+        0 => {
+            YOUNG.with(|y| scope.extend(y.borrow().iter().copied()));
+            Some(&*scope)
+        }
         1 => {
             // Gen-1: young + mid-age. Old objects (already scanned by a
             // gen-1 or full pass) stay out of scope; the next FULL pass
             // catches garbage among them.
-            let mut s = MID.with(|m| m.borrow().clone());
-            let young: Vec<usize> = YOUNG.with(|y| y.borrow().iter().copied().collect());
-            s.extend(young);
-            Some(s)
+            MID.with(|m| scope.extend(m.borrow().iter().copied()));
+            YOUNG.with(|y| scope.extend(y.borrow().iter().copied()));
+            Some(&*scope)
         }
         _ => None,
     };
-    let mut counts: HashMap<usize, usize> = HashMap::new();
-    REGISTRY.with(|r| count_internal_refs_scoped(&r.borrow(), &mut counts, scope.as_ref()));
-    let reachable = REGISTRY.with(|r| mark_reachable_scoped(&r.borrow(), &counts, scope.as_ref()));
+    REGISTRY.with(|r| count_internal_refs_scoped(&r.borrow(), counts, scope_opt, kids));
+    REGISTRY.with(|r| mark_reachable_scoped(&r.borrow(), counts, scope_opt, visited, queue, kids));
+    let reachable = std::mem::take(visited);
     if SCAN_CONTENDED.with(|c| c.get()) {
         SCAN_CONTENDED.with(|c| c.set(false));
         return 0; // heap mid-mutation; retry at next threshold
@@ -674,50 +870,65 @@ pub fn collect_gen(generation: usize) -> usize {
     //    clone (the registry's) drops in the retain below; cycles break
     //    because all member clones drop together. We collect the garbage
     //    Values first so finalizers can still see their objects.
-    let frozen = FROZEN.with(|f| f.borrow().clone());
+    //
+    //    C3 (memperf audit 2026-11-06): FROZEN is no longer cloned per pass
+    //    (post-`gc.freeze()` that clone was O(heap) on EVERY collect). The
+    //    sweep probes it under a short borrow (no user code runs while the
+    //    borrow is held); the full-pass retain below re-probes per entry.
+    //    C6: the staging vectors ride the scratch (`garbage`,
+    //    `garbage_addrs`) — no fresh allocations per pass.
     // gc002 pins CPython's creation-order finalizer firing: sort garbage by
     // registration sequence (the plain registry HashMap iteration order is
     // randomly seeded per process and does NOT correlate with creation).
     // Gen-0 scope: only YOUNG objects are candidates; unreachable OLD
     // objects are untouched this pass (they keep their registry handles).
-    let mut garbage: Vec<(usize, u64, Value)> = Vec::new();
-    // Iterate the SCOPE (young addrs), looking each up in the registry —
-    // same rule as the counts loop. Iterating the full registry here was
-    // the second quadratic remnant (O(heap) per gen-0 pass).
-    let garbage_scope: Box<dyn Iterator<Item = usize>> = match scope.as_ref() {
-        None => {
-            Box::new(REGISTRY.with(|r| r.borrow().keys().copied().collect::<Vec<_>>().into_iter()))
-        }
-        Some(s) => Box::new(s.iter().copied()),
-    };
-    // Collect the scoped (addr, seq) pairs first, THEN clone the garbage
-    // Values — one registry borrow, no Tracked clone.
-    let mut garbage_addrs: Vec<(usize, u64)> = Vec::new();
-    REGISTRY.with(|r| {
-        let r = r.borrow();
-        for addr in garbage_scope {
-            if r.get(&addr).is_none() {
-                continue;
+    garbage_addrs.clear();
+    // C3: FROZEN is probed under a short borrow (no user code runs inside
+    // this block — registry/SEQ_OF reads only). The old per-pass
+    // `f.borrow().clone()` was an O(heap) HashSet copy on every collect.
+    FROZEN.with(|frozen| {
+        let frozen = frozen.borrow();
+        REGISTRY.with(|r| {
+            let r = r.borrow();
+            // Iterate the SCOPE (young addrs), looking each up in the registry —
+            // same rule as the counts loop. Iterating the full registry here was
+            // the second quadratic remnant (O(heap) per gen-0 pass).
+            match scope_opt {
+                None => {
+                    for addr in r.keys() {
+                        if reachable.contains(addr) || frozen.contains(addr) {
+                            continue;
+                        }
+                        let seq = SEQ_OF.with(|s| s.borrow().get(addr).copied().unwrap_or(0));
+                        garbage_addrs.push((*addr, seq));
+                    }
+                }
+                Some(s) => {
+                    for addr in s.iter() {
+                        if r.get(addr).is_none() {
+                            continue;
+                        }
+                        if reachable.contains(addr) || frozen.contains(addr) {
+                            continue;
+                        }
+                        let seq = SEQ_OF.with(|x| x.borrow().get(addr).copied().unwrap_or(0));
+                        garbage_addrs.push((*addr, seq));
+                    }
+                }
             }
-            if reachable.contains(&addr) || frozen.contains(&addr) {
-                continue;
-            }
-            let seq = SEQ_OF.with(|s| s.borrow().get(&addr).copied().unwrap_or(0));
-            garbage_addrs.push((addr, seq));
-        }
+        });
     });
-    let mut garbage: Vec<(usize, u64, Value)> = garbage_addrs
-        .into_iter()
-        .filter_map(|(addr, seq)| {
-            REGISTRY.with(|r| r.borrow().get(&addr).map(|t| (addr, seq, t.value.clone())))
-        })
-        .collect();
+    garbage.clear();
+    for (addr, seq) in garbage_addrs.iter().copied() {
+        if let Some(v) = REGISTRY.with(|r| r.borrow().get(&addr).map(|t| t.value.clone())) {
+            garbage.push((addr, seq, v));
+        }
+    }
     garbage.sort_by_key(|(_, seq, _)| *seq);
-    let garbage: Vec<(usize, Value)> = garbage.into_iter().map(|(addr, _, v)| (addr, v)).collect();
     GARBAGE_NOW.with(|g| {
         let mut g = g.borrow_mut();
         g.clear();
-        g.extend(garbage.iter().map(|(addr, _)| *addr));
+        g.extend(garbage.iter().map(|(addr, _, _)| *addr));
     });
     if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::GcDump) {
         REGISTRY.with(|r| {
@@ -746,11 +957,15 @@ pub fn collect_gen(generation: usize) -> usize {
     //    rose during the call — someone stored it). Objects whose count is
     //    unchanged drop normally; the once-only guard lives in
     //    FINALIZED_ADDRS so a later sweep never re-fires them.
+    //    C3: the once-only probe reads FINALIZED_ADDRS per address instead
+    //    of cloning the whole set per pass (the borrow ends before the
+    //    finalizer runs, so a __del__ that touches GC state cannot panic
+    //    it; a nested collect inserting a mark is seen by the fresh probe
+    //    — strictly safer against double-fire than the stale snapshot).
     run_callbacks_gen("start", garbage.len(), generation);
     let mut truly_resurrected: HashSet<usize> = HashSet::new();
-    let already = FINALIZED_ADDRS.with(|r| r.borrow().clone());
-    for (addr, v) in &garbage {
-        if has_del(v) && !already.contains(addr) {
+    for (addr, _, v) in garbage.iter() {
+        if has_del(v) && FINALIZED_ADDRS.with(|r| !r.borrow().contains(addr)) {
             let before = strong_count_of(v);
             weakbridge::call_del_finalizer(v);
             let after = strong_count_of(v);
@@ -767,7 +982,7 @@ pub fn collect_gen(generation: usize) -> usize {
 
     // 5. Stats.
     let reclaimed = garbage.len() as u64;
-    let cycles = count_cycles(&garbage);
+    let cycles = count_cycles(garbage);
     STATS.with(|s| {
         let mut st = s.get();
         st.record(reclaimed, cycles);
@@ -788,19 +1003,19 @@ pub fn collect_gen(generation: usize) -> usize {
     if gen0 {
         REGISTRY.with(|r| {
             let mut r = r.borrow_mut();
-            for (addr, _) in &garbage {
+            for (addr, _, _) in garbage.iter() {
                 r.remove(addr);
             }
         });
         SEQ_OF.with(|s| {
             let mut s = s.borrow_mut();
-            for (addr, _) in &garbage {
+            for (addr, _, _) in garbage.iter() {
                 s.remove(addr);
             }
         });
         FINALIZED_ADDRS.with(|r| {
             let mut r = r.borrow_mut();
-            for (addr, _) in &garbage {
+            for (addr, _, _) in garbage.iter() {
                 r.remove(addr);
             }
         });
@@ -808,7 +1023,7 @@ pub fn collect_gen(generation: usize) -> usize {
         REGISTRY.with(|r| {
             r.borrow_mut().retain(|addr, _| {
                 reachable.contains(addr)
-                    || frozen.contains(addr)
+                    || FROZEN.with(|f| f.borrow().contains(addr))
                     || truly_resurrected.contains(addr)
             });
         });
@@ -839,21 +1054,17 @@ pub fn collect_gen(generation: usize) -> usize {
     // collects them eventually; the cascade above guarantees that).
     match generation {
         0 => {
-            let scoped: Vec<usize> = scope
-                .as_ref()
-                .map(|s| s.iter().copied().collect())
-                .unwrap_or_default();
             YOUNG.with(|y| {
                 let mut y = y.borrow_mut();
-                for addr in &scoped {
+                for addr in scope.iter() {
                     y.remove(addr);
                 }
             });
             MID.with(|m| {
                 let mut m = m.borrow_mut();
                 m.extend(
-                    scoped
-                        .into_iter()
+                    scope
+                        .iter()
                         .filter(|a| REGISTRY.with(|r| r.borrow().contains_key(a))),
                 );
             });
@@ -861,19 +1072,15 @@ pub fn collect_gen(generation: usize) -> usize {
         1 => {
             // Everything scanned this pass (scope = MID ∪ YOUNG) becomes
             // scanned-old; drop it from both frontier sets.
-            let scoped: Vec<usize> = scope
-                .as_ref()
-                .map(|s| s.iter().copied().collect())
-                .unwrap_or_default();
             YOUNG.with(|y| {
                 let mut y = y.borrow_mut();
-                for addr in &scoped {
+                for addr in scope.iter() {
                     y.remove(addr);
                 }
             });
             MID.with(|m| {
                 let mut m = m.borrow_mut();
-                for addr in &scoped {
+                for addr in scope.iter() {
                     m.remove(addr);
                 }
             });
@@ -904,30 +1111,28 @@ fn has_del(v: &Value) -> bool {
     }
 }
 
-fn run_callbacks(phase: &str, collected: usize) {
-    run_callbacks_gen(phase, collected, 2)
-}
-
-fn run_callbacks_gen(phase: &str, collected: usize, generation: usize) {
+fn run_callbacks_gen(phase: &'static str, collected: usize, generation: usize) {
     let cbs = callbacks_snapshot();
     if cbs.is_empty() {
         return;
     }
+    // A4: interned info-dict keys (per-collect; the info dict is rebuilt
+    // per callback fire, and reads go through PyDict::get_str by name).
     let info = PyDict::new();
     let _ = info.set(
-        Value::Str(ap_obj::value::PyString::new("collected")),
+        ap_obj::value::interned_key("collected"),
         Value::Int(ap_obj::Int::from_i64(collected as i64)),
     );
     let _ = info.set(
-        Value::Str(ap_obj::value::PyString::new("generation")),
+        ap_obj::value::interned_key("generation"),
         Value::Int(ap_obj::Int::from_i64(generation as i64)),
     );
     let _ = info.set(
-        Value::Str(ap_obj::value::PyString::new("uncollectable")),
+        ap_obj::value::interned_key("uncollectable"),
         Value::Int(ap_obj::Int::from_i64(0)),
     );
     let info = Value::Dict(info);
-    let phase_v = Value::Str(ap_obj::value::PyString::new(phase));
+    let phase_v = Value::Str(ap_obj::value::interned_str(phase));
     for cb in cbs {
         let _ = weakbridge::call_callback(&cb, &[phase_v.clone(), info.clone()]);
     }
@@ -939,29 +1144,35 @@ fn sweep_weakrefs(registry: &HashMap<usize, Tracked>, truly_resurrected: &HashSe
     // this cycle's deaths — a ref dropped right before collect() would only
     // flip dead on the NEXT collect (observed: weakref callbacks landed one
     // collect late, gc004/gc005/gc008/gc015 red).
-    let died_now: Vec<usize> = GARBAGE_NOW.with(|g| g.borrow().clone());
-    WEAKREFS.with(|w| {
-        let mut w = w.borrow_mut();
-        for e in w.iter_mut() {
-            if !e.dead
-                && (died_now.contains(&e.target) || !registry.contains_key(&e.target))
-                // C-22/gc008: a __del__ that resurrected its object put it
-                // back in the reachable set — the weakref must NOT fire.
-                && !truly_resurrected.contains(&e.target)
-            {
-                e.dead = true;
+    //
+    // C5 (memperf audit 2026-11-06): GARBAGE_NOW is a HashSet now — the old
+    // path cloned the whole Vec per pass and did a LINEAR `contains` per
+    // weakref entry: O(WEAKREFS × deaths). Borrowed, not cloned.
+    GARBAGE_NOW.with(|died| {
+        let died = died.borrow();
+        WEAKREFS.with(|w| {
+            let mut w = w.borrow_mut();
+            for e in w.iter_mut() {
+                if !e.dead
+                    && (died.contains(&e.target) || !registry.contains_key(&e.target))
+                    // C-22/gc008: a __del__ that resurrected its object put it
+                    // back in the reachable set — the weakref must NOT fire.
+                    && !truly_resurrected.contains(&e.target)
+                {
+                    e.dead = true;
+                }
             }
-        }
+        });
     });
     weakbridge::fire_dead_weakrefs();
 }
 
 /// Cycle census for GCSTATS: garbage members still holding strong counts > 1
 /// at sweep time (they were kept alive by cycle peers, not plain refcounts).
-fn count_cycles(garbage: &[(usize, Value)]) -> u64 {
+fn count_cycles(garbage: &[(usize, u64, Value)]) -> u64 {
     garbage
         .iter()
-        .filter(|(_, v)| strong_count_of(v) > 1)
+        .filter(|(_, _, v)| strong_count_of(v) > 1)
         .count() as u64
 }
 
@@ -1040,32 +1251,65 @@ pub fn weakref_alive(target_addr: usize) -> bool {
     REGISTRY.with(|r| r.borrow().contains_key(&target_addr))
 }
 
+// C8 (memperf audit 2026-11-06): side index target-addr -> positions in
+// WEAKREFS (registration order preserved per target). The queries below
+// (`weakref_count_for`, `weakref_tokens_for`, `weakref_is_dead`) were a
+// full WEAKREFS linear scan per call — O(weakrefs_total) per
+// getweakrefcount/getweakrefs token read and per per-entry dead probe.
+// Maintained at the only two mutation points: `weakref_add` (append) and
+// `weakref_prune_fired` (the single retain that removes entries — rebuilt
+// in the same O(live) pass, no extra traversal).
+thread_local! {
+    static WEAK_INDEX: RefCell<HashMap<usize, Vec<usize>>> = RefCell::new(HashMap::new());
+}
+
+fn rebuild_weak_index(w: &RefCell<Vec<WeakEntry>>) {
+    WEAK_INDEX.with(|idx| {
+        let mut idx = idx.borrow_mut();
+        idx.clear();
+        for (pos, e) in w.borrow().iter().enumerate() {
+            idx.entry(e.target).or_default().push(pos);
+        }
+    });
+}
+
 /// Number of weakref entries watching `target_addr` (dead ones included —
 /// CPython's getweakrefcount counts the object's weakref list, which keeps
 /// dead refs until their callbacks clear them).
 pub fn weakref_count_for(target_addr: usize) -> usize {
-    WEAKREFS.with(|w| {
-        w.borrow()
-            .iter()
-            .filter(|e| e.target == target_addr)
-            .count()
-    })
+    WEAK_INDEX.with(|i| i.borrow().get(&target_addr).map(|v| v.len()).unwrap_or(0))
 }
 
 /// The ref tokens watching `target_addr` (weakref.getweakrefs projection).
 pub fn weakref_tokens_for(target_addr: usize) -> Vec<Value> {
     WEAKREFS.with(|w| {
-        w.borrow()
-            .iter()
-            .filter(|e| e.target == target_addr)
-            .map(|e| e.token.clone())
-            .collect()
+        let w = w.borrow();
+        let refs: Vec<Value> = WEAK_INDEX.with(|i| {
+            i.borrow()
+                .get(&target_addr)
+                .map(|positions| {
+                    positions
+                        .iter()
+                        .filter_map(|&p| w.get(p))
+                        .map(|e| e.token.clone())
+                        .collect()
+                })
+                .unwrap_or_default()
+        });
+        refs
     })
 }
 
 /// Register a weakref entry (ap-run owns token/callback semantics).
 pub fn weakref_add(e: WeakEntry) {
-    WEAKREFS.with(|w| w.borrow_mut().push(e));
+    let target = e.target;
+    WEAKREFS.with(|w| {
+        let mut w = w.borrow_mut();
+        w.push(e);
+        let pos = w.len() - 1;
+        // C8: append keeps the side index exact — one push, no rebuild.
+        WEAK_INDEX.with(|i| i.borrow_mut().entry(target).or_default().push(pos));
+    });
 }
 
 /// Current weakref entry count (ap-run indexes entries by creation order).
@@ -1097,6 +1341,9 @@ pub fn weakref_prune_fired(seq_list: &[u64]) {
     let gone: HashSet<u64> = seq_list.iter().copied().collect();
     WEAKREFS.with(|w| {
         w.borrow_mut().retain(|e| !gone.contains(&e.seq));
+        // C8: positions shifted — rebuild the side index (O(live), same
+        // order as the retain that just ran).
+        rebuild_weak_index(w);
     });
 }
 
@@ -1122,32 +1369,15 @@ pub fn weakref_take_dead() -> Vec<(usize, Option<Value>)> {
 /// Is this weakref (by target address + registration order) dead?
 pub fn weakref_is_dead(target_addr: usize, nth: usize) -> Option<bool> {
     WEAKREFS.with(|w| {
-        let mut n = 0usize;
-        for e in w.borrow().iter() {
-            if e.target == target_addr {
-                if n == nth {
-                    return Some(e.dead);
-                }
-                n += 1;
-            }
-        }
-        None
+        let w = w.borrow();
+        WEAK_INDEX.with(|i| {
+            i.borrow()
+                .get(&target_addr)
+                .and_then(|positions| positions.get(nth))
+                .and_then(|&p| w.get(p))
+                .map(|e| e.dead)
+        })
     })
-}
-
-/// Remove every dead weakref whose target address is gone (housekeeping).
-pub fn weakref_prune() {
-    WEAKREFS.with(|w| {
-        w.borrow_mut().retain(|e| {
-            if e.dead {
-                // Keep fired entries that still have live tokens in Python;
-                // ap-run drops tokens explicitly. Keep all: tokens are
-                // user-visible objects. Only dedupe repeated dead entries.
-                return true;
-            }
-            true
-        });
-    });
 }
 
 /// Append a gc.callbacks observer.
@@ -1334,7 +1564,7 @@ mod unit_tests {
         let lone_v = Value::List(lone.clone());
         drop(lone); // lone_v is the ONLY clone
         assert_eq!(strong_count_of(&lone_v), 1);
-        let plain = vec![(value_addr(&lone_v), lone_v)];
+        let plain = vec![(value_addr(&lone_v), 0u64, lone_v)];
         assert_eq!(
             count_cycles(&plain),
             0,
@@ -1348,7 +1578,7 @@ mod unit_tests {
         let yv = Value::List(y.clone());
         drop(x);
         drop(y);
-        let garbage = vec![(value_addr(&xv), xv), (value_addr(&yv), yv)];
+        let garbage = vec![(value_addr(&xv), 0u64, xv), (value_addr(&yv), 1u64, yv)];
         assert_eq!(
             count_cycles(&garbage),
             2,
@@ -1508,6 +1738,110 @@ mod unit_tests {
         assert!(!weakbridge::suppress_registration());
         gc_register(&v.clone());
         assert!(REGISTRY.with(|r| r.borrow().contains_key(&addr)));
+    }
+
+    #[test]
+    fn weakref_side_index_agrees_with_linear_scan() {
+        // C8 (memperf audit 2026-11-06): weakref_count_for/weakref_is_dead/
+        // weakref_tokens_for answer from a target->positions side index.
+        // INVARIANT: the index must agree with the linear scan over WEAKREFS
+        // (registration order per target) across adds AND prunes — a stale
+        // position would silently mis-report getweakrefcount/getweakrefs
+        // and the per-entry dead flag (gc004/gc005/gc015 surface).
+        set_threshold(0, 10, 10);
+        let t1 = list_val();
+        let a1 = value_addr(&t1);
+        let t2 = list_val();
+        let a2 = value_addr(&t2);
+        for _ in 0..3 {
+            weakref_add(WeakEntry {
+                target: a1,
+                token: list_val(),
+                callback: None,
+                dead: false,
+                fired: false,
+                seq: weakref_next_seq(),
+            });
+        }
+        let seq2 = weakref_next_seq();
+        weakref_add(WeakEntry {
+            target: a2,
+            token: list_val(),
+            callback: None,
+            dead: false,
+            fired: false,
+            seq: seq2,
+        });
+        let count_linear =
+            |addr: usize| WEAKREFS.with(|w| w.borrow().iter().filter(|e| e.target == addr).count());
+        assert_eq!(weakref_count_for(a1), count_linear(a1));
+        assert_eq!(weakref_count_for(a2), count_linear(a2));
+        assert_eq!(weakref_is_dead(a1, 2), Some(false));
+        assert_eq!(weakref_is_dead(a1, 3), None);
+        assert_eq!(weakref_tokens_for(a1).len(), 3);
+        // Prune one of a1's entries: positions shift; the index must heal.
+        let prune_seq = WEAKREFS.with(|w| w.borrow()[0].seq);
+        weakref_prune_fired(&[prune_seq]);
+        assert_eq!(weakref_count_for(a1), count_linear(a1));
+        assert_eq!(weakref_tokens_for(a1).len(), 2);
+        assert_eq!(weakref_is_dead(a2, 0).is_some(), true);
+    }
+
+    #[test]
+    fn root_dict_seed_cache_replays_identical_seeds() {
+        // C3 (memperf audit 2026-11-06): the per-pass root-dict walk is
+        // cached per (ROOT_GEN, dict mutation epoch). INVARIANT: with the
+        // cache in play, a second collect over an UNCHANGED root set seeds
+        // exactly like a first collect, and a set on the root dict
+        // (epoch bump) picks up the new child on the next pass. A stale
+        // replay would silently drop a root-reachable object (false
+        // collection) — the C-22 guard this test pins.
+        set_threshold(0, 10, 10);
+        clear_roots();
+        let root = PyDict::new();
+        add_root_dict(&root);
+        let child = list_val();
+        let child_addr = value_addr(&child);
+        root.set(Value::Str(ap_obj::value::PyString::new("k")), child.clone())
+            .unwrap();
+        // Register so the child is in the graph, externally held ONLY by
+        // the root dict (sc = root clone + registry clone = 2, internal 0).
+        gc_register(&child.clone());
+        drop(child); // registry + root keep it alive
+        assert_eq!(collect(), 0, "root-held child must survive");
+        // Second pass hits the replay fast path — same verdict.
+        assert_eq!(collect(), 0, "cached replay must seed identically");
+        // Mutate the root: new tracked child, epoch bumps, cache rebuilds.
+        let kid2 = list_val();
+        let kid2_addr = value_addr(&kid2);
+        root.set(Value::Str(ap_obj::value::PyString::new("k2")), kid2.clone())
+            .unwrap();
+        gc_register(&kid2.clone());
+        drop(kid2);
+        assert_eq!(collect(), 0);
+        assert!(REGISTRY.with(|r| r.borrow().contains_key(&kid2_addr)));
+        // Remove from the root: both children now registry-only -> die.
+        let mut rk = Vec::new();
+        REGISTRY.with(|r| {
+            let r = r.borrow();
+            for addr in [child_addr, kid2_addr] {
+                if r.contains_key(&addr) {
+                    rk.push(addr);
+                }
+            }
+        });
+        assert_eq!(rk.len(), 2);
+        // Drop the root's references by clearing the listed dict content:
+        root.pop(&Value::Str(ap_obj::value::PyString::new("k")));
+        root.pop(&Value::Str(ap_obj::value::PyString::new("k2")));
+        // But the root dict is still LISTED (held) - pop removed the
+        // entries, so the children have only the registry clone: sc=1,
+        // internal=0 -> unreachable -> collected.
+        let swept = collect();
+        assert!(swept >= 2, "both de-rooted children must die, got {swept}");
+        assert!(!REGISTRY.with(|r| r.borrow().contains_key(&child_addr)));
+        assert!(!REGISTRY.with(|r| r.borrow().contains_key(&kid2_addr)));
+        clear_roots();
     }
 
     #[test]
