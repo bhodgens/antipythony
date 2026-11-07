@@ -59,14 +59,22 @@ pub fn run_on_worker_stack<T: Send + 'static>(
 mod tests {
     use super::*;
 
+    /// The two env-mutating tests below share process-global state
+    /// (`APX_MAIN_STACK_MB`), so they must not run concurrently. Rust
+    /// runs tests in threads; guard with a mutex instead of relying on
+    /// `--test-threads=1`.
+    static ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn default_stack_is_256mb() {
+        let _g = ENV_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var("APX_MAIN_STACK_MB");
         assert_eq!(worker_stack_size(), 256 << 20);
     }
 
     #[test]
     fn env_override_respected_with_floor() {
+        let _g = ENV_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var("APX_MAIN_STACK_MB", "64");
         assert_eq!(worker_stack_size(), 64 << 20);
         std::env::set_var("APX_MAIN_STACK_MB", "1");
