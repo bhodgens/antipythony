@@ -15318,9 +15318,13 @@ pub fn call_builtin_values(
                 };
                 match a(1) {
                     Some(Value::Dict(o)) => {
-                        for (k, v) in o.items() {
-                            let _ = d.set(k, v);
-                        }
+                        // D5 (memperf audit 2026-11-06): iterate the source
+                        // entries under one borrow — `items()` cloned every
+                        // pair (2n clones per update; loops calling .update()
+                        // were O(n^2)).
+                        o.foreach(|k, v| {
+                            let _ = d.set(k.clone(), v.clone());
+                        });
                     }
                     Some(other) if dict_like_mapping(&other) => {
                         // CPython update(mapping): keys() + __getitem__
@@ -15390,10 +15394,12 @@ pub fn call_builtin_values(
             }
             ("pydict", "copy") => {
                 if let Value::Dict(d) = &recv {
+                    // D5: same one-borrow entry iteration (was: full
+                    // items() pair-clone + re-set).
                     let nd = PyDict::new();
-                    for (k, v) in d.items() {
-                        let _ = nd.set(k, v);
-                    }
+                    d.foreach(|k, v| {
+                        let _ = nd.set(k.clone(), v.clone());
+                    });
                     return Ok(Value::Dict(nd));
                 }
                 Err(raise(

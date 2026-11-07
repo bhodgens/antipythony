@@ -302,6 +302,19 @@ impl PyDict {
         self.items().into_iter().map(|(k, _)| k).collect()
     }
 
+    /// D5 (memperf audit 2026-11-06): borrow-guarded entry iteration —
+    /// `f(&key, &value)` per live entry under ONE borrow, no pair clones.
+    /// Callers must not mutate this dict (or any dict) inside `f`; the
+    /// borrow guard enforces re-entrancy at runtime the same way `items()`
+    /// snapshots do (minus the clone cost). Returns Err (borrow panicked
+    /// guard) never — `f` is infallible by construction.
+    pub fn foreach<F: FnMut(&Value, &Value)>(&self, mut f: F) {
+        let state = self.state.borrow();
+        for e in state.entries.iter().flatten() {
+            f(&e.key, &e.value);
+        }
+    }
+
     /// Order-independent equality (S-01-22).
     pub fn py_eq(&self, other: &PyDict) -> bool {
         let items = self.items();
