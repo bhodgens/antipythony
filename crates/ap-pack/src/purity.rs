@@ -43,9 +43,16 @@ pub fn cext_diagnostic(module: &str, package: &str) -> String {
 /// diagnostic to print before exiting nonzero.
 pub fn check_pure(dir: &Path) -> Result<(), String> {
     let mut stack = vec![dir.to_path_buf()];
+    // F1 (memperf audit 2026-11-06): read_dir order is filesystem-dependent.
+    // With multiple native wheels staged (scrapy pulls lxml+brotli+
+    // cryptography) the first-found early return named a different package
+    // per machine/run. Deterministic contract fix: collect ALL hits, then
+    // report the lexicographic-first by relative path. Diagnostic text for
+    // a single offender is byte-identical to the old early-return form.
+    let mut hits: Vec<(String, String)> = Vec::new(); // (rel-path, diagnostic)
     while let Some(d) = stack.pop() {
-        let entries = match std::fs::read_dir(&d) {
-            Ok(e) => e,
+        let mut entries: Vec<std::fs::DirEntry> = match std::fs::read_dir(&d) {
+            Ok(e) => e.flatten().collect(),
             Err(err) => {
                 return Err(format!(
                     "antipythony: cannot inspect {}: {err}",
@@ -53,7 +60,9 @@ pub fn check_pure(dir: &Path) -> Result<(), String> {
                 ))
             }
         };
-        for e in entries.flatten() {
+        // Stable traversal so hit-collection order never matters.
+        entries.sort_by_key(|e| e.file_name());
+        for e in entries {
             let p = e.path();
             let name = e.file_name().to_string_lossy().into_owned();
             if p.is_dir() {
@@ -65,24 +74,35 @@ pub fn check_pure(dir: &Path) -> Result<(), String> {
             }
             if native_member(&name) {
                 let package = top_level_package(&p, dir);
-                return Err(cext_diagnostic(&p.to_string_lossy(), &package));
-            }
-            if name == "WHEEL"
+                hits.push((
+                    p.strip_prefix(dir)
+                        .unwrap_or(&p)
+                        .to_string_lossy()
+                        .into_owned(),
+                    cext_diagnostic(&p.to_string_lossy(), &package),
+                ));
+            } else if name == "WHEEL"
                 && p.parent()
                     .map(|x| x.to_string_lossy().ends_with(".dist-info"))
                     .unwrap_or(false)
             {
                 if let Err(bad_tag) = check_wheel_tags(&p) {
                     let package = top_level_package(&p, dir);
-                    return Err(cext_diagnostic(
-                        &format!("{} ({bad_tag})", p.to_string_lossy()),
-                        &package,
+                    hits.push((
+                        p.strip_prefix(dir)
+                            .unwrap_or(&p)
+                            .to_string_lossy()
+                            .into_owned(),
+                        cext_diagnostic(&format!("{} ({bad_tag})", p.to_string_lossy()), &package),
                     ));
                 }
             }
         }
     }
-    Ok(())
+    match hits.into_iter().min_by(|a, b| a.0.cmp(&b.0)) {
+        Some((_, diag)) => Err(diag),
+        None => Ok(()),
+    }
 }
 
 /// The T-14 oracle predicate: `(?i)\.(so|dylib|pyd|dll|o)$` (we add `.a`).
@@ -128,5 +148,41 @@ fn top_level_package(p: &Path, root: &Path) -> String {
             }
         }
         Err(_) => p.to_string_lossy().into_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// F1 (memperf audit 2026-11-06): with MULTIPLE native offenders staged,
+    /// the refusal must name the lexicographic-first by relative path —
+    /// never a filesystem-order-dependent pick.
+    #[test]
+    fn check_pure_reports_lexicographic_first_offender() {
+        let root = std::env::temp_dir().join(format!("apx_purity_f1_{}", std::process::id()));
+        let pkg_a = root.join("apkg_a/lib");
+        let pkg_z = root.join("zpkg_b/lib");
+        std::fs::create_dir_all(&pkg_a).unwrap();
+        std::fs::create_dir_all(&pkg_z).unwrap();
+        std::fs::write(pkg_z.join("zfirst.so"), b"").unwrap();
+        std::fs::write(pkg_a.join("asecond.dylib"), b"").unwrap();
+
+        let err = check_pure(&root).unwrap_err();
+        assert!(
+            err.contains("apkg_a"),
+            "diagnostic must name the lexicographic-first offender (apkg_a), got: {err}"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn check_pure_clean_tree_is_ok() {
+        let root = std::env::temp_dir().join(format!("apx_purity_ok_{}", std::process::id()));
+        std::fs::create_dir_all(root.join("pkg/__pycache__")).unwrap();
+        std::fs::write(root.join("pkg/mod.py"), b"x = 1").unwrap();
+        std::fs::write(root.join("pkg/__pycache__/mod.pyc"), b"").unwrap();
+        assert!(check_pure(&root).is_ok());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }
