@@ -244,10 +244,13 @@ fn target_addr_of(v: &Value) -> usize {
 
 /// Look up the target VALUE for a weak address (registry projection; the
 /// registry clone keeps tracked objects alive, so membership == liveness).
+///
+/// C1 (memperf audit 2026-11-06): this used `get_objects()` — an Rc clone
+/// per registry entry + a full Vec build — then a linear find, per
+/// ref()/weakmethod/finalize_detach call and per WeakKeyDictionary entry
+/// op. The registry is keyed by exactly this address: a direct O(1) get.
 pub fn target_value_by_addr(addr: usize) -> Option<Value> {
-    ap_gc::get_objects()
-        .into_iter()
-        .find(|v| target_addr_of(v) == addr)
+    ap_gc::get_object_by_addr(addr)
 }
 
 /// `ref()` — return the target while alive, None when dead (C-22).

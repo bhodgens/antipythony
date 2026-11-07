@@ -1011,6 +1011,17 @@ pub fn get_objects() -> Vec<Value> {
     REGISTRY.with(|r| r.borrow().values().map(|t| t.value.clone()).collect())
 }
 
+/// C1 (memperf audit 2026-11-06): O(1) registry projection by address.
+/// Same key the allocation registry already indexes (`value_addr` of the
+/// Rc payload). Used by the weakref surface's `target_value_by_addr` —
+/// previously a full `get_objects()` clone + linear find per call.
+pub fn get_object_by_addr(addr: usize) -> Option<Value> {
+    if addr == 0 {
+        return None;
+    }
+    REGISTRY.with(|r| r.borrow().get(&addr).map(|t| t.value.clone()))
+}
+
 /// gc.is_tracked(v): registered containers True, scalars False. Tuples
 /// containing only untracked leaves report False; a tuple holding a tracked
 /// container is itself tracked (CPython pins tuple-list True, gc007).
