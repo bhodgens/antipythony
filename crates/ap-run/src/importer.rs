@@ -498,6 +498,11 @@ fn load_into(
     );
     // Module frames keep locals empty; stores land in the globals dict (= ns).
     let frame = Rc::new(Frame::new_module(ns.clone()));
+    // B5 (memperf audit): the module frame carries THIS module's scope
+    // table so nested-def classification (and the importer's cell seeding
+    // below) resolves exactly, never through another module's same-path
+    // shadow (the twisted deprecate.py NameError collision class).
+    frame.scope_table.set(reg.last_table());
     // Bind module-level defs through the EXTENDED registry so their fn ids
     // resolve (mirror of interp::exec_module's FnDef arm).
     let mut stmts: Vec<ap_ir::Stmt> = Vec::new();
@@ -1294,6 +1299,10 @@ fn exec_compiled(
         Ok(()) => Ok(()),
         Err(f) => {
             // Failed body: CPython REMOVES the module from sys.modules.
+            // M2-adj (memperf audit 2026-11-06): the module frame dies with
+            // the failed body — drop its MODULE_FRAME_CELLS entries (the
+            // table is keyed by the monotone frame id, so this is exact).
+            crate::interp::retire_module_frame_cells(loaded.frame.frame_id);
             SYS_MODULES.with(|s| {
                 s.borrow_mut().remove(name);
             });
@@ -1334,12 +1343,15 @@ fn module_stmts(
                 // defining.my_cells at call time; module frames never run
                 // call_function's cell setup, so without this the cells
                 // are missing (typing._tp_cache 'typed' NameError).
-                if let Some(scope) = reg.scope_of(&f.name) {
-                    // T1-d: cells keyed by (module frame ptr, name) —
+                // B5: resolve against this module's own table (exact).
+                if let Some(scope) = reg.scope_of_in(frame.scope_table.get(), &f.name) {
+                    // T1-d: cells keyed by (module frame ID, name) —
                     // nested-def wiring consults this when the defining
                     // frame is a MODULE frame (which never builds my_cells
-                    // via call_function).
-                    let key = std::rc::Rc::as_ptr(&frame) as usize;
+                    // via call_function). M2-adj (memperf audit): the
+                    // monotone frame_id replaces the recycled Rc address.
+                    let key = frame.frame_id;
+                    frame.has_frame_cells.set(true);
                     crate::interp::MODULE_FRAME_CELLS.with(|reg2| {
                         let mut m = reg2.borrow_mut();
                         for cname in &scope.cells {

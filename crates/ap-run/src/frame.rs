@@ -15,10 +15,53 @@ use ap_obj::value::Value;
 /// One shared cell: closure variable storage (S-02-12/13).
 pub type CellSlot = Rc<RefCell<Option<Value>>>;
 
+/// A6: an Rc-shared declared-names set. Resolved ONCE when a FnEntry is
+/// registered (from the scope classification) and shared by every frame
+/// built from it — building a function frame is an Rc clone, not a
+/// HashSet<String> rebuild, per call.
+pub type DeclaredNames = std::rc::Rc<std::collections::HashSet<String>>;
+
+pub fn empty_declared() -> DeclaredNames {
+    std::rc::Rc::new(std::collections::HashSet::new())
+}
+
+thread_local! {
+    /// E8/M2-adj: monotone counter minting Frame::frame_id (unique per
+    /// thread; frame ids are never reused, so keyed side tables can't
+    /// alias a recycled Rc address to a fresh frame's entries).
+    static NEXT_FRAME_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
+}
+
+pub fn next_frame_id() -> u64 {
+    NEXT_FRAME_ID.with(|c| {
+        let id = c.get();
+        c.set(id + 1);
+        id
+    })
+}
+
 /// A single execution frame.
 pub struct Frame {
     /// Locals (module frames keep this empty and use `globals` directly).
     pub locals: RefCell<HashMap<String, Loc>>,
+    /// A6 (memperf audit 2026-11-06): the ENCLOSING frame for
+    /// comprehension/genexpr child scopes. The old run_comp snapshotted
+    /// ALL of the parent's bound locals (one Value clone per name) into
+    /// the comp frame on every comprehension execution. With a parent
+    /// link, `lookup` falls through the parent's live locals/cells instead
+    /// — zero per-run allocations, and reads see the CURRENT values
+    /// (closer to CPython 3 cell-based comprehension semantics).
+    pub parent: Option<Rc<Frame>>,
+    /// E8/M2-adj (memperf audit): monotone frame identity, unique across a
+    /// thread's lifetime (Rc addresses get recycled once a module frame
+    /// drops — the old (addr, name) keys on MODULE_FRAME_CELLS could then
+    /// alias a fresh frame's cells).
+    pub frame_id: u64,
+    /// M2-adj: set when the importer seeded MODULE_FRAME_CELLS entries for
+    /// this module frame; gates the Drop-time retire so transient module
+    /// frames (eval_default's fallback frame per default-expr eval) don't
+    /// scan the table on every drop.
+    pub has_frame_cells: std::cell::Cell<bool>,
     /// The module-level dict this frame reads globals from.
     pub globals: Gc<PyDict>,
     /// Scope path for classification lookup ("" for module).
@@ -27,10 +70,19 @@ pub struct Frame {
     pub my_cells: HashMap<String, CellSlot>,
     /// Cells captured from enclosing scopes (its `frees`).
     pub free_cells: HashMap<String, CellSlot>,
+    /// B5 (memperf audit): the DEFINING module's registered scope table,
+    /// plumbed from FnEntry.scope_table. Nested-def/lambda scope-path
+    /// classification prefers THIS table (exact, no cross-module
+    /// richest-wins collision), falling back to the global scan. Cell
+    /// because the call site sets it after the Rc<Frame> exists.
+    pub scope_table: std::cell::Cell<Option<&'static ap_parse::ScopeInfoModule>>,
     /// Names declared `global` in this scope (S-02-3): stores go to globals.
-    pub declared_globals: std::collections::HashSet<String>,
+    /// A6 (memperf audit 2026-11-06): `DeclaredNames` is an Rc-shared set —
+    /// the registry caches one per scope path so per-call frames no longer
+    /// rebuild two fresh HashSet<String> (2× |names| String allocs per call).
+    pub declared_globals: DeclaredNames,
     /// Names declared `nonlocal` (S-02-4).
-    pub declared_nonlocals: std::collections::HashSet<String>,
+    pub declared_nonlocals: DeclaredNames,
     /// Qualname for traceback rendering.
     pub qualname: String,
     /// Wave-58: the last executed statement's source line IN THIS
@@ -75,12 +127,16 @@ impl Frame {
     pub fn new_module(globals: Gc<PyDict>) -> Frame {
         Frame {
             locals: RefCell::new(HashMap::new()),
+            parent: None,
+            frame_id: next_frame_id(),
             globals,
             scope_path: String::new(),
             my_cells: HashMap::new(),
             free_cells: HashMap::new(),
-            declared_globals: std::collections::HashSet::new(),
-            declared_nonlocals: std::collections::HashSet::new(),
+            scope_table: std::cell::Cell::new(None),
+            has_frame_cells: std::cell::Cell::new(false),
+            declared_globals: empty_declared(),
+            declared_nonlocals: empty_declared(),
             qualname: "<module>".to_string(),
             is_module: true,
             last_line: std::cell::Cell::new(0),
@@ -97,18 +153,22 @@ impl Frame {
         globals: Gc<PyDict>,
         scope_path: &str,
         qualname: &str,
-        declared_globals: std::collections::HashSet<String>,
-        declared_nonlocals: std::collections::HashSet<String>,
+        declared_globals: DeclaredNames,
+        declared_nonlocals: DeclaredNames,
         my_cells: HashMap<String, CellSlot>,
         free_cells: HashMap<String, CellSlot>,
         locals: HashMap<String, Loc>,
     ) -> Frame {
         Frame {
             locals: RefCell::new(locals),
+            parent: None,
+            frame_id: next_frame_id(),
             globals,
             scope_path: scope_path.to_string(),
             my_cells,
             free_cells,
+            scope_table: std::cell::Cell::new(None),
+            has_frame_cells: std::cell::Cell::new(false),
             declared_globals,
             declared_nonlocals,
             qualname: qualname.to_string(),
@@ -127,12 +187,16 @@ impl Frame {
     pub fn new_child(parent: &Rc<Frame>) -> Frame {
         Frame {
             locals: RefCell::new(HashMap::new()),
+            parent: Some(parent.clone()),
+            frame_id: next_frame_id(),
             globals: parent.globals.clone(),
             scope_path: parent.scope_path.clone(),
             my_cells: HashMap::new(),
             free_cells: parent.my_cells.clone(),
-            declared_globals: std::collections::HashSet::new(),
-            declared_nonlocals: std::collections::HashSet::new(),
+            scope_table: std::cell::Cell::new(parent.scope_table.get()),
+            has_frame_cells: std::cell::Cell::new(false),
+            declared_globals: empty_declared(),
+            declared_nonlocals: empty_declared(),
             qualname: parent.qualname.clone(),
             is_module: false,
             last_line: std::cell::Cell::new(0),
@@ -151,12 +215,16 @@ impl Frame {
     pub fn new_class(parent: &Rc<Frame>, ns: Gc<PyDict>) -> Frame {
         Frame {
             locals: RefCell::new(HashMap::new()),
+            parent: None,
+            frame_id: next_frame_id(),
             globals: parent.globals.clone(),
             scope_path: parent.scope_path.clone(),
             my_cells: HashMap::new(),
             free_cells: HashMap::new(),
-            declared_globals: std::collections::HashSet::new(),
-            declared_nonlocals: std::collections::HashSet::new(),
+            scope_table: std::cell::Cell::new(parent.scope_table.get()),
+            has_frame_cells: std::cell::Cell::new(false),
+            declared_globals: empty_declared(),
+            declared_nonlocals: empty_declared(),
             qualname: parent.qualname.clone(),
             is_module: false,
             last_line: std::cell::Cell::new(0),
@@ -204,6 +272,40 @@ impl Frame {
                 Some(v) => Lookup::Found(v.clone()),
                 None => Lookup::UnboundLocal,
             };
+        }
+        // A6 (memperf audit): comprehension/child frames read the
+        // ENCLOSING frame's locals LIVE through the parent link instead of
+        // a per-run snapshot copy (one Value clone + one HashMap insert per
+        // bound name, per comprehension execution). Precedence replicates
+        // the old snapshot EXACTLY: the old child frame's `locals` map
+        // merged its own bindings over a copy of the parent's BOUND locals,
+        // and a nested comp's parent snapshot transitively carried the
+        // grandparent's bound values (they had been seeded into the parent
+        // comp frame's own map). So: walk the parent chain consulting ONLY
+        // each frame's bound locals (skip unbound slots — the old snapshot
+        // never seeded them), self.free_cells first (new_child's
+        // `parent.my_cells.clone()` — the parent's OWN cells were visible
+        // to the old child through that copy), and ancestor free/my cells
+        // NOT consulted beyond that (a 2-level-old child could not see the
+        // grandparent's cell-only names; preserved).
+        {
+            let mut cur = self.parent.as_ref();
+            while let Some(p) = cur {
+                let locals = p.locals.borrow();
+                if let Some(loc) = locals.get(name) {
+                    let found = match loc {
+                        Loc::Slot(cell) => cell.borrow().clone(),
+                        Loc::CellSlot(cell) => cell.borrow().clone(),
+                    };
+                    drop(locals);
+                    if let Some(v) = found {
+                        return Lookup::Found(v);
+                    }
+                } else {
+                    drop(locals);
+                }
+                cur = p.parent.as_ref();
+            }
         }
         // T1-d fix (@x.setter on __name__-style dunders): the CLASS namespace
         // must be consulted BEFORE module globals — the importer seeds
@@ -264,6 +366,23 @@ impl Frame {
     }
 }
 
+impl Drop for Frame {
+    /// M2-adj (memperf audit 2026-11-06): MODULE_FRAME_CELLS entries keyed
+    /// by this frame's id become unreachable the moment the last Rc<Frame>
+    /// drops (every consult path goes through a LIVE defining frame), so
+    /// retire them here. Failed-import frames are additionally retired
+    /// eagerly at the importer's failed-body arm because `defining_frames`
+    /// still pins them there (the frame outlives the failed module).
+    /// Cross-thread final drops hit another thread's TLS table and no-op
+    /// (bounded leak of that frame's cells on that thread, never a wrong
+    /// hit — ids are per-thread monotone).
+    fn drop(&mut self) {
+        if self.is_module && self.has_frame_cells.get() {
+            crate::interp::retire_module_frame_cells(self.frame_id);
+        }
+    }
+}
+
 pub enum Lookup {
     Found(Value),
     /// Local slot exists but is unbound (UnboundLocalError, S-02-2).
@@ -273,9 +392,16 @@ pub enum Lookup {
 }
 
 /// A registered function (function-table entry).
+/// A2 (memperf audit 2026-11-06): `def` is an `Rc<FnDef>` — the registry
+/// holds one copy of each function's AST and every clone of an entry (per
+/// call, per generator start) bumps a refcount instead of deep-cloning the
+/// whole body tree twice. B5/A6: the entry carries its PRE-RESOLVED scope
+/// classification (from its defining module's own table) plus Rc-shared
+/// declared-global/nonlocal sets, so call setup does zero scope lookups
+/// and zero HashSet rebuilds.
 #[derive(Clone)]
 pub struct FnEntry {
-    pub def: ap_ir::item::FnDef,
+    pub def: Rc<ap_ir::item::FnDef>,
     /// Dotted scope path matching ScopeInfoModule.
     pub scope_path: String,
     /// Qualname for tracebacks.
@@ -284,6 +410,47 @@ pub struct FnEntry {
     /// modules must resolve names in THEIR module, not the runner's).
     /// Construction sites default this to interp.globals.
     pub globals: Gc<PyDict>,
+    /// B5: scope classification resolved at registration against the
+    /// DEFINING module's table (exact; no cross-module path collision).
+    pub scope: Option<&'static ap_parse::ScopeInfo>,
+    /// B5: the DEFINING module's leaked scope table (nested-def path
+    /// lookups resolve against THIS table, not the global richest-wins
+    /// merge — the twisted deprecate.py collision class).
+    pub scope_table: Option<&'static ap_parse::ScopeInfoModule>,
+    /// A6: Rc-shared declared-names sets (see FnRegistry::declared_sets).
+    pub declared_globals: DeclaredNames,
+    pub declared_nonlocals: DeclaredNames,
+}
+
+impl FnEntry {
+    /// Construct with scope pre-resolution against `table` (the defining
+    /// module's registered scope table) through `reg`'s path index.
+    pub(crate) fn with_scope(
+        def: ap_ir::item::FnDef,
+        scope_path: String,
+        qualname: String,
+        globals: Gc<PyDict>,
+        scope: Option<&'static ap_parse::ScopeInfo>,
+        scope_table: Option<&'static ap_parse::ScopeInfoModule>,
+    ) -> FnEntry {
+        let (dg, dn) = match scope {
+            Some(s) => (
+                std::rc::Rc::new(s.globals.iter().cloned().collect()),
+                std::rc::Rc::new(s.nonlocals.iter().cloned().collect()),
+            ),
+            None => (empty_declared(), empty_declared()),
+        };
+        FnEntry {
+            def: Rc::new(def),
+            scope_path,
+            qualname,
+            globals,
+            scope,
+            scope_table,
+            declared_globals: dg,
+            declared_nonlocals: dn,
+        }
+    }
 }
 
 /// The interpreter: owns module state, function table, iterator table,
@@ -319,10 +486,15 @@ pub struct Interpreter {
     /// no mid-run drain happened).
     pub stdout_capture: bool,
     /// Traceback frames of the propagating exception, OUTERMOST-FIRST
-    /// (built by insert(0) at each frame exit; module frame pushes last).
+    /// (built at each frame exit; module frame pushes last).
     /// Entries: (qualname, lineno, filename) — the filename is the DEFINING
     /// module's __file__ (T2 gate finding 2: per-frame file attribution).
-    pub tb_frames: RefCell<Vec<(String, usize, String)>>,
+    /// A5 (memperf audit 2026-11-06): VecDeque so the head-records during an
+    /// unwind are O(1) per frame instead of O(depth) element shifts (the
+    /// old Vec::insert(0, ...) made a depth-d unwind O(depth^2)). All
+    /// consumers use len()/iter()/insert(idx)/truncate/drain, which VecDeque
+    /// provides with identical logical ordering.
+    pub tb_frames: RefCell<std::collections::VecDeque<(String, usize, String)>>,
     /// Per-frame current-line trackers (top = innermost frame).
     pub frame_stack: RefCell<Vec<Rc<Cell<usize>>>>,
     /// Recursion depth + limit (RecursionError at ~1000, task brief §5).
@@ -367,6 +539,15 @@ pub struct Interpreter {
     /// Active super() context per frame depth: (start-class, self/cls)
     /// stacked so zero-arg super() inside a method resolves (S-03-17/18).
     pub super_stack: RefCell<Vec<(std::rc::Rc<ap_obj::classes::TypeObject>, Value, bool)>>,
+    /// A6 (memperf audit): interned plain-function super() sentinels —
+    /// (non-mcap, mcap). One full TypeObject + fresh PyDict used to be
+    /// built on EVERY function call as the super_stack sentinel; nothing
+    /// mutates a sentinel or compares it by identity, so the two variants
+    /// are minted once per interpreter and cloned by refcount.
+    pub plain_super_ctx: (
+        std::rc::Rc<ap_obj::classes::TypeObject>,
+        std::rc::Rc<ap_obj::classes::TypeObject>,
+    ),
     /// Context staged by instantiate() for the __new__/__init__ call it is
     /// about to make (picked up by call_function after its sentinel push).
     pub pending_super_ctx: RefCell<Option<(std::rc::Rc<ap_obj::classes::TypeObject>, Value, bool)>>,
@@ -448,7 +629,7 @@ impl Interpreter {
             stdout: RefCell::new(Vec::new()),
             stdout_flushed_prefix: RefCell::new(Vec::new()),
             stdout_capture: false,
-            tb_frames: RefCell::new(Vec::new()),
+            tb_frames: RefCell::new(std::collections::VecDeque::new()),
             frame_stack: RefCell::new(Vec::new()),
             depth: Cell::new(0),
             recursion_limit: Cell::new(1000),
@@ -470,6 +651,21 @@ impl Interpreter {
             object_class: RefCell::new(None),
             type_class: RefCell::new(None),
             super_stack: RefCell::new(Vec::new()),
+            plain_super_ctx: {
+                let mk = |qual: &str| {
+                    std::rc::Rc::new(ap_obj::classes::TypeObject {
+                        name: "__plain_fn__".to_string(),
+                        qualname: qual.to_string(),
+                        bases: vec![],
+                        mro: std::cell::RefCell::new(Vec::new()),
+                        dict: ap_obj::dict::PyDict::new(),
+                        flags: ap_obj::classes::TypeFlags::default(),
+                        metaclass: std::cell::RefCell::new(None),
+                        class_value: std::cell::RefCell::new(None),
+                    })
+                };
+                (mk(""), mk("__mcap__"))
+            },
             pending_super_ctx: RefCell::new(None),
             source,
             script_path,
@@ -519,7 +715,7 @@ impl Interpreter {
                 .get((fn_id - NESTED_BASE) as usize)
                 .cloned()
         } else if let Some(reg) = self.registry.borrow().as_ref() {
-            reg.entries.get(fn_id as usize).cloned()
+            reg.entry(fn_id)
         } else {
             self.functions.borrow().get(fn_id as usize).cloned()
         }
