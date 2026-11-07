@@ -40,6 +40,11 @@ GIL, uv-backed deps at build time. Byte-exact differential conformance vs CPytho
   --get core.hooksPath`) silently disables repo-local hooks, so any future
   repo hook is a no-op here. If hooks are ever wanted, onboarding must set
   `git config core.hooksPath .githooks` per-repo. See docs/development.md.
+- Machine load policy (binding for local gate runs): ONE heavy cargo test
+  lane at a time on this host; parallel cargo builds during suites use
+  CARGO_BUILD_JOBS=4. Cause: 2026-11-07 WindowServer watchdog stall from a
+  1009-process parallel-cargo flood (power cycle required). Full policy:
+  docs/test-interpreter-lock-policy.md.
 
 ## Current status (update this block when it changes)
 - Plans 00+01 COMPLETE. Plan 02 nearly complete: 02.01 values, 02.02 executor,
