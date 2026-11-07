@@ -660,11 +660,17 @@ impl Drop for PooledStack {
             let v = pool.entry(self.mmap_len).or_default();
             if v.len() < STACK_POOL_CLASS_CAP {
                 // Drop the resident pages (RSS) while keeping the mapping
-                // (VA + no mmap/brk churn). A fresh mmap faults pages in
-                // the same way, so reuse costs no more — it only saves the
-                // syscall pair + the guard-page setup.
+                // (VA + no mmap churn). Usable range ONLY — the low guard
+                // page keeps its PROT_NONE mapping for the region's whole
+                // life (madvise on it could return zero-filled RW pages
+                // on some platforms and silently kill the overflow guard).
+                let page = page_size();
                 unsafe {
-                    libc::madvise(self.raw as *mut libc::c_void, self.mmap_len, libc::MADV_DONTNEED);
+                    libc::madvise(
+                        (self.raw + page) as *mut libc::c_void,
+                        self.mmap_len - page,
+                        libc::MADV_DONTNEED,
+                    );
                 }
                 v.push(self.raw);
                 true
