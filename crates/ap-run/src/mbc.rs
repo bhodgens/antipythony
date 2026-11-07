@@ -27,9 +27,7 @@
 //! raises `LookupError: unknown error handler` only when the handler is
 //! neither builtin nor registered).
 
-use crate::builtins_modules::{
-    finish, i, marker, new_module, raise, s, str_arg, tuple, BResult,
-};
+use crate::builtins_modules::{finish, i, marker, new_module, raise, s, str_arg, tuple, BResult};
 use ap_obj::dict::PyDict;
 use ap_obj::int::Gc;
 use ap_obj::object::{ObjKind, PyObject};
@@ -37,15 +35,15 @@ use ap_obj::value::Value;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+#[path = "mbc_gb18030_4.rs"]
+mod mbc_gb18030_4;
 #[path = "mbc_iso2022_spec.rs"]
 mod mbc_iso2022_spec;
 #[path = "mbc_tables.rs"]
 mod mbc_tables;
-#[path = "mbc_gb18030_4.rs"]
-mod mbc_gb18030_4;
 
-use mbc_iso2022_spec::{spec_for, Cs, Iso2022Spec, MultibyteKind};
 use mbc_gb18030_4::GB18030_4_LINEAR;
+use mbc_iso2022_spec::{spec_for, Cs, Iso2022Spec, MultibyteKind};
 
 // ===========================================================================
 // Codec table registry
@@ -69,10 +67,7 @@ pub struct CodecTables {
     pub canon: &'static str,
 }
 
-fn build_tables(
-    raw: &'static [(&'static str, u32)],
-    canon: &'static str,
-) -> CodecTables {
+fn build_tables(raw: &'static [(&'static str, u32)], canon: &'static str) -> CodecTables {
     let mut dec = HashMap::with_capacity(raw.len());
     let mut enc = HashMap::with_capacity(raw.len());
     let mut max_len = 1usize;
@@ -234,8 +229,8 @@ fn tables_for(name: &str) -> Option<&'static CodecTables> {
         "big5" => Some(big5()),
         "cp950" => Some(cp950()),
         "big5hkscs" => Some(big5hkscs()),
-        "iso2022_jp" | "iso2022_jp_1" | "iso2022_jp_2" | "iso2022_jp_3"
-        | "iso2022_jp_ext" | "iso2022_jp_2004" | "iso2022_kr" => {
+        "iso2022_jp" | "iso2022_jp_1" | "iso2022_jp_2" | "iso2022_jp_3" | "iso2022_jp_ext"
+        | "iso2022_jp_2004" | "iso2022_kr" => {
             let spec = spec_for(name)?;
             // iso2022 codecs decode through the state machine; their tables
             // come from the underlying charset (JIS0208 via euc_jp rows,
@@ -743,7 +738,10 @@ fn iso_decode(t: &CodecTables, b: &[u8], errors: &str) -> Result<String, crate::
             "UnicodeDecodeError",
             format!(
                 "'{}' codec can't decode bytes in position {}-{}: {}",
-                t.canon, start, end.saturating_sub(1), msg
+                t.canon,
+                start,
+                end.saturating_sub(1),
+                msg
             ),
         ));
     }
@@ -1048,9 +1046,8 @@ fn iso_encode(t: &CodecTables, text: &str, errors: &str) -> Result<Vec<u8>, crat
 
 /// Full engine entry: encode `text` under codec `name`.
 pub fn encode(name: &str, text: &str, errors: &str) -> Result<Vec<u8>, crate::Flow> {
-    let t = tables_for(name).ok_or_else(|| {
-        raise("LookupError", format!("unknown encoding: {}", name))
-    })?;
+    let t = tables_for(name)
+        .ok_or_else(|| raise("LookupError", format!("unknown encoding: {}", name)))?;
     if t.hz {
         return hz_encode(t, text, errors);
     }
@@ -1062,9 +1059,8 @@ pub fn encode(name: &str, text: &str, errors: &str) -> Result<Vec<u8>, crate::Fl
 
 /// Full engine entry: decode `bytes` under codec `name`.
 pub fn decode(name: &str, b: &[u8], errors: &str) -> Result<String, crate::Flow> {
-    let t = tables_for(name).ok_or_else(|| {
-        raise("LookupError", format!("unknown encoding: {}", name))
-    })?;
+    let t = tables_for(name)
+        .ok_or_else(|| raise("LookupError", format!("unknown encoding: {}", name)))?;
     if t.hz {
         return hz_decode(t, b, errors);
     }
@@ -1193,23 +1189,36 @@ pub fn call_getcodec(mod_name: &str, args: &[Value]) -> Option<BResult> {
         None => {
             return Some(Err(raise(
                 "TypeError",
-                format!("{}getcodec() missing required argument 'encoding'", mod_name),
+                format!(
+                    "{}getcodec() missing required argument 'encoding'",
+                    mod_name
+                ),
             )))
         }
     };
     // which codecs does this module own?
     let owned: &[&str] = match mod_name {
         "_codecs_jp" => &[
-            "cp932", "euc_jp", "shift_jis", "shift_jisx0213", "shift_jis_2004",
-            "euc_jisx0213", "euc_jis_2004",
+            "cp932",
+            "euc_jp",
+            "shift_jis",
+            "shift_jisx0213",
+            "shift_jis_2004",
+            "euc_jisx0213",
+            "euc_jis_2004",
         ],
         "_codecs_kr" => &["euc_kr", "cp949", "johab"],
         "_codecs_cn" => &["gb2312", "gbk", "gb18030", "hz"],
         "_codecs_tw" => &["big5", "cp950"],
         "_codecs_hk" => &["big5hkscs"],
         "_codecs_iso2022" => &[
-            "iso2022_jp", "iso2022_jp_1", "iso2022_jp_2", "iso2022_jp_3",
-            "iso2022_jp_ext", "iso2022_jp_2004", "iso2022_kr",
+            "iso2022_jp",
+            "iso2022_jp_1",
+            "iso2022_jp_2",
+            "iso2022_jp_3",
+            "iso2022_jp_ext",
+            "iso2022_jp_2004",
+            "iso2022_kr",
         ],
         _ => &[],
     };
@@ -1265,7 +1274,10 @@ pub fn call_mbc(fname: &str, args: &[Value], kwargs: &[(String, Value)]) -> Opti
                 }
             };
             let bs = encode(codec, &text, &errors)?;
-            Ok(tuple(vec![Value::Bytes(Gc::new(bs)), i(text.chars().count() as i64)]))
+            Ok(tuple(vec![
+                Value::Bytes(Gc::new(bs)),
+                i(text.chars().count() as i64),
+            ]))
         } else {
             let b: Vec<u8> = match payload {
                 Value::Bytes(bb) => bb.iter().cloned().collect(),

@@ -35,20 +35,29 @@ pub struct Iso2022Spec {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MultibyteKind {
-    JisX0208,   // euc_jp 2-byte table (JIS 0208+0201 rows)
-    JisX0213,   // euc_jis_2004 2-byte region
-    JisX0212,   // euc_jp 0x8F 3-byte region (JIS X 0212)
-    Ksc5601,    // euc_kr 2-byte region
-    Gb2312,     // gb2312 2-byte region
+    JisX0208, // euc_jp 2-byte table (JIS 0208+0201 rows)
+    JisX0213, // euc_jis_2004 2-byte region
+    JisX0212, // euc_jp 0x8F 3-byte region (JIS X 0212)
+    Ksc5601,  // euc_kr 2-byte region
+    Gb2312,   // gb2312 2-byte region
 }
 
 /// iso2022_jp family (CPython _codecs_iso2022.c).
 pub static SPEC_ISO2022_JP: Iso2022Spec = Iso2022Spec {
     name: "iso2022_jp",
     designations: &[
-        Designation { bytes: b"\x1b$B", cs: Cs::JisX0208 },
-        Designation { bytes: b"\x1b$@", cs: Cs::JisX0208 },
-        Designation { bytes: b"\x1b$)C", cs: Cs::Ksc5601 }, // escape-only, no payload switch on decode
+        Designation {
+            bytes: b"\x1b$B",
+            cs: Cs::JisX0208,
+        },
+        Designation {
+            bytes: b"\x1b$@",
+            cs: Cs::JisX0208,
+        },
+        Designation {
+            bytes: b"\x1b$)C",
+            cs: Cs::Ksc5601,
+        }, // escape-only, no payload switch on decode
     ],
     shifts: false,
     ascii_return: b"\x1b(B",
@@ -58,8 +67,14 @@ pub static SPEC_ISO2022_JP: Iso2022Spec = Iso2022Spec {
 pub static SPEC_ISO2022_JP_1: Iso2022Spec = Iso2022Spec {
     name: "iso2022_jp_1",
     designations: &[
-        Designation { bytes: b"\x1b$B", cs: Cs::JisX0208 },
-        Designation { bytes: b"\x1b$@", cs: Cs::JisX0208 },
+        Designation {
+            bytes: b"\x1b$B",
+            cs: Cs::JisX0208,
+        },
+        Designation {
+            bytes: b"\x1b$@",
+            cs: Cs::JisX0208,
+        },
     ],
     shifts: false,
     ascii_return: b"\x1b(B",
@@ -69,12 +84,30 @@ pub static SPEC_ISO2022_JP_1: Iso2022Spec = Iso2022Spec {
 pub static SPEC_ISO2022_JP_2: Iso2022Spec = Iso2022Spec {
     name: "iso2022_jp_2",
     designations: &[
-        Designation { bytes: b"\x1b$B", cs: Cs::JisX0208 },
-        Designation { bytes: b"\x1b$@", cs: Cs::JisX0208 },
-        Designation { bytes: b"\x1b$(D", cs: Cs::JisX0212 },
-        Designation { bytes: b"\x1b$A", cs: Cs::Gb2312 },
-        Designation { bytes: b"\x1b$(C", cs: Cs::Ksc5601 },
-        Designation { bytes: b"\x1b$(B", cs: Cs::JisX0213P2 },
+        Designation {
+            bytes: b"\x1b$B",
+            cs: Cs::JisX0208,
+        },
+        Designation {
+            bytes: b"\x1b$@",
+            cs: Cs::JisX0208,
+        },
+        Designation {
+            bytes: b"\x1b$(D",
+            cs: Cs::JisX0212,
+        },
+        Designation {
+            bytes: b"\x1b$A",
+            cs: Cs::Gb2312,
+        },
+        Designation {
+            bytes: b"\x1b$(C",
+            cs: Cs::Ksc5601,
+        },
+        Designation {
+            bytes: b"\x1b$(B",
+            cs: Cs::JisX0213P2,
+        },
     ],
     shifts: false,
     ascii_return: b"\x1b(B",
@@ -84,9 +117,18 @@ pub static SPEC_ISO2022_JP_2: Iso2022Spec = Iso2022Spec {
 pub static SPEC_ISO2022_JP_EXT: Iso2022Spec = Iso2022Spec {
     name: "iso2022_jp_ext",
     designations: &[
-        Designation { bytes: b"\x1b$B", cs: Cs::JisX0208 },
-        Designation { bytes: b"\x1b$@", cs: Cs::JisX0208 },
-        Designation { bytes: b"\x1b$(D", cs: Cs::JisX0212 },
+        Designation {
+            bytes: b"\x1b$B",
+            cs: Cs::JisX0208,
+        },
+        Designation {
+            bytes: b"\x1b$@",
+            cs: Cs::JisX0208,
+        },
+        Designation {
+            bytes: b"\x1b$(D",
+            cs: Cs::JisX0212,
+        },
     ],
     shifts: false,
     ascii_return: b"\x1b(B",
@@ -96,10 +138,22 @@ pub static SPEC_ISO2022_JP_EXT: Iso2022Spec = Iso2022Spec {
 pub static SPEC_ISO2022_JP_3: Iso2022Spec = Iso2022Spec {
     name: "iso2022_jp_3",
     designations: &[
-        Designation { bytes: b"\x1b$(O", cs: Cs::JisX0213P1 },
-        Designation { bytes: b"\x1b$(P", cs: Cs::JisX0213P2 },
-        Designation { bytes: b"\x1b$B", cs: Cs::JisX0208 },
-        Designation { bytes: b"\x1b$@", cs: Cs::JisX0208 },
+        Designation {
+            bytes: b"\x1b$(O",
+            cs: Cs::JisX0213P1,
+        },
+        Designation {
+            bytes: b"\x1b$(P",
+            cs: Cs::JisX0213P2,
+        },
+        Designation {
+            bytes: b"\x1b$B",
+            cs: Cs::JisX0208,
+        },
+        Designation {
+            bytes: b"\x1b$@",
+            cs: Cs::JisX0208,
+        },
     ],
     shifts: false,
     ascii_return: b"\x1b(B",
@@ -109,10 +163,22 @@ pub static SPEC_ISO2022_JP_3: Iso2022Spec = Iso2022Spec {
 pub static SPEC_ISO2022_JP_2004: Iso2022Spec = Iso2022Spec {
     name: "iso2022_jp_2004",
     designations: &[
-        Designation { bytes: b"\x1b$(Q", cs: Cs::JisX0213P1 },
-        Designation { bytes: b"\x1b$(P", cs: Cs::JisX0213P2 },
-        Designation { bytes: b"\x1b$B", cs: Cs::JisX0208 },
-        Designation { bytes: b"\x1b$@", cs: Cs::JisX0208 },
+        Designation {
+            bytes: b"\x1b$(Q",
+            cs: Cs::JisX0213P1,
+        },
+        Designation {
+            bytes: b"\x1b$(P",
+            cs: Cs::JisX0213P2,
+        },
+        Designation {
+            bytes: b"\x1b$B",
+            cs: Cs::JisX0208,
+        },
+        Designation {
+            bytes: b"\x1b$@",
+            cs: Cs::JisX0208,
+        },
     ],
     shifts: false,
     ascii_return: b"\x1b(B",
@@ -121,9 +187,10 @@ pub static SPEC_ISO2022_JP_2004: Iso2022Spec = Iso2022Spec {
 
 pub static SPEC_ISO2022_KR: Iso2022Spec = Iso2022Spec {
     name: "iso2022_kr",
-    designations: &[
-        Designation { bytes: b"\x1b$)C", cs: Cs::Ksc5601 },
-    ],
+    designations: &[Designation {
+        bytes: b"\x1b$)C",
+        cs: Cs::Ksc5601,
+    }],
     shifts: true,
     ascii_return: b"",
     multibyte: MultibyteKind::Ksc5601,
@@ -132,9 +199,18 @@ pub static SPEC_ISO2022_KR: Iso2022Spec = Iso2022Spec {
 pub static SPEC_ISO2022_CN: Iso2022Spec = Iso2022Spec {
     name: "iso2022_cn",
     designations: &[
-        Designation { bytes: b"\x1b$)G", cs: Cs::Gb2312 },
-        Designation { bytes: b"\x1b$)A", cs: Cs::Gb2312 },
-        Designation { bytes: b"\x1b$A", cs: Cs::Gb2312 },
+        Designation {
+            bytes: b"\x1b$)G",
+            cs: Cs::Gb2312,
+        },
+        Designation {
+            bytes: b"\x1b$)A",
+            cs: Cs::Gb2312,
+        },
+        Designation {
+            bytes: b"\x1b$A",
+            cs: Cs::Gb2312,
+        },
     ],
     shifts: true,
     ascii_return: b"",
@@ -144,8 +220,14 @@ pub static SPEC_ISO2022_CN: Iso2022Spec = Iso2022Spec {
 pub static SPEC_ISO2022_CN_CNS: Iso2022Spec = Iso2022Spec {
     name: "iso2022_cn_cns",
     designations: &[
-        Designation { bytes: b"\x1b$)G", cs: Cs::Gb2312 },
-        Designation { bytes: b"\x1b$(H", cs: Cs::JisX0212 }, // placeholder (CNS not v1)
+        Designation {
+            bytes: b"\x1b$)G",
+            cs: Cs::Gb2312,
+        },
+        Designation {
+            bytes: b"\x1b$(H",
+            cs: Cs::JisX0212,
+        }, // placeholder (CNS not v1)
     ],
     shifts: true,
     ascii_return: b"",

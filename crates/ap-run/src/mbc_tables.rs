@@ -202892,4 +202892,3 @@ pub static MAP_GB18030_2: &[(&str, u32)] = &[
     ("fefd", 0xE4C4),
     ("fefe", 0xE4C5),
 ];
-
