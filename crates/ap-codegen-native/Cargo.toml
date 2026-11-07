@@ -10,3 +10,17 @@ path = "src/lib.rs"
 
 [lints]
 workspace = true  # robustness-ci 02.01 - see root Cargo.toml [workspace.lints]
+
+[dependencies]
+ap-ir = { path = "../ap-ir" }
+ap-obj = { path = "../ap-obj" }
+# Cranelift pinned to the workspace's existing 0.134 line (pulled in via
+# ap-host's wasmtime 47 graph) so no duplicate builds.
+cranelift = "0.134"
+cranelift-frontend = "0.134"
+cranelift-jit = "0.134"
+cranelift-module = "0.134"
+cranelift-native = "0.134"
+
+[dev-dependencies]
+num-bigint = "0.4"
