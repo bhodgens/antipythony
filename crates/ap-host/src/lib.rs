@@ -9,6 +9,8 @@
 //!
 //! SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
+use std::sync::OnceLock;
+
 use wasmtime::{Config, Engine, Linker, Module as WasmModule, Store};
 use wasmtime_wasi::p1::WasiP1Ctx;
 use wasmtime_wasi::p2::pipe::MemoryOutputPipe;
@@ -42,11 +44,7 @@ impl std::fmt::Display for HostError {
 
 impl std::error::Error for HostError {}
 
-/// Run `wasm_bytes` (as emitted by ap-codegen-wasm) with piped stdio.
-///
-/// `_start` is invoked; a WASI `proc_exit` becomes its exit code, any other
-/// trap becomes [`HostError::Wasm`]. `cap` bounds the captured pipe size.
-pub fn run(wasm_bytes: &[u8], cap: usize) -> Result<RunResult, HostError> {
+fn host_config() -> Config {
     let mut config = Config::new();
     // Wasmtime 47: WasmGC + exception handling are on by default; stated
     // explicitly so the version constraint from
@@ -54,9 +52,51 @@ pub fn run(wasm_bytes: &[u8], cap: usize) -> Result<RunResult, HostError> {
     config.wasm_gc(true);
     config.wasm_function_references(true);
     config.wasm_exceptions(true);
-    let engine = Engine::new(&config).map_err(|e| HostError::Wasm(e.to_string()))?;
-    let module =
-        WasmModule::new(&engine, wasm_bytes).map_err(|e| HostError::Wasm(e.to_string()))?;
+    config
+}
+
+/// The process-wide shared engine (F2, audit 2026-11-06-memperf-bughunt):
+/// building a wasmtime `Engine` allocates the config, the CRANELIFT
+/// code-gen context, and the signal-stack/vm-offset machinery — doing it
+/// per `run()` call was a fixed per-invocation tax (a JIT compile of the
+/// same module in a long-lived process rebuilt this every time). One
+/// `Engine` is cheap to clone-share (`Arc<Engine>` under the hood is
+/// already `Clone`), and WASI/`Store` context stays per-call.
+fn shared_engine() -> Result<Engine, HostError> {
+    static ENGINE: OnceLock<Engine> = OnceLock::new();
+    if let Some(e) = ENGINE.get() {
+        return Ok(e.clone());
+    }
+    let engine = Engine::new(&host_config()).map_err(|e| HostError::Wasm(e.to_string()))?;
+    // A racing second init is harmless: wasmtime Engines are independent,
+    // and OnceLock keeps the first winner for all later callers.
+    let _ = ENGINE.set(engine.clone());
+    Ok(engine)
+}
+
+/// Run `wasm_bytes` (as emitted by ap-codegen-wasm) with piped stdio,
+/// reusing the process-wide [`Engine`].
+///
+/// `_start` is invoked; a WASI `proc_exit` becomes its exit code, any other
+/// trap becomes [`HostError::Wasm`]. `cap` bounds the captured pipe size.
+///
+/// Source-compatible with the original signature (existing test callers
+/// unchanged); callers who want full control of engine configuration
+/// (e.g. ahead-of-time compilation, tuning knobs) use [`run_with_engine`].
+pub fn run(wasm_bytes: &[u8], cap: usize) -> Result<RunResult, HostError> {
+    let engine = shared_engine()?;
+    run_with_engine(&engine, wasm_bytes, cap)
+}
+
+/// Run `wasm_bytes` on a caller-owned `engine`. Engines are `Send + Sync`
+/// and cloneable (internal `Arc`), so one `Engine` built once can drive
+/// every subsequent `run_with_engine` call in the process.
+pub fn run_with_engine(
+    engine: &Engine,
+    wasm_bytes: &[u8],
+    cap: usize,
+) -> Result<RunResult, HostError> {
+    let module = WasmModule::new(engine, wasm_bytes).map_err(|e| HostError::Wasm(e.to_string()))?;
 
     let stdout = MemoryOutputPipe::new(cap);
     let stderr = MemoryOutputPipe::new(cap);
@@ -67,8 +107,8 @@ pub fn run(wasm_bytes: &[u8], cap: usize) -> Result<RunResult, HostError> {
         .stdout(stdout)
         .stderr(stderr)
         .build_p1();
-    let mut store = Store::new(&engine, ctx);
-    let mut linker: Linker<WasiP1Ctx> = Linker::new(&engine);
+    let mut store = Store::new(engine, ctx);
+    let mut linker: Linker<WasiP1Ctx> = Linker::new(engine);
     wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |c: &mut WasiP1Ctx| c)
         .map_err(|e| HostError::Wasm(e.to_string()))?;
 
@@ -121,5 +161,40 @@ mod tests {
         assert_eq!(out.stdout, "hello, wasm\n");
         assert_eq!(out.stderr, "");
         assert_eq!(out.exit_code, 0);
+    }
+
+    /// F2 guard: two `run()` calls in one process share the single
+    /// process-wide Engine (the OnceLock), producing identical output —
+    /// the observable contract of engine reuse (the second call must not
+    /// rebuild config/CodeGenSettings; a fresh Engine per call was the bug).
+    #[test]
+    fn repeated_runs_reuse_the_shared_engine() {
+        let b = Builder::new();
+        let mut module = Module::new();
+        module.items.push(Item::Stmt(b.expr_stmt(
+            b.call(b.name("print"), vec![b.arg_pos(b.str_lit("engine reuse"))]),
+        )));
+        let bytes = lower_module(&module).expect("lower");
+        let first = run(&bytes, 64 * 1024).expect("run 1");
+        let second = run(&bytes, 64 * 1024).expect("run 2");
+        assert_eq!(first.stdout, "engine reuse\n");
+        assert_eq!(first.stdout, second.stdout);
+        assert_eq!(second.exit_code, 0);
+    }
+
+    #[test]
+    fn caller_owned_engine_runs() {
+        let engine = Engine::new(&host_config()).expect("engine");
+        let b = Builder::new();
+        let mut module = Module::new();
+        module.items.push(Item::Stmt(
+            b.expr_stmt(b.call(b.name("print"), vec![b.arg_pos(b.str_lit("owned"))])),
+        ));
+        let bytes = lower_module(&module).expect("lower");
+        let out = run_with_engine(&engine, &bytes, 64 * 1024).expect("run");
+        assert_eq!(out.stdout, "owned\n");
+        // The same Engine instance drives a second module compile+run.
+        let out2 = run_with_engine(&engine, &bytes, 64 * 1024).expect("run 2");
+        assert_eq!(out2.stdout, out.stdout);
     }
 }

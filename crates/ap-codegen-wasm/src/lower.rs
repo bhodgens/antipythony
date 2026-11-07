@@ -190,7 +190,11 @@ fn collect_print(e: &Expr, out: &mut Vec<Vec<u8>>) -> Result<(), CodegenError> {
     let Arg::Pos(Expr::LitStr(s)) = &args[0] else {
         return Err(CodegenError::Unsupported("print arg (not str literal)"));
     };
-    let mut bytes = s.clone().into_bytes();
+    // F4-adjacent (audit 2026-11-06-memperf-bughunt): build the line
+    // buffer directly instead of cloning the String and re-allocating
+    // via into_bytes()+push.
+    let mut bytes = Vec::with_capacity(s.len() + 1);
+    bytes.extend_from_slice(s.as_bytes());
     bytes.push(b'\n');
     out.push(bytes);
     Ok(())

@@ -103,14 +103,18 @@ pub fn manifest_to_toml(m: &Manifest) -> String {
 
 /// Serialize the lockfile. Packages sorted by name (deterministic across
 /// re-resolutions regardless of uv's install order — T-14 lock-determinism).
+/// The sort is the determinism gate and is KEPT; F-class LOW fix: sort an
+/// index vector instead of cloning the whole `LockedPkg` list (name+version
+/// Strings) on every lock write.
 pub fn lock_to_toml(l: &Lockfile) -> String {
-    let mut pkgs = l.packages.clone();
-    pkgs.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut idx: Vec<usize> = (0..l.packages.len()).collect();
+    idx.sort_by(|&a, &b| l.packages[a].name.cmp(&l.packages[b].name));
     let mut out = String::new();
     out.push_str("[metadata]\n");
     out.push_str(&format!("lock_version = {}\n", l.lock_version));
     out.push_str(&format!("created_by = {}\n", toml_str(&l.created_by)));
-    for p in &pkgs {
+    for &i in &idx {
+        let p = &l.packages[i];
         out.push_str("\n[[package]]\n");
         out.push_str(&format!("name = {}\n", toml_str(&p.name)));
         out.push_str(&format!("version = {}\n", toml_str(&p.version)));

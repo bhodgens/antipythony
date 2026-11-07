@@ -15,7 +15,7 @@
 //!
 //! `ANTIPTYHONY_CACHE` overrides the root (documented in docs/packaging.md).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 /// The cache root: `$ANTIPTYHONY_CACHE` or `$HOME/.cache/antipythony`.
@@ -89,6 +89,54 @@ pub fn entry_dir(key: &str) -> Option<PathBuf> {
     Some(dir)
 }
 
+/// Name of the future serialized-IR payload inside a build-cache entry
+/// (B4, audit 2026-11-06-memperf-bughunt; CLI-side plumbing only — the
+/// importer-side consumer + the `ap_ir::Module` serialization format are
+/// decided in docs/compile-cache-design.md).
+pub const COMPILED_PAYLOAD: &str = "compiled.bin";
+
+/// Layout decision baked into the seam: the payload file embeds its cache
+/// key as the first 64 bytes (hex of the SHA-256 `build_key`), then the
+/// serialized IR body. Embedding (vs a sidecar file) makes the payload
+/// self-validating: a truncated or re-keyed file can never be read as a
+/// hit. Writers: see `write_compiled_payload`; readers: `compiled_hit`.
+pub const COMPILED_KEY_LEN: usize = 64;
+
+/// Atomically write a `compiled.bin` payload for `key` into entry dir
+/// `dir` (temp file + rename under the cache lock). Nothing calls this
+/// yet — it is the writer half of the seam that lands with the IR
+/// serializer (02.06 AoT or the B4 importer-side consumer).
+pub fn write_compiled_payload(dir: &Path, key: &str, body: &[u8]) -> std::io::Result<()> {
+    let _guard = cache_lock();
+    let tmp = dir.join(format!("{COMPILED_PAYLOAD}.tmp-{}", std::process::id()));
+    {
+        use std::io::Write;
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(key.as_bytes())?; // must be the 64-hex build key
+        f.write_all(body)?;
+        f.flush()?;
+    }
+    std::fs::rename(&tmp, dir.join(COMPILED_PAYLOAD))?;
+    Ok(())
+}
+
+/// Probe an entry dir for a key-matched `compiled.bin`. `Some(path)` = a
+/// payload exists AND its embedded key equals `key` (a cache HIT for the
+/// serialized-IR path); `None` = absent, unreadable, or key-mismatched
+/// (caller must recompile and may overwrite). Never errors: a corrupt
+/// payload is just a miss.
+pub fn compiled_hit(dir: &Path, key: &str) -> Option<PathBuf> {
+    let p = dir.join(COMPILED_PAYLOAD);
+    let mut f = std::fs::File::open(&p).ok()?;
+    let mut head = [0u8; COMPILED_KEY_LEN];
+    use std::io::Read;
+    f.read_exact(&mut head).ok()?;
+    if head.as_slice() != key.as_bytes() {
+        return None;
+    }
+    Some(p)
+}
+
 /// Remove the whole build cache (`cache gc`). Returns the number of entry
 /// dirs removed. G-8: eviction policy is unspecced; v0 removes everything.
 pub fn gc_build_cache() -> Result<usize, String> {
@@ -110,4 +158,44 @@ pub fn gc_build_cache() -> Result<usize, String> {
         }
     }
     Ok(count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp_entry(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir =
+            std::env::temp_dir().join(format!("apcache-{tag}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn compiled_payload_roundtrip_and_key_match() {
+        let dir = tmp_entry("rt");
+        let key = build_key(b"src", b"", "0.0.0", "native", 2);
+        // No payload yet -> miss.
+        assert!(compiled_hit(&dir, &key).is_none());
+        write_compiled_payload(&dir, &key, b"serialized-ir-bytes").unwrap();
+        let hit = compiled_hit(&dir, &key).expect("key-matched payload is a hit");
+        assert!(hit.ends_with(COMPILED_PAYLOAD));
+        // A different key never matches the embedded header.
+        let other = build_key(b"src2", b"", "0.0.0", "native", 2);
+        assert!(compiled_hit(&dir, &other).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn truncated_payload_is_a_miss_not_a_panic() {
+        let dir = tmp_entry("trunc");
+        let key = build_key(b"s", b"", "0.0.0", "native", 2);
+        std::fs::write(dir.join(COMPILED_PAYLOAD), &key.as_bytes()[..10]).unwrap();
+        assert!(compiled_hit(&dir, &key).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
