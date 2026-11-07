@@ -4007,7 +4007,7 @@ pub fn call_operator(name: &str, args: &[Value], _kwargs: &[(String, Value)]) ->
             "length_hint" => {
                 let v = required(args, "length_hint")?;
                 let n = match v {
-                    Value::Str(x) => x.as_str().chars().count() as i64,
+                    Value::Str(x) => x.len() as i64, // D9: cached count
                     Value::List(l) => l.len() as i64,
                     Value::Tuple(t) => t.len() as i64,
                     Value::Dict(d) => d.len() as i64,
@@ -11639,9 +11639,14 @@ pub fn call_base64(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> O
             }
             "b16encode" => {
                 let data = bytes_arg(required(args, "b16encode")?)?;
+                // D9 (memperf audit 2026-11-06): nibble arithmetic with
+                // with_capacity — was format!("{b:02X}") per byte (a String
+                // alloc + format parse per input byte).
+                const HEX16: &[u8; 16] = b"0123456789ABCDEF";
                 let mut out = Vec::with_capacity(data.len() * 2);
-                for b in data {
-                    out.extend(format!("{b:02X}").into_bytes());
+                for &b in &data {
+                    out.push(HEX16[(b >> 4) as usize]);
+                    out.push(HEX16[(b & 0xf) as usize]);
                 }
                 Ok(Value::Bytes(Gc::new(out)))
             }
@@ -15583,8 +15588,10 @@ pub fn call_builtin_values(
                 Ok(Value::Bool(hit))
             }
             ("pystr", "strip") | ("pystr", "lstrip") | ("pystr", "rstrip") => {
+                // D9 (memperf audit 2026-11-06): borrow the receiver — the
+                // old path copied the whole String before trimming.
                 let v = match &recv {
-                    Value::Str(x) => x.as_str().to_string(),
+                    Value::Str(x) => x.as_str(),
                     _ => {
                         return Err(raise(
                             "SystemError",
@@ -16463,7 +16470,9 @@ pub fn call_builtin_values(
                         }
                         _ => ' ',
                     };
-                    let len = x.as_str().chars().count();
+                    // D9 (memperf audit 2026-11-06): cached count (was:
+                    // chars().count() walk per ljust/rjust/center call).
+                    let len = x.len();
                     let pad = if width > len { width - len } else { 0 };
                     let pad_s: String = std::iter::repeat(fill).take(pad).collect();
                     return Ok(s(if fname == "ljust" {
@@ -16668,7 +16677,8 @@ pub fn call_builtin_values(
             }
             ("pystr", "__len__") => {
                 if let Value::Str(x) = &recv {
-                    return Ok(i(x.as_str().chars().count() as i64));
+                    // D9 (memperf audit 2026-11-06): cached count.
+                    return Ok(i(x.len() as i64));
                 }
                 Err(raise(
                     "SystemError",

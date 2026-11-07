@@ -1928,7 +1928,9 @@ pub fn call_method(
             Some(Ok(Value::Int(ap_obj::Int::from_i64(t.0.len() as i64))))
         }
         (Value::Str(s), "__len__") => Some(Ok(Value::Int(ap_obj::Int::from_i64(
-            s.as_str().chars().count() as i64,
+            // D9 (memperf audit 2026-11-06): cached code-point count (was:
+            // full chars().count() walk per call).
+            s.len() as i64,
         )))),
         (Value::Set(s), "__len__") | (Value::Frozen(s), "__len__") => {
             Some(Ok(Value::Int(ap_obj::Int::from_i64(s.len() as i64))))
