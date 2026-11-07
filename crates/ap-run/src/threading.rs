@@ -46,7 +46,7 @@ use ap_obj::value::{PyString, Tuple, Value};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
-use std::sync::{Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 pub type BResult = Result<Value, Flow>;
@@ -74,17 +74,33 @@ thread_local! {
     static GIL_DEPTH: Cell<usize> = const { Cell::new(0) };
 }
 
+thread_local! {
+    /// E7 (memperf audit 2026-11-06): the minted os-tid, cached per thread.
+    /// current_os_tid used to lock the global TIDMAP on EVERY acquire_gil /
+    /// release_gil / local op / rlock op; the mint is once-per-thread now.
+    static OS_TID: Cell<u64> = const { Cell::new(0) };
+}
+
 pub fn current_os_tid() -> u64 {
     // Stable per-OS-thread identity without libc: mint one id per ThreadId
     // in a global map (mints differ from native pids by design — the corpus
-    // only compares > 0 and equality-with-self).
+    // only compares > 0 and equality-with-self). The Cell is fresh-zero on
+    // each new OS thread, so the map lock is paid at most once per thread.
+    let cached = OS_TID.with(|c| c.get());
+    if cached != 0 {
+        return cached;
+    }
     static TIDMAP: std::sync::LazyLock<Mutex<HashMap<std::thread::ThreadId, u64>>> =
         std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let id = std::thread::current().id();
-    let mut m = TIDMAP.lock().unwrap();
-    *m.entry(id)
-        .or_insert_with(|| NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst))
+    let tid = {
+        let mut m = TIDMAP.lock().unwrap();
+        *m.entry(id)
+            .or_insert_with(|| NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst))
+    };
+    OS_TID.with(|c| c.set(tid));
+    tid
 }
 
 /// Acquire the GIL (re-entrant on one thread via depth).
@@ -175,9 +191,91 @@ pub struct ThreadEntry {
 // serializes all access; see the module header).
 // ---------------------------------------------------------------------------
 
-static THREADS: std::sync::LazyLock<
-    Mutex<Vec<crate::gcsupport::GilSendPub<Rc<RefCell<ThreadEntry>>>>>,
-> = std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
+/// M2 (memperf audit 2026-11-06): the push-only Vec made EVERY threading API
+/// call (`entry_for` x4 sites, `entry_for_current` x2, the dup-start scan) a
+/// linear scan over the cumulative set of threads ever started, under one
+/// global Mutex, borrowing every entry on the way. The table now keeps side
+/// indexes (obj addr / native tid / serial) so lookups are O(1), and
+/// `evict_stale_tables` (below) purges dead entries so the table stays
+/// bounded by the live+joinable working set instead of growing forever.
+///
+/// The slot mirrors (addr/serial/tid) carry the index keys OUTSIDE the
+/// RefCell so index maintenance never borrows an entry: a worker thread
+/// stamps its real tid WITHOUT the table lock discipline the GIL gives the
+/// scanner, so the tid mirror is an AtomicI64 (Relaxed load is safe for an
+/// i64 identity — torn reads are impossible on the tier-1 targets, and the
+/// corpus only compares tid equality/self-consistency).
+pub struct ThreadSlot {
+    pub entry: crate::gcsupport::GilSendPub<Rc<RefCell<ThreadEntry>>>,
+    /// Mirror of ThreadEntry.obj_addr (the MainThread lazy-bind path
+    /// refreshes it via reindex_addr).
+    pub addr: usize,
+    /// Mirror of ThreadEntry.serial (immutable after push).
+    pub serial: i64,
+    /// Mirror of ThreadEntry.native_id (spawner placeholder -> real tid).
+    pub tid: std::sync::atomic::AtomicI64,
+}
+
+pub struct ThreadsTable {
+    pub entries: Vec<ThreadSlot>,
+    by_addr: HashMap<usize, Vec<usize>>,
+    by_tid: HashMap<i64, Vec<usize>>,
+    by_serial: HashMap<i64, Vec<usize>>,
+}
+
+impl ThreadsTable {
+    fn index_add(&mut self, idx: usize) {
+        let s = &self.entries[idx];
+        self.by_addr.entry(s.addr).or_default().push(idx);
+        let tid = s.tid.load(std::sync::atomic::Ordering::Relaxed);
+        self.by_tid.entry(tid).or_default().push(idx);
+        self.by_serial.entry(s.serial).or_default().push(idx);
+    }
+    fn push_slot(&mut self, slot: ThreadSlot) {
+        self.entries.push(slot);
+        let idx = self.entries.len() - 1;
+        self.index_add(idx);
+    }
+    fn rebuild_indexes(&mut self) {
+        self.by_addr.clear();
+        self.by_tid.clear();
+        self.by_serial.clear();
+        for i in 0..self.entries.len() {
+            self.index_add(i);
+        }
+    }
+    /// E7: move one slot's tid index entry after the worker swapped its real
+    /// os-tid in (O(1), no entry borrow — uses the mirrored keys).
+    fn reindex_tid(&mut self, idx: usize, old: i64, new: i64) {
+        if old == new {
+            return;
+        }
+        if let Some(v) = self.by_tid.get_mut(&old) {
+            v.retain(|&i| i != idx);
+            if v.is_empty() {
+                self.by_tid.remove(&old);
+            }
+        }
+        self.by_tid.entry(new).or_default().push(idx);
+    }
+    /// MainThread lazy-bind path (current_thread_value): an entry's obj_addr
+    /// mirror changed; refresh mirrors + rebuild. At most once per process.
+    fn reindex_addr(&mut self) {
+        for s in self.entries.iter_mut() {
+            s.addr = s.entry.0.borrow().obj_addr;
+        }
+        self.rebuild_indexes();
+    }
+}
+
+static THREADS: std::sync::LazyLock<Mutex<ThreadsTable>> = std::sync::LazyLock::new(|| {
+    Mutex::new(ThreadsTable {
+        entries: Vec::new(),
+        by_addr: HashMap::new(),
+        by_tid: HashMap::new(),
+        by_serial: HashMap::new(),
+    })
+});
 static NAME_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
 static NEXT_IDENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0x1000_0000);
 static NEXT_SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -191,9 +289,62 @@ static EXCEPTHOOK: Mutex<Option<crate::gcsupport::GilSendPub<Value>>> = Mutex::n
 static SWITCH_INTERVAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static MAIN_TID: std::sync::LazyLock<Mutex<Option<u64>>> =
     std::sync::LazyLock::new(|| Mutex::new(None));
-/// Timer-cancel flags by thread obj addr.
-static CANCELLED: std::sync::LazyLock<Mutex<std::collections::HashSet<usize>>> =
-    std::sync::LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
+/// Timer-cancel events by thread obj addr. E7 (memperf audit 2026-11-06):
+/// the value is a Condvar event pair — `wait_cancellable` blocks on the
+/// per-Timer Condvar with the remaining time as its WAIT TIMEOUT instead of
+/// locking the GLOBAL map once per 1 ms slice (a 60 s Timer used to take
+/// 60k acquisitions + 60k wakeups). The map lock is now taken exactly once
+/// by the waiter (fetch), once by cancel_timer (set + notify), and by the
+/// eviction sweep.
+pub struct CancelEvent {
+    pub cancelled: Mutex<bool>,
+    pub cv: Condvar,
+}
+/// Keyed (timer obj addr, construction serial): the serial blocks the
+/// addr-recycling alias where a stale pre-cancelled flag of a dead Timer
+/// would suppress a fresh Timer allocated on the same address.
+static CANCELLED: std::sync::LazyLock<Mutex<HashMap<(usize, i64), Arc<CancelEvent>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// E7: entry lookup by addr that WAITS (bounded) for the entry to become
+/// available, instead of the old 2000×50µs sleep-retry loop. The spawner
+/// inserts the entry BEFORE the OS thread exists (thread_start), so on the
+/// GIL protocol the entry is already visible when the worker stamps its
+/// identity; a contended borrow only happens if a main-side op holds it
+/// briefly. One short bounded wait, then proceed without stamping (the
+/// entry keeps its placeholder native_id — is_alive/join are addr-keyed and
+/// unaffected; the corpus only compares native_id > 0 + self-equality).
+fn stamp_worker_identity(self_addr: usize) {
+    let me = current_os_tid() as i64;
+    // Bounded: 200 x 50us = 10ms worst case, then proceed with the
+    // placeholder tid (native_id reads are the only consumer; is_alive/
+    // join/exit protocol are addr-keyed and unaffected).
+    for _ in 0..200 {
+        let e = entry_for(self_addr);
+        match e {
+            Some(e) => match e.try_borrow_mut() {
+                Ok(mut b) => {
+                    let old_tid = b.native_id.unwrap_or(0);
+                    b.native_id = Some(me);
+                    drop(b);
+                    // M2: swap the slot's tid index entry from the spawner
+                    // placeholder to the real worker tid — O(1), mirror
+                    // based (no entry borrow while the table lock is held).
+                    let mut t = THREADS.lock().unwrap();
+                    if let Some(&idx) = t.by_addr.get(&self_addr).and_then(|v| v.last()) {
+                        t.entries[idx]
+                            .tid
+                            .store(me, std::sync::atomic::Ordering::Relaxed);
+                        t.reindex_tid(idx, old_tid, me);
+                    }
+                    return;
+                }
+                Err(_) => std::thread::sleep(std::time::Duration::from_micros(50)),
+            },
+            None => std::thread::sleep(std::time::Duration::from_micros(50)),
+        }
+    }
+}
 /// The interpreter the WORKER threads evaluate through (set by the main
 /// thread at spawn; read by workers — the interp object itself is only
 /// touched under the GIL).
@@ -232,24 +383,26 @@ pub fn bootstrap_main(interp: &Rc<Interpreter>) {
     if let Value::Obj(mo) = &mv {
         mirror_put(Rc::as_ptr(mo).addr(), &mv);
     }
-    THREADS
-        .lock()
-        .unwrap()
-        .push(crate::gcsupport::GilSendPub(Rc::new(RefCell::new(
-            ThreadEntry {
-                obj_addr: match &mv {
-                    Value::Obj(mo) => Rc::as_ptr(mo).addr(),
-                    _ => 0,
-                },
-                serial: -1,
-                name: "MainThread".to_string(),
-                daemon: false,
-                started: true,
-                done: false,
-                ident: Some(ident),
-                native_id: Some(current_os_tid() as i64),
-            },
-        ))));
+    let mtid = current_os_tid() as i64;
+    let maddr = match &mv {
+        Value::Obj(mo) => Rc::as_ptr(mo).addr(),
+        _ => 0,
+    };
+    THREADS.lock().unwrap().push_slot(ThreadSlot {
+        entry: crate::gcsupport::GilSendPub(Rc::new(RefCell::new(ThreadEntry {
+            obj_addr: maddr,
+            serial: -1,
+            name: "MainThread".to_string(),
+            daemon: false,
+            started: true,
+            done: false,
+            ident: Some(ident),
+            native_id: Some(mtid),
+        }))),
+        addr: maddr,
+        serial: -1,
+        tid: std::sync::atomic::AtomicI64::new(mtid),
+    });
 }
 
 fn new_ident_pub() -> i64 {
@@ -257,29 +410,37 @@ fn new_ident_pub() -> i64 {
 }
 
 pub fn entry_for(addr: usize) -> Option<Rc<RefCell<ThreadEntry>>> {
-    THREADS
-        .lock()
-        .unwrap()
-        .iter()
-        .find(|e| {
-            e.0.try_borrow()
-                .map(|b| b.obj_addr == addr && addr != 0)
-                .unwrap_or(false)
-        })
-        .map(|e| e.0.clone())
+    if addr == 0 {
+        return None;
+    }
+    let t = THREADS.lock().unwrap();
+    // M2: O(1) addr index (was a full linear scan + try_borrow per entry).
+    t.by_addr
+        .get(&addr)
+        .and_then(|v| v.last())
+        .and_then(|&i| t.entries.get(i))
+        .map(|s| s.entry.0.clone())
 }
 
 fn main_thread_entry() -> Option<Rc<RefCell<ThreadEntry>>> {
-    THREADS
-        .lock()
-        .unwrap()
+    // M2: MainThread is slot 0 (bootstrap_main installs it first; the
+    // eviction sweep never drops it). O(1) fast path, scan as fallback.
+    let t = THREADS.lock().unwrap();
+    if let Some(s) = t.entries.first() {
+        if s.serial == -1 {
+            return Some(s.entry.0.clone());
+        }
+    }
+    t.entries
         .iter()
-        .find(|e| {
-            e.0.try_borrow()
+        .find(|s| {
+            s.entry
+                .0
+                .try_borrow()
                 .map(|b| b.name == "MainThread")
                 .unwrap_or(false)
         })
-        .map(|e| e.0.clone())
+        .map(|s| s.entry.0.clone())
 }
 
 // ===========================================================================
@@ -348,6 +509,21 @@ pub struct QueuePrim {
 static PRIMS: std::sync::LazyLock<
     Mutex<HashMap<usize, crate::gcsupport::GilSendPub<Rc<dyn std::any::Any>>>>,
 > = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// M4: keys of PRIMS entries that are a Condition's IMPLICIT backing RLock
+/// (key = condition addr + 1 — a phantom address that is never a real
+/// object, so registry liveness must be read off the OWNING Condition
+/// object instead). The eviction sweep drops these once the condition dies.
+static OWN_RLOCKS: std::sync::LazyLock<Mutex<std::collections::HashSet<usize>>> =
+    std::sync::LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
+
+/// cond_ctor's implicit RLock: register the (cond addr + 1) key as owned so
+/// eviction keys its liveness off the Condition object.
+pub fn prim_put_owned_rlock(cond_addr: usize, p: RLockPrim) {
+    let key = cond_addr + 1;
+    OWN_RLOCKS.lock().unwrap().insert(key);
+    prim_put(key, p);
+}
 
 pub fn prim_put<T: 'static>(addr: usize, p: T) {
     PRIMS.lock().unwrap().insert(
@@ -456,11 +632,25 @@ pub fn thread_start(interp: &Rc<Interpreter>, o: &Gc<PyObject>) -> EvalResult {
         .and_then(|v| v.as_int())
         .and_then(|i| i.to_i64());
     if let Some(serial) = my_serial {
-        let dup = THREADS.lock().unwrap().iter().any(|e| {
+        // M2: O(1) serial index (was a linear scan borrowing every entry).
+        // Clone candidate Rc's under the lock, check them outside it.
+        let candidates: Vec<Rc<RefCell<ThreadEntry>>> = {
+            let t = THREADS.lock().unwrap();
+            t.by_serial
+                .get(&serial)
+                .map(|v| {
+                    v.iter()
+                        .filter_map(|&i| t.entries.get(i))
+                        .map(|s| s.entry.0.clone())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        };
+        let dup = candidates.iter().any(|e| {
             // A worker thread may hold its entry borrow while stamping its
             // identity; a contended borrow is NOT evidence of double-start.
-            e.0.try_borrow()
-                .map(|b| b.started && b.serial == serial && b.obj_addr != usize::MAX)
+            e.try_borrow()
+                .map(|b| b.started && b.obj_addr != usize::MAX)
                 .unwrap_or(false)
         });
         if dup {
@@ -523,6 +713,23 @@ pub fn thread_start(interp: &Rc<Interpreter>, o: &Gc<PyObject>) -> EvalResult {
     let ident = new_ident_pub();
     let native_placeholder = (current_os_tid().wrapping_mul(7919).wrapping_add(17)).max(1) as i64;
     let native = native_placeholder;
+    // E7: a Timer's worker parks on its per-(addr, serial) CancelEvent;
+    // register it at start so cancel_timer / wait_cancellable rendezvous
+    // without ever polling the global map. A pre-cancelled flag (cancel()
+    // before start()) is preserved: only mint when absent.
+    if interval.is_some() {
+        let key = (addr, my_serial.unwrap_or(-2));
+        let mut m = CANCELLED.lock().unwrap();
+        if !m.contains_key(&key) {
+            m.insert(
+                key,
+                Arc::new(CancelEvent {
+                    cancelled: Mutex::new(false),
+                    cv: Condvar::new(),
+                }),
+            );
+        }
+    }
 
     if std::env::var("APX_TDEBUG").is_ok() {
         eprintln!(
@@ -530,21 +737,27 @@ pub fn thread_start(interp: &Rc<Interpreter>, o: &Gc<PyObject>) -> EvalResult {
             my_serial, addr, name
         );
     }
-    THREADS
-        .lock()
-        .unwrap()
-        .push(crate::gcsupport::GilSendPub(Rc::new(RefCell::new(
-            ThreadEntry {
-                obj_addr: addr,
-                serial: my_serial.unwrap_or(-2),
-                name: name.clone(),
-                daemon,
-                started: true,
-                done: false,
-                ident: Some(ident),
-                native_id: Some(native),
-            },
-        ))));
+    THREADS.lock().unwrap().push_slot(ThreadSlot {
+        entry: crate::gcsupport::GilSendPub(Rc::new(RefCell::new(ThreadEntry {
+            obj_addr: addr,
+            serial: my_serial.unwrap_or(-2),
+            name: name.clone(),
+            daemon,
+            started: true,
+            done: false,
+            ident: Some(ident),
+            native_id: Some(native),
+        }))),
+        addr,
+        serial: my_serial.unwrap_or(-2),
+        tid: std::sync::atomic::AtomicI64::new(native),
+    });
+
+    // E1-E4 parity: pin the mirror while the thread runs — enumerate()/
+    // active_count()/excepthook must see a RUNNING thread even when the
+    // script dropped its reference (CPython's _active holds it). The
+    // eviction sweep drops the pin the first sweep after done flips.
+    mirror_pin(addr, &Value::Obj(o.clone()));
 
     let interp2 = interp.clone();
     // GIL v1: the worker closure carries Rc graph values across the thread
@@ -573,10 +786,9 @@ pub fn thread_start(interp: &Rc<Interpreter>, o: &Gc<PyObject>) -> EvalResult {
         }
         Err(e) => {
             // Roll the registry entry back.
-            THREADS
-                .lock()
-                .unwrap()
-                .retain(|e| e.0.borrow().obj_addr != addr);
+            let mut t = THREADS.lock().unwrap();
+            t.entries.retain(|s| s.addr != addr);
+            t.rebuild_indexes();
             Err(raise(
                 "RuntimeError",
                 format!("can't start new thread: {e}"),
@@ -607,29 +819,29 @@ fn worker_bootstrap(
     crate::gcsupport::install_worker_thread();
     // Stamp THIS OS thread's identity into its registry entry (the spawner
     // could only record a placeholder — the worker tid exists only here).
-    for _ in 0..2000 {
-        match entry_for(self_addr) {
-            Some(e) => match e.try_borrow_mut() {
-                Ok(mut b) => {
-                    b.native_id = Some(current_os_tid() as i64);
-                    break;
-                }
-                Err(_) => std::thread::sleep(std::time::Duration::from_micros(50)),
-            },
-            None => break,
-        }
-    }
+    // E7: bounded wait + explicit index refresh (was a 2000x50us retry
+    // chain with no bound on the wake path).
+    stamp_worker_identity(self_addr);
 
     // Timer semantics: wait BEFORE the target (finished.wait(interval)).
     if let Some(dur) = interval {
-        wait_cancellable(Duration::from_secs_f64(dur.max(0.0)), self_addr);
-        let cancelled = CANCELLED.lock().unwrap().contains(&self_addr);
+        let my_serial = entry_for(self_addr)
+            .map(|e| e.borrow().serial)
+            .unwrap_or(-2);
+        wait_cancellable(Duration::from_secs_f64(dur.max(0.0)), self_addr, my_serial);
+        let cancelled = timer_cancelled(self_addr, my_serial);
         if cancelled {
             acquire_gil();
             if let Some(e) = entry_for(self_addr) {
                 e.borrow_mut().done = true;
             }
+            // E7: brief JOIN_MU acquisition before notifying — joiners
+            // re-check `done` under that mutex, so a lock-then-notify here
+            // closes the lost-wakeup window (set done -> notify before any
+            // waiter parks).
+            let _g = JOIN_MU.lock().unwrap();
             JOIN_CV.notify_all();
+            drop(_g);
             release_gil();
             return;
         }
@@ -655,22 +867,49 @@ fn worker_bootstrap(
     if let Some(e) = entry_for(self_addr) {
         e.borrow_mut().done = true;
     }
+    // E7: lock-then-notify (see the cancel arm) — a joiner checking `done`
+    // under JOIN_MU either sees it or is parked and gets this wakeup;
+    // notifying while holding the lock closes the lost-wakeup window.
+    let _g = JOIN_MU.lock().unwrap();
     JOIN_CV.notify_all();
+    drop(_g);
     release_gil();
 }
 
-/// Sleep in slices so cancel() is honored promptly (Timer.cancel polling).
-fn wait_cancellable(dur: Duration, self_addr: usize) {
-    let start = Instant::now();
-    loop {
-        if CANCELLED.lock().unwrap().contains(&self_addr) {
-            return;
-        }
-        let left = dur.saturating_sub(start.elapsed());
+/// E7: read the cancel state for a Timer addr (post-wait confirmation).
+fn timer_cancelled(addr: usize, serial: i64) -> bool {
+    match CANCELLED.lock().unwrap().get(&(addr, serial)) {
+        Some(ev) => *ev.cancelled.lock().unwrap(),
+        None => false,
+    }
+}
+
+/// Sleep honoring Timer.cancel — E7 (memperf audit 2026-11-06): the old
+/// shape locked the GLOBAL CANCELLED map once per 1 ms slice (60 s Timer =
+/// 60k lock acquisitions + wakeups). Now the worker fetches the per-addr
+/// CancelEvent once and parks on its Condvar with the remaining time as the
+/// wait timeout: zero lock traffic while sleeping, one wakeup at cancel or
+/// deadline.
+fn wait_cancellable(dur: Duration, self_addr: usize, serial: i64) {
+    let ev = CANCELLED.lock().unwrap().get(&(self_addr, serial)).cloned();
+    let Some(ev) = ev else {
+        // No event registered (cancel() never touched this Timer): plain
+        // sleep for the whole interval.
+        std::thread::sleep(dur);
+        return;
+    };
+    let deadline = Instant::now() + dur;
+    let mut g = ev.cancelled.lock().unwrap();
+    while !*g {
+        let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
             return;
         }
-        std::thread::sleep(left.min(Duration::from_millis(1)));
+        let (ng, res) = ev.cv.wait_timeout(g, left).unwrap();
+        g = ng;
+        if res.timed_out() {
+            return;
+        }
     }
 }
 
@@ -679,28 +918,56 @@ static JOIN_CV: Condvar = Condvar::new();
 static JOIN_MU: Mutex<()> = Mutex::new(());
 
 /// Block the CALLER (GIL must be RELEASED before calling us) until `done`
-/// flips. Returns true when the thread finished, false on timeout. Polls at
-/// a fine grain (the done flag is set under the GIL, so polling is the
-/// portable rendezvous; the granularity only affects latency, never
-/// correctness).
+/// flips. Returns true when the thread finished, false on timeout.
+///
+/// E7 (memperf audit 2026-11-06): the old shape polled the entry every
+/// 200us while JOIN_CV/JOIN_MU (notified by every worker that marks done)
+/// were never awaited — pure spin. Now: check under JOIN_MU, park on the
+/// Condvar with a done predicate; a timeout join bounds the wait with
+/// wait_timeout. The done flag itself lives in a RefCell the notifier
+/// mutates under the GIL, so the predicate re-reads it on every wake; the
+/// tiny race (mark done -> notify) is covered by the initial check inside
+/// the lock and by the notify-while-notified protocol on JOIN_CV.
 pub fn join_wait(entry: Rc<RefCell<ThreadEntry>>, timeout: Option<f64>) -> bool {
+    if entry.try_borrow().map(|b| b.done).unwrap_or(false) {
+        return true;
+    }
     let deadline = timeout.map(|t| Instant::now() + Duration::from_secs_f64(t.max(0.0)));
+    let guard = JOIN_MU.lock().unwrap();
+    let mut guard = guard;
     loop {
+        // Re-check under the lock: if the borrow contends, the worker is
+        // mid-stamp (it flips done + notifies holding no lock we need to
+        // interleave with), so a short bounded sleep is the fallback for
+        // that rare window only.
         match entry.try_borrow() {
             Ok(b) if b.done => return true,
             Ok(_) => {}
             Err(_) => {
+                // Contended borrow (a main-side op holds the entry under the
+                // GIL). Drop the condvar guard, brief bounded sleep, retake.
+                drop(guard);
                 std::thread::sleep(Duration::from_micros(50));
+                guard = JOIN_MU.lock().unwrap();
                 continue;
             }
         }
-        let now = Instant::now();
-        if let Some(d) = deadline {
-            if now >= d {
-                return entry.try_borrow().map(|b| b.done).unwrap_or(false);
+        match deadline {
+            None => {
+                guard = JOIN_CV.wait(guard).unwrap();
+            }
+            Some(d) => {
+                let left = d.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return entry.try_borrow().map(|b| b.done).unwrap_or(false);
+                }
+                let (g, timeout_res) = JOIN_CV.wait_timeout(guard, left).unwrap();
+                guard = g;
+                if timeout_res.timed_out() {
+                    return entry.try_borrow().map(|b| b.done).unwrap_or(false);
+                }
             }
         }
-        std::thread::sleep(Duration::from_micros(200));
     }
 }
 
@@ -716,12 +983,13 @@ pub fn wait_for_non_daemons() {
         let pending: Vec<Rc<RefCell<ThreadEntry>>> = THREADS
             .lock()
             .unwrap()
+            .entries
             .iter()
-            .filter(|e| {
-                let b = e.0.borrow();
+            .filter(|s| {
+                let b = s.entry.0.borrow();
                 b.started && !b.done && !b.daemon
             })
-            .map(|e| e.0.clone())
+            .map(|s| s.entry.0.clone())
             .collect();
         if pending.is_empty() {
             return;
@@ -767,16 +1035,13 @@ fn invoke_excepthook(interp: &Rc<Interpreter>, exc: &crate::exc_hier::ExceptionV
 
 fn entry_for_current() -> Option<Rc<RefCell<ThreadEntry>>> {
     let tid = current_os_tid() as i64;
-    THREADS
-        .lock()
-        .unwrap()
-        .iter()
-        .find(|e| {
-            e.0.try_borrow()
-                .map(|b| b.native_id == Some(tid))
-                .unwrap_or(false)
-        })
-        .map(|e| e.0.clone())
+    // M2: O(1) native-tid index (was a linear scan).
+    let t = THREADS.lock().unwrap();
+    t.by_tid
+        .get(&tid)
+        .and_then(|v| v.last())
+        .and_then(|&i| t.entries.get(i))
+        .map(|s| s.entry.0.clone())
 }
 
 fn thread_value_for_entry(e: Option<Rc<RefCell<ThreadEntry>>>) -> Value {
@@ -788,18 +1053,96 @@ fn thread_value_for_entry(e: Option<Rc<RefCell<ThreadEntry>>>) -> Value {
     mirror_get(e.map(|x| x.borrow().obj_addr).unwrap_or(0)).unwrap_or(Value::None)
 }
 
-static OBJ_MIRROR: std::sync::LazyLock<Mutex<HashMap<usize, crate::gcsupport::GilSendPub<Value>>>> =
+/// M3 (memperf audit 2026-11-06): addr -> Thread/Timer PyObject mirror. The
+/// table used to hold STRONG Value clones: every constructed Thread/Timer
+/// (three mirror_put sites) pinned its whole object graph (<target>/<args>/
+/// <kwargs> payloads included) for the process lifetime — the registry clone
+/// is subtracted by the collector's reachability seeding, so a mirror clone
+/// makes the object externally reachable forever and the addr is never even
+/// recycled. Now: Weak handles by default (the audit's named fix shape) with
+/// a STRONG pin installed only while the thread is RUNNING — CPython's
+/// `_active` holds the live Thread object exactly this way — released once
+/// the thread finishes, and the row pruned when the mirror goes dead.
+///
+/// GIL protocol: every upgrade happens while the caller holds the GIL (the
+/// worker takes it before touching the registry paths that read mirrors), so
+/// a Weak upgrade never races an Rc release on another thread.
+pub struct MirrorRow {
+    /// GilSendPub: the audited GIL-protocol wrapper (the table is only ever
+    /// touched under the interpreter lock; same contract as the Value
+    /// mirrors this replaced).
+    weak: crate::gcsupport::GilSendPub<std::rc::Weak<PyObject>>,
+    pinned: Option<crate::gcsupport::GilSendPub<Value>>,
+}
+
+static OBJ_MIRROR: std::sync::LazyLock<Mutex<HashMap<usize, MirrorRow>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn mirror_put(addr: usize, v: &Value) {
-    OBJ_MIRROR
-        .lock()
-        .unwrap()
-        .insert(addr, crate::gcsupport::GilSendPub(v.clone()));
+    if let Value::Obj(o) = v {
+        OBJ_MIRROR.lock().unwrap().insert(
+            addr,
+            MirrorRow {
+                weak: crate::gcsupport::GilSendPub(Rc::downgrade(o)),
+                pinned: None,
+            },
+        );
+    }
+}
+
+/// Install the running-thread strong pin on a mirror row (CPython's
+/// `_active` holds the live Thread object exactly this way; the eviction
+/// sweep releases the pin once the thread is done).
+fn mirror_pin(addr: usize, v: &Value) {
+    if let Value::Obj(o) = v {
+        let mut m = OBJ_MIRROR.lock().unwrap();
+        m.entry(addr)
+            .and_modify(|row| row.pinned = Some(crate::gcsupport::GilSendPub(v.clone())))
+            .or_insert_with(|| MirrorRow {
+                weak: crate::gcsupport::GilSendPub(Rc::downgrade(o)),
+                pinned: Some(crate::gcsupport::GilSendPub(v.clone())),
+            });
+    }
 }
 
 fn mirror_get(addr: usize) -> Option<Value> {
-    OBJ_MIRROR.lock().unwrap().get(&addr).map(|v| v.0.clone())
+    let m = OBJ_MIRROR.lock().unwrap();
+    match m.get(&addr) {
+        Some(row) => row
+            .pinned
+            .as_ref()
+            .map(|p| p.0.clone())
+            .or_else(|| row.weak.0.upgrade().map(Value::Obj)),
+        None => None,
+    }
+}
+
+/// M3: True when the mirror for `addr` upgrades to a live object carrying
+/// `serial` (the serial check blocks addr-recycling aliasing: a Thread
+/// object dead + its slot reused by a fresh Thread must not resurrect the
+/// old entry).
+fn mirror_alive_with_serial(addr: usize, serial: i64) -> bool {
+    let row = OBJ_MIRROR
+        .lock()
+        .unwrap()
+        .get(&addr)
+        .map(|r| (r.weak.clone(), r.pinned.as_ref().map(|p| p.0.clone())));
+    let obj = match row {
+        Some((_, Some(Value::Obj(o)))) => Some(o),
+        Some((_, Some(_))) | None => None,
+        Some((w, None)) => w.0.upgrade(),
+    };
+    match obj {
+        Some(o) => {
+            o.attrs
+                .borrow()
+                .get(&s("<serial>"))
+                .and_then(|v| v.as_int())
+                .and_then(|i| i.to_i64())
+                == Some(serial)
+        }
+        None => false,
+    }
 }
 
 fn attr_str_of(v: &Value) -> String {
@@ -850,11 +1193,18 @@ fn exception_instance_value(exc: &crate::exc_hier::ExceptionValue) -> Value {
     Value::Obj(o)
 }
 
+/// E7 (memperf audit 2026-11-06): bounded retry budget for the attrs
+/// probe — the old 2000 x 50us = 100 ms per contended read (attr_str/
+/// attr_bool run 3x per thread start). 200 x 50us = 10 ms caps a pathological
+/// contention without ever hanging the GIL, then degrades to the empty/false
+/// default exactly like the old exhausted loop did.
+const ATTR_PROBE_RETRIES: usize = 200;
+
 fn attr_str(o: &PyObject, key: &str) -> String {
     // A second OS thread can momentarily hold this RefCell (make_thread_value
     // constructs under a single borrow). We hold the GIL here, so the other
     // holder must be a brief native-only span; retry instead of panicking.
-    for _ in 0..2000 {
+    for _ in 0..ATTR_PROBE_RETRIES {
         match o.attrs.try_borrow() {
             Ok(a) => {
                 return match a.get(&s(key)) {
@@ -869,7 +1219,7 @@ fn attr_str(o: &PyObject, key: &str) -> String {
 }
 
 fn attr_bool(o: &PyObject, key: &str) -> bool {
-    for _ in 0..2000 {
+    for _ in 0..ATTR_PROBE_RETRIES {
         match o.attrs.try_borrow() {
             Ok(a) => return matches!(a.get(&s(key)), Some(Value::Bool(true))),
             Err(_) => std::thread::sleep(std::time::Duration::from_micros(50)),
@@ -901,8 +1251,16 @@ pub fn current_thread_value() -> Value {
                 None,
             );
             if let Value::Obj(o) = &v {
-                mirror_put(Rc::as_ptr(o).addr(), &v);
-                e.borrow_mut().obj_addr = Rc::as_ptr(o).addr();
+                let new_addr = Rc::as_ptr(o).addr();
+                let old_addr = e.borrow().obj_addr;
+                mirror_put(new_addr, &v);
+                e.borrow_mut().obj_addr = new_addr;
+                if old_addr != new_addr {
+                    // M2: the addr mirror + by_addr index must follow the
+                    // lazy bind (once per process; full rebuild is fine).
+                    let _ = old_addr;
+                    THREADS.lock().unwrap().reindex_addr();
+                }
             }
             v
         }
@@ -927,28 +1285,28 @@ pub fn active_count() -> usize {
     THREADS
         .lock()
         .unwrap()
+        .entries
         .iter()
-        .filter(|e| {
-            let b = e.0.borrow();
+        .filter(|s| {
+            let b = s.entry.0.borrow();
             b.started && !b.done
         })
         .count()
 }
 
 pub fn enumerate_values() -> Vec<Value> {
-    THREADS
+    let addrs: Vec<usize> = THREADS
         .lock()
         .unwrap()
+        .entries
         .iter()
-        .filter(|e| {
-            let b = e.0.borrow();
+        .filter(|s| {
+            let b = s.entry.0.borrow();
             b.started && !b.done
         })
-        .filter_map(|e| {
-            let addr = e.0.borrow().obj_addr;
-            mirror_get(addr)
-        })
-        .collect()
+        .map(|s| s.addr)
+        .collect();
+    addrs.into_iter().filter_map(mirror_get).collect()
 }
 
 pub fn get_ident_value() -> i64 {
@@ -1017,6 +1375,207 @@ pub fn build_queue_module(interp: &Interpreter) -> Value {
     crate::builtins_modules::finish(m, ns)
 }
 
+// ===========================================================================
+// E1-E4 (memperf audit 2026-11-06): the shared eviction sweep.
+//
+// The six process-lifetime tables (LOCALS / THREADS / OBJ_MIRROR / PRIMS /
+// CANCELLED / OWN_RLOCKS) were all insert-only with zero removal sites —
+// every threading.local dict, every Thread/Timer ever constructed (with its
+// whole <target>/<args>/<kwargs> graph), and every Lock/Queue primitive
+// (including QueuePrim.items payloads) was pinned forever. ONE sweep fixes
+// all of them: the orchestrator wires `evict_stale_tables()` into the
+// major-GC drain hook (gcsupport.rs, next to drain_worker_registrations).
+//
+// Liveness oracle: `ap_gc::get_object_by_addr(addr)` — the allocation
+// registry is keyed by exactly the Rc payload address, and its clone keeps
+// the count >= 1 while the object is reachable (so address presence == GC
+// liveness; a collected object's slot only ever re-appears with a NEW
+// object, which the serial checks below guard for identity-carrying rows).
+// Callers must hold the GIL: worker threads never take these table locks
+// except stamp_worker_identity (documented GilSendPub unsafety), and the
+// sweep uses try_borrow so a contended entry is conservatively kept.
+// ===========================================================================
+
+pub fn evict_stale_tables() -> usize {
+    // The GC registry is a MAIN-thread thread_local (workers forward their
+    // allocations through the registration channel); the liveness oracle is
+    // only meaningful on the main thread's view. A non-main caller must not
+    // even drain (that would steal registrations from the main registry).
+    if !is_main_os_thread() {
+        return 0;
+    }
+    // Worker-allocated objects live in the forward channel until drained —
+    // sweep after a drain or a live thread-local dict reads "absent".
+    let drained = crate::gcsupport::drain_worker_registrations();
+    let mut freed = 0usize;
+
+    // ---- THREADS entries + OBJ_MIRROR pins (three short phases; NEVER
+    // holds THREADS and OBJ_MIRROR at once) ----
+    let mut dropped_entries = 0usize;
+    let mut live_tids: Vec<i64> = Vec::new();
+    let mut pin_ops: Vec<(usize, bool)> = Vec::new(); // (addr, want_pin)
+    let snaps: Vec<(usize, i64, Option<bool>, i64)> = {
+        // Phase 1: snapshot (addr, serial, done?) + main-thread tids.
+        let t = THREADS.lock().unwrap();
+        t.entries
+            .iter()
+            .map(|s| {
+                (
+                    s.addr,
+                    s.serial,
+                    s.entry.0.try_borrow().map(|b| b.done).ok(),
+                    s.tid.load(std::sync::atomic::Ordering::Relaxed),
+                )
+            })
+            .collect::<Vec<_>>()
+        // (lock released before any mirror query)
+    };
+    // Phase 2: liveness decisions outside all table locks.
+    let mut drop_idx: Vec<usize> = Vec::new();
+    for (idx, (addr, serial, done, tid)) in snaps.iter().enumerate() {
+        if *serial == -1 {
+            // MainThread: permanent (the exit protocol marks it done;
+            // eviction must never drop it). tid mirror == real main tid.
+            live_tids.push(*tid);
+            pin_ops.push((*addr, true));
+            continue;
+        }
+        let effective = match done {
+            Some(d) => *d,
+            // Contended borrow: a worker is mid-stamp/mid-done. Keep + pin
+            // this sweep (conservative; the next sweep sees it settled).
+            None => {
+                live_tids.push(*tid);
+                pin_ops.push((*addr, true));
+                continue;
+            }
+        };
+        // The audit's retention rule: drop iff done AND the mirror is
+        // absent/dead (nobody can hold the Thread object -> nobody can
+        // join/is_alive/repr it). A live object (even finished, not yet
+        // joined) keeps its entry: post-join repr reads "stopped", and a
+        // re-start of the same object must still find its entry.
+        let mirror_live = mirror_alive_with_serial(*addr, *serial);
+        if effective && !mirror_live {
+            drop_idx.push(idx);
+            freed += 1;
+        } else {
+            pin_ops.push((*addr, !effective));
+            live_tids.push(*tid);
+        }
+    }
+    // Phase 3: apply drops by index (no slot shifted during the sweep —
+    // stamp_worker_identity only touches the tid atomics/indexes).
+    if !drop_idx.is_empty() {
+        let mut t = THREADS.lock().unwrap();
+        let before = t.entries.len();
+        let mut i = 0usize;
+        t.entries.retain(|_| {
+            let keep = !drop_idx.contains(&i);
+            i += 1;
+            keep
+        });
+        dropped_entries = before - t.entries.len();
+        t.rebuild_indexes();
+    }
+    // Mirror pin management (single pass over OBJ_MIRROR).
+    {
+        let mut m = OBJ_MIRROR.lock().unwrap();
+        for (addr, want_pin) in pin_ops {
+            if let Some(row) = m.get_mut(&addr) {
+                if want_pin && row.pinned.is_none() {
+                    if let Some(o) = row.weak.0.upgrade() {
+                        row.pinned = Some(crate::gcsupport::GilSendPub(Value::Obj(o)));
+                    }
+                } else if !want_pin {
+                    if row.pinned.take().is_some() {
+                        freed += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- OBJ_MIRROR rows: dead weak + not pinned ----
+    {
+        let mut m = OBJ_MIRROR.lock().unwrap();
+        let before = m.len();
+        m.retain(|_, row| row.pinned.is_some() || row.weak.0.upgrade().is_some());
+        freed += before - m.len();
+    }
+
+    // ---- LOCALS: outer keys absent from the registry; inner rows whose
+    // owner tid is no longer in the thread table (joined/dead thread) ----
+    {
+        let mut l = LOCALS.lock().unwrap();
+        let before = l.len();
+        l.retain(|addr, _| ap_gc::get_object_by_addr(*addr).is_some());
+        freed += before - l.len();
+        let tid_set: std::collections::HashSet<i64> = live_tids.into_iter().collect();
+        let before_inner: usize = l.values().map(|v| v.len()).sum();
+        for rows in l.values_mut() {
+            rows.retain(|tid, _| tid_set.contains(&(*tid as i64)));
+        }
+        let after_inner: usize = l.values().map(|v| v.len()).sum();
+        freed += before_inner - after_inner;
+        l.retain(|_, rows| !rows.is_empty());
+    }
+
+    // ---- PRIMS (+OWN_RLOCKS): phantom (cond+1) keys live off the
+    // Condition object; plain keys live off the object at that exact addr --
+    {
+        let owned: std::collections::HashSet<usize> =
+            OWN_RLOCKS.lock().unwrap().iter().copied().collect();
+        let mut p = PRIMS.lock().unwrap();
+        let before = p.len();
+        p.retain(|addr, _| {
+            if owned.contains(addr) {
+                // cond addr = key - 1
+                ap_gc::get_object_by_addr(addr.saturating_sub(1)).is_some()
+            } else {
+                ap_gc::get_object_by_addr(*addr).is_some()
+            }
+        });
+        freed += before - p.len();
+        let mut or = OWN_RLOCKS.lock().unwrap();
+        let live_keys: std::collections::HashSet<usize> = p.keys().copied().collect();
+        let before2 = or.len();
+        or.retain(|k| live_keys.contains(k));
+        freed += before2 - or.len();
+    }
+
+    // ---- lxml E5 side-table: compiled-XPath rows whose marker died ----
+    freed += crate::lxml::prune_xpath_registry();
+
+    // ---- CANCELLED: rows whose Timer object is gone (mirror dead AND not
+    // pinned by a running thread). A waiter holds its Arc clone, so pruning
+    // the map row cannot break an in-flight wait. ----
+    {
+        let mut c = CANCELLED.lock().unwrap();
+        let before = c.len();
+        c.retain(|(addr, serial), _| {
+            mirror_alive_with_serial(*addr, *serial) || ap_gc::get_object_by_addr(*addr).is_some()
+        });
+        freed += before - c.len();
+    }
+
+    let _ = drained;
+    freed + dropped_entries
+}
+
+/// Test/diagnostic hook: total table occupancy across the six sweeps (the
+/// eviction fence asserts these shrink after joins + collection).
+pub fn table_occupancy() -> (usize, usize, usize, usize, usize, usize) {
+    (
+        LOCALS.lock().unwrap().len(),
+        THREADS.lock().unwrap().entries.len(),
+        OBJ_MIRROR.lock().unwrap().len(),
+        PRIMS.lock().unwrap().len(),
+        CANCELLED.lock().unwrap().len(),
+        OWN_RLOCKS.lock().unwrap().len(),
+    )
+}
+
 pub fn interned_type_pub(name: &str) -> Value {
     if let Some(interp) = crate::builtins_modules::current_interp() {
         return crate::builtins::interned_type(&interp, name);
@@ -1051,8 +1610,44 @@ pub fn set_excepthook(v: Value) {
     };
 }
 
+/// Timer.cancel with the Timer object's construction serial (addr-only keys
+/// alias across recycled addresses — see CANCELLED).
+pub fn cancel_timer_serial(addr: usize, serial: i64) {
+    // E7: set the per-Timer event + notify (the worker is parked on it);
+    // if no event exists yet (cancel before start), mint one pre-cancelled
+    // so the waiter sees it immediately on its first fetch.
+    let mut m = CANCELLED.lock().unwrap();
+    match m.get(&(addr, serial)) {
+        Some(ev) => {
+            *ev.cancelled.lock().unwrap() = true;
+            ev.cv.notify_all();
+        }
+        None => {
+            let ev = Arc::new(CancelEvent {
+                cancelled: Mutex::new(true),
+                cv: Condvar::new(),
+            });
+            m.insert((addr, serial), ev);
+        }
+    }
+}
+
 pub fn cancel_timer(addr: usize) {
-    CANCELLED.lock().unwrap().insert(addr);
+    // Addr-only convenience: resolve the serial from the live object mirror
+    // (the <serial> attr is minted at construction, so a NOT-yet-started
+    // Timer cancel lands on the same (addr, serial) key thread_start will
+    // register — cancel-before-start suppresses the fire, CPython parity).
+    let serial = match mirror_get(addr) {
+        Some(Value::Obj(o)) => o
+            .attrs
+            .borrow()
+            .get(&s("<serial>"))
+            .and_then(|v| v.as_int())
+            .and_then(|i| i.to_i64())
+            .unwrap_or(-2),
+        _ => entry_for(addr).map(|e| e.borrow().serial).unwrap_or(-2),
+    };
+    cancel_timer_serial(addr, serial);
 }
 
 pub fn set_switch_interval(v: f64) {
