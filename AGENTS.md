@@ -60,20 +60,22 @@ GIL, uv-backed deps at build time. Byte-exact differential conformance vs CPytho
 - ROBUSTNESS-CI CAMPAIGN: plan tree at `plans/robustness-ci/` (master.md +
   7 branches, 24 leaves) implements ALL findings of
   .hermes/audits/robustness-review-2026-10-19.md (CI core, test integrity,
-  lint gates, provenance, fuzzing, CLI/docs, gated decomposition). Status:
-  WAVE A DISPATCHED 2026-10-19 (00.01, 00.02, 02.02, 03.03). Branch 06
-  hard-gated on Plan 02 waves.
-- Status block verified at 5f1e132 2026-10-19 by leaf 03.03 (fresh
-  re-measure): 94 commits; `cargo test --workspace` 289 passed / 0 failed
-  / 1 ignored; `xtask notices --check` exit 0 (151 deps, up to date);
-  corpus inventory 8 families / 270 .py cases / 696 expected files
-  (pass-rate counts: see plans/**/PROGRESS.md, source of truth). Previous
-  block (stale): "80 commits. rust 247/0, pytest 1272/0. Corpus 150/197".
-  CAVEAT: measured with sibling 02.07 threading work uncommitted in
-  crates/ap-run/src (threading.rs / threading_call.rs in flight); rust
-  gate green at that state, full `pytest tests/ -q` still running at
-  verify time (~50% done: 0 F/0 E, 3 skipped, 280 xfail, 0 xpass;
-  differential ap-conform suites are the long pole).
+  lint gates, provenance, fuzzing, CLI/docs, gated decomposition). Status
+  2026-11-07: waves A-D largely LANDED (.github/workflows/ci.yml +
+  nightly-fuzz.yml + clippy.toml at HEAD; interpreter-gate watchdog
+  e9196b8 + its TOCTOU follow-up 46729d4). Branch 06 decomposition
+  hard-gated on Plan 02; clippy -D burn-down (~49 errors) and
+  stdlib-provenance --check remediation queued.
+- Status block verified at 46729d4 2026-11-07 (fresh re-measure on the
+  merged trunk): 686 commits; `cargo test --workspace` 61 suites ok /
+  444 passed / 0 failed / 1 ignored (log
+  ~/.git/worktrees/wave3/main-gate-final.log); `pytest tests/ -q`
+  1977 passed / 6 skipped / 656 xfailed / 93 xpassed, exit 0 (measured
+  at 47be826; the 93 xpass are the known stale awaits-02.07/02.08 ledger
+  markers); `xtask notices --check` OK (336 deps). Corpus inventory:
+  274 corpus .py under tests/corpus; pass-rate counts: see
+  plans/**/PROGRESS.md, source of truth. Previous block (stale): "94
+  commits. rust 289/0/1. Corpus 8 families/270/696".
 - T1 SCRAPY: DONE 2026-10-25. scrapy 2.19.0 imports and runs; file:// spider
   items.jsonl byte-identical vs CPython (verified). Gate doc: docs/t1-gate.md.
   Chain: a14fe0d (sys.path), 9fe23b4 (lxml shim + interpreter wave), a021802
@@ -200,13 +202,34 @@ GIL, uv-backed deps at build time. Byte-exact differential conformance vs CPytho
   SystemExit died in enum.py __set_name__ _flag_mask_ |= object;
   documented in commit). Correctness bugs 1+2 FIXED (c553a64):
   metaclass __init__ now receives class kwargs; super_stack
-  __setitem__ dispatch is single-pop. OPEN: ast_getattr_leak_fence
-  perf regression (superlinear ast.walk probe growth, ~1.5s/it at
-  100it; bisect: reproduces at e62db1c start-of-day, NOT from the
-  OOM waves; attr_get_opt per-access TypeRef synthesis is the
-  suspected N^2 owner - needs bounded side-table fix, NOT the
-  class_ref slot); wave-3 memperf campaign (.hermes/audits/
-  2026-11-06-memperf-bughunt.md, W1-W4 plan) dispatched.
+  __setitem__ dispatch is single-pop. WAVE-3 MEMPERF CAMPAIGN CLOSED
+  2026-11-07: the ast_getattr_leak_fence perf regression owner landed
+  fence-green at 0858b53 (deque O(n^2) ops + iterator-table leak); the
+  fixer stacks merged to trunk via 47be826 (g1 interpreter hot path
+  d7f1bcc + g2 parser/IR quadratics + g3 GC borrow scans + g4 threading
+  eviction with evict_stale_tables wired into the major-GC collect
+  drain, join path untouched). Consolidated audit:
+  .hermes/audits/2026-11-07-memperf-consolidated.md (19-item wave plan
+  for the remaining OPEN rows incl. FILE_SRC cap (M07/disclosed M10),
+  pull_iter borrow hang risk (M03), lru_cache
+  M29, path-finder M13). TWO gate-found bugs fixed same day: (i)
+  3a80a4b pydict.update self-alias deadlock (foreach borrow + set()
+  retry-sleep never released when source==target — hung `import enum`,
+  hence unittest/inspect/dataclasses probes at the 240s fence; enum
+  import 240s->1s; doc .hermes/audits/
+  2026-11-07-dict-self-update-deadlock.md), (ii) 3fcc046 deque maxlen
+  semantics (overflow dropped the WRONG end for append/extend — old
+  comment had appendleft/append inverted; constructor never trimmed
+  deque(iterable, maxlen); deque.maxlen attr missing) - both
+  ground-truthed vs CPython 3.14.7, workspace gate green after each.
+  Gate-keep: 46729d4 fixed the new gate_wait_expiry_smoke TOCTOU
+  (probe-then-reacquire lost a race against a starting suite; now a
+  single LOCK_EX|LOCK_NB + clean SKIP). RESIDUALS: closure-carrying
+  nested defs ~3MB/1k (filed); M11 lxml XPATH open; pre-existing pdb
+  NameError in pluggy hook (bisect pending). NOTE 2026-11-07: the
+  sibling repr_fuzz 35-min stall + "shrink loop" was the stdin-EOF
+  harness bug (eceb1b7 fix: ref_batch must DROP child.stdin so CPython
+  reference reads EOF; suite now ~6.5s).
 - T1 CRAWL history (waves 90-110, pre-round-20 state - superseded by
   the block above, kept for fix provenance):
   W110-5 LANDED (85432c9): real coroutine frames - async def bodies
