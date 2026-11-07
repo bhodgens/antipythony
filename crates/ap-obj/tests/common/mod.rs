@@ -25,6 +25,8 @@
 
 #![allow(dead_code)] // each suite target compiles the subset it uses
 
+pub mod gate_watchdog;
+
 use std::sync::OnceLock;
 
 /// True when `program --version` succeeds and reports Python 3.14.
@@ -113,26 +115,13 @@ pub fn reference_or_skip() -> Option<&'static str> {
 /// Exclusive whole-invocation single-tenancy lock (same lock file + seam as
 /// crates/ap-run + crates/ap-cli `interpreter_gate`). Taken once per
 /// test-binary process, held to exit; cheap (one atomic load) after first.
+///
+/// Robustness (robustness-ci leaf 00-ci-core/LEAF-gate-watchdog): bounded
+/// wait + holder-liveness record + stale-holder takeover live in
+/// `gate_watchdog.rs`; a wedged holder no longer poisons the suite fleet
+/// (see that file's header for the full contract).
 pub fn interpreter_gate() {
-    static DONE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    use std::os::fd::AsFd as _;
-    use std::os::fd::AsRawFd as _;
-    use std::sync::atomic::Ordering;
-    if DONE.swap(1, Ordering::SeqCst) == 1 {
-        return;
-    }
-    let path = std::env::temp_dir().join("aprun_gate_global.lock");
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(&path)
-        .expect("open interpreter-gate lock file");
-    let rc = unsafe { libc::flock(file.as_fd().as_raw_fd(), libc::LOCK_EX) };
-    assert_eq!(rc, 0, "flock on interpreter-gate lock failed");
-    // Deliberately leak `file` (no Drop): the lock must live until process
-    // exit. One File per test-binary process, bounded.
-    std::mem::forget(file);
+    gate_watchdog::gate_watchdog_acquire();
 }
 
 /// True when the machine is NOT under critical memory pressure (same

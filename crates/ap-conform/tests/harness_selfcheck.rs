@@ -8,30 +8,17 @@
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-/// 2026-11-06 harness review: this suite spawns the ap-conform binary,
-/// which itself spawns impl+reference interpreter processes. Serialize
-/// against every other interpreter-spawning suite (same lock file as the
-/// ap-run/ap-cli/ap-obj `interpreter_gate` seams) and bound every wait —
-/// ap-conform defaults to a 10s per-process timeout, so 120s covers a
-/// small corpus with headroom.
+// Serialize against every other interpreter-spawning suite (same lock file as the
+// ap-run/ap-cli/ap-obj `interpreter_gate` seams) and bound every wait —
+// ap-conform defaults to a 10s per-process timeout, so 120s covers a
+// small corpus with headroom.
+// Robustness leaf 00-ci-core/LEAF-gate-watchdog: bounded wait + holder
+// liveness + stale takeover live in gate_watchdog.rs (include!d verbatim;
+// canonical copy: crates/ap-obj/tests/common/gate_watchdog.rs).
+include!("gate_watchdog.rs");
+
 fn interpreter_gate() {
-    static DONE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    use std::os::fd::AsFd as _;
-    use std::os::fd::AsRawFd as _;
-    use std::sync::atomic::Ordering;
-    if DONE.swap(1, Ordering::SeqCst) == 1 {
-        return;
-    }
-    let path = std::env::temp_dir().join("aprun_gate_global.lock");
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(&path)
-        .expect("open interpreter-gate lock file");
-    let rc = unsafe { libc::flock(file.as_fd().as_raw_fd(), libc::LOCK_EX) };
-    assert_eq!(rc, 0, "flock on interpreter-gate lock failed");
-    std::mem::forget(file); // hold to process exit
+    gate_watchdog_acquire();
 }
 
 /// Run `cmd` capturing Output with a hard wall-clock deadline; a child

@@ -14,28 +14,17 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-/// 2026-11-06 harness review: this suite runs the xtask binary, whose
-/// `notices` path invokes `cargo metadata` (a cargo/rustc subprocess tree)
-/// inside a fixture workspace. Bounded waits + participation in the
-/// repo-wide single-tenancy gate keep it from ever stacking with a build.
+// 2026-11-06 harness review: this suite runs the xtask binary, whose
+// `notices` path invokes `cargo metadata` (a cargo/rustc subprocess tree)
+// inside a fixture workspace. Bounded waits + participation in the
+// repo-wide single-tenancy gate keep it from ever stacking with a build.
+// Robustness leaf 00-ci-core/LEAF-gate-watchdog: bounded wait + holder
+// liveness + stale takeover live in gate_watchdog.rs (include!d verbatim;
+// canonical copy: crates/ap-obj/tests/common/gate_watchdog.rs).
+include!("gate_watchdog.rs");
+
 fn interpreter_gate() {
-    static DONE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    use std::os::fd::AsFd as _;
-    use std::os::fd::AsRawFd as _;
-    use std::sync::atomic::Ordering;
-    if DONE.swap(1, Ordering::SeqCst) == 1 {
-        return;
-    }
-    let path = std::env::temp_dir().join("aprun_gate_global.lock");
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(&path)
-        .expect("open interpreter-gate lock file");
-    let rc = unsafe { libc::flock(file.as_fd().as_raw_fd(), libc::LOCK_EX) };
-    assert_eq!(rc, 0, "flock on interpreter-gate lock failed");
-    std::mem::forget(file); // hold to process exit
+    gate_watchdog_acquire();
 }
 
 /// Run `cmd` with a hard 180s wall-clock deadline (cargo metadata can

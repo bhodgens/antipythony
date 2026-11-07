@@ -17,6 +17,8 @@
 
 #![allow(dead_code)] // each suite target compiles the subset it uses
 
+mod gate_watchdog;
+
 use std::os::fd::AsFd as _;
 use std::os::fd::AsRawFd as _;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -121,23 +123,13 @@ static PROBE_SEQ: AtomicU64 = AtomicU64::new(0);
 ///
 /// Every suite that spawns `antipythony`/`ap-run-eval`/`ap-run-probe` calls
 /// this at the top of each test fn (cheap after the first: one atomic load).
+///
+/// Robustness (robustness-ci leaf 00-ci-core/LEAF-gate-watchdog): bounded
+/// wait + holder-liveness record + stale-holder takeover live in
+/// `gate_watchdog.rs`; a wedged holder no longer poisons the suite fleet
+/// (see that file's header for the full contract).
 pub fn interpreter_gate() {
-    static DONE: AtomicU64 = AtomicU64::new(0);
-    if DONE.swap(1, Ordering::SeqCst) == 1 {
-        return;
-    }
-    let path = std::env::temp_dir().join("aprun_gate_global.lock");
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(&path)
-        .expect("open interpreter-gate lock file");
-    let rc = unsafe { libc::flock(file.as_fd().as_raw_fd(), libc::LOCK_EX) };
-    assert_eq!(rc, 0, "flock on interpreter-gate lock failed");
-    // Deliberately leak `file` (no Drop): the lock must live until process
-    // exit. One File per test-binary process, bounded.
-    std::mem::forget(file);
+    gate_watchdog::gate_watchdog_acquire();
 }
 
 /// Exclusive cross-process lock for the heavy in-process-tier executor.

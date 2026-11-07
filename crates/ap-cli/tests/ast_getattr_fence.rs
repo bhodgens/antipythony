@@ -3,24 +3,16 @@ use std::os::fd::AsRawFd as _;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-/// 2026-11-06 harness review: single-tenancy + memory-pressure preflight
-/// for this suite (same lock file / metrics as the other suites' common
-/// helpers — this target has no `mod common`, so the seam is local).
+// 2026-11-06 harness review: single-tenancy + memory-pressure preflight
+// for this suite (same lock file / metrics as the other suites' common
+// helpers — this target has no `mod common`, so the seam is local).
+// Robustness leaf 00-ci-core/LEAF-gate-watchdog: bounded wait + holder
+// liveness + stale takeover live in gate_watchdog.rs (include!d verbatim;
+// canonical copy: crates/ap-obj/tests/common/gate_watchdog.rs).
+include!("gate_watchdog.rs");
+
 fn interpreter_gate() {
-    static DONE: AtomicU64 = AtomicU64::new(0);
-    if DONE.swap(1, Ordering::SeqCst) == 1 {
-        return;
-    }
-    let path = std::env::temp_dir().join("aprun_gate_global.lock");
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(&path)
-        .expect("open interpreter-gate lock file");
-    let rc = unsafe { libc::flock(file.as_fd().as_raw_fd(), libc::LOCK_EX) };
-    assert_eq!(rc, 0, "flock on interpreter-gate lock failed");
-    std::mem::forget(file); // hold to process exit
+    gate_watchdog_acquire();
 }
 
 #[cfg(target_os = "macos")]
