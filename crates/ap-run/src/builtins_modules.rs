@@ -5908,6 +5908,17 @@ fn collections_namedtuple(
 
 fn make_deque(items: Vec<Value>, maxlen: Option<i64>) -> Value {
     let obj = PyObject::new(ap_obj::ObjKind::Opaque, "deque");
+    // CPython deque(iterable, maxlen): building appends each item, and an
+    // overflow drops the oldest (left) — so a too-long initial iterable
+    // keeps exactly the LAST maxlen items (deque([1,2,3], maxlen=2) ==
+    // deque([2, 3], maxlen=2)).
+    let items = match maxlen {
+        Some(ml) if ml >= 0 && items.len() > ml as usize => {
+            let skip = items.len() - ml as usize;
+            items.into_iter().skip(skip).collect()
+        }
+        _ => items,
+    };
     {
         let mut attrs = obj.attrs.borrow_mut();
         let _ = attrs.set(s("<items>"), list(items));
@@ -5949,11 +5960,18 @@ fn deque_maxlen_of(v: &Value) -> Option<i64> {
     }
 }
 
-/// Trim the RIGHT end to maxlen (append overflow drops from the right).
-fn deque_trim_maxlen(l: &Gc<ap_obj::value::PyList>, maxlen: Option<i64>) {
+/// Trim to maxlen after an overflow push; `drop_left` selects which end
+/// loses items (append/extend -> true, appendleft -> false, per CPython).
+fn deque_trim_maxlen(l: &Gc<ap_obj::value::PyList>, maxlen: Option<i64>, drop_left: bool) {
+    // CPython overflow direction: append/extend (right-push) drops from the
+    // LEFT (oldest); appendleft drops from the RIGHT (oldest-left).
     if let Some(ml) = maxlen {
         while ml >= 0 && l.len() as i64 > ml {
-            l.remove_take(l.len() - 1);
+            if drop_left {
+                l.remove_take(0);
+            } else {
+                l.remove_take(l.len() - 1);
+            }
         }
     }
 }
@@ -6359,7 +6377,7 @@ pub fn call_collections(name: &str, args: &[Value], kwargs: &[(String, Value)]) 
                     .ok_or_else(|| raise("TypeError", "expected deque, not receiver"))?;
                 let maxlen = deque_maxlen_of(recv);
                 l.append(v.clone());
-                deque_trim_maxlen(&l, maxlen);
+                deque_trim_maxlen(&l, maxlen, true);
                 Ok(Value::None)
             }
             "deque.appendleft" => {
@@ -6374,7 +6392,7 @@ pub fn call_collections(name: &str, args: &[Value], kwargs: &[(String, Value)]) 
                 let maxlen = deque_maxlen_of(recv);
                 l.insert_at(0, v.clone());
                 // appendleft overflow drops from the RIGHT (opposite of append).
-                deque_trim_maxlen(&l, maxlen);
+                deque_trim_maxlen(&l, maxlen, false);
                 Ok(Value::None)
             }
             "deque.pop" => {
@@ -6412,7 +6430,7 @@ pub fn call_collections(name: &str, args: &[Value], kwargs: &[(String, Value)]) 
                 for item in snapshot(v)? {
                     l.append(item);
                 }
-                deque_trim_maxlen(&l, maxlen);
+                deque_trim_maxlen(&l, maxlen, true);
                 Ok(Value::None)
             }
             "deque.rotate" => {
@@ -14312,6 +14330,14 @@ pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
                     }
                 }
                 "deque" => {
+                    // CPython deque.maxlen: int bound or None (unbounded).
+                    if name == "maxlen" {
+                        let attrs = o.attrs.borrow();
+                        return match attrs.get(&s("<maxlen>")) {
+                            Some(v @ Value::Int(_)) => Some(v.clone()),
+                            Some(_) | None => Some(Value::None),
+                        };
+                    }
                     let mname = match name {
                         "append" | "appendleft" | "pop" | "popleft" | "extend" | "clear"
                         | "rotate" | "index" | "__iter__" => {
