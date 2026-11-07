@@ -256,7 +256,9 @@ pub fn sys_modules_get(name: &str) -> Option<Value> {
 }
 
 fn sys_modules_insert(name: &str, v: &Value) {
-    if std::env::var("APX_MODDBG").is_ok() && name.contains("_py_warnings") {
+    if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::ModDbg)
+        && name.contains("_py_warnings")
+    {
         if let Value::Obj(o) = v {
             eprintln!("[INSDBG] insert {name} obj={:p}", std::rc::Rc::as_ptr(o));
         }
@@ -535,7 +537,7 @@ fn run_loaded(
     let saved = builtins_modules::CURRENT_MODULE_GLOBALS
         .with(|c| c.borrow_mut().replace(loaded.frame.globals.clone()));
     let r = exec_block(interp, &loaded.frame, stmts, &loaded.reg);
-    if std::env::var("APX_MODDBG").is_ok() {
+    if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::ModDbg) {
         if let Err(ref e) = r {
             eprintln!("[MODDBG] module exec failed (see traceback above)");
         }
@@ -1253,7 +1255,7 @@ fn exec_compiled(
     // then `_wm.filterwarnings`) an EMPTY snapshot; sys is a PyDict clone so
     // the clone never sees body writes.
     *m.module_ns.borrow_mut() = Some(loaded.ns.clone());
-    if std::env::var("APX_MODDBG").is_ok() {
+    if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::ModDbg) {
         eprintln!(
             "[EXECDBG] {} ns_ptr={:p} frame_g={:p}",
             name,
@@ -1264,7 +1266,9 @@ fn exec_compiled(
     // BEFORE body execution (design: CPython circular-import semantics).
     sys_modules_insert(name, &v);
     let stmts = module_stmts(interp, compiled, &loaded.reg, &loaded.frame);
-    if std::env::var("APX_STMTDBG").is_ok() && name.contains("http") {
+    if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::StmtDbg)
+        && name.contains("http")
+    {
         for (i, st) in stmts.iter().enumerate() {
             eprintln!("[STMTDBG] {} #{} {:?}", name, i, st);
         }
@@ -1273,7 +1277,9 @@ fn exec_compiled(
     // Refresh the module's namespace view after body execution (the module
     // stores a by-value PyDict; body writes landed in `loaded.ns`).
     *m.module_ns.borrow_mut() = Some(loaded.ns.clone());
-    if std::env::var("APX_MODDBG").is_ok() && name == "_py_warnings" {
+    if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::ModDbg)
+        && name == "_py_warnings"
+    {
         eprintln!(
             "[EXECDBG-post] {} ns items={} has_DEP={}",
             name,
@@ -1502,7 +1508,7 @@ pub fn import_from_module(
         match got {
             Some(v) => frame.store_global(bind, v),
             None => {
-                if std::env::var("APX_MODDBG").is_ok() {
+                if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::ModDbg) {
                     if let Value::Obj(o) = mv {
                         let n = o
                             .module_ns
@@ -1804,7 +1810,7 @@ pub(crate) fn augment_with_vendored(interp: &Rc<Interpreter>, name: &str, m: &Va
         // Best-effort body run (vendored namesakes may pull imports we
         // don't serve — ignore failures and copy what landed).
         let outcome = run_loaded(interp, &loaded, &stmts);
-        if std::env::var("APX_MODDBG").is_ok() {
+        if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::ModDbg) {
             let n_items = loaded.ns.items().len();
             eprintln!(
                 "[AUGDBG] augment {name}: run_loaded ok={} ns_items={}",

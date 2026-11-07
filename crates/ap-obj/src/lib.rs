@@ -92,6 +92,7 @@
 //! `Gc<T>` is a `Box` until then), no complex numbers (out of v1 corpus).
 
 pub mod classes;
+pub mod debug_flags;
 pub mod dict;
 pub mod exc;
 pub mod float_repr;
@@ -104,6 +105,7 @@ pub mod ops;
 pub mod str_repr;
 pub mod value;
 
+pub use debug_flags::{debug_flag, snapshot as snapshot_debug_flags, ApxFlag};
 pub use dict::{PyDict, PySet};
 pub use exc::PyException;
 pub use float_repr::py_float_repr;

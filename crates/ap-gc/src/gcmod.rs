@@ -533,7 +533,7 @@ fn mark_reachable_scoped(
     if let Some(frames) = weakbridge::frame_values_roots() {
         root_vals.extend(frames);
     }
-    if std::env::var("APX_GC_DUMP").is_ok() {
+    if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::GcDump) {
         let mut root_src = 0;
         for v in &root_vals {
             let a = value_addr(v);
@@ -719,7 +719,7 @@ pub fn collect_gen(generation: usize) -> usize {
         g.clear();
         g.extend(garbage.iter().map(|(addr, _)| *addr));
     });
-    if std::env::var("APX_GC_DUMP").is_ok() {
+    if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::GcDump) {
         REGISTRY.with(|r| {
             let r = r.borrow();
             eprintln!(

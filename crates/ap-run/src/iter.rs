@@ -243,7 +243,9 @@ impl PyIterator {
                             // via pending staging on the next explicit
                             // pull of this generator.
                             if let crate::Flow::Raise(e) = &f {
-                                if std::env::var("APX_GEN_DEBUG").is_ok() {
+                                if ap_obj::debug_flags::debug_flag(
+                                    ap_obj::debug_flags::ApxFlag::GenDebug,
+                                ) {
                                     let msg = e
                                         .args
                                         .first()

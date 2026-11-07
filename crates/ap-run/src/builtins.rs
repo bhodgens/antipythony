@@ -61,7 +61,9 @@ pub fn py_str_of(v: &Value) -> Result<String, ap_obj::exc::PyException> {
                             // consumes it on entry.
                             *interp.pending_super_ctx.borrow_mut() =
                                 Some((owner.clone(), v.clone(), false));
-                            if std::env::var("APX_SUPERDBG").is_ok() {
+                            if ap_obj::debug_flags::debug_flag(
+                                ap_obj::debug_flags::ApxFlag::SuperDbg,
+                            ) {
                                 eprintln!("[W113-STRSTAGE] pending set for owner={}", owner.name);
                             }
                             let r = crate::interp::call_value_pub(&interp, &f, &[v.clone()], &[])
@@ -229,7 +231,7 @@ fn print_to_file(interp: &Interpreter, v: &Value, args: &[Value], sep: &str, end
 /// len(v): sized types only, exact TypeError.
 pub fn builtin_len(args: &[Value]) -> BResult {
     let v = one(args, "len")?;
-    if std::env::var("APX_TBDBG").is_ok() {
+    if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::TbDbg) {
         match v {
             Value::Obj(o) => eprintln!("[LEN] Obj kind={:?} name={}", o.kind, o.name),
             other => eprintln!("[LEN] other={:?}", other),
@@ -253,7 +255,7 @@ pub fn builtin_len(args: &[Value]) -> BResult {
         {
             // T2: builtin-derived instances - len reads the backing
             // slice_parts (filled via __ap_base_<base>__init__).
-            if std::env::var("APX_TBDBG").is_ok() {
+            if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::TbDbg) {
                 let mro_names: Vec<String> = o
                     .class_ref
                     .borrow()
@@ -269,7 +271,7 @@ pub fn builtin_len(args: &[Value]) -> BResult {
             o.slice_parts.borrow().len()
         }
         Value::Obj(o) if o.kind == ap_obj::ObjKind::Namespace && o.name == "<traceback>" => {
-            if std::env::var("APX_TBDBG").is_ok() {
+            if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::TbDbg) {
                 eprintln!("[LEN-TB] counted");
             }
             let mut n = 0usize;
@@ -1153,7 +1155,7 @@ fn check_isinstance(v: &Value, t: &Value) -> Result<Value, Flow> {
             // Headers.update took the non-Mapping branch ('too many
             // values to unpack' in RetryMiddleware). Delegate.
             if o.kind == ap_obj::ObjKind::UserClass {
-                if std::env::var("APX_GEN_DEBUG").is_ok() {
+                if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::GenDebug) {
                     let vkind = match v {
                         Value::Obj(vo) => format!("{:?}", vo.kind),
                         _ => "prim".to_string(),
@@ -1415,7 +1417,7 @@ pub fn builtin_type(interp: &Interpreter, args: &[Value], kwargs: &[(String, Val
         0 => Err(raise("TypeError", "type() takes 1 or 3 arguments")),
         1 => {
             let v = &args[0];
-            if std::env::var("APX_TDEBUG").is_ok() {
+            if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::TDebug) {
                 if let Value::Obj(o) = v {
                     eprintln!(
                         "[TDEBUG] builtin_type obj kind={:?} name={}",
@@ -2818,10 +2820,7 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
             if !matches!(v, Value::Str(_)) {
                 return Some(Err(raise(
                     "TypeError",
-                    format!(
-                        "intern() argument must be str, not {}",
-                        v.type_name()
-                    ),
+                    format!("intern() argument must be str, not {}", v.type_name()),
                 )));
             }
             let text = crate::builtins::py_str_of(&v).unwrap_or_default();
@@ -3118,7 +3117,7 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
                     let interp3 = interp2.rc();
                     // T2: prefer the exception's OWN tb entries (true raise
                     // site + frame chain); fall back to the global table.
-                    if std::env::var("APX_TBDBG").is_ok() {
+                    if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::TbDbg) {
                         eprintln!(
                             "[EXCINFO] class={} tb_len={} tb={:?}",
                             ev.class,
@@ -3963,7 +3962,7 @@ pub fn call_builtin(
     args: &[Value],
     kwargs: &[(String, Value)],
 ) -> crate::EvalResult {
-    if std::env::var("APX_SCOPE_DEBUG").is_ok() {
+    if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::ScopeDebug) {
         eprintln!("[CB] name={}", name);
     }
     // Wave-68: copy._reconstruct dictiter form — fresh dict.

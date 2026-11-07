@@ -109,6 +109,10 @@ pub fn start() -> u64 {
     if GUARD_STARTED.swap(true, Ordering::SeqCst) {
         return CAP_GB.load(Ordering::SeqCst);
     }
+    // A3 (memperf W1): snapshot the APX_* debug flags once, up front, so the
+    // ~90 per-op probe sites read a cached bitset instead of scanning the
+    // environment on every raise/binop/attr/GC cycle.
+    ap_obj::debug_flags::snapshot();
     // resolve_cap_bytes is infallible: explicit env wins, invalid env warns
     // and falls back, sysconf failure fails closed at 4 GB.
     let cap_bytes = resolve_cap_bytes().unwrap_or_else(|_| 4 * 1024 * 1024 * 1024);

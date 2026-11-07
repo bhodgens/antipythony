@@ -244,7 +244,9 @@ fn gen_fiber_body(
         }
     }
     if let Err(Flow::Raise(e)) = &result {
-        if e.class == "NameError" && std::env::var("APX_GENDbg").is_ok() {
+        if e.class == "NameError"
+            && ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::GenDebug)
+        {
             let gname = entry
                 .globals
                 .get(&Value::Str(ap_obj::PyString::new("__name__")))
@@ -286,7 +288,7 @@ fn gen_fiber_body(
                 }
             };
             let file = crate::interp::fn_entry_file(&interp, &entry);
-            if std::env::var("APX_GEN_DEBUG").is_ok() {
+            if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::GenDebug) {
                 let msg = e
                     .args
                     .first()
@@ -412,7 +414,7 @@ pub fn resume_live(
     // starts the closure, which unwinds immediately without body effects
     // (the closure itself never observes the throw — the error surfaces
     // from the pending slot on Return).
-    if std::env::var("APX_GEN_DEBUG").is_ok() {
+    if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::GenDebug) {
         if let GenInput::Throw(e) = &input {
             let tbtxt: Vec<String> =
                 e.tb.iter()
@@ -484,10 +486,7 @@ pub fn resume_live(
         // resume_live's callers answer None / StopIteration exactly as
         // the fiber:None re-insert path did (verify: gen_send/gen_throw/
         // gen_close look up the entry — absent = already-exhausted arm).
-        interp
-            .generators
-            .borrow_mut()
-            .remove(&id);
+        interp.generators.borrow_mut().remove(&id);
         live.retired = true;
         return match out {
             CoroutineResult::Yield(GenOutput::Yield(v)) => Ok(Some(v)),

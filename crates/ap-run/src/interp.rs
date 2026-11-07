@@ -47,7 +47,9 @@ use crate::Flow;
 
 fn raise(class: &str, msg: impl Into<String>) -> Flow {
     let m = msg.into();
-    if class == "IndexError" && std::env::var("APX_IDX_DEBUG").is_ok() {
+    if class == "IndexError"
+        && ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::IdxDebug)
+    {
         eprintln!("APX-IDX-RAISE(interp): IndexError {:?} at interp::raise", m);
     }
     Flow::Raise(ExceptionValue::msg(class, m))
@@ -64,6 +66,10 @@ pub fn run_module(
     stdout: &mut dyn std::io::Write,
     stderr: &mut dyn std::io::Write,
 ) -> RunOutcome {
+    // A3 (memperf W1): idempotent snapshot of the APX_* debug flags for
+    // embedders that call run_module without going through a bin main
+    // (all bins call rss_guard::start() which snapshots earlier).
+    ap_obj::debug_flags::snapshot();
     let parsed = match ap_parse::parse(source) {
         Ok(p) => p,
         Err(e) => {
@@ -168,7 +174,7 @@ pub fn run_module(
     let _ = crate::gcsupport::drain_worker_registrations();
     crate::gcsupport::finalize_atexit_drain();
     // 02.04: GCSTATS instrumentation at exit.
-    if std::env::var("GCSTATS").is_ok() {
+    if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::GcStats) {
         let st = ap_gc::stats();
         eprintln!(
             "GCSTATS collections={} objects_reclaimed={} cycles_collected={}",
@@ -517,7 +523,7 @@ fn exec_module(
     for item in &module.items {
         match item {
             ap_ir::Item::Stmt(s) => {
-                if std::env::var("APX_DEBUG").is_ok() {
+                if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::Debug) {
                     eprintln!("module stmt: Try={}", matches!(s, ap_ir::Stmt::Try(_)));
                 }
                 stmts.push(s.clone());
@@ -629,7 +635,7 @@ pub(crate) fn exec_block(
     stmts: &[Stmt],
     reg: &Rc<FnRegistry>,
 ) -> Result<(), Flow> {
-    let moddbg = std::env::var("APX_MODDBG").is_ok();
+    let moddbg = ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::ModDbg);
     for (idx, s) in stmts.iter().enumerate() {
         if moddbg {
             let gn = frame
@@ -811,7 +817,10 @@ fn exec_stmt(
             let v = match eval_expr(interp, frame, value, reg) {
                 Ok(v) => v,
                 Err(Flow::Raise(ref ev))
-                    if ev.class == "TypeError" && std::env::var("APX_ASSERTDBG").is_ok() =>
+                    if ev.class == "TypeError"
+                        && ap_obj::debug_flags::debug_flag(
+                            ap_obj::debug_flags::ApxFlag::AssertDbg,
+                        ) =>
                 {
                     eprintln!(
                         "[ASSIGN-ERR] frame={} line={} msg={:?}",
@@ -1216,7 +1225,7 @@ fn exec_stmt(
             // both mis-attributed nested raises and double-counted
             // the module frame.
             e.raise_line = frame.last_line.get();
-            if std::env::var("APX_TBDBG").is_ok() {
+            if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::TbDbg) {
                 eprintln!(
                     "[APTB4] raise {} set raise_line={} (last_line={}) frame={}",
                     e.class,
@@ -1234,14 +1243,14 @@ fn exec_stmt(
                     Some(m) => vec![eval_expr(interp, frame, m, reg)?],
                     None => vec![],
                 };
-                if std::env::var("APX_ASSERTDBG").is_ok() {
+                if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::AssertDbg) {
                     eprintln!(
                         "[ASSERT-FAIL] {}:{}",
                         frame.qualname,
                         last_executed_line(interp)
                     );
                 }
-                if std::env::var("APX_ASSERTDBG").is_ok() {
+                if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::AssertDbg) {
                     let bt = std::backtrace::Backtrace::force_capture();
                     let bt_str = bt.to_string();
                     let interesting: Vec<&str> = bt_str
@@ -1435,7 +1444,8 @@ fn exec_stmt(
                     Target::Subscript(obj, key) => {
                         let o = eval_expr(interp, frame, obj, reg)?;
                         let k = eval_expr(interp, frame, key, reg)?;
-                        let dbg = std::env::var("APX_TBDBG").is_ok();
+                        let dbg =
+                            ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::TbDbg);
                         if dbg {
                             eprintln!("[APDEL3] del target={} key={:?}", o.type_name(), k);
                         }
@@ -1719,7 +1729,7 @@ fn exec_try(
                     // catches, so record the catching frame here —
                     // outermost-first, ahead of the raise-path frames.
                     let mut exc = exc.clone();
-                    if std::env::var("APX_TBDBG").is_ok() {
+                    if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::TbDbg) {
                         eprintln!(
                             "[APTB2] catch-exc class={} frame={}:{} name={:?}",
                             exc.class,
@@ -1735,7 +1745,8 @@ fn exec_try(
                         // time frame.last_line points at the try stmt;
                         // exc.raise_line holds the true raise line.
                         let line = if exc.tb.is_empty() && exc.raise_line > 0 {
-                            if std::env::var("APX_TBDBG").is_ok() {
+                            if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::TbDbg)
+                            {
                                 eprintln!(
                                     "[APTB3] use raise_line={} frame={}",
                                     exc.raise_line, frame.qualname
@@ -1743,7 +1754,8 @@ fn exec_try(
                             }
                             exc.raise_line.max(1)
                         } else {
-                            if std::env::var("APX_TBDBG").is_ok() {
+                            if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::TbDbg)
+                            {
                                 eprintln!(
                                     "[APTB3] use last_line={} tb_len={} raise_line={} frame={}",
                                     frame.last_line.get(),
@@ -1818,7 +1830,9 @@ fn exec_try(
                     // this try pushed.
                     {
                         let end = interp.tb_frames.borrow().len();
-                        if std::env::var("APX_TB_DEBUG").is_ok() && tb_snapshot > end {
+                        if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::TbDebug)
+                            && tb_snapshot > end
+                        {
                             eprintln!(
                                 "APX-TB-DEBUG: drain INVERTED snapshot={} end={} (frame {})",
                                 tb_snapshot, end, frame.qualname
@@ -1847,7 +1861,7 @@ fn exec_try(
 
 fn exc_matches(tv: &Value, exc: &ExceptionValue) -> Result<bool, Flow> {
     let interp = current_interp_for_bindings();
-    if std::env::var("APX_DEBUG").is_ok() {
+    if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::Debug) {
         eprintln!(
             "[02.03] exc_matches tv_kind={:?} tv_name={:?} exc={}",
             match tv {
@@ -2216,7 +2230,7 @@ fn exception_instance(exc: &ExceptionValue) -> Value {
         // teardown `raise exception` surfaces a 1-frame/filtered-empty
         // chain and repr_excinfo raises IndexError at code.py [-1].
         {
-            if std::env::var("APX_TBDBG").is_ok() {
+            if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::TbDbg) {
                 eprintln!("[APTB] cls={} tb={:?}", exc.class, exc.tb);
             }
             if let Value::Obj(o) = v {
@@ -2258,7 +2272,7 @@ fn exception_instance(exc: &ExceptionValue) -> Value {
     // (y144: [APTB2] showed the named AE catches firing while [APTB]
     // never did — the APTB/attach block only ran on the .instance arm).
     {
-        if std::env::var("APX_TBDBG").is_ok() {
+        if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::TbDbg) {
             eprintln!("[APTB-FALLBACK] cls={} tb_len={}", exc.class, exc.tb.len());
         }
         let entries: Vec<Value> = exc
@@ -2306,7 +2320,7 @@ fn raise_from_value(v: &Value) -> Result<ExceptionValue, Flow> {
                     .borrow()
                     .clone();
                 if let Some(prev) = inflight {
-                    if std::env::var("APX_IDX_DEBUG").is_ok() {
+                    if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::IdxDebug) {
                         eprintln!(
                             "[W112-MERGE] inflight class={} tb_len={}",
                             prev.class,
@@ -2413,7 +2427,7 @@ fn raise_from_value(v: &Value) -> Result<ExceptionValue, Flow> {
                     }
                 }
             }
-            if std::env::var("APX_IDX_DEBUG").is_ok() {
+            if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::IdxDebug) {
                 eprintln!(
                     "[W112-RR] re-raised instance class={} tb_len={}",
                     ev.class,
@@ -2769,7 +2783,9 @@ fn lookup_name(interp: &Rc<Interpreter>, frame: &Rc<Frame>, name: &str) -> EResu
             if let Some(v) = crate::classes::exc_class_value(interp, name) {
                 return Ok(v);
             }
-            if std::env::var("APX_SFCDBG").is_ok() && name == "attr_dict" {
+            if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::SfcDbg)
+                && name == "attr_dict"
+            {
                 eprintln!(
                     "[LOADMISS] name={} scope={} src={}",
                     name, frame.scope_path, interp.source
@@ -2889,7 +2905,7 @@ pub(crate) fn eval_expr(
             );
             // W112: name-dump for int - NoneType Subs (frame carries the
             // real qualname; LAST_PY_LOC is stale across unwinds).
-            if std::env::var("APX_GEN_DEBUG").is_ok()
+            if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::GenDebug)
                 && matches!(op, BinOp::Sub)
                 && crate::classes::display_type_name(&bv) == "NoneType"
             {
@@ -3074,7 +3090,9 @@ pub(crate) fn eval_expr(
                     }
                 }
             }
-            if std::env::var("APX_ASSERTDBG").is_ok() && fv.type_name() == "NoneType" {
+            if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::AssertDbg)
+                && fv.type_name() == "NoneType"
+            {
                 let callee_desc = match f.as_ref() {
                     Expr::Name(n) => format!("Name({})", n.as_str()),
                     Expr::Attribute(_, a) => format!("Attr({})", a.as_str()),
@@ -3125,7 +3143,7 @@ pub(crate) fn eval_expr(
                     }
                     _ => String::new(),
                 };
-                if std::env::var("APX_DEBUG").is_ok() {
+                if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::Debug) {
                     let last = interp
                         .tb_frames
                         .borrow()
@@ -3139,14 +3157,14 @@ pub(crate) fn eval_expr(
                         last
                     );
                 }
-                if std::env::var("APX_ATTRMISS").is_ok() {
+                if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::AttrMiss) {
                     eprintln!(
                         "[ATTRMISS2] recv={} attr={}",
                         crate::classes::display_type_name(&o),
                         name
                     );
                 }
-                if name == "_rawentry" && std::env::var("APX_TBDBG").is_ok() {
+                if name == "_rawentry" && ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::TbDbg) {
                     let pyloc = crate::interp::LAST_PY_LOC.with(|c| {
                         let (f, l) = &*c.borrow();
                         format!("{}:{}", f, l)
@@ -4159,7 +4177,7 @@ fn other_display_name(o: &ap_obj::PyObject) -> String {
 pub(crate) fn eval_binop(a: &Value, op: BinOp, b: &Value) -> EResult {
     use ap_obj::ops::BinOp as OB;
     // W112: Python-loc capture for int - NoneType failures.
-    if std::env::var("APX_GEN_DEBUG").is_ok()
+    if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::GenDebug)
         && matches!(op, BinOp::Sub)
         && crate::classes::display_type_name(b) == "NoneType"
     {
@@ -4617,7 +4635,15 @@ fn call_value_inner(
 ) -> EResult {
     // T2: env-gated call/return tracing (APX_CALLTRACE=<substr>) to catch
     // frame-return misdirection across native/python boundary stacks.
-    let trace_filter = std::env::var("APX_CALLTRACE").ok();
+    // A3 (memperf W1): flag cached in the A3 debug bitset; the value filter
+    // is re-read here — this is one call per call_value, not per-op, and
+    // APX_CALLTRACE carries a substring payload, not just presence.
+    let do_trace = ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::Calltrace);
+    let trace_filter = if do_trace {
+        std::env::var("APX_CALLTRACE").ok()
+    } else {
+        None
+    };
     let (trace_name, do_trace) = match (&trace_filter, f) {
         (Some(filt), Value::Obj(o)) => {
             let nm = o.name.clone();
@@ -4655,7 +4681,7 @@ fn call_value_inner_impl(
                 ap_obj::ObjKind::BuiltinFn => {
                     // 02.07: type(thread_obj) reports its <class> attr
                     // (_MainThread / Thread / Timer — T108).
-                    if std::env::var("APX_TDEBUG").is_ok() {
+                    if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::TDebug) {
                         eprintln!("[TDEBUG] BuiltinFn call: {}", o.name);
                     }
                     // Wave-70: copy._reconstruct marker calls.
@@ -4889,18 +4915,18 @@ fn call_value_inner_impl(
                     // StopIteration(None) — exhausted semantics so
                     // asyncio Tasks terminate cleanly.
                     if o.name == "__ap_coroutine_send__" {
-                        if std::env::var("APX_ICDBG").is_ok() {
+                        if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::IcDbg) {
                             eprintln!("[CO] send called -> StopIteration");
                         }
                         return Err(raise("StopIteration", ""));
                     }
                     if o.name == "__ap_coroutine_repr__" {
-                        if std::env::var("APX_ICDBG").is_ok() {
+                        if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::IcDbg) {
                             eprintln!("[CO] repr called");
                         }
                     }
                     if o.name == "__ap_coroutine_await__" {
-                        if std::env::var("APX_ICDBG").is_ok() {
+                        if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::IcDbg) {
                             eprintln!("[CO] await called");
                         }
                     }
@@ -5670,7 +5696,7 @@ fn call_value_inner_impl(
                         };
                     }
                     if o.name.starts_with("__ap_base_") && o.name.ends_with("__init__") {
-                        if std::env::var("APX_TBDBG").is_ok() {
+                        if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::TbDbg) {
                             eprintln!("[BASEINIT] dispatch {} args={}", o.name, args.len());
                         }
                         let subject = o
@@ -5690,7 +5716,9 @@ fn call_value_inner_impl(
                                 if let Some(it) = it {
                                     let pyit = crate::builtins::iterable_of(&it)?;
                                     let items = crate::iter::collect(&pyit);
-                                    if std::env::var("APX_TBDBG").is_ok() {
+                                    if ap_obj::debug_flags::debug_flag(
+                                        ap_obj::debug_flags::ApxFlag::TbDbg,
+                                    ) {
                                         eprintln!("[BASEINIT] filled {} items", items.len());
                                     }
                                     if let Value::Obj(so) = &subject {
@@ -5805,7 +5833,9 @@ fn call_value_inner_impl(
                                     .attrs
                                     .borrow_mut()
                                     .set(Value::Str(PyString::new("__ap_int__")), payload);
-                                if std::env::var("APX_SCOPE_DEBUG").is_ok() {
+                                if ap_obj::debug_flags::debug_flag(
+                                    ap_obj::debug_flags::ApxFlag::ScopeDebug,
+                                ) {
                                     eprintln!("[INTNEW-RET] kind={:?} name={:?}", io.kind, io.name);
                                 }
                                 return Ok(Value::Obj(io));
@@ -6033,7 +6063,7 @@ fn call_value_inner_impl(
                     // a metaclass method — type.__call__ virtual: instantiate
                     // the parked class with the given args/kwargs.
                     if o.name == "type.__call__" {
-                        if std::env::var("APX_SUPERDBG").is_ok() {
+                        if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::SuperDbg) {
                             eprintln!("[SUPERDBG] type.__call__ virtual fired");
                         }
                         crate::interp::supercall_flag_set();
@@ -6972,7 +7002,9 @@ fn call_value_inner_impl(
                     }
                 }
                 _ => {
-                    if std::env::var("APX_ASSERTDBG").is_ok() && f.type_name() == "NoneType" {
+                    if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::AssertDbg)
+                        && f.type_name() == "NoneType"
+                    {
                         eprintln!("[NONECALL] callee=None");
                     }
                     Err(raise(
@@ -6983,7 +7015,7 @@ fn call_value_inner_impl(
             }
         }
         _ => {
-            if std::env::var("APX_ASSERTDBG").is_ok() {
+            if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::AssertDbg) {
                 let ln = last_executed_line(interp);
                 eprintln!("[NONECALL-OUTER] type={:?} line={}", f.type_name(), ln);
             }
@@ -7166,7 +7198,9 @@ fn call_type_ctor(
         "SystemExit",
     ];
     if EXCS.contains(&name) {
-        if name == "IndexError" && std::env::var("APX_IDX_DEBUG").is_ok() {
+        if name == "IndexError"
+            && ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::IdxDebug)
+        {
             eprintln!(
                 "APX-IDX-RAISE(ctor): IndexError created via EXCS ctor with {} args",
                 args.len()
@@ -7433,7 +7467,7 @@ fn call_function(
         // The staged __new__/__init__ context sits above the sentinel.
         interp.super_stack.borrow_mut().pop();
     }
-    if std::env::var("APX_SUPERDBG").is_ok() {
+    if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::SuperDbg) {
         let depth = interp.super_stack.borrow().len();
         let fname = def.name.as_str();
         eprintln!("SUPER-RET {} depth={}", fname, depth);
@@ -7449,7 +7483,7 @@ fn call_function(
             // (entry.globals), not the driver script — library frames used
             // to render every File as the driver's path.
             let file = crate::interp::fn_entry_file(interp, &entry);
-            if std::env::var("APX_TBDBG").is_ok() {
+            if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::TbDbg) {
                 eprintln!("[FEXIT2] fn={} line={} file={}", entry.qualname, line, file);
             }
             // T2: per-exception traceback - the exception carries its own
@@ -7663,7 +7697,7 @@ fn bind_params(
     let mut my_cells: HashMap<String, CellSlot> = HashMap::new();
     let mut free_cells: HashMap<String, CellSlot> = HashMap::new();
     let reg = current_registry(interp);
-    if std::env::var("APX_CLOSURE_DEBUG").is_ok() {
+    if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::ClosureDebug) {
         eprintln!(
             "BIND scope={} known={}",
             entry.scope_path,
@@ -7702,7 +7736,7 @@ fn bind_params(
             .closure_slot
             .borrow()
             .and_then(|id| interp.defining_frames.borrow().get(&(id as u32)).cloned());
-        if std::env::var("APX_CLOSURE_DEBUG").is_ok() {
+        if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::ClosureDebug) {
             eprintln!(
                 "CLOSURE scope={} frees={:?} closure_slot={:?} defining={}",
                 entry.scope_path,
@@ -7816,7 +7850,7 @@ pub(crate) fn set_pending_generator_error(f: Flow) {
 
 pub(crate) fn set_pending_generator_error_for(fiber_id: u64, f: Flow) {
     if let Flow::Raise(e) = &f {
-        if std::env::var("APX_GEN_DEBUG").is_ok() {
+        if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::GenDebug) {
             eprintln!(
                 "APX-GEN-DEBUG: pending SET fiber={} class={} args={:?} (thread_local!)",
                 fiber_id,
@@ -7862,7 +7896,7 @@ pub(crate) fn take_pending_generator_error() -> Option<Flow> {
         taken = any;
     }
     if let Some(Flow::Raise(e)) = &taken {
-        if std::env::var("APX_GEN_DEBUG").is_ok() {
+        if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::GenDebug) {
             eprintln!(
                 "APX-GEN-DEBUG: pending TAKE class={} args={:?}",
                 e.class,
@@ -8154,7 +8188,7 @@ pub(crate) fn gen_throw(
     id: u64,
     ev: ExceptionValue,
 ) -> Result<Option<Value>, Flow> {
-    if std::env::var("APX_GEN_DEBUG").is_ok() {
+    if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::GenDebug) {
         let tbtxt: Vec<String> = ev
             .tb
             .iter()
@@ -9634,7 +9668,7 @@ fn user_binop(
         // W112: when the RHS is NoneType on a Sub, log the Python-level
         // tb so the failing subtraction site is visible.
         if sym == "-"
-            && std::env::var("APX_GEN_DEBUG").is_ok()
+            && ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::GenDebug)
             && crate::classes::display_type_name(b) == "NoneType"
         {
             let bt = std::backtrace::Backtrace::force_capture().to_string();
@@ -10023,7 +10057,7 @@ fn class_protocol_builtin(
                     }
                     // 02.07: threading objects report their <class> attr
                     // (type(me).__name__ == "_MainThread" — T108).
-                    if std::env::var("APX_TDEBUG").is_ok() {
+                    if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::TDebug) {
                         if let Value::Obj(so) = vv {
                             eprintln!("[TDEBUG] cpb type arm: kind={:?} name={}", so.kind, so.name);
                         }
@@ -10434,7 +10468,7 @@ fn class_isinstance(interp: &Rc<Interpreter>, args: &[Value]) -> EResult {
     {
         if let Value::Obj(vo) = v {
             let has_cr = vo.class_ref.borrow().is_some();
-            if std::env::var("APX_GEN_DEBUG").is_ok() {
+            if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::GenDebug) {
                 eprintln!("[ABC-TOP] vname={} has_cr={}", vo.name, has_cr);
             }
             let cr_opt = vo
@@ -10446,7 +10480,7 @@ fn class_isinstance(interp: &Rc<Interpreter>, args: &[Value]) -> EResult {
             if let Some(cr) = cr_opt {
                 let mro_names: Vec<String> =
                     cr.mro.borrow().iter().map(|m| m.name.clone()).collect();
-                if std::env::var("APX_GEN_DEBUG").is_ok() {
+                if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::GenDebug) {
                     eprintln!("[ABC-TOP] mro={:?}", mro_names);
                 }
                 if mro_names.iter().any(|n| n == "dict") {
@@ -10473,7 +10507,7 @@ fn class_isinstance(interp: &Rc<Interpreter>, args: &[Value]) -> EResult {
     {
         let is_class_subject = matches!(v, Value::Obj(vo)
             if vo.kind == ap_obj::ObjKind::UserClass || vo.kind == ap_obj::ObjKind::Type);
-        if std::env::var("APX_ISIDBG").is_ok() {
+        if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::IsiDbg) {
             eprintln!(
                 "[ISIDBG] type-subject: {} is_class={}",
                 crate::classes::display_type_name(v),
@@ -10695,7 +10729,7 @@ fn class_isinstance(interp: &Rc<Interpreter>, args: &[Value]) -> EResult {
 }
 
 fn class_issubclass(interp: &Rc<Interpreter>, args: &[Value]) -> EResult {
-    if std::env::var("APX_DBG_ISS").is_ok() {
+    if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::DbgIss) {
         if let (Some(a), Some(b)) = (args.first(), args.get(1)) {
             let nm = |v: &Value| match v {
                 Value::Obj(o) => format!("{:?}:{}", o.kind, o.name),
@@ -10759,7 +10793,9 @@ fn class_issubclass(interp: &Rc<Interpreter>, args: &[Value]) -> EResult {
                 let result = match b {
                     Value::Obj(y) => {
                         let r = one(&x.name, &y.name);
-                        if std::env::var("APX_DBG_ISS").is_ok() && r {
+                        if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::DbgIss)
+                            && r
+                        {
                             eprintln!("DBG TRUE: {} <= {}", x.name, y.name);
                         }
                         r
@@ -10860,7 +10896,7 @@ fn builtin_super(interp: &Rc<Interpreter>, args: &[Value], _kwargs: &[(String, V
             let ctx = ctx.filter(|(start, _, _)| start.name != "__plain_fn__");
             match ctx {
                 None => {
-                    if std::env::var("APX_SUPERDBG").is_ok() {
+                    if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::SuperDbg) {
                         let depth = interp.super_stack.borrow().len();
                         let pend = interp.pending_super_ctx.borrow().is_some();
                         eprintln!("SUPER-NOCTX super_stack={} pending_some={}", depth, pend);
@@ -10922,7 +10958,7 @@ pub fn register_shared_iter_pub(it: Gc<PyIterator>) -> u64 {
 
 /// user_iter variant returning the registered PyIterator (iterable_of path).
 fn user_iter_to_iterator(interp: &Rc<Interpreter>, v: &Value) -> Result<Gc<PyIterator>, Flow> {
-    if std::env::var("APX_STMTDBG").is_ok() {
+    if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::StmtDbg) {
         if let Some((f, _)) = crate::classes::special_lookup(interp, v, "__iter__") {
             eprintln!("[UIDBG] iter fn name={:?}", {
                 let n = match &f {
@@ -11183,7 +11219,7 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
     // W112: log native _rawentry reads on UserClass receivers -
     // identifies the non-Expr::Attribute caller of the failing
     // class-receiver read in the unraisable collector flow.
-    if std::env::var("APX_TBDBG").is_ok() {
+    if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::TbDbg) {
         if let Value::Obj(io) = obj {
             if io.kind == ap_obj::ObjKind::UserClass && io.name == "object" {
                 let bt = std::backtrace::Backtrace::force_capture().to_string();
@@ -11196,7 +11232,7 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
             }
         }
     }
-    if name == "_rawentry" {
+    if name == "_rawentry" && ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::TbDbg) {
         if let Value::Obj(io) = obj {
             if io.kind == ap_obj::ObjKind::UserClass && io.name == "object" {
                 let bt = std::backtrace::Backtrace::force_capture().to_string();
@@ -11945,16 +11981,15 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                                     // G5: reuse the cached wrapper when the
                                     // same (fn, cell) was already minted;
                                     // sweep dead wrappers on the way.
-                                    let slot_id = o
-                                        .closure_slot
-                                        .borrow()
-                                        .unwrap_or(0);
+                                    let slot_id = o.closure_slot.borrow().unwrap_or(0);
                                     let cache_key = (slot_id, cname.clone());
                                     let cached = CELL_WRAPPER_CACHE.with(|reg| {
                                         let mut m = reg.borrow_mut();
-                                        m.retain(|_, w| ap_gc::weakref_alive(std::rc::Rc::as_ptr(
-                                            w,
-                                        ) as *const u8 as usize));
+                                        m.retain(|_, w| {
+                                            ap_gc::weakref_alive(
+                                                std::rc::Rc::as_ptr(w) as *const u8 as usize,
+                                            )
+                                        });
                                         m.get(&cache_key).cloned()
                                     });
                                     if let Some(c) = cached {
@@ -13004,7 +13039,7 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                     return Ok(Some(Value::None));
                 }
                 if o.kind == ap_obj::ObjKind::UserInstance && name == "__traceback__" {
-                    if std::env::var("APX_TBDBG").is_ok() {
+                    if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::TbDbg) {
                         eprintln!("[UITB] __traceback__ read on {}", o.name);
                     }
                     // T2: render THIS exception's own chain when we recorded
@@ -13193,7 +13228,9 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                         }
                     }
                 }
-                if o.kind == ap_obj::ObjKind::UserClass && std::env::var("APX_ATTRDBG").is_ok() {
+                if o.kind == ap_obj::ObjKind::UserClass
+                    && ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::AttrDbg)
+                {
                     eprintln!("[ATTRDBG] UserClass {} :: {} (miss)", o.name, name);
                 }
                 // T2 (typing NamedTupleMeta `nm_tpl.__init_subclass__()`):
@@ -13210,7 +13247,7 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 // Real exception classes (re.error etc) answer via the class
                 // protocol first (__dict__-seeded __module__).
                 if o.kind == ap_obj::ObjKind::Type {
-                    if std::env::var("APX_ATTRDBG").is_ok() {
+                    if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::AttrDbg) {
                         eprintln!("[ATTRDBG] Type {} :: {}", o.name, name);
                     }
                     if let Some(v) = crate::classes::attr_get_opt(_interp, obj, name)? {
@@ -14012,7 +14049,7 @@ pub fn raise_class_pub(
     let mut ev = exception_value_of_instance(&inst)?;
     let inst_for_probe = inst.clone();
     ev.instance = Some(inst);
-    if std::env::var("APX_ASSERTDBG").is_ok() {
+    if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::AssertDbg) {
         let tn = crate::classes::display_type_name(&inst_for_probe);
         if tn == "NoneType" || tn == "BaseException" {
             eprintln!("[RCP] odd class inst display={} ev.class={}", tn, ev.class);

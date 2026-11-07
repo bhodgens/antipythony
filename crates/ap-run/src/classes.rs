@@ -227,7 +227,7 @@ pub fn dynamic_type(
             None,
         )
         .map_err(|e| {
-            if std::env::var("APX_MRODBG").is_ok() {
+            if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::MroDbg) {
                 let bn: Vec<String> = bases_v
                     .iter()
                     .map(|b| match b {
@@ -726,7 +726,7 @@ pub fn exec_class_def(
                 matches!(base_type_ref(interp, later), Ok(Some(t))
                     if t.mro.borrow().iter().any(|m| m.name == "Generic" && !std::rc::Rc::ptr_eq(m, &t)))
             });
-            if std::env::var("APX_MRODBG").is_ok() {
+            if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::MroDbg) {
                 let lnames: Vec<String> = bases_v[i + 1..]
                     .iter()
                     .map(|later| match base_type_ref(interp, later) {
@@ -1189,7 +1189,7 @@ pub fn exec_class_def(
             None,
         )
         .map_err(|e| {
-            if std::env::var("APX_MRODBG").is_ok() {
+            if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::MroDbg) {
                 let bn: Vec<String> = bases_v
                     .iter()
                     .map(|b| match b {
@@ -1865,7 +1865,11 @@ pub fn descr_get(interp: &Rc<Interpreter>, v: &Value, obj: &Value, owner: &Value
                                     .as_ref()
                                     .map(|w| w.upgrade().is_some())
                                     .unwrap_or(false);
-                                if !upgrade_ok && std::env::var("APX_TBDBG").is_ok() {
+                                if !upgrade_ok
+                                    && ap_obj::debug_flags::debug_flag(
+                                        ap_obj::debug_flags::ApxFlag::TbDbg,
+                                    )
+                                {
                                     eprintln!(
                                         "[APROP] fget self type_ref DEAD: inst={} class={}",
                                         io.name, o.name
@@ -2096,7 +2100,7 @@ fn run_set_name_hooks(interp: &Rc<Interpreter>, cls: &Value, t: &Rc<TypeRef>) ->
 /// isinstance(x, T): T a class, tuple, or union-type shape (X|Y lowers to a
 /// call in v1 — unions only surface via tuple form).
 pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bool, Flow> {
-    if std::env::var("APX_GEN_DEBUG").is_ok() {
+    if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::GenDebug) {
         if let Value::Obj(xo) = x {
             let has_cr = xo.class_ref.borrow().is_some();
             eprintln!(
@@ -2459,7 +2463,7 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
                         .as_ref()
                         .map(|m| m.name.clone())
                         .unwrap_or_else(|| "<none>".to_string());
-                    if std::env::var("APX_GEN_DEBUG").is_ok() {
+                    if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::GenDebug) {
                         eprintln!("[SUBHOOK] t={} meta={}", tc.name, meta_name);
                     }
                     meta_name == "ABCMeta"
@@ -2623,7 +2627,7 @@ pub fn value_issubclass(interp: &Interpreter, a: &Value, b: &Value) -> Result<bo
             // cycle" on `import pathlib`.
             if let Some(bct) = base_type_ref(interp, b)? {
                 let meta = bct.metaclass.borrow().clone();
-                if std::env::var("APX_DBG_HOOK").is_ok() {
+                if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::DbgHook) {
                     let hn = match &meta {
                         Some(mt) => format!("meta={}", mt.name),
                         None => "no-meta".to_string(),
@@ -2640,7 +2644,9 @@ pub fn value_issubclass(interp: &Interpreter, a: &Value, b: &Value) -> Result<bo
                                 &[class_value_for(&bct), a.clone()],
                                 &[],
                             )?;
-                            if std::env::var("APX_DBG_HOOK").is_ok() {
+                            if ap_obj::debug_flags::debug_flag(
+                                ap_obj::debug_flags::ApxFlag::DbgHook,
+                            ) {
                                 eprintln!(
                                     "DBG hook res {} <= {}: {}",
                                     bct.name,
@@ -3059,7 +3065,7 @@ fn instance_attr(
                 // pathlib relies on it); the member descriptor has no real
                 // fget and descr_get would call None.
                 if t.is_slot(name) {
-                    if std::env::var("APX_TBDBG").is_ok() {
+                    if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::TbDbg) {
                         let dict_keys: Vec<String> = t
                             .dict
                             .items()
@@ -3150,7 +3156,7 @@ fn instance_attr(
     if matches!(name, "__context__" | "__cause__" | "__suppress_context__") {
         return Ok(Value::None);
     }
-    if name == "_rawentry" && std::env::var("APX_TBDBG").is_ok() {
+    if name == "_rawentry" && ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::TbDbg) {
         let bt = std::backtrace::Backtrace::force_capture().to_string();
         let interesting: Vec<&str> = bt
             .lines()

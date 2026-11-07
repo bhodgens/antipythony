@@ -13,7 +13,9 @@ pub type MResult = Result<Value, Flow>;
 
 fn raise(class: &str, msg: impl Into<String>) -> Flow {
     let m = msg.into();
-    if class == "IndexError" && std::env::var("APX_IDX_DEBUG").is_ok() {
+    if class == "IndexError"
+        && ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::IdxDebug)
+    {
         eprintln!("APX-IDX-RAISE: IndexError {:?} at methods::raise", m);
     }
     Flow::Raise(ExceptionValue::msg(class, m))
@@ -202,7 +204,7 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
         }
         (Value::List(l), Key::Index(i)) => {
             let idx = normalize_index(*i, l.len() as i64).ok_or_else(|| {
-                if std::env::var("APX_IDX_DEBUG").is_ok() {
+                if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::IdxDebug) {
                     eprintln!(
                         "APX-IDX-DEBUG: list len={} idx={} (list index out of range)",
                         l.len(),
@@ -609,7 +611,7 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
             }
             if crate::classes::is_list_derived_instance(obj) {
                 if let Value::Str(sk) = key {
-                    if std::env::var("APX_SCOPE_DEBUG").is_ok() {
+                    if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::ScopeDebug) {
                         if let Ok(mut f) = std::fs::OpenOptions::new()
                             .create(true)
                             .append(true)
@@ -1121,7 +1123,7 @@ pub fn subscript_del(obj: &Value, key: &Value) -> Result<(), Flow> {
                 }
             };
             let idx = normalize_index(i, l.len() as i64).ok_or_else(|| {
-                if std::env::var("APX_IDX_DEBUG").is_ok() {
+                if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::IdxDebug) {
                     eprintln!("APX-IDX-DEBUG-DEL: list len={} idx={}", l.len(), i);
                 }
                 raise("IndexError", "list index out of range")
@@ -1172,7 +1174,7 @@ pub fn subscript_del(obj: &Value, key: &Value) -> Result<(), Flow> {
                 // bypasses the plain-fn reader that consumes pending, so
                 // the next nested plain-fn call — e.g. self._normkey —
                 // steals the staged ctx.)
-                if std::env::var("APX_SUPERDBG").is_ok() {
+                if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::SuperDbg) {
                     eprintln!("SUPER-DELSTAGE owner={}", owner.name);
                 }
                 interp
@@ -1281,7 +1283,7 @@ pub fn subscript_del(obj: &Value, key: &Value) -> Result<(), Flow> {
                     return r.map(|_| ());
                 }
             }
-            if std::env::var("APX_TBDBG").is_ok() {
+            if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::TbDbg) {
                 eprintln!("[APDEL2] target={} key={:?}", obj.type_name(), key);
             }
             Err(raise(
@@ -1579,7 +1581,7 @@ pub fn call_method(
             Some(Ok(Value::Bytes(Gc::new(out))))
         }
         (Value::Bytes(b), "decode") => {
-            if std::env::var("APX_DECDBG").is_ok() {
+            if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::DecDbg) {
                 let kinds: Vec<String> = args.iter().map(|v| v.type_name().to_string()).collect();
                 eprintln!("[DECDBG] args={} kinds={:?}", args.len(), kinds);
             }

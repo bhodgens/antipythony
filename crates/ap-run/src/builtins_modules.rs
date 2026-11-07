@@ -15216,7 +15216,7 @@ pub fn call_builtin_values(
                         },
                     }
                 } else {
-                    if std::env::var("APX_SCOPE_DEBUG").is_ok() {
+                    if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::ScopeDebug) {
                         let k2 = if let Value::Obj(ob) = &recv {
                             format!("Obj kind={:?} name={} attrs={:?} backing={:?}", ob.kind, ob.name, ob.attrs.borrow().items().iter().map(|(k,_k)| crate::builtins::py_str_of(k).unwrap_or_default()).collect::<Vec<_>>(), crate::classes::dict_backing(&recv).is_some())
                         } else {

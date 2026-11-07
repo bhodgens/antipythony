@@ -471,7 +471,7 @@ fn unsupported_binop(a: &Value, op: BinOp, b: &Value) -> PyException {
     // W112: int - NoneType capture - identify the Python caller via
     // the raising exception's msg alone is ambiguous; keep a marker
     // env-gated at the Rust level (frame data is not reachable here).
-    if std::env::var("APX_GEN_DEBUG").is_ok() {
+    if crate::debug_flags::debug_flag(crate::debug_flags::ApxFlag::GenDebug) {
         if matches!(op, BinOp::Sub) {
             let bt = std::backtrace::Backtrace::force_capture().to_string();
             let frames: Vec<&str> = bt

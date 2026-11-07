@@ -461,7 +461,7 @@ fn report_unraisable(interp: &Rc<Interpreter>, del_f: &Value, exc: &ExceptionVal
             // pytest's collector reads unraisable.err_msg first.
             let _ = a.set(s("err_msg"), Value::None);
         }
-        if std::env::var("APX_TBDBG").is_ok() {
+        if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::TbDbg) {
             let evk = match &exc_value {
                 Value::Obj(o) => format!("obj:{}", o.name),
                 v => format!("{:?}", v).chars().take(24).collect(),
