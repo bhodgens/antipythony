@@ -10,8 +10,8 @@
 use crate::builtins_modules::{i as smi, kw, marker, required, s, str_arg, BResult};
 use crate::exc_hier::ExceptionValue;
 use crate::threading::{
-    acquire_gil, prim_of, prim_put, release_gil, BarrierPrim, CondPrim, EventPrim,
-    LockPrim, QueuePrim, RLockPrim, SemPrim,
+    acquire_gil, prim_of, prim_put, release_gil, BarrierPrim, CondPrim, EventPrim, LockPrim,
+    QueuePrim, RLockPrim, SemPrim,
 };
 use crate::Flow;
 use ap_obj::dict::PyDict;
@@ -2041,7 +2041,11 @@ pub fn thread_repr_pub(o: &Gc<PyObject>) -> String {
     let (started, done, ident) = match crate::threading::entry_for_pub(addr) {
         Some(e) => {
             let b = e.borrow();
-            (b.started, b.done.load(std::sync::atomic::Ordering::SeqCst), b.ident)
+            (
+                b.started,
+                b.done.load(std::sync::atomic::Ordering::SeqCst),
+                b.ident,
+            )
         }
         None => (false, false, None),
     };

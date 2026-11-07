@@ -1557,6 +1557,20 @@ pub fn call_method(
                     _ => None,
                 })
                 .unwrap_or_else(|| "utf-8".to_string());
+            // Issue #13: pass the errors handler through to the mbc engine
+            // (str.encode(codec, errors='replace'|'ignore'|...) on the CJK
+            // codecs must NOT strict-raise).
+            let errors = match args.get(1) {
+                Some(Value::Str(x)) => x.as_str().to_string(),
+                _ => "strict".to_string(),
+            };
+            let name = codec.trim().to_ascii_lowercase().replace([' ', '-'], "_");
+            if crate::mbc::tables_for_pub(&name).is_some() {
+                return Some(match crate::mbc::encode(&name, s.as_str(), &errors) {
+                    Ok(bs) => Ok(Value::Bytes(Gc::new(bs))),
+                    Err(f) => Err(f),
+                });
+            }
             Some(encode_str(s.as_str(), &codec))
         }
         (Value::Str(s), "partition") => {
@@ -2042,10 +2056,30 @@ fn decode_bytes_err(b: &[u8], codec: &str, errors: &str) -> MResult {
         return Ok(Value::Str(PyString::new(out)));
     }
     if errors != "strict" {
+        // Issue #13: the native mbc engine handles the builtin decode error
+        // handlers (replace/ignore) for the CJK codecs; route there first.
+        let name = codec.trim().to_ascii_lowercase().replace([' ', '-'], "_");
+        if crate::mbc::tables_for_pub(&name).is_some() {
+            return match crate::mbc::decode(&name, b, errors) {
+                Ok(txt) => Ok(Value::Str(PyString::new(txt))),
+                Err(f) => Err(f),
+            };
+        }
         return match fallback_decode(b, codec, errors) {
             Ok(v) => Ok(v),
             Err(e) => Err(Flow::Raise(e)),
         };
+    }
+    // Issue #13: strict decode of a multibyte CJK codec goes through the
+    // native engine (byte-exact errors), falling back to the registry.
+    {
+        let name = codec.trim().to_ascii_lowercase().replace([' ', '-'], "_");
+        if crate::mbc::tables_for_pub(&name).is_some() {
+            return match crate::mbc::decode(&name, b, "strict") {
+                Ok(txt) => Ok(Value::Str(PyString::new(txt))),
+                Err(f) => Err(f),
+            };
+        }
     }
     match codec_l.as_str() {
         "utf-8" | "utf8" => match std::str::from_utf8(b) {
@@ -2213,7 +2247,20 @@ pub fn encode_str(s: &str, codec: &str) -> MResult {
             }
             Ok(Value::Bytes(Gc::new(out)))
         }
-        other => Err(raise("LookupError", format!("unknown encoding: {other}"))),
+        // Issue #13: multibyte CJK codecs route through the native mbc
+        // engine (strict + builtin error handlers; exact Unicode{En,De}code
+        // Error texts). Codec names normalized like CPython (dashes/spaces).
+        other => {
+            let name = other.trim().to_ascii_lowercase().replace([' ', '-'], "_");
+            if crate::mbc::tables_for_pub(&name).is_some() {
+                return match crate::mbc::encode(&name, s, "strict") {
+                    Ok(bs) => Ok(Value::Bytes(Gc::new(bs))),
+                    Err(f) => Err(f),
+                };
+            }
+            let _ = other;
+            Err(raise("LookupError", format!("unknown encoding: {other}")))
+        }
     }
 }
 /// The type name of the first unhashable element reachable in a tuple/list

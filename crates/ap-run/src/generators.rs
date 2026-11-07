@@ -641,12 +641,11 @@ impl PooledStack {
         // directly under the base, which would fault the fresh frame.
         let usable = (usable + page - 1) & !(page - 1);
         let mmap_len = usable + page;
-        let raw = match STACK_POOL.with(|p| {
-            p.borrow_mut().0.get_mut(&mmap_len).and_then(|v| v.pop())
-        }) {
-            Some(raw) => raw,
-            None => Self::map_region(mmap_len, usable)?,
-        };
+        let raw =
+            match STACK_POOL.with(|p| p.borrow_mut().0.get_mut(&mmap_len).and_then(|v| v.pop())) {
+                Some(raw) => raw,
+                None => Self::map_region(mmap_len, usable)?,
+            };
         let base = corosensei::stack::StackPointer::new(raw + mmap_len)
             .ok_or_else(|| std::io::Error::other("stack base overflow"))?;
         Ok(PooledStack {

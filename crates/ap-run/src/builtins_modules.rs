@@ -794,6 +794,17 @@ fn registry() -> &'static [(&'static str, ModuleBuilder)] {
         ("_collections", build__collections),
         ("_colorize", build_colorize),
         ("_codecs", build_codecs),
+        // Issue #13: native multibyte CJK codecs (cp932/big5/euc_*/gb*/hz/
+        // johab/iso2022_*). The vendored encodings/*.py wrappers import
+        // these + _multibytecodec; getcodec(name) hands back the CodecInfo-
+        // shaped namespace whose encode/decode route through crate::mbc.
+        ("_codecs_jp", crate::mbc::build_codecs_jp),
+        ("_codecs_kr", crate::mbc::build_codecs_kr),
+        ("_codecs_cn", crate::mbc::build_codecs_cn),
+        ("_codecs_tw", crate::mbc::build_codecs_tw),
+        ("_codecs_hk", crate::mbc::build_codecs_hk),
+        ("_codecs_iso2022", crate::mbc::build_codecs_iso2022),
+        ("_multibytecodec", crate::mbc::build_multibytecodec),
         ("_tokenize", build_tokenize),
         ("_ast", build__ast),
         ("_opcode", build__opcode),
@@ -13685,6 +13696,23 @@ pub fn call_native(
         "_colorize" => call_colorize(fname, args, kwargs),
         "unicodedata" => call_unicodedata(fname, args, kwargs),
         "_codecs" => call_codecs(fname, args, kwargs),
+        // Issue #13: multibyte codec module dispatch. `<lang>.getcodec`
+        // marker calls and the `_mbc.<codec>.encode|decode` bound surfaces.
+        "_codecs_jp" | "_codecs_kr" | "_codecs_cn" | "_codecs_tw" | "_codecs_hk"
+        | "_codecs_iso2022" => {
+            if fname == "getcodec" {
+                crate::mbc::call_getcodec(mod_name, args)
+            } else {
+                Some(Err(raise(
+                    "AttributeError",
+                    format!("module '{mod_name}' has no attribute '{fname}'"),
+                )))
+            }
+        }
+        "_multibytecodec" => {
+            // __getstate__ and friends are inert in the v0 engine.
+            Some(Ok(Value::None))
+        }
         "_tokenize" => call_tokenize(fname, args, kwargs),
         // 02.03b-fix: _signal — no-op stubs.
         "_signal" => {
@@ -14908,6 +14936,11 @@ fn builtinfn_attr(full: &str, name: &str) -> Option<Value> {
 
 /// Call an attrgetter/itemgetter marker (received as the function Value).
 pub fn call_native_marker(full: &str, args: &[Value]) -> Option<BResult> {
+    // Issue #13: multibyte codec bound surfaces (`_mbc.<codec>.encode|decode`
+    // over the getcodec namespace receiver riding args[0]).
+    if let Some(rest) = full.strip_prefix("_mbc.") {
+        return crate::mbc::call_mbc(rest, args, &[]);
+    }
     // 02.08-c: lxml element bound methods (`__ap_lxml__.<name>` over the
     // element receiver riding args[0]).
     if let Some(fname) = full.strip_prefix("__ap_lxml__.") {

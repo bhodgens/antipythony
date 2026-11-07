@@ -28,6 +28,7 @@ pub mod importer;
 pub mod interp;
 pub mod iter;
 pub mod lxml;
+pub mod mbc;
 pub mod methods;
 pub mod rss_guard;
 pub mod sre;
