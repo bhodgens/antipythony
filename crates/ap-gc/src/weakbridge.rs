@@ -13,27 +13,38 @@ use ap_obj::value::Value;
 use std::cell::RefCell;
 
 /// Guard against re-entrant collection (a `__del__` that allocates).
+///
+/// C10 (memperf audit 2026-11-06): DEPTH counter, not a bool. The old flag
+/// cleared unconditionally on Drop, so an inner guard exiting inside an
+/// outer collection window re-enabled registration for the REST of the
+/// outer pass — a callback's nested gc.collect() dropping its guard in
+/// step 4 left steps 5/6 running with registration live: an object born
+/// there inserted into REGISTRY after reachable was computed, and the
+/// step-6 retain then dropped it (a latent false-collection path, not
+/// reachable in the corpus only because no v1 case nests guards through a
+/// callback that allocates). With depth, the flag clears only when the
+/// OUTER guard exits.
 pub(crate) struct CollectGuard;
 
 thread_local! {
-    static IN_COLLECT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static IN_COLLECT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
 impl CollectGuard {
     pub(crate) fn new() -> CollectGuard {
-        IN_COLLECT.with(|c| c.set(true));
+        IN_COLLECT.with(|c| c.set(c.get() + 1));
         CollectGuard
     }
 }
 
 impl Drop for CollectGuard {
     fn drop(&mut self) {
-        IN_COLLECT.with(|c| c.set(false));
+        IN_COLLECT.with(|c| c.set(c.get().saturating_sub(1)));
     }
 }
 
 pub(crate) fn in_collect() -> bool {
-    IN_COLLECT.with(|c| c.get())
+    IN_COLLECT.with(|c| c.get() > 0)
 }
 
 /// True while the collector is firing finalizers/callbacks: ap-obj's
@@ -143,22 +154,25 @@ mod unit_tests {
     }
 
     #[test]
-    fn nested_guards_clear_the_flag_at_inner_drop() {
-        // KNOWN FOOTGUN pinned (not asserted as desired behavior — gap
-        // list): Drop unconditionally CLEARS, so an inner guard exiting
-        // inside an outer collection window resets the flag early and
-        // re-enables registration mid-pass. Safe today because nothing
-        // nests guards; the MMTk swap must revisit this.
+    fn nested_guards_keep_the_flag_until_the_outer_drop() {
+        // C10 (memperf audit 2026-11-06): the guard is a DEPTH counter now.
+        // The old bool flag cleared on the INNER drop, re-enabling
+        // registration inside the outer collection window (documented
+        // footgun this replaced). Correct behavior: the flag stays set
+        // until the LAST guard exits.
         let outer = CollectGuard::new();
         {
             let inner = CollectGuard::new();
+            assert!(in_collect());
             drop(inner);
             assert!(
-                !in_collect(),
-                "documented footgun: inner guard drop clears the OUTER window"
+                in_collect(),
+                "inner guard drop must NOT clear the OUTER window (depth counter)"
             );
         }
+        assert!(in_collect());
         drop(outer);
+        assert!(!in_collect());
     }
 
     #[test]

@@ -10,7 +10,7 @@
 use crate::builtins_modules::{i as smi, kw, marker, required, s, str_arg, BResult};
 use crate::exc_hier::ExceptionValue;
 use crate::threading::{
-    acquire_gil, join_wait, prim_of, prim_put, release_gil, BarrierPrim, CondPrim, EventPrim,
+    acquire_gil, prim_of, prim_put, release_gil, BarrierPrim, CondPrim, EventPrim,
     LockPrim, QueuePrim, RLockPrim, SemPrim,
 };
 use crate::Flow;
@@ -350,8 +350,11 @@ fn cond_ctor(args: &[Value]) -> BResult {
         _ => (addr + 1, true),
     };
     if own_lock {
-        prim_put(
-            lock_addr,
+        // M4: the implicit backing RLock lives at the PHANTOM key (cond
+        // addr + 1); register it as condition-owned so the eviction sweep
+        // keeps it exactly as long as the Condition object is alive.
+        crate::threading::prim_put_owned_rlock(
+            addr,
             RLockPrim {
                 st: Mutex::new((crate::threading::RLockOwner::None, 0usize)),
                 cv: std::sync::Condvar::new(),
@@ -605,7 +608,13 @@ fn thread_method(
         "start" => crate::threading::thread_start(interp, o),
         "cancel" => {
             // Timer.cancel: flag the parked pre-run wait to bail out.
-            crate::threading::cancel_timer(Rc::as_ptr(o).addr());
+            // E-key: the (addr, serial) pair — serial blocks addr-recycling
+            // aliasing on the cancel flag.
+            let serial = attr_v(o, "<serial>")
+                .and_then(|v| v.as_int())
+                .and_then(|i| i.to_i64())
+                .unwrap_or(-2);
+            crate::threading::cancel_timer_serial(Rc::as_ptr(o).addr(), serial);
             Ok(Value::None)
         }
         "interval" | "function" => {
@@ -624,16 +633,29 @@ fn thread_method(
                 ));
             };
             let timeout = timeout_of(args, kwargs, 0)?;
+            // E7/E-safety: grab the shared done FLAG while the GIL is held
+            // (borrow uncontended), release the GIL, then park on the
+            // condvar reading ONLY atomics off-lock.
+            let flag = crate::threading::entry_done_flag(&entry);
             release_gil();
-            let got = join_wait(entry, timeout);
+            let got = crate::threading::join_wait_flag(flag, timeout);
             acquire_gil();
+            // E1-E4: the eviction sweep (evict_stale_tables) is EXPORTED
+            // for the orchestrator's major-GC drain hook (gcsupport
+            // collect) — deliberately NOT called from the join path: the
+            // sweep's registration drain can fire an auto-collect while
+            // workers are parked at GIL-release points, and the registry
+            // then transiently mis-reads live objects as absent (T122
+            // caught a module-level Lock evicted from PRIMS under exactly
+            // that shape). Worker payload reclaim drains inside
+            // evict_stale_tables at the major-GC drain hook.
             Ok(Value::None)
         }
         "is_alive" | "isAlive" => {
             let alive = crate::threading::entry_for_pub(addr)
                 .map(|e| {
                     let b = e.borrow();
-                    b.started && !b.done
+                    b.started && !b.done.load(std::sync::atomic::Ordering::SeqCst)
                 })
                 .unwrap_or(false);
             Ok(Value::Bool(alive))
@@ -2019,7 +2041,7 @@ pub fn thread_repr_pub(o: &Gc<PyObject>) -> String {
     let (started, done, ident) = match crate::threading::entry_for_pub(addr) {
         Some(e) => {
             let b = e.borrow();
-            (b.started, b.done, b.ident)
+            (b.started, b.done.load(std::sync::atomic::Ordering::SeqCst), b.ident)
         }
         None => (false, false, None),
     };

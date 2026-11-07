@@ -171,6 +171,14 @@ enum ScopeKind {
 }
 
 /// Per-scope name-binding data collected during lowering.
+///
+/// B7 (memperf wave 3): each insertion-ordered `Vec` has a `HashSet`
+/// sidecar for the dedupe probe. The old form scanned the whole Vec per
+/// name occurrence — O(names^2) per scope for hot local scopes (large
+/// function bodies bind/read dozens of names, each re-scanned on every
+/// occurrence). `seen_*` sets accept exactly what the Vec scan accepted;
+/// insertion ORDER (the only externally-visible shape) still comes from
+/// the Vecs, so all outputs are unchanged.
 #[derive(Debug, Default)]
 struct ScopeData {
     /// All names bound in this scope (assignment, def/class, import, for
@@ -184,28 +192,46 @@ struct ScopeData {
     cells: Vec<String>,
     /// Names read but not bound in this scope (candidates for global/free).
     loads: Vec<String>,
+    seen_bound: std::collections::HashSet<String>,
+    seen_global: std::collections::HashSet<String>,
+    seen_nonlocal: std::collections::HashSet<String>,
+    seen_loads: std::collections::HashSet<String>,
 }
 
 impl ScopeData {
     fn bind(&mut self, name: &str) {
-        if !self.bound.iter().any(|n| n == name) {
+        // F5/B7 pattern: contains-first — repeated names (the hot case)
+        // cost one hash probe and zero allocations.
+        if !self.seen_bound.contains(name) {
+            self.seen_bound.insert(name.to_string());
             self.bound.push(name.to_string());
         }
     }
     fn declare_global(&mut self, name: &str) {
-        if !self.declared_global.iter().any(|n| n == name) {
+        if !self.seen_global.contains(name) {
+            self.seen_global.insert(name.to_string());
             self.declared_global.push(name.to_string());
         }
     }
     fn declare_nonlocal(&mut self, name: &str) {
-        if !self.declared_nonlocal.iter().any(|n| n == name) {
+        if !self.seen_nonlocal.contains(name) {
+            self.seen_nonlocal.insert(name.to_string());
             self.declared_nonlocal.push(name.to_string());
         }
     }
     fn load(&mut self, name: &str) {
-        if !self.loads.iter().any(|n| n == name) {
+        if !self.seen_loads.contains(name) {
+            self.seen_loads.insert(name.to_string());
             self.loads.push(name.to_string());
         }
+    }
+    /// Free-propagation push (close_scope): appends WITHOUT the dedupe
+    /// `load()` applies — preserving the original unconditional push (dupes
+    /// are collapsed by the sort+dedupe at the scope's close). Keeps the
+    /// `seen_loads` sidecar in sync.
+    fn load_propagate(&mut self, name: &str) {
+        self.seen_loads.insert(name.to_string());
+        self.loads.push(name.to_string());
     }
 }
 
@@ -285,8 +311,18 @@ impl<'s> Lowerer<'s> {
         // binding from make2). The recorded `enclosing` (nearest function
         // scope at def-time) is the def ITSELF — walk the enclosing chain
         // outward until a scope that truly binds the load is found.
-        let bounds = self.finished_bounds.clone();
+        // B7 (memperf wave 3): the old code CLONED the whole finished_bounds
+        // map (every finished scope's full bound Vec) even when there was
+        // nothing deferred. `finish_scopes` consumes self and nothing reads
+        // finished_bounds afterwards, so take ownership instead of cloning,
+        // and skip entirely when the deferred list is empty.
         let deferred = std::mem::take(&mut self.deferred_frees);
+        if deferred.is_empty() {
+            return ScopeInfoModule {
+                scopes: self.finished.into_values().collect(),
+            };
+        }
+        let bounds = std::mem::take(&mut self.finished_bounds);
         for (path, load, enclosing) in deferred {
             let original_enclosing = enclosing.clone();
             // Walk the prefix chain from the recorded enclosing scope
@@ -411,9 +447,9 @@ impl<'s> Lowerer<'s> {
         // the name is a plain global read, not free.
         let mut frees: Vec<String> = Vec::new();
         for load in &data.loads {
-            if data.bound.iter().any(|n| n == load)
-                || data.declared_global.iter().any(|n| n == load)
-                || data.declared_nonlocal.iter().any(|n| n == load)
+            if data.seen_bound.contains(load)
+                || data.seen_global.contains(load)
+                || data.seen_nonlocal.contains(load)
             {
                 continue;
             }
@@ -424,7 +460,7 @@ impl<'s> Lowerer<'s> {
                     ScopeKind::Module => break,   // module binding => global read
                     ScopeKind::Class => continue, // not enclosing (S-02-5)
                     ScopeKind::Function => {
-                        if edata.bound.iter().any(|n| n == load) {
+                        if edata.seen_bound.contains(load) {
                             let cells = &mut self.scopes[idx].1.cells;
                             if !cells.iter().any(|c| c == load) {
                                 cells.push(load.clone());
@@ -468,16 +504,21 @@ impl<'s> Lowerer<'s> {
                     ScopeKind::Class => continue,
                     ScopeKind::Function => {
                         let edata = &mut self.scopes[idx].1;
-                        let bound_here = |n: &str| {
-                            edata.bound.iter().any(|b| b == n)
-                                || edata.declared_global.iter().any(|g| g == n)
-                                || edata.cells.iter().any(|c| c == n)
-                                || edata.declared_nonlocal.iter().any(|c| c == n)
-                        };
-                        for f in &frees {
-                            if !bound_here(f) {
-                                edata.loads.push(f.clone()); // re-classified at this scope's close
-                            }
+                        // B7: sidecar-set probes; restructured to compute the
+                        // pushes first (the old closure held an immutable
+                        // borrow across the mutation).
+                        let to_push: Vec<String> = frees
+                            .iter()
+                            .filter(|f| {
+                                !(edata.seen_bound.contains(f.as_str())
+                                    || edata.seen_global.contains(f.as_str())
+                                    || edata.cells.iter().any(|c| c == *f)
+                                    || edata.seen_nonlocal.contains(f.as_str()))
+                            })
+                            .cloned()
+                            .collect();
+                        for f in to_push {
+                            edata.load_propagate(&f); // re-classified at this scope's close
                         }
                         break;
                     }
@@ -1188,25 +1229,25 @@ impl<'s> Lowerer<'s> {
                 // iterable evaluates in the ENCLOSING scope (S-02-5) —
                 // captured because lowering of `iter` happens before the
                 // scope opens below.
-                let clauses = self.lower_comp_clauses_head(&c.generators)?;
+                let head_iter = self.lower_comp_clauses_head(&c.generators)?;
                 self.open_scope(ScopeKind::Function, "<listcomp>");
-                let clauses = self.lower_comp_clauses_tail(clauses, &c.generators)?;
+                let clauses = self.lower_comp_clauses_tail(head_iter, &c.generators)?;
                 let elt = self.lower_expr(&c.elt)?;
                 self.close_scope();
                 Ok(self.b.list_comp(elt, clauses))
             }
             ast::Expr::SetComp(c) => {
-                let clauses = self.lower_comp_clauses_head(&c.generators)?;
+                let head_iter = self.lower_comp_clauses_head(&c.generators)?;
                 self.open_scope(ScopeKind::Function, "<setcomp>");
-                let clauses = self.lower_comp_clauses_tail(clauses, &c.generators)?;
+                let clauses = self.lower_comp_clauses_tail(head_iter, &c.generators)?;
                 let elt = self.lower_expr(&c.elt)?;
                 self.close_scope();
                 Ok(self.b.set_comp(elt, clauses))
             }
             ast::Expr::DictComp(c) => {
-                let clauses = self.lower_comp_clauses_head(&c.generators)?;
+                let head_iter = self.lower_comp_clauses_head(&c.generators)?;
                 self.open_scope(ScopeKind::Function, "<dictcomp>");
-                let clauses = self.lower_comp_clauses_tail(clauses, &c.generators)?;
+                let clauses = self.lower_comp_clauses_tail(head_iter, &c.generators)?;
                 let key = c
                     .key
                     .as_ref()
@@ -1218,9 +1259,9 @@ impl<'s> Lowerer<'s> {
                 Ok(self.b.dict_comp(key, val, clauses))
             }
             ast::Expr::Generator(g) => {
-                let clauses = self.lower_comp_clauses_head(&g.generators)?;
+                let head_iter = self.lower_comp_clauses_head(&g.generators)?;
                 self.open_scope(ScopeKind::Function, "<genexpr>");
-                let clauses = self.lower_comp_clauses_tail(clauses, &g.generators)?;
+                let clauses = self.lower_comp_clauses_tail(head_iter, &g.generators)?;
                 let elt = self.lower_expr(&g.elt)?;
                 self.close_scope();
                 Ok(self.b.generator(elt, clauses))
@@ -1234,18 +1275,20 @@ impl<'s> Lowerer<'s> {
 
     /// Lower the FIRST comprehension clause's iterable in the *enclosing*
     /// scope (S-02-5: the first iterable is evaluated outside the implicit
-    /// scope). Returns the lowered (target, iter, ifs) for clause 0 with
-    /// later clauses untouched (lowered by `lower_comp_clauses_tail`).
+    /// scope). Returns the lowered clause-0 iterable, or None when there are
+    /// no clauses (later clauses are lowered by `lower_comp_clauses_tail`).
+    /// B7 (memperf wave 3): the old shape returned a Vec wrapping the whole
+    /// `gens.to_vec()` deep clone of every comprehension clause; the tail
+    /// consumed only the lowered iterable and dropped the clone unconditionally.
     fn lower_comp_clauses_head(
         &mut self,
         gens: &[ast::Comprehension],
-    ) -> Result<Vec<Option<(Expr, Vec<ast::Comprehension>)>>, LowerError> {
-        let mut out = Vec::with_capacity(1);
+    ) -> Result<Option<Expr>, LowerError> {
         if let Some(first) = gens.first() {
             let iter = self.lower_expr(&first.iter)?;
-            out.push(Some((iter, gens.to_vec())));
+            return Ok(Some(iter));
         }
-        Ok(out)
+        Ok(None)
     }
 
     /// Finish comprehension lowering inside the fresh scope: rebuild all
@@ -1253,10 +1296,9 @@ impl<'s> Lowerer<'s> {
     /// iterable reuses the already-lowered enclosing-scope expression.
     fn lower_comp_clauses_tail(
         &mut self,
-        head: Vec<Option<(Expr, Vec<ast::Comprehension>)>>,
+        head_iter: Option<Expr>,
         gens: &[ast::Comprehension],
     ) -> Result<Vec<CompClause>, LowerError> {
-        let head_iter = head.into_iter().flatten().next().map(|(i, _)| i);
         let mut clauses = Vec::with_capacity(gens.len());
         for (i, g) in gens.iter().enumerate() {
             let target = self.lower_comp_target(&g.target)?;
@@ -1664,12 +1706,11 @@ fn bind_pattern_names(l: &mut Lowerer<'_>, p: &ast::Pattern) {
 }
 
 fn lower_alias(a: &ast::Alias) -> ImportAlias {
-    let dotted = a.name.id.as_str().to_string();
+    // B7 (memperf wave 3): split the borrowed dotted name directly — the
+    // old form allocated the whole dotted String only to re-segment it.
+    let path: Vec<String> = a.name.id.as_str().split('.').map(str::to_string).collect();
     let alias = a.asname.as_ref().map(|n| n.id.as_str().to_string());
-    ImportAlias {
-        path: dotted.split('.').map(str::to_string).collect(),
-        alias,
-    }
+    ImportAlias { path, alias }
 }
 
 /// `type X = ...` target is a name (possibly subscripted generic alias);

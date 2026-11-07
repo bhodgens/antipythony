@@ -104,9 +104,15 @@ impl TypeObject {
     }
 
     /// First class in the MRO whose dict contains `name` (S-03-09 scan).
+    ///
+    /// A4 (memperf audit 2026-11-06): `PyDict::get_str` probes with the
+    /// bare `&str` — the old path minted a fresh `Gc<PyString>` (heap alloc)
+    /// PER MRO ENTRY per lookup, and the `__del__` probe in ap-gc paid it
+    /// for every garbage instance on every collect.
     pub fn lookup(&self, name: &str) -> Option<Value> {
-        for t in self.mro.borrow().iter() {
-            if let Some(v) = t.dict.get(&Value::Str(crate::PyString::new(name))) {
+        let mro = self.mro.borrow();
+        for t in mro.iter() {
+            if let Some(v) = t.dict.get_str(name) {
                 return Some(v);
             }
         }
@@ -116,8 +122,9 @@ impl TypeObject {
     /// The class-of record for a name PLUS the defining class (needed for
     /// descriptor `__get__(obj, owner)` binding and super() positioning).
     pub fn lookup_with_owner(&self, name: &str) -> Option<(Value, Rc<TypeRef>)> {
-        for t in self.mro.borrow().iter() {
-            if let Some(v) = t.dict.get(&Value::Str(crate::PyString::new(name))) {
+        let mro = self.mro.borrow();
+        for t in mro.iter() {
+            if let Some(v) = t.dict.get_str(name) {
                 return Some((v, t.clone()));
             }
         }

@@ -65,6 +65,12 @@ struct Probe {
 #[derive(Debug, Clone, Default)]
 pub struct PyDict {
     state: std::cell::RefCell<DictState>,
+    /// C3 (memperf audit 2026-11-06): mutation epoch — bumped on every
+    /// `set`/`pop`/`popitem` (the only entry-set mutators in this crate).
+    /// The ap-gc root-seed cache keys on it so unchanged root dicts
+    /// (builtins, quiet module globals) cost cached-address replays per
+    /// collect instead of a full entry walk with per-key hash probes.
+    epoch: std::cell::Cell<u64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -92,6 +98,7 @@ impl PyDict {
                 used: 0,
                 dummies: 0,
             }),
+            epoch: std::cell::Cell::new(0),
         });
         crate::gc_gate::gc_register_pub(&Value::Dict(d.clone()));
         d
@@ -206,7 +213,16 @@ impl PyDict {
         if let Some(Some(entry)) = state.entries.get_mut(slot) {
             entry.value = value;
         }
+        // C3: content changed (insert OR overwrite) — invalidate the
+        // ap-gc root-seed cache slot for this dict.
+        self.epoch.set(self.epoch.get() + 1);
         Ok(())
+    }
+
+    /// C3: mutation epoch (bumped by every set/pop/popitem). Read by the
+    /// ap-gc root-seed cache; not part of the Python-visible surface.
+    pub fn mutation_epoch(&self) -> u64 {
+        self.epoch.get()
     }
 
     /// `d.get(key)` — `Some(Value)` (cloned handle) when present; unhashable
@@ -245,9 +261,78 @@ impl PyDict {
         })
     }
 
+    /// `key in d` WITHOUT cloning the value (A4: `contains()` used to
+    /// round-trip through `get` and clone the whole value per membership
+    /// test). Same probing semantics, no value handle copy.
+    pub fn contains_key(&self, key: &Value) -> bool {
+        let Ok(h) = Self::hash_of(key) else {
+            return false;
+        };
+        let state = self.state.borrow();
+        Self::probe(&state, key, h as u64).slot.is_some()
+    }
+
+    /// A4: `&str` key fast path — probes without minting a `Gc<PyString>`
+    /// for the query. Hash mirrors `PyString::py_hash` exactly (ASCII →
+    /// utf8 bytes; latin1-only → latin1 bytes; else UTF-8 bytes), and the
+    /// comparison only matches `Value::Str` arms by content — the same
+    /// set of keys `get(&Value::Str(PyString::new(name)))` would compare
+    /// equal to under `values_eq` (a bytes key never matches: str == bytes
+    /// is FALSE in the probe arms).
+    pub fn get_str(&self, name: &str) -> Option<Value> {
+        let h = str_key_hash(name) as u64;
+        let state = self.state.borrow();
+        let mut i = (h as usize) & state.mask;
+        let mut perturb = h as usize;
+        loop {
+            match state.indices[i] {
+                DKIX_EMPTY => return None,
+                ix if ix >= 0 => {
+                    if let Some(Some(entry)) = state.entries.get(ix as usize) {
+                        if let Value::Str(s) = &entry.key {
+                            if s.as_str() == name {
+                                return Some(entry.value.clone());
+                            }
+                        }
+                    }
+                }
+                _ => {} // DKIX_DUMMY: keep probing
+            }
+            perturb >>= 5;
+            i = (i.wrapping_mul(5).wrapping_add(perturb).wrapping_add(1)) & state.mask;
+        }
+    }
+
+    /// `name in d` for the `&str` fast path (no key mint, no value clone).
+    pub fn contains_str(&self, name: &str) -> bool {
+        let h = str_key_hash(name) as u64;
+        let state = self.state.borrow();
+        let mut i = (h as usize) & state.mask;
+        let mut perturb = h as usize;
+        loop {
+            match state.indices[i] {
+                DKIX_EMPTY => return false,
+                ix if ix >= 0 => {
+                    if let Some(Some(entry)) = state.entries.get(ix as usize) {
+                        if let Value::Str(s) = &entry.key {
+                            if s.as_str() == name {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+            perturb >>= 5;
+            i = (i.wrapping_mul(5).wrapping_add(perturb).wrapping_add(1)) & state.mask;
+        }
+    }
+
     /// `key in d`.
+    /// A4: probe without cloning the value (was `get(key).is_some()`,
+    /// copying the whole value handle per membership test).
     pub fn contains(&self, key: &Value) -> bool {
-        self.get(key).is_some()
+        self.contains_key(key)
     }
 
     /// `d.pop(key)` — remove and return the value; `None` when absent.
@@ -260,7 +345,22 @@ impl PyDict {
         let entry = state.entries[slot].take();
         state.used -= 1;
         state.dummies += 1;
+        // C7 (memperf audit 2026-11-06): shrink after heavy pruning. The
+        // growth resize never shrinks, so a 1M-entry peak was retained
+        // forever. Rehash-to-shrink when the live set dropped below 1/8 of
+        // the index table (resize compacts: dummies purged, insertion
+        // order of live entries preserved — S-01-21 unaffected).
+        Self::maybe_shrink(&mut state);
+        // C3: invalidate the ap-gc root-seed cache slot.
+        self.epoch.set(self.epoch.get() + 1);
         entry.map(|e| e.value)
+    }
+
+    /// C7: shrink rule shared by pop/popitem.
+    fn maybe_shrink(state: &mut DictState) {
+        if state.indices.len() > 8 && state.used * 8 < state.indices.len() {
+            Self::resize(state);
+        }
     }
 
     /// `d.popitem()` — remove and return the LAST inserted (key, value)
@@ -283,6 +383,10 @@ impl PyDict {
         }
         state.used -= 1;
         state.dummies += 1;
+        // C7: same shrink rule as pop.
+        Self::maybe_shrink(&mut state);
+        // C3: invalidate the ap-gc root-seed cache slot.
+        self.epoch.set(self.epoch.get() + 1);
         entry.map(|e| (e.key, e.value))
     }
 
@@ -327,9 +431,9 @@ impl PyDict {
     /// Recursive repr with CPython punctuation (S-01-44), cycle-protecting
     /// with `{...}` (V065: ys["self"] = ys).
     pub(crate) fn fmt_repr(&self, out: &mut String, active: &mut std::collections::HashSet<usize>) {
-        // RefCell-state address identity (stable for the dict's life).
-        let ptr = std::rc::Rc::as_ptr(&std::rc::Rc::new(0u8)) as usize; // placeholder
-        let _ = ptr;
+        // C10: the old code minted a throwaway `Rc::new(0u8)` and read its
+        // pointer here as a "placeholder" that was immediately discarded —
+        // dead allocation per repr. The identity key is the PyDict address.
         let ptr = self as *const PyDict as *const u8 as usize;
         if !active.insert(ptr) {
             out.push_str("{...}");
@@ -346,6 +450,20 @@ impl PyDict {
         }
         out.push('}');
         active.remove(&ptr);
+    }
+}
+
+/// A4: hash of a `&str` dict key matching `PyString::py_hash` EXACTLY
+/// (ASCII → utf8 bytes == ascii bytes; all-chars ≤ 0xFF → latin1 bytes;
+/// else UTF-8 bytes). Any drift here silently misses probes in `get_str`.
+fn str_key_hash(name: &str) -> i64 {
+    if name.is_ascii() {
+        crate::hash::hash_bytes(name.as_bytes())
+    } else if name.chars().all(|c| (c as u32) <= 0xFF) {
+        let latin1: Vec<u8> = name.chars().map(|c| c as u8).collect();
+        crate::hash::hash_bytes(&latin1)
+    } else {
+        crate::hash::hash_bytes(name.as_bytes())
     }
 }
 
@@ -457,7 +575,7 @@ pub(crate) fn int_payload(v: &Value) -> Option<Int> {
         Value::Obj(o) if o.kind == crate::object::ObjKind::UserInstance => o
             .attrs
             .borrow()
-            .get(&Value::Str(crate::PyString::new("__ap_int__")))
+            .get_str("__ap_int__")
             .and_then(|p| p.as_int()),
         _ => None,
     }
@@ -466,7 +584,7 @@ pub(crate) fn int_payload(v: &Value) -> Option<Int> {
 pub(crate) fn bytearray_data(o: &crate::object::PyObject) -> Option<Gc<Vec<u8>>> {
     if o.kind == crate::object::ObjKind::Opaque && o.name == "bytearray" {
         let ab = o.attrs.borrow();
-        match ab.get(&Value::Str(crate::PyString::new("<data>"))) {
+        match ab.get_str("<data>") {
             Some(Value::Bytes(b)) => Some(b.clone()),
             _ => None,
         }
@@ -588,10 +706,7 @@ pub fn values_cmp(a: &Value, b: &Value) -> Result<std::cmp::Ordering, PyExceptio
         (Value::Obj(o), _) | (_, Value::Obj(o)) if o.kind == crate::object::ObjKind::NamedTuple => {
             let a_is_nt =
                 matches!(a, Value::Obj(ao) if ao.kind == crate::object::ObjKind::NamedTuple);
-            let vals = o
-                .attrs
-                .borrow()
-                .get(&Value::Str(crate::PyString::new("<values>")));
+            let vals = o.attrs.borrow().get_str("<values>");
             let tup = match vals {
                 Some(Value::List(l)) => {
                     Value::Tuple(std::rc::Rc::new(crate::value::Tuple(l.items().to_vec())))
@@ -697,6 +812,21 @@ impl PySet {
         self.elements_snapshot().into_iter()
     }
 
+    /// C2 (memperf audit 2026-11-06): borrow-guarded element iteration —
+    /// `f(&element)` per live element under ONE borrow, no Value clones.
+    /// GC edge scanning (ap-gc `edges_of`) used `iter()`, which snapshots
+    /// (clones) the entire element set per traced set per pass. Callers
+    /// must not mutate this set inside `f` (the RefCell borrow panics —
+    /// same discipline as `PyDict::foreach`).
+    pub fn foreach_ref<F: FnMut(&Value)>(&self, mut f: F) {
+        let state = self.state.borrow();
+        for bucket in state.elements.values() {
+            for e in bucket.iter() {
+                f(e);
+            }
+        }
+    }
+
     /// Sorted element view for corpus support (C-26: tests use `sorted`).
     /// Sort falls back to internal order for mutually unorderable elements
     /// (CPython's sort would raise; the corpus never does this).
@@ -713,14 +843,22 @@ impl PySet {
             Err(_) => return false,
         };
         let mut state = self.state.borrow_mut();
+        let mut removed = false;
         if let Some(bucket) = state.elements.get_mut(&h) {
             if let Some(pos) = bucket.iter().position(|e| values_eq(e, v)) {
                 bucket.remove(pos);
                 state.size -= 1;
-                return true;
+                removed = true;
             }
         }
-        false
+        // C7 (memperf audit 2026-11-06): drop the bucket when it empties.
+        // The old code left empty Vecs parked in a never-shrinking HashMap
+        // — per-distinct-hash residue after heavy discard churn (WeakSet/
+        // prune workloads).
+        if removed && state.elements.get(&h).is_some_and(|b| b.is_empty()) {
+            state.elements.remove(&h);
+        }
+        removed
     }
 
     /// Sorted element view exposed for the frozenset repr (C-26 masking).

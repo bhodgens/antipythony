@@ -49,9 +49,13 @@ pub enum GenOutput {
 
 type FiberYielder = corosensei::Yielder<GenInput, GenOutput>;
 
+/// E6: fibers carry a pooled stack (PooledStack), not corosensei's
+/// DefaultStack — the Coroutine type parameter names the stack owner.
+pub type GenFiber = Coroutine<GenInput, GenOutput, (), PooledStack>;
+
 /// Per-generator state (stored in interp.generators behind GenFrame::Live).
 pub struct GenState {
-    pub fiber: Option<Coroutine<GenInput, GenOutput, ()>>,
+    pub fiber: Option<GenFiber>,
     pub started: bool,
     pub running: bool,
     /// Terminal: closed()/exhausted without the fiber ever having run (the
@@ -536,30 +540,249 @@ pub fn gen_stack_size() -> usize {
     mb.max(1) * 1024 * 1024
 }
 
+// ===========================================================================
+// E6 (memperf audit 2026-11-06): pooled fiber stacks.
+//
+// corosensei 0.3.4's DefaultStack mmaps a fresh region (size + guard page,
+// PROT_NONE then mprotect RW) per generator and munmaps it on Drop. With
+// thousands of short-lived generators that is thousands of mmap/munmap
+// round-trips plus (8MB default) VA held per SUSPENDED fiber. This is a
+// size-classed free list implementing corosensei's `Stack` trait over the
+// same layout DefaultStack uses: take a pooled region on make_fiber, return
+// it on fiber Drop instead of unmapping. Guard pages stay intact — the pool
+// stores whole mmap regions (guard + usable); a reused region's dirty pages
+// below the fresh frame pointer are never read (the fiber starts at base).
+//
+// The pool is thread_local (regions move freely between threads — they are
+// plain address-space memory), capped per size class so a burst of deep
+// nesting that spikes the pool eventually munmaps the surplus.
+// ===========================================================================
+
+/// Per-thread pool of freed stack regions, keyed by the exact mmap length.
+const STACK_POOL_CLASS_CAP: usize = 16;
+
+/// Per-thread pool of freed regions. On THREAD EXIT the map's Drop munmaps
+/// everything still pooled (munmap is VA bookkeeping — no interpreter Rc
+/// involved, so running it from the TLS destructor outside the GIL is
+/// safe); without this, every short-lived worker that pooled a stack would
+/// leak up to class-cap x region-size of address space per size class.
+pub struct StackPool(std::collections::HashMap<usize, Vec<usize>>);
+
+impl Drop for StackPool {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        for (len, regions) in self.0.iter() {
+            for raw in regions {
+                unsafe {
+                    libc::munmap(*raw as *mut libc::c_void, *len);
+                }
+            }
+        }
+    }
+}
+
+thread_local! {
+    static STACK_POOL: RefCell<StackPool> =
+        RefCell::new(StackPool(std::collections::HashMap::new()));
+}
+
+/// A stack region compatible with corosensei's Stack contract: one guard
+/// page at the low end, `usable` bytes above it, base = top of the region.
+pub struct PooledStack {
+    /// Raw mmap address (base - mmap_len), stored as usize so the pool's
+    /// Vec<usize> needs no pointer Send gymnastics.
+    raw: usize,
+    mmap_len: usize,
+    base: corosensei::stack::StackPointer,
+    #[cfg(not(unix))]
+    inner: corosensei::stack::DefaultStack,
+}
+
+#[cfg(unix)]
+impl PooledStack {
+    /// Reserve `usable` bytes with a low guard page, mirroring DefaultStack's
+    /// layout exactly (page-rounded mmap_len, PROT_NONE map then mprotect RW
+    /// on the usable span).
+    fn map_region(mmap_len: usize, usable: usize) -> Result<usize, std::io::Error> {
+        let map_flags = libc::MAP_ANONYMOUS | libc::MAP_PRIVATE;
+        unsafe {
+            let mmap = libc::mmap(
+                std::ptr::null_mut(),
+                mmap_len,
+                libc::PROT_NONE,
+                map_flags,
+                -1,
+                0,
+            );
+            if mmap == libc::MAP_FAILED {
+                return Err(std::io::Error::last_os_error());
+            }
+            let page = page_size();
+            if libc::mprotect(
+                (mmap as *mut u8).add(page).cast::<libc::c_void>(),
+                usable,
+                libc::PROT_READ | libc::PROT_WRITE,
+            ) != 0
+            {
+                libc::munmap(mmap, mmap_len);
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(mmap as usize)
+        }
+    }
+
+    /// Take a same-class region from this thread's pool, or map a new one.
+    fn new(usable: usize) -> Result<Self, std::io::Error> {
+        let page = page_size();
+        let usable = usable.max(corosensei::stack::MIN_STACK_SIZE);
+        // Page-round the usable span FIRST (mirrors DefaultStack): with
+        // `usable` page-aligned, mmap_len = usable + page and the mprotect
+        // covers exactly [mmap+page, mmap+mmap_len) — no PROT_NONE padding
+        // directly under the base, which would fault the fresh frame.
+        let usable = (usable + page - 1) & !(page - 1);
+        let mmap_len = usable + page;
+        let raw = match STACK_POOL.with(|p| {
+            p.borrow_mut().0.get_mut(&mmap_len).and_then(|v| v.pop())
+        }) {
+            Some(raw) => raw,
+            None => Self::map_region(mmap_len, usable)?,
+        };
+        let base = corosensei::stack::StackPointer::new(raw + mmap_len)
+            .ok_or_else(|| std::io::Error::other("stack base overflow"))?;
+        Ok(PooledStack {
+            raw,
+            mmap_len,
+            base,
+        })
+    }
+}
+
+#[cfg(unix)]
+fn page_size() -> usize {
+    use std::sync::OnceLock;
+    static PS: OnceLock<usize> = OnceLock::new();
+    *PS.get_or_init(|| {
+        let p = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
+        if p.is_power_of_two() && p >= 4096 {
+            p
+        } else {
+            4096
+        }
+    })
+}
+
+#[cfg(unix)]
+impl Drop for PooledStack {
+    fn drop(&mut self) {
+        // Return to the size-class pool (bounded); munmap the surplus so a
+        // one-off deep-nesting burst cannot grow the pool unboundedly.
+        let keep = STACK_POOL.with(|p| {
+            let mut pool = p.borrow_mut();
+            let v = pool.0.entry(self.mmap_len).or_default();
+            if v.len() < STACK_POOL_CLASS_CAP {
+                // Drop the resident pages (RSS) while keeping the mapping
+                // (VA + no mmap churn). Usable range ONLY — the low guard
+                // page keeps its PROT_NONE mapping for the region's whole
+                // life (madvise on it could return zero-filled RW pages
+                // on some platforms and silently kill the overflow guard).
+                let page = page_size();
+                unsafe {
+                    libc::madvise(
+                        (self.raw + page) as *mut libc::c_void,
+                        self.mmap_len - page,
+                        libc::MADV_DONTNEED,
+                    );
+                }
+                v.push(self.raw);
+                true
+            } else {
+                false
+            }
+        });
+        if !keep {
+            unsafe {
+                libc::munmap(self.raw as *mut _, self.mmap_len);
+            }
+        }
+    }
+}
+
+// SAFETY: the region has a guard page at its low end (the first `page_size`
+// bytes of the mapping are PROT_NONE), exposes >= MIN_STACK_SIZE usable
+// bytes, base/limit are page-aligned (mmap_len is page-rounded, base is the
+// mapping end), and nothing else aliases the usable span while a Coroutine
+// owns it. Same contract as corosensei's DefaultStack (we replicate its
+// unix layout 1:1); on Drop the region is either pooled (exclusive owner
+// hand-off) or unmapped.
+#[cfg(unix)]
+unsafe impl corosensei::stack::Stack for PooledStack {
+    #[inline]
+    fn base(&self) -> corosensei::stack::StackPointer {
+        self.base
+    }
+    #[inline]
+    fn limit(&self) -> corosensei::stack::StackPointer {
+        corosensei::stack::StackPointer::new(self.base.get() - self.mmap_len).unwrap()
+    }
+}
+
+#[cfg(not(unix))]
+impl PooledStack {
+    fn new(usable: usize) -> Result<Self, std::io::Error> {
+        Ok(PooledStack {
+            raw: 0,
+            mmap_len: 0,
+            base: corosensei::stack::StackPointer::new(corosensei::stack::STACK_ALIGNMENT).unwrap(),
+            inner: corosensei::stack::DefaultStack::new(usable)?,
+        })
+    }
+}
+
+#[cfg(not(unix))]
+unsafe impl corosensei::stack::Stack for PooledStack {
+    #[inline]
+    fn base(&self) -> corosensei::stack::StackPointer {
+        self.inner.base()
+    }
+    #[inline]
+    fn limit(&self) -> corosensei::stack::StackPointer {
+        self.inner.limit()
+    }
+    #[inline]
+    fn teb_fields(&self) -> corosensei::stack::StackTebFields {
+        self.inner.teb_fields()
+    }
+    #[inline]
+    fn update_teb_fields(&mut self, stack_limit: usize, guaranteed_stack_bytes: usize) {
+        self.inner
+            .update_teb_fields(stack_limit, guaranteed_stack_bytes)
+    }
+}
+
 /// Build the fiber for a def-generator (does NOT start it — corosensei runs
 /// the closure lazily on first resume). The stack is bounded (gen_stack_size):
 /// nested genexpr/listcomp evaluation inside a generator body costs real Rust
 /// stack, and the 1MB corosensei default overflows on vendored-stdlib shapes,
-/// so the floor is 2MB — but a per-generator 64MB was the F1 leak class.
+/// so the floor is 8MB — but a per-generator 64MB was the F1 leak class.
+/// E6: the region comes from the thread-local size-classed pool when one is
+/// available (no mmap round-trip), and returns there on fiber Drop.
 pub fn make_fiber(
     interp: std::rc::Rc<crate::frame::Interpreter>,
     entry: FnEntry,
     func_obj: ap_obj::int::Gc<ap_obj::PyObject>,
     args: Vec<Value>,
     kwargs: Vec<(String, Value)>,
-) -> Coroutine<GenInput, GenOutput, ()> {
+) -> GenFiber {
     let fiber_id = NEXT_FIBER.with(|n| {
         let id = n.get();
         n.set(id + 1);
         id
     });
-    Coroutine::with_stack(
-        corosensei::stack::DefaultStack::new(gen_stack_size()).expect("generator fiber stack"),
-        move |y, _first_input| {
-            let yptr: *const FiberYielder = y;
-            run_fiber_body(fiber_id, yptr, || {
-                gen_fiber_body(interp, entry, func_obj, args, kwargs)
-            })
-        },
-    )
+    let stack = PooledStack::new(gen_stack_size()).expect("generator fiber stack");
+    Coroutine::with_stack(stack, move |y, _first_input| {
+        let yptr: *const FiberYielder = y;
+        run_fiber_body(fiber_id, yptr, || {
+            gen_fiber_body(interp, entry, func_obj, args, kwargs)
+        })
+    })
 }

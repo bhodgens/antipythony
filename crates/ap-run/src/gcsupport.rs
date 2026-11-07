@@ -21,7 +21,7 @@ use crate::frame::Interpreter;
 use crate::Flow;
 use ap_obj::dict::PyDict;
 use ap_obj::int::{Gc, Int};
-use ap_obj::value::{PyList, PyString, Tuple, Value};
+use ap_obj::value::{interned_key, PyList, PyString, Tuple, Value};
 use ap_obj::PyObject;
 
 use crate::builtins_modules::{i, s, BResult};
@@ -154,7 +154,7 @@ pub fn weakref_ref(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
     let wseq = ap_gc::weakref_next_seq();
     {
         let mut tattrs = token.attrs.borrow_mut();
-        let _ = tattrs.set(s("<target_addr>"), i(target_addr as i64));
+        let _ = tattrs.set(interned_key("<target_addr>"), i(target_addr as i64));
     }
     if !untracked_immortal {
         ap_gc::weakref_add(ap_gc::WeakEntry {
@@ -206,7 +206,7 @@ pub fn weakref_proxy(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
     let token = PyObject::new(ap_obj::ObjKind::Opaque, "_weakref_proxy");
     {
         let mut tattrs = token.attrs.borrow_mut();
-        let _ = tattrs.set(s("<target_addr>"), i(target_addr as i64));
+        let _ = tattrs.set(interned_key("<target_addr>"), i(target_addr as i64));
     }
     let wseq = ap_gc::weakref_next_seq();
     ap_gc::weakref_add(ap_gc::WeakEntry {
@@ -277,7 +277,7 @@ fn target_addr_of_token(token: &Gc<PyObject>) -> usize {
     token
         .attrs
         .borrow()
-        .get(&s("<target_addr>"))
+        .get_str("<target_addr>")
         .and_then(|v| v.as_int())
         .and_then(|iv| iv.to_i64())
         .map(|n| n.max(0) as usize)
@@ -297,9 +297,18 @@ fn target_addr_of_token(token: &Gc<PyObject>) -> usize {
 ///   after the callback fires; keeping it pinned the token and its attrs
 ///   forever (~1.4KB/dead ref measured).
 pub fn fire_dead_weakrefs() {
-    // Snapshot the token index BEFORE take_dead prunes no-callback entries:
-    // the map holds (target -> [(seq, token)]) so a multi-ref target fires
-    // every callback without rescanning the Vec.
+    // C8 (memperf audit 2026-11-06): take the dead list FIRST and
+    // early-return when nothing died. The old order snapshotted every live
+    // token (one Rc clone each, full WEAK_TOKENS pass) on EVERY collect —
+    // including the common no-death gen-0 pass — before checking
+    // `dead.is_empty()`. take_dead marks entries fired and does not touch
+    // WEAK_TOKENS, so building the index after it yields the same snapshot.
+    let dead = ap_gc::weakref_take_dead();
+    if dead.is_empty() {
+        return;
+    }
+    // target -> [(seq, token)] so a multi-ref target fires every callback
+    // without rescanning the Vec.
     let mut index: std::collections::HashMap<usize, Vec<(u64, Gc<PyObject>)>> =
         std::collections::HashMap::new();
     WEAK_TOKENS.with(|w| {
@@ -310,10 +319,6 @@ pub fn fire_dead_weakrefs() {
                 .push((t.seq, t.token.clone()));
         }
     });
-    let dead = ap_gc::weakref_take_dead();
-    if dead.is_empty() {
-        return;
-    }
     // EVERY drained dead entry gets pruned this pass — with or without a
     // callback, with or without a WEAK_TOKENS twin (finalize dispatches
     // have none). Liveness is per-target: all refs to a dead target die
@@ -639,6 +644,16 @@ pub fn call_gc(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option
                 // until the next threading dispatch (unbounded growth for
                 // spawn-once workloads).
                 let _ = crate::gcsupport::drain_worker_registrations();
+                // E1-E4 (memperf wave-3 g4): the six process-lifetime
+                // threading tables (LOCALS/THREADS/OBJ_MIRROR/PRIMS/
+                // CANCELLED/OWN_RLOCKS) were insert-only; evict dead rows
+                // on every collect. Runs holding the GIL on the
+                // interpreter thread — evict_stale_tables is a no-op on
+                // non-main callers and has a re-entrancy gate, so the
+                // nested drain it performs cannot recurse via the
+                // allocator threshold. NOT wired on any thread-join path
+                // (join-path wiring regressed before).
+                let _ = crate::threading::evict_stale_tables();
                 let gen = ap_gc_arg(args, 0, 2)?;
                 let found = ap_gc::collect_gen(gen);
                 Ok(i(found as i64))
@@ -891,7 +906,7 @@ pub fn call_weakref_finalize(args: &[Value], kwargs: &[(String, Value)]) -> Opti
     let token = PyObject::new(ap_obj::ObjKind::Opaque, "_finalize_token");
     {
         let mut tattrs = token.attrs.borrow_mut();
-        let _ = tattrs.set(s("<target_addr>"), i(target_addr as i64));
+        let _ = tattrs.set(interned_key("<target_addr>"), i(target_addr as i64));
         let _ = tattrs.set(s("alive"), Value::Bool(true));
     }
     let rest: Vec<Value> = args[2..].to_vec();
@@ -1062,9 +1077,12 @@ fn container_new(cls: &str) -> Value {
     {
         let mut attrs = o.attrs.borrow_mut();
         if cls == WS {
-            let _ = attrs.set(s("<data>"), Value::Set(ap_obj::dict::PySet::new()));
+            let _ = attrs.set(
+                interned_key("<data>"),
+                Value::Set(ap_obj::dict::PySet::new()),
+            );
         } else {
-            let _ = attrs.set(s("<data>"), Value::Dict(PyDict::new()));
+            let _ = attrs.set(interned_key("<data>"), Value::Dict(PyDict::new()));
         }
     }
     // CPython repr form (WeakKeyDictionary.__repr__): "<%s at %#x>".
@@ -1076,7 +1094,7 @@ fn container_new(cls: &str) -> Value {
 /// The backing dict of a weak container instance.
 fn container_data(v: &Value) -> Option<Gc<PyDict>> {
     match v {
-        Value::Obj(o) => o.attrs.borrow().get(&s("<data>")).and_then(|d| match d {
+        Value::Obj(o) => o.attrs.borrow().get_str("<data>").and_then(|d| match d {
             Value::Dict(d) => Some(d.clone()),
             _ => None,
         }),
@@ -1087,7 +1105,7 @@ fn container_data(v: &Value) -> Option<Gc<PyDict>> {
 /// WeakSet storage: the `<data>` PySet of tokens.
 fn weakset_data(v: &Value) -> Option<Gc<ap_obj::dict::PySet>> {
     match v {
-        Value::Obj(o) => o.attrs.borrow().get(&s("<data>")).and_then(|d| match d {
+        Value::Obj(o) => o.attrs.borrow().get_str("<data>").and_then(|d| match d {
             Value::Set(set) => Some(set.clone()),
             _ => None,
         }),
@@ -1111,7 +1129,7 @@ fn make_token(target: &Value) -> BResult {
             let _ = token
                 .attrs
                 .borrow_mut()
-                .set(s("<target_addr>"), i(addr as i64));
+                .set(interned_key("<target_addr>"), i(addr as i64));
             return Ok(Value::Obj(token));
         }
     }
@@ -1129,7 +1147,7 @@ thread_local! {
 fn token_target(token: &Value) -> Option<usize> {
     match token {
         Value::Obj(o) => {
-            let a = o.attrs.borrow().get(&s("<target_addr>")).and_then(|v| {
+            let a = o.attrs.borrow().get_str("<target_addr>").and_then(|v| {
                 v.as_int()
                     .and_then(|iv| iv.to_i64())
                     .map(|n| n.max(0) as usize)
@@ -1605,7 +1623,7 @@ fn weakset_surface(self_v: &Value, op: &str, args: &[Value]) -> BResult {
                 let _ = co
                     .attrs
                     .borrow_mut()
-                    .set(s("<data>"), Value::Set(set.clone()));
+                    .set(interned_key("<data>"), Value::Set(set.clone()));
             }
             Ok(c)
         }
@@ -1646,9 +1664,9 @@ pub fn weakmethod_ctor(args: &[Value]) -> BResult {
     let token = PyObject::new(ap_obj::ObjKind::Opaque, "_weakmethod_token");
     {
         let mut tattrs = token.attrs.borrow_mut();
-        let _ = tattrs.set(s("<target_addr>"), i(target_addr as i64));
-        let _ = tattrs.set(s("<func>"), func);
-        let _ = tattrs.set(s("<name>"), s(name));
+        let _ = tattrs.set(interned_key("<target_addr>"), i(target_addr as i64));
+        let _ = tattrs.set(interned_key("<func>"), func);
+        let _ = tattrs.set(interned_key("<name>"), s(name));
     }
     let callback = args.get(1).cloned();
     ap_gc::weakref_add(ap_gc::WeakEntry {
@@ -1667,7 +1685,7 @@ pub fn weakmethod_call(token: &Gc<PyObject>) -> Value {
     let addr = token
         .attrs
         .borrow()
-        .get(&s("<target_addr>"))
+        .get_str("<target_addr>")
         .and_then(|v| v.as_int())
         .and_then(|iv| iv.to_i64())
         .map(|n| n.max(0) as usize)
@@ -1681,9 +1699,9 @@ pub fn weakmethod_call(token: &Gc<PyObject>) -> Value {
     let func = token
         .attrs
         .borrow()
-        .get(&s("<func>"))
+        .get_str("<func>")
         .unwrap_or(Value::None);
-    let name = match token.attrs.borrow().get(&s("<name>")) {
+    let name = match token.attrs.borrow().get_str("<name>") {
         Some(Value::Str(x)) => x.as_str().to_string(),
         _ => String::new(),
     };
@@ -1751,6 +1769,18 @@ fn weakbridge_callback(cb: &Value, args: &[Value]) -> Result<Value, String> {
 // this crate declares the GIL-protocol-validated Send wrapper (a documented,
 // audited unsafety, same class as CPython's own GIL-protected globals).
 pub struct GilSendPub<T>(pub T);
+// C9 (memperf audit 2026-11-06, SAFETY-GATE): this impl is the sole thing
+// preventing UB when `Value` (Rc — !Send by construction) crosses worker
+// threads. It is sound ONLY under the 02.07 GIL v1 protocol: every thread
+// touches the shared heap graph exclusively while holding the GIL, so the
+// refcount traffic is serialized by protocol, not by the type system.
+// The hook swap in `install_worker_thread` forwards main-thread
+// registrations through the same channel — `gc_register`'s thread-locals
+// remain main-thread-only (the drain hop restores that).
+// GATE for 02.09 (no-GIL swap): this wrapper must be DELETED (or replaced
+// by real atomic refcounting / a sendable handle) before worker threads can
+// run without the GIL; keeping it past 02.09 is UB. docs/0209-object-state-
+// audit.md tracks the per-registry audit.
 unsafe impl<T> Send for GilSendPub<T> {}
 unsafe impl<T> Sync for GilSendPub<T> {}
 impl<T> Clone for GilSendPub<T>

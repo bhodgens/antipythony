@@ -1521,14 +1521,33 @@ struct DocRegistry {
     docs: Vec<Option<std::rc::Weak<RefCell<LxDoc>>>>,
     /// Pin window: doc ids whose strong Rc is retained, oldest-first.
     pins: std::collections::VecDeque<SharedDoc>,
+    /// E9 (memperf audit 2026-11-06): indexes of slots whose Weak is dead —
+    /// the freed-slot list the G3 comment anticipated. register_doc takes one
+    /// from here (O(1)) instead of the O(n) upgrade-scan over EVERY parse;
+    /// doc release pushes the slot back. Empty => grow the Vec.
+    free: Vec<usize>,
+    /// Slots whose pin was released while a strong clone was in flight
+    /// (an ongoing lookup held the doc): re-checked (harvested) at the next
+    /// register_doc — GIL serialization guarantees the temporary died by
+    /// then, so this stays at most a handful of entries deep.
+    awaiting: Vec<usize>,
 }
 
-thread_local! {
-    static DOCS: RefCell<DocRegistry> = RefCell::new(DocRegistry {
-        docs: Vec::new(),
-        pins: std::collections::VecDeque::new(),
+// E5-adjacent (memperf audit 2026-11-06): the DOCS table is PROCESS-GLOBAL,
+// not thread-local. Workers run Python on the SHARED interpreter under the
+// GIL: a doc parsed on a worker thread used to land in that thread's local
+// Vec, and any later element read from another thread resolved doc_id in
+// the WRONG table (None, or a different document). GIL-serialized access
+// throughout, same GilSendPub contract as the threading tables.
+static DOCS: std::sync::LazyLock<crate::gcsupport::GilSendPub<std::sync::Mutex<DocRegistry>>> =
+    std::sync::LazyLock::new(|| {
+        crate::gcsupport::GilSendPub(std::sync::Mutex::new(DocRegistry {
+            docs: Vec::new(),
+            pins: std::collections::VecDeque::new(),
+            free: Vec::new(),
+            awaiting: Vec::new(),
+        }))
     });
-}
 
 /// Max simultaneously-pinned document DOMs (the working set). Scrapy/pytest
 /// touch one page at a time; 64 covers any table-heavy script too.
@@ -1536,41 +1555,74 @@ const DOC_PIN_WINDOW: usize = 64;
 
 fn register_doc(doc: LxDoc) -> usize {
     let rc = Rc::new(RefCell::new(doc));
-    DOCS.with(|c| {
-        let mut r = c.borrow_mut();
-        // Prefer a freed slot to keep the Vec bounded over long crawls.
-        let id = match r
-            .docs
-            .iter()
-            .position(|s| s.as_ref().and_then(|w| w.upgrade()).is_none())
-        {
-            Some(pos) => {
-                r.docs[pos] = Some(Rc::downgrade(&rc));
-                pos
+    let mut r = DOCS.0.lock().unwrap();
+    // E9 harvest: released-while-in-flight slots whose doc has since died.
+    if !r.awaiting.is_empty() {
+        let pending = std::mem::take(&mut r.awaiting);
+        for i in pending {
+            let dead = r
+                .docs
+                .get(i)
+                .map(|slot| slot.as_ref().and_then(|w| w.upgrade()).is_none())
+                .unwrap_or(true);
+            if dead {
+                r.docs[i] = None;
+                r.free.push(i);
+            } else {
+                r.awaiting.push(i);
             }
-            None => {
-                r.docs.push(Some(Rc::downgrade(&rc)));
-                r.docs.len() - 1
-            }
-        };
-        // Pin the new doc; release the oldest pin beyond the window.
-        r.pins.push_back(rc);
-        while r.pins.len() > DOC_PIN_WINDOW {
-            r.pins.pop_front();
         }
-        id
-    })
+    }
+    // E9: prefer a known-freed slot (O(1)).
+    let id = match r.free.pop() {
+        Some(pos) => {
+            r.docs[pos] = Some(Rc::downgrade(&rc));
+            pos
+        }
+        None => {
+            r.docs.push(Some(Rc::downgrade(&rc)));
+            r.docs.len() - 1
+        }
+    };
+    // Pin the new doc; release the oldest pin beyond the window. A released
+    // pin whose Weak stays alive via live element handles keeps its slot; a
+    // slot whose doc fully dies goes on the free list (E9 bookkeeping).
+    r.pins.push_back(rc);
+    while r.pins.len() > DOC_PIN_WINDOW {
+        let old = r.pins.pop_front().expect("pin window nonempty");
+        // Find the old doc's slot via strong-ptr identity (the Rc is still
+        // alive inside `old`; no upgrade-scan of Weaks needed).
+        for (i, slot) in r.docs.iter().enumerate() {
+            if slot
+                .as_ref()
+                .and_then(|w| w.upgrade())
+                .is_some_and(|x| Rc::ptr_eq(&x, &old))
+            {
+                if std::rc::Rc::strong_count(&old) == 1 {
+                    // Only the popped pin held the doc: dropping `old` at
+                    // the end of this scope frees the DOM — claim the slot
+                    // dead and recycle it (E9 freed-slot list).
+                    r.docs[i] = None;
+                    r.free.push(i);
+                } else {
+                    // An in-flight lookup holds a temporary strong clone;
+                    // revisit the slot at the next parse (E9 harvest).
+                    r.awaiting.push(i);
+                }
+                break;
+            }
+        }
+    }
+    id
 }
 
 /// G3: strong handle for a registered doc (pin window / live Weak). None
 /// when the doc was released (pin evicted AND no live element handles).
 fn doc_by_id(doc_id: usize) -> Option<SharedDoc> {
-    DOCS.with(|c| {
-        c.borrow()
-            .docs
-            .get(doc_id)
-            .and_then(|slot| slot.as_ref().and_then(|w| w.upgrade()))
-    })
+    let r = DOCS.0.lock().unwrap();
+    r.docs
+        .get(doc_id)
+        .and_then(|slot| slot.as_ref().and_then(|w| w.upgrade()))
 }
 
 /// G3: set base_url on a freshly-parsed doc (always inside the pin window).
@@ -1593,12 +1645,12 @@ fn elem_parts(v: &Value) -> Option<(SharedDoc, usize, bool)> {
                 .to_i64()? as usize;
             let idx = attrs.get(&s("<idx>")).and_then(|v| v.as_int())?.to_i64()? as usize;
             let html = o.name == "lxml.html.HtmlElement";
-            let doc = DOCS.with(|c| {
-                c.borrow()
-                    .docs
+            let doc = {
+                let r = DOCS.0.lock().unwrap();
+                r.docs
                     .get(doc_id)
                     .and_then(|slot| slot.as_ref().and_then(|w| w.upgrade()))
-            })?;
+            }?;
             return Some((doc, idx, html));
         }
     }
@@ -2247,21 +2299,24 @@ pub fn call_lxml(fname: &str, args: &[Value], kwargs: &[(String, Value)]) -> Opt
 }
 
 fn doc_id_of(v: &Value) -> usize {
-    elem_parts(v)
-        .map(|(d, _, _)| {
-            DOCS.with(|c| {
-                let r = c.borrow();
-                r.docs
-                    .iter()
-                    .position(|slot| {
-                        slot.as_ref()
-                            .and_then(|w| w.upgrade())
-                            .is_some_and(|x| Rc::ptr_eq(&x, &d))
-                    })
-                    .unwrap_or(0)
-            })
-        })
-        .unwrap_or(0)
+    // E9-adjacent: the element object already carries <doc_id> in its
+    // attrs — read it directly instead of the O(n) upgrade + ptr_eq scan
+    // per call (every xpath/attr op used to pay a full registry walk).
+    if let Value::Obj(o) = v {
+        if o.kind == ap_obj::ObjKind::Opaque
+            && (o.name == "lxml.etree._Element" || o.name == "lxml.html.HtmlElement")
+        {
+            return o
+                .attrs
+                .borrow()
+                .get(&s("<doc_id>"))
+                .and_then(|x| x.as_int())
+                .and_then(|n| n.to_i64())
+                .map(|n| n as usize)
+                .unwrap_or(0);
+        }
+    }
+    0
 }
 
 fn kw<'a>(kwargs: &'a [(String, Value)], name: &str) -> Option<&'a Value> {
@@ -2434,17 +2489,9 @@ pub fn elem_attr(obj: &Value, name: &str) -> Option<Value> {
                         .find(|&c| d.get(c).tag == name)
                         .unwrap()
                 };
-                let doc_id = DOCS.with(|c| {
-                    c.borrow()
-                        .docs
-                        .iter()
-                        .position(|slot| {
-                            slot.as_ref()
-                                .and_then(|w| w.upgrade())
-                                .is_some_and(|x| Rc::ptr_eq(&x, &doc))
-                        })
-                        .unwrap_or(0)
-                });
+                // E9-adjacent: read the receiver's <doc_id> attr instead of
+                // the O(n) upgrade + ptr_eq scan over the whole registry.
+                let doc_id = doc_id_of(obj);
                 return Some(make_element(doc_id, target, true));
             }
             return Some(Value::None);
@@ -2955,32 +3002,95 @@ fn urljoin_simple(base: &str, href: &str) -> String {
 /// (call_builtin → call_native_marker, dotted names) routes its call into
 /// call_xpath_object below — a plain Opaque falls off call_value_inner's
 /// not-callable arm (real lxml XPath instances are callable).
-thread_local! {
-    /// Compiled XPath queries registered by `etree.XPath(query)`. The ctor
-    /// returns a BuiltinFn marker `lxml.etree.XPath.call.<id>`; calls route
-    /// through call_native_marker -> call_xpath_by_id (the marker dispatch
-    /// has no object access, so the query rides the registry, not attrs).
-    static XPATH_OBJECTS: std::cell::RefCell<Vec<(String, Option<Value>)>> =
-        const { std::cell::RefCell::new(Vec::new()) };
+/// M11/E5 (memperf audit 2026-11-06): compiled-XPath registry. Two fixes:
+///
+/// 1. PROCESS-GLOBAL, not thread_local. Workers run Python on the SHARED
+///    interpreter under the GIL, so a table keyed by an id minted in one
+///    thread's Vec read from another thread returned None (marker not
+///    callable) or — on length collision — the WRONG query. Same
+///    thread_local-vs-workers hazard class as the DOCS registry (fixed
+///    alongside it above).
+/// 2. PRUNED, not push-only. Scrapy/parsel re-construct `etree.XPath(query)`
+///    per parse (10k-page crawl = ~100k entries before); the old table held
+///    the query + namespaces dict STRONGLY forever. Rows now key by a
+///    never-recycled generation id and hold only the query String plus a
+///    Weak to the marker object: `prune_xpath_registry` (called
+///    opportunistically from the ctor and by the shared threading
+///    `evict_stale_tables` sweep) drops rows whose marker died. The
+///    namespaces dict rides the MARKER's own attrs (`<namespaces>`) — when
+///    the marker dies, it dies with the object graph (no registry pin).
+struct XPathRow {
+    query: String,
+    marker: std::rc::Weak<PyObject>,
+}
+
+static XPATH_OBJECTS: std::sync::LazyLock<
+    crate::gcsupport::GilSendPub<std::sync::Mutex<std::collections::HashMap<u64, XPathRow>>>,
+> = std::sync::LazyLock::new(|| {
+    crate::gcsupport::GilSendPub(std::sync::Mutex::new(std::collections::HashMap::new()))
+});
+static XPATH_NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Drop rows whose marker object is gone (Weak dead). O(live rows); called
+/// from make_xpath_object past the soft cap and from the shared GC-drain
+/// eviction sweep (threading::evict_stale_tables).
+pub fn prune_xpath_registry() -> usize {
+    let mut t = XPATH_OBJECTS.0.lock().unwrap();
+    let before = t.len();
+    t.retain(|_, row| row.marker.upgrade().is_some());
+    before - t.len()
 }
 
 pub fn make_xpath_object(query: String, namespaces: Option<Value>) -> Value {
-    let id = XPATH_OBJECTS.with(|c| {
-        let mut r = c.borrow_mut();
-        r.push((query, namespaces));
-        r.len() - 1
-    });
+    let id = XPATH_NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let o = PyObject::new(
         ap_obj::ObjKind::BuiltinFn,
+        // The dispatch arm (call_native_marker, builtins_modules.rs) parses
+        // the suffix after "lxml.etree.XPath.call." as a usize — keep the
+        // generation id plain.
         format!("lxml.etree.XPath.call.{id}"),
     );
+    {
+        // Self-carried query/namespaces: any attrs-capable dispatch path
+        // (call_xpath_object) works without the registry; the registry row
+        // exists only because the marker call arm sees the NAME, not the
+        // object.
+        let mut a = o.attrs.borrow_mut();
+        let _ = a.set(s("<query>"), s(query.clone()));
+        let _ = a.set(s("<namespaces>"), namespaces.unwrap_or(Value::None));
+    }
+    {
+        let mut t = XPATH_OBJECTS.0.lock().unwrap();
+        t.insert(
+            id,
+            XPathRow {
+                query,
+                marker: Rc::downgrade(&o),
+            },
+        );
+        // Soft cap: prune dead rows when the table grows past 256
+        // (bounded, amortized against the ctor's parse cost).
+        if t.len() > 256 {
+            let before = t.len();
+            t.retain(|_, row| row.marker.upgrade().is_some());
+            // Keep the cap honest even under all-live churn: nothing to do
+            // (a crawl that holds every compiled XPath alive is holding it
+            // alive for a reason).
+            let _ = before;
+        }
+    }
     Value::Obj(o)
 }
 
 /// Dispatch arm for `lxml.etree.XPath.call.<id>` markers: evaluate the
 /// registered query against the receiver element (args[0]).
 pub fn call_xpath_by_id(id: usize, args: &[Value]) -> Option<BResult> {
-    let query = XPATH_OBJECTS.with(|c| c.borrow().get(id).map(|(q, _)| q.clone()))?;
+    let query = XPATH_OBJECTS
+        .0
+        .lock()
+        .unwrap()
+        .get(&(id as u64))
+        .map(|r| r.query.clone())?;
     let recv = args.first()?.clone();
     let (doc, idx, html) = elem_parts(&recv)?;
     let doc_id = doc_id_of(&recv);

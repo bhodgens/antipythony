@@ -30,7 +30,18 @@ thread_local! {
     pub static CELL_WRAPPER_CACHE:
         std::cell::RefCell<std::collections::HashMap<(u64, String), Gc<ap_obj::PyObject>>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
+    /// E8 (memperf audit 2026-11-06): live cell storage backing a __closure__
+    /// wrapper object (wrapper ptr -> CellSlot). Value type kept bare —
+    /// classes.rs's cell_contents write reads it directly. Eviction + the
+    /// stale-hit guard live in CELL_BACKING_PINS (parallel, same keys):
+    /// pins retain a Weak per backing entry; the sweep on every __closure__
+    /// probe drops both maps' dead entries, and a pinned address cannot be
+    /// recycled by a re-minted wrapper while its entry lives, so a stale
+    /// hit is structurally impossible.
     pub static CELL_BACKING: std::cell::RefCell<std::collections::HashMap<usize, crate::frame::CellSlot>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    /// E8: address pins for CELL_BACKING (same key set).
+    pub static CELL_BACKING_PINS: std::cell::RefCell<std::collections::HashMap<usize, std::rc::Weak<ap_obj::PyObject>>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
 }
 use crate::frame::{CellSlot, FnEntry, Frame, Interpreter, Loc, NESTED_DEDUPE};
@@ -298,31 +309,148 @@ fn render_traceback(interp: &Rc<Interpreter>, exc: &ExceptionValue) -> String {
 // Function registry
 // ===========================================================================
 
+/// One process-lifetime scope table + its precomputed joined-path index
+/// (B1/B5: registered once per module, mutated in place; no per-import
+/// union-and-leak, no per-miss `path.join(".")` scans).
+struct RegisteredScopes {
+    table: &'static ScopeInfoModule,
+    /// joined dotted path -> scope (first-wins within a table; the
+    /// lowerer's own dedupe makes duplicates non-reachable).
+    index: HashMap<String, &'static ap_parse::ScopeInfo>,
+}
+
 /// The function table: module-level defs + nested defs/lambdas, indexed by
 /// fn_id (nested ids offset by NESTED_BASE). Scopes borrowed from the
 /// program-lifetime ScopeInfoModule (leaked once per run — v0: a run is a
 /// process).
+///
+/// B1 (memperf audit 2026-11-06): the registry is LONG-LIVED and mutated
+/// IN PLACE. `extend_current` used to rebuild the whole thing per import —
+/// clone every prior module's FnEntry (deep AST clone), clone by_path,
+/// union every accumulated scope table into a fresh leaked BTreeMap, and
+/// reset the scope cache. With ~270 modules per process that was quadratic
+/// time + GC-immune growth. Entries are append-only (ids are indices, so
+/// in-place append keeps every live fn id valid) and scope tables are
+/// registered per module — no union, no re-leak, and the path caches
+/// survive imports instead of being wiped by each rebuild.
 pub struct FnRegistry {
-    scopes: &'static ScopeInfoModule,
-    pub(crate) entries: Vec<FnEntry>,
-    by_path: HashMap<String, u32>,
-    /// T2-perf: memoized richest-wins scope path → ScopeInfo. Interior
-    /// mutable so scope_of can populate lazily; lives INSIDE the registry
-    /// (a thread_local keyed by pointer aliased dropped registries after
-    /// extend_current rebuilt them — stale maps produced spurious NameErrors).
-    scope_cache: RefCell<HashMap<String, &'static ap_parse::ScopeInfo>>,
+    /// Module-level defs, append-only (fn_id = index). RefCell so
+    /// extend_current appends IN PLACE — the Rc<FnRegistry> identity never
+    /// changes, so handles held by live frames/generators see the appends.
+    entries: RefCell<Vec<FnEntry>>,
+    by_path: RefCell<HashMap<String, u32>>,
+    /// Process-lifetime scope tables, one registration per module.
+    scope_tables: RefCell<Vec<RegisteredScopes>>,
+    /// T2-perf: memoized richest-wins scope path -> candidate ScopeInfos.
+    /// Interior mutable so scope_of can populate lazily. B5: misses are
+    /// cached too (empty Vec = "no scope with this path in any registered
+    /// table") so repeated lambda/LocalDef gates don't rescan.
+    scope_cache: RefCell<HashMap<String, Vec<&'static ap_parse::ScopeInfo>>>,
 }
 
 impl FnRegistry {
     pub fn empty() -> FnRegistry {
-        use std::sync::OnceLock;
-        static EMPTY: OnceLock<ScopeInfoModule> = OnceLock::new();
         FnRegistry {
-            scopes: EMPTY.get_or_init(ScopeInfoModule::default),
-            entries: Vec::new(),
-            by_path: HashMap::new(),
+            entries: RefCell::new(Vec::new()),
+            by_path: RefCell::new(HashMap::new()),
+            scope_tables: RefCell::new(Vec::new()),
             scope_cache: RefCell::new(HashMap::new()),
         }
+    }
+
+    /// Register a module's scope table for the process lifetime (B1).
+    /// Leaks the table once (process-shaped program, same lifetime the old
+    /// per-import leak had — but now ONE leak per module, no union copies)
+    /// and builds the joined-path index ONCE.
+    pub fn register_scopes(&self, scopes: ScopeInfoModule) -> &'static ScopeInfoModule {
+        let leaked: &'static ScopeInfoModule = Box::leak(Box::new(scopes));
+        let mut index: HashMap<String, &'static ap_parse::ScopeInfo> = HashMap::new();
+        for s in leaked.scopes.iter() {
+            let sp = unsafe {
+                std::mem::transmute::<&ap_parse::ScopeInfo, &'static ap_parse::ScopeInfo>(s)
+            };
+            let key = sp.path.join(".");
+            match index.get(&key) {
+                // Within ONE module duplicate paths shouldn't exist; keep
+                // the richer classification if they do (T1-d rule).
+                Some(cur)
+                    if cur.cells.is_empty()
+                        && cur.frees.is_empty()
+                        && (!sp.cells.is_empty() || !sp.frees.is_empty()) =>
+                {
+                    index.insert(key, sp);
+                }
+                Some(_) => {}
+                None => {
+                    index.insert(key, sp);
+                }
+            }
+        }
+        self.scope_tables.borrow_mut().push(RegisteredScopes {
+            table: leaked,
+            index,
+        });
+        // B1/B5: the memo survives imports (that's the point), but a path
+        // that was a NEGATIVE hit before this module registered it must be
+        // reconsidered — drop exactly the keys this table defines.
+        {
+            let tables = self.scope_tables.borrow();
+            let index = &tables.last().expect("just pushed").index;
+            let mut cache = self.scope_cache.borrow_mut();
+            for k in index.keys() {
+                cache.remove(k);
+            }
+        }
+        leaked
+    }
+
+    /// Exact (B5): look up a joined dotted path in ONE module's table.
+    /// No cross-module candidates, so a `wrapper` defined in module A can
+    /// never shadow module B's classification for the same path (the
+    /// twisted deprecate.py NameError collision class).
+    fn scope_of_exact(
+        &self,
+        table: &'static ScopeInfoModule,
+        path: &str,
+    ) -> Option<&'static ap_parse::ScopeInfo> {
+        let tables = self.scope_tables.borrow();
+        for t in tables.iter() {
+            if std::ptr::addr_eq(t.table as *const ScopeInfoModule, table as *const _) {
+                return t.index.get(path).copied();
+            }
+        }
+        // Not registered (defensive: a table built outside register_scopes
+        // — e.g. exec_module's pre-registration adopt): scan it directly.
+        for s in table.scopes.iter() {
+            if s.path.join(".").as_str() == path {
+                return Some(unsafe {
+                    std::mem::transmute::<&ap_parse::ScopeInfo, &'static ap_parse::ScopeInfo>(s)
+                });
+            }
+        }
+        None
+    }
+
+    /// Path lookup scoped to one module's table, with the cross-table
+    /// richest-wins fallback for paths registered by NO table this registry
+    /// knows (nested-def scope paths like `f.<locals>.g` are only in the
+    /// defining module's table — pass that table when known).
+    /// B5-facing API: exact lookup against an explicit defining-module
+    /// table, falling back to the global richest-wins memoized scan when
+    /// the table doesn't hold the path (nested <locals> paths of defs
+    /// lowered in an earlier module live in that module's own table).
+    pub(crate) fn scope_of_in(
+        &self,
+        table: Option<&'static ScopeInfoModule>,
+        path: &str,
+    ) -> Option<&'static ap_parse::ScopeInfo> {
+        if let Some(t) = table {
+            let hit = self.scope_of_exact(t, path);
+            if hit.is_some() {
+                return hit;
+            }
+        }
+        self.scope_of(path)
     }
 
     fn build<'a>(
@@ -332,80 +460,154 @@ impl FnRegistry {
     ) -> FnRegistry {
         let mut entries = Vec::new();
         let mut by_path = HashMap::new();
+        let mut index: HashMap<String, &'static ap_parse::ScopeInfo> = HashMap::new();
+        for s in scopes.scopes.iter() {
+            let sp = unsafe {
+                std::mem::transmute::<&ap_parse::ScopeInfo, &'static ap_parse::ScopeInfo>(s)
+            };
+            index.entry(sp.path.join(".")).or_insert(sp);
+        }
+        let reg = FnRegistry {
+            entries: RefCell::new(Vec::new()),
+            by_path: RefCell::new(HashMap::new()),
+            scope_tables: RefCell::new(Vec::new()),
+            scope_cache: RefCell::new(HashMap::new()),
+        };
+        reg.scope_tables.borrow_mut().push(RegisteredScopes {
+            table: scopes,
+            index,
+        });
         for item in items {
             if let ap_ir::Item::FnDef(f) = item {
                 let id = entries.len() as u32;
                 by_path.insert(f.name.clone(), id);
-                entries.push(FnEntry {
-                    def: f.clone(),
-                    scope_path: f.name.clone(),
-                    qualname: f.name.clone(),
-                    globals: module_globals.clone(),
-                });
+                let scope = reg.scope_of_exact(scopes, &f.name);
+                entries.push(FnEntry::with_scope(
+                    f.clone(),
+                    f.name.clone(),
+                    f.name.clone(),
+                    module_globals.clone(),
+                    scope,
+                    Some(scopes),
+                ));
             }
         }
-        FnRegistry {
-            scopes,
-            entries,
-            by_path,
-            scope_cache: RefCell::new(HashMap::new()),
-        }
+        *reg.entries.borrow_mut() = entries;
+        *reg.by_path.borrow_mut() = by_path;
+        reg
     }
 
     pub(crate) fn scope_of(&self, path: &str) -> Option<&'static ap_parse::ScopeInfo> {
-        // T2-perf: O(n) scan with a String join per scope made big modules
-        // (pytest python.py, pluggy) quadratic on every function-scope
-        // lookup - the 100%-CPU hang in pytest.main collection. Memoize
-        // richest-wins per path INSIDE the registry (interior mutability).
-        // Fast path: single-scope registries (most modules).
-        if self.scopes.scopes.len() <= 1 {
-            return self
-                .scopes
-                .scopes
-                .first()
-                .filter(|s| s.path.join(".").as_str() == path);
-        }
+        // T2-perf: memoized richest-wins lookup. B1: the memo now SURVIVES
+        // imports (the registry is never rebuilt). B5: candidate lists are
+        // built from the precomputed per-table path indexes (no per-miss
+        // String joins), and misses are CACHED (empty Vec) so the
+        // lambda/LocalDef gates don't rescan every table per execution.
         if let Some(hit) = self.scope_cache.borrow().get(path) {
-            return Some(*hit);
+            return hit.first().copied();
         }
-        // T1-d: after cross-module merging, several entries can share a
-        // path; prefer the RICHEST (cells/frees content) so closure wiring
-        // never binds against an empty shadow.
-        let mut best: Option<&'static ap_parse::ScopeInfo> = None;
-        for s in self.scopes.scopes.iter() {
-            if s.path.join(".").as_str() != path {
-                continue;
+        let mut cands: Vec<&'static ap_parse::ScopeInfo> = Vec::new();
+        for t in self.scope_tables.borrow().iter() {
+            if let Some(sp) = t.index.get(path) {
+                cands.push(*sp);
             }
-            let sp = unsafe {
-                std::mem::transmute::<&ap_parse::ScopeInfo, &'static ap_parse::ScopeInfo>(s)
-            };
-            match best {
-                None => best = Some(sp),
-                Some(cur) => {
-                    if cur.cells.is_empty()
-                        && cur.frees.is_empty()
-                        && (!s.cells.is_empty() || !s.frees.is_empty())
-                    {
-                        best = Some(sp);
-                    }
+        }
+        let best: Option<&'static ap_parse::ScopeInfo> = if cands.is_empty() {
+            None
+        } else {
+            // Cross-table fallback fold (this scan only runs when NO
+            // defining-module table holds the path — see scope_of_in).
+            // BYTE-EXACT to the retired merge_scopes_static, whose net effect
+            // per field was: LAST registered non-empty cells/frees wins (the
+            // union-append was always overwritten whenever the new entry
+            // carried content), globals/nonlocals/path stay from the OLDEST
+            // accumulated entry. T1-d: twisted deprecate.py's `deprecated`
+            // beaten by an older empty shadow -> 'version' NameError;
+            // newest-non-empty wins.
+            let base = *cands.first().expect("cands non-empty");
+            let mut cells = &base.cells;
+            let mut frees = &base.frees;
+            for sp in cands.iter().skip(1) {
+                if !sp.cells.is_empty() {
+                    cells = &sp.cells;
+                }
+                if !sp.frees.is_empty() {
+                    frees = &sp.frees;
                 }
             }
-        }
-        if let Some(sp) = best {
-            self.scope_cache.borrow_mut().insert(path.to_string(), sp);
-        }
+            let merged: &'static ap_parse::ScopeInfo =
+                if cells == &base.cells && frees == &base.frees {
+                    base
+                } else {
+                    // Mixed collision (newer entries carry cells/frees the oldest
+                    // entry lacks): leak the merged entry ONCE per path (memoized
+                    // below) — the same classification the old per-import union
+                    // produced, without the quadratic rebuild.
+                    Box::leak(Box::new(ap_parse::ScopeInfo {
+                        path: base.path.clone(),
+                        globals: base.globals.clone(),
+                        nonlocals: base.nonlocals.clone(),
+                        cells: cells.clone(),
+                        frees: frees.clone(),
+                    }))
+                };
+            Some(merged)
+        };
+        // Cache BOTH hits and misses (B5 negative caching).
+        self.scope_cache
+            .borrow_mut()
+            .insert(path.to_string(), best.map(|s| vec![s]).unwrap_or_default());
         best
+    }
+
+    /// B5: the most recently registered scope table (the module currently
+    /// being loaded). Module frames adopt it so nested-def classification
+    /// resolves EXACTLY against their own module.
+    pub fn last_table(&self) -> Option<&'static ScopeInfoModule> {
+        self.scope_tables.borrow().last().map(|t| t.table)
     }
 
     /// 02.04a: module-level fn-id lookup for an IMPORTED module's defs
     /// (mirror of the `by_path` map the builder maintains).
     pub(crate) fn by_path_lookup(&self, name: &str) -> Option<u32> {
-        self.by_path.get(name).copied()
+        for _ in 0..2000 {
+            match self.by_path.try_borrow() {
+                Ok(bp) => return bp.get(name).copied(),
+                Err(_) => std::thread::sleep(std::time::Duration::from_micros(50)),
+            }
+        }
+        self.by_path.borrow().get(name).copied()
+    }
+
+    /// A2: borrowed entry access for hot paths — returns a CLONE of the
+    /// entry (cheap: Rc bumps only) but without the old deep FnDef clone.
+    /// The Vec borrow never outlives the call. 02.07: entries are now
+    /// mutated in place during imports while worker threads read them —
+    /// transient-borrow retry (writes are entry-atomic).
+    pub(crate) fn entry(&self, fn_id: u32) -> Option<FnEntry> {
+        for _ in 0..2000 {
+            match self.entries.try_borrow() {
+                Ok(e) => return e.get(fn_id as usize).cloned(),
+                Err(_) => std::thread::sleep(std::time::Duration::from_micros(50)),
+            }
+        }
+        self.entries.borrow().get(fn_id as usize).cloned()
+    }
+
+    /// Snapshot of the module-level entries (legacy `interp.functions`
+    /// seed; taken once per run at exec_module).
+    pub(crate) fn entries_snapshot(&self) -> Vec<FnEntry> {
+        self.entries.borrow().clone()
     }
 
     /// 02.04a: append an imported module's defs to the CURRENT registry,
-    /// merging its scope table. Module-level function ids stay stable across
-    /// imports because entries only ever APPEND (ids are indices).
+    /// registering its scope table. Module-level function ids stay stable
+    /// across imports because entries only ever APPEND (ids are indices).
+    /// B1: IN-PLACE mutation — the Rc<FnRegistry> object identity NEVER
+    /// changes once published, so frames/generators holding old handles
+    /// automatically see the imported defs. The old per-import rebuild
+    /// (full entries clone + by_path clone + scope-table union + leak) is
+    /// gone: cost per import is O(new defs), not O(all defs).
     pub(crate) fn extend_current(
         interp: &Rc<Interpreter>,
         items: &[ap_ir::Item],
@@ -417,82 +619,66 @@ impl FnRegistry {
             .borrow()
             .clone()
             .unwrap_or_else(|| Rc::new(FnRegistry::empty()));
-        let leaked: &'static ap_parse::ScopeInfoModule = Box::leak(Box::new(scopes));
-        // FnRegistry is not Clone (holds &'static scopes); rebuild it from
-        // the current pieces. Entries only append, so existing fn ids stay
-        // valid (ids are indices).
-        let mut entries = cur.entries.clone();
-        let mut by_path = cur.by_path.clone();
+        // Register the table FIRST so entries resolve their scope against it.
+        let leaked = cur.register_scopes(scopes);
+        // Build the new entries WITHOUT holding the entries/by_path borrows
+        // (the scope lookup reaches into scope_tables — disjoint RefCells,
+        // but keep the mutation window tight for the retry paths).
+        let mut new: Vec<(String, FnEntry)> = Vec::new();
         for item in items {
             if let ap_ir::Item::FnDef(f) = item {
+                let scope = cur.scope_of_exact(leaked, &f.name);
+                let entry = FnEntry::with_scope(
+                    f.clone(),
+                    f.name.clone(),
+                    f.name.clone(),
+                    module_globals.clone(),
+                    scope,
+                    Some(leaked),
+                );
+                new.push((f.name.clone(), entry));
+            }
+        }
+        {
+            // 02.07: retry the mutation borrows against worker readers
+            // (all holders run under the GIL, so a contention window is
+            // transient; the post-loop direct borrow matches the old
+            // immediate-borrow panic semantics if it ever persists).
+            let mut entries = None;
+            for _ in 0..2000 {
+                match cur.entries.try_borrow_mut() {
+                    Ok(e) => {
+                        entries = Some(e);
+                        break;
+                    }
+                    Err(_) => std::thread::sleep(std::time::Duration::from_micros(50)),
+                }
+            }
+            let mut entries = entries.unwrap_or_else(|| cur.entries.borrow_mut());
+            let mut by_path = None;
+            for _ in 0..2000 {
+                match cur.by_path.try_borrow_mut() {
+                    Ok(b) => {
+                        by_path = Some(b);
+                        break;
+                    }
+                    Err(_) => std::thread::sleep(std::time::Duration::from_micros(50)),
+                }
+            }
+            let mut by_path = by_path.unwrap_or_else(|| cur.by_path.borrow_mut());
+            for (name, entry) in new {
                 let id = entries.len() as u32;
-                by_path.insert(f.name.clone(), id);
-                entries.push(FnEntry {
-                    def: f.clone(),
-                    scope_path: f.name.clone(),
-                    qualname: f.name.clone(),
-                    globals: module_globals.clone(),
-                });
+                by_path.insert(name, id);
+                entries.push(entry);
             }
         }
-        let reg = Rc::new(FnRegistry {
-            scopes: merge_scopes_static(cur.scopes, leaked),
-            entries,
-            by_path,
-            scope_cache: RefCell::new(HashMap::new()),
-        });
-        // Publish: fn_entry resolves through interp.registry, so imported
-        // modules' defs must LIVE there (not just on the local handle).
-        *interp.registry.borrow_mut() = Some(reg.clone());
-        reg
+        // Publish: fn_entry resolves through interp.registry. In-place
+        // mutation means this only MATTERS the first time (no registry yet
+        // — or a thread that started before the first import); re-publishing
+        // the same Rc is cheap.
+        *interp.registry.borrow_mut() = Some(cur.clone());
+        cur
     }
-}
-
-/// Union two leaked scope tables (extend_current helper).
-fn merge_scopes_static(
-    a: &'static ap_parse::ScopeInfoModule,
-    b: &'static ap_parse::ScopeInfoModule,
-) -> &'static ap_parse::ScopeInfoModule {
-    // T1-d fix: key by PATH (BTreeMap) so a same-named scope from an
-    // earlier module can't shadow the newly imported module's real
-    // classification (twisted deprecate.py's `deprecated` scope was beaten
-    // by an older empty entry, giving a 'version' NameError). On collision
-    // the NEW module's entry wins; cells/frees union in.
-    use std::collections::BTreeMap;
-    let mut by_path: BTreeMap<Vec<String>, ap_parse::ScopeInfo> = BTreeMap::new();
-    for s in a.scopes.iter() {
-        by_path.insert(s.path.clone(), s.clone());
-    }
-    for s in b.scopes.iter() {
-        match by_path.get_mut(&s.path) {
-            Some(existing) => {
-                for c in &s.cells {
-                    if !existing.cells.iter().any(|x| x == c) {
-                        existing.cells.push(c.clone());
-                    }
-                }
-                for f in &s.frees {
-                    if !existing.frees.iter().any(|x| x == f) {
-                        existing.frees.push(f.clone());
-                    }
-                }
-                // The NEW module's own classification wins for its scopes:
-                // overwrite frees/cells wholesale when the incoming entry
-                // carries content.
-                if !s.cells.is_empty() {
-                    existing.cells = s.cells.clone();
-                }
-                if !s.frees.is_empty() {
-                    existing.frees = s.frees.clone();
-                }
-            }
-            None => {
-                by_path.insert(s.path.clone(), s.clone());
-            }
-        }
-    }
-    let scopes = by_path.into_values().collect();
-    Box::leak(Box::new(ap_parse::ScopeInfoModule { scopes }))
 }
 
 // ===========================================================================
@@ -512,9 +698,12 @@ fn exec_module(
         interp.globals.clone(),
     ));
     *interp.registry.borrow_mut() = Some(reg.clone());
-    interp.functions.replace(reg.entries.clone());
+    interp.functions.replace(reg.entries_snapshot());
 
     let frame = Rc::new(Frame::new_module(interp.globals.clone()));
+    // B5: the main module frame carries the main scope table (nested-def
+    // classification resolves exactly against it).
+    frame.scope_table.set(reg.last_table());
     let line_track = Rc::new(RustCell::new(0usize));
     interp.frame_stack.borrow_mut().push(line_track.clone());
 
@@ -538,7 +727,7 @@ fn exec_module(
                     stmts.push(Stmt::LocalDef(Box::new(f.clone())));
                     continue;
                 }
-                let id = reg.by_path.get(&f.name).copied().unwrap_or(0);
+                let id = reg.by_path_lookup(&f.name).unwrap_or(0);
                 let func = builtins::make_function(id, &f.name);
                 // W110 (T2): park annotation source strings on the function
                 // (functools.singledispatch register(func) reads
@@ -617,7 +806,7 @@ fn exec_module(
             interp
                 .tb_frames
                 .borrow_mut()
-                .insert(0, ("<module>".to_string(), line, file));
+                .push_front(("<module>".to_string(), line, file));
             Err(exc)
         }
         Err(_) => Ok(()),
@@ -1174,7 +1363,13 @@ fn exec_stmt(
                     if let Err(Flow::Raise(_)) = &result {
                         // Suppressed: the raising frames die with it (same
                         // rule as the handled-except path).
-                        interp.tb_frames.borrow_mut().truncate(tb_snapshot);
+                        {
+                            let mut d = interp.tb_frames.borrow_mut();
+                            let at = tb_snapshot.min(d.len());
+                            // Discard the tail (entries pushed at/after the
+                            // snapshot): the VecDeque return value is dead.
+                            let _ = d.split_off(at);
+                        }
                         return Ok(StmtOut::Next); // exception swallowed (S-02-41)
                     }
                 }
@@ -1526,30 +1721,50 @@ fn exec_stmt(
             // defining_frames entry per call, wave-1 semantics).
             let mut deduped = false;
             let id = {
+                let reg = current_registry(interp);
+                // B5: resolve the nested path against the ENCLOSING
+                // function's defining module table first (exact), falling
+                // back to the global richest-wins scan.
+                let nested_scope = reg.scope_of_in(frame.scope_table.get(), &scope_path);
                 let needs_own_entry = !f.decorators.is_empty()
                     || f.params.iter().any(|p| p.default.is_some())
-                    || current_registry(interp)
-                        .scope_of(&scope_path)
-                        .is_some_and(|s| !s.frees.is_empty() || !s.nonlocals.is_empty());
+                    || nested_scope.is_some_and(|s| !s.frees.is_empty() || !s.nonlocals.is_empty());
                 deduped = !needs_own_entry;
                 if needs_own_entry {
-                    interp.register_nested(FnEntry {
-                        def: (**f).clone(),
-                        scope_path: scope_path.clone(),
-                        qualname: qual.clone(),
-                        globals: frame.globals.clone(),
-                    })
+                    interp.register_nested(FnEntry::with_scope(
+                        (**f).clone(),
+                        scope_path.clone(),
+                        qual.clone(),
+                        frame.globals.clone(),
+                        nested_scope,
+                        frame.scope_table.get(),
+                    ))
                 } else {
-                    interp.register_nested_for(
-                        FnEntry {
-                            def: (**f).clone(),
-                            scope_path: scope_path.clone(),
-                            qualname: qual.clone(),
-                            globals: frame.globals.clone(),
-                        },
+                    // A2: check the code-object dedupe BEFORE cloning the
+                    // AST — a hot loop re-executing this def statement now
+                    // does zero FnDef deep clones per call (the old path
+                    // cloned the whole body tree, handed it to
+                    // register_nested_for, and threw it away on the hit).
+                    let key = (
+                        frame.scope_path.clone(),
+                        frame.def_line.get(),
                         std::ptr::addr_of!(**f) as usize,
-                        frame,
-                    )
+                    );
+                    match NESTED_DEDUPE.with(|d| d.borrow().get(&key).copied()) {
+                        Some(existing) => existing,
+                        None => {
+                            let id = interp.register_nested(FnEntry::with_scope(
+                                (**f).clone(),
+                                scope_path.clone(),
+                                qual.clone(),
+                                frame.globals.clone(),
+                                nested_scope,
+                                frame.scope_table.get(),
+                            ));
+                            crate::frame::nested_dedupe_insert(key, id);
+                            id
+                        }
+                    }
                 }
             };
             let func = builtins::make_function(id, &f.name);
@@ -1781,10 +1996,11 @@ fn exec_try(
                             exc.tb
                                 .insert(0, (frame.qualname.clone(), line, file.clone()));
                         }
-                        interp
-                            .tb_frames
-                            .borrow_mut()
-                            .insert(0, (frame.qualname.clone(), line, file));
+                        interp.tb_frames.borrow_mut().push_front((
+                            frame.qualname.clone(),
+                            line,
+                            file,
+                        ));
                     }
                     if let Some(name) = &h.name {
                         let exc_obj = exception_instance(&exc);
@@ -1809,7 +2025,11 @@ fn exec_try(
             match handled {
                 Some(Ok(())) => {
                     // Handled: the raising frames die with this exception.
-                    interp.tb_frames.borrow_mut().truncate(tb_snapshot);
+                    {
+                        let mut d = interp.tb_frames.borrow_mut();
+                        let at = tb_snapshot.min(d.len());
+                        let _ = d.split_off(at);
+                    }
                     exec_block(interp, frame, &t.finalbody, reg).map(|_| StmtOut::Next)
                 }
                 Some(Err(f)) => {
@@ -2063,7 +2283,26 @@ thread_local! {
 }
 
 /// Record the current python location (call at eval_expr entry).
+///
+/// A1 (memperf audit 2026-11-06): this ran on EVERY expression node —
+/// a heap String clone of the script path plus `last_executed_line`
+/// (a stmt_lines try_borrow, and on contention a 50µs sleep loop), per
+/// node. `x + y` paid it three times. The ONLY consumers of LAST_PY_LOC
+/// are diagnostic side-channels, each already gated on a debug flag:
+/// methods.rs's APX-IDX-RAISE arm (IdxDebug), interp.rs's `_rawentry`
+/// APX-ATTRMISS print (TbDbg), and eval_binop's [SUB-NONE-PY] trace
+/// (GenDebug). Snapshot the flags once (A3's cached bitset makes the
+/// probe an atomic load) and record NOTHING when no consumer is armed.
+/// Byte-exactness: with no APX flag set, LAST_PY_LOC was never read, so
+/// skipping the write is unobservable.
 pub fn note_py_loc(interp: &Rc<Interpreter>) {
+    use ap_obj::debug_flags::{debug_flag, ApxFlag};
+    let armed = debug_flag(ApxFlag::IdxDebug)
+        || debug_flag(ApxFlag::TbDbg)
+        || debug_flag(ApxFlag::GenDebug);
+    if !armed {
+        return;
+    }
     let f = interp.script_path.clone();
     let l = last_executed_line(interp);
     LAST_PY_LOC.with(|c| *c.borrow_mut() = (f, l));
@@ -3147,7 +3386,7 @@ pub(crate) fn eval_expr(
                     let last = interp
                         .tb_frames
                         .borrow()
-                        .last()
+                        .back()
                         .map(|(q, l, _f)| format!("{}:{}", q, l))
                         .unwrap_or_default();
                     eprintln!(
@@ -3360,13 +3599,15 @@ pub(crate) fn eval_expr(
             // Such lambdas take the fresh-entry path (wave-1 semantics).
             let node_addr = std::ptr::addr_of!(**body) as usize;
             let lambda_scope = format!("{}.<locals>.<lambda>", frame.scope_path);
+            // B5: resolve the lambda's classification against the ENCLOSING
+            // frame's defining-module table (exact) before the global scan.
+            let lam_scope_info =
+                current_registry(interp).scope_of_in(frame.scope_table.get(), &lambda_scope);
             let captures = sig.params.iter().any(|p| p.default.is_some())
-                || current_registry(interp)
-                    .scope_of(&lambda_scope)
-                    .is_some_and(|s| !s.frees.is_empty() || !s.nonlocals.is_empty());
-            let id = if captures {
-                let id = interp.register_nested(FnEntry {
-                    def: FnDef {
+                || lam_scope_info.is_some_and(|s| !s.frees.is_empty() || !s.nonlocals.is_empty());
+            let mk_lambda_entry = || {
+                FnEntry::with_scope(
+                    FnDef {
                         name: "<lambda>".to_string(),
                         params: sig.params.clone(),
                         return_ann: None,
@@ -3377,10 +3618,15 @@ pub(crate) fn eval_expr(
                         ret_ty: ap_ir::TypeLattice::Unknown,
                         def_line: 1,
                     },
-                    scope_path: lambda_scope.clone(),
-                    qualname: "<lambda>".to_string(),
-                    globals: frame.globals.clone(),
-                });
+                    lambda_scope.clone(),
+                    "<lambda>".to_string(),
+                    frame.globals.clone(),
+                    lam_scope_info,
+                    frame.scope_table.get(),
+                )
+            };
+            let id = if captures {
+                let id = interp.register_nested(mk_lambda_entry());
                 interp
                     .lambda_bodies
                     .borrow_mut()
@@ -3391,22 +3637,7 @@ pub(crate) fn eval_expr(
                 match NESTED_DEDUPE.with(|d| d.borrow().get(&dedupe_key).copied()) {
                     Some(existing) => existing,
                     None => {
-                        let id = interp.register_nested(FnEntry {
-                            def: FnDef {
-                                name: "<lambda>".to_string(),
-                                params: sig.params.clone(),
-                                return_ann: None,
-                                decorators: Vec::new(),
-                                body: ap_ir::item::FnBody { blocks: Vec::new() },
-                                is_generator: false,
-                                is_async: false,
-                                ret_ty: ap_ir::TypeLattice::Unknown,
-                                def_line: 1,
-                            },
-                            scope_path: lambda_scope.clone(),
-                            qualname: "<lambda>".to_string(),
-                            globals: frame.globals.clone(),
-                        });
+                        let id = interp.register_nested(mk_lambda_entry());
                         // Lambdas evaluate their body expression directly; stash it.
                         interp
                             .lambda_bodies
@@ -7288,6 +7519,9 @@ fn call_function(
     let entry = interp
         .fn_entry(fn_id)
         .ok_or_else(|| raise("SystemError", "function table miss"))?;
+    // A2 (memperf audit 2026-11-06): FnEntry.def is an Rc<FnDef> — this is
+    // a refcount bump, not the old deep clone of the whole body AST. The
+    // entry clone itself (fn_entry) is likewise Rc-cheap now.
     let def = entry.def.clone();
 
     // W110-5: async-def wins over the generator route — an `async def`
@@ -7373,6 +7607,9 @@ fn call_function(
         free_cells,
         locals,
     ));
+    // B5: nested-def scope classification resolves against THIS function's
+    // defining-module table (exact lookup; no cross-module richest-wins).
+    frame.scope_table.set(entry.scope_table);
     let line_track = Rc::new(RustCell::new(0usize));
     // 02.07: cross-thread push contention — retry (all holders run under the
     // GIL, so the borrow is transient).
@@ -7415,20 +7652,17 @@ fn call_function(
         .params
         .first()
         .is_some_and(|p| matches!(p.name.as_str(), "self" | "cls"));
-    let plain_sentinel = std::rc::Rc::new(ap_obj::classes::TypeObject {
-        name: "__plain_fn__".to_string(),
-        qualname: if mcap {
-            "__mcap__".to_string()
-        } else {
-            String::new()
-        },
-        bases: vec![],
-        mro: std::cell::RefCell::new(Vec::new()),
-        dict: ap_obj::dict::PyDict::new(),
-        flags: ap_obj::classes::TypeFlags::default(),
-        metaclass: std::cell::RefCell::new(None),
-        class_value: std::cell::RefCell::new(None),
-    });
+    // A6 (memperf audit 2026-11-06): the sentinel used to be a fresh
+    // TypeObject + fresh PyDict allocated on EVERY function call. The
+    // stack only ever READS `name`/`qualname` (builtin_super's skip test,
+    // the Wave-78 mcap peek) — nothing mutates a sentinel, and nothing
+    // compares sentinels by pointer identity. The interpreter interns TWO
+    // Rc's (plain + method-capable): a push is one refcount bump.
+    let plain_sentinel = if mcap {
+        interp.plain_super_ctx.1.clone()
+    } else {
+        interp.plain_super_ctx.0.clone()
+    };
     interp
         .super_stack
         .borrow_mut()
@@ -7515,12 +7749,20 @@ fn call_function(
             }
             exc.tb
                 .insert(0, (entry.qualname.clone(), line.max(1), file.clone()));
+            // A5 (memperf audit): VecDeque push_front — the old Vec
+            // insert(0) shifted every accumulated entry per frame exit
+            // (O(depth^2) across an unwind of depth). Same logical order.
             interp
                 .tb_frames
                 .borrow_mut()
-                .insert(0, (entry.qualname.clone(), line.max(1), file));
+                .push_front((entry.qualname.clone(), line.max(1), file));
             if exc.context.is_none() && exc.cause.is_none() {
                 if let Some(prev) = interp.current_exception.borrow().clone() {
+                    // A5 note: deep clone of the prior exception chain —
+                    // avoiding it requires ExceptionValue.context to become
+                    // an Rc (exc_hier.rs, OUTSIDE this task's file
+                    // ownership). It fires ONCE per exception (the first
+                    // context-less frame exit), not per exit.
                     exc.context = Some(Box::new((*prev).clone()));
                 }
             }
@@ -7538,24 +7780,18 @@ fn current_registry(interp: &Rc<Interpreter>) -> Rc<FnRegistry> {
         .unwrap_or_else(|| Rc::new(FnRegistry::empty()))
 }
 
-fn scope_globals(interp: &Rc<Interpreter>, entry: &FnEntry) -> std::collections::HashSet<String> {
-    interp
-        .registry
-        .borrow()
-        .as_ref()
-        .and_then(|r| r.scope_of(&entry.scope_path))
-        .map(|s| s.globals.iter().cloned().collect())
-        .unwrap_or_default()
+// A6 (memperf audit 2026-11-06): these used to rebuild two fresh
+// HashSet<String> (2x |names| String allocs) on EVERY function call, plus a
+// registry RefCell borrow + scope scan per set. The entry carries the
+// pre-resolved Rc-shared sets now (resolved once at registration from the
+// defining module's own scope table — B5); building a frame is two refcount
+// bumps.
+fn scope_globals(_interp: &Rc<Interpreter>, entry: &FnEntry) -> crate::frame::DeclaredNames {
+    entry.declared_globals.clone()
 }
 
-fn scope_nonlocals(interp: &Rc<Interpreter>, entry: &FnEntry) -> std::collections::HashSet<String> {
-    interp
-        .registry
-        .borrow()
-        .as_ref()
-        .and_then(|r| r.scope_of(&entry.scope_path))
-        .map(|s| s.nonlocals.iter().cloned().collect())
-        .unwrap_or_default()
+fn scope_nonlocals(_interp: &Rc<Interpreter>, entry: &FnEntry) -> crate::frame::DeclaredNames {
+    entry.declared_nonlocals.clone()
 }
 
 /// Bind call args to params with CPython's exact error texts (S-02-10).
@@ -7725,10 +7961,18 @@ fn bind_params(
         eprintln!(
             "BIND scope={} known={}",
             entry.scope_path,
-            reg.scope_of(&entry.scope_path).is_some()
+            (entry.scope.is_some() || reg.scope_of(&entry.scope_path).is_some())
         );
     }
-    if let Some(scope) = reg.scope_of(&entry.scope_path) {
+    // A2/A6/B5 (memperf audit): the classification was pre-resolved at
+    // registration against the DEFINING module's table (entry.scope). The
+    // per-call scope_of scan only runs for synthetic entries (lambdas
+    // built without classification) — the old path re-scanned + re-joined
+    // EVERY call.
+    let entry_scope = entry
+        .scope
+        .or_else(|| reg.scope_of_in(entry.scope_table, &entry.scope_path));
+    if let Some(scope) = entry_scope {
         for name in &scope.cells {
             my_cells.insert(name.clone(), Rc::new(RefCell::new(None)));
         }
@@ -7791,8 +8035,8 @@ fn bind_params(
                 }
                 if !wired && defining.is_module {
                     // T1-d: module frames pre-create cells in
-                    // MODULE_FRAME_CELLS (keyed by frame ptr).
-                    let key = std::rc::Rc::as_ptr(&defining) as usize;
+                    // MODULE_FRAME_CELLS (keyed by monotone frame id).
+                    let key = defining.frame_id;
                     let cell = MODULE_FRAME_CELLS
                         .with(|reg| reg.borrow().get(&(key, name.clone())).cloned());
                     if let Some(cell) = cell {
@@ -7961,14 +8205,14 @@ pub(crate) fn bind_params_for_generator(
 pub(crate) fn scope_globals_pub(
     interp: &Rc<Interpreter>,
     entry: &FnEntry,
-) -> std::collections::HashSet<String> {
+) -> crate::frame::DeclaredNames {
     scope_globals(interp, entry)
 }
 
 pub(crate) fn scope_nonlocals_pub(
     interp: &Rc<Interpreter>,
     entry: &FnEntry,
-) -> std::collections::HashSet<String> {
+) -> crate::frame::DeclaredNames {
     scope_nonlocals(interp, entry)
 }
 
@@ -8618,25 +8862,15 @@ fn run_comp(
     reg: &Rc<FnRegistry>,
     kind: CompKind,
 ) -> EResult {
+    // A6 (memperf audit 2026-11-06): the old path snapshotted ALL bound
+    // enclosing locals (one Value clone + one HashMap entry per name) on
+    // EVERY comprehension execution — a comprehension inside a hot loop
+    // paid O(size of scope) per run. Frame::new_child now links the
+    // enclosing frame; Frame::lookup walks the chain through LIVE slots
+    // (Rc bumps only, zero allocations per run, and reads see current
+    // values — CPython comp scopes read enclosing locals live). Writes
+    // still stay in the comp frame (comps don't leak bindings).
     let comp_frame = Rc::new(Frame::new_child(frame));
-    // 02.03b-fix: comprehension bodies read enclosing FUNCTION locals
-    // (enum._convert_'s `filter` param inside its members comp). The comp
-    // frame only chained parent CELLS; plain locals were invisible and the
-    // read fell through to builtins. Seed the comp frame with a snapshot of
-    // the parent's locals — writes stay in the comp frame (comps don't leak
-    // bindings), reads see the enclosing scope.
-    {
-        let parent_locals = frame.locals.borrow();
-        for (k, loc) in parent_locals.iter() {
-            let v: Option<Value> = match loc {
-                crate::frame::Loc::Slot(cell) => cell.borrow().clone(),
-                crate::frame::Loc::CellSlot(cell) => cell.borrow().clone(),
-            };
-            if let Some(v) = v {
-                comp_frame.store_local(k, v);
-            }
-        }
-    }
     let mut list_out = Vec::new();
     let set_out = ap_obj::PySet::new();
     let dict_out = PyDict::new();
@@ -12054,8 +12288,26 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                                     // type_ref slot — it is RefCell<Option<Weak>>
                                     // so use a parallel registry keyed by ptr).
                                     let ckey = std::rc::Rc::as_ptr(&c) as usize;
+                                    // E8 sweep: evict backing entries whose
+                                    // wrapper died (Weak upgrade fails). The
+                                    // table used to be insert-only — campaign
+                                    // #2's G5 fix capped the WRAPPER cache
+                                    // only. Pinning the address also makes a
+                                    // stale hit impossible: while an entry
+                                    // lives, its wrapper's allocation is
+                                    // pinned, so no re-minted object can
+                                    // reuse the key.
+                                    CELL_BACKING_PINS.with(|reg| {
+                                        let mut m = reg.borrow_mut();
+                                        m.retain(|_, w| w.upgrade().is_some());
+                                        m.insert(ckey, std::rc::Rc::downgrade(&c));
+                                    });
                                     CELL_BACKING.with(|reg| {
-                                        reg.borrow_mut().insert(ckey, cell.clone());
+                                        let mut m = reg.borrow_mut();
+                                        m.retain(|k, _| {
+                                            CELL_BACKING_PINS.with(|p| p.borrow().contains_key(k))
+                                        });
+                                        m.insert(ckey, cell.clone());
                                     });
                                     CELL_WRAPPER_CACHE.with(|reg| {
                                         reg.borrow_mut().insert(cache_key, c.clone());
@@ -12561,7 +12813,9 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
         Value::Obj(o) => match o.kind {
             ap_obj::ObjKind::Namespace if o.name == "cell" && name == "cell_contents" => {
                 // T1-d: live closure cell read (attrs may be stale after a
-                // write to the live cell).
+                // write to the live cell). E8: backing entries are address-
+                // pinned via CELL_BACKING_PINS, so a recycled address can
+                // never alias a stale slot.
                 let key = std::rc::Rc::as_ptr(o) as usize;
                 let live = CELL_BACKING.with(|reg| reg.borrow().get(&key).cloned());
                 if let Some(cell) = live {
@@ -14134,8 +14388,50 @@ fn complex_parts(v: &Value) -> Option<(f64, f64)> {
 
 thread_local! {
     /// T1-d: cells pre-created for MODULE frames (which never run
-    /// call_function's cell setup). Keyed by (frame ptr, cell name).
+    /// call_function's cell setup). Keyed by (frame ID, cell name).
+    /// M2-adj (memperf audit 2026-11-06): the old key was the frame's Rc
+    /// ADDRESS — recycled once a module frame dropped, so a fresh module
+    /// frame could inherit a dead frame's cells (wrong-module closure
+    /// wiring). frame_id is monotone per thread and never reused, so keys
+    /// are exact for the table's life. Eviction: retire_module_frame_cells
+    /// (wired at the importer's failed-body path; live module frames are
+    /// pinned by defining_frames by design, so their entries are
+    /// process-lifetime like the registry they back).
     pub static MODULE_FRAME_CELLS: std::cell::RefCell<
-        std::collections::HashMap<(usize, String), crate::frame::CellSlot>,
+        std::collections::HashMap<(u64, String), crate::frame::CellSlot>,
     > = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// M2-adj: drop every MODULE_FRAME_CELLS entry for a retired module frame.
+/// Keys are collected first and slots dropped OUTSIDE the map borrow —
+/// a CellSlot drop can cascade into interpreter code that re-touches this
+/// TLS table (RefCell double-borrow guard).
+pub fn retire_module_frame_cells(frame_id: u64) {
+    // TLS-teardown safety: Frame::drop can run during thread exit, after
+    // thread_locals have been destroyed — try_with no-ops instead of
+    // panicking (the table itself dies with the thread then anyway).
+    let Ok(doomed): Result<Vec<(u64, String)>, _> = MODULE_FRAME_CELLS.try_with(|reg| {
+        reg.borrow()
+            .iter()
+            .filter(|((id, _), _)| *id == frame_id)
+            .map(|(k, _)| k.clone())
+            .collect()
+    }) else {
+        return;
+    };
+    if doomed.is_empty() {
+        return;
+    }
+    let taken: Vec<crate::frame::CellSlot> = match MODULE_FRAME_CELLS.try_with(|reg| {
+        let mut m = reg.borrow_mut();
+        doomed.iter().filter_map(|k| m.remove(k)).collect()
+    }) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    // Drop the detached slots OUTSIDE the borrow: a cell-value drop can
+    // cascade (frames with has_frame_cells only retire from their own
+    // Drop / the importer's failed-body arm, but keeping the window
+    // borrow-free is the tree-wide RefCell discipline).
+    drop(taken);
 }
