@@ -162,20 +162,25 @@ pub fn verify(module: &Module) -> Vec<Diagnostic> {
             Item::Stmt(s) => collect_stmt(s, &mut module_scope),
         }
     }
-    let module_bound = module_scope.bound.clone();
-
     // Pass 2: classify scopes top-down; parents pass their binding sets down
     // the enclosing-function chain (class scopes join only as suggestion
     // legs — S-02-5). The module scope itself resolves once, whole; the
     // module bindings are the base leg of EVERY scope's chain.
-    let mut v = Verifier { diags: Vec::new() };
+    // B3: the module leg is built ONCE (moved, not cloned, out of the
+    // module scope after its own resolution) and Rc-shared into every child
+    // chain (the old form cloned the full module binding Vec per def item).
+    let mut v = Verifier {
+        diags: Vec::new(),
+        module_leg: fn_leg(Vec::new()),
+    };
     v.resolve_scope(&module_scope, "<module>", &Vec::new());
-    let module_leg = fn_leg(module_bound);
+    let module_leg = fn_leg(std::mem::take(&mut module_scope.bound));
+    v.module_leg = module_leg.clone();
     for item in &module.items {
         match item {
-            Item::FnDef(f) => v.verify_fn(f, &[], &module_scope, &vec![module_leg.clone()]),
-            Item::ClassDef(c) => v.verify_class(c, &[], &module_scope, &vec![module_leg.clone()]),
-            Item::Stmt(s) => v.nested_module_stmt(s, &module_scope, &vec![module_leg.clone()]),
+            Item::FnDef(f) => v.verify_fn(f, &[], &vec![module_leg.clone()]),
+            Item::ClassDef(c) => v.verify_class(c, &[], &vec![module_leg.clone()]),
+            Item::Stmt(s) => v.nested_module_stmt(s, &vec![module_leg.clone()]),
         }
     }
     v.diags
@@ -371,6 +376,15 @@ struct ScopeData {
     /// (name, index) of every `del NAME` — kills prior definite binds
     /// (del-then-read is CPython-verified UnboundLocalError).
     del_marks: Vec<(String, usize)>,
+    /// F5 (memperf wave 3): sidecar indexes for the hot membership scans.
+    /// `bound`/`definite_binds`/`del_marks` stay the source of truth (all
+    /// pushes go through the note_* helpers below); these give O(1) /
+    /// per-name iteration in `is_bound` / `has_binding_before` / del checks,
+    /// which were linear scans over the WHOLE scope name set per load —
+    /// O(names^2) per module for large stdlib scopes.
+    bound_set: std::collections::HashSet<String>,
+    definite_by_name: std::collections::HashMap<String, Vec<usize>>,
+    dels_by_name: std::collections::HashMap<String, Vec<usize>>,
     /// Monotonic position counter for the collection walk.
     pos: usize,
 }
@@ -415,40 +429,69 @@ fn iter_definitely_binds(it: &Expr) -> bool {
 }
 
 impl ScopeData {
-    fn bind(&mut self, n: &str) {
-        if !self.bound.iter().any(|b| b == n) {
-            self.bound.push(n.to_string());
+    fn bind(&mut self, name: &str) {
+        // F5: the bound_set sidecar doubles as the dedupe probe.
+        // contains-first: repeated binds (the hot case) cost one hash probe
+        // and ZERO allocations; only a first-time name pays the Strings.
+        // Vec push order (externally observed) is unchanged.
+        if self.bound_set.contains(name) {
+            return;
         }
+        self.bound_set.insert(name.to_string());
+        self.bound.push(name.to_string());
     }
     /// A DEFINITE binding at the current walk position.
     fn bind_definite(&mut self, n: &str) {
         self.bind(n);
-        self.definite_binds.push((n.to_string(), self.pos));
+        self.note_definite(n.to_string(), self.pos);
         self.pos += 1;
+    }
+    /// Register a definite-bind (name, idx) in the Vec + F5 per-name index.
+    /// All definite_binds pushes go through here so the sidecar stays exact.
+    fn note_definite(&mut self, n: String, idx: usize) {
+        self.definite_by_name
+            .entry(n.clone())
+            .or_default()
+            .push(idx);
+        self.definite_binds.push((n, idx));
+    }
+    /// Register a del-mark (name, idx) in the Vec + F5 per-name index.
+    fn note_del(&mut self, n: String, idx: usize) {
+        self.dels_by_name.entry(n.clone()).or_default().push(idx);
+        self.del_marks.push((n, idx));
     }
     fn load(&mut self, n: &str) {
         self.loads.push((n.to_string(), self.pos));
         self.pos += 1;
     }
     fn is_bound(&self, n: &str) -> bool {
-        self.bound.iter().any(|b| b == n)
+        self.bound_set.contains(n)
     }
     /// Any DEFINITE binding recorded BEFORE `idx` and not subsequently
     /// killed by a `del` of the same name (del-then-read is CPython-
     /// verified UnboundLocalError: the del unbinds, so the pre-del bind
     /// no longer protects). A del at the SAME position as a read kills it
     /// (the del statement is the read's predecessor).
+    ///
+    /// F5: same rule, but iterates only the per-name indexes (the old form
+    /// scanned every definite bind AND every del mark of the whole scope
+    /// for every load — O(scope^2)).
     fn has_binding_before(&self, n: &str, idx: usize) -> bool {
+        let Some(binds) = self.definite_by_name.get(n) else {
+            return false;
+        };
         let mut protected = false;
-        for (name, i) in &self.definite_binds {
-            if name != n || *i >= idx {
+        for &i in binds {
+            if i >= idx {
                 continue;
             }
             protected = true;
             // Any del of n at or between this bind and idx kills it.
-            for (dn, di) in &self.del_marks {
-                if dn == n && *di >= *i && *di < idx {
-                    protected = false;
+            if let Some(dels) = self.dels_by_name.get(n) {
+                for &di in dels {
+                    if di >= i && di < idx {
+                        protected = false;
+                    }
                 }
             }
         }
@@ -458,18 +501,27 @@ impl ScopeData {
         self.declared_global.iter().any(|g| g == n) || self.declared_nonlocal.iter().any(|l| l == n)
     }
     fn has_star_import(&self) -> bool {
-        self.bound.iter().any(|b| b == "*")
+        self.bound_set.contains("*")
     }
 }
 
 struct Verifier {
     diags: Vec<Diagnostic>,
+    /// B3: the module-scope binding leg, built once by `verify()` and
+    /// Rc-shared into every child chain (was: a full Vec<String> clone per
+    /// def/class item at verify_fn/verify_class).
+    module_leg: std::rc::Rc<EnclosingLeg>,
 }
 
 /// Enclosing-function chain for resolution: legs innermost-first, module
 /// leg last. Class scopes appear ONLY as suggestion-only legs (S-02-5:
 /// never a free-variable source; their names suppress UnresolvedName the
 /// way CPython's `self.x` suggestion does — G-5).
+///
+/// B3 (memperf wave 3): legs are `Rc`-shared. The old `Vec<EnclosingLeg>`
+/// deep-cloned EVERY ancestor leg's full `Vec<String>` (plus a fresh clone
+/// of the module bindings) per def/class item — O(items x chain size)
+/// allocation per module. Cloning the chain is now a Vec of refcount bumps.
 #[derive(Debug, Clone)]
 struct EnclosingLeg {
     names: Vec<String>,
@@ -477,20 +529,20 @@ struct EnclosingLeg {
     is_class: bool,
 }
 
-type Enclosing = Vec<EnclosingLeg>;
+type Enclosing = Vec<std::rc::Rc<EnclosingLeg>>;
 
-fn fn_leg(names: Vec<String>) -> EnclosingLeg {
-    EnclosingLeg {
+fn fn_leg(names: Vec<String>) -> std::rc::Rc<EnclosingLeg> {
+    std::rc::Rc::new(EnclosingLeg {
         names,
         is_class: false,
-    }
+    })
 }
 
-fn class_leg(names: Vec<String>) -> EnclosingLeg {
-    EnclosingLeg {
+fn class_leg(names: Vec<String>) -> std::rc::Rc<EnclosingLeg> {
+    std::rc::Rc::new(EnclosingLeg {
         names,
         is_class: true,
-    }
+    })
 }
 
 impl Verifier {
@@ -530,7 +582,9 @@ impl Verifier {
         if scope.has_star_import() {
             return; // `from m import *` may provide any name (conservative)
         }
-        let mut reported: Vec<(String, usize)> = Vec::new();
+        // F5: the reported-set sidecar replaces the old linear
+        // `reported.iter().any(|(r,_)| r == load)` scan (per-load O(scope)).
+        let mut reported_set: std::collections::HashSet<String> = std::collections::HashSet::new();
         // Per-name read ordinal (the frontend map indexes reads per name).
         let mut name_ordinals: std::collections::BTreeMap<String, usize> =
             std::collections::BTreeMap::new();
@@ -551,17 +605,20 @@ impl Verifier {
                 // idx) with a prior protecting bind, skip: the binding is
                 // live at the del itself; post-del reads carry the flag
                 // (fixture p19 pins the READ site, line 3, not the del line).
-                let is_del_read = scope.del_marks.iter().any(|(n, i)| n == load && *i == *idx)
+                let is_del_read = scope
+                    .dels_by_name
+                    .get(load.as_str())
+                    .is_some_and(|dels| dels.contains(idx))
                     && scope.has_binding_before(load, *idx);
                 if is_del_read {
-                    // Skip WITHOUT recording in `reported`: the post-del read
-                    // must carry the flag + its own position (fixture p19
-                    // pins the READ site line 3, not the del line 2).
+                    // Skip WITHOUT recording in `reported_set`: the post-del
+                    // read must carry the flag + its own position (fixture
+                    // p19 pins the READ site line 3, not the del line 2).
                     continue;
                 }
-                let already = reported.iter().any(|(r, _)| r == load);
+                let already = reported_set.contains(load.as_str());
                 if !scope.has_binding_before(load, *idx) && !already {
-                    reported.push((load.clone(), ordinal));
+                    reported_set.insert(load.clone());
                     if qualname == "<module>" {
                         // Module scope has no fast locals: del-then-read is
                         // the S-02-6 NameError form (fixture p19; G-7's
@@ -617,8 +674,25 @@ impl Verifier {
     /// suggestion distance of `load`? (Cheap over-approximation of the
     /// real engine: edit distance <= 1 by insertion/deletion/substitution,
     /// case-insensitive substitution cost 0.)
+    ///
+    /// F5 (memperf wave 3): edit_distance_le1 already length-gates, but the
+    /// old call paid two `Vec<char>` allocs + a per-char String alloc in
+    /// the substitution loop for EVERY candidate (bound names, every
+    /// enclosing leg, ~150 BUILTINS) per unresolved load. The distance test
+    /// is now allocation-free, and the byte-length gate here rejects all
+    /// but same/adjacent-length candidates before any character work.
     fn has_close_candidate(&self, load: &str, scope: &ScopeData, enclosing: &Enclosing) -> bool {
-        let near = |cand: &str| edit_distance_le1(load, cand);
+        let near = |cand: &str| {
+            // cheap reject: ASCII distance<=1 implies bytelen within 1;
+            // non-ASCII candidates fall through to the exact test.
+            if cand.is_ascii()
+                && load.is_ascii()
+                && (cand.len() + 1 < load.len() || cand.len() > load.len() + 1)
+            {
+                return false;
+            }
+            edit_distance_le1(load, cand)
+        };
         if scope.bound.iter().any(|c| near(c)) {
             return true;
         }
@@ -633,13 +707,7 @@ impl Verifier {
     // -- scope walk ----------------------------------------------------------
 
     /// Verify one function scope; recurse into nested scopes.
-    fn verify_fn(
-        &mut self,
-        f: &FnDef,
-        path: &[String],
-        module: &ScopeData,
-        parent_enclosing: &Enclosing,
-    ) {
+    fn verify_fn(&mut self, f: &FnDef, path: &[String], parent_enclosing: &Enclosing) {
         let mut scope_path: Vec<String> = path.to_vec();
         if !scope_path.is_empty() {
             scope_path.push("<locals>".to_string());
@@ -663,8 +731,8 @@ impl Verifier {
         self.resolve_scope(&scope, &qual, parent_enclosing);
 
         let mut child_enclosing: Enclosing = parent_enclosing.clone();
-        child_enclosing.push(fn_leg(scope.bound.clone()));
-        child_enclosing.push(fn_leg(module.bound.clone()));
+        child_enclosing.push(fn_leg(std::mem::take(&mut scope.bound)));
+        child_enclosing.push(self.module_leg.clone());
 
         // Defaults / decorators / return annotation evaluate in the
         // ENCLOSING scope (S-02-7): classify against the parent chain.
@@ -680,18 +748,12 @@ impl Verifier {
         if let Some(r) = &f.return_ann {
             self.verify_value_expr(&r.expr, &parent_qual, parent_enclosing);
         }
-        self.nested_stmts(&f.body.blocks, &scope_path, module, &child_enclosing);
+        self.nested_stmts(&f.body.blocks, &scope_path, &child_enclosing);
     }
 
     /// Verify one class scope (S-02-5: own namespace, never an enclosing
     /// scope for nested functions).
-    fn verify_class(
-        &mut self,
-        c: &ClassDef,
-        path: &[String],
-        module: &ScopeData,
-        parent_enclosing: &Enclosing,
-    ) {
+    fn verify_class(&mut self, c: &ClassDef, path: &[String], parent_enclosing: &Enclosing) {
         let mut scope_path: Vec<String> = path.to_vec();
         if !scope_path.is_empty() {
             scope_path.push("<locals>".to_string());
@@ -715,14 +777,18 @@ impl Verifier {
             collect_stmt(s, &mut scope);
         }
         let mut enclosing: Enclosing = parent_enclosing.clone();
+        // resolve_scope reads scope.bound (local classification + suggestion
+        // candidates) THROUGH this same leg, so the leg must be a clone, not
+        // a take. It's one Vec clone per class def — the quadratic part
+        // (ancestor chain + module bindings) is now Rc-shared.
         enclosing.push(class_leg(scope.bound.clone()));
-        enclosing.push(fn_leg(module.bound.clone()));
+        enclosing.push(self.module_leg.clone());
         let qual = scope_path.join(".");
         self.resolve_scope(&scope, &qual, &enclosing);
 
         // Nested defs inside the class SKIP the class namespace for free
         // lookups (S-02-5): pass the parent chain through unchanged.
-        self.nested_stmts(&c.body, &scope_path, module, parent_enclosing);
+        self.nested_stmts(&c.body, &scope_path, parent_enclosing);
     }
 
     /// Verify a value expression owned by scope `owner_qual` (defaults,
@@ -735,28 +801,16 @@ impl Verifier {
         self.nested_expr(e, owner_qual, enclosing);
     }
 
-    fn nested_stmts(
-        &mut self,
-        stmts: &[Stmt],
-        path: &[String],
-        module: &ScopeData,
-        enclosing: &Enclosing,
-    ) {
+    fn nested_stmts(&mut self, stmts: &[Stmt], path: &[String], enclosing: &Enclosing) {
         for s in stmts {
-            self.nested_stmt(s, path, module, enclosing);
+            self.nested_stmt(s, path, enclosing);
         }
     }
 
-    fn nested_stmt(
-        &mut self,
-        s: &Stmt,
-        path: &[String],
-        module: &ScopeData,
-        enclosing: &Enclosing,
-    ) {
+    fn nested_stmt(&mut self, s: &Stmt, path: &[String], enclosing: &Enclosing) {
         match s {
-            Stmt::LocalDef(f) => self.verify_fn(f, path, module, enclosing),
-            Stmt::LocalClass(c) => self.verify_class(c, path, module, enclosing),
+            Stmt::LocalDef(f) => self.verify_fn(f, path, enclosing),
+            Stmt::LocalClass(c) => self.verify_class(c, path, enclosing),
             Stmt::Line(_) => {}
             Stmt::Assign(_, v) => self.nested_expr(v, &qual_of(path), enclosing),
             Stmt::AugAssign(t, _, v) => {
@@ -777,19 +831,19 @@ impl Verifier {
             }
             Stmt::If(c, then, els) => {
                 self.nested_expr(c, &qual_of(path), enclosing);
-                self.nested_stmts(then, path, module, enclosing);
-                self.nested_stmts(els, path, module, enclosing);
+                self.nested_stmts(then, path, enclosing);
+                self.nested_stmts(els, path, enclosing);
             }
             Stmt::While(c, body, els) => {
                 self.nested_expr(c, &qual_of(path), enclosing);
-                self.nested_stmts(body, path, module, enclosing);
-                self.nested_stmts(els, path, module, enclosing);
+                self.nested_stmts(body, path, enclosing);
+                self.nested_stmts(els, path, enclosing);
             }
             Stmt::For(t, it, body, els) => {
                 self.nested_target(t, path, enclosing);
                 self.nested_expr(it, &qual_of(path), enclosing);
-                self.nested_stmts(body, path, module, enclosing);
-                self.nested_stmts(els, path, module, enclosing);
+                self.nested_stmts(body, path, enclosing);
+                self.nested_stmts(els, path, enclosing);
             }
             Stmt::With(items, body) => {
                 for i in items {
@@ -798,9 +852,9 @@ impl Verifier {
                         self.nested_target(t, path, enclosing);
                     }
                 }
-                self.nested_stmts(body, path, module, enclosing);
+                self.nested_stmts(body, path, enclosing);
             }
-            Stmt::Try(t) => self.nested_try(t, path, module, enclosing),
+            Stmt::Try(t) => self.nested_try(t, path, enclosing),
             Stmt::Raise(e, cause) => {
                 if let Some(e) = e {
                     self.nested_expr(e, &qual_of(path), enclosing);
@@ -815,7 +869,7 @@ impl Verifier {
                     if let Some(g) = &c.guard {
                         self.nested_expr(g, &qual_of(path), enclosing);
                     }
-                    self.nested_stmts(&c.body, path, module, enclosing);
+                    self.nested_stmts(&c.body, path, enclosing);
                 }
             }
             Stmt::Assert(t, m) => {
@@ -837,22 +891,16 @@ impl Verifier {
         }
     }
 
-    fn nested_try(
-        &mut self,
-        t: &TryStmt,
-        path: &[String],
-        module: &ScopeData,
-        enclosing: &Enclosing,
-    ) {
-        self.nested_stmts(&t.body, path, module, enclosing);
+    fn nested_try(&mut self, t: &TryStmt, path: &[String], enclosing: &Enclosing) {
+        self.nested_stmts(&t.body, path, enclosing);
         for h in &t.handlers {
             if let Some(ty) = &h.ty {
                 self.nested_expr(ty, &qual_of(path), enclosing);
             }
-            self.nested_stmts(&h.body, path, module, enclosing);
+            self.nested_stmts(&h.body, path, enclosing);
         }
-        self.nested_stmts(&t.orelse, path, module, enclosing);
-        self.nested_stmts(&t.finalbody, path, module, enclosing);
+        self.nested_stmts(&t.orelse, path, enclosing);
+        self.nested_stmts(&t.finalbody, path, enclosing);
     }
 
     fn nested_target(&mut self, t: &Target, path: &[String], enclosing: &Enclosing) {
@@ -874,34 +922,41 @@ impl Verifier {
 
     /// Find + verify nested scopes (lambdas, comprehensions) inside a value
     /// expression owned by scope `owner_qual`.
+    ///
+    /// B3 (memperf wave 3): the old recursion re-entered itself through
+    /// `child_exprs` (a Vec<Expr> deep clone per node). Non-scope nodes are
+    /// now walked with an explicit stack of BORROWED children; scope nodes
+    /// (lambda/comprehension) still recurse to switch `owner_qual`. Pop
+    /// order reproduces the old left-to-right preorder exactly, so
+    /// diagnostic emission order (byte-exact contract) is unchanged.
     fn nested_expr(&mut self, e: &Expr, owner_qual: &str, enclosing: &Enclosing) {
-        match e {
-            Expr::Lambda(params, body) => {
-                let qual = format!("{owner_qual}.<locals>.<lambda>");
-                let mut scope = ScopeData::default();
-                for p in &params.params {
-                    scope.bind(&p.name);
+        let mut stack: Vec<&Expr> = Vec::new();
+        stack.push(e);
+        while let Some(cur) = stack.pop() {
+            match cur {
+                Expr::Lambda(params, body) => {
+                    let qual = format!("{owner_qual}.<locals>.<lambda>");
+                    let mut scope = ScopeData::default();
+                    for p in &params.params {
+                        scope.bind(&p.name);
+                    }
+                    collect_expr_loads(body, &mut scope);
+                    self.resolve_scope(&scope, &qual, enclosing);
+                    self.nested_expr(body, &qual, enclosing);
                 }
-                collect_expr_loads(body, &mut scope);
-                self.resolve_scope(&scope, &qual, enclosing);
-                self.nested_expr(body, &qual, enclosing);
-            }
-            Expr::ListComp(elt, clauses) => {
-                self.verify_comp("<listcomp>", elt, None, clauses, owner_qual, enclosing);
-            }
-            Expr::SetComp(elt, clauses) => {
-                self.verify_comp("<setcomp>", elt, None, clauses, owner_qual, enclosing);
-            }
-            Expr::Generator(elt, clauses) => {
-                self.verify_comp("<genexpr>", elt, None, clauses, owner_qual, enclosing);
-            }
-            Expr::DictComp(key, val, clauses) => {
-                self.verify_comp("<dictcomp>", val, Some(key), clauses, owner_qual, enclosing);
-            }
-            other => {
-                for sub in child_exprs(other) {
-                    self.nested_expr(&sub, owner_qual, enclosing);
+                Expr::ListComp(elt, clauses) => {
+                    self.verify_comp("<listcomp>", elt, None, clauses, owner_qual, enclosing);
                 }
+                Expr::SetComp(elt, clauses) => {
+                    self.verify_comp("<setcomp>", elt, None, clauses, owner_qual, enclosing);
+                }
+                Expr::Generator(elt, clauses) => {
+                    self.verify_comp("<genexpr>", elt, None, clauses, owner_qual, enclosing);
+                }
+                Expr::DictComp(key, val, clauses) => {
+                    self.verify_comp("<dictcomp>", val, Some(key), clauses, owner_qual, enclosing);
+                }
+                other => push_child_expr_refs(other, &mut stack),
             }
         }
     }
@@ -960,7 +1015,7 @@ impl Verifier {
         }
     }
 
-    fn nested_module_stmt(&mut self, s: &Stmt, module: &ScopeData, enclosing: &Enclosing) {
+    fn nested_module_stmt(&mut self, s: &Stmt, enclosing: &Enclosing) {
         let qual = "<module>";
         match s {
             Stmt::Assign(_, v) => self.nested_expr(v, qual, enclosing),
@@ -980,20 +1035,20 @@ impl Verifier {
             Stmt::If(c, then, els) => {
                 self.nested_expr(c, qual, enclosing);
                 for st in then.iter().chain(els.iter()) {
-                    self.nested_module_stmt(st, module, enclosing);
+                    self.nested_module_stmt(st, enclosing);
                 }
             }
             Stmt::While(c, body, els) => {
                 self.nested_expr(c, qual, enclosing);
                 for st in body.iter().chain(els.iter()) {
-                    self.nested_module_stmt(st, module, enclosing);
+                    self.nested_module_stmt(st, enclosing);
                 }
             }
             Stmt::For(t, it, body, els) => {
                 self.nested_target(t, &[qual.to_string()], enclosing);
                 self.nested_expr(it, qual, enclosing);
                 for st in body.iter().chain(els.iter()) {
-                    self.nested_module_stmt(st, module, enclosing);
+                    self.nested_module_stmt(st, enclosing);
                 }
             }
             Stmt::With(items, body) => {
@@ -1004,7 +1059,7 @@ impl Verifier {
                     }
                 }
                 for st in body {
-                    self.nested_module_stmt(st, module, enclosing);
+                    self.nested_module_stmt(st, enclosing);
                 }
             }
             Stmt::Try(t) => {
@@ -1014,14 +1069,14 @@ impl Verifier {
                     .chain(t.orelse.iter())
                     .chain(t.finalbody.iter())
                 {
-                    self.nested_module_stmt(st, module, enclosing);
+                    self.nested_module_stmt(st, enclosing);
                 }
                 for h in &t.handlers {
                     if let Some(ty) = &h.ty {
                         self.nested_expr(ty, qual, enclosing);
                     }
                     for st in &h.body {
-                        self.nested_module_stmt(st, module, enclosing);
+                        self.nested_module_stmt(st, enclosing);
                     }
                 }
             }
@@ -1040,7 +1095,7 @@ impl Verifier {
                         self.nested_expr(g, qual, enclosing);
                     }
                     for st in &c.body {
-                        self.nested_module_stmt(st, module, enclosing);
+                        self.nested_module_stmt(st, enclosing);
                     }
                 }
             }
@@ -1086,7 +1141,7 @@ fn merge_conditional(inner: &ScopeData, outer: &mut ScopeData) {
 fn merge_definite(inner: &ScopeData, outer: &mut ScopeData) {
     for (name, i) in &inner.definite_binds {
         outer.bind(name);
-        outer.definite_binds.push((name.clone(), outer.pos + i));
+        outer.note_definite(name.clone(), outer.pos + i);
     }
     for n in &inner.bound {
         outer.bind(n);
@@ -1232,7 +1287,7 @@ fn collect_stmt(s: &Stmt, scope: &mut ScopeData) {
                     !handlers.is_empty() && handlers.iter().all(|h| h.is_bound(name));
                 if all_handlers_bind {
                     scope.bind(name);
-                    scope.definite_binds.push((name.clone(), bind_base));
+                    scope.note_definite(name.clone(), bind_base);
                 } else {
                     scope.bind(name);
                 }
@@ -1247,7 +1302,7 @@ fn collect_stmt(s: &Stmt, scope: &mut ScopeData) {
                 for (name, _) in &h.definite_binds {
                     if !try_body.is_bound(name) && !handlers.iter().any(|o| !o.is_bound(name)) {
                         scope.bind(name);
-                        scope.definite_binds.push((name.clone(), h_base));
+                        scope.note_definite(name.clone(), h_base);
                     } else {
                         scope.bind(name);
                     }
@@ -1353,7 +1408,7 @@ fn collect_stmt(s: &Stmt, scope: &mut ScopeData) {
                         // statement onward (the del-read itself stays
                         // protected — the bind is live at `del x` — via the
                         // is_del_read skip in resolve_scope).
-                        scope.del_marks.push((n.clone(), scope.pos));
+                        scope.note_del(n.clone(), scope.pos);
                         scope.load(n);
                     }
                     _ => collect_target_loads(t, scope),
@@ -1745,60 +1800,118 @@ fn leak_comp_walrus_binds(inner: &ScopeData, outer: &mut ScopeData) {
 /// Immediate child expressions of a non-scope expression (structural walk
 /// for nested-scope discovery). Does NOT descend into lambda/comp bodies
 /// (callers handle those as scopes).
-fn child_exprs(e: &Expr) -> Vec<Expr> {
+///
+/// B3 (memperf wave 3): the old `child_exprs` returned `Vec<Expr>` — a deep
+/// clone of every child — and the recursive caller held each frame's Vec
+/// alive while recursing, making chained expressions O(n^2) peak live per
+/// module. This pushes the children of `e` as BORROWED references onto a
+/// stack, in REVERSE visit order (pop-from-back then reproduces the exact
+/// left-to-right preorder of the old `for sub in child_exprs(other)`
+/// recursion, which is what fixes diagnostic emission order).
+fn push_child_expr_refs<'a>(e: &'a Expr, stack: &mut Vec<&'a Expr>) {
     match e {
-        Expr::BinOp(_, a, b) => vec![(**a).clone(), (**b).clone()],
-        Expr::UnaryOp(_, x) | Expr::Starred(x) | Expr::Await(x) | Expr::DictExpand(x) => {
-            vec![(**x).clone()]
+        Expr::BinOp(_, a, b) => {
+            stack.push(b);
+            stack.push(a);
         }
-        Expr::BoolOp(_, xs) | Expr::List(xs) | Expr::Tuple(xs) | Expr::Set(xs) => xs.clone(),
-        Expr::Compare(_, xs) => xs.clone(),
+        Expr::UnaryOp(_, x) | Expr::Starred(x) | Expr::Await(x) | Expr::DictExpand(x) => {
+            stack.push(x)
+        }
+        Expr::BoolOp(_, xs) | Expr::List(xs) | Expr::Tuple(xs) | Expr::Set(xs) => {
+            stack.extend(xs.iter().rev())
+        }
+        Expr::Compare(_, xs) => stack.extend(xs.iter().rev()),
         Expr::Call(f, args) => {
-            let mut out = vec![(**f).clone()];
-            for a in args {
+            for a in args.iter().rev() {
                 match a {
-                    Arg::Pos(x) | Arg::Star(x) | Arg::Kw(_, x) | Arg::KwStar(x) => {
-                        out.push(x.clone())
-                    }
+                    Arg::Pos(x) | Arg::Star(x) | Arg::Kw(_, x) | Arg::KwStar(x) => stack.push(x),
                 }
             }
-            out
+            stack.push(f);
         }
-        Expr::Attribute(obj, _) => vec![(**obj).clone()],
-        Expr::Subscript(o, k) => vec![(**o).clone(), (**k).clone()],
-        Expr::Slice(a, b, c) => [a, b, c]
-            .into_iter()
-            .flatten()
-            .map(|x| (**x).clone())
-            .collect(),
-        Expr::Dict(items) => items
-            .iter()
-            .flat_map(|i| [i.key.clone(), i.value.clone()])
-            .collect(),
-        Expr::FString(parts) => parts
-            .iter()
-            .filter_map(|p| match p {
-                FStrPart::Interp { expr, .. } => Some(expr.clone()),
-                FStrPart::Lit(_) => None,
-            })
-            .collect(),
-        Expr::IfExp(c, t, e) => vec![(**c).clone(), (**t).clone(), (**e).clone()],
-        Expr::Named(a, b) => vec![(**a).clone(), (**b).clone()],
-        Expr::Yield(Some(x)) | Expr::YieldFrom(x) => vec![(**x).clone()],
-        _ => Vec::new(),
+        Expr::Attribute(obj, _) => stack.push(obj),
+        Expr::Subscript(o, k) => {
+            stack.push(k);
+            stack.push(o);
+        }
+        Expr::Slice(a, b, c) => stack.extend([a, b, c].into_iter().rev().flatten().map(|x| &**x)),
+        Expr::Dict(items) => {
+            for i in items.iter().rev() {
+                stack.push(&i.value);
+                stack.push(&i.key);
+            }
+        }
+        Expr::FString(parts) => {
+            for p in parts.iter().rev() {
+                if let FStrPart::Interp { expr, .. } = p {
+                    stack.push(expr);
+                }
+            }
+        }
+        Expr::IfExp(c, t, e) => {
+            stack.push(e);
+            stack.push(t);
+            stack.push(c);
+        }
+        Expr::Named(a, b) => {
+            stack.push(b);
+            stack.push(a);
+        }
+        Expr::Yield(Some(x)) | Expr::YieldFrom(x) => stack.push(x),
+        _ => {}
     }
 }
 
 /// Conservative G-5 distance: true when `a`/`b` are within one edit
 /// (insert/delete/substitute, substitution free when case-insensitively
 /// equal).
+///
+/// F5 (memperf wave 3): allocation-free. The old form collected both names
+/// into `Vec<char>` (2 allocs per call) and — worse — built a lowercase
+/// `String` PER CHARACTER PAIR on the substitution path. Identical length +
+/// content logic; ASCII fast path via bytes, char-by-char walk otherwise.
 fn edit_distance_le1(a: &str, b: &str) -> bool {
-    let a: Vec<char> = a.chars().collect();
-    let b: Vec<char> = b.chars().collect();
     if a == b {
         return true;
     }
     let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    // Byte-length gate: |charlen difference| > 1 implies |bytelen
+    // difference| > 1 EXCEPT when the extra char is multi-byte... byte
+    // length underestimates char count only via multi-byte chars, so a
+    // bytelen gap > 1 can still hide a charlen gap of 1 (e.g. 1-char "é"
+    // vs 2-char "ab"). Keep the exact char-count gate for non-ASCII.
+    if long.is_ascii() && short.is_ascii() {
+        if long.len() - short.len() > 1 {
+            return false;
+        }
+        if short.len() == long.len() {
+            // substitution (or case-only difference), ASCII path
+            let mut diffs = 0usize;
+            for (x, y) in short.bytes().zip(long.bytes()) {
+                if !ascii_chars_equal(x, y) {
+                    diffs += 1;
+                    if diffs > 1 {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+        // one insertion/deletion, ASCII path
+        let (sb, lb) = (short.as_bytes(), long.as_bytes());
+        let mut i = 0usize;
+        while i < sb.len() && sb[i] == lb[i] {
+            i += 1;
+        }
+        return sb[i..] == lb[i + 1..];
+    }
+    let a_chars: Vec<char> = a.chars().collect();
+    let b_chars: Vec<char> = b.chars().collect();
+    let (short, long) = if a_chars.len() <= b_chars.len() {
+        (&a_chars[..], &b_chars[..])
+    } else {
+        (&b_chars[..], &a_chars[..])
+    };
     if long.len() - short.len() > 1 {
         return false;
     }
@@ -1807,23 +1920,49 @@ fn edit_distance_le1(a: &str, b: &str) -> bool {
         let diffs: usize = short
             .iter()
             .zip(long.iter())
-            .filter(|(x, y)| {
-                let xs: String = x.to_lowercase().collect();
-                let ys: String = y.to_lowercase().collect();
-                xs != ys
-            })
+            .filter(|(x, y)| !chars_equal(**x, **y))
             .count();
         return diffs <= 1;
     }
     // one insertion/deletion: all chars of `long` minus one must equal `short`
+    // (exact char equality — the old form compared Vec<char> directly, no
+    // case-folding on this path).
     for i in 0..long.len() {
-        let mut candidate = long.clone();
-        candidate.remove(i);
-        if candidate == short {
+        let mut ok = true;
+        for j in 0..short.len() {
+            let c = long[if j < i { j } else { j + 1 }];
+            if short[j] != c {
+                ok = false;
+                break;
+            }
+        }
+        if ok {
             return true;
         }
     }
     false
+}
+
+/// Case-insensitive equality of two chars (old behavior compared
+/// `to_lowercase()` String forms; equivalence here is exact for the
+/// single-char case: `char::to_lowercase` yields one char for every char
+/// except 'İ' (multi-char expansion "i̇") — those never compare equal
+/// under the old String comparison either since the lengths differ).
+#[inline]
+fn chars_equal(x: char, y: char) -> bool {
+    if x == y {
+        return true;
+    }
+    let mut xl = x.to_lowercase();
+    let mut yl = y.to_lowercase();
+    let xa = xl.next();
+    let ya = yl.next();
+    xa == ya && xl.next().is_none() && yl.next().is_none()
+}
+
+#[inline]
+fn ascii_chars_equal(x: u8, y: u8) -> bool {
+    x.eq_ignore_ascii_case(&y)
 }
 
 // ===========================================================================
@@ -2966,4 +3105,192 @@ fn big_pow(a: &IntVal, exp: u32) -> Option<IntVal> {
         }
     }
     Some(result)
+}
+
+// ===========================================================================
+// Unit tests (memperf wave 3 regressions)
+// ===========================================================================
+
+#[cfg(test)]
+mod perf_regressions {
+    use super::*;
+
+    /// Reference implementation of the PRE-F5 `edit_distance_le1`
+    /// (Vec<char> + per-char String lowercase comparison), kept verbatim so
+    /// the allocation-free rewrite can be differentially checked over the
+    /// whole BUILTINS table, the fixture name space, and adversarial shapes.
+    fn edit_distance_le1_old(a: &str, b: &str) -> bool {
+        let a: Vec<char> = a.chars().collect();
+        let b: Vec<char> = b.chars().collect();
+        if a == b {
+            return true;
+        }
+        let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+        if long.len() - short.len() > 1 {
+            return false;
+        }
+        if short.len() == long.len() {
+            let diffs: usize = short
+                .iter()
+                .zip(long.iter())
+                .filter(|(x, y)| {
+                    let xs: String = x.to_lowercase().collect();
+                    let ys: String = y.to_lowercase().collect();
+                    xs != ys
+                })
+                .count();
+            return diffs <= 1;
+        }
+        for i in 0..long.len() {
+            let mut candidate = long.clone();
+            candidate.remove(i);
+            if candidate == short {
+                return true;
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn edit_distance_le1_matches_reference_on_builtins_and_names() {
+        let mut names: Vec<String> = BUILTINS.iter().map(|s| s.to_string()).collect();
+        names.extend([
+            "print".to_string(),
+            "pront".to_string(),
+            "prin".to_string(),
+            "prinn".to_string(),
+            "PRINT".to_string(),
+            "é".to_string(),
+            "ée".to_string(),
+            "eé".to_string(),
+            "éx".to_string(),
+            "xyz".to_string(),
+            "αβγ".to_string(),
+            "αβδ".to_string(),
+            "İ".to_string(),
+            "i̇".to_string(),
+            "a".to_string(),
+            "".to_string(),
+            "ab".to_string(),
+            "aB".to_string(),
+            "Ab".to_string(),
+            "𝛼".to_string(),
+        ]);
+        for a in &names {
+            for b in &names {
+                assert_eq!(
+                    edit_distance_le1(a, b),
+                    edit_distance_le1_old(a, b),
+                    "divergence on ({a:?}, {b:?})"
+                );
+            }
+        }
+    }
+
+    /// F5 sidecar parity: the HashSet/HashMap sidecar answers must equal the
+    /// old linear scans after a realistic bind/load/del interleaving.
+    #[test]
+    fn scope_sidecars_match_linear_scans() {
+        let mut s = ScopeData::default();
+        s.bind_definite("x");
+        s.load("y");
+        s.bind("x");
+        s.bind("y");
+        s.note_del("x".to_string(), s.pos);
+        s.load("x");
+        s.pos += 1;
+        // is_bound parity
+        assert_eq!(s.is_bound("x"), s.bound.iter().any(|b| b == "x"));
+        assert_eq!(s.is_bound("z"), s.bound.iter().any(|b| b == "z"));
+        // has_binding_before parity against the old scan over the Vecs
+        for idx in 0..(s.pos + 2) {
+            for n in ["x", "y", "z"] {
+                let old = {
+                    let mut protected = false;
+                    for (name, i) in &s.definite_binds {
+                        if name != n || *i >= idx {
+                            continue;
+                        }
+                        protected = true;
+                        for (dn, di) in &s.del_marks {
+                            if dn == n && *di >= *i && *di < idx {
+                                protected = false;
+                            }
+                        }
+                    }
+                    protected
+                };
+                assert_eq!(s.has_binding_before(n, idx), old, "n={n} idx={idx}");
+            }
+        }
+    }
+
+    /// B3: the borrowed stack walk must visit child expressions in the same
+    /// order the old recursive `child_exprs` walk did (preorder, left-to-
+    /// right) — diagnostic emission order is a byte-exact contract.
+    #[test]
+    fn child_ref_stack_matches_old_clone_walk_order() {
+        fn old_children(e: &Expr) -> Vec<Expr> {
+            match e {
+                Expr::BinOp(op, a, b) => vec![(**a).clone(), (**b).clone()],
+                Expr::Call(f, args) => {
+                    let mut out = vec![(**f).clone()];
+                    for a in args {
+                        match a {
+                            Arg::Pos(x) | Arg::Star(x) | Arg::Kw(_, x) | Arg::KwStar(x) => {
+                                out.push(x.clone())
+                            }
+                        }
+                    }
+                    out
+                }
+                Expr::Attribute(o, _) => vec![(**o).clone()],
+                Expr::Subscript(o, k) => vec![(**o).clone(), (**k).clone()],
+                Expr::List(xs) | Expr::Tuple(xs) | Expr::Set(xs) | Expr::Compare(_, xs) => {
+                    xs.clone()
+                }
+                _ => Vec::new(),
+            }
+        }
+        fn collect_old(e: &Expr, out: &mut Vec<String>) {
+            out.push(format!("{:?}", std::mem::discriminant(e)));
+            for sub in old_children(e) {
+                collect_old(&sub, out);
+            }
+        }
+        fn collect_new(e: &Expr, out: &mut Vec<String>) {
+            let mut stack = vec![e];
+            while let Some(cur) = stack.pop() {
+                out.push(format!("{:?}", std::mem::discriminant(cur)));
+                push_child_expr_refs(cur, &mut stack);
+            }
+        }
+        // a[0](b, c.d) + [e, f] — nested calls, subscripts, lists
+        let inner = Expr::Call(
+            Box::new(Expr::Subscript(
+                Box::new(Expr::Name("a".into())),
+                Box::new(Expr::LitInt(0)),
+            )),
+            vec![
+                Arg::Pos(Expr::Name("b".into())),
+                Arg::Pos(Expr::Attribute(
+                    Box::new(Expr::Name("c".into())),
+                    "d".into(),
+                )),
+            ],
+        );
+        let outer = Expr::BinOp(
+            BinOp::Add,
+            Box::new(inner),
+            Box::new(Expr::List(vec![
+                Expr::Name("e".into()),
+                Expr::Name("f".into()),
+            ])),
+        );
+        let mut a = Vec::new();
+        let mut b = Vec::new();
+        collect_old(&outer, &mut a);
+        collect_new(&outer, &mut b);
+        assert_eq!(a, b);
+    }
 }

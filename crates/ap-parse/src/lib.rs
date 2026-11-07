@@ -103,65 +103,84 @@ pub fn collect_stmt_lines(ast: &ModuleAst) -> Vec<usize> {
     use ruff_python_ast as rast;
     use ruff_text_size::Ranged;
 
-    fn offset_to_line(source: &str, off: usize) -> usize {
-        source[..off.min(source.len())]
-            .bytes()
-            .filter(|&b| b == b'\n')
-            .count()
-            + 1
+    // B2 (memperf wave 3): build the line-start index ONCE and binary-search
+    // it per node. The old form re-counted every newline in `source[..off]`
+    // per statement — O(file) per node, O(file^2) per module — the identical
+    // bug the Lowerer's `line_starts`/`line_at` pair already fixed
+    // (see lowering.rs `Lowerer::line_at`; same 1-based semantics).
+    let source = ast.source();
+    let mut line_starts: Vec<usize> = Vec::with_capacity(64);
+    line_starts.push(0usize);
+    for (i, byte) in source.bytes().enumerate() {
+        if byte == b'\n' {
+            line_starts.push(i + 1);
+        }
     }
-    fn walk_body(body: &[rast::Stmt], source: &str, out: &mut Vec<usize>) {
+
+    fn offset_to_line(line_starts: &[usize], off: usize) -> usize {
+        match line_starts.binary_search(&off) {
+            Ok(i) => i + 1,
+            Err(i) => i, // off is inside line i-1 (line_starts[i-1] < off)
+        }
+    }
+    fn walk_body(
+        body: &[rast::Stmt],
+        line_starts: &[usize],
+        source_len: usize,
+        out: &mut Vec<usize>,
+    ) {
+        let off = |node: &dyn Ranged| node.start().to_u32() as usize;
         for s in body {
-            out.push(offset_to_line(source, s.start().to_u32() as usize));
+            out.push(offset_to_line(line_starts, off(s).min(source_len)));
             match s {
                 rast::Stmt::If(i) => {
-                    walk_body(&i.body, source, out);
+                    walk_body(&i.body, line_starts, source_len, out);
                     for c in &i.elif_else_clauses {
-                        out.push(offset_to_line(source, c.start().to_u32() as usize));
-                        walk_body(&c.body, source, out);
+                        out.push(offset_to_line(line_starts, off(c).min(source_len)));
+                        walk_body(&c.body, line_starts, source_len, out);
                     }
                 }
                 rast::Stmt::While(w) => {
-                    walk_body(&w.body, source, out);
-                    walk_body(&w.orelse, source, out);
+                    walk_body(&w.body, line_starts, source_len, out);
+                    walk_body(&w.orelse, line_starts, source_len, out);
                 }
                 rast::Stmt::For(f) => {
-                    walk_body(&f.body, source, out);
-                    walk_body(&f.orelse, source, out);
+                    walk_body(&f.body, line_starts, source_len, out);
+                    walk_body(&f.orelse, line_starts, source_len, out);
                 }
-                rast::Stmt::With(w) => walk_body(&w.body, source, out),
+                rast::Stmt::With(w) => walk_body(&w.body, line_starts, source_len, out),
                 rast::Stmt::Try(t) => {
-                    walk_body(&t.body, source, out);
+                    walk_body(&t.body, line_starts, source_len, out);
                     for h in &t.handlers {
-                        out.push(offset_to_line(source, h.start().to_u32() as usize));
+                        out.push(offset_to_line(line_starts, off(h).min(source_len)));
                         let rast::ExceptHandler::ExceptHandler(hi) = h;
-                        walk_body(&hi.body, source, out);
+                        walk_body(&hi.body, line_starts, source_len, out);
                     }
-                    walk_body(&t.orelse, source, out);
-                    walk_body(&t.finalbody, source, out);
+                    walk_body(&t.orelse, line_starts, source_len, out);
+                    walk_body(&t.finalbody, line_starts, source_len, out);
                 }
                 rast::Stmt::Match(m) => {
                     for c in &m.cases {
-                        out.push(offset_to_line(source, c.start().to_u32() as usize));
-                        walk_body(&c.body, source, out);
+                        out.push(offset_to_line(line_starts, off(c).min(source_len)));
+                        walk_body(&c.body, line_starts, source_len, out);
                     }
                 }
                 rast::Stmt::FunctionDef(f) => {
                     let body_line = f
                         .body
                         .first()
-                        .map(|s| offset_to_line(source, s.start().to_u32() as usize))
+                        .map(|s| offset_to_line(line_starts, off(s).min(source_len)))
                         .unwrap_or(1);
                     out.push(body_line);
-                    walk_body(&f.body, source, out);
+                    walk_body(&f.body, line_starts, source_len, out);
                 }
-                rast::Stmt::ClassDef(c) => walk_body(&c.body, source, out),
+                rast::Stmt::ClassDef(c) => walk_body(&c.body, line_starts, source_len, out),
                 _ => {}
             }
         }
     }
     let mut out = Vec::new();
-    walk_body(&ast.module().body, ast.source(), &mut out);
+    walk_body(&ast.module().body, &line_starts, source.len(), &mut out);
     out
 }
 
@@ -350,5 +369,84 @@ mod tests {
             err.message,
             "Positional argument cannot follow keyword argument"
         );
+    }
+
+    /// B2 regression: the line_starts+binary-search rewrite of
+    /// `collect_stmt_lines` must equal the OLD O(n^2) definition
+    /// (1 + count of '\n' before each statement start, same pre-order walk)
+    /// on a mixed-shape source covering every compound-statement branch of
+    /// the walker.
+    #[test]
+    fn collect_stmt_lines_matches_brute_force() {
+        let src = "x = 1\n\
+def f(a):\n    if a:\n        y = 2\n    elif a > 1:\n        y = 3\n    else:\n        y = 4\n    while y:\n        break\n    for i in range(3):\n        pass\n    try:\n        z = 5\n    except Exception:\n        pass\n    else:\n        pass\n    finally:\n        pass\n    match y:\n        case 1:\n            pass\n    with open('f') as g:\n        pass\n    return y\n\nclass C:\n    def m(self):\n        return [i for i in range(2)]\n";
+        let ast = parse(src).unwrap();
+        let got = collect_stmt_lines(&ast);
+
+        // Oracle: independent naive re-implementation of the documented
+        // walk with per-offset newline counting (the pre-B2 shape).
+        fn naive_line(src: &str, off: usize) -> usize {
+            src[..off.min(src.len())]
+                .bytes()
+                .filter(|&b| b == b'\n')
+                .count()
+                + 1
+        }
+        use ruff_python_ast as rast;
+        use ruff_text_size::Ranged;
+        fn walk(src: &str, body: &[rast::Stmt], out: &mut Vec<usize>) {
+            for s in body {
+                out.push(naive_line(src, s.start().to_u32() as usize));
+                match s {
+                    rast::Stmt::If(i) => {
+                        walk(src, &i.body, out);
+                        for c in &i.elif_else_clauses {
+                            out.push(naive_line(src, c.start().to_u32() as usize));
+                            walk(src, &c.body, out);
+                        }
+                    }
+                    rast::Stmt::While(w) => {
+                        walk(src, &w.body, out);
+                        walk(src, &w.orelse, out);
+                    }
+                    rast::Stmt::For(f) => {
+                        walk(src, &f.body, out);
+                        walk(src, &f.orelse, out);
+                    }
+                    rast::Stmt::With(w) => walk(src, &w.body, out),
+                    rast::Stmt::Try(t) => {
+                        walk(src, &t.body, out);
+                        for h in &t.handlers {
+                            out.push(naive_line(src, h.start().to_u32() as usize));
+                            let rast::ExceptHandler::ExceptHandler(hi) = h;
+                            walk(src, &hi.body, out);
+                        }
+                        walk(src, &t.orelse, out);
+                        walk(src, &t.finalbody, out);
+                    }
+                    rast::Stmt::Match(m) => {
+                        for c in &m.cases {
+                            out.push(naive_line(src, c.start().to_u32() as usize));
+                            walk(src, &c.body, out);
+                        }
+                    }
+                    rast::Stmt::FunctionDef(f) => {
+                        let body_line = f
+                            .body
+                            .first()
+                            .map(|s| naive_line(src, s.start().to_u32() as usize))
+                            .unwrap_or(1);
+                        out.push(body_line);
+                        walk(src, &f.body, out);
+                    }
+                    rast::Stmt::ClassDef(c) => walk(src, &c.body, out),
+                    _ => {}
+                }
+            }
+        }
+        let mut want = Vec::new();
+        walk(src, &ast.module().body, &mut want);
+        assert!(!got.is_empty());
+        assert_eq!(got, want, "binary-search lines diverge from naive count");
     }
 }
