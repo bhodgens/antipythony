@@ -1619,13 +1619,8 @@ pub fn call_method(
         // Wave-108: remaining in-place list surface (StackSummary.reverse in
         // traceback formatting; sort/insert/index/count/extend same family).
         (Value::List(l), "reverse") => {
-            let len = l.len();
-            for i in 0..len / 2 {
-                let a = l.get(i).unwrap();
-                let b = l.get(len - 1 - i).unwrap();
-                l.set_at(i, b);
-                l.set_at(len - 1 - i, a);
-            }
+            // D2 (memperf audit 2026-11-06): single in-place reverse.
+            l.reverse_in_place();
             Some(Ok(Value::None))
         }
         (Value::List(l), "sort") => {
@@ -1661,15 +1656,9 @@ pub fn call_method(
                 } else {
                     idx_v.min(len)
                 } as usize;
-                // v0 PyList has no insert: rebuild tail.
-                let tail: Vec<Value> = l.items()[idx.min(l.len())..].to_vec();
-                if idx < l.len() {
-                    l.remove_range(idx, l.len());
-                }
-                l.append(args[1].clone());
-                for it in tail {
-                    l.append(it);
-                }
+                // D2 (memperf audit 2026-11-06): in-place insert (was:
+                // tail clone + remove_range + re-append).
+                l.insert_at(idx.min(l.len()), args[1].clone());
             }
             Some(Ok(Value::None))
         }

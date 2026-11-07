@@ -16123,6 +16123,8 @@ pub fn call_builtin_values(
                                 }
                             });
                             items = wrapped.into_iter().map(|(_, v)| v).collect();
+                            // D2: batch in-place rewrite (one clear + appends
+                            // instead of per-element clones on a fresh Vec).
                             l.clear();
                             for x in items {
                                 l.append(x);
@@ -16215,14 +16217,10 @@ pub fn call_builtin_values(
                     .ok_or_else(|| raise("TypeError", "insert expected 2 arguments"))?;
                 let v = a(2).ok_or_else(|| raise("TypeError", "insert expected 2 arguments"))?;
                 if let Value::List(l) = &recv {
-                    let items = l.items().to_vec();
-                    let mut all = items;
-                    let idx = (idx.max(0) as usize).min(all.len());
-                    all.insert(idx, v);
-                    l.clear();
-                    for x in all {
-                        l.append(x);
-                    }
+                    // D2 (memperf audit 2026-11-06): in-place insert — the
+                    // old path cloned the whole list, cleared, re-appended.
+                    let idx = (idx.max(0) as usize).min(l.len());
+                    l.insert_at(idx, v);
                     return Ok(Value::None);
                 }
                 Err(raise(
@@ -16236,22 +16234,17 @@ pub fn call_builtin_values(
             }
             ("pylist", "pop") => {
                 if let Value::List(l) = &recv {
-                    let mut items = l.items().to_vec();
                     let idx = match a(1) {
                         Some(iv) => as_int_i64(&iv)?,
                         None => -1,
                     };
-                    let n = items.len() as i64;
+                    let n = l.len() as i64;
                     let real = if idx < 0 { n + idx } else { idx };
                     if real < 0 || real >= n {
                         return Err(raise("IndexError", "pop index out of range"));
                     }
-                    let out = items.remove(real as usize);
-                    l.clear();
-                    for x in items {
-                        l.append(x);
-                    }
-                    return Ok(out);
+                    // D2: in-place remove — no full-list clone round trip.
+                    return Ok(l.remove_take(real as usize));
                 }
                 Err(raise(
                     "SystemError",
@@ -16266,15 +16259,12 @@ pub fn call_builtin_values(
                 let v =
                     a(1).ok_or_else(|| raise("TypeError", "remove expected at least 1 argument"))?;
                 if let Value::List(l) = &recv {
-                    let items = l.items().to_vec();
-                    let mut all = items;
-                    for (idx, x) in all.iter().enumerate() {
+                    let items = l.items();
+                    for (idx, x) in items.iter().enumerate() {
                         if py_eq(x, &v) {
-                            all.remove(idx);
-                            l.clear();
-                            for y in all {
-                                l.append(y);
-                            }
+                            drop(items);
+                            // D2: in-place remove by index.
+                            l.remove_take(idx);
                             return Ok(Value::None);
                         }
                     }
@@ -16309,12 +16299,8 @@ pub fn call_builtin_values(
             }
             ("pylist", "reverse") => {
                 if let Value::List(l) = &recv {
-                    let mut items = l.items().to_vec();
-                    items.reverse();
-                    l.clear();
-                    for x in items {
-                        l.append(x);
-                    }
+                    // D2: in-place reverse — no clone/clear/re-append.
+                    l.reverse_in_place();
                     return Ok(Value::None);
                 }
                 Err(raise(

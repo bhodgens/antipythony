@@ -369,6 +369,28 @@ impl PyList {
         }
     }
 
+    /// D2 (memperf audit 2026-11-06): in-place `xs.insert(i, v)` under one
+    /// borrow (caller clamps the index). The old path copied the whole list
+    /// out, inserted, cleared, and re-appended — O(n) clones per op,
+    /// O(n²) for `insert(0, x)` loops.
+    pub fn insert_at(&self, i: usize, v: Value) {
+        let n = self.items.borrow().len() + 1;
+        self.reserve_for(n);
+        self.items.borrow_mut().insert(i, v);
+    }
+
+    /// D2: in-place `xs.remove(i)` returning the removed value
+    /// (caller validated the index).
+    pub fn remove_take(&self, i: usize) -> Value {
+        let mut b = self.items.borrow_mut();
+        b.remove(i)
+    }
+
+    /// D2: in-place `xs.reverse()` under one borrow.
+    pub fn reverse_in_place(&self) {
+        self.items.borrow_mut().reverse();
+    }
+
     /// `xs.clear()`.
     pub fn clear(&self) {
         self.items.borrow_mut().clear();
