@@ -315,3 +315,11 @@ serial runs.
 "ok: peak RSS 29MB <= 512MB cap; stdout marker present" (231s of probe,
 fence deadline 600s untouched) + fence_kill_path_is_live
 "ok: kill path fired (memory: child RSS reached 514MB, over the 8MB fence)".
+
+## INDEPENDENT ORCHESTRATOR VERIFY (2026-11-07)
+Adversarial re-run of the full fence suite on the COMBINED tree
+(0858b53 fence fix + memperf commits bc73b87..0eff19f + uncommitted
+W1 WIP in ap-run/src builtins/builtins_modules/format/methods):
+`cargo test -p ap-cli --test ast_getattr_fence --release` ->
+`test result: ok. 2 passed; 0 failed` (wall 8498s = gate-lock queue
+behind W1 differential suites; test itself passed). Fence leaf CLOSED.
