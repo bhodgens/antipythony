@@ -23,8 +23,7 @@ use ap_obj::PyException;
 /// Host callbacks the JIT'd code needs but ap-run owns (entry-hook seam).
 pub struct HostCallbacks {
     /// Resolve a global name (module globals → builtins chain, S-02-1).
-    pub load_global:
-        fn(ctx: &mut ExecCtx, name_idx: u32, dst_slot: u32) -> Result<(), PyException>,
+    pub load_global: fn(ctx: &mut ExecCtx, name_idx: u32, dst_slot: u32) -> Result<(), PyException>,
     /// Call a Python-visible callable (ap-run's frame machinery).
     pub call: fn(
         ctx: &mut ExecCtx,
@@ -34,8 +33,12 @@ pub struct HostCallbacks {
         dst_slot: u32,
     ) -> Result<(), PyException>,
     /// Attribute load (S-03-9 getattribute/MRO/descriptor protocol).
-    pub load_attr:
-        fn(ctx: &mut ExecCtx, obj_slot: u32, name_idx: u32, dst_slot: u32) -> Result<(), PyException>,
+    pub load_attr: fn(
+        ctx: &mut ExecCtx,
+        obj_slot: u32,
+        name_idx: u32,
+        dst_slot: u32,
+    ) -> Result<(), PyException>,
     /// Attribute store (S-03-10 setattr).
     pub store_attr:
         fn(ctx: &mut ExecCtx, obj_slot: u32, name_idx: u32, v_slot: u32) -> Result<(), PyException>,
@@ -60,6 +63,8 @@ pub struct ExecCtx {
     pub match_region: u32,
     /// The exception object bound by MatchExc (host reads for `as n`).
     pub matched_exc: Option<PyException>,
+    /// stdout accumulator (h_print writes; the host drains).
+    pub out: Vec<u8>,
     /// Host callbacks (see [`HostCallbacks`]).
     pub host: HostCallbacks,
 }
@@ -75,6 +80,7 @@ impl ExecCtx {
             exc_stack: Vec::new(),
             match_region: u32::MAX,
             matched_exc: None,
+            out: Vec::new(),
             host,
         }
     }
@@ -114,14 +120,17 @@ pub const OP_BOR: i64 = 10;
 pub const OP_BXOR: i64 = 11;
 pub const OP_BAND: i64 = 12;
 
-fn decode_binop(op: i64) -> ap_ir::expr::BinOp {
-    use ap_ir::expr::BinOp::*;
+fn decode_binop(op: i64) -> ap_obj::ops::BinOp {
+    use ap_obj::ops::BinOp::*;
     match op {
         OP_ADD => Add,
         OP_SUB => Sub,
         OP_MUL => Mul,
-        OP_MATMUL => MatMul,
-        OP_DIV => Div,
+        // MatMul has no ap-obj arm (S-01 spec 05: TypeError outside
+        // numpy-likes) — unreachable via the encoder (cfg stage rejects
+        // it before lowering; encoder keeps the ABI slot reserved).
+        OP_MATMUL => Add,
+        OP_DIV => TrueDiv,
         OP_FLOORDIV => FloorDiv,
         OP_MOD => Mod,
         OP_POW => Pow,
@@ -232,8 +241,8 @@ fn a_ptr_eq(a: &Value, b: &Value) -> bool {
         (Value::None, Value::None) => true,
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::Ellipsis, Value::Ellipsis) => true,
-        // Gc-backed arms: same allocation ⇒ same object.
-        (Value::Str(x), Value::Str(y)) => std::ptr::eq(x.as_ptr(), y.as_ptr()),
+        // Gc-backed arms (Gc<T> = Rc<T>): same allocation ⇒ same object.
+        (Value::Str(x), Value::Str(y)) => std::rc::Rc::ptr_eq(x, y),
         _ => false,
     }
 }
@@ -268,7 +277,12 @@ pub extern "C" fn h_load_global(ctx: &mut ExecCtx, name_idx: u32, dst: u32) -> H
 }
 
 /// Attribute load through the host seam (S-03-9).
-pub extern "C" fn h_load_attr(ctx: &mut ExecCtx, obj: u32, name_idx: u32, dst: u32) -> HelperStatus {
+pub extern "C" fn h_load_attr(
+    ctx: &mut ExecCtx,
+    obj: u32,
+    name_idx: u32,
+    dst: u32,
+) -> HelperStatus {
     match (ctx.host.load_attr)(ctx, obj, name_idx, dst) {
         Ok(()) => 0,
         Err(e) => park_exc(ctx, e),
@@ -400,14 +414,16 @@ pub extern "C" fn h_const_float(ctx: &mut ExecCtx, dst: u32, bits: i64) -> Helpe
 /// `ptr` points at a static byte payload in the JIT data section (alive
 /// for the module's lifetime — the JitFunc owns the blob).
 pub extern "C" fn h_const_str(ctx: &mut ExecCtx, dst: u32, ptr: i64, len: i64) -> HelperStatus {
-    let bytes =
-        unsafe { std::slice::from_raw_parts(ptr as *const u8, len as usize) };
+    let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, len as usize) };
     match std::str::from_utf8(bytes) {
         Ok(s) => {
             ctx.slots[dst as usize] = Value::Str(ap_obj::PyString::new(s));
             0
         }
-        Err(_) => park_exc(ctx, PyException::new("SystemError", "non-UTF8 string constant")),
+        Err(_) => park_exc(
+            ctx,
+            PyException::new("SystemError", "non-UTF8 string constant"),
+        ),
     }
 }
 
@@ -420,7 +436,10 @@ pub extern "C" fn h_subscript(ctx: &mut ExecCtx, obj: u32, _idx: u32, _dst: u32)
         ctx,
         PyException::new(
             "SystemError",
-            format!("Subscript read not supported by baseline JIT yet (got {})", o.type_name()),
+            format!(
+                "Subscript read not supported by baseline JIT yet (got {})",
+                o.type_name()
+            ),
         ),
     )
 }

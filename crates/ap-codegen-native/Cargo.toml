@@ -21,3 +21,6 @@ cranelift-frontend = "0.134"
 cranelift-jit = "0.134"
 cranelift-module = "0.134"
 cranelift-native = "0.134"
+
+[dev-dependencies]
+num-bigint = "0.4"

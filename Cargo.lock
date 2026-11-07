@@ -116,6 +116,7 @@ dependencies = [
  "cranelift-jit",
  "cranelift-module",
  "cranelift-native",
+ "num-bigint",
 ]
 
 [[package]]
