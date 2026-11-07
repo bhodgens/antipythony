@@ -644,6 +644,16 @@ pub fn call_gc(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option
                 // until the next threading dispatch (unbounded growth for
                 // spawn-once workloads).
                 let _ = crate::gcsupport::drain_worker_registrations();
+                // E1-E4 (memperf wave-3 g4): the six process-lifetime
+                // threading tables (LOCALS/THREADS/OBJ_MIRROR/PRIMS/
+                // CANCELLED/OWN_RLOCKS) were insert-only; evict dead rows
+                // on every collect. Runs holding the GIL on the
+                // interpreter thread — evict_stale_tables is a no-op on
+                // non-main callers and has a re-entrancy gate, so the
+                // nested drain it performs cannot recurse via the
+                // allocator threshold. NOT wired on any thread-join path
+                // (join-path wiring regressed before).
+                let _ = crate::threading::evict_stale_tables();
                 let gen = ap_gc_arg(args, 0, 2)?;
                 let found = ap_gc::collect_gen(gen);
                 Ok(i(found as i64))
