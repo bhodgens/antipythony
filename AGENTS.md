@@ -166,9 +166,19 @@ GIL, uv-backed deps at build time. Byte-exact differential conformance vs CPytho
   the hazard fired in production as the W114 _ast.py self-import
   recursion = the codecs.lookup 8.6GB/150MB-per-level leak and the
   `import ast`+parse hang; both fenced-green after the fix);
-  (c) #13 OPEN->leaf dispatched 2026-11-05: native multibyte codecs
-  (_multibytecodec/_codecs_jp/-kr/-cn/-tw; cp932/big5/euc_*/gb*
-  LookupError blocks CJK response.text);
+  (c) #13 CLOSED 2026-11-07: native multibyte CJK codecs COMPLETE (wave
+  a8841dc). ENGINE byte-exact: 1056/1056 encode+decode differential vs
+  CPython 3.14 (24 codecs); differential_probe.py 530/530; e2e w3lib
+  PROBE-GREEN; s037 corpus gate green. Root fixes this wave: gen_tables.py
+  exhaustive enumeration (hand-written ranges had lost euc_jp's JIS X 0208
+  block + johab hanja rows); gb18030 4-byte Gb4Run odometric runs table;
+  iso2022 per-charset table resolution + P1/P2 split + plane-2 removal from
+  _3/_2004 (ref rejects it); codecs.lookup dedupe poisoning FIXED via
+  Frame.frame_id 4th key (Box addr recycling collided same-shaped wrapper
+  modules); utf_7 native + utf_16/32 primitives; CPython-exact
+  UnicodeError message escapes. T1 scrapy CJK response.text blocker
+  CLEARED. GOTCHA: cargo does NOT relink after mbc_tables.rs changes —
+  `cargo clean -p ap-run` before probing or you test stale tables.
   (d) DONE: RSS-fenced probe = ast_getattr_identity_fence.
 - OOM CAMPAIGN #2 CLOSED 2026-11-06 (growth-class sweep; incident + fix
   record docs/oom-bughunt-2026-11-06-{rss-fiber-weakreg,static-growth-class}.md,
