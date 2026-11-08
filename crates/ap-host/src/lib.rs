@@ -111,6 +111,31 @@ pub fn run_with_engine(
     let mut linker: Linker<WasiP1Ctx> = Linker::new(engine);
     wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |c: &mut WasiP1Ctx| c)
         .map_err(|e| HostError::Wasm(e.to_string()))?;
+    // aprt service surface (S-07-41): abort_msg is the unrecoverable
+    // internal-error hook. v1 declares the param as `anyref` — import
+    // matching is by SUBTYPE, so the module's `(ref $str)` argument
+    // matches — and traps without rendering the payload (the host-side
+    // $str reader is 03.05's surface).
+    let abort_ty = wasmtime::FuncType::new(
+        engine,
+        [wasmtime::ValType::Ref(wasmtime::RefType::new(
+            true,
+            wasmtime::HeapType::Any,
+        ))],
+        [],
+    );
+    linker
+        .func_new(
+            "aprt",
+            "abort_msg",
+            abort_ty,
+            |_caller, _params, _results| -> Result<(), wasmtime::Error> {
+                // The param is a (ref $str) GC handle; rendering needs the
+                // 03.05 host-side $str reader. v1: no payload text.
+                Err(wasmtime::Error::msg("aprt: abort_msg called")) // placeholder
+            },
+        )
+        .map_err(|e| HostError::Wasm(e.to_string()))?;
 
     let instance = linker
         .instantiate(&mut store, &module)

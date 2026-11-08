@@ -9,5 +9,6 @@
 //! SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 pub mod lower;
+pub mod types;
 
 pub use lower::{lower_module, CodegenError};
