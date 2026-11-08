@@ -583,10 +583,10 @@ thread_local! {
     /// NESTED_DEDUPE_CAP entries (eviction only costs re-registration of
     /// a long-cold def — semantics unchanged).
     pub static NESTED_DEDUPE:
-        std::cell::RefCell<HashMap<(String, usize, usize), u32>> =
+        std::cell::RefCell<HashMap<(String, usize, usize, u64), u32>> =
         std::cell::RefCell::new(HashMap::new());
     /// Insertion-order ledger for the NESTED_DEDUPE cap (sre.rs style).
-    static NESTED_DEDUPE_ORDER: std::cell::RefCell<Vec<(String, usize, usize)>> =
+    static NESTED_DEDUPE_ORDER: std::cell::RefCell<Vec<(String, usize, usize, u64)>> =
         std::cell::RefCell::new(Vec::new());
 }
 
@@ -594,7 +594,7 @@ thread_local! {
 const NESTED_DEDUPE_CAP: usize = 1024;
 
 /// FIFO-capped insert into NESTED_DEDUPE (oldest key evicted past cap).
-pub fn nested_dedupe_insert(key: (String, usize, usize), id: u32) {
+pub fn nested_dedupe_insert(key: (String, usize, usize, u64), id: u32) {
     NESTED_DEDUPE.with(|d| {
         let mut map = d.borrow_mut();
         if map.contains_key(&key) {
@@ -745,6 +745,7 @@ impl Interpreter {
             defining.scope_path.clone(),
             defining.def_line.get(),
             ast_node,
+            defining.frame_id,
         );
         let existing = NESTED_DEDUPE.with(|d| d.borrow().get(&key).copied());
         if let Some(id) = existing {

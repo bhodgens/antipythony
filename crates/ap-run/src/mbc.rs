@@ -41,8 +41,24 @@ mod mbc_gb18030_4;
 mod mbc_iso2022_spec;
 #[path = "mbc_tables.rs"]
 mod mbc_tables;
+#[path = "mbc_utf7.rs"]
+pub(crate) mod mbc_utf7;
 
-use mbc_gb18030_4::GB18030_4_LINEAR;
+use mbc_gb18030_4::{Gb4Run, ASTRAL_ANCHOR_CP, ASTRAL_ANCHOR_SEQ, GB18030_4_BMP_RUNS};
+
+/// CPython's escape for the offending char in codec error messages:
+/// U+007F..U+00FF -> \xNN; other BMP non-ASCII -> \uNNNN; astral -> \UNNNNNNNN.
+fn msg_char_escape(ch: char) -> String {
+    let cp = ch as u32;
+    if (0x80..0x100).contains(&cp) {
+        format!("\\x{:02x}", cp)
+    } else if cp <= 0xFFFF {
+        format!("\\u{:04x}", cp)
+    } else {
+        format!("\\U{:08x}", cp)
+    }
+}
+
 use mbc_iso2022_spec::{spec_for, Cs, Iso2022Spec, MultibyteKind};
 
 // ===========================================================================
@@ -323,6 +339,45 @@ pub fn mbc_encode(t: &CodecTables, text: &str, errors: &str) -> Result<Vec<u8>, 
     for (i, ch) in text.char_indices() {
         if let Some(bs) = t.enc.get(&(ch as u32)) {
             out.extend_from_slice(bs);
+        } else if t.gb4 {
+            // Issue #13: chars outside the 2-byte table fall to the 4-byte
+            // runs engine (BMP runs + astral odometric anchor, both generated
+            // from CPython 3.14). Unmapped cps still error/replace below.
+            if let Some(seq) = gb4_encode_cp(ch as u32) {
+                out.extend_from_slice(&seq);
+            } else {
+                match handler {
+                    EncHandler::Strict => {
+                        bad = Some((i, i + ch.len_utf8(), ch));
+                        break;
+                    }
+                    EncHandler::Replace => {
+                        // CPython multibytecodec replace emits ONE '?' per
+                        // failing CHARACTER (not per byte).
+                        out.push(b'?');
+                    }
+                    EncHandler::Ignore => {}
+                    EncHandler::BackslashReplace => {
+                        let s = if (ch as u32) < 0x100 {
+                            format!("\\x{:02x}", ch as u32)
+                        } else if (ch as u32) < 0x10000 {
+                            format!("\\u{:04x}", ch as u32)
+                        } else {
+                            format!("\\U{:08x}", ch as u32)
+                        };
+                        out.extend_from_slice(s.as_bytes());
+                    }
+                    EncHandler::XmlCharrefReplace => {
+                        let s = format!("&#{};", ch as u32);
+                        out.extend_from_slice(s.as_bytes());
+                    }
+                    EncHandler::Other => {
+                        known_handler = false;
+                        bad = Some((i, i + ch.len_utf8(), ch));
+                        break;
+                    }
+                }
+            }
         } else {
             match handler {
                 EncHandler::Strict => {
@@ -370,9 +425,12 @@ pub fn mbc_encode(t: &CodecTables, text: &str, errors: &str) -> Result<Vec<u8>, 
         return Err(raise(
             "UnicodeEncodeError",
             format!(
-                "'{}' codec can't encode character '\\u{:04x}' in position {}: illegal multibyte sequence",
+                // CPython escape rule for the offending char in the message:
+                // U+007F..U+00FF -> \\xNN; everything else non-ASCII -> \\uNNNN
+                // (astral chars -> \\UNNNNNNNN).
+                "'{}' codec can't encode character '{}' in position {}: illegal multibyte sequence",
                 t.canon,
-                ch as u32,
+                msg_char_escape(ch),
                 start
             ),
         ));
@@ -519,7 +577,10 @@ fn hz_decode(t: &CodecTables, b: &[u8], errors: &str) -> Result<String, crate::F
                 }
                 continue;
             }
-            let key = format!("{:02x}{:02x}", b[i], b[i + 1]);
+            // Issue #13: HZ payload rows are 7-bit (high-bit STRIPPED) gb2312
+            // pairs — re-add the 0x80 bit before the table lookup (encode
+            // strips it; decode must mirror: 56 50 -> D6 D0 -> 中).
+            let key = format!("{:02x}{:02x}", b[i] | 0x80, b[i + 1] | 0x80);
             match t.dec.get(key.as_str()) {
                 Some(&cp) => {
                     out.push(char::from_u32(cp).unwrap_or('\u{fffd}'));
@@ -580,15 +641,24 @@ fn hz_encode(t: &CodecTables, text: &str, errors: &str) -> Result<Vec<u8>, crate
                 out.extend_from_slice(b"~{");
                 gb = true;
             }
-            out.extend_from_slice(bs);
+            // Issue #13 (orchestrator note): HZ payload rows are the 8-bit
+            // gb2312 pairs with the HIGH BITS STRIPPED (0xA1.. → 0x21..);
+            // emitting the raw 8-bit pair makes hz output raw GBK which is
+            // wrong (ref: '中'.encode('hz') == 7e7b56507e7d).
+            if bs.len() == 2 && bs[0] >= 0xA1 {
+                out.push(bs[0] - 0x80);
+                out.push(bs[1] - 0x80);
+            } else {
+                out.extend_from_slice(bs);
+            }
         } else {
             // error path same as plain encode (strict message at char pos)
             let pos = text.chars().take_while(|&c| c != ch).count();
             return Err(raise(
                 "UnicodeEncodeError",
                 format!(
-                    "'hz' codec can't encode character '\\u{:04x}' in position {}: illegal multibyte sequence",
-                    ch as u32, pos
+                    "'hz' codec can't encode character '{}' in position {}: illegal multibyte sequence",
+                    msg_char_escape(ch), pos
                 ),
             ));
         }
@@ -609,6 +679,9 @@ fn iso_decode(t: &CodecTables, b: &[u8], errors: &str) -> Result<String, crate::
     let mut i = 0usize;
     let n = b.len();
     let mut err_at: Option<(usize, usize, String)> = None; // (start, end, kind)
+                                                           // True after an ESC$)C-style G1-only designation (0x29 = ')'), which does
+                                                           // NOT switch the active payload charset.
+    let mut active_is_g0_ksc = false;
     while i < n {
         // escape matching
         if b[i] == 0x1B {
@@ -617,6 +690,8 @@ fn iso_decode(t: &CodecTables, b: &[u8], errors: &str) -> Result<String, crate::
                 let db = d.bytes;
                 if i + db.len() <= n && &b[i..i + db.len()] == db {
                     cs = d.cs;
+                    // 0x24=('$') 0x29=(')') = the G1-only form ESC$)C
+                    active_is_g0_ksc = db.contains(&0x29);
                     i += db.len();
                     matched = true;
                     break 'desig;
@@ -665,6 +740,29 @@ fn iso_decode(t: &CodecTables, b: &[u8], errors: &str) -> Result<String, crate::
                 out.push(b[i] as char);
                 i += 1;
             }
+            Cs::JisX0201Kana => {
+                // halfwidth kana: single bytes 0x21..0x5F -> U+FF61..
+                if (0x21..=0x5F).contains(&b[i]) {
+                    out.push(char::from_u32(0xFF61 + (b[i] as u32 - 0x21)).unwrap_or('\u{fffd}'));
+                    i += 1;
+                } else {
+                    match handler {
+                        DecHandler::Strict => {
+                            err_at = Some((i, i + 1, "illegal".to_string()));
+                            break;
+                        }
+                        DecHandler::Replace => {
+                            out.push('\u{fffd}');
+                            i += 1;
+                        }
+                        DecHandler::Ignore => i += 1,
+                        DecHandler::Other => {
+                            err_at = Some((i, i + 1, "illegal".to_string()));
+                            break;
+                        }
+                    }
+                }
+            }
             _ => {
                 if i + 1 >= n {
                     match handler {
@@ -688,10 +786,11 @@ fn iso_decode(t: &CodecTables, b: &[u8], errors: &str) -> Result<String, crate::
                 // (probed: iso2022_jp's ESC$)C / iso2022_kr's ESC$)C only
                 // designate G1 — payload stays ASCII until SO).
                 let payload_cs = match cs {
-                    // For the jp family, ESC$)C designates but leaves the
-                    // ACTIVE payload on ASCII (the G1 set is only reachable
-                    // via SO which the jp codecs don't honor).
-                    Cs::Ksc5601 if !spec.shifts => Cs::Ascii,
+                    // Only the ESC$)C G1 designation leaves the payload on
+                    // ASCII in the jp family (KSC reachable via SO only,
+                    // which the jp codecs don't honor). A REAL ESC$(C G0
+                    // switch (iso2022_jp_2) DOES carry KSC payload bytes.
+                    Cs::Ksc5601 if !spec.shifts && active_is_g0_ksc => Cs::Ascii,
                     other => other,
                 };
                 if payload_cs == Cs::Ascii {
@@ -700,12 +799,38 @@ fn iso_decode(t: &CodecTables, b: &[u8], errors: &str) -> Result<String, crate::
                     i += 2;
                     continue;
                 }
-                let key = format!("{:02x}{:02x}", b[i] | 0x80, b[i + 1] | 0x80);
-                // ISO-2022 payload bytes are 0x21..0x7E rows; the underlying
-                // tables are EUC-shaped (0xA1..0xFE), so map: byte | 0x80.
-                let key = format!("{:02x}{:02x}", b[i] | 0x80, b[i + 1] | 0x80);
-                match t.dec.get(key.as_str()) {
-                    Some(&cp) => {
+                // Issue #13 (root fix, decode side): each payload charset
+                // resolves through ITS OWN EUC table, never the codec base
+                // table. JIS X 0212 lives in euc_jp's 0x8F 3-byte rows (its
+                // 2-byte ISO payload pairs rehydrate to 8F-prefixed keys);
+                // KSC/GB/X0213 use their own tables' 2-byte rows.
+                let cs_dec: &CodecTables = match payload_cs {
+                    Cs::JisX0213P1 | Cs::JisX0213P2 => euc_jis_2004(),
+                    Cs::Ksc5601 => euc_kr(),
+                    Cs::Gb2312 => gb2312(),
+                    _ => euc_jp(),
+                };
+                let hi = (b[i] | 0x80) as u8;
+                let lo = (b[i + 1] | 0x80) as u8;
+                // JIS X 0212 payload pairs sit in the 0x8F-prefixed 3-byte
+                // euc_jp rows (0xA1.. lead); 2-byte rows never contain them.
+                let keys: [String; 2] = if payload_cs == Cs::JisX0212 {
+                    [
+                        format!("8f{:02x}{:02x}", hi, lo),
+                        format!("{:02x}{:02x}", hi, lo),
+                    ]
+                } else {
+                    [
+                        format!("{:02x}{:02x}", hi, lo),
+                        format!("8f{:02x}{:02x}", hi, lo),
+                    ]
+                };
+                let hit = keys
+                    .iter()
+                    .find_map(|k| cs_dec.dec.get(k.as_str()).copied());
+                let _ = t;
+                match hit {
+                    Some(cp) => {
                         out.push(char::from_u32(cp).unwrap_or('\u{fffd}'));
                         i += 2;
                     }
@@ -770,23 +895,34 @@ fn plain_decode(t: &CodecTables, b: &[u8], errors: &str) -> Result<String, crate
                 && (0x81..=0xFE).contains(&b3)
                 && (0x30..=0x39).contains(&b4);
             if is4 {
-                // linear interpolation within the ranges
+                // Odometric linear lookup over the sibling's Gb4Run layout:
+                // N(seq) = (b0-0x81)*12600 + (b1-0x30)*1260 + (b2-0x81)*10 +
+                // (b3-0x30); within a run cp = cp_start + (N - N(seq_start)).
+                let n_of = |s: &[u8; 4]| -> u32 {
+                    (s[0].wrapping_sub(0x81) as u32) * 12600
+                        + (s[1].wrapping_sub(0x30) as u32) * 1260
+                        + (s[2].wrapping_sub(0x81) as u32) * 10
+                        + (s[3].wrapping_sub(0x30) as u32)
+                };
+                let seq = [b1, b2, b3, b4];
+                let n_seq = n_of(&seq);
                 let mut cp: Option<u32> = None;
-                for (s_cp, s_b, e_cp, e_b) in GB18030_4_LINEAR.iter() {
-                    if b1 == s_b[0]
-                        && b1 == e_b[0]
-                        && in_digit_span(b2, s_b[1], e_b[1])
-                        && in_digit_span(b3, s_b[2], e_b[2])
-                        && in_digit_span(b4, s_b[3], e_b[3])
-                    {
-                        let d2 = (b2 - s_b[1]) as u32;
-                        let d3 = (b3 - s_b[2]) as u32;
-                        let d4 = (b4 - s_b[3]) as u32;
-                        cp = Some(s_cp + d2 * 100 + d3 * 10 + d4);
-                        if cp.unwrap() > *e_cp {
-                            cp = None;
-                        }
+                for run in GB18030_4_BMP_RUNS.iter() {
+                    let n0 = n_of(&run.seq_start);
+                    let d = n_seq.wrapping_sub(n0);
+                    if d <= run.cp_end - run.cp_start {
+                        cp = Some(run.cp_start + d);
                         break;
+                    }
+                }
+                if cp.is_none() {
+                    // astral: single odometric walk anchored at 0x10000
+                    let n_anchor = n_of(&ASTRAL_ANCHOR_SEQ);
+                    let d = n_seq.wrapping_sub(n_anchor);
+                    // bound the walk to the real astral allocation (avoids
+                    // absurd codepoints from arbitrary 4-byte shapes)
+                    if d <= 0x10_FFFF - ASTRAL_ANCHOR_CP {
+                        cp = Some(ASTRAL_ANCHOR_CP + d);
                     }
                 }
                 match cp {
@@ -877,6 +1013,95 @@ fn in_digit_span(b: u8, lo: u8, hi: u8) -> bool {
     (lo..=hi).contains(&b)
 }
 
+// ===========================================================================
+// gb18030 four-byte engine (runs table generated from CPython 3.14)
+// ===========================================================================
+
+/// Odometric linear index of a 4-byte gb18030 sequence: digit bytes 0x30-0x39
+/// at positions 1/3 (base 10), wide bytes 0x81-0xFE at positions 0/2 (base 126).
+fn gb4_to_lin(b: [u8; 4]) -> u32 {
+    ((b[0] - 0x81) as u32 * 10 + (b[1] - 0x30) as u32) * 1260
+        + (b[2] - 0x81) as u32 * 10
+        + (b[3] - 0x30) as u32
+}
+
+/// Inverse of `gb4_to_lin`.
+fn gb4_from_lin(l: u32) -> [u8; 4] {
+    let b4 = 0x30 + (l % 10) as u8;
+    let q = l / 10;
+    let b3 = 0x81 + (q % 126) as u8;
+    let q = q / 126;
+    let b2 = 0x30 + (q % 10) as u8;
+    let q = q / 10;
+    let b1 = 0x81 + q as u8;
+    [b1, b2, b3, b4]
+}
+
+/// Encode one codepoint to its gb18030 4-byte sequence; None when the cp is
+/// not 4-byte encodable (2-byte table coverage is checked by the caller).
+pub fn gb4_encode_cp(cp: u32) -> Option<[u8; 4]> {
+    if cp >= ASTRAL_ANCHOR_CP {
+        return Some(gb4_from_lin(
+            gb4_to_lin(ASTRAL_ANCHOR_SEQ) + (cp - ASTRAL_ANCHOR_CP),
+        ));
+    }
+    // binary search BMP runs
+    let mut lo = 0usize;
+    let mut hi = GB18030_4_BMP_RUNS.len();
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        let r: &Gb4Run = &GB18030_4_BMP_RUNS[mid];
+        if cp < r.cp_start {
+            hi = mid;
+        } else if cp > r.cp_end {
+            lo = mid + 1;
+        } else {
+            return Some(gb4_from_lin(gb4_to_lin(r.seq_start) + (cp - r.cp_start)));
+        }
+    }
+    None
+}
+
+/// Decode one gb18030 4-byte sequence to its codepoint; None when unmapped.
+pub fn gb4_decode_seq(b: [u8; 4]) -> Option<u32> {
+    let l = gb4_to_lin(b);
+    // astral walk: single contiguous odometric span from the anchor
+    let a_lin = gb4_to_lin(ASTRAL_ANCHOR_SEQ);
+    if l >= a_lin {
+        let cp = ASTRAL_ANCHOR_CP + (l - a_lin);
+        if cp <= 0x10FFFF {
+            return Some(cp);
+        }
+        return None;
+    }
+    // BMP runs: binary search by sequence index. A run spans linear
+    // [to_lin(seq_start), to_lin(seq_start) + (cp_end - cp_start)].
+    let mut lo = 0usize;
+    let mut hi = GB18030_4_BMP_RUNS.len();
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        let r: &Gb4Run = &GB18030_4_BMP_RUNS[mid];
+        let s = gb4_to_lin(r.seq_start);
+        let e = s + (r.cp_end - r.cp_start);
+        if l < s {
+            hi = mid;
+        } else if l > e {
+            lo = mid + 1;
+        } else {
+            return Some(r.cp_start + (l - s));
+        }
+    }
+    None
+}
+
+fn is_gb4_shape(b: &[u8]) -> bool {
+    b.len() == 4
+        && (0x81..=0xFE).contains(&b[0])
+        && (0x30..=0x39).contains(&b[1])
+        && (0x81..=0xFE).contains(&b[2])
+        && (0x30..=0x39).contains(&b[3])
+}
+
 /// True when `b` could begin a multi-byte sequence under `t` (used to pick
 /// the "incomplete" vs "illegal" reason at end-of-input).
 fn is_lead_byte(t: &CodecTables, b: u8) -> bool {
@@ -893,11 +1118,21 @@ fn iso_encode(t: &CodecTables, text: &str, errors: &str) -> Result<Vec<u8>, crat
     let mut out = Vec::new();
     let mut active: Option<&'static [u8]> = None; // current designation bytes
     let mut active_cs: Cs = Cs::Ascii;
+    // Issue #13 (orchestrator note): iso2022_kr emits the designation ONCE
+    // before the first multibyte char, then SO(0x0E) before / SI(0x0F) after
+    // each multibyte run (ref: 'a한b' -> 611b2429430e47510f62).
+    let mut kr_desig_done = false;
     for (ci, ch) in text.char_indices() {
         if (ch as u32) < 0x80 && ch != '\n' && ch != '\r' {
+            // iso2022_kr: SI closes the shifted run (never ESC-returns).
+            if spec.shifts && active.is_some() {
+                out.push(0x0F);
+                active = None;
+                active_cs = Cs::Ascii;
+            }
             // ISO-2022 jp family returns to ASCII around every non-ASCII run
             // (CPython emits ESC(B before ASCII after multibyte).
-            if active.is_some() {
+            if !spec.shifts && active.is_some() {
                 out.extend_from_slice(spec.ascii_return);
                 active = None;
                 active_cs = Cs::Ascii;
@@ -906,12 +1141,30 @@ fn iso_encode(t: &CodecTables, text: &str, errors: &str) -> Result<Vec<u8>, crat
             continue;
         }
         if ch == '\n' || ch == '\r' {
-            if active.is_some() {
+            if spec.shifts && active.is_some() {
+                out.push(0x0F);
+                active = None;
+                active_cs = Cs::Ascii;
+            } else if !spec.shifts && active.is_some() {
                 out.extend_from_slice(spec.ascii_return);
                 active = None;
                 active_cs = Cs::Ascii;
             }
             out.push(ch as u8);
+            continue;
+        }
+        // halfwidth katakana (iso2022_jp_ext only): ESC(I + 7-bit row
+        // 0x21..0x5F (ref: ｡｢｣ -> 1b28492122231b2842).
+        if spec.name == "iso2022_jp_ext" && (0xFF61..=0xFF9F).contains(&(ch as u32)) {
+            if active_cs != Cs::JisX0201Kana {
+                if active.is_some() {
+                    out.extend_from_slice(spec.ascii_return);
+                }
+                out.extend_from_slice(b"\x1b(I");
+                active = Some(&b"\x1b(I"[..]);
+                active_cs = Cs::JisX0201Kana;
+            }
+            out.push((0x21 + (ch as u32 - 0xFF61)) as u8);
             continue;
         }
         // find the charset that can encode this char
@@ -920,23 +1173,22 @@ fn iso_encode(t: &CodecTables, text: &str, errors: &str) -> Result<Vec<u8>, crat
         // a specific other charset owns the char.
         // Determine the char's canonical 2-byte row under each candidate:
         let candidates: Vec<(Cs, &'static [u8])> = match spec.name {
-            "iso2022_jp" | "iso2022_jp_1" => vec![(Cs::JisX0208, b"\x1b$B")],
+            "iso2022_jp" => vec![(Cs::JisX0208, b"\x1b$B")],
+            // _1 adds JIS X 0212 via ESC$(D (ref: № -> 1b24284422711b2842)
+            "iso2022_jp_1" => vec![(Cs::JisX0208, b"\x1b$B"), (Cs::JisX0212, b"\x1b$(D")],
             "iso2022_jp_ext" => vec![(Cs::JisX0208, b"\x1b$B"), (Cs::JisX0212, b"\x1b$(D")],
-            "iso2022_jp_3" => vec![
-                (Cs::JisX0208, b"\x1b$B"),
-                (Cs::JisX0213P1, b"\x1b$(O"),
-                (Cs::JisX0213P2, b"\x1b$(P"),
-            ],
-            "iso2022_jp_2004" => vec![
-                (Cs::JisX0208, b"\x1b$B"),
-                (Cs::JisX0213P1, b"\x1b$(Q"),
-                (Cs::JisX0213P2, b"\x1b$(P"),
-            ],
+            // CPython's _3/_2004 have NO plane-2 support: ref rejects
+            // 龥/2F800 encode AND $(P decode (only X0212 carries extra
+            // planes, via _ext/_2's $(D). Keep P1 + JIS208 only.
+            "iso2022_jp_3" => vec![(Cs::JisX0208, b"\x1b$B"), (Cs::JisX0213P1, b"\x1b$(O")],
+            "iso2022_jp_2004" => vec![(Cs::JisX0208, b"\x1b$B"), (Cs::JisX0213P1, b"\x1b$(Q")],
+            // _2 charset order per CPython: JIS208, X0212, KSC, GB; the
+            // GB2312 designation is ESC$(A (ref: 纲 -> 1b24284138591b2842)
             "iso2022_jp_2" => vec![
                 (Cs::JisX0208, b"\x1b$B"),
                 (Cs::JisX0212, b"\x1b$(D"),
-                (Cs::Gb2312, b"\x1b$A"),
                 (Cs::Ksc5601, b"\x1b$(C"),
+                (Cs::Gb2312, b"\x1b$(A"),
             ],
             "iso2022_kr" => vec![(Cs::Ksc5601, b"\x1b$)C")],
             _ => vec![(Cs::JisX0208, b"\x1b$B")],
@@ -944,47 +1196,60 @@ fn iso_encode(t: &CodecTables, text: &str, errors: &str) -> Result<Vec<u8>, crat
         for (cs, desig) in candidates {
             // Under JIS-style charsets the payload bytes are the 2-byte row
             // with the high bits STRIPPED (0x21..0x7E); under gb/ksc same.
+            // Issue #13 (root fix): each charset resolves through the EUC table of
+            // ITS OWN charset, never the codec's base table. The base-table
+            // shortcut made iso2022_jp_3 emit ESC$B rows for X0213-plane-1
+            // chars (ref: № -> ESC$(O2d62, NOT ESC$B2d62) and broke _2's
+            // KSC/GB arms (their chars live in OTHER charsets' tables).
+            let cs_tables: &CodecTables = match cs {
+                Cs::JisX0213P1 | Cs::JisX0213P2 => euc_jis_2004(),
+                Cs::Ksc5601 => euc_kr(),
+                Cs::Gb2312 => gb2312(),
+                _ => euc_jp(),
+            };
             let bs = match cs {
-                Cs::JisX0208 => t.enc.get(&(ch as u32)).map(|b| {
-                    // euc_jp rows: 0xA1.. -> JIS row = byte - 0x80
+                Cs::JisX0208 => cs_tables.enc.get(&(ch as u32)).and_then(|b| {
+                    // plain JIS X 0208 lives in euc_jp's 2-byte region only
                     if b.len() == 2 && b[0] >= 0xA1 {
-                        [b[0] - 0x80, b[1] - 0x80]
+                        Some([b[0] - 0x80, b[1] - 0x80])
                     } else {
-                        [0, 0]
+                        None
                     }
                 }),
-                Cs::JisX0213P1 | Cs::JisX0213P2 => t.enc.get(&(ch as u32)).map(|b| {
+                Cs::JisX0213P1 => cs_tables.enc.get(&(ch as u32)).and_then(|b| {
+                    // plane 1 = 2-byte rows only. 0x8E rows are halfwidth
+                    // kana in EUC form — CPython's _3/_2004 reject them.
+                    if b.len() == 2 && b[0] >= 0xA1 && b[0] != 0x8E {
+                        Some([b[0] - 0x80, b[1] - 0x80])
+                    } else {
+                        None
+                    }
+                }),
+                Cs::JisX0213P2 => cs_tables.enc.get(&(ch as u32)).and_then(|b| {
+                    // plane 2 = 0x8F-prefixed 3-byte rows ONLY (ref: 龥 is
+                    // $(P6d63, never $(O — P1 must not steal plane-2 chars)
+                    if b.len() == 3 && b[0] == 0x8F {
+                        Some([b[1] - 0x80, b[2] - 0x80])
+                    } else {
+                        None
+                    }
+                }),
+                Cs::JisX0212 => cs_tables.enc.get(&(ch as u32)).and_then(|b| {
+                    // JIS X 0212 lives in euc_jp's 0x8F 3-byte region
+                    if b.len() == 3 && b[0] == 0x8F {
+                        Some([b[1] - 0x80, b[2] - 0x80])
+                    } else {
+                        None
+                    }
+                }),
+                Cs::Ksc5601 | Cs::Gb2312 => cs_tables.enc.get(&(ch as u32)).and_then(|b| {
                     if b.len() == 2 && b[0] >= 0xA1 {
-                        [b[0] - 0x80, b[1] - 0x80]
-                    } else if b.len() == 3 && b[0] == 0x8F {
-                        // 3-byte euc 0213 plane 2: JIS plane-2 row
-                        [b[1] - 0x80, b[2] - 0x80]
+                        Some([b[0] - 0x80, b[1] - 0x80])
                     } else {
-                        [0, 0]
+                        None
                     }
                 }),
-                Cs::JisX0212 => {
-                    // JIS X 0212 rows live in the 0x8F region of euc_jp —
-                    // NOT in our table (euc_jp only keeps 2-byte rows +
-                    // the 0x8F rows the reference's euc_jp codec accepts).
-                    // The reference maps JIS212 through euc_jp's 0x8F
-                    // region; enumerate from the table's 3-byte rows.
-                    t.enc.get(&(ch as u32)).and_then(|b| {
-                        if b.len() == 3 && b[0] == 0x8F {
-                            Some([b[1] - 0x80, b[2] - 0x80])
-                        } else {
-                            None
-                        }
-                    })
-                }
-                Cs::Ksc5601 | Cs::Gb2312 => t.enc.get(&(ch as u32)).map(|b| {
-                    if b.len() == 2 {
-                        [b[0] - 0x80, b[1] - 0x80]
-                    } else {
-                        [0, 0]
-                    }
-                }),
-                Cs::JisX0201Roman | Cs::Ascii => None,
+                Cs::JisX0201Roman | Cs::JisX0201Kana | Cs::Ascii => None,
             };
             if let Some([h, l]) = bs {
                 if h == 0 && l == 0 {
@@ -994,7 +1259,17 @@ fn iso_encode(t: &CodecTables, text: &str, errors: &str) -> Result<Vec<u8>, crat
                     continue;
                 }
                 if active_cs != cs || active != Some(desig) {
-                    out.extend_from_slice(desig);
+                    // iso2022_kr: designate ONCE before the first multibyte
+                    // char, then SO before every run (never re-designate).
+                    if spec.shifts {
+                        if !kr_desig_done {
+                            out.extend_from_slice(desig);
+                            kr_desig_done = true;
+                        }
+                        out.push(0x0E);
+                    } else {
+                        out.extend_from_slice(desig);
+                    }
                     active = Some(desig);
                     active_cs = cs;
                 }
@@ -1010,8 +1285,8 @@ fn iso_encode(t: &CodecTables, text: &str, errors: &str) -> Result<Vec<u8>, crat
                     return Err(raise(
                         "UnicodeEncodeError",
                         format!(
-                            "'{}' codec can't encode character '\\u{:04x}' in position {}: illegal multibyte sequence",
-                            t.canon, ch as u32, ci
+                            "'{}' codec can't encode character '{}' in position {}: illegal multibyte sequence",
+                            t.canon, msg_char_escape(ch), ci
                         ),
                     ))
                 }
@@ -1029,8 +1304,8 @@ fn iso_encode(t: &CodecTables, text: &str, errors: &str) -> Result<Vec<u8>, crat
                     return Err(raise(
                         "UnicodeEncodeError",
                         format!(
-                            "'{}' codec can't encode character '\\u{:04x}' in position {}: illegal multibyte sequence",
-                            t.canon, ch as u32, ci
+                            "'{}' codec can't encode character '{}' in position {}: illegal multibyte sequence",
+                            t.canon, msg_char_escape(ch), ci
                         ),
                     ))
                 }
@@ -1038,8 +1313,12 @@ fn iso_encode(t: &CodecTables, text: &str, errors: &str) -> Result<Vec<u8>, crat
         }
     }
     // final return-to-ASCII if a multibyte run is still active
-    if active.is_some() && !spec.ascii_return.is_empty() {
-        out.extend_from_slice(spec.ascii_return);
+    if active.is_some() {
+        if spec.shifts {
+            out.push(0x0F); // SI (kr end-of-stream; no final ESC return)
+        } else if !spec.ascii_return.is_empty() {
+            out.extend_from_slice(spec.ascii_return);
+        }
     }
     Ok(out)
 }
@@ -1509,15 +1788,55 @@ fn mbc_incremental_method(recv: &Value, method: &str, args: &[Value]) -> Option<
                 incr_reset(recv);
                 Ok(s(txt))
             } else {
-                // drain the decodable prefix (stateless codecs: everything
-                // but a trailing incomplete sequence)
+                // Drain only a WHOLE-UNIT prefix: walk the table's unit
+                // boundaries (1-byte ASCII rows + multi-byte rows); a tail
+                // that could extend a multi-byte unit stays buffered. This
+                // avoids CPython's mbc buffering contract violation where a
+                // partial lead byte would be dropped.
                 let acc = incr_get_bytes(recv);
-                match decode_prefix(&codec_name, &acc, incr_errors(recv)) {
-                    Some((txt, consumed)) => {
-                        incr_drop_bytes(recv, consumed);
-                        Ok(s(txt))
+                let mut consumed = 0usize;
+                let mut out = String::new();
+                let t = tables_for(&codec_name);
+                let mut i = 0usize;
+                while i < acc.len() {
+                    let mut unit = 1usize;
+                    let mut is_lead = false;
+                    if let Some(t) = t {
+                        // longest COMPLETE table row starting at i
+                        let maxk = t.max_len.min(acc.len() - i);
+                        for k in (1..=maxk).rev() {
+                            let key: String =
+                                acc[i..i + k].iter().map(|x| format!("{x:02x}")).collect();
+                            if t.dec.contains_key(key.as_str()) {
+                                unit = k;
+                                break;
+                            }
+                        }
+                        // Issue #13 fix: a lead byte that STARTS a multi-byte
+                        // row but lacks the bytes to complete it stays
+                        // buffered (CPython mbc semantics — the partial
+                        // sequence must not error until final=True).
+                        if unit == 1 && !t.dec.contains_key(format!("{:02x}", acc[i]).as_str()) {
+                            let hex = format!("{:02x}", acc[i]);
+                            if t.dec.keys().any(|k| k.len() > 2 && k.starts_with(&hex)) {
+                                is_lead = true;
+                            }
+                        }
                     }
-                    None => Ok(s(String::new())),
+                    // lead with incomplete tail (or unit extends beyond the
+                    // available bytes): keep everything from i buffered
+                    if is_lead || i + unit > acc.len() {
+                        break;
+                    }
+                    i += unit;
+                    consumed = i;
+                }
+                if consumed > 0 {
+                    let txt = decode(&codec_name, &acc[..consumed], incr_errors(recv))?;
+                    incr_drop_bytes(recv, consumed);
+                    Ok(s(txt))
+                } else {
+                    Ok(s(String::new()))
                 }
             }
         }
@@ -1535,6 +1854,7 @@ fn mbc_incremental_method(recv: &Value, method: &str, args: &[Value]) -> Option<
 
 /// Decode a maximal decodable PREFIX; returns (text, consumed_bytes) or None
 /// when nothing decodable yet. Strict errors on the prefix still raise.
+#[allow(dead_code)]
 fn decode_prefix(name: &str, b: &[u8], errors: &str) -> Option<(String, usize)> {
     // find the longest prefix that decodes cleanly
     for end in (0..=b.len()).rev() {

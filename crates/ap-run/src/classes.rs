@@ -3091,6 +3091,21 @@ fn instance_attr(
                 if is_user_function(&entry) {
                     return Ok(bind_function_owned(&entry, obj.clone(), Some(&owner)));
                 }
+                // Issue #13: mbc mixin class-dict markers (`__ap_mbc__.decode`
+                // BuiltinFns on the interned mixin types) bind as BoundMethods
+                // so the interp call arm routes them to the mbc engine (a bare
+                // BuiltinFn would NameError in the caller's globals).
+                if let Value::Obj(mo) = &entry {
+                    if mo.kind == ap_obj::ObjKind::BuiltinFn && mo.name.starts_with("__ap_mbc__.") {
+                        let bm = ap_obj::PyObject::with_self(
+                            ap_obj::ObjKind::BoundMethod,
+                            mo.name.clone(),
+                            obj.clone(),
+                        );
+                        *bm.func.borrow_mut() = Some(entry.clone());
+                        return Ok(Value::Obj(bm));
+                    }
+                }
                 return Ok(entry);
             }
         }

@@ -1749,6 +1749,18 @@ fn exec_stmt(
                         frame.scope_path.clone(),
                         frame.def_line.get(),
                         std::ptr::addr_of!(**f) as usize,
+                        // Issue #13: heap addresses of per-module def AST
+                        // clones (and module Frames) are REUSED after the
+                        // defining module's stmt vec drops (gbk.py then
+                        // cp932.py — identical file shapes, identical
+                        // scope_path/def_line) — a bare (path, line, ptr)
+                        // key deduped DISTINCT modules' same-named defs to
+                        // the FIRST registration, so every encodings/*
+                        // wrapper's getregentry bound the first-imported
+                        // codec's tables (codecs.lookup cache poisoning).
+                        // The monotone frame_id disambiguates (never
+                        // recycled, unlike Rc/heap addresses).
+                        frame.frame_id,
                     );
                     match NESTED_DEDUPE.with(|d| d.borrow().get(&key).copied()) {
                         Some(existing) => existing,
@@ -3633,7 +3645,12 @@ pub(crate) fn eval_expr(
                     .insert(id, (**body).clone());
                 id
             } else {
-                let dedupe_key = (frame.scope_path.clone(), frame.def_line.get(), node_addr);
+                let dedupe_key = (
+                    frame.scope_path.clone(),
+                    frame.def_line.get(),
+                    node_addr,
+                    frame.frame_id,
+                );
                 match NESTED_DEDUPE.with(|d| d.borrow().get(&dedupe_key).copied()) {
                     Some(existing) => existing,
                     None => {
@@ -6684,6 +6701,18 @@ fn call_value_inner_impl(
                     // straight to the builtin dispatcher — attribute
                     // fallbacks would re-dispatch them as method lookups
                     // on the receiver (the bound-marker call loop).
+                    // Issue #13: the mbc mixin markers carry the instance as
+                    // args[0]; route them to the mbc incremental surface
+                    // before the generic NameError fallthrough.
+                    if let Some(rest) = o.name.strip_prefix("__ap_mbc__.") {
+                        if let Some(recv) = args.first() {
+                            if let Some(r) =
+                                crate::mbc::mbc_incremental_method_pub(recv, rest, &args[1..])
+                            {
+                                return r;
+                            }
+                        }
+                    }
                     if o.name.starts_with("__ap_") || o.name == "__dict__new__" {
                         return builtins::call_builtin(interp, &o.name, args, kwargs);
                     }
@@ -7315,7 +7344,10 @@ fn call_type_ctor(
                 Some(Value::Str(x)) => x.as_str().to_string(),
                 _ => "strict".to_string(),
             };
-            let _ = a.set(Value::Str(PyString::new("errors")), Value::Str(PyString::new(errors)));
+            let _ = a.set(
+                Value::Str(PyString::new("errors")),
+                Value::Str(PyString::new(errors)),
+            );
             if name == "MultibyteIncrementalDecoder" || name == "MultibyteStreamReader" {
                 let _ = a.set(
                     Value::Str(PyString::new("<buf>")),

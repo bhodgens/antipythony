@@ -20,10 +20,19 @@ except ImportError as why:
 # s037: CPython's codecs.encode/decode are the HELPER forms (bytes-only /
 # str-only results via the codec registry), not the raw _codecs tuples.
 def encode(input, encoding='utf-8', errors='strict'):
-    return lookup(encoding).encode(input, errors)
+    # APX issue #13/s037: CPython's codecs.encode returns BARE bytes/str
+    # (the CodecInfo entry is a native builtin returning one value), while
+    # our registry entries return (bytes, len) tuples. Unwrap tuples.
+    r = lookup(encoding).encode(input, errors)
+    if isinstance(r, tuple):
+        return r[0]
+    return r
 
 def decode(input, encoding='utf-8', errors='strict'):
-    return lookup(encoding).decode(input, errors)
+    r = lookup(encoding).decode(input, errors)
+    if isinstance(r, tuple):
+        return r[0]
+    return r
 
 ### W113: CPython-compatible codec registry (native fast path + registered
 ### Python search functions + encodings-package alias resolution) and pure-
@@ -176,9 +185,43 @@ def utf_8_encode(unicode, errors='strict'):
 
 
 def utf_8_decode(data, errors='strict', final=True):
+    # Issue #13/s037: honor `final` — an incomplete trailing sequence with
+    # final=False must return ('', 0) (CPython BufferedIncrementalDecoder
+    # contract: the incremental decoder buffers it for the next chunk).
     try:
         return bytes(data).decode('utf-8'), len(data)
     except UnicodeError:
+        if not final:
+            # could be an incomplete sequence at the tail; if any COMPLETE
+            # prefix exists, return it, else buffer everything.
+            buf = bytes(data)
+            i = 0
+            n = len(buf)
+            need = 1
+            while i < n:
+                b = buf[i]
+                if b < 0x80:
+                    i += 1
+                    continue
+                if 0xC0 <= b < 0xE0:
+                    need = 2
+                elif 0xE0 <= b < 0xF0:
+                    need = 3
+                elif 0xF0 <= b < 0xF8:
+                    need = 4
+                else:
+                    # genuinely invalid lead byte — strict raises below
+                    need = 0
+                    break
+                if i + need > n:
+                    # truncated tail: emit the complete prefix, consume it
+                    return buf[:i].decode('utf-8'), i
+                i += need
+            if need == 0:
+                if errors == 'strict':
+                    raise
+                return '', 0
+            return '', 0
         if errors == 'strict':
             raise
         buf = bytes(data)
@@ -188,20 +231,13 @@ def utf_8_decode(data, errors='strict', final=True):
         while i < n:
             advanced = False
             for l in (1, 2, 3, 4):
-                j = i + l
-                if j > n:
-                    # Truncated multi-byte sequence at end of input: no
-                    # slice fits. Do NOT rely on for/else here — the bounds
-                    # break would skip it and stall the while loop forever
-                    # (W113 runaway-allocation bug).
-                    break
                 try:
-                    out.append(buf[i:j].decode('utf-8'))
-                    i = j
+                    out.append(buf[i:i + l].decode('utf-8'))
                     advanced = True
+                    i += l
                     break
                 except UnicodeError:
-                    continue
+                    pass
             if not advanced:
                 if errors == 'strict':
                     raise UnicodeDecodeError('utf-8', buf, i, i + 1,
@@ -215,6 +251,18 @@ def utf_8_decode(data, errors='strict', final=True):
                                              'invalid continuation byte')
                 i += 1
         return ''.join(out), n
+
+
+# APX issue #13/s037: rebind to the NATIVE primitives when present. CPython's
+# codecs.utf_8_decode IS the builtin `_codecs.utf_8_decode`; a module-level
+# `def` here is a Python function (descriptor-bound when stored on a wrapper
+# class and read via an instance — _buffer_decode = codecs.utf_8_decode then
+# receives a spurious `self`). The native markers are non-binding builtins.
+try:
+    utf_8_decode = _native_codecs.utf_8_decode
+    utf_8_encode = _native_codecs.utf_8_encode
+except AttributeError:
+    pass
 
 
 def ascii_encode(unicode, errors='strict'):

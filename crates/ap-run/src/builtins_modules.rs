@@ -1111,6 +1111,43 @@ fn build_codecs(_i: &crate::frame::Interpreter) -> Value {
     fn1(&ns, "_codecs", "_clear_cache");
     fn1(&ns, "_codecs", "lookup_error");
     fn1(&ns, "_codecs", "register_error");
+    // s037: the wrapper classes assign _buffer_decode = codecs.utf_8_decode;
+    // accessed via an INSTANCE that binds (Python functions are descriptors),
+    // adding a spurious `self`. CPython's utf_8_decode is a BUILTIN (no
+    // descriptor protocol) so binding is a no-op. Register the native
+    // markers so codecs.py's star-import wins and class-attr assignment
+    // stores a non-binding callable. The vendored def later SHADOWS the
+    // star-import (defs exec after imports) — so codecs.py's own tail ALSO
+    // rebinds to these (see vendored_stdlib/codecs.py utf_8_decode).
+    fn1(&ns, "_codecs", "utf_8_encode");
+    fn1(&ns, "_codecs", "utf_8_decode");
+    // thin passthrough arms — decode/encode route to the methods.rs engines
+    // (strict utf-8 encode is a straight byte copy).
+    fn1(&ns, "_codecs", "ascii_encode");
+    fn1(&ns, "_codecs", "ascii_decode");
+    fn1(&ns, "_codecs", "latin_1_encode");
+    fn1(&ns, "_codecs", "latin_1_decode");
+    // Issue #13: utf_7 codec primitives (CPython keeps these on _codecs; the
+    // pure-Python encodings/utf_7.py wrapper binds codecs.utf_7_encode /
+    // codecs.utf_7_decode, which arrive via `from _codecs import *`).
+    fn1(&ns, "_codecs", "utf_7_encode");
+    fn1(&ns, "_codecs", "utf_7_decode");
+    // s037 (pinned corpus gate): encodings/utf_16.py binds codecs.utf_16_*.
+    fn1(&ns, "_codecs", "utf_16_encode");
+    fn1(&ns, "_codecs", "utf_16_decode");
+    fn1(&ns, "_codecs", "utf_16_le_encode");
+    fn1(&ns, "_codecs", "utf_16_le_decode");
+    fn1(&ns, "_codecs", "utf_16_be_encode");
+    fn1(&ns, "_codecs", "utf_16_be_decode");
+    fn1(&ns, "_codecs", "utf_16_ex_decode");
+    // s037: encodings/utf_32*.py bind codecs.utf_32_* the same way.
+    fn1(&ns, "_codecs", "utf_32_encode");
+    fn1(&ns, "_codecs", "utf_32_decode");
+    fn1(&ns, "_codecs", "utf_32_le_encode");
+    fn1(&ns, "_codecs", "utf_32_le_decode");
+    fn1(&ns, "_codecs", "utf_32_be_encode");
+    fn1(&ns, "_codecs", "utf_32_be_decode");
+    fn1(&ns, "_codecs", "utf_32_ex_decode");
     // BOM constants (tokenize reads BOM_UTF8 via `from codecs import ...`).
     ns_const(
         &ns,
@@ -1138,6 +1175,45 @@ fn recv_attr_set(obj: &Value, key: &Value, v: Value) {
 fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Option<BResult> {
     match fname {
         "register" | "_clear_cache" => Some(Ok(Value::None)),
+        // Issue #13: utf_7 primitives over the mbc_utf7 engine (RFC 2152,
+        // CPython-matching direct set). encode(str, errors?) -> (bytes, n);
+        // decode(bytes, errors?, final=1) -> (str, n) — the _codecs tuple
+        // shapes the vendored codecs.py helper layer expects.
+        "utf_7_encode" => {
+            let v = match str_arg(match required(args, "encode") {
+                Ok(v) => v,
+                Err(e) => return Some(Err(e)),
+            }, "encode") {
+                Ok(x) => x,
+                Err(e) => return Some(Err(e)),
+            };
+            let errors = match args.get(1) {
+                Some(Value::Str(es)) => es.as_str(),
+                _ => "strict",
+            };
+            match crate::mbc::mbc_utf7::utf_7_encode(&v, errors) {
+                Ok(bs) => Some(Ok(tuple(vec![
+                    Value::Bytes(Gc::new(bs)),
+                    i(v.chars().count() as i64),
+                ]))),
+                Err(flow) => Some(Err(flow)),
+            }
+        }
+        "utf_7_decode" => {
+            let b = match required(args, "decode") {
+                Ok(v) => v,
+                Err(e) => return Some(Err(e)),
+            };
+            let raw: Vec<u8> = match b {
+                Value::Bytes(bb) => bb.iter().cloned().collect(),
+                Value::Str(sv) => sv.as_str().as_bytes().to_vec(),
+                _ => Vec::new(),
+            };
+            match crate::mbc::mbc_utf7::utf_7_decode(&raw, "strict") {
+                Ok(txt) => Some(Ok(tuple(vec![s(txt), i(raw.len() as i64)]))),
+                Err(flow) => Some(Err(flow)),
+            }
+        }
         // s037: per-codec encode/decode markers from CodecInfo surfaces.
         "encode_latin1" => {
             let v = match str_arg(match required(args, "encode") { Ok(v) => v, Err(e) => return Some(Err(e)) }, "encode") {
@@ -1156,6 +1232,337 @@ fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opti
                 other => crate::builtins::py_str_of(other).unwrap_or_default(),
             };
             Some(Ok(tuple(vec![s(txt), i(0)])))
+        }
+        "utf_8_encode" => {
+            // Native utf-8 encode (s037): strict = byte copy; surrogate
+            // rejection mirrors CPython (V016).
+            let v = match str_arg(match required(args, "encode") {
+                Ok(v) => v,
+                Err(e) => return Some(Err(e)),
+            }, "encode") {
+                Ok(x) => x,
+                Err(e) => return Some(Err(e)),
+            };
+            if v.chars().any(|c| (0xD800..0xE000).contains(&(c as u32))) {
+                let pos = v.chars().position(|c| (0xD800..0xE000).contains(&(c as u32))).unwrap_or(0);
+                let ch = v.chars().nth(pos).unwrap();
+                return Some(Err(raise(
+                    "UnicodeEncodeError",
+                    format!(
+                        "'utf-8' codec can't encode character '\\u{:04x}' in position {pos}: surrogates not allowed",
+                        ch as u32
+                    ),
+                )));
+            }
+            return Some(Ok(tuple(vec![
+                Value::Bytes(Gc::new(v.as_bytes().to_vec())),
+                i(v.chars().count() as i64),
+            ])));
+        }
+        "utf_8_decode" => {
+            let b = match required(args, "decode") {
+                Ok(v) => v,
+                Err(e) => return Some(Err(e)),
+            };
+            let raw: Vec<u8> = match b {
+                Value::Bytes(bb) => bb.iter().cloned().collect(),
+                _ => Vec::new(),
+            };
+            match std::str::from_utf8(&raw) {
+                Ok(sv) => Some(Ok(tuple(vec![s(sv), i(raw.len() as i64)]))),
+                Err(e) => {
+                    // final=False: incomplete TRAILING sequence -> emit the
+                    // complete prefix, consume it ('',0 for none) — CPython
+                    // BufferedIncrementalDecoder contract. A genuinely bad
+                    // byte (error_len()=Some) still raises strict.
+                    if e.error_len().is_none() && e.valid_up_to() > 0 {
+                        let txt = String::from_utf8_lossy(&raw[..e.valid_up_to()]).to_string();
+                        Some(Ok(tuple(vec![s(txt), i(e.valid_up_to() as i64)])))
+                    } else if e.error_len().is_none() {
+                        Some(Ok(tuple(vec![s(String::new()), i(0)])))
+                    } else {
+                        Some(Err(raise(
+                            "UnicodeDecodeError",
+                            "'utf-8' codec can't decode bytes: invalid continuation byte",
+                        )))
+                    }
+                }
+            }
+        }
+        "ascii_encode" => {
+            let v = match str_arg(match required(args, "encode") {
+                Ok(v) => v,
+                Err(e) => return Some(Err(e)),
+            }, "encode") {
+                Ok(x) => x,
+                Err(e) => return Some(Err(e)),
+            };
+            if v.is_ascii() {
+                return Some(Ok(tuple(vec![
+                    Value::Bytes(Gc::new(v.as_bytes().to_vec())),
+                    i(v.chars().count() as i64),
+                ])));
+            }
+            let pos = v.chars().take_while(|c| c.is_ascii()).count();
+            let ch = v.chars().nth(pos).unwrap_or('\0');
+            return Some(Err(raise(
+                "UnicodeEncodeError",
+                format!(
+                    "'ascii' codec can't encode character '\\u{:04x}' in position {pos}: ordinal not in range(128)",
+                    ch as u32
+                ),
+            )));
+        }
+        "ascii_decode" => {
+            let b = match required(args, "decode") {
+                Ok(v) => v,
+                Err(e) => return Some(Err(e)),
+            };
+            let raw: Vec<u8> = match b {
+                Value::Bytes(bb) => bb.iter().cloned().collect(),
+                _ => Vec::new(),
+            };
+            if raw.iter().all(|&x| x < 0x80) {
+                let txt: String = raw.iter().map(|&x| x as char).collect();
+                return Some(Ok(tuple(vec![s(txt), i(raw.len() as i64)])));
+            }
+            let pos = raw.iter().take_while(|&&x| x < 0x80).count();
+            return Some(Err(raise(
+                "UnicodeDecodeError",
+                format!(
+                    "'ascii' codec can't decode byte 0x{:02x} in position {pos}: ordinal not in range(128)",
+                    raw[pos]
+                ),
+            )));
+        }
+        "latin_1_encode" => {
+            let v = match str_arg(match required(args, "encode") {
+                Ok(v) => v,
+                Err(e) => return Some(Err(e)),
+            }, "encode") {
+                Ok(x) => x,
+                Err(e) => return Some(Err(e)),
+            };
+            let mut out = Vec::with_capacity(v.len());
+            let mut bad: Option<(usize, char)> = None;
+            for (i, c) in v.chars().enumerate() {
+                if (c as u32) > 0xFF {
+                    bad = Some((i, c));
+                    break;
+                }
+                out.push(c as u32 as u8);
+            }
+            if let Some((pos, ch)) = bad {
+                return Some(Err(raise(
+                    "UnicodeEncodeError",
+                    format!(
+                        "'latin-1' codec can't encode character '\\u{:04x}' in position {pos}: ordinal not in range(256)",
+                        ch as u32
+                    ),
+                )));
+            }
+            return Some(Ok(tuple(vec![Value::Bytes(Gc::new(out)), i(v.chars().count() as i64)])));
+        }
+        "latin_1_decode" => {
+            let b = match required(args, "decode") {
+                Ok(v) => v,
+                Err(e) => return Some(Err(e)),
+            };
+            let raw: Vec<u8> = match b {
+                Value::Bytes(bb) => bb.iter().cloned().collect(),
+                _ => Vec::new(),
+            };
+            let txt: String = raw.iter().map(|&x| x as char).collect();
+            return Some(Ok(tuple(vec![s(txt), i(raw.len() as i64)])));
+        }
+        "utf_16_encode" => {
+            // codecs.utf_16_* (encodings/utf_16.py wrapper): native BE-BOM form.
+            return call_codecs("encode_utf16", args, _kwargs);
+        }
+        "utf_16_decode" => {
+            return call_codecs("decode_utf16", args, _kwargs);
+        }
+        "utf_16_le_encode" => {
+            let v = match str_arg(match required(args, "encode") {
+                Ok(v) => v,
+                Err(e) => return Some(Err(e)),
+            }, "encode") {
+                Ok(x) => x,
+                Err(e) => return Some(Err(e)),
+            };
+            let mut bytes: Vec<u8> = Vec::new();
+            for u in v.encode_utf16() {
+                bytes.extend_from_slice(&u.to_le_bytes());
+            }
+            let n = v.encode_utf16().count() as i64 * 2;
+            return Some(Ok(tuple(vec![Value::Bytes(Gc::new(bytes)), i(n)])));
+        }
+        "utf_16_le_decode" => {
+            let b = match required(args, "decode") {
+                Ok(v) => v,
+                Err(e) => return Some(Err(e)),
+            };
+            let raw: Vec<u8> = match b {
+                Value::Bytes(bb) => bb.iter().cloned().collect(),
+                _ => Vec::new(),
+            };
+            let units: Vec<u16> = raw
+                .chunks(2)
+                .filter(|c| c.len() == 2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .collect();
+            let txt = String::from_utf16_lossy(&units);
+            return Some(Ok(tuple(vec![s(txt), i(raw.len() as i64)])));
+        }
+        "utf_16_be_encode" => {
+            let v = match str_arg(match required(args, "encode") {
+                Ok(v) => v,
+                Err(e) => return Some(Err(e)),
+            }, "encode") {
+                Ok(x) => x,
+                Err(e) => return Some(Err(e)),
+            };
+            let mut bytes: Vec<u8> = Vec::new();
+            for u in v.encode_utf16() {
+                bytes.extend_from_slice(&u.to_be_bytes());
+            }
+            let n = v.encode_utf16().count() as i64 * 2;
+            return Some(Ok(tuple(vec![Value::Bytes(Gc::new(bytes)), i(n)])));
+        }
+        "utf_16_be_decode" => {
+            let b = match required(args, "decode") {
+                Ok(v) => v,
+                Err(e) => return Some(Err(e)),
+            };
+            let raw: Vec<u8> = match b {
+                Value::Bytes(bb) => bb.iter().cloned().collect(),
+                _ => Vec::new(),
+            };
+            let units: Vec<u16> = raw
+                .chunks(2)
+                .filter(|c| c.len() == 2)
+                .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                .collect();
+            let txt = String::from_utf16_lossy(&units);
+            return Some(Ok(tuple(vec![s(txt), i(raw.len() as i64)])));
+        }
+        "utf_16_ex_decode" => {
+            // (bytes, errors?, final?) -> (str, consumed, bom_found). v0:
+            // BE-BOM optional; no incremental BOM state (wrapper buffers).
+            let b = match required(args, "decode") {
+                Ok(v) => v,
+                Err(e) => return Some(Err(e)),
+            };
+            let raw: Vec<u8> = match b {
+                Value::Bytes(bb) => bb.iter().cloned().collect(),
+                _ => Vec::new(),
+            };
+            let (body, bom) = match raw.strip_prefix(&[0xFE, 0xFF][..]) {
+                Some(rest) => (rest, 1i64),
+                None => match raw.strip_prefix(&[0xFF, 0xFE][..]) {
+                    Some(rest) => (rest, -1i64),
+                    None => (raw.as_slice(), 0i64),
+                },
+            };
+            let units: Vec<u16> = body
+                .chunks(2)
+                .filter(|c| c.len() == 2)
+                .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                .collect();
+            let txt = String::from_utf16_lossy(&units);
+            return Some(Ok(tuple(vec![s(txt), i(raw.len() as i64), i(bom)])));
+        }
+        "utf_32_encode" => {
+            // codecs.utf_32_* (encodings/utf_32.py wrapper): BE-BOM form.
+            return call_codecs("encode_utf32", args, _kwargs);
+        }
+        "utf_32_decode" => {
+            return call_codecs("decode_utf32", args, _kwargs);
+        }
+        "utf_32_le_encode" => {
+            let v = match str_arg(match required(args, "encode") {
+                Ok(v) => v,
+                Err(e) => return Some(Err(e)),
+            }, "encode") {
+                Ok(x) => x,
+                Err(e) => return Some(Err(e)),
+            };
+            let mut bytes: Vec<u8> = Vec::new();
+            for c in v.chars() {
+                bytes.extend_from_slice(&(c as u32).to_le_bytes());
+            }
+            let n = v.chars().count() as i64 * 4;
+            return Some(Ok(tuple(vec![Value::Bytes(Gc::new(bytes)), i(n)])));
+        }
+        "utf_32_le_decode" => {
+            let b = match required(args, "decode") {
+                Ok(v) => v,
+                Err(e) => return Some(Err(e)),
+            };
+            let raw: Vec<u8> = match b {
+                Value::Bytes(bb) => bb.iter().cloned().collect(),
+                _ => Vec::new(),
+            };
+            let txt: String = raw
+                .chunks(4)
+                .filter(|c| c.len() == 4)
+                .map(|c| char::from_u32(u32::from_le_bytes([c[0], c[1], c[2], c[3]])).unwrap_or('\u{FFFD}'))
+                .collect();
+            return Some(Ok(tuple(vec![s(txt), i(raw.len() as i64)])));
+        }
+        "utf_32_be_encode" => {
+            let v = match str_arg(match required(args, "encode") {
+                Ok(v) => v,
+                Err(e) => return Some(Err(e)),
+            }, "encode") {
+                Ok(x) => x,
+                Err(e) => return Some(Err(e)),
+            };
+            let mut bytes: Vec<u8> = Vec::new();
+            for c in v.chars() {
+                bytes.extend_from_slice(&(c as u32).to_be_bytes());
+            }
+            let n = v.chars().count() as i64 * 4;
+            return Some(Ok(tuple(vec![Value::Bytes(Gc::new(bytes)), i(n)])));
+        }
+        "utf_32_be_decode" => {
+            let b = match required(args, "decode") {
+                Ok(v) => v,
+                Err(e) => return Some(Err(e)),
+            };
+            let raw: Vec<u8> = match b {
+                Value::Bytes(bb) => bb.iter().cloned().collect(),
+                _ => Vec::new(),
+            };
+            let txt: String = raw
+                .chunks(4)
+                .filter(|c| c.len() == 4)
+                .map(|c| char::from_u32(u32::from_be_bytes([c[0], c[1], c[2], c[3]])).unwrap_or('\u{FFFD}'))
+                .collect();
+            return Some(Ok(tuple(vec![s(txt), i(raw.len() as i64)])));
+        }
+        "utf_32_ex_decode" => {
+            let b = match required(args, "decode") {
+                Ok(v) => v,
+                Err(e) => return Some(Err(e)),
+            };
+            let raw: Vec<u8> = match b {
+                Value::Bytes(bb) => bb.iter().cloned().collect(),
+                _ => Vec::new(),
+            };
+            let (body, bom) = match raw.strip_prefix(&[0x00, 0x00, 0xFE, 0xFF][..]) {
+                Some(rest) => (rest, 1i64),
+                None => match raw.strip_prefix(&[0xFF, 0xFE, 0x00, 0x00][..]) {
+                    Some(rest) => (rest, -1i64),
+                    None => (raw.as_slice(), 0i64),
+                },
+            };
+            let txt: String = body
+                .chunks(4)
+                .filter(|c| c.len() == 4)
+                .map(|c| char::from_u32(u32::from_be_bytes([c[0], c[1], c[2], c[3]])).unwrap_or('\u{FFFD}'))
+                .collect();
+            return Some(Ok(tuple(vec![s(txt), i(raw.len() as i64), i(bom)])));
         }
         "encode_utf16" | "encode_utf32" => {
             let v = match str_arg(match required(args, "encode") { Ok(v) => v, Err(e) => return Some(Err(e)) }, "encode") {

@@ -6,6 +6,7 @@
 pub enum Cs {
     Ascii,
     JisX0201Roman,
+    JisX0201Kana,
     JisX0208,
     JisX0212,
     JisX0213P1,
@@ -75,6 +76,10 @@ pub static SPEC_ISO2022_JP_1: Iso2022Spec = Iso2022Spec {
             bytes: b"\x1b$@",
             cs: Cs::JisX0208,
         },
+        Designation {
+            bytes: b"\x1b$(D",
+            cs: Cs::JisX0212,
+        },
     ],
     shifts: false,
     ascii_return: b"\x1b(B",
@@ -98,6 +103,10 @@ pub static SPEC_ISO2022_JP_2: Iso2022Spec = Iso2022Spec {
         },
         Designation {
             bytes: b"\x1b$A",
+            cs: Cs::Gb2312,
+        },
+        Designation {
+            bytes: b"\x1b$(A",
             cs: Cs::Gb2312,
         },
         Designation {
@@ -129,6 +138,10 @@ pub static SPEC_ISO2022_JP_EXT: Iso2022Spec = Iso2022Spec {
             bytes: b"\x1b$(D",
             cs: Cs::JisX0212,
         },
+        Designation {
+            bytes: b"\x1b(I",
+            cs: Cs::JisX0201Kana,
+        },
     ],
     shifts: false,
     ascii_return: b"\x1b(B",
@@ -141,10 +154,6 @@ pub static SPEC_ISO2022_JP_3: Iso2022Spec = Iso2022Spec {
         Designation {
             bytes: b"\x1b$(O",
             cs: Cs::JisX0213P1,
-        },
-        Designation {
-            bytes: b"\x1b$(P",
-            cs: Cs::JisX0213P2,
         },
         Designation {
             bytes: b"\x1b$B",
@@ -166,10 +175,6 @@ pub static SPEC_ISO2022_JP_2004: Iso2022Spec = Iso2022Spec {
         Designation {
             bytes: b"\x1b$(Q",
             cs: Cs::JisX0213P1,
-        },
-        Designation {
-            bytes: b"\x1b$(P",
-            cs: Cs::JisX0213P2,
         },
         Designation {
             bytes: b"\x1b$B",

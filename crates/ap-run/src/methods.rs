@@ -1565,6 +1565,17 @@ pub fn call_method(
                 _ => "strict".to_string(),
             };
             let name = codec.trim().to_ascii_lowercase().replace([' ', '-'], "_");
+            if name == "utf_7" {
+                // Issue #13: utf_7 routes through the mbc_utf7 engine (the
+                // native _codecs.utf_7_* primitives the vendored wrapper
+                // binds; CPython str.encode('utf_7') resolves the same way).
+                return Some(
+                    match crate::mbc::mbc_utf7::utf_7_encode(s.as_str(), &errors) {
+                        Ok(bs) => Ok(Value::Bytes(Gc::new(bs))),
+                        Err(f) => Err(f),
+                    },
+                );
+            }
             if crate::mbc::tables_for_pub(&name).is_some() {
                 return Some(match crate::mbc::encode(&name, s.as_str(), &errors) {
                     Ok(bs) => Ok(Value::Bytes(Gc::new(bs))),
@@ -1920,11 +1931,12 @@ pub fn call_method(
             "AttributeError",
             format!("'{}' object has no attribute '{}'", obj.type_name(), name),
         ))),
-        (Value::Obj(o), _) if o.kind == ap_obj::ObjKind::Opaque
-            && matches!(
-                o.name.as_str(),
-                "MultibyteIncrementalEncoder" | "MultibyteIncrementalDecoder"
-            ) =>
+        (Value::Obj(o), _)
+            if o.kind == ap_obj::ObjKind::Opaque
+                && matches!(
+                    o.name.as_str(),
+                    "MultibyteIncrementalEncoder" | "MultibyteIncrementalDecoder"
+                ) =>
         {
             // Issue #13: the mbc incremental instances' encode/decode ride
             // the codec attr (the wrapper class sets it); route to the mbc
@@ -2012,6 +2024,14 @@ fn decode_bytes(b: &[u8], codec: &str) -> MResult {
 /// codec registry so w3lib's errors="replace" decodes like CPython.
 fn decode_bytes_err(b: &[u8], codec: &str, errors: &str) -> MResult {
     let codec_l = codec.to_ascii_lowercase();
+    // Issue #13: utf_7 decode rides the mbc_utf7 engine (the native
+    // _codecs.utf_7_decode primitives; CPython bytes.decode('utf_7')).
+    if matches!(codec_l.as_str(), "utf-7" | "utf_7" | "utf7" | "u7") {
+        return match crate::mbc::mbc_utf7::utf_7_decode(b, errors) {
+            Ok(txt) => Ok(Value::Str(PyString::new(txt))),
+            Err(f) => Err(f),
+        };
+    }
     // W113: the native arms below are strict-only. utf-8/ascii non-strict
     // modes are implemented here directly (CPython semantics) — the codec
     // registry route would recurse, since the Python utf_8 codec itself
@@ -2263,6 +2283,14 @@ pub fn encode_str(s: &str, codec: &str) -> MResult {
         // Error texts). Codec names normalized like CPython (dashes/spaces).
         other => {
             let name = other.trim().to_ascii_lowercase().replace([' ', '-'], "_");
+            if name == "utf_7" {
+                // Issue #13: utf_7 rides the mbc_utf7 engine (the native
+                // _codecs.utf_7_encode primitives).
+                return match crate::mbc::mbc_utf7::utf_7_encode(s, "strict") {
+                    Ok(bs) => Ok(Value::Bytes(Gc::new(bs))),
+                    Err(f) => Err(f),
+                };
+            }
             if crate::mbc::tables_for_pub(&name).is_some() {
                 return match crate::mbc::encode(&name, s, "strict") {
                     Ok(bs) => Ok(Value::Bytes(Gc::new(bs))),
