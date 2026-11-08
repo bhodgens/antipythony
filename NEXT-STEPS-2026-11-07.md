@@ -8,7 +8,9 @@
   (verified); split recorded; 03.02b next dispatch.
 
 ## Queued: XPASS ledger flip wave (01.02 owns the mechanism)
-Full-suite XPASS = 92 > ceiling 74 (tests/XPASS_CEILING, set 2026-10-20).
+Full-suite XPASS = 93 > ceiling 74 (tests/XPASS_CEILING, set 2026-10-20).
+[FRESH RUN 2026-11-07 post-commit: 1987 passed, 0 failed, 6 skipped,
+670 xfailed, 93 xpassed — pytest gate GREEN, ceiling breach confirmed.]
 Breakdown: 64 x tests/t11_stdlib (reason string: "awaits 02.08 v1 stdlib
 subset" - 02.08 landed long ago, markers stale), 28 across
 test_a1_rustpython_backfill (A-1 landed 2026-10-25) + others. This is
