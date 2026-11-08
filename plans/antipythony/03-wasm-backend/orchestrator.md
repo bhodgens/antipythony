@@ -92,7 +92,9 @@ BLOCKED on spec 07 = leaf 03.01):
 | # | Feature (from leaf briefs) | Source | Unit tests | E2E tests | Status |
 |---|---------------------------|--------|-----------|-----------|--------|
 | 1 | spec 07 representation contract (structs, bigint, EH, GC ownership) | 03.01 | doc-review gate (main model) | unblocks T-12/T-13 authoring | PENDING |
-| 2 | values + control flow + closures lowering | 03.02 | ap-codegen-wasm crate tests | values corpus slice native-vs-wasm byte-diff (T-12 rows) | PENDING |
+| 2a | spec-07 module skeleton: $pyobj rec group, rt_init, GC-$str print | 03.02a (SPLIT from 03.02; landed 2026-11-07, worktree leaf-0302 @1b02ae8, verified 5/5+3/3 green) | ap-codegen-wasm crate tests | e2e hello-world via wasmtime | LANDED (worktree; not merged to trunk) |
+| 2b | prelude runtime + value/arithmetic lowering | 03.02b | ap-codegen-wasm crate tests | values corpus slice native-vs-wasm byte-diff (T-12 rows) | PENDING |
+| 2c | control flow + calls + closures | 03.02c | ap-codegen-wasm crate tests | T-12 rows (control-flow slice) | PENDING |
 | 3 | classes + exceptions + traceback rendering | 03.03 | ap-codegen-wasm/ap-host crate tests | classes+exceptions slices byte-diff (T-12 rows) | PENDING |
 | 4 | generators, match, comprehensions | 03.04 | ap-codegen-wasm crate tests | FULL corpus native-vs-wasm (T-12) | PENDING |
 | 5 | ap-host WASI + aprt imports, `ap-host run` CLI | 03.05 | ap-host crate tests | T-13 host/wasi; full corpus in wasm mode | PENDING |

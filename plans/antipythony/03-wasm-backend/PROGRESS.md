@@ -36,3 +36,24 @@
 
 03.01 (spec 07 = the contract; unblocks T-12/T-13) → 03.02 → 03.03 →
 03.04 sequential; 03.05 parallel from 03.03 onward; 03.06 then 03.07 last.
+
+
+## 2026-11-07: leaf 03.02 SPLIT (orchestrator decision)
+
+03.02 as briefed (values + arithmetic + control flow + calls + containers)
+is multi-session work: byte-exact bigint limb routines, siphash13, compact
+dict probing, and shortest-round-trip float repr must be emitted in-module
+or as prelude Rust (spec-07 §6/§9) — an emitter restructuring, not one
+leaf. Split: 03.02a (skeleton: type hierarchy, rt_init, GC-$str print),
+03.02b (prelude runtime + value/arithmetic lowering), 03.02c (control
+flow + calls + closures). 03.02a LANDED in private worktree
+~/.git/worktrees/leaf-0302 @ 1b02ae8 (from 47be826), verified by the
+orchestrator: 5/5 ap-codegen-wasm + 3/3 ap-host tests green incl.
+end-to-end wasmtime hello-world; 18 named Unsupported sites, fail-closed.
+NOT merged to trunk; merge with the 03.02b/c wave.
+ENGINE FINDING carried into 03.02b scope: wasmtime 47 drops ACTIVE data
+segments after instantiation — the emitter carries a passive duplicate
+segment (index 1) for array.new_data. DEVIATION for 03.05 review:
+aprt.abort_msg declared param is anyref instead of spec-07-41 (ref $str)
+— wasmtime host-func matching cannot express the self-referential
+concrete type; call sites still pass $str values.
