@@ -105,6 +105,7 @@ masked slices, type names), never addresses.
 | t1_013_megamorphic_binop.py | megamorphic `+`: one binop site cycled through six type pairs (int, float, str, list, tuple, int+float) every 200 iterations — repeated guard failures, IC megamorphic-stub path | S-01-1, S-01-7, S-01-14, S-01-19, S-01-20, S-03-25, C-31 |
 | t1_014_exceptions_in_hot_loop.py | unwind-to-handler inside tier-1: ZeroDivisionError + LookupError raised/caught 4.7k times in a 20k loop; caught/kind exact sums pin that no iteration's handler state was skipped or doubled | S-02-29, S-02-30, S-02-31, C-31 |
 | t1_015_nested_break_else.py | control-flow traces across OSR: nested while/for with break, continue, and both `else` clauses — a mis-restored control stack at the tier boundary rewrites the deterministic (o, tag) trace | S-02-15, S-02-16, S-02-17, S-02-18, C-31 |
+| t1_016_deep_call_chain_500.py | 500-deep chained Python calls (`f(n) = 1 + f(n-1)`) — debug-build stack-overflow gate: each level adds one interpreter frame; passes only if the runtime survives depth 500 with def-time binding intact | S-02-7, S-02-10, C-31 |
 
 | bench/ program | Slice role | Cites |
 | --- | --- | --- |
