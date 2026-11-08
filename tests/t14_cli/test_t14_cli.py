@@ -297,7 +297,7 @@ def test_uv_availability_report():
 # ---------------------------------------------------------------------------
 
 
-@XFAIL_0401
+# 2026-11-07 flip wave (01.02): 04.01 landed (6f0b886) - marker removed.
 def test_new_scaffolds_project_files(tmp_path):
     """Plan 04 surface: `antipythony new myapp` -> scaffold: myapp.py +
     antipythony.toml. Both files must exist; the toml must carry the schema
@@ -576,7 +576,8 @@ def test_cache_gc_verb(tmp_path):
     assert b"hello, antipythony" in r2.stdout, "post-gc run must execute the program"
 
 
-@XFAIL_0402
+# 2026-11-07 flip wave (01.02): reproducible-build byte identity holds on
+# the current tree - marker removed.
 def test_build_reproducible_byte_identical_across_clean_caches(tmp_path):
     """04.02 Gate verbatim: 'build output reproducible byte-for-byte across
     two clean caches (documented exceptions: linker build-id — zeroed)'.

@@ -261,7 +261,8 @@ def test_apconform_antipythony_full_slice():
 
 
 @pytest.mark.skipif(not _ap_conform_available(), reason="ap-conform bin missing")
-@xfail_ap
+# 2026-11-07 flip wave (01.02): all 6 spot params pass since 02.01 landed;
+# blanket "awaits 02.08" decorator removed.
 @pytest.mark.parametrize(
     "stem",
     ["V001-bigint-exactness", "V061-float-repr-shortest",

@@ -444,7 +444,7 @@ def test_binary_size_within_bound():
         assert size > 0  # report-only on macos (GAP-2)
 
 
-@XFAIL_0402
+# 2026-11-07 flip wave (01.02): byte identity holds - marker removed.
 def test_reproducible_build_byte_identity():
     """CROSS-REF 04.02 (not a 02.06 blocker — GAP-3): two builds of the same
     source into fresh paths MUST be byte-identical once the linker build-id is

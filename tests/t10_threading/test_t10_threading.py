@@ -319,14 +319,20 @@ def test_apconform_antipythony_full_slice():
     assert proc.returncode == 0, proc.stdout[-4000:] + proc.stderr[-2000:]
 
 
+# 2026-11-07 flip wave (01.02): 7/8 spot params pass since 02.07 landed;
+# T109-exception-in-thread still genuinely fails (G-1 reference-install
+# path gap) and keeps the marker.
+STILL_XFAIL_T10_SPOTS = frozenset({"T109-exception-in-thread"})
+
+
 @pytest.mark.skipif(not _ap_conform_available(), reason="ap-conform bin missing")
-@xfail_ap
 @pytest.mark.parametrize(
-    "stem",
-    ["T101-start-join-completion-order", "T103-queue-producer-consumer",
-     "T107-daemon-exits-with-main", "T108-thread-naming-repr",
-     "T109-exception-in-thread", "T113-barrier",
-     "T114-system-exit-in-thread", "T122-no-refcount-visibility"],
+    "stem", [pytest.param(s, marks=xfail_ap) if s in STILL_XFAIL_T10_SPOTS else s
+             for s in
+             ["T101-start-join-completion-order", "T103-queue-producer-consumer",
+              "T107-daemon-exits-with-main", "T108-thread-naming-repr",
+              "T109-exception-in-thread", "T113-barrier",
+              "T114-system-exit-in-thread", "T122-no-refcount-visibility"]],
 )
 def test_apconform_spot_cases_against_pinned_bytes(stem):
     # Per-channel gate (C-24/C-27): run ONE case under the impl and diff the
@@ -351,7 +357,7 @@ def test_apconform_spot_cases_against_pinned_bytes(stem):
     # until that gap is resolved by spec/impl, not by re-pinning.
 
 
-@xfail_ap
+# 2026-11-07 flip wave: T120 correctness probe green under GIL v1 (02.07).
 def test_gil_free_correctness_differential():
     # Leaf 02.07 Expose: "no GIL". CORRECTNESS probe T120: 4 threads of
     # independent CPU work must produce byte-identical stdout to the pinned

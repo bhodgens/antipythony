@@ -1,17 +1,10 @@
-74
-# measured 2026-10-20 (leaf 01.01). Sources (see plans/robustness-ci/
-# 01-test-integrity/PROGRESS.md 01.01 for the full evidence trail):
-#  - Last VALID complete `pytest tests/ -q` tally: /tmp/ap_b3_pytest.log,
-#    run 2026-10-19 14:08 on this box at the pre-Wave-B tree:
-#    "31 failed, 1261 passed, 95 skipped, 693 xfailed, 74 xpassed" —
-#    the 74 are exactly the STALE-XFAIL-LEDGER "STILL STALE (74 tests)"
-#    t08 envelope (owner: leaf 02.05).
-#  - 2026-10-20 live re-measurement at HEAD e960be0 (+uncommitted
-#    sibling 02.07 threading): 0 XPASS through ~63% of three full-suite runs
-#    and through 2018/2630 tests of four disjoint partition probes — the
-#    t08 impl tests now TIMEOUT under the in-flight threading changes and
-#    report as genuine xfails (x), not xpasses. 0 is an interference
-#    artifact (tests/README: never record a baseline from a broken stack);
-#    74 is the true stale-marker count on any tree where the impl runs.
-# Monotone-decreasing: 01.02 ledger flips lower this file per flip wave.
-# CI fails when a full-suite run reports MORE than 74 xpassed.
+0
+# 2026-11-07 flip wave (leaf 01.02 protocol): ALL 93 stale markers flipped
+# (64x t11 "awaits 02.08", 28x A-1/A-12 backfill, 1x t09/t14 reproducible
+# build). 3 consecutive green runs at 0 xpassed: 2080 passed / 6 skipped /
+# 670 xfailed / 0 xpassed. Remaining 7 decorator/mark sites are GENUINE
+# xfails (verified failing params: t11 sys + 7 partial rows, t10 T109 + G-1,
+# a1 qp-roundtrip/hex-sep/kill-zero, a12 b16/b32/b64/hashlib-shape/
+# hex-sep-invalid/hexlify). Monotone-decreasing policy: any xpass above 0
+# is a stale marker and must flip in the next wave.
+# Previous ceiling: 74 (measured 2026-10-20, leaf 01.01; see git history).

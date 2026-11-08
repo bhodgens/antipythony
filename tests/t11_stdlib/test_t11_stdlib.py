@@ -421,8 +421,15 @@ def test_binary_mode_matches_expected(case):
     assert run.returncode == int((EXPECTED_DIR / (stem + ".rc")).read_text()), stem
 
 
-@xfail_ap
-@pytest.mark.parametrize("mod", sorted(scope_table.IN_MODULES))
+# 2026-11-07 flip wave (01.02 protocol): the blanket "awaits 02.08"
+# decorator was stale - 61/62 params pass. `sys` still genuinely fails
+# and keeps the marker; everything else is a hard pass.
+STILL_XFAIL_IN_MODULES = frozenset({"sys"})
+
+
+@pytest.mark.parametrize(
+    "mod", [pytest.param(m, marks=xfail_ap) if m in STILL_XFAIL_IN_MODULES
+            else m for m in sorted(scope_table.IN_MODULES)])
 def test_in_module_imports_and_smokes_on_antipythony(mod):
     # C-05 Verify: compiling `import m; print(m.__name__)` succeeds and the
     # output matches the reference.
@@ -473,9 +480,18 @@ def test_out_module_build_fails_loud_with_token(mod):
     assert not probe.with_suffix("").exists(), f"{mod}: artifact produced despite refusal"
 
 
-@xfail_ap
-@pytest.mark.parametrize("row", scope_table.PARTIAL_ROWS,
-                         ids=[f"{r['mod']}.{r['name']}" for r in scope_table.PARTIAL_ROWS])
+# 2026-11-07 flip wave: 12/19 partial rows pass; the 7 below still
+# genuinely fail and keep the marker (STALE-XFAIL-LEDGER, 01.02).
+STILL_XFAIL_PARTIAL_ROWS = frozenset({
+    "ast.main", "importlib.metadata", "os.kill", "os.pipe",
+    "sys.audit", "sys.monitoring", "tempfile.mkstemp"})
+
+
+@pytest.mark.parametrize(
+    "row", [pytest.param(r, id=f"{r['mod']}.{r['name']}", marks=xfail_ap)
+            if f"{r['mod']}.{r['name']}" in STILL_XFAIL_PARTIAL_ROWS
+            else pytest.param(r, id=f"{r['mod']}.{r['name']}")
+            for r in scope_table.PARTIAL_ROWS])
 def test_partial_row_enforcement_on_antipythony(row):
     # S-05-4: names NOT in the v1 subset MUST NOT be reachable (attribute
     # access raises AttributeError matching CPython's message shape; missing

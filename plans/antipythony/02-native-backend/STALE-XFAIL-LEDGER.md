@@ -95,3 +95,30 @@ tests/t08_tier1/test_t08_tier1.py::test_cross_mode_byte_identity[tests/corpus/fs
 tests/t08_tier1/test_t08_tier1.py::test_cross_mode_byte_identity[tests/corpus/fstrings/tools/cases/f35_empty_and_self.py]
 tests/t08_tier1/test_t08_tier1.py::test_cross_mode_byte_identity[tests/corpus/fstrings/tools/gen_cases.py]
 tests/t08_tier1/test_t08_tier1.py::test_cross_mode_suite_runs_over_grown_corpus
+
+
+## FLIPPED 2026-11-07 (93 tests, XPASS 93 -> 0; ceiling 74 -> 0)
+
+- tests/t11_stdlib/test_t11_stdlib.py (64): blanket "awaits 02.08" xfail_ap
+  decorators on test_in_module_imports_and_smokes_on_antipythony (61/62
+  params pass; `sys` keeps the marker) and test_partial_row_enforcement_on_
+  antipythony (12/19 pass; ast.main/importlib.metadata/os.kill/os.pipe/
+  sys.audit/sys.monitoring/tempfile.mkstemp keep markers) replaced with
+  per-param pytest.param marks.
+- tests/test_a1_rustpython_backfill.py (3): a1_hex1_fromhex + a1_utime0_ns
+  moved into ALREADY_GREEN per this file's own flip policy;
+  test_impl_utime_ns_exact_readback decorator dropped.
+- tests/test_a12_mined_corpus.py (9): stale marks= removed (b2a_base64_newline,
+  crc_tables, digest_bytes, filemode_table, fromhex_basic, kill_semantics,
+  normpath_table, registry_surface, utime_errors); test_surface_coverage
+  rewritten - stat/os coverage now asserted over the case-id table, not the
+  xfail-reason strings.
+- tests/t05_values/test_t05_values.py (6): spot-case decorator dropped
+  (all 6 params green since 02.01).
+- tests/t10_threading/test_t10_threading.py (8): spot-cases per-param
+  (T109 keeps marker, G-1 gap); test_gil_free_correctness_differential
+  decorator dropped (T120 green).
+- tests/t14_cli/test_t14_cli.py (2) + tests/t09_binary/test_t09_binary.py (1):
+  04.01/04.02 landed (6f0b886) - reproducible-build/scaffold markers dropped.
+- Evidence: 3 consecutive green full runs 2026-11-07 - 2080 passed / 6
+  skipped / 670 xfailed / 0 xpassed; tests/XPASS_CEILING now 0.

@@ -103,6 +103,10 @@ ALREADY_GREEN = frozenset({
     "a1_bin2_hqx",
     "a1_stat0_modes",
     "a1_stat1_consts",
+    # 2026-11-07 flip wave (01.02): green on the current binary; moved out of
+    # the xfail half per the flip policy in this file's header.
+    "a1_hex1_fromhex",
+    "a1_utime0_ns",
 })
 
 
@@ -818,7 +822,7 @@ def test_impl_kill_zero_and_killpg_zero(tmp_path):
     )
 
 
-@xfail_ap
+# 2026-11-07 flip wave (01.02): utime ns readback exact on current binary.
 def test_impl_utime_ns_exact_readback(tmp_path):
     """Leaf item 6 gate: ns= tuple survives a stat round trip exactly, and
     follow_symlinks=False hits the link, not the target."""

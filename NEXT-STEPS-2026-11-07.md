@@ -7,7 +7,11 @@
 - Plan 03: 03.02a landed in worktree ~/.git/worktrees/leaf-0302 @1b02ae8
   (verified); split recorded; 03.02b next dispatch.
 
-## Queued: XPASS ledger flip wave (01.02 owns the mechanism)
+## DONE: XPASS ledger flip wave (2026-11-07)
+93 stale markers flipped; 3 consecutive green runs at 2080 passed /
+670 xfailed / 0 xpassed; ceiling 74 -> 0. See STALE-XFAIL-LEDGER.md.
+
+## Queued: XPASS ledger flip wave (01.02 owns the mechanism) (SUPERSEDED - see DONE above)
 Full-suite XPASS = 93 > ceiling 74 (tests/XPASS_CEILING, set 2026-10-20).
 [FRESH RUN 2026-11-07 post-commit: 1987 passed, 0 failed, 6 skipped,
 670 xfailed, 93 xpassed — pytest gate GREEN, ceiling breach confirmed.]
