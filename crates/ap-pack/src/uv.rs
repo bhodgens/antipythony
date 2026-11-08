@@ -86,6 +86,11 @@ fn check_min_version(version_line: &str) -> Result<(), String> {
         .next()
         .and_then(|m| m.parse().ok())
         .ok_or_else(|| format!("antipythony: cannot parse uv version from `{version_line}`"))?;
+    // UV_MIN_MAJOR is 0 today (pin: any 0.x that parses - see the module
+    // doc), so this comparison is deliberately vacuous and clippy flags it
+    // (absurd_extreme_comparisons). The check MUST stay in source form so
+    // raising the floor above 0 re-arms the gate with no code change.
+    #[allow(clippy::absurd_extreme_comparisons)]
     if major < UV_MIN_MAJOR {
         return Err(format!(
             "antipythony: uv {version_line} is too old (minimum {UV_MIN_MAJOR}.x); \

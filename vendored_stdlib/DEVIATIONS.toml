@@ -891,8 +891,8 @@ path = "codecs.py"
 upstream_path = "codecs.py"
 status = "deviated"
 upstream_sha256 = "718f39b3ea68fe934214d789c5bce3005fa828040b03a72d2f715fc5e2647b7e"
-deviated_sha256 = "6db69cd0fb10a7e01e46b784384850c33553bad6ab1cd680610e1c212d6c80a1"
-note = "T1 chain: encode/decode helper unwrap"
+deviated_sha256 = "eab8c0d19653286b199c4e4e19be44a1419d3a73235d874b5406dc87f32ef315"
+note = "T1 chain: encode/decode helper unwrap; extended by issue #13 (a8841dc): codecs.encode/decode tuple unwrap + incremental writer wrapper glue for the native multibyte CJK engine."
 
 [[file]]
 path = "collections.py"
@@ -957,6 +957,14 @@ status = "pristine"
 upstream_sha256 = "5cecee12ee88255899e980a68d2706442b3fc510ccb9c4a1e0b2c6585ff79aef"
 deviated_sha256 = "5cecee12ee88255899e980a68d2706442b3fc510ccb9c4a1e0b2c6585ff79aef"
 note = ""
+
+[[file]]
+path = "concurrent/futures/thread.py"
+upstream_path = "concurrent/futures/thread.py"
+status = "deviated"
+upstream_sha256 = "7f95079dda8064cd372c9c0ea60c7e172b34c8f2aa0c3d9213e85b8584aa033c"
+deviated_sha256 = "ed22106d5d4cff49fbd0eb832c1e5824e4a95aa7e2daa08a728e5d0f90e0a4a6"
+note = "antipythony copy of CPython concurrent/futures/thread.py with an APX-W113 deviation: _CounterNext class replaces the itertools.count().__next__ counter binding (iterator-bound __next__ as a class attr is not callable on this runtime - same family as the asyncio/tasks.py _TaskNameCounter workaround). Behavior-identical Thread-N names."
 
 [[file]]
 path = "concurrent/interpreters/__init__.py"
@@ -3487,6 +3495,14 @@ deviated_sha256 = "65ba1bacdc42e768382208ff27f3001ee77d9d61aafba686c67652d22b84b
 note = ""
 
 [[file]]
+path = "traceback.py"
+upstream_path = "traceback.py"
+status = "deviated"
+upstream_sha256 = "a8fbeea470aa4e29691560de889de136570bead76d9c8a2b6a891849c047a3b3"
+deviated_sha256 = "1cac2a8eb6241b9c0f3292fd0d3dd9c944ed760ac67a2bd8a53954475591008e"
+note = "antipythony copy of CPython traceback.py with an APX-W113 deviation in _walk_tb_with_full_positions: co_positions() is not exposed on this runtime's code objects, so the shim falls back to tb_lineno for every frame (positions tuple keeps the None shape upstream emits when the line number is unknown). Line numbers on frames degrade toward tb_lineno precision; tracked residual (AGENTS.md T2: traceback frame linenos imprecise)."
+
+[[file]]
 path = "types.py"
 upstream_path = "types.py"
 status = "deviated"
@@ -3621,6 +3637,14 @@ status = "pristine"
 upstream_sha256 = "d12b3cc66af3f42a8ebe63e1c91d24f92c6237b6a93a3702938dffabd812d77b"
 deviated_sha256 = "d12b3cc66af3f42a8ebe63e1c91d24f92c6237b6a93a3702938dffabd812d77b"
 note = ""
+
+[[file]]
+path = "urllib/parse.py"
+upstream_path = "urllib/parse.py"
+status = "deviated"
+upstream_sha256 = "484b633b81d024da52649c7ff775c81b338de9f60585c94e5adfe335a27d9509"
+deviated_sha256 = "1bb180f547d741705714094eed575191c9fe2a9c7a1021c83a89c7b4ead75fe5"
+note = "antipythony copy of CPython urllib/parse.py, one-line APX-W113 deviation in urlsplit(): returns SplitResult(...) instead of the bare tuple (tuple subclass identity so isinstance(x, tuple) and field access both hold under this runtime's tuple-marker surface; CPython 3.14 returns the SplitResult too - the local upstream snapshot predates it). Parity restored to upstream shape; declaration records the bytes."
 
 [[file]]
 path = "urllib/request.py"
@@ -3967,33 +3991,17 @@ deviated_sha256 = "30dd49baa3468801293cabda14f45ac9f9bc4927a296e1c596145ea12f74a
 note = "antipythony shim with no CPython counterpart (zope.interface is third-party): inert InterfaceClass/Attribute/implementer declaration surfaces for twisted.python.components (4b228b8)."
 
 [[file]]
+path = "_multibytecodec.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "5e889ae21858005e9a5249a076780cdcdda8fb94881d5eccc4600aeab5200afa"
+note = "antipythony shim with no CPython counterpart: docstring + empty exec body satisfying the native-module augment hook; the _multibytecodec mixin surface is carried by the native engine (crates/ap-run/src/mbc.rs, issue #13, a8841dc)."
+
+[[file]]
 path = "zope/interface/interface.py"
 upstream_path = ""
 status = "deviated"
 upstream_sha256 = ""
 deviated_sha256 = "235ac04794e6237d9b32aba5571776867adeda06dffe419d794374b91faa2e91"
 note = "antipythony shim with no CPython counterpart (zope.interface is third-party): minimal InterfaceClass/SpecificationBase token surface backing the advisory-only zope shim (4b228b8)."
-
-[[file]]
-path = "traceback.py"
-upstream_path = "traceback.py"
-status = "deviated"
-upstream_sha256 = "a8fbeea470aa4e29691560de889de136570bead76d9c8a2b6a891849c047a3b3"
-deviated_sha256 = "1cac2a8eb6241b9c0f3292fd0d3dd9c944ed760ac67a2bd8a53954475591008e"
-note = "antipythony copy of CPython traceback.py with an APX-W113 deviation in _walk_tb_with_full_positions: co_positions() is not exposed on this runtime's code objects, so the shim falls back to tb_lineno for every frame (positions tuple keeps the None shape upstream emits when the line number is unknown). Line numbers on frames degrade toward tb_lineno precision; tracked residual (AGENTS.md T2: traceback frame linenos imprecise)."
-
-[[file]]
-path = "urllib/parse.py"
-upstream_path = "urllib/parse.py"
-status = "deviated"
-upstream_sha256 = "484b633b81d024da52649c7ff775c81b338de9f60585c94e5adfe335a27d9509"
-deviated_sha256 = "1bb180f547d741705714094eed575191c9fe2a9c7a1021c83a89c7b4ead75fe5"
-note = "antipythony copy of CPython urllib/parse.py, one-line APX-W113 deviation in urlsplit(): returns SplitResult(...) instead of the bare tuple (tuple subclass identity so isinstance(x, tuple) and field access both hold under this runtime's tuple-marker surface; CPython 3.14 returns the SplitResult too - the local upstream snapshot predates it). Parity restored to upstream shape; declaration records the bytes."
-
-[[file]]
-path = "concurrent/futures/thread.py"
-upstream_path = "concurrent/futures/thread.py"
-status = "deviated"
-upstream_sha256 = "7f95079dda8064cd372c9c0ea60c7e172b34c8f2aa0c3d9213e85b8584aa033c"
-deviated_sha256 = "ed22106d5d4cff49fbd0eb832c1e5824e4a95aa7e2daa08a728e5d0f90e0a4a6"
-note = "antipythony copy of CPython concurrent/futures/thread.py with an APX-W113 deviation: _CounterNext class replaces the itertools.count().__next__ counter binding (iterator-bound __next__ as a class attr is not callable on this runtime - same family as the asyncio/tasks.py _TaskNameCounter workaround). Behavior-identical Thread-N names."
