@@ -242,6 +242,12 @@ pub fn lower_module(module: &IrModule) -> Result<Vec<u8>, CodegenError> {
         funcs.function(FT_VOID); // _start (fn-section entry)
         let mut f = Function::new(locals);
         f.instruction(&Instruction::Call(fx::FN_RT_INIT));
+        // TEMP_LOCAL(40) = print-buffer running end; local.get on a fresh
+        // frame is 0, so it MUST start at PRINT_BUF or the first print_one
+        // copies to address 0 and flush computes len = 0 - PRINT_BUF
+        // (empty stdout with rc=0 — the hello-world regression).
+        f.instruction(&Instruction::I32Const(fx::PRINT_BUF));
+        f.instruction(&Instruction::LocalSet(TEMP_LOCAL));
         let mut buf_ptr = fx::PRINT_BUF;
         let mut name_idx: std::collections::HashMap<String, u32> =
             name_order
