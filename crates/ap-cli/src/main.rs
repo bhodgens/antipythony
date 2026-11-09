@@ -331,105 +331,6 @@ fn copy_tree(src: &Path, dst: &Path) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(test)]
-mod merge_tests {
-    use super::*;
-
-    /// Snapshot of a tree: relative path -> bytes, so the rename-merge and
-    /// the old copy-merge can be compared for identical file SET + CONTENTS
-    /// (the F3 contract: same-volume promotion must not change what lands
-    /// in site-packages).
-    fn snapshot(root: &Path, cur: &Path, out: &mut Vec<(String, Vec<u8>)>) {
-        for e in std::fs::read_dir(cur).unwrap().flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                snapshot(root, &p, out);
-            } else {
-                let rel = p.strip_prefix(root).unwrap().to_string_lossy().into_owned();
-                out.push((rel, std::fs::read(&p).unwrap()));
-            }
-        }
-    }
-
-    fn snap(root: &Path) -> Vec<(String, Vec<u8>)> {
-        let mut v = Vec::new();
-        snapshot(root, root, &mut v);
-        v.sort();
-        v
-    }
-
-    fn seed(tag: &str) -> (PathBuf, PathBuf) {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let base =
-            std::env::temp_dir().join(format!("apmerge-{tag}-{}-{nanos}", std::process::id()));
-        let src = base.join("src");
-        let dst = base.join("dst");
-        std::fs::create_dir_all(src.join("pkg/sub")).unwrap();
-        std::fs::create_dir_all(src.join("pkg-1.0.dist-info")).unwrap();
-        std::fs::write(src.join("pkg/__init__.py"), b"__version__ = '1.0'\n").unwrap();
-        std::fs::write(src.join("pkg/sub/mod.py"), b"X = 1\n").unwrap();
-        std::fs::write(src.join("pkg-1.0.dist-info/METADATA"), b"Name: pkg\n").unwrap();
-        std::fs::write(src.join("top.py"), b"print('top')\n").unwrap();
-        (base, src)
-    }
-
-    #[test]
-    fn rename_merge_matches_copy_merge_on_fresh_dst() {
-        let (base, src) = seed("fresh");
-        // merge_dirs MOVES (rename), so the copy arm needs its own pristine
-        // staging tree — same content, independent source.
-        let (base2, src2) = seed("fresh-copy");
-        let via_rename = base.join("dst-rename");
-        let via_copy = base2.join("dst-copy");
-        std::fs::create_dir_all(&via_rename).unwrap();
-        std::fs::create_dir_all(&via_copy).unwrap();
-        merge_dirs(&src, &via_rename).expect("rename merge");
-        copy_tree(&src2, &via_copy).expect("copy merge");
-        assert_eq!(snap(&via_rename), snap(&via_copy));
-        assert_eq!(
-            snap(&via_rename).len(),
-            4,
-            "merged set: pkg/__init__.py, pkg/sub/mod.py, dist-info/METADATA, top.py"
-        );
-        let _ = std::fs::remove_dir_all(&base);
-    }
-
-    #[test]
-    fn collision_dirs_merge_and_file_overwrites() {
-        // Re-add semantics: dst already has pkg/ with an extra installed
-        // file, plus a stale top.py. Rename-merge must merge into pkg/
-        // (keeping the extra file) and overwrite top.py — identical to the
-        // old copy-merge's end state.
-        let (base, src) = seed("collision");
-        let (base2, src2) = seed("collision-copy");
-        let via_rename = base.join("dst-rename");
-        let via_copy = base2.join("dst-copy");
-        for d in [&via_rename, &via_copy] {
-            std::fs::create_dir_all(d.join("pkg")).unwrap();
-            std::fs::write(d.join("pkg/stay.py"), b"installed earlier\n").unwrap();
-            std::fs::write(d.join("top.py"), b"STALE\n").unwrap();
-        }
-        merge_dirs(&src, &via_rename).expect("rename merge");
-        copy_tree(&src2, &via_copy).expect("copy merge");
-        assert_eq!(snap(&via_rename), snap(&via_copy));
-        let s = snap(&via_rename);
-        assert!(
-            s.iter()
-                .any(|(p, b)| p == "pkg/stay.py" && b == b"installed earlier\n"),
-            "collision merge keeps pre-existing files: {s:?}"
-        );
-        assert!(
-            s.iter()
-                .any(|(p, b)| p == "top.py" && b == b"print('top')\n"),
-            "new file must replace the stale one: {s:?}"
-        );
-        let _ = std::fs::remove_dir_all(&base);
-    }
-}
-
 // ---------------------------------------------------------------------------
 // run
 // ---------------------------------------------------------------------------
@@ -595,7 +496,7 @@ fn cmd_build(rest: &[&str]) -> Result<i32, String> {
     let out_path = out.unwrap_or_else(|| {
         Path::new(&path)
             .file_stem()
-            .map(|s| PathBuf::from(s))
+            .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("app"))
     });
     if let Some(dir) = ap_pack::cache::entry_dir(&key) {
@@ -624,7 +525,7 @@ fn cmd_build(rest: &[&str]) -> Result<i32, String> {
     // the interpreter the launcher execs — resolved at run time).
     std::fs::write(
         &out_path,
-        format!("#!/bin/sh\nexec antipythony run \"$0.py\" \"$@\"\n"),
+        "#!/bin/sh\nexec antipythony run \"$0.py\" \"$@\"\n",
     )
     .map_err(|e| format!("antipythony: cannot write {}: {e}", out_path.display()))?;
     println!("built {}", out_path.display());
@@ -643,5 +544,109 @@ fn cmd_cache(rest: &[&str]) -> Result<i32, String> {
             Ok(0)
         }
         _ => Err("usage: antipythony cache gc".to_string()),
+    }
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+
+    /// Snapshot of a tree: relative path -> bytes, so the rename-merge and
+    /// the old copy-merge can be compared for identical file SET + CONTENTS
+    /// (the F3 contract: same-volume promotion must not change what lands
+    /// in site-packages).
+    fn snapshot(root: &Path, cur: &Path, out: &mut Vec<(String, Vec<u8>)>) {
+        for e in std::fs::read_dir(cur).expect("main.rs:559").flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                snapshot(root, &p, out);
+            } else {
+                let rel = p
+                    .strip_prefix(root)
+                    .expect("main.rs:564")
+                    .to_string_lossy()
+                    .into_owned();
+                out.push((rel, std::fs::read(&p).expect("main.rs:565")));
+            }
+        }
+    }
+
+    fn snap(root: &Path) -> Vec<(String, Vec<u8>)> {
+        let mut v = Vec::new();
+        snapshot(root, root, &mut v);
+        v.sort();
+        v
+    }
+
+    fn seed(tag: &str) -> (PathBuf, PathBuf) {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let base =
+            std::env::temp_dir().join(format!("apmerge-{tag}-{}-{nanos}", std::process::id()));
+        let src = base.join("src");
+        let _dst = base.join("dst");
+        std::fs::create_dir_all(src.join("pkg/sub")).expect("main.rs:586");
+        std::fs::create_dir_all(src.join("pkg-1.0.dist-info")).expect("main.rs:587");
+        std::fs::write(src.join("pkg/__init__.py"), b"__version__ = '1.0'\n").expect("main.rs:588");
+        std::fs::write(src.join("pkg/sub/mod.py"), b"X = 1\n").expect("main.rs:589");
+        std::fs::write(src.join("pkg-1.0.dist-info/METADATA"), b"Name: pkg\n")
+            .expect("main.rs:590");
+        std::fs::write(src.join("top.py"), b"print('top')\n").expect("main.rs:591");
+        (base, src)
+    }
+
+    #[test]
+    fn rename_merge_matches_copy_merge_on_fresh_dst() {
+        let (base, src) = seed("fresh");
+        // merge_dirs MOVES (rename), so the copy arm needs its own pristine
+        // staging tree — same content, independent source.
+        let (base2, src2) = seed("fresh-copy");
+        let via_rename = base.join("dst-rename");
+        let via_copy = base2.join("dst-copy");
+        std::fs::create_dir_all(&via_rename).expect("main.rs:603");
+        std::fs::create_dir_all(&via_copy).expect("main.rs:604");
+        merge_dirs(&src, &via_rename).expect("rename merge");
+        copy_tree(&src2, &via_copy).expect("copy merge");
+        assert_eq!(snap(&via_rename), snap(&via_copy));
+        assert_eq!(
+            snap(&via_rename).len(),
+            4,
+            "merged set: pkg/__init__.py, pkg/sub/mod.py, dist-info/METADATA, top.py"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn collision_dirs_merge_and_file_overwrites() {
+        // Re-add semantics: dst already has pkg/ with an extra installed
+        // file, plus a stale top.py. Rename-merge must merge into pkg/
+        // (keeping the extra file) and overwrite top.py — identical to the
+        // old copy-merge's end state.
+        let (base, src) = seed("collision");
+        let (base2, src2) = seed("collision-copy");
+        let via_rename = base.join("dst-rename");
+        let via_copy = base2.join("dst-copy");
+        for d in [&via_rename, &via_copy] {
+            std::fs::create_dir_all(d.join("pkg")).expect("main.rs:627");
+            std::fs::write(d.join("pkg/stay.py"), b"installed earlier\n").expect("main.rs:628");
+            std::fs::write(d.join("top.py"), b"STALE\n").expect("main.rs:629");
+        }
+        merge_dirs(&src, &via_rename).expect("rename merge");
+        copy_tree(&src2, &via_copy).expect("copy merge");
+        assert_eq!(snap(&via_rename), snap(&via_copy));
+        let s = snap(&via_rename);
+        assert!(
+            s.iter()
+                .any(|(p, b)| p == "pkg/stay.py" && b == b"installed earlier\n"),
+            "collision merge keeps pre-existing files: {s:?}"
+        );
+        assert!(
+            s.iter()
+                .any(|(p, b)| p == "top.py" && b == b"print('top')\n"),
+            "new file must replace the stale one: {s:?}"
+        );
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

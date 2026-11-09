@@ -22,12 +22,12 @@
 //!    - p07 (`del q` never bound) must flag with the same class+message
 //!      (UnboundLocalError, G-7);
 //!    - p08 must flag a runtime-clean program (static rule, S-02-2).
-//!    Message text is the byte-exact 3.14 template (byte-verified against
-//!    CPython 3.14.7): `cannot access local variable 'x' where it is not
+//!      Message text is the byte-exact 3.14 template (byte-verified against
+//!      CPython 3.14.7): `cannot access local variable 'x' where it is not
 //!    associated with a value`. Control-flow is treated optimistically per
-//!    C-11: any statement sequence along the syntactic order (branches,
-//!    loops, try bodies, else/finally) counts as a potential protecting
-//!    path; only reads with NO potential prior binding anywhere flag.
+//!      C-11: any statement sequence along the syntactic order (branches,
+//!      loops, try bodies, else/finally) counts as a potential protecting
+//!      path; only reads with NO potential prior binding anywhere flag.
 //! 2. **Name-resolution completeness** — S-02-1: every Name read resolves
 //!    to (local | param | cell/free | global | builtin). A read that
 //!    resolves NOWHERE is [`DiagKind::UnresolvedName`] with CPython's
@@ -886,8 +886,6 @@ impl Verifier {
             Stmt::ExprStmt(e) => self.nested_expr(e, &qual_of(path), enclosing),
             Stmt::Global(_) | Stmt::Nonlocal(_) | Stmt::Import(_) | Stmt::ImportFrom(..) => {}
             Stmt::Pass | Stmt::Break | Stmt::Continue => {}
-            Stmt::Line(_) => {}
-            Stmt::Line(_) => {}
         }
     }
 
@@ -1026,11 +1024,8 @@ impl Verifier {
                     self.nested_expr(v, qual, enclosing);
                 }
             }
-            Stmt::Return(v) => {
-                if let Some(v) = v {
-                    self.nested_expr(v, qual, enclosing);
-                }
-            }
+            Stmt::Return(Some(v)) => self.nested_expr(v, qual, enclosing),
+            Stmt::Return(None) => {}
             Stmt::ExprStmt(v) => self.nested_expr(v, qual, enclosing),
             Stmt::If(c, then, els) => {
                 self.nested_expr(c, qual, enclosing);
@@ -2330,12 +2325,12 @@ impl IntVal {
     }
     fn bit_capacity_ok(&self) -> bool {
         // ~3.33 bits per decimal digit
-        self.digits.len() * 10 / 3 < FOLD_INT_DIGIT_CAP as usize * 10 / 3
+        self.digits.len() * 10 / 3 < FOLD_INT_DIGIT_CAP * 10 / 3
             && self.digits.len() <= FOLD_INT_DIGIT_CAP
     }
     fn to_expr(&self) -> Expr {
         if let Ok(v) = self.digits.parse::<i128>() {
-            if (v >= 0) == !self.neg && v != i128::MIN {
+            if (v >= 0) != self.neg && v != i128::MIN {
                 return Expr::LitInt(if self.neg { -v } else { v });
             }
         }
@@ -3232,7 +3227,7 @@ mod perf_regressions {
     fn child_ref_stack_matches_old_clone_walk_order() {
         fn old_children(e: &Expr) -> Vec<Expr> {
             match e {
-                Expr::BinOp(op, a, b) => vec![(**a).clone(), (**b).clone()],
+                Expr::BinOp(_op, a, b) => vec![(**a).clone(), (**b).clone()],
                 Expr::Call(f, args) => {
                     let mut out = vec![(**f).clone()];
                     for a in args {

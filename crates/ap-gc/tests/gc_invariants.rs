@@ -54,13 +54,13 @@ thread_local! {
     /// When true, call_del clones the dying object back to life
     /// (resurrection, C-21/gc008 case).
     static RESURRECT_MODE: Cell<bool> = const { Cell::new(false) };
-    static RESURRECT: RefCell<Vec<Value>> = RefCell::new(Vec::new());
+    static RESURRECT: RefCell<Vec<Value>> = const { RefCell::new(Vec::new()) };
     /// The weakref target the ordering probe watches at fire-time.
     static PROBE_TARGET: Cell<usize> = const { Cell::new(0) };
-    static DEAD_AT_FIRE: RefCell<Option<bool>> = RefCell::new(None);
-    static ALIVE_AT_FIRE: RefCell<Option<bool>> = RefCell::new(None);
+    static DEAD_AT_FIRE: RefCell<Option<bool>> = const { RefCell::new(None) };
+    static ALIVE_AT_FIRE: RefCell<Option<bool>> = const { RefCell::new(None) };
     /// Keeps TypeObject payloads alive so instance type_ref upgrades work.
-    static STICKY_TYPES: RefCell<Vec<Rc<TypeObject>>> = RefCell::new(Vec::new());
+    static STICKY_TYPES: RefCell<Vec<Rc<TypeObject>>> = const { RefCell::new(Vec::new()) };
 }
 
 fn sys_modules() -> Vec<Value> {
@@ -127,7 +127,7 @@ fn make_del_instance(name: &str) -> Value {
     let del_fn = PyObject::new(ObjKind::BuiltinFn, "__del__");
     cls_dict
         .set(Value::Str(PyString::new("__del__")), Value::Obj(del_fn))
-        .unwrap();
+        .expect("gc_invariants.rs:128");
     let to = TypeObject::create(
         name.to_string(),
         name.to_string(),
@@ -136,7 +136,7 @@ fn make_del_instance(name: &str) -> Value {
         TypeFlags::default(),
         None,
     )
-    .unwrap();
+    .expect("gc_invariants.rs:131");
     STICKY_TYPES.with(|s| s.borrow_mut().push(to.clone()));
     let inst = PyObject::new(ObjKind::UserInstance, name);
     *inst.type_ref.borrow_mut() = Some(Rc::downgrade(&to));
@@ -266,7 +266,8 @@ fn root_dict_keepalive_survives_collect() {
     add_root_dict(&root);
     let v = list_val();
     let addr = addr_of(&v);
-    root.set(Value::Str(PyString::new("x")), v.clone()).unwrap();
+    root.set(Value::Str(PyString::new("x")), v.clone())
+        .expect("gc_invariants.rs:269");
     drop(v);
 
     assert_eq!(
@@ -282,7 +283,7 @@ fn root_dict_keepalive_survives_collect() {
 
     // Release from the root: now ONLY the registry clone holds it.
     root.set(Value::Str(PyString::new("x")), Value::None)
-        .unwrap();
+        .expect("gc_invariants.rs:284");
     let reclaimed = collect();
     assert!(reclaimed >= 1);
     assert!(!tracked_set_contains(addr), "unrooted object collected");
@@ -304,14 +305,16 @@ fn module_ns_root_keepalive_survives_collect() {
     add_root_module_ns(&ns);
     let v = list_val();
     let addr = addr_of(&v);
-    ns.set(Value::Str(PyString::new("f")), v.clone()).unwrap();
+    ns.set(Value::Str(PyString::new("f")), v.clone())
+        .expect("gc_invariants.rs:307");
     drop(v);
 
     assert_eq!(collect(), 0, "module-ns-held object survives");
     assert!(tracked_set_contains(addr));
 
     clear_roots();
-    ns.set(Value::Str(PyString::new("f")), Value::None).unwrap();
+    ns.set(Value::Str(PyString::new("f")), Value::None)
+        .expect("gc_invariants.rs:314");
     collect();
     assert!(
         !tracked_set_contains(addr),
@@ -510,7 +513,7 @@ fn collect_aborts_on_mid_mutation_contention_never_skips() {
     obj.attrs
         .borrow_mut()
         .set(Value::Str(PyString::new("keep")), victim.clone())
-        .unwrap();
+        .expect("gc_invariants.rs:510");
     drop(victim);
 
     let alloc_before = get_count().0;
@@ -578,10 +581,10 @@ fn collect_aborts_on_mid_mutation_contention_never_skips() {
     obj2.attrs
         .borrow_mut()
         .set(Value::Str(PyString::new("keep")), victim2.clone())
-        .unwrap();
+        .expect("gc_invariants.rs:578");
     root2
         .set(Value::Str(PyString::new("obj")), obj2_v.clone())
-        .unwrap();
+        .expect("gc_invariants.rs:582");
     drop(victim2);
     collect(); // absorb the dunders orphan (see NOTE)
     assert_eq!(
@@ -596,7 +599,7 @@ fn collect_aborts_on_mid_mutation_contention_never_skips() {
     // Drop the external handles: the whole chain dies together.
     root2
         .set(Value::Str(PyString::new("obj")), Value::None)
-        .unwrap();
+        .expect("gc_invariants.rs:597");
     clear_roots();
     drop(obj2_v);
     drop(obj2);

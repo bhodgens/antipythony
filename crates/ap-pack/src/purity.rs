@@ -163,26 +163,26 @@ mod tests {
         let root = std::env::temp_dir().join(format!("apx_purity_f1_{}", std::process::id()));
         let pkg_a = root.join("apkg_a/lib");
         let pkg_z = root.join("zpkg_b/lib");
-        std::fs::create_dir_all(&pkg_a).unwrap();
-        std::fs::create_dir_all(&pkg_z).unwrap();
-        std::fs::write(pkg_z.join("zfirst.so"), b"").unwrap();
-        std::fs::write(pkg_a.join("asecond.dylib"), b"").unwrap();
+        std::fs::create_dir_all(&pkg_a).expect("purity.rs:166");
+        std::fs::create_dir_all(&pkg_z).expect("purity.rs:167");
+        std::fs::write(pkg_z.join("zfirst.so"), b"").expect("purity.rs:168");
+        std::fs::write(pkg_a.join("asecond.dylib"), b"").expect("purity.rs:169");
 
-        let err = check_pure(&root).unwrap_err();
+        let err = check_pure(&root).expect_err("purity.rs:171");
         assert!(
             err.contains("apkg_a"),
             "diagnostic must name the lexicographic-first offender (apkg_a), got: {err}"
         );
-        std::fs::remove_dir_all(&root).unwrap();
+        std::fs::remove_dir_all(&root).expect("purity.rs:176");
     }
 
     #[test]
     fn check_pure_clean_tree_is_ok() {
         let root = std::env::temp_dir().join(format!("apx_purity_ok_{}", std::process::id()));
-        std::fs::create_dir_all(root.join("pkg/__pycache__")).unwrap();
-        std::fs::write(root.join("pkg/mod.py"), b"x = 1").unwrap();
-        std::fs::write(root.join("pkg/__pycache__/mod.pyc"), b"").unwrap();
+        std::fs::create_dir_all(root.join("pkg/__pycache__")).expect("purity.rs:182");
+        std::fs::write(root.join("pkg/mod.py"), b"x = 1").expect("purity.rs:183");
+        std::fs::write(root.join("pkg/__pycache__/mod.pyc"), b"").expect("purity.rs:184");
         assert!(check_pure(&root).is_ok());
-        std::fs::remove_dir_all(&root).unwrap();
+        std::fs::remove_dir_all(&root).expect("purity.rs:186");
     }
 }

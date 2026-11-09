@@ -30,9 +30,9 @@ fn run_reference(py: &str, src: &str) -> (Vec<u8>, i32) {
         std::process::id(),
         PROBE_SEQ.fetch_add(1, Ordering::Relaxed)
     ));
-    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(&dir).expect("name_resolution_differential.rs:33");
     let path = dir.join("probe.py");
-    std::fs::write(&path, src).unwrap();
+    std::fs::write(&path, src).expect("name_resolution_differential.rs:35");
     let out = Command::new(py)
         .arg(&path)
         .output()

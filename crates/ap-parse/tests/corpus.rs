@@ -19,7 +19,13 @@ fn fixture_names(prefix: &str) -> Vec<String> {
     let dir = Path::new(FIXTURE_DIR);
     let mut names: Vec<String> = std::fs::read_dir(dir)
         .unwrap_or_else(|e| panic!("read fixtures dir {}: {e}", FIXTURE_DIR))
-        .map(|e| e.unwrap().file_name().to_str().unwrap().to_string())
+        .map(|e| {
+            e.expect("corpus.rs:22")
+                .file_name()
+                .to_str()
+                .expect("non-utf8 fixture name")
+                .to_string()
+        })
         .filter(|n| n.starts_with(prefix) && n.ends_with(".py"))
         .collect();
     names.sort();
@@ -27,7 +33,7 @@ fn fixture_names(prefix: &str) -> Vec<String> {
 }
 
 fn read_fixture(name: &str) -> String {
-    std::fs::read_to_string(Path::new(FIXTURE_DIR).join(name)).unwrap()
+    std::fs::read_to_string(Path::new(FIXTURE_DIR).join(name)).expect("corpus.rs:30")
 }
 
 /// Expected (line, col) of the first ruff syntax error, established by probe
@@ -111,7 +117,7 @@ fn corpus_invalid_programs_fail_at_expected_position() {
 #[test]
 fn invalid_unclosed_paren_display_is_byte_exact() {
     let src = read_fixture("invalid_unclosed_paren.py");
-    let err = ap_parse::parse(&src).unwrap_err();
+    let err = ap_parse::parse(&src).expect_err("corpus.rs:114");
     assert_eq!(
         err.to_string(),
         "error at line 2, column 1: Expected `)`, found name"
@@ -157,7 +163,7 @@ fn source_map_survives_multibyte_characters() {
     // Scalar positions: s=0 ' '=1 ==2 ' '=3 '"'=4 h=5 é=6 l=7 l=8 ó=9 '"'=10 \n=11
     // Byte offsets:      0        1  2     3     4    5  6     8   9   10     12
     let src = "s = \"h\u{e9}ll\u{f3}\"\nt = 1\n";
-    let ast = ap_parse::parse(src).unwrap();
+    let ast = ap_parse::parse(src).expect("corpus.rs:160");
     assert_eq!(ast.line_col(0), (1, 1)); // 's'
     assert_eq!(ast.line_col(4), (1, 5)); // opening quote
     assert_eq!(ast.line_col(5), (1, 6)); // 'h'
@@ -171,14 +177,14 @@ fn source_map_survives_multibyte_characters() {
 
 #[test]
 fn parse_error_is_std_error() {
-    let err = ap_parse::parse("x = (").unwrap_err();
+    let err = ap_parse::parse("x = (").expect_err("corpus.rs:174");
     let _: &dyn std::error::Error = &err;
 }
 
 #[test]
 fn module_ast_exposes_source_and_ruff_ast() {
     let src = "value = 40 + 2\n";
-    let ast = ap_parse::parse(src).unwrap();
+    let ast = ap_parse::parse(src).expect("corpus.rs:181");
     assert_eq!(ast.source(), src);
     assert_eq!(ast.module().body.len(), 1);
     // One statement: an assignment whose value is a binop.

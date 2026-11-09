@@ -82,13 +82,13 @@ thread_local! {
     static GEN_TB_BASE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// Stack of (fiber_id, yielder) for fibers whose body is executing on
     /// this thread. TOP = the fiber that executes the next statement.
-    static ACTIVE: RefCell<Vec<(u64, *const FiberYielder)>> = RefCell::new(Vec::new());
+    static ACTIVE: RefCell<Vec<(u64, *const FiberYielder)>> = const { RefCell::new(Vec::new()) };
     /// Parked (fiber_id, yielder) for fibers SUSPENDED at a yield while an
     /// outer fiber continues running (nested generators). Re-activated on
     /// resume.
-    static PARKED: RefCell<Vec<(u64, *const FiberYielder)>> = RefCell::new(Vec::new());
+    static PARKED: RefCell<Vec<(u64, *const FiberYielder)>> = const { RefCell::new(Vec::new()) };
     /// The fiber id whose body is executing on this stack segment.
-    static CURRENT: RefCell<Vec<u64>> = RefCell::new(Vec::new());
+    static CURRENT: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
     static NEXT_FIBER: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
 }
 
@@ -529,9 +529,9 @@ pub fn resume_live(
 ///   is 8MB (debug-frame overhead is ~4x release);
 /// - deep recursion THROUGH a generator chain (rare): opt-in via
 ///   AP_GEN_STACK_MB. AP_GEN_STACK_MB=64 restores the old size exactly.
-/// Committed RSS is UNCHANGED by this knob for shallow generators (a fiber
-/// commits only its touched pages, ~330KB measured); the knob bounds the
-/// RESERVATION, which is what compounds across simultaneously-held fibers.
+///   Committed RSS is UNCHANGED by this knob for shallow generators (a fiber
+///   commits only its touched pages, ~330KB measured); the knob bounds the
+///   RESERVATION, which is what compounds across simultaneously-held fibers.
 pub fn gen_stack_size() -> usize {
     let mb = std::env::var("AP_GEN_STACK_MB")
         .ok()

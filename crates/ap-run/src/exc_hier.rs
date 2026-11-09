@@ -221,7 +221,7 @@ impl ExceptionValue {
             return ExceptionValue::new("MemoryError", vec![]);
         }
         ExceptionValue::new(
-            &exc.class,
+            exc.class,
             vec![ap_obj::Value::Str(ap_obj::PyString::new(msg))],
         )
     }

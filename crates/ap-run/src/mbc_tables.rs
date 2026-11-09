@@ -153736,6 +153736,7 @@ pub static MAP_GBK: &[(&str, u32)] = &[
     ("fe4f", 0xFA29),
 ];
 
+#[allow(dead_code)] // kept: part of an unfinished surface (robustness-ci 02.x burn-down leaf)
 pub static MAP_HZ: &[(&str, u32)] = &[
     ("00", 0x0000),
     ("01", 0x0001),
@@ -224164,4 +224165,3 @@ pub static MAP_GB18030_2: &[(&str, u32)] = &[
     ("fefd", 0xE4C4),
     ("fefe", 0xE4C5),
 ];
-

@@ -28,7 +28,6 @@
 //! neither builtin nor registered).
 
 use crate::builtins_modules::{finish, i, marker, new_module, raise, s, str_arg, tuple, BResult};
-use ap_obj::dict::PyDict;
 use ap_obj::int::Gc;
 use ap_obj::object::{ObjKind, PyObject};
 use ap_obj::value::Value;
@@ -127,6 +126,7 @@ fn build_tables(raw: &'static [(&'static str, u32)], canon: &'static str) -> Cod
     }
 }
 
+#[allow(unused_macros)] // kept for parity with sibling codec fns; currently unreferenced
 macro_rules! table_of {
     ($name:literal) => {
         &mbc_tables::$name
@@ -251,7 +251,7 @@ fn tables_for(name: &str) -> Option<&'static CodecTables> {
             // iso2022 codecs decode through the state machine; their tables
             // come from the underlying charset (JIS0208 via euc_jp rows,
             // KSC5601 via euc_kr rows, GB2312 via gb2312 rows).
-            let base: &'static CodecTables = match spec.multibyte {
+            let _base: &'static CodecTables = match spec.multibyte {
                 MultibyteKind::JisX0208 => euc_jp(),
                 MultibyteKind::JisX0213 => euc_jis_2004(),
                 MultibyteKind::JisX0212 => euc_jp(),
@@ -416,7 +416,7 @@ pub fn mbc_encode(t: &CodecTables, text: &str, errors: &str) -> Result<Vec<u8>, 
         if !known_handler {
             return Err(raise(
                 "LookupError",
-                format!("unknown error handler: non-builtin handler"),
+                "unknown error handler: non-builtin handler".to_string(),
             ));
         }
         // CPython raises UnicodeEncodeError with the standard message text;
@@ -459,6 +459,7 @@ fn dec_handler_of(errors: &str) -> DecHandler {
     }
 }
 
+#[allow(dead_code)] // kept: part of an unfinished surface (robustness-ci 02.x burn-down leaf)
 fn hex_decode(hex: &str) -> Vec<u8> {
     let b = hex.as_bytes();
     let mut out = Vec::with_capacity(b.len() / 2);
@@ -622,7 +623,7 @@ fn hz_decode(t: &CodecTables, b: &[u8], errors: &str) -> Result<String, crate::F
 }
 
 /// HZ encode: ASCII stays; CJK -> ~{ gb2 ~}; literal ~ -> ~~.
-fn hz_encode(t: &CodecTables, text: &str, errors: &str) -> Result<Vec<u8>, crate::Flow> {
+fn hz_encode(t: &CodecTables, text: &str, _errors: &str) -> Result<Vec<u8>, crate::Flow> {
     let mut out = Vec::new();
     let mut gb = false;
     for ch in text.chars() {
@@ -698,12 +699,10 @@ fn iso_decode(t: &CodecTables, b: &[u8], errors: &str) -> Result<String, crate::
                 }
             }
             // ASCII-return designations ESC ( B / ESC ( J accepted everywhere
-            if !matched {
-                if i + 3 <= n && (&b[i..i + 3] == b"\x1b(B" || &b[i..i + 3] == b"\x1b(J") {
-                    cs = Cs::Ascii;
-                    i += 3;
-                    matched = true;
-                }
+            if !matched && i + 3 <= n && (&b[i..i + 3] == b"\x1b(B" || &b[i..i + 3] == b"\x1b(J") {
+                cs = Cs::Ascii;
+                i += 3;
+                matched = true;
             }
             if !matched {
                 // unknown escape: CPython errors on the ESC itself
@@ -810,8 +809,8 @@ fn iso_decode(t: &CodecTables, b: &[u8], errors: &str) -> Result<String, crate::
                     Cs::Gb2312 => gb2312(),
                     _ => euc_jp(),
                 };
-                let hi = (b[i] | 0x80) as u8;
-                let lo = (b[i + 1] | 0x80) as u8;
+                let hi = b[i] | 0x80;
+                let lo = b[i + 1] | 0x80;
                 // JIS X 0212 payload pairs sit in the 0x8F-prefixed 3-byte
                 // euc_jp rows (0xA1.. lead); 2-byte rows never contain them.
                 let keys: [String; 2] = if payload_cs == Cs::JisX0212 {
@@ -992,7 +991,7 @@ fn plain_decode(t: &CodecTables, b: &[u8], errors: &str) -> Result<String, crate
             }
         }
     }
-    if let Some((start, end, incomplete)) = err {
+    if let Some((start, _end, incomplete)) = err {
         let msg = if incomplete {
             "incomplete multibyte sequence"
         } else {
@@ -1009,6 +1008,7 @@ fn plain_decode(t: &CodecTables, b: &[u8], errors: &str) -> Result<String, crate
     Ok(out)
 }
 
+#[allow(dead_code)] // kept: part of an unfinished surface (robustness-ci 02.x burn-down leaf)
 fn in_digit_span(b: u8, lo: u8, hi: u8) -> bool {
     (lo..=hi).contains(&b)
 }
@@ -1094,6 +1094,7 @@ pub fn gb4_decode_seq(b: [u8; 4]) -> Option<u32> {
     None
 }
 
+#[allow(dead_code)] // kept: part of an unfinished surface (robustness-ci 02.x burn-down leaf)
 fn is_gb4_shape(b: &[u8]) -> bool {
     b.len() == 4
         && (0x81..=0xFE).contains(&b[0])
@@ -1255,7 +1256,7 @@ fn iso_encode(t: &CodecTables, text: &str, errors: &str) -> Result<Vec<u8>, crat
                 if h == 0 && l == 0 {
                     continue; // not representable under this charset
                 }
-                if h < 0x21 || h > 0x7E || l < 0x21 || l > 0x7E {
+                if !(0x21..=0x7E).contains(&h) || !(0x21..=0x7E).contains(&l) {
                     continue;
                 }
                 if active_cs != cs || active != Some(desig) {
@@ -1499,9 +1500,9 @@ fn pending_str_of(text: &str, consumed_chars: usize) -> String {
 /// One `_codecs_<lang>.getcodec(name)` surface: returns a namespace object
 /// with encode/decode bound-method markers `_mbc.<name>.encode|decode`.
 fn getcodec_value(name: &str, canon: &str) -> Value {
-    let o = PyObject::new(ObjKind::Namespace, &format!("multibyte_codec_{}", name));
+    let o = PyObject::new(ObjKind::Namespace, format!("multibyte_codec_{}", name));
     {
-        let mut a = o.attrs.borrow_mut();
+        let a = o.attrs.borrow_mut();
         let _ = a.set(s("name"), s(canon));
         let _ = a.set(s("encode"), marker(&format!("_mbc.{}.encode", name)));
         let _ = a.set(s("decode"), marker(&format!("_mbc.{}.decode", name)));
@@ -1662,10 +1663,7 @@ pub fn call_getcodec(mod_name: &str, args: &[Value]) -> Option<BResult> {
 /// errors is args[2] (encode: str, decode: bytes) / kwargs.
 pub fn call_mbc(fname: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option<BResult> {
     // fname shape: "<codec>.encode" | "<codec>.decode"
-    let (codec, op) = match fname.rsplit_once('.') {
-        Some(pair) => pair,
-        None => return None,
-    };
+    let (codec, op) = fname.rsplit_once('.')?;
     if !matches!(op, "encode" | "decode") {
         return None;
     }
@@ -1795,7 +1793,7 @@ fn mbc_incremental_method(recv: &Value, method: &str, args: &[Value]) -> Option<
                 // partial lead byte would be dropped.
                 let acc = incr_get_bytes(recv);
                 let mut consumed = 0usize;
-                let mut out = String::new();
+                let _out = String::new();
                 let t = tables_for(&codec_name);
                 let mut i = 0usize;
                 while i < acc.len() {
@@ -1872,7 +1870,7 @@ fn decode_prefix(name: &str, b: &[u8], errors: &str) -> Option<(String, usize)> 
 
 fn incr_attr_get(recv: &Value, key: &str) -> Option<Value> {
     if let Value::Obj(o) = recv {
-        return o.attrs.borrow().get(&s(key)).map(|v| v.clone());
+        return o.attrs.borrow().get(&s(key));
     }
     None
 }

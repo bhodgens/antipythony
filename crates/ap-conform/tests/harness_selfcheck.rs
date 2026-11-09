@@ -51,9 +51,9 @@ fn harness_reports_fail_on_divergent_impl() {
     // If this ever passes, the comparator is broken and every green gate
     // in the project is worthless.
     let dir = std::env::temp_dir().join(format!("ap_conform_neg_{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(&dir).expect("harness_selfcheck.rs:54");
     let case = dir.join("negcase.py");
-    std::fs::write(&case, "print(\"A\")\n").unwrap();
+    std::fs::write(&case, "print(\"A\")\n").expect("harness_selfcheck.rs:56");
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_ap-conform"));
     cmd.args([
@@ -100,9 +100,9 @@ fn tier_flag_is_accepted_and_forwarded() {
     // would choke on --tier, so we point at a tiny shim that echoes its argv
     // and assert the flag reached the IMPL side.
     let dir = std::env::temp_dir().join(format!("ap_conform_tier_{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(&dir).expect("harness_selfcheck.rs:103");
     let case = dir.join("t.py");
-    std::fs::write(&case, "print(1)\n").unwrap();
+    std::fs::write(&case, "print(1)\n").expect("harness_selfcheck.rs:105");
 
     // Bad tier value must be rejected (exit 2), not silently ignored.
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_ap-conform"));

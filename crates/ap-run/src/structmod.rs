@@ -51,7 +51,7 @@ pub(crate) fn call_struct(name: &str, args: &[Value]) -> Option<crate::builtins_
         }
         Some(Value::Str(f)) => (f.as_str().to_string(), &args[1..]),
         // T1-d (zipfile): formats are bytes literals (b"<4s4H2LH").
-        Some(Value::Bytes(b)) => match std::str::from_utf8(&**b) {
+        Some(Value::Bytes(b)) => match std::str::from_utf8(b) {
             Ok(fs) => (fs.to_string(), &args[1..]),
             Err(_) => return None,
         },
@@ -181,19 +181,14 @@ fn buffer_bytes(buf: &Value) -> BResultV<Vec<u8>> {
 /// Unpack to a tuple Value from raw bytes (shared by unpack/unpack_from/
 /// iter_unpack).
 fn unpack_bytes(fmt: &str, data: &[u8]) -> BResultV<Value> {
-    match unpack(fmt, &[Value::Bytes(Gc::new(data.to_vec()))])? {
-        v => Ok(v),
-    }
+    unpack(fmt, &[Value::Bytes(Gc::new(data.to_vec()))])
 }
 
 fn strip_order(fmt: &str) -> (&str, bool) {
     if let Some(rest) = fmt.strip_prefix('<') {
         (rest, true)
     } else {
-        (
-            fmt.trim_start_matches(|c| matches!(c, '@' | '=' | '>' | '!')),
-            false,
-        )
+        (fmt.trim_start_matches(['@', '=', '>', '!']), false)
     }
 }
 
@@ -443,7 +438,7 @@ pub(crate) fn struct_ctor(args: &[Value]) -> Option<crate::builtins_modules::BRe
     };
     let o = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "struct.Struct");
     {
-        let mut attrs = o.attrs.borrow_mut();
+        let attrs = o.attrs.borrow_mut();
         let _ = attrs.set(s("<fmt>"), Value::Str(PyString::new(fmt)));
     }
     Some(Ok(Value::Obj(o)))
@@ -457,7 +452,7 @@ pub(crate) fn struct_attr(obj: &Value, name: &str) -> Option<Value> {
                     format!("struct.{name}")
                 }
                 "format" => {
-                    let fmt = o.attrs.borrow().get(&s("<fmt>")).map(|v| v.clone());
+                    let fmt = o.attrs.borrow().get(&s("<fmt>"));
                     return Some(fmt.unwrap_or(Value::None));
                 }
                 "size" => {

@@ -65,7 +65,10 @@ fn divergent_tags_promote_through_poly_to_mega() {
     assert_eq!(state, FeedbackState::Mega, "mega is terminal");
     // MEGA stops tracking (no further state churn).
     cell.record(TypeTag::Bool, None);
-    assert_eq!(cell.read().unwrap().0, FeedbackState::Mega);
+    assert_eq!(
+        cell.read().expect("feedback_tests.rs:68").0,
+        FeedbackState::Mega
+    );
 }
 
 #[test]
@@ -111,7 +114,7 @@ fn type_tag_classifies_boxed_values() {
     assert_eq!(TypeTag::of(&Value::None), TypeTag::Other);
     assert_eq!(TypeTag::of(&Value::Bool(true)), TypeTag::Bool);
     assert_eq!(TypeTag::of(&Value::Int(Int::from_i64(5))), TypeTag::IntI64);
-    let big = ap_obj::Int::from_big(num_bigint::BigInt::from(2u8).pow(200u32).into());
+    let big = ap_obj::Int::from_big(num_bigint::BigInt::from(2u8).pow(200u32));
     assert_eq!(TypeTag::of(&Value::Int(big)), TypeTag::IntBig);
     assert_eq!(TypeTag::of(&Value::Float(1.5)), TypeTag::Float);
     assert_eq!(TypeTag::of(&Value::Str(PyString::new("x"))), TypeTag::Str);

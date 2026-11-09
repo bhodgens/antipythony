@@ -86,7 +86,8 @@ mod tests {
     fn worker_returns_values_and_panics() {
         let v = run_on_worker_stack(|| 40 + 2).expect("spawn ok");
         assert_eq!(v, 42);
-        let err = run_on_worker_stack(|| -> i32 { panic!("boom") }).unwrap_err();
+        let err =
+            run_on_worker_stack(|| -> i32 { panic!("boom") }).expect_err("worker_stack.rs:89");
         assert!(err.contains("boom"));
     }
 

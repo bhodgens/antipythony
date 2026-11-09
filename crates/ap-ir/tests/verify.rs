@@ -24,7 +24,7 @@ fn unbound_local_message_byte_matches_cpython() {
     // CPython: def f(): print(z); z = 1 / f()  ->  UnboundLocalError: <msg>
     // (verified via /opt/homebrew/bin/python3.14 -c probes; the T-04 suite
     // pins the same text in fixtures/expected_t04.json)
-    let diags = verify_source("def f():\n    print(z)\n    z = 1\n\nf()\n").unwrap();
+    let diags = verify_source("def f():\n    print(z)\n    z = 1\n\nf()\n").expect("verify.rs:27");
     assert_eq!(diags.len(), 1);
     assert_eq!(diags[0].kind.class(), "UnboundLocalError");
     assert_eq!(diags[0].message, ubl("z"));
@@ -38,7 +38,7 @@ fn unbound_local_in_nested_fn() {
     let diags = verify_source(
         "def outer():\n    def inner():\n        return q\n    return inner\n\nouter()()\n",
     )
-    .unwrap();
+    .expect("verify.rs:38");
     assert!(
         diags.iter().any(|d| d.message == "name 'q' is not defined"
             && d.kind.class() == "NameError"
@@ -50,19 +50,21 @@ fn unbound_local_in_nested_fn() {
 #[test]
 fn global_resolved_no_diag() {
     // CPython runs clean (module global read).
-    let diags = verify_source("g = 7\n\ndef f():\n    return g\n\nprint(f())\n").unwrap();
+    let diags =
+        verify_source("g = 7\n\ndef f():\n    return g\n\nprint(f())\n").expect("verify.rs:53");
     assert!(diags.is_empty(), "{diags:?}");
 }
 
 #[test]
 fn builtin_resolved_no_diag() {
-    let diags = verify_source("def f():\n    return len([1])\n\nprint(f())\n").unwrap();
+    let diags =
+        verify_source("def f():\n    return len([1])\n\nprint(f())\n").expect("verify.rs:59");
     assert!(diags.is_empty(), "{diags:?}");
 }
 
 #[test]
 fn param_resolved_no_diag() {
-    let diags = verify_source("def f(a):\n    return a\n\nprint(f(1))\n").unwrap();
+    let diags = verify_source("def f(a):\n    return a\n\nprint(f(1))\n").expect("verify.rs:65");
     assert!(diags.is_empty(), "{diags:?}");
 }
 
@@ -71,7 +73,7 @@ fn closure_free_resolved_no_diag() {
     // CPython: read-only closure over a set cell runs clean (n01).
     let diags =
         verify_source("def outer():\n    a = 1\n    def inner():\n        return a\n    return inner\n\nprint(outer()())\n")
-            .unwrap();
+            .expect("verify.rs:73");
     assert!(diags.is_empty(), "{diags:?}");
 }
 
@@ -81,7 +83,7 @@ fn comprehension_var_no_leak_no_diag() {
     // NameError (boundary-optional per T-04 G-3 — verify stays silent when
     // a suggestion candidate exists; 'id' is one char from 'i'... actually
     // CPython DOES suggest. We must stay silent: distance('i','id') <= 1).
-    let diags = verify_source("print([i for i in range(3)])\n").unwrap();
+    let diags = verify_source("print([i for i in range(3)])\n").expect("verify.rs:84");
     assert!(diags.is_empty(), "{diags:?}");
 }
 
@@ -92,7 +94,7 @@ fn except_var_no_diag() {
     let diags = verify_source(
         "def f():\n    try:\n        x = int('nope')\n    except ValueError:\n        x = 0\n    return x\n\nprint(f())\n",
     )
-    .unwrap();
+    .expect("verify.rs:92");
     assert!(diags.is_empty(), "{diags:?}");
 }
 
@@ -102,7 +104,7 @@ fn if_false_branch_read_flags() {
     // UnboundLocalError (the branch never runs) — the fixture p02 shape.
     let diags =
         verify_source("def f():\n    if False:\n        x = 1\n    return x\n\nprint(f())\n")
-            .unwrap();
+            .expect("verify.rs:104");
     assert!(diags.iter().any(|d| d.message == ubl("x")), "{diags:?}");
 }
 
@@ -111,7 +113,7 @@ fn dead_branch_assignment_after_read_flags() {
     // CPython: p02 shape — read BEFORE the only (branch) binding flags.
     let diags =
         verify_source("def f(flag):\n    if flag:\n        y = 1\n    return y\n\nf(False)\n")
-            .unwrap();
+            .expect("verify.rs:113");
     assert!(diags.iter().any(|d| d.message == ubl("y")), "{diags:?}");
 }
 
@@ -134,7 +136,7 @@ fn walrus_bind_then_read_no_diag() {
         "ks = [1, 2, 3]\nout = [k for k in ks if (m := k) > 1]\nprint(out, m)\n",
     ];
     for src in clean {
-        let diags = verify_source(src).unwrap();
+        let diags = verify_source(src).expect("verify.rs:137");
         assert!(diags.is_empty(), "false positive for {src:?}: {diags:?}");
     }
 }
@@ -144,7 +146,8 @@ fn walrus_then_del_then_read_still_flags() {
     // FINDING-3 del_marks interaction: a walrus bind is protecting only until
     // a del unbinds it — CPython 3.14.7 raises UnboundLocalError here, and
     // verify must keep flagging (probed byte-identical message).
-    let diags = verify_source("def f():\n    (v := 5)\n    del v\n    print(v)\n\nf()\n").unwrap();
+    let diags = verify_source("def f():\n    (v := 5)\n    del v\n    print(v)\n\nf()\n")
+        .expect("verify.rs:147");
     assert!(
         diags
             .iter()
@@ -157,7 +160,8 @@ fn walrus_then_del_then_read_still_flags() {
 fn del_then_read_flags_local_form() {
     // CPython 3.14.7: `x = 1; del x; return x` inside a function raises
     // UnboundLocalError with the standard local template (probed directly).
-    let diags = verify_source("def f():\n    x = 1\n    del x\n    return x\n\nf()\n").unwrap();
+    let diags = verify_source("def f():\n    x = 1\n    del x\n    return x\n\nf()\n")
+        .expect("verify.rs:160");
     assert!(
         diags
             .iter()
@@ -169,7 +173,7 @@ fn del_then_read_flags_local_form() {
 #[test]
 fn del_of_never_bound_flags_p07_form() {
     // p07: `del q` never bound -> UnboundLocalError (G-7), caret col 9.
-    let diags = verify_source("def f():\n    del q\n\nf()\n").unwrap();
+    let diags = verify_source("def f():\n    del q\n\nf()\n").expect("verify.rs:172");
     assert_eq!(diags.len(), 1);
     assert_eq!(diags[0].message, ubl("q"));
     assert_eq!((diags[0].line, diags[0].col), (Some(2), Some(9)));
@@ -179,7 +183,7 @@ fn del_of_never_bound_flags_p07_form() {
 fn augassign_before_assign_flags_p04_form() {
     // p04: `x += 1` reads first (S-02-19) -> UnboundLocalError, caret col 5
     // (bare caret anchoring the whole statement).
-    let diags = verify_source("def f():\n    x += 1\n\nf()\n").unwrap();
+    let diags = verify_source("def f():\n    x += 1\n\nf()\n").expect("verify.rs:182");
     assert_eq!(diags.len(), 1);
     assert_eq!(diags[0].message, ubl("x"));
     assert_eq!((diags[0].line, diags[0].col), (Some(2), Some(5)));
@@ -189,7 +193,7 @@ fn augassign_before_assign_flags_p04_form() {
 fn big_int_folded_expr_message_context() {
     // The module-level unresolved diagnostic never carries the UBL template;
     // sanity: a clean big-int program verifies silently.
-    let diags = verify_source("x = 2 ** 100\nprint(x)\n").unwrap();
+    let diags = verify_source("x = 2 ** 100\nprint(x)\n").expect("verify.rs:192");
     assert!(diags.is_empty(), "{diags:?}");
 }
 
@@ -202,7 +206,7 @@ fn global_and_nonlocal_clash_p09() {
     let diags = verify_source(
         "def outer():\n    x = 1\n    def f():\n        global x\n        nonlocal x\n    f()\n\nouter()\n",
     )
-    .unwrap();
+    .expect("verify.rs:202");
     assert!(
         diags
             .iter()
@@ -215,7 +219,7 @@ fn global_and_nonlocal_clash_p09() {
 
 #[test]
 fn nonlocal_at_module_p11() {
-    let diags = verify_source("nonlocal x\n").unwrap();
+    let diags = verify_source("nonlocal x\n").expect("verify.rs:218");
     assert!(
         diags.iter().any(
             |d| d.message == "nonlocal declaration not allowed at module level"
@@ -227,7 +231,8 @@ fn nonlocal_at_module_p11() {
 
 #[test]
 fn nonlocal_no_binding_p10() {
-    let diags = verify_source("def f():\n    nonlocal x\n    x = 1\n\nf()\n").unwrap();
+    let diags =
+        verify_source("def f():\n    nonlocal x\n    x = 1\n\nf()\n").expect("verify.rs:230");
     assert!(
         diags
             .iter()
@@ -239,7 +244,7 @@ fn nonlocal_no_binding_p10() {
 
 #[test]
 fn break_outside_loop_p12() {
-    let diags = verify_source("def f():\n    break\n").unwrap();
+    let diags = verify_source("def f():\n    break\n").expect("verify.rs:242");
     assert!(
         diags
             .iter()
@@ -250,7 +255,7 @@ fn break_outside_loop_p12() {
 
 #[test]
 fn continue_outside_loop_p13() {
-    let diags = verify_source("def f():\n    continue\n").unwrap();
+    let diags = verify_source("def f():\n    continue\n").expect("verify.rs:253");
     assert!(
         diags
             .iter()
@@ -262,7 +267,7 @@ fn continue_outside_loop_p13() {
 
 #[test]
 fn return_outside_function_p14() {
-    let diags = verify_source("def f():\n    pass\n\nreturn 1\n").unwrap();
+    let diags = verify_source("def f():\n    pass\n\nreturn 1\n").expect("verify.rs:265");
     assert!(
         diags
             .iter()
@@ -274,7 +279,7 @@ fn return_outside_function_p14() {
 
 #[test]
 fn import_star_in_fn_p15() {
-    let diags = verify_source("def f():\n    from os import *\n").unwrap();
+    let diags = verify_source("def f():\n    from os import *\n").expect("verify.rs:277");
     assert!(
         diags
             .iter()
@@ -286,8 +291,8 @@ fn import_star_in_fn_p15() {
 
 #[test]
 fn import_star_in_class_p16() {
-    let diags =
-        verify_source("class C:\n    from os import getcwd\n    from os import *\n").unwrap();
+    let diags = verify_source("class C:\n    from os import getcwd\n    from os import *\n")
+        .expect("verify.rs:290");
     assert!(
         diags
             .iter()
@@ -299,7 +304,7 @@ fn import_star_in_class_p16() {
 
 #[test]
 fn duplicate_param_p18() {
-    let diags = verify_source("def f(x=1, x=2):\n    pass\n").unwrap();
+    let diags = verify_source("def f(x=1, x=2):\n    pass\n").expect("verify.rs:302");
     assert!(
         diags.iter().any(
             |d| d.message == "duplicate argument 'x' in function definition"
@@ -312,7 +317,7 @@ fn duplicate_param_p18() {
 #[test]
 fn invalid_default_p17() {
     // Parse-stage remap (G-4): CPython message + caret col 12.
-    let diags = verify_source("def f(x=):\n    pass\n").unwrap();
+    let diags = verify_source("def f(x=):\n    pass\n").expect("verify.rs:315");
     assert!(
         diags
             .iter()
@@ -329,7 +334,7 @@ fn invalid_default_p17() {
 
 /// Fold a single expression source and render it like CPython repr.
 fn fold_src(src: &str) -> Option<String> {
-    let (module, _) = lower_source(&format!("x = {src}\n")).unwrap();
+    let (module, _) = lower_source(&format!("x = {src}\n")).expect("verify.rs:332");
     let mut module = module;
     fold(&mut module);
     let first = module
@@ -521,7 +526,7 @@ fn fold_does_not_fold_raising_ops() {
     // Division/modulo by zero, negative shifts, matmul, negative-base float
     // pow: must stay UNFOLDED (they raise at runtime).
     for src in ["1 / 0", "1 // 0", "1 % 0", "1.5 // 0", "1 << -1", "2 @ 3"] {
-        let (module, _) = lower_source(&format!("x = {src}\n")).unwrap();
+        let (module, _) = lower_source(&format!("x = {src}\n")).expect("verify.rs:524");
         let mut module = module;
         fold(&mut module);
         let first = module
@@ -543,7 +548,7 @@ fn fold_does_not_fold_raising_ops() {
 
 #[test]
 fn fold_never_touches_names_or_calls() {
-    let (module, _) = lower_source("y = 3\nx = y + 1\nprint(x)\n").unwrap();
+    let (module, _) = lower_source("y = 3\nx = y + 1\nprint(x)\n").expect("verify.rs:546");
     let mut module = module;
     fold(&mut module);
     let stmts: Vec<&Item> = module
@@ -569,14 +574,14 @@ fn fold_never_touches_names_or_calls() {
 fn fold_comparisons_unfolded() {
     // CPython's own peephole does NOT fold comparisons (probe: dis shows
     // COMPARE_OP); verify stays equally conservative.
-    let (module, _) = lower_source("x = 1 < 2\n").unwrap();
+    let (module, _) = lower_source("x = 1 < 2\n").expect("verify.rs:572");
     let mut module = module;
     fold(&mut module);
     let first = module
         .items
         .iter()
         .find(|i| !matches!(i, Item::Stmt(Stmt::Line(_))));
-    match first.unwrap() {
+    match first.expect("verify.rs:579") {
         Item::Stmt(Stmt::Assign(_, v)) => {
             assert!(matches!(v, Expr::Compare(..)), "folded a compare: {v:?}");
         }

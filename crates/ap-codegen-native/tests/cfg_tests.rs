@@ -80,7 +80,7 @@ fn unsupported_constructs_fail_closed() {
         vec![],
         vec![],
     )]);
-    let err = lower_fn(&f).unwrap_err();
+    let err = lower_fn(&f).expect_err("cfg_tests.rs:83");
     assert!(matches!(
         err,
         ap_codegen_native::CodegenError::Unsupported("For")
@@ -88,7 +88,7 @@ fn unsupported_constructs_fail_closed() {
     // Break likewise.
     let f = fn_def(vec![ap_ir::item::Stmt::Break]);
     assert!(matches!(
-        lower_fn(&f).unwrap_err(),
+        lower_fn(&f).expect_err("cfg_tests.rs:91"),
         ap_codegen_native::CodegenError::Unsupported("Break/Continue")
     ));
     // Subscript store likewise.
@@ -100,7 +100,7 @@ fn unsupported_constructs_fail_closed() {
         Expr::LitInt(1),
     )]);
     assert!(matches!(
-        lower_fn(&f).unwrap_err(),
+        lower_fn(&f).expect_err("cfg_tests.rs:103"),
         ap_codegen_native::CodegenError::Unsupported("Subscript store")
     ));
 }

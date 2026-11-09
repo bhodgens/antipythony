@@ -185,7 +185,7 @@ impl Value {
             Value::Bytes(b) => !b.is_empty(),
             Value::List(l) => l.len() != 0,
             Value::Tuple(t) => !t.0.is_empty(),
-            Value::Dict(d) => d.len() != 0,
+            Value::Dict(d) => !d.is_empty(),
             Value::Set(s) => s.len() != 0,
             // frozenset truthiness follows len (S-01-27; __bool__ absent).
             Value::Frozen(s) => s.len() != 0,
@@ -244,6 +244,7 @@ impl PyString {
     }
 
     /// `len()` — code points, not bytes (S-01-14).
+    #[allow(clippy::len_without_is_empty)] // is_empty would extend the public surface beyond the CPython-parity API
     pub fn len(&self) -> usize {
         if let Some(n) = self.cached_len.get() {
             return n;
@@ -327,6 +328,7 @@ impl Tuple {
     pub fn iter(&self) -> std::slice::Iter<'_, Value> {
         self.0.iter()
     }
+    #[allow(clippy::len_without_is_empty)] // is_empty would extend the public surface beyond the CPython-parity API
     pub fn len(&self) -> usize {
         self.0.len()
     }
@@ -381,6 +383,7 @@ impl PyList {
         l
     }
 
+    #[allow(clippy::len_without_is_empty)] // is_empty would extend the public surface beyond the CPython-parity API
     pub fn len(&self) -> usize {
         self.items.borrow().len()
     }

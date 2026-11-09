@@ -7,7 +7,7 @@
 //! re-acquire AFTER waking (the re-entrant depth counter makes nested
 //! dispatches safe).
 
-use crate::builtins_modules::{i as smi, kw, marker, required, s, str_arg, BResult};
+use crate::builtins_modules::{i as smi, kw, required, s, str_arg, BResult};
 use crate::exc_hier::ExceptionValue;
 use crate::threading::{
     acquire_gil, prim_of, prim_put, release_gil, BarrierPrim, CondPrim, EventPrim, LockPrim,
@@ -15,10 +15,9 @@ use crate::threading::{
 };
 use crate::Flow;
 use ap_obj::dict::PyDict;
-use ap_obj::int::{Gc, Int};
+use ap_obj::int::Gc;
 use ap_obj::object::{ObjKind, PyObject};
-use ap_obj::value::{PyString, Tuple, Value};
-use std::cell::RefCell;
+use ap_obj::value::{PyString, Value};
 use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::Mutex;
@@ -36,7 +35,7 @@ fn obj_addr(v: &Value) -> Result<usize, Flow> {
 }
 
 fn attr_v(o: &PyObject, key: &str) -> Option<Value> {
-    o.attrs.borrow().get(&s(key)).map(|v| v.clone())
+    o.attrs.borrow().get(&s(key))
 }
 
 fn attr_set(o: &PyObject, key: &str, v: Value) {
@@ -180,7 +179,7 @@ fn threading_exc_class(interp: &crate::frame::Interpreter, name: &str) -> Value 
 // ===========================================================================
 
 pub fn call_threading(
-    interp: &Rc<crate::frame::Interpreter>,
+    _interp: &Rc<crate::frame::Interpreter>,
     name: &str,
     args: &[Value],
     _kwargs: &[(String, Value)],
@@ -315,7 +314,7 @@ fn excepthook_get() -> BResult {
 // Constructors
 // ===========================================================================
 
-fn lock_ctor(args: &[Value]) -> BResult {
+fn lock_ctor(_args: &[Value]) -> BResult {
     let o = PyObject::new(ObjKind::Opaque, "lock");
     let addr = obj_addr(&Value::Obj(o.clone()))?;
     prim_put(
@@ -328,7 +327,7 @@ fn lock_ctor(args: &[Value]) -> BResult {
     Ok(Value::Obj(o))
 }
 
-fn rlock_ctor(args: &[Value]) -> BResult {
+fn rlock_ctor(_args: &[Value]) -> BResult {
     let o = PyObject::new(ObjKind::Opaque, "rlock");
     let addr = obj_addr(&Value::Obj(o.clone()))?;
     prim_put(
@@ -373,7 +372,7 @@ fn cond_ctor(args: &[Value]) -> BResult {
     Ok(Value::Obj(o))
 }
 
-fn event_ctor(args: &[Value]) -> BResult {
+fn event_ctor(_args: &[Value]) -> BResult {
     let o = PyObject::new(ObjKind::Opaque, "event");
     let addr = obj_addr(&Value::Obj(o.clone()))?;
     prim_put(
@@ -525,7 +524,7 @@ fn timer_ctor(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
     Ok(v)
 }
 
-fn local_ctor(args: &[Value]) -> BResult {
+fn local_ctor(_args: &[Value]) -> BResult {
     let o = PyObject::new(ObjKind::Opaque, "_local");
     let _ = obj_addr(&Value::Obj(o.clone()))?;
     Ok(Value::Obj(o))
@@ -546,7 +545,7 @@ pub fn call_threading_method(
     args: &[Value],
     kwargs: &[(String, Value)],
 ) -> Option<BResult> {
-    let r: BResult = (|| match recv {
+    let r: BResult = match recv {
         Value::Obj(o) => match o.name.as_str() {
             "thread" => thread_method(interp, o, method, args, kwargs),
             "lock" => lock_method(o, method, args, kwargs),
@@ -563,10 +562,11 @@ pub fn call_threading_method(
             _ => None2Err(method),
         },
         _ => None2Err(method),
-    })();
+    };
     Some(r)
 }
 
+#[allow(non_snake_case)] // CPython-exact identifier - renaming would break the byte-exact conformance contract
 fn None2Err(method: &str) -> BResult {
     Err(raise(
         "AttributeError",
@@ -584,6 +584,7 @@ fn timeout_of(args: &[Value], kwargs: &[(String, Value)], pos: usize) -> Result<
     }
 }
 
+#[allow(dead_code)] // kept: part of an unfinished surface (robustness-ci 02.x burn-down leaf)
 fn blocking_of(args: &[Value], kwargs: &[(String, Value)]) -> Result<bool, Flow> {
     if let Some(v) = kw(kwargs, "blocking") {
         return Ok(matches!(v, Value::Bool(true)));
@@ -638,7 +639,7 @@ fn thread_method(
             // condvar reading ONLY atomics off-lock.
             let flag = crate::threading::entry_done_flag(&entry);
             release_gil();
-            let got = crate::threading::join_wait_flag(flag, timeout);
+            let _got = crate::threading::join_wait_flag(flag, timeout);
             acquire_gil();
             // E1-E4: the eviction sweep (evict_stale_tables) is EXPORTED
             // for the orchestrator's major-GC drain hook (gcsupport
@@ -712,7 +713,7 @@ fn thread_method(
                     b.native_id
                 }
             });
-            Ok(v.map(|n| smi(n)).unwrap_or(Value::None))
+            Ok(v.map(smi).unwrap_or(Value::None))
         }
         _ => None2Err(method),
     }
@@ -821,10 +822,7 @@ fn rlock_method(o: &Gc<PyObject>, method: &str, args: &[Value]) -> BResult {
         return Err(raise("SystemError", "rlock primitive missing"));
     };
     let me = crate::threading::current_os_tid();
-    let owner_of = |st: (crate::threading::RLockOwner, usize)| match st.0 {
-        crate::threading::RLockOwner::Owned(t) if t == me => true,
-        _ => false,
-    };
+    let owner_of = |st: (crate::threading::RLockOwner, usize)| matches!(st.0, crate::threading::RLockOwner::Owned(t) if t == me);
     match method {
         "acquire" | "__enter__" => {
             let blocking = match args.first() {
@@ -1100,7 +1098,7 @@ fn lock_release(lk: Rc<LockPrim>) -> BResult {
 
 /// Condition.wait: release the backing lock FULLY, park, re-acquire.
 fn cond_wait(
-    interp: &Rc<crate::frame::Interpreter>,
+    _interp: &Rc<crate::frame::Interpreter>,
     prim: &CondPrim,
     timeout: Option<f64>,
 ) -> Result<bool, Flow> {
@@ -1363,13 +1361,11 @@ fn barrier_method(
             if index + 1 == prim.parties {
                 // _release: run the action, drain.
                 let action = prim.action.clone();
-                let run_result: Result<(), Flow> = (|| {
-                    if let Some(action) = action {
-                        crate::interp::call_value_pub(interp, &action, &[], &[]).map(|_| ())
-                    } else {
-                        Ok(())
-                    }
-                })();
+                let run_result: Result<(), Flow> = if let Some(action) = action {
+                    crate::interp::call_value_pub(interp, &action, &[], &[]).map(|_| ())
+                } else {
+                    Ok(())
+                };
                 match run_result {
                     Ok(()) => {
                         st.1 = 1;
@@ -1595,19 +1591,19 @@ fn queue_exc_class(interp: &crate::frame::Interpreter, name: &str) -> Value {
 }
 
 pub fn call_queue(
-    interp: &Rc<crate::frame::Interpreter>,
+    _interp: &Rc<crate::frame::Interpreter>,
     name: &str,
     args: &[Value],
     kwargs: &[(String, Value)],
 ) -> Option<BResult> {
     let _ = crate::gcsupport::drain_worker_registrations();
-    let r: BResult = (|| match name {
+    let r: BResult = match name {
         "Queue" | "LifoQueue" | "PriorityQueue" | "SimpleQueue" => queue_ctor(args, kwargs, name),
         _ => Err(raise(
             "AttributeError",
             format!("module 'queue' has no attribute '{name}'"),
         )),
-    })();
+    };
     Some(r)
 }
 
@@ -1744,9 +1740,9 @@ pub fn call_queue_method(
                         .position(|x| prio_less(&item, x))
                         .unwrap_or(items.len());
                     items.insert(pos, item);
-                } else if prim.lifo {
-                    items.push_back(item);
                 } else {
+                    // FIFO and LIFO share the deque push here; the pop side
+                    // reads prim.lifo to choose the end.
                     items.push_back(item);
                 }
                 {

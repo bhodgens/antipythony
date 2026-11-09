@@ -68,13 +68,13 @@ fn write_fixture(root: &Path) {
         root.join("Cargo.toml"),
         "[workspace]\nresolver = \"2\"\nmembers = [\"crates/sample\"]\n",
     )
-    .unwrap();
+    .expect("xtask_gates.rs:67");
     fs::write(
         root.join("crates").join("sample").join("Cargo.toml"),
         "[package]\nname = \"sample\"\nversion = \"0.1.0\"\nedition = \"2021\"\nlicense = \"MIT\"\n",
     )
-    .unwrap();
-    fs::create_dir_all(root.join("crates").join("sample").join("src")).unwrap();
+    .expect("xtask_gates.rs:72");
+    fs::create_dir_all(root.join("crates").join("sample").join("src")).expect("xtask_gates.rs:77");
     fs::write(
         root.join("crates")
             .join("sample")
@@ -82,7 +82,7 @@ fn write_fixture(root: &Path) {
             .join("lib.rs"),
         "",
     )
-    .unwrap();
+    .expect("xtask_gates.rs:78");
 }
 
 /// Run the compiled xtask binary with CWD (and CARGO_MANIFEST_DIR) inside the
@@ -123,10 +123,10 @@ fn check_exits_zero_when_notices_in_sync() {
     );
 
     // Determinism at the CLI level: regenerate and require byte-identity.
-    let first = fs::read(&notices).unwrap();
+    let first = fs::read(&notices).expect("xtask_gates.rs:126");
     let regen = run_xtask(&root, &["notices"]);
     assert!(regen.status.success());
-    let second = fs::read(&notices).unwrap();
+    let second = fs::read(&notices).expect("xtask_gates.rs:129");
     assert_eq!(first, second, "CLI re-generation must be byte-identical");
 
     cleanup(&root);
@@ -140,9 +140,9 @@ fn check_exits_one_when_notices_stale() {
 
     assert!(run_xtask(&root, &["notices"]).status.success());
     // Inject staleness in the fixture only — never the repo file.
-    let mut stale = fs::read_to_string(&notices).unwrap();
+    let mut stale = fs::read_to_string(&notices).expect("xtask_gates.rs:143");
     stale.push_str("\nSTALE INJECTED ENTRY (fixture drift)\n");
-    fs::write(&notices, stale).unwrap();
+    fs::write(&notices, stale).expect("xtask_gates.rs:145");
 
     let check = run_xtask(&root, &["notices", "--check"]);
     assert_eq!(

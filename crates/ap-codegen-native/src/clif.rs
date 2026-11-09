@@ -87,7 +87,9 @@ impl JitFunc {
     /// Call the compiled function. Returns Err(parked exception) on a
     /// raised Python exception.
     ///
-    /// SAFETY: the code blob is alive as long as `self` is; `ctx` is
+    /// # Safety
+    ///
+    /// The code blob is alive as long as `self` is; `ctx` is
     /// exclusively borrowed for the call duration.
     pub unsafe fn call(&self, ctx: &mut rt::ExecCtx) -> Result<(), ap_obj::PyException> {
         let f: extern "C" fn(*mut rt::ExecCtx) -> i32 = std::mem::transmute(self.code_ptr);
@@ -116,8 +118,10 @@ pub fn compile_baseline(func: &Func) -> Result<JitFunc, CodegenError> {
     let slot_plan = SlotPlan::assign(func);
 
     let mut flag_builder = settings::builder();
-    flag_builder.set("use_colocated_libcalls", "false").unwrap();
-    flag_builder.set("is_pic", "false").unwrap();
+    flag_builder
+        .set("use_colocated_libcalls", "false")
+        .expect("clif.rs:119");
+    flag_builder.set("is_pic", "false").expect("clif.rs:120");
     let flags = settings::Flags::new(flag_builder);
     let isa = cranelift_native::builder()
         .map_err(|_| CodegenError::Unsupported("native ISA unavailable"))?
@@ -128,7 +132,7 @@ pub fn compile_baseline(func: &Func) -> Result<JitFunc, CodegenError> {
         cranelift_jit::JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
     // Helper symbols: declare the runtime helpers once.
     for (name, ptr) in helper_symbols() {
-        module.symbol(name, ptr as *const u8);
+        module.symbol(name, ptr);
     }
     let mut module = cranelift_jit::JITModule::new(module);
 
@@ -443,7 +447,7 @@ fn emit_cfg(
                     }
                     let f = helpers["apjit_h_call"];
                     let a1 = iconst!(fb, f_slot.0 as i64);
-                    let a2 = iconst!(fb, arg_start as i64);
+                    let a2 = iconst!(fb, arg_start);
                     let a3 = iconst!(fb, args.len() as i64);
                     let a4 = iconst!(fb, dst.0 as i64);
                     let r = fb.ins().call(f, &[ctx_ptr, a1, a2, a3, a4]);

@@ -70,7 +70,7 @@ fn parse_spec(spec: &str) -> Result<Spec, ap_obj::exc::PyException> {
     let c0 = ci.next();
     let c1 = ci.next();
     let mut rest = match (c0, c1) {
-        (Some((i0, ca)), Some((i1, cb))) if matches!(cb, '<' | '^' | '>' | '=') => {
+        (Some((_i0, ca)), Some((i1, cb))) if matches!(cb, '<' | '^' | '>' | '=') => {
             p.fill = Some(ca);
             p.align = Some(cb);
             &spec[i1 + cb.len_utf8()..]
@@ -211,7 +211,7 @@ fn pad_str(body: &str, p: &Spec) -> String {
 
 /// Append `n` copies of `fill` to `out` (no intermediate String).
 fn push_fill(out: &mut String, fill: char, n: usize) {
-    out.extend(std::iter::repeat(fill).take(n));
+    out.extend(std::iter::repeat_n(fill, n));
 }
 
 // ---------------------------------------------------------------------------
@@ -354,7 +354,7 @@ fn prefix_full(t: Option<char>) -> &'static str {
 }
 
 fn to_u128_or_panic(digits: &str) -> u128 {
-    digits.parse::<u128>().unwrap_or_else(|_| {
+    digits.parse::<u128>().unwrap_or({
         // Values beyond u128 in hex/bin/oct formatting: CPython supports
         // arbitrary size; our v0 corpus doesn't. Format via bigint digits.
         0
@@ -370,7 +370,7 @@ pub fn apply_grouping(digits: &str, sep: Option<char>, group: usize) -> String {
             let mut out = String::with_capacity(bytes.len() + bytes.len() / group);
             let n = bytes.len();
             for (idx, b) in bytes.iter().enumerate() {
-                if idx > 0 && (n - idx) % group == 0 {
+                if idx > 0 && (n - idx).is_multiple_of(group) {
                     out.push(sep);
                 }
                 out.push(*b as char);
@@ -421,8 +421,7 @@ fn format_float(f: f64, p: &Spec) -> Result<String, ap_obj::exc::PyException> {
             // format(2.71828, '8.3') == '     2.72'; f15).
             if let Some(prec) = p.precision {
                 if prec == 0 {
-                    let g = format_g(af, 1, false);
-                    g
+                    format_g(af, 1, false)
                 } else {
                     format_g(af, prec, false)
                 }
@@ -439,16 +438,14 @@ fn format_float(f: f64, p: &Spec) -> Result<String, ap_obj::exc::PyException> {
             format!("{:.*}", prec, af * 100.0) + "%"
         }
         Some('e') => format_exp(af, precision.unwrap_or(6), false),
-        Some('E') => format_exp(af, precision.unwrap_or(6), true)
-            .to_uppercase()
-            .replace("E", "E"),
+        Some('E') => format_exp(af, precision.unwrap_or(6), true).to_uppercase(),
         Some('g') => format_g(af, precision.unwrap_or(6), false),
         Some('G') => format_g(af, precision.unwrap_or(6), true),
         Some('n') => {
             // locale-aware g: C locale == g with ',' grouping on the integer
             // part of the fixed representation.
-            let g = format_g(af, precision.unwrap_or(6), false);
-            g
+
+            format_g(af, precision.unwrap_or(6), false)
         }
         Some(other) => {
             return Err(ap_obj::exc::PyException::new(

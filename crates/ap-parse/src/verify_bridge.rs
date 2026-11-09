@@ -437,7 +437,7 @@ fn module_level_binds(body: &[ast::Stmt], idx: usize, name: &str) -> bool {
             ast::Stmt::ClassDef(c) => vec![c.name.id.as_str()],
             _ => vec![],
         };
-        if binds.iter().any(|b| *b == name) {
+        if binds.contains(&name) {
             return true;
         }
     }

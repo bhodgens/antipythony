@@ -621,7 +621,6 @@ impl<'s> Lowerer<'s> {
     /// ruff's FunctionDef range begins at the first decorator, matching
     /// CPython's co_firstlineno semantics).
     fn line_of_stmt_start<T: ruff_text_size::Ranged>(&self, node: &T) -> usize {
-        use ruff_text_size::Ranged;
         let off = node.start().to_u32() as usize;
         self.line_at(off)
     }
@@ -878,9 +877,7 @@ impl<'s> Lowerer<'s> {
                 let body = self.lower_block(&t.body)?;
                 let mut handlers = Vec::with_capacity(t.handlers.len());
                 for h in &t.handlers {
-                    let h = match h {
-                        ast::ExceptHandler::ExceptHandler(inner) => inner,
-                    };
+                    let ast::ExceptHandler::ExceptHandler(h) = h;
                     let ty = h.type_.as_ref().map(|e| self.lower_expr(e)).transpose()?;
                     let name = h.name.as_ref().map(|n| n.id.as_str().to_string());
                     if let Some(n) = &h.name {

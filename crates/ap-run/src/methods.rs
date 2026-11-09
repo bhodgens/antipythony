@@ -136,9 +136,7 @@ pub fn subscript_key(v: &Value) -> Result<Key, Flow> {
                         .ok_or_else(|| {
                             raise(
                                 "TypeError",
-                                format!(
-                                    "slice indices must be integers or None or have an __index__ method"
-                                ),
+                                "slice indices must be integers or None or have an __index__ method".to_string(),
                             )
                         }),
                 }
@@ -149,9 +147,9 @@ pub fn subscript_key(v: &Value) -> Result<Key, Flow> {
                 step: get_i(&parts[2])?.unwrap_or(1),
             })
         }
-        Value::Int(_) | Value::Bool(_) => Ok(Key::Index(
-            v.as_int().and_then(|i| i.to_i64()).unwrap_or_else(|| 0),
-        )),
+        Value::Int(_) | Value::Bool(_) => {
+            Ok(Key::Index(v.as_int().and_then(|i| i.to_i64()).unwrap_or(0)))
+        }
         Value::Float(_) => Ok(Key::Float),
         other => Ok(Key::Other(other.clone())),
     }
@@ -402,21 +400,16 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
             if has_params {
                 let ga = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "_GenericAlias");
                 {
-                    let mut attrs = ga.attrs.borrow_mut();
+                    let attrs = ga.attrs.borrow_mut();
                     let origin = o
                         .attrs
                         .borrow()
                         .get(&Value::Str(PyString::new("__origin__")))
-                        .map(|x| x.clone())
                         .unwrap_or(Value::None);
                     let _ = attrs.set(Value::Str(PyString::new("__origin__")), origin);
                     // v0 substitution: walk __args__, replace TypeVar
                     // positions with the subscription args (single-arg form).
-                    let old_args = o
-                        .attrs
-                        .borrow()
-                        .get(&Value::Str(PyString::new("__args__")))
-                        .map(|x| x.clone());
+                    let old_args = o.attrs.borrow().get(&Value::Str(PyString::new("__args__")));
                     let mut new_args: Vec<Value> = Vec::new();
                     if let Some(Value::Tuple(t)) = &old_args {
                         let kv: Vec<Value> = match key {
@@ -453,24 +446,19 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
             // return a fresh alias carrying the same origin/args.
             let ga = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "_GenericAlias");
             {
-                let mut attrs = ga.attrs.borrow_mut();
+                let attrs = ga.attrs.borrow_mut();
                 for src_key in ["__origin__", "__args__"] {
-                    if let Some(vv) = o
-                        .attrs
-                        .borrow()
-                        .get(&Value::Str(PyString::new(src_key)))
-                        .map(|x| x.clone())
-                    {
+                    if let Some(vv) = o.attrs.borrow().get(&Value::Str(PyString::new(src_key))) {
                         let _ = attrs.set(Value::Str(PyString::new(src_key)), vv);
                     }
                 }
             }
-            return Ok(Value::Obj(ga));
+            Ok(Value::Obj(ga))
         }
         (Value::Obj(o), _k) if o.kind == ap_obj::ObjKind::Type => {
             let ga = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "_GenericAlias");
             {
-                let mut attrs = ga.attrs.borrow_mut();
+                let attrs = ga.attrs.borrow_mut();
                 let _ = attrs.set(
                     Value::Str(PyString::new("__origin__")),
                     Value::Obj(o.clone()),
@@ -484,7 +472,7 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
                 // substitutions for re-subscription (defer.py
                 // (_DeferredListResultListT = list[_DeferredListResultItemT[T]]).
                 let mut tvs: Vec<Value> = Vec::new();
-                let mut collect_tvs = |v: &Value, tvs: &mut Vec<Value>| {
+                let collect_tvs = |v: &Value, tvs: &mut Vec<Value>| {
                     if let Value::Obj(vo) = v {
                         if let Some(Value::Str(flag)) = vo.slice_parts.borrow().first().cloned() {
                             if flag.as_str() == "__ap_typevar__" {
@@ -493,7 +481,7 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
                         }
                     }
                 };
-                collect_tvs(&key, &mut tvs);
+                collect_tvs(key, &mut tvs);
                 if !tvs.is_empty() {
                     let _ = attrs.set(
                         Value::Str(PyString::new("__parameters__")),
@@ -524,7 +512,7 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
                 // origin + params (real alias semantics are a documented
                 // Plan-02 gap; scrapy's annotations only need the object to
                 // EXIST and be inert).
-                let is_generic = t.lookup("__class_getitem__").is_some()
+                let _is_generic = t.lookup("__class_getitem__").is_some()
                     || t.mro.borrow().iter().any(|m| m.name == "Generic")
                     || o.name == "Generic";
                 // 02.08-c fix: classes deriving from builtin containers
@@ -568,7 +556,7 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
             // __class_getitem__-style usage) - opaque alias placeholder.
             let g = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "typing._GenericAlias");
             *g.slice_parts.borrow_mut() = vec![obj.clone(), key.clone()];
-            return Ok(Value::Obj(g));
+            Ok(Value::Obj(g))
         }
         // 02.04 completion: weak containers route subscripts through the
         // gcsupport surface (dunder ops, self rides args[0]).
@@ -576,7 +564,7 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
             if o.kind == ap_obj::ObjKind::Opaque
                 && crate::gcsupport::is_weak_container(&o.name) =>
         {
-            return match crate::gcsupport::call_weakref(
+            match crate::gcsupport::call_weakref(
                 &format!("{}.__getitem__", o.name),
                 &[obj.clone(), key.clone()],
                 &[],
@@ -586,15 +574,13 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
                     "TypeError",
                     format!("'{}' object is not subscriptable", obj.type_name()),
                 )),
-            };
+            }
         }
         // T2 (_pydatetime._mktime: `_time.localtime(u)[:6]`): native
         // struct_time subscripts through its <values> field tuple.
         (Value::Obj(o), _k) if o.kind == ap_obj::ObjKind::Opaque && o.name == "struct_time" => {
             match o.attrs.borrow().get(&Value::Str(PyString::new("<values>"))) {
-                Some(Value::List(l)) => {
-                    return subscript_get(&Value::List(l.clone()), key);
-                }
+                Some(Value::List(l)) => subscript_get(&Value::List(l.clone()), key),
                 _ => Err(raise(
                     "TypeError",
                     "'struct_time' object is not subscriptable",
@@ -610,7 +596,7 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
             if o.kind == ap_obj::ObjKind::Opaque && !o.slice_parts.borrow().is_empty() =>
         {
             let parts = o.slice_parts.borrow().clone();
-            return subscript_get(&Value::Tuple(Gc::new(Tuple(parts))), key);
+            subscript_get(&Value::Tuple(Gc::new(Tuple(parts))), key)
         }
         // A-4 item 1: bytearray subscripts — ba[i] → int, ba[a:b] →
         // bytearray (CPython returns the SAME type for a slice).
@@ -1028,7 +1014,6 @@ pub fn subscript_set(obj: &Value, key: &Value, v: Value) -> Result<(), Flow> {
                     let interp = crate::interp::current_interp_handle();
                     let (sf, owner) = t
                         .lookup_with_owner("__setitem__")
-                        .map(|(f, ow)| (f, ow))
                         .unwrap_or((Value::None, t.clone()));
                     let caller = crate::interp::module_frame_pub();
                     // super() inside __setitem__ (EnumDict -> dict) needs
@@ -1425,7 +1410,7 @@ pub fn call_method(
         // form "{}({!r})".format). index/name lookup against args/kwargs.
         (Value::Str(s), "format") => {
             let mut pos: Vec<Value> = Vec::new();
-            let mut kw: Vec<(String, Value)> = Vec::new();
+            let kw: Vec<(String, Value)> = Vec::new();
             for a in args {
                 // L2 (memperf audit 2026-11-06): the old `Value::Str(k2) if
                 // false => {}` arm was dead code — every arg is positional.
@@ -1499,7 +1484,7 @@ pub fn call_method(
                     Value::None
                 };
                 let rendered = match conv {
-                    "r" => crate::builtins::builtin_repr(&[value.clone()])
+                    "r" => crate::builtins::builtin_repr(std::slice::from_ref(&value))
                         .map(|v| match v {
                             Value::Str(x) => x.as_str().to_string(),
                             _ => String::new(),
@@ -1768,7 +1753,7 @@ pub fn call_method(
             let view = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "dict_keys");
             {
                 let payload = Value::List(PyList::from_vec(items));
-                let mut a = view.attrs.borrow_mut();
+                let a = view.attrs.borrow_mut();
                 let _ = a.set(Value::Str(PyString::new("<payload>")), payload);
                 let _ = a.set(Value::Str(PyString::new("<dict>")), Value::Dict(d.clone()));
             }
@@ -1779,7 +1764,7 @@ pub fn call_method(
             let view = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "dict_values");
             {
                 let payload = Value::List(PyList::from_vec(items));
-                let mut a = view.attrs.borrow_mut();
+                let a = view.attrs.borrow_mut();
                 let _ = a.set(Value::Str(PyString::new("<payload>")), payload);
                 let _ = a.set(Value::Str(PyString::new("<dict>")), Value::Dict(d.clone()));
             }
@@ -1794,7 +1779,7 @@ pub fn call_method(
             let view = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "dict_items");
             {
                 let payload = Value::List(PyList::from_vec(items));
-                let mut a = view.attrs.borrow_mut();
+                let a = view.attrs.borrow_mut();
                 let _ = a.set(Value::Str(PyString::new("<payload>")), payload);
                 let _ = a.set(Value::Str(PyString::new("<dict>")), Value::Dict(d.clone()));
             }
@@ -1967,11 +1952,6 @@ pub fn call_method(
             let k = one_arg(args)?;
             Some(Ok(Value::Bool(d.get(k).is_some())))
         }
-        (Value::Dict(d), "get") => {
-            let k = one_arg(args)?;
-            let dv = args.get(1).cloned().unwrap_or(Value::None);
-            Some(Ok(d.get(k).unwrap_or(dv)))
-        }
         (Value::List(l), "__len__") => Some(Ok(Value::Int(ap_obj::Int::from_i64(l.len() as i64)))),
         (Value::Tuple(t), "__len__") => {
             Some(Ok(Value::Int(ap_obj::Int::from_i64(t.0.len() as i64))))
@@ -2006,7 +1986,7 @@ fn super_user_method(
         // Bound method call: self is implicit.
         return crate::interp::call_value_pub(&interp.rc(), &v, &[Value::Obj(o.clone())], &[])
             .map(|_| Value::None)
-            .and_then(|_| Ok(Value::None));
+            .map(|_| Value::None);
     }
     Err(raise(
         "AttributeError",
@@ -2015,6 +1995,7 @@ fn super_user_method(
 }
 
 /// bytes.decode(codec).
+#[allow(dead_code)] // kept: part of an unfinished surface (robustness-ci 02.x burn-down leaf)
 fn decode_bytes(b: &[u8], codec: &str) -> MResult {
     decode_bytes_err(b, codec, "strict")
 }
@@ -2058,9 +2039,8 @@ fn decode_bytes_err(b: &[u8], codec: &str, errors: &str) -> MResult {
                         _ => {
                             return Err(raise(
                                 "UnicodeDecodeError",
-                                format!(
-                                    "'utf-8' codec can't decode bytes: invalid continuation byte"
-                                ),
+                                "'utf-8' codec can't decode bytes: invalid continuation byte"
+                                    .to_string(),
                             ))
                         }
                     }
@@ -2117,7 +2097,7 @@ fn decode_bytes_err(b: &[u8], codec: &str, errors: &str) -> MResult {
             Ok(s) => Ok(Value::Str(PyString::new(s))),
             Err(_) => Err(raise(
                 "UnicodeDecodeError",
-                format!("'utf-8' codec can't decode bytes: invalid continuation byte"),
+                "'utf-8' codec can't decode bytes: invalid continuation byte".to_string(),
             )),
         },
         "ascii" => {
@@ -2141,7 +2121,7 @@ fn decode_bytes_err(b: &[u8], codec: &str, errors: &str) -> MResult {
             let s: String = b.iter().map(|&x| x as char).collect();
             Ok(Value::Str(PyString::new(s)))
         }
-        other => match fallback_decode(b, codec, errors) {
+        _other => match fallback_decode(b, codec, errors) {
             Ok(v) => Ok(v),
             Err(e) => Err(Flow::Raise(e)),
         },

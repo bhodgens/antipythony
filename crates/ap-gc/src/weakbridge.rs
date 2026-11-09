@@ -225,8 +225,8 @@ mod unit_tests {
         // that reads another bridge seam does not panic on a double borrow.
         // This is the one global-state deadlock the seam could hide.
         set_bridge(
-            || Vec::new(),
-            || Vec::new(),
+            Vec::new,
+            Vec::new,
             |_v| {},
             |_cb, _args| Ok(Value::None),
             || {

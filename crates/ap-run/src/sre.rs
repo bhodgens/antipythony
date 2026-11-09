@@ -8,8 +8,8 @@
 //! uniform lookaround, different alternation preference), which would make
 //! byte-exactness impossible. The vendored CPython re/_parser + re/_compiler
 //! + C _sre path was also rejected: it needs array-module semantics,
-//! memoryview.cast and a bytecode VM — far more interpreter surface than a
-//! native engine, for the same observable behavior.
+//!   memoryview.cast and a bytecode VM — far more interpreter surface than a
+//!   native engine, for the same observable behavior.
 //!
 //! CPython SEMANTICS honored: leftmost-first (PCRE-style) match, greedy/
 //! lazy quantifiers with backtracking, capture groups reset on backtrack,
@@ -28,14 +28,13 @@
 //! Value layer: Pattern and Match are Opaque objects; attributes/methods
 //! dispatch through `re_pattern_attr` / `re_match_attr` / `call_re_obj`.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use ap_obj::value::{PyString, Value};
+use ap_obj::value::Value;
 use ap_obj::PyObject;
 
-use crate::builtins_modules::{i as vi, raise, s as vs, tuple as vtuple, BResult};
+use crate::builtins_modules::{i as vi, raise, s as vs, tuple as vtuple};
 use crate::sre_tables::{in_ranges, DIGIT_RANGES, SPACE_RANGES, WORD_RANGES};
 
 // ===========================================================================
@@ -116,6 +115,7 @@ fn extra_cases(c: u32) -> &'static [u32] {
 // AST
 // ===========================================================================
 
+#[allow(dead_code)] // kept: part of an unfinished surface (robustness-ci 02.x burn-down leaf)
 #[derive(Clone, Debug)]
 pub(crate) enum Node {
     Empty,
@@ -192,6 +192,7 @@ pub(crate) enum SetItem {
 // Pattern (compiled form) + compile errors
 // ===========================================================================
 
+#[allow(dead_code)] // kept: part of an unfinished surface (robustness-ci 02.x burn-down leaf)
 pub(crate) struct Compiled {
     pub pattern: String,
     pub flags: u32,
@@ -604,8 +605,7 @@ impl Parser {
                 if lo_n >= 4294967295 {
                     return Err(raise("OverflowError", "the repetition number is too large"));
                 }
-                let hi_n;
-                if self.eat(',') {
+                let hi_n = if self.eat(',') {
                     let mut hi = String::new();
                     while let Some(d) = self.peek() {
                         if d.is_ascii_digit() {
@@ -615,7 +615,7 @@ impl Parser {
                             break;
                         }
                     }
-                    hi_n = if hi.is_empty() {
+                    if hi.is_empty() {
                         u32::MAX
                     } else {
                         // CPython raises OverflowError (not re.error).
@@ -629,10 +629,10 @@ impl Parser {
                             ));
                         }
                         h
-                    };
+                    }
                 } else {
-                    hi_n = lo_n;
-                }
+                    lo_n
+                };
                 if !self.eat('}') {
                     // not a quantifier: literal '{' — restore; the '{' we
                     // consumed was already pushed as a literal below? No:
@@ -713,13 +713,13 @@ impl Parser {
                         Ok(Node::Backref(idx))
                     } else {
                         let c2 = self.bump();
-                        return Err(self.err(
+                        Err(self.err(
                             &format!(
                                 "unknown extension ?P{}",
                                 c2.map(|x| x.to_string()).unwrap_or_default()
                             ),
                             3,
-                        ));
+                        ))
                     }
                 }
                 ':' => {
@@ -1681,7 +1681,7 @@ impl<'a> Matcher<'a> {
                     let start = pos - w;
                     let saved = groups.snapshot();
                     let matched = self.m(body, start, groups, &mut |_m, _e, _g| Ok(Some(_e)))?;
-                    if (*negative) {
+                    if *negative {
                         if matched.is_some() {
                             groups.restore(&saved);
                             Ok(None)
@@ -1699,7 +1699,7 @@ impl<'a> Matcher<'a> {
                 } else {
                     let saved = groups.snapshot();
                     let matched = self.m(body, pos, groups, &mut |_m, _e, _g| Ok(Some(_e)))?;
-                    if (*negative) {
+                    if *negative {
                         if matched.is_some() {
                             groups.restore(&saved);
                             Ok(None)
@@ -1746,6 +1746,7 @@ impl<'a> Matcher<'a> {
         })
     }
 
+    #[allow(clippy::too_many_arguments)] // mirrors the CPython C-function signature shape
     fn m_repeat(
         &mut self,
         min: u32,
@@ -1772,7 +1773,7 @@ impl<'a> Matcher<'a> {
         pos: usize,
         groups: &mut Groups,
         k: &mut dyn FnMut(&mut Matcher<'a>, usize, &mut Groups) -> MRes,
-        last_pos: usize,
+        _last_pos: usize,
     ) -> MRes {
         self.tick()?;
         let can_more = count < max;
@@ -1929,6 +1930,7 @@ impl<'a> Matcher<'a> {
 // the matcher; Rust cannot express that through a `&mut Matcher` closure, so
 // m_seq carries the rest-slice as a raw pointer and rebuilds the reference
 // per level. Sound: the AST is never mutated during a match.
+#[allow(dead_code)] // kept: part of an unfinished surface (robustness-ci 02.x burn-down leaf)
 fn items_rest(items: &[Node], from: usize) -> *const Node {
     unsafe { items.as_ptr().add(from) }
 }
@@ -2022,7 +2024,7 @@ thread_local! {
     /// (pattern_object) is per-object and bypasses the cache, as in CPython.
     static RE_CACHE: RcRefCell<HashMap<(String, u32), GcPyObject>> = RcRefCell::new(HashMap::new());
     /// Insertion-order ledger for the 512-entry cap (HashMap has no order).
-    static RE_CACHE_ORDER: RcRefCell<Vec<(String, u32)>> = RcRefCell::new(Vec::new());
+    static RE_CACHE_ORDER: RcRefCell<Vec<(String, u32)>> = const { RcRefCell::new(Vec::new()) };
 }
 
 /// CPython re._cache cap (libreftest MAXCACHE).
@@ -2077,7 +2079,7 @@ pub(crate) fn pattern_object(compiled: Compiled) -> Value {
     let key = compiled_identity(&o);
     let pat_rc: PatRc = Rc::new(PatBox { compiled });
     {
-        let mut a = o.attrs.borrow_mut();
+        let a = o.attrs.borrow_mut();
         let _ = a.set(vs("pattern"), vs(pat_rc.compiled.pattern.clone()));
         let _ = a.set(vs("flags"), vi(pat_rc.compiled.flags as i64));
         let _ = a.set(vs("groups"), vi(pat_rc.compiled.groups as i64));
@@ -2111,8 +2113,8 @@ thread_local! {
         RcRefCell::new(HashMap::new());
     static MATCH_TABLE: RcRefCell<HashMap<usize, Rc<MatchBox>>> = RcRefCell::new(HashMap::new());
     /// Insertion-order ledgers for the SRE_TABLE_CAP eviction.
-    static PAT_TABLE_ORDER: RcRefCell<Vec<usize>> = RcRefCell::new(Vec::new());
-    static MATCH_TABLE_ORDER: RcRefCell<Vec<usize>> = RcRefCell::new(Vec::new());
+    static PAT_TABLE_ORDER: RcRefCell<Vec<usize>> = const { RcRefCell::new(Vec::new()) };
+    static MATCH_TABLE_ORDER: RcRefCell<Vec<usize>> = const { RcRefCell::new(Vec::new()) };
 }
 
 /// G2 housekeeping bound: the tables key entries by the OWNER PyObject's
@@ -2267,6 +2269,7 @@ fn match_repr(mb: &MatchBox) -> String {
 
 // ------------------------------------------------------------------ ops ---
 
+#[allow(dead_code)] // kept: part of an unfinished surface (robustness-ci 02.x burn-down leaf)
 pub(crate) struct PatOp;
 
 /// Run one pattern op. `method` is match/fullmatch/search; `pos`/`endpos`
@@ -2359,7 +2362,7 @@ pub(crate) fn group_value(mb: &MatchBox, key: &Value) -> Result<Value, crate::Fl
             ))
         }
     };
-    if idx < 0 || idx as usize > mb.pattern.compiled.groups {
+    if idx > mb.pattern.compiled.groups {
         return Err(raise("IndexError", "no such group"));
     }
     let (s, e) = mb.result.spans[idx];
@@ -2371,6 +2374,7 @@ pub(crate) fn group_value(mb: &MatchBox, key: &Value) -> Result<Value, crate::Fl
 }
 
 /// groups() / group(...) multi-arg.
+#[allow(dead_code)] // kept: part of an unfinished surface (robustness-ci 02.x burn-down leaf)
 pub(crate) fn match_groups_all(mb: &MatchBox, keys: &[Value]) -> Result<Vec<Value>, crate::Flow> {
     if keys.is_empty() {
         let mut out = Vec::new();
@@ -2721,7 +2725,7 @@ pub(crate) fn pat_findall(pat: &PatRc, text: &str) -> Result<Vec<Value>, crate::
         } else {
             let mut tup = Vec::new();
             for gi in 1..=c.groups {
-                let (s, e) = res.spans[gi];
+                let (s, _e) = res.spans[gi];
                 if s == usize::MAX {
                     // CPython findall: unmatched groups become ''
                     tup.push(vs(String::new()));
@@ -2782,7 +2786,7 @@ pub(crate) fn pattern_object_patbox(pat: PatRc) -> Value {
     let o = PyObject::new(ap_obj::ObjKind::Opaque, "re.Pattern");
     let key = compiled_identity(&o);
     {
-        let mut a = o.attrs.borrow_mut();
+        let a = o.attrs.borrow_mut();
         let _ = a.set(vs("pattern"), vs(pat.compiled.pattern.clone()));
         let _ = a.set(vs("flags"), vi(pat.compiled.flags as i64));
         let _ = a.set(vs("groups"), vi(pat.compiled.groups as i64));

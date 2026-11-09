@@ -83,7 +83,7 @@ fn osr_plan_deterministic_for_same_cfg() {
 fn oversized_live_set_is_reported_ineligible() {
     // A cfg Func with locals beyond the cap must report Ineligible
     // with the live count — never silently dropped (leaf Risk-2 gate).
-    let mut f = fn_def(vec![]);
+    let f = fn_def(vec![]);
     let mut cfg = lower_fn(&f).expect("lower");
     cfg.num_locals = (OSR_MAX_LIVE + 5) as u32;
     let plan = osr_plan(&cfg, BlockId(0));

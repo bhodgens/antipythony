@@ -21,14 +21,10 @@ fn fstring_parts(src: &str) -> Vec<FStrPart> {
     let (module, _) = lower_source(src).expect("program must lower");
     let mut last = None;
     for item in &module.items {
-        if let ap_ir::Item::Stmt(ap_ir::Stmt::ExprStmt(e)) = item {
-            if let Expr::Call(_, args) = e {
-                for a in args {
-                    if let ap_ir::Arg::Pos(x) = a {
-                        if let Expr::FString(parts) = x {
-                            last = Some(parts.clone());
-                        }
-                    }
+        if let ap_ir::Item::Stmt(ap_ir::Stmt::ExprStmt(Expr::Call(_, args))) = item {
+            for a in args {
+                if let ap_ir::Arg::Pos(Expr::FString(parts)) = a {
+                    last = Some(parts.clone());
                 }
             }
         }
@@ -48,7 +44,7 @@ fn f17_plain_debug_keeps_text_and_implies_r() {
             spec,
             debug_text,
         } => {
-            assert!(matches!(&*expr, Expr::Name(n) if n == "x"));
+            assert!(matches!(expr, Expr::Name(n) if n == "x"));
             assert_eq!(debug_text.as_deref(), Some("x="));
             assert_eq!(*conv, Some(Conversion::R));
             assert!(spec.is_none());

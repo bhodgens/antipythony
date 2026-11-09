@@ -23,9 +23,9 @@ fn run_reference(py: &str, src: &str) -> (Vec<u8>, i32) {
         std::process::id(),
         PROBE_SEQ.fetch_add(1, Ordering::Relaxed)
     ));
-    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(&dir).expect("metaclass_arity_differential.rs:26");
     let path = dir.join("probe.py");
-    std::fs::write(&path, src).unwrap();
+    std::fs::write(&path, src).expect("metaclass_arity_differential.rs:28");
     let out = Command::new(py)
         .arg(&path)
         .output()

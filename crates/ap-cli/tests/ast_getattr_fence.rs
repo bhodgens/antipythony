@@ -1,6 +1,3 @@
-use std::os::fd::AsFd as _;
-use std::os::fd::AsRawFd as _;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 // 2026-11-06 harness review: single-tenancy + memory-pressure preflight
@@ -21,7 +18,7 @@ fn memory_pressure_ok() -> bool {
     let mut size = std::mem::size_of::<libc::c_int>();
     let rc = unsafe {
         libc::sysctlbyname(
-            "kern.memorystatus_vm_pressure_level\0".as_ptr() as *const libc::c_char,
+            c"kern.memorystatus_vm_pressure_level".as_ptr() as *const libc::c_char,
             (&mut level as *mut libc::c_int).cast(),
             &mut size,
             std::ptr::null_mut(),
@@ -116,12 +113,12 @@ fn run_fenced(
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .expect("ast_getattr_fence.rs:116")
             .as_nanos()
     ));
-    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(&dir).expect("ast_getattr_fence.rs:121");
     let path = dir.join("probe_ast_getattr.py");
-    std::fs::write(&path, src).unwrap();
+    std::fs::write(&path, src).expect("ast_getattr_fence.rs:123");
 
     let bin =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/release/ap-run-probe");
@@ -295,7 +292,7 @@ fn ast_getattr_leak_fence() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(512);
-    let deadline_secs: u64 = std::env::var("AP_AST_FENCE_DEADLINE_SECS")
+    let _deadline_secs: u64 = std::env::var("AP_AST_FENCE_DEADLINE_SECS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(600);

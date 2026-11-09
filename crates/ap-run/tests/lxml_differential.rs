@@ -37,14 +37,14 @@ fn diff_check_main(body: &str) {
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let stamp = (std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .expect("lxml_differential.rs:38")
         .as_nanos() as u64)
         ^ (SEQ.fetch_add(1, Ordering::SeqCst) << 1)
         ^ ((std::process::id() as u64) << 33);
     let ref_py = tmp.join(format!("lxml_diff_ref_{}.py", stamp));
     let ap_py = tmp.join(format!("lxml_diff_ap_{}.py", stamp));
-    std::fs::write(&ref_py, body).unwrap();
-    std::fs::write(&ap_py, body).unwrap();
+    std::fs::write(&ref_py, body).expect("lxml_differential.rs:46");
+    std::fs::write(&ap_py, body).expect("lxml_differential.rs:47");
 
     let out_ref = Command::new(REF_VENV_PY)
         .arg(&ref_py)

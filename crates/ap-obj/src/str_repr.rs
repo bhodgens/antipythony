@@ -65,40 +65,6 @@ pub fn bytes_repr(b: &[u8]) -> String {
     out
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{bytes_repr, str_repr};
-
-    #[test]
-    fn str_quote_selection() {
-        // All probed against python3.14 3.14.7.
-        assert_eq!(str_repr("it's"), "\"it's\"");
-        assert_eq!(str_repr("say \"hi\""), "'say \"hi\"'");
-        assert_eq!(str_repr("both ' and \""), "'both \\' and \"'");
-        assert_eq!(str_repr(""), "''");
-        assert_eq!(str_repr("café 中"), "'café 中'");
-        assert_eq!(str_repr("\u{1F600}"), "'😀'");
-    }
-
-    #[test]
-    fn str_escapes() {
-        assert_eq!(str_repr("\t\n\x00\x07\r"), "'\\t\\n\\x00\\x07\\r'");
-        assert_eq!(str_repr("\\"), "'\\\\'");
-        assert_eq!(str_repr("\x7f"), "'\\x7f'");
-        assert_eq!(str_repr("a\x1b[0m"), "'a\\x1b[0m'");
-        assert_eq!(str_repr("\n'"), "\"\\n'\"");
-        assert_eq!(str_repr("\"'"), "'\"\\''");
-    }
-
-    #[test]
-    fn bytes_repr_cases() {
-        assert_eq!(bytes_repr(b"caf\xc3\xa9"), "b'caf\\xc3\\xa9'");
-        assert_eq!(bytes_repr(b"\x00abc'\"\\"), "b'\\x00abc\\'\"\\\\'");
-        assert_eq!(bytes_repr(b"Hi"), "b'Hi'");
-        assert_eq!(bytes_repr(b"a\x7f"), "b'a\\x7f'");
-    }
-}
-
 use crate::exc::PyException;
 use crate::value::Value;
 
@@ -451,7 +417,7 @@ pub fn percent_format(fmt: &str, args: &[Value]) -> Result<Value, PyException> {
         out.push_str(&padded);
     }
     // Mapping form consumes the dict as a whole (arg_i stays 0).
-    if !mapping.is_some() && arg_i < args.len() {
+    if mapping.is_none() && arg_i < args.len() {
         return Err(PyException::new(
             "TypeError",
             "not all arguments converted during string formatting",
@@ -554,5 +520,39 @@ fn float_of(v: &Value) -> Result<f64, PyException> {
             "TypeError",
             format!("must be real number, not {}", other.type_name()),
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{bytes_repr, str_repr};
+
+    #[test]
+    fn str_quote_selection() {
+        // All probed against python3.14 3.14.7.
+        assert_eq!(str_repr("it's"), "\"it's\"");
+        assert_eq!(str_repr("say \"hi\""), "'say \"hi\"'");
+        assert_eq!(str_repr("both ' and \""), "'both \\' and \"'");
+        assert_eq!(str_repr(""), "''");
+        assert_eq!(str_repr("café 中"), "'café 中'");
+        assert_eq!(str_repr("\u{1F600}"), "'😀'");
+    }
+
+    #[test]
+    fn str_escapes() {
+        assert_eq!(str_repr("\t\n\x00\x07\r"), "'\\t\\n\\x00\\x07\\r'");
+        assert_eq!(str_repr("\\"), "'\\\\'");
+        assert_eq!(str_repr("\x7f"), "'\\x7f'");
+        assert_eq!(str_repr("a\x1b[0m"), "'a\\x1b[0m'");
+        assert_eq!(str_repr("\n'"), "\"\\n'\"");
+        assert_eq!(str_repr("\"'"), "'\"\\''");
+    }
+
+    #[test]
+    fn bytes_repr_cases() {
+        assert_eq!(bytes_repr(b"caf\xc3\xa9"), "b'caf\\xc3\\xa9'");
+        assert_eq!(bytes_repr(b"\x00abc'\"\\"), "b'\\x00abc\\'\"\\\\'");
+        assert_eq!(bytes_repr(b"Hi"), "b'Hi'");
+        assert_eq!(bytes_repr(b"a\x7f"), "b'a\\x7f'");
     }
 }

@@ -23,9 +23,9 @@ fn run_reference(py: &str, src: &str) -> (Vec<u8>, i32) {
         std::process::id(),
         PROBE_SEQ.fetch_add(1, Ordering::Relaxed)
     ));
-    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(&dir).expect("metaclass_enum_differential.rs:26");
     let path = dir.join("probe.py");
-    std::fs::write(&path, src).unwrap();
+    std::fs::write(&path, src).expect("metaclass_enum_differential.rs:28");
     let out = Command::new(py)
         .arg(&path)
         .output()
@@ -144,7 +144,7 @@ print("warned")
     let (gold, gold_code) = run_reference(py, src);
     let (ours, our_code) = run_aprun(src);
     assert_eq!(our_code, gold_code, "warnings_warn_runs: exit codes differ");
-    let gold_stdout: Vec<u8> = gold.iter().cloned().collect();
+    let gold_stdout: Vec<u8> = gold.to_vec();
     assert_eq!(
         ours,
         gold_stdout,

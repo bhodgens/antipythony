@@ -108,6 +108,7 @@ print(re.findall(r'\d', '١٢٣', re.A))
     );
 }
 
+#[allow(non_snake_case)] // CPython-exact identifier - renaming would break the byte-exact conformance contract
 #[test]
 fn anchors_bA() {
     common::interpreter_gate();

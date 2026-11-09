@@ -59,14 +59,14 @@ thread_local! {
     static ENABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 
     /// gc.callbacks observers (callables; fired with (phase, info-dict)).
-    pub(crate) static CALLBACKS: RefCell<Vec<Value>> = RefCell::new(Vec::new());
+    pub(crate) static CALLBACKS: RefCell<Vec<Value>> = const { RefCell::new(Vec::new()) };
 
     /// gc.freeze/gc.unfreeze: addresses excluded from sweeping.
     static FROZEN: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
 
     /// Weakrefs: the ap-run weakref surface records (target-addr, token,
     /// callback) here; the collector owns liveness and dead-notifications.
-    pub(crate) static WEAKREFS: RefCell<Vec<WeakEntry>> = RefCell::new(Vec::new());
+    pub(crate) static WEAKREFS: RefCell<Vec<WeakEntry>> = const { RefCell::new(Vec::new()) };
 
     /// Addresses whose finalizer already ran: never fire again (C-21).
     /// (Non-resurrected ones die at the sweep that ran them; resurrected
@@ -91,9 +91,9 @@ thread_local! {
     static WEAK_SEQ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 
     /// Root dicts (module globals, builtins) wired by ap-run at entry.
-    static ROOT_DICTS: RefCell<Vec<Gc<PyDict>>> = RefCell::new(Vec::new());
+    static ROOT_DICTS: RefCell<Vec<Gc<PyDict>>> = const { RefCell::new(Vec::new()) };
     /// Root module namespaces.
-    static ROOT_MODULE_NS: RefCell<Vec<std::rc::Rc<PyDict>>> = RefCell::new(Vec::new());
+    static ROOT_MODULE_NS: RefCell<Vec<std::rc::Rc<PyDict>>> = const { RefCell::new(Vec::new()) };
 }
 
 /// A registered weak reference: the target address it watches, the token
@@ -202,11 +202,11 @@ pub fn gc_register(v: &Value) {
     }
     REGISTRY.with(|r| {
         let mut r = r.borrow_mut();
-        if !r.contains_key(&key) {
+        if let std::collections::hash_map::Entry::Vacant(e) = r.entry(key) {
             let n = SEQ.get() + 1;
             SEQ.set(n);
             SEQ_OF.with(|s| s.borrow_mut().insert(key, n));
-            r.insert(key, Tracked { value: v.clone() });
+            e.insert(Tracked { value: v.clone() });
             // New object -> young. The next gen-0 pass scans it (and
             // graduates it); full passes re-seed YOUNG from the registry.
             YOUNG.with(|y| y.borrow_mut().insert(key));
@@ -331,6 +331,7 @@ thread_local! {
     /// is unchanged; rebuilt on any set/pop/popitem of the dict. See
     /// the C3 note in `mark_reachable_scoped` for the address-reuse
     /// safety argument. Bounded by the root count (modules + builtins).
+#[allow(clippy::type_complexity)] // interpreter plumbing type; factoring out would obscure the signature
     static ROOT_SEEDS: RefCell<HashMap<usize, (u64, u64, Vec<usize>)>> =
         RefCell::new(HashMap::new());
     /// Bumped whenever the ROOT LIST itself changes (add/clear): guards
@@ -368,7 +369,7 @@ fn seed_root_dict(
     // NOTE: callers hold the root-list Rc/Gc clone; `d` is pinned alive.
     let epoch = d.mutation_epoch();
     let in_and_push = |a: usize, queue: &mut Vec<usize>, root_hits: &mut usize| {
-        if a != 0 && registry.contains_key(&a) && scope.map_or(true, |s| s.contains(&a)) {
+        if a != 0 && registry.contains_key(&a) && scope.is_none_or(|s| s.contains(&a)) {
             queue.push(a);
             *root_hits += 1;
         }
@@ -578,16 +579,19 @@ fn scan_edges(
 }
 
 /// Addr of a tracked value without touching the registry map itself.
+#[allow(dead_code)] // kept: part of an unfinished surface (robustness-ci 02.x burn-down leaf)
 fn value_addr_of_tracked(t: &Tracked) -> usize {
     value_addr(&t.value)
 }
 
 /// Unscoped wrappers (full-heap scan): unit tests and any legacy callers.
+#[allow(dead_code)] // kept: part of an unfinished surface (robustness-ci 02.x burn-down leaf)
 fn count_internal_refs(registry: &HashMap<usize, Tracked>, counts: &mut HashMap<usize, usize>) {
     let mut kids = Vec::new();
     count_internal_refs_scoped(registry, counts, None, &mut kids)
 }
 
+#[allow(dead_code)] // kept: part of an unfinished surface (robustness-ci 02.x burn-down leaf)
 fn mark_reachable(
     registry: &HashMap<usize, Tracked>,
     counts: &HashMap<usize, usize>,
@@ -616,7 +620,7 @@ fn mark_reachable_scoped(
     queue: &mut Vec<usize>,
     kids: &mut Vec<usize>,
 ) {
-    let in_scope = |addr: usize| scope.map_or(true, |s| s.contains(&addr));
+    let in_scope = |addr: usize| scope.is_none_or(|s| s.contains(&addr));
     visited.clear();
     queue.clear();
 
@@ -1351,7 +1355,7 @@ pub fn weakref_prune_fired(seq_list: &[u64]) {
 /// marks them fired. ap-run invokes the callbacks (it owns call semantics)
 /// and prunes BOTH sides of each drained pair by seq (weakref_prune_fired
 /// + its own WEAK_TOKENS) — no-callback entries included: CPython drops a
-/// dead ref immediately when no callback exists.
+///   dead ref immediately when no callback exists.
 pub fn weakref_take_dead() -> Vec<(usize, Option<Value>)> {
     WEAKREFS.with(|w| {
         let mut w = w.borrow_mut();
@@ -1381,6 +1385,7 @@ pub fn weakref_is_dead(target_addr: usize, nth: usize) -> Option<bool> {
 }
 
 /// Append a gc.callbacks observer.
+#[allow(dead_code)] // kept: part of an unfinished surface (robustness-ci 02.x burn-down leaf)
 pub fn callback_add(v: Value) {
     CALLBACKS.with(|c| c.borrow_mut().push(v));
 }
@@ -1481,7 +1486,7 @@ mod unit_tests {
         // contribute edges. Not spec-pinned beyond the corpus slices.
         let tracked_child = list_val();
         let untracked_child = list_val(); // deliberately NOT in the map
-        let registry = local_registry(&[tracked_child.clone()]);
+        let registry = local_registry(std::slice::from_ref(&tracked_child));
 
         let mut out = Vec::new();
         let list = PyList::from_vec(vec![
@@ -1495,16 +1500,16 @@ mod unit_tests {
         // Dict arm: tracked VALUES are edges (the untracked Str key is not).
         let d = PyDict::new();
         let val = list_val();
-        let reg2 = local_registry(&[val.clone()]);
+        let reg2 = local_registry(std::slice::from_ref(&val));
         d.set(Value::Str(ap_obj::PyString::new("k")), val.clone())
-            .unwrap();
+            .expect("gcmod.rs:1499");
         let mut out2 = Vec::new();
         edges_of(&Value::Dict(d), &reg2, &mut out2);
         assert_eq!(out2, vec![value_addr(&val)]);
 
         // Tuple arm (gc007 fix 380f28e): members are edges.
         let kid = list_val();
-        let reg3 = local_registry(&[kid.clone()]);
+        let reg3 = local_registry(std::slice::from_ref(&kid));
         let tup = Value::Tuple(Gc::new(ap_obj::Tuple(vec![
             Value::Int(ap_obj::Int::from_i64(1)),
             kid.clone(),
@@ -1524,7 +1529,7 @@ mod unit_tests {
         // Case A: registry clone + one external holder => sc = 2,
         // internal = 0 => seeded reachable (false-collection guard).
         let holder = list_val();
-        let registry = local_registry(&[holder.clone()]);
+        let registry = local_registry(std::slice::from_ref(&holder));
         let mut counts = HashMap::new();
         count_internal_refs(&registry, &mut counts);
         let reach = mark_reachable(&registry, &counts);
@@ -1547,8 +1552,8 @@ mod unit_tests {
         drop((a, b, va, vb));
         let mut counts2 = HashMap::new();
         count_internal_refs(&reg_b, &mut counts2);
-        assert_eq!(*counts2.get(&addr_a).unwrap(), 1);
-        assert_eq!(*counts2.get(&addr_b).unwrap(), 1);
+        assert_eq!(*counts2.get(&addr_a).expect("gcmod.rs:1550"), 1);
+        assert_eq!(*counts2.get(&addr_b).expect("gcmod.rs:1551"), 1);
         let reach2 = mark_reachable(&reg_b, &counts2);
         assert!(reach2.is_empty(), "a pure cycle must be unreachable");
 
@@ -1615,11 +1620,7 @@ mod unit_tests {
             REGISTRY.with(|r| r.borrow().contains_key(&victim_addr)),
             "abort must NOT sweep: the victim stays tracked (no partial-view kill)"
         );
-        assert_eq!(
-            SCAN_CONTENDED.with(|c| c.get()),
-            false,
-            "flag reset after abort"
-        );
+        assert!(!SCAN_CONTENDED.with(|c| c.get()), "flag reset after abort");
         drop(held);
 
         // Release the contention: the same pass now runs and sweeps the
@@ -1784,7 +1785,7 @@ mod unit_tests {
         weakref_prune_fired(&[prune_seq]);
         assert_eq!(weakref_count_for(a1), count_linear(a1));
         assert_eq!(weakref_tokens_for(a1).len(), 2);
-        assert_eq!(weakref_is_dead(a2, 0).is_some(), true);
+        assert!(weakref_is_dead(a2, 0).is_some());
     }
 
     #[test]
@@ -1803,7 +1804,7 @@ mod unit_tests {
         let child = list_val();
         let child_addr = value_addr(&child);
         root.set(Value::Str(ap_obj::value::PyString::new("k")), child.clone())
-            .unwrap();
+            .expect("gcmod.rs:1801");
         // Register so the child is in the graph, externally held ONLY by
         // the root dict (sc = root clone + registry clone = 2, internal 0).
         gc_register(&child.clone());
@@ -1815,7 +1816,7 @@ mod unit_tests {
         let kid2 = list_val();
         let kid2_addr = value_addr(&kid2);
         root.set(Value::Str(ap_obj::value::PyString::new("k2")), kid2.clone())
-            .unwrap();
+            .expect("gcmod.rs:1813");
         gc_register(&kid2.clone());
         drop(kid2);
         assert_eq!(collect(), 0);

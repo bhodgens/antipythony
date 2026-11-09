@@ -16,7 +16,6 @@ use ruff_python_ast::AnyNodeRef;
 /// Wildcard-free ruff variant-name matches live in `KindCollector::enter_node`
 /// below (via `StmtRef` / `ExprRef`); they are the compile-time exhaustiveness
 /// gate. This file keeps no duplicate name tables.
-
 /// Visitor collecting variant names for every node it walks.
 #[derive(Default)]
 struct KindCollector {

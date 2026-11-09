@@ -90,7 +90,7 @@ pub fn process_start_time_secs(pid: u32) -> Option<u64> {
     if n as usize != std::mem::size_of::<libc::proc_bsdinfo>() {
         return None;
     }
-    Some(info.pbi_start_tvsec as u64)
+    Some(info.pbi_start_tvsec)
 }
 
 /// Linux twin: `/proc/<pid>/stat` field 22 (starttime, in clock ticks after

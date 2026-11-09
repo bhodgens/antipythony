@@ -7,7 +7,6 @@
 // Standalone test target so it never disturbs the real suites.
 mod common;
 
-use std::os::fd::AsFd as _;
 use std::os::fd::AsRawFd as _;
 
 #[test]

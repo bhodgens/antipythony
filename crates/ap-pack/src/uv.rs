@@ -189,10 +189,10 @@ pub fn installed_versions(dir: &std::path::Path) -> Vec<(String, String)> {
         let mut pkg = String::new();
         let mut ver = String::new();
         for line in text.lines() {
-            if line.starts_with("Name:") {
-                pkg = line["Name:".len()..].trim().to_string();
-            } else if line.starts_with("Version:") {
-                ver = line["Version:".len()..].trim().to_string();
+            if let Some(rest) = line.strip_prefix("Name:") {
+                pkg = rest.trim().to_string();
+            } else if let Some(rest) = line.strip_prefix("Version:") {
+                ver = rest.trim().to_string();
             }
             if !pkg.is_empty() && !ver.is_empty() {
                 break;

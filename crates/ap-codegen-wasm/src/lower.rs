@@ -167,7 +167,11 @@ pub fn lower_module(module: &IrModule) -> Result<Vec<u8>, CodegenError> {
         );
     };
     for _ in 0..4 {
-        add_global(&mut globals, pyobj_ref(), wasm_encoder::HeapType::Concrete(T_PYOBJ));
+        add_global(
+            &mut globals,
+            pyobj_ref(),
+            wasm_encoder::HeapType::Concrete(T_PYOBJ),
+        );
         // None/True/False/Ellipsis
     }
     globals.global(
@@ -204,8 +208,16 @@ pub fn lower_module(module: &IrModule) -> Result<Vec<u8>, CodegenError> {
     // wasmtime 47 drops ACTIVE segments after instantiation, so any
     // array.new_data over an active segment traps (out-of-bounds; probed
     // in examples/probe_seg.rs). rt_init's $str builders read segment 1.
-    let name_blob: Vec<u8> = TYPE_ORDER.iter().flat_map(|n| n.as_bytes()).copied().collect();
-    let blob: Vec<u8> = name_blob.iter().chain(strings.iter().flatten()).copied().collect();
+    let name_blob: Vec<u8> = TYPE_ORDER
+        .iter()
+        .flat_map(|n| n.as_bytes())
+        .copied()
+        .collect();
+    let blob: Vec<u8> = name_blob
+        .iter()
+        .chain(strings.iter().flatten())
+        .copied()
+        .collect();
     let mut data = DataSection::new();
     let mut data_count_n = 0u32;
     if !blob.is_empty() {
@@ -412,10 +424,10 @@ fn push_str_struct(f: &mut Function, off: u32, len: u32, type_g: Option<u32>) {
     f.instruction(&Instruction::I64Const(0)); // hash: unhashed (S-07-12)
     f.instruction(&Instruction::I32Const(0)); // kind 0 = ascii/latin1 (S-07-11)
     f.instruction(&Instruction::I32Const(len as i32)); // len (code points)
-    // data: push operands (offset, size) THEN array.new_data $byte_arr 0.
-    // NOTE: array.new_data indexes the DATA SEGMENT (0-based), NOT linear
-    // memory — the segment lives at STR_BASE but its internal offsets are
-    // relative to the segment start.
+                                                       // data: push operands (offset, size) THEN array.new_data $byte_arr 0.
+                                                       // NOTE: array.new_data indexes the DATA SEGMENT (0-based), NOT linear
+                                                       // memory — the segment lives at STR_BASE but its internal offsets are
+                                                       // relative to the segment start.
     f.instruction(&Instruction::I32Const(off as i32));
     f.instruction(&Instruction::I32Const(len as i32));
     f.instruction(&Instruction::ArrayNewData {
@@ -436,7 +448,7 @@ fn push_empty_dict(f: &mut Function) {
     f.instruction(&Instruction::I32Const(0)); // fill
     f.instruction(&Instruction::I32Const(7)); // mask (8 slots)
     f.instruction(&Instruction::I32Const(0)); // perturb_shift
-    // index array: push the 8 DKIX_EMPTY(-1) values THEN array.new_fixed.
+                                              // index array: push the 8 DKIX_EMPTY(-1) values THEN array.new_fixed.
     for _ in 0..8 {
         f.instruction(&Instruction::I32Const(-1)); // DKIX_EMPTY
     }
@@ -615,9 +627,7 @@ mod tests {
             ap_ir::item::FnBody { blocks: vec![] },
         )));
         let err = lower_module(&module).expect_err("FnDef must not silently drop");
-        let CodegenError::Unsupported(what) = &err else {
-            panic!("expected Unsupported");
-        };
+        let CodegenError::Unsupported(what) = &err;
         assert!(
             what.contains("FnDef"),
             "error must name the construct: {what}"

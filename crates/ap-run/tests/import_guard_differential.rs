@@ -64,7 +64,7 @@ fn write_case(tag: &str, src: &str) -> std::path::PathBuf {
         tag,
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .expect("import_guard_differential.rs:65")
             .as_nanos()
     ));
     std::fs::write(&p, src).expect("write probe");
@@ -204,7 +204,7 @@ fn leading_dot_single_name() {
         q(".sys"),
         q(".builtins"),
     ] {
-        check_guard_case("lead", &catch_probe(&[sh.clone()]), None);
+        check_guard_case("lead", &catch_probe(std::slice::from_ref(&sh)), None);
     }
 }
 
@@ -267,9 +267,10 @@ fn fixture_root(tag: &str) -> std::path::PathBuf {
     let dir =
         std::env::temp_dir().join(format!("ap_import_guard_fix_{}_{tag}", std::process::id()));
     std::fs::create_dir_all(dir.join("pkg")).expect("mkdir fixture");
-    std::fs::write(dir.join("pkg/__init__.py"), "VALUE = 42\n").unwrap();
-    std::fs::write(dir.join("pkg/mod.py"), "W = 7\n").unwrap();
-    std::fs::write(dir.join("mod.py"), "W = 7\n").unwrap();
+    std::fs::write(dir.join("pkg/__init__.py"), "VALUE = 42\n")
+        .expect("import_guard_differential.rs:270");
+    std::fs::write(dir.join("pkg/mod.py"), "W = 7\n").expect("import_guard_differential.rs:271");
+    std::fs::write(dir.join("mod.py"), "W = 7\n").expect("import_guard_differential.rs:272");
     dir
 }
 
