@@ -628,7 +628,6 @@ dependencies = [
  "ap-ir",
  "ap-parse",
  "wasm-encoder 0.263.0",
- "wasmparser 0.263.0",
  "wasmtime",
 ]
 
@@ -2291,10 +2290,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4f5fa0a054ae153606df820eb0a84213e28cda41bbe04ba2628e71b6ba100fcb"
 dependencies = [
  "bitflags",
- "hashbrown 0.17.1",
  "indexmap",
  "semver",
- "serde",
 ]
 
 [[package]]

@@ -11,8 +11,7 @@ ap-parse = { path = "../../ap-parse" }
 ap-codegen-wasm = { path = "../../ap-codegen-wasm" }
 ap-host = { path = "../../ap-host" }
 wasm-encoder = "0.263"
-wasmtime = "47"
-wasmparser = "0.263"
+wasmtime = { version = "47", features = ["reexport-wasmparser"] }
 
 [[bin]]
 name = "diag_host"

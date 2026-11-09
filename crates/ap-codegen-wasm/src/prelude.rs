@@ -1161,7 +1161,7 @@ fn none_eq(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::C
 
 /// list_eq (FT_OO_I): (a, b) -> i32 — same length, all items $eq.
 fn list_eq(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
-    add(funcs, code, FT_OO_I, &[(2, ValType::I32)], |f| {
+    add(funcs, code, FT_OO_I, &[(2, oref()), (2, ValType::I32), (2, oref())], |f| {
         // 2=a 3=b 4=len 5=i 6=item-a 7=item-b
         f.instruction(&Instruction::LocalGet(0));
         f.instruction(&Instruction::LocalSet(2));
@@ -1198,14 +1198,14 @@ fn list_eq(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::C
         f.instruction(&Instruction::RefCastNullable(hc(T_LIST)));
         sget(f, T_LIST, F_LIST_ITEMS);
         f.instruction(&Instruction::LocalGet(5));
-        f.instruction(&Instruction::ArrayGetU(T_OBJ_ARR));
+        f.instruction(&Instruction::ArrayGet(T_OBJ_ARR));
         f.instruction(&Instruction::LocalSet(6));
         // item-b = b.items[i]
         f.instruction(&Instruction::LocalGet(3));
         f.instruction(&Instruction::RefCastNullable(hc(T_LIST)));
         sget(f, T_LIST, F_LIST_ITEMS);
         f.instruction(&Instruction::LocalGet(5));
-        f.instruction(&Instruction::ArrayGetU(T_OBJ_ARR));
+        f.instruction(&Instruction::ArrayGet(T_OBJ_ARR));
         f.instruction(&Instruction::LocalSet(7));
         // eq(item-a, item-b) == 0 -> false
         f.instruction(&Instruction::LocalGet(6));
@@ -1231,7 +1231,7 @@ fn list_eq(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::C
 
 /// tuple_eq (FT_OO_I): same recursion over the tuple items array.
 fn tuple_eq(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
-    add(funcs, code, FT_OO_I, &[(2, ValType::I32)], |f| {
+    add(funcs, code, FT_OO_I, &[(2, oref()), (2, ValType::I32), (2, oref())], |f| {
         // 2=a 3=b 4=len 5=i 6=item-a 7=item-b
         f.instruction(&Instruction::LocalGet(0));
         f.instruction(&Instruction::LocalSet(2));
@@ -1268,13 +1268,13 @@ fn tuple_eq(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::
         f.instruction(&Instruction::RefCastNullable(hc(T_TUPLE)));
         sget(f, T_TUPLE, F_TUPLE_ITEMS);
         f.instruction(&Instruction::LocalGet(5));
-        f.instruction(&Instruction::ArrayGetU(T_OBJ_ARR_RO));
+        f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
         f.instruction(&Instruction::LocalSet(6));
         f.instruction(&Instruction::LocalGet(3));
         f.instruction(&Instruction::RefCastNullable(hc(T_TUPLE)));
         sget(f, T_TUPLE, F_TUPLE_ITEMS);
         f.instruction(&Instruction::LocalGet(5));
-        f.instruction(&Instruction::ArrayGetU(T_OBJ_ARR_RO));
+        f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
         f.instruction(&Instruction::LocalSet(7));
         f.instruction(&Instruction::LocalGet(6));
         f.instruction(&Instruction::LocalGet(7));
@@ -1322,7 +1322,21 @@ fn eq(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSe
         funcs,
         code,
         FT_OO_I,
-        &[(1, oref()), (1, oref()), (2, ValType::I32)],
+        &[(1, oref()), (1, oref()), (1, ValType::I32), (1, ValType::I32), (1, ValType::I32)],
+        |f| {
+            // BISECT-0: full body stub
+            f.instruction(&Instruction::I32Const(0));
+        },
+    );
+}
+
+#[allow(dead_code)]
+fn eq_full(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
+    add(
+        funcs,
+        code,
+        FT_OO_I,
+        &[(1, oref()), (1, oref()), (1, ValType::I32), (1, ValType::I32), (1, ValType::I32)],
         |f| {
             // 1=a(o) 2=b(o) 3=sel-a 4=sel-b — v1: None identity + numeric
             // (int smi/big + float cross) + str bytes + list/tuple recursion.
