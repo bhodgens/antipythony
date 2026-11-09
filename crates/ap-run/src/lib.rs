@@ -27,6 +27,9 @@ pub mod generators;
 pub mod importer;
 pub mod interp;
 pub mod iter;
+/// Leaf 02.05a: the JIT entry hook + tier-dispatch seam (tier mode
+/// resolution, HostCallbacks impl, compile cache, jit_call_body).
+pub mod jit_hook;
 pub mod lxml;
 pub mod mbc;
 pub mod methods;
@@ -41,6 +44,24 @@ use ap_obj::exc::PyException;
 pub use exc_hier::ExceptionValue;
 pub use frame::Interpreter;
 pub use interp::run_module;
+
+/// Leaf 02.05a: the bins' `--tier <mode>` flag rides this one-shot cell
+/// into run_module's tier init seam (a static because run_module takes
+/// no config struct and its signature is a pinned public seam).
+pub mod tier_flag {
+    use std::cell::Cell;
+    thread_local! {
+        static TIER: Cell<Option<&'static str>> = const { Cell::new(None) };
+    }
+    /// Bins call this before run_module with "0" or "adaptive".
+    pub fn set(mode: &'static str) {
+        TIER.with(|t| t.set(Some(mode)));
+    }
+    /// run_module consumes it once; None = env fallback in jit_hook.
+    pub fn take() -> Option<&'static str> {
+        TIER.with(|t| t.replace(None))
+    }
+}
 
 /// Outcome of executing a module (S-06-7/S-06-11, C-25/C-29).
 pub struct RunOutcome {

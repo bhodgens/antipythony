@@ -13,7 +13,7 @@
 //!
 //! SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-use crate::cfg::{ConstValue, Func, Inst, Terminator};
+use crate::cfg::{ConstValue, Func, Inst, LocalId, TempId, Terminator};
 use crate::runtime as rt;
 use crate::CodegenError;
 use cranelift::codegen::ir::{types, FuncRef, Function, InstBuilder};
@@ -79,6 +79,10 @@ pub struct JitFunc {
     /// The feedback slot plan this compilation assigned (Risk 5:
     /// snapshot carries slot-count; mismatch = compile failure).
     pub slots: SlotPlan,
+    /// Interned name table in the same first-appearance order the code
+    /// embedded as immediates (02.05a — the entry hook copies this into
+    /// ExecCtx::names; the old stub interned every name at index 0).
+    pub name_table: Vec<String>,
     /// libloading-style code blob handle (owning; dropped → unmapped).
     pub _blob: cranelift_jit::JITModule,
 }
@@ -136,6 +140,11 @@ pub fn compile_baseline(func: &Func) -> Result<JitFunc, CodegenError> {
     }
     let mut module = cranelift_jit::JITModule::new(module);
 
+    // Interned name table (02.05a): filled in emit_cfg first-appearance
+    // order; the entry hook copies it into ExecCtx::names so host helpers
+    // resolve name ids against the same table the code embedded.
+    let mut name_table: Vec<String> = Vec::new();
+
     let sig = {
         let mut s = cranelift::codegen::ir::Signature::new(module.isa().default_call_conv());
         s.params.push(cranelift::codegen::ir::AbiParam::new(
@@ -181,11 +190,15 @@ pub fn compile_baseline(func: &Func) -> Result<JitFunc, CodegenError> {
         for _ in 0..func.blocks.len() {
             clif_blocks.push(fb.create_block());
         }
-        // All blocks pre-sealed (the CFG is fully explicit — no phis, all
-        // values route through the boxed slot array on the ctx).
-        for b in &clif_blocks {
-            fb.seal_block(*b);
-        }
+        // ABI entry hand-off: emit the jump to the lowered CFG's block 0
+        // BEFORE emit_cfg so the entry block is inserted into the layout
+        // FIRST (layout.entry_block() == first inserted block — emitting
+        // this after emit_cfg made the first CFG block the layout entry,
+        // failing typecheck_entry_block_params with 0 params vs the
+        // 1-param signature; 02.05a fix, first real compile_baseline
+        // customer — unit tests never exercised the JIT compile path).
+        fb.switch_to_block(entry);
+        fb.ins().jump(clif_blocks[0], &[]);
 
         emit_cfg(
             &mut fb,
@@ -194,15 +207,24 @@ pub fn compile_baseline(func: &Func) -> Result<JitFunc, CodegenError> {
             ctx_ptr,
             &mut module,
             &helper_refs,
+            &mut name_table,
         )?;
 
         fb.seal_all_blocks();
         fb.finalize(frontend_config);
     }
-
-    module
-        .define_function(func_id, &mut ctx)
-        .map_err(|e| CodegenError::Verify(format!("define_function: {e}")))?;
+    if let Err(e) = module.define_function(func_id, &mut ctx) {
+        // 02.05a: CompileError's Debug hides the verifier detail list —
+        // match the inner CodegenError so the fallback report names the
+        // offending construct (fail-closed reporting, never silent).
+        let detail = match &e {
+            cranelift_module::ModuleError::Compilation(c) => {
+                format!("{c:?}")
+            }
+            other => format!("{other}"),
+        };
+        return Err(CodegenError::Verify(format!("define_function: {detail}")));
+    }
     module
         .finalize_definitions()
         .map_err(|e| CodegenError::Verify(format!("finalize_definitions: {e}")))?;
@@ -211,6 +233,7 @@ pub fn compile_baseline(func: &Func) -> Result<JitFunc, CodegenError> {
     Ok(JitFunc {
         code_ptr,
         slots: slot_plan,
+        name_table,
         _blob: module,
     })
 }
@@ -291,9 +314,18 @@ fn emit_cfg(
     ctx_ptr: Value,
     module: &mut cranelift_jit::JITModule,
     helpers: &HashMap<&'static str, FuncRef>,
+    name_table: &mut Vec<String>,
 ) -> Result<(), CodegenError> {
     let i64_t = types::I64;
     let i32_t = types::I32;
+    // Slot-space fix (02.05a): locals and temps used to SHARE index space
+    // (LocalId(n) == TempId(n)) — a temp write clobbered the local at the
+    // same index (t1_016 `1 + f(n-1)` evaluated `None <= 0`). Params/
+    // locals keep their indices (the entry hook bridges by name at those
+    // slots); temps are offset above every local.
+    let num_locals = func.num_locals as i64;
+    let local_slot = |l: LocalId| l.0 as i64;
+    let temp_slot = |t: TempId| num_locals + t.0 as i64;
     #[allow(unused_macros)]
     macro_rules! iconst {
         ($fb:expr, $v:expr) => {
@@ -327,7 +359,7 @@ fn emit_cfg(
                 Inst::Const(c, dst) => {
                     // Boxed constants: materialized via a per-const helper.
                     // (Args computed into locals first — two-phase borrow.)
-                    let dst_i = dst.0 as i64;
+                    let dst_i = temp_slot(*dst);
                     match c {
                         ConstValue::None => {
                             let f = helpers["apjit_h_const_none"];
@@ -380,20 +412,20 @@ fn emit_cfg(
                 }
                 Inst::LoadLocal(src, dst) => {
                     let f = helpers["apjit_h_load_local"];
-                    let a1 = iconst!(fb, src.0 as i64);
-                    let a2 = iconst!(fb, dst.0 as i64);
+                    let a1 = iconst!(fb, local_slot(*src));
+                    let a2 = iconst!(fb, temp_slot(*dst));
                     let r = fb.ins().call(f, &[ctx_ptr, a1, a2]);
                     let _ = r; // infallible
                 }
                 Inst::StoreLocal(src, dst) => {
                     let f = helpers["apjit_h_store_local"];
-                    let a1 = iconst!(fb, src.0 as i64);
-                    let a2 = iconst!(fb, dst.0 as i64);
+                    let a1 = iconst!(fb, temp_slot(*src));
+                    let a2 = iconst!(fb, local_slot(*dst));
                     fb.ins().call(f, &[ctx_ptr, a1, a2]);
                 }
                 Inst::LoadGlobal(name, dst) => {
                     let f = helpers["apjit_h_load_global"];
-                    let a1 = iconst!(fb, name_id(name) as i64);
+                    let a1 = iconst!(fb, name_id(name_table, name) as i64);
                     let a2 = iconst!(fb, dst.0 as i64);
                     let r = fb.ins().call(f, &[ctx_ptr, a1, a2]);
                     check_status(fb, r, raise_target);
@@ -406,33 +438,33 @@ fn emit_cfg(
                     // op helper (no semantic effect; hooks only).
                     let f = helpers["apjit_h_binop"];
                     let a1 = iconst!(fb, op_code(*op));
-                    let a2 = iconst!(fb, a.0 as i64);
-                    let a3 = iconst!(fb, b.0 as i64);
-                    let a4 = iconst!(fb, dst.0 as i64);
+                    let a2 = iconst!(fb, temp_slot(*a));
+                    let a3 = iconst!(fb, temp_slot(*b));
+                    let a4 = iconst!(fb, temp_slot(*dst));
                     let r = fb.ins().call(f, &[ctx_ptr, a1, a2, a3, a4]);
                     check_status(fb, r, raise_target);
                 }
                 Inst::UnaryOp(op, a, dst) => {
                     let f = helpers["apjit_h_unaryop"];
                     let a1 = iconst!(fb, uop_code(*op));
-                    let a2 = iconst!(fb, a.0 as i64);
-                    let a3 = iconst!(fb, dst.0 as i64);
+                    let a2 = iconst!(fb, temp_slot(*a));
+                    let a3 = iconst!(fb, temp_slot(*dst));
                     let r = fb.ins().call(f, &[ctx_ptr, a1, a2, a3]);
                     check_status(fb, r, raise_target);
                 }
                 Inst::Compare(op, a, b, dst) => {
                     let f = helpers["apjit_h_compare"];
                     let a1 = iconst!(fb, cmp_code(*op));
-                    let a2 = iconst!(fb, a.0 as i64);
-                    let a3 = iconst!(fb, b.0 as i64);
-                    let a4 = iconst!(fb, dst.0 as i64);
+                    let a2 = iconst!(fb, temp_slot(*a));
+                    let a3 = iconst!(fb, temp_slot(*b));
+                    let a4 = iconst!(fb, temp_slot(*dst));
                     let r = fb.ins().call(f, &[ctx_ptr, a1, a2, a3, a4]);
                     check_status(fb, r, raise_target);
                 }
                 Inst::Truthy(a, dst) => {
                     let f = helpers["apjit_h_truthy"];
-                    let a1 = iconst!(fb, a.0 as i64);
-                    let a2 = iconst!(fb, dst.0 as i64);
+                    let a1 = iconst!(fb, temp_slot(*a));
+                    let a2 = iconst!(fb, temp_slot(*dst));
                     fb.ins().call(f, &[ctx_ptr, a1, a2]);
                 }
                 Inst::Call(f_slot, args, dst) => {
@@ -442,38 +474,38 @@ fn emit_cfg(
                     let arg_start = ARG_AREA_BASE + arg_area_reserve();
                     for (k, a) in args.iter().enumerate() {
                         let a1 = iconst!(fb, (arg_start as usize + k) as i64);
-                        let a2 = iconst!(fb, a.0 as i64);
+                        let a2 = iconst!(fb, temp_slot(*a));
                         fb.ins().call(stage, &[ctx_ptr, a1, a2]);
                     }
                     let f = helpers["apjit_h_call"];
-                    let a1 = iconst!(fb, f_slot.0 as i64);
+                    let a1 = iconst!(fb, temp_slot(*f_slot));
                     let a2 = iconst!(fb, arg_start);
                     let a3 = iconst!(fb, args.len() as i64);
-                    let a4 = iconst!(fb, dst.0 as i64);
+                    let a4 = iconst!(fb, temp_slot(*dst));
                     let r = fb.ins().call(f, &[ctx_ptr, a1, a2, a3, a4]);
                     check_status(fb, r, raise_target);
                 }
                 Inst::LoadAttr(obj, name, dst) => {
                     let f = helpers["apjit_h_load_attr"];
-                    let a1 = iconst!(fb, obj.0 as i64);
-                    let a2 = iconst!(fb, name_id(name) as i64);
-                    let a3 = iconst!(fb, dst.0 as i64);
+                    let a1 = iconst!(fb, temp_slot(*obj));
+                    let a2 = iconst!(fb, name_id(name_table, name) as i64);
+                    let a3 = iconst!(fb, temp_slot(*dst));
                     let r = fb.ins().call(f, &[ctx_ptr, a1, a2, a3]);
                     check_status(fb, r, raise_target);
                 }
                 Inst::StoreAttr(obj, name, v) => {
                     let f = helpers["apjit_h_store_attr"];
-                    let a1 = iconst!(fb, obj.0 as i64);
-                    let a2 = iconst!(fb, name_id(name) as i64);
-                    let a3 = iconst!(fb, v.0 as i64);
+                    let a1 = iconst!(fb, temp_slot(*obj));
+                    let a2 = iconst!(fb, name_id(name_table, name) as i64);
+                    let a3 = iconst!(fb, temp_slot(*v));
                     let r = fb.ins().call(f, &[ctx_ptr, a1, a2, a3]);
                     check_status(fb, r, raise_target);
                 }
                 Inst::Subscript(obj, idx, dst) => {
                     let f = helpers["apjit_h_subscript"];
-                    let a1 = iconst!(fb, obj.0 as i64);
-                    let a2 = iconst!(fb, idx.0 as i64);
-                    let a3 = iconst!(fb, dst.0 as i64);
+                    let a1 = iconst!(fb, temp_slot(*obj));
+                    let a2 = iconst!(fb, temp_slot(*idx));
+                    let a3 = iconst!(fb, temp_slot(*dst));
                     let r = fb.ins().call(f, &[ctx_ptr, a1, a2, a3]);
                     check_status(fb, r, raise_target);
                 }
@@ -489,10 +521,10 @@ fn emit_cfg(
                 }
                 Inst::MatchExc(region, bind, dst) => {
                     let f = helpers["apjit_h_match_exc"];
-                    let bind_i = bind.map(|l| l.0 as i64).unwrap_or(-1);
+                    let bind_i = bind.map(local_slot).unwrap_or(-1);
                     let a1 = iconst!(fb, region.0 as i64);
                     let a2 = iconst!(fb, bind_i);
-                    let a3 = iconst!(fb, dst.0 as i64);
+                    let a3 = iconst!(fb, temp_slot(*dst));
                     let r = fb.ins().call(f, &[ctx_ptr, a1, a2, a3]);
                     check_status(fb, r, raise_target);
                 }
@@ -503,7 +535,7 @@ fn emit_cfg(
                 }
                 Inst::Print(v) => {
                     let f = helpers["apjit_h_print"];
-                    let a1 = iconst!(fb, v.0 as i64);
+                    let a1 = iconst!(fb, temp_slot(*v));
                     let r = fb.ins().call(f, &[ctx_ptr, a1]);
                     check_status(fb, r, raise_target);
                 }
@@ -525,7 +557,7 @@ fn emit_cfg(
                 // Truthiness is pre-materialized by the cfg stage into a
                 // boxed bool; branch on its unboxed bit through h_truthy_bit.
                 let bit_f = helpers["apjit_h_truthy_bit"];
-                let a1 = iconst!(fb, c.0 as i64);
+                let a1 = iconst!(fb, temp_slot(*c));
                 let bit = fb.ins().call(bit_f, &[ctx_ptr, a1]);
                 let bit_v = fb.inst_results(bit)[0];
                 fb.ins()
@@ -534,7 +566,7 @@ fn emit_cfg(
             Some(Terminator::Return(v)) => {
                 // h_return parks the value into ctx.ret and returns 0.
                 let f = helpers["apjit_h_return"];
-                let a1 = iconst!(fb, v.0 as i64);
+                let a1 = iconst!(fb, temp_slot(*v));
                 fb.ins().call(f, &[ctx_ptr, a1]);
                 let zero = fb.ins().iconst(i32_t, 0);
                 fb.ins().return_(&[zero]);
@@ -543,7 +575,7 @@ fn emit_cfg(
                 // h_raise parks the exception value in ctx.pending_exc and
                 // returns 1; then jump to the raise edge (dispatch or exit).
                 let f = helpers["apjit_h_raise"];
-                let a1 = iconst!(fb, v.0 as i64);
+                let a1 = iconst!(fb, temp_slot(*v));
                 fb.ins().call(f, &[ctx_ptr, a1]);
                 match target {
                     Some(t) => {
@@ -560,7 +592,7 @@ fn emit_cfg(
                 // returns 1 (host resumes later); resume point jumps in.
                 let f = helpers["apjit_h_suspend"];
                 let a1 = iconst!(fb, *state as i64);
-                let a2 = iconst!(fb, val.0 as i64);
+                let a2 = iconst!(fb, temp_slot(*val));
                 let r = fb.ins().call(f, &[ctx_ptr, a1, a2]);
                 let _ = r;
                 fb.ins().jump(blocks[resume.0 as usize], &[]);
@@ -645,11 +677,19 @@ fn uop_code(op: ap_ir::expr::UnaryOp) -> i64 {
     }
 }
 
-/// Name ids are emitted as immediates; the mapping table itself travels
-/// with the compiled artifact (apjit_name_table symbol) — documented in
-/// the entry-hook wiring (ap-run side lands the ctx.names rebuild).
-fn name_id(_name: &str) -> u32 {
-    0
+/// Name ids are emitted as immediates; the mapping table travels with the
+/// compiled artifact (apjit_name_table symbol) — the entry hook (ap-run
+/// jit_hook.rs) rebuilds ctx.names from the same deterministic order:
+/// first-appearance order of LoadGlobal/LoadAttr names during emit_cfg.
+/// 02.05a: the stub that returned 0 for every name made all name-keyed
+/// sites collide on names[0] — this pass now interns for real.
+fn name_id(table: &mut Vec<String>, name: &str) -> u32 {
+    if let Some(i) = table.iter().position(|n| n == name) {
+        i as u32
+    } else {
+        table.push(name.to_string());
+        (table.len() - 1) as u32
+    }
 }
 
 const ARG_AREA_BASE: i64 = 0;
