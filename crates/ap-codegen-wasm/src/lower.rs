@@ -230,10 +230,12 @@ pub fn lower_module(module: &IrModule) -> Result<Vec<u8>, CodegenError> {
         let mut locals: Vec<(u32, ValType)> = Vec::new();
         // temps: 0..n_names = name slots; then fillers up to 40, then
         // TEMP_LOCAL(40)=i32, 41=i64, 42..45=oref
-        let fill = 40u32.saturating_sub(n_names);
-        if fill > 0 {
-            locals.push((fill, pyobj_ref()));
-        }
+        // names occupy 0..n_names-1 (name_idx maps them there); fillers
+        // bring the pyobj block to exactly 40 so TEMP_LOCAL(40)=i32 lands
+        // at index 40. Before this fix the block was 40-n_names wide, the
+        // i32/i64/oref temps shifted down by n_names, and local.set 40 hit
+        // the i64 slot ("expected i64, found i32" at the flush call).
+        locals.push((40, pyobj_ref()));
         locals.push((1, ValType::I32)); // 40
         locals.push((1, ValType::I64)); // 41
         locals.push((5, pyobj_ref())); // 42..46
@@ -686,23 +688,44 @@ fn emit_expr(
             match name.as_str() {
                 "print" => {
                     // print(*args): space-joined str(x) + newline via the
-                    // print buffer. Multi-arg: v1 single-arg per call
-                    // (corpus slice print calls take ONE expression);
-                    // multi-arg raises at scan.
-                    emit_args(f, args, names, strs, buf_ptr, tab);
-                    // to str
-                    f.instruction(&Instruction::Call(fx::FN_PY_STR));
-                    // print_one(buf, s): stash the $str, push buf first
-                    // (FT_PL_ONE = (i32 bufptr, $str) -> i32; bug-class (c)).
-                    f.instruction(&Instruction::LocalSet(TEMP_LOCAL_S));
+                    // print buffer. Running end lives in TEMP_LOCAL (i32);
+                    // each arg: [space] py_str -> print_one(buf, s) -> new end.
+                    // (running end already in TEMP_LOCAL - no push)
+                    for (i, a) in args.iter().enumerate() {
+                        if i > 0 {
+                            // space separator at current end, advance
+                            f.instruction(&Instruction::LocalGet(TEMP_LOCAL));
+                            f.instruction(&Instruction::I32Const(b' ' as i32));
+                            f.instruction(&Instruction::I32Store8(wasm_encoder::MemArg {
+                                offset: 0,
+                                align: 0,
+                                target: wasm_encoder::MemArgTarget::Memory(0),
+                                ordering: None,
+                            }));
+                            f.instruction(&Instruction::LocalGet(TEMP_LOCAL));
+                            f.instruction(&Instruction::I32Const(1));
+                            f.instruction(&Instruction::I32Add);
+                            f.instruction(&Instruction::LocalSet(TEMP_LOCAL));
+                        }
+                        let Arg::Pos(xe) = a else {
+                            unreachable!("scan rejects non-positional args");
+                        };
+                        emit_expr(f, xe, names, strs, buf_ptr, tab);
+                        f.instruction(&Instruction::Call(fx::FN_PY_STR));
+                        f.instruction(&Instruction::LocalSet(TEMP_LOCAL_S));
+                        // print_one(buf=current end, s) -> new end; keep in TEMP_LOCAL
+                        f.instruction(&Instruction::LocalGet(TEMP_LOCAL));
+                        f.instruction(&Instruction::LocalGet(TEMP_LOCAL_S));
+                        f.instruction(&Instruction::Call(fx::FN_PRINT_ONE));
+                        f.instruction(&Instruction::LocalSet(TEMP_LOCAL));
+                    }
+                    // flush (FT_PL_FLUSH = (bufptr, end))
                     f.instruction(&Instruction::I32Const(fx::PRINT_BUF));
-                    f.instruction(&Instruction::LocalGet(TEMP_LOCAL_S));
-                    f.instruction(&Instruction::Call(fx::FN_PRINT_ONE));
-                    // new end -> flush
-                    f.instruction(&Instruction::LocalSet(TEMP_LOCAL));
                     f.instruction(&Instruction::LocalGet(TEMP_LOCAL));
-                    f.instruction(&Instruction::I32Const(fx::PRINT_BUF));
                     f.instruction(&Instruction::Call(fx::FN_PRINT_FLUSH));
+                    // reset running end for the next statement
+                    f.instruction(&Instruction::I32Const(fx::PRINT_BUF));
+                    f.instruction(&Instruction::LocalSet(TEMP_LOCAL));
                 }
                 "bool" => {
                     f.instruction(&Instruction::I32Const(0)); // unused op

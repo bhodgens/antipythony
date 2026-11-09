@@ -122,7 +122,7 @@ pub const FT_O_L: u32 = 40; // (o) -> i64                    hash
 pub const FT_O_I: u32 = 41; // (o) -> i32                    truthy/type_index
 pub const FT_OO_I: u32 = 42; // (o, o) -> i32               eq primitives
 pub const FT_TOP_I: u32 = 43; // (i32 op, o, o) -> i32       compare dispatch
-pub const FT_PL_ONE: u32 = 44; // (i32 bufptr, $str) -> i32  print_one
+pub const FT_PL_ONE: u32 = 44; // (i32 bufptr, o $pyobj) -> i32  print_one (casts to $str inside)
 pub const FT_PL_FLUSH: u32 = 45; // (i32 bufptr, i32 end) -> ()
 pub const FT_L_O: u32 = 46; // (i64) -> o                    int/float from i64
 pub const FT_L_OI2: u32 = 47; // (i64, i32 ptr) -> i32       append digits
@@ -737,8 +737,10 @@ pub fn append_prelude_fts(types: &mut wasm_encoder::TypeSection) {
     types.ty().function([o(), o()], [i32v()]);
     // 43 FT_TOP_I: (op, o, o) -> i32
     types.ty().function([i32v(), o(), o()], [i32v()]);
-    // 44 FT_PL_ONE: (bufptr, $str) -> new-bufptr
-    types.ty().function([i32v(), sg()], [i32v()]);
+    // 44 FT_PL_ONE: (bufptr, o) -> new-bufptr. Param is $pyobj: _start stashes
+    // py_str's return in an oref local (declared $pyobj); print_one casts to
+    // $str internally (RefCastNullable before every struct.get).
+    types.ty().function([i32v(), o()], [i32v()]);
     // 45 FT_PL_FLUSH: (bufptr, end) -> ()
     types.ty().function([i32v(), i32v()], []);
     // 46 FT_L_O: (i64) -> o

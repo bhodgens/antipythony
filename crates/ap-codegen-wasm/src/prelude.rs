@@ -1420,14 +1420,14 @@ fn int_to_str(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder
             f.instruction(&Instruction::End);
             f.instruction(&Instruction::LocalSet(3));
             f.instruction(&Instruction::LocalGet(3));
-            f.instruction(&Instruction::I32Const(fx::PRINT_BUF));
+            f.instruction(&Instruction::I32Const(fx::PRINT_BUF + 2048));
             f.instruction(&Instruction::Call(fx::FN_APPEND_I64));
             f.instruction(&Instruction::LocalSet(4));
             f.instruction(&Instruction::LocalGet(4));
-            f.instruction(&Instruction::I32Const(fx::PRINT_BUF));
+            f.instruction(&Instruction::I32Const(fx::PRINT_BUF + 2048));
             f.instruction(&Instruction::I32Sub);
             f.instruction(&Instruction::LocalSet(5));
-            f.instruction(&Instruction::I32Const(fx::PRINT_BUF));
+            f.instruction(&Instruction::I32Const(fx::PRINT_BUF + 2048));
             f.instruction(&Instruction::LocalGet(5));
             f.instruction(&Instruction::Call(fx::FN_STR_FROM_BYTES));
         },
@@ -1603,28 +1603,46 @@ fn push_str_literal_seg(f: &mut Function, off: u32, len: u32) {
 /// print_one (FT_PL_ONE): (bufptr, s) -> new-bufptr — copy $str bytes into
 /// linear memory at bufptr.
 fn print_one(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
-    add(funcs, code, FT_PL_ONE, &[(1, ValType::I32)], |f| {
-        // 2 = len. params: 0 = buf(i32), 1 = s($str)
-        // dst data array:
-        f.instruction(&Instruction::LocalGet(1));
-        f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
-        sget(f, T_STR, F_STR_DATA);
-        // dst offset = buf
-        f.instruction(&Instruction::LocalGet(0));
-        // src data array:
-        f.instruction(&Instruction::LocalGet(1));
-        f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
-        sget(f, T_STR, F_STR_DATA);
-        // src offset = 0
+    add(funcs, code, FT_PL_ONE, &[(1, ValType::I32), (2, ValType::I32)], |f| {
+        // params: 0 = buf(i32), 1 = s($str); local 2 = loop i.
+        // The $str payload lives in a $byte_arr ARRAY; the print buffer is
+        // LINEAR MEMORY (WASI fd_write reads iovecs there). Copy byte-wise:
+        // for i in 0..len { store8(buf + i, s.data[i]) }.
         f.instruction(&Instruction::I32Const(0));
-        // len
+        f.instruction(&Instruction::LocalSet(2));
+        // loop
+        f.instruction(&Instruction::Block(BlockType::Empty));
+        f.instruction(&Instruction::Loop(BlockType::Empty));
+        // if i >= len break
+        f.instruction(&Instruction::LocalGet(2));
         f.instruction(&Instruction::LocalGet(1));
         f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
         sget(f, T_STR, F_STR_LEN);
-        f.instruction(&Instruction::ArrayCopy {
-            array_type_index_dst: T_BYTE_ARR,
-            array_type_index_src: T_BYTE_ARR,
-        });
+        f.instruction(&Instruction::I32GeU);
+        f.instruction(&Instruction::BrIf(1));
+        // store8(buf + i, data[i])
+        f.instruction(&Instruction::LocalGet(0));
+        f.instruction(&Instruction::LocalGet(2));
+        f.instruction(&Instruction::I32Add);
+        f.instruction(&Instruction::LocalGet(1));
+        f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
+        sget(f, T_STR, F_STR_DATA);
+        f.instruction(&Instruction::LocalGet(2));
+        f.instruction(&Instruction::ArrayGetU(T_BYTE_ARR));
+        f.instruction(&Instruction::I32Store8(wasm_encoder::MemArg {
+            offset: 0,
+            align: 0,
+            target: wasm_encoder::MemArgTarget::Memory(0),
+            ordering: None,
+        }));
+        // i++
+        f.instruction(&Instruction::LocalGet(2));
+        f.instruction(&Instruction::I32Const(1));
+        f.instruction(&Instruction::I32Add);
+        f.instruction(&Instruction::LocalSet(2));
+        f.instruction(&Instruction::Br(0));
+        f.instruction(&Instruction::End);
+        f.instruction(&Instruction::End);
         // new end = buf + len
         f.instruction(&Instruction::LocalGet(0));
         f.instruction(&Instruction::LocalGet(1));
@@ -1663,15 +1681,22 @@ fn print_flush(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encode
             target: wasm_encoder::MemArgTarget::Memory(0),
             ordering: None,
         }));
+        // Single-iov write: newline already stored at [end], so span
+        // buf..end+1 in ONE iovec (the 2-iov form dropped iov2 under
+        // wasmtime-wasi p1 - observed: stdout missing every newline).
         f.instruction(&Instruction::I32Const(8));
-        f.instruction(&Instruction::LocalGet(1));
+        f.instruction(&Instruction::I32Const(fx::PRINT_BUF));
         f.instruction(&Instruction::I32Store(m2()));
         f.instruction(&Instruction::I32Const(12));
+        f.instruction(&Instruction::LocalGet(1));
+        f.instruction(&Instruction::LocalGet(0));
+        f.instruction(&Instruction::I32Sub);
         f.instruction(&Instruction::I32Const(1));
+        f.instruction(&Instruction::I32Add);
         f.instruction(&Instruction::I32Store(m2()));
         f.instruction(&Instruction::I32Const(1));
-        f.instruction(&Instruction::I32Const(0));
-        f.instruction(&Instruction::I32Const(2));
+        f.instruction(&Instruction::I32Const(8));
+        f.instruction(&Instruction::I32Const(1));
         f.instruction(&Instruction::I32Const(16));
         f.instruction(&Instruction::Call(0));
         f.instruction(&Instruction::Drop);
