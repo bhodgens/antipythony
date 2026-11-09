@@ -317,7 +317,11 @@ fn big_from_i64(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encod
             (1, ValType::I64), // 2 = u (magnitude)
             (1, ValType::I32), // 3 = sign
             (1, ValType::I32), // 4 = n limbs
-            (1, ValType::I32), // 5 = i
+            (1, ValType::I32), // 5 = i (wasm locals are spec-zeroed; the
+                               // V001 `2**100 -> 3` symptom was NOT this
+                               // loop — it is i64-wrapping POW mul in
+                               // binop, a limb-arith capability gap for
+                               // 03.02c; zero-init asserted defensively)
             (1, ValType::Ref(wasm_encoder::RefType {
                 nullable: true,
                 heap_type: hc(T_LIMB_ARRAY),
