@@ -98,14 +98,41 @@ pub const T_TYPE_ARR: u32 = 29;
 pub const T_METHOD: u32 = 30;
 pub const T_GENERATOR: u32 = 31;
 pub const T_INSTANCE: u32 = 32;
-/// Types 0..=32 ride the single rec group.
-pub const REC_GROUP_LEN: u32 = 33;
+/// Types 0..=33 ride the single rec group (33 = `$complex`, S-07 §9,
+/// appended by leaf 03.02b — append-only, nothing renumbered).
+pub const REC_GROUP_LEN: u32 = 34;
+/// `$complex` rec-group index (S-07 §9: two binary64 halves).
+pub const T_COMPLEX: u32 = 33;
 
-/// Function types (declared AFTER the rec group).
-pub const FT_FD_WRITE: u32 = 33;
-pub const FT_ABORT_MSG: u32 = 34;
-pub const FT_VOID: u32 = 35;
-pub const FT_PYCALL: u32 = 36;
+/// Function types (declared AFTER the rec group; ids start at 34 =
+/// REC_GROUP_LEN — the rec group grew by `$complex` in leaf 03.02b).
+pub const FT_FD_WRITE: u32 = 34;
+pub const FT_ABORT_MSG: u32 = 35;
+pub const FT_VOID: u32 = 36;
+pub const FT_PYCALL: u32 = 37;
+// ---------------------------------------------------------------------------
+// Prelude function types (leaf 03.02b; appended, existing ids untouched).
+// `o` = (ref null $pyobj), `big` = (ref null $bigint), `str` = (ref null $str).
+// ---------------------------------------------------------------------------
+pub const FT_U_O: u32 = 38; // (i32 unused, o) -> o          bool_obj
+pub const FT_IOP_O: u32 = 56; // (i32 op, o, o) -> o         binop dispatch
+pub const FT_O_STR: u32 = 39; // (o) -> $str                 py_str/int_to_str
+pub const FT_O_L: u32 = 40; // (o) -> i64                    hash
+pub const FT_O_I: u32 = 41; // (o) -> i32                    truthy/type_index
+pub const FT_OO_I: u32 = 42; // (o, o) -> i32               eq primitives
+pub const FT_TOP_I: u32 = 43; // (i32 op, o, o) -> i32       compare dispatch
+pub const FT_PL_ONE: u32 = 44; // (i32 bufptr, $str) -> i32  print_one
+pub const FT_PL_FLUSH: u32 = 45; // (i32 bufptr, i32 end) -> ()
+pub const FT_L_O: u32 = 46; // (i64) -> o                    int/float from i64
+pub const FT_L_OI2: u32 = 47; // (i64, i32 ptr) -> i32       append digits
+pub const FT_F_O: u32 = 48; // (f64) -> o                    float_from_i64 is L_O; this is float->obj (unused v1)
+pub const FT_SFB: u32 = 49; // (i32 ptr, i32 len) -> str     str_from_bytes
+pub const FT_BIG_NORM: u32 = 50; // (big) -> big
+pub const FT_BIG_FI64: u32 = 51; // (i64) -> big
+pub const FT_BIG_CMP: u32 = 52; // (big, big) -> i32
+pub const FT_BIG_BITS: u32 = 53; // (big) -> i64
+pub const FT_L_L: u32 = 54; // (i64) -> i64                    hash_i64 core
+pub const FT_F_L: u32 = 55; // (f64) -> i64                   float_hash
 
 // ---------------------------------------------------------------------------
 // Struct field indices (spec-07 layouts, declared order).
@@ -509,8 +536,8 @@ pub fn build_type_section_with_prefix(prefix: usize) -> wasm_encoder::TypeSectio
             field_i32(false),   // len (BYTES)
             fr(T_BYTE_ARR, false),
         ]),
-        // 10 $byte_arr
-        array_ty(field_i8(false)),
+        // 10 $byte_arr — elements MUTABLE (print_one/array.copy writes)
+        array_ty(field_i8(true)),
         // 11 $i16_arr
         array_ty(field_i16(false)),
         // 12 $i32_arr
@@ -621,6 +648,8 @@ pub fn build_type_section_with_prefix(prefix: usize) -> wasm_encoder::TypeSectio
         ]),
         // 32 $instance sub $pyobj (S-07-17)
         sub(vec![fr(T_DICT, true)]), // attrs (lazy, null until first set)
+        // 33 $complex sub $pyobj (S-07 §9, leaf 03.02b): two binary64 halves.
+        sub(vec![field_f64(false), field_f64(false)]),
     ];
 
     let mut types = wasm_encoder::TypeSection::new();
@@ -661,6 +690,7 @@ pub fn build_type_section_with_prefix(prefix: usize) -> wasm_encoder::TypeSectio
         ],
         [nullable_concrete(T_PYOBJ)],
     ); // FT_PYCALL — (fn, args, kwargs) -> pyobj
+    append_prelude_fts(&mut types);
 
     types
 }
@@ -673,4 +703,63 @@ fn field_pyobj_ref() -> FieldType {
 }
 fn field_pyobj_ref_mut() -> FieldType {
     field(pyobj_ref(), true)
+}
+
+// ---------------------------------------------------------------------------
+// Leaf 03.02b: complex type global + prelude FT builders (S-07 §9 v1).
+// ---------------------------------------------------------------------------
+
+/// Complex type GLOBAL slot (declared AFTER the builtin $type globals;
+/// rt_init leaves it null — bool(v) never inspects it on the corpus slice).
+pub const G_COMPLEX: u32 = GLOBAL_COUNT;
+/// Total globals emitted: singletons + rt_done + 16 builtin types + complex.
+pub const GLOBAL_COUNT_TOTAL: u32 = GLOBAL_COUNT + 1;
+
+/// Append the prelude FT declarations (FT_IOP_O..FT_L_L) to the type
+/// section — called by `build_type_section` after FT_PYCALL.
+pub fn append_prelude_fts(types: &mut wasm_encoder::TypeSection) {
+    let o = || pyobj_ref();
+    let big = || nullable_concrete(T_BIGINT);
+    let sg = || nullable_concrete(T_STR);
+    let i32v = || ValType::I32;
+    let i64v = || ValType::I64;
+    let f64v = || ValType::F64;
+    // 38 FT_U_O: (unused-op, o) -> o
+    types.ty().function([i32v(), o()], [o()]);
+    // 39 FT_O_STR: (o) -> $str
+    types.ty().function([o()], [sg()]);
+    // 40 FT_O_L: (o) -> i64
+    types.ty().function([o()], [i64v()]);
+    // 41 FT_O_I: (o) -> i32
+    types.ty().function([o()], [i32v()]);
+    // 42 FT_OO_I: (o, o) -> i32
+    types.ty().function([o(), o()], [i32v()]);
+    // 43 FT_TOP_I: (op, o, o) -> i32
+    types.ty().function([i32v(), o(), o()], [i32v()]);
+    // 44 FT_PL_ONE: (bufptr, $str) -> new-bufptr
+    types.ty().function([i32v(), sg()], [i32v()]);
+    // 45 FT_PL_FLUSH: (bufptr, end) -> ()
+    types.ty().function([i32v(), i32v()], []);
+    // 46 FT_L_O: (i64) -> o
+    types.ty().function([i64v()], [o()]);
+    // 47 FT_L_OI2: (i64, ptr) -> new-ptr
+    types.ty().function([i64v(), i32v()], [i32v()]);
+    // 48 FT_F_O: (f64) -> o (declared; used by later leaves)
+    types.ty().function([f64v()], [o()]);
+    // 49 FT_SFB: (ptr, len) -> $str
+    types.ty().function([i32v(), i32v()], [sg()]);
+    // 50 FT_BIG_NORM: (big) -> big
+    types.ty().function([big()], [big()]);
+    // 51 FT_BIG_FI64: (i64) -> big
+    types.ty().function([i64v()], [big()]);
+    // 52 FT_BIG_CMP: (big, big) -> i32
+    types.ty().function([big(), big()], [i32v()]);
+    // 53 FT_BIG_BITS: (big) -> i64
+    types.ty().function([big()], [i64v()]);
+    // 54 FT_L_L: (i64) -> i64
+    types.ty().function([i64v()], [i64v()]);
+    // 55 FT_F_L: (f64) -> i64
+    types.ty().function([f64v()], [i64v()]);
+    // 56 FT_IOP_O: (op, o, o) -> o
+    types.ty().function([i32v(), o(), o()], [o()]);
 }
