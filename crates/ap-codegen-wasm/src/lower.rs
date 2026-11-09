@@ -236,7 +236,7 @@ pub fn lower_module(module: &IrModule) -> Result<Vec<u8>, CodegenError> {
         }
         locals.push((1, ValType::I32)); // 40
         locals.push((1, ValType::I64)); // 41
-        locals.push((4, pyobj_ref())); // 42..45
+        locals.push((5, pyobj_ref())); // 42..46
         funcs.function(FT_VOID); // _start (fn-section entry)
         let mut f = Function::new(locals);
         f.instruction(&Instruction::Call(fx::FN_RT_INIT));
@@ -692,9 +692,11 @@ fn emit_expr(
                     emit_args(f, args, names, strs, buf_ptr, tab);
                     // to str
                     f.instruction(&Instruction::Call(fx::FN_PY_STR));
-                    // print_one(buf, s)
+                    // print_one(buf, s): stash the $str, push buf first
+                    // (FT_PL_ONE = (i32 bufptr, $str) -> i32; bug-class (c)).
+                    f.instruction(&Instruction::LocalSet(TEMP_LOCAL_S));
                     f.instruction(&Instruction::I32Const(fx::PRINT_BUF));
-                    // stack: [buf, s] — print_one wants (buf, s)
+                    f.instruction(&Instruction::LocalGet(TEMP_LOCAL_S));
                     f.instruction(&Instruction::Call(fx::FN_PRINT_ONE));
                     // new end -> flush
                     f.instruction(&Instruction::LocalSet(TEMP_LOCAL));
@@ -805,6 +807,7 @@ const TEMP_LOCAL_I64: u32 = 41;
 const TEMP_LOCAL_A: u32 = 42;
 const TEMP_LOCAL_B: u32 = 43;
 const TEMP_LOCAL_OBJARR: u32 = 44;
+const TEMP_LOCAL_S: u32 = 45; // $str stash for print arg reorder ($str <: $pyobj)
 
 fn binop_op(op: BinOp) -> i32 {
     match op {
