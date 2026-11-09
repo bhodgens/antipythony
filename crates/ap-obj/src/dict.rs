@@ -62,15 +62,31 @@ struct Probe {
 /// reference lives inside another container). The whole state is one
 /// `RefCell<DictState>` so probes can't observe half-mutations; 02.07 picks
 /// the concurrent wrapper.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub struct PyDict {
     state: std::cell::RefCell<DictState>,
-    /// C3 (memperf audit 2026-11-06): mutation epoch — bumped on every
-    /// `set`/`pop`/`popitem` (the only entry-set mutators in this crate).
-    /// The ap-gc root-seed cache keys on it so unchanged root dicts
-    /// (builtins, quiet module globals) cost cached-address replays per
-    /// collect instead of a full entry walk with per-key hash probes.
-    epoch: std::cell::Cell<u64>,
+    /// 02.09 phase 1 (docs/no-gil-object-audit.md entry 23): `Cell<u64>` ->
+    /// `AtomicU64` (Relaxed). Pure single-word mutation counter; under GIL v1
+    /// the lock provided the ordering Relaxed now names explicitly, so the
+    /// conversion is behavior-identical. 02.05b builds version counters on
+    /// this atomic; with the GIL gone the GC already treats the epoch as a
+    /// hint (stale entry = cache miss = re-walk, see ap-gc ROOT_SEEDS).
+    /// The epoch no longer participates in the derived Clone: a manual
+    /// `Clone` copies the current epoch (the old `Cell` derive copied it
+    /// too, and the cache key includes the payload address, so clones were
+    /// already distinct entries — behavior unchanged).
+    epoch: std::sync::atomic::AtomicU64,
+}
+
+impl Clone for PyDict {
+    fn clone(&self) -> Self {
+        PyDict {
+            state: std::cell::RefCell::new(self.state.borrow().clone()),
+            epoch: std::sync::atomic::AtomicU64::new(
+                self.epoch.load(std::sync::atomic::Ordering::Relaxed),
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -98,7 +114,7 @@ impl PyDict {
                 used: 0,
                 dummies: 0,
             }),
-            epoch: std::cell::Cell::new(0),
+            epoch: std::sync::atomic::AtomicU64::new(0),
         });
         crate::gc_gate::gc_register_pub(&Value::Dict(d.clone()));
         d
@@ -215,14 +231,26 @@ impl PyDict {
         }
         // C3: content changed (insert OR overwrite) — invalidate the
         // ap-gc root-seed cache slot for this dict.
-        self.epoch.set(self.epoch.get() + 1);
+        self.bump_epoch();
         Ok(())
     }
 
     /// C3: mutation epoch (bumped by every set/pop/popitem). Read by the
     /// ap-gc root-seed cache; not part of the Python-visible surface.
+    /// 02.09 phase 1: atomic read (Relaxed) — see the field doc.
     pub fn mutation_epoch(&self) -> u64 {
-        self.epoch.get()
+        self.epoch.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// 02.09 phase 1: the single epoch-bump site helper (Relaxed fetch_add —
+    /// every mutator is under the GIL today, so monotonicity per-thread
+    /// holds trivially; with the GIL gone Relaxed still guarantees each
+    /// mutator's own bump is returned once, which is all the cache
+    /// invalidation contract needs: ANY change in the observed epoch
+    /// invalidates the slot).
+    fn bump_epoch(&self) {
+        self.epoch
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// `d.get(key)` — `Some(Value)` (cloned handle) when present; unhashable
@@ -345,14 +373,14 @@ impl PyDict {
         let entry = state.entries[slot].take();
         state.used -= 1;
         state.dummies += 1;
-        // C7 (memperf audit 2026-11-06): shrink after heavy pruning. The
+        // C7: shrink after heavy pruning. The
         // growth resize never shrinks, so a 1M-entry peak was retained
         // forever. Rehash-to-shrink when the live set dropped below 1/8 of
         // the index table (resize compacts: dummies purged, insertion
         // order of live entries preserved — S-01-21 unaffected).
         Self::maybe_shrink(&mut state);
         // C3: invalidate the ap-gc root-seed cache slot.
-        self.epoch.set(self.epoch.get() + 1);
+        self.bump_epoch();
         entry.map(|e| e.value)
     }
 
@@ -384,7 +412,7 @@ impl PyDict {
         // C7: same shrink rule as pop.
         Self::maybe_shrink(&mut state);
         // C3: invalidate the ap-gc root-seed cache slot.
-        self.epoch.set(self.epoch.get() + 1);
+        self.bump_epoch();
         entry.map(|e| (e.key, e.value))
     }
 

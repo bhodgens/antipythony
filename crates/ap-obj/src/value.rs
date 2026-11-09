@@ -198,13 +198,19 @@ impl Value {
     }
 }
 
+/// 02.09 phase 1 (docs/no-gil-object-audit.md entry 27): `PyString.cached_len`
+/// sentinel for "not yet computed" — a string of `usize::MAX` code points
+/// cannot be allocated on any supported target, so the sentinel can never
+/// collide with a real length.
+const LEN_UNKNOWN: usize = usize::MAX;
+
 /// CPython-style string: compact ASCII or full Unicode (crate docs §strings).
 ///
 /// Carries a lazily-cached code-point count for the UTF-8 arm and a cached
 /// hash — the cached-hash pattern is monty's (`types/str.rs`), adapted.
 pub struct PyString {
     repr: StrRepr,
-    cached_len: std::cell::Cell<Option<usize>>,
+    cached_len: std::sync::atomic::AtomicUsize,
     cached_hash: std::cell::Cell<Option<i64>>,
 }
 
@@ -228,7 +234,7 @@ impl PyString {
         };
         Gc::new(PyString {
             repr,
-            cached_len: std::cell::Cell::new(None),
+            cached_len: std::sync::atomic::AtomicUsize::new(LEN_UNKNOWN),
             cached_hash: std::cell::Cell::new(None),
         })
     }
@@ -244,16 +250,25 @@ impl PyString {
     }
 
     /// `len()` — code points, not bytes (S-01-14).
+    ///
+    /// 02.09 phase 1 (docs/no-gil-object-audit.md entry 27): the lazy fill
+    /// is an idempotent same-value cache — `Cell<Option<usize>>` became an
+    /// `AtomicUsize` with `usize::MAX` as the None sentinel (a string of
+    /// `usize::MAX` code points is unallocatable on every supported target).
+    /// Relaxed is sufficient: racing fills write identical bits, so any
+    /// winner is indistinguishable from the GIL-serialized fill.
     #[allow(clippy::len_without_is_empty)] // is_empty would extend the public surface beyond the CPython-parity API
     pub fn len(&self) -> usize {
-        if let Some(n) = self.cached_len.get() {
-            return n;
+        let cached = self.cached_len.load(std::sync::atomic::Ordering::Relaxed);
+        if cached != LEN_UNKNOWN {
+            return cached;
         }
         let n = match &self.repr {
             StrRepr::Ascii(s) => s.len(),
             StrRepr::Unicode(s) => s.chars().count(),
         };
-        self.cached_len.set(Some(n));
+        self.cached_len
+            .store(n, std::sync::atomic::Ordering::Relaxed);
         n
     }
 
@@ -289,7 +304,9 @@ impl Clone for PyString {
     fn clone(&self) -> Self {
         PyString {
             repr: self.repr.clone(),
-            cached_len: std::cell::Cell::new(self.cached_len.get()),
+            cached_len: std::sync::atomic::AtomicUsize::new(
+                self.cached_len.load(std::sync::atomic::Ordering::Relaxed),
+            ),
             cached_hash: std::cell::Cell::new(self.cached_hash.get()),
         }
     }
