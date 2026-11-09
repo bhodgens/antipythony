@@ -1,0 +1,18 @@
+[package]
+name = "diag-host-bin"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+ap-ir = { path = "../../ap-ir" }
+ap-parse = { path = "../../ap-parse" }
+ap-codegen-wasm = { path = "../../ap-codegen-wasm" }
+ap-host = { path = "../../ap-host" }
+wasm-encoder = "0.263"
+wasmtime = { version = "47", features = ["reexport-wasmparser"] }
+
+[[bin]]
+name = "diag_host"
+path = "main.rs"

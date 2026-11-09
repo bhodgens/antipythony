@@ -16,4 +16,7 @@ ap-ir = { path = "../ap-ir" }
 wasm-encoder = "0.263.0"
 
 [dev-dependencies]
+ap-parse = { path = "../ap-parse" }
 wasmparser = "0.263"
+ap-host = { path = "../ap-host" }
+
