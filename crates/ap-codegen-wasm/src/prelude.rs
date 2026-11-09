@@ -569,12 +569,14 @@ fn bool_obj(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::
     );
 }
 
-/// float_from_i64 (FT_L_O shared sig — emitted with its own copy): (i64) -> o.
+/// float_from_f64 (FT_F_O): (f64) -> o — box an f64 as a $float object.
+/// (v1 named `float_from_i64`; the values slice only ever boxes LITERAL
+/// f64s, so the caller pushes the raw f64 — mismatched FT_L_O sig was the
+/// V052/V055 `expected i64, found f64` validate error.)
 fn float_from_i64(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
-    add(funcs, code, FT_L_O, &[(1, ValType::F64)], |f| {
+    add(funcs, code, FT_F_O, &[], |f| {
         f.instruction(&Instruction::GlobalGet(g_float()));
         f.instruction(&Instruction::LocalGet(0));
-        f.instruction(&Instruction::F64ConvertI64S);
         f.instruction(&Instruction::StructNew(T_FLOAT));
     });
 }
@@ -1157,18 +1159,141 @@ fn none_eq(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::C
     });
 }
 
-/// list_eq (FT_OO_I): (a, b) -> i32 — recursive via $eq.
+/// list_eq (FT_OO_I): (a, b) -> i32 — same length, all items $eq.
 fn list_eq(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
-    add(funcs, code, FT_OO_I, &[], |f| {
+    add(funcs, code, FT_OO_I, &[(2, ValType::I32)], |f| {
+        // 2=a 3=b 4=len 5=i 6=item-a 7=item-b
+        f.instruction(&Instruction::LocalGet(0));
+        f.instruction(&Instruction::LocalSet(2));
+        f.instruction(&Instruction::LocalGet(1));
+        f.instruction(&Instruction::LocalSet(3));
+        f.instruction(&Instruction::Block(BlockType::Result(ValType::I32)));
+        // len check
+        f.instruction(&Instruction::LocalGet(2));
+        f.instruction(&Instruction::RefCastNullable(hc(T_LIST)));
+        sget(f, T_LIST, F_LIST_LEN);
+        f.instruction(&Instruction::LocalGet(3));
+        f.instruction(&Instruction::RefCastNullable(hc(T_LIST)));
+        sget(f, T_LIST, F_LIST_LEN);
+        f.instruction(&Instruction::I32Ne);
+        f.instruction(&Instruction::If(BlockType::Empty));
         f.instruction(&Instruction::I32Const(0));
+        f.instruction(&Instruction::Return);
+        f.instruction(&Instruction::End);
+        // itemwise loop
+        f.instruction(&Instruction::LocalGet(2));
+        f.instruction(&Instruction::RefCastNullable(hc(T_LIST)));
+        sget(f, T_LIST, F_LIST_LEN);
+        f.instruction(&Instruction::LocalSet(4));
+        f.instruction(&Instruction::I32Const(0));
+        f.instruction(&Instruction::LocalSet(5));
+        f.instruction(&Instruction::Block(BlockType::Empty));
+        f.instruction(&Instruction::Loop(BlockType::Empty));
+        f.instruction(&Instruction::LocalGet(5));
+        f.instruction(&Instruction::LocalGet(4));
+        f.instruction(&Instruction::I32GeU);
+        f.instruction(&Instruction::BrIf(1));
+        // item-a = a.items[i]
+        f.instruction(&Instruction::LocalGet(2));
+        f.instruction(&Instruction::RefCastNullable(hc(T_LIST)));
+        sget(f, T_LIST, F_LIST_ITEMS);
+        f.instruction(&Instruction::LocalGet(5));
+        f.instruction(&Instruction::ArrayGetU(T_OBJ_ARR));
+        f.instruction(&Instruction::LocalSet(6));
+        // item-b = b.items[i]
+        f.instruction(&Instruction::LocalGet(3));
+        f.instruction(&Instruction::RefCastNullable(hc(T_LIST)));
+        sget(f, T_LIST, F_LIST_ITEMS);
+        f.instruction(&Instruction::LocalGet(5));
+        f.instruction(&Instruction::ArrayGetU(T_OBJ_ARR));
+        f.instruction(&Instruction::LocalSet(7));
+        // eq(item-a, item-b) == 0 -> false
+        f.instruction(&Instruction::LocalGet(6));
+        f.instruction(&Instruction::LocalGet(7));
+        f.instruction(&Instruction::Call(fx::FN_EQ));
+        f.instruction(&Instruction::I32Eqz);
+        f.instruction(&Instruction::If(BlockType::Empty));
+        f.instruction(&Instruction::I32Const(0));
+        f.instruction(&Instruction::Return);
+        f.instruction(&Instruction::End);
+        f.instruction(&Instruction::LocalGet(5));
+        f.instruction(&Instruction::I32Const(1));
+        f.instruction(&Instruction::I32Add);
+        f.instruction(&Instruction::LocalSet(5));
+        f.instruction(&Instruction::Br(0));
+        f.instruction(&Instruction::End);
+        f.instruction(&Instruction::End);
+        f.instruction(&Instruction::I32Const(1));
+        f.instruction(&Instruction::Return);
+        f.instruction(&Instruction::End);
     });
 }
 
-
 /// tuple_eq (FT_OO_I): same recursion over the tuple items array.
 fn tuple_eq(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
-    add(funcs, code, FT_OO_I, &[], |f| {
+    add(funcs, code, FT_OO_I, &[(2, ValType::I32)], |f| {
+        // 2=a 3=b 4=len 5=i 6=item-a 7=item-b
+        f.instruction(&Instruction::LocalGet(0));
+        f.instruction(&Instruction::LocalSet(2));
+        f.instruction(&Instruction::LocalGet(1));
+        f.instruction(&Instruction::LocalSet(3));
+        f.instruction(&Instruction::Block(BlockType::Result(ValType::I32)));
+        f.instruction(&Instruction::LocalGet(2));
+        f.instruction(&Instruction::RefCastNullable(hc(T_TUPLE)));
+        sget(f, T_TUPLE, F_TUPLE_ITEMS);
+        f.instruction(&Instruction::ArrayLen);
+        f.instruction(&Instruction::LocalGet(3));
+        f.instruction(&Instruction::RefCastNullable(hc(T_TUPLE)));
+        sget(f, T_TUPLE, F_TUPLE_ITEMS);
+        f.instruction(&Instruction::ArrayLen);
+        f.instruction(&Instruction::I32Ne);
+        f.instruction(&Instruction::If(BlockType::Empty));
         f.instruction(&Instruction::I32Const(0));
+        f.instruction(&Instruction::Return);
+        f.instruction(&Instruction::End);
+        f.instruction(&Instruction::LocalGet(2));
+        f.instruction(&Instruction::RefCastNullable(hc(T_TUPLE)));
+        sget(f, T_TUPLE, F_TUPLE_ITEMS);
+        f.instruction(&Instruction::ArrayLen);
+        f.instruction(&Instruction::LocalSet(4));
+        f.instruction(&Instruction::I32Const(0));
+        f.instruction(&Instruction::LocalSet(5));
+        f.instruction(&Instruction::Block(BlockType::Empty));
+        f.instruction(&Instruction::Loop(BlockType::Empty));
+        f.instruction(&Instruction::LocalGet(5));
+        f.instruction(&Instruction::LocalGet(4));
+        f.instruction(&Instruction::I32GeU);
+        f.instruction(&Instruction::BrIf(1));
+        f.instruction(&Instruction::LocalGet(2));
+        f.instruction(&Instruction::RefCastNullable(hc(T_TUPLE)));
+        sget(f, T_TUPLE, F_TUPLE_ITEMS);
+        f.instruction(&Instruction::LocalGet(5));
+        f.instruction(&Instruction::ArrayGetU(T_OBJ_ARR_RO));
+        f.instruction(&Instruction::LocalSet(6));
+        f.instruction(&Instruction::LocalGet(3));
+        f.instruction(&Instruction::RefCastNullable(hc(T_TUPLE)));
+        sget(f, T_TUPLE, F_TUPLE_ITEMS);
+        f.instruction(&Instruction::LocalGet(5));
+        f.instruction(&Instruction::ArrayGetU(T_OBJ_ARR_RO));
+        f.instruction(&Instruction::LocalSet(7));
+        f.instruction(&Instruction::LocalGet(6));
+        f.instruction(&Instruction::LocalGet(7));
+        f.instruction(&Instruction::Call(fx::FN_EQ));
+        f.instruction(&Instruction::I32Eqz);
+        f.instruction(&Instruction::If(BlockType::Empty));
+        f.instruction(&Instruction::I32Const(0));
+        f.instruction(&Instruction::Return);
+        f.instruction(&Instruction::End);
+        f.instruction(&Instruction::LocalGet(5));
+        f.instruction(&Instruction::I32Const(1));
+        f.instruction(&Instruction::I32Add);
+        f.instruction(&Instruction::LocalSet(5));
+        f.instruction(&Instruction::Br(0));
+        f.instruction(&Instruction::End);
+        f.instruction(&Instruction::End);
+        f.instruction(&Instruction::I32Const(1));
+        f.instruction(&Instruction::Return);
+        f.instruction(&Instruction::End);
     });
 }
 
@@ -1199,7 +1324,8 @@ fn eq(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSe
         FT_OO_I,
         &[(1, oref()), (1, oref()), (2, ValType::I32)],
         |f| {
-            // 1=a(o) 2=b(o) 3=eqflag 4=tmp — v1: None identity + numeric f64 + str bytes via STR_EQ
+            // 1=a(o) 2=b(o) 3=sel-a 4=sel-b — v1: None identity + numeric
+            // (int smi/big + float cross) + str bytes + list/tuple recursion.
             f.instruction(&Instruction::LocalGet(0));
             f.instruction(&Instruction::LocalSet(1));
             f.instruction(&Instruction::LocalGet(1));
@@ -1213,14 +1339,130 @@ fn eq(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSe
             f.instruction(&Instruction::I32Const(1));
             f.instruction(&Instruction::Return);
             f.instruction(&Instruction::End);
-            // otherwise: both int (smi payload compare), else false
-            // probe: struct.get $int kind on both — traps if not int, but values-slice
-            // eq outside numeric is V041-dict (dict_eq handles its own keys) — safe.
+            // select both type keys
+            type_sel(f, 1, 3);
+            f.instruction(&Instruction::LocalSet(3));
+            type_sel(f, 2, 4);
+            f.instruction(&Instruction::LocalSet(4));
+            // float involved (sel-a==1 || sel-b==1): float_py_eq handles
+            // float-vs-float AND numeric promotion (int/bool payloads read
+            // as f64 inside); float vs non-numeric -> 0.
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::I32Or);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(2));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::I32Or);
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::I32Or);
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::I32Const(2));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::I32Or);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            // float vs int/bool: numeric promotion compare
             f.instruction(&Instruction::LocalGet(1));
-            f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
             f.instruction(&Instruction::LocalGet(2));
-            f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
+            f.instruction(&Instruction::Call(fx::FN_FLOAT_PY_EQ));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // float vs non-numeric
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // int/bool vs int/bool (sel 0 or 2 both sides)
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(2));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::I32Or);
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::I32Or);
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::I32Const(2));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::I32Or);
+            f.instruction(&Instruction::I32And);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::LocalGet(2));
             f.instruction(&Instruction::Call(fx::FN_INT_EQ));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // str vs str
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(3));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::I32Const(3));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::I32And);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::Call(fx::FN_STR_EQ));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // list vs list (recursive via $eq items)
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(6));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::I32Const(6));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::I32And);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::Call(fx::FN_LIST_EQ));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // tuple vs tuple
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(7));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::I32Const(7));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::I32And);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::Call(fx::FN_TUPLE_EQ));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // dict vs dict
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(5));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::I32Const(5));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::I32And);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::Call(fx::FN_DICT_EQ));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // None vs anything-else: 0 (ref-eq above covers None is None;
+            // per S-01-33 None == False / None == 0 is False)
+            f.instruction(&Instruction::I32Const(0));
             f.instruction(&Instruction::Return);
             f.instruction(&Instruction::End);
         },

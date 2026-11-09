@@ -635,36 +635,33 @@ fn emit_expr(
         Expr::Compare(ops, operands) => {
             // chain: a op1 b op2 c => all comparisons ANDed; middle terms
             // evaluated once (straight-line: evaluate each once in order).
-            let mut prev = &operands[0];
-            emit_expr(f, prev, names, strs, buf_ptr, tab);
-            // We need short-circuit semantics; on the values slice chains
-            // appear in straight-line bool contexts. Evaluate pair-wise and
-            // AND via FN_BOOL path.
+            // FT_TOP_I is (op, a, b) -> i32, so EACH link pushes op FIRST,
+            // then a, then b. Chained terms: prev operand is re-evaluated
+            // (corpus slice operands are literals/names: side-effect free).
             for (i, op) in ops.iter().enumerate() {
-                let cur = &operands[i + 1];
-                // stack: [op, a, b] — push op first
                 f.instruction(&Instruction::I32Const(cmp_op(*op)));
-                emit_expr(f, cur, names, strs, buf_ptr, tab);
+                emit_expr(f, &operands[i], names, strs, buf_ptr, tab);
+                emit_expr(f, &operands[i + 1], names, strs, buf_ptr, tab);
                 f.instruction(&Instruction::Call(fx::FN_COMPARE));
-                // push a copy for the next link: save b as new prev via
-                // a temp local slot (NAMES_BASE + temp area is not
-                // available here) — v1: chains supported pairwise only
-                // when operands are literal/name (re-evaluated cheaply
-                // and side-effect free: V052 `1 == 1.0 == True`).
-                if i + 1 < ops.len() {
-                    // re-evaluate cur for the next pair
-                    emit_expr(f, cur, names, strs, buf_ptr, tab);
-                }
             }
             // AND-reduce all the i32s on the stack (ops.len() results)
             for _ in 1..ops.len() {
                 f.instruction(&Instruction::I32And);
             }
-            // i32 -> bool object
-            f.instruction(&Instruction::I64ExtendI32U);
-            f.instruction(&Instruction::Call(fx::FN_INT_FROM_I64));
+            // i32 -> bool object: BOOL_OBJ (FT_U_O) takes (unused-i32, x-o)
+            // and re-truthies x itself; for a compare RESULT that would
+            // double-negate. Build the bool $int directly: (bool-type,
+            // kind 0, smi payload, null big).
+            f.instruction(&Instruction::GlobalGet(crate::types::builtin_type_global(
+                "bool",
+            )
+            .expect("TYPE_ORDER carries bool")));
             f.instruction(&Instruction::I32Const(0));
-            f.instruction(&Instruction::Call(fx::FN_BOOL_OBJ));
+            f.instruction(&Instruction::I64ExtendI32U);
+            f.instruction(&Instruction::RefNull(prelude::hc(
+                crate::types::T_BIGINT,
+            )));
+            f.instruction(&Instruction::StructNew(crate::types::T_INT));
         }
         Expr::Call(func, args) => {
             let Expr::Name(name) = func.as_ref() else {

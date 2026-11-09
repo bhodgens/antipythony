@@ -125,6 +125,7 @@ version = "0.1.0"
 dependencies = [
  "ap-host",
  "ap-ir",
+ "ap-parse",
  "wasm-encoder 0.263.0",
  "wasmparser 0.263.0",
 ]
