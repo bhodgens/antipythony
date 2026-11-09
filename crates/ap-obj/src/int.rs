@@ -142,7 +142,7 @@ impl Int {
     /// round-half-even long→double conversion (verified vs 3.14: `float(2**53
     /// + 3)` → `9007199254740996.0`). A value whose first 40 significant
     /// digits place it below `2^-1075` (i.e. rounds to 0.0) parses as 0.0,
-    /// which is what CPython produces for those too.
+    ///   which is what CPython produces for those too.
     pub fn to_f64(&self) -> Option<f64> {
         match self {
             Int::Smi(v) => Some(*v as f64),
@@ -438,6 +438,7 @@ impl Int {
     /// syntax); leading/trailing/doubled underscores are invalid.
     /// Returns `Err(())` for invalid input — the caller wraps in
     /// `invalid_int_literal`.
+    #[allow(clippy::result_unit_err)] // unit error kept for CPython-exact exception mapping
     pub fn parse_base10(text: &str) -> Result<Int, ()> {
         let t = text.trim_matches(|c: char| {
             c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\x0b' || c == '\x0c'
@@ -475,6 +476,7 @@ impl Int {
     }
 
     /// Parse with an explicit base 2..=36 (S-01-13: `int("ff", 16)` == 255).
+    #[allow(clippy::result_unit_err)] // unit error kept for CPython-exact exception mapping
     pub fn parse_base(text: &str, base: u32) -> Result<Int, ()> {
         if !(2..=36).contains(&base) {
             return Err(());
@@ -562,8 +564,8 @@ fn divmod_big(a: &Big, b: &Big) -> (Big, Big) {
     let mut q = a / b; // truncated
     let mut r = a % b; // sign of a
     if !r.is_zero() && (a.is_negative() != b.is_negative()) {
-        q = q - Big::from(1);
-        r = r + b; // remainder takes the divisor's sign
+        q -= Big::from(1);
+        r += b; // remainder takes the divisor's sign
     }
     (q, r)
 }
@@ -581,7 +583,7 @@ mod tests {
         // C-13 boundary sweep at B = SMI_BITS.
         let b = Int::from_big(Big::from(1i64) << (SMI_BITS - 1)); // 2**59
         for k in -2i64..=2i64 {
-            let v = Int::from_big((&*b.as_big().unwrap()) + k);
+            let v = Int::from_big(b.as_big().unwrap() + k);
             let plus1 = v.add(&Int::Smi(1));
             let expect = Int::from_big((Big::from(1i64) << (SMI_BITS - 1)) + k + 1);
             assert!(plus1.eq_int(&expect), "2**{SMI_BITS}+{k}+1");

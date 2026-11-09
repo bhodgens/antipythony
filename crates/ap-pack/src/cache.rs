@@ -171,7 +171,7 @@ mod tests {
             .unwrap_or(0);
         let dir =
             std::env::temp_dir().join(format!("apcache-{tag}-{}-{nanos}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&dir).expect("cache.rs:174");
         dir
     }
 
@@ -181,7 +181,7 @@ mod tests {
         let key = build_key(b"src", b"", "0.0.0", "native", 2);
         // No payload yet -> miss.
         assert!(compiled_hit(&dir, &key).is_none());
-        write_compiled_payload(&dir, &key, b"serialized-ir-bytes").unwrap();
+        write_compiled_payload(&dir, &key, b"serialized-ir-bytes").expect("cache.rs:184");
         let hit = compiled_hit(&dir, &key).expect("key-matched payload is a hit");
         assert!(hit.ends_with(COMPILED_PAYLOAD));
         // A different key never matches the embedded header.
@@ -194,7 +194,7 @@ mod tests {
     fn truncated_payload_is_a_miss_not_a_panic() {
         let dir = tmp_entry("trunc");
         let key = build_key(b"s", b"", "0.0.0", "native", 2);
-        std::fs::write(dir.join(COMPILED_PAYLOAD), &key.as_bytes()[..10]).unwrap();
+        std::fs::write(dir.join(COMPILED_PAYLOAD), &key.as_bytes()[..10]).expect("cache.rs:197");
         assert!(compiled_hit(&dir, &key).is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }

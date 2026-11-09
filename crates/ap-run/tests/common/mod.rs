@@ -266,9 +266,9 @@ fn ap_run_probe_bin() -> std::path::PathBuf {
     // shared-target builds — same discipline as re_differential.rs).
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .unwrap()
+        .expect("mod.rs:267")
         .parent()
-        .unwrap()
+        .expect("workspace root above crate dir")
         .to_path_buf();
     match std::env::var("CARGO_TARGET_DIR") {
         Ok(d) => std::path::Path::new(&d).join("debug/ap-run-probe"),
@@ -290,7 +290,7 @@ fn memory_pressure_ok() -> bool {
     let mut size = std::mem::size_of::<libc::c_int>();
     let rc = unsafe {
         libc::sysctlbyname(
-            "kern.memorystatus_vm_pressure_level\0".as_ptr() as *const libc::c_char,
+            c"kern.memorystatus_vm_pressure_level".as_ptr() as *const libc::c_char,
             (&mut level as *mut libc::c_int).cast(),
             &mut size,
             std::ptr::null_mut(),

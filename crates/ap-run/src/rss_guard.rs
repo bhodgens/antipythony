@@ -115,7 +115,7 @@ pub fn start() -> u64 {
     ap_obj::debug_flags::snapshot();
     // resolve_cap_bytes is infallible: explicit env wins, invalid env warns
     // and falls back, sysconf failure fails closed at 4 GB.
-    let cap_bytes = resolve_cap_bytes().unwrap_or_else(|_| 4 * 1024 * 1024 * 1024);
+    let cap_bytes = resolve_cap_bytes().unwrap_or(4 * 1024 * 1024 * 1024);
     CAP_GB.store(cap_bytes / (1024 * 1024 * 1024), Ordering::SeqCst);
     if cap_bytes == 0 {
         return 0; // AP_MAX_RSS_GB=0: explicit opt-out

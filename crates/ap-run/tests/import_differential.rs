@@ -54,7 +54,7 @@ fn assert_differential_with_path(src: &str, fixture: &std::path::Path) {
     static CASE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .expect("import_differential.rs:55")
         .as_nanos() as u64;
     let stamp = nanos ^ CASE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let tmp = std::env::temp_dir().join(format!(
@@ -98,22 +98,22 @@ fn fixture_root(tag: &str) -> std::path::PathBuf {
 fn package_import_and_relative() {
     common::interpreter_gate();
     let root = fixture_root("pkg");
-    std::fs::create_dir_all(root.join("pkg")).unwrap();
+    std::fs::create_dir_all(root.join("pkg")).expect("import_differential.rs:101");
     std::fs::write(
         root.join("pkg/__init__.py"),
         "VALUE = 42\nfrom .mod import helper\n",
     )
-    .unwrap();
+    .expect("import_differential.rs:102");
     std::fs::write(
         root.join("pkg/mod.py"),
         "def helper():\n    return \"helped\"\n",
     )
-    .unwrap();
+    .expect("import_differential.rs:107");
     std::fs::write(
         root.join("pkg/sub.py"),
         "from .mod import helper\nX = helper()\n",
     )
-    .unwrap();
+    .expect("import_differential.rs:112");
     assert_differential_with_path(
         r#"
 import pkg
@@ -133,8 +133,9 @@ print(X)
 fn circular_imports_partial_visibility() {
     common::interpreter_gate();
     let root = fixture_root("circ");
-    std::fs::write(root.join("a.py"), "import b\nX = b.Y + 1\n").unwrap();
-    std::fs::write(root.join("b.py"), "import a\nY = 10\n").unwrap();
+    std::fs::write(root.join("a.py"), "import b\nX = b.Y + 1\n")
+        .expect("import_differential.rs:136");
+    std::fs::write(root.join("b.py"), "import a\nY = 10\n").expect("import_differential.rs:137");
     assert_differential_with_path(
         r#"
 import a
@@ -154,8 +155,8 @@ fn import_error_texts_byte_exact() {
         None => return, // no reference + AP_REQUIRE_REFERENCE unset: skip
     };
     let root = fixture_root("err");
-    std::fs::create_dir_all(root.join("pkg")).unwrap();
-    std::fs::write(root.join("pkg/__init__.py"), "").unwrap();
+    std::fs::create_dir_all(root.join("pkg")).expect("import_differential.rs:157");
+    std::fs::write(root.join("pkg/__init__.py"), "").expect("import_differential.rs:158");
     // Missing module (both plain and dotted), missing name, relative without
     // parent. stderr last-line texts must match CPython byte-exactly.
     for case in [
@@ -170,7 +171,7 @@ fn import_error_texts_byte_exact() {
             std::process::id(),
             case.replace([' ', '.'], "_")
         ));
-        std::fs::write(&tmp, case).unwrap();
+        std::fs::write(&tmp, case).expect("import_differential.rs:173");
         let expected = Command::new(py)
             .arg(&tmp)
             .env("PYTHONPATH", &root)
@@ -202,7 +203,7 @@ fn import_error_texts_byte_exact() {
 fn sys_modules_identity() {
     common::interpreter_gate();
     let root = fixture_root("ident");
-    std::fs::write(root.join("onemod.py"), "Q = 1\n").unwrap();
+    std::fs::write(root.join("onemod.py"), "Q = 1\n").expect("import_differential.rs:205");
     assert_differential_with_path(
         r#"
 import onemod
@@ -227,7 +228,7 @@ fn vendored_types_and_abc_import() {
     };
     let src = "import types\nimport _collections_abc\nprint('ok')\n";
     let tmp = std::env::temp_dir().join(format!("ap_vendored_{}", std::process::id()));
-    std::fs::write(&tmp, src).unwrap();
+    std::fs::write(&tmp, src).expect("import_differential.rs:230");
     let expected = Command::new(py)
         .arg(&tmp)
         .output()
@@ -251,9 +252,10 @@ fn script_dir_on_sys_path() {
     common::interpreter_gate();
     // A script imports a module sitting NEXT TO it (script_dir bootstrap).
     let root = fixture_root("scriptdir");
-    std::fs::write(root.join("neighbor.py"), "N = 5\n").unwrap();
+    std::fs::write(root.join("neighbor.py"), "N = 5\n").expect("import_differential.rs:254");
     let main = root.join("main_script.py");
-    std::fs::write(&main, "import neighbor\nprint(neighbor.N)\n").unwrap();
+    std::fs::write(&main, "import neighbor\nprint(neighbor.N)\n")
+        .expect("import_differential.rs:256");
     let py = match common::reference_or_skip() {
         Some(py) => py,
         None => return, // no reference + AP_REQUIRE_REFERENCE unset: skip

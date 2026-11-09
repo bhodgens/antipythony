@@ -294,6 +294,7 @@ static NAME_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicU
 static NEXT_IDENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0x1000_0000);
 static NEXT_SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 /// threading.local namespaces: (local obj addr, owner os tid, ns dict).
+#[allow(clippy::type_complexity)] // interpreter plumbing type; factoring out would obscure the signature
 pub static LOCALS: std::sync::LazyLock<
     Mutex<HashMap<usize, HashMap<u64, crate::gcsupport::GilSendPub<Gc<PyDict>>>>>,
 > = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -317,6 +318,7 @@ pub struct CancelEvent {
 /// Keyed (timer obj addr, construction serial): the serial blocks the
 /// addr-recycling alias where a stale pre-cancelled flag of a dead Timer
 /// would suppress a fresh Timer allocated on the same address.
+#[allow(clippy::type_complexity)] // interpreter plumbing type; factoring out would obscure the signature
 static CANCELLED: std::sync::LazyLock<Mutex<HashMap<(usize, i64), Arc<CancelEvent>>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -368,6 +370,7 @@ fn stamp_worker_identity(self_addr: usize) {
 /// traffic) and the MAIN thread drops them at a GIL-held safe point
 /// (drain_worker_reclaim, called from evict_stale_tables at the major-GC
 /// drain hook). Mirrors the gc-registration forward-channel design.
+#[allow(clippy::type_complexity)] // interpreter plumbing type; factoring out would obscure the signature
 static WORKER_RECLAIM: std::sync::LazyLock<
     Mutex<Vec<crate::gcsupport::GilSendPub<Box<dyn std::any::Any>>>>,
 > = std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
@@ -413,7 +416,7 @@ pub fn is_main_os_thread() -> bool {
 }
 
 /// Called by run_module entry (interp.rs) — registers the main thread.
-pub fn bootstrap_main(interp: &Rc<Interpreter>) {
+pub fn bootstrap_main(_interp: &Rc<Interpreter>) {
     let mut mt = MAIN_TID.lock().unwrap();
     if mt.is_some() {
         return;
@@ -600,6 +603,7 @@ pub struct QueuePrim {
     pub prio: bool,
 }
 
+#[allow(clippy::type_complexity)] // interpreter plumbing type; factoring out would obscure the signature
 static PRIMS: std::sync::LazyLock<
     Mutex<HashMap<usize, crate::gcsupport::GilSendPub<Rc<dyn std::any::Any>>>>,
 > = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -628,7 +632,7 @@ pub fn prim_put<T: 'static>(addr: usize, p: T) {
 
 pub fn prim_of<T: 'static>(addr: usize) -> Option<Rc<T>> {
     let slot = { PRIMS.lock().unwrap().get(&addr).map(|s| s.0.clone()) }?;
-    slot.downcast::<T>().ok().map(Rc::from)
+    slot.downcast::<T>().ok()
 }
 
 /// Legacy bridge shim: the table is global now; this only re-inserts.
@@ -639,6 +643,7 @@ pub fn prim_bridge<T: 'static>(addr: usize, p: Rc<T>) {
     );
 }
 
+#[allow(dead_code)] // kept: part of an unfinished surface (robustness-ci 02.x burn-down leaf)
 fn obj_addr(v: &Value) -> Option<usize> {
     match v {
         Value::Obj(o) => Some(Rc::as_ptr(o).addr()),
@@ -661,11 +666,11 @@ pub(crate) fn thread_obj(
 ) -> Value {
     let o = PyObject::new(ObjKind::Opaque, "thread");
     {
-        let mut a = o.attrs.borrow_mut();
+        let a = o.attrs.borrow_mut();
         let _ = a.set(s("<name>"), s(name));
         let _ = a.set(s("<target>"), target.unwrap_or(Value::None));
         let _ = a.set(s("<args>"), Value::Tuple(Gc::new(Tuple(args))));
-        let mut kd = PyDict::new();
+        let kd = PyDict::new();
         for (k, v) in kwargs {
             let _ = kd.set(s(k), v);
         }
@@ -679,10 +684,12 @@ pub(crate) fn thread_obj(
     Value::Obj(o)
 }
 
+#[allow(dead_code)] // kept: part of an unfinished surface (robustness-ci 02.x burn-down leaf)
 fn thread_entry_for_obj(o: &Gc<PyObject>) -> Option<Rc<RefCell<ThreadEntry>>> {
     entry_for(Rc::as_ptr(o).addr())
 }
 
+#[allow(dead_code)] // kept: part of an unfinished surface (robustness-ci 02.x burn-down leaf)
 fn thread_state(o: &Gc<PyObject>) -> (&'static str, bool) {
     let daemon = matches!(
         o.attrs.borrow().get(&s("<daemon>")),
@@ -762,24 +769,9 @@ pub fn thread_start(interp: &Rc<Interpreter>, o: &Gc<PyObject>) -> EvalResult {
     let _ = addr;
     let name = attr_str(o, "<name>");
     let daemon = attr_bool(o, "<daemon>");
-    let target = o
-        .attrs
-        .borrow()
-        .get(&s("<target>"))
-        .map(|v| v.clone())
-        .unwrap_or(Value::None);
-    let args_v = o
-        .attrs
-        .borrow()
-        .get(&s("<args>"))
-        .map(|v| v.clone())
-        .unwrap_or(Value::None);
-    let kwargs_v = o
-        .attrs
-        .borrow()
-        .get(&s("<kwargs>"))
-        .map(|v| v.clone())
-        .unwrap_or(Value::None);
+    let target = o.attrs.borrow().get(&s("<target>")).unwrap_or(Value::None);
+    let args_v = o.attrs.borrow().get(&s("<args>")).unwrap_or(Value::None);
+    let kwargs_v = o.attrs.borrow().get(&s("<kwargs>")).unwrap_or(Value::None);
     let interval = o
         .attrs
         .borrow()
@@ -814,15 +806,12 @@ pub fn thread_start(interp: &Rc<Interpreter>, o: &Gc<PyObject>) -> EvalResult {
     if interval.is_some() {
         let key = (addr, my_serial.unwrap_or(-2));
         let mut m = CANCELLED.lock().unwrap();
-        if !m.contains_key(&key) {
-            m.insert(
-                key,
-                Arc::new(CancelEvent {
-                    cancelled: Mutex::new(false),
-                    cv: Condvar::new(),
-                }),
-            );
-        }
+        m.entry(key).or_insert_with(|| {
+            Arc::new(CancelEvent {
+                cancelled: Mutex::new(false),
+                cv: Condvar::new(),
+            })
+        });
     }
 
     if std::env::var("APX_TDEBUG").is_ok() {
@@ -1143,7 +1132,7 @@ fn invoke_excepthook(interp: &Rc<Interpreter>, exc: &crate::exc_hier::ExceptionV
     if let Some(hook) = hook {
         let args_obj = PyObject::new(ObjKind::Namespace, "ExceptHookArgs");
         {
-            let mut a = args_obj.attrs.borrow_mut();
+            let a = args_obj.attrs.borrow_mut();
             let _ = a.set(
                 s("exc_type"),
                 crate::classes::exc_class_value(interp, &exc.class)
@@ -1463,7 +1452,7 @@ pub fn local_get(addr: usize, name: &str) -> Option<Value> {
     let l = LOCALS.lock().unwrap();
     l.get(&addr)
         .and_then(|m| m.get(&tid))
-        .and_then(|d| d.0.get(&s(name)).map(|v| v.clone()))
+        .and_then(|d| d.0.get(&s(name)))
 }
 
 pub fn local_set(addr: usize, name: &str, v: Value) {
@@ -1647,10 +1636,8 @@ fn evict_stale_tables_inner() -> usize {
                     if let Some(o) = row.weak.0.upgrade() {
                         row.pinned = Some(crate::gcsupport::GilSendPub(Value::Obj(o)));
                     }
-                } else if !want_pin {
-                    if row.pinned.take().is_some() {
-                        freed += 1;
-                    }
+                } else if !want_pin && row.pinned.take().is_some() {
+                    freed += 1;
                 }
             }
         }
@@ -1687,7 +1674,7 @@ fn evict_stale_tables_inner() -> usize {
         let owned: std::collections::HashSet<usize> =
             OWN_RLOCKS.lock().unwrap().iter().copied().collect();
         let mut p = PRIMS.lock().unwrap();
-        let before = p.len();
+        let _before = p.len();
         let dbg = std::env::var("APX_TDEBUG").is_ok();
         p.retain(|addr, _| {
             let keep_it = if owned.contains(addr) {

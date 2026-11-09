@@ -18,9 +18,9 @@ fn run_reference(py: &str, src: &str) -> (Vec<u8>, i32) {
         std::process::id(),
         PROBE_SEQ.fetch_add(1, Ordering::Relaxed)
     ));
-    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(&dir).expect("gc_differential.rs:21");
     let path = dir.join("probe.py");
-    std::fs::write(&path, src).unwrap();
+    std::fs::write(&path, src).expect("gc_differential.rs:23");
     let out = Command::new(py)
         .arg(&path)
         .current_dir(&dir)

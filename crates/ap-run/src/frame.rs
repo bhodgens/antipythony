@@ -149,6 +149,7 @@ impl Frame {
     }
 
     /// A function frame with pre-bound locals and closure cell sets.
+    #[allow(clippy::too_many_arguments)] // mirrors the CPython C-function signature shape
     pub fn new_function(
         globals: Gc<PyDict>,
         scope_path: &str,
@@ -587,7 +588,7 @@ thread_local! {
         std::cell::RefCell::new(HashMap::new());
     /// Insertion-order ledger for the NESTED_DEDUPE cap (sre.rs style).
     static NESTED_DEDUPE_ORDER: std::cell::RefCell<Vec<(String, usize, usize, u64)>> =
-        std::cell::RefCell::new(Vec::new());
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// G4-repair table cap (mirrors SRE_TABLE_CAP, sre.rs).
@@ -597,18 +598,16 @@ const NESTED_DEDUPE_CAP: usize = 1024;
 pub fn nested_dedupe_insert(key: (String, usize, usize, u64), id: u32) {
     NESTED_DEDUPE.with(|d| {
         let mut map = d.borrow_mut();
-        if map.contains_key(&key) {
-            map.insert(key, id);
-            return;
+        if !map.contains_key(&key) {
+            NESTED_DEDUPE_ORDER.with(|l| {
+                let mut ledger = l.borrow_mut();
+                ledger.push(key.clone());
+                if ledger.len() > NESTED_DEDUPE_CAP {
+                    let oldest = ledger.remove(0);
+                    map.remove(&oldest);
+                }
+            });
         }
-        NESTED_DEDUPE_ORDER.with(|l| {
-            let mut ledger = l.borrow_mut();
-            ledger.push(key.clone());
-            if ledger.len() > NESTED_DEDUPE_CAP {
-                let oldest = ledger.remove(0);
-                map.remove(&oldest);
-            }
-        });
         map.insert(key, id);
     });
 }
@@ -688,7 +687,6 @@ impl Interpreter {
         // nothing — fd 1 already has the bytes and the production callers
         // never read RunOutcome.stdout (verifier: 2x full output resident).
         if buf.len() >= STDOUT_FLUSH_THRESHOLD {
-            use std::io::Write as _;
             let n = buf.len();
             let ok = unsafe { libc::write(1, buf.as_ptr() as *const libc::c_void, n) };
             if ok == n as isize {

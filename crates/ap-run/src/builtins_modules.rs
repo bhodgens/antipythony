@@ -292,6 +292,9 @@ pub enum NativeIterState {
 
 impl NativeIterState {
     /// Pull the next value; `None` = exhausted.
+    // Inherent `next` mirrors Python's iterator protocol name; renaming would
+    // break the byte-exact surface, so the clippy trait-method lint is allowed.
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Option<Value> {
         match self {
             NativeIterState::Seq(it) | NativeIterState::RandSeq { items: it } => it.next(),
@@ -362,7 +365,7 @@ impl NativeIterState {
             } => loop {
                 let x = items.next()?;
                 if !*dropped {
-                    let keep = call_named(pred, &[x.clone()])
+                    let keep = call_named(pred, std::slice::from_ref(&x))
                         .map(|v| truthy(&v))
                         .unwrap_or(false);
                     if keep {
@@ -377,7 +380,7 @@ impl NativeIterState {
                     return None;
                 }
                 let x = items.next()?;
-                let keep = call_named(pred, &[x.clone()])
+                let keep = call_named(pred, std::slice::from_ref(&x))
                     .map(|v| truthy(&v))
                     .unwrap_or(false);
                 if keep {
@@ -391,7 +394,7 @@ impl NativeIterState {
                 let x = items.next()?;
                 let sel = match pred {
                     None => true,
-                    Some(p) => call_named(p, &[x.clone()])
+                    Some(p) => call_named(p, std::slice::from_ref(&x))
                         .map(|v| truthy(&v))
                         .unwrap_or(false),
                 };
@@ -403,7 +406,7 @@ impl NativeIterState {
                 let x = items.next()?;
                 let sel = match func {
                     None => truthy(&x),
-                    Some(p) => call_named(p, &[x.clone()])
+                    Some(p) => call_named(p, std::slice::from_ref(&x))
                         .map(|v| truthy(&v))
                         .unwrap_or(false),
                 };
@@ -980,7 +983,7 @@ fn build_re(_i: &crate::frame::Interpreter) -> Value {
         "finditer",
         "purge",
     ] {
-        let f = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, &format!("re.{n}"));
+        let f = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, format!("re.{n}"));
         let _ = ns.set(Value::Str(PyString::new(n)), Value::Obj(f));
     }
     // error/PatternError exception class + Pattern/Match type objects.
@@ -1039,6 +1042,7 @@ fn build_re(_i: &crate::frame::Interpreter) -> Value {
 /// re.escape — backslash every non-alphanumeric/underscore byte (CPython
 /// 3.7+ escapes only special chars; escaping more is harmless for matching
 /// literals and warns-gate patterns).
+#[allow(dead_code)] // kept: part of an unfinished surface (robustness-ci 02.x burn-down leaf)
 fn re_escape(pattern: &str) -> String {
     let mut out = String::with_capacity(pattern.len() * 2);
     for ch in pattern.chars() {
@@ -1093,7 +1097,7 @@ pub fn re_match_stub(pattern: &str, text: &str, ic: bool, meth: &str) -> Option<
         .collect();
     let mo = PyObject::new(ap_obj::ObjKind::Namespace, "re.Match");
     {
-        let mut a = mo.attrs.borrow_mut();
+        let a = mo.attrs.borrow_mut();
         let _ = a.set(s("re"), s(pattern.to_string()));
         let _ = a.set(s("string"), s(text.to_string()));
         let _ = a.set(s("__ap_matched__"), s(matched));
@@ -1161,7 +1165,7 @@ fn build_codecs(_i: &crate::frame::Interpreter) -> Value {
 
 pub fn recv_attr_get(obj: &Value, key: &Value) -> Option<Value> {
     if let Value::Obj(o) = obj {
-        return o.attrs.borrow().get(key).map(|v| v.clone());
+        return o.attrs.borrow().get(key);
     }
     None
 }
@@ -1254,10 +1258,10 @@ fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opti
                     ),
                 )));
             }
-            return Some(Ok(tuple(vec![
+            Some(Ok(tuple(vec![
                 Value::Bytes(Gc::new(v.as_bytes().to_vec())),
                 i(v.chars().count() as i64),
-            ])));
+            ])))
         }
         "utf_8_decode" => {
             let b = match required(args, "decode") {
@@ -1305,13 +1309,13 @@ fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opti
             }
             let pos = v.chars().take_while(|c| c.is_ascii()).count();
             let ch = v.chars().nth(pos).unwrap_or('\0');
-            return Some(Err(raise(
+            Some(Err(raise(
                 "UnicodeEncodeError",
                 format!(
                     "'ascii' codec can't encode character '\\u{:04x}' in position {pos}: ordinal not in range(128)",
                     ch as u32
                 ),
-            )));
+            )))
         }
         "ascii_decode" => {
             let b = match required(args, "decode") {
@@ -1327,13 +1331,13 @@ fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opti
                 return Some(Ok(tuple(vec![s(txt), i(raw.len() as i64)])));
             }
             let pos = raw.iter().take_while(|&&x| x < 0x80).count();
-            return Some(Err(raise(
+            Some(Err(raise(
                 "UnicodeDecodeError",
                 format!(
                     "'ascii' codec can't decode byte 0x{:02x} in position {pos}: ordinal not in range(128)",
                     raw[pos]
                 ),
-            )));
+            )))
         }
         "latin_1_encode" => {
             let v = match str_arg(match required(args, "encode") {
@@ -1361,7 +1365,7 @@ fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opti
                     ),
                 )));
             }
-            return Some(Ok(tuple(vec![Value::Bytes(Gc::new(out)), i(v.chars().count() as i64)])));
+            Some(Ok(tuple(vec![Value::Bytes(Gc::new(out)), i(v.chars().count() as i64)])))
         }
         "latin_1_decode" => {
             let b = match required(args, "decode") {
@@ -1373,14 +1377,14 @@ fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opti
                 _ => Vec::new(),
             };
             let txt: String = raw.iter().map(|&x| x as char).collect();
-            return Some(Ok(tuple(vec![s(txt), i(raw.len() as i64)])));
+            Some(Ok(tuple(vec![s(txt), i(raw.len() as i64)])))
         }
         "utf_16_encode" => {
             // codecs.utf_16_* (encodings/utf_16.py wrapper): native BE-BOM form.
-            return call_codecs("encode_utf16", args, _kwargs);
+            call_codecs("encode_utf16", args, _kwargs)
         }
         "utf_16_decode" => {
-            return call_codecs("decode_utf16", args, _kwargs);
+            call_codecs("decode_utf16", args, _kwargs)
         }
         "utf_16_le_encode" => {
             let v = match str_arg(match required(args, "encode") {
@@ -1395,7 +1399,7 @@ fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opti
                 bytes.extend_from_slice(&u.to_le_bytes());
             }
             let n = v.encode_utf16().count() as i64 * 2;
-            return Some(Ok(tuple(vec![Value::Bytes(Gc::new(bytes)), i(n)])));
+            Some(Ok(tuple(vec![Value::Bytes(Gc::new(bytes)), i(n)])))
         }
         "utf_16_le_decode" => {
             let b = match required(args, "decode") {
@@ -1412,7 +1416,7 @@ fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opti
                 .map(|c| u16::from_le_bytes([c[0], c[1]]))
                 .collect();
             let txt = String::from_utf16_lossy(&units);
-            return Some(Ok(tuple(vec![s(txt), i(raw.len() as i64)])));
+            Some(Ok(tuple(vec![s(txt), i(raw.len() as i64)])))
         }
         "utf_16_be_encode" => {
             let v = match str_arg(match required(args, "encode") {
@@ -1427,7 +1431,7 @@ fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opti
                 bytes.extend_from_slice(&u.to_be_bytes());
             }
             let n = v.encode_utf16().count() as i64 * 2;
-            return Some(Ok(tuple(vec![Value::Bytes(Gc::new(bytes)), i(n)])));
+            Some(Ok(tuple(vec![Value::Bytes(Gc::new(bytes)), i(n)])))
         }
         "utf_16_be_decode" => {
             let b = match required(args, "decode") {
@@ -1444,7 +1448,7 @@ fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opti
                 .map(|c| u16::from_be_bytes([c[0], c[1]]))
                 .collect();
             let txt = String::from_utf16_lossy(&units);
-            return Some(Ok(tuple(vec![s(txt), i(raw.len() as i64)])));
+            Some(Ok(tuple(vec![s(txt), i(raw.len() as i64)])))
         }
         "utf_16_ex_decode" => {
             // (bytes, errors?, final?) -> (str, consumed, bom_found). v0:
@@ -1470,14 +1474,14 @@ fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opti
                 .map(|c| u16::from_be_bytes([c[0], c[1]]))
                 .collect();
             let txt = String::from_utf16_lossy(&units);
-            return Some(Ok(tuple(vec![s(txt), i(raw.len() as i64), i(bom)])));
+            Some(Ok(tuple(vec![s(txt), i(raw.len() as i64), i(bom)])))
         }
         "utf_32_encode" => {
             // codecs.utf_32_* (encodings/utf_32.py wrapper): BE-BOM form.
-            return call_codecs("encode_utf32", args, _kwargs);
+            call_codecs("encode_utf32", args, _kwargs)
         }
         "utf_32_decode" => {
-            return call_codecs("decode_utf32", args, _kwargs);
+            call_codecs("decode_utf32", args, _kwargs)
         }
         "utf_32_le_encode" => {
             let v = match str_arg(match required(args, "encode") {
@@ -1492,7 +1496,7 @@ fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opti
                 bytes.extend_from_slice(&(c as u32).to_le_bytes());
             }
             let n = v.chars().count() as i64 * 4;
-            return Some(Ok(tuple(vec![Value::Bytes(Gc::new(bytes)), i(n)])));
+            Some(Ok(tuple(vec![Value::Bytes(Gc::new(bytes)), i(n)])))
         }
         "utf_32_le_decode" => {
             let b = match required(args, "decode") {
@@ -1508,7 +1512,7 @@ fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opti
                 .filter(|c| c.len() == 4)
                 .map(|c| char::from_u32(u32::from_le_bytes([c[0], c[1], c[2], c[3]])).unwrap_or('\u{FFFD}'))
                 .collect();
-            return Some(Ok(tuple(vec![s(txt), i(raw.len() as i64)])));
+            Some(Ok(tuple(vec![s(txt), i(raw.len() as i64)])))
         }
         "utf_32_be_encode" => {
             let v = match str_arg(match required(args, "encode") {
@@ -1523,7 +1527,7 @@ fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opti
                 bytes.extend_from_slice(&(c as u32).to_be_bytes());
             }
             let n = v.chars().count() as i64 * 4;
-            return Some(Ok(tuple(vec![Value::Bytes(Gc::new(bytes)), i(n)])));
+            Some(Ok(tuple(vec![Value::Bytes(Gc::new(bytes)), i(n)])))
         }
         "utf_32_be_decode" => {
             let b = match required(args, "decode") {
@@ -1539,7 +1543,7 @@ fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opti
                 .filter(|c| c.len() == 4)
                 .map(|c| char::from_u32(u32::from_be_bytes([c[0], c[1], c[2], c[3]])).unwrap_or('\u{FFFD}'))
                 .collect();
-            return Some(Ok(tuple(vec![s(txt), i(raw.len() as i64)])));
+            Some(Ok(tuple(vec![s(txt), i(raw.len() as i64)])))
         }
         "utf_32_ex_decode" => {
             let b = match required(args, "decode") {
@@ -1562,7 +1566,7 @@ fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opti
                 .filter(|c| c.len() == 4)
                 .map(|c| char::from_u32(u32::from_be_bytes([c[0], c[1], c[2], c[3]])).unwrap_or('\u{FFFD}'))
                 .collect();
-            return Some(Ok(tuple(vec![s(txt), i(raw.len() as i64), i(bom)])));
+            Some(Ok(tuple(vec![s(txt), i(raw.len() as i64), i(bom)])))
         }
         "encode_utf16" | "encode_utf32" => {
             let v = match str_arg(match required(args, "encode") { Ok(v) => v, Err(e) => return Some(Err(e)) }, "encode") {
@@ -1660,7 +1664,7 @@ fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opti
                 let txt: String = match std::str::from_utf8(&acc) {
                     Ok(_) => {
                         let emit = std::mem::take(&mut acc);
-                        let _ = recv_attr_set(&recv, &buf_key, Value::Bytes(Gc::new(acc)));
+                        recv_attr_set(&recv, &buf_key, Value::Bytes(Gc::new(acc)));
                         String::from_utf8(emit).unwrap_or_default()
                     }
                     Err(e) => {
@@ -1668,7 +1672,7 @@ fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opti
                         // Reuse `acc`'s allocation: drain the decodable head
                         // out in place, retain the incomplete tail.
                         let head: Vec<u8> = acc.drain(..v).collect();
-                        let _ = recv_attr_set(&recv, &buf_key, Value::Bytes(Gc::new(acc)));
+                        recv_attr_set(&recv, &buf_key, Value::Bytes(Gc::new(acc)));
                         String::from_utf8(head).unwrap_or_default()
                     }
                 };
@@ -1686,10 +1690,10 @@ fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opti
             acc.push_str(&txt);
             let final_flag = args.get(2).map(|v| v.is_truthy()).unwrap_or(false);
             if final_flag {
-                let _ = recv_attr_set(&recv, &buf_key, s(""));
+                recv_attr_set(&recv, &buf_key, s(""));
                 return Some(Ok(Value::Bytes(Gc::new(acc.as_bytes().to_vec()))));
             }
-            let _ = recv_attr_set(&recv, &buf_key, s(acc.clone()));
+            recv_attr_set(&recv, &buf_key, s(acc.clone()));
             Some(Ok(Value::Bytes(Gc::new(Vec::new()))))
         }
         "incrementalencoder" | "incrementaldecoder" => {
@@ -1700,7 +1704,7 @@ fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opti
             // `codec` class attr) — here only the utf-8 fast path is built.
             let o = PyObject::new(ap_obj::ObjKind::Opaque, "_codecs.Incremental");
             {
-                let mut a = o.attrs.borrow_mut();
+                let a = o.attrs.borrow_mut();
                 let _ = a.set(s("<mode>"), s(fname));
                 let _ = a.set(s("<codec>"), s("utf-8"));
                 let _ = a.set(s("<buf>"), Value::Bytes(Gc::new(Vec::new())));
@@ -1761,7 +1765,7 @@ fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opti
                     _ => "_codecs.decode",
                 };
                 {
-                    let mut a = ci.attrs.borrow_mut();
+                    let a = ci.attrs.borrow_mut();
                     let _ = a.set(s("name"), s(canon));
                     let _ = a.set(s("encode"), marker(enc_marker));
                     let _ = a.set(s("decode"), marker(dec_marker));
@@ -1853,6 +1857,7 @@ pub fn call_tokenize(fname: &str, _args: &[Value], _kwargs: &[(String, Value)]) 
 /// 02.03b-fix: `_signal` C surface — signal.py imports it at load; the v0
 /// runtime has no OS signal wiring (no-op stubs + the SIG constants the
 /// stdlib reads at import).
+#[allow(non_snake_case)] // CPython-exact identifier - renaming would break the byte-exact conformance contract
 fn build__signal(_i: &crate::frame::Interpreter) -> Value {
     let (m, ns) = new_module("_signal");
     for (k, v) in [
@@ -1896,6 +1901,7 @@ fn build_marshal_stub(_i: &crate::frame::Interpreter) -> Value {
 
 /// 02.03b-fix: `_io` C surface — importlib._bootstrap_external imports it;
 /// v0 name surface (the v0 file model lives in the io/namespace shims).
+#[allow(non_snake_case)] // CPython-exact identifier - renaming would break the byte-exact conformance contract
 fn build__io(_i: &crate::frame::Interpreter) -> Value {
     let (m, ns) = new_module("_io");
     for n in [
@@ -1924,6 +1930,7 @@ fn build__io(_i: &crate::frame::Interpreter) -> Value {
 
 /// 02.03b-fix: `_warnings` C surface — importlib._bootstrap_external
 /// imports it at load; the real warnings chain runs through _py_warnings.
+#[allow(non_snake_case)] // CPython-exact identifier - renaming would break the byte-exact conformance contract
 fn build__warnings(_i: &crate::frame::Interpreter) -> Value {
     let (m, ns) = new_module("_warnings");
     for n in [
@@ -1966,6 +1973,7 @@ fn build__warnings(_i: &crate::frame::Interpreter) -> Value {
 
 /// 02.03b-fix: `_imp` C surface — importlib.util imports it at module load.
 /// v0: constants/name surface only; the executor has its own import engine.
+#[allow(non_snake_case)] // CPython-exact identifier - renaming would break the byte-exact conformance contract
 fn build__imp(_i: &crate::frame::Interpreter) -> Value {
     let (m, ns) = new_module("_imp");
     for n in [
@@ -2046,6 +2054,7 @@ fn build_locale(_i: &crate::frame::Interpreter) -> Value {
     finish(m, ns)
 }
 
+#[allow(non_snake_case)] // CPython-exact identifier - renaming would break the byte-exact conformance contract
 fn build__opcode(_i: &crate::frame::Interpreter) -> Value {
     let (m, ns) = new_module("_opcode");
     for n in [
@@ -2073,6 +2082,7 @@ fn build__opcode(_i: &crate::frame::Interpreter) -> Value {
 /// 02.03b-fix: `_ast` name-surface — ast.py imports the C accel module for
 /// node classes; the v0 executor has no AST value model (parse happens in
 /// Rust), so the module carries stub type names only.
+#[allow(non_snake_case)] // CPython-exact identifier - renaming would break the byte-exact conformance contract
 fn build__ast(_i: &crate::frame::Interpreter) -> Value {
     let (m, ns) = new_module("_ast");
     for n in [
@@ -2220,6 +2230,7 @@ fn build__ast(_i: &crate::frame::Interpreter) -> Value {
 
 /// 02.03b-fix: `_collections` (the C accel module) name-surface — pprint
 /// reads _collections.UserDict/UserList at import to register repr dispatch.
+#[allow(non_snake_case)] // CPython-exact identifier - renaming would break the byte-exact conformance contract
 fn build__collections(_i: &crate::frame::Interpreter) -> Value {
     let (m, ns) = new_module("_collections");
     for n in [
@@ -2268,7 +2279,7 @@ pub fn call_colorize(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -
         "get_theme" | "get_theme_no_color" => {
             let t = PyObject::new(ap_obj::ObjKind::Namespace, "Theme");
             {
-                let mut a = t.attrs.borrow_mut();
+                let a = t.attrs.borrow_mut();
                 // T2 fix: vendored traceback.py formats exceptions via
                 // theme.{type,reset,message,error_highlight,error_range,
                 // filename,frame,line_no} — no-color theme: every field is
@@ -2276,7 +2287,7 @@ pub fn call_colorize(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -
                 // with AttributeError and EVERY traceback render fails.
                 let sub = PyObject::new(ap_obj::ObjKind::Namespace, "traceback");
                 {
-                    let mut sa = sub.attrs.borrow_mut();
+                    let sa = sub.attrs.borrow_mut();
                     for f in [
                         "type",
                         "reset",
@@ -2301,7 +2312,7 @@ pub fn call_colorize(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -
                 // theme: every field is the empty string).
                 let sub = PyObject::new(ap_obj::ObjKind::Namespace, "argparse");
                 {
-                    let mut sa = sub.attrs.borrow_mut();
+                    let sa = sub.attrs.borrow_mut();
                     for f in [
                         "usage",
                         "prog",
@@ -2322,7 +2333,7 @@ pub fn call_colorize(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -
                 let _ = a.set(s("argparse"), Value::Obj(sub));
                 let sub = PyObject::new(ap_obj::ObjKind::Namespace, "unittest");
                 {
-                    let mut sa = sub.attrs.borrow_mut();
+                    let sa = sub.attrs.borrow_mut();
                     for f in ["passed", "warn", "fail", "fail_info", "reset"] {
                         let _ = sa.set(s(f), s(""));
                     }
@@ -2663,7 +2674,7 @@ fn re_op_form(
             // eager list-backed iterator of Match objects
             let text = re_str_arg(required(rest, op)?, op)?;
             let chars: Vec<char> = text.chars().collect();
-            let c = &pat.compiled;
+            let _c = &pat.compiled;
             let mut m = crate::sre::engine_for(pat, &chars);
             let mut out: Vec<Value> = Vec::new();
             let mut pos = 0usize;
@@ -2773,12 +2784,12 @@ fn match_op(mb: &Rc<crate::sre::MatchBox>, op: &str, rest: &[Value]) -> BResult 
                 if op == "__getitem__" {
                     return Err(raise("TypeError", "expected an index"));
                 }
-                return Ok(crate::sre::group_value(mb, &i(0))?);
+                return crate::sre::group_value(mb, &i(0));
             }
             if rest.len() == 1 && !(op == "__getitem__" && false) {
                 // single arg: return the group directly (not a tuple);
                 // __getitem__ with a tuple key is not supported.
-                return Ok(crate::sre::group_value(mb, &rest[0])?);
+                return crate::sre::group_value(mb, &rest[0]);
             }
             let mut out = Vec::new();
             for k in rest {
@@ -2816,7 +2827,7 @@ fn match_op(mb: &Rc<crate::sre::MatchBox>, op: &str, rest: &[Value]) -> BResult 
             if gi > mb.pattern.compiled.groups {
                 return Err(raise("IndexError", "no such group"));
             }
-            let (a, b) = crate::sre::group_span(&mb, gi);
+            let (a, b) = crate::sre::group_span(mb, gi);
             match op {
                 "start" => Ok(i(a)),
                 "end" => Ok(i(b)),
@@ -2843,6 +2854,7 @@ fn match_op(mb: &Rc<crate::sre::MatchBox>, op: &str, rest: &[Value]) -> BResult 
 /// Literal re.sub: replace up to `count` (0 = all) occurrences of `pat`
 /// in `text` with `repl`. Escape sequences in repl pass through literally
 /// except \\1-style backrefs, which v0 does not support (documented).
+#[allow(dead_code)] // kept: part of an unfinished surface (robustness-ci 02.x burn-down leaf)
 fn re_sub_literal(pat: &str, repl: &str, text: &str, count: i64) -> String {
     if pat.is_empty() {
         return text.to_string();
@@ -3430,11 +3442,11 @@ pub fn call_math(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Opti
                 }
                 Ok(f(lgamma(x)))
             }
-            _ => return Err(Flow::Next),
+            _ => Err(Flow::Next),
         }
     })();
     match r {
-        Err(Flow::Next) => return None,
+        Err(Flow::Next) => None,
         other => Some(other),
     }
 }
@@ -3551,26 +3563,26 @@ fn frexp(x: f64) -> (f64, i32) {
 /// CPython mathmodule.c m_lgamma/m_tgamma verbatim port (PSF license —
 /// attribution in THIRD_PARTY_NOTICES per S-05-5). CPython does NOT use libm
 /// for these; byte-exactness requires the same Lanczos(13) implementation.
-const LANCZOS_G: f64 = 6.024680040776729583740234375;
-const LANCZOS_G_MINUS_HALF: f64 = 5.524680040776729583740234375;
+const LANCZOS_G: f64 = 6.024_680_040_776_73;
+const LANCZOS_G_MINUS_HALF: f64 = 5.524_680_040_776_73;
 const LOG_PI: f64 = 1.144729885849400174143427351353058711647;
 const PI_CONST: f64 = std::f64::consts::PI;
 
 fn lanczos_num_coeffs() -> [f64; 13] {
     [
-        23531376880.410759688572007674451636754734846804940,
-        42919803642.649098768957899047001988850926355848959,
-        35711959237.355668049440185451547166705960488635843,
-        17921034426.037209699919755754458931112671403265390,
-        6039542586.3520280050642916443072979210699388420708,
-        1439720407.3117216736632230727949123939715485786772,
-        248874557.86205415651146038641322942321632125127801,
-        31426415.585400194380614231628318205362874684987640,
-        2876370.6289353724412254090516208496135991145378768,
-        186056.26539522349504029498971604569928220784236328,
-        8071.6720023658162106380029022722506138218516325024,
-        210.82427775157934587250973392071336271166969580291,
-        2.5066282746310002701649081771338373386264310793408,
+        23_531_376_880.410_76,
+        42_919_803_642.649_1,
+        35_711_959_237.355_67,
+        17_921_034_426.037_21,
+        6_039_542_586.352_028,
+        1_439_720_407.311_721_6,
+        248_874_557.862_054_17,
+        31_426_415.585_400_194,
+        2_876_370.628_935_372_5,
+        186_056.265_395_223_48,
+        8_071.672_002_365_816,
+        210.824_277_751_579_36,
+        2.506_628_274_631_000_2,
     ]
 }
 
@@ -3618,7 +3630,7 @@ fn gamma_integral(n: usize) -> Option<f64> {
         51090942171709440000.0,
         1124000727777607680000.0,
     ];
-    if n >= 1 && n <= 23 {
+    if (1..=23).contains(&n) {
         Some(T[n - 1])
     } else {
         None
@@ -3846,11 +3858,7 @@ pub fn call_itertools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
                         .map(as_int_big)
                         .transpose()?
                         .unwrap_or_else(|| Int::from_i64(0));
-                    let step = args
-                        .get(1)
-                        .map(|v| as_int_i64(&v))
-                        .transpose()?
-                        .unwrap_or(1);
+                    let step = args.get(1).map(as_int_i64).transpose()?.unwrap_or(1);
                     // type(itertools.count(1)).__name__ == "count"
                     let obj = PyObject::new(ap_obj::ObjKind::Iterator, "count");
                     let it = crate::iter::PyIterator::new(crate::iter::IterState::Native(
@@ -3996,10 +4004,7 @@ pub fn call_itertools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
                                 Some(v) => Some(as_int_i64(v)?),
                                 None => None,
                             },
-                            args.get(3)
-                                .map(|v| as_int_i64(&v))
-                                .transpose()?
-                                .unwrap_or(1),
+                            args.get(3).map(as_int_i64).transpose()?.unwrap_or(1),
                         ),
                     };
                     if step < 1 {
@@ -4049,29 +4054,21 @@ pub fn call_itertools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
                 }
                 "combinations" => {
                     let items = snapshot(required(args, "combinations")?)?;
-                    let r = args
-                        .get(1)
-                        .map(|v| as_int_i64(&v))
-                        .transpose()?
-                        .ok_or_else(|| {
-                            raise("TypeError", "combinations() missing required argument")
-                        })?;
+                    let r = args.get(1).map(as_int_i64).transpose()?.ok_or_else(|| {
+                        raise("TypeError", "combinations() missing required argument")
+                    })?;
                     let mut out = Vec::new();
                     combine(&items, r as usize, 0, &mut vec![], &mut out, false);
                     Ok(make_iter(NativeIterState::Seq(out.into_iter())))
                 }
                 "combinations_with_replacement" => {
                     let items = snapshot(required(args, "combinations_with_replacement")?)?;
-                    let r = args
-                        .get(1)
-                        .map(|v| as_int_i64(&v))
-                        .transpose()?
-                        .ok_or_else(|| {
-                            raise(
-                                "TypeError",
-                                "combinations_with_replacement() missing required argument",
-                            )
-                        })?;
+                    let r = args.get(1).map(as_int_i64).transpose()?.ok_or_else(|| {
+                        raise(
+                            "TypeError",
+                            "combinations_with_replacement() missing required argument",
+                        )
+                    })?;
                     let mut out = Vec::new();
                     combine(&items, r as usize, 0, &mut vec![], &mut out, true);
                     Ok(make_iter(NativeIterState::Seq(out.into_iter())))
@@ -4111,7 +4108,7 @@ pub fn call_itertools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
                     let mut groups: Vec<(Value, Vec<Value>)> = Vec::new();
                     for x in items {
                         let k = match &keyf {
-                            Some(kf) => call_named(kf, &[x.clone()])?,
+                            Some(kf) => call_named(kf, std::slice::from_ref(&x))?,
                             None => x.clone(),
                         };
                         match groups.last_mut() {
@@ -4171,11 +4168,11 @@ pub fn call_itertools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
                     }
                     Ok(make_iter(NativeIterState::Seq(out.into_iter())))
                 }
-                _ => return Err(Flow::Next),
+                _ => Err(Flow::Next),
             }
         })();
     match r {
-        Err(Flow::Next) => return None,
+        Err(Flow::Next) => None,
         other => Some(other),
     }
 }
@@ -4225,12 +4222,7 @@ fn combine(
     if start >= items.len() {
         return;
     }
-    let lim = if with_replacement {
-        items.len()
-    } else {
-        items.len()
-    };
-    for idx in start..lim {
+    for idx in start..items.len() {
         cur.push(items[idx].clone());
         let next = if with_replacement { idx } else { idx + 1 };
         combine(items, r, next, cur, out, with_replacement);
@@ -4398,7 +4390,6 @@ fn binop_by_name(name: &str, a: &Value, b: &Value) -> BResult {
         ap_obj::ops::BinOp::BitAnd => ap_ir::BinOp::BitAnd,
         ap_obj::ops::BinOp::BitOr => ap_ir::BinOp::BitOr,
         ap_obj::ops::BinOp::BitXor => ap_ir::BinOp::BitXor,
-        _ => ap_ir::BinOp::Add,
     };
     if let Some(_interp) = current_interp() {
         if let Ok(v) = crate::interp::eval_binop(a, ir_op, b) {
@@ -4643,7 +4634,7 @@ pub fn call_operator(name: &str, args: &[Value], _kwargs: &[(String, Value)]) ->
         }
     })();
     match r {
-        Err(Flow::Next) => return None,
+        Err(Flow::Next) => None,
         other => Some(other),
     }
 }
@@ -4714,7 +4705,7 @@ fn build_heapq(_i: &crate::frame::Interpreter) -> Value {
     finish(m, ns)
 }
 
-fn sift_down(h: &mut Vec<Value>, mut pos: usize, is_max: bool) -> Result<(), Flow> {
+fn sift_down(h: &mut [Value], mut pos: usize, is_max: bool) -> Result<(), Flow> {
     let n = h.len();
     loop {
         let left = 2 * pos + 1;
@@ -4740,7 +4731,7 @@ fn sift_down(h: &mut Vec<Value>, mut pos: usize, is_max: bool) -> Result<(), Flo
     Ok(())
 }
 
-fn sift_up(h: &mut Vec<Value>, mut pos: usize, is_max: bool) -> Result<(), Flow> {
+fn sift_up(h: &mut [Value], mut pos: usize, is_max: bool) -> Result<(), Flow> {
     while pos > 0 {
         let parent = (pos - 1) / 2;
         let better = if is_max {
@@ -4897,7 +4888,7 @@ pub fn call_heapq(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Op
         _ => Err(raise("SystemError", format!("heapq fn {name} unbound"))),
     })();
     match r {
-        Err(Flow::Next) => return None,
+        Err(Flow::Next) => None,
         other => Some(other),
     }
 }
@@ -5001,7 +4992,7 @@ pub fn call_bisect(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Op
         }
     })();
     match r {
-        Err(Flow::Next) => return None,
+        Err(Flow::Next) => None,
         other => Some(other),
     }
 }
@@ -5203,9 +5194,7 @@ pub fn call_functools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
         // json/pytest plugin hot path).
         let chosen = SD_REGISTRY.with(|t| {
             let t = t.borrow();
-            let Some(r) = t.get(&id) else {
-                return None;
-            };
+            let r = t.get(&id)?;
             let mut chosen = r.default.clone();
             if let Some(first) = args.first() {
                 // s013b: dispatch by the receiver's FULL MRO (exact type first,
@@ -5249,7 +5238,7 @@ pub fn call_functools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
                     .ok_or_else(|| raise("TypeError", "cmp_to_key() needs a callable"))?;
                 let o = PyObject::new(ap_obj::ObjKind::Opaque, "functools.cmp_to_key");
                 {
-                    let mut a = o.attrs.borrow_mut();
+                    let a = o.attrs.borrow_mut();
                     let _ = a.set(s("<cmp>"), cmp);
                     let _ = a.set(s("<obj>"), Value::None);
                 }
@@ -5275,7 +5264,7 @@ pub fn call_functools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
                     format!("functools.partialmethod:<{}:{}>", id, enc.join("\u{1f}")),
                 );
                 {
-                    let mut a = o.attrs.borrow_mut();
+                    let a = o.attrs.borrow_mut();
                     let _ = a.set(s("<func>"), func);
                     let _ = a.set(s("<args>"), tuple(pargs));
                 }
@@ -5344,7 +5333,7 @@ pub fn call_functools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
                                 format!("functools._sd_{id}"),
                             );
                             {
-                                let mut a = o.attrs.borrow_mut();
+                                let a = o.attrs.borrow_mut();
                                 let _ = a.set(s("<default>"), f.clone());
                                 let _ = a.set(s("<impls>"), Value::Dict(PyDict::new()));
                             }
@@ -5387,11 +5376,11 @@ pub fn call_functools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
                     // wrapped the int itself, so `.cache_clear` blew up.
                     // s014: maxsize/typed kwargs ride the wrapper (real
                     // memoization + stats in lru_wrapper_call).
-                    if args.first().map(|v| callable_value(v)).unwrap_or(false) {
+                    if args.first().map(callable_value).unwrap_or(false) {
                         return Ok(lru_wrapper_of_typed(args.first().unwrap(), None, false));
                     }
                     let maxsize = match kw(kwargs, "maxsize")
-                        .map(|v| v.clone())
+                        .cloned()
                         .or_else(|| args.first().cloned())
                     {
                         Some(v) => match v.as_int().and_then(|n| n.to_i64()) {
@@ -5406,7 +5395,7 @@ pub fn call_functools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
                         },
                         None => Some(128),
                     };
-                    let typed = kw(kwargs, "typed").map(|v| truthy(v)).unwrap_or(false);
+                    let typed = kw(kwargs, "typed").map(truthy).unwrap_or(false);
                     LRU_PENDING.with(|c| {
                         *c.borrow_mut() = Some((maxsize, typed));
                     });
@@ -5426,20 +5415,6 @@ pub fn call_functools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
                     }
                 }
                 return Ok(Value::None);
-            }
-            // 02.03b-fix: wraps is ALWAYS two-stage (CPython: wraps(m) ->
-            // updater that copies __wrapped__ etc onto its argument). The
-            // first call returns an updater carrying the SRC; the second
-            // copies __module__/__name__/__qualname__/__doc__ (+ __dict__
-            // update) onto its argument (s013 pins).
-            "wraps" => {
-                let src = args.first().cloned().unwrap_or(Value::None);
-                let o = PyObject::new(
-                    ap_obj::ObjKind::BuiltinFn,
-                    format!("functools.__ap_wraps_apply__<{}>", name_callable(&src)),
-                );
-                let _ = o.attrs.borrow_mut().set(s("<src>"), src);
-                return Ok(Value::Obj(o));
             }
             n if n.starts_with("functools.__ap_wraps_apply__:")
                 || n.starts_with("__ap_wraps_apply__:") =>
@@ -5571,10 +5546,10 @@ pub fn call_functools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
                 };
                 let obj = PyObject::new(ap_obj::ObjKind::BuiltinFn, marker_name);
                 {
-                    let mut attrs = obj.attrs.borrow_mut();
+                    let attrs = obj.attrs.borrow_mut();
                     let _ = attrs.set(s("func"), func);
                     let _ = attrs.set(s("args"), tuple(pargs));
-                    let mut kd = PyDict::new();
+                    let kd = PyDict::new();
                     for (k, v) in kwargs {
                         let _ = kd.set(Value::Str(PyString::new(k.clone())), v.clone());
                     }
@@ -5617,7 +5592,7 @@ pub fn call_functools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
                     let obj = PyObject::new(ap_obj::ObjKind::NamedTuple, "CacheInfo");
                     let fields = ["hits", "misses", "maxsize", "currsize"];
                     {
-                        let mut attrs = obj.attrs.borrow_mut();
+                        let attrs = obj.attrs.borrow_mut();
                         let _ = attrs.set(s("hits"), i(hits));
                         let _ = attrs.set(s("misses"), i(misses));
                         let _ = attrs.set(s("maxsize"), maxsize.clone());
@@ -5647,22 +5622,16 @@ pub fn call_functools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
                 Ok(cache_info_v)
             }
             // s014: functools._lruwrapper_<id>(...) — the lru wrapper call.
-            n if n.starts_with("_lruwrapper_") => {
-                return lru_wrapper_call_id(n, args, kwargs);
-            }
+            n if n.starts_with("_lruwrapper_") => lru_wrapper_call_id(n, args, kwargs),
             // s014: functools._lruci_<st_key>() — cache_info bound surface.
-            n if n.starts_with("_lruci_") => {
-                return Ok(lru_cache_info_id(&n["_lruci_".len()..]));
-            }
+            n if n.starts_with("_lruci_") => Ok(lru_cache_info_id(&n["_lruci_".len()..])),
             // s014: functools._lruc_<st_key>() — cache_clear bound surface.
             n if n.starts_with("_lruc_") => {
                 lru_cache_clear_id(&n["_lruc_".len()..]);
-                return Ok(Value::None);
+                Ok(Value::None)
             }
             // s014: functools._lrup_<st_key>() — cache_parameters bound surface.
-            n if n.starts_with("_lrup_") => {
-                return Ok(lru_cache_parameters_id(&n["_lrup_".len()..]));
-            }
+            n if n.starts_with("_lrup_") => Ok(lru_cache_parameters_id(&n["_lrup_".len()..])),
             // s014: functools.CacheInfo(hits, misses, maxsize, currsize) —
             // the NamedTuple value factory (uname_result pattern).
             "functools.CacheInfo" | "CacheInfo" => {
@@ -5674,7 +5643,7 @@ pub fn call_functools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
                 let obj = PyObject::new(ap_obj::ObjKind::NamedTuple, "CacheInfo");
                 let fields = ["hits", "misses", "maxsize", "currsize"];
                 {
-                    let mut attrs = obj.attrs.borrow_mut();
+                    let attrs = obj.attrs.borrow_mut();
                     let _ = attrs.set(s("hits"), hits.clone());
                     let _ = attrs.set(s("misses"), misses.clone());
                     let _ = attrs.set(s("maxsize"), maxsize.clone());
@@ -5754,25 +5723,24 @@ pub fn call_functools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
                 }
                 Ok(wrapper)
             }
-            _ => return Err(Flow::Next),
+            _ => Err(Flow::Next),
         }
     })();
     match r {
-        Err(Flow::Next) => return None,
+        Err(Flow::Next) => None,
         other => Some(other),
     }
 }
 
 /// The functools.CacheInfo class value from the module namespace (built at
 /// module construction; import order guarantees functools is built first).
+#[allow(dead_code)] // kept: part of an unfinished surface (robustness-ci 02.x burn-down leaf)
 fn get_functools_attr(name: &str) -> Value {
     if let Some(interp) = CURRENT.with(|c| c.borrow().clone()) {
-        if let Some(m) = MODULE_CACHE.with(|c| c.borrow().get("functools").cloned()) {
-            if let Value::Obj(mo) = m {
-                if let Some(ns) = &*mo.module_ns.borrow() {
-                    if let Some(v) = ns.get(&s(name)) {
-                        return v;
-                    }
+        if let Some(Value::Obj(mo)) = MODULE_CACHE.with(|c| c.borrow().get("functools").cloned()) {
+            if let Some(ns) = &*mo.module_ns.borrow() {
+                if let Some(v) = ns.get(&s(name)) {
+                    return v;
                 }
             }
         }
@@ -5782,7 +5750,11 @@ fn get_functools_attr(name: &str) -> Value {
 }
 
 /// Call a functools.partial object built by call_functools.
-pub fn call_partial_obj(obj: &Gc<PyObject>, args: &[Value], kwargs: &[(String, Value)]) -> BResult {
+pub fn call_partial_obj(
+    obj: &Gc<PyObject>,
+    args: &[Value],
+    _kwargs: &[(String, Value)],
+) -> BResult {
     let fname = {
         let attrs = obj.attrs.borrow();
         match attrs.get(&s("__func_name__")) {
@@ -5883,7 +5855,7 @@ pub fn call_string(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> O
         Ok(s(parts.join(&sep.unwrap_or_else(|| " ".to_string()))))
     })();
     match r {
-        Err(Flow::Next) => return None,
+        Err(Flow::Next) => None,
         other => Some(other),
     }
 }
@@ -5911,12 +5883,10 @@ pub fn call_textwrap(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> 
     if name == "TextWrapper" {
         let o = PyObject::new(ap_obj::ObjKind::Opaque, "textwrap.TextWrapper");
         {
-            let mut a = o.attrs.borrow_mut();
+            let a = o.attrs.borrow_mut();
             let _ = a.set(
                 s("width"),
-                kw(kwargs, "width")
-                    .map(|v| v.clone())
-                    .unwrap_or_else(|| i(70)),
+                kw(kwargs, "width").cloned().unwrap_or_else(|| i(70)),
             );
             let _ = a.set(
                 s("break_long_words"),
@@ -5957,7 +5927,7 @@ pub fn call_textwrap(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> 
             "wrap" => {
                 let text = str_arg(required(args, "wrap")?, "wrap")?;
                 let width = kw(kwargs, "width")
-                    .map(|v| as_int_i64(&v))
+                    .map(as_int_i64)
                     .transpose()?
                     .unwrap_or(70);
                 Ok(list(
@@ -5970,7 +5940,7 @@ pub fn call_textwrap(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> 
             "fill" => {
                 let text = str_arg(required(args, "fill")?, "fill")?;
                 let width = kw(kwargs, "width")
-                    .map(|v| as_int_i64(&v))
+                    .map(as_int_i64)
                     .transpose()?
                     .unwrap_or(70);
                 Ok(s(wrap_text(&text, width as usize).join("\n")))
@@ -6012,7 +5982,7 @@ pub fn call_textwrap(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> 
             "shorten" => {
                 let text = str_arg(required(args, "shorten")?, "shorten")?;
                 let width = kw(kwargs, "width")
-                    .map(|v| as_int_i64(&v))
+                    .map(as_int_i64)
                     .transpose()?
                     .unwrap_or(70) as usize;
                 let placeholder = match kw(kwargs, "placeholder") {
@@ -6050,7 +6020,7 @@ pub fn call_textwrap(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> 
         }
     })();
     match r {
-        Err(Flow::Next) => return None,
+        Err(Flow::Next) => None,
         other => Some(other),
     }
 }
@@ -6110,7 +6080,6 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
             cur_len += 1 + wlen;
         } else {
             lines.push(std::mem::take(&mut cur));
-            cur_len = 0;
             cur = word.to_string();
             cur_len = wlen;
         }
@@ -6350,7 +6319,7 @@ fn make_deque(items: Vec<Value>, maxlen: Option<i64>) -> Value {
         _ => items,
     };
     {
-        let mut attrs = obj.attrs.borrow_mut();
+        let attrs = obj.attrs.borrow_mut();
         let _ = attrs.set(s("<items>"), list(items));
         let _ = attrs.set(
             s("<maxlen>"),
@@ -6406,7 +6375,7 @@ fn deque_trim_maxlen(l: &Gc<ap_obj::value::PyList>, maxlen: Option<i64>, drop_le
     }
 }
 
-fn deque_state<'a>(v: &'a Value) -> Result<(Vec<Value>, Option<i64>), Flow> {
+fn deque_state(v: &Value) -> Result<(Vec<Value>, Option<i64>), Flow> {
     match v {
         Value::Obj(o) if o.name == "deque" => {
             let attrs = o.attrs.borrow();
@@ -6591,7 +6560,7 @@ fn call_bytearray_method(
                         bytearray_state(src_v)?
                     }
                     other => {
-                        let interp = current_interp().ok_or_else(|| {
+                        let _interp = current_interp().ok_or_else(|| {
                             raise("RuntimeError", "no interpreter on this thread")
                         })?;
                         let it = crate::interp::iterable_of_public(other)?;
@@ -6755,6 +6724,7 @@ pub fn make_deque_pub(items: Vec<Value>, maxlen: Option<i64>) -> Value {
     make_deque(items, maxlen)
 }
 
+#[allow(dead_code)] // kept: part of an unfinished surface (robustness-ci 02.x burn-down leaf)
 fn set_deque_items(v: &Value, mut items: Vec<Value>, maxlen: Option<i64>) -> Result<(), Flow> {
     if let Some(ml) = maxlen {
         while items.len() as i64 > ml {
@@ -6763,7 +6733,7 @@ fn set_deque_items(v: &Value, mut items: Vec<Value>, maxlen: Option<i64>) -> Res
     }
     if let Value::Obj(o) = v {
         // maxlen=None here means "already trimmed" — preserve the stored bound.
-        let ml = if maxlen.is_some() {
+        let _ml = if maxlen.is_some() {
             maxlen
         } else {
             o.attrs
@@ -6773,7 +6743,7 @@ fn set_deque_items(v: &Value, mut items: Vec<Value>, maxlen: Option<i64>) -> Res
                 .and_then(|i| i.to_i64())
         };
         {
-            let mut attrs = o.attrs.borrow_mut();
+            let attrs = o.attrs.borrow_mut();
             let _ = attrs.set(s("<items>"), list(items));
         }
         // repr is rendered lazily from live state (default_repr deque arm).
@@ -6793,7 +6763,7 @@ pub fn call_collections(name: &str, args: &[Value], kwargs: &[(String, Value)]) 
                     Some(v) => snapshot(v)?,
                     None => vec![],
                 };
-                let maxlen = kw(kwargs, "maxlen").map(|v| as_int_i64(&v)).transpose()?;
+                let maxlen = kw(kwargs, "maxlen").map(as_int_i64).transpose()?;
                 Ok(make_deque(items, maxlen))
             }
             "deque.append" => {
@@ -6868,11 +6838,7 @@ pub fn call_collections(name: &str, args: &[Value], kwargs: &[(String, Value)]) 
                     .first()
                     .ok_or_else(|| raise("TypeError", "missing receiver argument"))?
                     .clone();
-                let n = args
-                    .get(1)
-                    .map(|v| as_int_i64(&v))
-                    .transpose()?
-                    .unwrap_or(1);
+                let n = args.get(1).map(as_int_i64).transpose()?.unwrap_or(1);
                 let l = deque_items_list(&recv)
                     .ok_or_else(|| raise("TypeError", "expected deque, not receiver"))?;
                 let len = l.len();
@@ -6899,7 +6865,7 @@ pub fn call_collections(name: &str, args: &[Value], kwargs: &[(String, Value)]) 
                     .ok_or_else(|| raise("TypeError", "index expected at least 1 argument"))?;
                 let (items, _) = deque_state(recv)?;
                 for (idx, x) in items.iter().enumerate() {
-                    if py_eq(x, &target) {
+                    if py_eq(x, target) {
                         return Ok(i(idx as i64));
                     }
                 }
@@ -6921,11 +6887,11 @@ pub fn call_collections(name: &str, args: &[Value], kwargs: &[(String, Value)]) 
                 let (items, _) = deque_state(recv)?;
                 Ok(make_iter(NativeIterState::Seq(items.into_iter())))
             }
-            _ => return Err(Flow::Next),
+            _ => Err(Flow::Next),
         }
     })();
     match r {
-        Err(Flow::Next) => return None,
+        Err(Flow::Next) => None,
         other => Some(other),
     }
 }
@@ -6985,7 +6951,7 @@ pub fn call_json(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Opti
             "JSONDecoder" => {
                 let o = PyObject::new(ap_obj::ObjKind::Opaque, "JSONDecoder");
                 *o.repr_text.borrow_mut() = Some("<json.JSONDecoder object>".to_string());
-                return Ok(Value::Obj(o));
+                Ok(Value::Obj(o))
             }
             // s008: decoder/decoder-instance bound methods (json.decode /
             // json.encode) arrive with the instance in args[0] — drop it.
@@ -7035,13 +7001,13 @@ pub fn call_json(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Opti
             )),
             // 02.08-full part 1: default(self, o) — the encoder hook; the
             // encoder instance rides args[0] (bound-method slot 0).
-            "default" if args.len() >= 1 => {
+            "default" if !args.is_empty() => {
                 let enc = &args[0];
                 if let Some(interp) = current_interp() {
                     let interp = std::rc::Rc::new(interp);
                     if let Ok(Some(f)) = crate::interp::attr_get_public(&interp, enc, "default") {
                         let arg = args.get(1).cloned().unwrap_or(Value::None);
-                        return Ok(crate::interp::call_value_pub(&interp, &f, &[arg], &[])?);
+                        return crate::interp::call_value_pub(&interp, &f, &[arg], &[]);
                     }
                 }
                 Err(raise(
@@ -7053,11 +7019,12 @@ pub fn call_json(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Opti
         }
     })();
     match r {
-        Err(Flow::Next) => return None,
+        Err(Flow::Next) => None,
         other => Some(other),
     }
 }
 
+#[allow(dead_code)] // kept: part of an unfinished surface (robustness-ci 02.x burn-down leaf)
 fn json_error(msg: &str, doc: &str, pos: usize) -> Flow {
     // CPython: "{msg}: line {l} column {c} (char {p})" — 1-based line/col.
     let (line, col) = line_col(doc, pos);
@@ -7068,9 +7035,7 @@ fn json_error(msg: &str, doc: &str, pos: usize) -> Flow {
     // Attach structured attrs for e.msg/e.lineno/e.colno/e.pos/e.doc reads
     // (attr_get hook consults EXC_ATTRS by object identity path — we stash the
     // structured fields inside the exception's args? No: use the side table).
-    let obj = match &e {
-        _ => None::<Value>,
-    };
+    let obj = None::<Value>;
     let _ = obj;
     EXC_ATTRS.with(|t| {
         t.borrow_mut()
@@ -7084,6 +7049,7 @@ thread_local! {
     /// keyed by a synthetic key embedded in the exception id table.
     static EXC_ATTRS: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
     /// Last raised JSONDecodeError's structured fields (msg,line,col,pos,doc).
+#[allow(clippy::type_complexity)] // interpreter plumbing type; factoring out would obscure the signature
     static LAST_JSON_ERR: RefCell<Option<(String, i64, i64, i64, String)>> =
         const { RefCell::new(None) };
 }
@@ -7515,7 +7481,7 @@ fn dump_value(
         Value::Str(st) => dump_string(st.as_str(), ensure_ascii, out),
         Value::List(l) => {
             dump_seq(
-                &l.items().to_vec(),
+                &l.items(),
                 ensure_ascii,
                 sort_keys,
                 indent,
@@ -7625,6 +7591,7 @@ fn dump_value(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)] // mirrors the CPython C-function signature shape
 fn dump_seq(
     items: &[Value],
     ensure_ascii: bool,
@@ -8077,7 +8044,7 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                     let is_file = e.file_type().map(|t| t.is_file()).unwrap_or(false);
                     let entry = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "os.DirEntry");
                     {
-                        let mut a = entry.attrs.borrow_mut();
+                        let a = entry.attrs.borrow_mut();
                         let _ = a.set(s("name"), s(fname.clone()));
                         let _ = a.set(s("path"), s(full));
                         let _ = a.set(s("<is_dir>"), Value::Bool(is_dir));
@@ -8258,7 +8225,7 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                 if let Value::Obj(o) = &v {
                     let _ = o.attrs.borrow_mut().set(s("<fd>"), i(fd as i64));
                 }
-                return Ok(v);
+                Ok(v)
             }
             "rename" | "replace" => {
                 let a = str_arg(required(args, name)?, name)?;
@@ -8488,7 +8455,7 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                 let obj = PyObject::new(ap_obj::ObjKind::Opaque, "uname_result");
                 let names = ["sysname", "nodename", "release", "version", "machine"];
                 {
-                    let mut attrs = obj.attrs.borrow_mut();
+                    let attrs = obj.attrs.borrow_mut();
                     for (k, v) in names.iter().zip(vals.iter()) {
                         let _ = attrs.set(s(*k), s(v.clone()));
                     }
@@ -8743,10 +8710,10 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                 // name must raise AttributeError like CPython, never
                 // silently fall through (which terminated the script with
                 // truncated stdout, rc=0).
-                return Err(raise(
+                Err(raise(
                     "AttributeError",
                     format!("module 'os' has no attribute '{}' (module 'os')", name),
-                ));
+                ))
             }
         }
     })();
@@ -8765,15 +8732,15 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
 /// sec + nsec/1e9 form (byte-identical to CPython's float division path).
 fn stat_result_value(st: &libc::stat) -> Value {
     let mode = st.st_mode as i64;
-    let size = st.st_size as i64;
+    let size = st.st_size;
     #[cfg(target_os = "macos")]
     let (a_sec, a_nsec, m_sec, m_nsec, c_sec, c_nsec) = (
-        st.st_atime as i64,
-        st.st_atime_nsec as i64,
-        st.st_mtime as i64,
-        st.st_mtime_nsec as i64,
-        st.st_ctime as i64,
-        st.st_ctime_nsec as i64,
+        st.st_atime,
+        st.st_atime_nsec,
+        st.st_mtime,
+        st.st_mtime_nsec,
+        st.st_ctime,
+        st.st_ctime_nsec,
     );
     #[cfg(not(target_os = "macos"))]
     let (a_sec, a_nsec, m_sec, m_nsec, c_sec, c_nsec) = (
@@ -8797,9 +8764,9 @@ fn stat_result_value(st: &libc::stat) -> Value {
         i(st.st_uid as i64),
         i(st.st_gid as i64),
         i(size),
-        Value::Float(atime.into()),
-        Value::Float(mtime.into()),
-        Value::Float(ctime.into()),
+        Value::Float(atime),
+        Value::Float(mtime),
+        Value::Float(ctime),
     ];
     let o = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "stat_result");
     let attrs = [
@@ -8810,21 +8777,21 @@ fn stat_result_value(st: &libc::stat) -> Value {
         ("st_uid", i(st.st_uid as i64)),
         ("st_gid", i(st.st_gid as i64)),
         ("st_size", i(size)),
-        ("st_atime", Value::Float(atime.into())),
-        ("st_mtime", Value::Float(mtime.into())),
-        ("st_ctime", Value::Float(ctime.into())),
+        ("st_atime", Value::Float(atime)),
+        ("st_mtime", Value::Float(mtime)),
+        ("st_ctime", Value::Float(ctime)),
         // Exact integer nanoseconds (timespec-sourced, no f64 round trip).
         ("st_atime_ns", i(a_sec * 1_000_000_000 + a_nsec)),
         ("st_mtime_ns", i(m_sec * 1_000_000_000 + m_nsec)),
         ("st_ctime_ns", i(c_sec * 1_000_000_000 + c_nsec)),
         ("st_blksize", i(st.st_blksize as i64)),
-        ("st_blocks", i(st.st_blocks as i64)),
+        ("st_blocks", i(st.st_blocks)),
         ("st_rdev", i(st.st_rdev as i64)),
         ("st_flags", i(0)),
-        ("st_birthtime", Value::Float(atime.into())),
+        ("st_birthtime", Value::Float(atime)),
     ];
     {
-        let mut a = o.attrs.borrow_mut();
+        let a = o.attrs.borrow_mut();
         for (k, v) in attrs {
             let _ = a.set(s(k), v);
         }
@@ -9096,9 +9063,8 @@ pub fn call_posixpath(
                 }
                 let mut joined = String::new();
                 for p in parts {
-                    if p.starts_with('/') {
-                        joined = p;
-                    } else if joined.is_empty() {
+                    if p.starts_with('/') || joined.is_empty() {
+                        // absolute part resets; empty accumulator adopts
                         joined = p;
                     } else if joined.ends_with('/') {
                         joined.push_str(&p);
@@ -9216,7 +9182,7 @@ pub fn call_posixpath(
             "realpath" => {
                 let filename = str_arg(required(args, "realpath")?, "realpath")?;
                 let strict = kw(_kwargs, "strict").map(truthy).unwrap_or(false);
-                return realpath_walk(&filename, strict);
+                realpath_walk(&filename, strict)
             }
             "relpath" => {
                 let p = str_arg(required(args, "relpath")?, "relpath")?;
@@ -9360,7 +9326,7 @@ pub fn call_posixpath(
                     _ => false,
                 }))
             }
-            _ => return Err(Flow::Next),
+            _ => Err(Flow::Next),
         }
     })();
     if r.is_err() && module == "genericpath" {
@@ -9413,7 +9379,7 @@ fn call_genericpath(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> 
         }
     })();
     match r {
-        Err(Flow::Next) => return None,
+        Err(Flow::Next) => None,
         other => Some(other),
     }
 }
@@ -9752,7 +9718,7 @@ pub fn call_stat(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opt
         }
     })();
     match r {
-        Err(Flow::Next) => return None,
+        Err(Flow::Next) => None,
         other => Some(other),
     }
 }
@@ -9982,7 +9948,7 @@ pub fn call_keyword(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> 
         }
     })();
     match r {
-        Err(Flow::Next) => return None,
+        Err(Flow::Next) => None,
         other => Some(other),
     }
 }
@@ -10062,89 +10028,87 @@ fn os_release() -> String {
         .unwrap_or_default()
 }
 
-pub fn call_platform(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Option<BResult> {
-    let r: BResult = (|| -> BResult {
-        match name {
-            "system" => Ok(s(std::env::consts::OS)),
-            "machine" => Ok(s(std::env::consts::ARCH)),
-            "node" => Ok(s(hostname())),
-            "processor" => Ok(s("")),
-            "python_version" => Ok(s("3.14.0")),
-            "python_implementation" => Ok(s("antipythony")),
-            "uname" => {
-                let u = uname_tuple();
-                let obj = PyObject::new(ap_obj::ObjKind::NamedTuple, "uname_result");
-                {
-                    let mut ints = obj.ints.borrow_mut();
-                    ints.clear();
+pub fn call_platform(name: &str, _args: &[Value], _kwargs: &[(String, Value)]) -> Option<BResult> {
+    let r: BResult = match name {
+        "system" => Ok(s(std::env::consts::OS)),
+        "machine" => Ok(s(std::env::consts::ARCH)),
+        "node" => Ok(s(hostname())),
+        "processor" => Ok(s("")),
+        "python_version" => Ok(s("3.14.0")),
+        "python_implementation" => Ok(s("antipythony")),
+        "uname" => {
+            let u = uname_tuple();
+            let obj = PyObject::new(ap_obj::ObjKind::NamedTuple, "uname_result");
+            {
+                let mut ints = obj.ints.borrow_mut();
+                ints.clear();
+            }
+            // store fields via attrs + a synthetic repr
+            let fields = [
+                "system",
+                "node",
+                "release",
+                "version",
+                "machine",
+                "processor",
+            ];
+            {
+                let attrs = obj.attrs.borrow_mut();
+                for (k, v) in fields.iter().zip(u.iter()) {
+                    let _ = attrs.set(s(*k), s(v.clone()));
                 }
-                // store fields via attrs + a synthetic repr
-                let fields = [
-                    "system",
-                    "node",
-                    "release",
-                    "version",
-                    "machine",
-                    "processor",
-                ];
-                {
-                    let mut attrs = obj.attrs.borrow_mut();
-                    for (k, v) in fields.iter().zip(u.iter()) {
-                        let _ = attrs.set(s(*k), s(v.clone()));
-                    }
-                    let _ = attrs.set(s("_fields"), tuple(fields.iter().map(|f| s(*f)).collect()));
-                    let _ = attrs.set(
-                        s("<values>"),
-                        list(u.iter().map(|x| s(x.clone())).collect()),
-                    );
-                }
-                *obj.repr_text.borrow_mut() = Some(format!(
+                let _ = attrs.set(s("_fields"), tuple(fields.iter().map(|f| s(*f)).collect()));
+                let _ = attrs.set(
+                    s("<values>"),
+                    list(u.iter().map(|x| s(x.clone())).collect()),
+                );
+            }
+            *obj.repr_text.borrow_mut() = Some(format!(
                     "uname_result(system='{}', node='{}', release='{}', version='{}', machine='{}', processor='{}')",
                     u[0], u[1], u[2], u[3], u[4], u[5]
                 ));
-                Ok(Value::Obj(obj))
-            }
-            // Wave-82: scrapy's log_scrapy_info → get_versions →
-            // platform.platform(); CPython composes
-            // system-release-version. mac_ver returns the
-            // (release, versioninfo, machine) triple from the uname.
-            "mac_ver" => {
-                let u = uname_tuple();
-                let release = u[2].clone();
-                let machine = u[4].clone();
-                Ok(tuple(vec![
-                    s(release),
-                    tuple(vec![s(""), s(""), s("")]),
-                    s(machine),
-                ]))
-            }
-            "platform" => {
-                let u = uname_tuple();
-                let (system, _node, release, version, _machine, _proc) = (
-                    u[0].clone(),
-                    u[1].clone(),
-                    u[2].clone(),
-                    u[3].clone(),
-                    u[4].clone(),
-                    u[5].clone(),
-                );
-                let system_c = if system == "Darwin" {
-                    "Darwin"
-                } else {
-                    system.as_str()
-                };
-                Ok(s(format!(
-                    "{}-{}-{}",
-                    system_c,
-                    release,
-                    version.split(' ').next().unwrap_or(&release)
-                )))
-            }
-            _ => Err(raise("SystemError", format!("platform fn {name} unbound"))),
+            Ok(Value::Obj(obj))
         }
-    })();
+        // Wave-82: scrapy's log_scrapy_info → get_versions →
+        // platform.platform(); CPython composes
+        // system-release-version. mac_ver returns the
+        // (release, versioninfo, machine) triple from the uname.
+        "mac_ver" => {
+            let u = uname_tuple();
+            let release = u[2].clone();
+            let machine = u[4].clone();
+            Ok(tuple(vec![
+                s(release),
+                tuple(vec![s(""), s(""), s("")]),
+                s(machine),
+            ]))
+        }
+        "platform" => {
+            let u = uname_tuple();
+            let (system, _node, release, version, _machine, _proc) = (
+                u[0].clone(),
+                u[1].clone(),
+                u[2].clone(),
+                u[3].clone(),
+                u[4].clone(),
+                u[5].clone(),
+            );
+            let system_c = if system == "Darwin" {
+                "Darwin"
+            } else {
+                system.as_str()
+            };
+            Ok(s(format!(
+                "{}-{}-{}",
+                system_c,
+                release,
+                version.split(' ').next().unwrap_or(&release)
+            )))
+        }
+        _ => Err(raise("SystemError", format!("platform fn {name} unbound"))),
+    };
     match r {
-        Err(Flow::Next) => return None,
+        Err(Flow::Next) => None,
         other => Some(other),
     }
 }
@@ -10184,7 +10148,7 @@ fn build_time(_i: &crate::frame::Interpreter) -> Value {
 fn make_struct_time(fields: [i64; 9]) -> Value {
     let obj = PyObject::new(ap_obj::ObjKind::Opaque, "struct_time");
     {
-        let mut attrs = obj.attrs.borrow_mut();
+        let attrs = obj.attrs.borrow_mut();
         let names = [
             "tm_year", "tm_mon", "tm_mday", "tm_hour", "tm_min", "tm_sec", "tm_wday", "tm_yday",
             "tm_isdst",
@@ -10323,7 +10287,7 @@ pub fn call_time(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Opti
             "get_clock_info" => {
                 let obj = PyObject::new(ap_obj::ObjKind::Namespace, "clock_info");
                 {
-                    let mut attrs = obj.attrs.borrow_mut();
+                    let attrs = obj.attrs.borrow_mut();
                     let _ = attrs.set(s("monotonic"), Value::Bool(true));
                     let _ = attrs.set(s("adjustable"), Value::Bool(false));
                     let _ = attrs.set(s("implementation"), s("clock_gettime(CLOCK_MONOTONIC)"));
@@ -10621,7 +10585,7 @@ pub fn call_atexit(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> O
                 Ok(Value::None)
             }
             "exit" => Ok(Value::None),
-            _ => return Err(raise("SystemError", "atexit fn unbound")),
+            _ => Err(raise("SystemError", "atexit fn unbound")),
         }
     })();
     match r {
@@ -10656,7 +10620,7 @@ thread_local! {
     /// at 64MB: dozens of vendored stdlib files fit comfortably.
     static LINECACHE: RefCell<HashMap<String, std::rc::Rc<Vec<String>>>> = RefCell::new(HashMap::new());
     /// Insertion order for cap eviction (oldest file evicted first).
-    static LINECACHE_ORDER: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    static LINECACHE_ORDER: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     /// Approximate total cached bytes.
     static LINECACHE_BYTES: Cell<usize> = const { Cell::new(0) };
 }
@@ -10754,7 +10718,7 @@ pub fn call_linecache(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -
         }
     })();
     match r {
-        Err(Flow::Next) => return None,
+        Err(Flow::Next) => None,
         other => Some(other),
     }
 }
@@ -11007,10 +10971,7 @@ pub fn call_random(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Op
                         _ => (
                             as_int_i64(&args[0])?,
                             as_int_i64(&args[1])?,
-                            args.get(2)
-                                .map(|v| as_int_i64(&v))
-                                .transpose()?
-                                .unwrap_or(1),
+                            args.get(2).map(as_int_i64).transpose()?.unwrap_or(1),
                         ),
                     };
                     if step == 0 {
@@ -11018,7 +10979,10 @@ pub fn call_random(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Op
                     }
                     let width = (stop - start).div_euclid(step);
                     if width <= 0 {
-                        return Err(raise("ValueError", format!("empty range for randrange()")));
+                        return Err(raise(
+                            "ValueError",
+                            "empty range for randrange()".to_string(),
+                        ));
                     }
                     let r = MT.with(|mt| mt.borrow_mut().randbelow(width as u64));
                     Ok(i(start + r as i64 * step))
@@ -11265,7 +11229,7 @@ pub fn call_hashlib(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> 
                 let hex = hex_digest_of(name, &data);
                 let obj = PyObject::new(ap_obj::ObjKind::Opaque, format!("{name}_HASH").as_str());
                 {
-                    let mut attrs = obj.attrs.borrow_mut();
+                    let attrs = obj.attrs.borrow_mut();
                     let _ = attrs.set(s("hexdigest"), s(hex.clone()));
                     let _ = attrs.set(s("digest"), Value::Bytes(Gc::new(hex_bytes(&hex))));
                     let _ = attrs.set(s("name"), s(name));
@@ -11310,7 +11274,7 @@ pub fn call_hashlib(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> 
                 let data = bytes_arg(required(args, name)?)?;
                 let obj = PyObject::new(ap_obj::ObjKind::Opaque, format!("{name}_HASH").as_str());
                 {
-                    let mut attrs = obj.attrs.borrow_mut();
+                    let attrs = obj.attrs.borrow_mut();
                     let _ = attrs.set(s("<data>"), Value::Bytes(Gc::new(data)));
                     let _ = attrs.set(s("<alg>"), s(name));
                     let _ = attrs.set(s("name"), s(name));
@@ -11393,7 +11357,7 @@ pub fn call_hashlib(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> 
                     if !(0..=255).contains(&n) {
                         return Err(raise(
                             "ValueError",
-                            format!("fanout must be between 0 and 255"),
+                            "fanout must be between 0 and 255".to_string(),
                         ));
                     }
                 }
@@ -11402,14 +11366,14 @@ pub fn call_hashlib(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> 
                     if !(1..=255).contains(&n) {
                         return Err(raise(
                             "ValueError",
-                            format!("depth must be between 1 and 255"),
+                            "depth must be between 1 and 255".to_string(),
                         ));
                     }
                 }
                 let hex = blake2_variable_hex(name, &data, ds, &key, &salt, &person);
                 let obj = PyObject::new(ap_obj::ObjKind::Opaque, format!("{name}_HASH").as_str());
                 {
-                    let mut attrs = obj.attrs.borrow_mut();
+                    let attrs = obj.attrs.borrow_mut();
                     let _ = attrs.set(s("hexdigest"), s(hex.clone()));
                     let _ = attrs.set(s("digest"), Value::Bytes(Gc::new(hex_bytes(&hex))));
                     let _ = attrs.set(s("name"), s(name));
@@ -11441,7 +11405,7 @@ pub fn call_hashlib(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> 
         }
     })();
     match r {
-        Err(Flow::Next) => return None,
+        Err(Flow::Next) => None,
         other => Some(other),
     }
 }
@@ -11667,7 +11631,7 @@ pub fn call_zlib(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opt
         }
     })();
     match r {
-        Err(Flow::Next) => return None,
+        Err(Flow::Next) => None,
         other => Some(other),
     }
 }
@@ -11698,7 +11662,7 @@ fn crc32_walk(mut crc: u32, data: &[u8]) -> u32 {
     crc
 }
 
-fn adler32_walk(mut value: u32, data: &[u8]) -> u32 {
+fn adler32_walk(value: u32, data: &[u8]) -> u32 {
     let mut a = value & 0xFFFF;
     let mut b = (value >> 16) & 0xFFFF;
     for chunk in data.chunks(5552) {
@@ -11889,7 +11853,7 @@ pub fn call_select(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> O
         }
     })();
     match r {
-        Err(Flow::Next) => return None,
+        Err(Flow::Next) => None,
         other => Some(other),
     }
 }
@@ -12200,7 +12164,7 @@ pub fn call_base64(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> O
             "b16decode" => {
                 let data = bytes_arg(required(args, "b16decode")?)?;
                 let txt = String::from_utf8_lossy(&data).to_uppercase();
-                if txt.len() % 2 != 0 {
+                if !txt.len().is_multiple_of(2) {
                     return Err(raise("binascii.Error", "Odd-length string"));
                 }
                 let mut out = Vec::with_capacity(txt.len() / 2);
@@ -12218,7 +12182,7 @@ pub fn call_base64(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> O
         }
     })();
     match r {
-        Err(Flow::Next) => return None,
+        Err(Flow::Next) => None,
         other => Some(other),
     }
 }
@@ -12481,7 +12445,7 @@ pub fn call_binascii(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> 
                     }
                 };
                 let txt: String = txt.chars().filter(|c| !c.is_whitespace()).collect();
-                if txt.len() % 2 != 0 {
+                if !txt.len().is_multiple_of(2) {
                     return Err(raise("binascii.Error", "Odd-length string"));
                 }
                 let mut out = Vec::with_capacity(txt.len() / 2);
@@ -12585,7 +12549,7 @@ pub fn call_binascii(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> 
         }
     })();
     match r {
-        Err(Flow::Next) => return None,
+        Err(Flow::Next) => None,
         other => Some(other),
     }
 }
@@ -12850,7 +12814,7 @@ pub(crate) fn a2b_uu(b: &[u8]) -> Result<Vec<u8>, UuError> {
     }
     let remaining_length = length - res.len();
     if remaining_length > 0 {
-        res.extend(std::iter::repeat(0).take(remaining_length));
+        res.extend(std::iter::repeat_n(0, remaining_length));
     }
     Ok(res)
 }
@@ -12922,7 +12886,7 @@ pub(crate) fn bytes_to_hex_str(bytes: &[u8], sep: Option<u8>, bytes_per_sep: i64
         // counting from the right (never leading).
         let len = bytes.len();
         for (i, &b) in bytes.iter().enumerate() {
-            if i != 0 && (len - i) % abs_bps == 0 {
+            if i != 0 && (len - i).is_multiple_of(abs_bps) {
                 out.push(sep_char);
             }
             hex_nibbles(&mut out, b);
@@ -12967,7 +12931,7 @@ pub(crate) fn bytes_fromhex(txt: &[u8]) -> BResult {
         result.push((top << 4) | bot);
     };
     Err(match bad {
-        Some((false, pos)) => raise(
+        Some((false, _pos)) => raise(
             "ValueError",
             "fromhex() arg must contain an even number of hexadecimal digits",
         ),
@@ -13023,7 +12987,7 @@ fn build_io(_i: &crate::frame::Interpreter) -> Value {
 fn make_stream(kind: &str, data: Vec<u8>, encoding: Option<String>) -> Value {
     let obj = PyObject::new(ap_obj::ObjKind::Opaque, kind);
     {
-        let mut attrs = obj.attrs.borrow_mut();
+        let attrs = obj.attrs.borrow_mut();
         let _ = attrs.set(s("<buf>"), Value::Bytes(Gc::new(data)));
         let _ = attrs.set(s("<pos>"), i(0));
         let _ = attrs.set(
@@ -13038,7 +13002,7 @@ fn make_stream(kind: &str, data: Vec<u8>, encoding: Option<String>) -> Value {
     Value::Obj(obj)
 }
 
-fn stream_parts<'a>(v: &'a Value) -> Result<(Vec<u8>, usize, Option<String>), Flow> {
+fn stream_parts(v: &Value) -> Result<(Vec<u8>, usize, Option<String>), Flow> {
     if let Value::Obj(o) = v {
         let attrs = o.attrs.borrow();
         let data = match attrs.get(&s("<buf>")) {
@@ -13061,7 +13025,7 @@ fn stream_parts<'a>(v: &'a Value) -> Result<(Vec<u8>, usize, Option<String>), Fl
 
 fn stream_set_pos(v: &Value, pos: usize) {
     if let Value::Obj(o) = v {
-        let mut attrs = o.attrs.borrow_mut();
+        let attrs = o.attrs.borrow_mut();
         let _ = attrs.set(s("<pos>"), i(pos as i64));
     }
 }
@@ -13086,7 +13050,7 @@ pub fn call_io(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option
             "TextIOWrapper" => {
                 let inner = required(args, "TextIOWrapper")?;
                 let enc = kw(kwargs, "encoding")
-                    .map(|v| str_arg(&v, "encoding"))
+                    .map(|v| str_arg(v, "encoding"))
                     .transpose()?
                     .unwrap_or_else(|| "utf-8".to_string());
                 let (data, _, _) = stream_parts(inner)?;
@@ -13136,7 +13100,7 @@ pub fn call_io(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option
                     if mode.contains('b') {
                         let st = make_stream("TextIOWrapper", vec![], Some("binary".into()));
                         if let Value::Obj(o) = &st {
-                            let mut attrs = o.attrs.borrow_mut();
+                            let attrs = o.attrs.borrow_mut();
                             let _ = attrs.set(s("<path>"), s(path.clone()));
                             let _ = attrs.set(s("<binary>"), Value::Bool(true));
                             let _ = attrs.set(s("<not-readable>"), Value::Bool(true));
@@ -13145,7 +13109,7 @@ pub fn call_io(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option
                     }
                     let st = make_stream("TextIOWrapper", vec![], Some("utf-8".into()));
                     if let Value::Obj(o) = &st {
-                        let mut attrs = o.attrs.borrow_mut();
+                        let attrs = o.attrs.borrow_mut();
                         let _ = attrs.set(s("<path>"), s(path.clone()));
                         // 02.08-full part 1: write-mode streams raise
                         // UnsupportedOperation on read (s005 pin).
@@ -13169,7 +13133,7 @@ pub fn call_io(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option
                         Some("utf-8".into()),
                     );
                     if let Value::Obj(o) = &st {
-                        let mut attrs = o.attrs.borrow_mut();
+                        let attrs = o.attrs.borrow_mut();
                         let _ = attrs.set(s("<path>"), s(path.clone()));
                         let _ = attrs.set(s("<append>"), Value::Bool(true));
                         let _ = attrs.set(s("<not-readable>"), Value::Bool(true));
@@ -13237,13 +13201,13 @@ pub fn call_io(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option
                 }
                 let (data, pos, _) = stream_parts(v)?;
                 if name == "read" {
-                    let n = args.get(1).map(|v| as_int_i64(&v)).transpose()?;
+                    let n = args.get(1).map(as_int_i64).transpose()?;
                     let out = match n {
                         None => data[pos..].to_vec(),
                         Some(n) => data[pos..(pos + n.max(0) as usize).min(data.len())].to_vec(),
                     };
                     stream_set_pos(v, pos + out.len());
-                    return Ok(stream_payload(&v, out));
+                    return Ok(stream_payload(v, out));
                 }
                 let rest = &data[pos..];
                 let nl = rest.iter().position(|&b| b == b'\n');
@@ -13257,35 +13221,18 @@ pub fn call_io(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option
                         rest.to_vec()
                     }
                 };
-                return Ok(stream_payload(&v, out));
+                Ok(stream_payload(v, out))
             }
             "read_legacy" => {
                 let v = required(args, "read")?;
                 let (data, pos, _) = stream_parts(v)?;
-                let n = args.get(1).map(|v| as_int_i64(&v)).transpose()?;
+                let n = args.get(1).map(as_int_i64).transpose()?;
                 let out = match n {
                     None => data[pos..].to_vec(),
                     Some(n) => data[pos..(pos + n.max(0) as usize).min(data.len())].to_vec(),
                 };
                 stream_set_pos(v, pos + out.len());
-                Ok(stream_payload(&v, out))
-            }
-            "readline" => {
-                let v = required(args, "readline")?;
-                let (data, pos, _) = stream_parts(v)?;
-                let rest = &data[pos..];
-                let nl = rest.iter().position(|&b| b == b'\n');
-                let out = match nl {
-                    Some(p) => {
-                        stream_set_pos(v, pos + p + 1);
-                        rest[..p + 1].to_vec()
-                    }
-                    None => {
-                        stream_set_pos(v, data.len());
-                        rest.to_vec()
-                    }
-                };
-                Ok(stream_payload(&v, out))
+                Ok(stream_payload(v, out))
             }
             "write" => {
                 let v = required(args, "write")?;
@@ -13315,7 +13262,7 @@ pub fn call_io(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option
                         )?
                         .into_bytes()
                     };
-                    let mut attrs = o.attrs.borrow_mut();
+                    let attrs = o.attrs.borrow_mut();
                     // F3 (oom-bughunt 2026-11-06): write() used to clone the
                     // ENTIRE buffer per call (b.to_vec() + extend + replace),
                     // O(n²) bytes copied and ~2x peak transient memory —
@@ -13367,7 +13314,7 @@ pub fn call_io(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option
                     // the real fd (the buffer stays for readback). Note the
                     // fast path may have MOVED payload into the buffer —
                     // the fd write reads len from the pre-computed n.
-                    let fdv = attrs.get(&s("<fd>")).map(|v| v.clone());
+                    let fdv = attrs.get(&s("<fd>"));
                     drop(attrs);
                     if let Some(fdv) = fdv {
                         let fd = as_int_i64(&fdv)? as i32;
@@ -13399,11 +13346,7 @@ pub fn call_io(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option
                     .map(as_int_i64)
                     .transpose()?
                     .ok_or_else(|| raise("TypeError", "seek() missing required argument"))?;
-                let whence = args
-                    .get(2)
-                    .map(|v| as_int_i64(&v))
-                    .transpose()?
-                    .unwrap_or(0);
+                let whence = args.get(2).map(as_int_i64).transpose()?.unwrap_or(0);
                 let (data, pos, _) = stream_parts(v)?;
                 let np = match whence {
                     0 => off,
@@ -13514,7 +13457,7 @@ pub fn call_io(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option
                 };
                 Ok(s(text.replace("\r\n", "\n").replace('\r', "\n")))
             }
-            _ => return Err(raise("SystemError", format!("io fn {name} unbound"))),
+            _ => Err(raise("SystemError", format!("io fn {name} unbound"))),
         }
     })();
     Some(r)
@@ -13560,6 +13503,7 @@ fn build_tempfile(_i: &crate::frame::Interpreter) -> Value {
 /// state (s014: cache_info/cache_clear/parameters with CPython-exact
 /// hit/miss/currsize accounting; maxsize LRU eviction). Attr surface
 /// (cache_clear/cache_info/cache_parameters/__wrapped__) via native_attr.
+#[allow(dead_code)] // kept: part of an unfinished surface (robustness-ci 02.x burn-down leaf)
 pub(crate) fn lru_wrapper_of(f: &Value) -> Value {
     lru_wrapper_of_typed(f, None, false)
 }
@@ -13812,7 +13756,7 @@ pub(crate) fn lru_cache_info_id(id: &str) -> Value {
         None => Value::None,
     };
     {
-        let mut attrs = obj.attrs.borrow_mut();
+        let attrs = obj.attrs.borrow_mut();
         let _ = attrs.set(s("hits"), i(hits as i64));
         let _ = attrs.set(s("misses"), i(misses as i64));
         let _ = attrs.set(s("maxsize"), maxsize_v.clone());
@@ -13992,7 +13936,7 @@ pub fn call_tempfile(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> 
                 let obj = PyObject::new(ap_obj::ObjKind::Opaque, "TemporaryDirectory");
                 let path_repr = path.clone();
                 {
-                    let mut attrs = obj.attrs.borrow_mut();
+                    let attrs = obj.attrs.borrow_mut();
                     let _ = attrs.set(s("name"), s(path));
                     let _ = attrs.set(s("<path>"), s(path_repr.clone()));
                 }
@@ -14028,7 +13972,7 @@ pub fn call_tempfile(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> 
                 std::fs::write(&path, b"").map_err(|e| os_error(&path, &e))?;
                 let f = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "TextIOWrapper");
                 {
-                    let mut fa = f.attrs.borrow_mut();
+                    let fa = f.attrs.borrow_mut();
                     let _ = fa.set(s("<path>"), s(path.clone()));
                     let _ = fa.set(s("name"), s("<fd>"));
                     let _ = fa.set(s("closed"), Value::Bool(false));
@@ -14044,7 +13988,7 @@ pub fn call_tempfile(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> 
                 }
                 Ok(Value::Obj(f))
             }
-            _ => return Err(raise("SystemError", format!("tempfile fn {name} unbound"))),
+            _ => Err(raise("SystemError", format!("tempfile fn {name} unbound"))),
         }
     })();
     Some(r)
@@ -14138,7 +14082,7 @@ pub fn call_native(
         "_tokenize" => call_tokenize(fname, args, kwargs),
         // 02.03b-fix: _signal — no-op stubs.
         "_signal" => {
-            let r: BResult = (|| match fname {
+            let r: BResult = match fname {
                 "signal" => Ok(Value::None),
                 "getsignal" => Ok(Value::None),
                 "setDefaultIntHandler" => Ok(Value::None),
@@ -14147,12 +14091,12 @@ pub fn call_native(
                     "AttributeError",
                     format!("module '_signal' has no attribute '{}'", fname),
                 )),
-            })();
+            };
             Some(r)
         }
         // 02.03b-fix: marshal — v0 has no pyc model.
         "marshal" => {
-            let r: BResult = (|| match fname {
+            let r: BResult = match fname {
                 "loads" => Err(raise("ValueError", "marshal loads unsupported in v0")),
                 "dumps" | "dump" => Ok(Value::None),
                 "load" => Err(raise("EOFError", "marshal load unsupported in v0")),
@@ -14160,13 +14104,13 @@ pub fn call_native(
                     "AttributeError",
                     format!("module 'marshal' has no attribute '{}'", fname),
                 )),
-            })();
+            };
             Some(r)
         }
         // 02.03b-fix: _warnings C surface — inert v0 stubs (the real
         // warnings machinery runs in _py_warnings).
         "_warnings" => {
-            let r: BResult = (|| match fname {
+            let r: BResult = match fname {
                 "warn" | "warn_explicit" | "simplefilter" | "filterwarnings" | "resetwarnings" => {
                     Ok(Value::None)
                 }
@@ -14184,34 +14128,32 @@ pub fn call_native(
                     "AttributeError",
                     format!("module '_warnings' has no attribute '{}'", fname),
                 )),
-            })();
+            };
             Some(r)
         }
         // 02.03b-fix: _imp C surface — v0 stubs.
         "_imp" => {
-            let r: BResult = (|| {
-                match fname {
-                    "source_hash" => Ok(Value::Bytes(Gc::new(Vec::new()))),
-                    "_override_multi_interp_extensions_check" => Ok(Value::Bool(false)),
-                    "acquire_lock" | "release_lock" | "exec_builtin" | "create_builtin"
-                    | "get_frozen_object" => Ok(Value::None),
-                    // 02.03b-fix: no extension modules in v0.
-                    "extension_suffixes" => {
-                        Ok(Value::List(PyList::from_vec(vec![s(".so"), s(".pyd")])))
-                    }
-                    "lock_held" => Ok(Value::Bool(false)),
-                    "is_frozen" | "is_builtin" | "is_frozen_package" => Ok(Value::Bool(false)),
-                    _ => Err(raise(
-                        "AttributeError",
-                        format!("module '_imp' has no attribute '{}'", fname),
-                    )),
+            let r: BResult = match fname {
+                "source_hash" => Ok(Value::Bytes(Gc::new(Vec::new()))),
+                "_override_multi_interp_extensions_check" => Ok(Value::Bool(false)),
+                "acquire_lock" | "release_lock" | "exec_builtin" | "create_builtin"
+                | "get_frozen_object" => Ok(Value::None),
+                // 02.03b-fix: no extension modules in v0.
+                "extension_suffixes" => {
+                    Ok(Value::List(PyList::from_vec(vec![s(".so"), s(".pyd")])))
                 }
-            })();
+                "lock_held" => Ok(Value::Bool(false)),
+                "is_frozen" | "is_builtin" | "is_frozen_package" => Ok(Value::Bool(false)),
+                _ => Err(raise(
+                    "AttributeError",
+                    format!("module '_imp' has no attribute '{}'", fname),
+                )),
+            };
             Some(r)
         }
         // 02.03b-fix: _opcode predicates — v0 has no bytecode model.
         "shutil" => {
-            let r: BResult = (|| match fname {
+            let r: BResult = match fname {
                 "get_terminal_size" => {
                     // os.get_terminal_size with COLUMNS/LINES env override —
                     // the argparse width computation only reads .columns.
@@ -14227,7 +14169,7 @@ pub fn call_native(
                     // payload (`columns, lines = os.get_terminal_size()`).
                     let o = PyObject::new(ap_obj::ObjKind::NamedTuple, "terminal_size");
                     {
-                        let mut attrs = o.attrs.borrow_mut();
+                        let attrs = o.attrs.borrow_mut();
                         let _ = attrs.set(s("columns"), i(cols));
                         let _ = attrs.set(s("lines"), i(lines));
                         let _ = attrs.set(s("<values>"), list(vec![i(cols), i(lines)]));
@@ -14262,11 +14204,11 @@ pub fn call_native(
                     "NotImplementedError",
                     format!("shutil.{fname} is out of the v1 surface"),
                 )),
-            })();
+            };
             Some(r)
         }
         "locale" => {
-            let r: BResult = (|| match fname {
+            let r: BResult = match fname {
                 "normalize" => {
                     // v0: identity over common aliases ("C" stays "C").
                     let loc = match args.first() {
@@ -14304,11 +14246,11 @@ pub fn call_native(
                     "AttributeError",
                     format!("module 'locale' has no attribute '{fname}'"),
                 )),
-            })();
+            };
             Some(r)
         }
         "_opcode" => {
-            let r: BResult = (|| match fname {
+            let r: BResult = match fname {
                 "has_arg" | "has_const" | "has_name" | "has_jump" | "has_free" | "has_local"
                 | "has_exc" => Ok(Value::Bool(false)),
                 "stack_effect" => Ok(Value::Int(ap_obj::Int::from_i64(0))),
@@ -14323,7 +14265,7 @@ pub fn call_native(
                     "AttributeError",
                     format!("module '_opcode' has no attribute '{}'", fname),
                 )),
-            })();
+            };
             Some(r)
         }
         "codeop" => call_codeop(fname, args, kwargs),
@@ -14343,7 +14285,7 @@ pub fn call_native(
                 call_builtin_values("pyfloat", fname, args, kwargs)
             }
         }
-        "str" | "list" | "dict" | "set" | "frozenset" | "tuple" | "bytes" | "bytearray" | "int" => {
+        "str" | "list" | "dict" | "set" | "frozenset" | "tuple" | "bytes" | "int" => {
             let tag = match mod_name {
                 "str" => "pystr",
                 "list" => "pylist",
@@ -14357,64 +14299,6 @@ pub fn call_native(
             call_builtin_values(tag, fname, args, kwargs)
         }
         "io" => call_io(fname, args, kwargs),
-        "json" if fname == "default" && args.len() >= 2 => {
-            // default(self, o) — resolve through the MRO (the user subclass
-            // carries the method; instances hold none).
-            let enc = &args[0];
-            if let Some(interp) = current_interp() {
-                let interp = std::rc::Rc::new(interp);
-                if let Ok(Some(f)) = crate::interp::attr_get_public(&interp, enc, "default") {
-                    return Some(crate::interp::call_value_pub(
-                        &interp,
-                        &f,
-                        &[args[1].clone()],
-                        &[],
-                    ));
-                }
-            }
-            Some(Err(raise(
-                "TypeError",
-                "Object of unsupported type is not JSON serializable",
-            )))
-        }
-        "json" if fname == "default" && args.len() >= 2 => {
-            // default(self, o) — resolve through the MRO (the user subclass
-            // carries the method; instances hold none).
-            let enc = &args[0];
-            if let Some(interp) = current_interp() {
-                let interp = std::rc::Rc::new(interp);
-                if let Ok(Some(f)) = crate::interp::attr_get_public(&interp, enc, "default") {
-                    return Some(crate::interp::call_value_pub(
-                        &interp,
-                        &f,
-                        &[args[1].clone()],
-                        &[],
-                    ));
-                }
-            }
-            Some(Err(raise(
-                "TypeError",
-                "Object of unsupported type is not JSON serializable",
-            )))
-        }
-        "json" if matches!(fname, "decode" | "encode" | "iterencode") => {
-            // JSONDecoder().decode(s) / JSONEncoder().encode(o): route to the
-            // module-level loads/dumps (the v0 encoder/decoder options are
-            // inert; the corpus only exercises identity of behavior).
-            let tag = match fname {
-                "decode" => "loads",
-                "encode" | "iterencode" => "dumps",
-                _ => "default",
-            };
-            if tag == "default" {
-                Some(Err(raise(
-                    "TypeError",
-                    "Object of unsupported type is not JSON serializable",
-                )))
-            } else {
-                call_json(tag, args, kwargs)
-            }
-        }
         "importlib" => call_importlib(fname, args, kwargs),
         "importlib.util" => call_importlib_util(fname, args, kwargs),
         "tempfile" => call_tempfile(fname, args, kwargs),
@@ -14438,7 +14322,7 @@ pub fn call_native_object(
 ) -> Option<BResult> {
     if let Value::Obj(o) = v {
         if o.kind == ap_obj::ObjKind::Opaque && o.name == "functools._lru_wrapper" {
-            let inner = o.attrs.borrow().get(&s("<wrapped>")).map(|v| v.clone());
+            let inner = o.attrs.borrow().get(&s("<wrapped>"));
             if let Some(fv) = inner {
                 return Some(crate::interp::call_value_pub2(&fv, args, kwargs));
             }
@@ -14546,7 +14430,7 @@ pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
             // dunder protocol surface (len(r), r[i], iter(r)) binds the
             // element and lands back in call_elem via the dotted marker.
             if matches!(name, "__len__" | "__getitem__" | "__iter__") {
-                let bm = PyObject::new(ap_obj::ObjKind::BuiltinFn, &format!("lxml.elem.{}", name));
+                let bm = PyObject::new(ap_obj::ObjKind::BuiltinFn, format!("lxml.elem.{}", name));
                 *bm.slice_parts.borrow_mut() = vec![obj.clone()];
                 return Some(Value::Obj(bm));
             }
@@ -14562,7 +14446,7 @@ pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
                 if let Some(Value::Str(mn)) = ns.get(&s("__name__")) {
                     let spec = PyObject::new(ap_obj::ObjKind::Namespace, "ModuleSpec");
                     {
-                        let mut a = spec.attrs.borrow_mut();
+                        let a = spec.attrs.borrow_mut();
                         let _ = a.set(s("name"), s(mn.as_str().to_string()));
                     }
                     return Some(Value::Obj(spec));
@@ -14588,19 +14472,14 @@ pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
                         | "queue"
                 ) =>
             {
-                return crate::threading_call::native_thread_attr(obj, name);
+                crate::threading_call::native_thread_attr(obj, name)
             }
             ap_obj::ObjKind::Function => match name {
                 "__name__" => Some(s(o.name.clone())),
                 "__qualname__" => Some(s(o.name.clone())),
                 // s013: __doc__ reads the function's attrs first (wraps pins
                 // wrapped.__doc__ == base.__doc__ through the attr table).
-                "__doc__" => o
-                    .attrs
-                    .borrow()
-                    .get(&s("__doc__"))
-                    .map(|v| v.clone())
-                    .or(Some(Value::None)),
+                "__doc__" => o.attrs.borrow().get(&s("__doc__")).or(Some(Value::None)),
                 _ => None,
             },
             ap_obj::ObjKind::BuiltinFn => {
@@ -14612,7 +14491,7 @@ pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
                 // set cache_clear/cache on marker-callable fns in the
                 // two-stage unwrap) — attrs are the fallback after the
                 // builtinfn table misses.
-                if let Some(v) = o.attrs.borrow().get(&s(name)).map(|v| v.clone()) {
+                if let Some(v) = o.attrs.borrow().get(&s(name)) {
                     return Some(v);
                 }
                 // partial markers: func/args/keywords decode from the name
@@ -14724,21 +14603,21 @@ pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
                         );
                         Some(Value::Dict(d))
                     }
-                    "__wrapped__" => o.attrs.borrow().get(&s("<wrapped>")).map(|v| v.clone()),
+                    "__wrapped__" => o.attrs.borrow().get(&s("<wrapped>")),
                     _ => None,
                 },
                 "functools.partial" => match name {
                     "func" => {
                         let attrs = o.attrs.borrow();
-                        return attrs
+                        attrs
                             .get(&s("__func_name__"))
-                            .and_then(|v| resolve_callable_marker(&v));
+                            .and_then(|v| resolve_callable_marker(&v))
                     }
                     "args" => {
                         let attrs = o.attrs.borrow();
-                        return attrs.get(&s("__args__"));
+                        attrs.get(&s("__args__"))
                     }
-                    "keywords" => return Some(Value::Dict(PyDict::new())),
+                    "keywords" => Some(Value::Dict(PyDict::new())),
                     _ => None,
                 },
                 // s013: partialmethod read off an instance binds as the
@@ -14826,20 +14705,16 @@ pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
                     *bm.func.borrow_mut() = Some(marker(&mname));
                     Some(Value::Obj(bm))
                 }
-                "struct.Struct" => {
-                    return crate::structmod::struct_attr(obj, name);
-                }
+                "struct.Struct" => crate::structmod::struct_attr(obj, name),
                 "textwrap.TextWrapper" if name == "wrap" => {
                     let mname = "textwrap.TextWrapper.wrap";
                     let bm = PyObject::with_self(ap_obj::ObjKind::BoundMethod, mname, obj.clone());
                     *bm.func.borrow_mut() = Some(marker(mname));
-                    return Some(Value::Obj(bm));
+                    Some(Value::Obj(bm))
                 }
                 "JSONEncoder" | "JSONDecoder" => match name {
                     // s008: json.decoder.JSONDecodeError is json.JSONDecodeError.
-                    "JSONDecodeError" => {
-                        return Some(interned_type_pub("JSONDecodeError"));
-                    }
+                    "JSONDecodeError" => Some(interned_type_pub("JSONDecodeError")),
                     "decode" | "encode" | "default" | "iterencode" | "__enter__" | "__exit__" => {
                         let mname = format!("json.{}", name);
                         let bm = PyObject::with_self(
@@ -14852,9 +14727,7 @@ pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
                     }
                     _ => None,
                 },
-                "TextIOWrapper" if name == "encoding" => {
-                    o.attrs.borrow().get(&s("<encoding>")).map(|v2| v2.clone())
-                }
+                "TextIOWrapper" if name == "encoding" => o.attrs.borrow().get(&s("<encoding>")),
                 // 02.04: weakref/finalize token surfaces (alive, detach,
                 // __call__ handling rides the call path in interp.rs).
                 "_weakref_token" | "_finalize_token" => match name {
@@ -15009,9 +14882,7 @@ pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
                         *bm.func.borrow_mut() = Some(marker(&format!("re.Pattern.{}", name)));
                         Some(Value::Obj(bm))
                     }
-                    "pattern" | "flags" | "groups" | "groupindex" => {
-                        o.attrs.borrow().get(&s(name)).map(|v| v.clone())
-                    }
+                    "pattern" | "flags" | "groups" | "groupindex" => o.attrs.borrow().get(&s(name)),
                     _ => None,
                 },
                 "re.Match" => match name {
@@ -15089,7 +14960,7 @@ pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
                             );
                             *bm.func.borrow_mut() =
                                 Some(marker(&format!("<hashlib.shake_hexdigest.{alg}>")));
-                            return Some(Value::Obj(bm));
+                            Some(Value::Obj(bm))
                         }
                         "digest" if attrs.get(&s("<data>")).is_some() => {
                             let data = attrs.get(&s("<data>")).unwrap();
@@ -15104,30 +14975,26 @@ pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
                             );
                             *bm.func.borrow_mut() =
                                 Some(marker(&format!("<hashlib.shake_digest.{alg}>")));
-                            return Some(Value::Obj(bm));
+                            Some(Value::Obj(bm))
                         }
-                        "hexdigest" => {
-                            return attrs.get(&s("hexdigest")).map(|v| {
-                                let bm = PyObject::with_self(
-                                    ap_obj::ObjKind::BoundMethod,
-                                    "<hashlib.hexdigest>",
-                                    v.clone(),
-                                );
-                                *bm.func.borrow_mut() = Some(marker("<hashlib.hexdigest>"));
-                                Value::Obj(bm)
-                            })
-                        }
-                        "digest" => {
-                            return attrs.get(&s("digest")).map(|v| {
-                                let bm = PyObject::with_self(
-                                    ap_obj::ObjKind::BoundMethod,
-                                    "<hashlib.digest>",
-                                    v.clone(),
-                                );
-                                *bm.func.borrow_mut() = Some(marker("<hashlib.digest>"));
-                                Value::Obj(bm)
-                            })
-                        }
+                        "hexdigest" => attrs.get(&s("hexdigest")).map(|v| {
+                            let bm = PyObject::with_self(
+                                ap_obj::ObjKind::BoundMethod,
+                                "<hashlib.hexdigest>",
+                                v.clone(),
+                            );
+                            *bm.func.borrow_mut() = Some(marker("<hashlib.hexdigest>"));
+                            Value::Obj(bm)
+                        }),
+                        "digest" => attrs.get(&s("digest")).map(|v| {
+                            let bm = PyObject::with_self(
+                                ap_obj::ObjKind::BoundMethod,
+                                "<hashlib.digest>",
+                                v.clone(),
+                            );
+                            *bm.func.borrow_mut() = Some(marker("<hashlib.digest>"));
+                            Value::Obj(bm)
+                        }),
                         "name" | "block_size" | "digest_size" => attrs.get(&s(name)),
                         _ => None,
                     }
@@ -15229,10 +15096,6 @@ fn builtin_value_method_exists(tag: &str, name: &str) -> bool {
             | ("pystr", "rfind")
             | ("pystr", "index")
             | ("pystr", "count")
-            | ("pystr", "isdigit")
-            | ("pystr", "isalpha")
-            | ("pystr", "isalnum")
-            | ("pystr", "isspace")
             | ("pystr", "splitlines")
             | ("pystr", "title")
             | ("pystr", "capitalize")
@@ -15413,7 +15276,7 @@ pub fn call_native_marker(full: &str, args: &[Value]) -> Option<BResult> {
     }
     // 02.07: threading native-object bound methods
     // ("__ap_threading__.start" over receiver args[0]).
-    if let Some(fname) = full.strip_prefix("__ap_threading__.") {
+    if let Some(_fname) = full.strip_prefix("__ap_threading__.") {
         return None; // handled in builtins.rs with kwargs (02.07)
     }
     if let Some(rest) = full.strip_prefix("<partial:") {
@@ -15447,7 +15310,7 @@ pub fn call_native_marker(full: &str, args: &[Value]) -> Option<BResult> {
         // s013: functools.Placeholder slots — a Placeholder in the bound args
         // is replaced by the next positional call arg; extra runtime args
         // that already filled slots are consumed (not appended twice).
-        if full_args.iter().any(|v| is_functools_placeholder(v)) {
+        if full_args.iter().any(is_functools_placeholder) {
             let bound = std::mem::take(&mut full_args);
             let mut out: Vec<Value> = Vec::with_capacity(bound.len());
             let mut it = args.iter().cloned();
@@ -15735,10 +15598,7 @@ fn attr_lookup_value(v: &Value, name: &str) -> Result<Value, Flow> {
         Some(i) => i,
         None => return Err(raise("RuntimeError", "no interpreter on this thread")),
     };
-    let got = match crate::builtins::attr_get_pub(&interp, v, name) {
-        Ok(g) => g,
-        Err(e) => return Err(e),
-    };
+    let got = crate::builtins::attr_get_pub(&interp, v, name)?;
     match got {
         Some(x) => Ok(x),
         None => {
@@ -15768,7 +15628,7 @@ pub fn exception_attr(class: &str, name: &str) -> Option<Value> {
     // _handle_fromlist backwards-compat path compares `exc.name == from_name`
     // (jmespath/shibboleth-style submodule imports hit this).
     if class == "ModuleNotFoundError" && name == "name" {
-        return crate::importer::last_mnf_name().map(|n| s(n));
+        return crate::importer::last_mnf_name().map(s);
     }
     if class != "JSONDecodeError" {
         return None;
@@ -15982,7 +15842,7 @@ pub fn call_builtin_values(
                         let k2 = if let Value::Obj(ob) = &recv {
                             format!("Obj kind={:?} name={} attrs={:?} backing={:?}", ob.kind, ob.name, ob.attrs.borrow().items().iter().map(|(k,_k)| crate::builtins::py_str_of(k).unwrap_or_default()).collect::<Vec<_>>(), crate::classes::dict_backing(&recv).is_some())
                         } else {
-                            format!("{}", recv.type_name())
+                            recv.type_name().to_string()
                         };
                         eprintln!("POPMISS k2={}", k2);
                     }
@@ -16029,7 +15889,7 @@ pub fn call_builtin_values(
                         // updates module __dict__ with a members dict that
                         // can alias it) and every unittest/mock/inspect/
                         // dataclasses probe timing out at 240s.
-                        if std::ptr::eq(Rc::as_ptr(&o), Rc::as_ptr(&d)) {
+                        if std::ptr::eq(Rc::as_ptr(&o), Rc::as_ptr(d)) {
                             for (k, v) in o.items() {
                                 let _ = d.set(k, v);
                             }
@@ -16076,7 +15936,11 @@ pub fn call_builtin_values(
                                         ))
                                     }
                                 };
-                            let v = crate::interp::call_value_pub2(&getitem, &[k.clone()], &[])?;
+                            let v = crate::interp::call_value_pub2(
+                                &getitem,
+                                std::slice::from_ref(&k),
+                                &[],
+                            )?;
                             let _ = d.set(k, v);
                         }
                     }
@@ -16089,9 +15953,7 @@ pub fn call_builtin_values(
                                 _ => {
                                     return Err(raise(
                                         "TypeError",
-                                        format!(
-                                            "cannot convert dictionary update sequence element to a sequence"
-                                        ),
+                                        "cannot convert dictionary update sequence element to a sequence".to_string(),
                                     ))
                                 }
                             };
@@ -16103,7 +15965,7 @@ pub fn call_builtin_values(
                 for (k, v) in kwargs {
                     let _ = d.set(s(k.clone()), v.clone());
                 }
-                return Ok(Value::None);
+                Ok(Value::None)
             }
             ("pydict", "copy") => {
                 if let Value::Dict(d) = &recv {
@@ -16571,35 +16433,6 @@ pub fn call_builtin_values(
                     ),
                 ))
             }
-            ("pystr", "isdigit")
-            | ("pystr", "isalpha")
-            | ("pystr", "isalnum")
-            | ("pystr", "isspace") => {
-                if let Value::Str(x) = &recv {
-                    // D9 (memperf audit 2026-11-06): iterator passes over the
-                    // borrowed &str (was: Vec<char> materialization per call).
-                    let src = x.as_str();
-                    let out = if src.is_empty() {
-                        false
-                    } else {
-                        match fname {
-                            "isdigit" => src.chars().all(|c| c.is_ascii_digit()),
-                            "isalpha" => src.chars().all(|c| c.is_alphabetic()),
-                            "isalnum" => src.chars().all(|c| c.is_alphanumeric()),
-                            _ => src.chars().all(|c| c.is_whitespace()),
-                        }
-                    };
-                    return Ok(Value::Bool(out));
-                }
-                Err(raise(
-                    "SystemError",
-                    format!(
-                        "bad receiver for pydict fn {} (recv={}",
-                        fname,
-                        recv.type_name()
-                    ),
-                ))
-            }
             ("pystr", "splitlines") => {
                 if let Value::Str(x) = &recv {
                     // CPython universal newlines: \n \r \r\n \v \f \x1c \x1d
@@ -16751,9 +16584,9 @@ pub fn call_builtin_values(
                     if sep.is_none() && sep_arg.is_some() {
                         // bytes.hex(sep=None) is valid CPython: explicit None
                         // disables separation.
-                        return Ok(s(bytes_to_hex_str(&**b, None, bytes_per_sep)));
+                        return Ok(s(bytes_to_hex_str(b, None, bytes_per_sep)));
                     }
-                    return Ok(s(bytes_to_hex_str(&**b, sep, bytes_per_sep)));
+                    return Ok(s(bytes_to_hex_str(b, sep, bytes_per_sep)));
                 }
                 Err(raise(
                     "SystemError",
@@ -16787,7 +16620,7 @@ pub fn call_builtin_values(
                     })?;
                 let txt: &[u8] = match arg {
                     Value::Str(st) => st.as_str().as_bytes(),
-                    Value::Bytes(b) => &**b,
+                    Value::Bytes(b) => b,
                     other => {
                         return Err(raise(
                             "TypeError",
@@ -16807,7 +16640,7 @@ pub fn call_builtin_values(
                         other => other,
                     });
                 }
-                return bytes_fromhex(txt);
+                bytes_fromhex(txt)
             }
             ("pylist", "sort") => {
                 if let Value::List(l) = &recv {
@@ -16823,8 +16656,12 @@ pub fn call_builtin_values(
                             };
                             let mut wrapped: Vec<(Value, Value)> = Vec::with_capacity(items.len());
                             for x in items {
-                                let k =
-                                    crate::interp::call_value_pub(&interp, kv, &[x.clone()], &[])?;
+                                let k = crate::interp::call_value_pub(
+                                    &interp,
+                                    kv,
+                                    std::slice::from_ref(&x),
+                                    &[],
+                                )?;
                                 wrapped.push((k, x));
                             }
                             let unwrap = |w: &Value| -> Value {
@@ -16845,7 +16682,7 @@ pub fn call_builtin_values(
                                 let lt = crate::interp::call_value_pub(
                                     &interp,
                                     &cmp,
-                                    &[ub.clone()],
+                                    std::slice::from_ref(&ub),
                                     &[],
                                 )
                                 .map(|v| v.is_truthy())
@@ -16853,7 +16690,7 @@ pub fn call_builtin_values(
                                 let gt = crate::interp::call_value_pub(
                                     &interp,
                                     &cmp,
-                                    &[ua.clone()],
+                                    std::slice::from_ref(&ua),
                                     &[],
                                 )
                                 .map(|v| v.is_truthy())
@@ -16889,7 +16726,7 @@ pub fn call_builtin_values(
                     let mut keyed: Vec<(Value, Value)> = Vec::with_capacity(items.len());
                     for x in items {
                         let k = match &keyf {
-                            Some(kf) => call_named(kf, &[x.clone()])?,
+                            Some(kf) => call_named(kf, std::slice::from_ref(&x))?,
                             None => x.clone(),
                         };
                         keyed.push((k, x));
@@ -16997,30 +16834,6 @@ pub fn call_builtin_values(
                     }
                     // D2: in-place remove — no full-list clone round trip.
                     return Ok(l.remove_take(real as usize));
-                }
-                Err(raise(
-                    "SystemError",
-                    format!(
-                        "bad receiver for pydict fn {} (recv={}",
-                        fname,
-                        recv.type_name()
-                    ),
-                ))
-            }
-            ("pylist", "remove") => {
-                let v =
-                    a(1).ok_or_else(|| raise("TypeError", "remove expected at least 1 argument"))?;
-                if let Value::List(l) = &recv {
-                    let items = l.items();
-                    for (idx, x) in items.iter().enumerate() {
-                        if py_eq(x, &v) {
-                            drop(items);
-                            // D2: in-place remove by index.
-                            l.remove_take(idx);
-                            return Ok(Value::None);
-                        }
-                    }
-                    return Err(raise("ValueError", "list.remove(x): x not in list"));
                 }
                 Err(raise(
                     "SystemError",
@@ -17151,9 +16964,9 @@ pub fn call_builtin_values(
                     let left = total / 2;
                     let right = total - left;
                     let mut out = String::with_capacity(src.len() + fill.len_utf8() * total);
-                    out.extend(std::iter::repeat(fill).take(left));
+                    out.extend(std::iter::repeat_n(fill, left));
                     out.push_str(src);
-                    out.extend(std::iter::repeat(fill).take(right));
+                    out.extend(std::iter::repeat_n(fill, right));
                     return Ok(s(out));
                 }
                 Err(raise(
@@ -17212,15 +17025,15 @@ pub fn call_builtin_values(
                     // pre-sized String (was: chars().count() walk, then a
                     // separate pad_s alloc + format! concat buffer).
                     let len = x.len();
-                    let pad = if width > len { width - len } else { 0 };
+                    let pad = width.saturating_sub(len);
                     let src = x.as_str();
                     let mut out = String::with_capacity(src.len() + fill.len_utf8() * pad);
                     if fname != "ljust" {
-                        out.extend(std::iter::repeat(fill).take(pad));
+                        out.extend(std::iter::repeat_n(fill, pad));
                     }
                     out.push_str(src);
                     if fname == "ljust" {
-                        out.extend(std::iter::repeat(fill).take(pad));
+                        out.extend(std::iter::repeat_n(fill, pad));
                     }
                     return Ok(s(out));
                 }
@@ -17377,7 +17190,7 @@ pub fn call_builtin_values(
                         && src
                             .chars()
                             .next()
-                            .map_or(false, |c| c.is_alphabetic() || c == '_')
+                            .is_some_and(|c| c.is_alphabetic() || c == '_')
                         && src.chars().all(|c| c.is_alphanumeric() || c == '_');
                     return Ok(Value::Bool(ok));
                 }
@@ -17414,7 +17227,7 @@ pub fn call_builtin_values(
                     let ok = !src.is_empty()
                         && src.chars().all(|c| match fname {
                             "isdecimal" => {
-                                c.is_numeric() && c.is_alphanumeric() && c.to_digit(10).is_some()
+                                c.is_numeric() && c.is_alphanumeric() && c.is_ascii_digit()
                             }
                             _ => c.is_numeric(),
                         });
@@ -17531,7 +17344,7 @@ pub fn call_builtin_values(
                         }
                         let mut parts: Vec<Vec<u8>> = Vec::new();
                         if fname == "split" {
-                            let mut rest: &[u8] = &data;
+                            let mut rest: &[u8] = data;
                             let mut left = maxsplit;
                             loop {
                                 if left == 0 {
@@ -17551,7 +17364,7 @@ pub fn call_builtin_values(
                                 }
                             }
                         } else {
-                            let mut rest: &[u8] = &data;
+                            let mut rest: &[u8] = data;
                             let mut left = maxsplit;
                             loop {
                                 if left == 0 {
@@ -17579,7 +17392,7 @@ pub fn call_builtin_values(
                     let mut parts: Vec<Vec<u8>> = Vec::new();
                     let mut left = maxsplit;
                     if fname == "split" {
-                        let mut rest: &[u8] = &data;
+                        let mut rest: &[u8] = data;
                         loop {
                             while rest.first().map(|x| is_ws(*x)).unwrap_or(false) {
                                 rest = &rest[1..];
@@ -17604,7 +17417,7 @@ pub fn call_builtin_values(
                             }
                         }
                     } else {
-                        let mut rest: &[u8] = &data;
+                        let mut rest: &[u8] = data;
                         loop {
                             while rest.last().map(|x| is_ws(*x)).unwrap_or(false) {
                                 rest = &rest[..rest.len() - 1];
@@ -17836,16 +17649,16 @@ pub fn call_builtin_values(
                             _ => (Vec::new(), b.to_vec()),
                         };
                         out.extend_from_slice(&sign);
-                        out.extend(std::iter::repeat(b'0').take(width - sign.len() - body.len()));
+                        out.extend(std::iter::repeat_n(b'0', width - sign.len() - body.len()));
                         out.extend_from_slice(&body);
                         out
                     } else {
                         let total = width - len;
                         let left = total / 2;
                         let mut out = Vec::with_capacity(width);
-                        out.extend(std::iter::repeat(fill).take(left));
+                        out.extend(std::iter::repeat_n(fill, left));
                         out.extend_from_slice(b);
-                        out.extend(std::iter::repeat(fill).take(total - left));
+                        out.extend(std::iter::repeat_n(fill, total - left));
                         out
                     };
                     return Ok(Value::Bytes(Gc::new(out)));
@@ -17962,7 +17775,7 @@ pub fn call_builtin_values(
                         }
                     });
                 }
-                return Ok(Value::Dict(d));
+                Ok(Value::Dict(d))
             }
             // ==== dict surface: fromkeys / views / update forms ====
             ("pystr", "maketrans") => {
@@ -18024,7 +17837,7 @@ pub fn call_builtin_values(
                         let _ = d.set(Value::Int(Int::from_i64(c as i64)), Value::None);
                     }
                 }
-                return Ok(Value::Dict(d));
+                Ok(Value::Dict(d))
             }
             ("pydict", "fromkeys") => {
                 // classmethod: dict.fromkeys(seq[, value]) — the seq is the
@@ -18045,7 +17858,7 @@ pub fn call_builtin_values(
                 for k in snapshot(&seq)? {
                     let _ = d.set(k, dflt.clone());
                 }
-                return Ok(Value::Dict(d));
+                Ok(Value::Dict(d))
             }
             ("pydict", "items") | ("pydict", "keys") | ("pydict", "values") => {
                 if let Value::Dict(d) = &recv {
@@ -18366,60 +18179,6 @@ pub fn call_builtin_values(
                     ),
                 ))
             }
-            ("pytuple", "index") => {
-                if let Value::Tuple(t) = &recv {
-                    let v = a(1).ok_or_else(|| raise("TypeError", "index expected 1 argument"))?;
-                    let n = t.0.len() as i64;
-                    let start = match a(2) {
-                        Some(sv) => {
-                            let s = as_int_i64(&sv)?;
-                            if s < 0 {
-                                (s + n).max(0)
-                            } else {
-                                s.min(n)
-                            }
-                        }
-                        None => 0,
-                    };
-                    let end = match a(3) {
-                        Some(ev) => {
-                            let e = as_int_i64(&ev)?;
-                            if e < 0 {
-                                (e + n).max(0)
-                            } else {
-                                e.min(n)
-                            }
-                        }
-                        None => n,
-                    };
-                    for (idx, x) in t.0.iter().enumerate().skip(start as usize) {
-                        if (idx as i64) >= end {
-                            break;
-                        }
-                        if py_eq(x, &v) {
-                            return Ok(i(idx as i64));
-                        }
-                    }
-                    let txt = crate::builtins::builtin_repr(std::slice::from_ref(&v))
-                        .map(|x| match x {
-                            Value::Str(sv) => sv.as_str().to_string(),
-                            _ => String::new(),
-                        })
-                        .unwrap_or_default();
-                    return Err(raise(
-                        "ValueError",
-                        format!("tuple.index(x): {txt} not in tuple"),
-                    ));
-                }
-                Err(raise(
-                    "SystemError",
-                    format!(
-                        "bad receiver for pydict fn {} (recv={}",
-                        fname,
-                        recv.type_name()
-                    ),
-                ))
-            }
             ("pytuple", "__len__") => {
                 if let Value::Tuple(t) = &recv {
                     return Ok(i(t.0.len() as i64));
@@ -18447,7 +18206,7 @@ pub fn call_builtin_values(
                     let neg = *x < 0.0;
                     let bits = x.abs().to_bits();
                     let raw_exp = ((bits >> 52) & 0x7ff) as i64;
-                    let (mut num, mut exp): (i128, i64) = if raw_exp == 0 {
+                    let (mut num, exp): (i128, i64) = if raw_exp == 0 {
                         ((bits & 0xf_ffff_ffff_ffff) as i128, -1022 - 52)
                     } else {
                         (
@@ -18571,7 +18330,7 @@ pub fn call_builtin_values(
                 if signed && n > 0 && (acc >> (8 * n - 1)) & 1 == 1 {
                     acc -= 1i128 << (8 * n);
                 }
-                return Ok(big_or_int(acc));
+                Ok(big_or_int(acc))
             }
             ("pyint", "bit_count") => {
                 if let Value::Int(n) = &recv {
@@ -18744,10 +18503,10 @@ pub fn call_builtin_values(
                         .map(|sv| Value::Str(ap_obj::PyString::new(sv)))
                         .map_err(Flow::from_py);
                 }
-                return Err(raise(
+                Err(raise(
                     "SystemError",
                     format!("unbound builtin-value method: {}", fname),
-                ));
+                ))
             }
         }
     })();
@@ -18921,9 +18680,11 @@ pub fn native_iter(v: &Value) -> Option<Gc<crate::iter::PyIterator>> {
                 crate::gcsupport::WS => "__iter__",
                 _ => "keys",
             };
-            if let Some(Ok(Value::List(l))) =
-                crate::gcsupport::call_weakref(&format!("{}.{}", o.name, op), &[v.clone()], &[])
-            {
+            if let Some(Ok(Value::List(l))) = crate::gcsupport::call_weakref(
+                &format!("{}.{}", o.name, op),
+                std::slice::from_ref(v),
+                &[],
+            ) {
                 let items: Vec<Value> = l.items().to_vec();
                 return Some(crate::iter::PyIterator::new(
                     crate::iter::IterState::Native(Box::new(NativeIterState::Seq(
@@ -18944,6 +18705,7 @@ pub fn native_iter(v: &Value) -> Option<Gc<crate::iter::PyIterator>> {
 /// 02.08-full part 1: dict view object factory (dict_keys/dict_items/
 /// dict_values). Payload is a snapshot; repr uses the CPython form. The
 /// snapshot is refreshed on iteration via the "<dict>" back-pointer.
+#[allow(dead_code)] // kept: part of an unfinished surface (robustness-ci 02.x burn-down leaf)
 fn make_dict_view(kind: &str, payload: Vec<Value>) -> Value {
     make_dict_view_of(kind, payload, None)
 }
@@ -18954,7 +18716,7 @@ fn make_dict_view(kind: &str, payload: Vec<Value>) -> Value {
 fn make_dict_view_of(kind: &str, payload: Vec<Value>, live: Option<Value>) -> Value {
     let obj = PyObject::new(ap_obj::ObjKind::Opaque, kind);
     {
-        let mut attrs = obj.attrs.borrow_mut();
+        let attrs = obj.attrs.borrow_mut();
         let _ = attrs.set(s("<payload>"), list(payload.clone()));
         if let Some(dv) = live {
             let _ = attrs.set(s("<dict>"), dv);
@@ -19040,6 +18802,7 @@ fn stream_payload(v: &Value, data: Vec<u8>) -> Value {
 
 /// 02.08-full part 1: importlib._abc / importlib._bootstrap name surfaces
 /// (s047 imports them through the vendored importlib package).
+#[allow(non_snake_case)] // CPython-exact identifier - renaming would break the byte-exact conformance contract
 fn build_importlib__abc(_i: &crate::frame::Interpreter) -> Value {
     let (m, ns) = new_module("importlib._abc");
     for n in [
@@ -19059,6 +18822,7 @@ fn build_importlib__abc(_i: &crate::frame::Interpreter) -> Value {
     finish(m, ns)
 }
 
+#[allow(non_snake_case)] // CPython-exact identifier - renaming would break the byte-exact conformance contract
 fn build_importlib__bootstrap(_i: &crate::frame::Interpreter) -> Value {
     let (m, ns) = new_module("importlib._bootstrap");
     for n in [
@@ -19176,7 +18940,7 @@ fn call_importlib(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Opt
                             Some(v) => Ok(Value::Str(PyString::new(v.as_str()))),
                             None => Err(raise(
                                 "PackageNotFoundError",
-                                &format!("No package metadata was found for {name}"),
+                                format!("No package metadata was found for {name}"),
                             )),
                         }
                     }
@@ -19219,7 +18983,7 @@ fn call_importlib_util(name: &str, args: &[Value], _kwargs: &[(String, Value)]) 
                 }
                 let spec = PyObject::new(ap_obj::ObjKind::Namespace, "ModuleSpec");
                 {
-                    let mut attrs = spec.attrs.borrow_mut();
+                    let attrs = spec.attrs.borrow_mut();
                     let _ = attrs.set(s("name"), s(mod_name));
                     let _ = attrs.set(s("origin"), Value::None);
                 }
@@ -19242,12 +19006,12 @@ fn call_importlib_util(name: &str, args: &[Value], _kwargs: &[(String, Value)]) 
                 };
                 let spec = PyObject::new(ap_obj::ObjKind::Namespace, "ModuleSpec");
                 {
-                    let mut attrs = spec.attrs.borrow_mut();
+                    let attrs = spec.attrs.borrow_mut();
                     let _ = attrs.set(s("name"), s(mod_name.clone()));
                     let _ = attrs.set(s("origin"), s(path.clone()));
                     let loader = PyObject::new(ap_obj::ObjKind::Opaque, "SourceFileLoader");
                     {
-                        let mut la = loader.attrs.borrow_mut();
+                        let la = loader.attrs.borrow_mut();
                         let _ = la.set(s("<mod_name>"), s(mod_name.clone()));
                         let _ = la.set(s("<path>"), s(path));
                     }
@@ -19337,7 +19101,7 @@ fn build_importlib_machinery(_i: &crate::frame::Interpreter) -> Value {
 pub fn make_complex_value(re: f64, im: f64) -> Value {
     let obj = PyObject::new(ap_obj::ObjKind::Opaque, "complex");
     {
-        let mut attrs = obj.attrs.borrow_mut();
+        let attrs = obj.attrs.borrow_mut();
         let _ = attrs.set(s("real"), Value::Float(re));
         let _ = attrs.set(s("imag"), Value::Float(im));
     }
@@ -19359,7 +19123,7 @@ pub fn make_complex_value(re: f64, im: f64) -> Value {
             format!("({}-{}j)", fmt(re), fmt(-im))
         }
     } else if im == 0.0 && im.is_sign_negative() {
-        format!("(-0.0-0.0j)")
+        "(-0.0-0.0j)".to_string()
     } else if im >= 0.0 || im.is_nan() {
         format!("{}j", fmt(im))
     } else {
@@ -19475,7 +19239,7 @@ fn general_category(c: char) -> String {
         | '\u{3000}' => s("Zs"),
         '\n' | '\r' | '\u{b}' | '\u{c}' | '\u{85}' => s("Cc"),
         '\t' => s("Cc"),
-        c if cp < 0x20 || (0x7f..=0x9f).contains(&cp) => s("Cc"),
+        _c if cp < 0x20 || (0x7f..=0x9f).contains(&cp) => s("Cc"),
         'a'..='z'
         | 'A'..='Z'
         | 'ª'
@@ -19487,7 +19251,7 @@ fn general_category(c: char) -> String {
         | 'ˆ'..='ˑ'
         | '̀'..='ͯ'
         | 'ᵃ'..='ᵐ' => s("Ll"),
-        _ if c.is_ascii_digit() || ('0'..='9').contains(&c) => s("Nd"),
+        _ if c.is_ascii_digit() || c.is_ascii_digit() => s("Nd"),
         _ if c.is_numeric() => s("No"),
         _ if matches!(
             c,

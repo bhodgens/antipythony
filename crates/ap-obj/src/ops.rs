@@ -307,7 +307,7 @@ fn true_div_int_int(x: &Int, y: &Int) -> Result<Value, PyException> {
     let (nneg, num_mag) = split_sign(&num);
     let (dneg, den_mag) = split_sign(&den);
     let neg = nneg != dneg;
-    let q = scientific_quotient(&num_mag, &den_mag)?;
+    let q = scientific_quotient(num_mag, den_mag)?;
     let v: f64 = q
         .parse()
         .map_err(|_| PyException::int_div_too_large_for_float())?;
@@ -471,21 +471,21 @@ fn unsupported_binop(a: &Value, op: BinOp, b: &Value) -> PyException {
     // W112: int - NoneType capture - identify the Python caller via
     // the raising exception's msg alone is ambiguous; keep a marker
     // env-gated at the Rust level (frame data is not reachable here).
-    if crate::debug_flags::debug_flag(crate::debug_flags::ApxFlag::GenDebug) {
-        if matches!(op, BinOp::Sub) {
-            let bt = std::backtrace::Backtrace::force_capture().to_string();
-            let frames: Vec<&str> = bt
-                .lines()
-                .filter(|l| l.contains("ap_run::"))
-                .take(16)
-                .collect();
-            eprintln!(
-                "[SUB-NONE-OBJ] a={} b={}\n{}",
-                a.type_name(),
-                b.type_name(),
-                frames.join("\n")
-            );
-        }
+    if crate::debug_flags::debug_flag(crate::debug_flags::ApxFlag::GenDebug)
+        && matches!(op, BinOp::Sub)
+    {
+        let bt = std::backtrace::Backtrace::force_capture().to_string();
+        let frames: Vec<&str> = bt
+            .lines()
+            .filter(|l| l.contains("ap_run::"))
+            .take(16)
+            .collect();
+        eprintln!(
+            "[SUB-NONE-OBJ] a={} b={}\n{}",
+            a.type_name(),
+            b.type_name(),
+            frames.join("\n")
+        );
     }
     let is_sequence = matches!(
         a,
@@ -766,6 +766,32 @@ fn float_mant_exp(f: f64) -> (i64, i32) {
     }
 }
 
+// A-4 item 1: bytearray helpers for the binop layer (mirrors dict::bytearray_data;
+// local because ap-run owns the public constructors).
+fn is_bytearray(o: &crate::object::PyObject) -> bool {
+    o.kind == crate::object::ObjKind::Opaque && o.name == "bytearray"
+}
+
+fn bytearray_buf(o: &crate::object::PyObject) -> Vec<u8> {
+    crate::dict::bytearray_data(o)
+        .map(|b| b.as_ref().clone())
+        .unwrap_or_default()
+}
+
+fn make_bytearray_value(data: Vec<u8>) -> Value {
+    use crate::PyString;
+    let obj = crate::object::PyObject::new(crate::object::ObjKind::Opaque, "bytearray");
+    let _ = obj.attrs.borrow_mut().set(
+        Value::Str(PyString::new("<data>")),
+        Value::Bytes(Gc::new(data.clone())),
+    );
+    let mut repr = "bytearray(".to_string();
+    repr.push_str(&crate::str_repr::bytes_repr(&data));
+    repr.push(')');
+    *obj.repr_text.borrow_mut() = Some(repr);
+    Value::Obj(obj)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -965,7 +991,7 @@ mod tests {
     #[test]
     fn dict_order_after_deletes() {
         // S-01-21 probed sequence
-        let mut d = PyDict::new();
+        let d = PyDict::new();
         d.set(s("b"), i(1)).unwrap();
         d.set(s("a"), i(2)).unwrap();
         assert_eq!(repr(&Value::Dict(d.clone())).unwrap(), "{'b': 1, 'a': 2}");
@@ -1057,30 +1083,4 @@ mod tests {
             .to_string_raw()
             .starts_with("10000000000000000525047602552"));
     }
-}
-
-// A-4 item 1: bytearray helpers for the binop layer (mirrors dict::bytearray_data;
-// local because ap-run owns the public constructors).
-fn is_bytearray(o: &crate::object::PyObject) -> bool {
-    o.kind == crate::object::ObjKind::Opaque && o.name == "bytearray"
-}
-
-fn bytearray_buf(o: &crate::object::PyObject) -> Vec<u8> {
-    crate::dict::bytearray_data(o)
-        .map(|b| b.as_ref().clone())
-        .unwrap_or_default()
-}
-
-fn make_bytearray_value(data: Vec<u8>) -> Value {
-    use crate::PyString;
-    let obj = crate::object::PyObject::new(crate::object::ObjKind::Opaque, "bytearray");
-    let _ = obj.attrs.borrow_mut().set(
-        Value::Str(PyString::new("<data>")),
-        Value::Bytes(Gc::new(data.clone())),
-    );
-    let mut repr = "bytearray(".to_string();
-    repr.push_str(&crate::str_repr::bytes_repr(&data));
-    repr.push(')');
-    *obj.repr_text.borrow_mut() = Some(repr);
-    Value::Obj(obj)
 }

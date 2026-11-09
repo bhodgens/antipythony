@@ -66,7 +66,7 @@ pub fn py_float_repr(v: f64) -> String {
             }
         }
     };
-    if exp10 < -4 || exp10 >= 16 {
+    if !(-4..16).contains(&exp10) {
         // exponent form: strip trailing ".0" from mantissa, two-digit exp
         let m = mant.strip_suffix(".0").unwrap_or(&mant);
         let (sign, mag) = if exp10 < 0 {
@@ -116,7 +116,7 @@ mod tests {
         assert_eq!(r(0.15625), "0.15625");
         assert_eq!(r(0.1 + 0.7), "0.7999999999999999");
         assert_eq!(r(2.0f64.sqrt()), "1.4142135623730951");
-        assert_eq!(r(123456789.123456789_f64), "123456789.12345679");
+        assert_eq!(r(123_456_789.123_456_79_f64), "123456789.12345679");
         assert_eq!(r(1e20), "1e+20");
         assert_eq!(r(2.5e-10), "2.5e-10");
     }

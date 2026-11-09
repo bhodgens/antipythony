@@ -727,7 +727,7 @@ impl<'a> Lowerer<'a> {
                 // fail-closed until it lands.
                 let _ = terms;
                 let _is_and = matches!(e, Expr::BoolOp(BoolOp::And, _));
-                return Err(CodegenError::Unsupported("BoolOp (and/or)"));
+                Err(CodegenError::Unsupported("BoolOp (and/or)"))
             }
             Expr::IfExp(c, a, b) => {
                 let tc = self.lower_expr(c)?;

@@ -7,9 +7,9 @@
 //!      reports Python 3.14.
 //!   2. PATH `python3.14` — same version-string check (mirrors the logic at
 //!      `crates/ap-conform/src/lib.rs:90-117`).
-//! Deliberately NO bare `python3` fallback and no hardcoded Homebrew path:
-//! tests/README.md rule 5 says anything that runs "CPython" must require a
-//! real Python 3.14 via the `--version` string check.
+//!      Deliberately NO bare `python3` fallback and no hardcoded Homebrew path:
+//!      tests/README.md rule 5 says anything that runs "CPython" must require a
+//!      real Python 3.14 via the `--version` string check.
 //!
 //! Skip policy (master.md "Skip policy" contract): when no reference is
 //! found, `AP_REQUIRE_REFERENCE=1` (set in every CI job that runs
@@ -29,7 +29,6 @@ mod gate_watchdog;
 
 use std::os::fd::AsFd as _;
 use std::os::fd::AsRawFd as _;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 
 /// True when `program --version` succeeds and reports Python 3.14.
@@ -190,7 +189,7 @@ fn memory_pressure_ok() -> bool {
     let mut size = std::mem::size_of::<libc::c_int>();
     let rc = unsafe {
         libc::sysctlbyname(
-            "kern.memorystatus_vm_pressure_level\0".as_ptr() as *const libc::c_char,
+            c"kern.memorystatus_vm_pressure_level".as_ptr() as *const libc::c_char,
             (&mut level as *mut libc::c_int).cast(),
             &mut size,
             std::ptr::null_mut(),

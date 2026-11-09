@@ -328,21 +328,21 @@ mod tests {
 
     #[test]
     fn parses_simple_module() {
-        let ast = parse("x = 1\n").unwrap();
+        let ast = parse("x = 1\n").expect("lib.rs:331");
         assert_eq!(ast.module().body.len(), 1);
         assert_eq!(ast.source(), "x = 1\n");
     }
 
     #[test]
     fn line_col_is_one_based() {
-        let ast = parse("a = 1\nb = 2\n").unwrap();
+        let ast = parse("a = 1\nb = 2\n").expect("lib.rs:338");
         assert_eq!(ast.line_col(0), (1, 1));
         assert_eq!(ast.line_col(6), (2, 1));
     }
 
     #[test]
     fn syntax_error_becomes_contract_diagnostic() {
-        let err = parse("x = (\n").unwrap_err();
+        let err = parse("x = (\n").expect_err("lib.rs:345");
         assert!(
             err.to_string().starts_with("error at line 2, column 1: "),
             "got: {err}"
@@ -356,13 +356,13 @@ mod tests {
         // construct ruff flags as unsupported at 3.14: none expected, so this
         // asserts the valid case still passes (regression guard for the
         // unsupported-error check ordering).
-        let ast = parse("match x:\n    case _:\n        pass\n").unwrap();
+        let ast = parse("match x:\n    case _:\n        pass\n").expect("lib.rs:359");
         assert!(!ast.module().body.is_empty());
     }
 
     #[test]
     fn offset_points_at_error_start() {
-        let err = parse("f(x=1, 2)\n").unwrap_err();
+        let err = parse("f(x=1, 2)\n").expect_err("lib.rs:365");
         assert_eq!(err.line, 1);
         assert_eq!(err.col, 8);
         assert_eq!(
@@ -380,7 +380,7 @@ mod tests {
     fn collect_stmt_lines_matches_brute_force() {
         let src = "x = 1\n\
 def f(a):\n    if a:\n        y = 2\n    elif a > 1:\n        y = 3\n    else:\n        y = 4\n    while y:\n        break\n    for i in range(3):\n        pass\n    try:\n        z = 5\n    except Exception:\n        pass\n    else:\n        pass\n    finally:\n        pass\n    match y:\n        case 1:\n            pass\n    with open('f') as g:\n        pass\n    return y\n\nclass C:\n    def m(self):\n        return [i for i in range(2)]\n";
-        let ast = parse(src).unwrap();
+        let ast = parse(src).expect("lib.rs:383");
         let got = collect_stmt_lines(&ast);
 
         // Oracle: independent naive re-implementation of the documented

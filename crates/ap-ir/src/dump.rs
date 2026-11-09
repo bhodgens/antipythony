@@ -550,8 +550,8 @@ fn dump_fn_def(out: &mut String, f: &FnDef, depth: usize) {
             .map(dump_param)
             .collect::<Vec<_>>()
             .join(", "),
-        f.is_async.then_some(" async").unwrap_or(""),
-        f.is_generator.then_some(" gen").unwrap_or(""),
+        if f.is_async { " async" } else { "" },
+        if f.is_generator { " gen" } else { "" },
         match &f.return_ann {
             Some(a) => format!(" -> {}", dump_ann(a)),
             None => String::new(),

@@ -257,7 +257,7 @@ fn ref_batch(
         .split('\n')
         .map(|s| s.to_string())
         .collect();
-    if lines.last().map_or(false, |l| l.is_empty()) {
+    if lines.last().is_some_and(|l| l.is_empty()) {
         lines.pop();
     }
     assert_eq!(
@@ -581,7 +581,7 @@ fn comparator_rejects_synthetic_mismatch() {
     // would race the parallel proptest threads):
     assert_eq!(
         route_known_divergence(
-            -15614122725348.3125,
+            -15_614_122_725_348.313,
             "-15614122725348.313",
             "-15614122725348.312"
         ),
@@ -604,7 +604,7 @@ fn routed_findings_pins_currently_reproduce() {
     };
     let tokens = [
         format!("{:016x}", (-1e15f64).to_bits()), // F0402-1 minimal window (FIXED)
-        format!("{:016x}", (-15614122725348.3125f64).to_bits()), // F0402-2 scan-shrunk
+        format!("{:016x}", (-15_614_122_725_348.313_f64).to_bits()), // F0402-2 scan-shrunk
     ];
     let lines = ref_batch(py, FLOAT_SCRIPT, &tokens, 2);
     // Reference bytes as live-probed (sanity that the seam matches the
@@ -621,9 +621,9 @@ fn routed_findings_pins_currently_reproduce() {
     );
     // Impl still diverges on the tie-break (F0402-2, unfixed - Gay's
     // half-to-even vs Rust half-up):
-    let got2 = py_float_repr(-15614122725348.3125);
+    let got2 = py_float_repr(-15_614_122_725_348.313);
     assert_eq!(
-        route_known_divergence(-15614122725348.3125, &got2, &lines[2]),
+        route_known_divergence(-15_614_122_725_348.313, &got2, &lines[2]),
         Some(Finding::F0402_2),
         "impl no longer produces F0402-2 bytes: {got2:?} vs {:?} \u{2014} Plan 02 fixed \
          it: delete the router + this pin + the PROGRESS entry",

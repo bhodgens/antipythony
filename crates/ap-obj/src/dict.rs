@@ -370,16 +370,14 @@ impl PyDict {
         let slot = state.entries.iter().rposition(|e| e.is_some())?;
         let entry = state.entries[slot].take();
         // Find the index slot pointing at this entry and mark it dummy.
-        if let Some(h) = entry.as_ref().map(|e| Self::hash_of(&e.key).ok()) {
-            if let Some(hv) = h {
-                for (i, ix) in state.indices.iter().enumerate() {
-                    if *ix == slot as isize {
-                        state.indices[i] = DKIX_DUMMY;
-                        break;
-                    }
+        if let Some(hv) = entry.as_ref().and_then(|e| Self::hash_of(&e.key).ok()) {
+            for (i, ix) in state.indices.iter().enumerate() {
+                if *ix == slot as isize {
+                    state.indices[i] = DKIX_DUMMY;
+                    break;
                 }
-                let _ = hv;
             }
+            let _ = hv;
         }
         state.used -= 1;
         state.dummies += 1;
@@ -500,7 +498,7 @@ pub fn values_eq(a: &Value, b: &Value) -> bool {
         // is an Opaque object with its buffer in the "<data>" attr).
         (Value::Bytes(x), Value::Obj(o)) | (Value::Obj(o), Value::Bytes(x)) => {
             match bytearray_data(o) {
-                Some(d) => &**x == &*d,
+                Some(d) => **x == *d,
                 None => false,
             }
         }
@@ -676,7 +674,7 @@ pub fn values_cmp(a: &Value, b: &Value) -> Result<std::cmp::Ordering, PyExceptio
             }
         }
         (Value::Float(x), Value::Float(y)) => {
-            x.partial_cmp(y).ok_or_else(|| type_err()) // NaN: not orderable
+            x.partial_cmp(y).ok_or_else(&type_err) // NaN: not orderable
         }
         (Value::Int(_) | Value::Bool(_), Value::Float(_)) => Ok(cmp_int_f64(
             &a.as_int().unwrap(),
@@ -758,6 +756,7 @@ impl PySet {
         s
     }
 
+    #[allow(clippy::len_without_is_empty)] // is_empty would extend the public surface beyond the CPython-parity API
     pub fn len(&self) -> usize {
         self.state.borrow().size
     }

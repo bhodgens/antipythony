@@ -50,7 +50,7 @@ fn scratch(tag: &str) -> std::path::PathBuf {
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .expect("packaging_differential.rs:51")
             .as_nanos()
     ));
     std::fs::create_dir_all(d.join("home")).expect("mkdir scratch home");
@@ -179,11 +179,12 @@ print(six.iteritems({'k': 1}) is not None or True)
         "add six failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    std::fs::create_dir_all(&proj).unwrap();
-    std::fs::write(proj.join("app.py"), src).unwrap();
+    std::fs::create_dir_all(&proj).expect("packaging_differential.rs:182");
+    std::fs::write(proj.join("app.py"), src).expect("packaging_differential.rs:183");
     // The CPython reference needs the SAME package version: read the pin
     // from our lock and install into a scratch venv-target for the py side.
-    let lock = std::fs::read_to_string(proj.join("antipythony.lock")).unwrap();
+    let lock = std::fs::read_to_string(proj.join("antipythony.lock"))
+        .expect("packaging_differential.rs:186");
     assert!(
         lock.contains("created_by = \"uv\""),
         "lock must record uv provenance"
@@ -200,7 +201,7 @@ print(six.iteritems({'k': 1}) is not None or True)
 fn add_packaging_import_use_byte_exact() {
     common::interpreter_gate();
     let py = reference_or_skip();
-    let Some(py) = py else { return };
+    let Some(_py) = py else { return };
     if !pypi_reachable() {
         eprintln!("SKIP: pypi.org unreachable (G-7 network policy)");
         return;
@@ -230,8 +231,8 @@ print(Version('1.2.3') < Version('1.10'))
     // surfaces — pure-wheel accept, manifest+lock pins, site-packages layout —
     // are all asserted above; the import byte-exactness gate is carried by
     // `six` (complete) until the typing-stub runtime lands.
-    std::fs::create_dir_all(&proj).unwrap();
-    std::fs::write(proj.join("app.py"), src).unwrap();
+    std::fs::create_dir_all(&proj).expect("packaging_differential.rs:233");
+    std::fs::write(proj.join("app.py"), src).expect("packaging_differential.rs:234");
     let sp = d.join("cache").join("site-packages");
     assert!(sp.is_dir(), "site-packages must exist after add");
     cleanup(&d);
@@ -246,44 +247,44 @@ fn add_native_wheel_fails_with_cext_diagnostic() {
     // Fixture wheel with a .so member (built in-test; T-14 oracle predicate).
     use std::io::Write as _;
     let whl_path = d.join("native_demo-0.1.0-py3-none-any.whl");
-    let file = std::fs::File::create(&whl_path).unwrap();
+    let file = std::fs::File::create(&whl_path).expect("packaging_differential.rs:249");
     let mut z = zip::ZipWriter::new(file);
     z.start_file(
         "native_demo/__init__.py",
         zip::write::SimpleFileOptions::default(),
     )
-    .unwrap();
+    .expect("packaging_differential.rs:251");
     z.write_all(b"from native_demo._native import noop\n")
-        .unwrap();
+        .expect("packaging_differential.rs:256");
     z.start_file(
         "native_demo/_native.cpython-314-x86_64-linux-gnu.so",
         zip::write::SimpleFileOptions::default(),
     )
-    .unwrap();
+    .expect("packaging_differential.rs:258");
     z.write_all(b"\x7fELF fake native component - ap-pack fixture")
-        .unwrap();
+        .expect("packaging_differential.rs:263");
     z.start_file(
         "native_demo-0.1.0.dist-info/METADATA",
         zip::write::SimpleFileOptions::default(),
     )
-    .unwrap();
+    .expect("packaging_differential.rs:265");
     z.write_all(b"Metadata-Version: 2.1\nName: native-demo\nVersion: 0.1.0\n")
-        .unwrap();
+        .expect("packaging_differential.rs:270");
     z.start_file(
         "native_demo-0.1.0.dist-info/WHEEL",
         zip::write::SimpleFileOptions::default(),
     )
-    .unwrap();
+    .expect("packaging_differential.rs:272");
     z.write_all(b"Wheel-Version: 1.0\nRoot-Is-Purelib: false\nTag: py3-none-any\n")
-        .unwrap();
+        .expect("packaging_differential.rs:277");
     // uv refuses wheels whose dist-info lacks RECORD (install-time check).
     z.start_file(
         "native_demo-0.1.0.dist-info/RECORD",
         zip::write::SimpleFileOptions::default(),
     )
-    .unwrap();
-    z.write_all(b"").unwrap();
-    z.finish().unwrap();
+    .expect("packaging_differential.rs:280");
+    z.write_all(b"").expect("packaging_differential.rs:285");
+    z.finish().expect("packaging_differential.rs:286");
 
     let out = run_cli_in(&d, &proj, &["add", &whl_path.to_string_lossy()]);
     let err = String::from_utf8_lossy(&out.stderr).into_owned();
@@ -298,7 +299,7 @@ fn add_native_wheel_fails_with_cext_diagnostic() {
     // C-11: nothing entered the lock.
     let lock = proj.join("antipythony.lock");
     if lock.exists() {
-        let text = std::fs::read_to_string(&lock).unwrap();
+        let text = std::fs::read_to_string(&lock).expect("packaging_differential.rs:301");
         assert!(
             !text.contains("native"),
             "refused dep must not enter the lock"
@@ -314,7 +315,7 @@ fn add_without_uv_errors_helpfully() {
     let proj = d.join("myapp");
     let _ = run_cli(&d, &["new", "myapp"]);
     let emptybin = d.join("emptybin");
-    std::fs::create_dir_all(&emptybin).unwrap();
+    std::fs::create_dir_all(&emptybin).expect("packaging_differential.rs:317");
     // antipythony runs under the OOM fence (2026-11-06 mitigation 2).
     let out = common::fenced_output(
         Command::new(antipythony())
@@ -437,12 +438,12 @@ fn sys_path_ordering_proof() {
     let _ = run_cli(&d, &["new", "myapp"]);
     let out = run_cli_in(&d, &proj, &["add", "six"]);
     assert!(out.status.success());
-    std::fs::create_dir_all(&proj).unwrap();
+    std::fs::create_dir_all(&proj).expect("packaging_differential.rs:440");
     std::fs::write(
         proj.join("dump.py"),
         "import sys\n[print(p) for p in sys.path]\n",
     )
-    .unwrap();
+    .expect("packaging_differential.rs:441");
     // antipythony runs under the OOM fence (2026-11-06 mitigation 2).
     let out = common::fenced_output(
         Command::new(antipythony())

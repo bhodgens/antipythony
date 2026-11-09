@@ -234,16 +234,13 @@ impl PyObject {
                 .unwrap_or(Value::None);
             let mut out = String::from("deque([");
             let mut active = std::collections::HashSet::new();
-            match &items {
-                crate::value::Value::List(l) => {
-                    for (i, item) in l.items().iter().enumerate() {
-                        if i > 0 {
-                            out.push_str(", ");
-                        }
-                        item.fmt_repr(&mut out, &mut active);
+            if let crate::value::Value::List(l) = &items {
+                for (i, item) in l.items().iter().enumerate() {
+                    if i > 0 {
+                        out.push_str(", ");
                     }
+                    item.fmt_repr(&mut out, &mut active);
                 }
-                _ => {}
             }
             out.push(']');
             if let crate::value::Value::Int(n) = &maxlen {

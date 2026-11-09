@@ -131,11 +131,11 @@ fn is_python_314(program: &str) -> bool {
 ///
 /// S-06-15 (harness contract): BOTH sides launch with a scrubbed environment
 /// - only PATH/HOME pass through, plus the pinned locale LANG=C. LC_* is
-/// excluded on purpose: CPython's UTF-8-mode auto-detection rewrites
-/// LC_CTYPE in its own environment block, so a Python parent leaks it to
-/// children and silently changes their locale. Without the scrub, the
-/// reference and the implementation can run under different effective
-/// locales, and the byte-exact verdict depends on the developer's shell.
+///   excluded on purpose: CPython's UTF-8-mode auto-detection rewrites
+///   LC_CTYPE in its own environment block, so a Python parent leaks it to
+///   children and silently changes their locale. Without the scrub, the
+///   reference and the implementation can run under different effective
+///   locales, and the byte-exact verdict depends on the developer's shell.
 pub fn run_with_timeout(
     program: &str,
     args: &[String],

@@ -49,7 +49,7 @@ fn list_of(items: Vec<Value>) -> Value {
     Value::List(PyList::from_vec(items))
 }
 
-fn opt<T>(v: &Option<T>, line_col: &dyn Fn(usize) -> (usize, usize), f: impl Fn(&T) -> R) -> R {
+fn opt<T>(v: &Option<T>, _line_col: &dyn Fn(usize) -> (usize, usize), f: impl Fn(&T) -> R) -> R {
     match v {
         Some(x) => f(x),
         None => Ok(Value::None),

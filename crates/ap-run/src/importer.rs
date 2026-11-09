@@ -77,7 +77,7 @@ fn s(x: impl Into<String>) -> Value {
 
 thread_local! {
     static SYS_MODULES: RefCell<HashMap<String, Value>> = RefCell::new(HashMap::new());
-    static SYS_PATH: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    static SYS_PATH: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     /// The PyList exposed as `sys.path` (attached by attach_sys_extras via
     /// sys_path_value). Once set, this list object is the LIVE source of
     /// truth: user code mutating `sys.path` (`sys.path.insert(0, ...)`,
@@ -543,7 +543,7 @@ fn run_loaded(
         .with(|c| c.borrow_mut().replace(loaded.frame.globals.clone()));
     let r = exec_block(interp, &loaded.frame, stmts, &loaded.reg);
     if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::ModDbg) {
-        if let Err(ref e) = r {
+        if let Err(ref _e) = r {
             eprintln!("[MODDBG] module exec failed (see traceback above)");
         }
     }
@@ -570,7 +570,7 @@ pub fn import_module(interp: &Rc<Interpreter>, name: &str) -> EResult {
     // anything the imported module does.
     let saved_super: Vec<(std::rc::Rc<ap_obj::classes::TypeRef>, Value, bool)> =
         interp.super_stack.borrow().iter().cloned().collect();
-    let super_guard = SuperStackGuard {
+    let _super_guard = SuperStackGuard {
         interp: std::rc::Rc::downgrade(interp),
         saved: saved_super,
     };
@@ -625,7 +625,7 @@ impl Drop for SuperStackGuard {
 
 thread_local! {
     static BOOTSTRAP_SEEDED: std::cell::RefCell<std::cell::Cell<bool>> =
-        std::cell::RefCell::new(std::cell::Cell::new(false));
+        const { std::cell::RefCell::new(std::cell::Cell::new(false)) };
 }
 
 pub fn import_module_inner(interp: &Rc<Interpreter>, name: &str) -> EResult {
@@ -929,12 +929,11 @@ pub(crate) fn import_file_module(interp: &Rc<Interpreter>, name: &str) -> EResul
             // descent using its __path__ when present. Ensure the parent
             // link exists (the cached module may have loaded through
             // import_from without the attribute ever being set).
-            if let (Some((parent_name, child_name)), Value::Obj(po)) = (full.rsplit_once('.'), &m) {
-                if let Some(pv) = sys_modules_get(parent_name) {
-                    if let Value::Obj(pp) = pv {
-                        if let Some(pns) = &*pp.module_ns.borrow_mut() {
-                            let _ = pns.set(s(child_name), m.clone());
-                        }
+            if let (Some((parent_name, child_name)), Value::Obj(_po)) = (full.rsplit_once('.'), &m)
+            {
+                if let Some(Value::Obj(pp)) = sys_modules_get(parent_name) {
+                    if let Some(pns) = &*pp.module_ns.borrow_mut() {
+                        let _ = pns.set(s(child_name), m.clone());
                     }
                 }
             }
@@ -1018,7 +1017,7 @@ pub(crate) fn import_file_module(interp: &Rc<Interpreter>, name: &str) -> EResul
                             .module_ns
                             .borrow()
                             .as_ref()
-                            .and_then(|ns| ns.get(&s(part.to_string())).map(|v| v.clone()));
+                            .and_then(|ns| ns.get(&s(part.to_string())));
                         if let Some(Value::Obj(am)) = attr {
                             let is_module = am.kind == ap_obj::ObjKind::Module
                                 || am
@@ -1061,18 +1060,16 @@ pub(crate) fn import_file_module(interp: &Rc<Interpreter>, name: &str) -> EResul
         ap_trace(format!("walk: exec {full} OK"));
         // CPython: the submodule becomes an attribute of the parent package
         // (import a.b makes a.b reachable as a.b after `import a.b`).
-        if let (Some((parent_name, child_name)), Value::Obj(po)) = (full.rsplit_once('.'), &m) {
-            if let Some(pv) = sys_modules_get(parent_name) {
-                if let Value::Obj(pp) = pv {
-                    // W112: try_borrow_mut — a re-entrant import (module body
-                    // importing a sibling while the parent link is already
-                    // held) panics the whole run on a plain borrow_mut; the
-                    // link is idempotent so skipping a contended write is
-                    // safe (the winner sets the same value).
-                    if let Ok(mut pns_ref) = pp.module_ns.try_borrow_mut() {
-                        if let Some(pns) = &*pns_ref {
-                            let _ = pns.set(s(child_name), m.clone());
-                        }
+        if let (Some((parent_name, child_name)), Value::Obj(_po)) = (full.rsplit_once('.'), &m) {
+            if let Some(Value::Obj(pp)) = sys_modules_get(parent_name) {
+                // W112: try_borrow_mut — a re-entrant import (module body
+                // importing a sibling while the parent link is already
+                // held) panics the whole run on a plain borrow_mut; the
+                // link is idempotent so skipping a contended write is
+                // safe (the winner sets the same value).
+                if let Ok(pns_ref) = pp.module_ns.try_borrow_mut() {
+                    if let Some(pns) = &*pns_ref {
+                        let _ = pns.set(s(child_name), m.clone());
                     }
                 }
             }
@@ -1099,7 +1096,7 @@ fn attach_module_spec(name: &str) {
         }
         let spec = PyObject::new(ap_obj::ObjKind::Namespace, "ModuleSpec");
         {
-            let mut attrs = spec.attrs.borrow_mut();
+            let attrs = spec.attrs.borrow_mut();
             let _ = attrs.set(s("name"), s(name));
             let _ = attrs.set(s("origin"), Value::None);
         }
@@ -1411,8 +1408,8 @@ pub fn attach_sys_extras(_interp: &Rc<Interpreter>, sys_m: &Value) {
 /// - level 1, no module: `__package__`
 /// - level >1 or with module: strip (level-1) trailing components from the
 ///   package, then join `module`.
-/// Returns Err for "attempted relative import with no known parent package"
-/// (byte-exact) when no parent package is known.
+///   Returns Err for "attempted relative import with no known parent package"
+///   (byte-exact) when no parent package is known.
 pub fn resolve_relative_base(
     interp: &Rc<Interpreter>,
     frame: &Rc<Frame>,
@@ -1506,9 +1503,11 @@ pub fn import_from_module(
                         // circular import), do NOT re-execute its file —
                         // CPython returns the half-built module. Re-running
                         // the body here restarts the cycle forever.
-                        if sys_modules_get(&full).is_none() {
-                            exec_found(interp, &full, &found)?;
-                        } else if !matches!(found, Found::Module { .. }) {
+                        // Skip re-exec only for an ALREADY-REGISTERED module
+                        // (a re-entrant/circular import); non-module `Found`
+                        // kinds (e.g. namespace packages) always re-exec.
+                        let already_registered = sys_modules_get(&full).is_some();
+                        if !(already_registered && matches!(found, Found::Module { .. })) {
                             exec_found(interp, &full, &found)?;
                         }
                         // Re-read the (possibly refreshed) module attr.
@@ -1787,11 +1786,9 @@ fn link_parent_attr(full: &str, m: &Value) {
     let Some((parent_name, child_name)) = full.rsplit_once('.') else {
         return;
     };
-    if let Some(pv) = sys_modules_get(parent_name) {
-        if let Value::Obj(pp) = pv {
-            if let Some(pns) = &*pp.module_ns.borrow_mut() {
-                let _ = pns.set(s(child_name), m.clone());
-            }
+    if let Some(Value::Obj(pp)) = sys_modules_get(parent_name) {
+        if let Some(pns) = &*pp.module_ns.borrow_mut() {
+            let _ = pns.set(s(child_name), m.clone());
         }
     }
 }

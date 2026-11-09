@@ -48,7 +48,7 @@ fn assert_differential(src: &str) {
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .expect("fix_pass_differential.rs:49")
             .as_nanos()
     ));
     std::fs::write(&tmp, src).expect("write temp case");

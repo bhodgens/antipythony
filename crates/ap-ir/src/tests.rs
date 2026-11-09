@@ -11,6 +11,8 @@ use crate::types::TypeLattice;
 /// silent lie in the docs.
 #[test]
 fn matrix_builder_names_resolve_to_real_methods() {
+    #[allow(clippy::type_complexity)]
+    // interpreter plumbing type; factoring out would obscure the signature
     let table: &[(&str, fn(&Builder))] = &[
         ("bool_op", |b| {
             let _ = b.bool_op(BoolOp::And, vec![b.bool_lit(true), b.bool_lit(false)]);
@@ -393,7 +395,7 @@ fn fn_def_detects_generator() {
 #[test]
 fn arg_forms() {
     let b = Builder::new();
-    let args = vec![
+    let args = [
         b.arg_pos(b.int_lit(1)),
         b.arg_star(b.name("xs")),
         b.arg_kw("k", b.int_lit(2)),

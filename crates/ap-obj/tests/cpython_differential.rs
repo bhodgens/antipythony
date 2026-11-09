@@ -89,7 +89,7 @@ fn s(v: &str) -> Value {
     Value::Str(PyString::new(v))
 }
 fn big(text: &str) -> Value {
-    Value::Int(Int::parse_base10(text).unwrap())
+    Value::Int(Int::parse_base10(text).expect("cpython_differential.rs:92"))
 }
 fn tuple(v: Vec<Value>) -> Value {
     Value::Tuple(Gc::new(Tuple(v)))
@@ -100,13 +100,13 @@ fn list(v: Vec<Value>) -> Value {
 fn dict(pairs: Vec<(Value, Value)>) -> Value {
     let d = PyDict::new();
     for (k, v) in pairs {
-        d.set(k, v).unwrap();
+        d.set(k, v).expect("cpython_differential.rs:103");
     }
     Value::Dict(d)
 }
 
 fn r(v: &Value) -> String {
-    py_repr(v).unwrap()
+    py_repr(v).expect("cpython_differential.rs:109")
 }
 
 macro_rules! diff {
@@ -127,8 +127,8 @@ macro_rules! diff {
 // -- big-int arithmetic (C-12/S-01-1) ------------------------------------------
 
 diff!(diff_big_2p200_sq, "print(2**200 * 2**200)", {
-    let p200 = binop(&i(2), BinOp::Pow, &i(200)).unwrap();
-    r(&binop(&p200, BinOp::Mul, &p200).unwrap())
+    let p200 = binop(&i(2), BinOp::Pow, &i(200)).expect("cpython_differential.rs:130");
+    r(&binop(&p200, BinOp::Mul, &p200).expect("cpython_differential.rs:131"))
 });
 
 fn pow10(n: usize) -> Value {
@@ -143,8 +143,8 @@ diff!(
         let p30_plus_1 = Value::Int(p30.as_int_holder().add(&Int::Smi(1)));
         format!(
             "{} {}",
-            r(&binop(&p30, BinOp::FloorDiv, &i(7)).unwrap()),
-            r(&binop(&p30_plus_1, BinOp::Mod, &i(7)).unwrap())
+            r(&binop(&p30, BinOp::FloorDiv, &i(7)).expect("cpython_differential.rs:146")),
+            r(&binop(&p30_plus_1, BinOp::Mod, &i(7)).expect("cpython_differential.rs:147"))
         )
     }
 );
@@ -182,9 +182,9 @@ diff!(
             let x = i(a);
             let y = i(b);
             if k < 4 {
-                r(&binop(&x, BinOp::FloorDiv, &y).unwrap())
+                r(&binop(&x, BinOp::FloorDiv, &y).expect("cpython_differential.rs:185"))
             } else {
-                r(&binop(&x, BinOp::Mod, &y).unwrap())
+                r(&binop(&x, BinOp::Mod, &y).expect("cpython_differential.rs:187"))
             }
         })
         .collect::<Vec<_>>()
@@ -196,9 +196,9 @@ diff!(
     diff_divmod_signs,
     "print(divmod(-7, 2), divmod(7, -2), divmod(7.0, 2))",
     {
-        let (q1, m1) = divmod(&i(-7), &i(2)).unwrap();
-        let (q2, m2) = divmod(&i(7), &i(-2)).unwrap();
-        let (q3, m3) = divmod(&f(7.0), &i(2)).unwrap();
+        let (q1, m1) = divmod(&i(-7), &i(2)).expect("cpython_differential.rs:199");
+        let (q2, m2) = divmod(&i(7), &i(-2)).expect("cpython_differential.rs:200");
+        let (q3, m3) = divmod(&f(7.0), &i(2)).expect("cpython_differential.rs:201");
         format!(
             "({}, {}) ({}, {}) ({}, {})",
             r(&q1),
@@ -217,15 +217,21 @@ diff!(
     {
         format!(
             "{} {} {} {}",
-            r(&binop(&i(1), BinOp::LShift, &i(100)).unwrap()),
-            r(&binop(&big(&format!("1{}", "0".repeat(25))), BinOp::LShift, &i(5)).unwrap()),
-            r(&binop(&big(&format!("1{}", "0".repeat(25))), BinOp::RShift, &i(60)).unwrap()),
+            r(&binop(&i(1), BinOp::LShift, &i(100)).expect("cpython_differential.rs:220")),
+            r(
+                &binop(&big(&format!("1{}", "0".repeat(25))), BinOp::LShift, &i(5))
+                    .expect("cpython_differential.rs:221")
+            ),
+            r(
+                &binop(&big(&format!("1{}", "0".repeat(25))), BinOp::RShift, &i(60))
+                    .expect("cpython_differential.rs:222")
+            ),
             r(&binop(
                 &big(&format!("-1{}", "0".repeat(25))),
                 BinOp::RShift,
                 &i(60)
             )
-            .unwrap())
+            .expect("cpython_differential.rs:223"))
         )
     }
 );
@@ -235,7 +241,7 @@ diff!(diff_invert_shift, "print(~7, ~(-8), -5 >> 1)", {
         "{} {} {}",
         r(&i(7).invert_val()),
         r(&i(-8).invert_val()),
-        r(&binop(&i(-5), BinOp::RShift, &i(1)).unwrap())
+        r(&binop(&i(-5), BinOp::RShift, &i(1)).expect("cpython_differential.rs:238"))
     )
 });
 
@@ -244,7 +250,7 @@ trait InvertVal {
 }
 impl InvertVal for Value {
     fn invert_val(&self) -> Value {
-        ap_obj::ops::invert(self).unwrap()
+        ap_obj::ops::invert(self).expect("cpython_differential.rs:247")
     }
 }
 
@@ -265,11 +271,11 @@ diff!(
     {
         format!(
             "{} {} {} {} {}",
-            r(&binop(&i(6), BinOp::TrueDiv, &i(3)).unwrap()),
-            r(&binop(&i(3), BinOp::TrueDiv, &i(2)).unwrap()),
-            r(&binop(&i(1), BinOp::Add, &f(2.0)).unwrap()),
-            r(&binop(&f(0.1), BinOp::Add, &f(0.2)).unwrap()),
-            r(&binop(&i(2), BinOp::Pow, &i(-3)).unwrap())
+            r(&binop(&i(6), BinOp::TrueDiv, &i(3)).expect("cpython_differential.rs:268")),
+            r(&binop(&i(3), BinOp::TrueDiv, &i(2)).expect("cpython_differential.rs:269")),
+            r(&binop(&i(1), BinOp::Add, &f(2.0)).expect("cpython_differential.rs:270")),
+            r(&binop(&f(0.1), BinOp::Add, &f(0.2)).expect("cpython_differential.rs:271")),
+            r(&binop(&i(2), BinOp::Pow, &i(-3)).expect("cpython_differential.rs:272"))
         )
     }
 );
@@ -320,8 +326,9 @@ diff!(
     diff_bool_int,
     "print(True+True, True*3, isinstance(True,int), type(True+True).__name__)",
     {
-        let tt = binop(&Value::Bool(true), BinOp::Add, &Value::Bool(true)).unwrap();
-        let t3 = binop(&Value::Bool(true), BinOp::Mul, &i(3)).unwrap();
+        let tt = binop(&Value::Bool(true), BinOp::Add, &Value::Bool(true))
+            .expect("cpython_differential.rs:323");
+        let t3 = binop(&Value::Bool(true), BinOp::Mul, &i(3)).expect("cpython_differential.rs:324");
         // isinstance/type-name: our arithmetic widens bool→int arm
         format!("{} {} True int", r(&tt), r(&t3))
     }
@@ -331,7 +338,7 @@ diff!(
 
 diff!(diff_container_repr, "print(repr([1, 'a', (2,), {1: 'x'}]), repr([]), repr(()), repr({}), repr((1,)), repr(set()), repr(frozenset()))", {
     let d = PyDict::new();
-    d.set(i(1), s("x")).unwrap();
+    d.set(i(1), s("x")).expect("cpython_differential.rs:334");
     format!("{} [] () {{}} (1,) set() frozenset()",
         r(&list(vec![i(1), s("a"), tuple(vec![i(2)]), Value::Dict(d)])))
 });
@@ -345,9 +352,9 @@ diff!(
     "d={}; d['b']=1; d['a']=2; d['b']=3; print(d)",
     {
         let d = PyDict::new();
-        d.set(s("b"), i(1)).unwrap();
-        d.set(s("a"), i(2)).unwrap();
-        d.set(s("b"), i(3)).unwrap();
+        d.set(s("b"), i(1)).expect("cpython_differential.rs:348");
+        d.set(s("a"), i(2)).expect("cpython_differential.rs:349");
+        d.set(s("b"), i(3)).expect("cpython_differential.rs:350");
         r(&Value::Dict(d))
     }
 );
@@ -357,10 +364,10 @@ diff!(
     "d={}; d['b']=1; d['a']=2; del d['b']; d['b']=9; print(d)",
     {
         let d = PyDict::new();
-        d.set(s("b"), i(1)).unwrap();
-        d.set(s("a"), i(2)).unwrap();
+        d.set(s("b"), i(1)).expect("cpython_differential.rs:360");
+        d.set(s("a"), i(2)).expect("cpython_differential.rs:361");
         d.pop(&s("b"));
-        d.set(s("b"), i(9)).unwrap();
+        d.set(s("b"), i(9)).expect("cpython_differential.rs:363");
         r(&Value::Dict(d))
     }
 );
@@ -403,13 +410,16 @@ diff!(
     {
         format!(
             "{} {} {} {} {} {} {}",
-            ap_obj::ops::hash(&i(42)).unwrap(),
-            ap_obj::ops::hash(&i(-1)).unwrap(),
-            ap_obj::ops::hash(&i(-2)).unwrap(),
-            ap_obj::ops::hash(&i(0)).unwrap(),
-            ap_obj::ops::hash(&big(&format!("1{}", "0".repeat(100)))).unwrap(),
-            ap_obj::ops::hash(&big(&format!("-1{}", "0".repeat(100)))).unwrap(),
-            ap_obj::ops::hash(&big(&(2u128.pow(61) - 1).to_string())).unwrap()
+            ap_obj::ops::hash(&i(42)).expect("cpython_differential.rs:406"),
+            ap_obj::ops::hash(&i(-1)).expect("cpython_differential.rs:407"),
+            ap_obj::ops::hash(&i(-2)).expect("cpython_differential.rs:408"),
+            ap_obj::ops::hash(&i(0)).expect("cpython_differential.rs:409"),
+            ap_obj::ops::hash(&big(&format!("1{}", "0".repeat(100))))
+                .expect("cpython_differential.rs:410"),
+            ap_obj::ops::hash(&big(&format!("-1{}", "0".repeat(100))))
+                .expect("cpython_differential.rs:411"),
+            ap_obj::ops::hash(&big(&(2u128.pow(61) - 1).to_string()))
+                .expect("cpython_differential.rs:412")
         )
     }
 );
@@ -417,22 +427,22 @@ diff!(
 diff!(diff_hash_floats,
       "print(hash(2.0), hash(0.0), hash(-0.0), hash(1.5), hash(True), hash(1), hash(1.0), hash(float('inf')), hash(float('-inf')))", {
     format!("{} {} {} {} {} {} {} {} {}",
-        ap_obj::ops::hash(&f(2.0)).unwrap(),
-        ap_obj::ops::hash(&f(0.0)).unwrap(),
-        ap_obj::ops::hash(&f(-0.0)).unwrap(),
-        ap_obj::ops::hash(&f(1.5)).unwrap(),
-        ap_obj::ops::hash(&Value::Bool(true)).unwrap(),
-        ap_obj::ops::hash(&i(1)).unwrap(),
-        ap_obj::ops::hash(&f(1.0)).unwrap(),
-        ap_obj::ops::hash(&f(f64::INFINITY)).unwrap(),
-        ap_obj::ops::hash(&f(f64::NEG_INFINITY)).unwrap())
+        ap_obj::ops::hash(&f(2.0)).expect("cpython_differential.rs:420"),
+        ap_obj::ops::hash(&f(0.0)).expect("cpython_differential.rs:421"),
+        ap_obj::ops::hash(&f(-0.0)).expect("cpython_differential.rs:422"),
+        ap_obj::ops::hash(&f(1.5)).expect("cpython_differential.rs:423"),
+        ap_obj::ops::hash(&Value::Bool(true)).expect("cpython_differential.rs:424"),
+        ap_obj::ops::hash(&i(1)).expect("cpython_differential.rs:425"),
+        ap_obj::ops::hash(&f(1.0)).expect("cpython_differential.rs:426"),
+        ap_obj::ops::hash(&f(f64::INFINITY)).expect("cpython_differential.rs:427"),
+        ap_obj::ops::hash(&f(f64::NEG_INFINITY)).expect("cpython_differential.rs:428"))
 });
 
 diff!(diff_hash_tuple, "print(hash((1, 2)), hash(()))", {
     format!(
         "{} {}",
-        ap_obj::ops::hash(&tuple(vec![i(1), i(2)])).unwrap(),
-        ap_obj::ops::hash(&tuple(vec![])).unwrap()
+        ap_obj::ops::hash(&tuple(vec![i(1), i(2)])).expect("cpython_differential.rs:434"),
+        ap_obj::ops::hash(&tuple(vec![])).expect("cpython_differential.rs:435")
     )
 });
 
@@ -444,9 +454,9 @@ diff!(
     {
         format!(
             "{} {} {}",
-            ap_obj::ops::hash(&s("abc")).unwrap(),
-            ap_obj::ops::hash(&s("")).unwrap(),
-            ap_obj::ops::hash(&s("café")).unwrap()
+            ap_obj::ops::hash(&s("abc")).expect("cpython_differential.rs:447"),
+            ap_obj::ops::hash(&s("")).expect("cpython_differential.rs:448"),
+            ap_obj::ops::hash(&s("café")).expect("cpython_differential.rs:449")
         )
     }
 );
@@ -490,8 +500,11 @@ fn diff_int_str_digit_limit() {
     let expected_str = cpython(
         "try:\n    str(10**5000)\nexcept ValueError as e:\n    print('ValueError: ' + str(e), end='')",
     );
-    let huge = Int::parse_base10(&format!("1{}", "0".repeat(5000))).unwrap();
-    let got = huge.to_py_string().unwrap_err();
+    let huge =
+        Int::parse_base10(&format!("1{}", "0".repeat(5000))).expect("cpython_differential.rs:493");
+    let got = huge
+        .to_py_string()
+        .expect_err("cpython_differential.rs:494");
     assert_eq!(got.to_string(), expected_str);
 
     // int(str) form (with digit count) — A-2
@@ -502,7 +515,7 @@ fn diff_int_str_digit_limit() {
     assert_eq!(got2.to_string(), expected_parse);
 
     // 4300 digits is fine (both directions)
-    let ok = Int::parse_base10(&"1".repeat(4300)).unwrap();
+    let ok = Int::parse_base10(&"1".repeat(4300)).expect("cpython_differential.rs:505");
     assert!(ok.to_py_string().is_ok());
 }
 
@@ -515,15 +528,13 @@ fn diff_big_shifts_signed() {
     // where the reference raises; 1<<2**62 here is NOT attempted — it would
     // need 2^61 bytes; CPython raises MemoryError, we'd OOM identically).
     let expected = cpython("print((1 << 61) - 1, -1 >> 100, -2**65 >> 32)");
-    let m1 = binop(&i(1), BinOp::LShift, &i(61)).unwrap();
+    let m1 = binop(&i(1), BinOp::LShift, &i(61)).expect("cpython_differential.rs:518");
     let m1 = Value::Int(m1.as_int_holder().sub(&Int::Smi(1)));
     let a = r(&m1);
-    let b = r(&binop(&i(-1), BinOp::RShift, &i(100)).unwrap());
-    let c = r(&binop(
-        &big(&format!("-{}", u128::from(2u128).pow(65))),
-        BinOp::RShift,
-        &i(32),
-    )
-    .unwrap());
+    let b = r(&binop(&i(-1), BinOp::RShift, &i(100)).expect("cpython_differential.rs:521"));
+    let c = r(
+        &binop(&big(&format!("-{}", 2u128.pow(65))), BinOp::RShift, &i(32))
+            .expect("cpython_differential.rs:522"),
+    );
     assert_eq!(format!("{a} {b} {c}"), expected);
 }

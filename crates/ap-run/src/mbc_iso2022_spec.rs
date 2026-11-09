@@ -201,6 +201,7 @@ pub static SPEC_ISO2022_KR: Iso2022Spec = Iso2022Spec {
     multibyte: MultibyteKind::Ksc5601,
 };
 
+#[allow(dead_code)] // kept: part of an unfinished surface (robustness-ci 02.x burn-down leaf)
 pub static SPEC_ISO2022_CN: Iso2022Spec = Iso2022Spec {
     name: "iso2022_cn",
     designations: &[
@@ -222,6 +223,7 @@ pub static SPEC_ISO2022_CN: Iso2022Spec = Iso2022Spec {
     multibyte: MultibyteKind::Gb2312,
 };
 
+#[allow(dead_code)] // kept: part of an unfinished surface (robustness-ci 02.x burn-down leaf)
 pub static SPEC_ISO2022_CN_CNS: Iso2022Spec = Iso2022Spec {
     name: "iso2022_cn_cns",
     designations: &[

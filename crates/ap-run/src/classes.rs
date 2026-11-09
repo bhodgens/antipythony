@@ -63,7 +63,7 @@ fn tb_node(
     let frame = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<frame>");
     let code = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<code>");
     {
-        let mut cattrs = code.attrs.borrow_mut();
+        let cattrs = code.attrs.borrow_mut();
         let _ = cattrs.set(
             Value::Str(PyString::new("co_filename")),
             Value::Str(PyString::new(script.to_string())),
@@ -91,7 +91,7 @@ fn tb_node(
         );
     }
     {
-        let mut attrs = frame.attrs.borrow_mut();
+        let attrs = frame.attrs.borrow_mut();
         let _ = attrs.set(Value::Str(PyString::new("f_code")), Value::Obj(code));
         let _ = attrs.set(
             Value::Str(PyString::new("f_lineno")),
@@ -109,7 +109,7 @@ fn tb_node(
     }
     let tb = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<traceback>");
     {
-        let mut attrs = tb.attrs.borrow_mut();
+        let attrs = tb.attrs.borrow_mut();
         let _ = attrs.set(Value::Str(PyString::new("tb_frame")), Value::Obj(frame));
         let _ = attrs.set(Value::Str(PyString::new("tb_next")), next);
         let _ = attrs.set(
@@ -177,7 +177,7 @@ pub fn dynamic_type(
     let meta_new_f = resolved
         .lookup_with_owner("__new__")
         .map(|(f, _)| f)
-        .filter(|f| is_user_function(f));
+        .filter(is_user_function);
     let t = if let Some(f) = meta_new_f {
         // T1-d fix: the cached class VALUE (make_class_value OVERWRITES the
         // back-pointer, so every metaclass-__new__ creation broke the
@@ -587,17 +587,14 @@ pub fn subclasses_of(interp: &Interpreter, name: &str) -> Vec<Value> {
 
 // ===========================================================================
 // Class creation from a class statement (S-03-01..04, S-03-27..29)
-// ===========================================================================
-
-/// Execute a class statement: bases, body in a fresh namespace, class
-/// creation, hooks, name binding in the enclosing scope.
+// =============================================================// Execute a class statement: bases, body in a fresh n// creation, hooks, name binding in the enclosing scope.enclosing scope.enclosing scope.
 
 thread_local! {
     /// Wave-104: the class namespace of the class body CURRENTLY executing
     /// (set by exec_class_def, cleared after). 1-arg exec() routes here so
     /// exec'd statements see class-body names (CPython exec-in-class rule).
     static CURRENT_CLASS_NS: std::cell::RefCell<Option<Gc<PyDict>>> =
-        std::cell::RefCell::new(None);
+        const { std::cell::RefCell::new(None) };
 }
 
 /// Public accessor for builtin_exec (builtins.rs).
@@ -647,7 +644,6 @@ pub fn exec_class_def(
             if ga.kind == ap_obj::ObjKind::Opaque && ga.name == "typing._GenericAlias" {
                 if let Some(origin) = ga.slice_parts.borrow().first().cloned() {
                     bases_v.push(origin);
-                    replaced = true;
                 }
                 continue;
             }
@@ -663,17 +659,13 @@ pub fn exec_class_def(
                     let mut me_opt = bo
                         .attrs
                         .borrow()
-                        .get(&Value::Str(PyString::new("__mro_entries__")))
-                        .map(|x| x.clone());
-                    if me_opt.is_none() {
-                        if bo.kind == ap_obj::ObjKind::UserInstance {
-                            // T1-d: class-level __mro_entries__ must bind to
-                            // the INSTANCE (zope Interface shim).
-                            if let Some(t) = bo.type_ref.borrow().as_ref().and_then(|w| w.upgrade())
-                            {
-                                if let Some(f) = t.lookup("__mro_entries__") {
-                                    me_opt = Some(bind_function_owned(&f, v.clone(), Some(&t)));
-                                }
+                        .get(&Value::Str(PyString::new("__mro_entries__")));
+                    if me_opt.is_none() && bo.kind == ap_obj::ObjKind::UserInstance {
+                        // T1-d: class-level __mro_entries__ must bind to
+                        // the INSTANCE (zope Interface shim).
+                        if let Some(t) = bo.type_ref.borrow().as_ref().and_then(|w| w.upgrade()) {
+                            if let Some(f) = t.lookup("__mro_entries__") {
+                                me_opt = Some(bind_function_owned(&f, v.clone(), Some(&t)));
                             }
                         }
                     }
@@ -822,7 +814,7 @@ pub fn exec_class_def(
                         &[
                             meta_cls_v,
                             Value::Str(PyString::new(c.name.clone())),
-                            Value::Tuple(Gc::new(Tuple(bases_v.iter().cloned().collect()))),
+                            Value::Tuple(Gc::new(Tuple(bases_v.to_vec()))),
                         ],
                         &class_kwargs
                             .iter()
@@ -1061,7 +1053,7 @@ pub fn exec_class_def(
         .as_ref()
         .and_then(|meta| meta.lookup_with_owner("__new__"))
         .map(|(f, _)| f)
-        .filter(|f| is_user_function(f));
+        .filter(is_user_function);
     // 02.03b: the owner of the inherited __new__ (CPython zero-arg super()
     // starts at the DEFINING class — the __class__ cell — not at the class
     // the method was reached through). class M2(Meta) with class
@@ -1092,7 +1084,7 @@ pub fn exec_class_def(
         // metaclass's cached class_value → identity broke).
         let meta_v = _resolved_meta
             .as_ref()
-            .map(|m| class_value_for_public(m))
+            .map(class_value_for_public)
             .unwrap_or_else(|| Value::None);
         // Zero-arg super() inside the metaclass __new__ body needs the
         // method context. 02.03b: route through the BoundMethod channel
@@ -1159,9 +1151,9 @@ pub fn exec_class_def(
                             .attrs
                             .borrow()
                             .get(&Value::Str(PyString::new("__qualname__")))
-                            .and_then(|q| match q {
-                                Value::Str(s) => Some(s.as_str().contains('.')),
-                                _ => Some(false),
+                            .map(|q| match q {
+                                Value::Str(s) => s.as_str().contains('.'),
+                                _ => false,
                             })
                             .unwrap_or(false);
                         if !dotted {
@@ -1263,9 +1255,9 @@ pub fn exec_class_def(
                         .attrs
                         .borrow()
                         .get(&Value::Str(PyString::new("__qualname__")))
-                        .and_then(|q| match q {
-                            Value::Str(s) => Some(s.as_str().contains('.')),
-                            _ => Some(false),
+                        .map(|q| match q {
+                            Value::Str(s) => s.as_str().contains('.'),
+                            _ => false,
                         })
                         .unwrap_or(false);
                     if !dotted {
@@ -1435,10 +1427,7 @@ pub fn exec_class_def(
                             class_v.clone(),
                             Value::Str(PyString::new(c.name.clone())),
                             Value::Tuple(Gc::new(Tuple(
-                                base_types
-                                    .iter()
-                                    .map(|b| class_value_for_public(b))
-                                    .collect(),
+                                base_types.iter().map(class_value_for_public).collect(),
                             ))),
                             Value::Dict(t.dict.clone()),
                         ],
@@ -1497,6 +1486,7 @@ pub fn exec_class_def(
 
 /// 02.03b-fix: class kwargs are present when the class statement carried
 /// keyword arguments (class A(metaclass=M, foo=1)).
+#[allow(dead_code)] // kept: part of an unfinished surface (robustness-ci 02.x burn-down leaf)
 fn class_kwargs_present(interp: &Interpreter) -> bool {
     let _ = interp;
     CLASS_KWARGS.with(|c| !c.borrow().is_empty())
@@ -1504,7 +1494,7 @@ fn class_kwargs_present(interp: &Interpreter) -> bool {
 
 thread_local! {
     static CLASS_KWARGS: std::cell::RefCell<Vec<(String, Value)>> =
-        std::cell::RefCell::new(Vec::new());
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 fn qualname_for(frame: &Frame, name: &str) -> String {
@@ -1845,9 +1835,13 @@ pub fn descr_get(interp: &Rc<Interpreter>, v: &Value, obj: &Value, owner: &Value
             let f: Value = o.func.borrow().clone().unwrap_or(Value::None);
             match o.descr_kind.borrow().as_deref() {
                 Some("staticmethod") => Ok(f),
-                Some("classmethod") => {
-                    call_value(interp, &module_frame(interp), &f, &[owner.clone()], &[])
-                }
+                Some("classmethod") => call_value(
+                    interp,
+                    &module_frame(interp),
+                    &f,
+                    std::slice::from_ref(owner),
+                    &[],
+                ),
                 Some("property") | Some("member") => {
                     if matches!(obj, Value::None) {
                         // C.p -> the property object itself (S-03-21).
@@ -1878,7 +1872,13 @@ pub fn descr_get(interp: &Rc<Interpreter>, v: &Value, obj: &Value, owner: &Value
                             }
                         }
                         let fget = o.self_value.borrow().clone().unwrap_or(Value::None);
-                        call_value(interp, &module_frame(interp), &fget, &[obj.clone()], &[])
+                        call_value(
+                            interp,
+                            &module_frame(interp),
+                            &fget,
+                            std::slice::from_ref(obj),
+                            &[],
+                        )
                     }
                 }
                 _ => Ok(v.clone()),
@@ -1973,8 +1973,14 @@ pub fn descr_delete(
                 Some("property") | Some("member") => {
                     let fdel = o.dunders.borrow().get(&Value::Str(PyString::new("fdel")));
                     if let Some(f) = fdel {
-                        return call_value(interp, &module_frame(interp), &f, &[obj.clone()], &[])
-                            .map(|_| ());
+                        return call_value(
+                            interp,
+                            &module_frame(interp),
+                            &f,
+                            std::slice::from_ref(obj),
+                            &[],
+                        )
+                        .map(|_| ());
                     }
                     Err(raise(
                         "AttributeError",
@@ -2170,7 +2176,7 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
             if let Ok(Some(origin)) = crate::interp::attr_get_public(&rc, t, "__origin__") {
                 return value_isinstance(interp, x, &origin);
             }
-            return Ok(false);
+            Ok(false)
         }
         _ => {
             // s014: namedtuple instances ARE tuples (class carries the
@@ -2287,8 +2293,8 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
                         // Mapping/MutableMapping/Collection/Iterable/
                         // Sized/Container/Hashable (CPython ABCMeta
                         // __subclasshook__ + registration equivalents).
-                        if mro_names.iter().any(|n| n == "dict") {
-                            if matches!(
+                        if mro_names.iter().any(|n| n == "dict")
+                            && matches!(
                                 want,
                                 "Mapping"
                                     | "MutableMapping"
@@ -2297,12 +2303,12 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
                                     | "Container"
                                     | "Sized"
                                     | "Hashable"
-                            ) {
-                                return Ok(true);
-                            }
+                            )
+                        {
+                            return Ok(true);
                         }
-                        if mro_names.iter().any(|n| n == "list") {
-                            if matches!(
+                        if mro_names.iter().any(|n| n == "list")
+                            && matches!(
                                 want,
                                 "MutableSequence"
                                     | "Sequence"
@@ -2310,12 +2316,12 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
                                     | "Iterable"
                                     | "Container"
                                     | "Sized"
-                            ) {
-                                return Ok(true);
-                            }
+                            )
+                        {
+                            return Ok(true);
                         }
-                        if mro_names.iter().any(|n| n == "tuple") {
-                            if matches!(
+                        if mro_names.iter().any(|n| n == "tuple")
+                            && matches!(
                                 want,
                                 "Sequence"
                                     | "Collection"
@@ -2323,12 +2329,12 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
                                     | "Container"
                                     | "Sized"
                                     | "Hashable"
-                            ) {
-                                return Ok(true);
-                            }
+                            )
+                        {
+                            return Ok(true);
                         }
-                        if mro_names.iter().any(|n| n == "str") {
-                            if matches!(
+                        if mro_names.iter().any(|n| n == "str")
+                            && matches!(
                                 want,
                                 "Sequence"
                                     | "Collection"
@@ -2337,9 +2343,9 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
                                     | "Sized"
                                     | "Hashable"
                                     | "ByteString"
-                            ) {
-                                return Ok(true);
-                            }
+                            )
+                        {
+                            return Ok(true);
                         }
                     }
                 }
@@ -2727,7 +2733,7 @@ pub fn special_lookup(interp: &Interpreter, v: &Value, name: &str) -> Option<(Va
                 && matches!(name, "__len__" | "__iter__" | "__getitem__") =>
         {
             let marker =
-                ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, &format!("lxml.elem.{}", name));
+                ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, format!("lxml.elem.{}", name));
             *marker.slice_parts.borrow_mut() = vec![v.clone()];
             // owner type is unused by the marker dispatch path
             Some((Value::Obj(marker), object_class(interp)))
@@ -2750,7 +2756,7 @@ pub fn special_lookup(interp: &Interpreter, v: &Value, name: &str) -> Option<(Va
         {
             let marker = ap_obj::PyObject::new(
                 ap_obj::ObjKind::BuiltinFn,
-                &format!("__ap_base_{}__init__", o.name),
+                format!("__ap_base_{}__init__", o.name),
             );
             *marker.slice_parts.borrow_mut() = vec![v.clone()];
             Some((Value::Obj(marker), object_class(interp)))
@@ -2790,7 +2796,7 @@ pub fn attr_get_protocol(interp: &Rc<Interpreter>, obj: &Value, name: &str) -> E
         None if name == "f_code" && matches!(obj, Value::Obj(_)) => {
             let code = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<code>");
             {
-                let mut cattrs = code.attrs.borrow_mut();
+                let cattrs = code.attrs.borrow_mut();
                 let _ = cattrs.set(
                     Value::Str(PyString::new("co_filename")),
                     Value::Str(PyString::new("<antipythony>")),
@@ -3155,7 +3161,7 @@ fn instance_attr(
     {
         let f = ap_obj::PyObject::new(
             ap_obj::ObjKind::BuiltinFn,
-            &format!("__object_virtual_{name}__"),
+            format!("__object_virtual_{name}__"),
         );
         return Ok(Value::Obj(f));
     }
@@ -3163,7 +3169,7 @@ fn instance_attr(
     // subclass hook is readable (and callable) on every class — v0 default
     // is a no-op marker.
     if matches!(name, "__init_subclass__" | "__subclasshook__") {
-        let f = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, &format!("object.{name}"));
+        let f = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, format!("object.{name}"));
         return Ok(Value::Obj(f));
     }
     // T2 (contextlib _BaseExitStack.__exit__): exception-chain dunders
@@ -3442,28 +3448,27 @@ fn class_attr_get(interp: &Rc<Interpreter>, cls_v: &Value, t: &Rc<TypeRef>, name
             // 02.03b-fix: _py_abc.__subclasscheck__ probes
             // cls.__subclasshook__ (object's classmethod default: None).
             | "__subclasshook__"
-    ) {
-        if t.mro.borrow().iter().any(|m| m.name == "object") {
-            if name == "__doc__" {
-                return Ok(Value::None);
-            }
-            if name == "__subclasshook__" {
-                // object.__subclasshook__ is a classmethod returning
-                // NotImplemented (the _py_abc.__subclasscheck__ probe
-                // compares `ok is not NotImplemented`). Marker: the call
-                // site ignores its args and yields the singleton.
-                let f = ap_obj::PyObject::new(
-                    ap_obj::ObjKind::BuiltinFn,
-                    "__object_virtual___subclasshook____",
-                );
-                return Ok(Value::Obj(f));
-            }
+    ) && t.mro.borrow().iter().any(|m| m.name == "object")
+    {
+        if name == "__doc__" {
+            return Ok(Value::None);
+        }
+        if name == "__subclasshook__" {
+            // object.__subclasshook__ is a classmethod returning
+            // NotImplemented (the _py_abc.__subclasscheck__ probe
+            // compares `ok is not NotImplemented`). Marker: the call
+            // site ignores its args and yields the singleton.
             let f = ap_obj::PyObject::new(
                 ap_obj::ObjKind::BuiltinFn,
-                &format!("__object_virtual_{name}__"),
+                "__object_virtual___subclasshook____",
             );
             return Ok(Value::Obj(f));
         }
+        let f = ap_obj::PyObject::new(
+            ap_obj::ObjKind::BuiltinFn,
+            format!("__object_virtual_{name}__"),
+        );
+        return Ok(Value::Obj(f));
     }
     // 02.04a (interp bug #4c): types.py reads FunctionType.__code__ and
     // FunctionType.__globals__ at import (GetSet/MemberDescriptorType).
@@ -3475,7 +3480,7 @@ fn class_attr_get(interp: &Rc<Interpreter>, cls_v: &Value, t: &Rc<TypeRef>, name
     // subclass hook is readable (and callable) on every class — v0 default
     // is a no-op marker. __subclasshook__ rides the same default.
     if matches!(name, "__init_subclass__" | "__subclasshook__") {
-        let f = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, &format!("object.{name}"));
+        let f = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, format!("object.{name}"));
         return Ok(Value::Obj(f));
     }
     Err(raise(
@@ -3998,7 +4003,7 @@ pub fn instantiate(
     // Exception classes: BaseException.__init__ stores args; instances
     // carry the class payload back-ref so except-as / isinstance see the
     // real class (e001/e007).
-    if t.flags.is_exception && init_f.as_ref().map_or(true, |f| !is_user_function(f)) {
+    if t.flags.is_exception && init_f.as_ref().is_none_or(|f| !is_user_function(f)) {
         let obj = alloc_instance(t);
         {
             let Value::Obj(io) = &obj else { unreachable!() };
@@ -4154,17 +4159,29 @@ pub fn instantiate(
                         Value::List(l) => Some(Value::Tuple(Gc::new(Tuple(l.items().to_vec())))),
                         _ => None,
                     },
-                    "list" => crate::builtins::builtin_list(&[p.clone()]).ok(),
-                    "set" => crate::builtins::call_builtin(interp, "set", &[p.clone()], &[]).ok(),
+                    "list" => crate::builtins::builtin_list(std::slice::from_ref(&p)).ok(),
+                    "set" => {
+                        crate::builtins::call_builtin(interp, "set", std::slice::from_ref(&p), &[])
+                            .ok()
+                    }
                     // T2 (pygments `class include(str)` + enum `_inherit`):
                     // str subclasses construct from the single arg like
                     // CPython str(obj).
-                    "str" => crate::builtins::call_builtin(interp, "str", &[p.clone()], &[]).ok(),
+                    "str" => {
+                        crate::builtins::call_builtin(interp, "str", std::slice::from_ref(&p), &[])
+                            .ok()
+                    }
                     // dict subclass: dict(mapping-or-iterable, **kw).
-                    "dict" => crate::builtins::call_builtin(interp, "dict", &[p.clone()], &[]).ok(),
+                    "dict" => {
+                        crate::builtins::call_builtin(interp, "dict", std::slice::from_ref(&p), &[])
+                            .ok()
+                    }
                     // W110 (T2): int subclasses (enum members) construct
                     // from the value arg like CPython int(x).
-                    "int" => crate::builtins::call_builtin(interp, "int", &[p.clone()], &[]).ok(),
+                    "int" => {
+                        crate::builtins::call_builtin(interp, "int", std::slice::from_ref(&p), &[])
+                            .ok()
+                    }
                     // property(fget): the fget rides the descriptor.
                     "property" => {
                         let o = ap_obj::PyObject::new(ap_obj::ObjKind::Descriptor, "property");
@@ -4297,7 +4314,7 @@ pub fn instantiate(
             _ => "TextIOWrapper",
         };
         if let Value::Obj(old_o) = &obj {
-            let fresh = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, kind.clone());
+            let fresh = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, kind);
             *fresh.type_ref.borrow_mut() = old_o.type_ref.borrow().clone();
             let cr = old_o
                 .class_ref
@@ -4306,7 +4323,7 @@ pub fn instantiate(
                 .unwrap_or_else(|| t.clone());
             *fresh.class_ref.borrow_mut() = Some(cr);
             {
-                let mut attrs = fresh.attrs.borrow_mut();
+                let attrs = fresh.attrs.borrow_mut();
                 let _ = attrs.set(
                     Value::Str(PyString::new("<buf>".to_string())),
                     Value::Bytes(Gc::new(vec![])),
@@ -4484,14 +4501,12 @@ pub fn is_tuple_derived_instance(v: &Value) -> bool {
 /// first use. Stored under attrs["__ap_tuple__"] (mirrors list_backing_or_new).
 pub fn tuple_backing_or_new(v: &Value) -> Gc<Tuple> {
     if let Value::Obj(o) = v {
-        if let Some(t) = o
+        if let Some(Value::Tuple(t)) = o
             .attrs
             .borrow()
             .get(&Value::Str(PyString::new("__ap_tuple__")))
         {
-            if let Value::Tuple(t) = t {
-                return t.clone();
-            }
+            return t.clone();
         }
         let t = Gc::new(Tuple(Vec::new()));
         let _ = o.attrs.borrow_mut().set(
@@ -4507,14 +4522,12 @@ pub fn tuple_backing_or_new(v: &Value) -> Gc<Tuple> {
 /// use. Stored under attrs["__ap_list__"].
 pub fn list_backing_or_new(v: &Value) -> Gc<PyList> {
     if let Value::Obj(o) = v {
-        if let Some(l) = o
+        if let Some(Value::List(l)) = o
             .attrs
             .borrow()
             .get(&Value::Str(PyString::new("__ap_list__")))
         {
-            if let Value::List(l) = l {
-                return l.clone();
-            }
+            return l.clone();
         }
         let l = PyList::new();
         let _ = o.attrs.borrow_mut().set(

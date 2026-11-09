@@ -14,13 +14,12 @@
 //! - root registration + the weakbridge install at run entry.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::frame::Interpreter;
 use crate::Flow;
 use ap_obj::dict::PyDict;
-use ap_obj::int::{Gc, Int};
+use ap_obj::int::Gc;
 use ap_obj::value::{interned_key, PyList, PyString, Tuple, Value};
 use ap_obj::PyObject;
 
@@ -39,6 +38,7 @@ fn raise(class: &str, msg: impl Into<String>) -> Flow {
 
 /// One live weakref token: the `_weakref_token` PyObject address is the key;
 /// the target payload address + callback + dead-flag ride alongside.
+#[allow(dead_code)] // kept: part of an unfinished surface (robustness-ci 02.x burn-down leaf)
 struct WeakToken {
     token: Gc<PyObject>,
     target_addr: usize,
@@ -51,9 +51,9 @@ struct WeakToken {
 }
 
 thread_local! {
-    static WEAK_TOKENS: RefCell<Vec<WeakToken>> = RefCell::new(Vec::new());
+    static WEAK_TOKENS: RefCell<Vec<WeakToken>> = const { RefCell::new(Vec::new()) };
     /// Finalizer registry for weakref.finalize (obj-addr -> finalize token).
-    static FINALIZERS: RefCell<Vec<FinalizerEntry>> = RefCell::new(Vec::new());
+    static FINALIZERS: RefCell<Vec<FinalizerEntry>> = const { RefCell::new(Vec::new()) };
 }
 
 struct FinalizerEntry {
@@ -153,7 +153,7 @@ pub fn weakref_ref(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
     let entry_index = ap_gc::weakref_entry_count();
     let wseq = ap_gc::weakref_next_seq();
     {
-        let mut tattrs = token.attrs.borrow_mut();
+        let tattrs = token.attrs.borrow_mut();
         let _ = tattrs.set(interned_key("<target_addr>"), i(target_addr as i64));
     }
     if !untracked_immortal {
@@ -205,7 +205,7 @@ pub fn weakref_proxy(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
     let target_addr = target_addr_of(target);
     let token = PyObject::new(ap_obj::ObjKind::Opaque, "_weakref_proxy");
     {
-        let mut tattrs = token.attrs.borrow_mut();
+        let tattrs = token.attrs.borrow_mut();
         let _ = tattrs.set(interned_key("<target_addr>"), i(target_addr as i64));
     }
     let wseq = ap_gc::weakref_next_seq();
@@ -398,7 +398,7 @@ pub fn bridge_del(v: &Value) {
 }
 
 /// Look up `__del__` on a UserInstance (class MRO).
-fn lookup_del(interp: &Rc<Interpreter>, v: &Value) -> Option<Value> {
+fn lookup_del(_interp: &Rc<Interpreter>, v: &Value) -> Option<Value> {
     match v {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
             let t = o.type_ref.borrow().as_ref().and_then(|w| w.upgrade())?;
@@ -434,7 +434,7 @@ fn report_unraisable(interp: &Rc<Interpreter>, del_f: &Value, exc: &ExceptionVal
             .clone()
             .unwrap_or_else(|| crate::interp::exception_instance_value(exc));
         {
-            let mut a = args_obj.attrs.borrow_mut();
+            let a = args_obj.attrs.borrow_mut();
             let _ = a.set(s("exc_type"), exc_type);
             let _ = a.set(s("exc_value"), exc_value.clone());
             // W112: real tb chain (was a BuiltinFn marker object -
@@ -905,7 +905,7 @@ pub fn call_weakref_finalize(args: &[Value], kwargs: &[(String, Value)]) -> Opti
     let target_addr = target_addr_of(&obj);
     let token = PyObject::new(ap_obj::ObjKind::Opaque, "_finalize_token");
     {
-        let mut tattrs = token.attrs.borrow_mut();
+        let tattrs = token.attrs.borrow_mut();
         let _ = tattrs.set(interned_key("<target_addr>"), i(target_addr as i64));
         let _ = tattrs.set(s("alive"), Value::Bool(true));
     }
@@ -1031,6 +1031,8 @@ pub fn finalize_alive(token: &Gc<PyObject>) -> bool {
 pub fn finalize_atexit_drain() {
     let pending = FINALIZERS.with(|f| {
         let mut f = f.borrow_mut();
+        #[allow(clippy::type_complexity)]
+        // interpreter plumbing type; factoring out would obscure the signature
         let mut out: Vec<(Value, Vec<Value>, Vec<(String, Value)>)> = Vec::new();
         f.sort_by_key(|e| e.index);
         for e in f.iter_mut() {
@@ -1075,7 +1077,7 @@ pub fn is_weak_container(name: &str) -> bool {
 fn container_new(cls: &str) -> Value {
     let o = PyObject::new(ap_obj::ObjKind::Opaque, cls);
     {
-        let mut attrs = o.attrs.borrow_mut();
+        let attrs = o.attrs.borrow_mut();
         if cls == WS {
             let _ = attrs.set(
                 interned_key("<data>"),
@@ -1133,7 +1135,7 @@ fn make_token(target: &Value) -> BResult {
             return Ok(Value::Obj(token));
         }
     }
-    weakref_ref(&[target.clone()], &[])
+    weakref_ref(std::slice::from_ref(target), &[])
 }
 
 thread_local! {
@@ -1305,7 +1307,7 @@ pub fn weakref_surface(cls: &str, op: &str, args: &[Value]) -> BResult {
         }
         (WKD, "__bool__") => {
             prune_dict(&d, KeyPos::Key);
-            Ok(Value::Bool(d.len() != 0))
+            Ok(Value::Bool(!d.is_empty()))
         }
         (WKD, "__iter__") | (WKD, "keys") => {
             prune_dict(&d, KeyPos::Key);
@@ -1449,7 +1451,7 @@ pub fn weakref_surface(cls: &str, op: &str, args: &[Value]) -> BResult {
         }
         (WVD, "__bool__") => {
             prune_dict(&d, KeyPos::Value);
-            Ok(Value::Bool(d.len() != 0))
+            Ok(Value::Bool(!d.is_empty()))
         }
         (WVD, "__iter__") | (WVD, "keys") => Ok(Value::List(PyList::from_vec(d.keys()))),
         (WVD, "values") => {
@@ -1663,7 +1665,7 @@ pub fn weakmethod_ctor(args: &[Value]) -> BResult {
     let target_addr = target_addr_of(&recv);
     let token = PyObject::new(ap_obj::ObjKind::Opaque, "_weakmethod_token");
     {
-        let mut tattrs = token.attrs.borrow_mut();
+        let tattrs = token.attrs.borrow_mut();
         let _ = tattrs.set(interned_key("<target_addr>"), i(target_addr as i64));
         let _ = tattrs.set(interned_key("<func>"), func);
         let _ = tattrs.set(interned_key("<name>"), s(name));
@@ -1792,9 +1794,11 @@ where
     }
 }
 
+#[allow(clippy::type_complexity)] // interpreter plumbing type; factoring out would obscure the signature
 static WORKER_REG_IN: std::sync::LazyLock<
     GilSendPub<std::sync::Mutex<Option<std::sync::mpsc::Sender<GilSendPub<Value>>>>>,
 > = std::sync::LazyLock::new(|| GilSendPub(std::sync::Mutex::new(None)));
+#[allow(clippy::type_complexity)] // interpreter plumbing type; factoring out would obscure the signature
 static WORKER_REG_OUT: std::sync::LazyLock<
     GilSendPub<std::sync::Mutex<Option<std::sync::mpsc::Receiver<GilSendPub<Value>>>>>,
 > = std::sync::LazyLock::new(|| GilSendPub(std::sync::Mutex::new(None)));

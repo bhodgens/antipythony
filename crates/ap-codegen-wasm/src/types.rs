@@ -340,12 +340,8 @@ pub fn build_type_section() -> wasm_encoder::TypeSection {
 pub fn build_type_section_with_prefix(prefix: usize) -> wasm_encoder::TypeSection {
     use wasm_encoder::{CompositeInnerType, CompositeType, StructType, SubType};
 
-    let c = |idx: u32| -> wasm_encoder::HeapType {
-        wasm_encoder::HeapType::Concrete(idx)
-    };
-    let fr = |idx: u32, mutable: bool| -> FieldType {
-        field(nullable_concrete(idx), mutable)
-    };
+    let c = |idx: u32| -> wasm_encoder::HeapType { wasm_encoder::HeapType::Concrete(idx) };
+    let fr = |idx: u32, mutable: bool| -> FieldType { field(nullable_concrete(idx), mutable) };
     let array_ty = |elem: FieldType| -> SubType {
         SubType {
             is_final: true,
@@ -447,12 +443,12 @@ pub fn build_type_section_with_prefix(prefix: usize) -> wasm_encoder::TypeSectio
 
     let dict_fields = || -> Vec<FieldType> {
         vec![
-            field_i32(false),            // used
-            field_i32(false),            // fill
-            field_i32(false),            // mask
-            field_i32(false),            // perturb_shift
-            fr(T_IDX_ARR, false),        // index
-            fr(T_ENTRY_ARR, false),      // entries
+            field_i32(false),       // used
+            field_i32(false),       // fill
+            field_i32(false),       // mask
+            field_i32(false),       // perturb_shift
+            fr(T_IDX_ARR, false),   // index
+            fr(T_ENTRY_ARR, false), // entries
         ]
     };
 
@@ -461,17 +457,17 @@ pub fn build_type_section_with_prefix(prefix: usize) -> wasm_encoder::TypeSectio
         pyobj_root(vec![fr(T_TYPE, false)]),
         // 1 $type sub $pyobj
         sub(vec![
-            fr(T_STR, false),       // name
-            fr(T_TYPE_ARR, false),  // mro
-            fr(T_SLOT_ARR, false),  // slots
-            fr(T_OBJ_ARR, false),   // bases
-            fr(T_DICT, false),      // dict
+            fr(T_STR, false),      // name
+            fr(T_TYPE_ARR, false), // mro
+            fr(T_SLOT_ARR, false), // slots
+            fr(T_OBJ_ARR, false),  // bases
+            fr(T_DICT, false),     // dict
         ]),
         // 2 $int sub $pyobj
         sub(vec![
-            field_i32(false),   // kind (0 smi / 1 big)
-            field_i64(false),   // smi (i61)
-            fr(T_BIGINT, false) // big
+            field_i32(false),    // kind (0 smi / 1 big)
+            field_i64(false),    // smi (i61)
+            fr(T_BIGINT, false), // big
         ]),
         // 3 $bigint — internal payload, NOT a $pyobj (S-07-6)
         bare(vec![field_i32(false), fr(T_LIMB_ARRAY, false)]),
@@ -505,8 +501,8 @@ pub fn build_type_section_with_prefix(prefix: usize) -> wasm_encoder::TypeSectio
         ]),
         // 9 $bytes sub $pyobj
         sub(vec![
-            field_i64(false),   // hash
-            field_i32(false),   // len (BYTES)
+            field_i64(false), // hash
+            field_i32(false), // len (BYTES)
             fr(T_BYTE_ARR, false),
         ]),
         // 10 $byte_arr
@@ -517,9 +513,9 @@ pub fn build_type_section_with_prefix(prefix: usize) -> wasm_encoder::TypeSectio
         array_ty(field(field_i32_val(), false)),
         // 13 $list sub $pyobj
         sub(vec![
-            field_i32(false),      // len
-            field_i32(false),      // cap
-            fr(T_OBJ_ARR, false),  // items (mut array)
+            field_i32(false),     // len
+            field_i32(false),     // cap
+            fr(T_OBJ_ARR, false), // items (mut array)
         ]),
         // 14 $obj_arr — mut pyobj array
         array_ty(field(pyobj_ref(), true)),
@@ -531,7 +527,7 @@ pub fn build_type_section_with_prefix(prefix: usize) -> wasm_encoder::TypeSectio
         sub(dict_fields()),
         // 18 $dict_entry — bare struct
         bare(vec![
-            field_i64(false), // hash
+            field_i64(false),  // hash
             field_pyobj_ref(), // key
             field_pyobj_ref(), // value
         ]),
@@ -549,28 +545,28 @@ pub fn build_type_section_with_prefix(prefix: usize) -> wasm_encoder::TypeSectio
         sub(dict_fields()),
         // 22 $exception sub $pyobj
         sub(vec![
-            fr(T_TUPLE, false),       // args
-            fr(T_TB_FRAME, true),     // tb
-            fr(T_EXCEPTION, false),   // context
-            fr(T_EXCEPTION, false),   // cause
-            field_i32(false),         // suppress_context
+            fr(T_TUPLE, false),     // args
+            fr(T_TB_FRAME, true),   // tb
+            fr(T_EXCEPTION, false), // context
+            fr(T_EXCEPTION, false), // cause
+            field_i32(false),       // suppress_context
         ]),
         // 23 $tb_frame — bare struct
         bare(vec![
-            fr(T_TB_FRAME, true),  // next
-            fr(T_STR, false),      // filename
-            fr(T_STR, false),      // funcname
-            field_i32(false),      // lineno
-            field_i32(false),      // col
-            field_i32(false),      // end_lineno
+            fr(T_TB_FRAME, true), // next
+            fr(T_STR, false),     // filename
+            fr(T_STR, false),     // funcname
+            field_i32(false),     // lineno
+            field_i32(false),     // col
+            field_i32(false),     // end_lineno
         ]),
         // 24 $function sub $pyobj (S-07 §4)
         sub(vec![
-            fr(T_CODE, false),      // code
-            fr(T_OBJ_ARR, false),   // defaults (def-time)
-            fr(T_DICT, false),      // kwdefaults
-            fr(T_CELL_ARR, false),  // cells
-            fr(T_DICT, false),      // globals
+            fr(T_CODE, false),     // code
+            fr(T_OBJ_ARR, false),  // defaults (def-time)
+            fr(T_DICT, false),     // kwdefaults
+            fr(T_CELL_ARR, false), // cells
+            fr(T_DICT, false),     // globals
         ]),
         // 25 $cell — bare struct
         bare(vec![field_pyobj_ref_mut()]),
@@ -584,11 +580,11 @@ pub fn build_type_section_with_prefix(prefix: usize) -> wasm_encoder::TypeSectio
         )),
         // 27 $code — bare module-data struct
         bare(vec![
-            fr(T_STR, false),       // name
-            field_i32(false),       // nparams
-            field_i32(false),       // flags
-            fr(T_OBJ_ARR, false),   // param_names
-            field_i32(false),       // func_idx
+            fr(T_STR, false),     // name
+            field_i32(false),     // nparams
+            field_i32(false),     // flags
+            fr(T_OBJ_ARR, false), // param_names
+            field_i32(false),     // func_idx
         ]),
         // 28 $slot_arr — mut array of $function refs
         array_ty(field(
@@ -608,7 +604,7 @@ pub fn build_type_section_with_prefix(prefix: usize) -> wasm_encoder::TypeSectio
         )),
         // 30 $method sub $pyobj
         sub(vec![
-            field_pyobj_ref(),  // self (never null once built)
+            field_pyobj_ref(), // self (never null once built)
             fr(T_FUNCTION, false),
         ]),
         // 31 $generator sub $pyobj (S-07 §8)
@@ -636,12 +632,12 @@ pub fn build_type_section_with_prefix(prefix: usize) -> wasm_encoder::TypeSectio
         [ValType::I32, ValType::I32, ValType::I32, ValType::I32],
         [ValType::I32],
     ); // FT_FD_WRITE
-    // FT_ABORT_MSG: (param anyref). Spec-07-41 declares (param (ref $str));
-    // v1 widens the DECLARED import param to anyref because wasmtime's
-    // host-func matching requires the host-side concrete $str struct type
-    // (a self-referential StructType the host API cannot express yet).
-    // Call sites pass (ref $str) values — the widening is an ordinary
-    // subsumption. DEVIATION recorded for 03.05 (import-surface owner).
+       // FT_ABORT_MSG: (param anyref). Spec-07-41 declares (param (ref $str));
+       // v1 widens the DECLARED import param to anyref because wasmtime's
+       // host-func matching requires the host-side concrete $str struct type
+       // (a self-referential StructType the host API cannot express yet).
+       // Call sites pass (ref $str) values — the widening is an ordinary
+       // subsumption. DEVIATION recorded for 03.05 (import-surface owner).
     types.ty().function(
         [ValType::Ref(RefType {
             nullable: true,
