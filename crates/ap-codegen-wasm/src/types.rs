@@ -116,6 +116,7 @@ pub const FT_PYCALL: u32 = 37;
 // ---------------------------------------------------------------------------
 pub const FT_U_O: u32 = 38; // (i32 unused, o) -> o          bool_obj
 pub const FT_IOP_O: u32 = 56; // (i32 op, o, o) -> o         binop dispatch
+pub const FT_O_O: u32 = 57; // (o) -> o                       len
 pub const FT_O_STR: u32 = 39; // (o) -> $str                 py_str/int_to_str
 pub const FT_O_L: u32 = 40; // (o) -> i64                    hash
 pub const FT_O_I: u32 = 41; // (o) -> i32                    truthy/type_index
@@ -762,4 +763,6 @@ pub fn append_prelude_fts(types: &mut wasm_encoder::TypeSection) {
     types.ty().function([f64v()], [i64v()]);
     // 56 FT_IOP_O: (op, o, o) -> o
     types.ty().function([i32v(), o(), o()], [o()]);
+    // 57 FT_O_O: (o) -> o                        len / passthrough
+    types.ty().function([o()], [o()]);
 }

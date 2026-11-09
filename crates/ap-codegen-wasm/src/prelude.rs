@@ -1690,11 +1690,10 @@ fn binop(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::Cod
         code,
         FT_IOP_O,
         &[
-            (2, oref()),  // 1,2
-            (2, oref()),  // 3,4
+            (2, oref()),       // 3,4
             (2, ValType::I32), // 5,6
             (3, ValType::I64), // 7,8,9
-            (1, ValType::F64), // 10
+            (2, ValType::F64), // 10,11
         ],
         |f| {
             // params: 0=op, 1=a, 2=b; locals: 3=a(o),4=b(o),5=sa,6=sb,7=va,8=vb,9=r(i64),10=f64tmp
@@ -1836,6 +1835,8 @@ fn binop(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::Cod
             f.instruction(&Instruction::LocalGet(8));
             f.instruction(&Instruction::I64Const(1));
             f.instruction(&Instruction::I64And);
+            f.instruction(&Instruction::I64Eqz);
+            f.instruction(&Instruction::I32Eqz);
             f.instruction(&Instruction::If(BlockType::Empty));
             f.instruction(&Instruction::LocalGet(9));
             f.instruction(&Instruction::LocalGet(7));
@@ -1863,11 +1864,10 @@ fn binop(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::Cod
             f.instruction(&Instruction::End);
             f.instruction(&Instruction::End);
             f.instruction(&Instruction::End);
-            f.instruction(&Instruction::End);
             f.instruction(&Instruction::Call(fx::FN_INT_FROM_I64));
             f.instruction(&Instruction::Return);
-            f.instruction(&Instruction::End);
-            // float-involved
+            f.instruction(&Instruction::Else);
+            // float-involved (the If(oref) else-fallthrough; If(oref) closes at tail)
             f.instruction(&Instruction::Block(BlockType::Result(oref())));
             // fa
             f.instruction(&Instruction::LocalGet(6));
@@ -1883,6 +1883,7 @@ fn binop(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::Cod
             int_smi(f);
             f.instruction(&Instruction::F64ConvertI64S);
             f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalSet(10));
             // fb
             f.instruction(&Instruction::LocalGet(5));
             f.instruction(&Instruction::I32Const(1));
@@ -1897,29 +1898,38 @@ fn binop(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::Cod
             int_smi(f);
             f.instruction(&Instruction::F64ConvertI64S);
             f.instruction(&Instruction::End);
-            // op dispatch on f64 (stack: [fa, fb])
+            f.instruction(&Instruction::LocalSet(11));
+            // op dispatch on f64 (locals 10=fa 11=fb)
             f.instruction(&Instruction::LocalGet(0));
             f.instruction(&Instruction::I32Const(OPS::ADD));
             f.instruction(&Instruction::I32Eq);
             f.instruction(&Instruction::If(BlockType::Result(ValType::F64)));
+            f.instruction(&Instruction::LocalGet(10));
+            f.instruction(&Instruction::LocalGet(11));
             f.instruction(&Instruction::F64Add);
             f.instruction(&Instruction::Else);
             f.instruction(&Instruction::LocalGet(0));
             f.instruction(&Instruction::I32Const(OPS::SUB));
             f.instruction(&Instruction::I32Eq);
             f.instruction(&Instruction::If(BlockType::Result(ValType::F64)));
+            f.instruction(&Instruction::LocalGet(10));
+            f.instruction(&Instruction::LocalGet(11));
             f.instruction(&Instruction::F64Sub);
             f.instruction(&Instruction::Else);
             f.instruction(&Instruction::LocalGet(0));
             f.instruction(&Instruction::I32Const(OPS::MUL));
             f.instruction(&Instruction::I32Eq);
             f.instruction(&Instruction::If(BlockType::Result(ValType::F64)));
+            f.instruction(&Instruction::LocalGet(10));
+            f.instruction(&Instruction::LocalGet(11));
             f.instruction(&Instruction::F64Mul);
             f.instruction(&Instruction::Else);
             f.instruction(&Instruction::LocalGet(0));
             f.instruction(&Instruction::I32Const(OPS::DIV));
             f.instruction(&Instruction::I32Eq);
             f.instruction(&Instruction::If(BlockType::Result(ValType::F64)));
+            f.instruction(&Instruction::LocalGet(10));
+            f.instruction(&Instruction::LocalGet(11));
             f.instruction(&Instruction::F64Div);
             f.instruction(&Instruction::Else);
             f.instruction(&Instruction::Unreachable);
@@ -1934,6 +1944,7 @@ fn binop(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::Cod
             f.instruction(&Instruction::LocalGet(10));
             f.instruction(&Instruction::StructNew(T_FLOAT));
             f.instruction(&Instruction::End);
+            f.instruction(&Instruction::Return);
             // unsupported combination
             f.instruction(&Instruction::Unreachable);
             f.instruction(&Instruction::End);
@@ -1953,22 +1964,24 @@ fn unary(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::Cod
         f.instruction(&Instruction::LocalGet(2));
         f.instruction(&Instruction::I32Const(OPS::BOOL));
         f.instruction(&Instruction::I32Eq);
-        f.instruction(&Instruction::If(BlockType::Result(oref())));
-        f.instruction(&Instruction::LocalGet(3));
+        f.instruction(&Instruction::If(BlockType::Empty));
         f.instruction(&Instruction::I32Const(0));
+        f.instruction(&Instruction::LocalGet(3));
         f.instruction(&Instruction::Call(fx::FN_BOOL_OBJ));
         f.instruction(&Instruction::Return);
         f.instruction(&Instruction::End);
         f.instruction(&Instruction::LocalGet(2));
         f.instruction(&Instruction::I32Const(OPS::NOT));
         f.instruction(&Instruction::I32Eq);
-        f.instruction(&Instruction::If(BlockType::Result(oref())));
+        f.instruction(&Instruction::If(BlockType::Empty));
         f.instruction(&Instruction::LocalGet(3));
         f.instruction(&Instruction::Call(fx::FN_TRUTHY));
         f.instruction(&Instruction::I32Eqz);
         f.instruction(&Instruction::I64ExtendI32U);
         f.instruction(&Instruction::Call(fx::FN_INT_FROM_I64));
+        f.instruction(&Instruction::LocalSet(3));
         f.instruction(&Instruction::I32Const(0));
+        f.instruction(&Instruction::LocalGet(3));
         f.instruction(&Instruction::Call(fx::FN_BOOL_OBJ));
         f.instruction(&Instruction::Return);
         f.instruction(&Instruction::End);
@@ -2008,12 +2021,14 @@ fn unary(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::Cod
         f.instruction(&Instruction::End);
         f.instruction(&Instruction::End);
         f.instruction(&Instruction::Call(fx::FN_INT_FROM_I64));
+        f.instruction(&Instruction::LocalSet(3));
+        f.instruction(&Instruction::LocalGet(3));
     });
 }
 
 /// len (FT_L_O): (x) -> o — container length as an int object.
 fn len(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
-    add(funcs, code, FT_L_O, &[(1, oref()), (2, ValType::I32)],
+    add(funcs, code, FT_O_O, &[(2, oref()), (2, ValType::I32)],
     |f| {
         f.instruction(&Instruction::LocalGet(0));
         f.instruction(&Instruction::LocalSet(2));
@@ -2023,57 +2038,62 @@ fn len(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeS
         f.instruction(&Instruction::LocalGet(3));
         f.instruction(&Instruction::I32Const(5));
         f.instruction(&Instruction::I32Eq);
-        f.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
+        f.instruction(&Instruction::If(BlockType::Empty));
         f.instruction(&Instruction::LocalGet(2));
         
         f.instruction(&Instruction::RefCastNullable(hc(T_DICT)));
         sget(f, T_DICT, F_DICT_USED);
         f.instruction(&Instruction::I64ExtendI32U);
+        f.instruction(&Instruction::Call(fx::FN_INT_FROM_I64));
         f.instruction(&Instruction::Return);
         f.instruction(&Instruction::End);
         f.instruction(&Instruction::LocalGet(3));
         f.instruction(&Instruction::I32Const(6));
         f.instruction(&Instruction::I32Eq);
-        f.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
+        f.instruction(&Instruction::If(BlockType::Empty));
         f.instruction(&Instruction::LocalGet(2));
         
         f.instruction(&Instruction::RefCastNullable(hc(T_LIST)));
         sget(f, T_LIST, F_LIST_LEN);
         f.instruction(&Instruction::I64ExtendI32U);
+        f.instruction(&Instruction::Call(fx::FN_INT_FROM_I64));
         f.instruction(&Instruction::Return);
         f.instruction(&Instruction::End);
         f.instruction(&Instruction::LocalGet(3));
         f.instruction(&Instruction::I32Const(3));
         f.instruction(&Instruction::I32Eq);
-        f.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
+        f.instruction(&Instruction::If(BlockType::Empty));
         f.instruction(&Instruction::LocalGet(2));
         
         f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
         sget(f, T_STR, F_STR_LEN);
         f.instruction(&Instruction::I64ExtendI32U);
+        f.instruction(&Instruction::Call(fx::FN_INT_FROM_I64));
         f.instruction(&Instruction::Return);
         f.instruction(&Instruction::End);
         f.instruction(&Instruction::LocalGet(3));
         f.instruction(&Instruction::I32Const(4));
         f.instruction(&Instruction::I32Eq);
-        f.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
+        f.instruction(&Instruction::If(BlockType::Empty));
         f.instruction(&Instruction::LocalGet(2));
         
         f.instruction(&Instruction::RefCastNullable(hc(T_BYTES)));
         sget(f, T_BYTES, F_BYTES_LEN);
         f.instruction(&Instruction::I64ExtendI32U);
+        f.instruction(&Instruction::Call(fx::FN_INT_FROM_I64));
         f.instruction(&Instruction::Return);
         f.instruction(&Instruction::End);
         f.instruction(&Instruction::LocalGet(3));
         f.instruction(&Instruction::I32Const(7));
         f.instruction(&Instruction::I32Eq);
-        f.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
+        f.instruction(&Instruction::If(BlockType::Empty));
         f.instruction(&Instruction::LocalGet(2));
         
         f.instruction(&Instruction::RefCastNullable(hc(T_TUPLE)));
         sget(f, T_TUPLE, F_TUPLE_ITEMS);
         f.instruction(&Instruction::ArrayLen);
         f.instruction(&Instruction::I64ExtendI32U);
+        f.instruction(&Instruction::Call(fx::FN_INT_FROM_I64));
         f.instruction(&Instruction::Return);
         f.instruction(&Instruction::End);
         f.instruction(&Instruction::I64Const(0));
@@ -2158,7 +2178,7 @@ fn big_cmp(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::C
         funcs,
         code,
         FT_BIG_CMP,
-        &[(2, bref()), (1, bref()), (8, ValType::I32)],
+        &[(2, bref()), (8, ValType::I32)],
         |f| {
             // 2=a 3=b 4=sa 5=sb 6=na 7=nb 8=i 9=mc 10=la 11=lb
             f.instruction(&Instruction::LocalGet(0));
@@ -2178,7 +2198,7 @@ fn big_cmp(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::C
             f.instruction(&Instruction::LocalGet(4));
             f.instruction(&Instruction::LocalGet(5));
             f.instruction(&Instruction::I32Ne);
-            f.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
+            f.instruction(&Instruction::If(BlockType::Empty));
             f.instruction(&Instruction::LocalGet(4));
             f.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
             f.instruction(&Instruction::I32Const(-1));
@@ -2202,7 +2222,7 @@ fn big_cmp(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::C
             f.instruction(&Instruction::LocalGet(6));
             f.instruction(&Instruction::LocalGet(7));
             f.instruction(&Instruction::I32Ne);
-            f.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
+            f.instruction(&Instruction::If(BlockType::Empty));
             f.instruction(&Instruction::LocalGet(6));
             f.instruction(&Instruction::LocalGet(7));
             f.instruction(&Instruction::I32GtU);
@@ -2211,6 +2231,7 @@ fn big_cmp(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::C
             f.instruction(&Instruction::Else);
             f.instruction(&Instruction::I32Const(-1));
             f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalSet(9));
             f.instruction(&Instruction::Else);
             f.instruction(&Instruction::LocalGet(6));
             f.instruction(&Instruction::LocalSet(8));
@@ -2259,7 +2280,6 @@ fn big_cmp(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::C
             f.instruction(&Instruction::Br(0));
             f.instruction(&Instruction::End);
             f.instruction(&Instruction::End);
-            f.instruction(&Instruction::LocalGet(9));
             f.instruction(&Instruction::End);
             f.instruction(&Instruction::LocalGet(4));
             f.instruction(&Instruction::I32Eqz);

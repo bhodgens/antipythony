@@ -17,3 +17,8 @@ wasm-encoder = "0.263.0"
 
 [dev-dependencies]
 wasmparser = "0.263"
+ap-host = { path = "../ap-host" }
+
+[[bin]]
+name = "diag_host"
+path = "src/bin/diag_host.rs"
