@@ -1,11 +1,13 @@
-//! `ap-run-eval` — the T-05/T-06 testability bin: parse -> lower -> tier-0
+//! `ap-run-eval` — the T-05/T-06 testability bin: parse -> lower ->
 //! execute a single .py file; stdout/stderr/exit mirror CPython (C-24).
 //!
 //! Accepts the documented gate seam `--tier <mode>` (C-31 / 02.03 gate,
-//! T-06/T-07/T-08: `ap-conform run … --impl "<bin> --tier 0"`). This bin IS
-//! the tier-0 executor, so `--tier 0` is the only mode it honors; any other
-//! mode is rejected loudly rather than silently running tier-0 (a silent
-//! accept would let an adaptive/binary gate report green on tier-0 output).
+//! T-06/T-07/T-08: `ap-conform run … --impl "<bin> --tier 0"`). Modes:
+//! `0` (tree-walker only) and `adaptive` (leaf 02.05a — function bodies
+//! route through the JIT baseline when the lowering supports them,
+//! tree-walker fallback otherwise; byte-identical per the transparency
+//! differential). `--tier jit` is accepted as an adaptive alias. Any
+//! other mode is rejected loudly rather than silently running tier-0.
 //!
 //! robustness-ci 05.01: arg parsing moved to clap. The stdout/stderr/exit
 //! bytes this bin emits for VALID invocations (and for the semantic errors
@@ -16,11 +18,11 @@
 use clap::Parser;
 use std::io::Write;
 
-/// Parse -> lower -> tier-0 execute a single .py file (T-05/T-06 testability seam).
+/// Parse -> lower -> execute a single .py file (T-05/T-06 testability seam).
 #[derive(Parser)]
 #[command(name = "ap-run-eval", version)]
 struct Args {
-    /// Execution tier mode; this bin is the tier-0 executor, so only `0` is honored.
+    /// Execution tier mode: `0` (tree-walker) or `adaptive` (02.05a JIT seam).
     #[arg(long, value_name = "MODE")]
     tier: Option<String>,
 
@@ -35,10 +37,10 @@ fn main() {
     let Args { tier, file: path } = Args::parse();
 
     if let Some(mode) = &tier {
-        if mode != "0" {
+        if mode != "0" && mode != "adaptive" && mode != "jit" {
             eprintln!(
-                "ap-run-eval: --tier {mode} is not implemented; this bin runs tier-0 only \
-                 (pass --tier 0 or omit --tier)"
+                "ap-run-eval: --tier {mode} is not implemented; this bin runs tier-0 or adaptive \
+                 (pass --tier 0, --tier adaptive, or omit --tier)"
             );
             std::process::exit(2);
         }
@@ -52,6 +54,15 @@ fn main() {
         }
     };
     let script_path = path.clone();
+
+    // 02.05a: forward the tier into run_module's init seam ('static &'s —
+    // the flag is one of three literals, so leaking a clone is not needed;
+    // we match to the pinned literals instead).
+    match tier.as_deref() {
+        Some("0") => ap_run::tier_flag::set("0"),
+        Some("adaptive") | Some("jit") => ap_run::tier_flag::set("adaptive"),
+        _ => {}
+    }
 
     // The tier-0 interpreter consumes ~50KB of native stack per Python frame,
     // so the default 8MB main-thread stack overflows (SIGABRT) at ~150 frames

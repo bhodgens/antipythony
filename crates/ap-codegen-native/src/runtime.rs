@@ -67,6 +67,10 @@ pub struct ExecCtx {
     pub out: Vec<u8>,
     /// Host callbacks (see [`HostCallbacks`]).
     pub host: HostCallbacks,
+    /// Host-owned state pointer (02.05a entry-hook seam): ap-run parks
+    /// its per-frame HostState (interpreter + frame + name table) here;
+    /// the helpers transmute it back. The runtime itself never derefs it.
+    pub host_data: *mut u8,
 }
 
 impl ExecCtx {
@@ -82,6 +86,7 @@ impl ExecCtx {
             matched_exc: None,
             out: Vec::new(),
             host,
+            host_data: std::ptr::null_mut(),
         }
     }
 

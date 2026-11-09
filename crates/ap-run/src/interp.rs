@@ -135,6 +135,9 @@ pub fn run_module(
     // 02.04a: sys.path bootstrap ([script_dir] + vendored_stdlib +
     // ANTIPTYHONY_PATH) and a clean sys.modules for this run.
     importer::reset_import_state();
+    // 02.05a tier init seam: resolve the execution tier once per module
+    // run (bins pass --tier here; embedders fall back to APX_TIER env).
+    crate::jit_hook::init_tier(crate::tier_flag::take());
     // `app.py` (no dir component) parents to "" — treat as "." so upward
     // project-manifest discovery (04.01 site-packages) walks real dirs.
     let script_dir = {
@@ -7750,6 +7753,18 @@ fn call_function(
     }
     let result: Result<Value, Flow> = if let Some(body) = lambda_body {
         eval_expr(interp, &frame, &body, &current_registry(interp))
+    } else if crate::jit_hook::tier_mode().jit_enabled() {
+        // 02.05a JIT entry hook (the ONE dispatch arm): route the body
+        // through the compiled cfg::Func baseline. Ok(None) = fallback
+        // table (Unsupported lowering) → tree-walker, identical bytes.
+        // GIL v1 coexistence: the JIT call runs on this thread under the
+        // same lock — no new thread state anywhere in the hook.
+        match crate::jit_hook::jit_call_body(interp, &entry, &frame) {
+            Ok(Some(v)) => Ok(v),
+            Ok(None) => exec_block(interp, &frame, &def.body.blocks, &current_registry(interp))
+                .map(|_| Value::None),
+            Err(f) => Err(f),
+        }
     } else {
         exec_block(interp, &frame, &def.body.blocks, &current_registry(interp)).map(|_| Value::None)
     };
@@ -14169,6 +14184,23 @@ pub fn attr_get_public(
     name: &str,
 ) -> Result<Option<Value>, Flow> {
     attr_get(interp, obj, name)
+}
+
+/// 02.05a JIT entry hook seams: the tree-walker's exact name resolution
+/// (locals → globals → builtins → module ns → exc classes → NameError)
+/// and full caller-frame call dispatch for the JIT host callbacks.
+pub fn lookup_name_pub(interp: &Rc<Interpreter>, frame: &Rc<Frame>, name: &str) -> EResult {
+    lookup_name(interp, frame, name)
+}
+
+pub fn call_value_frame_pub(
+    interp: &Rc<Interpreter>,
+    caller: &Rc<Frame>,
+    f: &Value,
+    args: &[Value],
+    kwargs: &[(String, Value)],
+) -> EResult {
+    call_value(interp, caller, f, args, kwargs)
 }
 
 /// `a < b` through the FULL compare protocol (user `__lt__`/reflected

@@ -35,6 +35,10 @@ fn main() {
     };
     let script_path = path.clone();
 
+    // 02.05a: the differential suites drive this bin under both modes via
+    // APX_TIER (jit_hook's env fallback resolves it inside run_module);
+    // no flag surface is added — the bin's argv stays `<probe.py>`.
+
     // Same rationale as ap-run-eval: the tier-0 interpreter consumes ~50KB
     // of native stack per Python frame, so run the module on a dedicated
     // 256MB-stack thread (recursion_limit guard needs headroom to raise
