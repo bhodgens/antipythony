@@ -31,11 +31,11 @@ fn diag_corpus_slice() {
         match ap_host::run(&bytes, 64 * 1024) {
             Ok(o) => eprintln!("{} OUT={:?} ERR={:?} rc={}", c, o.stdout, o.stderr, o.exit_code),
             Err(e) => eprintln!("{} RUN-ERR {} {}", c, {
-                use wasmtime::wasmparser::Validator;
-                let feats = wasmtime::wasmparser::WasmFeatures::default()
-                    | wasmtime::wasmparser::WasmFeatures::GC
-                    | wasmtime::wasmparser::WasmFeatures::FUNCTION_REFERENCES
-                    | wasmtime::wasmparser::WasmFeatures::EXCEPTIONS;
+                use wasmparser::Validator;
+                let feats = wasmparser::WasmFeatures::default()
+                    | wasmparser::WasmFeatures::GC
+                    | wasmparser::WasmFeatures::FUNCTION_REFERENCES
+                    | wasmparser::WasmFeatures::EXCEPTIONS;
                 match Validator::new_with_features(feats).validate_all(&bytes) {
                     Err(ve) => format!("(validate: {})", ve),
                     Ok(_) => String::new(),
