@@ -128,7 +128,7 @@ struct HostState {
 }
 
 /// Read the HostState out of an ExecCtx (raw-pointer seam).
-fn host<'a>(ctx: &'a mut ExecCtx) -> &'a mut HostState {
+fn host(ctx: &mut ExecCtx) -> &mut HostState {
     unsafe {
         let p = ctx.host_data as *mut HostState;
         &mut *p
