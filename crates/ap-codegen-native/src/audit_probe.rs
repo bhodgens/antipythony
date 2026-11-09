@@ -44,10 +44,16 @@ pub fn audit_ic_hit<T: PartialEq + std::fmt::Debug>(
 mod tests {
     use super::*;
 
+    // The three tests mutate the process-global env var; under parallel test
+    // threads a set/remove race flips `audit_disabled_by_default_is_noop`
+    // into the panic path (observed 2026-11-08). Serialize env access.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn audit_disabled_by_default_is_noop() {
         // Without APX_IC_AUDIT the hook must not recompute (and must not
         // panic on a mismatch).
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var("APX_IC_AUDIT");
         audit_ic_hit("test", &1, || 999);
     }
@@ -55,12 +61,14 @@ mod tests {
     #[test]
     #[should_panic(expected = "IC AUDIT FAIL")]
     fn audit_enabled_panics_on_mismatch() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var("APX_IC_AUDIT", "1");
         audit_ic_hit("test", &1, || 999);
     }
 
     #[test]
     fn audit_enabled_passes_on_match() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var("APX_IC_AUDIT", "1");
         audit_ic_hit("test", &42, || 42);
         std::env::remove_var("APX_IC_AUDIT");
