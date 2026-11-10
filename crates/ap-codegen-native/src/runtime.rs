@@ -88,6 +88,10 @@ pub struct ExecCtx {
     /// the recording helpers. Null/0 when ICs are not wired (tests).
     pub ic_base: *mut FeedbackCell,
     pub ic_len: u32,
+    /// 02.05c cold-twin seam: the CFG block id the twin should START at
+    /// (region-exit continuation). 0 = from the top. Set by the fast path
+    /// before a hand-off; cleared by the host after each call.
+    pub twin_start: u32,
 }
 
 impl ExecCtx {
@@ -106,6 +110,7 @@ impl ExecCtx {
             host_data: std::ptr::null_mut(),
             ic_base: std::ptr::null_mut(),
             ic_len: 0,
+            twin_start: 0,
         }
     }
 
@@ -497,6 +502,128 @@ pub extern "C" fn h_const_str(ctx: &mut ExecCtx, dst: u32, ptr: i64, len: i64) -
             PyException::new("SystemError", "non-UTF8 string constant"),
         ),
     }
+}
+
+// ---------------------------------------------------------------------------
+// 02.05c — tier-1 typed-region helpers + stats.
+//
+// The typed fast path keeps unboxed i64s in CLIF registers; ALL boxed state
+// still lives in ctx.slots (write-through stores), so no pointer-typed CLIF
+// value exists even in tier-1 (the gc_value_declarations set stays empty —
+// see PROGRESS-0205c). Guards are VALUE-level (type + smi range), re-checked
+// on every region load: a guard never caches across executions, so nothing
+// here consumes the 02.05b version counters (those remain for the future
+// IC-consuming codegen; a type flip degrades the path to the cold twin,
+// which recomputes with baseline semantics).
+// ---------------------------------------------------------------------------
+
+/// Guard-load failure sentinel: `i64::MIN`, OUTSIDE the smi domain
+/// ([-2^59, 2^59)) so it can never collide with a real fast-path value.
+/// Guard helpers return it on any non-`Int::Smi` operand; the JIT'd caller
+/// compares and branches to the cold-twin hand-off.
+pub const GUARD_FAIL_SENTINEL: i64 = i64::MIN;
+
+/// Guard-load: read ctx slot `idx`; `Value::Int(Int::Smi(v))` → `v`, ANY
+/// other boxed shape (Bool, bigint Int, Float, Str, …) → the sentinel.
+/// Bool never enters the fast path as a loaded local (bool ⊂ int for
+/// arithmetic, but the BOXED shape must round-trip — `return flag` must
+/// return `True`, not `1` — so bools deopt to the twin, which boxes
+/// exactly).
+pub extern "C" fn h_slot_smi_v(ctx: &mut ExecCtx, idx: u32) -> i64 {
+    match &ctx.slots[idx as usize] {
+        Value::Int(ap_obj::Int::Smi(s)) => *s,
+        _ => GUARD_FAIL_SENTINEL,
+    }
+}
+
+/// Typed multiply with exact-overflow detection (the one typed op whose
+/// i64 result can leave i64). Exact: `checked_mul`, `None` → the sentinel
+/// (the caller side-exits; the cold twin recomputes with bigint promotion
+/// — same value, exact).
+pub extern "C" fn h_mul_smi(a: i64, b: i64) -> i64 {
+    match a.checked_mul(b) {
+        Some(v) => v,
+        None => GUARD_FAIL_SENTINEL,
+    }
+}
+
+/// Typed store (write-through): box the i64 into a ctx slot. By the typed
+/// invariant every fast-path value is in the smi domain (each BinOp result
+/// is range-checked), so this never allocates.
+pub extern "C" fn h_store_smi(ctx: &mut ExecCtx, slot: u32, v: i64) -> HelperStatus {
+    ctx.slots[slot as usize] = Value::Int(ap_obj::Int::from_i64(v));
+    0
+}
+
+/// Typed return: park the boxed result and complete.
+pub extern "C" fn h_return_smi(ctx: &mut ExecCtx, v: i64) -> HelperStatus {
+    ctx.ret = Value::Int(ap_obj::Int::from_i64(v));
+    0
+}
+
+/// Cold-twin entry selector (the 02.05c region-exit seam): the fast path
+/// parks the twin's start block via [`h_set_twin_start`] before handing
+/// off (status 2), and the twin reads it here (0 = from the top). The
+/// BASELINE clears the field after each call (jit_hook's exit path) so a
+/// stale start can never leak into an independent later call.
+pub extern "C" fn h_twin_start(ctx: &mut ExecCtx) -> i32 {
+    ctx.twin_start as i32
+}
+
+/// Park the twin start block (fast-path region-exit seam; see
+/// [`h_twin_start`]).
+pub extern "C" fn h_set_twin_start(ctx: &mut ExecCtx, block: i64) -> HelperStatus {
+    ctx.twin_start = block.max(0) as u32;
+    0
+}
+
+/// Side-exit note (02.05d will grow this into the epoch/thrash counter):
+/// called on every fast-path guard-failure edge, just before the hand-off.
+/// Counts are read through [`tier1_stats`].
+pub extern "C" fn h_deopt_note(_ctx: &mut ExecCtx) -> HelperStatus {
+    TIER1_SIDE_EXITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    0
+}
+
+/// Tier-1 counters (process-global; probe/stats surface only).
+static TIER1_INSTALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static TIER1_REGIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static TIER1_SIDE_EXITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Snapshot of the tier-1 counters `(installs, regions, side_exits)` for
+/// tests and probes. Installs/regions are compile-time counts (one install
+/// per Tier1Func with a non-empty typed region); side_exits is the runtime
+/// guard/arith-failure count.
+pub fn tier1_stats() -> (u64, u64, u64) {
+    use std::sync::atomic::Ordering;
+    (
+        TIER1_INSTALLS.load(Ordering::Relaxed),
+        TIER1_REGIONS.load(Ordering::Relaxed),
+        TIER1_SIDE_EXITS.load(Ordering::Relaxed),
+    )
+}
+
+/// Record one successful tier-1 install of `regions` typed regions (called
+/// by the compile path; prints the probe line under APX_TIER1_STATS=1).
+pub fn note_tier1_install(regions: usize, fn_name: &str) {
+    use std::sync::atomic::Ordering;
+    TIER1_INSTALLS.fetch_add(1, Ordering::Relaxed);
+    TIER1_REGIONS.fetch_add(regions as u64, Ordering::Relaxed);
+    if tier1_stats_enabled() {
+        eprintln!(
+            "[TIER1-STATS] install fn={fn_name} regions={regions} \
+             installs={} side_exits={}",
+            TIER1_INSTALLS.load(Ordering::Relaxed),
+            TIER1_SIDE_EXITS.load(Ordering::Relaxed),
+        );
+    }
+}
+
+/// Whether the [TIER1-STATS] probe line is enabled.
+pub fn tier1_stats_enabled() -> bool {
+    std::env::var("APX_TIER1_STATS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
 }
 
 /// Flattened host subscript-reader signature: `Err` carries the rendered
