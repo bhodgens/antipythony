@@ -104,6 +104,7 @@ pub mod object;
 pub mod ops;
 pub mod str_repr;
 pub mod value;
+pub mod versioning;
 
 pub use debug_flags::{debug_flag, snapshot as snapshot_debug_flags, ApxFlag};
 pub use dict::{PyDict, PySet};

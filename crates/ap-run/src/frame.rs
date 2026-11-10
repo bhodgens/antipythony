@@ -679,6 +679,11 @@ impl Interpreter {
                         flags: ap_obj::classes::TypeFlags::default(),
                         metaclass: std::cell::RefCell::new(None),
                         class_value: std::cell::RefCell::new(None),
+                        // 02.05b: super_stack sentinels never mutate (A6
+                        // audit: "nothing mutates a sentinel") — counters
+                        // stay at seed and never guard an IC.
+                        type_version: std::sync::atomic::AtomicU64::new(1),
+                        surgery_version: std::sync::atomic::AtomicU64::new(1),
                     })
                 };
                 (mk(""), mk("__mcap__"))

@@ -221,22 +221,30 @@ fn rebuild(ev: PyException) -> crate::exc_hier::ExceptionValue {
     crate::exc_hier::ExceptionValue::from_py(ev)
 }
 
-fn jit_lookup_global(ctx: &mut ExecCtx, name_idx: u32, dst_slot: u32) -> Result<(), PyException> {
+fn jit_lookup_global(
+    ctx: &mut ExecCtx,
+    slot: u32,
+    name_idx: u32,
+    dst_slot: u32,
+) -> Result<(), PyException> {
     let name = host(ctx).names[name_idx as usize].clone();
     let h = host(ctx);
-    // The tree-walker's exact resolution order (lookup_name): locals →
-    // globals → builtins → current module ns → exception classes →
-    // NameError. NOTE (02.05a): the JIT route is only dispatched for
-    // bodies whose lowering succeeded, and the cfg stage routes ANY name
-    // not in its local set through LoadGlobal — module-level names
-    // included. Locals were already synced into ctx.slots at entry, and
-    // temps live ABOVE the local slots, so reading frame.locals here
-    // would alias the same storage the JIT is writing through its own
-    // slots; skip it and resolve through the tree-walker's full chain.
+    // NOTE: the JIT route is only dispatched for bodies whose lowering
+    // succeeded, and the cfg stage routes ANY name not in its local set
+    // through LoadGlobal — module-level names included. Locals were already
+    // synced into ctx.slots at entry, and temps live ABOVE the local slots,
+    // so reading frame.locals here would alias the same storage the JIT is
+    // writing through its own slots; skip it and resolve through the
+    // tree-walker's full chain.
     let res = crate::interp::lookup_name_pub(&h.interp, &h.frame, &name);
     match res {
         Ok(v) => {
             ctx.slots[dst_slot as usize] = v;
+            // 02.05b GlobalIC: record the loaded tag at this site.
+            let v = ctx.slots[dst_slot as usize].clone();
+            if let Some(cell) = ctx.ic_cell(slot) {
+                cell.record(ap_codegen_native::feedback::TypeTag::of(&v), None);
+            }
             Ok(())
         }
         Err(f) => Err(flow_to_py(f)),
@@ -245,12 +253,17 @@ fn jit_lookup_global(ctx: &mut ExecCtx, name_idx: u32, dst_slot: u32) -> Result<
 
 fn jit_call(
     ctx: &mut ExecCtx,
+    slot: u32,
     callee_slot: u32,
     arg_start: u32,
     argc: u32,
     dst_slot: u32,
 ) -> Result<(), PyException> {
     let callee = ctx.slots[callee_slot as usize].clone();
+    // 02.05b CallIC: record the callee tag (callability feedback).
+    if let Some(cell) = ctx.ic_cell(slot) {
+        cell.record(ap_codegen_native::feedback::TypeTag::of(&callee), None);
+    }
     let args: Vec<Value> = ctx.args[arg_start as usize..(arg_start + argc) as usize].to_vec();
     let res = {
         let h = host(ctx);
@@ -271,6 +284,7 @@ fn jit_call(
 
 fn jit_load_attr(
     ctx: &mut ExecCtx,
+    slot: u32,
     obj_slot: u32,
     name_idx: u32,
     dst_slot: u32,
@@ -281,6 +295,10 @@ fn jit_load_attr(
     match res {
         Ok(Some(v)) => {
             ctx.slots[dst_slot as usize] = v;
+            // 02.05b AttrIC: record (receiver tag) at this site.
+            if let Some(cell) = ctx.ic_cell(slot) {
+                cell.record(ap_codegen_native::feedback::TypeTag::of(&obj), None);
+            }
             Ok(())
         }
         Ok(None) => {
@@ -473,6 +491,11 @@ pub fn jit_call_body(
     let mut ctx = ExecCtx::new(je.num_slots as usize, host_callbacks());
     ctx.host_data = hptr as *mut u8;
     ctx.names = je.jit.name_table.clone();
+    // 02.05b: park the compiled feedback cells (slot id == index) so the
+    // recording helpers can reach them. The JitFunc owns the cells; the
+    // ctx borrow cannot outlive jit_call_body.
+    ctx.ic_base = je.jit.feedback_cells.as_ptr() as *mut _;
+    ctx.ic_len = je.jit.feedback_cells.len() as u32;
     load_slots_into_ctx(&mut ctx, frame, &names);
 
     let call_r = unsafe { je.jit.call(&mut ctx) };

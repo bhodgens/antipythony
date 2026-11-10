@@ -59,6 +59,20 @@ pub struct TypeObject {
     /// Back-pointer to the class's PyObject Value (set right after
     /// creation; identity for `x.__class__ is C`).
     pub class_value: RefCell<Option<Value>>,
+    /// 02.05b Risk 4 (docs/ic-version-audit.md "Type version" domain, audit
+    /// rows 11+16): per-class version counter bumped when the class's
+    /// attribute surface mutates (`type.__setattr__` — method add/remove,
+    /// the hot AttrIC invalidator). Atomic per the 02.09 entry-23 epoch
+    /// pattern (Relaxed — ANY observed change invalidates the guarded IC;
+    /// no ordering consumer). Seeded 1.
+    pub type_version: std::sync::atomic::AtomicU64,
+    /// 02.05b Risk 4 ("Class-surgery version" domain, audit row 10): bumped
+    /// alongside `type_version` when class STRUCTURE changes. In this
+    /// runtime bases/MRO are immutable post-creation (C3 computed once at
+    /// `create`), so today the only surgery surface IS the namespace —
+    /// both counters bump together at the same sites; the separation lets a
+    /// tier-1 guard distinguish them if base surgery ever lands. Seeded 1.
+    pub surgery_version: std::sync::atomic::AtomicU64,
 }
 
 /// A shared handle to a class. `Rc<TypeObject>` behind the same Gc pattern
@@ -95,6 +109,8 @@ impl TypeObject {
             flags,
             metaclass: std::cell::RefCell::new(metaclass),
             class_value: std::cell::RefCell::new(None),
+            type_version: std::sync::atomic::AtomicU64::new(1),
+            surgery_version: std::sync::atomic::AtomicU64::new(1),
         });
         // The class's OWN mro starts with itself (S-03-15): splice after
         // construction (self-reference through the Rc).
@@ -166,6 +182,96 @@ impl TypeObject {
                 .as_ref()
                 .is_some_and(|s: &Vec<String>| s.iter().any(|x| x == name))
         })
+    }
+
+    /// 02.05b Risk 4: the max class-surgery version across the MRO (audit
+    /// row 10 — the AttrIC chain guard). A method added on ANY MRO entry
+    /// invalidates caches keyed on this; the chain carries the counter, not
+    /// the cache site. Relaxed reads (02.09 epoch-pattern contract).
+    pub fn chain_surgery_version(&self) -> u64 {
+        self.mro
+            .borrow()
+            .iter()
+            .map(|t| t.class_version())
+            .max()
+            .unwrap_or(1)
+    }
+
+    /// 02.05b Risk 4: the surgery counter of THIS class payload (audit row
+    /// 10 — AttrIC chain guard component).
+    pub fn class_version(&self) -> u64 {
+        self.surgery_version
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// 02.05b Risk 4: bump BOTH counters (rows 10/11/16 — the only live
+    /// mutation path today is namespace surgery, which is both a type
+    /// -surface and a class-structure change; bases/MRO are immutable
+    /// post-creation so no other bump site exists). Relaxed fetch_add per
+    /// the 02.09 entry-23 pattern. `chain_surgery_version` of every
+    /// subclass sees the change through its MRO sweep.
+    pub fn bump_class_versions(&self) {
+        self.type_version
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.surgery_version
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::*;
+
+    fn mkclass(name: &str) -> Rc<TypeRef> {
+        TypeObject::create(
+            name.to_string(),
+            name.to_string(),
+            vec![],
+            PyDict::new(),
+            TypeFlags::default(),
+            None,
+        )
+        .expect("acyclic")
+    }
+
+    /// 02.05b: counters seeded at 1; a surgery bump moves BOTH counters and
+    /// the subclass chain sees it through `chain_surgery_version`.
+    #[test]
+    fn counters_seed_and_bump_through_chain() {
+        let parent = mkclass("P");
+        let child = mkclass("C");
+        *child.mro.borrow_mut() = vec![child.clone(), parent.clone(), mkclass("object")];
+        assert_eq!(child.chain_surgery_version(), 1);
+        let before = parent.type_version.load(std::sync::atomic::Ordering::Relaxed);
+        parent.bump_class_versions();
+        assert_eq!(
+            parent.type_version.load(std::sync::atomic::Ordering::Relaxed),
+            before + 1
+        );
+        assert_eq!(child.chain_surgery_version(), 2);
+        assert!(child.chain_surgery_version() > 1);
+    }
+
+    /// The dict-version domain: `PyDict::mutation_epoch` bumps on the
+    /// store/pop surface (single source of truth — audit rule 4).
+    #[test]
+    fn dict_epoch_is_the_dict_version() {
+        let d = PyDict::new();
+        let e0 = d.mutation_epoch();
+        d.set(Value::Str(crate::PyString::new("k")), Value::None)
+            .unwrap();
+        let e1 = d.mutation_epoch();
+        assert!(e1 > e0);
+        d.pop(&Value::Str(crate::PyString::new("k")));
+        assert!(d.mutation_epoch() > e1);
+    }
+
+    /// Builtins-version domain seeds at 1 and is monotonic under bumps.
+    #[test]
+    fn builtins_version_monotonic() {
+        let v0 = crate::versioning::builtins_version();
+        crate::versioning::bump_builtins_version();
+        assert!(crate::versioning::builtins_version() > v0);
     }
 }
 
