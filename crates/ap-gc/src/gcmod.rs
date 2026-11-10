@@ -721,6 +721,36 @@ fn mark_reachable_scoped(
             }
         }
     }
+    // 02.05g: the JIT-frame root feed. The walker entry point is a
+    // thread-local capture: a collection can be triggered from DEEP
+    // inside Rust call chains (allocation gates on ap-obj sites), where
+    // the frames between the JIT code and the collector are plain Rust
+    // (unmapped) — the fp chain from HERE would name only our own Rust
+    // frames, none of which carry maps. The JIT boundary is instead
+    // captured per-thread at the seam where JIT'd code re-enters the
+    // host (the ExecCtx frame, see ap-run jit_hook): the chain start is
+    // that captured frame-pointer, and it is valid exactly while that
+    // JIT frame is live (cleared on exit by the same seam). A collection
+    // with no live JIT frame on this thread walks nothing — the correct
+    // degenerate behavior.
+    let walker_fp = crate::rootscan::capture_point();
+    if walker_fp != 0 {
+        for (frame_fp, entry) in crate::rootscan::mapped_frames_from(walker_fp) {
+            for slot in &entry.roots {
+                if slot.fp_offset >= 0 {
+                    let slot_addr = frame_fp.wrapping_add(slot.fp_offset as usize);
+                    // The slot holds a `Value` (16-byte enum): the Rc
+                    // payload pointer is the first word. Probe it as the
+                    // registry key (the same shape value_addr derives).
+                    let payload = unsafe { *(slot_addr as *const usize) };
+                    if payload != 0 && registry.contains_key(&payload) && in_scope(payload) {
+                        queue.push(payload);
+                        root_hits += 1;
+                    }
+                }
+            }
+        }
+    }
     if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::GcDump) {
         let sc_seeds = registry
             .iter()

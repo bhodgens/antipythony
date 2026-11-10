@@ -475,7 +475,18 @@ pub fn jit_call_body(
     ctx.names = je.jit.name_table.clone();
     load_slots_into_ctx(&mut ctx, frame, &names);
 
+    // 02.05g root-shim seam: capture this host frame as the fp-chain walk
+    // start for the duration of the JIT call. The collector (ap-gc
+    // rootscan feed) walks the native chain from HERE when a GC fires
+    // inside the JIT'd body; the ExecCtx slot array (`ctx`) is a local of
+    // THIS frame, so the walk must be able to name it. Cleared on every
+    // exit path below — a stale capture would dangle.
+    // SAFETY: `caller_frame_pointer()` reads this function's own fp; the
+    // frame stays live across `je.jit.call` (all exits clear before
+    // returning).
+    unsafe { ap_gc::set_capture_point(ap_gc::caller_frame_pointer()) };
     let call_r = unsafe { je.jit.call(&mut ctx) };
+    ap_gc::clear_capture_point();
 
     // Sync locals back BEFORE mapping the result: an exception unwind
     // still leaves partially-updated locals observable to except blocks.

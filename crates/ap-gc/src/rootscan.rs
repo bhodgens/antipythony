@@ -149,6 +149,74 @@ pub fn map_for_return_address(return_address: usize) -> Option<SafepointEntry> {
 }
 
 // ---------------------------------------------------------------------------
+// The capture point: where the fp-chain walk STARTS
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    /// The captured frame-pointer of the innermost live JIT frame on this
+    /// thread (0 = no JIT frame live). Set by the JIT entry seam
+    /// (ap-run jit_hook) on entry to JIT'd code and cleared on exit; the
+    /// collector reads it as the fp-chain walk start (see the gcmod.rs
+    /// root-feed note for why the walk cannot simply start at the
+    /// collector's own frame).
+    static CAPTURE_POINT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The fp-chain walk start for the calling thread (0 = no live JIT
+/// frame; the collector treats that as "walk nothing").
+pub fn capture_point() -> usize {
+    CAPTURE_POINT.with(|c| c.get())
+}
+
+/// Capture the calling frame's pointer as this thread's walk start.
+/// Consumed by the ap-run JIT entry seam (jit_hook.rs) — the only
+/// legitimate caller; kept `pub` for that cross-crate contract.
+///
+/// # Safety
+///
+/// `fp` must be the caller's own frame-pointer base (the intended call
+/// site is the JIT entry seam immediately after the prologue, reading
+/// its rbp via inline asm), and the frame must stay live until
+/// [`clear_capture_point`] runs on the same thread. A stale capture
+/// makes the collector read dangling stack memory — the seam MUST clear
+/// on every exit path (pon's trampoline discipline).
+#[cfg_attr(not(test), allow(dead_code))] // consumed by the ap-run jit_hook seam
+pub unsafe fn set_capture_point(fp: usize) {
+    CAPTURE_POINT.with(|c| c.set(fp));
+}
+
+/// Clear this thread's capture (the JIT exit seam).
+pub fn clear_capture_point() {
+    CAPTURE_POINT.with(|c| c.set(0));
+}
+
+/// Read the caller's own frame-pointer base (aarch64: `fp` = x29 = bp).
+///
+/// This is the ONLY inline-asm site in the shim and it is trivially
+/// shape-checked: it copies the frame register into a local.
+#[inline(always)]
+pub fn caller_frame_pointer() -> usize {
+    #[cfg(target_arch = "aarch64")]
+    {
+        let fp: usize;
+        // SAFETY: reads the frame-pointer register; pure, no memory access.
+        unsafe { std::arch::asm!("mov {}, fp", out(reg) fp, options(nomem, nostack)) };
+        fp
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        let fp: usize;
+        // SAFETY: reads the base-pointer register; pure, no memory access.
+        unsafe { std::arch::asm!("mov {}, rbp", out(reg) fp, options(nomem, nostack)) };
+        fp
+    }
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    {
+        0 // unsupported arch: the walk never starts (conservative floor holds)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The fp-chain walker
 // ---------------------------------------------------------------------------
 
@@ -341,8 +409,16 @@ mod tests {
 
     use super::*;
 
+    /// The registry is a PROCESS-GLOBAL structure (see the module thread-
+    /// safety note) and libtest runs tests on parallel threads: every
+    /// registry-mutating test here holds this lock for its whole body so
+    /// one test's clear_safepoints() cannot wipe another's registrations
+    /// mid-assert (observed as flaky counts when run in parallel).
+    static REG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn register_and_resolve_roundtrip() {
+        let _g = REG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_safepoints();
         let ra = 0x0000_5aa0_usize; // synthetic; never dereferenced
         register_safepoint(
@@ -369,6 +445,7 @@ mod tests {
 
     #[test]
     fn re_register_replaces_and_recounts() {
+        let _g = REG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_safepoints();
         let ra = 0x0000_5aa1_usize;
         register_safepoint(ra, vec![StackRootSlot { fp_offset: 8 }]);
@@ -391,6 +468,7 @@ mod tests {
 
     #[test]
     fn empty_root_sets_are_not_registered() {
+        let _g = REG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_safepoints();
         let before = safepoint_map_count();
         register_safepoint(0x0000_5aa2_usize, Vec::new());
@@ -400,6 +478,7 @@ mod tests {
 
     #[test]
     fn unmapped_return_addresses_miss() {
+        let _g = REG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_safepoints();
         assert!(map_for_return_address(0xdead_beef_usize).is_none());
     }
@@ -468,6 +547,7 @@ mod tests {
 
     #[test]
     fn mapped_frames_joins_walk_and_maps() {
+        let _g = REG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_safepoints();
         let mut buf = [0usize; 4];
         let base = buf.as_mut_ptr() as usize;
