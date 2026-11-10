@@ -194,6 +194,8 @@ pub fn run_module(
             st.collections, st.objects_reclaimed, st.cycles_collected
         );
     }
+    // 02.05a-residual: JIT-exercise report at exit (APX_TIER_STATS=1).
+    crate::jit_hook::report_line();
     match outcome {
         Ok(()) => RunOutcome {
             stdout: out_bytes,
@@ -701,6 +703,11 @@ fn exec_module(
     ));
     *interp.registry.borrow_mut() = Some(reg.clone());
     interp.functions.replace(reg.entries_snapshot());
+
+    // 02.05a-residual: eager warm pass (compile cache / fallback table for
+    // every module-level def BEFORE the first call — execs stays
+    // call-driven, compiles+fallbacks become def-complete).
+    crate::jit_hook::warm_module_defs(module);
 
     let frame = Rc::new(Frame::new_module(interp.globals.clone()));
     // B5: the main module frame carries the main scope table (nested-def
@@ -7854,6 +7861,14 @@ fn current_registry(interp: &Rc<Interpreter>) -> Rc<FnRegistry> {
         .unwrap_or_else(|| Rc::new(FnRegistry::empty()))
 }
 
+/// 02.05a-residual: registry access for jit_hook's slot sync-back (the
+/// store_name chain takes the active FnRegistry like every tree-walker
+/// statement store).
+pub fn current_registry_pub() -> Rc<FnRegistry> {
+    let interp = current_interp_for_bindings();
+    current_registry(&interp)
+}
+
 // A6 (memperf audit 2026-11-06): these used to rebuild two fresh
 // HashSet<String> (2x |names| String allocs) on EVERY function call, plus a
 // registry RefCell borrow + scope scan per set. The entry carries the
@@ -9748,6 +9763,11 @@ thread_local! {
 /// through the SAME interpreter object; this seeds its thread-local handle.
 pub fn install_current_interp(interp: &Rc<Interpreter>) {
     CURRENT_INTERP.with(|c| *c.borrow_mut() = Some(interp.clone()));
+}
+
+/// 02.05a-residual: interpreter access for jit_hook's slot sync-back.
+pub fn current_interp_for_bindings_pub() -> Rc<Interpreter> {
+    current_interp_for_bindings()
 }
 
 fn current_interp_for_bindings() -> Rc<Interpreter> {
