@@ -32,7 +32,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use ap_codegen_native::cfg;
 use ap_codegen_native::clif::compile_baseline;
-use ap_codegen_native::clif::JitFunc;
+use ap_codegen_native::clif::{compile_tier1, JitFunc, Tier1Func};
 use ap_codegen_native::runtime::{ExecCtx, HostCallbacks};
 use ap_obj::exc::PyException;
 use ap_obj::value::Value;
@@ -81,6 +81,15 @@ struct JitEntry {
     /// Total slot count the compiled code indexes (cfg num_locals; temps
     /// alias locals 1:1 in the current lowering — see the leaf report).
     num_slots: u32,
+    /// 02.05c: the tier-1 pair, compiled ONCE a binop cell reached MONO
+    /// int-int (synchronous tier-up at the call boundary; 02.05e moves
+    /// this to the background driver). Interior-mutable: tier-up swaps it
+    /// in from under the shared Rc on a later call.
+    tier1_cell: std::cell::RefCell<Option<Rc<Tier1Func>>>,
+    /// 02.05c failed-tier-up-disables flag: a tier-1 compile error marks
+    /// this true and the tier-up probe never fires again for the body
+    /// (pon's failed-tier-up-disables discipline).
+    tier1_failed: std::cell::Cell<bool>,
 }
 
 /// Resolve the tier mode from an explicit flag, falling back to APX_TIER,
@@ -505,6 +514,17 @@ pub fn jit_call_body(
     };
     JIT_EXECS.fetch_add(1, Ordering::Relaxed);
 
+    // 02.05c tier-up probe (synchronous at the call boundary; the 02.05e
+    // background driver replaces this site): when no tier-1 pair exists
+    // yet and a binop feedback cell reached MONO(IntI64, IntI64) — the
+    // steady-state arithmetic loop shape tier-1 exists for — compile the
+    // typed fast path ONCE and cache it. Failure records tier1_failed and
+    // never retries (pon's failed-tier-up-disables discipline).
+    if je.tier1_cell.borrow().is_none() && !je.tier1_failed.get() {
+        try_tier_up(entry, &je);
+    }
+    let tier1 = je.tier1_cell.borrow().clone();
+
     let names = slot_names_for(entry);
     let mut host_state = Box::new(HostState {
         interp: interp.clone(),
@@ -533,7 +553,17 @@ pub fn jit_call_body(
     // frame stays live across `je.jit.call` (all exits clear before
     // returning).
     unsafe { ap_gc::set_capture_point(ap_gc::caller_frame_pointer()) };
-    let call_r = unsafe { je.jit.call(&mut ctx) };
+    // 02.05c: run the typed fast path when the tier-1 pair exists; its
+    // call() falls back to the boxed twin internally on guard failure
+    // (status 2) — one entry point, byte-identical results either way.
+    let call_r = match &tier1 {
+        Some(t1) => unsafe { t1.call(&mut ctx) },
+        None => unsafe { je.jit.call(&mut ctx) },
+    };
+    // 02.05c twin-start hygiene: the tier-1 hand-off parks the twin start
+    // block; both call paths consume it. Reset so an independent later
+    // call never inherits a stale start block.
+    ctx.twin_start = 0;
     ap_gc::clear_capture_point();
 
     // Sync locals back BEFORE mapping the result: an exception unwind
@@ -546,6 +576,64 @@ pub fn jit_call_body(
             Ok(Some(r))
         }
         Err(py) => Err(crate::Flow::Raise(rebuild(py))),
+    }
+}
+
+/// 02.05c tier-up attempt (synchronous at the call boundary; 02.05e moves
+/// this to the background driver with the pin/snapshot/CAS discipline):
+///
+/// 1. Snapshot the function's feedback cells ON THE CALLING thread (pon
+///    snapshot discipline — the compiler never reads live cells
+///    concurrently with mutator writes).
+/// 2. Hotness gate: a binop cell must be MONO(IntI64, IntI64) — no
+///    typed compilation for cold or megamorphic sites.
+/// 3. Re-lower + compile the tier-1 pair (cold twin + typed fast path).
+///    The cfg re-lowering is deterministic (same FnDef → same Func, the
+///    Risk-5 slot discipline), so the twin's slot ids and the recording
+///    cells already in flight line up with the ORIGINAL baseline's cells.
+///    The NEW twin gets fresh cells (it records anew); the original
+///    baseline in the same JitEntry keeps serving non-tier-1 entries
+///    until this compile succeeds, then `tier1` routes all future calls.
+/// 4. Failure: record `tier1_failed` and never retry (pon
+///    failed-tier-up-disables discipline).
+fn try_tier_up(entry: &FnEntry, je: &Rc<JitEntry>) {
+    // Never retry a failed tier-1 compile (failed-tier-up-disables).
+    if je.tier1_failed.get() {
+        return;
+    }
+    let snapshots: Vec<ap_codegen_native::feedback::CellSnapshot> =
+        je.jit.feedback_cells.iter().map(|c| c.snapshot()).collect();
+    if !ap_codegen_native::infer::has_int_hotness(&snapshots) {
+        return; // not hot yet (or megamorphic) — check again next call
+    }
+    // The cfg re-lowering is deterministic (same FnDef -> same Func, the
+    // Risk-5 slot discipline), so the twin's slot ids match the recording
+    // cells already in flight. The tier-1 twin carries fresh cells of its
+    // own; the original baseline keeps serving until this lands.
+    let func = match cfg::lower_fn(&entry.def) {
+        Ok(f) => f,
+        Err(_) => return,
+    };
+    match compile_tier1(&func, &snapshots) {
+        Ok(Some(t1)) => {
+            ap_codegen_native::runtime::note_tier1_install(t1.regions, &entry.def.name);
+            *je.tier1_cell.borrow_mut() = Some(Rc::new(t1));
+        }
+        Ok(None) => {
+            // No typed region in this body — mark as permanently boxed
+            // (not an error; the probe would re-run every call otherwise).
+            je.tier1_failed.set(true);
+        }
+        Err(e) => {
+            if tier_debug() {
+                eprintln!(
+                    "[TIER1] fn {} tier-1 compile failed (disabled): {e:?}",
+                    entry.def.name
+                );
+            }
+            // Failed-tier-up-disables: never retry.
+            je.tier1_failed.set(true);
+        }
     }
 }
 
@@ -590,7 +678,12 @@ fn compile_for(entry: &FnEntry) -> Option<JitEntry> {
             return None;
         }
     };
-    Some(JitEntry { jit, num_slots })
+    Some(JitEntry {
+        jit,
+        num_slots,
+        tier1_cell: std::cell::RefCell::new(None),
+        tier1_failed: std::cell::Cell::new(false),
+    })
 }
 
 /// Highest TempId referenced by one inst (for the slot-count bound).

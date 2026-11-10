@@ -24,7 +24,10 @@ pub mod audit_probe;
 pub mod cfg;
 pub mod clif;
 pub mod feedback;
+pub mod infer;
+pub mod optimizing;
 pub mod osr;
+pub mod region;
 pub mod runtime;
 pub mod worker_stack;
 
