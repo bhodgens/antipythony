@@ -331,7 +331,12 @@ pub extern "C" fn h_store_local(ctx: &mut ExecCtx, src: u32, dst: u32) -> Helper
 
 /// Global load through the host seam (NameError on unbound — S-02-1).
 /// 02.05b: `slot` keys the GlobalIC (host cache + feedback cell).
-pub extern "C" fn h_load_global(ctx: &mut ExecCtx, slot: u32, name_idx: u32, dst: u32) -> HelperStatus {
+pub extern "C" fn h_load_global(
+    ctx: &mut ExecCtx,
+    slot: u32,
+    name_idx: u32,
+    dst: u32,
+) -> HelperStatus {
     match (ctx.host.load_global)(ctx, slot, name_idx, dst) {
         Ok(()) => 0,
         Err(e) => park_exc(ctx, e),
