@@ -4165,7 +4165,9 @@ fn value_is(a: &Value, b: &Value) -> bool {
     }
 }
 
-fn contains(a: &Value, b: &Value) -> Result<bool, Flow> {
+/// `a in b` — the host membership surface the JIT seam consumes (02.05c;
+/// same shape as the subscript_get seam). Pub per the inverted-seam rule.
+pub fn contains(a: &Value, b: &Value) -> Result<bool, Flow> {
     // 02.03 __contains__ on the type (S-03-26; c030), then the iteration
     // fallback.
     {

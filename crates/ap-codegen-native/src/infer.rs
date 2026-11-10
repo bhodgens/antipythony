@@ -97,6 +97,11 @@ pub fn infer(func: &Func, snapshots: &[CellSnapshot]) -> InferInfo {
     };
     for block in &func.blocks {
         for inst in &block.insts {
+            // Risk-5 lockstep: the site count uses the SAME shared
+            // predicate the SlotPlan assign walk uses (one definition).
+            if specializable(inst).is_some() {
+                info.site_count += 1;
+            }
             match inst {
                 Inst::Const(ConstValue::Int(v), d) if is_smi(*v) => {
                     info.temps[d.0 as usize] = Inferred::SmiConst;
@@ -105,7 +110,6 @@ pub fn infer(func: &Func, snapshots: &[CellSnapshot]) -> InferInfo {
                     info.temps[d.0 as usize] = Inferred::SmiLocal;
                 }
                 Inst::BinOp(_, a, b, d) => {
-                    info.site_count += 1;
                     if operand_ok(&info, *a) && operand_ok(&info, *b) {
                         info.temps[d.0 as usize] = Inferred::SmiBin;
                     }
@@ -116,7 +120,6 @@ pub fn infer(func: &Func, snapshots: &[CellSnapshot]) -> InferInfo {
                     let _ = snapshots;
                 }
                 Inst::Compare(op, a, b, d) => {
-                    info.site_count += 0; // Compare is not specializable
                     if relational(*op) && operand_ok(&info, *a) && operand_ok(&info, *b) {
                         info.temps[d.0 as usize] = Inferred::Bool;
                     }
@@ -126,12 +129,7 @@ pub fn infer(func: &Func, snapshots: &[CellSnapshot]) -> InferInfo {
                         info.temps[d.0 as usize] = Inferred::Bool;
                     }
                 }
-                other => {
-                    if specializable(other).is_some() {
-                        info.site_count += 1;
-                    }
-                    let _ = writes_of(other);
-                }
+                _ => {}
             }
         }
     }
@@ -192,6 +190,7 @@ pub fn max_temp(func: &Func) -> u32 {
 }
 
 /// The temp a specializable inst WRITES (its result), if any.
+#[allow(dead_code)] // diagnostic surface (first_disqualifier reporting)
 fn writes_of(inst: &Inst) -> Option<TempId> {
     match inst {
         Inst::BinOp(_, _, _, d)

@@ -352,7 +352,13 @@ pub fn compile_baseline(func: &Func) -> Result<JitFunc, CodegenError> {
 
 fn helper_sig(isa: &dyn TargetIsa, name: &'static str) -> cranelift::codegen::ir::Signature {
     use cranelift::codegen::ir::{AbiParam, Signature};
-    let mut params = vec![AbiParam::new(isa.pointer_type())]; // ctx
+    // 02.05c: the pure typed-arithmetic helpers take NO ctx (they operate
+    // on raw i64s only) — `apjit_h_mul_smi(a, b) -> i64`.
+    let mut params = if ctx_less(name) {
+        Vec::new()
+    } else {
+        vec![AbiParam::new(isa.pointer_type())] // ctx
+    };
     params.extend(extra_params(name).iter().map(|_| AbiParam::new(types::I64)));
     // 02.05c: the value-returning typed helpers return i64 (a raw smi),
     // not the i32 HelperStatus convention.
@@ -366,6 +372,12 @@ fn helper_sig(isa: &dyn TargetIsa, name: &'static str) -> cranelift::codegen::ir
         returns: vec![AbiParam::new(ret)],
         call_conv: isa.default_call_conv(),
     }
+}
+
+/// Helpers whose CLIF signature takes NO ctx pointer (pure typed
+/// arithmetic over raw i64s).
+fn ctx_less(name: &str) -> bool {
+    name == "apjit_h_mul_smi"
 }
 
 /// Helpers whose CLIF signature returns i64 (the unboxed smi value) rather
@@ -1061,7 +1073,7 @@ pub fn compile_tier1(
             twin.slots.len()
         )));
     }
-    let mut plan = crate::optimizing::plan_function(func, info, twin);
+    let plan = crate::optimizing::plan_function(func, info, twin);
     if !crate::optimizing::has_typed_regions(&plan) {
         return Ok(None);
     }

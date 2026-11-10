@@ -82,9 +82,21 @@ pub fn plan_function(
     cold_twin: crate::clif::JitFunc,
 ) -> OptimizingPlan {
     let RegionPlan {
-        regions,
+        mut regions,
         boxed_blocks,
     } = plan_regions(func, &info);
+    // FAST-ENTRY SOUNDNESS (02.05c gate fix): the typed fast path enters
+    // the region AT ITS ENTRY BLOCK from the function entry — value guards
+    // establish TYPES, but they cannot establish the BRANCH CONDITION that
+    // guards a mid-function entry (e.g. the `count = 0` then-arm of
+    // `if count is None`). A region whose entry is a branch target would
+    // execute unconditionally on the fast path, corrupting control flow
+    // (live repro: functools/argparse corpus, two-region bodies flipping
+    // results on call 2). pon enters typed regions ONLY at function entry
+    // (guards on parameters); we adopt the same discipline: keep regions
+    // rooted at block 0, demote everything else to the twin. The finder's
+    // other regions remain REPORTED (never silently dropped).
+    regions.retain(|r| r.entry.0 == 0);
     let mut guards = Vec::with_capacity(regions.len());
     let mut typed_temps_set = std::collections::BTreeSet::new();
     for region in &regions {

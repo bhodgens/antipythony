@@ -81,6 +81,9 @@ struct JitEntry {
     /// Total slot count the compiled code indexes (cfg num_locals; temps
     /// alias locals 1:1 in the current lowering — see the leaf report).
     num_slots: u32,
+    /// 02.05c: the lowered cfg's per-slot name table (local_names) — the
+    /// slot bridge needs it to sync body locals (params only before).
+    local_names: Vec<String>,
     /// 02.05c: the tier-1 pair, compiled ONCE a binop cell reached MONO
     /// int-int (synchronous tier-up at the call boundary; 02.05e moves
     /// this to the background driver). Interior-mutable: tier-up swaps it
@@ -127,6 +130,21 @@ pub fn init_tier(explicit: Option<&str>) {
             }
             Err(_) => Err("SystemError: non-raise Flow in JIT subscript".to_string()),
         }
+    });
+    // 02.05c: the membership seam (`a in b`) — same pattern; the JIT'd
+    // h_compare routes CMP_IN/CMP_NOTIN through interp::contains.
+    ap_codegen_native::runtime::set_host_contains(|o, k| match crate::interp::contains(o, k) {
+        Ok(has) => Ok(has),
+        Err(crate::Flow::Raise(ev)) => {
+            let class = intern_class(&ev.class);
+            let probe = crate::exc_hier::ExceptionValue::new(class, ev.args.clone());
+            Err(format!(
+                "{}: {}",
+                ev.class,
+                probe.py_str().unwrap_or_default()
+            ))
+        }
+        Err(_) => Err("SystemError: non-raise Flow in JIT contains".to_string()),
     });
 }
 
@@ -384,10 +402,24 @@ fn host_callbacks() -> HostCallbacks {
 /// slots [0..num_params) are dead and params live at
 /// [num_params .. num_params + n_params) in source order. The bridge
 /// mirrors exactly that.
-fn slot_names_for(entry: &FnEntry) -> Vec<String> {
+///
+/// 02.05c: body locals (slots beyond the params) now carry REAL names
+/// (cfg::Func::local_names) — the bridge must include them or
+/// store_slots_into_frame drops every non-param binding (the `global X;
+/// X = v` corpus divergences). `func` is the lowered cfg (available at
+/// the call site from the JitEntry's compile); None when the caller
+/// lacks it (never, post-02.05c — kept Option for warm ordering).
+fn slot_names_for(entry: &FnEntry, body_locals: &[String]) -> Vec<String> {
     let num_params = entry.def.params.len();
     let mut names: Vec<String> = vec![String::new(); num_params];
     names.extend(entry.def.params.iter().map(|p| p.name.clone()));
+    // Body locals: the cfg's local_names beyond the (dead + params)
+    // prefix — the authoritative name-per-slot record for slots the body
+    // assigns (02.05c; without these, store_slots_into_frame dropped
+    // every non-param binding — the `global X; X = v` divergences).
+    for name in body_locals.iter().skip(names.len()) {
+        names.push(name.clone());
+    }
     names
 }
 
@@ -467,6 +499,33 @@ fn store_slots_into_frame(frame: &Frame, names: &[String], ctx: &ExecCtx, frame_
 // Compile + execute (the dispatch arm's callee)
 // ===========================================================================
 
+/// Warm-pass compile: populate the compile cache / fallback table WITHOUT
+/// executing anything.
+///
+/// 02.05c gate fix (latent 02.05a bug exposed when the h_call arity fix
+/// first let bodies with calls actually compile): the warm pass used to
+/// call `jit_call_body`, which RUNS the compiled body — its "NO execution
+/// happens here" comment was only true while every call-containing body
+/// failed baseline compile and the warm pass was a no-op. A module whose
+/// top-level code short-circuits a call (`0 and side()`) printed side
+/// effects during warm before main even ran. Warm now goes through the
+/// same cache slot call_function will hit, but via this execute-free path.
+fn warm_compile_only(entry: &FnEntry) {
+    let fn_id = Rc::as_ptr(&entry.def) as usize;
+    JIT_CACHE.with(|c| {
+        let mut cache = c.borrow_mut();
+        let _ = cache.entry(fn_id).or_insert_with(|| {
+            let r = compile_for(entry).map(Rc::new);
+            if r.is_some() {
+                JIT_COMPILES.fetch_add(1, Ordering::Relaxed);
+            } else {
+                JIT_FALLBACKS.fetch_add(1, Ordering::Relaxed);
+            }
+            r
+        });
+    });
+}
+
 /// Route one function body through the JIT baseline.
 ///
 /// Ok(None) = fallback-table hit (cfg lowering unsupported for this
@@ -525,7 +584,7 @@ pub fn jit_call_body(
     }
     let tier1 = je.tier1_cell.borrow().clone();
 
-    let names = slot_names_for(entry);
+    let names = slot_names_for(entry, &je.local_names);
     let mut host_state = Box::new(HostState {
         interp: interp.clone(),
         frame: frame.clone(),
@@ -681,6 +740,7 @@ fn compile_for(entry: &FnEntry) -> Option<JitEntry> {
     Some(JitEntry {
         jit,
         num_slots,
+        local_names: func.local_names.clone(),
         tier1_cell: std::cell::RefCell::new(None),
         tier1_failed: std::cell::Cell::new(false),
     })
@@ -782,6 +842,7 @@ pub fn warm_module_defs(module: &ap_ir::Module) {
             // is never dereferenced. jit_call_body's execs counter must
             // stay call-driven — warm deliberately does not run the body.
             let frame = Rc::new(Frame::new_module(interp.globals.clone()));
+            let _ = frame; // compile-only: the frame is never executed against
             if tier_debug() {
                 // TEMP residual-diag: why did this body not reach a verdict?
                 match cfg::lower_fn(&entry.def) {
@@ -789,7 +850,7 @@ pub fn warm_module_defs(module: &ap_ir::Module) {
                     Err(e) => eprintln!("[TIER-WARM] fn {} lower-reject: {e}", entry.def.name),
                 }
             }
-            let _ = jit_call_body(&interp, &entry, &frame);
+            warm_compile_only(&entry);
         }
     }
 }
