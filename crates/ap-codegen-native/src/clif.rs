@@ -468,7 +468,18 @@ fn emit_cfg(
                 Inst::LoadGlobal(name, dst) => {
                     let f = helpers["apjit_h_load_global"];
                     let a1 = iconst!(fb, name_id(name_table, name) as i64);
-                    let a2 = iconst!(fb, dst.0 as i64);
+                    // t1_016 ROOT CAUSE FIX (tier1-0205a-t1016fix; re-landed
+                    // on this branch — the leaf base predates the fix): this
+                    // must go through temp_slot() like every other inst —
+                    // temps live at num_locals + t (the 02.05a slot-space
+                    // fix that separated temps from locals), and the RAW
+                    // TempId made the load land in slot t (a param/dead
+                    // slot) while the Call reading that temp read slot
+                    // num_locals + t = None → "'NoneType' object is not
+                    // callable" on every JIT-routed call site (t1_016's
+                    // deep call chain, and every gc-corpus case under
+                    // adaptive, are exactly this).
+                    let a2 = iconst!(fb, temp_slot(*dst));
                     let r = fb.ins().call(f, &[ctx_ptr, a1, a2]);
                     check_status(fb, r, raise_target);
                 }

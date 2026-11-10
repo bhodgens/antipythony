@@ -94,6 +94,31 @@ pub fn init_tier(explicit: Option<&str>) {
             .unwrap_or(TierMode::Tree),
     };
     TIER_MODE.with(|t| t.set(mode));
+    // 02.05g (gate-run finding): the baseline JIT's subscript read was a
+    // fail-closed stub — any JIT-routed body reading info["..."] /
+    // seq[i] SystemError'd. Route it through the exact tree-walker
+    // surface (methods::subscript_get), flattened to the (class, msg)
+    // string form the codegen seam reconstructs Python exceptions from.
+    // Install once per process; the fn pointer is pure (no interpreter
+    // state captured — subscript_get is a free function over Values).
+    ap_codegen_native::runtime::set_host_subscript_get(|o, k| {
+        match crate::methods::subscript_get(o, k) {
+            Ok(v) => Ok(v),
+            Err(crate::Flow::Raise(ev)) => {
+                // Identical rendering to flow_to_py + str_args: rebuild the
+                // ExceptionValue and reuse its py_str (byte-identical to
+                // the tree-walker's exception text).
+                let class = intern_class(&ev.class);
+                let probe = crate::exc_hier::ExceptionValue::new(class, ev.args.clone());
+                Err(format!(
+                    "{}: {}",
+                    ev.class,
+                    probe.py_str().unwrap_or_default()
+                ))
+            }
+            Err(_) => Err("SystemError: non-raise Flow in JIT subscript".to_string()),
+        }
+    });
 }
 
 fn parse_tier(m: &str) -> Option<TierMode> {
