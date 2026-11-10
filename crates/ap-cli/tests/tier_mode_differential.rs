@@ -238,14 +238,15 @@ fn expected_triple(probe: &PathBuf) -> Option<(Vec<u8>, Vec<u8>, i32)> {
 // Gate 1: mode-pair byte-identity, per probe (the 16-row table).
 // ---------------------------------------------------------------------------
 
-// IGNORED (open bug, tracked): t1_016_deep_call_chain_500 mode-pair
-// MISMATCH - tier-0 rc=0 full output, adaptive rc=1 empty stdout. The JIT
-// fast path fails on deep recursion (500-deep call chain; likely frame/
-// stack sizing in jit_call_body or the HostCallbacks recursion depth).
-// Everything else in this table is MATCH. Re-enable when fixed; the
-// printed table above remains the 02.05a residual evidence.
+// t1_016 OPEN BUG FIXED (tier1-0205a-t1016fix): the adaptive-mode mismatch
+// was NOT frame/stack sizing — clif.rs emitted Inst::LoadGlobal's dst as the
+// RAW TempId instead of temp_slot(dst), so every callee/global temp read
+// slot num_locals+t (None) while the value sat in slot t. Any JIT-routed
+// body containing a call crashed with TypeError "'NoneType' object is not
+// callable" (t1_016's 500-deep f(n-1) chain rc=1'd with empty stdout).
+// LoadGlobal now bridges through temp_slot like every other inst; the test
+// below is re-enabled and asserts tier0 == adaptive per probe.
 #[test]
-#[ignore = "open bug: t1_016 JIT deep-recursion mismatch (rc 0 vs 1)"]
 fn test_tier0_vs_adaptive_byte_identity_per_probe() {
     interpreter_gate();
     let ps = probes();

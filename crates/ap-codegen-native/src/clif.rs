@@ -426,7 +426,17 @@ fn emit_cfg(
                 Inst::LoadGlobal(name, dst) => {
                     let f = helpers["apjit_h_load_global"];
                     let a1 = iconst!(fb, name_id(name_table, name) as i64);
-                    let a2 = iconst!(fb, dst.0 as i64);
+                    // t1_016 ROOT CAUSE: this was `dst.0 as i64` — the RAW
+                    // TempId — while every other inst goes through
+                    // temp_slot() (temps live at num_locals + t). The load
+                    // landed in slot 0 (a param/dead-slot) and the Call
+                    // reading temp 0 read slot num_locals+0 = None →
+                    // "'NoneType' object is not callable" on every
+                    // JIT-routed call site (t1_016 deep call chain: f
+                    // resolves via LoadGlobal, callee slot stayed None).
+                    // Every probe with zero call sites passed; adaptive
+                    // rc=1'd on any body with one.
+                    let a2 = iconst!(fb, temp_slot(*dst));
                     let r = fb.ins().call(f, &[ctx_ptr, a1, a2]);
                     check_status(fb, r, raise_target);
                 }
