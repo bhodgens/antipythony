@@ -25,9 +25,10 @@ pub use gcmod::{
 /// Leaf 02.05g: the GC roots shim — safepoint-map registry + fp-chain
 /// walker (the MMTk root feed for native JIT frames).
 pub use rootscan::{
-    clear_safepoints, fp_chain_walk, map_for_return_address, mapped_frames_from,
-    register_safepoint, safepoint_map_count, safepoint_root_slot_count, ConservativeFloorGuard,
-    StackRootSlot, WalkedFrame, FP_CHAIN_MAX_DEPTH,
+    caller_frame_pointer, capture_point, clear_capture_point, clear_safepoints, fp_chain_walk,
+    map_for_return_address, mapped_frames_from, register_safepoint, safepoint_map_count,
+    safepoint_root_slot_count, set_capture_point, ConservativeFloorGuard, StackRootSlot,
+    WalkedFrame, FP_CHAIN_MAX_DEPTH,
 };
 
 /// The bridge module path (ap-run installs via weakbridge::set_bridge).

@@ -1,0 +1,13 @@
+/Users/caimlas/.git/worktrees/leaf-0205g/target-0205g/debug/deps/target_lexicon-1e66b72ad6809798.d: /Users/caimlas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/target-lexicon-0.13.5/src/lib.rs /Users/caimlas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/target-lexicon-0.13.5/src/data_model.rs /Users/caimlas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/target-lexicon-0.13.5/src/host.rs /Users/caimlas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/target-lexicon-0.13.5/src/parse_error.rs /Users/caimlas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/target-lexicon-0.13.5/src/targets.rs /Users/caimlas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/target-lexicon-0.13.5/src/triple.rs /Users/caimlas/.git/worktrees/leaf-0205g/target-0205g/debug/build/target-lexicon-e687ecec1a5cfb12/out/host.rs
+
+/Users/caimlas/.git/worktrees/leaf-0205g/target-0205g/debug/deps/libtarget_lexicon-1e66b72ad6809798.rmeta: /Users/caimlas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/target-lexicon-0.13.5/src/lib.rs /Users/caimlas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/target-lexicon-0.13.5/src/data_model.rs /Users/caimlas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/target-lexicon-0.13.5/src/host.rs /Users/caimlas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/target-lexicon-0.13.5/src/parse_error.rs /Users/caimlas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/target-lexicon-0.13.5/src/targets.rs /Users/caimlas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/target-lexicon-0.13.5/src/triple.rs /Users/caimlas/.git/worktrees/leaf-0205g/target-0205g/debug/build/target-lexicon-e687ecec1a5cfb12/out/host.rs
+
+/Users/caimlas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/target-lexicon-0.13.5/src/lib.rs:
+/Users/caimlas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/target-lexicon-0.13.5/src/data_model.rs:
+/Users/caimlas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/target-lexicon-0.13.5/src/host.rs:
+/Users/caimlas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/target-lexicon-0.13.5/src/parse_error.rs:
+/Users/caimlas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/target-lexicon-0.13.5/src/targets.rs:
+/Users/caimlas/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/target-lexicon-0.13.5/src/triple.rs:
+/Users/caimlas/.git/worktrees/leaf-0205g/target-0205g/debug/build/target-lexicon-e687ecec1a5cfb12/out/host.rs:
+
+# env-dep:OUT_DIR=/Users/caimlas/.git/worktrees/leaf-0205g/target-0205g/debug/build/target-lexicon-e687ecec1a5cfb12/out
