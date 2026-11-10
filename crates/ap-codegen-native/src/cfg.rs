@@ -166,6 +166,13 @@ pub struct Func {
     pub params: Vec<LocalId>,
     /// Local slot count (params occupy the first slots).
     pub num_locals: u32,
+    /// 02.05c: name per local slot (index == LocalId), empty string for
+    /// the dead pre-bumped param slots (the 02.05a off-by-one) — the
+    /// jit_hook slot bridge needs REAL names for every local the body
+    /// assigns, or store_slots_into_frame drops the binding (the
+    /// `global X; X = v` corpus divergences: the store landed in an
+    /// unnamed slot and the sync-back skipped it).
+    pub local_names: Vec<String>,
     /// Blocks in emission order; entry is always block 0.
     pub blocks: Vec<Block>,
     /// Whether the body contains yield (generator → state machine).
@@ -194,6 +201,7 @@ impl Func {
             name: name.into(),
             params: (0..num_params).map(LocalId).collect(),
             num_locals: num_params,
+            local_names: vec![String::new(); num_params as usize],
             blocks: Vec::new(),
             is_generator: false,
             num_states: 0,
@@ -284,6 +292,7 @@ impl<'a> Lowerer<'a> {
         }
         let id = LocalId(self.func.num_locals);
         self.func.num_locals += 1;
+        self.func.local_names.push(name.to_string());
         self.locals.insert(name.to_string(), id);
         id
     }

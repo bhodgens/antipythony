@@ -268,6 +268,21 @@ pub extern "C" fn h_unaryop(ctx: &mut ExecCtx, op: i64, a: u32, dst: u32) -> Hel
 }
 
 /// Compare through the ap-obj surface.
+/// Host membership reader (`a in b`), the same inverted-seam pattern as
+/// SUBSCRIPT_GET_FN: ap-run owns the protocol surface (interp::contains),
+/// the codegen seam reconstructs (bool, error-text) from it. Installed at
+/// JIT init; None = unwired (tests) → fail-closed TypeError-free park.
+type HostContains = fn(&ap_obj::value::Value, &ap_obj::value::Value) -> Result<bool, String>;
+
+static CONTAINS_FN: std::sync::RwLock<Option<HostContains>> = std::sync::RwLock::new(None);
+
+/// Install the host membership reader (ap-run calls once at entry).
+pub fn set_host_contains(f: HostContains) {
+    if let Ok(mut g) = CONTAINS_FN.write() {
+        *g = Some(f);
+    }
+}
+
 pub extern "C" fn h_compare(ctx: &mut ExecCtx, op: i64, a: u32, b: u32, dst: u32) -> HelperStatus {
     use ap_obj::value::Value;
     let a = ctx.slots[a as usize].clone();
@@ -285,11 +300,43 @@ pub extern "C" fn h_compare(ctx: &mut ExecCtx, op: i64, a: u32, b: u32, dst: u32
             Ok(Value::Bool(if op == CMP_IS { same } else { !same }))
         }
         CMP_IN | CMP_NOTIN => {
-            // `a in b` — membership via iteration protocol on b.
-            Err(PyException::new(
-                "TypeError",
-                "membership (in) not supported by baseline JIT yet",
-            ))
+            // `a in b` — membership via the host seam (interp::contains;
+            // iteration protocol over b). Unwired (tests) → fail-closed.
+            let f = CONTAINS_FN.read().ok().and_then(|g| *g);
+            match f {
+                Some(f) => match f(&a, &b) {
+                    Ok(has) => Ok(Value::Bool(if op == CMP_IN { has } else { !has })),
+                    Err(class_msg) => {
+                        let (class, msg) = match class_msg.split_once(": ") {
+                            Some((c, m)) => (c.to_string(), m.to_string()),
+                            None => ("TypeError".to_string(), class_msg),
+                        };
+                        let class: &'static str = {
+                            // Same leak-intern pattern as h_subscript.
+                            thread_local! {
+                                static INTERNED: std::cell::RefCell<
+                                    std::collections::HashMap<String, &'static str>,
+                                > = std::cell::RefCell::new(std::collections::HashMap::new());
+                            }
+                            INTERNED.with(|m| {
+                                let mut m = m.borrow_mut();
+                                if let Some(s) = m.get(&class) {
+                                    return *s;
+                                }
+                                let leaked: &'static str =
+                                    Box::leak(class.clone().into_boxed_str());
+                                m.insert(class.clone(), leaked);
+                                leaked
+                            })
+                        };
+                        Err(PyException::new(class, msg))
+                    }
+                },
+                None => Err(PyException::new(
+                    "TypeError",
+                    "membership (in) not supported by baseline JIT yet",
+                )),
+            }
         }
         _ => unreachable!("CLIF embeds only encoder constants"),
     };
@@ -309,6 +356,13 @@ fn a_ptr_eq(a: &Value, b: &Value) -> bool {
         (Value::Ellipsis, Value::Ellipsis) => true,
         // Gc-backed arms (Gc<T> = Rc<T>): same allocation ⇒ same object.
         (Value::Str(x), Value::Str(y)) => std::rc::Rc::ptr_eq(x, y),
+        // 02.05c gate fix (latent 02.05a bug exposed when the h_call
+        // arity fix first let class bodies reach the baseline JIT): the
+        // Obj arm (classes, instances, functions, modules) — `cls is A`
+        // was unconditionally false, so every `is` over objects diverged
+        // from the tree-walker. Same allocation ⇒ same object (the same
+        // rule interp.rs's `is` uses).
+        (Value::Obj(x), Value::Obj(y)) => std::rc::Rc::ptr_eq(x, y),
         _ => false,
     }
 }
