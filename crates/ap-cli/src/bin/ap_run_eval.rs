@@ -55,14 +55,10 @@ fn main() {
     };
     let script_path = path.clone();
 
-    // 02.05a: forward the tier into run_module's init seam ('static &'s —
-    // the flag is one of three literals, so leaking a clone is not needed;
-    // we match to the pinned literals instead).
-    match tier.as_deref() {
-        Some("0") => ap_run::tier_flag::set("0"),
-        Some("adaptive") | Some("jit") => ap_run::tier_flag::set("adaptive"),
-        _ => {}
-    }
+    // 02.05a: forward the tier into run_module's init seam. The set() lives
+    // in the spawned closure below (the interpreter thread) — see the
+    // 02.05a-residual FIX note there for why a main-thread set() is a
+    // silent no-op (tier_flag is thread_local).
 
     // The tier-0 interpreter consumes ~50KB of native stack per Python frame,
     // so the default 8MB main-thread stack overflows (SIGABRT) at ~150 frames
@@ -75,6 +71,14 @@ fn main() {
     let exit_code = std::thread::Builder::new()
         .stack_size(256 << 20)
         .spawn(move || {
+            // The tier seam init happens HERE (interpreter thread): see the
+            // thread_local note above — a set() on the main thread never
+            // reaches run_module's take().
+            match tier.as_deref() {
+                Some("0") => ap_run::tier_flag::set("0"),
+                Some("adaptive") | Some("jit") => ap_run::tier_flag::set("adaptive"),
+                _ => {}
+            }
             let mut out = std::io::stdout();
             let mut err = std::io::stderr();
             let outcome = ap_run::run_module(&source, &script_path, &mut out, &mut err);

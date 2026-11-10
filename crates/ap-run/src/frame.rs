@@ -248,6 +248,24 @@ impl Frame {
         }
     }
 
+    /// Does this frame hold ANY binding for `name` (local slot, own cell,
+    /// or free cell)? jit_hook's slot sync-back uses this to distinguish
+    /// "the JIT'd body assigned None" from "the slot was never assigned"
+    /// (the cfg ABI models unbound as None; store_name(None) on a fresh
+    /// name would fabricate a binding the tree-walker never makes).
+    pub fn has_binding(&self, name: &str) -> bool {
+        if self.locals.borrow().contains_key(name)
+            || self.my_cells.contains_key(name)
+            || self.free_cells.contains_key(name)
+        {
+            return true;
+        }
+        // Declared globals write through to the module dict, which the
+        // caller treats as always-bindable; class-ns frames never reach
+        // the JIT hook (the dispatch arm is call_function on FnDef bodies).
+        self.declared_globals.contains(name) || self.declared_nonlocals.contains(name)
+    }
+
     pub fn store_global(&self, name: &str, v: Value) {
         let _ = self.globals.set(Value::Str(ap_obj::PyString::new(name)), v);
     }

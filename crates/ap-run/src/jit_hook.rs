@@ -28,6 +28,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use ap_codegen_native::cfg;
 use ap_codegen_native::clif::compile_baseline;
@@ -111,6 +112,48 @@ fn tier_debug() -> bool {
     std::env::var("APX_TIER_DEBUG")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
+}
+
+// ---------------------------------------------------------------------------
+// 02.05a-residual: JIT-exercise counters. The t08 byte-identity suite proves
+// TRANSPARENCY, not EXERCISE — the dispatch arm could silently fall back to
+// the tree-walker everywhere and still pass. These process-global counters
+// make the routing observable: compiles (lowering+baseline succeeded),
+// fallbacks (lowering rejected — the fallback table), execs (jit_call_body
+// actually ran compiled code). Printed once per process as a single
+// machine-parseable stderr line under APX_TIER_STATS=1 (report_line), so the
+// mode-pair differential runner can build the per-probe exercise table
+// without touching the conformance output channels.
+// ---------------------------------------------------------------------------
+
+/// Bodies whose lowering + baseline compile SUCCEEDED (cache-insert path).
+static JIT_COMPILES: AtomicU64 = AtomicU64::new(0);
+/// Bodies whose lowering was REJECTED (fallback-table insert).
+static JIT_FALLBACKS: AtomicU64 = AtomicU64::new(0);
+/// jit_call_body invocations that RAN compiled code (cache hits + first
+/// calls on a fresh compile; the actual exercise count).
+static JIT_EXECS: AtomicU64 = AtomicU64::new(0);
+
+/// Read the stats knobs once per call site (cheap env lookups; the stats
+/// path is diagnostic-only).
+fn tier_stats() -> bool {
+    std::env::var("APX_TIER_STATS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Emit the one-line exercise report when APX_TIER_STATS=1. Called from
+/// run_module's exit seam so the counts cover the whole module run.
+pub fn report_line() {
+    if !tier_stats() {
+        return;
+    }
+    eprintln!(
+        "[TIER-STATS] compiles={} fallbacks={} execs={}",
+        JIT_COMPILES.load(Ordering::Relaxed),
+        JIT_FALLBACKS.load(Ordering::Relaxed),
+        JIT_EXECS.load(Ordering::Relaxed),
+    );
 }
 
 // ===========================================================================
@@ -314,18 +357,58 @@ fn load_slots_into_ctx(ctx: &mut ExecCtx, frame: &Frame, names: &[String]) {
 
 /// Sync the JIT slot array back INTO the frame (call exit — success AND
 /// exception unwind; except blocks observe partially-updated locals).
-fn store_slots_into_frame(frame: &Frame, names: &[String], ctx: &ExecCtx) {
-    // 02.05a (timeboxed): locals sync-back DISABLED. Writes the body made
-    // to non-param locals do not propagate to the frame in this revision
-    // (the JIT body works on its own slot array; params + return value
-    // are bridged exactly). Consequence: a tier-routed function body that
-    // assigns a LOCAL then relies on it in the same body is fine (slots
-    // hold it), but a caller-visible side effect through that local name
-    // (nested def re-binding) diverges — those bodies fall in the
-    // fallback table via the checks below. Documented as a known
-    // deviation in the leaf report; the transparency differential
-    // (measured) gates whatever this sync policy actually delivers.
-    let _ = (frame, names, ctx);
+///
+/// 02.05a-residual (this leaf): the sync is REAL now, routed through the
+/// tree-walker's exact `store_name` semantics per slot name. The 02.05a
+/// revision shipped this as a disabled no-op (`let _ = (frame, names,
+/// ctx)` — timeboxed), which made any tier-routed body that binds a
+/// non-param local diverge from the tree-walker the moment a caller (or a
+/// nested def) observed the frame. The bridge writes each named slot back
+/// through `store_name`'s own chain — declared-global → frame global,
+/// declared-nonlocal / my-cell → the shared cell, everything else → the
+/// frame's local map — so the observable post-call frame state matches the
+/// tree-walker's by construction. Unbound JIT slots (dead pre-bumped
+/// params, never-assigned temps) are skipped: the cfg ABI models
+/// unbound-as-None and store_name(None) would fabricate a binding the
+/// tree-walker never makes.
+fn store_slots_into_frame(frame: &Frame, names: &[String], ctx: &ExecCtx, frame_rc: &Rc<Frame>) {
+    let interp = crate::interp::current_interp_for_bindings_pub();
+    let reg = crate::interp::current_registry_pub();
+    for (i, name) in names.iter().enumerate() {
+        if name.is_empty() {
+            continue; // dead pre-bumped slot (Func::new off-by-one, 02.05a)
+        }
+        // Skip NEVER-ASSIGNED slots: the JIT models unbound as None, but
+        // the tree-walker leaves the name out of the frame entirely (a
+        // later read must stay NameError/UnboundLocalError, not None).
+        // Distinguishing "assigned None" from "never assigned" needs a
+        // write marker; the cheap conservative rule is: only propagate a
+        // None when the frame ALREADY has a binding for the name (an
+        // overwrite of an existing param/local), and skip None entirely
+        // when it doesn't.
+        let v = ctx.slots[i].clone();
+        if matches!(v, Value::None) && !frame.has_binding(name) {
+            continue;
+        }
+        // The tree-walker's exact store chain (declared global → globals;
+        // nonlocal/cell → the cell; else the local map). Errors are
+        // impossible on these shapes (no class-ns frame ever reaches the
+        // JIT hook), so a failure is a bridge bug: surface loudly.
+        if let Err(f) = crate::interp::store_name(&interp, frame_rc, name, v, &reg) {
+            let why = match f {
+                crate::Flow::Raise(ev) => format!("raise {}: {:?}", ev.class, ev.args),
+                crate::Flow::Return(_) => "Return flow".to_string(),
+                crate::Flow::Break => "Break flow".to_string(),
+                crate::Flow::Continue => "Continue flow".to_string(),
+                crate::Flow::Next => "Next flow".to_string(),
+                crate::Flow::YieldBack(_) => "YieldBack flow".to_string(),
+            };
+            eprintln!(
+                "[TIER] slot sync-back store_name({name}) failed: {why} — \
+                 jit_hook bridge bug, refusing to swallow"
+            );
+        }
+    }
 }
 
 // ===========================================================================
@@ -350,7 +433,18 @@ pub fn jit_call_body(
         let mut cache = c.borrow_mut();
         cache
             .entry(fn_id)
-            .or_insert_with(|| compile_for(entry).map(Rc::new))
+            .or_insert_with(|| {
+                // First (and only) lowering attempt for this body: count the
+                // outcome so the exercise report distinguishes a real JIT
+                // route from a silent all-fallback run.
+                let r = compile_for(entry).map(Rc::new);
+                if r.is_some() {
+                    JIT_COMPILES.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    JIT_FALLBACKS.fetch_add(1, Ordering::Relaxed);
+                }
+                r
+            })
             .clone()
     });
 
@@ -366,6 +460,7 @@ pub fn jit_call_body(
     let Some(je) = cached else {
         return Ok(None); // fallback table
     };
+    JIT_EXECS.fetch_add(1, Ordering::Relaxed);
 
     let names = slot_names_for(entry);
     let mut host_state = Box::new(HostState {
@@ -384,7 +479,7 @@ pub fn jit_call_body(
 
     // Sync locals back BEFORE mapping the result: an exception unwind
     // still leaves partially-updated locals observable to except blocks.
-    store_slots_into_frame(frame, &names, &ctx);
+    store_slots_into_frame(frame, &names, &ctx, frame);
 
     match call_r {
         Ok(()) => {
@@ -489,4 +584,60 @@ fn _cell_slot_of(frame: &Frame, name: &str) -> Option<CellSlot> {
         .get(name)
         .cloned()
         .or_else(|| frame.free_cells.get(name).cloned())
+}
+
+// ===========================================================================
+// 02.05a-residual: eager warm pass
+//
+// WHY THIS EXISTS: the dispatch arm lives in call_function (interp.rs: the
+// ObjKind::Function route), so a body only reaches jit_call_body when its
+// function is CALLED at least once. The 16 transparency probes keep every
+// module-level def hot, so measured runs DID route bodies — but a run whose
+// only def is never called (or whose calls all happen through paths the
+// arm doesn't see) reported execs=0 and looked like a silent fallback. The
+// warm pass decouples PROOF from CALL PATTERNS: after the registry is
+// published (exec_module's init seam), every module-level FnDef body is
+// lowered+compiled once (populating the fallback table / compile cache up
+// front), so [TIER-STATS] shows compiles+fallbacks for ALL module defs and
+// execs counts real jit_call_body executions. The per-body compile-attempt
+// idempotence is untouched: the cache key is the def Rc pointer, and the
+// warm pass uses the SAME cache slot call_function will hit.
+// ===========================================================================
+
+/// Lower + attempt-compile every module-level function body once (warm the
+/// compile cache / fallback table). Called from run_module's init seam with
+/// the freshly-built module; zero per-call overhead afterwards.
+pub fn warm_module_defs(module: &ap_ir::Module) {
+    if !tier_mode().jit_enabled() {
+        return; // tier 0: the seam is off; nothing to warm, nothing to count
+    }
+    let interp = crate::interp::current_interp_for_bindings_pub();
+    let reg = crate::interp::current_registry_pub();
+    for item in &module.items {
+        if let ap_ir::Item::FnDef(f) = item {
+            // Same id resolution the def-binding pass uses (by_path, exact
+            // name); a decorated def defers to Stmt::LocalDef and lands in
+            // the nested table with the SAME id space, so a miss here is
+            // benign (its warm happens via the cache on first call).
+            let Some(id) = reg.by_path_lookup(&f.name) else {
+                continue;
+            };
+            let Some(entry) = reg.entry(id) else {
+                continue;
+            };
+            // Dummy frame: the warm pass only exercises lower+compile (the
+            // or_insert_with arm); NO execution happens here, so the frame
+            // is never dereferenced. jit_call_body's execs counter must
+            // stay call-driven — warm deliberately does not run the body.
+            let frame = Rc::new(Frame::new_module(interp.globals.clone()));
+            if tier_debug() {
+                // TEMP residual-diag: why did this body not reach a verdict?
+                match cfg::lower_fn(&entry.def) {
+                    Ok(_) => eprintln!("[TIER-WARM] fn {} lowerable", entry.def.name),
+                    Err(e) => eprintln!("[TIER-WARM] fn {} lower-reject: {e}", entry.def.name),
+                }
+            }
+            let _ = jit_call_body(&interp, &entry, &frame);
+        }
+    }
 }
