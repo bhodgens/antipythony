@@ -53,10 +53,40 @@ GIL, uv-backed deps at build time. Byte-exact differential conformance vs CPytho
   native modules, method surfaces) ALL COMMITTED.
 - unittest/pathlib/enum/weakref IMPORTS ALL WORK (vendored stdlib chain).
 - BUGHUNT 2026-10-17: 7 fixes landed; report in .hermes/audits/.
-- PLAN 02 REMAINING: 02.05 tier-1 (split per risks) + 02.06 AoT + 02.08
-  method surfaces + 02.09 no-GIL swap (NEW gated leaf - T121 >=3x scaling
-  is its GREEN gate per master.md Design intent; dispatchable independent
-  of 02.05/06) + 02.10 Go-style scheduler (stretch, research-only for now).
+- PLAN 02 REMAINING: 02.05 tier-1 remainder (02.05c typed regions + 02.05d
+  deopt + 02.05e driver + 02.05f OSR + 02.05h bench) + 02.06 AoT + 02.08
+  method surfaces + 02.09 no-GIL swap (T121 >=3x GREEN gate) + 02.10
+  Go-scheduler (stretch).
+- 02.05 SPLIT STATUS 2026-11-09 (all merged to main): 02.05a DONE;
+  t1_016 FIXED - root cause was NOT frame/stack sizing: clif.rs emit_cfg
+  emitted Inst::LoadGlobal's dst as the RAW TempId instead of temp_slot()
+  (86d0c09), so ANY JIT-routed call site crashed TypeError 'NoneType'
+  not callable; min repro depth-independent `def k(n): return len(n)`;
+  ignored differential test re-enabled (2/2 green). 02.05b DONE (a4cfea3):
+  TypeObject type_version + surgery_version AtomicU64 counters (ap-obj
+  versioning.rs builtins_version for row 18), bump sites bound in
+  ap-run/classes.rs, ALL ic-version-audit rows now COVERED/documented-N/A
+  (13 super_stack = documented interaction, keyable off chain_surgery_version);
+  Risk-4 probe matrix verdict-identical vs CPython in tier 0/jit/APX_IC_AUDIT;
+  IC recording lands in FeedbackCells - guard consumption is 02.05c's job.
+  02.05g DONE (d42212d): ap-gc/rootscan.rs SafepointMap registry + fp-chain
+  walker (fp-chain SHIPPED, measured ~2-4% FP cost; NOT force-enabled until
+  02.05c has real pointer declarations), collector root feed
+  (augment-not-replace over the subtract-refs floor), clif.rs additive
+  declare_gc_values + stack-map tail, gcsupport clear_safepoints at install;
+  gc family 20/20 adaptive; alloc-under-recursion + del/collect probes
+  byte-identical vs CPython. En-route fix: h_subscript was a fail-closed
+  SystemError stub -> routed via methods::subscript_get process-global seam
+  (2df7e9d). Merged-trunk gates: ap-gc 35/0, ap-obj 66/0, ap-codegen-native
+  26/0, ap-run 194/0/1, tier_mode_differential 2/2, clippy -D clean, fmt clean.
+  02.05c OPEN ITEMS from 02.05g: flip gc_value_declarations non-empty,
+  replace PENDING_MAP_BASE pre-finalize registration with real blob-base
+  keys, enable -C force-frame-pointers in the JIT flag builder.
+  KNOWN RESIDUALS (filed, pre-existing): t1_007 format_decimal round()
+  bug (values-leaf ownership call); fix_pass_differential ENOENT was a
+  CARGO_TARGET_DIR-relative harness artifact (use ABSOLUTE CARGO_TARGET_DIR
+  when running cargo test manually), not a code bug; adaptive-mode traceback
+  frame linenos imprecise (JIT frames attributed to def line).
 - ROBUSTNESS-CI CAMPAIGN: plan tree at `plans/robustness-ci/` (master.md +
   7 branches, 24 leaves) implements ALL findings of
   .hermes/audits/robustness-review-2026-10-19.md (CI core, test integrity,
