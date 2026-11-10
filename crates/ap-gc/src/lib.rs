@@ -10,6 +10,7 @@
 //! land here, replacing the registry with MMTk root reporting.
 
 mod gcmod;
+mod rootscan;
 mod weakbridge;
 
 pub use gcmod::{
@@ -19,6 +20,14 @@ pub use gcmod::{
     unfreeze, weakref_add, weakref_alive, weakref_count_for, weakref_entry_count, weakref_is_dead,
     weakref_next_seq, weakref_prune_fired, weakref_take_dead, weakref_tokens_for, GcStats,
     WeakEntry,
+};
+
+/// Leaf 02.05g: the GC roots shim — safepoint-map registry + fp-chain
+/// walker (the MMTk root feed for native JIT frames).
+pub use rootscan::{
+    clear_safepoints, fp_chain_walk, map_for_return_address, mapped_frames_from,
+    register_safepoint, safepoint_map_count, safepoint_root_slot_count, ConservativeFloorGuard,
+    StackRootSlot, WalkedFrame, FP_CHAIN_MAX_DEPTH,
 };
 
 /// The bridge module path (ap-run installs via weakbridge::set_bridge).
