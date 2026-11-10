@@ -432,6 +432,12 @@ pub extern "C" fn h_const_str(ctx: &mut ExecCtx, dst: u32, ptr: i64, len: i64) -
     }
 }
 
+/// Flattened host subscript-reader signature: `Err` carries the rendered
+/// "Class: message" text (the Flow::Raise rendering flattened — the
+/// codegen seam reconstructs the Python exception from it).
+type HostSubscriptGet =
+    fn(&ap_obj::value::Value, &ap_obj::value::Value) -> Result<ap_obj::value::Value, String>;
+
 /// Subscript read (S-01-15) — routed through the host seam via the ctx
 /// slot carry (t1_016-family fix, landed with leaf 02.05g's gate run):
 /// the JIT has no host borrow here, so the helper implements the read
@@ -441,16 +447,10 @@ pub extern "C" fn h_const_str(ctx: &mut ExecCtx, dst: u32, ptr: i64, len: i64) -
 /// dependency for this one surface is taken through a process-global
 /// function pointer installed at JIT init (same inverted-seam pattern
 /// as weakbridge — ap-codegen-native cannot depend on ap-run).
-static SUBSCRIPT_GET_FN: std::sync::RwLock<
-    Option<
-        fn(&ap_obj::value::Value, &ap_obj::value::Value) -> Result<ap_obj::value::Value, String>,
-    >,
-> = std::sync::RwLock::new(None);
+static SUBSCRIPT_GET_FN: std::sync::RwLock<Option<HostSubscriptGet>> = std::sync::RwLock::new(None);
 
 /// Install the host subscript reader (ap-run calls once at entry).
-pub fn set_host_subscript_get(
-    f: fn(&ap_obj::value::Value, &ap_obj::value::Value) -> Result<ap_obj::value::Value, String>,
-) {
+pub fn set_host_subscript_get(f: HostSubscriptGet) {
     if let Ok(mut g) = SUBSCRIPT_GET_FN.write() {
         *g = Some(f);
     }
