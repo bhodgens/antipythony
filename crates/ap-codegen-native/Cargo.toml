@@ -14,6 +14,9 @@ workspace = true  # robustness-ci 02.01 - see root Cargo.toml [workspace.lints]
 [dependencies]
 ap-ir = { path = "../ap-ir" }
 ap-obj = { path = "../ap-obj" }
+# 02.05g: the GC roots shim — per-callsite stack maps are handed to the
+# ap-gc safepoint registry at code-finalize time (declare_gc_values tail).
+ap-gc = { path = "../ap-gc" }
 # Cranelift pinned to the workspace's existing 0.134 line (pulled in via
 # ap-host's wasmtime 47 graph) so no duplicate builds.
 cranelift = "0.134"
