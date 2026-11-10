@@ -227,6 +227,10 @@ pub fn compile_baseline(func: &Func) -> Result<JitFunc, CodegenError> {
             idx: 0,
             plan: &slot_plan,
         };
+        let mut emit_state = EmitState {
+            name_table: &mut name_table,
+            site_counter: &mut site_counter,
+        };
         // ABI entry hand-off: emit the jump to the lowered CFG's block 0
         // BEFORE emit_cfg so the entry block is inserted into the layout
         // FIRST (layout.entry_block() == first inserted block — emitting
@@ -244,16 +248,16 @@ pub fn compile_baseline(func: &Func) -> Result<JitFunc, CodegenError> {
             ctx_ptr,
             &mut module,
             &helper_refs,
-            &mut name_table,
-            &mut site_counter,
+            &mut emit_state,
         )?;
 
         fb.seal_all_blocks();
         fb.finalize(frontend_config);
         // 02.05b: sites actually emitted (== SlotPlan::len when emit and
-        // assign stay in lockstep; captured here because site_counter lives
-        // in this scope and the JitFunc is built after the block closes).
-        site_count = Some(site_counter.idx);
+        // assign stay in lockstep; captured through the state because the
+        // borrow ends only here and the JitFunc is built after the block
+        // closes).
+        site_count = Some(emit_state.site_counter.idx);
     }
     let site_count = site_count.expect("emit_cfg always runs");
     if let Err(e) = module.define_function(func_id, &mut ctx) {
@@ -367,8 +371,16 @@ fn helper_symbols() -> Vec<(&'static str, *const u8)> {
     ]
 }
 
+/// 02.05b emit-thread state: the mutable cross-cutting cursors emit_cfg
+/// advances (name interning + the SlotPlan site-id cursor), bundled to keep
+/// the parameter list flat (clippy too_many_arguments on the 8-arg form).
+struct EmitState<'a> {
+    name_table: &'a mut Vec<String>,
+    site_counter: &'a mut SiteCounter<'a>,
+}
+
 /// Emit the whole CFG. Fail-closed on any unhandled inst/terminator.
-/// 02.05b: `site_counter` carries the running SlotPlan id so every
+/// 02.05b: `state.site_counter` carries the running SlotPlan id so every
 /// specializable site embeds its own slot id as the first helper immediate.
 fn emit_cfg(
     fb: &mut FunctionBuilder,
@@ -377,8 +389,7 @@ fn emit_cfg(
     ctx_ptr: Value,
     module: &mut cranelift_jit::JITModule,
     helpers: &HashMap<&'static str, FuncRef>,
-    name_table: &mut Vec<String>,
-    site_counter: &mut SiteCounter<'_>,
+    state: &mut EmitState<'_>,
 ) -> Result<(), CodegenError> {
     let i64_t = types::I64;
     let i32_t = types::I32;
@@ -491,8 +502,8 @@ fn emit_cfg(
                     // 02.05b: FEEDBACK SLOT id embedded as the first
                     // immediate (GlobalIC key: host cache + feedback cell).
                     let f = helpers["apjit_h_load_global"];
-                    let a0 = iconst!(fb, site_counter.next() as i64);
-                    let a1 = iconst!(fb, name_id(name_table, name) as i64);
+                    let a0 = iconst!(fb, state.site_counter.next() as i64);
+                    let a1 = iconst!(fb, name_id(state.name_table, name) as i64);
                     let a2 = iconst!(fb, dst.0 as i64);
                     let r = fb.ins().call(f, &[ctx_ptr, a0, a1, a2]);
                     check_status(fb, r, raise_target);
@@ -506,7 +517,7 @@ fn emit_cfg(
                     // 02.05b: the BinOp site's own slot id feeds the cell
                     // via h_binop (tag recording inside the helper).
                     let f = helpers["apjit_h_binop"];
-                    let a0 = iconst!(fb, site_counter.next() as i64);
+                    let a0 = iconst!(fb, state.site_counter.next() as i64);
                     let a1 = iconst!(fb, op_code(*op));
                     let a2 = iconst!(fb, temp_slot(*a));
                     let a3 = iconst!(fb, temp_slot(*b));
@@ -550,7 +561,7 @@ fn emit_cfg(
                     // 02.05b: the Call site's feedback slot id rides as the
                     // first helper param (CallIC key + callee tag recording).
                     let f = helpers["apjit_h_call"];
-                    let a0 = iconst!(fb, site_counter.next() as i64);
+                    let a0 = iconst!(fb, state.site_counter.next() as i64);
                     let a1 = iconst!(fb, temp_slot(*f_slot));
                     let a2 = iconst!(fb, arg_start);
                     let a3 = iconst!(fb, args.len() as i64);
@@ -562,9 +573,9 @@ fn emit_cfg(
                     // 02.05b: the Attr site's feedback slot id rides as the
                     // first helper param (AttrIC key + receiver tag record).
                     let f = helpers["apjit_h_load_attr"];
-                    let a0 = iconst!(fb, site_counter.next() as i64);
+                    let a0 = iconst!(fb, state.site_counter.next() as i64);
                     let a1 = iconst!(fb, temp_slot(*obj));
-                    let a2 = iconst!(fb, name_id(name_table, name) as i64);
+                    let a2 = iconst!(fb, name_id(state.name_table, name) as i64);
                     let a3 = iconst!(fb, temp_slot(*dst));
                     let r = fb.ins().call(f, &[ctx_ptr, a0, a1, a2, a3]);
                     check_status(fb, r, raise_target);
@@ -572,7 +583,7 @@ fn emit_cfg(
                 Inst::StoreAttr(obj, name, v) => {
                     let f = helpers["apjit_h_store_attr"];
                     let a1 = iconst!(fb, temp_slot(*obj));
-                    let a2 = iconst!(fb, name_id(name_table, name) as i64);
+                    let a2 = iconst!(fb, name_id(state.name_table, name) as i64);
                     let a3 = iconst!(fb, temp_slot(*v));
                     let r = fb.ins().call(f, &[ctx_ptr, a1, a2, a3]);
                     check_status(fb, r, raise_target);

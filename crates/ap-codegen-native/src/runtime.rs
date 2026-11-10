@@ -26,19 +26,23 @@ use crate::feedback::{FeedbackCell, TypeTag};
 /// 02.05b: every specializable site passes its feedback SLOT ID as the
 /// first argument after `ctx` — the host cache and the feedback cell for
 /// a site are keyed by the same id the CLIF embedded.
+/// 02.05b (clippy type_complexity): the Call callback's signature is
+/// factored out once.
+pub type CallCallback = fn(
+    ctx: &mut ExecCtx,
+    slot: u32,
+    callee_slot: u32,
+    arg_start: u32,
+    argc: u32,
+    dst_slot: u32,
+) -> Result<(), PyException>;
+
 pub struct HostCallbacks {
     /// Resolve a global name (module globals → builtins chain, S-02-1).
     pub load_global:
         fn(ctx: &mut ExecCtx, slot: u32, name_idx: u32, dst_slot: u32) -> Result<(), PyException>,
     /// Call a Python-visible callable (ap-run's frame machinery).
-    pub call: fn(
-        ctx: &mut ExecCtx,
-        slot: u32,
-        callee_slot: u32,
-        arg_start: u32,
-        argc: u32,
-        dst_slot: u32,
-    ) -> Result<(), PyException>,
+    pub call: CallCallback,
     /// Attribute load (S-03-9 getattribute/MRO/descriptor protocol).
     pub load_attr: fn(
         ctx: &mut ExecCtx,
