@@ -20,13 +20,20 @@
 use ap_obj::value::Value;
 use ap_obj::PyException;
 
+use crate::feedback::{FeedbackCell, TypeTag};
+
 /// Host callbacks the JIT'd code needs but ap-run owns (entry-hook seam).
+/// 02.05b: every specializable site passes its feedback SLOT ID as the
+/// first argument after `ctx` — the host cache and the feedback cell for
+/// a site are keyed by the same id the CLIF embedded.
 pub struct HostCallbacks {
     /// Resolve a global name (module globals → builtins chain, S-02-1).
-    pub load_global: fn(ctx: &mut ExecCtx, name_idx: u32, dst_slot: u32) -> Result<(), PyException>,
+    pub load_global:
+        fn(ctx: &mut ExecCtx, slot: u32, name_idx: u32, dst_slot: u32) -> Result<(), PyException>,
     /// Call a Python-visible callable (ap-run's frame machinery).
     pub call: fn(
         ctx: &mut ExecCtx,
+        slot: u32,
         callee_slot: u32,
         arg_start: u32,
         argc: u32,
@@ -35,6 +42,7 @@ pub struct HostCallbacks {
     /// Attribute load (S-03-9 getattribute/MRO/descriptor protocol).
     pub load_attr: fn(
         ctx: &mut ExecCtx,
+        slot: u32,
         obj_slot: u32,
         name_idx: u32,
         dst_slot: u32,
@@ -71,6 +79,11 @@ pub struct ExecCtx {
     /// its per-frame HostState (interpreter + frame + name table) here;
     /// the helpers transmute it back. The runtime itself never derefs it.
     pub host_data: *mut u8,
+    /// 02.05b: the compiled function's feedback cells (one per SlotPlan
+    /// site, slot id == index), owned by the JitFunc and parked here for
+    /// the recording helpers. Null/0 when ICs are not wired (tests).
+    pub ic_base: *mut FeedbackCell,
+    pub ic_len: u32,
 }
 
 impl ExecCtx {
@@ -87,12 +100,26 @@ impl ExecCtx {
             out: Vec::new(),
             host,
             host_data: std::ptr::null_mut(),
+            ic_base: std::ptr::null_mut(),
+            ic_len: 0,
         }
     }
 
     #[inline]
     pub fn slot(&mut self, i: usize) -> &mut Value {
         &mut self.slots[i]
+    }
+
+    /// 02.05b: the feedback cell for a slot id (None when ICs are not
+    /// wired or the id is out of range — callers then skip recording;
+    /// never a wrong-answer path).
+    #[inline]
+    pub fn ic_cell(&self, slot: u32) -> Option<&FeedbackCell> {
+        if slot < self.ic_len && !self.ic_base.is_null() {
+            Some(unsafe { &*self.ic_base.add(slot as usize) })
+        } else {
+            None
+        }
     }
 }
 
@@ -170,13 +197,38 @@ pub const UOP_NOT: i64 = 3;
 // Helpers — one public symbol per cfg::Inst that needs runtime work
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// 02.05b IC recording: one shared helper (feedback.rs `record` — the same
+// state machine the boxed binop sites already feed).
+// ---------------------------------------------------------------------------
+
+/// Record an operand tag (and, for binop sites, a second tag) into a site's
+/// feedback cell. Allocation-free; skipped silently when ICs are unwired.
+#[inline]
+fn ic_record_tag(ctx: &ExecCtx, slot: u32, a: &Value, b: Option<&Value>) {
+    if let Some(cell) = ctx.ic_cell(slot) {
+        let ta = TypeTag::of(a);
+        let tb = b.map(TypeTag::of);
+        cell.record(ta, tb);
+    }
+}
+
 /// BinOp through ap_obj::ops::binop (clauses S-01-3..S-03-25 preserved by
-/// that surface — the JIT adds no semantics of its own).
-pub extern "C" fn h_binop(ctx: &mut ExecCtx, op: i64, a: u32, b: u32, dst: u32) -> HelperStatus {
+/// that surface — the JIT adds no semantics of its own). 02.05b: `slot`
+/// carries the feedback slot id; both operand tags feed the cell.
+pub extern "C" fn h_binop(
+    ctx: &mut ExecCtx,
+    slot: u32,
+    op: i64,
+    a: u32,
+    b: u32,
+    dst: u32,
+) -> HelperStatus {
     let a = ctx.slots[a as usize].clone();
     let b = ctx.slots[b as usize].clone();
     match ap_obj::ops::binop(&a, decode_binop(op), &b) {
         Ok(v) => {
+            ic_record_tag(ctx, slot, &a, Some(&b));
             ctx.slots[dst as usize] = v;
             0
         }
@@ -274,21 +326,24 @@ pub extern "C" fn h_store_local(ctx: &mut ExecCtx, src: u32, dst: u32) -> Helper
 }
 
 /// Global load through the host seam (NameError on unbound — S-02-1).
-pub extern "C" fn h_load_global(ctx: &mut ExecCtx, name_idx: u32, dst: u32) -> HelperStatus {
-    match (ctx.host.load_global)(ctx, name_idx, dst) {
+/// 02.05b: `slot` keys the GlobalIC (host cache + feedback cell).
+pub extern "C" fn h_load_global(ctx: &mut ExecCtx, slot: u32, name_idx: u32, dst: u32) -> HelperStatus {
+    match (ctx.host.load_global)(ctx, slot, name_idx, dst) {
         Ok(()) => 0,
         Err(e) => park_exc(ctx, e),
     }
 }
 
-/// Attribute load through the host seam (S-03-9).
+/// Attribute load through the host seam (S-03-9). 02.05b: `slot` keys the
+/// AttrIC (host cache + feedback cell).
 pub extern "C" fn h_load_attr(
     ctx: &mut ExecCtx,
+    slot: u32,
     obj: u32,
     name_idx: u32,
     dst: u32,
 ) -> HelperStatus {
-    match (ctx.host.load_attr)(ctx, obj, name_idx, dst) {
+    match (ctx.host.load_attr)(ctx, slot, obj, name_idx, dst) {
         Ok(()) => 0,
         Err(e) => park_exc(ctx, e),
     }
@@ -304,14 +359,17 @@ pub extern "C" fn h_store_attr(ctx: &mut ExecCtx, obj: u32, name_idx: u32, v: u3
 
 /// Call through the host seam (S-02-7..S-02-10, S-03-28). Args are staged
 /// in ctx.args[arg_start..arg_start+argc] by the JIT'd code before the call.
+/// 02.05b: `slot` keys the CallIC (host cache + feedback cell; the callee
+/// tag feeds the cell).
 pub extern "C" fn h_call(
     ctx: &mut ExecCtx,
+    slot: u32,
     callee: u32,
     arg_start: u32,
     argc: u32,
     dst: u32,
 ) -> HelperStatus {
-    match (ctx.host.call)(ctx, callee, arg_start, argc, dst) {
+    match (ctx.host.call)(ctx, slot, callee, arg_start, argc, dst) {
         Ok(()) => 0,
         Err(e) => park_exc(ctx, e),
     }

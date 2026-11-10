@@ -488,9 +488,12 @@ pub fn install_exception_classes(interp: &Rc<Interpreter>) {
         table.insert(name.to_string(), v.clone());
         // Shadow the name-Type interns in builtins with the REAL classes
         // (name reads, `except E`, and base-class resolution all see them).
+        // 02.05b (audit row 18): a shadowed name invalidates GlobalICs that
+        // resolved through builtins — bump the builtins version.
         let _ = interp
             .builtins
             .set(Value::Str(PyString::new(name.to_string())), v);
+        ap_obj::versioning::bump_builtins_version();
     }
     // `object`/`type` as REAL class values (identity: type(A) is type,
     // c001/c014). Overrides the name-Type interned entries.
@@ -1331,6 +1334,13 @@ pub fn exec_class_def(
     //    04.01: search the hook across ALL bases' MROs — typing.py's
     //    _SpecialGenericAlias(_NotIterable, _BaseGenericAlias, _root=True)
     //    carries the hook on _Final, reached only through the SECOND base.
+    // 02.05b (audit row 11): metaclass hooks may mutate the class surface
+    // from user code (`cls.__protocol_attrs__ = ...` in
+    // Protocol.__init_subclass__); those writes already route through
+    // attr_set_protocol's UserClass arm (above), which bumps both counters.
+    // The hook DISPATCH itself is recorded here so the audit row's
+    // "affected type" claim stays checkable: the affected type is `cls`
+    // (this class), and its counters were seeded fresh this creation.
     run_set_name_hooks(interp, &class_v, &t)?;
     let hook_owner: Option<(Value, String)> = base_types.iter().find_map(|b| {
         b.lookup_with_owner("__init_subclass__")
@@ -3533,6 +3543,10 @@ pub fn attr_set_protocol(
     // T1 (scrapy fix pass): class-attribute writes on UserClasses
     // (typing: `cls.__protocol_attrs__ = ...` inside __init_subclass__).
     // Land in the class dict so MRO lookups see them.
+    // 02.05b (audit row 16/11): a class-attr write IS type.__setattr__ —
+    // bump both class counters (namespace surgery invalidates AttrICs
+    // keyed on this class and, through chain_surgery_version, every
+    // subclass).
     if let Value::Obj(o) = obj {
         if o.kind == ap_obj::ObjKind::UserClass {
             let t = o
@@ -3542,18 +3556,26 @@ pub fn attr_set_protocol(
                 .or_else(|| o.type_ref.borrow().as_ref().and_then(|w| w.upgrade()));
             if let Some(t) = t {
                 let _ = t.dict.set(Value::Str(PyString::new(name.to_string())), v);
+                t.bump_class_versions();
                 return Ok(());
             }
         }
     }
     // 02.03b-fix: interned-type attr writes (ast.py: Tuple.dims = property)
     // park on the PyObject; attr_get's Type arm reads them back.
+    // 02.05b (audit row 16): same invalidation discipline for interned
+    // types (PyObject-attr-backed surfaces — their read arms consult
+    // o.attrs, so the write bumps the TypeObject payload's counters when
+    // reachable; the read path keys AttrICs on the payload counters).
     if let Value::Obj(o) = obj {
         if o.kind == ap_obj::ObjKind::Type {
             let _ = o
                 .attrs
                 .borrow_mut()
                 .set(Value::Str(PyString::new(name.to_string())), v);
+            if let Some(t) = o.class_ref.borrow().clone() {
+                t.bump_class_versions();
+            }
             return Ok(());
         }
     }
@@ -3637,7 +3659,11 @@ pub fn attr_set_protocol(
             };
             t.dict
                 .set(Value::Str(PyString::new(name)), v)
-                .map_err(Flow::from_py)
+                .map_err(Flow::from_py)?;
+            // 02.05b (audit row 16): type.__setattr__ bumps BOTH counters —
+            // method add/remove is the hot AttrIC invalidator.
+            t.bump_class_versions();
+            Ok(())
         }
         // 02.04a (interp bug #1b): functions accept arbitrary attribute
         // writes (CPython function.__dict__) — vendored stdlib does
@@ -3782,6 +3808,9 @@ pub fn attr_del_protocol(interp: &Rc<Interpreter>, obj: &Value, name: &str) -> R
                     format!("type object '{}' has no attribute '{}'", t.name, name),
                 ));
             }
+            // 02.05b (audit row 16): delattr-on-class is the remove half of
+            // type.__setattr__ — same counter pair.
+            t.bump_class_versions();
             Ok(())
         }
         // T2 (pytest -> pygments lexers/formatters __init__ swap):
