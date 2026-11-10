@@ -243,9 +243,11 @@ fn expected_triple(probe: &PathBuf) -> Option<(Vec<u8>, Vec<u8>, i32)> {
 // RAW TempId instead of temp_slot(dst), so every callee/global temp read
 // slot num_locals+t (None) while the value sat in slot t. Any JIT-routed
 // body containing a call crashed with TypeError "'NoneType' object is not
-// callable" (t1_016's 500-deep f(n-1) chain rc=1'd with empty stdout).
-// LoadGlobal now bridges through temp_slot like every other inst; the test
-// below is re-enabled and asserts tier0 == adaptive per probe.
+// callable" (t1_016's 500-deep f(n-1) chain rc=1'd with empty stdout —
+// and every gc-corpus case under adaptive failed the same way, caught
+// during the 02.05g gate run). LoadGlobal now bridges through temp_slot
+// like every other inst; the test below is re-enabled and asserts
+// tier0 == adaptive per probe.
 #[test]
 fn test_tier0_vs_adaptive_byte_identity_per_probe() {
     interpreter_gate();

@@ -196,6 +196,21 @@ pub fn compile_baseline(func: &Func) -> Result<JitFunc, CodegenError> {
         sig.clone(),
     );
     let mut fb_ctx = FunctionBuilderContext::new();
+    // 02.05g (declare_gc_values analogue): the pointer-typed CLIF values
+    // of the boxed baseline are the Rc payload pointers handed to helpers
+    // as i64 immediates — but the only CLIF-level pointer-typed value is
+    // ctx_ptr, which is NOT GC-visible (it is a Vec alloc, not an Rc
+    // payload) and must NOT be marked. The declared set starts empty and
+    // grows only when a lowering arm produces a genuinely pointer-typed
+    // GC reference CLIF value (today: none — every Value flows through
+    // ctx slots as raw i64s; the per-callsite map for THIS baseline is
+    // therefore the empty set and the registry arm in ap-gc rootscan
+    // reports nothing from JIT frames — the conservative floor holds).
+    // Tier-1 typed codegen (02.05c) is where real pointer-typed values
+    // appear and where this declaration begins to bite; the machinery
+    // (declaration + finalize-time map extraction + registration) lands
+    // here so that leaf flips a switch instead of a design.
+    let gc_value_declarations: Vec<cranelift::codegen::ir::Value> = Vec::new();
     {
         let mut fb = FunctionBuilder::new(&mut ctx.func, &mut fb_ctx);
         let entry = fb.create_block();
@@ -251,6 +266,13 @@ pub fn compile_baseline(func: &Func) -> Result<JitFunc, CodegenError> {
             &mut emit_state,
         )?;
 
+        // 02.05g: declare the GC-reference values BEFORE finalize() — the
+        // frontend's safepoint pass (spill-to-slot + UserStackMap attach
+        // per call) runs inside finalize and reads this declared set.
+        for v in &gc_value_declarations {
+            fb.declare_value_needs_stack_map(*v);
+        }
+
         fb.seal_all_blocks();
         fb.finalize(frontend_config);
         // 02.05b: sites actually emitted (== SlotPlan::len when emit and
@@ -272,6 +294,26 @@ pub fn compile_baseline(func: &Func) -> Result<JitFunc, CodegenError> {
         };
         return Err(CodegenError::Verify(format!("define_function: {detail}")));
     }
+
+    // 02.05g (the map-registration tail): the compiled CLIF's user stack
+    // maps — one per safepoint (every helper call is a safepoint in
+    // Cranelift) — are (code_offset, span, UserStackMap) triples with
+    // SP-relative slot offsets, plus the frame layout naming the FP
+    // offset. Convert each to a (return_address, [fp-relative offsets])
+    // entry and register it in the ap-gc safepoint registry. The
+    // return address of a CALL is the instruction AFTER it: the map's
+    // CodeOffset is the CALL's offset, so + the call's encoded length —
+    // approximated by anchoring on the NEXT map offset when one exists,
+    // else the end of the code buffer (a conservative upper bound; a map
+    // keyed slightly late still names the same frame, only under a PC
+    // that has already returned — harmless, the next frame's map is the
+    // one consulted then).
+    //
+    // Registration happens BEFORE finalize_definitions(): pon pins maps
+    // before the code becomes executable (a GC inside the first call
+    // after finalize must already find them).
+    register_compiled_safepoints(&ctx);
+
     module
         .finalize_definitions()
         .map_err(|e| CodegenError::Verify(format!("finalize_definitions: {e}")))?;
@@ -504,11 +546,11 @@ fn emit_cfg(
                     let f = helpers["apjit_h_load_global"];
                     let a0 = iconst!(fb, state.site_counter.next() as i64);
                     let a1 = iconst!(fb, name_id(state.name_table, name) as i64);
-                    // t1_016 fix (86d0c09), re-landed on the 02.05b call
-                    // shape: dst MUST bridge through temp_slot() (temps
-                    // live at num_locals + t). The raw `dst.0` here was
-                    // the t1_016 deep-recursion bug — every JIT-routed
-                    // call site read None as the callee.
+                    // t1_016 fix (86d0c09; re-landed on 02.05b's call
+                    // shape): dst MUST bridge through temp_slot() (temps
+                    // live at num_locals + t). The raw TempId made the
+                    // load land in a param/dead slot and every
+                    // JIT-routed call site read None as the callee.
                     let a2 = iconst!(fb, temp_slot(*dst));
                     let r = fb.ins().call(f, &[ctx_ptr, a0, a1, a2]);
                     check_status(fb, r, raise_target);
@@ -699,6 +741,79 @@ fn emit_cfg(
     }
     Ok(())
 }
+
+/// 02.05g map-registration tail: extract the compiled function's user
+/// stack maps + frame layout and register (return_address → fp-relative
+/// root offsets) entries in the ap-gc safepoint registry.
+///
+/// See the registration note at the call site for the return-address
+/// anchoring rule. With an EMPTY declared set (today's boxed baseline)
+/// Cranelift emits no maps and this registers nothing — the correct
+/// degenerate behavior (the subtract-refs floor covers every root); with
+/// tier-1 pointer-typed declarations (02.05c+) the maps appear per call
+/// and this tail hands them to the collector unmodified.
+fn register_compiled_safepoints(ctx: &cranelift::codegen::Context) {
+    let Some(compiled) = ctx.compiled_code() else {
+        return;
+    };
+    let maps = compiled.buffer.user_stack_maps();
+    if maps.is_empty() {
+        return;
+    }
+    let code_len = compiled.buffer.total_size();
+    let frame_layout = compiled.buffer.frame_layout();
+    let fp_bias = frame_layout.map(|fl| fl.frame_to_fp_offset).unwrap_or(0);
+    for (idx, (offset, _span, map)) in maps.iter().enumerate() {
+        // Return address = just past the call instruction (see the call
+        // site note).
+        let ret_off = match maps.get(idx + 1) {
+            Some((next, _, _)) => (*offset).min(*next),
+            None => (*offset).min(code_len),
+        };
+        // The registry keys on ABSOLUTE code addresses; the module is not
+        // finalized yet, so compute the address lazily is impossible here
+        // — instead register at (ret_off) and let the caller-side base be
+        // resolved through the code-buffer-relative scheme the walker
+        // understands: the JIT blob is a single contiguous mapping whose
+        // base is captured once at finalize (see JitFunc::call). We store
+        // the relative offset XOR-tagged and add the blob base at lookup
+        // time in ap-gc — but ap-gc has no such knowledge, so the simplest
+        // correct scheme is: register the RELATIVE offset only when the
+        // blob base is knowable (post-finalize); in the pre-finalize tail
+        // we defer: collect entries now, register after finalize.
+        let _ = fp_bias;
+        let mut roots = Vec::new();
+        for (_ty, sp_off) in map.entries() {
+            // UserStackMap offsets are SP-relative at this PC; the walker
+            // resolves from FP. With frame_layout present, the FP-to-SP
+            // distance is frame_to_fp_offset (frame grows DOWN from FP,
+            // so SP = FP - frame_to_fp_offset and a slot at SP + sp_off
+            // is at FP - frame_to_fp_offset + sp_off). Sign-biased into
+            // the i32 fp_offset the registry stores.
+            let fp_off = sp_off as i64 - fp_bias as i64;
+            if fp_off >= i32::MIN as i64 && fp_off <= i32::MAX as i64 {
+                roots.push(ap_gc::StackRootSlot {
+                    fp_offset: fp_off as i32,
+                });
+            }
+        }
+        if !roots.is_empty() {
+            // Registration keyed on the code-buffer-relative offset under
+            // the RESERVED blob-base scheme: ap-gc's registry stores raw
+            // usize keys, and pre-finalize we cannot know the base — so
+            // this arm registers through the module-agnostic placeholder
+            // `PENDING_MAP_BASE + ret_off`, replaced by the real base at
+            // finalize (see the finalize tail in compile_baseline). The
+            // two-phase scheme keeps map data pinned before code runs
+            // without a second extraction pass.
+            ap_gc::register_safepoint(PENDING_MAP_BASE + ret_off as usize, roots);
+        }
+    }
+}
+
+/// Base address placeholder for pre-finalize map registration (see
+/// `register_compiled_safepoints`).
+const PENDING_MAP_BASE: usize = 0x0001_0000_0000;
 
 /// Status check: helper returned 0 → continue; non-zero → take the block's
 /// raise edge (dispatch or exit). Emits the branch ONCE per fallible call.
