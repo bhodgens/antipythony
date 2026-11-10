@@ -242,10 +242,14 @@ mod version_tests {
         let child = mkclass("C");
         *child.mro.borrow_mut() = vec![child.clone(), parent.clone(), mkclass("object")];
         assert_eq!(child.chain_surgery_version(), 1);
-        let before = parent.type_version.load(std::sync::atomic::Ordering::Relaxed);
+        let before = parent
+            .type_version
+            .load(std::sync::atomic::Ordering::Relaxed);
         parent.bump_class_versions();
         assert_eq!(
-            parent.type_version.load(std::sync::atomic::Ordering::Relaxed),
+            parent
+                .type_version
+                .load(std::sync::atomic::Ordering::Relaxed),
             before + 1
         );
         assert_eq!(child.chain_surgery_version(), 2);
