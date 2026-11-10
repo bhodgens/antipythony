@@ -1727,6 +1727,7 @@ pub fn install(interp: &Rc<Interpreter>) {
         fire_dead_weakrefs_pub,
     );
     ap_gc::clear_roots();
+    ap_gc::clear_safepoints();
     ap_gc::add_root_dict(&interp.globals);
     ap_gc::add_root_dict(&interp.builtins);
     // Threshold from env (task: GC_THRESHOLD tunable).

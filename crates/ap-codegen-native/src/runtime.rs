@@ -494,21 +494,79 @@ pub extern "C" fn h_const_str(ctx: &mut ExecCtx, dst: u32, ptr: i64, len: i64) -
     }
 }
 
-/// Subscript read (S-01-15) — host-owned container protocol in the v0
-/// slice: ap-obj lists/tuples/dicts have direct surfaces but the generic
-/// `__getitem__` route is host territory; explicit fail-closed here.
-pub extern "C" fn h_subscript(ctx: &mut ExecCtx, obj: u32, _idx: u32, _dst: u32) -> HelperStatus {
+/// Flattened host subscript-reader signature: `Err` carries the rendered
+/// "Class: message" text (the Flow::Raise rendering flattened — the
+/// codegen seam reconstructs the Python exception from it).
+type HostSubscriptGet =
+    fn(&ap_obj::value::Value, &ap_obj::value::Value) -> Result<ap_obj::value::Value, String>;
+
+/// Subscript read (S-01-15) — routed through the host seam via the ctx
+/// slot carry (t1_016-family fix, landed with leaf 02.05g's gate run):
+/// the JIT has no host borrow here, so the helper implements the read
+/// through ap-run's `methods::subscript_get` surface the tree-walker
+/// uses — lists/strings/tuples/bytes/dict-string reads all work; the
+/// errors flow back as Python exceptions, not SystemErrors. The ap-run
+/// dependency for this one surface is taken through a process-global
+/// function pointer installed at JIT init (same inverted-seam pattern
+/// as weakbridge — ap-codegen-native cannot depend on ap-run).
+static SUBSCRIPT_GET_FN: std::sync::RwLock<Option<HostSubscriptGet>> = std::sync::RwLock::new(None);
+
+/// Install the host subscript reader (ap-run calls once at entry).
+pub fn set_host_subscript_get(f: HostSubscriptGet) {
+    if let Ok(mut g) = SUBSCRIPT_GET_FN.write() {
+        *g = Some(f);
+    }
+}
+
+pub extern "C" fn h_subscript(ctx: &mut ExecCtx, obj: u32, idx: u32, dst: u32) -> HelperStatus {
+    // Class-name interning: PyException::new takes a &'static str (the
+    // same leak-intern pattern jit_hook::intern_class uses — the error
+    // class vocabulary is small and closed).
+    fn intern_class(class: &str) -> &'static str {
+        thread_local! {
+            static INTERNED: std::cell::RefCell<std::collections::HashMap<String, &'static str>> =
+                std::cell::RefCell::new(std::collections::HashMap::new());
+        }
+        INTERNED.with(|m| {
+            let mut m = m.borrow_mut();
+            if let Some(s) = m.get(class) {
+                return *s;
+            }
+            let leaked: &'static str = Box::leak(class.to_string().into_boxed_str());
+            m.insert(class.to_string(), leaked);
+            leaked
+        })
+    }
     let o = ctx.slots[obj as usize].clone();
-    park_exc(
-        ctx,
-        PyException::new(
-            "SystemError",
-            format!(
-                "Subscript read not supported by baseline JIT yet (got {})",
-                o.type_name()
+    let k = ctx.slots[idx as usize].clone();
+    let f = SUBSCRIPT_GET_FN.read().ok().and_then(|g| *g);
+    match f {
+        Some(f) => match f(&o, &k) {
+            Ok(v) => {
+                ctx.slots[dst as usize] = v;
+                0
+            }
+            Err(class_msg) => {
+                // class_msg is "Class: message" (the Flow::Raise rendering
+                // the host seam flattens); split on the first colon.
+                let (class, msg) = match class_msg.split_once(": ") {
+                    Some((c, m)) => (c.to_string(), m.to_string()),
+                    None => ("KeyError".to_string(), class_msg),
+                };
+                park_exc(ctx, PyException::new(intern_class(&class), msg))
+            }
+        },
+        None => park_exc(
+            ctx,
+            PyException::new(
+                "SystemError",
+                format!(
+                    "Subscript read not supported by baseline JIT yet (got {})",
+                    o.type_name()
+                ),
             ),
         ),
-    )
+    }
 }
 
 /// Stage one call argument into ctx.args[k] (clif.rs Call lowering).
