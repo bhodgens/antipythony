@@ -264,12 +264,16 @@ pub fn compile_baseline(func: &Func) -> Result<JitFunc, CodegenError> {
         // 1-param signature; 02.05a fix, first real compile_baseline
         // customer — unit tests never exercised the JIT compile path).
         fb.switch_to_block(entry);
+        // ABI entry hand-off (02.05a, kept): the entry block is inserted
+        // into the layout FIRST, jumping to clif_blocks[0] — whose body
+        // now OPENS with the 02.05c twin-start dispatcher (emitted inline
+        // by emit_cfg's block-0 arm, before block 0's own insts).
         fb.ins().jump(clif_blocks[0], &[]);
 
         emit_cfg(
             &mut fb,
             func,
-            &clif_blocks,
+            &mut clif_blocks,
             ctx_ptr,
             &mut module,
             &helper_refs,
@@ -350,11 +354,24 @@ fn helper_sig(isa: &dyn TargetIsa, name: &'static str) -> cranelift::codegen::ir
     use cranelift::codegen::ir::{AbiParam, Signature};
     let mut params = vec![AbiParam::new(isa.pointer_type())]; // ctx
     params.extend(extra_params(name).iter().map(|_| AbiParam::new(types::I64)));
+    // 02.05c: the value-returning typed helpers return i64 (a raw smi),
+    // not the i32 HelperStatus convention.
+    let ret = if i64_return(name) {
+        types::I64
+    } else {
+        types::I32
+    };
     Signature {
         params,
-        returns: vec![AbiParam::new(types::I32)],
+        returns: vec![AbiParam::new(ret)],
         call_conv: isa.default_call_conv(),
     }
+}
+
+/// Helpers whose CLIF signature returns i64 (the unboxed smi value) rather
+/// than the i32 status convention.
+fn i64_return(name: &str) -> bool {
+    matches!(name, "apjit_h_slot_smi_v" | "apjit_h_mul_smi")
 }
 
 fn extra_params(name: &'static str) -> &'static [usize] {
@@ -363,14 +380,15 @@ fn extra_params(name: &'static str) -> &'static [usize] {
     match name {
         // 02.05b: h_binop/h_load_global/h_load_attr/h_call gained a
         // leading feedback-slot param (the SlotPlan site id).
-        "apjit_h_binop" => &[0, 0, 0, 0, 0],
-        "apjit_h_compare" | "apjit_h_call" => {
-            if name == "apjit_h_call" {
-                &[0, 0, 0, 0, 0, 0]
-            } else {
-                &[0, 0, 0, 0]
-            }
-        }
+        "apjit_h_binop" => &[0, 0, 0, 0, 0], // slot, op, a, b, dst
+        // h_compare takes op, a, b, dst; h_call takes slot, callee,
+        // arg_start, argc, dst (5) — the pre-02.05c table over-declared
+        // h_call by one, which made every function body containing a call
+        // fail baseline compile and silently tree-walk (found by the
+        // 02.05c gate run; jit_hook fell back by table so bytes stayed
+        // identical and the bug hid).
+        "apjit_h_compare" => &[0, 0, 0, 0], // op, a, b, dst
+        "apjit_h_call" => &[0, 0, 0, 0, 0],
         "apjit_h_unaryop" => &[0, 0, 0],
         "apjit_h_truthy" | "apjit_h_load_local" | "apjit_h_store_local" => &[0, 0],
         "apjit_h_load_global" => &[0, 0, 0],
@@ -383,15 +401,15 @@ fn extra_params(name: &'static str) -> &'static [usize] {
         "apjit_h_subscript" => &[0, 0, 0],
         "apjit_h_stage_arg" => &[0, 0],
         "apjit_h_truthy_bit" => &[0],
-        // 02.05c typed-region helpers.
-        "apjit_h_slot_smi_v" => &[0, 0],
+        // 02.05c typed-region helpers (extra-arg counts AFTER ctx; a
+        // helper taking only ctx gets &[] — see apjit_h_twin_start).
+        "apjit_h_slot_smi_v" => &[0],
         "apjit_h_mul_smi" => &[0, 0],
-        "apjit_h_store_smi" => &[0, 0, 0],
-        "apjit_h_store_bool" => &[0, 0, 0],
-        "apjit_h_return_smi" => &[0, 0],
-        "apjit_h_return_bool" => &[0, 0],
-        "apjit_h_twin_start" => &[0],
-        "apjit_h_deopt_note" => &[0],
+        "apjit_h_store_smi" => &[0, 0],
+        "apjit_h_return_smi" => &[0],
+        "apjit_h_twin_start" => &[],
+        "apjit_h_set_twin_start" => &[0],
+        "apjit_h_deopt_note" => &[],
         "apjit_h_match_exc" => &[0, 0, 0],
         "apjit_h_raise" | "apjit_h_suspend" => &[0, 0],
         "apjit_h_reraise" => &[],
@@ -454,7 +472,7 @@ struct EmitState<'a> {
 fn emit_cfg(
     fb: &mut FunctionBuilder,
     func: &Func,
-    blocks: &[Block],
+    blocks: &mut [Block],
     ctx_ptr: Value,
     module: &mut cranelift_jit::JITModule,
     helpers: &HashMap<&'static str, FuncRef>,
@@ -486,18 +504,14 @@ fn emit_cfg(
     for (bi, block) in func.blocks.iter().enumerate() {
         let b = blocks[bi];
         fb.switch_to_block(b);
-        // 02.05c cold-twin seam: block 0 checks ctx.twin_start — nonzero
-        // means a tier-1 region exit handed off mid-function; the twin
-        // skips the blocks before the parked start block (their re-run
-        // would be wrong: the fast path already executed them). The skip
-        // chain is data-only (no helper calls), one brif per leading
-        // block; the field is reset by the host after each call.
+        // 02.05c cold-twin seam: block 0 (the CLIF layout entry) opens
+        // with the twin_start dispatcher — if ctx.twin_start == k, jump
+        // straight to block k (region-exit continuation); checks
+        // ascending, then FALLS THROUGH into block 0's own body, which
+        // the normal emit path below appends into this same block. No
+        // extra blocks, no re-binding: the original CFG edges all keep
+        // their targets.
         if bi == 0 {
-            // 02.05c cold-twin seam: if ctx.twin_start == k, jump straight
-            // to block k (region-exit continuation); checks ascending,
-            // then fall through into block 0. A helper call per check is
-            // acceptable: twin_start is 0 on every non-hand-off call and
-            // JIT-eligible CFGs are small.
             for (k, tgt_ref) in blocks.iter().enumerate().skip(1) {
                 let tgt = *tgt_ref;
                 let cont = fb.create_block();
@@ -511,10 +525,10 @@ fn emit_cfg(
                 fb.ins().brif(eq, tgt, &[], cont, &[]);
                 fb.switch_to_block(cont);
             }
-            fb.ins().jump(blocks[0], &[]);
-            // The per-block loop below re-switches to each block, so
-            // nothing further is emitted into block 0 here.
-            continue;
+            // Fall through into block 0's body: the cont chain's LAST
+            // block is now current; block 0's insts+terminator emit there
+            // via the normal path (rebind blocks[0] so internal CFG edges
+            // to block 0 land in that same block).
         }
         // The block's raise edge (helper-failure route): the block's own
         // terminator's raise target if it is a Raise, else function exit
@@ -1047,9 +1061,7 @@ pub fn compile_tier1(
             twin.slots.len()
         )));
     }
-    let cold_twin_for_plan = placeholder_twin();
-    let mut plan = crate::optimizing::plan_function(func, info, cold_twin_for_plan);
-    plan.cold_twin = twin;
+    let mut plan = crate::optimizing::plan_function(func, info, twin);
     if !crate::optimizing::has_typed_regions(&plan) {
         return Ok(None);
     }
@@ -1061,26 +1073,6 @@ pub fn compile_tier1(
         twin: plan.cold_twin,
         regions,
     }))
-}
-
-/// The plan builder needs a twin only for ownership; the real twin is
-/// swapped in after compilation (compile_tier1 owns the sequencing).
-fn placeholder_twin() -> JitFunc {
-    // SAFETY-free placeholder: a dangling code pointer the plan never
-    // calls (compile_tier1 overwrites it with the real twin before any
-    // call). Kept private so no other caller can construct it.
-    JitFunc {
-        code_ptr: std::ptr::null(),
-        slots: crate::clif::SlotPlan { sites: Vec::new() },
-        name_table: Vec::new(),
-        feedback_cells: Vec::new(),
-        _blob: unreachable_blob(),
-    }
-}
-
-/// Panic on use — the placeholder blob exists only to satisfy the struct.
-fn unreachable_blob() -> cranelift_jit::JITModule {
-    unreachable!("placeholder_twin's blob is replaced before any use")
 }
 
 /// Emit the typed fast path over the plan's regions.
@@ -1145,13 +1137,17 @@ fn emit_typed_fastpath(
             helper_refs.insert(name, fref);
         }
 
-        emit_fastpath_body(&mut fb, func, plan, ctx_ptr, &helper_refs, num_slots)?;
+        emit_fastpath_body(&mut fb, entry, func, plan, ctx_ptr, &helper_refs, num_slots)?;
 
         fb.seal_all_blocks();
         fb.finalize(frontend_config);
     }
     if let Err(e) = module.define_function(func_id, &mut ctx) {
-        return Err(CodegenError::Verify(format!("define fast: {e}")));
+        let detail = match &e {
+            cranelift_module::ModuleError::Compilation(c) => format!("{c:?}"),
+            other => format!("{other}"),
+        };
+        return Err(CodegenError::Verify(format!("define fast: {detail}")));
     }
     module
         .finalize_definitions()
@@ -1172,6 +1168,7 @@ fn emit_typed_fastpath(
 /// The fast-path body: entry guards + region bodies + hand-off tail.
 fn emit_fastpath_body(
     fb: &mut FunctionBuilder,
+    entry: Block,
     func: &Func,
     plan: &crate::optimizing::OptimizingPlan,
     ctx_ptr: Value,
@@ -1182,20 +1179,13 @@ fn emit_fastpath_body(
     let Some(region) = plan.regions.first() else {
         return Ok(());
     };
+    // Re-anchor on the layout entry (create_block moves the cursor; the
+    // guard chain below must emit into the entry).
+    fb.switch_to_block(entry);
 
-    // The single hand-off tail: deopt-note + return status 2 (call the
-    // twin). All side-exits funnel here.
-    let tail = fb.create_block();
-    fb.switch_to_block(tail);
-    {
-        let f = helpers["apjit_h_deopt_note"];
-        let a = fb.ins().iconst(types::I64, 0);
-        fb.ins().call(f, &[ctx_ptr, a]);
-        let two = fb.ins().iconst(i32_t, 2);
-        fb.ins().return_(&[two]);
-    }
-
-    // Member blocks (CLIF) + exit landing blocks.
+    // Member blocks (CLIF) + exit landing blocks — created FIRST so the
+    // fast ENTRY (the function's layout-entry block) can emit into itself
+    // without ever being "already filled" (the guard chain lands here).
     let member: HashMap<u32, Block> = region
         .blocks
         .iter()
@@ -1220,8 +1210,15 @@ fn emit_fastpath_body(
         }
     }
 
-    // Entry edge: guard every ctx slot the region loads (ascending), then
-    // jump into the region entry block. Failure → tail (twin restart).
+    // The single hand-off tail: deopt-note + return status 2 (call the
+    // twin). All side-exits funnel here. (Filled LAST; block created here
+    // but the cursor returns to the entry for the guard chain.)
+    let tail = fb.create_block();
+    fb.switch_to_block(entry);
+
+    // Entry edge (CURRENT block = the layout entry): guard every ctx slot
+    // the region loads (ascending), then jump into the region entry block.
+    // Failure → tail (twin restart).
     let Some(guards) = plan.fast_path.guards.first() else {
         return Ok(());
     };
@@ -1339,6 +1336,15 @@ fn emit_fastpath_body(
         fb.ins().call(f, &[ctx_ptr, a]);
         fb.ins().jump(tail, &[]);
     }
+    // Fill the deopt tail LAST (its handle existed since before the guard
+    // chain; every failure edge jumps here).
+    fb.switch_to_block(tail);
+    {
+        let f = helpers["apjit_h_deopt_note"];
+        fb.ins().call(f, &[ctx_ptr]);
+        let two = fb.ins().iconst(i32_t, 2);
+        fb.ins().return_(&[two]);
+    }
     Ok(())
 }
 
@@ -1451,20 +1457,19 @@ fn emit_typed_binop(
 }
 
 /// Range-check `v` in the smi domain; out → twin (bigint recomputation).
+/// All ops are explicitly i64-typed (icmp picks its type from the first
+/// operand; the constants are iconst i64 so the compare stays i64).
 fn check_smi_range_or_tail(fb: &mut FunctionBuilder, v: Value, tail: Block) {
     let lo = fb.ins().iconst(types::I64, ap_obj::int::SMI_MIN);
     let hi = fb.ins().iconst(types::I64, ap_obj::int::SMI_MAX);
     let ge = fb.ins().icmp(IntCC::SignedGreaterThanOrEqual, v, lo);
     let le = fb.ins().icmp(IntCC::SignedLessThanOrEqual, v, hi);
     let in_range = fb.ins().band(ge, le);
-    let bad = fb
-        .ins()
-        .uextend(cranelift::codegen::ir::types::I8, in_range);
-    let zero = fb.ins().iconst(cranelift::codegen::ir::types::I8, 0);
-    let is_bad = fb
-        .ins()
-        .icmp(cranelift::codegen::ir::condcodes::IntCC::Equal, bad, zero);
-    guard_or_tail(fb, is_bad, tail);
+    // bad = in_range == 0 (both operands i1/i8 — icmp on the band result
+    // against a dynamically-typed zero; icmp_imm_s keeps the immediate
+    // sign-extended and the type from the value operand).
+    let bad = fb.ins().icmp_imm_s(IntCC::Equal, in_range, 0);
+    guard_or_tail(fb, bad, tail);
 }
 
 fn cmp_cc(op: ap_ir::expr::CmpOp) -> IntCC {
