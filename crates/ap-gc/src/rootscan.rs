@@ -1,7 +1,7 @@
 //! rootscan — the GC roots shim (leaf 02.05g, Risk 1): precise stack maps
-//! + the frame-pointer-chain walker, the pon stackmap.rs pattern adapted
-//! per docs/pon-study-tier1.md §"Green Tea GC integration points" and
-//! docs/gc-mmtk-swap.md §4 (root scanning, the pon shim pattern).
+//! plus the frame-pointer-chain walker. The pon `stackmap.rs` pattern
+//! adapted per the two design docs: docs/pon-study-tier1.md ("Green Tea
+//! GC integration points") and docs/gc-mmtk-swap.md §4.
 //!
 //! Attribution: adapted from pon (github.com/can1357/pon,
 //! pon-runtime/src/stackmap.rs + pon-gc conservative-scan floor patterns).
@@ -228,8 +228,11 @@ pub fn unmapped_frame_count() -> u64 {
     UNMAPPED_FRAME_COUNT.load(Ordering::Relaxed)
 }
 
-/// fp-chain walks performed (probe/stats read; frames, not calls).
-#[cfg_attr(not(test), allow(dead_code))] // probe surface parity (kept: rootscan stats seam)
+/// fp-chain walks performed (probe/stats read; frames, not calls). Used
+/// by the walker unit tests and exposed as the probe seam for the
+/// ap-run rootscan instrumentation (kept for that consumer even though
+/// the shim itself does not read it).
+#[cfg_attr(not(test), allow(dead_code))] // probe seam (consumed by tests + future ap-run instrumentation)
 pub fn walked_frame_count() -> u64 {
     WALK_COUNT.load(Ordering::Relaxed)
 }
@@ -341,7 +344,7 @@ mod tests {
     #[test]
     fn register_and_resolve_roundtrip() {
         clear_safepoints();
-        let ra = 0x0000_5aa0 as usize; // synthetic; never dereferenced
+        let ra = 0x0000_5aa0_usize; // synthetic; never dereferenced
         register_safepoint(
             ra,
             vec![
@@ -367,7 +370,7 @@ mod tests {
     #[test]
     fn re_register_replaces_and_recounts() {
         clear_safepoints();
-        let ra = 0x0000_5aa1 as usize;
+        let ra = 0x0000_5aa1_usize;
         register_safepoint(ra, vec![StackRootSlot { fp_offset: 8 }]);
         register_safepoint(
             ra,
@@ -390,15 +393,15 @@ mod tests {
     fn empty_root_sets_are_not_registered() {
         clear_safepoints();
         let before = safepoint_map_count();
-        register_safepoint(0x0000_5aa2 as usize, Vec::new());
+        register_safepoint(0x0000_5aa2_usize, Vec::new());
         assert_eq!(safepoint_map_count(), before);
-        assert!(map_for_return_address(0x0000_5aa2 as usize).is_none());
+        assert!(map_for_return_address(0x0000_5aa2_usize).is_none());
     }
 
     #[test]
     fn unmapped_return_addresses_miss() {
         clear_safepoints();
-        assert!(map_for_return_address(0xdead_beefusize).is_none());
+        assert!(map_for_return_address(0xdead_beef_usize).is_none());
     }
 
     #[test]
@@ -452,6 +455,11 @@ mod tests {
             }
             let frames = fp_chain_walk(base);
             assert_eq!(frames.len(), n, "chain of {n} links walks fully");
+            // The stats counter observed every walked frame (probe seam).
+            assert!(
+                walked_frame_count() >= n as u64,
+                "walk counter must track walked frames"
+            );
             // Depth guard is structural: FP_CHAIN_MAX_DEPTH bounds any
             // walk; assert the constant is the documented value.
             assert_eq!(FP_CHAIN_MAX_DEPTH, 16_384);
@@ -478,7 +486,7 @@ mod tests {
         let base2 = buf2.as_mut_ptr() as usize;
         unsafe {
             *(base2 as *mut usize) = 0;
-            *((base2 + 8) as *mut usize) = 0x0000_c0ff_ee0usize & 0xffff_ffff;
+            *((base2 + 8) as *mut usize) = 0x0000_0c0f_fee0_usize & 0xffff_ffff;
             let mapped2 = mapped_frames_from(base2);
             assert!(mapped2.is_empty(), "unmapped frame contributes nothing");
             assert!(unmapped_frame_count() >= 1);
