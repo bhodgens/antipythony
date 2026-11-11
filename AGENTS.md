@@ -104,9 +104,31 @@ GIL, uv-backed deps at build time. Byte-exact differential conformance vs CPytho
   (invalid block ref block3), transparent tier-0 fallback, byte-identical
   (caps tier-1 coverage for that shape); adaptive-mode traceback linenos
   imprecise (JIT frames attributed to def line).
-  PLAN 02 REMAINING: 02.06 AoT (prereqs 02.05a+02.05g DONE - dispatchable)
-  + 02.08 method surfaces + 02.09 no-GIL swap (T121 >=3x GREEN gate)
-  + 02.10 Go-scheduler (stretch).
+- 02.06 AoT BINARY COMPLETE 2026-11-11 (merged to main; macOS aarch64
+  PRIMARY VERIFIED): `antipythony build app.py -o app` -> native Mach-O
+  (17.7MB, links only libSystem). Commits 7c34de0e..87e2cd0f (branch was
+  history-sanitized: a `git add -A` had swept 29,200 target-0206/ build
+  artifacts into 4 commits - filter-branch stripped them; /target-* now
+  gitignored). Architecture: aot.rs cranelift-object emit (shared cfg→CLIF
+  lowering, static feedback snapshots), ap-aot-crt staticlib crate IS the
+  entry (rss-guard, manifest registration, catch_unwind, 256MB-stack
+  interpreter thread, exit-code map - replaces spec's aot_entry.rs shape,
+  documented), link.rs static assembly, ap-conform --impl-binary mode.
+  Gates verified on trunk by orchestrator: hello + classes/inheritance +
+  module-For probes byte-identical vs CPython 3.14 (module-For = tree-walk
+  fallback per 02.05 discipline, loud [AOT-BUILD] notice); T-09 30-case
+  slice through the BINARY 30/30; startup 0.69x of JIT run (soft gate);
+  GC-heavy 20M-alloc probe green; catch_unwind rc 134 no raw backtrace;
+  notices --check OK (345 deps); workspace 540/0. MUSL: BLOCKED - no musl
+  toolchain on host (rustup absent, Homebrew rustc 1.94); --target
+  linux-musl implemented + fails loudly naming the missing toolchain;
+  15MB musl size gate unmeasurable here, report-only per T-09 GAP-2
+  (installing toolchain = user decision). FILED follow-ups: stdlib .py
+  not embedded yet (native registry unconditional; embedding = future
+  work); Stmt::For at module level AOT-unsupported (tree-walk fallback);
+  For-loop OSR + generator OSR + no-GIL OSR registry (from 02.05f).
+  PLAN 02 REMAINING: 02.08 method surfaces + 02.09 no-GIL swap (T121 >=3x
+  GREEN gate) + 02.10 Go-scheduler (stretch).
 - ROBUSTNESS-CI CAMPAIGN: plan tree at `plans/robustness-ci/` (master.md +
   7 branches, 24 leaves) implements ALL findings of
   .hermes/audits/robustness-review-2026-10-19.md (CI core, test integrity,
