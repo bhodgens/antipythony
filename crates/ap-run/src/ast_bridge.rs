@@ -25,13 +25,10 @@ fn s(v: &str) -> Value {
     Value::Str(PyString::new(v.to_string()))
 }
 
-thread_local! {
-    /// Source text of the module currently being bridged; needed to
-    /// recover raw interpolation source text (CPython 3.14
-    /// Interpolation.str) for t-strings.
-    static BRIDGE_SOURCE: std::cell::RefCell<String> =
-        const { std::cell::RefCell::new(String::new()) };
-}
+// 02.09a P3: BRIDGE_SOURCE moved to the RuntimeState table
+// (runtime_state.rs::BRIDGE_SOURCE_T). The thread_local let a worker
+// AST-bridging a module clobber main's staged source mid-run (audit row:
+// ast_bridge.rs:32, class (c)).
 
 fn i(v: usize) -> Value {
     Value::Int(Int::from_i64(v as i64))
@@ -80,7 +77,10 @@ fn rng(node: &impl ruff_text_size::Ranged) -> (usize, usize) {
 
 /// Entry point: source text -> generic node dict tree (Module root).
 pub fn native_parse_tree(source: &str) -> Result<Value, String> {
-    BRIDGE_SOURCE.with(|src| *src.borrow_mut() = source.to_string());
+    {
+        use crate::runtime_state as rs;
+        rs::with_active_mut(rs::BRIDGE_SOURCE_T_acc(), |src| *src = source.to_string());
+    }
     let parsed = ap_parse::parse(source).map_err(|e| e.message)?;
     let line_col = |off: usize| parsed.line_col(off);
     let module = parsed.module();
@@ -1181,13 +1181,16 @@ fn tstring_element_node(
                     values.push(dict_of(cf));
                     format!("{}{}", dt.leading(), dt.expression())
                 }
-                None => BRIDGE_SOURCE.with(|src| {
-                    let src = src.borrow();
-                    src.get(istart + 1..estart.min(iend))
-                        .unwrap_or("")
-                        .to_string()
-                        + src.get(estart..eend).unwrap_or("")
-                }),
+                None => {
+                    use crate::runtime_state as rs;
+                    rs::with_active(rs::BRIDGE_SOURCE_T_acc(), |src| {
+                        let src = src.as_str();
+                        src.get(istart + 1..estart.min(iend))
+                            .unwrap_or("")
+                            .to_string()
+                            + src.get(estart..eend).unwrap_or("")
+                    })
+                }
             };
             f.push(("str", s(&raw)));
             // conversion: -1 (none) or the ord of the conversion char.

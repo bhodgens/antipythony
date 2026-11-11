@@ -24,8 +24,8 @@ use ap_obj::value::{PyList, PyString, Tuple, Value};
 
 use crate::exc_hier::ExceptionValue;
 use crate::frame::{Frame, Interpreter};
-use crate::interp::{call_value, eval_expr, exec_block, store_name, FnRegistry};
-use crate::{builtins, Flow};
+use crate::interp::{FnRegistry, call_value, eval_expr, exec_block, store_name};
+use crate::{Flow, builtins};
 
 type EResult = Result<Value, Flow>;
 
@@ -139,7 +139,7 @@ pub fn dynamic_type(
                 return Err(raise(
                     "TypeError",
                     format!("bases must be types, not '{}'", b.type_name()),
-                ))
+                ));
             }
         }
     }
@@ -214,7 +214,7 @@ pub fn dynamic_type(
                         resolved.name,
                         other.type_name()
                     ),
-                ))
+                ));
             }
         }
     } else {
@@ -448,10 +448,12 @@ pub fn install_exception_classes(interp: &Arc<Interpreter>) {
     let mut table = interp.exc_classes.borrow_mut();
     for (name, parent) in EXC_TREE {
         let mut bases: Vec<Arc<TypeRef>> = match parent {
-            Some(p) => vec![table
-                .get(*p)
-                .and_then(|v| type_of(interp, v))
-                .expect("parent created first")],
+            Some(p) => vec![
+                table
+                    .get(*p)
+                    .and_then(|v| type_of(interp, v))
+                    .expect("parent created first"),
+            ],
             None => vec![object_class(interp)],
         };
         // CPython: class ExceptionGroup(BaseExceptionGroup, Exception).
@@ -592,17 +594,14 @@ pub fn subclasses_of(interp: &Interpreter, name: &str) -> Vec<Value> {
 // Class creation from a class statement (S-03-01..04, S-03-27..29)
 // =============================================================// Execute a class statement: bases, body in a fresh n// creation, hooks, name binding in the enclosing scope.enclosing scope.enclosing scope.
 
-thread_local! {
-    /// Wave-104: the class namespace of the class body CURRENTLY executing
-    /// (set by exec_class_def, cleared after). 1-arg exec() routes here so
-    /// exec'd statements see class-body names (CPython exec-in-class rule).
-    static CURRENT_CLASS_NS: std::cell::RefCell<Option<Gc<PyDict>>> =
-        const { std::cell::RefCell::new(None) };
-}
+// 02.09a P3: CURRENT_CLASS_NS moved to the RuntimeState table
+// (runtime_state.rs::CURRENT_CLASS_NS_T). The thread_local aliased when two
+// interpreters ran on one thread (audit row: classes.rs:603, class (c)).
 
 /// Public accessor for builtin_exec (builtins.rs).
 pub fn current_class_ns() -> Option<Gc<PyDict>> {
-    CURRENT_CLASS_NS.with(|c| c.borrow().clone())
+    use crate::runtime_state as rs;
+    rs::with_active(rs::CURRENT_CLASS_NS_T_acc(), |c| c.clone())
 }
 
 pub fn exec_class_def(
@@ -887,9 +886,16 @@ pub fn exec_class_def(
     }
     // Wave-104: publish the class ns for 1-arg exec() inside the class body
     // (twisted insults.py `exec(ch + " = _makeSimple(ch, fName)")`).
-    CURRENT_CLASS_NS.with(|c| *c.borrow_mut() = Some(ns.clone()));
+    // 02.09a P3: storage in the RuntimeState table (see current_class_ns).
+    {
+        use crate::runtime_state as rs;
+        rs::with_active_mut(rs::CURRENT_CLASS_NS_T_acc(), |c| *c = Some(ns.clone()));
+    }
     let body_res = exec_block(interp, &class_frame, &c.body, reg);
-    CURRENT_CLASS_NS.with(|c| *c.borrow_mut() = None);
+    {
+        use crate::runtime_state as rs;
+        rs::with_active_mut(rs::CURRENT_CLASS_NS_T_acc(), |c| *c = None);
+    }
     body_res?;
 
     // W110-5 fix (CPython private-name mangling): class-body names of the
@@ -939,7 +945,7 @@ pub fn exec_class_def(
                 return Err(raise(
                     "TypeError",
                     format!("bases must be types, not '{}'", b.type_name()),
-                ))
+                ));
             }
         }
     }
@@ -1008,7 +1014,7 @@ pub fn exec_class_def(
                                         "__slots__ items must be strings, not '{}'",
                                         other.type_name()
                                     ),
-                                ))
+                                ));
                             }
                         }
                     }
@@ -1022,7 +1028,7 @@ pub fn exec_class_def(
                             "__slots__ must be a non-empty iterable, not '{}'",
                             other.type_name()
                         ),
-                    ))
+                    ));
                 }
             };
             for s in &names {
@@ -1074,7 +1080,10 @@ pub fn exec_class_def(
                 None
             }
         });
-    CLASS_KWARGS.with(|c| *c.borrow_mut() = class_kwargs.clone());
+    {
+        use crate::runtime_state as rs;
+        rs::with_active_mut(rs::CLASS_KWARGS_T_acc(), |c| *c = class_kwargs.clone());
+    }
     let t = if let Some(f) = meta_new_f {
         // 02.03b: when __prepare__ returned a dict-subclass instance
         // (EnumDict), the metaclass __new__ receives THE INSTANCE — its
@@ -1115,7 +1124,10 @@ pub fn exec_class_def(
         // them before super().__new__ — __init_subclass__ sees the EMPTY
         // remainder). type.__new__-level rejections (mk.py's Meta
         // forwarding **kw) surface through builtin_type_new's kwargs arm.
-        CLASS_KWARGS.with(|c| c.borrow_mut().clear());
+        {
+            use crate::runtime_state as rs;
+            rs::with_active_mut(rs::CLASS_KWARGS_T_acc(), |c| c.clear());
+        }
         match created {
             Value::Obj(ref o) if o.kind == ap_obj::ObjKind::UserClass => {
                 let t = o
@@ -1136,7 +1148,7 @@ pub fn exec_class_def(
                             .unwrap_or_default(),
                         other.type_name()
                     ),
-                ))
+                ));
             }
         }
     } else {
@@ -1353,7 +1365,10 @@ pub fn exec_class_def(
             })
     });
     if let Some(parent) = base_types.first() {
-        let kwargs: Vec<(String, Value)> = CLASS_KWARGS.with(|c| c.borrow().clone());
+        let kwargs: Vec<(String, Value)> = {
+            use crate::runtime_state as rs;
+            rs::with_active(rs::CLASS_KWARGS_T_acc(), |c| c.clone())
+        };
         let has_user_hook = hook_owner.is_some();
         if !kwargs.is_empty() && !has_user_hook {
             // CPython (probed 3.14): object.__init_subclass__ rejects
@@ -1385,7 +1400,10 @@ pub fn exec_class_def(
             // A.__init_subclass__ (typing's Protocol machinery needs it).
             // The DEFAULT hook (object.__init_subclass__) rejects kwargs
             // with the pinned text (S-03-29); user overrides consume them.
-            let kwargs = CLASS_KWARGS.with(|c| c.borrow().clone());
+            let kwargs = {
+                use crate::runtime_state as rs;
+                rs::with_active(rs::CLASS_KWARGS_T_acc(), |c| c.clone())
+            };
             // T1 (scrapy fix pass): stage the classmethod super context so
             // zero-arg super() inside the hook resolves (typing:
             // super().__init_subclass__() in Protocol.__init_subclass__).
@@ -1417,8 +1435,14 @@ pub fn exec_class_def(
     // __init__ always observed EMPTY kwargs (CPython passes the full
     // class-statement kwargs here; repro meta_kwargs6: CPython
     // [('Thing', {'flag': 7})], ours [('Thing', {})]).
-    let meta_init_kwargs: Vec<(String, Value)> = CLASS_KWARGS.with(|c| c.borrow().clone());
-    CLASS_KWARGS.with(|c| c.borrow_mut().clear());
+    let meta_init_kwargs: Vec<(String, Value)> = {
+        use crate::runtime_state as rs;
+        rs::with_active(rs::CLASS_KWARGS_T_acc(), |c| c.clone())
+    };
+    {
+        use crate::runtime_state as rs;
+        rs::with_active_mut(rs::CLASS_KWARGS_T_acc(), |c| c.clear());
+    }
     {
         let meta = t.metaclass.borrow().clone();
         if let Some(mt) = meta {
@@ -1499,13 +1523,16 @@ pub fn exec_class_def(
 #[allow(dead_code)] // kept: part of an unfinished surface (robustness-ci 02.x burn-down leaf)
 fn class_kwargs_present(interp: &Interpreter) -> bool {
     let _ = interp;
-    CLASS_KWARGS.with(|c| !c.borrow().is_empty())
+    {
+        use crate::runtime_state as rs;
+        rs::with_active(rs::CLASS_KWARGS_T_acc(), |c| !c.is_empty())
+    }
 }
 
-thread_local! {
-    static CLASS_KWARGS: std::cell::RefCell<Vec<(String, Value)>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-}
+// 02.09a P3: CLASS_KWARGS moved to the RuntimeState table
+// (runtime_state.rs::CLASS_KWARGS_T). The thread_local staged class-body
+// kwargs around class construction — aliased when two interpreters ran on
+// one thread (audit row: classes.rs:1494, class (c)).
 
 fn qualname_for(frame: &Frame, name: &str) -> String {
     // Top-level: the bare name; nested: dotted (Outer.Inner per S-03-04).
@@ -1528,7 +1555,7 @@ fn string_items(l: &Gc<PyList>) -> Result<Vec<String>, Flow> {
                         "__slots__ items must be strings, not '{}'",
                         other.type_name()
                     ),
-                ))
+                ));
             }
         }
     }
@@ -3542,7 +3569,11 @@ pub fn attr_set_protocol(
     if let Value::Obj(o) = obj {
         if o.kind == ap_obj::ObjKind::Namespace && o.name == "cell" && name == "cell_contents" {
             let key = std::sync::Arc::as_ptr(o) as usize;
-            let live = crate::interp::CELL_BACKING.with(|reg| reg.borrow().get(&key).cloned());
+            // 02.09a P3: storage in the RuntimeState table.
+            let live = {
+                use crate::runtime_state as rs;
+                rs::with_active(rs::CELL_BACKING_T_acc(), |reg| reg.get(&key).cloned())
+            };
             if let Some(cell) = live {
                 if matches!(v, Value::None) {
                     *cell.borrow_mut() = None;
@@ -4017,11 +4048,7 @@ pub fn instantiate(
                         .position(|m| m.name == "list" || m.name == "tuple");
                     matches!(owner_idx.zip(cont_idx), Some((oi, ci)) if ci < oi)
                 };
-            if shadowed {
-                None
-            } else {
-                Some((nv, owner))
-            }
+            if shadowed { None } else { Some((nv, owner)) }
         }
         None => None,
     };

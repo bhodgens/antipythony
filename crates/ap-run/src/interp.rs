@@ -15,41 +15,22 @@ use ap_obj::dict::PyDict;
 use ap_obj::int::{Gc, Int};
 use ap_obj::value::{PyList, PyString, Tuple, Value};
 
-use crate::exc_hier::{is_subclass, ExceptionValue};
+use crate::exc_hier::{ExceptionValue, is_subclass};
 
-thread_local! {
-    /// T1-d: live cell storage for __closure__ cell namespace objects
-    /// (ptr -> CellSlot). cell_contents writes update the live cell.
-    /// G5 (oom-bughunt-2026-11-06): wrapper-cache keyed (closure_slot,
-    /// cell name) — the doc's "cache the cell-wrapper object on the
-    /// function object itself (stable per function)" arm. __closure__
-    /// re-uses the wrapper instead of minting a fresh PyObject + registry
-    /// entry per access (inspect-heavy loops grew the table linearly).
-    /// Values are GC-registered PyObjects; sweep on insert drops entries
-    /// whose wrapper died (weakref_alive = registry membership).
-    pub static CELL_WRAPPER_CACHE:
-        std::cell::RefCell<std::collections::HashMap<(u64, String), Gc<ap_obj::PyObject>>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
-    /// E8 (memperf audit 2026-11-06): live cell storage backing a __closure__
-    /// wrapper object (wrapper ptr -> CellSlot). Value type kept bare —
-    /// classes.rs's cell_contents write reads it directly. Eviction + the
-    /// stale-hit guard live in CELL_BACKING_PINS (parallel, same keys):
-    /// pins retain a Weak per backing entry; the sweep on every __closure__
-    /// probe drops both maps' dead entries, and a pinned address cannot be
-    /// recycled by a re-minted wrapper while its entry lives, so a stale
-    /// hit is structurally impossible.
-    pub static CELL_BACKING: std::cell::RefCell<std::collections::HashMap<usize, crate::frame::CellSlot>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
-    /// E8: address pins for CELL_BACKING (same key set).
-    pub static CELL_BACKING_PINS: std::cell::RefCell<std::collections::HashMap<usize, std::sync::Weak<ap_obj::PyObject>>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
-}
+// 02.09a P3 (the two allowed interp.rs declaration moves — SPLIT-02.09.md
+// file-ownership note): CELL_BACKING / CELL_BACKING_PINS /
+// MODULE_FRAME_CELLS now live in runtime_state.rs as per-interp rows
+// (CELL_BACKING_T / CELL_BACKING_PINS_T / MODULE_FRAME_CELLS_T). The
+// thread_locals were (c)+(d)+(address-keyed): ptr keys recycle across
+// threads/runs — the exact aliasing class documented at the old
+// FnRegistry scope_cache comment. Accessors below route through
+// with_active/with_active_mut on the ACTIVE interp key.
 use crate::frame::{CellSlot, FnEntry, Frame, Interpreter, Loc, NESTED_DEDUPE};
 use crate::iter::{IterState, PyIterator};
-use crate::{builtins, builtins_modules, importer, methods, RunOutcome};
+use crate::{RunOutcome, builtins, builtins_modules, importer, methods};
+use ap_ir::Module;
 use ap_ir::expr::{Arg, BinOp, BoolOp, CmpOp, Conversion, Expr, FStrPart, UnaryOp};
 use ap_ir::item::{FnDef, Param, ParamKind, Pattern, Stmt, Target};
-use ap_ir::Module;
 use ap_parse::ScopeInfoModule;
 
 type EResult = Result<Value, Flow>;
@@ -162,11 +143,7 @@ pub fn run_module(
             .parent()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|| ".".to_string());
-        if d.is_empty() {
-            ".".to_string()
-        } else {
-            d
-        }
+        if d.is_empty() { ".".to_string() } else { d }
     };
     importer::bootstrap_sys_path(&script_dir, &[]);
 
@@ -1092,7 +1069,7 @@ fn exec_stmt(
                                 "can only concatenate list (not \"{}\") to list",
                                 rhs.type_name()
                             ),
-                        ))
+                        ));
                     }
                 }
             } else {
@@ -1427,7 +1404,7 @@ fn exec_stmt(
                     match &*inflight {
                         Some(prev) => (**prev).clone(),
                         None => {
-                            return Err(raise("RuntimeError", "No active exception to re-raise"))
+                            return Err(raise("RuntimeError", "No active exception to re-raise"));
                         }
                     }
                 }
@@ -1657,7 +1634,7 @@ fn exec_stmt(
                             return Err(raise(
                                 "ImportError",
                                 format!("cannot import name '{src_name}' from 'sys'"),
-                            ))
+                            ));
                         }
                     }
                 }
@@ -2212,10 +2189,12 @@ fn exc_matches(tv: &Value, exc: &ExceptionValue) -> Result<bool, Flow> {
                     Value::Obj(po)
                         if po.kind == ap_obj::ObjKind::UserClass
                             || po.kind == ap_obj::ObjKind::Type => {}
-                    _ => return Err(raise(
-                        "TypeError",
-                        "catching classes that do not inherit from BaseException is not allowed",
-                    )),
+                    _ => {
+                        return Err(raise(
+                            "TypeError",
+                            "catching classes that do not inherit from BaseException is not allowed",
+                        ));
+                    }
                 }
                 if exc_matches(p, exc)? {
                     return Ok(true);
@@ -2347,7 +2326,7 @@ thread_local! {
 /// Byte-exactness: with no APX flag set, LAST_PY_LOC was never read, so
 /// skipping the write is unobservable.
 pub fn note_py_loc(interp: &Arc<Interpreter>) {
-    use ap_obj::debug_flags::{debug_flag, ApxFlag};
+    use ap_obj::debug_flags::{ApxFlag, debug_flag};
     let armed = debug_flag(ApxFlag::IdxDebug)
         || debug_flag(ApxFlag::TbDbg)
         || debug_flag(ApxFlag::GenDebug);
@@ -2928,7 +2907,7 @@ fn unpack_into(
                     return Err(raise(
                         "TypeError",
                         format!("cannot unpack non-iterable {} object", other.type_name()),
-                    ))
+                    ));
                 }
             }
         }
@@ -3357,7 +3336,7 @@ pub(crate) fn eval_expr(
                                             return Err(raise(
                                                 "TypeError",
                                                 "keywords must be strings",
-                                            ))
+                                            ));
                                         }
                                     };
                                     if kwargs.iter().any(|(k2, _)| *k2 == key) {
@@ -3378,7 +3357,7 @@ pub(crate) fn eval_expr(
                                         "argument after ** must be a mapping, not {}",
                                         v.type_name()
                                     ),
-                                ))
+                                ));
                             }
                         }
                     }
@@ -3617,7 +3596,7 @@ pub(crate) fn eval_expr(
                             return Err(raise(
                                 "TypeError",
                                 format!("'{}' object is not a mapping", v.type_name()),
-                            ))
+                            ));
                         }
                     }
                 } else {
@@ -4668,12 +4647,12 @@ pub(crate) fn eval_binop(a: &Value, op: BinOp, b: &Value) -> EResult {
             BinOp::BitAnd => ("__and__", "__rand__", "&", "__iand__"),
         };
         let _ = iop_name; // augmented ops route through exec_stmt's AugAssign
-                          // Union types: X | Y on class values (S-03-31 isinstance union form).
-                          // T1 (w3lib/typing conformance): CPython's type.__or__ (PEP 604) makes
-                          // `|` valid across ALL class-like operands — builtin Types, user
-                          // classes, existing unions (flatten), and typing._GenericAlias
-                          // placeholders (`Any | Sequence[bytes]`). Previously only the
-                          // UserClass|UserClass pair unioned; everything else TypeErrored.
+        // Union types: X | Y on class values (S-03-31 isinstance union form).
+        // T1 (w3lib/typing conformance): CPython's type.__or__ (PEP 604) makes
+        // `|` valid across ALL class-like operands — builtin Types, user
+        // classes, existing unions (flatten), and typing._GenericAlias
+        // placeholders (`Any | Sequence[bytes]`). Previously only the
+        // UserClass|UserClass pair unioned; everything else TypeErrored.
         if op == BinOp::BitOr {
             let is_classlike = |v: &Value| match v {
                 Value::Obj(o)
@@ -4794,7 +4773,7 @@ pub(crate) fn eval_binop(a: &Value, op: BinOp, b: &Value) -> EResult {
                     a.type_name(),
                     b.type_name()
                 ),
-            ))
+            ));
         }
         BinOp::Div => OB::TrueDiv,
         BinOp::FloorDiv => OB::FloorDiv,
@@ -7643,11 +7622,11 @@ fn call_function(
         let fn_name = entry.def.name.clone();
         let gen_id = interp.next_gen_id.get();
         interp.next_gen_id.set(gen_id + 2); // odd ids only (iter ids are even)
-                                            // W112-T1: the bound-method pending ctx (staged by BoundMethod
-                                            // dispatch just above this call) must ride the coroutine/agen fiber
-                                            // — zero-arg super() inside `async def ... yield` methods (scrapy
-                                            // DepthMiddleware.process_spider_output_async) resolves against the
-                                            // fiber's resume-time stack, NOT the driver's.
+        // W112-T1: the bound-method pending ctx (staged by BoundMethod
+        // dispatch just above this call) must ride the coroutine/agen fiber
+        // — zero-arg super() inside `async def ... yield` methods (scrapy
+        // DepthMiddleware.process_spider_output_async) resolves against the
+        // fiber's resume-time stack, NOT the driver's.
         let super_ctx = interp
             .pending_super_ctx
             .try_borrow_mut()
@@ -8164,9 +8143,14 @@ fn bind_params(
                 if !wired && defining.is_module {
                     // T1-d: module frames pre-create cells in
                     // MODULE_FRAME_CELLS (keyed by monotone frame id).
+                    // 02.09a P3: storage in the RuntimeState table.
                     let key = defining.frame_id;
-                    let cell = MODULE_FRAME_CELLS
-                        .with(|reg| reg.borrow().get(&(key, name.clone())).cloned());
+                    let cell = {
+                        use crate::runtime_state as rs;
+                        rs::with_active(rs::MODULE_FRAME_CELLS_T_acc(), |reg| {
+                            reg.get(&(key, name.clone())).cloned()
+                        })
+                    };
                     if let Some(cell) = cell {
                         free_cells.insert(name.clone(), cell);
                     }
@@ -8362,10 +8346,10 @@ fn start_generator(
 ) -> EResult {
     let gen_id = interp.next_gen_id.get();
     interp.next_gen_id.set(gen_id + 2); // odd ids only (iter ids are even)
-                                        // W112-T1: bound-method calls stage pending_super_ctx right before
-                                        // call_value; a GENERATOR function returns here without the sentinel
-                                        // path ever consuming it. Take it for the fiber (zero-arg super()
-                                        // inside a sync generator method, e.g. DepthMiddleware).
+    // W112-T1: bound-method calls stage pending_super_ctx right before
+    // call_value; a GENERATOR function returns here without the sentinel
+    // path ever consuming it. Take it for the fiber (zero-arg super()
+    // inside a sync generator method, e.g. DepthMiddleware).
     let super_ctx = interp
         .pending_super_ctx
         .try_borrow_mut()
@@ -9455,12 +9439,12 @@ fn register_iter(interp: &Arc<Interpreter>, v: &Value) -> Result<u64, Flow> {
     let it = iterable_of(v)?;
     let id = interp.next_iter_id.get();
     interp.next_iter_id.set(id + 2); // even ids only (gen ids are odd)
-                                     // 02.07 race fix (wave-4 audit): a worker parked inside pull_iter's
-                                     // it.next() holds a READ borrow of interp.iterators across the park
-                                     // (GIL released while parked). The main thread reaching register_iter
-                                     // then panics 'RefCell already borrowed' on the unconditional
-                                     // borrow_mut (T102-lock-shared-list aborts rc=134 ~1-in-8 runs).
-                                     // Mirror pull_iter's contended-borrow retry discipline.
+    // 02.07 race fix (wave-4 audit): a worker parked inside pull_iter's
+    // it.next() holds a READ borrow of interp.iterators across the park
+    // (GIL released while parked). The main thread reaching register_iter
+    // then panics 'RefCell already borrowed' on the unconditional
+    // borrow_mut (T102-lock-shared-list aborts rc=134 ~1-in-8 runs).
+    // Mirror pull_iter's contended-borrow retry discipline.
     loop {
         match interp.iterators.try_borrow_mut() {
             Ok(mut its) => {
@@ -12203,7 +12187,7 @@ fn attr_get(_interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Optio
         if o.kind == ap_obj::ObjKind::BoundMethod {
             match name {
                 "__self__" => {
-                    return Ok(Some(o.self_value.borrow().clone().unwrap_or(Value::None)))
+                    return Ok(Some(o.self_value.borrow().clone().unwrap_or(Value::None)));
                 }
                 // T1-d fix: BoundMethods built from the method-surface
                 // (str.join / list.append) carry NO func slot — synthesize a
@@ -12385,7 +12369,7 @@ fn attr_get(_interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Optio
                     return Ok(Some(Value::Obj(ap_obj::PyObject::new(
                         ap_obj::ObjKind::BuiltinFn,
                         "__ap_abc_register__",
-                    ))))
+                    ))));
                 }
                 // T1-d (attrs _create_slots_class closure rewrite):
                 // __closure__ carries REAL cells (defining-frame my_cells)
@@ -12409,15 +12393,17 @@ fn attr_get(_interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Optio
                                     // sweep dead wrappers on the way.
                                     let slot_id = o.closure_slot.borrow().unwrap_or(0);
                                     let cache_key = (slot_id, cname.clone());
-                                    let cached = CELL_WRAPPER_CACHE.with(|reg| {
-                                        let mut m = reg.borrow_mut();
-                                        m.retain(|_, w| {
-                                            ap_gc::weakref_alive(std::sync::Arc::as_ptr(w)
-                                                as *const u8
-                                                as usize)
-                                        });
-                                        m.get(&cache_key).cloned()
-                                    });
+                                    let cached = {
+                                        use crate::runtime_state as rs;
+                                        rs::with_active_mut(rs::CELL_WRAPPER_CACHE_T_acc(), |m| {
+                                            m.retain(|_, w| {
+                                                ap_gc::weakref_alive(std::sync::Arc::as_ptr(w)
+                                                    as *const u8
+                                                    as usize)
+                                            });
+                                            m.get(&cache_key).cloned()
+                                        })
+                                    };
                                     if let Some(c) = cached {
                                         cells.push(Value::Obj(c));
                                         continue;
@@ -12443,21 +12429,30 @@ fn attr_get(_interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Optio
                                     // lives, its wrapper's allocation is
                                     // pinned, so no re-minted object can
                                     // reuse the key.
-                                    CELL_BACKING_PINS.with(|reg| {
-                                        let mut m = reg.borrow_mut();
-                                        m.retain(|_, w| w.upgrade().is_some());
-                                        m.insert(ckey, std::sync::Arc::downgrade(&c));
-                                    });
-                                    CELL_BACKING.with(|reg| {
-                                        let mut m = reg.borrow_mut();
-                                        m.retain(|k, _| {
-                                            CELL_BACKING_PINS.with(|p| p.borrow().contains_key(k))
+                                    // 02.09a P3: storage in the RuntimeState
+                                    // tables (CELL_BACKING_PINS_T keeps its
+                                    // own pin set per interp).
+                                    {
+                                        use crate::runtime_state as rs;
+                                        rs::with_active_mut(rs::CELL_BACKING_PINS_T_acc(), |m| {
+                                            m.retain(|_, w| w.upgrade().is_some());
+                                            m.insert(ckey, std::sync::Arc::downgrade(&c));
                                         });
-                                        m.insert(ckey, cell.clone());
-                                    });
-                                    CELL_WRAPPER_CACHE.with(|reg| {
-                                        reg.borrow_mut().insert(cache_key, c.clone());
-                                    });
+                                        let pinned: Vec<usize> =
+                                            rs::with_active(rs::CELL_BACKING_PINS_T_acc(), |p| {
+                                                p.keys().copied().collect()
+                                            });
+                                        rs::with_active_mut(rs::CELL_BACKING_T_acc(), |m| {
+                                            m.retain(|k, _| pinned.contains(k));
+                                            m.insert(ckey, cell.clone());
+                                        });
+                                    }
+                                    {
+                                        use crate::runtime_state as rs;
+                                        rs::with_active_mut(rs::CELL_WRAPPER_CACHE_T_acc(), |m| {
+                                            m.insert(cache_key, c.clone());
+                                        });
+                                    }
                                     cells.push(Value::Obj(c));
                                 }
                             }
@@ -12964,7 +12959,10 @@ fn attr_get(_interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Optio
                 // pinned via CELL_BACKING_PINS, so a recycled address can
                 // never alias a stale slot.
                 let key = std::sync::Arc::as_ptr(o) as usize;
-                let live = CELL_BACKING.with(|reg| reg.borrow().get(&key).cloned());
+                let live = {
+                    use crate::runtime_state as rs;
+                    rs::with_active(rs::CELL_BACKING_T_acc(), |reg| reg.get(&key).cloned())
+                };
                 if let Some(cell) = live {
                     return Ok(Some(cell.borrow().clone().unwrap_or(Value::None)));
                 }
@@ -13222,7 +13220,7 @@ fn attr_get(_interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Optio
                         // Introspection surface (inspect/asyncio read these).
                         match name {
                             "cr_running" | "cr_suspended" | "ag_running" => {
-                                return Ok(Some(Value::Bool(false)))
+                                return Ok(Some(Value::Bool(false)));
                             }
                             "cr_frame" | "cr_code" | "ag_frame" | "ag_code" => {
                                 let code =
@@ -14545,49 +14543,32 @@ fn complex_parts(v: &Value) -> Option<(f64, f64)> {
     None
 }
 
-thread_local! {
-    /// T1-d: cells pre-created for MODULE frames (which never run
-    /// call_function's cell setup). Keyed by (frame ID, cell name).
-    /// M2-adj (memperf audit 2026-11-06): the old key was the frame's Rc
-    /// ADDRESS — recycled once a module frame dropped, so a fresh module
-    /// frame could inherit a dead frame's cells (wrong-module closure
-    /// wiring). frame_id is monotone per thread and never reused, so keys
-    /// are exact for the table's life. Eviction: retire_module_frame_cells
-    /// (wired at the importer's failed-body path; live module frames are
-    /// pinned by defining_frames by design, so their entries are
-    /// process-lifetime like the registry they back).
-    pub static MODULE_FRAME_CELLS: std::cell::RefCell<
-        std::collections::HashMap<(u64, String), crate::frame::CellSlot>,
-    > = std::cell::RefCell::new(std::collections::HashMap::new());
-}
+// 02.09a P3: MODULE_FRAME_CELLS storage lives in runtime_state.rs
+// (MODULE_FRAME_CELLS_T). T1-d: cells pre-created for MODULE frames (which
+// never run call_function's cell setup), keyed by (frame ID, cell name).
+// M2-adj (memperf audit 2026-11-06): frame IDs are monotone and never
+// reused, so keys are exact for the table's life. Eviction:
+// retire_module_frame_cells (wired at the importer's failed-body path).
 
 /// M2-adj: drop every MODULE_FRAME_CELLS entry for a retired module frame.
 /// Keys are collected first and slots dropped OUTSIDE the map borrow —
 /// a CellSlot drop can cascade into interpreter code that re-touches this
-/// TLS table (RefCell double-borrow guard).
+/// table (the tree-wide borrow-free-window discipline).
 pub fn retire_module_frame_cells(frame_id: u64) {
-    // TLS-teardown safety: Frame::drop can run during thread exit, after
-    // thread_locals have been destroyed — try_with no-ops instead of
-    // panicking (the table itself dies with the thread then anyway).
-    let Ok(doomed): Result<Vec<(u64, String)>, _> = MODULE_FRAME_CELLS.try_with(|reg| {
-        reg.borrow()
-            .iter()
-            .filter(|((id, _), _)| *id == frame_id)
-            .map(|(k, _)| k.clone())
+    use crate::runtime_state as rs;
+    let doomed: Vec<(u64, String)> = rs::with_active(rs::MODULE_FRAME_CELLS_T_acc(), |reg| {
+        reg.keys()
+            .filter(|(id, _)| *id == frame_id)
+            .cloned()
             .collect()
-    }) else {
-        return;
-    };
+    });
     if doomed.is_empty() {
         return;
     }
-    let taken: Vec<crate::frame::CellSlot> = match MODULE_FRAME_CELLS.try_with(|reg| {
-        let mut m = reg.borrow_mut();
-        doomed.iter().filter_map(|k| m.remove(k)).collect()
-    }) {
-        Ok(v) => v,
-        Err(_) => return,
-    };
+    let taken: Vec<crate::frame::CellSlot> =
+        rs::with_active_mut(rs::MODULE_FRAME_CELLS_T_acc(), |m| {
+            doomed.iter().filter_map(|k| m.remove(k)).collect()
+        });
     // Drop the detached slots OUTSIDE the borrow: a cell-value drop can
     // cascade (frames with has_frame_cells only retire from their own
     // Drop / the importer's failed-body arm, but keeping the window
