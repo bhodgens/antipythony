@@ -75,11 +75,14 @@ pub fn manifest_slice() -> &'static [AotFnEntry] {
 static AOT_EXECS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// The one-line AOT report appended to jit_hook's [TIER-STATS] output.
+/// None unless an AOT manifest is registered — a plain `run`/JIT process
+/// must stay stderr-identical to pre-02.06 (osr_gate's mode-pair contract).
 pub fn stats_line() -> Option<String> {
+    let manifest = MANIFEST.get()?;
     let n = AOT_EXECS.load(std::sync::atomic::Ordering::Relaxed);
     Some(format!(
         "[AOT-STATS] registered={} execs={n}",
-        manifest_slice().len()
+        manifest.len()
     ))
 }
 
