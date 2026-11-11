@@ -1,0 +1,7 @@
+{
+  "date": "2026-11-10",
+  "family": "tier1-transparency",
+  "generator": "leaf 02.05d thrash-gate pin (python3.14 -c recording)",
+  "generator_sha256": "n/a (hand-pinned in-leaf)",
+  "sys_version": "3.14.7 (main, Aug  5 2026, 10:29:49) [Clang 21.0.0 (clang-2100.1.1.101)]"
+}

@@ -92,9 +92,9 @@ fn preflight_or_panic() {
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .unwrap()
+        .expect("manifest dir has a parent")
         .parent()
-        .unwrap()
+        .expect("crates dir has a parent")
         .to_path_buf()
 }
 
@@ -218,7 +218,7 @@ fn parse_tier_stats(stderr: &[u8]) -> Option<TierStats> {
 
 /// Pinned reference triple for a probe (real python3.14 recordings from
 /// the T-08 authorship pass); None when the pin set is absent.
-fn expected_triple(probe: &PathBuf) -> Option<(Vec<u8>, Vec<u8>, i32)> {
+fn expected_triple(probe: &std::path::Path) -> Option<(Vec<u8>, Vec<u8>, i32)> {
     let exp = probe.parent()?.join("expected");
     let stem = probe.file_stem()?.to_str()?;
     let so = exp.join(format!("{stem}.stdout"));
@@ -262,7 +262,11 @@ fn test_tier0_vs_adaptive_byte_identity_per_probe() {
         "probe", "rc0", "stdout-hash[0]", "rcA", "stdout-hash[A]", "MATCH"
     );
     for probe in &ps {
-        let name = probe.file_stem().unwrap().to_string_lossy().into_owned();
+        let name = probe
+            .file_stem()
+            .expect("probe entries are files with stems")
+            .to_string_lossy()
+            .into_owned();
         let (out0, err0, rc0, w0) = run_tier("0", probe, &[]);
         let (outa, erra, rca, wa) = run_tier("adaptive", probe, &[]);
         let ok = out0 == outa && err0 == erra && rc0 == rca;
@@ -353,7 +357,11 @@ fn test_jit_path_is_exercised_not_silent_fallback() {
         "probe", "compiles", "fallbacks", "execs"
     );
     for probe in &ps {
-        let name = probe.file_stem().unwrap().to_string_lossy().into_owned();
+        let name = probe
+            .file_stem()
+            .expect("probe entries are files with stems")
+            .to_string_lossy()
+            .into_owned();
         // Only functions whose DEFINITIONS run matter; module-level code
         // never routes through the hook (the dispatch arm is call_function).
         // A probe with zero defs shows 0/0/0 — recorded, not an error.
@@ -403,5 +411,45 @@ fn test_jit_path_is_exercised_not_silent_fallback() {
         total_execs > 0,
         "bodies compiled but NEVER executed — jit_call_body ran zero compiled \
          entries; the dispatch arm is unreachable despite successful lowers."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Gate 3 (02.05d): the deliberate-thrash probe ends DISABLED — the
+// machine-parseable [TIER1-STATS] pin line must appear under
+// APX_TIER1_STATS=1 — with byte-identical results (covered by gate 1,
+// which now includes t1_017 via the glob). This is the SPLIT-02.05
+// §02.05d gate: "deliberate-thrash probe (function flapping between
+// int/str) ends DISABLED with tier-0 results still byte-identical".
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_deliberate_thrash_probe_ends_disabled() {
+    interpreter_gate();
+    let thrash = probe_dir().join("t1_017_thrash_backoff_disable.py");
+    assert!(
+        thrash.is_file(),
+        "the deliberate-thrash probe is missing: {}",
+        thrash.display()
+    );
+    let (_o, err, rc, _w) = run_tier(
+        "adaptive",
+        &thrash,
+        &[("APX_TIER1_STATS", "1"), ("APX_TIER_STATS", "1")],
+    );
+    let text = String::from_utf8_lossy(&err);
+    assert_eq!(rc, 0, "thrash probe exited {rc} (stderr: {text})");
+    let installed = text.contains("[TIER1-STATS] install fn=mix regions=");
+    assert!(
+        installed,
+        "thrash probe never installed tier-1 (no install line) — the probe \
+         shape drifted and no longer exercises the backoff\nstderr: {text}"
+    );
+    let pinned = text.contains("[TIER1-STATS] pin key=");
+    assert!(
+        pinned,
+        "thrash probe did NOT reach the DISABLED pin (no pin line) — the \
+         epoch/backoff machine is not firing on the deliberate-thrash shape\n\
+         stderr: {text}"
     );
 }

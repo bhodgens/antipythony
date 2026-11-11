@@ -387,7 +387,7 @@ fn tier1_fast_pointer_survives_pair_drop() {
     let snaps = mono_int_snapshots(func.num_locals as usize + 64);
     let mut ptrs = Vec::new();
     for _ in 0..4 {
-        let t1 = compile_tier1(&func, &snaps)
+        let t1 = compile_tier1(&func, &snaps, 0)
             .expect("tier-1 compile")
             .expect("typed region");
         ptrs.push(t1.fast_ptr as usize);
@@ -415,7 +415,7 @@ fn tier1_func_owns_fast_blob() {
     let f = fn_def(arith_body());
     let func = ap_codegen_native::lower_fn(&f).expect("lower");
     let snaps = mono_int_snapshots(func.num_locals as usize + 64);
-    let t1 = compile_tier1(&func, &snaps)
+    let t1 = compile_tier1(&func, &snaps, 0)
         .expect("tier-1 compile")
         .expect("region");
     let sz = std::mem::size_of_val(&t1);

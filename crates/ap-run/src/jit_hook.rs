@@ -98,6 +98,11 @@ struct JitEntry {
     /// The lowered cfg, retained for the driver's enqueue path (the
     /// compiler compiles from a clone — deterministic lowering, Risk-5).
     cfg: cfg::Func,
+    /// 02.05d thrash backoff: the function's deopt state word (deopt.rs
+    /// table cell), cached at tier-1 install so the per-call dispatch
+    /// gate is ONE relaxed load. None until a tier-1 exists (a boxed-only
+    /// body has no fast path to gate).
+    deopt_word: std::cell::RefCell<Option<&'static std::sync::atomic::AtomicU64>>,
 }
 
 /// Resolve the tier mode from an explicit flag, falling back to APX_TIER,
@@ -196,6 +201,15 @@ static JIT_FALLBACKS: AtomicU64 = AtomicU64::new(0);
 /// jit_call_body invocations that RAN compiled code (cache hits + first
 /// calls on a fresh compile; the actual exercise count).
 static JIT_EXECS: AtomicU64 = AtomicU64::new(0);
+
+/// 02.05d: read the process-wide exec counter as the deopt backoff's
+/// progress signal. Monotonic and cheap (one relaxed load per tier-up
+/// probe); per-function fairness comes from the per-key epoch word —
+/// this is only the "has enough work happened since" term of
+/// `tier_up_allowed`.
+fn jit_execs_now() -> u64 {
+    JIT_EXECS.load(Ordering::Relaxed)
+}
 
 /// Read the stats knobs once per call site (cheap env lookups; the stats
 /// path is diagnostic-only).
@@ -599,10 +613,29 @@ pub fn jit_call_body(
     // debug mode, which keeps the 02.05c inline shape for differential
     // debugging). Failure disables permanently (pon
     // failed-tier-up-disables, owned by the driver's state machine).
-    if je.tier1_fast.get().is_null() && !je.tier1_failed.get() {
+    //
+    // 02.05d thrash backoff: the probe consults the per-function deopt
+    // state FIRST — a Deferred function waits out `threshold << epoch`
+    // calls (deopt::tier_up_allowed with this body's lifetime exec
+    // counter as the progress signal) and a Disabled one never tiers up
+    // again.
+    let fn_key = fn_id as u64;
+    if je.tier1_fast.get().is_null()
+        && !je.tier1_failed.get()
+        && ap_codegen_native::deopt::tier_up_allowed(fn_key, jit_execs_now())
+    {
         tier_up_step(fn_id, entry, &je);
     }
     let tier1_fast = je.tier1_fast.get();
+    if std::env::var("APX_CALLDBG").is_ok() {
+        let st = ap_codegen_native::deopt::deopt_stats(fn_key);
+        eprintln!(
+            "[DISPATCH-DBG] fast_null={} failed={} deopt={:?}",
+            tier1_fast.is_null(),
+            je.tier1_failed.get(),
+            st
+        );
+    }
 
     let names = slot_names_for(entry, &je.local_names);
     let mut host_state = Box::new(HostState {
@@ -636,7 +669,27 @@ pub fn jit_call_body(
     // status-2 hand-off falls back to THIS entry's own baseline twin
     // (slot-identical by the deterministic lowering — see tierup.rs).
     // One entry point, byte-identical results either way.
-    let call_r = match (!tier1_fast.is_null()).then_some(tier1_fast) {
+    //
+    // 02.05d thrash backoff dispatch gate: once the pin lands (state ==
+    // Disabled after DEOPT_PIN_EPOCH deferred epochs), the fast path is
+    // bypassed and the boxed twin runs directly — the pon entry-pointer
+    // restore analogue. Semantically free either way (the twin IS the
+    // same lowering tier-0 executes), so the gate is a pure de-cost.
+    // The word pointer is cached at install time (see tier_up_step), so
+    // the gate is ONE relaxed load; an unpinned body skips the map.
+    let fast_for_call = match (
+        (!tier1_fast.is_null()).then_some(tier1_fast),
+        je.deopt_word.borrow().as_ref(),
+    ) {
+        (Some(_), Some(w))
+            if ap_codegen_native::deopt::state_byte_of(w)
+                == ap_codegen_native::deopt::TierState::Disabled =>
+        {
+            None // pinned: run the boxed baseline (== tier-0 code)
+        }
+        (other, _) => other,
+    };
+    let call_r = match fast_for_call {
         Some(fast_ptr) => unsafe { tierup::call_fast(fast_ptr, &je.jit, &mut ctx) },
         None => unsafe { je.jit.call(&mut ctx) },
     };
@@ -682,6 +735,11 @@ pub fn jit_call_body(
 ///
 /// Failure anywhere → DISABLED (never retried, pon
 /// failed-tier-up-disables); tier-0 results stay byte-identical.
+///
+/// 02.05d: the install arms ALSO cache the function's deopt state word
+/// (`deopt::word_cell(fn_key)`) on the JitEntry so the per-call dispatch
+/// gate in `jit_call_body` is one relaxed load — the pinned-Disabled
+/// bypass reads it; a boxed-only body has no fast path to gate.
 fn tier_up_step(fn_id: usize, entry: &FnEntry, je: &Rc<JitEntry>) {
     let driver = tierup::global();
     // 1. Poll for a finished background compile (async mode only).
@@ -689,6 +747,14 @@ fn tier_up_step(fn_id: usize, entry: &FnEntry, je: &Rc<JitEntry>) {
         if let Some(handle) = driver.poll(fn_id) {
             ap_codegen_native::runtime::note_tier1_install(handle.regions, &entry.def.name);
             je.tier1_fast.set(handle.fast_ptr);
+            // 02.05d: cache the deopt state word so the dispatch loop
+            // gates the fast path on it (pon's entry-pointer restore
+            // analogue: a DISABLED function dispatches to the twin).
+            let fn_key = fn_id as u64;
+            *je.deopt_word.borrow_mut() = Some(ap_codegen_native::deopt::word_cell(fn_key));
+            // The async compile went through compile_tier1 with this
+            // fn_key, which already ran deopt::note_tier1_installed —
+            // Tier1/fresh-epoch in the thrash table, matching the install.
             return;
         }
     }
@@ -701,7 +767,8 @@ fn tier_up_step(fn_id: usize, entry: &FnEntry, je: &Rc<JitEntry>) {
     }
     if driver.sync_mode() {
         // Debug mode: the 02.05c synchronous shape, driver-owned state.
-        match compile_tier1(&je.cfg, &snapshots) {
+        let fn_key = fn_id as u64;
+        match compile_tier1(&je.cfg, &snapshots, fn_key) {
             Ok(Some(t1)) => {
                 ap_codegen_native::runtime::note_tier1_install(t1.regions, &entry.def.name);
                 driver.note_installed(fn_id);
@@ -713,6 +780,10 @@ fn tier_up_step(fn_id: usize, entry: &FnEntry, je: &Rc<JitEntry>) {
                 let t1_fast_ptr = t1.fast_ptr;
                 std::mem::forget(t1);
                 je.tier1_fast.set(t1_fast_ptr);
+                // 02.05d: cache the deopt state word (dispatch gate).
+                *je.deopt_word.borrow_mut() = Some(ap_codegen_native::deopt::word_cell(fn_key));
+                // compile_tier1 already ran note_tier1_installed(fn_key)
+                // (Tier1, counters reset) — the thrash table is in sync.
             }
             Ok(None) => {
                 // No typed region — permanently boxed (not an error).
@@ -790,6 +861,7 @@ fn compile_for(entry: &FnEntry) -> Option<JitEntry> {
         tier1_fast: std::cell::Cell::new(std::ptr::null()),
         tier1_failed: std::cell::Cell::new(false),
         cfg: func,
+        deopt_word: std::cell::RefCell::new(None),
     })
 }
 
