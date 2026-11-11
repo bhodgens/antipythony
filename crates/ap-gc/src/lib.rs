@@ -9,17 +9,43 @@
 //! STAGE 2 (future): the MMTk binding + heap policies behind trait Heap
 //! land here, replacing the registry with MMTk root reporting.
 
+mod census;
 mod gcmod;
 mod rootscan;
 mod weakbridge;
 
+pub use census::{
+    active_capture_points, live_mutators, my_capture_slot, register, set_thread_id, unregister,
+};
+
+/// 02.09b: the worker-registration drain seam. ap-run installs a drain fn
+/// at bridge-install time (draining its per-worker forward channels into
+/// the process registry); every collect calls this FIRST so a worker's
+/// allocations are visible to the pass scope. Without an installer (pure
+/// ap-gc tests) this is a no-op.
+static BRIDGE_DRAIN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Install the drain fn (ap-run::gcsupport, once at run entry).
+pub fn set_bridge_drain(f: fn() -> usize) {
+    BRIDGE_DRAIN.store(f as usize, std::sync::atomic::Ordering::Release);
+}
+
+fn gc_bridge_drain() -> usize {
+    let f = BRIDGE_DRAIN.load(std::sync::atomic::Ordering::Acquire);
+    if f != 0 {
+        let f: fn() -> usize = unsafe { std::mem::transmute(f) };
+        return f();
+    }
+    0
+}
+
 pub use gcmod::{
     add_root_dict, add_root_module_ns, callbacks_set_list, callbacks_snapshot, clear_roots,
     collect, collect_gen, disable, enable, freeze, gc_register, gc_tracked_len, get_count,
-    get_object_by_addr, get_objects, get_threshold, is_enabled, is_tracked, set_threshold, stats,
-    unfreeze, weakref_add, weakref_alive, weakref_count_for, weakref_entry_count, weakref_is_dead,
-    weakref_next_seq, weakref_prune_fired, weakref_take_dead, weakref_tokens_for, GcStats,
-    WeakEntry,
+    get_object_by_addr, get_objects, get_threshold, is_enabled, is_tracked, reset_for_test,
+    set_threshold, stats, unfreeze, weakref_add, weakref_alive, weakref_count_for,
+    weakref_entry_count, weakref_is_dead, weakref_next_seq, weakref_prune_fired, weakref_take_dead,
+    weakref_tokens_for, GcStats, WeakEntry,
 };
 
 /// Leaf 02.05g: the GC roots shim — safepoint-map registry + fp-chain
