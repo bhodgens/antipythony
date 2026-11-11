@@ -8102,7 +8102,7 @@ fn bind_params(
         .or_else(|| reg.scope_of_in(entry.scope_table, &entry.scope_path));
     if let Some(scope) = entry_scope {
         for name in &scope.cells {
-            my_cells.insert(name.clone(), Arc::new(RefCell::new(None)));
+            my_cells.insert(name.clone(), crate::cell_slot::CellSlotHandle::new(None));
         }
         // BUG-B fix: a PARAMETER that this scope's symtable classifies as a
         // cell is captured by a nested def — its initial value must live IN
@@ -9878,7 +9878,7 @@ pub fn seed_class_cell(interp: &Arc<Interpreter>, class_frame: &Arc<Frame>, clas
     // body copied `class_frame.my_cells` BEFORE this runs, so we ALSO walk
     // the nested table and wire the cell directly (methods capture by
     // shared Arc — see bind_params' defining-frame path).
-    let cell: CellSlot = Arc::new(RefCell::new(Some(class_v.clone())));
+    let cell: CellSlot = crate::cell_slot::CellSlotHandle::new(Some(class_v.clone()));
     *class_frame.class_cell.borrow_mut() = Some(cell.clone());
     // Walk functions defined in this body (registered while the body ran)
     // and give their defining-frame entry a `__class__` free-cell.

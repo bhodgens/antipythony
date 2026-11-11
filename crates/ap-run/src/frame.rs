@@ -13,7 +13,10 @@ use ap_obj::int::Gc;
 use ap_obj::value::Value;
 
 /// One shared cell: closure variable storage (S-02-12/13).
-pub type CellSlot = Arc<RefCell<Option<Value>>>;
+/// A cell handle: Arc<RefCell<Option<Value>>> with a staged Send+Sync
+/// marker (02.09a P4/P5 — see ap_obj::markers + int.rs contract: the cell
+/// is touched under the GIL/table-lock protocol; refcount traffic is Arc).
+pub type CellSlot = crate::cell_slot::CellSlotHandle;
 
 /// A6: an Arc-shared declared-names set. Resolved ONCE when a FnEntry is
 /// registered (from the scope classification) and shared by every frame

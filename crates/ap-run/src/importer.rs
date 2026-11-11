@@ -1358,7 +1358,7 @@ fn module_stmts(
                         let mut m = reg2.borrow_mut();
                         for cname in &scope.cells {
                             m.entry((key, cname.clone())).or_insert_with(|| {
-                                std::sync::Arc::new(std::cell::RefCell::new(None))
+                                crate::cell_slot::CellSlotHandle::new(None)
                             });
                         }
                     });
