@@ -21,19 +21,17 @@
 //! sys.path bootstrap: [script_dir, vendored_stdlib] + ANTIPTYHONY_PATH env
 //! entries. `--path` on ap-run-eval appends extra entries.
 
-use std::cell::RefCell;
-use std::collections::HashMap;
 use std::sync::Arc;
 
+use ap_obj::PyObject;
 use ap_obj::dict::PyDict;
 use ap_obj::int::Gc;
 use ap_obj::value::{PyString, Value};
-use ap_obj::PyObject;
 
 use crate::exc_hier::ExceptionValue;
 use crate::frame::{FnEntry, Frame, Interpreter};
-use crate::interp::{exec_block, FnRegistry};
-use crate::{builtins, builtins_modules, Flow};
+use crate::interp::{FnRegistry, exec_block};
+use crate::{Flow, builtins, builtins_modules};
 
 type EResult = Result<Value, Flow>;
 
@@ -75,19 +73,11 @@ fn s(x: impl Into<String>) -> Value {
 // sys.modules / sys.path state (thread-local, per-run like MODULE_CACHE)
 // ---------------------------------------------------------------------------
 
-thread_local! {
-    static SYS_MODULES: RefCell<HashMap<String, Value>> = RefCell::new(HashMap::new());
-    static SYS_PATH: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
-    /// The PyList exposed as `sys.path` (attached by attach_sys_extras via
-    /// sys_path_value). Once set, this list object is the LIVE source of
-    /// truth: user code mutating `sys.path` (`sys.path.insert(0, ...)`,
-    /// `.append(...)`) mutates THIS list, and every importer lookup reads
-    /// through sys_path_entries() so runtime mutations are visible to the
-    /// file finder (previously the finder read the bootstrap Vec snapshot
-    /// and user mutations were invisible).
-    static SYS_PATH_VIEW: RefCell<Option<ap_obj::int::Gc<ap_obj::value::PyList>>> =
-        const { RefCell::new(None) };
-}
+// 02.09a P3: SYS_MODULES / SYS_PATH / SYS_PATH_VIEW / SYS_MODULES_VIEW /
+// BOOTSTRAP_SEEDED moved to the per-interp RuntimeState tables
+// (runtime_state.rs). Accessors below route through the ACTIVE interp key
+// (process-global Mutex<HashMap> tables) — worker threads now see the SAME
+// sys.modules/sys.path as main (the audit's named (c) bug).
 
 /// sys.path bootstrap: [script_dir] + vendored_stdlib + **fetched
 /// site-packages** + ANTIPTYHONY_PATH (04.01/04.02 integration: the uv fetch
@@ -95,6 +85,38 @@ thread_local! {
 /// stdlib module, and BEFORE env/extra entries — env wins for dev overrides).
 /// Idempotent (re-running clears and rebuilds — tests spawn fresh processes).
 pub fn bootstrap_sys_path(script_dir: &str, extra: &[String]) {
+    let path = build_bootstrap_path(script_dir, extra);
+    {
+        use crate::runtime_state as rs;
+        let table = rs::SYS_PATH_T_acc();
+        let mut guard = table.lock().unwrap();
+        let key = rs::active_interp_opt().map(|(k, _)| k).unwrap_or(0);
+        *guard.entry(key).or_default() = path.clone();
+    }
+    // LIVE-list wiring: if a sys.path PyList view already exists (same-process
+    // re-bootstrap), sync the fresh bootstrap content into it so the view
+    // stays the single source of truth. If not, DROP any stale view so the
+    // next sys_path_value() rebuilds from this bootstrap.
+    let existing = {
+        use crate::runtime_state as rs;
+        rs::with_active(rs::SYS_PATH_VIEW_T_acc(), |v| v.clone())
+    };
+    if let Some(l) = existing {
+        let items: Vec<Value> = path.iter().map(|e| s(e.clone())).collect();
+        l.clear();
+        for it in items {
+            l.append(it);
+        }
+    } else {
+        // drop the stale view
+        use crate::runtime_state as rs;
+        rs::with_active_mut(rs::SYS_PATH_VIEW_T_acc(), |v| *v = None);
+    }
+}
+
+/// sys.path bootstrap path builder (extracted; the storage moved to the
+/// RuntimeState table but the ORDERED resolution is unchanged).
+fn build_bootstrap_path(script_dir: &str, extra: &[String]) -> Vec<String> {
     let mut path = vec![script_dir.to_string()];
     if let Some(vd) = vendored_stdlib_dir() {
         path.push(vd);
@@ -114,24 +136,7 @@ pub fn bootstrap_sys_path(script_dir: &str, extra: &[String]) {
         }
     }
     path.extend(extra.iter().cloned());
-    SYS_PATH.with(|p| {
-        *p.borrow_mut() = path;
-    });
-    // LIVE-list wiring: if a sys.path PyList view already exists (same-process
-    // re-bootstrap), sync the fresh bootstrap content into it so the view
-    // stays the single source of truth. If not, DROP any stale view so the
-    // next sys_path_value() rebuilds from this bootstrap.
-    let existing = SYS_PATH_VIEW.with(|v| v.borrow().clone());
-    if let Some(l) = existing {
-        let items: Vec<Value> =
-            SYS_PATH.with(|p| p.borrow().iter().map(|e| s(e.clone())).collect());
-        l.clear();
-        for it in items {
-            l.append(it);
-        }
-    } else {
-        SYS_PATH_VIEW.with(|v| *v.borrow_mut() = None);
-    }
+    path
 }
 
 /// The site-packages dir to join sys.path for a script in `script_dir`
@@ -188,15 +193,22 @@ pub fn vendored_stdlib_dir() -> Option<String> {
 /// as the LIVE view (SYS_PATH_VIEW); every later call returns that same list
 /// object, so user mutations of `sys.path` persist and the importer sees them.
 pub fn sys_path_value() -> Value {
-    let existing = SYS_PATH_VIEW.with(|v| v.borrow().clone());
+    let existing = {
+        use crate::runtime_state as rs;
+        rs::with_active(rs::SYS_PATH_VIEW_T_acc(), |v| v.clone())
+    };
     if let Some(l) = existing {
         return Value::List(l);
     }
-    let items: Vec<Value> = SYS_PATH.with(|p| p.borrow().iter().map(|e| s(e.clone())).collect());
+    let items: Vec<Value> = {
+        use crate::runtime_state as rs;
+        rs::with_active(rs::SYS_PATH_T_acc(), |p| {
+            p.iter().map(|e| s(e.clone())).collect()
+        })
+    };
     let l = ap_obj::value::PyList::from_vec(items);
-    SYS_PATH_VIEW.with(|v| {
-        *v.borrow_mut() = Some(l.clone());
-    });
+    use crate::runtime_state as rs;
+    rs::with_active_mut(rs::SYS_PATH_VIEW_T_acc(), |v| *v = Some(l.clone()));
     Value::List(l)
 }
 
@@ -210,7 +222,10 @@ pub fn sys_path_value() -> Value {
 /// other importer lookup) sees the mutation. Falls back to the bootstrap Vec
 /// for reads before sys is ever built.
 pub(crate) fn sys_path_entries() -> Vec<String> {
-    let view = SYS_PATH_VIEW.with(|v| v.borrow().clone());
+    let view = {
+        use crate::runtime_state as rs;
+        rs::with_active(rs::SYS_PATH_VIEW_T_acc(), |v| v.clone())
+    };
     if let Some(l) = view {
         return l
             .items()
@@ -221,17 +236,21 @@ pub(crate) fn sys_path_entries() -> Vec<String> {
             })
             .collect();
     }
-    SYS_PATH.with(|p| p.borrow().clone())
+    use crate::runtime_state as rs;
+    rs::with_active(rs::SYS_PATH_T_acc(), |p| p.clone())
 }
 
 /// `sys.modules` dict snapshot (fresh dict each read — v0).
 pub fn sys_modules_value() -> Value {
     let d = PyDict::new();
-    SYS_MODULES.with(|m| {
-        for (k, v) in m.borrow().iter() {
-            let _ = d.set(s(k.clone()), v.clone());
-        }
-    });
+    {
+        use crate::runtime_state as rs;
+        rs::with_active(rs::SYS_MODULES_T_acc(), |m| {
+            for (k, v) in m.iter() {
+                let _ = d.set(s(k.clone()), v.clone());
+            }
+        });
+    }
     Value::Dict(d)
 }
 
@@ -241,18 +260,21 @@ pub fn sys_modules_value() -> Value {
 /// the test suite spawns. (SYS_PATH itself intentionally persists like the
 /// bootstrap Vec did — reset_import_state never cleared it.)
 pub fn reset_import_state() {
-    SYS_MODULES.with(|m| m.borrow_mut().clear());
-    SYS_PATH_VIEW.with(|v| *v.borrow_mut() = None);
+    use crate::runtime_state as rs;
+    rs::with_active_mut(rs::SYS_MODULES_T_acc(), |m| m.clear());
+    rs::with_active_mut(rs::SYS_PATH_VIEW_T_acc(), |v| *v = None);
 }
 
 /// Public read for the Import binding (top-package fetch) and the ap-gc
 /// root scanner (sys.modules VALUES are collection roots).
 pub fn sys_modules_values_pub() -> Vec<Value> {
-    SYS_MODULES.with(|m| m.borrow().values().cloned().collect())
+    use crate::runtime_state as rs;
+    rs::with_active(rs::SYS_MODULES_T_acc(), |m| m.values().cloned().collect())
 }
 
 pub fn sys_modules_get(name: &str) -> Option<Value> {
-    SYS_MODULES.with(|m| m.borrow().get(name).cloned())
+    use crate::runtime_state as rs;
+    rs::with_active(rs::SYS_MODULES_T_acc(), |m| m.get(name).cloned())
 }
 
 fn sys_modules_insert(name: &str, v: &Value) {
@@ -263,22 +285,24 @@ fn sys_modules_insert(name: &str, v: &Value) {
             eprintln!("[INSDBG] insert {name} obj={:p}", std::sync::Arc::as_ptr(o));
         }
     }
-    SYS_MODULES.with(|m| m.borrow_mut().insert(name.to_string(), v.clone()));
+    {
+        use crate::runtime_state as rs;
+        rs::with_active_mut(rs::SYS_MODULES_T_acc(), |m| {
+            m.insert(name.to_string(), v.clone())
+        });
+    }
     // 02.04a fix pass (BUG-C): keep the PYTHON-VISIBLE sys.modules dict in
     // sync — it was a snapshot taken when sys was built, so
     // `sys.modules[__name__]` inside a freshly-imported module (warnings.py
     // line 96) raised KeyError for every module imported after sys.
-    SYS_MODULES_VIEW.with(|m| {
-        if let Some(d) = m.borrow().as_ref() {
-            let _ = d.set(s(name.to_string()), v.clone());
-        }
-    });
-}
-
-thread_local! {
-    /// The PyDict exposed as `sys.modules` (attached by attach_sys_extras);
-    /// kept live by sys_modules_insert / the exec_compiled removal path.
-    static SYS_MODULES_VIEW: RefCell<Option<std::sync::Arc<PyDict>>> = const { RefCell::new(None) };
+    {
+        use crate::runtime_state as rs;
+        rs::with_active(rs::SYS_MODULES_VIEW_T_acc(), |m| {
+            if let Some(d) = m.as_ref() {
+                let _ = d.set(s(name.to_string()), v.clone());
+            }
+        });
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -577,9 +601,20 @@ pub fn import_module(interp: &Arc<Interpreter>, name: &str) -> EResult {
     // 02.03b-fix: seed the bootstrap builtins ONCE — importlib/_bootstrap's
     // _setup skips _builtin_from_name for names already in sys.modules
     // (CPython: real builtins are always present there).
-    BOOTSTRAP_SEEDED.with(|c| {
-        if !c.borrow().get() {
-            c.borrow_mut().set(true);
+    // 02.09a P3: the once-flag lives in the RuntimeState table (was a
+    // thread_local Cell — a worker re-seeded bootstrap modules into ITS
+    // private SYS_MODULES, breaking `is` identity across threads).
+    {
+        use crate::runtime_state as rs;
+        let seeded = rs::with_active_mut(rs::BOOTSTRAP_SEEDED_T_acc(), |c| {
+            if !*c {
+                *c = true;
+                true
+            } else {
+                false
+            }
+        });
+        if seeded {
             for n in ["_thread", "_warnings", "_weakref", "_imp"] {
                 if sys_modules_get(n).is_none() {
                     if let Ok(m) = import_module_inner(interp, n) {
@@ -599,7 +634,7 @@ pub fn import_module(interp: &Arc<Interpreter>, name: &str) -> EResult {
                 sys_modules_insert("__main__", &Value::Obj(m));
             }
         }
-    });
+    }
     import_module_inner(interp, name)
 }
 
@@ -621,11 +656,6 @@ impl Drop for SuperStackGuard {
             }
         }
     }
-}
-
-thread_local! {
-    static BOOTSTRAP_SEEDED: std::cell::RefCell<std::cell::Cell<bool>> =
-        const { std::cell::RefCell::new(std::cell::Cell::new(false)) };
 }
 
 pub fn import_module_inner(interp: &Arc<Interpreter>, name: &str) -> EResult {
@@ -699,14 +729,17 @@ pub fn import_module_inner(interp: &Arc<Interpreter>, name: &str) -> EResult {
                         if outcome.is_ok() {
                             return Ok(mv);
                         }
-                        SYS_MODULES.with(|sm| {
-                            sm.borrow_mut().remove(name);
-                        });
-                        SYS_MODULES_VIEW.with(|v| {
-                            if let Some(d) = v.borrow().as_ref() {
-                                let _ = d.pop(&s(name.to_string()));
-                            }
-                        });
+                        {
+                            use crate::runtime_state as rs;
+                            rs::with_active_mut(rs::SYS_MODULES_T_acc(), |sm| {
+                                sm.remove(name);
+                            });
+                            rs::with_active(rs::SYS_MODULES_VIEW_T_acc(), |v| {
+                                if let Some(d) = v.as_ref() {
+                                    let _ = d.pop(&s(name.to_string()));
+                                }
+                            });
+                        }
                     }
                 }
             }
@@ -819,8 +852,8 @@ pub fn import_module_inner(interp: &Arc<Interpreter>, name: &str) -> EResult {
             // empty and importlib.machinery.PathFinder/importlib.metadata
             // find nothing on sys.path.
             if name == "_frozen_importlib_external" {
-                let frozen = SYS_MODULES.with(|m| m.borrow().get("_frozen_importlib").cloned());
-                let ext = SYS_MODULES.with(|m| m.borrow().get(name).cloned());
+                let frozen = sys_modules_get("_frozen_importlib");
+                let ext = sys_modules_get(name);
                 if let (Some(Value::Obj(frozen_m)), Some(Value::Obj(ext_m))) = (frozen, ext) {
                     let install = ext_m
                         .module_ns
@@ -1305,14 +1338,17 @@ fn exec_compiled(
             // the failed body — drop its MODULE_FRAME_CELLS entries (the
             // table is keyed by the monotone frame id, so this is exact).
             crate::interp::retire_module_frame_cells(loaded.frame.frame_id);
-            SYS_MODULES.with(|s| {
-                s.borrow_mut().remove(name);
-            });
-            SYS_MODULES_VIEW.with(|v| {
-                if let Some(d) = v.borrow().as_ref() {
-                    let _ = d.pop(&s(name.to_string()));
-                }
-            });
+            {
+                use crate::runtime_state as rs;
+                rs::with_active_mut(rs::SYS_MODULES_T_acc(), |s| {
+                    s.remove(name);
+                });
+                rs::with_active(rs::SYS_MODULES_VIEW_T_acc(), |v| {
+                    if let Some(d) = v.as_ref() {
+                        let _ = d.pop(&s(name.to_string()));
+                    }
+                });
+            }
             Err(f)
         }
     }
@@ -1357,9 +1393,8 @@ fn module_stmts(
                     crate::interp::MODULE_FRAME_CELLS.with(|reg2| {
                         let mut m = reg2.borrow_mut();
                         for cname in &scope.cells {
-                            m.entry((key, cname.clone())).or_insert_with(|| {
-                                crate::cell_slot::CellSlotHandle::new(None)
-                            });
+                            m.entry((key, cname.clone()))
+                                .or_insert_with(|| crate::cell_slot::CellSlotHandle::new(None));
                         }
                     });
                 }
@@ -1388,14 +1423,17 @@ pub fn attach_sys_extras(_interp: &Arc<Interpreter>, sys_m: &Value) {
                 }
             };
             // Pre-seed with the current registry, then keep the view live.
-            SYS_MODULES.with(|m| {
-                for (k, v) in m.borrow().iter() {
-                    let _ = view.set(s(k.clone()), v.clone());
-                }
-            });
-            SYS_MODULES_VIEW.with(|slot| {
-                *slot.borrow_mut() = Some(view);
-            });
+            {
+                use crate::runtime_state as rs;
+                rs::with_active(rs::SYS_MODULES_T_acc(), |m| {
+                    for (k, v) in m.iter() {
+                        let _ = view.set(s(k.clone()), v.clone());
+                    }
+                });
+                rs::with_active_mut(rs::SYS_MODULES_VIEW_T_acc(), |slot| {
+                    *slot = Some(view);
+                });
+            }
         }
     }
 }
