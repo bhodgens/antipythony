@@ -2331,7 +2331,11 @@ pub fn make_sys_module(interp: &Interpreter) -> Value {
     // argv: [script] + the AoT binary's argv tail (02.06; empty in the
     // run verb). CPython convention: sys.argv[0] is the script path.
     let mut argv_items = vec![Value::Str(PyString::new(interp.script_path.clone()))];
-    argv_items.extend(crate::interp::argv_tail().into_iter().map(|a| Value::Str(PyString::new(a))));
+    argv_items.extend(
+        crate::interp::argv_tail()
+            .into_iter()
+            .map(|a| Value::Str(PyString::new(a))),
+    );
     let argv = PyList::from_vec(argv_items);
     let _ = ns.set(Value::Str(PyString::new("argv")), Value::List(argv));
     // 02.03b-fix: sys.builtin_module_names (importlib._bootstrap reads it).

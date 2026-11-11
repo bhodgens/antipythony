@@ -214,7 +214,10 @@ pub fn run_module(
     // 02.05a-residual: JIT-exercise report at exit (APX_TIER_STATS=1).
     crate::jit_hook::report_line();
     // 02.06: AOT dispatch report (same knob; separate [AOT-STATS] line).
-    if std::env::var("APX_TIER_STATS").map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false) {
+    if std::env::var("APX_TIER_STATS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
         if let Some(line) = crate::aot_runtime::stats_line() {
             eprintln!("{line}");
         }

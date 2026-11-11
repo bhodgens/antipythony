@@ -182,7 +182,9 @@ pub fn compile_baseline(func: &Func) -> Result<JitFunc, CodegenError> {
         code_ptr: compiled.code_ptr,
         slots: compiled.slot_plan,
         name_table: compiled.name_table,
-        feedback_cells: (0..compiled.site_count).map(|_| FeedbackCell::new()).collect(),
+        feedback_cells: (0..compiled.site_count)
+            .map(|_| FeedbackCell::new())
+            .collect(),
         _blob: module,
     })
 }

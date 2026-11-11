@@ -871,3 +871,50 @@
 - Note: importlib.resources.files already works via native __path__ fix.
 
 ## 02.10 research note - docs/02-10-scheduler-design.md (leaf dispatched 2026-10-20)
+
+
+## 02.06 AoT static binary — COMPLETE (2026-11-11, tier1-0206)
+
+`antipythony build app.py -o app` produces a native macOS aarch64 binary
+(byte-identical runtime vs CPython 3.14). Architecture:
+
+- **T1** ap-codegen-native/{clif,link,aot}.rs: emit_cfg/emit_cfg_with_osr are
+  Module-generic (ONE lowering for JIT + object); link.rs emits ONE
+  cranelift-object ObjectModule (Export per-fn sections, ap_aot_manifest
+  rows with function-address relocs, ExecCtx name tables, writable frozen
+  IC blobs, embedded program source); aot.rs lowers module-level FnDefs
+  through the 02.05 cfg stage (num_slots per jit_hook's rule).
+- **T2** link against ap-aot-crt staticlib with the SYSTEM linker
+  (-Wl,-dead_strip / musl: -static --gc-sections); LTO dead-strip measured
+  (18.09→16.90 MiB; full accounting in docs/aot-binary-gate.md).
+- **T3** ap-aot-crt (new staticlib crate): main = rss_guard + manifest
+  registration + catch_unwind safety net (panic → one-line abort message +
+  rc 134, NEVER a raw Rust panic print — pon aot_entry pattern) +
+  256MB-stack interpreter thread + run_module + exit-code passthrough.
+  Manifest row layout static-asserted == link.rs's 64B.
+- **T4** ap-cli build verb rewritten: real binary via build.rs, --target
+  {macos, linux-musl} with loud missing-toolchain failure, cache backend
+  "native-aot", staging under the content-addressed entry.
+- **T5** ap-conform --impl-binary '<cli>': per-case BUILD then run the
+  BUILT FILE (gate verbatim).
+- **Runtime seam** ap-run/aot_runtime.rs: manifest registry + the FIRST
+  dispatch arm in call_function (AOT → JIT twin → tree-walk); HostState +
+  slot-bridge helpers exposed to the AOT arm (same surfaces the JIT route
+  uses); sys.argv = binary path + argv tail; "aot" tier mode.
+- **cfg.rs**: Expr::Slice lowers as the slice() builtin call (CPython
+  evaluation order identical). helpers carry #[export_name = apjit_*]
+  (linker-visible; the JIT fn-pointer route unaffected).
+- **Lowering rejects** drop from the manifest with a loud [AOT-BUILD]
+  NOTICE and tree-walk at runtime = the 02.05 JIT fallback-table
+  discipline (tier-0-native-equivalent semantics).
+
+GATES (docs/aot-binary-gate.md): hello + classes corpus byte-identical;
+T-09 pinned 30-case slice through the binary 30/30; ap-conform
+--impl-binary slice 30/30; 11/11 exit-case parity binary==run-verb (7/11
+vs pinned CPython triples — 4 pre-existing interpreter divergences,
+identical under run); PATH isolation / argv / cwd green; startup 0.69x of
+the JIT run (soft gate <= 2x); binary==tier0-JIT==tree-walk 5/5; GC-heavy
+alloc probe green (roots + heap sizing live); catch_unwind unit-tested.
+musl: --target implemented, blocked on host toolchain (no rustup/musl-gcc;
+orchestrator decision). Sizes: 16.90 MiB dead-stripped macOS (musl 15MB
+gate not measurable on this host — blocked, report-only per T-09 GAP-2).

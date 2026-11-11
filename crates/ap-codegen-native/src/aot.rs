@@ -83,7 +83,9 @@ pub struct AotFunction {
 /// byte-identical output; "tier-0-native-equivalent" = the same set of
 /// functions native as the JIT route would compile, no more, no less).
 /// The NOTICE keeps the fallback loud at BUILD time (never silent).
-pub fn lower_module_functions(module: &ap_ir::Module) -> Result<(Vec<AotFunction>, Vec<String>), CodegenError> {
+pub fn lower_module_functions(
+    module: &ap_ir::Module,
+) -> Result<(Vec<AotFunction>, Vec<String>), CodegenError> {
     let mut out: Vec<AotFunction> = Vec::new();
     let mut tree_walk_fns: Vec<String> = Vec::new();
     for item in &module.items {
@@ -201,10 +203,7 @@ pub fn build_program_object(
         }
     }
     let _ = &lowered;
-    Ok((
-        bytes,
-        outs.into_iter().map(|o| o.ic_slot_count).collect(),
-    ))
+    Ok((bytes, outs.into_iter().map(|o| o.ic_slot_count).collect()))
 }
 
 /// Link the program object into a native binary.
@@ -213,6 +212,7 @@ pub fn build_program_object(
 /// * MacosNative: `cc -o out prog.o crt.a` (PIE default), `-Wl,-dead_strip`
 ///   for the dead-strip (review box 5).
 /// * LinuxMusl: `cc -static -o out prog.o crt.a -Wl,--gc-sections`.
+///
 /// `cc` (the toolchain driver) is deliberately used instead of `ld`
 /// directly: driver flags port across toolchains and pick up the CRT's
 /// start files correctly.
@@ -315,5 +315,64 @@ fn collect_imports_shallow(s: &ap_ir::Stmt, out: &mut Vec<String>) {
         }
         ap_ir::Stmt::ImportFrom(mv, _, _) => out.push(mv.clone()),
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A tiny module with one def + a call: parse → lower → AoT emit must
+    /// produce a linkable object with an Export ap_aot_fn_0 + manifest.
+    fn probe_module(source: &str) -> ap_ir::Module {
+        let parsed = ap_parse::parse(source).expect("parse");
+        let (module, _) = ap_parse::lower(&parsed).expect("lower");
+        module
+    }
+
+    #[test]
+    fn program_object_emits_and_carries_manifest() {
+        let src = "def add(a, b):\n    return a + b\n\nprint(add(1, 2))\n";
+        let module = probe_module(src);
+        let (bytes, outs) = build_program_object(&module, src, false).expect("emit");
+        assert!(!bytes.is_empty());
+        assert_eq!(outs.len(), 1); // one module-level def
+                                   // The object carries the manifest + program-fn symbols.
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("ap_aot_manifest"), "manifest symbol");
+        assert!(text.contains("ap_aot_fn_0"), "program fn symbol");
+        assert!(text.contains("ap_aot_source"), "embedded source blob");
+    }
+
+    #[test]
+    fn lowering_reject_falls_to_tree_walk_list() {
+        // `for` at module-level-def scope is outside the cfg stage's
+        // statement coverage — the fn drops to the tree-walk list.
+        let src = "def f(n):\n    for i in range(n):\n        print(i)\n\nf(2)\n";
+        let module = probe_module(src);
+        let (fns, tree_walk) = lower_module_functions(&module).expect("lower");
+        assert!(fns.is_empty());
+        assert_eq!(tree_walk, vec!["f".to_string()]);
+    }
+
+    #[test]
+    fn reachable_imports_dedupes_and_sorts() {
+        let src = "import json\nimport json\nfrom os import path\n\nprint(1)\n";
+        let module = probe_module(src);
+        let imports = reachable_imports(&module);
+        assert_eq!(imports, vec!["json".to_string(), "os".to_string()]);
+    }
+
+    /// The AOT object and the JIT baseline compile the SAME cfg: compile
+    /// both for one body and assert identical slot plans (Risk-5 parity).
+    #[test]
+    fn aot_and_jit_share_slot_plans() {
+        let src = "def add(a, b):\n    c = a + b\n    return c * 2\n";
+        let module = probe_module(src);
+        let (fns, _) = lower_module_functions(&module).expect("lower");
+        assert_eq!(fns.len(), 1);
+        let plan_aot = crate::clif::slot_plan_len(&fns[0].cfg);
+        let jit = crate::clif::compile_baseline(&fns[0].cfg).expect("jit compile");
+        assert_eq!(plan_aot, jit.slots.len());
     }
 }

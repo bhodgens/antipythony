@@ -412,7 +412,11 @@ pub struct HostState {
 impl HostState {
     /// 02.06: the AOT arm's constructor (same shape as jit_call_body's).
     pub fn new(interp: Rc<Interpreter>, frame: Rc<Frame>, names: Vec<String>) -> Self {
-        HostState { interp, frame, names }
+        HostState {
+            interp,
+            frame,
+            names,
+        }
     }
 }
 
@@ -430,12 +434,7 @@ pub fn aot_load_slots(ctx: &mut ExecCtx, frame: &Frame, names: &[String]) {
 }
 
 /// 02.06: slot → frame sync for the AOT arm (store_slots_into_frame).
-pub fn aot_store_slots(
-    frame: &Frame,
-    names: &[String],
-    ctx: &ExecCtx,
-    frame_rc: &Rc<Frame>,
-) {
+pub fn aot_store_slots(frame: &Frame, names: &[String], ctx: &ExecCtx, frame_rc: &Rc<Frame>) {
     store_slots_into_frame(frame, names, ctx, frame_rc);
 }
 

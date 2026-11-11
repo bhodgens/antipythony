@@ -121,6 +121,7 @@ dependencies = [
  "ap-gc",
  "ap-ir",
  "ap-obj",
+ "ap-parse",
  "cranelift",
  "cranelift-frontend",
  "cranelift-jit",

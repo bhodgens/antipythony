@@ -42,15 +42,15 @@ enum Commands {
         /// `<prefix> --tier 0`. The reference side never receives it.
         #[arg(long, value_name = "MODE")]
         tier: Option<String>,
-    /// 02.06: impl-string mode accepting a BUILT-BINARY producer CLI (the
-    /// 02.06 gate runs the conformance suite against the FILE, not
-    /// `antipythony run`). Value = the CLI command prefix that BUILDS
-    /// (shell-split), e.g. `--impl-binary 'target/release/antipythony'`.
-    /// Per corpus case: `<cli> build <case> -o <tmp>/conform-<n>` runs
-    /// first; the BUILT binary then executes the case. `--impl` is
-    /// ignored when this is set.
-    #[arg(long, num_args = 1.., value_delimiter = ' ')]
-    impl_binary: Vec<String>,
+        /// 02.06: impl-string mode accepting a BUILT-BINARY producer CLI (the
+        /// 02.06 gate runs the conformance suite against the FILE, not
+        /// `antipythony run`). Value = the CLI command prefix that BUILDS
+        /// (shell-split), e.g. `--impl-binary 'target/release/antipythony'`.
+        /// Per corpus case: `<cli> build <case> -o <tmp>/conform-<n>` runs
+        /// first; the BUILT binary then executes the case. `--impl` is
+        /// ignored when this is set.
+        #[arg(long, num_args = 1.., value_delimiter = ' ')]
+        impl_binary: Vec<String>,
     },
 }
 
@@ -166,7 +166,10 @@ fn run(
                     #[cfg(unix)]
                     {
                         use std::os::unix::fs::PermissionsExt;
-                        let _ = std::fs::set_permissions(&out_path, std::fs::Permissions::from_mode(0o755));
+                        let _ = std::fs::set_permissions(
+                            &out_path,
+                            std::fs::Permissions::from_mode(0o755),
+                        );
                     }
                     true
                 }
@@ -200,10 +203,7 @@ fn run(
             let expected = ap_conform::run_with_timeout(&reference, &[], file, timeout);
             let actual = match &built_impls[i] {
                 Some(bin) => ap_conform::run_with_timeout(bin, &[], file, timeout),
-                None => Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "build refused",
-                )),
+                None => Err(std::io::Error::other("build refused")),
             };
             let (expected_res, expected_missing) = match expected {
                 Ok(r) => (Some(r), false),

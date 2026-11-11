@@ -29,3 +29,5 @@ cranelift-native = "0.134"
 
 [dev-dependencies]
 num-bigint = "0.4"
+# 02.06 tests: build the probe ap-ir modules through the real front end.
+ap-parse = { path = "../ap-parse" }
