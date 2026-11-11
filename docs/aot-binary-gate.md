@@ -45,7 +45,8 @@ codegen failures (object emit / verify / link) stay fail-closed build errors.
 | binary == forced-tier-0 JIT == tree-walk (same lowering) | 5/5 probes byte-identical |
 | GC-heavy alloc probe (20M+ allocations in-binary) | PASS — roots + heap sizing live (review box 3) |
 | catch_unwind safety net | CRT unit test `catch_unwind_maps_panic_to_internal_abort` PASS; panic → one-line abort message + rc 134, never a raw Rust panic print (review box 4) |
-| `cargo test --workspace` | see PROGRESS.md (one heavy lane, CARGO_BUILD_JOBS=4) |
+| `cargo test --workspace` | **PASS** — 75 suites ok, 540 passed / 0 failed / 1 ignored, exit 0 (one heavy lane, CARGO_BUILD_JOBS=4, log /tmp/ws_test_0206c.log). En-route fixes: (1) osr_gate mode-pair regression — [AOT-STATS] printed `registered=0` in plain run processes; now only emitted when an AOT manifest is registered (700bfec9); (2) ast_getattr_fence needs the release probe at the baked `target/release/ap-run-probe` path in fresh worktrees — pre-existing harness convention, built it before the lane. |
+| `xtask notices --check` | **OK** (345 third-party dependencies, up to date; static-link CRT crate covered) |
 
 ## Sizes (macOS aarch64, hello-world program)
 
