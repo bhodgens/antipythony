@@ -27,7 +27,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use ap_codegen_native::cfg;
@@ -71,7 +71,7 @@ thread_local! {
     /// Per-function compiled cache: def-pointer → compiled JIT entry
     /// (None = fallback table — the lowering attempt happens once per
     /// function).
-    static JIT_CACHE: RefCell<HashMap<usize, Option<Rc<JitEntry>>>> =
+    static JIT_CACHE: RefCell<HashMap<usize, Option<Arc<JitEntry>>>> =
         RefCell::new(HashMap::new());
 }
 
@@ -403,15 +403,15 @@ pub fn report_line() {
 /// SAME host surfaces; a separate private clone would be a byte-identity
 /// drift surface, not a seam.
 pub struct HostState {
-    pub(crate) interp: Rc<Interpreter>,
-    pub(crate) frame: Rc<Frame>,
+    pub(crate) interp: Arc<Interpreter>,
+    pub(crate) frame: Arc<Frame>,
     /// Interned name table in compile-assigned id order.
     pub(crate) names: Vec<String>,
 }
 
 impl HostState {
     /// 02.06: the AOT arm's constructor (same shape as jit_call_body's).
-    pub fn new(interp: Rc<Interpreter>, frame: Rc<Frame>, names: Vec<String>) -> Self {
+    pub fn new(interp: Arc<Interpreter>, frame: Arc<Frame>, names: Vec<String>) -> Self {
         HostState {
             interp,
             frame,
@@ -434,7 +434,7 @@ pub fn aot_load_slots(ctx: &mut ExecCtx, frame: &Frame, names: &[String]) {
 }
 
 /// 02.06: slot → frame sync for the AOT arm (store_slots_into_frame).
-pub fn aot_store_slots(frame: &Frame, names: &[String], ctx: &ExecCtx, frame_rc: &Rc<Frame>) {
+pub fn aot_store_slots(frame: &Frame, names: &[String], ctx: &ExecCtx, frame_rc: &Arc<Frame>) {
     store_slots_into_frame(frame, names, ctx, frame_rc);
 }
 
@@ -676,7 +676,7 @@ fn load_slots_into_ctx(ctx: &mut ExecCtx, frame: &Frame, names: &[String]) {
 /// params, never-assigned temps) are skipped: the cfg ABI models
 /// unbound-as-None and store_name(None) would fabricate a binding the
 /// tree-walker never makes.
-fn store_slots_into_frame(frame: &Frame, names: &[String], ctx: &ExecCtx, frame_rc: &Rc<Frame>) {
+fn store_slots_into_frame(frame: &Frame, names: &[String], ctx: &ExecCtx, frame_rc: &Arc<Frame>) {
     let interp = crate::interp::current_interp_for_bindings_pub();
     let reg = crate::interp::current_registry_pub();
     for (i, name) in names.iter().enumerate() {
@@ -732,11 +732,11 @@ fn store_slots_into_frame(frame: &Frame, names: &[String], ctx: &ExecCtx, frame_
 /// effects during warm before main even ran. Warm now goes through the
 /// same cache slot call_function will hit, but via this execute-free path.
 fn warm_compile_only(entry: &FnEntry) {
-    let fn_id = Rc::as_ptr(&entry.def) as usize;
+    let fn_id = Arc::as_ptr(&entry.def) as usize;
     JIT_CACHE.with(|c| {
         let mut cache = c.borrow_mut();
         let _ = cache.entry(fn_id).or_insert_with(|| {
-            let r = compile_for(entry).map(Rc::new);
+            let r = compile_for(entry).map(Arc::new);
             if r.is_some() {
                 JIT_COMPILES.fetch_add(1, Ordering::Relaxed);
             } else {
@@ -753,13 +753,13 @@ fn warm_compile_only(entry: &FnEntry) {
 /// body); caller uses the tree-walker. Some(v) = the JIT'd body's return
 /// value. Err(Flow::Raise(..)) = the JIT'd body raised.
 pub fn jit_call_body(
-    interp: &Rc<Interpreter>,
+    interp: &Arc<Interpreter>,
     entry: &FnEntry,
-    frame: &Rc<Frame>,
+    frame: &Arc<Frame>,
 ) -> Result<Option<Value>, crate::Flow> {
-    // Cache identity: the FnEntry's def Rc pointer (stable per registered
+    // Cache identity: the FnEntry's def Arc pointer (stable per registered
     // function; G4 dedupe guarantees one entry per code object).
-    let fn_id = Rc::as_ptr(&entry.def) as usize;
+    let fn_id = Arc::as_ptr(&entry.def) as usize;
 
     let cached = JIT_CACHE.with(|c| {
         let mut cache = c.borrow_mut();
@@ -769,7 +769,7 @@ pub fn jit_call_body(
                 // First (and only) lowering attempt for this body: count the
                 // outcome so the exercise report distinguishes a real JIT
                 // route from a silent all-fallback run.
-                let r = compile_for(entry).map(Rc::new);
+                let r = compile_for(entry).map(Arc::new);
                 if r.is_some() {
                     JIT_COMPILES.fetch_add(1, Ordering::Relaxed);
                 } else {
@@ -937,7 +937,7 @@ pub fn jit_call_body(
 /// (`deopt::word_cell(fn_key)`) on the JitEntry so the per-call dispatch
 /// gate in `jit_call_body` is one relaxed load — the pinned-Disabled
 /// bypass reads it; a boxed-only body has no fast path to gate.
-fn tier_up_step(fn_id: usize, entry: &FnEntry, je: &Rc<JitEntry>) {
+fn tier_up_step(fn_id: usize, entry: &FnEntry, je: &Arc<JitEntry>) {
     let driver = tierup::global();
     // 1. Poll for a finished background compile (async mode only).
     if !driver.sync_mode() {
@@ -1013,7 +1013,7 @@ fn tier_up_step(fn_id: usize, entry: &FnEntry, je: &Rc<JitEntry>) {
 // The compile-cache path (lowering + baseline only — the tier-up hand-off
 // above never re-lowers; it clones the cached `cfg`).
 fn compile_for(entry: &FnEntry) -> Option<JitEntry> {
-    let fn_id = Rc::as_ptr(&entry.def) as usize;
+    let fn_id = Arc::as_ptr(&entry.def) as usize;
     let func = match cfg::lower_fn(&entry.def) {
         Ok(f) => f,
         Err(e) => {
@@ -1134,7 +1134,7 @@ fn _cell_slot_of(frame: &Frame, name: &str) -> Option<CellSlot> {
 // lowered+compiled once (populating the fallback table / compile cache up
 // front), so [TIER-STATS] shows compiles+fallbacks for ALL module defs and
 // execs counts real jit_call_body executions. The per-body compile-attempt
-// idempotence is untouched: the cache key is the def Rc pointer, and the
+// idempotence is untouched: the cache key is the def Arc pointer, and the
 // warm pass uses the SAME cache slot call_function will hit.
 // ===========================================================================
 
@@ -1163,7 +1163,7 @@ pub fn warm_module_defs(module: &ap_ir::Module) {
             // or_insert_with arm); NO execution happens here, so the frame
             // is never dereferenced. jit_call_body's execs counter must
             // stay call-driven — warm deliberately does not run the body.
-            let frame = Rc::new(Frame::new_module(interp.globals.clone()));
+            let frame = Arc::new(Frame::new_module(interp.globals.clone()));
             let _ = frame; // compile-only: the frame is never executed against
             if tier_debug() {
                 // TEMP residual-diag: why did this body not reach a verdict?

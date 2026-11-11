@@ -276,7 +276,7 @@ impl ExceptionValue {
                 // CPython: BaseException.__str__ for multi-arg is str(args)
                 // == the tuple repr (e001/e005 observed "('a', 2)").
                 let t = ap_obj::value::Tuple(self.args.clone());
-                ap_obj::ops::repr(&ap_obj::value::Value::Tuple(std::rc::Rc::new(t)))
+                ap_obj::ops::repr(&ap_obj::value::Value::Tuple(std::sync::Arc::new(t)))
             }
         }
     }

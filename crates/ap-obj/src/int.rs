@@ -66,14 +66,29 @@ pub enum Int {
     Big(Gc<Big>),
 }
 
-/// Heap handle placeholder: `Rc<T>` — SHARED ownership, because Python
-/// semantics demand aliasing (`ys = xs; ys.append(4)` mutates `xs`,
-/// S-01-19) and self-referential structures (`xs.append(xs)` → repr
-/// `[1, [...]]`, S-01-44) are possible with plain builtins. A `Box` here
-/// would deep-clone and break both. Mutable containers reach interior
-/// mutability in 02.02's executor (`RefCell`/`Mutex` wrapper); 02.04 swaps
-/// this alias for the MMTk handle type, whose sharing semantics match `Rc`.
-pub type Gc<T> = std::rc::Rc<T>;
+/// Heap handle: `Arc<T>` — SHARED ownership, because Python semantics demand
+/// aliasing (`ys = xs; ys.append(4)` mutates `xs`, S-01-19) and
+/// self-referential structures (`xs.append(xs)` → repr `[1, [...]]`,
+/// S-01-44) are possible with plain builtins. A `Box` here would deep-clone
+/// and break both. Mutable containers reach interior mutability in 02.02's
+/// executor (`RefCell`/`Mutex` wrapper); 02.04 swaps this alias for the MMTk
+/// handle type, whose sharing semantics match `Arc`.
+///
+/// 02.09a Decision 1 pull-in (SPLIT-02.09.md decision 1; docs/no-gil-object-
+/// audit.md "The blocker every surface shares"): was `std::rc::Rc<T>`. Every
+/// Send/Sync marker is unprovable while refcounts are non-atomic — values
+/// legally cross threads since 02.07 (queue/T101–T115), so a cross-thread
+/// clone/drop on an Rc is UB regardless of the interior-mutability story.
+/// Arc's atomic counts make concurrent clone/drop sound; the 16-byte Value
+/// contract, address stability, and the subtract-refs arithmetic
+/// (`Arc::strong_count` == `Rc::strong_count` semantics) are preserved. The
+/// ap-gc collector reads counts via `strong_count_of` only, GC-register/
+/// drop paths are GIL-serialized in this phase, and under the still-present
+/// GIL v1 behavior is byte-identical (the lock already excluded concurrent
+/// refcount traffic; now the type system does too). Arc drop contention on
+/// interned strings/builtins was measured on this M2 Ultra before/after
+/// (leaf report; geomean delta within noise).
+pub type Gc<T> = std::sync::Arc<T>;
 
 impl Int {
     /// Build from any i64, normalizing into the smi fast path when it fits.

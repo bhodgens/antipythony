@@ -23,7 +23,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use ap_obj::dict::PyDict;
 use ap_obj::int::Gc;
@@ -260,7 +260,7 @@ fn sys_modules_insert(name: &str, v: &Value) {
         && name.contains("_py_warnings")
     {
         if let Value::Obj(o) = v {
-            eprintln!("[INSDBG] insert {name} obj={:p}", std::rc::Rc::as_ptr(o));
+            eprintln!("[INSDBG] insert {name} obj={:p}", std::sync::Arc::as_ptr(o));
         }
     }
     SYS_MODULES.with(|m| m.borrow_mut().insert(name.to_string(), v.clone()));
@@ -278,7 +278,7 @@ fn sys_modules_insert(name: &str, v: &Value) {
 thread_local! {
     /// The PyDict exposed as `sys.modules` (attached by attach_sys_extras);
     /// kept live by sys_modules_insert / the exec_compiled removal path.
-    static SYS_MODULES_VIEW: RefCell<Option<std::rc::Rc<PyDict>>> = const { RefCell::new(None) };
+    static SYS_MODULES_VIEW: RefCell<Option<std::sync::Arc<PyDict>>> = const { RefCell::new(None) };
 }
 
 // ---------------------------------------------------------------------------
@@ -463,12 +463,12 @@ fn compile_file(path: &str, is_package: bool, dir: String) -> Result<Compiled, F
 /// registry share the module's globals dict; the dict IS the module ns.
 struct Loaded {
     ns: Gc<PyDict>,
-    frame: Rc<Frame>,
-    reg: Rc<FnRegistry>,
+    frame: Arc<Frame>,
+    reg: Arc<FnRegistry>,
 }
 
 fn load_into(
-    interp: &Rc<Interpreter>,
+    interp: &Arc<Interpreter>,
     compiled: &Compiled,
     name: &str,
     file: &str,
@@ -497,7 +497,7 @@ fn load_into(
         ns.clone(),
     );
     // Module frames keep locals empty; stores land in the globals dict (= ns).
-    let frame = Rc::new(Frame::new_module(ns.clone()));
+    let frame = Arc::new(Frame::new_module(ns.clone()));
     // B5 (memperf audit): the module frame carries THIS module's scope
     // table so nested-def classification (and the importer's cell seeding
     // below) resolves exactly, never through another module's same-path
@@ -533,7 +533,7 @@ fn load_into(
 /// Execute an already-inserted module namespace (sys.modules holds the
 /// partial module for circular imports).
 fn run_loaded(
-    interp: &Rc<Interpreter>,
+    interp: &Arc<Interpreter>,
     loaded: &Loaded,
     stmts: &[ap_ir::Stmt],
 ) -> Result<(), Flow> {
@@ -558,7 +558,7 @@ fn run_loaded(
 /// Import a module by absolute dotted name; returns the module object (the
 /// TOP package for dotted names — the caller binds per CPython rules).
 /// `interp` is needed for registry extension + builtins dispatch.
-pub fn import_module(interp: &Rc<Interpreter>, name: &str) -> EResult {
+pub fn import_module(interp: &Arc<Interpreter>, name: &str) -> EResult {
     ap_trace(format!("import_module({name})"));
     builtins_modules::set_current_interp(interp);
     // T2 (pytest PytestPluginManager.__init__: nested `from _pytest.assertion
@@ -568,10 +568,10 @@ pub fn import_module(interp: &Rc<Interpreter>, name: &str) -> EResult {
     // emptied the CALLER's staged __init__ context. Snapshot and restore the
     // stack around the whole import so the enclosing method's context survives
     // anything the imported module does.
-    let saved_super: Vec<(std::rc::Rc<ap_obj::classes::TypeRef>, Value, bool)> =
+    let saved_super: Vec<(std::sync::Arc<ap_obj::classes::TypeRef>, Value, bool)> =
         interp.super_stack.borrow().iter().cloned().collect();
     let _super_guard = SuperStackGuard {
-        interp: std::rc::Rc::downgrade(interp),
+        interp: std::sync::Arc::downgrade(interp),
         saved: saved_super,
     };
     // 02.03b-fix: seed the bootstrap builtins ONCE — importlib/_bootstrap's
@@ -606,8 +606,8 @@ pub fn import_module(interp: &Rc<Interpreter>, name: &str) -> EResult {
 /// T2: RAII restore of the zero-arg-super stack across a module import (the
 /// imported body may imbalanced-pop the caller's staged method context).
 struct SuperStackGuard {
-    interp: std::rc::Weak<Interpreter>,
-    saved: Vec<(std::rc::Rc<ap_obj::classes::TypeRef>, Value, bool)>,
+    interp: std::sync::Weak<Interpreter>,
+    saved: Vec<(std::sync::Arc<ap_obj::classes::TypeRef>, Value, bool)>,
 }
 impl Drop for SuperStackGuard {
     fn drop(&mut self) {
@@ -628,7 +628,7 @@ thread_local! {
         const { std::cell::RefCell::new(std::cell::Cell::new(false)) };
 }
 
-pub fn import_module_inner(interp: &Rc<Interpreter>, name: &str) -> EResult {
+pub fn import_module_inner(interp: &Arc<Interpreter>, name: &str) -> EResult {
     ap_trace(format!("import_module_inner({name})"));
     // 1. sys.modules cache.
     if let Some(m) = sys_modules_get(name) {
@@ -745,7 +745,7 @@ pub fn import_module_inner(interp: &Rc<Interpreter>, name: &str) -> EResult {
                             for (k, v) in loaded.ns.items() {
                                 let _ = mns.set(k, v);
                             }
-                            *m.module_ns.borrow_mut() = Some(std::rc::Rc::new((*mns).clone()));
+                            *m.module_ns.borrow_mut() = Some(std::sync::Arc::new((*mns).clone()));
                             let mv = Value::Obj(m);
                             link_parent_attr(name, &mv);
                             sys_modules_insert(name, &mv);
@@ -867,7 +867,7 @@ pub fn import_module_inner(interp: &Rc<Interpreter>, name: &str) -> EResult {
     import_file_module(interp, name)
 }
 
-pub(crate) fn import_file_module(interp: &Rc<Interpreter>, name: &str) -> EResult {
+pub(crate) fn import_file_module(interp: &Arc<Interpreter>, name: &str) -> EResult {
     ap_trace(format!("import_file_module({name})"));
     // --- robustness-ci leaf 02.02: module-name path-segment guard ----------
     // (review finding #16). No unsafe segment ('', '.', '..', or one
@@ -1208,7 +1208,7 @@ fn module_path_dir(m: &Value) -> Option<String> {
     None
 }
 
-fn exec_found(interp: &Rc<Interpreter>, name: &str, found: &Found) -> Result<(), Flow> {
+fn exec_found(interp: &Arc<Interpreter>, name: &str, found: &Found) -> Result<(), Flow> {
     match found {
         Found::Module { file } => {
             let compiled = compile_file(file, false, String::new())?;
@@ -1234,7 +1234,7 @@ fn exec_found(interp: &Rc<Interpreter>, name: &str, found: &Found) -> Result<(),
             );
             let _ = ns.set(s("__doc__"), Value::None);
             let v = Value::Obj(m.clone());
-            *m.module_ns.borrow_mut() = Some(std::rc::Rc::new((*ns).clone()));
+            *m.module_ns.borrow_mut() = Some(std::sync::Arc::new((*ns).clone()));
             sys_modules_insert(name, &v);
             Ok(())
         }
@@ -1244,7 +1244,7 @@ fn exec_found(interp: &Rc<Interpreter>, name: &str, found: &Found) -> Result<(),
 /// Create the module object, insert into sys.modules (PARTIAL visibility —
 /// circular imports observe the half-built namespace), run the body.
 fn exec_compiled(
-    interp: &Rc<Interpreter>,
+    interp: &Arc<Interpreter>,
     name: &str,
     file: &str,
     package: &str,
@@ -1266,8 +1266,8 @@ fn exec_compiled(
         eprintln!(
             "[EXECDBG] {} ns_ptr={:p} frame_g={:p}",
             name,
-            std::rc::Rc::as_ptr(&loaded.ns),
-            std::rc::Rc::as_ptr(&loaded.frame.globals)
+            std::sync::Arc::as_ptr(&loaded.ns),
+            std::sync::Arc::as_ptr(&loaded.frame.globals)
         );
     }
     // BEFORE body execution (design: CPython circular-import semantics).
@@ -1319,10 +1319,10 @@ fn exec_compiled(
 }
 
 fn module_stmts(
-    interp: &Rc<Interpreter>,
+    interp: &Arc<Interpreter>,
     compiled: &Compiled,
-    reg: &Rc<FnRegistry>,
-    frame: &Rc<Frame>,
+    reg: &Arc<FnRegistry>,
+    frame: &Arc<Frame>,
 ) -> Vec<ap_ir::Stmt> {
     let mut stmts: Vec<ap_ir::Stmt> = Vec::new();
     for item in &compiled.module.items {
@@ -1351,14 +1351,14 @@ fn module_stmts(
                     // nested-def wiring consults this when the defining
                     // frame is a MODULE frame (which never builds my_cells
                     // via call_function). M2-adj (memperf audit): the
-                    // monotone frame_id replaces the recycled Rc address.
+                    // monotone frame_id replaces the recycled Arc address.
                     let key = frame.frame_id;
                     frame.has_frame_cells.set(true);
                     crate::interp::MODULE_FRAME_CELLS.with(|reg2| {
                         let mut m = reg2.borrow_mut();
                         for cname in &scope.cells {
                             m.entry((key, cname.clone()))
-                                .or_insert_with(|| std::rc::Rc::new(std::cell::RefCell::new(None)));
+                                .or_insert_with(|| std::sync::Arc::new(std::cell::RefCell::new(None)));
                         }
                     });
                 }
@@ -1373,7 +1373,7 @@ fn module_stmts(
 }
 
 /// Attach `sys.path` / `sys.modules` onto the sys module namespace.
-pub fn attach_sys_extras(_interp: &Rc<Interpreter>, sys_m: &Value) {
+pub fn attach_sys_extras(_interp: &Arc<Interpreter>, sys_m: &Value) {
     if let Value::Obj(o) = sys_m {
         let mut ns_ref = o.module_ns.borrow_mut();
         if let Some(ns) = &mut *ns_ref {
@@ -1411,8 +1411,8 @@ pub fn attach_sys_extras(_interp: &Rc<Interpreter>, sys_m: &Value) {
 ///   Returns Err for "attempted relative import with no known parent package"
 ///   (byte-exact) when no parent package is known.
 pub fn resolve_relative_base(
-    interp: &Rc<Interpreter>,
-    frame: &Rc<Frame>,
+    interp: &Arc<Interpreter>,
+    frame: &Arc<Frame>,
     level: usize,
     module: &str,
 ) -> Result<String, Flow> {
@@ -1463,8 +1463,8 @@ pub fn resolve_relative_base(
 /// `from <module> import names` where <module> resolved to a file/native
 /// module Value: bind each name (with submodule fallback for packages).
 pub fn import_from_module(
-    interp: &Rc<Interpreter>,
-    frame: &Rc<Frame>,
+    interp: &Arc<Interpreter>,
+    frame: &Arc<Frame>,
     module: &str,
     mv: &Value,
     names: &[(String, String)], // (source, bind)
@@ -1546,7 +1546,7 @@ pub fn import_from_module(
                                     .collect::<Vec<_>>()
                             })
                             .unwrap_or_default();
-                        eprintln!("[FROMDBG] module_ptr={:p}", std::rc::Rc::as_ptr(o));
+                        eprintln!("[FROMDBG] module_ptr={:p}", std::sync::Arc::as_ptr(o));
                         eprintln!(
                             "[FROMDBG] miss '{src}' in {module}: ns has {} items: {:?}",
                             n, keys
@@ -1565,7 +1565,7 @@ pub fn import_from_module(
 }
 
 /// Attribute read on a module value (module_ns dict), native modules included.
-fn attr_on_module(_interp: &Rc<Interpreter>, mv: &Value, name: &str) -> Option<Value> {
+fn attr_on_module(_interp: &Arc<Interpreter>, mv: &Value, name: &str) -> Option<Value> {
     if let Value::Obj(o) = mv {
         let ns = o.module_ns.borrow();
         if let Some(ns) = &*ns {
@@ -1593,8 +1593,8 @@ fn module_file_repr(mv: &Value) -> Option<String> {
 /// `base` is the already-qualified absolute module name (relative part
 /// resolved by the caller via resolve_relative_base).
 pub fn import_from(
-    interp: &Rc<Interpreter>,
-    frame: &Rc<Frame>,
+    interp: &Arc<Interpreter>,
+    frame: &Arc<Frame>,
     base: &str,
     names: &[(String, String)],
 ) -> Result<(), Flow> {
@@ -1610,7 +1610,7 @@ fn _fn_entry_parity(_e: FnEntry) {}
 /// `from M import *` (02.04a): bind every public name of the module's
 /// namespace into the frame's globals. v0: no `__all__` support, no
 /// module-level `_` filtering for native marker names.
-pub fn import_star(_interp: &Rc<Interpreter>, frame: &Rc<Frame>, mv: &Value) -> Result<(), Flow> {
+pub fn import_star(_interp: &Arc<Interpreter>, frame: &Arc<Frame>, mv: &Value) -> Result<(), Flow> {
     let names: Vec<String> = match mv {
         Value::Obj(o) => {
             let ns = o.module_ns.borrow();
@@ -1642,7 +1642,7 @@ pub fn import_star(_interp: &Rc<Interpreter>, frame: &Rc<Frame>, mv: &Value) -> 
 /// The `builtins` module: namespace snapshots interp.builtins (reprlib etc
 /// do `import builtins` then read names lazily — a COPY is fine for v0
 /// because interpreter builtins don't change after install).
-fn builtins_module(interp: &Rc<Interpreter>) -> Value {
+fn builtins_module(interp: &Arc<Interpreter>) -> Value {
     let m = PyObject::new(ap_obj::ObjKind::Module, "builtins");
     let ns = PyDict::new();
     for (k, v) in interp.builtins.items() {
@@ -1650,7 +1650,7 @@ fn builtins_module(interp: &Rc<Interpreter>) -> Value {
     }
     let _ = ns.set(s("__name__"), s("builtins"));
     let _ = ns.set(s("__doc__"), Value::None);
-    *m.module_ns.borrow_mut() = Some(std::rc::Rc::new((*ns).clone()));
+    *m.module_ns.borrow_mut() = Some(std::sync::Arc::new((*ns).clone()));
     Value::Obj(m)
 }
 
@@ -1693,7 +1693,7 @@ fn thread_stub_module(interp: &crate::frame::Interpreter) -> Value {
     let lock_class_value = ap_obj::classes::make_class_value(lock_type);
     let _ = ns.set(s("RLock"), lock_class_value.clone());
     let _ = ns.set(s("allocate_lock"), lock_class_value);
-    *m.module_ns.borrow_mut() = Some(std::rc::Rc::new((*ns).clone()));
+    *m.module_ns.borrow_mut() = Some(std::sync::Arc::new((*ns).clone()));
     Value::Obj(m)
 }
 
@@ -1724,7 +1724,7 @@ fn weakref_stub_module() -> Value {
     for t in ["CallableProxyType", "ProxyType", "ReferenceType"] {
         let _ = ns.set(s(t), s(t));
     }
-    *m.module_ns.borrow_mut() = Some(std::rc::Rc::new((*ns).clone()));
+    *m.module_ns.borrow_mut() = Some(std::sync::Arc::new((*ns).clone()));
     Value::Obj(m)
 }
 
@@ -1772,7 +1772,7 @@ fn typing_stub_module(interp: &crate::frame::Interpreter) -> Value {
     )
     .expect("Generic mro");
     let _ = ns.set(s("Generic"), ap_obj::classes::make_class_value(generic));
-    *m.module_ns.borrow_mut() = Some(std::rc::Rc::new((*ns).clone()));
+    *m.module_ns.borrow_mut() = Some(std::sync::Arc::new((*ns).clone()));
     Value::Obj(m)
 }
 
@@ -1796,7 +1796,7 @@ fn link_parent_attr(full: &str, m: &Value) {
 /// Copy names the native module lacks from the vendored CPython file's
 /// executed namespace into it (02.04a augmentation — keeps native identity,
 /// adds private helpers like posixpath._splitext).
-pub(crate) fn augment_with_vendored(interp: &Rc<Interpreter>, name: &str, m: &Value) {
+pub(crate) fn augment_with_vendored(interp: &Arc<Interpreter>, name: &str, m: &Value) {
     // Already augmented?
     if let Value::Obj(o) = m {
         if let Some(ns) = &*o.module_ns.borrow() {

@@ -599,7 +599,7 @@ fn check_int_limits(v: &Value) -> Result<(), PyException> {
             Value::Dict(d) => {
                 // Cycle guard keyed on the dict payload address (same key
                 // as fmt_repr; V065: ys["self"] = ys).
-                let ptr = std::rc::Rc::as_ptr(d) as *const u8 as usize;
+                let ptr = std::sync::Arc::as_ptr(d) as *const u8 as usize;
                 if !active.insert(ptr) {
                     return Ok(()); // cycle
                 }

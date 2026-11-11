@@ -24,7 +24,7 @@
 //! SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::OnceLock;
 
 use ap_codegen_native::runtime::ExecCtx;
@@ -100,8 +100,8 @@ pub fn entry_for(def_name: &str) -> Option<usize> {
 /// at the CRT boundary (catch_unwind), not here.
 pub fn call_body(
     index: usize,
-    interp: &Rc<crate::frame::Interpreter>,
-    frame: &Rc<crate::frame::Frame>,
+    interp: &Arc<crate::frame::Interpreter>,
+    frame: &Arc<crate::frame::Frame>,
     entry: &crate::frame::FnEntry,
 ) -> Result<Value, crate::Flow> {
     let manifest = MANIFEST.get().expect("AOT dispatch before registration");

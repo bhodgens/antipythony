@@ -15,7 +15,7 @@
 //! thread_local — every test starts with an empty registry.
 
 use std::cell::{Cell, RefCell};
-use std::rc::Rc;
+use std::sync::Arc;
 
 use ap_gc::{
     add_root_dict, add_root_module_ns, clear_roots, collect, disable, enable, gc_register,
@@ -34,9 +34,9 @@ fn list_val() -> Value {
 
 fn addr_of(v: &Value) -> usize {
     match v {
-        Value::List(l) => Rc::as_ptr(l) as *const u8 as usize,
-        Value::Dict(d) => Rc::as_ptr(d) as *const u8 as usize,
-        Value::Obj(o) => Rc::as_ptr(o) as *const u8 as usize,
+        Value::List(l) => Arc::as_ptr(l) as *const u8 as usize,
+        Value::Dict(d) => Arc::as_ptr(d) as *const u8 as usize,
+        Value::Obj(o) => Arc::as_ptr(o) as *const u8 as usize,
         _ => panic!("not a tracked arm"),
     }
 }
@@ -60,7 +60,7 @@ thread_local! {
     static DEAD_AT_FIRE: RefCell<Option<bool>> = const { RefCell::new(None) };
     static ALIVE_AT_FIRE: RefCell<Option<bool>> = const { RefCell::new(None) };
     /// Keeps TypeObject payloads alive so instance type_ref upgrades work.
-    static STICKY_TYPES: RefCell<Vec<Rc<TypeObject>>> = const { RefCell::new(Vec::new()) };
+    static STICKY_TYPES: RefCell<Vec<Arc<TypeObject>>> = const { RefCell::new(Vec::new()) };
 }
 
 fn sys_modules() -> Vec<Value> {
@@ -139,7 +139,7 @@ fn make_del_instance(name: &str) -> Value {
     .expect("gc_invariants.rs:131");
     STICKY_TYPES.with(|s| s.borrow_mut().push(to.clone()));
     let inst = PyObject::new(ObjKind::UserInstance, name);
-    *inst.type_ref.borrow_mut() = Some(Rc::downgrade(&to));
+    *inst.type_ref.borrow_mut() = Some(Arc::downgrade(&to));
     Value::Obj(inst)
 }
 
@@ -182,12 +182,12 @@ fn allocation_accounting_counts_tracks_and_reclaims() {
     assert!(!is_tracked(&Value::None));
     // gc007: tuple of scalars untracked; tuple holding a tracked container
     // IS tracked.
-    let tup_scalars = Value::Tuple(Rc::new(ap_obj::Tuple(vec![
+    let tup_scalars = Value::Tuple(Arc::new(ap_obj::Tuple(vec![
         Value::Int(ap_obj::Int::from_i64(1)),
         Value::Int(ap_obj::Int::from_i64(2)),
     ])));
     assert!(!is_tracked(&tup_scalars), "gc007 tuple-scalar rule");
-    let tup_with_list = Value::Tuple(Rc::new(ap_obj::Tuple(vec![held[0].clone()])));
+    let tup_with_list = Value::Tuple(Arc::new(ap_obj::Tuple(vec![held[0].clone()])));
     assert!(is_tracked(&tup_with_list), "gc007 tuple-list rule");
     drop(tup_with_list); // its held[0] clone is an EXTERNAL ref: drop it
                          // before the sweep or held[0] legitimately lives.
@@ -206,7 +206,7 @@ fn allocation_accounting_counts_tracks_and_reclaims() {
 
 #[test]
 fn collection_cycle_frees_a_true_reference_cycle() {
-    // INVARIANT (the reason this crate exists — Rc alone leaks cycles): a
+    // INVARIANT (the reason this crate exists — Arc alone leaks cycles): a
     // cycle with no external holder is collected and ALL members die in
     // one retain pass; while any node is externally held the whole cycle
     // survives the pass (never a false collection, C-22). gc011: a 10-node
@@ -215,7 +215,7 @@ fn collection_cycle_frees_a_true_reference_cycle() {
     install_bridge();
     let base = gc_tracked_len();
 
-    let nodes: Vec<Rc<PyList>> = (0..5).map(|_| PyList::new()).collect();
+    let nodes: Vec<Arc<PyList>> = (0..5).map(|_| PyList::new()).collect();
     for i in 0..5 {
         nodes[i].append(Value::List(nodes[(i + 1) % 5].clone()));
     }
@@ -301,7 +301,7 @@ fn module_ns_root_keepalive_survives_collect() {
     // at entry and the MMTk swap replaces them with MMTk root reporting
     // (docs/gc-mmtk-swap.md §1) — this pins today's stage-1 behavior.
     install_bridge();
-    let ns: Rc<PyDict> = PyDict::new();
+    let ns: Arc<PyDict> = PyDict::new();
     add_root_module_ns(&ns);
     let v = list_val();
     let addr = addr_of(&v);

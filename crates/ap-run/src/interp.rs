@@ -9,7 +9,7 @@
 
 use std::cell::{Cell as RustCell, RefCell};
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use ap_obj::dict::PyDict;
 use ap_obj::int::{Gc, Int};
@@ -41,7 +41,7 @@ thread_local! {
     pub static CELL_BACKING: std::cell::RefCell<std::collections::HashMap<usize, crate::frame::CellSlot>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
     /// E8: address pins for CELL_BACKING (same key set).
-    pub static CELL_BACKING_PINS: std::cell::RefCell<std::collections::HashMap<usize, std::rc::Weak<ap_obj::PyObject>>> =
+    pub static CELL_BACKING_PINS: std::cell::RefCell<std::collections::HashMap<usize, std::sync::Weak<ap_obj::PyObject>>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
 }
 use crate::frame::{CellSlot, FnEntry, Frame, Interpreter, Loc, NESTED_DEDUPE};
@@ -131,12 +131,12 @@ pub fn run_module(
         }
     };
 
-    let interp = Rc::new(Interpreter::new(
+    let interp = Arc::new(Interpreter::new(
         source.to_string(),
         script_path.to_string(),
     ));
     CURRENT_INTERP.with(|c| *c.borrow_mut() = Some(interp.clone()));
-    *interp.self_rc.borrow_mut() = Some(Rc::downgrade(&interp));
+    *interp.self_rc.borrow_mut() = Some(Arc::downgrade(&interp));
     builtins::install_builtins(&interp);
     crate::classes::install_exception_classes(&interp);
     // 02.04 stage 1: wire the cycle collector (roots + bridges) BEFORE any
@@ -266,7 +266,7 @@ pub fn run_module(
 /// Source echo for a traceback frame: the frame's OWN file when it differs
 /// from the driver script (library frames), else the in-memory source.
 /// Cached per (file) via a thread-local to avoid re-reading big stdlib files.
-fn source_line_for(interp: &Rc<Interpreter>, file: &str, line: usize) -> Option<String> {
+fn source_line_for(interp: &Arc<Interpreter>, file: &str, line: usize) -> Option<String> {
     thread_local! {
         static FILE_SRC: std::cell::RefCell<HashMap<String, Option<String>>> =
             std::cell::RefCell::new(HashMap::new());
@@ -295,7 +295,7 @@ fn source_line_for(interp: &Rc<Interpreter>, file: &str, line: usize) -> Option<
 /// CPython-format traceback (C-25/S-06-7): frames outermost-first with the
 /// innermost LAST, `  File "path", line N, in qualname` + 4-space source
 /// echo, then `ExcType[: str(exc)]`. Chained reports render FIRST (S-06-8).
-fn render_traceback(interp: &Rc<Interpreter>, exc: &ExceptionValue) -> String {
+fn render_traceback(interp: &Arc<Interpreter>, exc: &ExceptionValue) -> String {
     let mut out = String::new();
     out.push_str("Traceback (most recent call last):\n");
     for (qualname, line, file) in interp.tb_frames.borrow().iter() {
@@ -369,7 +369,7 @@ struct RegisteredScopes {
 /// survive imports instead of being wiped by each rebuild.
 pub struct FnRegistry {
     /// Module-level defs, append-only (fn_id = index). RefCell so
-    /// extend_current appends IN PLACE — the Rc<FnRegistry> identity never
+    /// extend_current appends IN PLACE — the Arc<FnRegistry> identity never
     /// changes, so handles held by live frames/generators see the appends.
     entries: RefCell<Vec<FnEntry>>,
     by_path: RefCell<HashMap<String, u32>>,
@@ -614,7 +614,7 @@ impl FnRegistry {
     }
 
     /// A2: borrowed entry access for hot paths — returns a CLONE of the
-    /// entry (cheap: Rc bumps only) but without the old deep FnDef clone.
+    /// entry (cheap: Arc bumps only) but without the old deep FnDef clone.
     /// The Vec borrow never outlives the call. 02.07: entries are now
     /// mutated in place during imports while worker threads read them —
     /// transient-borrow retry (writes are entry-atomic).
@@ -637,22 +637,22 @@ impl FnRegistry {
     /// 02.04a: append an imported module's defs to the CURRENT registry,
     /// registering its scope table. Module-level function ids stay stable
     /// across imports because entries only ever APPEND (ids are indices).
-    /// B1: IN-PLACE mutation — the Rc<FnRegistry> object identity NEVER
+    /// B1: IN-PLACE mutation — the Arc<FnRegistry> object identity NEVER
     /// changes once published, so frames/generators holding old handles
     /// automatically see the imported defs. The old per-import rebuild
     /// (full entries clone + by_path clone + scope-table union + leak) is
     /// gone: cost per import is O(new defs), not O(all defs).
     pub(crate) fn extend_current(
-        interp: &Rc<Interpreter>,
+        interp: &Arc<Interpreter>,
         items: &[ap_ir::Item],
         scopes: ap_parse::ScopeInfoModule,
         module_globals: Gc<PyDict>,
-    ) -> Rc<FnRegistry> {
+    ) -> Arc<FnRegistry> {
         let cur = interp
             .registry
             .borrow()
             .clone()
-            .unwrap_or_else(|| Rc::new(FnRegistry::empty()));
+            .unwrap_or_else(|| Arc::new(FnRegistry::empty()));
         // Register the table FIRST so entries resolve their scope against it.
         let leaked = cur.register_scopes(scopes);
         // Build the new entries WITHOUT holding the entries/by_path borrows
@@ -709,7 +709,7 @@ impl FnRegistry {
         // Publish: fn_entry resolves through interp.registry. In-place
         // mutation means this only MATTERS the first time (no registry yet
         // — or a thread that started before the first import); re-publishing
-        // the same Rc is cheap.
+        // the same Arc is cheap.
         *interp.registry.borrow_mut() = Some(cur.clone());
         cur
     }
@@ -720,13 +720,13 @@ impl FnRegistry {
 // ===========================================================================
 
 fn exec_module(
-    interp: &Rc<Interpreter>,
+    interp: &Arc<Interpreter>,
     module: &Module,
     scopes: &ScopeInfoModule,
 ) -> Result<(), ExceptionValue> {
     // Leak the scope table for the run's lifetime (process-shaped program).
     let scopes: &'static ScopeInfoModule = Box::leak(Box::new(scopes.clone()));
-    let reg = Rc::new(FnRegistry::build(
+    let reg = Arc::new(FnRegistry::build(
         module.items.iter(),
         scopes,
         interp.globals.clone(),
@@ -739,11 +739,11 @@ fn exec_module(
     // call-driven, compiles+fallbacks become def-complete).
     crate::jit_hook::warm_module_defs(module);
 
-    let frame = Rc::new(Frame::new_module(interp.globals.clone()));
+    let frame = Arc::new(Frame::new_module(interp.globals.clone()));
     // B5: the main module frame carries the main scope table (nested-def
     // classification resolves exactly against it).
     frame.scope_table.set(reg.last_table());
-    let line_track = Rc::new(RustCell::new(0usize));
+    let line_track = Arc::new(RustCell::new(0usize));
     interp.frame_stack.borrow_mut().push(line_track.clone());
 
     // Bind module defs; class statements become LocalClass (02.03 diag).
@@ -858,10 +858,10 @@ fn exec_module(
 
 /// Execute a statement list. Ok(()) = block completed; Err(Flow) = unwind.
 pub(crate) fn exec_block(
-    interp: &Rc<Interpreter>,
-    frame: &Rc<Frame>,
+    interp: &Arc<Interpreter>,
+    frame: &Arc<Frame>,
     stmts: &[Stmt],
-    reg: &Rc<FnRegistry>,
+    reg: &Arc<FnRegistry>,
 ) -> Result<(), Flow> {
     let moddbg = ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::ModDbg);
     for (idx, s) in stmts.iter().enumerate() {
@@ -951,7 +951,7 @@ pub(crate) fn exec_block(
 
 /// Append one yielded value to the generator sink currently being drained
 /// (set up by gen_pull's Fn arm).
-fn gen_sink_push(interp: &Rc<Interpreter>, v: Value) {
+fn gen_sink_push(interp: &Arc<Interpreter>, v: Value) {
     if let Some(sink) = interp.active_gen_sink.borrow().clone() {
         sink.borrow_mut().push(v);
     }
@@ -967,7 +967,7 @@ enum StmtOut {
 /// Nth executable statement, precomputed by scanning the source. This is
 /// enough for the corpus's single-statement-per-line programs; a span map
 /// on the IR is a documented follow-up (progress log).
-fn touch_line(interp: &Rc<Interpreter>, frame: Option<&Rc<Frame>>, line: usize) {
+fn touch_line(interp: &Arc<Interpreter>, frame: Option<&Arc<Frame>>, line: usize) {
     // Wave-58: the global ordinal->line table counts statements in
     // EXECUTION order across ALL frames, so a nested frame's statement
     // maps to the caller's next line (inner's raise read line 9). The
@@ -1005,10 +1005,10 @@ fn touch_line(interp: &Rc<Interpreter>, frame: Option<&Rc<Frame>>, line: usize) 
 }
 
 fn exec_stmt(
-    interp: &Rc<Interpreter>,
-    frame: &Rc<Frame>,
+    interp: &Arc<Interpreter>,
+    frame: &Arc<Frame>,
     s: &Stmt,
-    reg: &Rc<FnRegistry>,
+    reg: &Arc<FnRegistry>,
 ) -> Result<StmtOut, Flow> {
     touch_line(interp, Some(frame), stmt_source_line(interp, s));
 
@@ -1377,7 +1377,7 @@ fn exec_stmt(
                     // sys.exc_info() inside __exit__ must return it
                     // (twisted Failure() depends on this). Restore after.
                     let inflight = match &result {
-                        Err(Flow::Raise(e)) => Some(Rc::new(e.clone())),
+                        Err(Flow::Raise(e)) => Some(Arc::new(e.clone())),
                         _ => None,
                     };
                     let prev = interp.current_exception.borrow().clone();
@@ -1798,7 +1798,7 @@ fn exec_stmt(
                         // wrapper's getregentry bound the first-imported
                         // codec's tables (codecs.lookup cache poisoning).
                         // The monotone frame_id disambiguates (never
-                        // recycled, unlike Rc/heap addresses).
+                        // recycled, unlike Arc/heap addresses).
                         frame.frame_id,
                     );
                     match NESTED_DEDUPE.with(|d| d.borrow().get(&key).copied()) {
@@ -1909,7 +1909,7 @@ fn exec_stmt(
 /// corpus) get exact lines from the precomputed ordinal table when the
 /// statement is at module level; function frames report their def line
 /// range by block walk.
-fn stmt_source_line(_interp: &Rc<Interpreter>, _s: &Stmt) -> usize {
+fn stmt_source_line(_interp: &Arc<Interpreter>, _s: &Stmt) -> usize {
     // Placeholder refined by SourceMap below (set at module entry).
     0
 }
@@ -1922,10 +1922,10 @@ enum LoopOut {
 }
 
 fn run_loop_body(
-    interp: &Rc<Interpreter>,
-    frame: &Rc<Frame>,
+    interp: &Arc<Interpreter>,
+    frame: &Arc<Frame>,
     body: &[Stmt],
-    reg: &Rc<FnRegistry>,
+    reg: &Arc<FnRegistry>,
 ) -> Result<LoopOut, Flow> {
     for s in body {
         match exec_stmt(interp, frame, s, reg) {
@@ -1950,10 +1950,10 @@ fn run_loop_body(
 }
 
 fn exec_try(
-    interp: &Rc<Interpreter>,
-    frame: &Rc<Frame>,
+    interp: &Arc<Interpreter>,
+    frame: &Arc<Frame>,
     t: &ap_ir::item::TryStmt,
-    reg: &Rc<FnRegistry>,
+    reg: &Arc<FnRegistry>,
 ) -> Result<StmtOut, Flow> {
     // try/except/else/finally (S-02-30..34).
     // CPython: frames the raising unwound through belong to THIS exception's
@@ -2058,7 +2058,7 @@ fn exec_try(
                         frame.store_local(name, exc_obj);
                     }
                     let prev = interp.current_exception.borrow().clone();
-                    *interp.current_exception.borrow_mut() = Some(Rc::new(exc.clone()));
+                    *interp.current_exception.borrow_mut() = Some(Arc::new(exc.clone()));
                     // Frames pushed by the HANDLER BODY belong to any new
                     // exception raised there; the ORIGINAL exception's frames
                     // ([tb_snapshot..body_tb_start)) do not (CPython shows
@@ -2232,7 +2232,7 @@ fn exc_matches(tv: &Value, exc: &ExceptionValue) -> Result<bool, Flow> {
 
 /// MRO subclass check for a legacy-raised exception name against a real
 /// user class that derives (transitively) from a builtin exception.
-fn legacy_exc_is_subclass(exc_name: &str, target: &Rc<ap_obj::classes::TypeRef>) -> bool {
+fn legacy_exc_is_subclass(exc_name: &str, target: &Arc<ap_obj::classes::TypeRef>) -> bool {
     // Only LEGACY-known names participate (the old table defaults unknowns
     // to Exception, which would wrongly catch BaseExceptionGroup here).
     // The legacy table's known set (its `_ => Exception` default must not
@@ -2277,7 +2277,7 @@ fn legacy_exc_is_subclass(exc_name: &str, target: &Rc<ap_obj::classes::TypeRef>)
 /// Current frame's line cell (top of the frame stack); 0 when empty.
 /// 02.07: frame_stack pop with cross-thread contention retry (all holders
 /// run under the GIL, so a held borrow clears on the next scheduling turn).
-fn frame_stack_pop(interp: &Rc<Interpreter>) {
+fn frame_stack_pop(interp: &Arc<Interpreter>) {
     for _ in 0..2000 {
         match interp.frame_stack.try_borrow_mut() {
             Ok(mut fs) => {
@@ -2291,7 +2291,7 @@ fn frame_stack_pop(interp: &Rc<Interpreter>) {
 
 /// PEP-342 (generators.rs suspend/resume): pop the fiber's line cell while
 /// the generator is suspended so module statements keep their own lines.
-pub fn frame_stack_pop_pub(interp: &Rc<Interpreter>) -> Option<Rc<RustCell<usize>>> {
+pub fn frame_stack_pop_pub(interp: &Arc<Interpreter>) -> Option<Arc<RustCell<usize>>> {
     for _ in 0..2000 {
         match interp.frame_stack.try_borrow_mut() {
             Ok(mut fs) => return fs.pop(),
@@ -2301,7 +2301,7 @@ pub fn frame_stack_pop_pub(interp: &Rc<Interpreter>) -> Option<Rc<RustCell<usize
     None
 }
 
-pub fn frame_stack_push_pub(interp: &Rc<Interpreter>, cell: Rc<RustCell<usize>>) {
+pub fn frame_stack_push_pub(interp: &Arc<Interpreter>, cell: Arc<RustCell<usize>>) {
     for _ in 0..2000 {
         match interp.frame_stack.try_borrow_mut() {
             Ok(mut fs) => {
@@ -2313,7 +2313,7 @@ pub fn frame_stack_push_pub(interp: &Rc<Interpreter>, cell: Rc<RustCell<usize>>)
     }
 }
 
-fn current_frame_line(interp: &Rc<Interpreter>) -> usize {
+fn current_frame_line(interp: &Arc<Interpreter>) -> usize {
     let top = loop {
         match interp.frame_stack.try_borrow() {
             Ok(fs) => break fs.last().cloned(),
@@ -2346,7 +2346,7 @@ thread_local! {
 /// probe an atomic load) and record NOTHING when no consumer is armed.
 /// Byte-exactness: with no APX flag set, LAST_PY_LOC was never read, so
 /// skipping the write is unobservable.
-pub fn note_py_loc(interp: &Rc<Interpreter>) {
+pub fn note_py_loc(interp: &Arc<Interpreter>) {
     use ap_obj::debug_flags::{debug_flag, ApxFlag};
     let armed = debug_flag(ApxFlag::IdxDebug)
         || debug_flag(ApxFlag::TbDbg)
@@ -2359,7 +2359,7 @@ pub fn note_py_loc(interp: &Rc<Interpreter>) {
     LAST_PY_LOC.with(|c| *c.borrow_mut() = (f, l));
 }
 
-fn last_executed_line(interp: &Rc<Interpreter>) -> usize {
+fn last_executed_line(interp: &Arc<Interpreter>) -> usize {
     let ordinal = interp.stmt_ordinal.get();
     if ordinal == 0 {
         return current_frame_line(interp);
@@ -2379,7 +2379,7 @@ fn last_executed_line(interp: &Rc<Interpreter>) -> usize {
 /// `__file__` the importer sets at load time; the driver module's globals
 /// carry the script path (exec_module binds __file__). Fallback: the
 /// interpreter's script path.
-pub fn fn_entry_file(interp: &Rc<Interpreter>, entry: &FnEntry) -> String {
+pub fn fn_entry_file(interp: &Arc<Interpreter>, entry: &FnEntry) -> String {
     if let Some(Value::Str(f)) = entry.globals.get(&Value::Str(PyString::new("__file__"))) {
         return f.as_str().to_string();
     }
@@ -2858,7 +2858,7 @@ fn exception_value_of_instance(v: &Value) -> Result<ExceptionValue, Flow> {
             if !is_default {
                 let s = call_value(
                     &interp,
-                    &Rc::new(Frame::new_module(interp.globals.clone())),
+                    &Arc::new(Frame::new_module(interp.globals.clone())),
                     &sf,
                     std::slice::from_ref(v),
                     &[],
@@ -2877,11 +2877,11 @@ fn exception_value_of_instance(v: &Value) -> Result<ExceptionValue, Flow> {
 // ===========================================================================
 
 fn assign_target(
-    interp: &Rc<Interpreter>,
-    frame: &Rc<Frame>,
+    interp: &Arc<Interpreter>,
+    frame: &Arc<Frame>,
     t: &Target,
     v: Value,
-    reg: &Rc<FnRegistry>,
+    reg: &Arc<FnRegistry>,
 ) -> Result<(), Flow> {
     match t {
         Target::Name(n) => store_name(interp, frame, n, v, reg),
@@ -2903,11 +2903,11 @@ fn assign_target(
 }
 
 fn unpack_into(
-    interp: &Rc<Interpreter>,
-    frame: &Rc<Frame>,
+    interp: &Arc<Interpreter>,
+    frame: &Arc<Frame>,
     parts: &[Target],
     v: &Value,
-    reg: &Rc<FnRegistry>,
+    reg: &Arc<FnRegistry>,
 ) -> Result<(), Flow> {
     let items: Vec<Value> = match v {
         Value::List(l) => l.items().to_vec(),
@@ -2994,10 +2994,10 @@ fn unpack_into(
 }
 
 fn read_target(
-    interp: &Rc<Interpreter>,
-    frame: &Rc<Frame>,
+    interp: &Arc<Interpreter>,
+    frame: &Arc<Frame>,
     t: &Target,
-    reg: &Rc<FnRegistry>,
+    reg: &Arc<FnRegistry>,
 ) -> EResult {
     match t {
         Target::Name(n) => lookup_name(interp, frame, n),
@@ -3038,7 +3038,7 @@ fn key_str(o: &Gc<ap_obj::PyObject>) -> String {
     String::new()
 }
 
-fn lookup_name(interp: &Rc<Interpreter>, frame: &Rc<Frame>, name: &str) -> EResult {
+fn lookup_name(interp: &Arc<Interpreter>, frame: &Arc<Frame>, name: &str) -> EResult {
     match frame.lookup(name) {
         crate::frame::Lookup::Found(v) => Ok(v),
         crate::frame::Lookup::UnboundLocal => Err(raise(
@@ -3059,7 +3059,7 @@ fn lookup_name(interp: &Rc<Interpreter>, frame: &Rc<Frame>, name: &str) -> EResu
                 if let Some(mg) =
                     crate::builtins_modules::CURRENT_MODULE_GLOBALS.with(|c| c.borrow().clone())
                 {
-                    if !Rc::ptr_eq(&mg, &frame.globals) {
+                    if !Arc::ptr_eq(&mg, &frame.globals) {
                         if let Some(v) = mg.get(&Value::Str(PyString::new(name))) {
                             return Ok(v);
                         }
@@ -3085,11 +3085,11 @@ fn lookup_name(interp: &Rc<Interpreter>, frame: &Rc<Frame>, name: &str) -> EResu
 }
 
 pub fn store_name(
-    _interp: &Rc<Interpreter>,
-    frame: &Rc<Frame>,
+    _interp: &Arc<Interpreter>,
+    frame: &Arc<Frame>,
     name: &str,
     v: Value,
-    _reg: &Rc<FnRegistry>,
+    _reg: &Arc<FnRegistry>,
 ) -> Result<(), Flow> {
     if frame.declared_globals.contains(name) && !frame.is_module {
         frame.store_global(name, v);
@@ -3162,10 +3162,10 @@ pub fn store_name(
 // ===========================================================================
 
 pub(crate) fn eval_expr(
-    interp: &Rc<Interpreter>,
-    frame: &Rc<Frame>,
+    interp: &Arc<Interpreter>,
+    frame: &Arc<Frame>,
     e: &Expr,
-    reg: &Rc<FnRegistry>,
+    reg: &Arc<FnRegistry>,
 ) -> EResult {
     note_py_loc(interp);
     match e {
@@ -4175,14 +4175,14 @@ fn value_is(a: &Value, b: &Value) -> bool {
         (Value::None, Value::None) => true,
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::Ellipsis, Value::Ellipsis) => true,
-        (Value::Str(x), Value::Str(y)) => std::rc::Rc::ptr_eq(x, y),
-        (Value::Obj(x), Value::Obj(y)) => std::rc::Rc::ptr_eq(x, y),
-        (Value::List(x), Value::List(y)) => std::rc::Rc::ptr_eq(x, y),
-        (Value::Tuple(x), Value::Tuple(y)) => std::rc::Rc::ptr_eq(x, y),
-        (Value::Dict(x), Value::Dict(y)) => std::rc::Rc::ptr_eq(x, y),
-        (Value::Set(x), Value::Set(y)) => std::rc::Rc::ptr_eq(x, y),
-        (Value::Frozen(x), Value::Frozen(y)) => std::rc::Rc::ptr_eq(x, y),
-        (Value::Bytes(x), Value::Bytes(y)) => std::rc::Rc::ptr_eq(x, y),
+        (Value::Str(x), Value::Str(y)) => std::sync::Arc::ptr_eq(x, y),
+        (Value::Obj(x), Value::Obj(y)) => std::sync::Arc::ptr_eq(x, y),
+        (Value::List(x), Value::List(y)) => std::sync::Arc::ptr_eq(x, y),
+        (Value::Tuple(x), Value::Tuple(y)) => std::sync::Arc::ptr_eq(x, y),
+        (Value::Dict(x), Value::Dict(y)) => std::sync::Arc::ptr_eq(x, y),
+        (Value::Set(x), Value::Set(y)) => std::sync::Arc::ptr_eq(x, y),
+        (Value::Frozen(x), Value::Frozen(y)) => std::sync::Arc::ptr_eq(x, y),
+        (Value::Bytes(x), Value::Bytes(y)) => std::sync::Arc::ptr_eq(x, y),
         // Ints: smi identity is value identity ONLY for small ints
         // (S-01-31: small-int caching UNSPECIFIED — corpus never asserts
         // cross-object `is` on ints; the arm equality below matches
@@ -4876,7 +4876,7 @@ pub(crate) fn eval_binop(a: &Value, op: BinOp, b: &Value) -> EResult {
                     .and_then(|w| w.upgrade())
                     .ok_or_else(|| raise("SystemError", "derived instance without class"))?;
                 let io = ap_obj::PyObject::new(ap_obj::ObjKind::UserInstance, t.name.clone());
-                *io.type_ref.borrow_mut() = Some(std::rc::Rc::downgrade(&t));
+                *io.type_ref.borrow_mut() = Some(std::sync::Arc::downgrade(&t));
                 *io.class_ref.borrow_mut() = Some(t.clone());
                 let key = if crate::classes::is_tuple_derived_instance(a) {
                     "__ap_tuple__"
@@ -4904,8 +4904,8 @@ pub(crate) fn eval_binop(a: &Value, op: BinOp, b: &Value) -> EResult {
 // ===========================================================================
 
 pub(crate) fn call_value(
-    interp: &Rc<Interpreter>,
-    caller: &Rc<Frame>,
+    interp: &Arc<Interpreter>,
+    caller: &Arc<Frame>,
     f: &Value,
     args: &[Value],
     kwargs: &[(String, Value)],
@@ -4917,8 +4917,8 @@ pub(crate) fn call_value(
 }
 
 fn call_value_inner(
-    interp: &Rc<Interpreter>,
-    caller: &Rc<Frame>,
+    interp: &Arc<Interpreter>,
+    caller: &Arc<Frame>,
     f: &Value,
     args: &[Value],
     kwargs: &[(String, Value)],
@@ -4959,8 +4959,8 @@ fn call_value_inner(
 }
 
 fn call_value_inner_impl(
-    interp: &Rc<Interpreter>,
-    caller: &Rc<Frame>,
+    interp: &Arc<Interpreter>,
+    caller: &Arc<Frame>,
     f: &Value,
     args: &[Value],
     kwargs: &[(String, Value)],
@@ -6116,7 +6116,7 @@ fn call_value_inner_impl(
                                     ap_obj::ObjKind::UserInstance,
                                     t.name.clone(),
                                 );
-                                *io.type_ref.borrow_mut() = Some(std::rc::Rc::downgrade(&t));
+                                *io.type_ref.borrow_mut() = Some(std::sync::Arc::downgrade(&t));
                                 *io.class_ref.borrow_mut() = Some(t.clone());
                                 let _ = io
                                     .attrs
@@ -6183,7 +6183,7 @@ fn call_value_inner_impl(
                                     ap_obj::ObjKind::UserInstance,
                                     t.name.clone(),
                                 );
-                                *io.type_ref.borrow_mut() = Some(std::rc::Rc::downgrade(&t));
+                                *io.type_ref.borrow_mut() = Some(std::sync::Arc::downgrade(&t));
                                 *io.class_ref.borrow_mut() = Some(t.clone());
                                 let key = if is_tuple {
                                     "__ap_tuple__"
@@ -7326,7 +7326,7 @@ fn call_value_inner_impl(
 
 /// Type-object calls: exception constructors + builtin type constructors.
 fn call_type_ctor(
-    interp: &Rc<Interpreter>,
+    interp: &Arc<Interpreter>,
     name: &str,
     args: &[Value],
     kwargs: &[(String, Value)],
@@ -7611,7 +7611,7 @@ fn call_type_ctor(
 
 /// Call a user function: bind params (S-02-8/10), run the body.
 fn call_function(
-    interp: &Rc<Interpreter>,
+    interp: &Arc<Interpreter>,
     o: &Gc<ap_obj::PyObject>,
     args: &[Value],
     kwargs: &[(String, Value)],
@@ -7620,9 +7620,9 @@ fn call_function(
     let entry = interp
         .fn_entry(fn_id)
         .ok_or_else(|| raise("SystemError", "function table miss"))?;
-    // A2 (memperf audit 2026-11-06): FnEntry.def is an Rc<FnDef> — this is
+    // A2 (memperf audit 2026-11-06): FnEntry.def is an Arc<FnDef> — this is
     // a refcount bump, not the old deep clone of the whole body AST. The
-    // entry clone itself (fn_entry) is likewise Rc-cheap now.
+    // entry clone itself (fn_entry) is likewise Arc-cheap now.
     let def = entry.def.clone();
 
     // W110-5: async-def wins over the generator route — an `async def`
@@ -7698,7 +7698,7 @@ fn call_function(
     let (locals, my_cells, free_cells) =
         bind_params(interp, &entry, &def, o, lambda_body.is_some(), args, kwargs)?;
 
-    let frame = Rc::new(Frame::new_function(
+    let frame = Arc::new(Frame::new_function(
         entry.globals.clone(),
         &entry.scope_path,
         &entry.qualname,
@@ -7711,7 +7711,7 @@ fn call_function(
     // B5: nested-def scope classification resolves against THIS function's
     // defining-module table (exact lookup; no cross-module richest-wins).
     frame.scope_table.set(entry.scope_table);
-    let line_track = Rc::new(RustCell::new(0usize));
+    let line_track = Arc::new(RustCell::new(0usize));
     // 02.07: cross-thread push contention — retry (all holders run under the
     // GIL, so the borrow is transient).
     for _ in 0..2000 {
@@ -7758,7 +7758,7 @@ fn call_function(
     // stack only ever READS `name`/`qualname` (builtin_super's skip test,
     // the Wave-78 mcap peek) — nothing mutates a sentinel, and nothing
     // compares sentinels by pointer identity. The interpreter interns TWO
-    // Rc's (plain + method-capable): a push is one refcount bump.
+    // Arc's (plain + method-capable): a push is one refcount bump.
     let plain_sentinel = if mcap {
         interp.plain_super_ctx.1.clone()
     } else {
@@ -7880,7 +7880,7 @@ fn call_function(
                 if let Some(prev) = interp.current_exception.borrow().clone() {
                     // A5 note: deep clone of the prior exception chain —
                     // avoiding it requires ExceptionValue.context to become
-                    // an Rc (exc_hier.rs, OUTSIDE this task's file
+                    // an Arc (exc_hier.rs, OUTSIDE this task's file
                     // ownership). It fires ONCE per exception (the first
                     // context-less frame exit), not per exit.
                     exc.context = Some(Box::new((*prev).clone()));
@@ -7892,18 +7892,18 @@ fn call_function(
     }
 }
 
-fn current_registry(interp: &Rc<Interpreter>) -> Rc<FnRegistry> {
+fn current_registry(interp: &Arc<Interpreter>) -> Arc<FnRegistry> {
     interp
         .registry
         .borrow()
         .clone()
-        .unwrap_or_else(|| Rc::new(FnRegistry::empty()))
+        .unwrap_or_else(|| Arc::new(FnRegistry::empty()))
 }
 
 /// 02.05a-residual: registry access for jit_hook's slot sync-back (the
 /// store_name chain takes the active FnRegistry like every tree-walker
 /// statement store).
-pub fn current_registry_pub() -> Rc<FnRegistry> {
+pub fn current_registry_pub() -> Arc<FnRegistry> {
     let interp = current_interp_for_bindings();
     current_registry(&interp)
 }
@@ -7911,21 +7911,21 @@ pub fn current_registry_pub() -> Rc<FnRegistry> {
 // A6 (memperf audit 2026-11-06): these used to rebuild two fresh
 // HashSet<String> (2x |names| String allocs) on EVERY function call, plus a
 // registry RefCell borrow + scope scan per set. The entry carries the
-// pre-resolved Rc-shared sets now (resolved once at registration from the
+// pre-resolved Arc-shared sets now (resolved once at registration from the
 // defining module's own scope table — B5); building a frame is two refcount
 // bumps.
-fn scope_globals(_interp: &Rc<Interpreter>, entry: &FnEntry) -> crate::frame::DeclaredNames {
+fn scope_globals(_interp: &Arc<Interpreter>, entry: &FnEntry) -> crate::frame::DeclaredNames {
     entry.declared_globals.clone()
 }
 
-fn scope_nonlocals(_interp: &Rc<Interpreter>, entry: &FnEntry) -> crate::frame::DeclaredNames {
+fn scope_nonlocals(_interp: &Arc<Interpreter>, entry: &FnEntry) -> crate::frame::DeclaredNames {
     entry.declared_nonlocals.clone()
 }
 
 /// Bind call args to params with CPython's exact error texts (S-02-10).
 #[allow(clippy::type_complexity)]
 fn bind_params(
-    interp: &Rc<Interpreter>,
+    interp: &Arc<Interpreter>,
     entry: &FnEntry,
     def: &FnDef,
     o: &Gc<ap_obj::PyObject>,
@@ -7942,7 +7942,7 @@ fn bind_params(
 > {
     let mut locals: HashMap<String, Loc> = HashMap::new();
     let set = |locals: &mut HashMap<String, Loc>, name: &str, v: Value| {
-        locals.insert(name.to_string(), Loc::Slot(Rc::new(RefCell::new(Some(v)))));
+        locals.insert(name.to_string(), Loc::Slot(Arc::new(RefCell::new(Some(v)))));
     };
 
     let named: Vec<&Param> = def
@@ -8102,7 +8102,7 @@ fn bind_params(
         .or_else(|| reg.scope_of_in(entry.scope_table, &entry.scope_path));
     if let Some(scope) = entry_scope {
         for name in &scope.cells {
-            my_cells.insert(name.clone(), Rc::new(RefCell::new(None)));
+            my_cells.insert(name.clone(), Arc::new(RefCell::new(None)));
         }
         // BUG-B fix: a PARAMETER that this scope's symtable classifies as a
         // cell is captured by a nested def — its initial value must live IN
@@ -8180,12 +8180,12 @@ fn bind_params(
 /// Defaults evaluate at DEF time against the DEFINING frame's scope
 /// (S-02-7); v0 re-evaluates per call against the defining frame's cell
 /// env (pure defaults: unobservable — documented).
-fn eval_default(interp: &Rc<Interpreter>, o: &Gc<ap_obj::PyObject>, d: &ap_ir::Expr) -> EResult {
+fn eval_default(interp: &Arc<Interpreter>, o: &Gc<ap_obj::PyObject>, d: &ap_ir::Expr) -> EResult {
     let defining = o
         .closure_slot
         .borrow()
         .and_then(|id| interp.defining_frames.borrow().get(&(id as u32)).cloned())
-        .unwrap_or_else(|| Rc::new(Frame::new_module(interp.globals.clone())));
+        .unwrap_or_else(|| Arc::new(Frame::new_module(interp.globals.clone())));
     eval_expr(interp, &defining, d, &current_registry(interp))
 }
 
@@ -8204,8 +8204,8 @@ pub enum GenFrame {
     GenExpr {
         elt: Expr,
         clauses: Vec<ap_ir::expr::CompClause>,
-        defining: Rc<Frame>,
-        reg: Rc<FnRegistry>,
+        defining: Arc<Frame>,
+        reg: Arc<FnRegistry>,
     },
     /// def-generator: resumable fiber state (PEP-342). The fiber is created
     /// at call time but NOT started — the body runs on first resume.
@@ -8219,7 +8219,7 @@ pub enum GenFrame {
         func_obj: Gc<ap_obj::PyObject>,
         args: Vec<Value>,
         kwargs: Vec<(String, Value)>,
-        super_ctx: Option<(Rc<ap_obj::classes::TypeObject>, Value, bool)>,
+        super_ctx: Option<(Arc<ap_obj::classes::TypeObject>, Value, bool)>,
     },
     /// def-generator past ensure_fiber: live resumable state.
     Live(crate::generators::GenState),
@@ -8309,7 +8309,7 @@ pub(crate) fn take_pending_generator_error() -> Option<Flow> {
 
 #[allow(clippy::type_complexity)] // interpreter plumbing type; factoring out would obscure the signature
 pub(crate) fn bind_params_for_generator(
-    interp: &Rc<Interpreter>,
+    interp: &Arc<Interpreter>,
     entry: &FnEntry,
     def: &FnDef,
     func_obj: &Gc<ap_obj::PyObject>,
@@ -8331,30 +8331,30 @@ pub(crate) fn bind_params_for_generator(
 }
 
 pub(crate) fn scope_globals_pub(
-    interp: &Rc<Interpreter>,
+    interp: &Arc<Interpreter>,
     entry: &FnEntry,
 ) -> crate::frame::DeclaredNames {
     scope_globals(interp, entry)
 }
 
 pub(crate) fn scope_nonlocals_pub(
-    interp: &Rc<Interpreter>,
+    interp: &Arc<Interpreter>,
     entry: &FnEntry,
 ) -> crate::frame::DeclaredNames {
     scope_nonlocals(interp, entry)
 }
 
 pub(crate) fn eval_expr_on_frame(
-    interp: &Rc<Interpreter>,
-    frame: &Rc<Frame>,
+    interp: &Arc<Interpreter>,
+    frame: &Arc<Frame>,
     e: &Expr,
-    reg: &Rc<FnRegistry>,
+    reg: &Arc<FnRegistry>,
 ) -> EResult {
     eval_expr(interp, frame, e, reg)
 }
 
 fn start_generator(
-    interp: &Rc<Interpreter>,
+    interp: &Arc<Interpreter>,
     entry: FnEntry,
     o: &Gc<ap_obj::PyObject>,
     args: &[Value],
@@ -8392,7 +8392,7 @@ fn start_generator(
 /// becomes RuntimeError per PEP-479; a real thrown exception that fell out
 /// unhandled propagates to the caller).
 fn pump_outcome(
-    _interp: &Rc<Interpreter>,
+    _interp: &Arc<Interpreter>,
     r: Result<Option<Value>, Flow>,
     throwing: Option<ExceptionValue>,
 ) -> Result<Option<Value>, Flow> {
@@ -8447,7 +8447,7 @@ fn pump_outcome(
 }
 
 /// Pull one value from a generator: PEP-342 resume semantics.
-fn gen_pull(interp: &Rc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> {
+fn gen_pull(interp: &Arc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> {
     let gen_kind = {
         let gens = interp.generators.borrow();
         gens.get(&id).map(|g| match g {
@@ -8469,7 +8469,7 @@ fn gen_pull(interp: &Rc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> {
             else {
                 return Ok(None);
             };
-            let sink: Rc<RefCell<Vec<Value>>> = Rc::new(RefCell::new(Vec::new()));
+            let sink: Arc<RefCell<Vec<Value>>> = Arc::new(RefCell::new(Vec::new()));
             run_gen_body(interp, &defining, |cf| {
                 run_comp_clauses_into(
                     interp,
@@ -8516,7 +8516,7 @@ fn gen_pull(interp: &Rc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> {
 }
 
 /// Create the fiber for a not-yet-started def-generator (first resume).
-fn ensure_fiber(interp: &Rc<Interpreter>, id: u64) -> Result<(), Flow> {
+fn ensure_fiber(interp: &Arc<Interpreter>, id: u64) -> Result<(), Flow> {
     let needs = {
         let gens = interp.generators.borrow();
         matches!(gens.get(&id), Some(GenFrame::Fn { .. }))
@@ -8555,7 +8555,7 @@ fn ensure_fiber(interp: &Rc<Interpreter>, id: u64) -> Result<(), Flow> {
 }
 
 /// send(v) into generator `id` (PEP-342 / S-02-24).
-pub(crate) fn gen_send(interp: &Rc<Interpreter>, id: u64, v: Value) -> Result<Option<Value>, Flow> {
+pub(crate) fn gen_send(interp: &Arc<Interpreter>, id: u64, v: Value) -> Result<Option<Value>, Flow> {
     ensure_fiber(interp, id)?;
     {
         let gens = interp.generators.borrow();
@@ -8582,7 +8582,7 @@ pub(crate) fn gen_send(interp: &Rc<Interpreter>, id: u64, v: Value) -> Result<Op
 /// throw(e) into generator `id` (S-02-25 area; raises at the suspension
 /// point; unstarted = raise before the first line; exhausted = propagate).
 pub(crate) fn gen_throw(
-    interp: &Rc<Interpreter>,
+    interp: &Arc<Interpreter>,
     id: u64,
     ev: ExceptionValue,
 ) -> Result<Option<Value>, Flow> {
@@ -8610,7 +8610,7 @@ pub(crate) fn gen_throw(
 /// close() on generator `id` (S-02-25: GeneratorExit at the suspension
 /// point; finally blocks run; a generator that then yields again raises
 /// RuntimeError('generator ignored GeneratorExit'); clean exits absorb it).
-pub(crate) fn gen_close(interp: &Rc<Interpreter>, id: u64) -> Result<(), Flow> {
+pub(crate) fn gen_close(interp: &Arc<Interpreter>, id: u64) -> Result<(), Flow> {
     ensure_fiber(interp, id)?;
     interp.si_value.borrow_mut().take();
     let r = crate::generators::resume_live(interp, id, crate::generators::GenInput::Close);
@@ -8633,7 +8633,7 @@ pub(crate) fn gen_close(interp: &Rc<Interpreter>, id: u64) -> Result<(), Flow> {
 /// GenExpr keeps the v0 eager drain; def-generators are now LAZY (PEP-342),
 /// so this simply makes sure the fiber exists and lets pulls drive it —
 /// `iterable_of` returns the registered id and gen_pull resumes per-step.
-fn gen_materialize(interp: &Rc<Interpreter>, id: u64) -> Result<(), Flow> {
+fn gen_materialize(interp: &Arc<Interpreter>, id: u64) -> Result<(), Flow> {
     let gen_kind = {
         let gens = interp.generators.borrow();
         gens.get(&id).map(|g| match g {
@@ -8676,11 +8676,11 @@ fn gen_materialize(interp: &Rc<Interpreter>, id: u64) -> Result<(), Flow> {
 
 /// Run a body, catching yields into the active sink (v0 stream materialize).
 fn run_gen_body(
-    interp: &Rc<Interpreter>,
-    frame: &Rc<Frame>,
-    f: impl FnOnce(&Rc<Frame>) -> Result<(), Flow>,
+    interp: &Arc<Interpreter>,
+    frame: &Arc<Frame>,
+    f: impl FnOnce(&Arc<Frame>) -> Result<(), Flow>,
 ) -> Result<(), Flow> {
-    let sink = Rc::new(RefCell::new(Vec::new()));
+    let sink = Arc::new(RefCell::new(Vec::new()));
     let prev = interp.active_gen_sink.borrow().clone();
     *interp.active_gen_sink.borrow_mut() = Some(sink.clone());
     let r = f(frame);
@@ -8735,7 +8735,7 @@ fn coro_gen_id(v: &Value) -> Option<u64> {
 
 /// Build the StopIteration Flow carrying the coroutine's TRUE return value
 /// (parked on si_value by the fiber body on Flow::Return).
-fn stop_iteration_with_value(interp: &Rc<Interpreter>) -> Flow {
+fn stop_iteration_with_value(interp: &Arc<Interpreter>) -> Flow {
     let val = interp.si_value.borrow_mut().take().unwrap_or(Value::None);
     let mut e = ExceptionValue::new("StopIteration", vec![]);
     if !matches!(val, Value::None) {
@@ -8751,14 +8751,14 @@ fn stop_async_iteration_flow() -> Flow {
 
 /// Prepare a coroutine/async-gen fiber for a direct resume: ensure the
 /// (still GenFrame::Fn) state got its fiber, and clear any stale si_value.
-fn coro_ensure(interp: &Rc<Interpreter>, id: u64) -> Result<(), Flow> {
+fn coro_ensure(interp: &Arc<Interpreter>, id: u64) -> Result<(), Flow> {
     ensure_fiber(interp, id)
 }
 
 /// close() on a coroutine: GeneratorExit at the suspension point; a coro
 /// that absorbs it (or never started) ends cleanly. CPython close() returns
 /// None and lets GeneratorExit/StopIteration pass silently.
-fn coro_close(interp: &Rc<Interpreter>, id: u64) -> Result<(), Flow> {
+fn coro_close(interp: &Arc<Interpreter>, id: u64) -> Result<(), Flow> {
     coro_ensure(interp, id)?;
     let r = crate::generators::resume_live(interp, id, crate::generators::GenInput::Close);
     match r {
@@ -8786,7 +8786,7 @@ enum AwaitTarget {
 }
 
 /// GET_AWAITABLE: resolve `v` to the thing we can drive.
-fn get_awaitable(interp: &Rc<Interpreter>, v: &Value) -> Result<AwaitTarget, Flow> {
+fn get_awaitable(interp: &Arc<Interpreter>, v: &Value) -> Result<AwaitTarget, Flow> {
     // Our coroutine / async-gen objects drive directly (first send None).
     if is_coroutine_obj(v) || is_asyncgen_obj(v) {
         if let Some(id) = coro_gen_id(v) {
@@ -8884,7 +8884,7 @@ fn get_awaitable(interp: &Rc<Interpreter>, v: &Value) -> Result<AwaitTarget, Flo
 /// (so the Task/loop or an outer send() sees it) and taking the resume input
 /// as the next send value. The awaitable's return value (si_value) is the
 /// expression's value.
-fn eval_await(interp: &Rc<Interpreter>, v: Value) -> EResult {
+fn eval_await(interp: &Arc<Interpreter>, v: Value) -> EResult {
     if !crate::generators::in_fiber() {
         return Err(raise("SyntaxError", "'await' outside async function"));
     }
@@ -8982,12 +8982,12 @@ enum CompKind {
 }
 
 fn run_comp(
-    interp: &Rc<Interpreter>,
-    frame: &Rc<Frame>,
+    interp: &Arc<Interpreter>,
+    frame: &Arc<Frame>,
     elt: &Expr,
     val: Option<&Expr>,
     clauses: &[ap_ir::expr::CompClause],
-    reg: &Rc<FnRegistry>,
+    reg: &Arc<FnRegistry>,
     kind: CompKind,
 ) -> EResult {
     // A6 (memperf audit 2026-11-06): the old path snapshotted ALL bound
@@ -8995,10 +8995,10 @@ fn run_comp(
     // EVERY comprehension execution — a comprehension inside a hot loop
     // paid O(size of scope) per run. Frame::new_child now links the
     // enclosing frame; Frame::lookup walks the chain through LIVE slots
-    // (Rc bumps only, zero allocations per run, and reads see current
+    // (Arc bumps only, zero allocations per run, and reads see current
     // values — CPython comp scopes read enclosing locals live). Writes
     // still stay in the comp frame (comps don't leak bindings).
-    let comp_frame = Rc::new(Frame::new_child(frame));
+    let comp_frame = Arc::new(Frame::new_child(frame));
     let mut list_out = Vec::new();
     let set_out = ap_obj::PySet::new();
     let dict_out = PyDict::new();
@@ -9026,12 +9026,12 @@ fn run_comp(
 /// Genexpr variant: append to a shared sink (called per outer iteration).
 #[allow(clippy::too_many_arguments)]
 fn run_comp_clauses_into(
-    interp: &Rc<Interpreter>,
-    cf: &Rc<Frame>,
+    interp: &Arc<Interpreter>,
+    cf: &Arc<Frame>,
     elt: &Expr,
     val: Option<&Expr>,
     clauses: &[ap_ir::expr::CompClause],
-    reg: &Rc<FnRegistry>,
+    reg: &Arc<FnRegistry>,
     sink: &mut Vec<Value>,
 ) -> Result<(), Flow> {
     let mut out = Vec::new();
@@ -9057,14 +9057,14 @@ fn run_comp_clauses_into(
 
 #[allow(clippy::too_many_arguments)]
 fn run_comp_clauses(
-    interp: &Rc<Interpreter>,
-    cf: &Rc<Frame>,
-    outer: &Rc<Frame>,
+    interp: &Arc<Interpreter>,
+    cf: &Arc<Frame>,
+    outer: &Arc<Frame>,
     elt: &Expr,
     val: Option<&Expr>,
     clauses: &[ap_ir::expr::CompClause],
     ci: usize,
-    reg: &Rc<FnRegistry>,
+    reg: &Arc<FnRegistry>,
     kind: &CompKind,
     list_out: &mut Vec<Value>,
     set_out: &ap_obj::PySet,
@@ -9126,7 +9126,7 @@ fn run_comp_clauses(
     Ok(())
 }
 
-fn assign_comp_target(frame: &Rc<Frame>, target: &Expr, v: Value) -> Result<(), Flow> {
+fn assign_comp_target(frame: &Arc<Frame>, target: &Expr, v: Value) -> Result<(), Flow> {
     match target {
         Expr::Name(n) => {
             // 02.07 fix: a genexpr whose DEFINING frame is the module frame
@@ -9308,7 +9308,7 @@ fn iterable_of(v: &Value) -> Result<Gc<PyIterator>, Flow> {
                         let interp = current_interp_for_bindings();
                         let iter_v = call_value(
                             &interp,
-                            &Rc::new(Frame::new_module(interp.globals.clone())),
+                            &Arc::new(Frame::new_module(interp.globals.clone())),
                             &it_fn,
                             std::slice::from_ref(v),
                             &[],
@@ -9378,7 +9378,7 @@ pub fn iterable_of_public(v: &Value) -> Result<Gc<PyIterator>, Flow> {
 }
 
 /// thread-local interpreter handle (set at run entry).
-fn interp_rc() -> Rc<Interpreter> {
+fn interp_rc() -> Arc<Interpreter> {
     CURRENT_INTERP
         .with(|c| c.borrow().clone())
         .expect("interpreter set for the run")
@@ -9394,7 +9394,7 @@ fn collect_iter(it: &Gc<PyIterator>) -> Vec<Value> {
 
 /// Register an iterable, returning the interpreter-side id. Generators and
 /// iterators pass through with their own ids.
-fn register_iter(interp: &Rc<Interpreter>, v: &Value) -> Result<u64, Flow> {
+fn register_iter(interp: &Arc<Interpreter>, v: &Value) -> Result<u64, Flow> {
     if let Value::Obj(o) = v {
         if matches!(
             o.kind,
@@ -9471,7 +9471,7 @@ fn register_iter(interp: &Rc<Interpreter>, v: &Value) -> Result<u64, Flow> {
 }
 
 /// F5 (oom-bughunt 2026-11-06): remove registry entries whose PyIterator
-/// handle was DROPPED (last Rc gone) since the last call. pull_iter only
+/// handle was DROPPED (last Arc gone) since the last call. pull_iter only
 /// pruned on natural exhaustion; iterators abandoned mid-stream (itertools
 /// chains via iter()/next(), comprehension snapshots dropped by collectors,
 /// user_iter getitem paths) used to pin their whole state — with the old
@@ -9486,7 +9486,7 @@ fn register_iter(interp: &Rc<Interpreter>, v: &Value) -> Result<u64, Flow> {
 /// functions (vendored ast.py iter_fields/walk...) creates an iterator-table
 /// entry per call and drains it natively; with pruning only on pull_iter the
 /// table grew ~400B/call forever (ast_getattr fence RSS 1.4MB/walk).
-pub(crate) fn prune_dropped_iters(interp: &Rc<Interpreter>) {
+pub(crate) fn prune_dropped_iters(interp: &Arc<Interpreter>) {
     let dead = crate::iter::take_dead_iter_ids();
     if dead.is_empty() {
         return;
@@ -9518,7 +9518,7 @@ pub(crate) fn prune_dropped_iters(interp: &Rc<Interpreter>) {
 }
 
 /// Pull one value from a registered iterator id (generator-aware).
-fn pull_iter(interp: &Rc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> {
+fn pull_iter(interp: &Arc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> {
     // F5: prune dropped iterators' registry entries first (the Drop list is
     // usually empty — one Vec take, one HashMap miss per dead id).
     prune_dropped_iters(interp);
@@ -9564,10 +9564,10 @@ fn pull_iter(interp: &Rc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> {
 // ===========================================================================
 
 fn render_fstring(
-    interp: &Rc<Interpreter>,
-    frame: &Rc<Frame>,
+    interp: &Arc<Interpreter>,
+    frame: &Arc<Frame>,
     parts: &[FStrPart],
-    reg: &Rc<FnRegistry>,
+    reg: &Arc<FnRegistry>,
 ) -> EResult {
     let mut out = String::new();
     for part in parts {
@@ -9598,12 +9598,12 @@ fn render_fstring(
 }
 
 fn render_interp_value(
-    interp: &Rc<Interpreter>,
-    frame: &Rc<Frame>,
+    interp: &Arc<Interpreter>,
+    frame: &Arc<Frame>,
     v: &Value,
     conv: Option<Conversion>,
     spec: Option<&[FStrPart]>,
-    reg: &Rc<FnRegistry>,
+    reg: &Arc<FnRegistry>,
 ) -> Result<String, Flow> {
     let base: String = match conv {
         Some(Conversion::S) => str_of_value(interp, frame, v)?,
@@ -9649,7 +9649,7 @@ fn render_interp_value(
 
 /// str(v) honoring user __str__/__repr__ (V066/f12); plain values fall to
 /// the value layer.
-fn str_of_value(interp: &Rc<Interpreter>, _frame: &Rc<Frame>, v: &Value) -> Result<String, Flow> {
+fn str_of_value(interp: &Arc<Interpreter>, _frame: &Arc<Frame>, v: &Value) -> Result<String, Flow> {
     match v {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::Exception => {
             // str(exc): zero args -> '', one arg -> str(arg), KeyError ->
@@ -9685,9 +9685,9 @@ fn str_of_value(interp: &Rc<Interpreter>, _frame: &Rc<Frame>, v: &Value) -> Resu
 // ===========================================================================
 
 fn pattern_match(
-    interp: &Rc<Interpreter>,
-    frame: &Rc<Frame>,
-    reg: &Rc<FnRegistry>,
+    interp: &Arc<Interpreter>,
+    frame: &Arc<Frame>,
+    reg: &Arc<FnRegistry>,
     p: &Pattern,
     v: &Value,
     bindings: &mut Vec<(String, Value)>,
@@ -9782,9 +9782,9 @@ fn pattern_match(
 }
 
 fn apply_bindings(
-    frame: &Rc<Frame>,
+    frame: &Arc<Frame>,
     bindings: &[(String, Value)],
-    reg: &Rc<FnRegistry>,
+    reg: &Arc<FnRegistry>,
 ) -> Result<(), Flow> {
     // Bindings ride the interpreter's store_name via a shim frame.
     let interp = current_interp_for_bindings();
@@ -9795,21 +9795,21 @@ fn apply_bindings(
 }
 
 thread_local! {
-    static CURRENT_INTERP: RefCell<Option<Rc<Interpreter>>> = const { RefCell::new(None) };
+    static CURRENT_INTERP: RefCell<Option<Arc<Interpreter>>> = const { RefCell::new(None) };
 }
 
 /// Public installer for WORKER threads (02.07): a new OS thread evaluates
 /// through the SAME interpreter object; this seeds its thread-local handle.
-pub fn install_current_interp(interp: &Rc<Interpreter>) {
+pub fn install_current_interp(interp: &Arc<Interpreter>) {
     CURRENT_INTERP.with(|c| *c.borrow_mut() = Some(interp.clone()));
 }
 
 /// 02.05a-residual: interpreter access for jit_hook's slot sync-back.
-pub fn current_interp_for_bindings_pub() -> Rc<Interpreter> {
+pub fn current_interp_for_bindings_pub() -> Arc<Interpreter> {
     current_interp_for_bindings()
 }
 
-fn current_interp_for_bindings() -> Rc<Interpreter> {
+fn current_interp_for_bindings() -> Arc<Interpreter> {
     CURRENT_INTERP
         .with(|c| c.borrow().clone())
         .expect("interpreter set for the run")
@@ -9821,7 +9821,7 @@ fn current_interp_for_bindings() -> Rc<Interpreter> {
 
 /// Call a dunder found on the value's type with `self` prepended.
 pub fn special_call(
-    interp: &Rc<Interpreter>,
+    interp: &Arc<Interpreter>,
     obj: &Value,
     dunder: &str,
     args: &[Value],
@@ -9846,14 +9846,14 @@ pub fn special_call(
     call_value(interp, &module_frame_pub(), &f, &full, &[])
 }
 
-pub fn module_frame_pub() -> Rc<Frame> {
+pub fn module_frame_pub() -> Arc<Frame> {
     let interp = current_interp_for_bindings();
-    Rc::new(Frame::new_module(interp.globals.clone()))
+    Arc::new(Frame::new_module(interp.globals.clone()))
 }
 
 /// The class Value for an exception class NAME (None-safe: v0 legacy
 /// exceptions that predate the class tree still resolve through here).
-pub fn exception_class_value(interp: &Rc<Interpreter>, name: &str) -> Value {
+pub fn exception_class_value(interp: &Arc<Interpreter>, name: &str) -> Value {
     crate::classes::exc_class_value(interp, name)
         .unwrap_or_else(|| Value::Obj(ap_obj::PyObject::new(ap_obj::ObjKind::Type, name)))
 }
@@ -9869,12 +9869,12 @@ pub fn exception_instance_value(e: &ExceptionValue) -> Value {
 /// frontend classifies the implicit reference as a free read of the
 /// class-frame-local `__class__`). Called AFTER the class value exists
 /// (S-03-17: the cell binds the created class object).
-pub fn seed_class_cell(interp: &Rc<Interpreter>, class_frame: &Rc<Frame>, class_v: &Value) {
+pub fn seed_class_cell(interp: &Arc<Interpreter>, class_frame: &Arc<Frame>, class_v: &Value) {
     // Park the cell on the class frame; method-def registration inside the
     // body copied `class_frame.my_cells` BEFORE this runs, so we ALSO walk
     // the nested table and wire the cell directly (methods capture by
-    // shared Rc — see bind_params' defining-frame path).
-    let cell: CellSlot = Rc::new(RefCell::new(Some(class_v.clone())));
+    // shared Arc — see bind_params' defining-frame path).
+    let cell: CellSlot = Arc::new(RefCell::new(Some(class_v.clone())));
     *class_frame.class_cell.borrow_mut() = Some(cell.clone());
     // Walk functions defined in this body (registered while the body ran)
     // and give their defining-frame entry a `__class__` free-cell.
@@ -9882,7 +9882,7 @@ pub fn seed_class_cell(interp: &Rc<Interpreter>, class_frame: &Rc<Frame>, class_
         .defining_frames
         .borrow()
         .iter()
-        .filter(|(_, f)| Rc::ptr_eq(f, class_frame))
+        .filter(|(_, f)| Arc::ptr_eq(f, class_frame))
         .map(|(id, _)| *id)
         .collect();
     let _ = ids; // the real wiring happens in bind_params via class_cell
@@ -9891,7 +9891,7 @@ pub fn seed_class_cell(interp: &Rc<Interpreter>, class_frame: &Rc<Frame>, class_
 
 /// User-protocol truthiness: __bool__ then __len__ then default (S-01-27
 /// + S-03-26). Returns None when no protocol applies.
-fn user_truthiness(interp: &Rc<Interpreter>, v: &Value) -> Result<Option<bool>, Flow> {
+fn user_truthiness(interp: &Arc<Interpreter>, v: &Value) -> Result<Option<bool>, Flow> {
     // collections.deque (native opaque): live truthiness from the <items>
     // backing list — `while self._exit_callbacks:` (contextlib) mutates the
     // deque in the loop condition. Value::is_truthy has no per-object state.
@@ -9944,7 +9944,7 @@ fn user_truthiness(interp: &Rc<Interpreter>, v: &Value) -> Result<Option<bool>, 
 
 /// Protocol-aware truthiness: user __bool__/__len__ first (S-03-26),
 /// then the value layer (S-01-27).
-pub(crate) fn truthy(interp: &Rc<Interpreter>, v: &Value) -> Result<bool, Flow> {
+pub(crate) fn truthy(interp: &Arc<Interpreter>, v: &Value) -> Result<bool, Flow> {
     match user_truthiness(interp, v)? {
         Some(b) => Ok(b),
         None => Ok(v.is_truthy()),
@@ -9952,7 +9952,7 @@ pub(crate) fn truthy(interp: &Rc<Interpreter>, v: &Value) -> Result<bool, Flow> 
 }
 
 /// User-protocol len(): __len__ via the type (S-03-22), exact error text.
-fn user_len(interp: &Rc<Interpreter>, v: &Value) -> Result<Option<i64>, Flow> {
+fn user_len(interp: &Arc<Interpreter>, v: &Value) -> Result<Option<i64>, Flow> {
     // T1 (scrapy fix pass): list-derived instances (traceback.StackSummary)
     // size via their backing list (synthesized `list` base has no __len__).
     if crate::classes::is_list_derived_instance(v) {
@@ -9992,7 +9992,7 @@ fn user_len(interp: &Rc<Interpreter>, v: &Value) -> Result<Option<i64>, Flow> {
 }
 
 /// User-protocol repr/str. `which`: "__repr__" or "__str__".
-fn user_repr(interp: &Rc<Interpreter>, v: &Value, which: &str) -> Result<Option<String>, Flow> {
+fn user_repr(interp: &Arc<Interpreter>, v: &Value, which: &str) -> Result<Option<String>, Flow> {
     // __str__ falls back to __repr__ only through object.__str__ semantics
     // (S-03-24): an explicit __str__ must return str; missing __str__ with
     // a class __repr__ uses it; neither -> default form.
@@ -10034,7 +10034,7 @@ fn user_repr(interp: &Rc<Interpreter>, v: &Value, which: &str) -> Result<Option<
 /// user slot produced a value (or raised), None when no slot applies.
 #[allow(clippy::too_many_arguments)]
 fn user_binop(
-    interp: &Rc<Interpreter>,
+    interp: &Arc<Interpreter>,
     op: &str,
     rop: &str,
     sym: &str,
@@ -10146,7 +10146,7 @@ fn is_not_implemented_value(v: &Value) -> bool {
     matches!(v, Value::Obj(o) if o.name == "NotImplemented" && o.kind == ap_obj::ObjKind::Opaque)
 }
 
-fn value_is_proper_subclass_of(interp: &Rc<Interpreter>, b: &Value, a: &Value) -> bool {
+fn value_is_proper_subclass_of(interp: &Arc<Interpreter>, b: &Value, a: &Value) -> bool {
     let (Some(bc), Some(ac)) = (
         crate::classes::class_of_value(interp, b),
         crate::classes::class_of_value(interp, a),
@@ -10159,7 +10159,7 @@ fn value_is_proper_subclass_of(interp: &Rc<Interpreter>, b: &Value, a: &Value) -
 
 /// In-place op dispatch (S-03-26): __iX__ first.
 fn user_binop_inplace(
-    interp: &Rc<Interpreter>,
+    interp: &Arc<Interpreter>,
     iop: &str,
     op: &str,
     rop: &str,
@@ -10184,7 +10184,7 @@ fn user_binop_inplace(
 
 /// User comparison dispatch: __eq__/__ne__/__lt__/__le__/__gt__/__ge__.
 fn user_compare(
-    interp: &Rc<Interpreter>,
+    interp: &Arc<Interpreter>,
     op: CmpOp,
     a: &Value,
     b: &Value,
@@ -10297,7 +10297,7 @@ fn user_compare(
 }
 
 fn class_protocol_builtin(
-    interp: &Rc<Interpreter>,
+    interp: &Arc<Interpreter>,
     name: &str,
     args: &[Value],
     kwargs: &[(String, Value)],
@@ -10652,16 +10652,16 @@ fn class_protocol_builtin(
 }
 
 /// Public wrapper for print()'s container rendering.
-pub fn repr_with_classes_public(interp: &Rc<Interpreter>, v: &Value) -> EResult {
+pub fn repr_with_classes_public(interp: &Arc<Interpreter>, v: &Value) -> EResult {
     repr_with_classes(interp, v)
 }
 
 /// repr() that renders user __repr__ through containers (V066's
 /// `repr([Both()])` -> `[REPR]`): walks the value tree, pre-rendering
 /// user instances, then splices them into the structural form.
-fn repr_with_classes(interp: &Rc<Interpreter>, v: &Value) -> EResult {
+fn repr_with_classes(interp: &Arc<Interpreter>, v: &Value) -> EResult {
     fn render(
-        interp: &Rc<Interpreter>,
+        interp: &Arc<Interpreter>,
         v: &Value,
         out: &mut String,
         active: &mut std::collections::HashSet<usize>,
@@ -10872,7 +10872,7 @@ fn t_kind(t: &Value) -> Option<&'static str> {
     }
 }
 
-fn class_isinstance(interp: &Rc<Interpreter>, args: &[Value]) -> EResult {
+fn class_isinstance(interp: &Arc<Interpreter>, args: &[Value]) -> EResult {
     let v = args
         .first()
         .ok_or_else(|| raise("TypeError", "isinstance expected 2 arguments, got 1"))?;
@@ -11159,7 +11159,7 @@ fn class_isinstance(interp: &Rc<Interpreter>, args: &[Value]) -> EResult {
     Ok(Value::Bool(crate::classes::value_isinstance(interp, v, t)?))
 }
 
-fn class_issubclass(interp: &Rc<Interpreter>, args: &[Value]) -> EResult {
+fn class_issubclass(interp: &Arc<Interpreter>, args: &[Value]) -> EResult {
     if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::DbgIss) {
         if let (Some(a), Some(b)) = (args.first(), args.get(1)) {
             let nm = |v: &Value| match v {
@@ -11248,7 +11248,7 @@ fn class_issubclass(interp: &Rc<Interpreter>, args: &[Value]) -> EResult {
 }
 
 /// property(fget, [fset], [fdel]) -> descriptor object (S-03-21).
-fn make_property(interp: &Rc<Interpreter>, args: &[Value]) -> EResult {
+fn make_property(interp: &Arc<Interpreter>, args: &[Value]) -> EResult {
     let _ = interp;
     let o = ap_obj::PyObject::new(ap_obj::ObjKind::Descriptor, "property");
     *o.descr_kind.borrow_mut() = Some("property".to_string());
@@ -11263,7 +11263,7 @@ fn make_property(interp: &Rc<Interpreter>, args: &[Value]) -> EResult {
     Ok(Value::Obj(o))
 }
 
-fn make_descr(interp: &Rc<Interpreter>, kind: &str, args: &[Value]) -> EResult {
+fn make_descr(interp: &Arc<Interpreter>, kind: &str, args: &[Value]) -> EResult {
     let _ = interp;
     let o = ap_obj::PyObject::new(ap_obj::ObjKind::Descriptor, kind);
     *o.descr_kind.borrow_mut() = Some(kind.to_string());
@@ -11288,7 +11288,7 @@ pub fn supercall_flag_take() -> bool {
     SUPERCALL_SKIP.with(|f| std::mem::replace(&mut f.get(), false))
 }
 
-fn builtin_super(interp: &Rc<Interpreter>, args: &[Value], _kwargs: &[(String, Value)]) -> EResult {
+fn builtin_super(interp: &Arc<Interpreter>, args: &[Value], _kwargs: &[(String, Value)]) -> EResult {
     match args.len() {
         0 => {
             // Zero-arg super(): the innermost active method context
@@ -11388,7 +11388,7 @@ pub fn register_shared_iter_pub(it: Gc<PyIterator>) -> u64 {
 }
 
 /// user_iter variant returning the registered PyIterator (iterable_of path).
-fn user_iter_to_iterator(interp: &Rc<Interpreter>, v: &Value) -> Result<Gc<PyIterator>, Flow> {
+fn user_iter_to_iterator(interp: &Arc<Interpreter>, v: &Value) -> Result<Gc<PyIterator>, Flow> {
     if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::StmtDbg) {
         if let Some((f, _)) = crate::classes::special_lookup(interp, v, "__iter__") {
             eprintln!("[UIDBG] iter fn name={:?}", {
@@ -11465,7 +11465,7 @@ fn user_iter_to_iterator(interp: &Rc<Interpreter>, v: &Value) -> Result<Gc<PyIte
 
 /// iter() over a user instance: __iter__ result or legacy __getitem__
 /// sequence protocol (S-03-24).
-fn user_iter(interp: &Rc<Interpreter>, v: &Value) -> EResult {
+fn user_iter(interp: &Arc<Interpreter>, v: &Value) -> EResult {
     if let Some((f, _)) = crate::classes::special_lookup(interp, v, "__iter__") {
         return call_value(
             interp,
@@ -11516,7 +11516,7 @@ fn user_iter(interp: &Rc<Interpreter>, v: &Value) -> EResult {
 }
 
 /// next() over a user-defined iterator (__next__ protocol).
-fn user_next(interp: &Rc<Interpreter>, v: &Value) -> EResult {
+fn user_next(interp: &Arc<Interpreter>, v: &Value) -> EResult {
     let (f, _) = crate::classes::special_lookup(interp, v, "__next__").ok_or_else(|| {
         raise(
             "TypeError",
@@ -11535,7 +11535,7 @@ fn user_next(interp: &Rc<Interpreter>, v: &Value) -> EResult {
 /// Raw-value user __eq__/__ne__ dispatch (c028: the slot's return value IS
 /// the comparison result, truthiness applied by the caller).
 fn user_compare_value(
-    interp: &Rc<Interpreter>,
+    interp: &Arc<Interpreter>,
     op: CmpOp,
     a: &Value,
     b: &Value,
@@ -11555,9 +11555,9 @@ fn user_compare_value(
     let a_is_type = is_class(a);
     let b_is_type = is_class(b);
     if a_is_type || b_is_type {
-        // Identity semantics (Value::is for Obj is Rc::ptr_eq).
+        // Identity semantics (Value::is for Obj is Arc::ptr_eq).
         let same = match (a, b) {
-            (Value::Obj(x), Value::Obj(y)) => std::rc::Rc::ptr_eq(x, y),
+            (Value::Obj(x), Value::Obj(y)) => std::sync::Arc::ptr_eq(x, y),
             _ => false,
         };
         return Some(Ok(Value::Bool(same)));
@@ -11659,7 +11659,7 @@ fn w112_attr_fallback(o: &Value, name: &str) -> Option<Value> {
     None
 }
 
-fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option<Value>, Flow> {
+fn attr_get(_interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Option<Value>, Flow> {
     // W112: log native _rawentry reads on UserClass receivers -
     // identifies the non-Expr::Attribute caller of the failing
     // class-receiver read in the unraisable collector flow.
@@ -12405,7 +12405,7 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                                         let mut m = reg.borrow_mut();
                                         m.retain(|_, w| {
                                             ap_gc::weakref_alive(
-                                                std::rc::Rc::as_ptr(w) as *const u8 as usize,
+                                                std::sync::Arc::as_ptr(w) as *const u8 as usize,
                                             )
                                         });
                                         m.get(&cache_key).cloned()
@@ -12422,10 +12422,10 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                                         .borrow_mut()
                                         .set(Value::Str(PyString::new("cell_contents")), cur);
                                     // Track the LIVE cell for writes: park it
-                                    // on the cell object (Rc clone rides the
+                                    // on the cell object (Arc clone rides the
                                     // type_ref slot — it is RefCell<Option<Weak>>
                                     // so use a parallel registry keyed by ptr).
-                                    let ckey = std::rc::Rc::as_ptr(&c) as usize;
+                                    let ckey = std::sync::Arc::as_ptr(&c) as usize;
                                     // E8 sweep: evict backing entries whose
                                     // wrapper died (Weak upgrade fails). The
                                     // table used to be insert-only — campaign
@@ -12438,7 +12438,7 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                                     CELL_BACKING_PINS.with(|reg| {
                                         let mut m = reg.borrow_mut();
                                         m.retain(|_, w| w.upgrade().is_some());
-                                        m.insert(ckey, std::rc::Rc::downgrade(&c));
+                                        m.insert(ckey, std::sync::Arc::downgrade(&c));
                                     });
                                     CELL_BACKING.with(|reg| {
                                         let mut m = reg.borrow_mut();
@@ -12672,7 +12672,7 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 // (type(subject).__mro__), not the subject's own class MRO —
                 // otherwise super().__new__ in EnumType.__new__ scans
                 // ReprEnum→Enum→object and misses ABCMeta/type entirely.
-                let scan_mro: Vec<std::rc::Rc<ap_obj::classes::TypeRef>>;
+                let scan_mro: Vec<std::sync::Arc<ap_obj::classes::TypeRef>>;
                 let borrowed;
                 let subject_is_class = matches!(&subject, Value::Obj(so) if so.kind == ap_obj::ObjKind::UserClass)
                     // T2 (pytest NodeMeta): class objects created through a
@@ -12691,7 +12691,7 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 };
                 if let Some(meta) = &meta_of_subject {
                     if meta.is_subclass(&start_t)
-                        || std::rc::Rc::ptr_eq(meta, &start_t)
+                        || std::sync::Arc::ptr_eq(meta, &start_t)
                         // T2 (pytest NodeMeta): the super-stack start may be
                         // a DIFFERENT payload for the same-named metaclass
                         // (class values cache independently); match by name.
@@ -12704,7 +12704,7 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                         let mut after = false;
                         for cls in mro.iter() {
                             if !after {
-                                if std::rc::Rc::ptr_eq(cls, &start_t) || cls.name == start_t.name {
+                                if std::sync::Arc::ptr_eq(cls, &start_t) || cls.name == start_t.name {
                                     after = true;
                                 }
                                 continue;
@@ -12784,7 +12784,7 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 let mut after = false;
                 for cls in mro.iter() {
                     if !after {
-                        if std::rc::Rc::ptr_eq(cls, &start_t) || cls.name == start_t.name {
+                        if std::sync::Arc::ptr_eq(cls, &start_t) || cls.name == start_t.name {
                             after = true;
                         }
                         continue;
@@ -12954,7 +12954,7 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 // write to the live cell). E8: backing entries are address-
                 // pinned via CELL_BACKING_PINS, so a recycled address can
                 // never alias a stale slot.
-                let key = std::rc::Rc::as_ptr(o) as usize;
+                let key = std::sync::Arc::as_ptr(o) as usize;
                 let live = CELL_BACKING.with(|reg| reg.borrow().get(&key).cloned());
                 if let Some(cell) = live {
                     return Ok(Some(cell.borrow().clone().unwrap_or(Value::None)));
@@ -14232,13 +14232,13 @@ fn attr_get(_interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<Option
 }
 
 /// Public truthiness shim (threading_call Condition.wait_for predicates).
-pub fn truthy_public(interp: &Rc<Interpreter>, v: &Value) -> Result<bool, Flow> {
+pub fn truthy_public(interp: &Arc<Interpreter>, v: &Value) -> Result<bool, Flow> {
     truthy(interp, v)
 }
 
 /// Public attr_get shim (builtins_modules json/os lookups).
 pub fn attr_get_public(
-    interp: &Rc<Interpreter>,
+    interp: &Arc<Interpreter>,
     obj: &Value,
     name: &str,
 ) -> Result<Option<Value>, Flow> {
@@ -14248,13 +14248,13 @@ pub fn attr_get_public(
 /// 02.05a JIT entry hook seams: the tree-walker's exact name resolution
 /// (locals → globals → builtins → module ns → exc classes → NameError)
 /// and full caller-frame call dispatch for the JIT host callbacks.
-pub fn lookup_name_pub(interp: &Rc<Interpreter>, frame: &Rc<Frame>, name: &str) -> EResult {
+pub fn lookup_name_pub(interp: &Arc<Interpreter>, frame: &Arc<Frame>, name: &str) -> EResult {
     lookup_name(interp, frame, name)
 }
 
 pub fn call_value_frame_pub(
-    interp: &Rc<Interpreter>,
-    caller: &Rc<Frame>,
+    interp: &Arc<Interpreter>,
+    caller: &Arc<Frame>,
     f: &Value,
     args: &[Value],
     kwargs: &[(String, Value)],
@@ -14350,17 +14350,17 @@ fn builtin_method_exists(name: &str) -> bool {
 /// 3-arg shim (methods.rs): positional-only call on a fresh module frame.
 pub fn call_value_pub3(f: &Value, args: &[Value]) -> EResult {
     let interp = current_interp_for_bindings();
-    let caller = Rc::new(Frame::new_module(interp.globals.clone()));
+    let caller = Arc::new(Frame::new_module(interp.globals.clone()));
     call_value(&interp, &caller, f, args, &[])
 }
 
 pub fn call_value_pub(
-    interp: &Rc<Interpreter>,
+    interp: &Arc<Interpreter>,
     f: &Value,
     args: &[Value],
     kwargs: &[(String, Value)],
 ) -> EResult {
-    let caller = Rc::new(Frame::new_module(interp.globals.clone()));
+    let caller = Arc::new(Frame::new_module(interp.globals.clone()));
     call_value(interp, &caller, f, args, kwargs)
 }
 
@@ -14370,16 +14370,16 @@ pub fn call_value_pub2(f: &Value, args: &[Value], kwargs: &[(String, Value)]) ->
     call_value_pub(&interp, f, args, kwargs)
 }
 
-pub fn eval_expr_public(interp: &Rc<Interpreter>, e: &ap_ir::Expr) -> EResult {
-    let frame = Rc::new(Frame::new_module(interp.globals.clone()));
+pub fn eval_expr_public(interp: &Arc<Interpreter>, e: &ap_ir::Expr) -> EResult {
+    let frame = Arc::new(Frame::new_module(interp.globals.clone()));
     let reg = current_registry(interp);
     eval_expr(interp, &frame, e, &reg)
 }
 
 /// Public statement-execution shim (builtins.exec, 04.01): run pre-lowered
 /// statements in a module frame over the CURRENT globals.
-pub fn exec_stmts_public(interp: &Rc<Interpreter>, stmts: &[ap_ir::Stmt]) -> EResult {
-    let frame = Rc::new(Frame::new_module(interp.globals.clone()));
+pub fn exec_stmts_public(interp: &Arc<Interpreter>, stmts: &[ap_ir::Stmt]) -> EResult {
+    let frame = Arc::new(Frame::new_module(interp.globals.clone()));
     let reg = current_registry(interp);
     exec_block(interp, &frame, stmts, &reg)?;
     Ok(Value::None)
@@ -14390,12 +14390,12 @@ pub fn exec_stmts_public(interp: &Rc<Interpreter>, stmts: &[ap_ir::Stmt]) -> ERe
 /// required; locals optional). Defs bind into the locals dict when locals is
 /// a distinct dict, else into globals (CPython semantics at module scope).
 pub fn exec_stmts_in_ns(
-    interp: &Rc<Interpreter>,
+    interp: &Arc<Interpreter>,
     stmts: &[ap_ir::Stmt],
     globals: Gc<PyDict>,
     locals: Option<Gc<PyDict>>,
 ) -> EResult {
-    let frame = Rc::new(Frame::new_module(globals.clone()));
+    let frame = Arc::new(Frame::new_module(globals.clone()));
     // Module frames read globals directly; explicit locals ride the frame's
     // locals slot via a globals-echo (frame locals is `Option<PyDict>`? we
     // mirror by writing defs into BOTH when they differ — v0 approximation
@@ -14419,12 +14419,12 @@ pub fn exec_stmts_in_ns(
 }
 
 /// Interpreter getter for the keyed builtin paths.
-pub fn interp_registry(interp: &Rc<Interpreter>) -> Rc<FnRegistry> {
+pub fn interp_registry(interp: &Arc<Interpreter>) -> Arc<FnRegistry> {
     current_registry(interp)
 }
 
 /// Public gen_pull for the builtins' next() surface.
-pub fn gen_pull_public(interp: &Rc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> {
+pub fn gen_pull_public(interp: &Arc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> {
     gen_pull(interp, id)
 }
 
@@ -14467,23 +14467,23 @@ pub fn drain_generator_public(v: &Value) -> Option<Result<Vec<Value>, Flow>> {
 }
 
 /// Public send/throw/close entries (builtins' generator method surface).
-pub fn gen_send_pub(interp: &Rc<Interpreter>, id: u64, v: Value) -> Result<Option<Value>, Flow> {
+pub fn gen_send_pub(interp: &Arc<Interpreter>, id: u64, v: Value) -> Result<Option<Value>, Flow> {
     gen_send(interp, id, v)
 }
 pub fn gen_throw_pub(
-    interp: &Rc<Interpreter>,
+    interp: &Arc<Interpreter>,
     id: u64,
     ev: ExceptionValue,
 ) -> Result<Option<Value>, Flow> {
     gen_throw(interp, id, ev)
 }
-pub fn gen_close_pub(interp: &Rc<Interpreter>, id: u64) -> Result<(), Flow> {
+pub fn gen_close_pub(interp: &Arc<Interpreter>, id: u64) -> Result<(), Flow> {
     gen_close(interp, id)
 }
 
 /// Instantiate an exception CLASS payload (throw() path; S-03-33).
 pub fn raise_class_pub(
-    interp: &Rc<Interpreter>,
+    interp: &Arc<Interpreter>,
     eo: &Gc<ap_obj::PyObject>,
 ) -> Result<ExceptionValue, Flow> {
     let v = Value::Obj(eo.clone());
@@ -14513,7 +14513,7 @@ pub fn is_builtin_exc_name_pub(n: &str) -> bool {
 }
 
 /// Public thread-local interpreter handle (classes.rs metaclass hooks).
-pub fn current_interp_handle() -> std::rc::Rc<Interpreter> {
+pub fn current_interp_handle() -> std::sync::Arc<Interpreter> {
     current_interp_for_bindings()
 }
 

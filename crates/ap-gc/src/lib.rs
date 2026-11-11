@@ -1,9 +1,9 @@
 //! ap-gc — the antipythony cycle collector (leaf 02.04).
 //!
-//! STAGE 1 (this leaf): a CPython-shaped Rc-cycle collector over the
+//! STAGE 1 (this leaf): a CPython-shaped Arc-cycle collector over the
 //! interpreter's object graph — allocation registry, subtract-refs
 //! reachability, once-only finalizers, weakref liveness, and the state for
-//! the `gc` module surface ap-run builds. `Gc<T>` stays `Rc<T>`; the MMTk
+//! the `gc` module surface ap-run builds. `Gc<T>` stays `Arc<T>`; the MMTk
 //! swap is designed in docs/gc-mmtk-swap.md (stage 2).
 //!
 //! STAGE 2 (future): the MMTk binding + heap policies behind trait Heap

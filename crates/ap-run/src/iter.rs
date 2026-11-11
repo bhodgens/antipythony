@@ -17,16 +17,16 @@ use ap_obj::value::{PyList, PyString, Tuple, Value};
 /// Iterator state. Every variant's `next` yields Some(value) or ends.
 pub enum IterState {
     /// Index cursor into a SNAPSHOT — EXCEPT `Shared`: list/tuple sources
-    /// carry the container's own Rc (G1: a for-loop over a 100MB list used
+    /// carry the container's own Arc (G1: a for-loop over a 100MB list used
     /// to clone the whole container per iter(); now the iterator shares the
     /// backing store and clones only the yielded VALUE per step).
     Seq(Vec<Value>, usize),
-    /// G1: index cursor sharing the ORIGINAL container's backing Rc. The
+    /// G1: index cursor sharing the ORIGINAL container's backing Arc. The
     /// RefCell borrow per step mirrors PyList aliasing semantics (append
     /// during iteration is visible — same UB-in-CPython caveat as snapshots,
     /// but no full-container clone per iter()).
     SharedList(Gc<PyList>, usize),
-    /// G1: tuple variant (immutable; the Rc shares the backing Vec).
+    /// G1: tuple variant (immutable; the Arc shares the backing Vec).
     SharedTuple(Gc<Tuple>, usize),
     /// range: integer cursor with start/stop/step.
     Range {

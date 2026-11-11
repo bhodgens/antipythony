@@ -478,7 +478,7 @@ pub fn builtin_int(interp: &Interpreter, args: &[Value]) -> BResult {
             if let Some(t) = crate::classes::class_of_value(interp, &cls_v) {
                 if t.mro.borrow().iter().any(|m| m.name == "int") {
                     let io = ap_obj::PyObject::new(ap_obj::ObjKind::UserInstance, t.name.clone());
-                    *io.type_ref.borrow_mut() = Some(std::rc::Rc::downgrade(&t));
+                    *io.type_ref.borrow_mut() = Some(std::sync::Arc::downgrade(&t));
                     *io.class_ref.borrow_mut() = Some(t.clone());
                     let _ = io
                         .attrs
@@ -2802,9 +2802,9 @@ pub fn make_sys_module(interp: &Interpreter) -> Value {
     let _ = m
         .module_ns
         .borrow_mut()
-        .replace(std::rc::Rc::new((*ns).clone()));
+        .replace(std::sync::Arc::new((*ns).clone()));
     // Store the ns for attribute reads.
-    *m.module_ns.borrow_mut() = Some(std::rc::Rc::new((*ns).clone()));
+    *m.module_ns.borrow_mut() = Some(std::sync::Arc::new((*ns).clone()));
     Value::Obj(m)
 }
 
@@ -3755,7 +3755,7 @@ pub fn builtin_vars(interp: &Interpreter, args: &[Value]) -> BResult {
 pub fn builtin_id(args: &[Value]) -> BResult {
     let v = one(args, "id")?;
     let n = match v {
-        Value::Obj(o) => std::rc::Rc::as_ptr(o) as *const u8 as i64,
+        Value::Obj(o) => std::sync::Arc::as_ptr(o) as *const u8 as i64,
         other => {
             // Wave-68: containers get a real per-instance identity (the
             // payload pointer) — id()-keyed memos (copy.deepcopy,
@@ -4690,7 +4690,7 @@ pub fn call_builtin(
                     .map_err(|m| raise("SyntaxError", m))?;
                 let interp = crate::builtins_modules::current_interp()
                     .ok_or_else(|| raise("RuntimeError", "no interpreter"))?;
-                let interp = std::rc::Rc::new(interp);
+                let interp = std::sync::Arc::new(interp);
                 let ast_mod = crate::importer::import_module(&interp, "_ast")?;
                 let conv = crate::interp::attr_get_public(&interp, &ast_mod, "from_native")?
                     .ok_or_else(|| raise("RuntimeError", "_ast.from_native missing"))?;
@@ -4719,7 +4719,7 @@ pub fn call_builtin(
             };
             let interp = crate::builtins_modules::current_interp()
                 .ok_or_else(|| raise("RuntimeError", "no interpreter"))?;
-            let interp = std::rc::Rc::new(interp);
+            let interp = std::sync::Arc::new(interp);
             match crate::importer::import_module(&interp, &mod_name) {
                 Ok(v) => Ok(v),
                 Err(Flow::Raise(e)) => Err(Flow::Raise(e)),
@@ -5005,7 +5005,7 @@ pub fn builtin_exec(interp: &Interpreter, args: &[Value]) -> crate::EvalResult {
                             rc_interp
                                 .defining_frames
                                 .borrow_mut()
-                                .insert(id, std::rc::Rc::new(df));
+                                .insert(id, std::sync::Arc::new(df));
                         }
                     }
                 }
@@ -5073,7 +5073,7 @@ pub fn builtin_exec(interp: &Interpreter, args: &[Value]) -> crate::EvalResult {
 
 /// Public attr_get shim for builtins_modules (module ns lookups from native code).
 pub fn attr_get_pub(
-    interp: &std::rc::Rc<Interpreter>,
+    interp: &std::sync::Arc<Interpreter>,
     obj: &Value,
     name: &str,
 ) -> Result<Option<Value>, Flow> {
@@ -5194,7 +5194,7 @@ pub fn py_float_repr_pub(x: f64) -> String {
 }
 
 /// Register a native iterator into the CURRENT interpreter's table.
-pub fn interp_register_iter(id: u64, it: std::rc::Rc<crate::iter::PyIterator>) {
+pub fn interp_register_iter(id: u64, it: std::sync::Arc<crate::iter::PyIterator>) {
     if let Some(interp) = crate::builtins_modules::current_interp() {
         // Fence-perf fix 2026-11-06: tag for Drop-prune (F5 contract).
         it.table_id.set(Some(id));
@@ -5337,7 +5337,7 @@ fn builtin_type_new(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
     };
     let interp = crate::builtins_modules::current_interp()
         .ok_or_else(|| raise("SystemError", "no interpreter"))?;
-    let mut base_types: Vec<std::rc::Rc<crate::classes::TypeRef>> = Vec::new();
+    let mut base_types: Vec<std::sync::Arc<crate::classes::TypeRef>> = Vec::new();
     for b in &bases_v {
         // 02.03b: builtin-type bases (`class IntEnum(int, Enum)` through the
         // metaclass __new__ path) go through the SAME synthesis exec_class_def

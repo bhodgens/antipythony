@@ -29,7 +29,7 @@
 //! dispatch through `re_pattern_attr` / `re_match_attr` / `call_re_obj`.
 
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use ap_obj::value::Value;
 use ap_obj::PyObject;
@@ -2070,14 +2070,14 @@ pub(crate) fn cached_pattern_object(compiled: Compiled) -> Value {
     v
 }
 
-type GcPyObject = std::rc::Rc<ap_obj::PyObject>;
+type GcPyObject = std::sync::Arc<ap_obj::PyObject>;
 
 pub(crate) fn pattern_object(compiled: Compiled) -> Value {
     let o = PyObject::new(ap_obj::ObjKind::Opaque, "re.Pattern");
     // The Compiled engine rides a thread-local identity map (attrs carry the
     // Python-visible surface only).
     let key = compiled_identity(&o);
-    let pat_rc: PatRc = Rc::new(PatBox { compiled });
+    let pat_rc: PatRc = Arc::new(PatBox { compiled });
     {
         let a = o.attrs.borrow_mut();
         let _ = a.set(vs("pattern"), vs(pat_rc.compiled.pattern.clone()));
@@ -2097,28 +2097,28 @@ pub(crate) fn pattern_object(compiled: Compiled) -> Value {
     Value::Obj(o)
 }
 
-pub(crate) type PatRc = Rc<PatBox>;
+pub(crate) type PatRc = Arc<PatBox>;
 
 thread_local! {
-    /// OOM-wave-2 G2: both registries were insert-only `HashMap<usize, Rc<_>>`
+    /// OOM-wave-2 G2: both registries were insert-only `HashMap<usize, Arc<_>>`
     /// tables keyed by the OBJECT's own address — the key is the object's
     /// identity, so the table could NEVER dedupe (every object gets a fresh
     /// key) and could only grow: PAT_TABLE pinned every compiled pattern and
     /// MATCH_TABLE pinned its full subject TEXT forever. Fix: store
     /// `Weak` handles instead. The owner (the Python-visible
-    /// Pattern/Match PyObject) keeps its own strong Rc, so the entry lives
+    /// Pattern/Match PyObject) keeps its own strong Arc, so the entry lives
     /// exactly as long as the Python object, and dead entries are swept on
     /// the next lookup/insert (cheap amortized housekeeping).
     static PAT_TABLE: RcRefCell<HashMap<usize, PatRc>> =
         RcRefCell::new(HashMap::new());
-    static MATCH_TABLE: RcRefCell<HashMap<usize, Rc<MatchBox>>> = RcRefCell::new(HashMap::new());
+    static MATCH_TABLE: RcRefCell<HashMap<usize, Arc<MatchBox>>> = RcRefCell::new(HashMap::new());
     /// Insertion-order ledgers for the SRE_TABLE_CAP eviction.
     static PAT_TABLE_ORDER: RcRefCell<Vec<usize>> = const { RcRefCell::new(Vec::new()) };
     static MATCH_TABLE_ORDER: RcRefCell<Vec<usize>> = const { RcRefCell::new(Vec::new()) };
 }
 
 /// G2 housekeeping bound: the tables key entries by the OWNER PyObject's
-/// address, and the strong Rc lives HERE (the PyObject has no Rc carrier to
+/// address, and the strong Arc lives HERE (the PyObject has no Arc carrier to
 /// park it in). Unbounded growth is prevented by capping: entries beyond the
 /// cap evict oldest-first (Vec ledger). A dead object's entry is released
 /// when its address is reused by a new Pattern/Match (fresh insert at the
@@ -2146,7 +2146,7 @@ fn sre_table_insert<T>(
 }
 
 fn compiled_identity(o: &GcPyObject) -> usize {
-    std::rc::Rc::as_ptr(o) as *const u8 as usize
+    std::sync::Arc::as_ptr(o) as *const u8 as usize
 }
 
 pub(crate) struct MatchBox {
@@ -2167,7 +2167,7 @@ pub(crate) fn pattern_of(obj: &Value) -> Option<PatRc> {
     None
 }
 
-pub(crate) fn match_of(obj: &Value) -> Option<Rc<MatchBox>> {
+pub(crate) fn match_of(obj: &Value) -> Option<Arc<MatchBox>> {
     if let Value::Obj(o) = obj {
         if o.name == "re.Match" {
             let key = compiled_identity(o);
@@ -2315,7 +2315,7 @@ pub(crate) fn pat_exec(
                 None => return Ok(None),
             }
         }
-        let mb = Rc::new(MatchBox {
+        let mb = Arc::new(MatchBox {
             pattern: pat.clone(),
             text: text.to_string(),
             pos,
@@ -2327,7 +2327,7 @@ pub(crate) fn pat_exec(
     Ok(None)
 }
 
-pub(crate) fn match_object(mb: Rc<MatchBox>) -> Value {
+pub(crate) fn match_object(mb: Arc<MatchBox>) -> Value {
     let o = PyObject::new(ap_obj::ObjKind::Opaque, "re.Match");
     let key = compiled_identity(&o);
     let repr = match_repr(&mb);
@@ -2583,7 +2583,7 @@ pub(crate) fn pat_sub(
             None => break,
         };
         out.extend(chars[last..res.start].iter());
-        let mb = Rc::new(MatchBox {
+        let mb = Arc::new(MatchBox {
             pattern: pat.clone(),
             text: text.to_string(),
             pos: 0,
@@ -2704,7 +2704,7 @@ pub(crate) fn pat_findall(pat: &PatRc, text: &str) -> Result<Vec<Value>, crate::
             Some(r) => r,
             None => break,
         };
-        let mb = Rc::new(MatchBox {
+        let mb = Arc::new(MatchBox {
             pattern: pat.clone(),
             text: text.to_string(),
             pos: 0,

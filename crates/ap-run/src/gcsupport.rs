@@ -14,7 +14,7 @@
 //! - root registration + the weakbridge install at run entry.
 
 use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::frame::Interpreter;
 use crate::Flow;
@@ -231,13 +231,13 @@ pub fn weakref_proxy(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
 
 fn target_addr_of(v: &Value) -> usize {
     match v {
-        Value::Str(x) => Rc::as_ptr(x) as *const u8 as usize,
-        Value::Bytes(x) => Rc::as_ptr(x) as *const u8 as usize,
-        Value::List(x) => Rc::as_ptr(x) as *const u8 as usize,
-        Value::Tuple(x) => Rc::as_ptr(x) as *const u8 as usize,
-        Value::Dict(x) => Rc::as_ptr(x) as *const u8 as usize,
-        Value::Set(x) | Value::Frozen(x) => Rc::as_ptr(x) as *const u8 as usize,
-        Value::Obj(x) => Rc::as_ptr(x) as *const u8 as usize,
+        Value::Str(x) => Arc::as_ptr(x) as *const u8 as usize,
+        Value::Bytes(x) => Arc::as_ptr(x) as *const u8 as usize,
+        Value::List(x) => Arc::as_ptr(x) as *const u8 as usize,
+        Value::Tuple(x) => Arc::as_ptr(x) as *const u8 as usize,
+        Value::Dict(x) => Arc::as_ptr(x) as *const u8 as usize,
+        Value::Set(x) | Value::Frozen(x) => Arc::as_ptr(x) as *const u8 as usize,
+        Value::Obj(x) => Arc::as_ptr(x) as *const u8 as usize,
         _ => 0,
     }
 }
@@ -245,7 +245,7 @@ fn target_addr_of(v: &Value) -> usize {
 /// Look up the target VALUE for a weak address (registry projection; the
 /// registry clone keeps tracked objects alive, so membership == liveness).
 ///
-/// C1 (memperf audit 2026-11-06): this used `get_objects()` — an Rc clone
+/// C1 (memperf audit 2026-11-06): this used `get_objects()` — an Arc clone
 /// per registry entry + a full Vec build — then a linear find, per
 /// ref()/weakmethod/finalize_detach call and per WeakKeyDictionary entry
 /// op. The registry is keyed by exactly this address: a direct O(1) get.
@@ -299,7 +299,7 @@ fn target_addr_of_token(token: &Gc<PyObject>) -> usize {
 pub fn fire_dead_weakrefs() {
     // C8 (memperf audit 2026-11-06): take the dead list FIRST and
     // early-return when nothing died. The old order snapshotted every live
-    // token (one Rc clone each, full WEAK_TOKENS pass) on EVERY collect —
+    // token (one Arc clone each, full WEAK_TOKENS pass) on EVERY collect —
     // including the common no-death gen-0 pass — before checking
     // `dead.is_empty()`. take_dead marks entries fired and does not touch
     // WEAK_TOKENS, so building the index after it yields the same snapshot.
@@ -398,7 +398,7 @@ pub fn bridge_del(v: &Value) {
 }
 
 /// Look up `__del__` on a UserInstance (class MRO).
-fn lookup_del(_interp: &Rc<Interpreter>, v: &Value) -> Option<Value> {
+fn lookup_del(_interp: &Arc<Interpreter>, v: &Value) -> Option<Value> {
     match v {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
             let t = o.type_ref.borrow().as_ref().and_then(|w| w.upgrade())?;
@@ -412,7 +412,7 @@ fn lookup_del(_interp: &Rc<Interpreter>, v: &Value) -> Option<Value> {
 /// The C-21 unraisable report: `Exception ignored while calling deallocator
 /// <function Bad.__del__ at 0xADDR>:` + traceback + `ExcType: msg`, to the
 /// script's sys.unraisablehook when one is set (gc009), else real stderr.
-fn report_unraisable(interp: &Rc<Interpreter>, del_f: &Value, exc: &ExceptionValue) {
+fn report_unraisable(interp: &Arc<Interpreter>, del_f: &Value, exc: &ExceptionValue) {
     // sys.unraisablehook override (gc009's structured path). The attribute
     // is seeded as None (native default); only a real callable swaps to the
     // hook path — None must fall through to the stderr renderer.
@@ -493,7 +493,7 @@ fn report_unraisable(interp: &Rc<Interpreter>, del_f: &Value, exc: &ExceptionVal
     // Function repr with address: <function Bad.__del__ at 0x...>. CPython
     // prints the qualified name; look it up via the fn registry (fn_id).
     let addr = match del_f {
-        Value::Obj(o) => Rc::as_ptr(o) as *const u8 as usize,
+        Value::Obj(o) => Arc::as_ptr(o) as *const u8 as usize,
         _ => 0,
     };
     let qual = match del_f {
@@ -543,7 +543,7 @@ fn report_unraisable(interp: &Rc<Interpreter>, del_f: &Value, exc: &ExceptionVal
     write_stderr(interp, &text);
 }
 
-fn sys_attr(interp: &Rc<Interpreter>, name: &str) -> Option<Value> {
+fn sys_attr(interp: &Arc<Interpreter>, name: &str) -> Option<Value> {
     let sys_v = interp.sys_module.borrow().clone()?;
     match sys_v {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::Module => o
@@ -555,7 +555,7 @@ fn sys_attr(interp: &Rc<Interpreter>, name: &str) -> Option<Value> {
     }
 }
 
-fn write_stderr(interp: &Rc<Interpreter>, text: &str) {
+fn write_stderr(interp: &Arc<Interpreter>, text: &str) {
     // Route through sys.stderr's current binding (gc009 swaps it). Resolve
     // `write` through the interpreter's attribute protocol, not a raw attrs
     // lookup: native streams (io.StringIO et al) keep `write` in the methods
@@ -623,7 +623,7 @@ fn build_gc_module_inner() -> Value {
     let _ = ns.set(s("DEBUG_UNCOLLECTABLE"), i(4));
     let _ = ns.set(s("DEBUG_SAVEALL"), i(32));
     let _ = ns.set(s("DEBUG_LEAK"), i(37));
-    let _ = m.module_ns.borrow_mut().replace(Rc::new((*ns).clone()));
+    let _ = m.module_ns.borrow_mut().replace(Arc::new((*ns).clone()));
     Value::Obj(m)
 }
 
@@ -811,7 +811,7 @@ pub fn build_weakref_module_pub() -> Value {
             Value::Obj(PyObject::new(ap_obj::ObjKind::Type, cls)),
         );
     }
-    let _ = m.module_ns.borrow_mut().replace(Rc::new((*ns).clone()));
+    let _ = m.module_ns.borrow_mut().replace(Arc::new((*ns).clone()));
     Value::Obj(m)
 }
 
@@ -944,7 +944,7 @@ pub fn call_weakref_finalize(args: &[Value], kwargs: &[(String, Value)]) -> Opti
 pub fn finalize_call(token: &Gc<PyObject>) -> Value {
     let entry = FINALIZERS.with(|f| {
         let mut f = f.borrow_mut();
-        let pos = f.iter().position(|e| Rc::ptr_eq(&e.token, token))?;
+        let pos = f.iter().position(|e| Arc::ptr_eq(&e.token, token))?;
         let e = &mut f[pos];
         if e.detached || !alive_bookkeeping(e) {
             return None;
@@ -980,7 +980,7 @@ fn alive_bookkeeping(_e: &FinalizerEntry) -> bool {
 pub fn finalize_detach(token: &Gc<PyObject>) -> Option<Value> {
     FINALIZERS.with(|f| {
         let mut f = f.borrow_mut();
-        let pos = f.iter().position(|e| Rc::ptr_eq(&e.token, token))?;
+        let pos = f.iter().position(|e| Arc::ptr_eq(&e.token, token))?;
         let e = &mut f[pos];
         if e.detached {
             return None;
@@ -1022,7 +1022,7 @@ pub fn finalize_alive(token: &Gc<PyObject>) -> bool {
     FINALIZERS.with(|f| {
         f.borrow()
             .iter()
-            .any(|e| Rc::ptr_eq(&e.token, token) && !e.detached)
+            .any(|e| Arc::ptr_eq(&e.token, token) && !e.detached)
     })
 }
 
@@ -1088,7 +1088,7 @@ fn container_new(cls: &str) -> Value {
         }
     }
     // CPython repr form (WeakKeyDictionary.__repr__): "<%s at %#x>".
-    let addr = Rc::as_ptr(&o) as *const u8 as usize;
+    let addr = Arc::as_ptr(&o) as *const u8 as usize;
     *o.repr_text.borrow_mut() = Some(format!("<{cls} at 0x{addr:x}>"));
     Value::Obj(o)
 }
@@ -1717,7 +1717,7 @@ pub fn weakmethod_call(token: &Gc<PyObject>) -> Value {
 // ---------------------------------------------------------------------------
 
 /// Wire the collector to this interpreter: roots + the weakbridge fns.
-pub fn install(interp: &Rc<Interpreter>) {
+pub fn install(interp: &Arc<Interpreter>) {
     ap_obj::gc_gate::set_hook(ap_gc::gc_register);
     ap_gc::set_bridge(
         weakbridge_sys_modules,
@@ -1766,14 +1766,14 @@ fn weakbridge_callback(cb: &Value, args: &[Value]) -> Result<Value, String> {
 // ---------------------------------------------------------------------------
 
 // A worker allocates values that must join the MAIN thread's gc registry.
-// Value (Rc-based) is !Send by construction — but under GIL v1 all threads
+// Value (Arc-based) is !Send by construction — but under GIL v1 all threads
 // touch the graph only while holding the lock, so the transfer is
 // GIL-serialized by protocol. The compiler cannot see the lock protocol;
 // this crate declares the GIL-protocol-validated Send wrapper (a documented,
 // audited unsafety, same class as CPython's own GIL-protected globals).
 pub struct GilSendPub<T>(pub T);
 // C9 (memperf audit 2026-11-06, SAFETY-GATE): this impl is the sole thing
-// preventing UB when `Value` (Rc — !Send by construction) crosses worker
+// preventing UB when `Value` (Arc — !Send by construction) crosses worker
 // threads. It is sound ONLY under the 02.07 GIL v1 protocol: every thread
 // touches the shared heap graph exclusively while holding the GIL, so the
 // refcount traffic is serialized by protocol, not by the type system.

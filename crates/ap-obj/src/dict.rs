@@ -574,7 +574,7 @@ pub fn values_eq(a: &Value, b: &Value) -> bool {
             ) {
                 a == b
             } else {
-                std::rc::Rc::ptr_eq(x, y)
+                std::sync::Arc::ptr_eq(x, y)
             }
         }
         // Different types never compare equal (S-01-33), never an error.
@@ -735,7 +735,7 @@ pub fn values_cmp(a: &Value, b: &Value) -> Result<std::cmp::Ordering, PyExceptio
             let vals = o.attrs.borrow().get_str("<values>");
             let tup = match vals {
                 Some(Value::List(l)) => {
-                    Value::Tuple(std::rc::Rc::new(crate::value::Tuple(l.items().to_vec())))
+                    Value::Tuple(std::sync::Arc::new(crate::value::Tuple(l.items().to_vec())))
                 }
                 Some(other) => other.clone(),
                 None => return Err(type_err()),

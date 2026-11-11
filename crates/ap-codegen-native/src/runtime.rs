@@ -358,14 +358,14 @@ fn a_ptr_eq(a: &Value, b: &Value) -> bool {
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::Ellipsis, Value::Ellipsis) => true,
         // Gc-backed arms (Gc<T> = Rc<T>): same allocation ⇒ same object.
-        (Value::Str(x), Value::Str(y)) => std::rc::Rc::ptr_eq(x, y),
+        (Value::Str(x), Value::Str(y)) => std::sync::Arc::ptr_eq(x, y),
         // 02.05c gate fix (latent 02.05a bug exposed when the h_call
         // arity fix first let class bodies reach the baseline JIT): the
         // Obj arm (classes, instances, functions, modules) — `cls is A`
         // was unconditionally false, so every `is` over objects diverged
         // from the tree-walker. Same allocation ⇒ same object (the same
         // rule interp.rs's `is` uses).
-        (Value::Obj(x), Value::Obj(y)) => std::rc::Rc::ptr_eq(x, y),
+        (Value::Obj(x), Value::Obj(y)) => std::sync::Arc::ptr_eq(x, y),
         _ => false,
     }
 }

@@ -19,7 +19,7 @@ use ap_obj::int::Gc;
 use ap_obj::object::{ObjKind, PyObject};
 use ap_obj::value::{PyString, Value};
 use std::collections::VecDeque;
-use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -29,7 +29,7 @@ fn raise(class: &str, msg: impl Into<String>) -> Flow {
 
 fn obj_addr(v: &Value) -> Result<usize, Flow> {
     match v {
-        Value::Obj(o) => Ok(Rc::as_ptr(o).addr()),
+        Value::Obj(o) => Ok(Arc::as_ptr(o).addr()),
         _ => Err(raise("TypeError", "expected an object")),
     }
 }
@@ -179,7 +179,7 @@ fn threading_exc_class(interp: &crate::frame::Interpreter, name: &str) -> Value 
 // ===========================================================================
 
 pub fn call_threading(
-    _interp: &Rc<crate::frame::Interpreter>,
+    _interp: &Arc<crate::frame::Interpreter>,
     name: &str,
     args: &[Value],
     _kwargs: &[(String, Value)],
@@ -539,7 +539,7 @@ fn local_ctor(_args: &[Value]) -> BResult {
 /// never happens — methods arrive via the native_attr BoundMethod surface).
 /// Entry: `call_threading_method(recv, method, args, kwargs)`.
 pub fn call_threading_method(
-    interp: &Rc<crate::frame::Interpreter>,
+    interp: &Arc<crate::frame::Interpreter>,
     recv: &Value,
     method: &str,
     args: &[Value],
@@ -598,13 +598,13 @@ fn blocking_of(args: &[Value], kwargs: &[(String, Value)]) -> Result<bool, Flow>
 // --------------------------- Thread methods --------------------------------
 
 fn thread_method(
-    interp: &Rc<crate::frame::Interpreter>,
+    interp: &Arc<crate::frame::Interpreter>,
     o: &Gc<PyObject>,
     method: &str,
     args: &[Value],
     kwargs: &[(String, Value)],
 ) -> BResult {
-    let addr = Rc::as_ptr(o).addr();
+    let addr = Arc::as_ptr(o).addr();
     match method {
         "start" => crate::threading::thread_start(interp, o),
         "cancel" => {
@@ -615,7 +615,7 @@ fn thread_method(
                 .and_then(|v| v.as_int())
                 .and_then(|i| i.to_i64())
                 .unwrap_or(-2);
-            crate::threading::cancel_timer_serial(Rc::as_ptr(o).addr(), serial);
+            crate::threading::cancel_timer_serial(Arc::as_ptr(o).addr(), serial);
             Ok(Value::None)
         }
         "interval" | "function" => {
@@ -727,7 +727,7 @@ fn lock_method(
     args: &[Value],
     kwargs: &[(String, Value)],
 ) -> BResult {
-    let addr = Rc::as_ptr(o).addr();
+    let addr = Arc::as_ptr(o).addr();
     let Some(prim) = prim_of::<LockPrim>(addr) else {
         return Err(raise("SystemError", "lock primitive missing"));
     };
@@ -817,7 +817,7 @@ fn lock_method(
 // --------------------------- RLock methods ---------------------------------
 
 fn rlock_method(o: &Gc<PyObject>, method: &str, args: &[Value]) -> BResult {
-    let addr = Rc::as_ptr(o).addr();
+    let addr = Arc::as_ptr(o).addr();
     let Some(prim) = prim_of::<RLockPrim>(addr) else {
         return Err(raise("SystemError", "rlock primitive missing"));
     };
@@ -926,7 +926,7 @@ fn cond_acquire_lock(cond: &CondPrim) -> BResult {
     Err(raise("SystemError", "condition backing lock missing"))
 }
 
-fn lock_acquire_blocking(lk: Rc<LockPrim>) -> BResult {
+fn lock_acquire_blocking(lk: Arc<LockPrim>) -> BResult {
     let mut locked = lk.locked.lock().unwrap();
     while *locked {
         release_gil();
@@ -938,7 +938,7 @@ fn lock_acquire_blocking(lk: Rc<LockPrim>) -> BResult {
     Ok(Value::Bool(true))
 }
 
-fn rlock_acquire(rl: Rc<RLockPrim>) -> BResult {
+fn rlock_acquire(rl: Arc<RLockPrim>) -> BResult {
     let me = crate::threading::current_os_tid();
     // GIL FIRST: never take the primitive's lock holding the interpreter
     // lock — a parked path would hold the GIL and starve the owner.
@@ -976,12 +976,12 @@ fn rlock_release_full(rl: &RLockPrim) -> BResult {
 }
 
 fn cond_method(
-    interp: &Rc<crate::frame::Interpreter>,
+    interp: &Arc<crate::frame::Interpreter>,
     o: &Gc<PyObject>,
     method: &str,
     args: &[Value],
 ) -> BResult {
-    let addr = Rc::as_ptr(o).addr();
+    let addr = Arc::as_ptr(o).addr();
     let Some(prim) = prim_of::<CondPrim>(addr) else {
         return Err(raise("SystemError", "condition primitive missing"));
     };
@@ -1070,7 +1070,7 @@ fn cond_method(
     }
 }
 
-fn rlock_release_one(rl: &Rc<RLockPrim>) -> BResult {
+fn rlock_release_one(rl: &Arc<RLockPrim>) -> BResult {
     let me = crate::threading::current_os_tid();
     let mut st = rl.st.lock().unwrap();
     if !matches!(st.0, crate::threading::RLockOwner::Owned(t) if t == me) {
@@ -1085,7 +1085,7 @@ fn rlock_release_one(rl: &Rc<RLockPrim>) -> BResult {
     Ok(Value::None)
 }
 
-fn lock_release(lk: Rc<LockPrim>) -> BResult {
+fn lock_release(lk: Arc<LockPrim>) -> BResult {
     let mut locked = lk.locked.lock().unwrap();
     if !*locked {
         return Err(raise("RuntimeError", "release unlocked lock"));
@@ -1098,7 +1098,7 @@ fn lock_release(lk: Rc<LockPrim>) -> BResult {
 
 /// Condition.wait: release the backing lock FULLY, park, re-acquire.
 fn cond_wait(
-    _interp: &Rc<crate::frame::Interpreter>,
+    _interp: &Arc<crate::frame::Interpreter>,
     prim: &CondPrim,
     timeout: Option<f64>,
 ) -> Result<bool, Flow> {
@@ -1163,7 +1163,7 @@ fn event_method_kw(
 }
 
 fn event_method(o: &Gc<PyObject>, method: &str, args: &[Value]) -> BResult {
-    let addr = Rc::as_ptr(o).addr();
+    let addr = Arc::as_ptr(o).addr();
     let Some(prim) = prim_of::<EventPrim>(addr) else {
         return Err(raise("SystemError", "event primitive missing"));
     };
@@ -1190,7 +1190,7 @@ fn event_method(o: &Gc<PyObject>, method: &str, args: &[Value]) -> BResult {
 }
 
 fn event_wait(o: &Gc<PyObject>, timeout: Option<f64>) -> BResult {
-    let addr = Rc::as_ptr(o).addr();
+    let addr = Arc::as_ptr(o).addr();
     let Some(prim) = prim_of::<EventPrim>(addr) else {
         return Err(raise("SystemError", "event primitive missing"));
     };
@@ -1232,7 +1232,7 @@ fn sem_method(
     args: &[Value],
     kwargs: &[(String, Value)],
 ) -> BResult {
-    let addr = Rc::as_ptr(o).addr();
+    let addr = Arc::as_ptr(o).addr();
     let Some(prim) = prim_of::<SemPrim>(addr) else {
         return Err(raise("SystemError", "semaphore primitive missing"));
     };
@@ -1319,13 +1319,13 @@ fn sem_method(
 // --------------------------- Barrier methods -------------------------------
 
 fn barrier_method(
-    interp: &Rc<crate::frame::Interpreter>,
+    interp: &Arc<crate::frame::Interpreter>,
     o: &Gc<PyObject>,
     method: &str,
     args: &[Value],
     kwargs: &[(String, Value)],
 ) -> BResult {
-    let addr = Rc::as_ptr(o).addr();
+    let addr = Arc::as_ptr(o).addr();
     let Some(prim) = prim_of::<BarrierPrim>(addr) else {
         return Err(raise("SystemError", "barrier primitive missing"));
     };
@@ -1499,7 +1499,7 @@ fn barrier_method(
 
 /// Barrier property reads (parties/n_waiting/broken) — the attr surface.
 pub fn barrier_attr(o: &Gc<PyObject>, name: &str) -> Option<Value> {
-    let prim = prim_of::<BarrierPrim>(Rc::as_ptr(o).addr())?;
+    let prim = prim_of::<BarrierPrim>(Arc::as_ptr(o).addr())?;
     match name {
         "parties" => Some(smi(prim.parties as i64)),
         "n_waiting" => {
@@ -1591,7 +1591,7 @@ fn queue_exc_class(interp: &crate::frame::Interpreter, name: &str) -> Value {
 }
 
 pub fn call_queue(
-    _interp: &Rc<crate::frame::Interpreter>,
+    _interp: &Arc<crate::frame::Interpreter>,
     name: &str,
     args: &[Value],
     kwargs: &[(String, Value)],
@@ -1616,7 +1616,7 @@ fn queue_ctor(args: &[Value], kwargs: &[(String, Value)], class: &str) -> BResul
     *o.repr_text.borrow_mut() = None;
     // class marker for type(x).__name__ and reprs.
     let _ = o.attrs.borrow_mut().set(s("<class>"), s(class));
-    let addr = Rc::as_ptr(&o).addr();
+    let addr = Arc::as_ptr(&o).addr();
     prim_put(
         addr,
         QueuePrim {
@@ -1670,7 +1670,7 @@ fn qsize(prim: &QueuePrim) -> usize {
 }
 
 pub fn call_queue_method(
-    interp: &Rc<crate::frame::Interpreter>,
+    interp: &Arc<crate::frame::Interpreter>,
     recv: &Value,
     method: &str,
     args: &[Value],
@@ -1683,7 +1683,7 @@ pub fn call_queue_method(
     if o.name != "queue" {
         return None;
     }
-    let addr = Rc::as_ptr(o).addr();
+    let addr = Arc::as_ptr(o).addr();
     let Some(prim) = prim_of::<QueuePrim>(addr) else {
         return Some(Err(raise("SystemError", "queue primitive missing")));
     };
@@ -1852,7 +1852,7 @@ pub fn native_thread_attr(obj: &Value, name: &str) -> Option<Value> {
     };
     match o.name.as_str() {
         "thread" => {
-            let addr = Rc::as_ptr(o).addr();
+            let addr = Arc::as_ptr(o).addr();
             match name {
                 "name" => Some(attr_v(o, "<name>").unwrap_or(Value::None)),
                 "daemon" => Some(Value::Bool(matches!(
@@ -1907,7 +1907,7 @@ pub fn native_thread_attr(obj: &Value, name: &str) -> Option<Value> {
         "barrier" => {
             // Property-like reads: parties/n_waiting/broken.
             if matches!(name, "parties" | "n_waiting" | "broken") {
-                let prim = prim_of::<BarrierPrim>(Rc::as_ptr(o).addr())?;
+                let prim = prim_of::<BarrierPrim>(Arc::as_ptr(o).addr())?;
                 return match name {
                     "parties" => Some(smi(prim.parties as i64)),
                     "n_waiting" => {
@@ -1929,14 +1929,14 @@ pub fn native_thread_attr(obj: &Value, name: &str) -> Option<Value> {
             if name.starts_with("__") && name.ends_with("__") {
                 return None;
             }
-            let addr = Rc::as_ptr(o).addr();
+            let addr = Arc::as_ptr(o).addr();
             crate::threading::local_get(addr, name)
         }
         "queue" => match name {
             "qsize" | "empty" | "full" | "put" | "put_nowait" | "get" | "get_nowait"
             | "task_done" | "join" | "maxsize" | "unfinished_tasks" | "shutdown" => {
                 if name == "maxsize" || name == "unfinished_tasks" {
-                    let prim = prim_of::<QueuePrim>(Rc::as_ptr(o).addr())?;
+                    let prim = prim_of::<QueuePrim>(Arc::as_ptr(o).addr())?;
                     return Some(if name == "maxsize" {
                         smi(prim.cap)
                     } else {
@@ -1984,7 +1984,7 @@ pub fn native_thread_attr_set(obj: &Value, name: &str, v: Value) -> Result<(), F
     };
     match o.name.as_str() {
         "_local" => {
-            let addr = Rc::as_ptr(o).addr();
+            let addr = Arc::as_ptr(o).addr();
             crate::threading::local_set(addr, name, v);
             Ok(())
         }
@@ -1994,7 +1994,7 @@ pub fn native_thread_attr_set(obj: &Value, name: &str, v: Value) -> Result<(), F
                 Ok(())
             }
             "daemon" => {
-                let started = crate::threading::entry_for_pub(Rc::as_ptr(o).addr()).is_some();
+                let started = crate::threading::entry_for_pub(Arc::as_ptr(o).addr()).is_some();
                 if started {
                     return Err(raise(
                         "RuntimeError",
@@ -2033,7 +2033,7 @@ pub fn thread_repr_pub(o: &Gc<PyObject>) -> String {
         })
         .unwrap_or_default();
     let daemon = matches!(attr_v(o, "<daemon>"), Some(Value::Bool(true)));
-    let addr = Rc::as_ptr(o).addr();
+    let addr = Arc::as_ptr(o).addr();
     let (started, done, ident) = match crate::threading::entry_for_pub(addr) {
         Some(e) => {
             let b = e.borrow();
