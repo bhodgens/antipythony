@@ -90,12 +90,17 @@ process-wide lock. Refcount story (blocker above) gates all of them.
 
 | # | Field | Mutators | Class | Notes |
 |---|-------|----------|-------|-------|
-| 19 | `mro: RefCell<Vec<Rc<TypeRef>>>` | class construction (classes.rs:102); MRO patching | (c) | classes are process-global (interned_type cache); any thread may read |
+| 19 | `mro: Mutex<Vec<Arc<TypeRef>>>` — **02.09a P4 FROZEN write-once** | seeded FULL inside `create` (self-reference spliced under the lock before the Arc is observable); ZERO post-construction mutators (verified: grep `mro.lock` shows reads only + the create/seed writes) | (c)-resolved | classes are process-global; the Mutex makes the read path cross-thread-safe NOW (the audit's "ArcSwap or RCU" want is satisfied at 0 post-construction writes — no swap ever happens) |
 | 20 | `metaclass: RefCell<Option<Rc<TypeRef>>>` | class construction | (a)-per-object* | set-once at `class` statement |
 | 21 | `class_value: RefCell<Option<Value>>` | classes.rs:250 (set-once backref) | (a)-per-object* | |
 
-Reads dominate (attribute lookup walks `mro` per access) — phase 2 wants
-`ArcSwap`-style read-mostly handling or RCU on `mro`, not a per-access mutex.
+Reads dominate (attribute lookup walks `mro` per access). **RESOLVED 02.09a
+P4**: the field is now `Mutex<Vec<Arc<TypeRef>>>`, write-once — the MRO is
+computed and seeded FULL inside `TypeObject::create` (and the frame.rs
+super-sentinel builder) before the Arc escapes, and no post-construction
+write site exists. The "ArcSwap or RCU" phase-2 want is therefore satisfied
+trivially: the read path takes the lock (uncontended in practice) and no
+swap ever happens.
 
 ### 3. `crates/ap-obj/src/dict.rs` — `PyDict` (2 fields) + `PySet` (1 field)
 
@@ -112,7 +117,7 @@ Reads dominate (attribute lookup walks `mro` per access) — phase 2 wants
 | 25 | `PyList.items: RefCell<Vec<Value>>` | append/setitem/del/insert/reverse/sort (value.rs:401-462) | (c) | multi-word Vec + S-01-19 aliasing invariant (`xs` may alias into itself during mutation — the RefCell guards mid-mutation observation). Per the brief: algorithmic internals UNCHANGED. Phase 2: per-list lock |
 | 26 | `PyList.allocated: Cell<usize>` | same sites as `items` (capacity hint) | (c) | co-mutated with `items` — must move under the SAME lock as items in phase 2; NOT convertible alone (divorcing it would let phase 2 readers see inconsistent capacity, currently unobservable) |
 | 27 | `PyString.cached_len: Cell<Option<usize>>` | `len()` lazy fill (value.rs:228-233) | **(b) CONVERTED** | idempotent same-value cache; `Cell<Option<usize>>` -> `AtomicUsize` with `usize::MAX` = None sentinel (a `usize::MAX`-length string is unallocatable). Relaxed. Under GIL v1: identical bytes — the winner of a same-value race writes the same bits |
-| 28 | `PyString.cached_hash: Cell<Option<i64>>` | `hash()` lazy fill | (b) DEFERRED | convertible in principle (None sentinel needed), but `i64::MIN`-style sentinels require proving hash never produces the sentinel value (CPython maps hash -1 -> -2; our zero-keyed siphash13 does NOT document that mapping — verify before converting). Phase 2 with a hash-domain audit |
+| 28 | `PyString.cached_hash: AtomicI64` — **02.09a P4 CONVERTED** | `hash()` lazy fill | **(b) CONVERTED** | hash-domain audit PASSED (the explicit precondition): `hash_bytes` reinterprets a u64 siphash13 output as i64 — it can only equal -1 when the full output is u64::MAX; CPython itself normalizes str hash -1 => -2 (unicodeobject.c) and we now mirror that BEFORE caching, so -1 never enters the cache; 0 doubles as the "not yet computed" sentinel and is unambiguous (a true hash of 0 recomputes to 0 — idempotent). Relaxed ordering, same-value-race-safe (winner writes identical bits). Byte-exactness pinned by the ap-obj hash differential suites (green post-conversion) |
 | 29 | `INTERNED_NAMES: thread_local RefCell<HashMap<String, Gc<PyString>>>` (value.rs:27) | `interned_str_ref` | **(a) already thread-confined** | thread_local since A4 (memperf 2026-11-06); each thread interns its own map. No conversion; phase 2 note: cross-thread identity of interned handles relies on the maps agreeing, which holds because keys are process-static `&'static str` |
 | 30 | `PyTuple` (value.rs) | none | (a) | immutable tuple — no interior mutability at all; first candidate for `unsafe impl Sync` ONCE the refcount story lands |
 
@@ -165,10 +170,12 @@ they must carry is the table above.
 ## Deferred (phase 2+ handoff)
 
 - (c) class: per-object lock strategy for PyObject.attrs / PyDict.state /
-  PyList.items(+allocated) / PySet.state / TypeObject.mro — decide lock vs
-  epochs+retry against real T121 contention, do NOT pre-commit.
-- (b) `PyString.cached_hash` atomic conversion pending a hash-domain audit
-  (sentinel collision proof; CPython maps hash -1 -> -2 — check parity).
+  PyList.items(+allocated) / PySet.state — decide lock vs epochs+retry
+  against real T121 contention, do NOT pre-commit. ~~TypeObject.mro~~
+  RESOLVED 02.09a P4 (write-once Mutex, entry 19).
+- ~~(b) `PyString.cached_hash` atomic conversion pending a hash-domain audit~~
+  DONE 02.09a P4 (entry 28: AtomicI64, -1 => -2 normalization, 0-sentinel
+  domain proof in the py_hash doc comment).
 - (a)-per-object set-once fields: init-phase state machine (immutability
   proof or init mutex) — mechanical once refcounts are atomic.
 - 02.05b: extend entry 23's epoch pattern into per-type version counters;

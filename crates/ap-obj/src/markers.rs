@@ -15,9 +15,10 @@ use crate::object::PyObject;
 use crate::value::{PyList, PyString, Tuple};
 
 // PyString: interior state is two atomic idempotent caches (entry 27
-// CONVERTED; entry 28 converted in this leaf after the hash-domain audit —
-// both same-value races, benign by construction). Sync is actually PROVEN
-// for this type, not just staged.
+// CONVERTED; entry 28 converted in 02.09a P4 after the hash-domain audit —
+// the -1 => -2 CPython-parity normalization keeps the 0-sentinel domain
+// clean; both same-value races, benign by construction). Sync is actually
+// PROVEN for this type, not just staged.
 unsafe impl Send for PyString {}
 unsafe impl Sync for PyString {}
 
@@ -27,9 +28,10 @@ unsafe impl Sync for PyString {}
 unsafe impl Send for Tuple {}
 unsafe impl Sync for Tuple {}
 
-// Staged (RefCell interiors — sound only under the GIL/mutex protocol):
+// Staged (RefCell/Mutex interiors — sound under the GIL/mutex protocol):
 // PyObject (18 RefCell fields), PyDict (state + epoch), PySet (state),
-// PyList (items + allocated), TypeObject (mro/dict/metaclass/class_value).
+// PyList (items + allocated), TypeObject (mro[Mutex, write-once frozen in
+// 02.09a P4]/dict/metaclass/class_value).
 unsafe impl Send for PyObject {}
 unsafe impl Sync for PyObject {}
 unsafe impl Send for PyDict {}
