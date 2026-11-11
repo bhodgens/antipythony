@@ -766,6 +766,34 @@ impl<'a> Lowerer<'a> {
                 self.push_inst(Inst::LoadLocal(result, t));
                 Ok(t)
             }
+            // 02.06 (AoT): `lo:hi:step` sugar lowers as the `slice` builtin
+            // call — CPython's own evaluation order for `x[lo:hi:step]` is
+            // `x[slice(lo, hi, step)]` (the subscript protocol receives a
+            // slice object), so routing through slice() is semantically
+            // identical, not an approximation. CPython treats slice()
+            // evaluation with DEFAULTS-as-None; our `slice` global resolves
+            // through the normal LoadGlobal chain.
+            Expr::Slice(lo, hi, step) => {
+                let mut args: Vec<TempId> = Vec::with_capacity(3);
+                for a in [lo, hi, step] {
+                    match a {
+                        Some(e) => {
+                            let t = self.lower_expr(e)?;
+                            args.push(t);
+                        }
+                        None => {
+                            let t = self.temp();
+                            self.push_inst(Inst::LoadGlobal("None".to_string(), t));
+                            args.push(t);
+                        }
+                    }
+                }
+                let f = self.temp();
+                let l = self.temp();
+                self.push_inst(Inst::LoadGlobal("slice".to_string(), f));
+                self.push_inst(Inst::Call(f, args, l));
+                Ok(l)
+            }
             _ => Err(CodegenError::Unsupported(
                 "expression form (see cfg.rs lower_expr)",
             )),

@@ -225,6 +225,7 @@ fn ic_record_tag(ctx: &ExecCtx, slot: u32, a: &Value, b: Option<&Value>) {
 /// BinOp through ap_obj::ops::binop (clauses S-01-3..S-03-25 preserved by
 /// that surface — the JIT adds no semantics of its own). 02.05b: `slot`
 /// carries the feedback slot id; both operand tags feed the cell.
+#[export_name = "apjit_h_binop"]
 pub extern "C" fn h_binop(
     ctx: &mut ExecCtx,
     slot: u32,
@@ -246,6 +247,7 @@ pub extern "C" fn h_binop(
 }
 
 /// UnaryOp through the ap-obj surface.
+#[export_name = "apjit_h_unaryop"]
 pub extern "C" fn h_unaryop(ctx: &mut ExecCtx, op: i64, a: u32, dst: u32) -> HelperStatus {
     let v = ctx.slots[a as usize].clone();
     let r = match op {
@@ -283,6 +285,7 @@ pub fn set_host_contains(f: HostContains) {
     }
 }
 
+#[export_name = "apjit_h_compare"]
 pub extern "C" fn h_compare(ctx: &mut ExecCtx, op: i64, a: u32, b: u32, dst: u32) -> HelperStatus {
     use ap_obj::value::Value;
     let a = ctx.slots[a as usize].clone();
@@ -368,6 +371,7 @@ fn a_ptr_eq(a: &Value, b: &Value) -> bool {
 }
 
 /// Truthiness test (S-01-27 falsy set) — result is a boxed bool.
+#[export_name = "apjit_h_truthy"]
 pub extern "C" fn h_truthy(ctx: &mut ExecCtx, a: u32, dst: u32) -> HelperStatus {
     let t = ctx.slots[a as usize].is_truthy();
     ctx.slots[dst as usize] = Value::Bool(t);
@@ -375,6 +379,7 @@ pub extern "C" fn h_truthy(ctx: &mut ExecCtx, a: u32, dst: u32) -> HelperStatus 
 }
 
 /// Load a local slot into another slot (NULL-if-unbound modeled as None).
+#[export_name = "apjit_h_load_local"]
 pub extern "C" fn h_load_local(ctx: &mut ExecCtx, src: u32, dst: u32) -> HelperStatus {
     let v = ctx.slots[src as usize].clone();
     ctx.slots[dst as usize] = v;
@@ -382,6 +387,7 @@ pub extern "C" fn h_load_local(ctx: &mut ExecCtx, src: u32, dst: u32) -> HelperS
 }
 
 /// Store a value into a local slot.
+#[export_name = "apjit_h_store_local"]
 pub extern "C" fn h_store_local(ctx: &mut ExecCtx, src: u32, dst: u32) -> HelperStatus {
     let v = ctx.slots[src as usize].clone();
     ctx.slots[dst as usize] = v;
@@ -390,6 +396,7 @@ pub extern "C" fn h_store_local(ctx: &mut ExecCtx, src: u32, dst: u32) -> Helper
 
 /// Global load through the host seam (NameError on unbound — S-02-1).
 /// 02.05b: `slot` keys the GlobalIC (host cache + feedback cell).
+#[export_name = "apjit_h_load_global"]
 pub extern "C" fn h_load_global(
     ctx: &mut ExecCtx,
     slot: u32,
@@ -404,6 +411,7 @@ pub extern "C" fn h_load_global(
 
 /// Attribute load through the host seam (S-03-9). 02.05b: `slot` keys the
 /// AttrIC (host cache + feedback cell).
+#[export_name = "apjit_h_load_attr"]
 pub extern "C" fn h_load_attr(
     ctx: &mut ExecCtx,
     slot: u32,
@@ -418,6 +426,7 @@ pub extern "C" fn h_load_attr(
 }
 
 /// Attribute store through the host seam (S-03-10).
+#[export_name = "apjit_h_store_attr"]
 pub extern "C" fn h_store_attr(ctx: &mut ExecCtx, obj: u32, name_idx: u32, v: u32) -> HelperStatus {
     match (ctx.host.store_attr)(ctx, obj, name_idx, v) {
         Ok(()) => 0,
@@ -429,6 +438,7 @@ pub extern "C" fn h_store_attr(ctx: &mut ExecCtx, obj: u32, name_idx: u32, v: u3
 /// in ctx.args[arg_start..arg_start+argc] by the JIT'd code before the call.
 /// 02.05b: `slot` keys the CallIC (host cache + feedback cell; the callee
 /// tag feeds the cell).
+#[export_name = "apjit_h_call"]
 pub extern "C" fn h_call(
     ctx: &mut ExecCtx,
     slot: u32,
@@ -446,6 +456,7 @@ pub extern "C" fn h_call(
 /// print() fast path used by the hello-world parity probe: str() the value
 /// (ap_obj::ops::to_str — C-18 rendering through the ap-obj surface) and
 /// append to ctx.out; the host flushes.
+#[export_name = "apjit_h_print"]
 pub extern "C" fn h_print(ctx: &mut ExecCtx, v: u32) -> HelperStatus {
     let v = ctx.slots[v as usize].clone();
     match ap_obj::ops::to_str(&v) {
@@ -459,6 +470,7 @@ pub extern "C" fn h_print(ctx: &mut ExecCtx, v: u32) -> HelperStatus {
 }
 
 /// PushExcInfo: open a protected region.
+#[export_name = "apjit_h_push_exc"]
 pub extern "C" fn h_push_exc(ctx: &mut ExecCtx, region: u32) -> HelperStatus {
     ctx.exc_stack.push(region);
     0
@@ -466,6 +478,7 @@ pub extern "C" fn h_push_exc(ctx: &mut ExecCtx, region: u32) -> HelperStatus {
 
 /// PopExcInfo: close a protected region (VERIFIER RULE companion — the
 /// cfg verifier guarantees every exit edge emits this call).
+#[export_name = "apjit_h_pop_exc"]
 pub extern "C" fn h_pop_exc(ctx: &mut ExecCtx, region: u32) -> HelperStatus {
     // Pop down to (and including) `region`; mismatch = internal bug, but
     // fail-closed: report as a runtime error, never continue silently.
@@ -491,6 +504,7 @@ pub extern "C" fn h_pop_exc(ctx: &mut ExecCtx, region: u32) -> HelperStatus {
 /// The typed-handler test is host-owned (ap-run classes.rs); the baseline
 /// accepts bare-except shapes only (typed handlers fail-closed at cfg
 /// lowering).
+#[export_name = "apjit_h_match_exc"]
 pub extern "C" fn h_match_exc(ctx: &mut ExecCtx, region: u32, dst: u32) -> HelperStatus {
     if ctx.match_region != region {
         return park_exc(
@@ -507,6 +521,7 @@ pub extern "C" fn h_match_exc(ctx: &mut ExecCtx, region: u32, dst: u32) -> Helpe
 
 /// Reraise: propagate the in-flight exception outward (host reads
 /// pending_exc at the function boundary).
+#[export_name = "apjit_h_reraise"]
 pub extern "C" fn h_reraise(ctx: &mut ExecCtx) -> HelperStatus {
     if ctx.pending_exc.is_none() {
         return park_exc(
@@ -521,21 +536,25 @@ pub extern "C" fn h_reraise(ctx: &mut ExecCtx) -> HelperStatus {
 // Const materialization helpers (clif.rs Const lowering)
 // ---------------------------------------------------------------------------
 
+#[export_name = "apjit_h_const_none"]
 pub extern "C" fn h_const_none(ctx: &mut ExecCtx, dst: u32) -> HelperStatus {
     ctx.slots[dst as usize] = Value::None;
     0
 }
 
+#[export_name = "apjit_h_const_bool"]
 pub extern "C" fn h_const_bool(ctx: &mut ExecCtx, dst: u32, v: i64) -> HelperStatus {
     ctx.slots[dst as usize] = Value::Bool(v != 0);
     0
 }
 
+#[export_name = "apjit_h_const_int"]
 pub extern "C" fn h_const_int(ctx: &mut ExecCtx, dst: u32, v: i64) -> HelperStatus {
     ctx.slots[dst as usize] = Value::Int(ap_obj::Int::from_i64(v));
     0
 }
 
+#[export_name = "apjit_h_const_float"]
 pub extern "C" fn h_const_float(ctx: &mut ExecCtx, dst: u32, bits: i64) -> HelperStatus {
     let f = f64::from_bits(bits as u64);
     ctx.slots[dst as usize] = Value::Float(f);
@@ -544,6 +563,7 @@ pub extern "C" fn h_const_float(ctx: &mut ExecCtx, dst: u32, bits: i64) -> Helpe
 
 /// `ptr` points at a static byte payload in the JIT data section (alive
 /// for the module's lifetime — the JitFunc owns the blob).
+#[export_name = "apjit_h_const_str"]
 pub extern "C" fn h_const_str(ctx: &mut ExecCtx, dst: u32, ptr: i64, len: i64) -> HelperStatus {
     let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, len as usize) };
     match std::str::from_utf8(bytes) {
@@ -583,6 +603,7 @@ pub const GUARD_FAIL_SENTINEL: i64 = i64::MIN;
 /// arithmetic, but the BOXED shape must round-trip — `return flag` must
 /// return `True`, not `1` — so bools deopt to the twin, which boxes
 /// exactly).
+#[export_name = "apjit_h_slot_smi_v"]
 pub extern "C" fn h_slot_smi_v(ctx: &mut ExecCtx, idx: u32) -> i64 {
     match &ctx.slots[idx as usize] {
         Value::Int(ap_obj::Int::Smi(s)) => *s,
@@ -594,6 +615,7 @@ pub extern "C" fn h_slot_smi_v(ctx: &mut ExecCtx, idx: u32) -> i64 {
 /// i64 result can leave i64). Exact: `checked_mul`, `None` → the sentinel
 /// (the caller side-exits; the cold twin recomputes with bigint promotion
 /// — same value, exact).
+#[export_name = "apjit_h_mul_smi"]
 pub extern "C" fn h_mul_smi(a: i64, b: i64) -> i64 {
     match a.checked_mul(b) {
         Some(v) => v,
@@ -604,12 +626,14 @@ pub extern "C" fn h_mul_smi(a: i64, b: i64) -> i64 {
 /// Typed store (write-through): box the i64 into a ctx slot. By the typed
 /// invariant every fast-path value is in the smi domain (each BinOp result
 /// is range-checked), so this never allocates.
+#[export_name = "apjit_h_store_smi"]
 pub extern "C" fn h_store_smi(ctx: &mut ExecCtx, slot: u32, v: i64) -> HelperStatus {
     ctx.slots[slot as usize] = Value::Int(ap_obj::Int::from_i64(v));
     0
 }
 
 /// Typed return: park the boxed result and complete.
+#[export_name = "apjit_h_return_smi"]
 pub extern "C" fn h_return_smi(ctx: &mut ExecCtx, v: i64) -> HelperStatus {
     ctx.ret = Value::Int(ap_obj::Int::from_i64(v));
     0
@@ -620,12 +644,14 @@ pub extern "C" fn h_return_smi(ctx: &mut ExecCtx, v: i64) -> HelperStatus {
 /// off (status 2), and the twin reads it here (0 = from the top). The
 /// BASELINE clears the field after each call (jit_hook's exit path) so a
 /// stale start can never leak into an independent later call.
+#[export_name = "apjit_h_twin_start"]
 pub extern "C" fn h_twin_start(ctx: &mut ExecCtx) -> i32 {
     ctx.twin_start as i32
 }
 
 /// Park the twin start block (fast-path region-exit seam; see
 /// [`h_twin_start`]).
+#[export_name = "apjit_h_set_twin_start"]
 pub extern "C" fn h_set_twin_start(ctx: &mut ExecCtx, block: i64) -> HelperStatus {
     ctx.twin_start = block.max(0) as u32;
     0
@@ -638,6 +664,7 @@ pub extern "C" fn h_set_twin_start(ctx: &mut ExecCtx, block: i64) -> HelperStatu
 /// state machine in [`crate::deopt`] is PER FUNCTION, not process-wide.
 /// The process-wide side-exit total (read through [`tier1_stats`]) is
 /// kept as a coarse counter for the stats line.
+#[export_name = "apjit_h_deopt_note"]
 pub extern "C" fn h_deopt_note(_ctx: &mut ExecCtx, fn_key: i64) -> HelperStatus {
     TIER1_SIDE_EXITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     // The per-function epoch/thrash machine (fail-open: the returned
@@ -705,6 +732,7 @@ fn osr_dbg() -> bool {
     *CACHED.get_or_init(|| std::env::var("APX_OSRDBG").is_ok())
 }
 
+#[export_name = "apjit_h_osr_poll"]
 pub extern "C" fn h_osr_poll(_ctx: &mut ExecCtx, fn_key: i64, header: i64) -> i64 {
     let entry = osr_entry_for(fn_key.max(0) as u64, header.max(0) as u32);
     if osr_dbg() {
@@ -730,6 +758,7 @@ pub extern "C" fn h_osr_poll(_ctx: &mut ExecCtx, fn_key: i64, header: i64) -> i6
 ///
 /// `buf` must point at a populated `OsrTransferBuffer` with at least
 /// `idx + 1` populated slots (the shared-table contract above).
+#[export_name = "apjit_h_osr_load"]
 pub extern "C" fn h_osr_load(ctx: &mut ExecCtx, buf: *const u8, idx: i64, dst: u32) {
     if osr_dbg() {
         eprintln!("[OSRLOAD] idx={idx} dst={dst}");
@@ -789,6 +818,7 @@ pub fn osr_stats_line() -> Option<String> {
 /// SAFETY: idx < OSR_MAX_LIVE (enforced by the eligibility gate that
 /// compiled this poll — an out-of-range idx is an emitter bug and
 /// panics loudly rather than corrupting the transfer).
+#[export_name = "apjit_h_osr_fill"]
 pub extern "C" fn h_osr_fill(ctx: &mut ExecCtx, buf: *mut u8, src: i64, idx: i64) {
     if osr_dbg() {
         eprintln!("[OSRFILL] src={src} idx={idx}");
@@ -867,6 +897,7 @@ pub fn set_host_subscript_get(f: HostSubscriptGet) {
     }
 }
 
+#[export_name = "apjit_h_subscript"]
 pub extern "C" fn h_subscript(ctx: &mut ExecCtx, obj: u32, idx: u32, dst: u32) -> HelperStatus {
     // Class-name interning: PyException::new takes a &'static str (the
     // same leak-intern pattern jit_hook::intern_class uses — the error
@@ -919,6 +950,7 @@ pub extern "C" fn h_subscript(ctx: &mut ExecCtx, obj: u32, idx: u32, dst: u32) -
 }
 
 /// Stage one call argument into ctx.args[k] (clif.rs Call lowering).
+#[export_name = "apjit_h_stage_arg"]
 pub extern "C" fn h_stage_arg(ctx: &mut ExecCtx, k: u32, src: u32) -> HelperStatus {
     let k = k as usize;
     if ctx.args.len() <= k {
@@ -929,11 +961,13 @@ pub extern "C" fn h_stage_arg(ctx: &mut ExecCtx, k: u32, src: u32) -> HelperStat
 }
 
 /// Branch-side truthiness: unboxed 0/1 for CLIF brif (no allocation).
+#[export_name = "apjit_h_truthy_bit"]
 pub extern "C" fn h_truthy_bit(ctx: &mut ExecCtx, a: u32) -> i32 {
     ctx.slots[a as usize].is_truthy() as i32
 }
 
 /// Return terminator: park the value and complete.
+#[export_name = "apjit_h_return"]
 pub extern "C" fn h_return(ctx: &mut ExecCtx, v: u32) -> HelperStatus {
     ctx.ret = ctx.slots[v as usize].clone();
     0
@@ -942,6 +976,7 @@ pub extern "C" fn h_return(ctx: &mut ExecCtx, v: u32) -> HelperStatus {
 /// Raise terminator: park the exception object and take the raise edge.
 /// The boxed exception value converts to the payload layer here; the host
 /// re-materializes the traceback-wrapped exception at the boundary.
+#[export_name = "apjit_h_raise"]
 pub extern "C" fn h_raise(ctx: &mut ExecCtx, v: u32) -> HelperStatus {
     let v = ctx.slots[v as usize].clone();
     // The boxed value IS the exception instance (Obj arm) in real runs;
@@ -954,6 +989,7 @@ pub extern "C" fn h_raise(ctx: &mut ExecCtx, v: u32) -> HelperStatus {
 }
 
 /// Generator suspend: record state, park the yielded value.
+#[export_name = "apjit_h_suspend"]
 pub extern "C" fn h_suspend(ctx: &mut ExecCtx, state: u32, v: u32) -> HelperStatus {
     ctx.ret = ctx.slots[v as usize].clone();
     let _ = state; // consumed by the generator state machine (phase 5)

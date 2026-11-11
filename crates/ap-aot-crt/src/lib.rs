@@ -47,6 +47,10 @@ struct ManifestRow {
 // The linker resolves these against the program object's Export data.
 extern "C" {
     static ap_aot_manifest: u8;
+    static ap_aot_source: u8;
+    /// u64 byte length of ap_aot_source + the "APSRCEND" sentinel (the
+    /// length word lets the CRT read exactly the embedded program bytes).
+    static ap_aot_source_len: u8;
 }
 
 /// Safety-net panic message (the exception-format abort, review box 4).
@@ -106,7 +110,16 @@ fn aot_run() -> i32 {
             ap_run::set_argv_tail(thread_args.1.clone());
             let mut out = std::io::stdout();
             let mut err = std::io::stderr();
-            let source = std::fs::read_to_string(&thread_args.0).unwrap_or_default();
+            // The program body IS the embedded ap_aot_source blob (a
+            // static binary carries its program; nothing is read from
+            // disk). sys.argv[0] = the binary path (CPython's `./app`
+            // convention).
+            let s0 = std::ptr::addr_of!(ap_aot_source) as *const u8;
+            let lenp = std::ptr::addr_of!(ap_aot_source_len) as *const u64;
+            let len = unsafe { lenp.read_unaligned() } as usize;
+            let source = unsafe {
+                String::from_utf8_lossy(std::slice::from_raw_parts(s0, len)).into_owned()
+            };
             let outcome = ap_run::run_module_embedded(
                 &source,
                 &thread_args.0,
@@ -173,6 +186,19 @@ fn register_manifest() {
             ic_ptr: row.ic_ptr as *mut u8,
             ic_len: row.ic_len as u32,
         });
+    }
+    if std::env::var_os("APX_AOT_DEBUG").is_some() {
+        eprintln!("[AOT-MANIFEST] {count} rows");
+        for e in &entries {
+            eprintln!(
+                "[AOT-MANIFEST] {} slots={} names={:?} code={:p} ic_len={}",
+                e.qualname,
+                e.num_slots,
+                e.name_table,
+                e.code_ptr,
+                e.ic_len
+            );
+        }
     }
     ap_run::aot_set_manifest(entries);
 }

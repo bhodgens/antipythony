@@ -65,11 +65,14 @@ pub fn build_binary(
         ap_parse::lower(&parsed).map_err(|e| format!("antipythony: lower: {e}"))?;
 
     // 2. Lower every module-level def through the 02.05 cfg stage +
-    //    emit the program object (fail-closed: a construct the lowering
-    //    rejects is a BUILD ERROR naming the construct — a static
-    //    artifact cannot fall back at runtime).
+    //    emit the program object. Lowering-rejected bodies are dropped
+    //    from the manifest with a loud [AOT-BUILD] NOTICE (lower_module_
+    //    functions) and tree-walk at runtime — the JIT fallback-table
+    //    discipline, byte-identical output. Remaining codegen failures
+    //    (object emit / verify) stay fail-closed build errors.
     let pic = target.pic();
-    let (prog_obj, _ic_counts) = ap_codegen_native::aot::build_program_object(&module, pic)
+    let (prog_obj, _ic_counts) =
+        ap_codegen_native::aot::build_program_object(&module, source, pic)
         .map_err(|e| match e {
             CodegenError::Unsupported(what) => format!(
                 "antipythony: build: unsupported construct in a module-level function body: {what} \
