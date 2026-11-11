@@ -23,6 +23,7 @@
 pub mod audit_probe;
 pub mod cfg;
 pub mod clif;
+pub mod deopt;
 pub mod feedback;
 pub mod infer;
 pub mod optimizing;

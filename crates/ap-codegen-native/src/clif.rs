@@ -421,7 +421,9 @@ fn extra_params(name: &'static str) -> &'static [usize] {
         "apjit_h_return_smi" => &[0],
         "apjit_h_twin_start" => &[],
         "apjit_h_set_twin_start" => &[0],
-        "apjit_h_deopt_note" => &[],
+        // 02.05d: the deopt note keys the per-function thrash state (the
+        // fn identity rides the key field — see emit_fastpath_body).
+        "apjit_h_deopt_note" => &[0],
         "apjit_h_match_exc" => &[0, 0, 0],
         "apjit_h_raise" | "apjit_h_suspend" => &[0, 0],
         "apjit_h_reraise" => &[],
@@ -1068,6 +1070,7 @@ impl Tier1Func {
 pub fn compile_tier1(
     func: &Func,
     snapshots: &[crate::feedback::CellSnapshot],
+    fn_key: u64,
 ) -> Result<Option<Tier1Func>, CodegenError> {
     let twin = compile_baseline(func)?;
     let info = crate::infer::infer(func, snapshots);
@@ -1085,8 +1088,12 @@ pub fn compile_tier1(
         return Ok(None);
     }
     crate::optimizing::verify_region_terminators(func, &plan)?;
-    let (fast_ptr, fast_blob) = emit_typed_fastpath(func, &plan)?;
+    let (fast_ptr, fast_blob) = emit_typed_fastpath(func, &plan, fn_key)?;
     let regions = plan.regions.len();
+    // 02.05d: record the successful install in the thrash table (Tier1,
+    // counters reset) so a re-specialization after a Deferred drop starts
+    // a clean epoch.
+    crate::deopt::note_tier1_installed(fn_key);
     Ok(Some(Tier1Func {
         fast_ptr,
         twin: plan.cold_twin,
@@ -1095,11 +1102,19 @@ pub fn compile_tier1(
     }))
 }
 
-/// Emit the typed fast path over the plan's regions.
+/// Emit the typed fast path over the plan's regions. `fn_key` is the
+/// executing function's stable identity (02.05d), compiled into the
+/// deopt tail so `h_deopt_note` can key the per-function thrash state.
 fn emit_typed_fastpath(
     func: &Func,
     plan: &crate::optimizing::OptimizingPlan,
+    fn_key: u64,
 ) -> Result<(*const u8, cranelift_jit::JITModule), CodegenError> {
+    // 02.05d guard-fix: the thread-local SSA temp map is per-EMIT — a
+    // stale entry from a previous function's fast-path emission would be
+    // read by this one (same temp id = silent WRONG VALUE). Clear at the
+    // top of every emit.
+    ssa_temps::clear();
     let mut flag_builder = settings::builder();
     flag_builder
         .set("use_colocated_libcalls", "false")
@@ -1157,7 +1172,16 @@ fn emit_typed_fastpath(
             helper_refs.insert(name, fref);
         }
 
-        emit_fastpath_body(&mut fb, entry, func, plan, ctx_ptr, &helper_refs, num_slots)?;
+        emit_fastpath_body(
+            &mut fb,
+            entry,
+            func,
+            plan,
+            ctx_ptr,
+            &helper_refs,
+            num_slots,
+            fn_key,
+        )?;
 
         fb.seal_all_blocks();
         fb.finalize(frontend_config);
@@ -1186,6 +1210,7 @@ fn emit_typed_fastpath(
 }
 
 /// The fast-path body: entry guards + region bodies + hand-off tail.
+#[allow(clippy::too_many_arguments)]
 fn emit_fastpath_body(
     fb: &mut FunctionBuilder,
     entry: Block,
@@ -1194,6 +1219,7 @@ fn emit_fastpath_body(
     ctx_ptr: Value,
     helpers: &HashMap<&'static str, FuncRef>,
     _num_slots: i64,
+    fn_key: u64,
 ) -> Result<(), CodegenError> {
     let i32_t = types::I32;
     let Some(region) = plan.regions.first() else {
@@ -1357,11 +1383,13 @@ fn emit_fastpath_body(
         fb.ins().jump(tail, &[]);
     }
     // Fill the deopt tail LAST (its handle existed since before the guard
-    // chain; every failure edge jumps here).
+    // chain; every failure edge jumps here). 02.05d: the note carries the
+    // function key so the thrash backoff is PER FUNCTION.
     fb.switch_to_block(tail);
     {
         let f = helpers["apjit_h_deopt_note"];
-        fb.ins().call(f, &[ctx_ptr]);
+        let key = fb.ins().iconst(types::I64, fn_key as i64);
+        fb.ins().call(f, &[ctx_ptr, key]);
         let two = fb.ins().iconst(i32_t, 2);
         fb.ins().return_(&[two]);
     }
@@ -1525,6 +1553,11 @@ mod ssa_temps {
 
     pub fn store(t: u32, v: Value) {
         SSA.with(|m| m.borrow_mut().insert(t, v));
+    }
+
+    /// 02.05d: clear the per-emit map (see `emit_typed_fastpath`).
+    pub fn clear() {
+        SSA.with(|m| m.borrow_mut().clear());
     }
 
     pub fn load(t: u32) -> Value {

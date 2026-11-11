@@ -168,6 +168,14 @@ pub unsafe fn call_fast(
 ) -> Result<(), ap_obj::PyException> {
     let f: extern "C" fn(*mut crate::runtime::ExecCtx) -> i32 = std::mem::transmute(fast_ptr);
     let status = f(ctx as *mut crate::runtime::ExecCtx);
+    // Diagnostic-only, env-gated (02.05e union fix): the unconditional
+    // eprintln here fired PER CALL — 40k lines for a single race-stress
+    // probe, filling the 64KB stderr pipe and deadlocking any harness that
+    // spawns the interpreter with piped stderr before draining it (the
+    // tierup_race_stress suite died at its own 300s deadline this way).
+    if std::env::var("APX_CALLDBG").is_ok() {
+        eprintln!("[CALLFAST-DBG] status={status}");
+    }
     match status {
         0 => Ok(()),
         2 => twin.call(ctx),
@@ -540,31 +548,39 @@ fn compiler_loop(rx: Receiver<CompileRequest>, completions: Arc<Completions>) {
         // DROPPED (not freed — the mutator executes its OWN baseline as
         // the twin; see the module docs), and the fast-path blob is
         // pinned above.
-        let outcome = match crate::clif::compile_tier1(&func, &snapshots) {
-            Ok(Some(t1)) => {
-                let handle = FastPathHandle {
-                    fast_ptr: t1.fast_ptr,
-                    regions: t1.regions,
-                };
-                pinned.insert(
-                    fn_id,
-                    PinnedFastPath {
-                        ptr: t1.fast_ptr,
-                        _blob: t1._fast_blob,
-                    },
-                );
-                let _ = t1.twin; // dropped, NOT freed (see above)
-                Ok(handle)
-            }
-            Ok(None) => Err(()), // no typed region: permanently boxed
-            Err(e) => {
-                if tier_debug() {
-                    eprintln!(
-                        "[TIER1-ASYNC] fn {fn_name} tier-1 compile failed \
-                         (disabled): {e:?}"
+        let outcome = {
+            // 02.05d: the deopt thrash key IS the fn identity the driver
+            // was requested under — the same def-pointer key jit_hook
+            // gates tier-up and dispatch on.
+            let fn_key = fn_id as u64;
+            match crate::clif::compile_tier1(&func, &snapshots, fn_key) {
+                Ok(Some(t1)) => {
+                    // compile_tier1 already ran deopt::note_tier1_installed
+                    // (Tier1, counters reset) for this fn_key.
+                    let handle = FastPathHandle {
+                        fast_ptr: t1.fast_ptr,
+                        regions: t1.regions,
+                    };
+                    pinned.insert(
+                        fn_id,
+                        PinnedFastPath {
+                            ptr: t1.fast_ptr,
+                            _blob: t1._fast_blob,
+                        },
                     );
+                    let _ = t1.twin; // dropped, NOT freed (see above)
+                    Ok(handle)
                 }
-                Err(())
+                Ok(None) => Err(()), // no typed region: permanently boxed
+                Err(e) => {
+                    if tier_debug() {
+                        eprintln!(
+                            "[TIER1-ASYNC] fn {fn_name} tier-1 compile failed \
+                             (disabled): {e:?}"
+                        );
+                    }
+                    Err(())
+                }
             }
         };
         if tier_debug() && outcome.is_ok() {

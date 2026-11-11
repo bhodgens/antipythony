@@ -111,19 +111,37 @@ fn run_probe(tier: &str, probe: &PathBuf, extra_env: &[(&str, &str)]) -> (Vec<u8
     for (k, v) in extra_env {
         cmd.env(k, v);
     }
+    // Drain both pipes CONCURRENTLY with the wait (harness hardening,
+    // 02.05e union): a child that writes >64KB to stderr (e.g. a debug
+    // spam regression) would otherwise block forever on a full pipe while
+    // this loop only polls try_wait — the exact 300s-timeout failure this
+    // suite hit before the CALLFAST-DBG spam was env-gated.
     let mut child = cmd
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap_or_else(|e| panic!("spawn tierup probe: {e}"));
+    let stdout_handle = child.stdout.take().expect("child stdout");
+    let stderr_handle = child.stderr.take().expect("child stderr");
+    let out_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        use std::io::Read;
+        let mut h = stdout_handle;
+        let _ = h.read_to_end(&mut buf);
+        buf
+    });
+    let err_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        use std::io::Read;
+        let mut h = stderr_handle;
+        let _ = h.read_to_end(&mut buf);
+        buf
+    });
     let deadline = Instant::now() + Duration::from_secs(run_timeout_secs());
-    loop {
+    let status = loop {
         match child.try_wait().expect("wait tierup child") {
-            Some(status) => {
-                let out = child.wait_with_output().expect("collect output");
-                break (out.stdout, out.stderr, status.code().unwrap_or(-1));
-            }
+            Some(status) => break status,
             None => {
                 assert!(
                     Instant::now() < deadline,
@@ -133,7 +151,14 @@ fn run_probe(tier: &str, probe: &PathBuf, extra_env: &[(&str, &str)]) -> (Vec<u8
                 std::thread::sleep(Duration::from_millis(100));
             }
         }
-    }
+    };
+    let out = child.wait_with_output().expect("collect output");
+    let _ = out; // readers own the pipes now
+    (
+        out_reader.join().unwrap_or_default(),
+        err_reader.join().unwrap_or_default(),
+        status.code().unwrap_or(-1),
+    )
 }
 
 /// The race-stress probe (tier-up decisions made mid-loop while the hot
