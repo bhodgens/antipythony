@@ -31,7 +31,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use ap_codegen_native::cfg;
-use ap_codegen_native::clif::{compile_baseline, compile_tier1, JitFunc};
+use ap_codegen_native::clif::{compile_tier1, JitFunc};
 use ap_codegen_native::runtime::{ExecCtx, HostCallbacks};
 use ap_codegen_native::tierup;
 use ap_obj::exc::PyException;
@@ -156,6 +156,10 @@ pub fn init_tier(explicit: Option<&str>) {
         }
         Err(_) => Err("SystemError: non-raise Flow in JIT contains".to_string()),
     });
+    // 02.05f: the boxed OSR registry seam — the tier-0 back-edge poll
+    // probes THIS function (installed once per process; the lookup is
+    // pure over the registry + the JIT cache, no interpreter state).
+    ap_codegen_native::runtime::set_host_osr_poll(osr_registry_lookup);
 }
 
 fn parse_tier(m: &str) -> Option<TierMode> {
@@ -168,6 +172,145 @@ fn parse_tier(m: &str) -> Option<TierMode> {
 
 pub fn tier_mode() -> TierMode {
     TIER_MODE.with(|t| t.get())
+}
+
+// ===========================================================================
+// 02.05f — the boxed OSR registry + dispatch arm.
+//
+// The OSR registry maps (fn_key, header) → entry pointer. The back-edge
+// poll (compiled into tier-0 by clif.rs's OsrPoll arm) probes it through
+// runtime::set_host_osr_poll's inverted seam (installed once in
+// init_tier); on a hit, tier-0 builds the OsrTransferBuffer in a stack
+// slot, calls the entry (OSR-BY-CALL — osr.rs), and abandons its frame.
+//
+// Compile routing: OSR entries are compiled through the SAME background
+// driver (tierup::request_osr / poll_osr), keyed (fn_key, header), with
+// the disable marker permanently blacklisting the header (failed-tier-up-
+// disables). The eligible-header set is fixed per function at cache-insert
+// time (osr::loop_headers — while-shape polls only; each resolved header
+// passes the OSR_MAX_LIVE eligibility gate here, reported under
+// APX_TIER_DEBUG when refused).
+// ===========================================================================
+
+thread_local! {
+    /// (fn_key, header) → OSR-entry pointer (null = blacklisted: an
+    /// ineligible live set or a failed compile — never retried).
+    static OSR_ENTRIES: RefCell<HashMap<(u64, u32), *const u8>> =
+        RefCell::new(HashMap::new());
+    /// OSR compile requests in flight (or answered) — the exactly-once
+    /// guard for driver.request_osr. Mirrors the OSR_ENTRIES keyspace:
+    /// an answered-but-not-installed key stays here until poll_osr hands
+    /// over the verdict.
+    static OSR_REQUESTED: RefCell<std::collections::HashSet<(u64, u32)>> =
+        RefCell::new(std::collections::HashSet::new());
+}
+
+/// OSR registry probe (the h_osr_poll host seam). `fn_key`/`header` come
+/// from the compiled poll immediates. Steps:
+/// 1. installed entry → return it;
+/// 2. blacklisted / already-requested → null (poll fast path);
+/// 3. header eligible (OSR_MAX_LIVE gate) → enqueue an OSR compile
+///    through the background driver, remember the key as pending → null.
+///
+/// Only the process-global driver runs here; when the driver was never
+/// started (tier-0 runs, unit tests) the registry stays empty.
+fn osr_registry_lookup(fn_key: u64, header: u32) -> *const u8 {
+    let installed = OSR_ENTRIES.with(|m| {
+        *m.borrow()
+            .get(&(fn_key, header))
+            .unwrap_or(&std::ptr::null())
+    });
+    if !installed.is_null() {
+        return installed;
+    }
+    let requested = OSR_REQUESTED.with(|s| s.borrow().contains(&(fn_key, header)));
+    if requested {
+        return std::ptr::null();
+    }
+    // Route the compile through the driver (process-global only). A
+    // missing driver (tier-0 run / sync-mode unit context without a
+    // started driver) means no OSR — the loop keeps running tier-0.
+    let Some(driver) = tierup::try_global() else {
+        return std::ptr::null();
+    };
+    // The JitEntry for this fn_key owns the lowered cfg (the cache is
+    // never evicted, so the def-pointer key resolves for any function
+    // that ever reached the JIT route — a miss here means the poll was
+    // compiled under a key whose cache row vanished, impossible today).
+    let Some(je) = JIT_CACHE.with(|c| {
+        let cache = c.borrow();
+        cache
+            .iter()
+            .find_map(|(k, v)| (*k as u64 == fn_key).then(|| v.clone()).flatten())
+    }) else {
+        return std::ptr::null();
+    };
+    // Eligibility gate (reported, never silent).
+    let plan = ap_codegen_native::osr::osr_plan(&je.cfg, cfg::BlockId(header));
+    let eligible = matches!(
+        &plan,
+        ap_codegen_native::osr::OsrEligibility::Eligible { .. }
+    );
+    if !eligible {
+        if tier_debug() {
+            if let ap_codegen_native::osr::OsrEligibility::Ineligible { reason, live_count } = &plan
+            {
+                eprintln!(
+                    "[OSR] fn_key={fn_key} header={header} INELIGIBLE live_count={live_count}: {reason}"
+                );
+            }
+        }
+        // Mark blacklisted so the poll never re-checks.
+        OSR_ENTRIES.with(|m| m.borrow_mut().insert((fn_key, header), std::ptr::null()));
+        OSR_REQUESTED.with(|s| s.borrow_mut().insert((fn_key, header)));
+        return std::ptr::null();
+    }
+    // The driver requires an Arc'd completion consumer; enqueue with a
+    // fresh in-flight set seeded from our requested keys.
+    let mut in_flight = OSR_REQUESTED.with(|s| s.borrow().clone());
+    let sent = driver.request_osr(fn_key, &je.cfg.name, header, je.cfg.clone(), &mut in_flight);
+    OSR_REQUESTED.with(|s| *s.borrow_mut() = in_flight);
+    let _ = sent;
+    std::ptr::null() // install happens at the next call boundary (below)
+}
+
+/// Drain finished OSR compiles for every requested-but-unanswered key
+/// (called at each jit_call_body entry — the same poll discipline as the
+/// tier-1 install). Installs handles / records blacklists.
+fn osr_poll_installs() {
+    let Some(driver) = tierup::try_global() else {
+        return;
+    };
+    let mut pending: Vec<(u64, u32)> = OSR_REQUESTED.with(|s| {
+        let set = s.borrow();
+        OSR_ENTRIES.with(|m| {
+            let installed = m.borrow();
+            set.iter()
+                .filter(|k| !installed.contains_key(k))
+                .copied()
+                .collect()
+        })
+    });
+    pending.sort_unstable();
+    for key in pending {
+        if let Some(done) = driver.poll_osr(key.0, key.1) {
+            match done {
+                Ok(h) => {
+                    OSR_ENTRIES.with(|m| m.borrow_mut().insert(key, h.ptr));
+                }
+                Err(()) => {
+                    // Failed-tier-up-disables: blacklist the header.
+                    OSR_ENTRIES.with(|m| m.borrow_mut().insert(key, std::ptr::null()));
+                    if tier_debug() {
+                        eprintln!(
+                            "[OSR] fn_key={} header={} compile FAILED (blacklisted)",
+                            key.0, key.1
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// 02.05e: join the background tier-up compiler (process exit seam).
@@ -234,6 +377,11 @@ pub fn report_line() {
     // 02.05e: the background driver's tier-state histogram (only when the
     // driver was actually started this run).
     if let Some(line) = tierup::stats_line() {
+        eprintln!("{line}");
+    }
+    // 02.05f: the OSR transfer counter (own APX_OSR_STATS knob — the
+    // conformance channels stay untouched without it).
+    if let Some(line) = ap_codegen_native::runtime::osr_stats_line() {
         eprintln!("{line}");
     }
 }
@@ -626,6 +774,12 @@ pub fn jit_call_body(
     {
         tier_up_step(fn_id, entry, &je);
     }
+    // 02.05f: drain finished OSR-entry compiles (the same poll-to-install
+    // discipline the tier-1 path uses — the back-edge poll in tier-0 code
+    // only consults OSR_ENTRIES, never the driver, so installs land here
+    // at call boundaries; the header's own NEXT back-edge crossing
+    // transfers).
+    osr_poll_installs();
     let tier1_fast = je.tier1_fast.get();
     if std::env::var("APX_CALLDBG").is_ok() {
         let st = ap_codegen_native::deopt::deopt_stats(fn_key);
@@ -816,6 +970,7 @@ fn tier_up_step(fn_id: usize, entry: &FnEntry, je: &Rc<JitEntry>) {
 // The compile-cache path (lowering + baseline only — the tier-up hand-off
 // above never re-lowers; it clones the cached `cfg`).
 fn compile_for(entry: &FnEntry) -> Option<JitEntry> {
+    let fn_id = Rc::as_ptr(&entry.def) as usize;
     let func = match cfg::lower_fn(&entry.def) {
         Ok(f) => f,
         Err(e) => {
@@ -845,7 +1000,12 @@ fn compile_for(entry: &FnEntry) -> Option<JitEntry> {
         .map(|t| t.0 + 1)
         .unwrap_or(0) as u32;
     let num_slots = func.num_locals + max_temp;
-    let jit = match compile_baseline(&func) {
+    // 02.05f: the tier-0 baseline is compiled WITH live OSR polls (the
+    // poll sites probe the host registry under this function's key; with
+    // no registry entries they are one helper call + branch per
+    // back-edge). Deterministic lowering otherwise — slot layout
+    // identical to a compile_baseline compile (Risk-5 contract kept).
+    let jit = match ap_codegen_native::clif::compile_baseline_with_osr(&func, fn_id as u64) {
         Ok(j) => j,
         Err(e) => {
             if tier_debug() {

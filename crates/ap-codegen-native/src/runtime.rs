@@ -647,6 +647,161 @@ pub extern "C" fn h_deopt_note(_ctx: &mut ExecCtx, fn_key: i64) -> HelperStatus 
     0
 }
 
+// ---------------------------------------------------------------------------
+// 02.05f — boxed OSR: the back-edge poll helper + the entry's buffer-load
+// helper. Transfer is OSR-BY-CALL (osr.rs module docs): the poll returns
+// the OSR-entry pointer or NULL; the tier-0 emitter builds an
+// OsrTransferBuffer in a stack slot and calls the entry with it; the OSR
+// body runs to completion and returns the function's final boxed result.
+// ---------------------------------------------------------------------------
+
+/// The boxed OSR back-edge poll (`Inst::OsrPoll` lowering, tier-0).
+/// `fn_key` is the executing function's stable identity (the same
+/// def-pointer key the JIT cache and the tier-up driver use); `header`
+/// is the raw cfg BlockId of this poll's loop header (an immediate from
+/// the lowering — one poll per header, so the pair (fn_key, header) is
+/// the OSR registry's key).
+///
+/// Returns the OSR-entry function pointer as an i64 (0 = NULL: no entry
+/// compiled yet — the tier-0 loop simply continues; this is the POLL
+/// fast path: one atomic map probe per back-edge crossing). The registry
+/// lives in ap-run (jit_hook.rs installs it — ap-codegen-native cannot
+/// depend on ap-run), arrived via the same inverted seam pattern as
+/// SUBSCRIPT_GET_FN/CONTAINS_FN: a host-installed fn pointer, absent in
+/// unit tests (returns NULL = never OSR).
+type HostOsrPoll = fn(fn_key: u64, header: u32) -> *const u8;
+
+static OSR_POLL_FN: std::sync::RwLock<Option<HostOsrPoll>> = std::sync::RwLock::new(None);
+
+/// Install the host OSR-registry reader (ap-run calls once at JIT init).
+pub fn set_host_osr_poll(f: HostOsrPoll) {
+    if let Ok(mut g) = OSR_POLL_FN.write() {
+        *g = Some(f);
+    }
+}
+
+/// The OSR-entry pointer for (fn_key, header), or null (never OSR).
+pub fn osr_entry_for(fn_key: u64, header: u32) -> *const u8 {
+    let f = OSR_POLL_FN.read().ok().and_then(|g| *g);
+    match f {
+        Some(f) => f(fn_key, header),
+        None => std::ptr::null(),
+    }
+}
+
+#[inline]
+fn usize_to_i64(p: *const u8) -> i64 {
+    // usize == i64 on every supported target (asserted at compile time in
+    // osr.rs's buffer-layout check); the CLIF ABI moves the pointer as an
+    // i64 and the caller transmutes it back.
+    p as usize as i64
+}
+
+/// The APX_OSRDBG flag, resolved once (no per-call env::var allocation —
+/// the 02.05e pipe-buffer lesson: per-call diagnostics must not allocate
+/// on hot paths).
+fn osr_dbg() -> bool {
+    static CACHED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| std::env::var("APX_OSRDBG").is_ok())
+}
+
+pub extern "C" fn h_osr_poll(_ctx: &mut ExecCtx, fn_key: i64, header: i64) -> i64 {
+    let entry = osr_entry_for(fn_key.max(0) as u64, header.max(0) as u32);
+    if osr_dbg() {
+        eprintln!(
+            "[OSRPOLL] fn_key={fn_key} header={header} hit={}",
+            !entry.is_null()
+        );
+    }
+    usize_to_i64(entry)
+}
+
+/// The OSR ENTRY's boxed-load helper: read buffer slot `idx` as a boxed
+/// Value clone into the entry's ctx. The buffer is `repr(C)` with usize
+/// slots (osr.rs); the entry's host side (jit_hook) built the matching
+/// `OsrTransferBuffer` before the call, and tier-0 forwarded its pointer.
+/// SAFETY (enforced by the two sides' shared constant table — osr.rs
+/// OsrPlan): idx < live_count <= OSR_MAX_LIVE, and the pointer is a live
+/// stack address for the whole OSR call (tier-0's frame — the buffer's
+/// home — is parked for the entry's duration by the OSR-by-call
+/// discipline).
+///
+/// # Safety
+///
+/// `buf` must point at a populated `OsrTransferBuffer` with at least
+/// `idx + 1` populated slots (the shared-table contract above).
+pub extern "C" fn h_osr_load(ctx: &mut ExecCtx, buf: *const u8, idx: i64, dst: u32) {
+    if osr_dbg() {
+        eprintln!("[OSRLOAD] idx={idx} dst={dst}");
+    }
+    // idx == 0 marks an OSR entry PROLOGUE start (one per transfer — the
+    // loads run once, in order, at the head of the entry). Counting here
+    // makes the [OSR-STATS] transfers= counter prove the OSR path RAN
+    // (the gate suite's exercise proof); the entry always runs to the
+    // function's end (baseline lowering — it cannot side-exit).
+    if idx == 0 {
+        note_osr_transfer();
+    }
+    let b = buf as *const crate::osr::OsrTransferBuffer;
+    // SAFETY: the shared-table contract above (idx in bounds; buffer live).
+    let v = unsafe { &(*b).slots[idx as usize] };
+    ctx.slots[dst as usize] = v.clone();
+}
+
+/// The OSR ENTRY's header reader (diagnostics: which header/count the
+/// transfer carried).
+pub fn osr_buffer_header(buf: *const u8) -> (u32, u32) {
+    let b = buf as *const crate::osr::OsrTransferBuffer;
+    // SAFETY: repr(C) header, pointer from a populated buffer (call sites).
+    unsafe { ((*b).loop_header, (*b).live_count) }
+}
+
+/// 02.05f exercise counter: completed OSR transfers (the entry returned
+/// 0 = the loop's remainder ran inside the OSR body). Process-global;
+/// printed as `[OSR-STATS] transfers=N` by the report seam so the gate
+/// suite can prove the OSR path actually FIRED (byte-identity alone
+/// could pass with OSR silently never firing).
+static OSR_TRANSFERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Record one completed OSR transfer (called from ap-run's dispatch arm
+/// when call_osr_status returned 0).
+pub fn note_osr_transfer() {
+    OSR_TRANSFERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The `[OSR-STATS]` line (None when APX_OSR_STATS is unset — the
+/// conformance output channels stay untouched).
+pub fn osr_stats_line() -> Option<String> {
+    let on = std::env::var("APX_OSR_STATS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if !on {
+        return None;
+    }
+    Some(format!(
+        "[OSR-STATS] transfers={}",
+        OSR_TRANSFERS.load(std::sync::atomic::Ordering::Relaxed)
+    ))
+}
+
+/// Tier-0's buffer FILL: clone ctx.slots[src] into buf.slots[idx] (the
+/// 16-byte boxed Value moves Rust-side; the CLIF only passes indices).
+/// SAFETY: idx < OSR_MAX_LIVE (enforced by the eligibility gate that
+/// compiled this poll — an out-of-range idx is an emitter bug and
+/// panics loudly rather than corrupting the transfer).
+pub extern "C" fn h_osr_fill(ctx: &mut ExecCtx, buf: *mut u8, src: i64, idx: i64) {
+    if osr_dbg() {
+        eprintln!("[OSRFILL] src={src} idx={idx}");
+    }
+    debug_assert!(idx >= 0 && (idx as usize) < crate::osr::OSR_MAX_LIVE);
+    let b = buf as *mut crate::osr::OsrTransferBuffer;
+    // SAFETY: buf is a live Explicit stack slot of the caller's frame
+    // (the OSR-BY-CALL discipline parks that frame for the whole entry
+    // call), idx is in range per the gate.
+    let v = ctx.slots[src as usize].clone();
+    unsafe { (*b).slots[idx as usize] = v };
+}
+
 /// Tier-1 counters (process-global; probe/stats surface only).
 static TIER1_INSTALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static TIER1_REGIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

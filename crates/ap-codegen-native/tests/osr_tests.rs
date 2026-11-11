@@ -29,12 +29,14 @@ fn fn_def(body: Vec<ap_ir::item::Stmt>) -> FnDef {
 
 #[test]
 fn buffer_layout_is_fixed() {
-    // repr(C): 2×u32 header + OSR_MAX_LIVE usize slots. The tier-0 emitter
-    // and the OSR entry read/write at these FIXED offsets.
+    // repr(C): 2×u32 header + OSR_MAX_LIVE boxed Values (16B each). The
+    // tier-0 emitter and the OSR entry read/write at these FIXED offsets
+    // (02.05f: the slots carry Value directly — both transfer sides are
+    // Rust compiled from this crate, so no usize-punning shim is needed).
     assert_eq!(OSR_MAX_LIVE, 16);
     assert_eq!(
         std::mem::size_of::<ap_codegen_native::osr::OsrTransferBuffer>(),
-        8 + 8 * OSR_MAX_LIVE
+        8 + 16 * OSR_MAX_LIVE
     );
 }
 
