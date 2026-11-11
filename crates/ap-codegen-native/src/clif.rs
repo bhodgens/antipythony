@@ -1021,6 +1021,13 @@ pub struct Tier1Func {
     pub twin: JitFunc,
     /// The plan the fast path was emitted from (regions + guards).
     pub regions: usize,
+    /// 02.05e: the fast path's code blob, OWNED here (was leaked via
+    /// mem::forget in emit_typed_fastpath before this leaf). The blob must
+    /// stay mapped for every call through `fast_ptr`; the owner is whoever
+    /// retains the Tier1Func — the 02.05e driver pins it until retire (see
+    /// tierup.rs). Not Send: keep the blob on the thread that compiled it
+    /// (pon discipline) and ship only the raw pointers (tierup::Tier1Exec).
+    pub _fast_blob: cranelift_jit::JITModule,
 }
 
 impl Tier1Func {
@@ -1078,12 +1085,13 @@ pub fn compile_tier1(
         return Ok(None);
     }
     crate::optimizing::verify_region_terminators(func, &plan)?;
-    let fast_ptr = emit_typed_fastpath(func, &plan)?;
+    let (fast_ptr, fast_blob) = emit_typed_fastpath(func, &plan)?;
     let regions = plan.regions.len();
     Ok(Some(Tier1Func {
         fast_ptr,
         twin: plan.cold_twin,
         regions,
+        _fast_blob: fast_blob,
     }))
 }
 
@@ -1091,7 +1099,7 @@ pub fn compile_tier1(
 fn emit_typed_fastpath(
     func: &Func,
     plan: &crate::optimizing::OptimizingPlan,
-) -> Result<*const u8, CodegenError> {
+) -> Result<(*const u8, cranelift_jit::JITModule), CodegenError> {
     let mut flag_builder = settings::builder();
     flag_builder
         .set("use_colocated_libcalls", "false")
@@ -1165,16 +1173,16 @@ fn emit_typed_fastpath(
         .finalize_definitions()
         .map_err(|e| CodegenError::Verify(format!("finalize fast: {e}")))?;
     let ptr = module.get_finalized_function(func_id);
-    // NOTE: the fast path's JITModule is intentionally leaked-ish: it is
-    // owned by NO ONE after this point because the machine code must stay
-    // mapped for the Tier1Func's lifetime, and Tier1Func carries no blob.
-    // Wrapping it requires moving the module into Tier1Func; that refactor
-    // lands with 02.05e's retained-module discipline (the driver owns
-    // finished compilations). Until then compile_tier1 keeps the module
-    // alive by leaking it (cranelift JITModules are small metadata over
-    // the mapped code; the leak is bounded per function).
-    std::mem::forget(module);
-    Ok(ptr)
+    // 02.05e: the fast path's JITModule is OWNED by the Tier1Func (the
+    // driver pins the finished compilation until retire). Dropped-on-drop
+    // is SAFE here: cranelift-jit 0.134's SystemMemoryProvider::drop
+    // deliberately LEAKS the mapped code ("leak memory to guarantee
+    // validity of function pointers"), so even an accidental early drop
+    // cannot unmap executing code — the failure mode of the old
+    // mem::forget-less shape is gone by construction, and the leak is
+    // bounded per function exactly as before. The stale mem::forget note
+    // is retired with this refactor.
+    Ok((ptr, module))
 }
 
 /// The fast-path body: entry guards + region bodies + hand-off tail.

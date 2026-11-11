@@ -29,6 +29,7 @@ pub mod optimizing;
 pub mod osr;
 pub mod region;
 pub mod runtime;
+pub mod tierup;
 pub mod worker_stack;
 
 /// Codegen failure. Every unsupported construct is explicit — fail-closed,
