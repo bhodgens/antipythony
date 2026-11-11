@@ -10584,9 +10584,8 @@ fn strptime_parse(text: &str, fmt: &str) -> Result<[i64; 9], Flow> {
 // atexit
 // ===========================================================================
 
-thread_local! {
-    static ATEXIT_FNS: RefCell<Vec<(String, Vec<Value>)>> = const { RefCell::new(Vec::new()) };
-}
+// 02.09a P3: ATEXIT_FNS moved to runtime_state.rs (ATEXIT_FNS_T) — see
+// call_atexit/drain_atexit below.
 
 fn build_atexit(_i: &crate::frame::Interpreter) -> Value {
     let (m, ns) = new_module("atexit");
