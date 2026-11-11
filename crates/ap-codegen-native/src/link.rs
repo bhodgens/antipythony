@@ -28,9 +28,9 @@
 //! absolute relocations for static or static-PIE layouts on both MachO
 //! and ELF, which is exactly what cranelift-object emits).
 
-use cranelift::codegen::ir::types;
 use crate::cfg::Func;
 use crate::CodegenError;
+use cranelift::codegen::ir::types;
 
 /// Manifest row: 8 u64 words = 64 bytes. Word offsets are THE definition;
 /// ap-aot-crt reads the same table (a drift is a link-visible size break,
@@ -232,8 +232,7 @@ pub fn emit_program_object(
             // word 3: num_slots
             bytes[base + 24..base + 32].copy_from_slice(&(input.num_slots as u64).to_le_bytes());
             // word 5: names_len (ROWS, not bytes — the CRT strides by 16)
-            bytes[base + 40..base + 48]
-                .copy_from_slice(&(names.len() as u64).to_le_bytes());
+            bytes[base + 40..base + 48].copy_from_slice(&(names.len() as u64).to_le_bytes());
             // word 7: ic_len (bytes)
             bytes[base + 56..base + 64].copy_from_slice(&(outputs[i].ic_len as u64).to_le_bytes());
         }

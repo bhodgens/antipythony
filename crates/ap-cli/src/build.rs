@@ -71,8 +71,7 @@ pub fn build_binary(
     //    discipline, byte-identical output. Remaining codegen failures
     //    (object emit / verify) stay fail-closed build errors.
     let pic = target.pic();
-    let (prog_obj, _ic_counts) =
-        ap_codegen_native::aot::build_program_object(&module, source, pic)
+    let (prog_obj, _ic_counts) = ap_codegen_native::aot::build_program_object(&module, source, pic)
         .map_err(|e| match e {
             CodegenError::Unsupported(what) => format!(
                 "antipythony: build: unsupported construct in a module-level function body: {what} \

@@ -471,9 +471,7 @@ fn cmd_build(rest: &[&str]) -> Result<i32, String> {
                     .get(i + 1)
                     .ok_or("antipythony: --target requires a triple (macos | linux-musl)")?;
                 let t = ap_codegen_native::aot::AotTarget::parse(v).ok_or_else(|| {
-                    format!(
-                        "antipythony: unknown --target '{v}' (supported: macos, linux-musl)"
-                    )
+                    format!("antipythony: unknown --target '{v}' (supported: macos, linux-musl)")
                 })?;
                 // Fail loudly on a missing toolchain (no silent fallback).
                 if t == ap_codegen_native::aot::AotTarget::LinuxMusl

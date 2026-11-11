@@ -77,16 +77,16 @@ static AOT_EXECS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::n
 /// The one-line AOT report appended to jit_hook's [TIER-STATS] output.
 pub fn stats_line() -> Option<String> {
     let n = AOT_EXECS.load(std::sync::atomic::Ordering::Relaxed);
-    Some(format!("[AOT-STATS] registered={} execs={n}", manifest_slice().len()))
+    Some(format!(
+        "[AOT-STATS] registered={} execs={n}",
+        manifest_slice().len()
+    ))
 }
 
 /// Resolve the AOT entry for a MAIN-module def by name (the registry's
 /// `by_path` name — call_function knows it as entry.def.name).
 pub fn entry_for(def_name: &str) -> Option<usize> {
-    BY_NAME
-        .get()?
-        .get(&format!("apfn_{def_name}"))
-        .copied()
+    BY_NAME.get()?.get(&format!("apfn_{def_name}")).copied()
 }
 
 /// Execute an AOT body (the AOT dispatch arm's callee — mirrors
@@ -103,8 +103,7 @@ pub fn call_body(
 ) -> Result<Value, crate::Flow> {
     let manifest = MANIFEST.get().expect("AOT dispatch before registration");
     let aot = &manifest[index];
-    let code: extern "C" fn(*mut ExecCtx) -> i32 =
-        unsafe { std::mem::transmute(aot.code_ptr) };
+    let code: extern "C" fn(*mut ExecCtx) -> i32 = unsafe { std::mem::transmute(aot.code_ptr) };
 
     // Slot bridge (jit_hook parity): params at [n_params..2*n_params) per
     // the cfg ABI's off-by-one convention, then body locals by name.
@@ -122,7 +121,10 @@ pub fn call_body(
         frame.clone(),
         aot.name_table.clone(),
     ));
-    let mut ctx = ExecCtx::new(aot.num_slots as usize, crate::jit_hook::aot_host_callbacks());
+    let mut ctx = ExecCtx::new(
+        aot.num_slots as usize,
+        crate::jit_hook::aot_host_callbacks(),
+    );
     ctx.host_data = Box::into_raw(host_state) as *mut u8;
     ctx.names = aot.name_table.clone();
     // The static IC payload is never recorded by tier-0-native code; the

@@ -41,11 +41,11 @@ pub mod structmod;
 pub mod threading;
 pub mod threading_call;
 
+pub use aot_runtime::AotFnEntry;
 use ap_obj::exc::PyException;
 pub use exc_hier::ExceptionValue;
 pub use frame::Interpreter;
 pub use interp::run_module;
-pub use aot_runtime::AotFnEntry;
 
 /// CRT seam: register the linked AOT manifest (once, before run_module).
 pub fn aot_set_manifest(entries: Vec<AotFnEntry>) {

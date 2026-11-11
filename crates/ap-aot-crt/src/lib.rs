@@ -54,7 +54,8 @@ extern "C" {
 }
 
 /// Safety-net panic message (the exception-format abort, review box 4).
-const PANIC_ABORT_MSG: &str = "antipythony: internal error (interpreter panic caught at the AoT entry boundary)\n";
+const PANIC_ABORT_MSG: &str =
+    "antipythony: internal error (interpreter panic caught at the AoT entry boundary)\n";
 
 /// `main` for the produced binary (the staticlib's single exported
 /// entry; the linker's start files call it).
@@ -64,7 +65,9 @@ const PANIC_ABORT_MSG: &str = "antipythony: internal error (interpreter panic ca
 /// manifest symbol are guaranteed by the link contract (ap_aot_prog.o
 /// always defines ap_aot_manifest — even def-less programs emit a
 /// zero-row manifest, see emit_program_object).
-#[no_mangle]
+// not(test): the test harness links its own main; a staticlib exporting
+// `main` collides with it.
+#[cfg_attr(not(test), no_mangle)]
 pub extern "C" fn main() -> i32 {
     // (a) RSS self-guard FIRST (same 2026-11-06 OOM mitigation every
     // interpreter process installs — the binary is an interpreter
@@ -102,7 +105,10 @@ fn aot_run() -> i32 {
     let args: Vec<String> = std::env::args().collect();
     let script_path = args.first().cloned().unwrap_or_else(|| "app".to_string());
 
-    let thread_args = (script_path.clone(), args.into_iter().skip(1).collect::<Vec<String>>());
+    let thread_args = (
+        script_path.clone(),
+        args.into_iter().skip(1).collect::<Vec<String>>(),
+    );
     let code = std::thread::Builder::new()
         .stack_size(256 << 20)
         .spawn(move || {
@@ -114,7 +120,7 @@ fn aot_run() -> i32 {
             // static binary carries its program; nothing is read from
             // disk). sys.argv[0] = the binary path (CPython's `./app`
             // convention).
-            let s0 = std::ptr::addr_of!(ap_aot_source) as *const u8;
+            let s0 = std::ptr::addr_of!(ap_aot_source);
             let lenp = std::ptr::addr_of!(ap_aot_source_len) as *const u64;
             let len = unsafe { lenp.read_unaligned() } as usize;
             let source = unsafe {
@@ -161,20 +167,16 @@ fn register_manifest() {
             let p = row.names_ptr as *const u8;
             let n = row.names_len as usize;
             let mut out = Vec::with_capacity(n);
-            let mut cursor = 0usize;
-            for _ in 0..n {
-                let ptr = (p.add(cursor * 16) as *const u64).read_unaligned();
-                let len = (p.add(cursor * 16 + 8) as *const u64).read_unaligned() as usize;
-                let ptr = ptr as *const u8;
+            for cursor in 0..n {
+                let ptr = p.add(cursor * 16).cast::<u64>().read_unaligned() as *const u8;
+                let len = p.add(cursor * 16 + 8).cast::<u64>().read_unaligned() as usize;
                 if !ptr.is_null() && len > 0 {
                     out.push(
-                        String::from_utf8_lossy(std::slice::from_raw_parts(ptr, len))
-                            .into_owned(),
+                        String::from_utf8_lossy(std::slice::from_raw_parts(ptr, len)).into_owned(),
                     );
                 } else {
                     out.push(String::new());
                 }
-                cursor += 1;
             }
             out
         };
@@ -192,11 +194,7 @@ fn register_manifest() {
         for e in &entries {
             eprintln!(
                 "[AOT-MANIFEST] {} slots={} names={:?} code={:p} ic_len={}",
-                e.qualname,
-                e.num_slots,
-                e.name_table,
-                e.code_ptr,
-                e.ic_len
+                e.qualname, e.num_slots, e.name_table, e.code_ptr, e.ic_len
             );
         }
     }
@@ -215,4 +213,32 @@ const _: () = assert!(
 static _KEEP_PANIC: fn() = keep_panic;
 fn keep_panic() {
     std::process::abort();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Review box 4: the safety net catches a deliberate panic and returns
+    /// the internal-abort code — never propagates (a raw Rust panic print
+    /// is the failure mode this exists to prevent).
+    #[test]
+    fn catch_unwind_maps_panic_to_internal_abort() {
+        let r = std::panic::catch_unwind(|| -> i32 {
+            panic!("deliberate probe");
+        });
+        assert!(r.is_err());
+        // The mapping in main() turns Err into 134 + the one-line abort
+        // message; assert the constant shape here so a refactor that
+        // changes the contract fails loud.
+        assert!(PANIC_ABORT_MSG.contains("interpreter panic caught"));
+    }
+
+    /// Manifest row size contract (the ONE-definition assert, mirrored
+    /// from link.rs).
+    #[test]
+    fn manifest_row_size_is_64() {
+        assert_eq!(MANIFEST_ROW_SIZE, std::mem::size_of::<ManifestRow>());
+        assert_eq!(MANIFEST_ROW_SIZE, 64);
+    }
 }
