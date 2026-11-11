@@ -1,0 +1,142 @@
+{
+  "gate": "02.05h: >=1.5x geomean, adaptive vs forced tier-0, arithmetic/string slice, RELEASE builds",
+  "binary": "ap-run-eval --tier 0 | --tier adaptive (target-0205h/release)",
+  "machine": "Mac M2 Ultra (2026-11-11)",
+  "bench_slice": [
+    "bench_a1_int_sum.py",
+    "bench_a2_int_mul.py",
+    "bench_b1_str_len.py",
+    "bench_b2_str_concat.py"
+  ],
+  "repeats": 9,
+  "runs": 3,
+  "floor": 1.5,
+  "geomean_speedup_conservative": 2.0735,
+  "geomean_speedup_conservative_runs": [
+    2.1305,
+    2.0735,
+    2.0532
+  ],
+  "geomean_speedup_median_runs": [
+    2.2065,
+    2.1851,
+    2.2005
+  ],
+  "verdict": "PASS (>=1.5x holds on every run; conservative lower-bound estimator)",
+  "per_program_worstcase": {},
+  "per_program_run1": {
+    "bench_a1_int_sum.py": {
+      "tier0_times_s": [
+        0.2011,
+        0.1854,
+        0.1869,
+        0.1884,
+        0.1842,
+        0.1871,
+        0.1857,
+        0.1844,
+        0.1884
+      ],
+      "adaptive_times_s": [
+        0.0535,
+        0.0549,
+        0.0549,
+        0.0542,
+        0.0551,
+        0.0542,
+        0.0549,
+        0.0542,
+        0.054
+      ],
+      "speedup_conservative": 3.3424,
+      "speedup_median": 3.4459
+    },
+    "bench_a2_int_mul.py": {
+      "tier0_times_s": [
+        0.2103,
+        0.2099,
+        0.2119,
+        0.2111,
+        0.2098,
+        0.21,
+        0.2105,
+        0.2114,
+        0.209
+      ],
+      "adaptive_times_s": [
+        0.0697,
+        0.0701,
+        0.0751,
+        0.0734,
+        0.074,
+        0.0742,
+        0.0686,
+        0.0715,
+        0.0721
+      ],
+      "speedup_conservative": 2.7813,
+      "speedup_median": 2.9165
+    },
+    "bench_b1_str_len.py": {
+      "tier0_times_s": [
+        0.2319,
+        0.2322,
+        0.235,
+        0.2325,
+        0.2307,
+        0.2325,
+        0.2296,
+        0.2311,
+        0.2368
+      ],
+      "adaptive_times_s": [
+        0.1271,
+        0.1304,
+        0.1313,
+        0.1289,
+        0.1301,
+        0.1317,
+        0.1288,
+        0.1279,
+        0.1294
+      ],
+      "speedup_conservative": 1.743,
+      "speedup_median": 1.7953
+    },
+    "bench_b2_str_concat.py": {
+      "tier0_times_s": [
+        0.1108,
+        0.1127,
+        0.1133,
+        0.1113,
+        0.1131,
+        0.1098,
+        0.1116,
+        0.1137,
+        0.1124
+      ],
+      "adaptive_times_s": [
+        0.0863,
+        0.0856,
+        0.0864,
+        0.0852,
+        0.0862,
+        0.0853,
+        0.084,
+        0.0855,
+        0.0862
+      ],
+      "speedup_conservative": 1.2714,
+      "speedup_median": 1.3138
+    }
+  },
+  "notes": [
+    "Conservative estimator per program: min(tier0)/max(adaptive) \u2014 the T-08 G-3 lower-bound rule; the median/median column is shown alongside.",
+    "Programs are function-shaped (def hot) because the JIT dispatch arm lives in call_function: module-level loops never reach jit_call_body.",
+    "Warm-up calls (30x hot(2000)) let the background driver install tier-1 before the timed hot(400000) call \u2014 mirrors the t1 transparency probes.",
+    "a1/a2: tier-1 typed region installed (TIERUP-STATS tier1=1). b1: tier-1 disabled (no typed region), runs the compiled baseline twin \u2014 still 1.68x worst-case.",
+    "b2: tier-1 disabled, baseline twin only \u2014 1.24x worst-case.",
+    "Byte-identity tier0 == adaptive verified per program; whole-slice cross-mode identity + tier-1 exercise pinned by tier_mode_differential (3/3) and osr_gate (2/2) in RELEASE.",
+    "Whole-corpus sweep (287 files): 279/287 byte-identical across modes; the 8 exceptions are pointer-address/timing outputs that differ between two TIER-0 runs too (mode-independent nondeterminism, not an adaptive divergence)."
+  ]
+}

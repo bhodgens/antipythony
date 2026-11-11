@@ -72,6 +72,8 @@
 - T7 tier-up driver (tierup.rs) — not started.
 - T8 typed-OSR extension — boxed OSR plan + polls landed; entry transfer
   emission lands with the driver.
-- T12 benchmark geomean measurement (>=1.5x gate) — requires tier-1.
+- T12 benchmark geomean measurement (>=1.5x gate) — DONE by leaf 02.05h
+  (PROGRESS-0205h.md): PASS at 2.07x conservative geomean, slice in
+  tests/bench/tier1/, doc docs/tier1-bench.md.
 - `round(float, nd)` pre-existing bug (above) — needs orchestrator
   ownership call.
