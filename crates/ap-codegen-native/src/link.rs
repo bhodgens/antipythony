@@ -73,6 +73,7 @@ pub struct AotFnOutputs {
 /// append the manifest + data blobs.
 pub fn emit_program_object(
     fns: &[AotFnInput<'_>],
+    source: &str,
     pic: bool,
 ) -> Result<(Vec<u8>, Vec<AotFnOutputs>), CodegenError> {
     use cranelift::codegen::settings::{self, Configurable};
@@ -130,10 +131,28 @@ pub fn emit_program_object(
     }
 
     // ---- name tables + string blobs + IC payloads ----
+    // The interned name tables come from the EMIT capture (clif fills
+    // them during the shared emit — the same tables ExecCtx::names
+    // carries in JIT mode). A capture/input count mismatch is a
+    // fail-closed build error, never a manifest row with an empty table.
+    let captured = crate::clif::last_emit_name_tables();
+    assert_eq!(
+        captured.len(),
+        fns.len(),
+        "link: emit captured {} name tables for {} fns",
+        captured.len(),
+        fns.len()
+    );
     let mut outputs = Vec::with_capacity(fns.len());
     let mut name_data_ids = Vec::with_capacity(fns.len());
     let mut ic_data_ids = Vec::with_capacity(fns.len());
     for (i, input) in fns.iter().enumerate() {
+        let input = &AotFnInput {
+            cfg: input.cfg,
+            qualname: input.qualname.clone(),
+            name_table: captured[i].clone(),
+            num_slots: input.num_slots,
+        };
         // String blob (one flat concatenation; rows point at offsets).
         let blob_id = module
             .declare_anonymous_data(false, false)
@@ -177,8 +196,12 @@ pub fn emit_program_object(
         // docs). Defined as data so the manifest reloc resolves.
         let slot_count = crate::clif::slot_plan_len(input.cfg);
         let ic_len = slot_count * IC_CELL_PITCH;
+        // WRITABLE: the helper sites record type tags into these cells at
+        // runtime (FeedbackCell::record does an atomic CAS). Tier-0-native
+        // semantics keep them EMPTY-forever in practice, but the memory
+        // must be writable or the first recorded site bus-errors.
         let ic_id = module
-            .declare_data(&format!("ap_aot_ic_{i}"), Linkage::Export, false, false)
+            .declare_data(&format!("ap_aot_ic_{i}"), Linkage::Export, true, false)
             .map_err(|e| CodegenError::Verify(format!("ic decl: {e}")))?;
         let mut desc = cranelift_module::DataDescription::new();
         desc.define(vec![0u8; ic_len].into_boxed_slice());
@@ -201,6 +224,7 @@ pub fn emit_program_object(
         let mut bytes = vec![0u8; 8 + fns.len() * MANIFEST_ROW_SIZE];
         bytes[..8].copy_from_slice(&(fns.len() as u64).to_le_bytes());
         for (i, input) in fns.iter().enumerate() {
+            let names = &captured[i];
             let base = 8 + i * MANIFEST_ROW_SIZE;
             // word 1: qualname_len
             bytes[base + 8..base + 16]
@@ -209,7 +233,7 @@ pub fn emit_program_object(
             bytes[base + 24..base + 32].copy_from_slice(&(input.num_slots as u64).to_le_bytes());
             // word 5: names_len (ROWS, not bytes — the CRT strides by 16)
             bytes[base + 40..base + 48]
-                .copy_from_slice(&(input.name_table.len() as u64).to_le_bytes());
+                .copy_from_slice(&(names.len() as u64).to_le_bytes());
             // word 7: ic_len (bytes)
             bytes[base + 56..base + 64].copy_from_slice(&(outputs[i].ic_len as u64).to_le_bytes());
         }
@@ -241,6 +265,31 @@ pub fn emit_program_object(
         module
             .define_data(mf_id, &desc)
             .map_err(|e| CodegenError::Verify(format!("manifest def: {e}")))?;
+    }
+
+    // ---- the embedded program source (read-only blob; the CRT runs THIS
+    //      as the module body — a static binary carries its program) ----
+    let src_id = module
+        .declare_data("ap_aot_source", Linkage::Export, false, false)
+        .map_err(|e| CodegenError::Verify(format!("source decl: {e}")))?;
+    {
+        let mut desc = cranelift_module::DataDescription::new();
+        desc.define(source.as_bytes().to_vec().into_boxed_slice());
+        module
+            .define_data(src_id, &desc)
+            .map_err(|e| CodegenError::Verify(format!("source def: {e}")))?;
+    }
+    let src_len_id = module
+        .declare_data("ap_aot_source_len", Linkage::Export, false, false)
+        .map_err(|e| CodegenError::Verify(format!("source len decl: {e}")))?;
+    {
+        let mut desc = cranelift_module::DataDescription::new();
+        let mut b = source.len().to_le_bytes().to_vec();
+        b.extend_from_slice(b"APSRCEND");
+        desc.define(b.into_boxed_slice());
+        module
+            .define_data(src_len_id, &desc)
+            .map_err(|e| CodegenError::Verify(format!("source len def: {e}")))?;
     }
 
     let product = module.finish();

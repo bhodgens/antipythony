@@ -74,14 +74,33 @@ pub struct AotFunction {
 }
 
 /// Lower every module-level FnDef with the 02.05 cfg stage (the crate's
-/// public `lower_fn`). Nested defs / lambdas keep their tree-walk route
-/// (the FnRegistry executes them); the same scope the JIT tier-0 dispatch
-/// covers is what ships native.
-pub fn lower_module_functions(module: &ap_ir::Module) -> Result<Vec<AotFunction>, CodegenError> {
+/// public `lower_fn`). NESTED defs / lambdas keep their tree-walk route
+/// (the FnRegistry executes them); module-level bodies the cfg lowering
+/// REJECTS are dropped from the manifest with a loud per-function NOTICE
+/// (returned in `tree_walk_fns`) — the runtime dispatch then falls
+/// through to the tree-walker for those names, the EXACT discipline the
+/// JIT tier-0 route uses (02.05's fallback table, Ok(None) → tree-walk,
+/// byte-identical output; "tier-0-native-equivalent" = the same set of
+/// functions native as the JIT route would compile, no more, no less).
+/// The NOTICE keeps the fallback loud at BUILD time (never silent).
+pub fn lower_module_functions(module: &ap_ir::Module) -> Result<(Vec<AotFunction>, Vec<String>), CodegenError> {
     let mut out: Vec<AotFunction> = Vec::new();
+    let mut tree_walk_fns: Vec<String> = Vec::new();
     for item in &module.items {
         if let ap_ir::Item::FnDef(f) = item {
-            let func = crate::cfg::lower_fn(f)?;
+            let func = match crate::cfg::lower_fn(f) {
+                Ok(f) => f,
+                Err(e) => {
+                    tree_walk_fns.push(f.name.clone());
+                    eprintln!(
+                        "[AOT-BUILD] fn {} tree-walks (cfg lowering rejected: {e}) — \
+                         byte-identical output via the embedded interpreter (JIT \
+                         fallback-table parity)",
+                        f.name
+                    );
+                    continue;
+                }
+            };
             let max_temp = func
                 .blocks
                 .iter()
@@ -104,7 +123,7 @@ pub fn lower_module_functions(module: &ap_ir::Module) -> Result<Vec<AotFunction>
             });
         }
     }
-    Ok(out)
+    Ok((out, tree_walk_fns))
 }
 
 fn temp_of_inst(i: &crate::cfg::Inst) -> crate::cfg::TempId {
@@ -153,9 +172,10 @@ fn term_temp_of(t: &crate::cfg::Terminator) -> Option<crate::cfg::TempId> {
 /// function).
 pub fn build_program_object(
     module: &ap_ir::Module,
+    source: &str,
     pic: bool,
 ) -> Result<(Vec<u8>, Vec<u32>), CodegenError> {
-    let mut lowered = lower_module_functions(module)?;
+    let (mut lowered, _tree_walk) = lower_module_functions(module)?;
     if lowered.is_empty() {
         // A module with no defs still builds: emit a manifest with zero
         // rows (the CRT's register walk no-ops; the interpreter runs the
@@ -170,7 +190,7 @@ pub fn build_program_object(
             num_slots: f.num_slots,
         })
         .collect();
-    let (bytes, outs) = emit_program_object(&inputs, pic)?;
+    let (bytes, outs) = emit_program_object(&inputs, source, pic)?;
     // Post-emit: pull the interned name tables back out (the shared emit
     // stage collected them in emit order — the runtime seam needs the
     // SAME tables jit_hook would have used).

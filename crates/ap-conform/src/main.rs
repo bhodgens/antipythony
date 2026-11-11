@@ -42,6 +42,15 @@ enum Commands {
         /// `<prefix> --tier 0`. The reference side never receives it.
         #[arg(long, value_name = "MODE")]
         tier: Option<String>,
+    /// 02.06: impl-string mode accepting a BUILT-BINARY producer CLI (the
+    /// 02.06 gate runs the conformance suite against the FILE, not
+    /// `antipythony run`). Value = the CLI command prefix that BUILDS
+    /// (shell-split), e.g. `--impl-binary 'target/release/antipythony'`.
+    /// Per corpus case: `<cli> build <case> -o <tmp>/conform-<n>` runs
+    /// first; the BUILT binary then executes the case. `--impl` is
+    /// ignored when this is set.
+    #[arg(long, num_args = 1.., value_delimiter = ' ')]
+    impl_binary: Vec<String>,
     },
 }
 
@@ -82,6 +91,7 @@ fn main() -> std::process::ExitCode {
             json,
             timeout,
             tier,
+            impl_binary,
         } => {
             if let Some(mode) = &tier {
                 if mode != "0" && mode != "adaptive" {
@@ -96,6 +106,7 @@ fn main() -> std::process::ExitCode {
                 json,
                 Duration::from_secs(timeout),
                 tier,
+                impl_binary,
             )
         }
     }
@@ -108,6 +119,7 @@ fn run(
     json: bool,
     timeout: Duration,
     tier: Option<String>,
+    impl_binary: Vec<String>,
 ) -> std::process::ExitCode {
     let files = match ap_conform::expand_corpus(&corpus) {
         Ok(files) => files,
@@ -130,6 +142,104 @@ fn run(
         return std::process::ExitCode::from(2);
     }
 
+    // 02.06 --impl-binary: per-case BUILD then run the BUILT binary. The
+    // files list is already filtered; build each into a numbered temp path
+    // (stable order — the nth case always maps to conform-<n>).
+    if !impl_binary.is_empty() {
+        let tmp = std::env::temp_dir().join(format!(
+            "apconform-binary-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::create_dir_all(&tmp);
+        let mut built_impls: Vec<Option<String>> = Vec::with_capacity(files.len());
+        for (i, file) in files.iter().enumerate() {
+            let out_path = tmp.join(format!("conform-{i}"));
+            let mut cmd = std::process::Command::new(&impl_binary[0]);
+            cmd.args(&impl_binary[1..]);
+            cmd.arg("build").arg(file).arg("-o").arg(&out_path);
+            let ok = match cmd.output() {
+                Ok(o) if o.status.success() && out_path.exists() => {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let _ = std::fs::set_permissions(&out_path, std::fs::Permissions::from_mode(0o755));
+                    }
+                    true
+                }
+                Ok(o) => {
+                    eprintln!(
+                        "ap-conform: build refused {} (rc {:?}): {}",
+                        file,
+                        o.status.code(),
+                        String::from_utf8_lossy(&o.stderr).trim()
+                    );
+                    false
+                }
+                Err(e) => {
+                    eprintln!("ap-conform: build spawn failed for {file}: {e}");
+                    false
+                }
+            };
+            built_impls.push(ok.then(|| out_path.to_string_lossy().into_owned()));
+        }
+        // Run the corpus case-by-case with per-case impl commands (the
+        // generic run_corpus takes ONE impl command — loop here instead).
+        let reference = match ap_conform::find_reference_interpreter() {
+            Some(r) => r,
+            None => {
+                eprintln!("ap-conform: error: no reference interpreter found");
+                return std::process::ExitCode::from(2);
+            }
+        };
+        let mut results = Vec::with_capacity(files.len());
+        for (i, file) in files.iter().enumerate() {
+            let expected = ap_conform::run_with_timeout(&reference, &[], file, timeout);
+            let actual = match &built_impls[i] {
+                Some(bin) => ap_conform::run_with_timeout(bin, &[], file, timeout),
+                None => Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "build refused",
+                )),
+            };
+            let (expected_res, expected_missing) = match expected {
+                Ok(r) => (Some(r), false),
+                Err(_) => (None, true),
+            };
+            let (actual_res, actual_missing) = match actual {
+                Ok(r) => (Some(r), false),
+                Err(_) => (None, true),
+            };
+            let outcome_is_timeout =
+                |r: &Option<ap_conform::RunResult>| matches!(r, Some(r) if r.exit_code.is_none());
+            let result = if outcome_is_timeout(&expected_res) || outcome_is_timeout(&actual_res) {
+                ap_conform::CaseResult {
+                    case: file.clone(),
+                    outcome: ap_conform::CaseOutcome::Timeout,
+                    reference_interpreter: reference.clone(),
+                    expected: expected_res,
+                    actual: actual_res,
+                    diff_summary: Some("process exceeded timeout and was killed".to_string()),
+                }
+            } else {
+                ap_conform::compare_case(
+                    file,
+                    expected_res,
+                    actual_res,
+                    expected_missing,
+                    actual_missing,
+                    &reference,
+                )
+            };
+            results.push(result);
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+        return emit(&results, json);
+    }
+
     // C-31 / 02.03 gate seam: forward the tier to the implementation only.
     // The reference side (CPython) has no tiers, so it must not receive the
     // flag. Appending to impl_ yields `<impl> ... --tier <mode> <file>`,
@@ -145,7 +255,11 @@ fn run(
             return std::process::ExitCode::from(2);
         }
     };
+    emit(&results, json)
+}
 
+/// Shared output emission (text table or JSON) + the process exit code.
+fn emit(results: &[ap_conform::CaseResult], json: bool) -> std::process::ExitCode {
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
 
@@ -198,7 +312,7 @@ fn run(
                 .map(|r| r.reference_interpreter.as_str())
                 .unwrap_or("?")
         );
-        for r in &results {
+        for r in results.iter() {
             match r.outcome {
                 ap_conform::CaseOutcome::Pass => {
                     let _ = writeln!(out, "PASS  {}", r.case);
