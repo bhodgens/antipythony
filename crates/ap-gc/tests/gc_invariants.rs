@@ -97,7 +97,17 @@ fn fire_weakrefs() {
 
 /// Install the allocation hook + bridge (ap-run does this at entry via
 /// gcsupport.rs:1505-1506). Threshold 0 => no auto-collect surprises.
-fn install_bridge() {
+///
+/// 02.09b: the collector state is PROCESS-global now, so these tests (which
+/// previously relied on thread_local registry isolation between libtest
+/// threads) must run ONE AT A TIME against the shared registry — same
+/// assertions, serialized execution (never weakening).
+fn install_bridge() -> std::sync::MutexGuard<'static, ()> {
+    static TEST_SER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let guard = match TEST_SER.lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
     ap_obj::gc_gate::set_hook(ap_gc::gc_register);
     ap_gc::set_bridge(
         sys_modules,
@@ -106,8 +116,10 @@ fn install_bridge() {
         call_callback,
         fire_weakrefs,
     );
+    ap_gc::reset_for_test();
     set_threshold(0, 10, 10);
     clear_log();
+    guard
 }
 
 fn clear_log() {
@@ -158,7 +170,7 @@ fn allocation_accounting_counts_tracks_and_reclaims() {
     // garbage OBJECTS (gc011 pins the unit) and shrinks the registry
     // identically. Timing-safe per C-23: only explicit-collect deltas
     // observed.
-    install_bridge();
+    let _bridge_ser = install_bridge();
     let base = gc_tracked_len();
     assert_eq!(base, 0, "fresh thread_local registry");
     assert_eq!(get_threshold().0, 0);
@@ -212,7 +224,7 @@ fn collection_cycle_frees_a_true_reference_cycle() {
     // survives the pass (never a false collection, C-22). gc011: a 10-node
     // cycle reports >= 10 OBJECTS; here a 5-node cycle reports exactly 5
     // and the cycle census counts the same 5 peers.
-    install_bridge();
+    let _bridge_ser = install_bridge();
     let base = gc_tracked_len();
 
     let nodes: Vec<Arc<PyList>> = (0..5).map(|_| PyList::new()).collect();
@@ -260,7 +272,7 @@ fn root_dict_keepalive_survives_collect() {
     // belt-and-braces per mark_reachable's doc). It becomes collectable
     // exactly when the root releases it (explicit collect() => deterministic
     // per C-23's allowance).
-    install_bridge();
+    let _bridge_ser = install_bridge();
 
     let root = PyDict::new();
     add_root_dict(&root);
@@ -300,7 +312,7 @@ fn module_ns_root_keepalive_survives_collect() {
     // alive exactly like root dicts. Both root channels are wired by ap-run
     // at entry and the MMTk swap replaces them with MMTk root reporting
     // (docs/gc-mmtk-swap.md §1) — this pins today's stage-1 behavior.
-    install_bridge();
+    let _bridge_ser = install_bridge();
     let ns: Arc<PyDict> = PyDict::new();
     add_root_module_ns(&ns);
     let v = list_val();
@@ -334,7 +346,7 @@ fn weakref_never_false_collects_and_dies_in_the_same_pass_it_fires() {
     // the GARBAGE_NOW ordering fix: the dead flip and the ap-run fire
     // notification land in the SAME collect that killed the target, not
     // one pass late (gc004/gc005/gc015 were red before that fix).
-    install_bridge();
+    let _bridge_ser = install_bridge();
     let target = list_val();
     let addr = addr_of(&target);
 
@@ -388,7 +400,7 @@ fn weakref_bridge_orders_del_then_fire_before_registry_retain() {
     // ran) yet weakref_alive == true (retain hasn't). C-22 timing is
     // D1-divergent outside this explicit-collect anchor; ordering after
     // collect() is the one C-23-allowed form.
-    install_bridge();
+    let _bridge_ser = install_bridge();
     let target = make_del_instance("Noisy");
     let addr = addr_of(&target);
     weakref_add(WeakEntry {
@@ -438,7 +450,7 @@ fn resurrecting_del_keeps_weakref_alive_and_never_refires() {
     // flip dead (C-22: "callbacks MUST NOT fire for objects that are still
     // reachable"), and the finalizer MUST NOT run again when the object
     // later dies — once-only is per-OBJECT over the process lifetime.
-    install_bridge();
+    let _bridge_ser = install_bridge();
     RESURRECT_MODE.with(|m| m.set(true));
     let target = make_del_instance("Zombie");
     let addr = addr_of(&target);
@@ -500,7 +512,7 @@ fn collect_aborts_on_mid_mutation_contention_never_skips() {
     // it — the historical incident behind this gate (gcmod.rs SCAN_CONTENDED
     // + count_internal_refs docs; protects C-22's never-false-collection
     // half). Not corpus-pinned: S-06-17 #1 bans GC timing from the diff.
-    install_bridge();
+    let _bridge_ser = install_bridge();
 
     let obj = PyObject::new(ObjKind::Opaque, "mutating");
     let obj_v = Value::Obj(obj.clone());
@@ -615,7 +627,7 @@ fn disable_gates_automatic_collection_only() {
     // disabled the t0 threshold never auto-collects, but an explicit
     // collect() still runs — C-20's "finalization is forced by an explicit
     // gc.collect()" stays true while disabled (the corpus relies on it).
-    install_bridge();
+    let _bridge_ser = install_bridge();
     set_threshold(2, 10, 10);
     disable();
     assert!(!is_enabled());
