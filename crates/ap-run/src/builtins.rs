@@ -5,9 +5,9 @@
 //! stdout byte gate). Numeric routes delegate to ap-obj ops (the C-12..C-16
 //! surface proven in 02.01).
 
+use crate::Flow;
 use crate::exc_hier::ExceptionValue;
 use crate::frame::Interpreter;
-use crate::Flow;
 use ap_obj::dict::{PyDict, PySet};
 use ap_obj::int::{Gc, Int};
 use ap_obj::value::{PyList, PyString, Tuple, Value};
@@ -154,7 +154,7 @@ pub fn print(interp: &Interpreter, args: &[Value], kwargs: &[(String, Value)]) -
                 return Err(raise(
                     "TypeError",
                     format!("'{other}' is an invalid keyword argument for print()"),
-                ))
+                ));
             }
         }
     }
@@ -316,7 +316,7 @@ pub fn builtin_len(args: &[Value]) -> BResult {
                         return Err(raise(
                             "TypeError",
                             format!("object of type '{}' has no len()", v.type_name()),
-                        ))
+                        ));
                     }
                 }
             }
@@ -346,7 +346,7 @@ pub fn builtin_len(args: &[Value]) -> BResult {
                         return Err(raise(
                             "TypeError",
                             "object of type 'bytearray' has no len()",
-                        ))
+                        ));
                     }
                 }
             }
@@ -392,7 +392,7 @@ pub fn builtin_len(args: &[Value]) -> BResult {
                         return Err(raise(
                             "TypeError",
                             format!("object of type '{}' has no len()", v.type_name()),
-                        ))
+                        ));
                     }
                 }
             }
@@ -418,7 +418,7 @@ pub fn builtin_len(args: &[Value]) -> BResult {
             return Err(raise(
                 "TypeError",
                 format!("object of type '{}' has no len()", v.type_name()),
-            ))
+            ));
         }
     };
     Ok(Value::Int(Int::from_i64(n as i64)))
@@ -497,8 +497,12 @@ pub fn builtin_int(interp: &Interpreter, args: &[Value]) -> BResult {
                 // their __ap_int__ payload (CPython int.__int__); WITHOUT a
                 // payload, fall through to the user __int__/__index__
                 // protocol below (vendored ipaddress IPv4Address etc).
-                Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance
-                    && o.attrs.borrow().get(&Value::Str(PyString::new("__ap_int__"))).is_some() =>
+                Value::Obj(o)
+                    if o.kind == ap_obj::ObjKind::UserInstance
+                        && o.attrs
+                            .borrow()
+                            .get(&Value::Str(PyString::new("__ap_int__")))
+                            .is_some() =>
                 {
                     match o
                         .attrs
@@ -516,7 +520,11 @@ pub fn builtin_int(interp: &Interpreter, args: &[Value]) -> BResult {
                 // 02.08-c: any Opaque carrying an <int_value> attr (lxml
                 // ErrorTypes members etc.) int()s to that stored value.
                 Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque => {
-                    match o.attrs.borrow().get(&Value::Str(PyString::new("<int_value>"))) {
+                    match o
+                        .attrs
+                        .borrow()
+                        .get(&Value::Str(PyString::new("<int_value>")))
+                    {
                         Some(v @ Value::Int(_)) => Ok(v.clone()),
                         _ => Err(raise(
                             "TypeError",
@@ -554,22 +562,26 @@ pub fn builtin_int(interp: &Interpreter, args: &[Value]) -> BResult {
                     // instance attr (enum.py __set_name__); CPython members
                     // ARE ints. int(member) == member._value_.
                     if let Value::Obj(o) = v {
-                        if let Some(Value::Int(i)) = o
-                            .attrs
-                            .borrow()
-                            .get(&Value::Str(PyString::new("_value_")))
+                        if let Some(Value::Int(i)) =
+                            o.attrs.borrow().get(&Value::Str(PyString::new("_value_")))
                         {
                             return Ok(Value::Int(i.clone()));
                         }
                     }
                     Err(raise(
                         "TypeError",
-                        format!("int() argument must be a string, a bytes-like object or a real number, not '{}'", v.type_name()),
+                        format!(
+                            "int() argument must be a string, a bytes-like object or a real number, not '{}'",
+                            v.type_name()
+                        ),
                     ))
                 }
                 _ => Err(raise(
                     "TypeError",
-                    format!("int() argument must be a string, a bytes-like object or a real number, not '{}'", v.type_name()),
+                    format!(
+                        "int() argument must be a string, a bytes-like object or a real number, not '{}'",
+                        v.type_name()
+                    ),
                 )),
             }
         }
@@ -822,7 +834,7 @@ pub fn builtin_dict(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
                             return Err(raise(
                                 "TypeError",
                                 format!("'{}' object is not a mapping", other.type_name()),
-                            ))
+                            ));
                         }
                     };
                     let keys_v = crate::interp::call_value_pub2(&keys_f, &[], &[])?;
@@ -835,7 +847,7 @@ pub fn builtin_dict(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
                                     return Err(raise(
                                         "TypeError",
                                         format!("'{}' object is not a mapping", other.type_name()),
-                                    ))
+                                    ));
                                 }
                             };
                         let v = crate::interp::call_value_pub2(
@@ -1513,7 +1525,7 @@ pub fn builtin_type(interp: &Interpreter, args: &[Value], kwargs: &[(String, Val
                     return Err(raise(
                         "TypeError",
                         format!("type() argument 1 must be str, not {}", other.type_name()),
-                    ))
+                    ));
                 }
             };
             let bases_v: Vec<Value> = match &args[1] {
@@ -1523,7 +1535,7 @@ pub fn builtin_type(interp: &Interpreter, args: &[Value], kwargs: &[(String, Val
                     return Err(raise(
                         "TypeError",
                         format!("type() argument 2 must be tuple, not {}", other.type_name()),
-                    ))
+                    ));
                 }
             };
             let ns = match &args[2] {
@@ -1532,7 +1544,7 @@ pub fn builtin_type(interp: &Interpreter, args: &[Value], kwargs: &[(String, Val
                     return Err(raise(
                         "TypeError",
                         format!("type() argument 3 must be dict, not {}", other.type_name()),
-                    ))
+                    ));
                 }
             };
             let interp_rc = crate::builtins_modules::current_interp()
@@ -2311,7 +2323,7 @@ pub fn builtin_format(args: &[Value]) -> BResult {
             return Err(raise(
                 "TypeError",
                 format!("format() argument 2 must be str, not {}", other.type_name()),
-            ))
+            ));
         }
     };
     let out = crate::format::format_value(v, spec).map_err(Flow::from_py)?;
@@ -2838,11 +2850,11 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
             // for the key, and pinned the arbitrary object forever under a
             // string key (CPython raises TypeError: intern() argument must
             // be str).
-            use std::collections::HashMap;
-            thread_local! {
-                static INTERNED: std::cell::RefCell<HashMap<String, Value>> =
-                    std::cell::RefCell::new(HashMap::new());
-            }
+            // 02.09a P3: INTERNED moved to the RuntimeState table
+            // (runtime_state.rs::INTERNED_T). The fn-local thread_local made
+            // sys.intern identity per-THREAD — CPython guarantees sys.intern
+            // identity process-wide (audit row: builtins.rs:2800, "(c)+(d)").
+            use crate::runtime_state as rs;
             let v = args.first().cloned().unwrap_or(Value::None);
             if !matches!(v, Value::Str(_)) {
                 return Some(Err(raise(
@@ -2851,8 +2863,7 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
                 )));
             }
             let text = crate::builtins::py_str_of(&v).unwrap_or_default();
-            let canon = INTERNED.with(|c| {
-                let mut m = c.borrow_mut();
+            let canon = rs::with_active_mut(rs::INTERNED_T_acc(), |m| {
                 if let Some(canon) = m.get(&text) {
                     return canon.clone();
                 }
@@ -3096,7 +3107,7 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
                         Value::None,
                         Value::None,
                         Value::None,
-                    ])))))
+                    ])))));
                 }
             };
             let inflight = interp2.current_exception.borrow().clone();
@@ -4566,7 +4577,7 @@ pub fn call_builtin(
                                     return Err(raise(
                                         "ValueError",
                                         "OrderedDict/update expected pairs",
-                                    ))
+                                    ));
                                 }
                             }
                         }
@@ -4767,11 +4778,7 @@ pub fn builtin_range(args: &[Value]) -> crate::EvalResult {
             Ok(v.as_int().and_then(|i| i.to_i64()).unwrap_or_else(|| {
                 // clamp by sign of the bigint
                 let neg = v.as_int().map(|i| i.is_negative()).unwrap_or(false);
-                if neg {
-                    i64::MIN
-                } else {
-                    i64::MAX
-                }
+                if neg { i64::MIN } else { i64::MAX }
             }))
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -4788,7 +4795,7 @@ pub fn builtin_range(args: &[Value]) -> crate::EvalResult {
             return Err(raise(
                 "TypeError",
                 format!("range expected at most 3 arguments, got {n}"),
-            ))
+            ));
         }
     };
     let o = ap_obj::PyObject::new(ap_obj::ObjKind::Range, "range");
@@ -4826,7 +4833,7 @@ pub fn builtin_eval(interp: &Interpreter, args: &[Value]) -> crate::EvalResult {
                     "eval() arg 1 must be a string, bytes or code object (got {})",
                     other.type_name()
                 ),
-            ))
+            ));
         }
         None => return Err(raise("TypeError", "eval expected at least 1 argument")),
     };
@@ -4920,7 +4927,7 @@ pub fn builtin_exec(interp: &Interpreter, args: &[Value]) -> crate::EvalResult {
                     "exec() arg 1 must be a string, bytes or code object (got {})",
                     other.type_name()
                 ),
-            ))
+            ));
         }
         None => return Err(raise("TypeError", "exec expected at least 1 argument")),
     };
@@ -4940,7 +4947,7 @@ pub fn builtin_exec(interp: &Interpreter, args: &[Value]) -> crate::EvalResult {
                         return Err(raise(
                             "TypeError",
                             format!("exec() globals must be a dict, not {}", other.type_name()),
-                        ))
+                        ));
                     }
                 };
                 Some((g.clone(), loc))
@@ -4949,7 +4956,7 @@ pub fn builtin_exec(interp: &Interpreter, args: &[Value]) -> crate::EvalResult {
                 return Err(raise(
                     "TypeError",
                     format!("exec() globals must be a dict, not {}", other.type_name()),
-                ))
+                ));
             }
         }
     } else {
@@ -5299,7 +5306,7 @@ fn builtin_type_new(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
                     "type.__new__ argument 2 must be str, not {}",
                     other.type_name()
                 ),
-            ))
+            ));
         }
     };
     let bases_v: Vec<Value> = match &args[2] {
@@ -5312,7 +5319,7 @@ fn builtin_type_new(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
                     "type.__new__ argument 3 must be tuple, not {}",
                     other.type_name()
                 ),
-            ))
+            ));
         }
     };
     let ns = match &args[3] {
@@ -5332,7 +5339,7 @@ fn builtin_type_new(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
                     "type.__new__ argument 4 must be dict, not {}",
                     other.type_name()
                 ),
-            ))
+            ));
         }
     };
     let interp = crate::builtins_modules::current_interp()
@@ -5348,7 +5355,7 @@ fn builtin_type_new(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
                 return Err(raise(
                     "TypeError",
                     format!("bases must be types, not '{}'", b.type_name()),
-                ))
+                ));
             }
         }
     }

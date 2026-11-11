@@ -1388,15 +1388,18 @@ fn module_stmts(
                     // frame is a MODULE frame (which never builds my_cells
                     // via call_function). M2-adj (memperf audit): the
                     // monotone frame_id replaces the recycled Arc address.
+                    // 02.09a P3: storage in the RuntimeState table.
                     let key = frame.frame_id;
                     frame.has_frame_cells.set(true);
-                    crate::interp::MODULE_FRAME_CELLS.with(|reg2| {
-                        let mut m = reg2.borrow_mut();
-                        for cname in &scope.cells {
-                            m.entry((key, cname.clone()))
-                                .or_insert_with(|| crate::cell_slot::CellSlotHandle::new(None));
-                        }
-                    });
+                    {
+                        use crate::runtime_state as rs;
+                        rs::with_active_mut(rs::MODULE_FRAME_CELLS_T_acc(), |m| {
+                            for cname in &scope.cells {
+                                m.entry((key, cname.clone()))
+                                    .or_insert_with(|| crate::cell_slot::CellSlotHandle::new(None));
+                            }
+                        });
+                    }
                 }
                 stmts.push(ap_ir::Stmt::LocalDef(Box::new(f.clone())));
             }

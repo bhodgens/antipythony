@@ -31,11 +31,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use ap_obj::value::Value;
 use ap_obj::PyObject;
+use ap_obj::value::Value;
 
 use crate::builtins_modules::{i as vi, raise, s as vs, tuple as vtuple};
-use crate::sre_tables::{in_ranges, DIGIT_RANGES, SPACE_RANGES, WORD_RANGES};
+use crate::sre_tables::{DIGIT_RANGES, SPACE_RANGES, WORD_RANGES, in_ranges};
 
 // ===========================================================================
 // Flags (values match re._constants SRE_FLAG_*)
@@ -741,7 +741,7 @@ impl Parser {
                             None => {
                                 return Err(
                                     self.err("missing ), unterminated comment", self.pos - start)
-                                )
+                                );
                             }
                             Some(')') => break,
                             _ => {}
@@ -921,7 +921,7 @@ impl Parser {
                                 return Err(self.err(
                                     "bad inline flags: cannot turn off flags 'a', 'u' and 'L'",
                                     1,
-                                ))
+                                ));
                             }
                             _ => {
                                 let m = if d.is_alphabetic() {
@@ -1264,7 +1264,7 @@ impl Parser {
                                 return Err(bad_pattern(&format!(
                                     "internal: unsupported set item {:?}",
                                     other
-                                )))
+                                )));
                             }
                         }
                     }
@@ -1282,7 +1282,7 @@ impl Parser {
                     })?;
                     match e {
                         'd' | 'D' | 's' | 'S' | 'w' | 'W' => {
-                            return Err(self.err(&format!("bad character range {}-\\{}", c, e), 3))
+                            return Err(self.err(&format!("bad character range {}-\\{}", c, e), 3));
                         }
                         _ => {
                             let n = self.parse_escape(e)?;
@@ -1292,7 +1292,7 @@ impl Parser {
                                 _ => {
                                     return Err(
                                         self.err(&format!("bad character range {}-\\{}", c, e), 3)
-                                    )
+                                    );
                                 }
                             }
                         }
@@ -1333,7 +1333,7 @@ impl Parser {
                         return Err(self.err(
                             &format!("bad character range {}-{}", c, c2),
                             c.len_utf8() + 1 + c2.len_utf8(),
-                        ))
+                        ));
                     }
                 }
             } else {
@@ -2007,50 +2007,41 @@ impl<'a> Matcher<'a> {
 // Value layer: Pattern / Match objects + module API
 // ===========================================================================
 
-use std::cell::RefCell as RcRefCell;
-
 /// A compiled pattern wrapped for the interpreter.
 pub(crate) struct PatBox {
     pub compiled: Compiled,
 }
 
-thread_local! {
-    /// re module-level pattern cache: (pattern, flags) -> Pattern PyObject.
-    /// OOM-wave-2 G2: WAS dead code (declared, never read). Wired as the
-    /// CPython-style re._cache: bounded at 512 entries, keyed by
-    /// (pattern, flags); the OLDEST entry (insertion order proxy) is evicted
-    /// when the cap is hit. Only the module-level re.compile path consults
-    /// it (pattern_object_from_cache); Pattern OBJECT compilation
-    /// (pattern_object) is per-object and bypasses the cache, as in CPython.
-    static RE_CACHE: RcRefCell<HashMap<(String, u32), GcPyObject>> = RcRefCell::new(HashMap::new());
-    /// Insertion-order ledger for the 512-entry cap (HashMap has no order).
-    static RE_CACHE_ORDER: RcRefCell<Vec<(String, u32)>> = const { RcRefCell::new(Vec::new()) };
-}
+// 02.09a P3: RE_CACHE / PAT_TABLE / MATCH_TABLE moved to the RuntimeState
+// tables (runtime_state.rs::RE_CACHE_T / PAT_TABLE_T / MATCH_TABLE_T). The
+// thread_locals made compiled patterns cross-thread INVISIBLE (audit row:
+// sre.rs:2017/2049/2050 — "PAT/MATCH keyed by Rc::as_ptr -> a worker
+// matching a main-compiled re.Pattern misses"; RE_CACHE held Gc payloads).
 
 /// CPython re._cache cap (libreftest MAXCACHE).
 const RE_CACHE_MAX: usize = 512;
 
 fn re_cache_lookup(key: &(String, u32)) -> Option<GcPyObject> {
-    RE_CACHE.with(|c| c.borrow().get(key).cloned())
+    use crate::runtime_state as rs;
+    rs::with_active(rs::RE_CACHE_T_acc(), |c| c.0.get(key).cloned())
 }
 
 fn re_cache_insert(key: (String, u32), o: GcPyObject) {
-    RE_CACHE.with(|c| {
-        let mut m = c.borrow_mut();
+    use crate::runtime_state as rs;
+    rs::with_active_mut(rs::RE_CACHE_T_acc(), |c| {
+        let m = &mut c.0;
+        let ord = &mut c.1;
         if m.contains_key(&key) {
             return;
         }
-        RE_CACHE_ORDER.with(|ord| {
-            let mut ord = ord.borrow_mut();
-            if ord.len() >= RE_CACHE_MAX {
-                // Evict the oldest entry (FIFO, close enough to CPython's
-                // LRU-for-compile-purpose; the corpus pins no eviction order).
-                let oldest = ord.remove(0);
-                m.remove(&oldest);
-            }
-            ord.push(key.clone());
-            m.insert(key, o);
-        });
+        if ord.len() >= RE_CACHE_MAX {
+            // Evict the oldest entry (FIFO, close enough to CPython's
+            // LRU-for-compile-purpose; the corpus pins no eviction order).
+            let oldest = ord.remove(0);
+            m.remove(&oldest);
+        }
+        ord.push(key.clone());
+        m.insert(key, o);
     });
 }
 
@@ -2090,59 +2081,47 @@ pub(crate) fn pattern_object(compiled: Compiled) -> Value {
         let _ = a.set(vs("groupindex"), Value::Dict(gd));
     }
     *o.repr_text.borrow_mut() = Some(pattern_repr(&pat_rc.compiled));
-    PAT_TABLE.with(|t| {
-        let mut m = t.borrow_mut();
-        sre_table_insert(&PAT_TABLE_ORDER, &mut m, key, pat_rc);
-    });
+    pat_table_insert(key, pat_rc);
     Value::Obj(o)
 }
 
 pub(crate) type PatRc = Arc<PatBox>;
 
-thread_local! {
-    /// OOM-wave-2 G2: both registries were insert-only `HashMap<usize, Arc<_>>`
-    /// tables keyed by the OBJECT's own address — the key is the object's
-    /// identity, so the table could NEVER dedupe (every object gets a fresh
-    /// key) and could only grow: PAT_TABLE pinned every compiled pattern and
-    /// MATCH_TABLE pinned its full subject TEXT forever. Fix: store
-    /// `Weak` handles instead. The owner (the Python-visible
-    /// Pattern/Match PyObject) keeps its own strong Arc, so the entry lives
-    /// exactly as long as the Python object, and dead entries are swept on
-    /// the next lookup/insert (cheap amortized housekeeping).
-    static PAT_TABLE: RcRefCell<HashMap<usize, PatRc>> =
-        RcRefCell::new(HashMap::new());
-    static MATCH_TABLE: RcRefCell<HashMap<usize, Arc<MatchBox>>> = RcRefCell::new(HashMap::new());
-    /// Insertion-order ledgers for the SRE_TABLE_CAP eviction.
-    static PAT_TABLE_ORDER: RcRefCell<Vec<usize>> = const { RcRefCell::new(Vec::new()) };
-    static MATCH_TABLE_ORDER: RcRefCell<Vec<usize>> = const { RcRefCell::new(Vec::new()) };
-}
+// 02.09a P3: PAT_TABLE / MATCH_TABLE / their order ledgers live in the
+// RuntimeState tables as (HashMap, Vec) rows — see the block comment above
+// re_cache_lookup. The helper below takes the runtime_state table (NOT a
+// LocalKey anymore).
 
-/// G2 housekeeping bound: the tables key entries by the OWNER PyObject's
-/// address, and the strong Arc lives HERE (the PyObject has no Arc carrier to
-/// park it in). Unbounded growth is prevented by capping: entries beyond the
-/// cap evict oldest-first (Vec ledger). A dead object's entry is released
-/// when its address is reused by a new Pattern/Match (fresh insert at the
-/// recycled address) or on eviction — a bounded stale-text window, the same
-/// trade CPython makes with re._cache.
 const SRE_TABLE_CAP: usize = 1024;
 
-fn sre_table_insert<T>(
-    ledger: &'static std::thread::LocalKey<RcRefCell<Vec<usize>>>,
-    m: &mut HashMap<usize, T>,
-    key: usize,
-    v: T,
-) {
-    if !m.contains_key(&key) {
-        ledger.with(|l| {
-            let mut l = l.borrow_mut();
-            l.push(key);
-            if l.len() > SRE_TABLE_CAP {
-                let oldest = l.remove(0);
+fn pat_table_insert(key: usize, pat_rc: PatRc) {
+    use crate::runtime_state as rs;
+    rs::with_active_mut(rs::PAT_TABLE_T_acc(), |row| {
+        let (ref mut m, ref mut ledger) = *row;
+        if !m.contains_key(&key) {
+            ledger.push(key);
+            if ledger.len() > SRE_TABLE_CAP {
+                let oldest = ledger.remove(0);
                 m.remove(&oldest);
             }
-        });
-    }
-    m.insert(key, v);
+        }
+        m.insert(key, pat_rc);
+    });
+}
+
+fn match_table_insert(key: usize, mb: Arc<MatchBox>) {
+    use crate::runtime_state as rs;
+    rs::with_active_mut(rs::MATCH_TABLE_T_acc(), |row| {
+        let (ref mut m, ref mut ledger) = *row;
+        if !m.contains_key(&key) {
+            ledger.push(key);
+            if ledger.len() > SRE_TABLE_CAP {
+                let oldest = ledger.remove(0);
+                m.remove(&oldest);
+            }
+        }
+        m.insert(key, mb);
+    });
 }
 
 fn compiled_identity(o: &GcPyObject) -> usize {
@@ -2161,7 +2140,8 @@ pub(crate) fn pattern_of(obj: &Value) -> Option<PatRc> {
     if let Value::Obj(o) = obj {
         if o.name == "re.Pattern" {
             let key = compiled_identity(o);
-            return PAT_TABLE.with(|t| t.borrow().get(&key).cloned());
+            use crate::runtime_state as rs;
+            return rs::with_active(rs::PAT_TABLE_T_acc(), |t| t.0.get(&key).cloned());
         }
     }
     None
@@ -2171,7 +2151,8 @@ pub(crate) fn match_of(obj: &Value) -> Option<Arc<MatchBox>> {
     if let Value::Obj(o) = obj {
         if o.name == "re.Match" {
             let key = compiled_identity(o);
-            return MATCH_TABLE.with(|t| t.borrow().get(&key).cloned());
+            use crate::runtime_state as rs;
+            return rs::with_active(rs::MATCH_TABLE_T_acc(), |t| t.0.get(&key).cloned());
         }
     }
     None
@@ -2331,10 +2312,7 @@ pub(crate) fn match_object(mb: Arc<MatchBox>) -> Value {
     let o = PyObject::new(ap_obj::ObjKind::Opaque, "re.Match");
     let key = compiled_identity(&o);
     let repr = match_repr(&mb);
-    MATCH_TABLE.with(|t| {
-        let mut m = t.borrow_mut();
-        sre_table_insert(&MATCH_TABLE_ORDER, &mut m, key, mb);
-    });
+    match_table_insert(key, mb);
     *o.repr_text.borrow_mut() = Some(repr);
     Value::Obj(o)
 }
@@ -2359,7 +2337,7 @@ pub(crate) fn group_value(mb: &MatchBox, key: &Value) -> Result<Value, crate::Fl
                     "group() argument must be str or int, not {}",
                     key.type_name()
                 ),
-            ))
+            ));
         }
     };
     if idx > mb.pattern.compiled.groups {
@@ -2797,9 +2775,6 @@ pub(crate) fn pattern_object_patbox(pat: PatRc) -> Value {
         let _ = a.set(vs("groupindex"), Value::Dict(gd));
     }
     *o.repr_text.borrow_mut() = Some(pattern_repr(&pat.compiled));
-    PAT_TABLE.with(|t| {
-        let mut m = t.borrow_mut();
-        sre_table_insert(&PAT_TABLE_ORDER, &mut m, key, pat);
-    });
+    pat_table_insert(key, pat);
     Value::Obj(o)
 }

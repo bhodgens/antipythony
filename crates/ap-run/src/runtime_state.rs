@@ -182,6 +182,12 @@ registry_table!(
     "E8 address pins for CELL_BACKING (same key set; interp.rs thread_local MOVED HERE)"
 );
 registry_table!(
+    CELL_WRAPPER_CACHE_T,
+    CELL_WRAPPER_CACHE_T_acc,
+    HashMap<(u64, String), Gc<ap_obj::PyObject>>,
+    "G5 __closure__ wrapper cache keyed (closure_slot, cell name) (interp.rs thread_local MOVED HERE)"
+);
+registry_table!(
     NAMED_BY_ADDR_T,
     NAMED_BY_ADDR_T_acc,
     HashMap<usize, String>,
