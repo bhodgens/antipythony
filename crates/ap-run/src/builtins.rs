@@ -1543,7 +1543,12 @@ pub fn builtin_type(interp: &Interpreter, args: &[Value], kwargs: &[(String, Val
                         .unwrap_or_else(|p| p.into_inner())
                         .clone()
                     {
-                        if let Some(cv) = t.class_value.borrow().clone() {
+                        if let Some(cv) = t
+                            .class_value
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .clone()
+                        {
                             return Ok(cv);
                         }
                     }
@@ -5599,7 +5604,7 @@ fn builtin_type_new(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
     }
     // The creating metaclass rides the payload.
     if let Some(m) = class_of_value(&interp, &args[0]) {
-        *t.metaclass.borrow_mut() = Some(m);
+        *t.metaclass.lock().unwrap_or_else(|p| p.into_inner()) = Some(m);
     }
     Ok(ap_obj::classes::make_class_value(t))
 }

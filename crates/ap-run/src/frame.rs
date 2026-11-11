@@ -732,8 +732,8 @@ impl Interpreter {
                         mro: std::sync::Mutex::new(Vec::new()),
                         dict: ap_obj::dict::PyDict::new(),
                         flags: ap_obj::classes::TypeFlags::default(),
-                        metaclass: std::cell::RefCell::new(None),
-                        class_value: std::cell::RefCell::new(None),
+                        metaclass: std::sync::Mutex::new(None),
+                        class_value: std::sync::Mutex::new(None),
                         // 02.05b: super_stack sentinels never mutate (A6
                         // audit: "nothing mutates a sentinel") — counters
                         // stay at seed and never guard an IC.

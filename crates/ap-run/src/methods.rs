@@ -517,7 +517,12 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
                 .unwrap_or_else(|p| p.into_inner())
                 .clone()
             {
-                if let Some(meta) = t.metaclass.borrow().clone() {
+                if let Some(meta) = t
+                    .metaclass
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone()
+                {
                     if let Some((gf, _)) = meta.lookup_with_owner("__getitem__") {
                         let is_fn =
                             matches!(&gf, Value::Obj(fo) if fo.kind == ap_obj::ObjKind::Function);

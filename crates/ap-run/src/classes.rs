@@ -152,7 +152,8 @@ pub fn dynamic_type(
     for b in &base_types {
         let bm = b
             .metaclass
-            .borrow()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
             .clone()
             .or_else(|| Some(type_class(interp)));
         match (&best, bm) {
@@ -275,11 +276,15 @@ pub fn dynamic_type(
                 }
             }
         }
-        *t.metaclass.borrow_mut() = Some(resolved.clone());
+        *t.metaclass.lock().unwrap_or_else(|p| p.into_inner()) = Some(resolved.clone());
         t
     };
-    if t.metaclass.borrow().is_none() {
-        *t.metaclass.borrow_mut() = Some(resolved.clone());
+    if t.metaclass
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .is_none()
+    {
+        *t.metaclass.lock().unwrap_or_else(|p| p.into_inner()) = Some(resolved.clone());
     }
     let class_v = ap_obj::classes::make_class_value(t.clone());
     // 02.08-c: exec_class_def seeds __module__ from the DEFINING frame's
@@ -831,7 +836,11 @@ pub fn exec_class_def(
                 let mut found: Option<Arc<TypeRef>> = None;
                 for b in &bases_v {
                     if let Some(t) = base_type_ref(interp, b)? {
-                        let bm = t.metaclass.borrow().clone();
+                        let bm = t
+                            .metaclass
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .clone();
                         if let Some(m) = bm {
                             match &found {
                                 None => found = Some(m),
@@ -1040,7 +1049,8 @@ pub fn exec_class_def(
             for b in &base_types {
                 let bm = b
                     .metaclass
-                    .borrow()
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
                     .clone()
                     .or_else(|| Some(type_class(interp)));
                 match (&best, bm) {
@@ -1325,7 +1335,7 @@ pub fn exec_class_def(
             }
         }
         // The RESOLVED metaclass rides the payload (type(C), meta hook lookup).
-        *t.metaclass.borrow_mut() = _resolved_meta.clone();
+        *t.metaclass.lock().unwrap_or_else(|p| p.into_inner()) = _resolved_meta.clone();
         t
     };
     // T2 (pluggy varnames): the class-body __qualname__ rewrite must cover
@@ -1366,9 +1376,13 @@ pub fn exec_class_def(
     // creation paths (the else branch set it inline; the meta __new__ path
     // left it None, breaking isinstance(C, EnumType)-style checks and any
     // metaclass hook dispatch on the new class).
-    if t.metaclass.borrow().is_none() {
+    if t.metaclass
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .is_none()
+    {
         if let Some(meta) = &_resolved_meta {
-            *t.metaclass.borrow_mut() = Some(meta.clone());
+            *t.metaclass.lock().unwrap_or_else(|p| p.into_inner()) = Some(meta.clone());
         }
     }
     let class_v = ap_obj::classes::make_class_value(t.clone());
@@ -1518,7 +1532,11 @@ pub fn exec_class_def(
         rs::with_active_mut(rs::CLASS_KWARGS_T_acc(), |c| c.clear());
     }
     {
-        let meta = t.metaclass.borrow().clone();
+        let meta = t
+            .metaclass
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
         if let Some(mt) = meta {
             if mt.name != "type" {
                 if let Some((minit, minit_owner)) = mt.lookup_with_owner("__init__") {
@@ -2450,7 +2468,8 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
                             if Arc::ptr_eq(&xc, &tc) {
                                 let has_user_meta = xc
                                     .metaclass
-                                    .borrow()
+                                    .lock()
+                                    .unwrap_or_else(|p| p.into_inner())
                                     .as_ref()
                                     .map(|m| !Arc::ptr_eq(m, &type_class(interp)))
                                     .unwrap_or(false);
@@ -2458,7 +2477,12 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
                                     return Ok(false);
                                 }
                             }
-                            if let Some(meta) = xc.metaclass.borrow().clone() {
+                            if let Some(meta) = xc
+                                .metaclass
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner())
+                                .clone()
+                            {
                                 if meta.is_subclass(&tc) {
                                     return Ok(true);
                                 }
@@ -2682,7 +2706,8 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
                 let is_abc = base_type_ref(interp, t)?.map(|tc| {
                     let meta_name = tc
                         .metaclass
-                        .borrow()
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
                         .as_ref()
                         .map(|m| m.name.clone())
                         .unwrap_or_else(|| "<none>".to_string());
@@ -2762,7 +2787,12 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
                 return Ok(false);
             }
             // Custom metaclass __instancecheck__ (S-03-31; c033 Weird).
-            if let Some(meta) = xc.metaclass.borrow().clone() {
+            if let Some(meta) = xc
+                .metaclass
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
+            {
                 if let Some(hook) = meta.lookup("__instancecheck__") {
                     if matches!(&hook, Value::Obj(f) if f.kind == ap_obj::ObjKind::Function) {
                         let interp_rc = crate::interp::current_interp_handle();
@@ -2779,7 +2809,12 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
             // CLASS subject: isinstance(C, M) consults the metaclass chain
             // (type(C2) is M2 ⊂ M, c014/c032).
             if matches!(x, Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass) {
-                if let Some(meta) = xc.metaclass.borrow().clone() {
+                if let Some(meta) = xc
+                    .metaclass
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone()
+                {
                     return Ok(meta.is_subclass(&tc));
                 }
             }
@@ -2857,7 +2892,11 @@ pub fn value_issubclass(interp: &Interpreter, a: &Value, b: &Value) -> Result<bo
             // Coroutine) -> True -> "Refusing to create an inheritance
             // cycle" on `import pathlib`.
             if let Some(bct) = base_type_ref(interp, b)? {
-                let meta = bct.metaclass.borrow().clone();
+                let meta = bct
+                    .metaclass
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone();
                 if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::DbgHook) {
                     let hn = match &meta {
                         Some(mt) => format!("meta={}", mt.name),
@@ -3502,7 +3541,11 @@ pub fn class_value_for_public(t: &Arc<TypeRef>) -> Value {
 fn class_value_for(t: &Arc<TypeRef>) -> Value {
     // Two-step: the read borrow must DROP before make_class_value takes
     // the write borrow (same RefCell).
-    let existing = t.class_value.borrow().clone();
+    let existing = t
+        .class_value
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
     existing.unwrap_or_else(|| ap_obj::classes::make_class_value(t.clone()))
 }
 
@@ -3633,7 +3676,8 @@ fn class_attr_get(
     //    then metaclass __getattr__.
     if let Some(meta) = t
         .metaclass
-        .borrow()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
         .clone()
         .or_else(|| Some(type_class(interp)))
     {
@@ -4210,7 +4254,12 @@ pub fn instantiate(
     // marker `_ap_supercall` on the thread side marks that route.
     let skip_meta_call = crate::interp::supercall_flag_take();
     if !skip_meta_call {
-        if let Some(meta) = t.metaclass.borrow().clone() {
+        if let Some(meta) = t
+            .metaclass
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+        {
             if let Some((call, _)) = meta.lookup_with_owner("__call__") {
                 if is_user_function(&call) {
                     let mut full = vec![cls.clone()];
