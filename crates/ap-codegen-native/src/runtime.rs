@@ -631,11 +631,19 @@ pub extern "C" fn h_set_twin_start(ctx: &mut ExecCtx, block: i64) -> HelperStatu
     0
 }
 
-/// Side-exit note (02.05d will grow this into the epoch/thrash counter):
-/// called on every fast-path guard-failure edge, just before the hand-off.
-/// Counts are read through [`tier1_stats`].
-pub extern "C" fn h_deopt_note(_ctx: &mut ExecCtx) -> HelperStatus {
+/// Side-exit note (the 02.05d thrash backoff entry): called on every
+/// fast-path guard-failure edge, just before the hand-off. `fn_key` is
+/// the executing function's stable identity (the same def-pointer key
+/// jit_hook's cache uses — see [`deopt_hook_id`]), so the epoch/thrash
+/// state machine in [`crate::deopt`] is PER FUNCTION, not process-wide.
+/// The process-wide side-exit total (read through [`tier1_stats`]) is
+/// kept as a coarse counter for the stats line.
+pub extern "C" fn h_deopt_note(_ctx: &mut ExecCtx, fn_key: i64) -> HelperStatus {
     TIER1_SIDE_EXITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    // The per-function epoch/thrash machine (fail-open: the returned
+    // state is advisory — the twin already owns this call, and the
+    // jit_hook consults the state before the NEXT tier-up dispatch).
+    let _ = crate::deopt::record_side_exit(fn_key.max(0) as u64);
     0
 }
 
