@@ -31,9 +31,9 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use ap_codegen_native::cfg;
-use ap_codegen_native::clif::compile_baseline;
-use ap_codegen_native::clif::{compile_tier1, JitFunc, Tier1Func};
+use ap_codegen_native::clif::{compile_baseline, compile_tier1, JitFunc};
 use ap_codegen_native::runtime::{ExecCtx, HostCallbacks};
+use ap_codegen_native::tierup;
 use ap_obj::exc::PyException;
 use ap_obj::value::Value;
 
@@ -84,15 +84,20 @@ struct JitEntry {
     /// 02.05c: the lowered cfg's per-slot name table (local_names) — the
     /// slot bridge needs it to sync body locals (params only before).
     local_names: Vec<String>,
-    /// 02.05c: the tier-1 pair, compiled ONCE a binop cell reached MONO
-    /// int-int (synchronous tier-up at the call boundary; 02.05e moves
-    /// this to the background driver). Interior-mutable: tier-up swaps it
-    /// in from under the shared Rc on a later call.
-    tier1_cell: std::cell::RefCell<Option<Rc<Tier1Func>>>,
-    /// 02.05c failed-tier-up-disables flag: a tier-1 compile error marks
-    /// this true and the tier-up probe never fires again for the body
-    /// (pon's failed-tier-up-disables discipline).
+    /// 02.05e: the installed tier-1 fast-path entry (None until the
+    /// background driver's compile completes and a call boundary installs
+    /// it). The twin for the call is THIS entry's own `jit` baseline (the
+    /// deterministic Risk-5 lowering makes the compiler's cfg clone slot-
+    /// identical). Execution contract: tierup::call_fast(fast_ptr, &jit, ctx).
+    tier1_fast: std::cell::Cell<*const u8>,
+    /// 02.05c/02.05e failed-tier-up-disables: a tier-1 compile error (or a
+    /// region-less body) marks DISABLED in the driver's state machine and
+    /// the tier-up probe never fires again for the body (pon's
+    /// failed-tier-up-disables discipline).
     tier1_failed: std::cell::Cell<bool>,
+    /// The lowered cfg, retained for the driver's enqueue path (the
+    /// compiler compiles from a clone — deterministic lowering, Risk-5).
+    cfg: cfg::Func,
 }
 
 /// Resolve the tier mode from an explicit flag, falling back to APX_TIER,
@@ -160,6 +165,12 @@ pub fn tier_mode() -> TierMode {
     TIER_MODE.with(|t| t.get())
 }
 
+/// 02.05e: join the background tier-up compiler (process exit seam).
+/// Idempotent; a no-op when the driver never started (tier-0 runs).
+pub fn shutdown_tierup_driver() {
+    tierup::shutdown_global();
+}
+
 fn tier_debug() -> bool {
     std::env::var("APX_TIER_DEBUG")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -206,6 +217,11 @@ pub fn report_line() {
         JIT_FALLBACKS.load(Ordering::Relaxed),
         JIT_EXECS.load(Ordering::Relaxed),
     );
+    // 02.05e: the background driver's tier-state histogram (only when the
+    // driver was actually started this run).
+    if let Some(line) = tierup::stats_line() {
+        eprintln!("{line}");
+    }
 }
 
 // ===========================================================================
@@ -573,16 +589,20 @@ pub fn jit_call_body(
     };
     JIT_EXECS.fetch_add(1, Ordering::Relaxed);
 
-    // 02.05c tier-up probe (synchronous at the call boundary; the 02.05e
-    // background driver replaces this site): when no tier-1 pair exists
-    // yet and a binop feedback cell reached MONO(IntI64, IntI64) — the
-    // steady-state arithmetic loop shape tier-1 exists for — compile the
-    // typed fast path ONCE and cache it. Failure records tier1_failed and
-    // never retries (pon's failed-tier-up-disables discipline).
-    if je.tier1_cell.borrow().is_none() && !je.tier1_failed.get() {
-        try_tier_up(entry, &je);
+    // 02.05e tier-up probe (background driver; replaces 02.05c's
+    // synchronous compile-at-the-boundary): when no tier-1 fast path is
+    // installed yet and the body is not permanently disabled, first POLL
+    // for a finished background compile (install on hit), else — if the
+    // driver's state says this body was never enqueued — snapshot the
+    // feedback cells ON THIS THREAD (pon snapshot discipline) and enqueue.
+    // The caller never blocks on a compile (except APX_SYNC_TIERUP=1
+    // debug mode, which keeps the 02.05c inline shape for differential
+    // debugging). Failure disables permanently (pon
+    // failed-tier-up-disables, owned by the driver's state machine).
+    if je.tier1_fast.get().is_null() && !je.tier1_failed.get() {
+        tier_up_step(fn_id, entry, &je);
     }
-    let tier1 = je.tier1_cell.borrow().clone();
+    let tier1_fast = je.tier1_fast.get();
 
     let names = slot_names_for(entry, &je.local_names);
     let mut host_state = Box::new(HostState {
@@ -612,11 +632,12 @@ pub fn jit_call_body(
     // frame stays live across `je.jit.call` (all exits clear before
     // returning).
     unsafe { ap_gc::set_capture_point(ap_gc::caller_frame_pointer()) };
-    // 02.05c: run the typed fast path when the tier-1 pair exists; its
-    // call() falls back to the boxed twin internally on guard failure
-    // (status 2) — one entry point, byte-identical results either way.
-    let call_r = match &tier1 {
-        Some(t1) => unsafe { t1.call(&mut ctx) },
+    // 02.05e: run the typed fast path when an install has landed; its
+    // status-2 hand-off falls back to THIS entry's own baseline twin
+    // (slot-identical by the deterministic lowering — see tierup.rs).
+    // One entry point, byte-identical results either way.
+    let call_r = match (!tier1_fast.is_null()).then_some(tier1_fast) {
+        Some(fast_ptr) => unsafe { tierup::call_fast(fast_ptr, &je.jit, &mut ctx) },
         None => unsafe { je.jit.call(&mut ctx) },
     };
     // 02.05c twin-start hygiene: the tier-1 hand-off parks the twin start
@@ -638,66 +659,91 @@ pub fn jit_call_body(
     }
 }
 
-/// 02.05c tier-up attempt (synchronous at the call boundary; 02.05e moves
-/// this to the background driver with the pin/snapshot/CAS discipline):
+/// 02.05e tier-up step (the call-boundary probe; replaces 02.05c's
+/// synchronous `try_tier_up`).
 ///
-/// 1. Snapshot the function's feedback cells ON THE CALLING thread (pon
-///    snapshot discipline — the compiler never reads live cells
-///    concurrently with mutator writes).
-/// 2. Hotness gate: a binop cell must be MONO(IntI64, IntI64) — no
-///    typed compilation for cold or megamorphic sites.
-/// 3. Re-lower + compile the tier-1 pair (cold twin + typed fast path).
-///    The cfg re-lowering is deterministic (same FnDef → same Func, the
-///    Risk-5 slot discipline), so the twin's slot ids and the recording
-///    cells already in flight line up with the ORIGINAL baseline's cells.
-///    The NEW twin gets fresh cells (it records anew); the original
-///    baseline in the same JitEntry keeps serving non-tier-1 entries
-///    until this compile succeeds, then `tier1` routes all future calls.
-/// 4. Failure: record `tier1_failed` and never retry (pon
-///    failed-tier-up-disables discipline).
-fn try_tier_up(entry: &FnEntry, je: &Rc<JitEntry>) {
-    // Never retry a failed tier-1 compile (failed-tier-up-disables).
-    if je.tier1_failed.get() {
-        return;
+/// Three states of the world, one cheap probe per not-yet-tier-1 call:
+///
+/// 1. **Poll**: a background compile may have finished since the last
+///    call — `driver.poll(fn_id)` installs it (Release store of the
+///    fast-path entry into the JitEntry, QUEUED→TIER1 CAS inside the
+///    driver) or consumes a disable marker (compile failed / no typed
+///    region → `tier1_failed`, never retried).
+/// 2. **Enqueue**: the body is still Tier0 in the driver's machine and a
+///    binop feedback cell reached MONO(IntI64, IntI64) — snapshot the
+///    cells ON THIS THREAD (pon snapshot-at-enqueue discipline: the
+///    compiler never reads live cells) and hand the driver a clone of the
+///    lowered cfg (deterministic lowering, Risk-5: the compiler's slot
+///    layout is identical to this entry's baseline, so the fast path's
+///    guards line up with the cells already recording in flight).
+/// 3. **Sync mode** (APX_SYNC_TIERUP=1 debug): keep 02.05c's inline
+///    compile exactly, but route the outcome through the driver's state
+///    machine so stats/failure ownership have one home in both modes.
+///
+/// Failure anywhere → DISABLED (never retried, pon
+/// failed-tier-up-disables); tier-0 results stay byte-identical.
+fn tier_up_step(fn_id: usize, entry: &FnEntry, je: &Rc<JitEntry>) {
+    let driver = tierup::global();
+    // 1. Poll for a finished background compile (async mode only).
+    if !driver.sync_mode() {
+        if let Some(handle) = driver.poll(fn_id) {
+            ap_codegen_native::runtime::note_tier1_install(handle.regions, &entry.def.name);
+            je.tier1_fast.set(handle.fast_ptr);
+            return;
+        }
     }
+    // 2. Hotness gate + enqueue (exactly-once: the driver's Tier0→Queued
+    //    CAS rejects repeat enqueues while a compile is in flight).
     let snapshots: Vec<ap_codegen_native::feedback::CellSnapshot> =
         je.jit.feedback_cells.iter().map(|c| c.snapshot()).collect();
     if !ap_codegen_native::infer::has_int_hotness(&snapshots) {
         return; // not hot yet (or megamorphic) — check again next call
     }
-    // The cfg re-lowering is deterministic (same FnDef -> same Func, the
-    // Risk-5 slot discipline), so the twin's slot ids match the recording
-    // cells already in flight. The tier-1 twin carries fresh cells of its
-    // own; the original baseline keeps serving until this lands.
-    let func = match cfg::lower_fn(&entry.def) {
-        Ok(f) => f,
-        Err(_) => return,
-    };
-    match compile_tier1(&func, &snapshots) {
-        Ok(Some(t1)) => {
-            ap_codegen_native::runtime::note_tier1_install(t1.regions, &entry.def.name);
-            *je.tier1_cell.borrow_mut() = Some(Rc::new(t1));
-        }
-        Ok(None) => {
-            // No typed region in this body — mark as permanently boxed
-            // (not an error; the probe would re-run every call otherwise).
-            je.tier1_failed.set(true);
-        }
-        Err(e) => {
-            if tier_debug() {
-                eprintln!(
-                    "[TIER1] fn {} tier-1 compile failed (disabled): {e:?}",
-                    entry.def.name
-                );
+    if driver.sync_mode() {
+        // Debug mode: the 02.05c synchronous shape, driver-owned state.
+        match compile_tier1(&je.cfg, &snapshots) {
+            Ok(Some(t1)) => {
+                ap_codegen_native::runtime::note_tier1_install(t1.regions, &entry.def.name);
+                driver.note_installed(fn_id);
+                // Pin-until-retire, sync variant: the blob must outlive
+                // every call through the pointer; JitEntry lives for the
+                // process (the 02.05a cache is never evicted), so park
+                // the Tier1Func — twin included — right here. The leak is
+                // bounded per function exactly as the 02.05c cache was.
+                let t1_fast_ptr = t1.fast_ptr;
+                std::mem::forget(t1);
+                je.tier1_fast.set(t1_fast_ptr);
             }
-            // Failed-tier-up-disables: never retry.
-            je.tier1_failed.set(true);
+            Ok(None) => {
+                // No typed region — permanently boxed (not an error).
+                je.tier1_failed.set(true);
+                driver.mark_disabled(fn_id);
+            }
+            Err(e) => {
+                if tier_debug() {
+                    eprintln!(
+                        "[TIER1] fn {} tier-1 compile failed (disabled): {e:?}",
+                        entry.def.name
+                    );
+                }
+                je.tier1_failed.set(true);
+                driver.mark_disabled(fn_id);
+            }
         }
+        return;
     }
+    // Async enqueue: clone the cfg for the compiler thread (deterministic
+    // lowering — same FnDef → identical slot layout, the Risk-5
+    // discipline; the recording cells already in flight belong to THIS
+    // entry's baseline and stay the twin).
+    let _ = driver.request(fn_id, &entry.def.name, je.cfg.clone(), snapshots);
 }
 
-/// Try lowering + compiling `entry`'s body. None = fallback-table entry
-/// (reason cached for the tier-debug report).
+/// 02.05c's synchronous tier-up (REMOVED by 02.05e): the compile no longer
+/// happens at the call boundary; see `tier_up_step` + tierup.rs.
+//
+// The compile-cache path (lowering + baseline only — the tier-up hand-off
+// above never re-lowers; it clones the cached `cfg`).
 fn compile_for(entry: &FnEntry) -> Option<JitEntry> {
     let func = match cfg::lower_fn(&entry.def) {
         Ok(f) => f,
@@ -741,8 +787,9 @@ fn compile_for(entry: &FnEntry) -> Option<JitEntry> {
         jit,
         num_slots,
         local_names: func.local_names.clone(),
-        tier1_cell: std::cell::RefCell::new(None),
+        tier1_fast: std::cell::Cell::new(std::ptr::null()),
         tier1_failed: std::cell::Cell::new(false),
+        cfg: func,
     })
 }
 

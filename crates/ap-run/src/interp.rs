@@ -196,6 +196,10 @@ pub fn run_module(
     }
     // 02.05a-residual: JIT-exercise report at exit (APX_TIER_STATS=1).
     crate::jit_hook::report_line();
+    // 02.05e: join the background tier-up compiler before the interpreter
+    // state drops (pon shutdown discipline — join before dropping retained
+    // modules; happens once per process, at the exit seam).
+    crate::jit_hook::shutdown_tierup_driver();
     match outcome {
         Ok(()) => RunOutcome {
             stdout: out_bytes,
