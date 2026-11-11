@@ -150,7 +150,10 @@ registry_table!(
 registry_table!(
     RE_CACHE_T,
     RE_CACHE_T_acc,
-    (HashMap<(String, u32), Gc<ap_obj::PyObject>>, Vec<(String, u32)>),
+    (
+        HashMap<(String, u32), Gc<ap_obj::PyObject>>,
+        Vec<(String, u32)>
+    ),
     "module-level re.compile cache + order ledger (sre.rs thread_local)"
 );
 registry_table!(
@@ -170,6 +173,19 @@ registry_table!(
     CELL_BACKING_T_acc,
     HashMap<usize, CellSlot>,
     "__closure__ cell storage (interp.rs thread_local DECLARATION MOVED HERE)"
+);
+
+registry_table!(
+    CELL_BACKING_PINS_T,
+    CELL_BACKING_PINS_T_acc,
+    HashMap<usize, std::sync::Weak<ap_obj::PyObject>>,
+    "E8 address pins for CELL_BACKING (same key set; interp.rs thread_local MOVED HERE)"
+);
+registry_table!(
+    NAMED_BY_ADDR_T,
+    NAMED_BY_ADDR_T_acc,
+    HashMap<usize, String>,
+    "obj-addr -> registered marker name dedupe (builtins_modules.rs fn-local thread_local)"
 );
 registry_table!(
     MODULE_FRAME_CELLS_T,
@@ -237,11 +253,17 @@ pub fn interp_state_key(interp: &Arc<Interpreter>) -> InterpKey {
 
 /// Run `f` against the active interpreter's slot value (clone-in/clone-out
 /// for Copy-sized state; callers needing mutation use with_* variants).
+///
+/// No active handle (access before gcsupport::install seeds one — e.g.
+/// builtins::install_builtins runs one statement before install): the call
+/// lands on the scratch key 0, which every run retires. The old TLS tables
+/// answered the same pre-run access with a fresh empty row, so this is the
+/// behavior-identical fallback (an ACTIVE run never hits it).
 pub fn with_active<T: Default, R>(
     table: &Mutex<HashMap<InterpKey, T>>,
     f: impl FnOnce(&T) -> R,
 ) -> R {
-    let key = active_interp().0;
+    let key = active_interp_opt().map(|(k, _)| k).unwrap_or(SCRATCH_KEY);
     let guard = table.lock().unwrap();
     let default_slot: T = T::default();
     f(guard.get(&key).unwrap_or(&default_slot))
@@ -251,10 +273,14 @@ pub fn with_active_mut<T: Default, R>(
     table: &Mutex<HashMap<InterpKey, T>>,
     f: impl FnOnce(&mut T) -> R,
 ) -> R {
-    let key = active_interp().0;
+    let key = active_interp_opt().map(|(k, _)| k).unwrap_or(SCRATCH_KEY);
     let mut guard = table.lock().unwrap();
     f(guard.entry(key).or_default())
 }
+
+/// Pre-run access key (see with_active). A real InterpKey is an allocation
+/// address — never 0.
+const SCRATCH_KEY: InterpKey = 0;
 
 /// Drop the active interpreter's rows in every registry (run teardown —
 /// the tables are keyed by payload address, which RECYCLES; leaving rows
@@ -280,11 +306,30 @@ pub fn retire_runtime_state(interp: &Arc<Interpreter>) {
     let _ = RE_CACHE_T_acc().lock().unwrap().remove(&key);
     let _ = PAT_TABLE_T_acc().lock().unwrap().remove(&key);
     let _ = MATCH_TABLE_T_acc().lock().unwrap().remove(&key);
-    let _ = CELL_BACKING_T_acc().lock().unwrap().remove(&key);
-    let _ = MODULE_FRAME_CELLS_T_acc().lock().unwrap().remove(&key);
     let _ = CLASS_KWARGS_T_acc().lock().unwrap().remove(&key);
     let _ = CURRENT_CLASS_NS_T_acc().lock().unwrap().remove(&key);
     let _ = BRIDGE_SOURCE_T_acc().lock().unwrap().remove(&key);
+    let _ = NAMED_BY_ADDR_T_acc().lock().unwrap().remove(&key);
+    // CELL_BACKING / MODULE_FRAME_CELLS / CELL_BACKING_PINS hold CellSlots
+    // and Weak pins keyed by OBJECT addresses (not interp keys): dropping a
+    // CellSlot can cascade into interpreter code that re-enters these
+    // tables, so the detach runs AFTER every other table row is dropped and
+    // the drops land OUTSIDE the locks (borrow-free-window discipline).
+    let mut detached: Vec<crate::cell_slot::CellSlotHandle> = Vec::new();
+    {
+        let mut g = CELL_BACKING_T_acc().lock().unwrap();
+        // One live interp per process: its whole row detaches at retire
+        // (the inner map's keys are object addresses, which recycle —
+        // the same cross-run hazard retire_runtime_state exists to clear).
+        if let Some(row) = g.remove(&key) {
+            for (_, slot) in row {
+                detached.push(slot);
+            }
+        }
+    }
+    let _ = CELL_BACKING_PINS_T_acc().lock().unwrap().remove(&key);
+    let _ = MODULE_FRAME_CELLS_T_acc().lock().unwrap().remove(&key);
+    drop(detached);
     let mut slot = active_slot().lock().unwrap();
     if let Some((k, _)) = slot.as_ref() {
         if *k == key {
