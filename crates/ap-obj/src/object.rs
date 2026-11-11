@@ -17,13 +17,13 @@
 //! 02.03 (classes/protocols) replaces the tag dispatch with real type
 //! objects + MRO + descriptors; the payload kinds stay.
 //!
-//! NOT here: GC. `Gc<T>` is the `Rc` placeholder (02.04); reference cycles
+//! NOT here: GC. `Gc<T>` is the `Arc` placeholder (02.04); reference cycles
 //! through closures/generators leak until then — documented v0 divergence.
 
 use crate::int::Gc;
 use crate::value::Value;
 use std::cell::RefCell;
-use std::rc::{Rc, Weak};
+use std::sync::{Arc, Weak};
 
 /// What kind of object this is. The executor matches on this to dispatch
 /// calls/methods; the tag also names the type (`type(v).__name__`).
@@ -100,7 +100,7 @@ pub struct PyObject {
     /// For Namespace (sys.float_info etc.): printable repr override.
     pub repr_text: RefCell<Option<String>>,
     /// For Module: exported names dict (lazy attribute reads).
-    pub module_ns: RefCell<Option<std::rc::Rc<crate::dict::PyDict>>>,
+    pub module_ns: RefCell<Option<std::sync::Arc<crate::dict::PyDict>>>,
     /// For Function: executor-side closure state slot (defining-frame id
     /// in the interpreter's frame table; the executor owns the typing).
     pub closure_slot: RefCell<Option<u64>>,
@@ -108,7 +108,7 @@ pub struct PyObject {
     pub defaults: RefCell<Vec<Value>>,
     /// For UserClass: the class payload (TypeObject: MRO, dict, flags).
     /// Strong handle — the TypeObject never points back at the PyObject.
-    pub class_ref: RefCell<Option<Rc<crate::classes::TypeObject>>>,
+    pub class_ref: RefCell<Option<Arc<crate::classes::TypeObject>>>,
     /// For UserInstance: a WEAK back-pointer to the instance's class
     /// payload (the strong handle lives on the class PyObject; instances
     /// must not keep their class's payload alive solo — no cycles).
@@ -118,7 +118,7 @@ pub struct PyObject {
     pub descr_kind: RefCell<Option<String>>,
     /// For BoundMethod: the class whose dict the function was found in
     /// (zero-arg super() start-class, S-03-17/18).
-    pub method_owner: RefCell<Option<std::rc::Weak<crate::classes::TypeObject>>>,
+    pub method_owner: RefCell<Option<std::sync::Weak<crate::classes::TypeObject>>>,
 }
 
 impl PyObject {

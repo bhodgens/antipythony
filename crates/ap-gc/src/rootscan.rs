@@ -62,7 +62,7 @@ use std::sync::RwLock;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StackRootSlot {
     /// Byte offset from the frame pointer of the slot holding a
-    /// `Value` (16-byte enum-of-Rc: the Rc payload pointer is the first
+    /// `Value` (16-byte enum-of-Arc: the Arc payload pointer is the first
     /// word; the walker reports slot BASE addresses and the consumer
     /// re-derives the payload pointer exactly as `value_addr` does).
     pub fp_offset: i32,
@@ -348,7 +348,7 @@ pub fn mapped_frames_from(first_fp: usize) -> Vec<(usize, SafepointEntry)> {
 ///   arithmetic sees the drop) and stays correct with maps registered —
 ///   a precise map ADDS roots, it never removes the floor.
 /// - A JIT frame holding the ONLY reference to an object is safe even
-///   if its map is missing or incomplete: the Rc clone in the slot makes
+///   if its map is missing or incomplete: the Arc clone in the slot makes
 ///   the object externally referenced.
 ///
 /// This struct has no runtime state today (the floor is structural);
@@ -381,13 +381,13 @@ impl ConservativeFloorGuard {
 ///
 /// Scrub policy (pon baseline.rs:2153-2175 discipline): a slot whose
 /// value will not be read again before the next safepoint must be
-/// cleared so its stale Rc payload pointer cannot pin garbage. The
+/// cleared so its stale Arc payload pointer cannot pin garbage. The
 /// baseline codegen routes EVERY op through host helpers (the helper
 /// call sites are the safepoints), so the codegen tail calls this at
 /// the lowering points where a temp dies (see clif.rs `emit_scrub`).
 ///
 /// The slot write is a plain `Value::None` store (not unsafe): the
-/// dropping Rc releases the reference EXACTLY as a normal rebinding
+/// dropping Arc releases the reference EXACTLY as a normal rebinding
 /// would — this is scrub-as-semantics, not scrub-as-raw-memory. That is
 /// the difference from pon: our slots are Rust `Value`s in a Vec, so
 /// the type system already gives us the drop-on-overwrite; the helper
@@ -587,10 +587,10 @@ mod tests {
     fn scrub_slot_releases_and_zeros() {
         let v = ap_obj::value::Value::List(ap_obj::value::PyList::new());
         let mut dead = v;
-        // Probe the Rc count through a clone first: after the scrub the
+        // Probe the Arc count through a clone first: after the scrub the
         // list must be released (strong count back to ours only).
         let strong_before = match &dead {
-            ap_obj::value::Value::List(l) => std::rc::Rc::strong_count(l),
+            ap_obj::value::Value::List(l) => std::sync::Arc::strong_count(l),
             _ => unreachable!("test builds a list"),
         };
         assert_eq!(strong_before, 1);

@@ -14,9 +14,9 @@
 //! conformance bytes of T120/T122 are order-independent and DO pass).
 //!
 //! Sharing model: the GLOBAL LOCK makes sharing safe (the easy path, per the
-//! leaf brief). ap-obj values (`Gc<T>` = Rc + RefCell interiors) are !Sync by
+//! leaf brief). ap-obj values (`Gc<T>` = Arc + RefCell interiors) are !Sync by
 //! construction; rather than per-thread heaps with a cross-thread Weak
-//! bridge, every OS worker runs the SAME Rc graph behind the interpreter
+//! bridge, every OS worker runs the SAME Arc graph behind the interpreter
 //! lock — exactly CPython's model (the GIL protects refcounts; ours protects
 //! RefCell borrows). ap-gc's REGISTRY/FROZEN/WEAKREFS/CALLBACKS are
 //! thread-locals of the MAIN thread; worker threads allocate through
@@ -44,8 +44,8 @@ use ap_obj::object::{ObjKind, PyObject};
 use ap_obj::value::{Tuple, Value};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
-use std::rc::Rc;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::Arc;
+use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 pub type BResult = Result<Value, Flow>;
@@ -189,7 +189,7 @@ pub struct ThreadEntry {
 // GLOBAL registry state (02.07 redesign): worker OS threads run the SAME
 // interpreter object, so the thread registry / primitive table / local
 // namespaces must be process-global. Every access is GIL-serialized by
-// protocol; the Mutex wrappers satisfy the compiler. The only Rc payloads
+// protocol; the Mutex wrappers satisfy the compiler. The only Arc payloads
 // live behind GilSendPub wrappers (documented audited unsafety — the GIL
 // serializes all access; see the module header).
 // ---------------------------------------------------------------------------
@@ -209,12 +209,12 @@ pub struct ThreadEntry {
 /// i64 identity — torn reads are impossible on the tier-1 targets, and the
 /// corpus only compares tid equality/self-consistency).
 pub struct ThreadSlot {
-    pub entry: crate::gcsupport::GilSendPub<Rc<RefCell<ThreadEntry>>>,
+    pub entry: crate::gcsupport::GilSendPub<Arc<RefCell<ThreadEntry>>>,
     /// E-safety: clone of the entry's done atom — the worker marks
     /// completion through the table index WITHOUT borrowing the RefCell.
     pub done: Arc<std::sync::atomic::AtomicBool>,
     /// Mirror of ThreadEntry.daemon (immutable after push; lets
-    /// wait_for_non_daemons filter via atomics — zero Rc clones).
+    /// wait_for_non_daemons filter via atomics — zero Arc clones).
     pub daemon: bool,
     /// Mirror of ThreadEntry.obj_addr (the MainThread lazy-bind path
     /// refreshes it via reindex_addr).
@@ -361,7 +361,7 @@ fn stamp_worker_identity(self_addr: usize) {
         }
     }
 }
-/// E-safety (stress probe): worker closures carry Rc payload clones (the
+/// E-safety (stress probe): worker closures carry Arc payload clones (the
 /// Thread target/args/kwargs + interp handle) whose natural Drop runs AFTER
 /// release_gil — decrementing a shared non-atomic strong_count while the
 /// GIL holder mutates the same graphs is the debug-runtime UB class the
@@ -375,7 +375,7 @@ static WORKER_RECLAIM: std::sync::LazyLock<
     Mutex<Vec<crate::gcsupport::GilSendPub<Box<dyn std::any::Any>>>>,
 > = std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
 
-/// The boxed payload is !Send (Rc graph) — the audited GIL-protocol
+/// The boxed payload is !Send (Arc graph) — the audited GIL-protocol
 /// crossing used by every registry table in this module (GilSendPub).
 fn reclaim_worker_payload<T: std::any::Any>(vals: T) {
     WORKER_RECLAIM
@@ -386,7 +386,7 @@ fn reclaim_worker_payload<T: std::any::Any>(vals: T) {
 
 /// Drain + drop reclaimed worker payloads. Call ONLY on the main thread
 /// with the GIL held — non-main callers must not steal the drop queue (the
-/// payloads are main-heap Rc clones; a worker-side drop defeats the point).
+/// payloads are main-heap Arc clones; a worker-side drop defeats the point).
 pub fn drain_worker_reclaim() -> usize {
     if !is_main_os_thread() {
         return 0;
@@ -404,7 +404,7 @@ pub fn drain_worker_reclaim() -> usize {
 /// thread at spawn; read by workers — the interp object itself is only
 /// touched under the GIL).
 static WORKER_INTERP: std::sync::LazyLock<
-    Mutex<Option<crate::gcsupport::GilSendPub<Rc<Interpreter>>>>,
+    Mutex<Option<crate::gcsupport::GilSendPub<Arc<Interpreter>>>>,
 > = std::sync::LazyLock::new(|| Mutex::new(None));
 
 pub fn is_main_os_thread() -> bool {
@@ -416,7 +416,7 @@ pub fn is_main_os_thread() -> bool {
 }
 
 /// Called by run_module entry (interp.rs) — registers the main thread.
-pub fn bootstrap_main(_interp: &Rc<Interpreter>) {
+pub fn bootstrap_main(_interp: &Arc<Interpreter>) {
     let mut mt = MAIN_TID.lock().unwrap();
     if mt.is_some() {
         return;
@@ -436,16 +436,16 @@ pub fn bootstrap_main(_interp: &Rc<Interpreter>) {
         None,
     );
     if let Value::Obj(mo) = &mv {
-        mirror_put(Rc::as_ptr(mo).addr(), &mv);
+        mirror_put(Arc::as_ptr(mo).addr(), &mv);
     }
     let mtid = current_os_tid() as i64;
     let maddr = match &mv {
-        Value::Obj(mo) => Rc::as_ptr(mo).addr(),
+        Value::Obj(mo) => Arc::as_ptr(mo).addr(),
         _ => 0,
     };
     let main_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
     THREADS.lock().unwrap().push_slot(ThreadSlot {
-        entry: crate::gcsupport::GilSendPub(Rc::new(RefCell::new(ThreadEntry {
+        entry: crate::gcsupport::GilSendPub(Arc::new(RefCell::new(ThreadEntry {
             obj_addr: maddr,
             serial: -1,
             name: "MainThread".to_string(),
@@ -495,7 +495,7 @@ fn mark_done(addr: usize) {
 }
 
 /// E-safety: completion read — never panics (try_borrow-based).
-fn entry_done(entry: &Rc<RefCell<ThreadEntry>>) -> bool {
+fn entry_done(entry: &Arc<RefCell<ThreadEntry>>) -> bool {
     entry
         .try_borrow()
         .map(|b| b.done.load(std::sync::atomic::Ordering::SeqCst))
@@ -506,7 +506,7 @@ fn new_ident_pub() -> i64 {
     NEXT_IDENT.fetch_add(1, std::sync::atomic::Ordering::SeqCst) as i64
 }
 
-pub fn entry_for(addr: usize) -> Option<Rc<RefCell<ThreadEntry>>> {
+pub fn entry_for(addr: usize) -> Option<Arc<RefCell<ThreadEntry>>> {
     if addr == 0 {
         return None;
     }
@@ -519,7 +519,7 @@ pub fn entry_for(addr: usize) -> Option<Rc<RefCell<ThreadEntry>>> {
         .map(|s| s.entry.0.clone())
 }
 
-fn main_thread_entry() -> Option<Rc<RefCell<ThreadEntry>>> {
+fn main_thread_entry() -> Option<Arc<RefCell<ThreadEntry>>> {
     // M2: MainThread is slot 0 (bootstrap_main installs it first; the
     // eviction sweep never drops it). O(1) fast path, scan as fallback.
     let t = THREADS.lock().unwrap();
@@ -605,7 +605,7 @@ pub struct QueuePrim {
 
 #[allow(clippy::type_complexity)] // interpreter plumbing type; factoring out would obscure the signature
 static PRIMS: std::sync::LazyLock<
-    Mutex<HashMap<usize, crate::gcsupport::GilSendPub<Rc<dyn std::any::Any>>>>,
+    Mutex<HashMap<usize, crate::gcsupport::GilSendPub<Arc<dyn std::any::Any>>>>,
 > = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// M4: keys of PRIMS entries that are a Condition's IMPLICIT backing RLock
@@ -626,27 +626,41 @@ pub fn prim_put_owned_rlock(cond_addr: usize, p: RLockPrim) {
 pub fn prim_put<T: 'static>(addr: usize, p: T) {
     PRIMS.lock().unwrap().insert(
         addr,
-        crate::gcsupport::GilSendPub(Rc::new(p) as Rc<dyn std::any::Any>),
+        crate::gcsupport::GilSendPub(Arc::new(p) as Arc<dyn std::any::Any>),
     );
 }
 
-pub fn prim_of<T: 'static>(addr: usize) -> Option<Rc<T>> {
+pub fn prim_of<T: 'static>(addr: usize) -> Option<Arc<T>> {
     let slot = { PRIMS.lock().unwrap().get(&addr).map(|s| s.0.clone()) }?;
-    slot.downcast::<T>().ok()
+    // Arc<dyn Any> has no inherent `downcast` for !Sync payloads (std only
+    // provides it for `dyn Any + Send + Sync`; every prim payload holds
+    // RefCell-graph Values and is !Sync by construction). The table's key
+    // provenance IS the type contract: a slot at `addr` was created by
+    // prim_put::<T>/prim_bridge::<T> with the SAME T (the object address is
+    // minted with the payload and both die together — evict_stale_tables
+    // drops the row when the owning PyObject dies, so the address cannot be
+    // re-minted with a different payload type while the row lives). The
+    // Arc allocation layout is identical for Arc<T> and the coerced
+    // Arc<dyn Any> (same ArcInner), so recovering the original thin pointer
+    // from the fat-pointer data word and rebuilding the handle is sound.
+    // SAFETY: type identity by key provenance (above); the input handle is
+    // consumed by into_raw, so no double-drop; GIL v1 serializes the table.
+    let raw = Arc::into_raw(slot) as *const T;
+    Some(unsafe { Arc::from_raw(raw) })
 }
 
 /// Legacy bridge shim: the table is global now; this only re-inserts.
-pub fn prim_bridge<T: 'static>(addr: usize, p: Rc<T>) {
+pub fn prim_bridge<T: 'static>(addr: usize, p: Arc<T>) {
     PRIMS.lock().unwrap().insert(
         addr,
-        crate::gcsupport::GilSendPub(p as Rc<dyn std::any::Any>),
+        crate::gcsupport::GilSendPub(p as Arc<dyn std::any::Any>),
     );
 }
 
 #[allow(dead_code)] // kept: part of an unfinished surface (robustness-ci 02.x burn-down leaf)
 fn obj_addr(v: &Value) -> Option<usize> {
     match v {
-        Value::Obj(o) => Some(Rc::as_ptr(o).addr()),
+        Value::Obj(o) => Some(Arc::as_ptr(o).addr()),
         _ => None,
     }
 }
@@ -685,8 +699,8 @@ pub(crate) fn thread_obj(
 }
 
 #[allow(dead_code)] // kept: part of an unfinished surface (robustness-ci 02.x burn-down leaf)
-fn thread_entry_for_obj(o: &Gc<PyObject>) -> Option<Rc<RefCell<ThreadEntry>>> {
-    entry_for(Rc::as_ptr(o).addr())
+fn thread_entry_for_obj(o: &Gc<PyObject>) -> Option<Arc<RefCell<ThreadEntry>>> {
+    entry_for(Arc::as_ptr(o).addr())
 }
 
 #[allow(dead_code)] // kept: part of an unfinished surface (robustness-ci 02.x burn-down leaf)
@@ -720,8 +734,8 @@ fn thread_state(o: &Gc<PyObject>) -> (&'static str, bool) {
 
 /// Start a thread object: registers the entry, spawns the OS worker.
 /// The GIL is HELD by the caller here.
-pub fn thread_start(interp: &Rc<Interpreter>, o: &Gc<PyObject>) -> EvalResult {
-    let addr = Rc::as_ptr(o).addr();
+pub fn thread_start(interp: &Arc<Interpreter>, o: &Gc<PyObject>) -> EvalResult {
+    let addr = Arc::as_ptr(o).addr();
     // Double-start check by SERIAL (addresses are recyclable after a Thread
     // object is dropped — an addr-only registry false-positives when a new
     // allocation lands on a dead thread's address; the serial is minted at
@@ -734,8 +748,8 @@ pub fn thread_start(interp: &Rc<Interpreter>, o: &Gc<PyObject>) -> EvalResult {
         .and_then(|i| i.to_i64());
     if let Some(serial) = my_serial {
         // M2: O(1) serial index (was a linear scan borrowing every entry).
-        // Clone candidate Rc's under the lock, check them outside it.
-        let candidates: Vec<Rc<RefCell<ThreadEntry>>> = {
+        // Clone candidate Arc's under the lock, check them outside it.
+        let candidates: Vec<Arc<RefCell<ThreadEntry>>> = {
             let t = THREADS.lock().unwrap();
             t.by_serial
                 .get(&serial)
@@ -822,7 +836,7 @@ pub fn thread_start(interp: &Rc<Interpreter>, o: &Gc<PyObject>) -> EvalResult {
     }
     let wdone = Arc::new(std::sync::atomic::AtomicBool::new(false));
     THREADS.lock().unwrap().push_slot(ThreadSlot {
-        entry: crate::gcsupport::GilSendPub(Rc::new(RefCell::new(ThreadEntry {
+        entry: crate::gcsupport::GilSendPub(Arc::new(RefCell::new(ThreadEntry {
             obj_addr: addr,
             serial: my_serial.unwrap_or(-2),
             name: name.clone(),
@@ -845,7 +859,7 @@ pub fn thread_start(interp: &Rc<Interpreter>, o: &Gc<PyObject>) -> EvalResult {
     drain_worker_reclaim();
     // E-safety: publish the worker-interp handle HERE (main side, GIL
     // held) — the clone is a GIL-ordered refcount write; workers only
-    // read the Rc pointer under the GIL afterwards.
+    // read the Arc pointer under the GIL afterwards.
     *WORKER_INTERP.lock().unwrap() = Some(crate::gcsupport::GilSendPub(interp.clone()));
     // E1-E4 parity: pin the mirror while the thread runs — enumerate()/
     // active_count()/excepthook must see a RUNNING thread even when the
@@ -854,7 +868,7 @@ pub fn thread_start(interp: &Rc<Interpreter>, o: &Gc<PyObject>) -> EvalResult {
     mirror_pin(addr, &Value::Obj(o.clone()));
 
     let interp2 = interp.clone();
-    // GIL v1: the worker closure carries Rc graph values across the thread
+    // GIL v1: the worker closure carries Arc graph values across the thread
     // boundary. Safe under the interpreter lock (the worker takes the GIL as
     // its first act; no thread touches the graph unlocked) — the compiler
     // cannot see the lock protocol, so the closure is boxed and the BOX
@@ -897,7 +911,7 @@ pub fn thread_start(interp: &Rc<Interpreter>, o: &Gc<PyObject>) -> EvalResult {
 /// Worker entry: install thread-locals (GIL identity, interp handle), run
 /// the body, honor excepthook, mark done, wake joiners.
 fn worker_bootstrap(
-    interp: Rc<Interpreter>,
+    interp: Arc<Interpreter>,
     target: Value,
     args: Vec<Value>,
     kwargs: Vec<(String, Value)>,
@@ -908,17 +922,17 @@ fn worker_bootstrap(
     GIL_HELD.with(|h| h.set(false));
     GIL_DEPTH.with(|d| d.set(0));
     // WORKER_INTERP is (re)installed by the SPAWNER under the GIL (see
-    // thread_start): a worker-side interp.clone() is off-lock Rc traffic.
+    // thread_start): a worker-side interp.clone() is off-lock Arc traffic.
     crate::gcsupport::install_worker_thread();
     // E-safety: the identity stamp is deferred to AFTER acquire_gil
-    // (below) — pre-GIL it cloned/dropped entry Rc's, racing main-side
+    // (below) — pre-GIL it cloned/dropped entry Arc's, racing main-side
     // mutation (the stress-probe UB class; baseline had the same hole).
-    // Nothing between here and acquire_gil touches Rc counts.
+    // Nothing between here and acquire_gil touches Arc counts.
 
     // Timer semantics: wait BEFORE the target (finished.wait(interval)).
     if let Some(dur) = interval {
         // E-safety: read the serial from the SLOT MIRROR under the table
-        // lock — entry_for() clones an Rc, and pre-GIL Rc traffic is the
+        // lock — entry_for() clones an Arc, and pre-GIL Arc traffic is the
         // stress-probe UB class (see WORKER_RECLAIM).
         let my_serial = {
             let t = THREADS.lock().unwrap();
@@ -935,7 +949,7 @@ fn worker_bootstrap(
             acquire_gil();
             stamp_worker_identity(self_addr);
             mark_done(self_addr);
-            // E-safety: move the Rc payloads to the main thread's reclaim
+            // E-safety: move the Arc payloads to the main thread's reclaim
             // queue instead of dropping them at the post-release_gil tail
             // (see WORKER_RECLAIM).
             reclaim_worker_payload((interp, target, args, kwargs));
@@ -945,14 +959,14 @@ fn worker_bootstrap(
     }
 
     acquire_gil();
-    // E-safety: the TLS interp handles (each holds an Rc clone) install
+    // E-safety: the TLS interp handles (each holds an Arc clone) install
     // AFTER the GIL is held — their strong_count writes then serialize
     // with every main-side mutation (baseline installed them pre-GIL).
     crate::builtins_modules::set_current_interp(&interp);
     crate::interp::install_current_interp(&interp);
     // Stamp THIS OS thread's identity into its registry entry (the spawner
     // could only record a placeholder — the worker tid exists only here).
-    // GIL-held now: the entry Rc clone/drop inside is serialized like
+    // GIL-held now: the entry Arc clone/drop inside is serialized like
     // every other graph mutation.
     stamp_worker_identity(self_addr);
     let outcome = if matches!(target, Value::None) {
@@ -1031,7 +1045,7 @@ static JOIN_MU: Mutex<()> = Mutex::new(());
 /// mutates under the GIL, so the predicate re-reads it on every wake; the
 /// tiny race (mark done -> notify) is covered by the initial check inside
 /// the lock and by the notify-while-notified protocol on JOIN_CV.
-pub fn join_wait(entry: Rc<RefCell<ThreadEntry>>, timeout: Option<f64>) -> bool {
+pub fn join_wait(entry: Arc<RefCell<ThreadEntry>>, timeout: Option<f64>) -> bool {
     join_wait_flag(entry_done_flag(&entry), timeout)
 }
 
@@ -1040,7 +1054,7 @@ pub fn join_wait(entry: Rc<RefCell<ThreadEntry>>, timeout: Option<f64>) -> bool 
 /// uncontended, and the returned Arc<AtomicBool> lets the parked joiner
 /// observe completion with atomics ONLY (no borrow-flag reads, no
 /// non-atomic refcount traffic off-lock).
-pub fn entry_done_flag(entry: &Rc<RefCell<ThreadEntry>>) -> Arc<std::sync::atomic::AtomicBool> {
+pub fn entry_done_flag(entry: &Arc<RefCell<ThreadEntry>>) -> Arc<std::sync::atomic::AtomicBool> {
     match entry.try_borrow() {
         Ok(b) => b.done.clone(),
         // Contended (only reachable from a non-GIL caller): the done flag
@@ -1102,7 +1116,7 @@ pub fn wait_for_non_daemons() {
     mark_done_main();
     loop {
         // E-safety: collect FLAGS ONLY (Arc — atomic refcount, safe to
-        // clone while parked). The baseline cloned entry Rc's here without
+        // clone while parked). The baseline cloned entry Arc's here without
         // the GIL while workers cloned/dropped the same pointers under it
         // (non-atomic strong_count race — the stress-probe UB class).
         let pending: Vec<Arc<std::sync::atomic::AtomicBool>> = {
@@ -1126,7 +1140,7 @@ pub fn wait_for_non_daemons() {
 // excepthook (T109/T110 + probe20: hook-errors report too)
 // ---------------------------------------------------------------------------
 
-fn invoke_excepthook(interp: &Rc<Interpreter>, exc: &crate::exc_hier::ExceptionValue) {
+fn invoke_excepthook(interp: &Arc<Interpreter>, exc: &crate::exc_hier::ExceptionValue) {
     let thread_v = thread_value_for_entry(entry_for_current());
     let hook = EXCEPTHOOK.lock().unwrap().clone().map(|h| h.0);
     if let Some(hook) = hook {
@@ -1155,7 +1169,7 @@ fn invoke_excepthook(interp: &Rc<Interpreter>, exc: &crate::exc_hier::ExceptionV
     eprint!("{out}");
 }
 
-fn entry_for_current() -> Option<Rc<RefCell<ThreadEntry>>> {
+fn entry_for_current() -> Option<Arc<RefCell<ThreadEntry>>> {
     let tid = current_os_tid() as i64;
     // M2: O(1) native-tid index (was a linear scan).
     let t = THREADS.lock().unwrap();
@@ -1166,7 +1180,7 @@ fn entry_for_current() -> Option<Rc<RefCell<ThreadEntry>>> {
         .map(|s| s.entry.0.clone())
 }
 
-fn thread_value_for_entry(e: Option<Rc<RefCell<ThreadEntry>>>) -> Value {
+fn thread_value_for_entry(e: Option<Arc<RefCell<ThreadEntry>>>) -> Value {
     // The obj Value for an entry: look the obj up by addr in the interp's
     // reach — we stored the addr only; reconstruct the Value handle via the
     // obj-table. Entries store their obj handle at construction (thread_start
@@ -1188,12 +1202,12 @@ fn thread_value_for_entry(e: Option<Rc<RefCell<ThreadEntry>>>) -> Value {
 ///
 /// GIL protocol: every upgrade happens while the caller holds the GIL (the
 /// worker takes it before touching the registry paths that read mirrors), so
-/// a Weak upgrade never races an Rc release on another thread.
+/// a Weak upgrade never races an Arc release on another thread.
 pub struct MirrorRow {
     /// GilSendPub: the audited GIL-protocol wrapper (the table is only ever
     /// touched under the interpreter lock; same contract as the Value
     /// mirrors this replaced).
-    weak: crate::gcsupport::GilSendPub<std::rc::Weak<PyObject>>,
+    weak: crate::gcsupport::GilSendPub<std::sync::Weak<PyObject>>,
     pinned: Option<crate::gcsupport::GilSendPub<Value>>,
 }
 
@@ -1205,7 +1219,7 @@ fn mirror_put(addr: usize, v: &Value) {
         OBJ_MIRROR.lock().unwrap().insert(
             addr,
             MirrorRow {
-                weak: crate::gcsupport::GilSendPub(Rc::downgrade(o)),
+                weak: crate::gcsupport::GilSendPub(Arc::downgrade(o)),
                 pinned: None,
             },
         );
@@ -1221,7 +1235,7 @@ fn mirror_pin(addr: usize, v: &Value) {
         m.entry(addr)
             .and_modify(|row| row.pinned = Some(crate::gcsupport::GilSendPub(v.clone())))
             .or_insert_with(|| MirrorRow {
-                weak: crate::gcsupport::GilSendPub(Rc::downgrade(o)),
+                weak: crate::gcsupport::GilSendPub(Arc::downgrade(o)),
                 pinned: Some(crate::gcsupport::GilSendPub(v.clone())),
             });
     }
@@ -1275,7 +1289,7 @@ fn attr_str_of(v: &Value) -> String {
 }
 
 fn render_thread_exc_report(
-    interp: &Rc<Interpreter>,
+    interp: &Arc<Interpreter>,
     exc: &crate::exc_hier::ExceptionValue,
 ) -> String {
     // CPython 3.14 shape: "Traceback (most recent call last):" + the
@@ -1373,7 +1387,7 @@ pub fn current_thread_value() -> Value {
                 None,
             );
             if let Value::Obj(o) = &v {
-                let new_addr = Rc::as_ptr(o).addr();
+                let new_addr = Arc::as_ptr(o).addr();
                 let old_addr = e.borrow().obj_addr;
                 mirror_put(new_addr, &v);
                 e.borrow_mut().obj_addr = new_addr;
@@ -1509,7 +1523,7 @@ pub fn build_queue_module(interp: &Interpreter) -> Value {
 // major-GC drain hook (gcsupport.rs, next to drain_worker_registrations).
 //
 // Liveness oracle: `ap_gc::get_object_by_addr(addr)` — the allocation
-// registry is keyed by exactly the Rc payload address, and its clone keeps
+// registry is keyed by exactly the Arc payload address, and its clone keeps
 // the count >= 1 while the object is reachable (so address presence == GC
 // liveness; a collected object's slot only ever re-appears with a NEW
 // object, which the serial checks below guard for identity-carrying rows).
@@ -1549,7 +1563,7 @@ pub fn evict_stale_tables() -> usize {
 
 fn evict_stale_tables_inner() -> usize {
     // E-safety: drop reclaimed worker payloads FIRST (main thread, GIL
-    // held — the only safe place for these Rc clones to die).
+    // held — the only safe place for these Arc clones to die).
     drain_worker_reclaim();
     // Worker-allocated objects live in the forward channel until drained —
     // sweep after a drain or a live thread-local dict reads "absent".
@@ -1745,13 +1759,13 @@ pub fn interned_type_pub(name: &str) -> Value {
     Value::Obj(PyObject::new(ObjKind::Type, name))
 }
 
-pub fn unused(_f: &Rc<Frame>) {}
+pub fn unused(_f: &Arc<Frame>) {}
 
 // ===========================================================================
 // Public shims for threading_call.rs
 // ===========================================================================
 
-pub fn entry_for_pub(addr: usize) -> Option<Rc<RefCell<ThreadEntry>>> {
+pub fn entry_for_pub(addr: usize) -> Option<Arc<RefCell<ThreadEntry>>> {
     entry_for(addr)
 }
 
@@ -1845,7 +1859,7 @@ pub fn make_thread_value(
     };
     let v = thread_obj(name, target, args, kwargs, daemon, class_name, interval);
     if let Value::Obj(o) = &v {
-        mirror_put(Rc::as_ptr(o).addr(), &v);
+        mirror_put(Arc::as_ptr(o).addr(), &v);
         let serial = NEXT_SERIAL.fetch_add(1, std::sync::atomic::Ordering::SeqCst) as i64;
         let _ = o
             .attrs

@@ -13,13 +13,13 @@ use crate::object::PyObject;
 // for every magic/dunder name probe on hot paths: MRO attribute lookups,
 // weakref target reads (`<target_addr>`), `values_eq` object arms, the GC
 // support layer. The names are a small fixed set of `&'static str` constants,
-// so a per-thread cache turns every probe into a HashMap hit + Rc bump
+// so a per-thread cache turns every probe into a HashMap hit + Arc bump
 // (content-equal handles are reused; dict probing compares by content, so
 // identity of the handle is an optimization, never a semantic).
 //
-// Thread-local by construction: `Gc<T> = Rc<T>` refcounts must not be shared
+// Thread-local by construction: `Gc<T> = Arc<T>` refcounts must not be shared
 // across threads outside the GIL protocol, and a per-thread cache hands each
-// thread its own Rc clone. (Under 02.07's GIL v1 the main-thread cache holds
+// thread its own Arc clone. (Under 02.07's GIL v1 the main-thread cache holds
 // every handle the collector probes.)
 // ---------------------------------------------------------------------------
 
@@ -37,7 +37,7 @@ pub fn interned_str(name: &'static str) -> Gc<PyString> {
 }
 
 /// A4: interned handle for a BORROWED name — hot-path attr/dict probes
-/// (MRO lookups take `&str` of runtime lifetime) get one Rc bump + the
+/// (MRO lookups take `&str` of runtime lifetime) get one Arc bump + the
 /// handle's CACHED hash, replacing the per-probe `PyString::new` alloc and
 /// full siphash. A miss allocates once per distinct name per thread.
 pub fn interned_str_ref(name: &str) -> Gc<PyString> {
@@ -565,11 +565,11 @@ impl Value {
 }
 
 /// Address key for cycle detection: heap objects are unique per identity;
-/// the Rc payload pointer is heap-stable and shared across clones, so the
+/// the Arc payload pointer is heap-stable and shared across clones, so the
 /// recursion guard compares equal for the same object. When `Gc` becomes the
 /// MMTk handle (02.04) this becomes the handle id.
 pub fn addr_of<T>(r: &Gc<T>) -> usize {
-    std::rc::Rc::as_ptr(r).addr()
+    std::sync::Arc::as_ptr(r).addr()
 }
 
 /// Address of any Obj value's payload (0 for immediates) — the weakref
@@ -609,7 +609,7 @@ mod unit_tests {
         // by content — identity reuse is pure allocation optimization).
         let a = interned_str("<<intern_test_name>>");
         let b = interned_str("<<intern_test_name>>");
-        assert!(std::rc::Rc::ptr_eq(&a, &b), "same handle for same name");
+        assert!(std::sync::Arc::ptr_eq(&a, &b), "same handle for same name");
         assert_eq!(a.as_str(), b.as_str());
         let c = PyString::new("<<intern_test_name>>");
         assert_eq!(&*a, &*c, "interned == fresh (content)");

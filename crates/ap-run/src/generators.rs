@@ -68,7 +68,7 @@ pub struct GenState {
     /// gen_pull), where no method ctx sits — CPython keeps __class__ + self
     /// on the generator's OWN frame across resumes, so resume_live pushes
     /// this ctx around every resume slice and pops it after.
-    pub super_ctx: Option<(std::rc::Rc<ap_obj::classes::TypeObject>, Value, bool)>,
+    pub super_ctx: Option<(std::sync::Arc<ap_obj::classes::TypeObject>, Value, bool)>,
 }
 
 thread_local! {
@@ -192,7 +192,7 @@ pub fn gen_yield(v: Value) -> Result<Value, Flow> {
 ///   pump_outcome.
 /// - other Flow::Raise: propagate to the resumer (pending-error slot).
 fn gen_fiber_body(
-    interp: std::rc::Rc<crate::frame::Interpreter>,
+    interp: std::sync::Arc<crate::frame::Interpreter>,
     entry: FnEntry,
     func_obj: ap_obj::int::Gc<ap_obj::PyObject>,
     args: Vec<Value>,
@@ -215,7 +215,7 @@ fn gen_fiber_body(
             return;
         }
     };
-    let frame = std::rc::Rc::new(crate::frame::Frame::new_function(
+    let frame = std::sync::Arc::new(crate::frame::Frame::new_function(
         entry.globals.clone(),
         &entry.scope_path,
         &entry.qualname,
@@ -225,7 +225,7 @@ fn gen_fiber_body(
         free_cells,
         locals,
     ));
-    let line_track = std::rc::Rc::new(std::cell::Cell::new(0usize));
+    let line_track = std::sync::Arc::new(std::cell::Cell::new(0usize));
     for _ in 0..2000 {
         match interp.frame_stack.try_borrow_mut() {
             Ok(mut fs) => {
@@ -342,7 +342,7 @@ fn gen_fiber_body(
 /// Ok(Some(v)) = yielded v; Ok(None) = exhausted (StopIteration);
 /// Err(Flow::Raise) = the body's exception (surfaces to the CALLER).
 pub fn resume_live(
-    interp: &std::rc::Rc<crate::frame::Interpreter>,
+    interp: &std::sync::Arc<crate::frame::Interpreter>,
     id: u64,
     input: GenInput,
 ) -> Result<Option<Value>, Flow> {
@@ -770,7 +770,7 @@ unsafe impl corosensei::stack::Stack for PooledStack {
 /// E6: the region comes from the thread-local size-classed pool when one is
 /// available (no mmap round-trip), and returns there on fiber Drop.
 pub fn make_fiber(
-    interp: std::rc::Rc<crate::frame::Interpreter>,
+    interp: std::sync::Arc<crate::frame::Interpreter>,
     entry: FnEntry,
     func_obj: ap_obj::int::Gc<ap_obj::PyObject>,
     args: Vec<Value>,

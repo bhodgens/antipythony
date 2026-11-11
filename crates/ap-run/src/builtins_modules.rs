@@ -26,7 +26,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::exc_hier::ExceptionValue;
 use crate::Flow;
@@ -504,7 +504,7 @@ impl NativeIterState {
 
 thread_local! {
     static NAMED_CALLABLES: RefCell<HashMap<String, Value>> = RefCell::new(HashMap::new());
-    static CURRENT: RefCell<Option<Rc<crate::frame::Interpreter>>> =
+    static CURRENT: RefCell<Option<Arc<crate::frame::Interpreter>>> =
         const { RefCell::new(None) };
 }
 
@@ -563,7 +563,7 @@ fn name_callable(v: &Value) -> String {
         static NAMED_BY_ADDR: RefCell<HashMap<usize, String>> = RefCell::new(HashMap::new());
     }
     let obj_addr = if let Value::Obj(o) = &v {
-        std::rc::Rc::as_ptr(o) as *const u8 as usize
+        std::sync::Arc::as_ptr(o) as *const u8 as usize
     } else {
         0
     };
@@ -655,7 +655,7 @@ pub fn call_named_kw(
 
 /// Publish the running interpreter (called from the import hook, which fires
 /// on the first import of every run).
-pub fn set_current_interp(interp: &Rc<crate::frame::Interpreter>) {
+pub fn set_current_interp(interp: &Arc<crate::frame::Interpreter>) {
     CURRENT.with(|c| *c.borrow_mut() = Some(interp.clone()));
 }
 
@@ -858,7 +858,7 @@ fn registry() -> &'static [(&'static str, ModuleBuilder)] {
 }
 
 /// Resolve (and lazily build + cache) a native module by dotted name.
-pub fn get_or_make_module(interp: &Rc<crate::frame::Interpreter>, name: &str) -> Option<Value> {
+pub fn get_or_make_module(interp: &Arc<crate::frame::Interpreter>, name: &str) -> Option<Value> {
     set_current_interp(interp);
     // `posixpath` and `os.path` are the SAME module object (CPython:
     // os.path is posixpath), so `posixpath.join is os.path.join` holds.
@@ -917,7 +917,7 @@ pub(crate) fn new_module(name: &str) -> (Gc<PyObject>, Gc<PyDict>) {
 }
 
 pub(crate) fn finish(m: Gc<PyObject>, ns: Gc<PyDict>) -> Value {
-    *m.module_ns.borrow_mut() = Some(std::rc::Rc::new((*ns).clone()));
+    *m.module_ns.borrow_mut() = Some(std::sync::Arc::new((*ns).clone()));
     Value::Obj(m)
 }
 
@@ -2583,7 +2583,7 @@ fn compile_arg_flags(v: &Value, flags: u32, fname: &str) -> Result<(crate::sre::
         Value::Str(sv) => {
             let pat = sv.as_str().to_string();
             let compiled = crate::sre::compile_pattern(&pat, flags)?;
-            Ok((Rc::new(crate::sre::PatBox { compiled }), flags))
+            Ok((Arc::new(crate::sre::PatBox { compiled }), flags))
         }
         _ => compile_arg(v, fname),
     }
@@ -2594,7 +2594,7 @@ fn compile_arg(v: &Value, fname: &str) -> Result<(crate::sre::PatRc, u32), Flow>
         Value::Str(sv) => {
             let pat = sv.as_str().to_string();
             let compiled = crate::sre::compile_pattern(&pat, 0)?;
-            Ok((Rc::new(crate::sre::PatBox { compiled }), 0))
+            Ok((Arc::new(crate::sre::PatBox { compiled }), 0))
         }
         other => {
             if let Some(p) = crate::sre::pattern_of(other) {
@@ -2684,7 +2684,7 @@ fn re_op_form(
                     Some(r) => r,
                     None => break,
                 };
-                let mb = Rc::new(crate::sre::MatchBox {
+                let mb = Arc::new(crate::sre::MatchBox {
                     pattern: pat.clone(),
                     text: text.clone(),
                     pos: 0,
@@ -2777,7 +2777,7 @@ fn callable_value(v: &Value) -> bool {
 }
 
 /// Match-method bodies.
-fn match_op(mb: &Rc<crate::sre::MatchBox>, op: &str, rest: &[Value]) -> BResult {
+fn match_op(mb: &Arc<crate::sre::MatchBox>, op: &str, rest: &[Value]) -> BResult {
     match op {
         "group" | "__getitem__" => {
             if rest.is_empty() {
@@ -4642,7 +4642,7 @@ pub fn call_operator(name: &str, args: &[Value], _kwargs: &[(String, Value)]) ->
 fn value_is(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::None, Value::None) => true,
-        (Value::Obj(x), Value::Obj(y)) => std::rc::Rc::ptr_eq(x, y),
+        (Value::Obj(x), Value::Obj(y)) => std::sync::Arc::ptr_eq(x, y),
         _ => {
             // numbers/bools/strings are inline copies: identity == equality
             // within the same variant (documented v0 approximation).
@@ -5430,7 +5430,7 @@ pub fn call_functools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
                     if let Some(src) = NAMED_CALLABLES.with(|t| t.borrow().get(&srcname).cloned()) {
                         let read_attr = |attr: &str| -> Option<Value> {
                             let interp = current_interp()?;
-                            let rc = std::rc::Rc::new(interp);
+                            let rc = std::sync::Arc::new(interp);
                             crate::interp::attr_get_public(&rc, &src, attr)
                                 .ok()
                                 .flatten()
@@ -6216,7 +6216,7 @@ fn build_collections(_i: &crate::frame::Interpreter) -> Value {
 /// real user class via the 3-arg type() machinery with __getitem__ (index),
 /// property accessors, _fields, _asdict, _replace, and __repr__/__eq__.
 fn collections_namedtuple(
-    interp: &std::rc::Rc<crate::frame::Interpreter>,
+    interp: &std::sync::Arc<crate::frame::Interpreter>,
     args: &[Value],
     kwargs: &[(String, Value)],
 ) -> Option<BResult> {
@@ -6418,7 +6418,7 @@ pub fn bytearray_state(v: &Value) -> Result<Vec<u8>, Flow> {
 }
 
 /// D1 (memperf audit 2026-11-06): in-place mutation over the bytearray's
-/// `Gc<Vec<u8>>` buffer. Runs `f` on the unique buffer (Rc::get_mut — the
+/// `Gc<Vec<u8>>` buffer. Runs `f` on the unique buffer (Arc::get_mut — the
 /// ctor hands out count-1 buffers) and refreshes the cached repr from the
 /// mutated buffer. Errors short-circuit BEFORE any mutation (f returns
 /// Err before touching the tail it would invalidate... callers validate
@@ -6442,7 +6442,7 @@ where
         _ => return Err(raise("SystemError", "bytearray without buffer")),
     };
     let mut b = buf;
-    match std::rc::Rc::get_mut(&mut b) {
+    match std::sync::Arc::get_mut(&mut b) {
         Some(data) => {
             f(data)?;
             let repr = format!("bytearray({})", ap_obj::str_repr::bytes_repr(data));
@@ -7003,7 +7003,7 @@ pub fn call_json(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Opti
             "default" if !args.is_empty() => {
                 let enc = &args[0];
                 if let Some(interp) = current_interp() {
-                    let interp = std::rc::Rc::new(interp);
+                    let interp = std::sync::Arc::new(interp);
                     if let Ok(Some(f)) = crate::interp::attr_get_public(&interp, enc, "default") {
                         let arg = args.get(1).cloned().unwrap_or(Value::None);
                         return crate::interp::call_value_pub(&interp, &f, &[arg], &[]);
@@ -10611,13 +10611,13 @@ pub fn drain_atexit() {
 // ===========================================================================
 
 thread_local! {
-    /// OOM-wave-2 M6: values are `Rc<Vec<String>>` so `getline` hands out a
-    /// cheap Rc clone instead of deep-copying every line on EACH call; the
+    /// OOM-wave-2 M6: values are `Arc<Vec<String>>` so `getline` hands out a
+    /// cheap Arc clone instead of deep-copying every line on EACH call; the
     /// total cache is byte-capped (LINECACHE_MAX_BYTES) — beyond the cap the
     /// whole cache clears (traceback-heavy runs stay bounded; CPython
     /// grows linecache without bound but also runs short-lived). Cap chosen
     /// at 64MB: dozens of vendored stdlib files fit comfortably.
-    static LINECACHE: RefCell<HashMap<String, std::rc::Rc<Vec<String>>>> = RefCell::new(HashMap::new());
+    static LINECACHE: RefCell<HashMap<String, std::sync::Arc<Vec<String>>>> = RefCell::new(HashMap::new());
     /// Insertion order for cap eviction (oldest file evicted first).
     static LINECACHE_ORDER: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     /// Approximate total cached bytes.
@@ -10722,13 +10722,13 @@ pub fn call_linecache(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -
     }
 }
 
-fn cache_lines(path: &str) -> std::rc::Rc<Vec<String>> {
+fn cache_lines(path: &str) -> std::sync::Arc<Vec<String>> {
     LINECACHE.with(|c| {
         let mut m = c.borrow_mut();
         if let Some(v) = m.get(path) {
             return v.clone();
         }
-        let lines: std::rc::Rc<Vec<String>> = std::rc::Rc::new(
+        let lines: std::sync::Arc<Vec<String>> = std::sync::Arc::new(
             std::fs::read_to_string(path)
                 .map(|txt| txt.lines().map(|l| format!("{l}\n")).collect::<Vec<_>>())
                 .unwrap_or_default(),
@@ -11825,7 +11825,7 @@ pub fn call_select(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> O
             // the object's address in POLL_TABLES).
             "poll" => {
                 let o = PyObject::new(ap_obj::ObjKind::Opaque, "select.poll");
-                let key = std::rc::Rc::as_ptr(&o) as *const () as usize;
+                let key = std::sync::Arc::as_ptr(&o) as *const () as usize;
                 POLL_TABLES.with(|t| t.borrow_mut().insert(key, std::collections::HashMap::new()));
                 *o.slice_parts.borrow_mut() = vec![i(key as i64)];
                 // NO close(): CPython's select.poll has none (selectors
@@ -11862,7 +11862,7 @@ pub fn call_select(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> O
 fn select_poll_method(m: &str, args: &[Value]) -> Option<BResult> {
     // args[0] = self (the poll Opaque), args[1..] = call args.
     let key = match args.first() {
-        Some(Value::Obj(o)) => std::rc::Rc::as_ptr(o) as *const () as usize,
+        Some(Value::Obj(o)) => std::sync::Arc::as_ptr(o) as *const () as usize,
         _ => return Some(Err(raise("TypeError", "missing self"))),
     };
     // Each method extracts what it needs WITHOUT holding the RefCell borrow
@@ -13268,7 +13268,7 @@ pub fn call_io(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option
                     // measured ~2.3KB RSS per 33-byte write (481MB RSS for
                     // 6.9MB content). Fast path: when the stream's dict is
                     // the ONLY holder of the buffer Gc, take the Vec out
-                    // (Rc::try_unwrap), extend in place (Vec's own geometric
+                    // (Arc::try_unwrap), extend in place (Vec's own geometric
                     // growth = amortized O(1) per byte), and put it back —
                     // zero copies while appending. Aliased buffers (a live
                     // getvalue() result snapshot holds the same Gc? — no:
@@ -13285,7 +13285,7 @@ pub fn call_io(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option
                     // write semantics make that window unobservable.
                     let popped = attrs.pop(&s("<buf>"));
                     let total = match popped {
-                        Some(Value::Bytes(b)) => match std::rc::Rc::try_unwrap(b) {
+                        Some(Value::Bytes(b)) => match std::sync::Arc::try_unwrap(b) {
                             Ok(mut v) => {
                                 v.extend_from_slice(&payload);
                                 let t = v.len();
@@ -15643,12 +15643,12 @@ thread_local! {
     /// s022: globals() inside an IMPORTED module body must return that
     /// module's namespace, not the main script's. run_loaded sets this around
     /// module-body execution; builtins globals()/locals() consult it first.
-    pub static CURRENT_MODULE_GLOBALS: std::cell::RefCell<Option<std::rc::Rc<ap_obj::dict::PyDict>>> =
+    pub static CURRENT_MODULE_GLOBALS: std::cell::RefCell<Option<std::sync::Arc<ap_obj::dict::PyDict>>> =
         const { std::cell::RefCell::new(None) };
 }
 
 /// Public handle to the thread-current interpreter.
-pub fn current_interp() -> Option<Rc<crate::frame::Interpreter>> {
+pub fn current_interp() -> Option<Arc<crate::frame::Interpreter>> {
     CURRENT.with(|c| c.borrow().clone())
 }
 
@@ -15663,7 +15663,7 @@ pub fn call_native_marker_obj(
 
 /// Register an already-built iterator in the live interpreter's table under a
 /// fresh native-region id (used by the iter() builtin).
-pub fn register_shared_iter(it: std::rc::Rc<crate::iter::PyIterator>) -> u64 {
+pub fn register_shared_iter(it: std::sync::Arc<crate::iter::PyIterator>) -> u64 {
     // 02.03 repair: route through the interpreter's own id space/table (the
     // module-local CURRENT/NEXT_ITER pair could miss, leaving handles that
     // resolve to nothing).
@@ -15884,7 +15884,7 @@ pub fn call_builtin_values(
                         // updates module __dict__ with a members dict that
                         // can alias it) and every unittest/mock/inspect/
                         // dataclasses probe timing out at 240s.
-                        if std::ptr::eq(Rc::as_ptr(&o), Rc::as_ptr(d)) {
+                        if std::ptr::eq(Arc::as_ptr(&o), Arc::as_ptr(d)) {
                             for (k, v) in o.items() {
                                 let _ = d.set(k, v);
                             }
@@ -18776,7 +18776,7 @@ fn float_hex(x: f64) -> String {
 
 /// frozenset construction from an item list (dedup via PySet; V046 phrasing
 /// does not apply — no error text here beyond unhashable).
-fn frozenset_of(items: Vec<Value>) -> std::rc::Rc<ap_obj::dict::PySet> {
+fn frozenset_of(items: Vec<Value>) -> std::sync::Arc<ap_obj::dict::PySet> {
     let st = ap_obj::dict::PySet::new();
     for it in items {
         let _ = st.add(it);
@@ -18913,7 +18913,7 @@ fn call_importlib(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Opt
                 )?;
                 let interp =
                     current_interp().ok_or_else(|| raise("RuntimeError", "no interpreter"))?;
-                let interp = std::rc::Rc::new(interp);
+                let interp = std::sync::Arc::new(interp);
                 match crate::importer::import_module(&interp, &mod_name) {
                     Ok(v) => Ok(v),
                     Err(Flow::Raise(e)) => Err(Flow::Raise(e)),

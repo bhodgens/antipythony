@@ -1,6 +1,6 @@
 //! ap-gc — the cycle collector (leaf 02.04 STAGE 1).
 //!
-//! STAGE 1 keeps `Gc<T> = Rc<T>` (the MMTk swap is STAGE 2,
+//! STAGE 1 keeps `Gc<T> = Arc<T>` (the MMTk swap is STAGE 2,
 //! docs/gc-mmtk-swap.md) and adds a CPython-shaped CYCLE COLLECTOR:
 //!
 //! - A global REGISTRY of every GC-tracked allocation (`Value` clones keyed
@@ -8,13 +8,13 @@
 //!   container/object allocation site).
 //! - `collect()` uses CPython's SUBTRACT-REFS invariant (gcmodule.c
 //!   `subtract_refs`+`move_unreachable` collapsed into one pass): an object
-//!   whose Rc strong count exceeds the number of inbound registry-graph
+//!   whose Arc strong count exceeds the number of inbound registry-graph
 //!   edges has an external referee (root dict, live frame, native stack
 //!   temporary) and is reachable; the rest are garbage. This needs NO root
 //!   scanning of the Rust stack — every mutator reference outside the
 //!   object graph simply shows up as `strong_count > internal_edges`,
-//!   which is why the algorithm is safe for an Rc-hosting interpreter.
-//! - Unreachable acyclic garbage dies by the plain Rc cascade once the
+//!   which is why the algorithm is safe for an Arc-hosting interpreter.
+//! - Unreachable acyclic garbage dies by the plain Arc cascade once the
 //!   registry clone drops; true cycles are broken because every member's
 //!   registry clone was one of its inbound edges and all are dropped in
 //!   the same pass.
@@ -43,7 +43,7 @@ pub(crate) struct Tracked {
 
 thread_local! {
     /// The allocation registry: address -> tracked handle. Address keys are
-    /// Rc payload pointers, stable for the object's life (the registry
+    /// Arc payload pointers, stable for the object's life (the registry
     /// clone keeps the count >= 1, so addresses are never recycled while
     /// tracked — C-21's no-slot-reuse-re-fire requirement).
     static REGISTRY: RefCell<HashMap<usize, Tracked>> = RefCell::new(HashMap::new());
@@ -93,7 +93,7 @@ thread_local! {
     /// Root dicts (module globals, builtins) wired by ap-run at entry.
     static ROOT_DICTS: RefCell<Vec<Gc<PyDict>>> = const { RefCell::new(Vec::new()) };
     /// Root module namespaces.
-    static ROOT_MODULE_NS: RefCell<Vec<std::rc::Rc<PyDict>>> = const { RefCell::new(Vec::new()) };
+    static ROOT_MODULE_NS: RefCell<Vec<std::sync::Arc<PyDict>>> = const { RefCell::new(Vec::new()) };
 }
 
 /// A registered weak reference: the target address it watches, the token
@@ -272,11 +272,11 @@ fn value_addr(v: &Value) -> usize {
 }
 
 fn rc_addr<T>(r: &Gc<T>) -> usize {
-    std::rc::Rc::as_ptr(r) as *const u8 as usize
+    std::sync::Arc::as_ptr(r) as *const u8 as usize
 }
 
 fn strong_count<T>(r: &Gc<T>) -> usize {
-    std::rc::Rc::strong_count(r)
+    std::sync::Arc::strong_count(r)
 }
 
 // ---------------------------------------------------------------------------
@@ -296,13 +296,13 @@ pub fn add_root_dict(d: &Gc<PyDict>) {
 }
 
 /// Register a module namespace root.
-pub fn add_root_module_ns(ns: &std::rc::Rc<PyDict>) {
+pub fn add_root_module_ns(ns: &std::sync::Arc<PyDict>) {
     ROOT_MODULE_NS.with(|r| {
         let mut r = r.borrow_mut();
-        let ptr = std::rc::Rc::as_ptr(ns) as *const u8 as usize;
+        let ptr = std::sync::Arc::as_ptr(ns) as *const u8 as usize;
         if !r
             .iter()
-            .any(|x| std::rc::Rc::as_ptr(x) as *const u8 as usize == ptr)
+            .any(|x| std::sync::Arc::as_ptr(x) as *const u8 as usize == ptr)
         {
             r.push(ns.clone());
             // C3: the root set changed — stale every seed cache entry.
@@ -366,7 +366,7 @@ fn seed_root_dict(
     queue: &mut Vec<usize>,
     root_hits: &mut usize,
 ) {
-    // NOTE: callers hold the root-list Rc/Gc clone; `d` is pinned alive.
+    // NOTE: callers hold the root-list Arc/Gc clone; `d` is pinned alive.
     let epoch = d.mutation_epoch();
     let in_and_push = |a: usize, queue: &mut Vec<usize>, root_hits: &mut usize| {
         if a != 0 && registry.contains_key(&a) && scope.is_none_or(|s| s.contains(&a)) {
@@ -607,7 +607,7 @@ fn mark_reachable(
 /// `strong_count > internal_edges` is externally referenced — seed the walk
 /// from those (CPython's move_unreachable frontier) AND from the explicit
 /// root dicts/module namespaces (belt and braces: roots may hold objects
-/// through non-registry channels like module_ns Rc clones).
+/// through non-registry channels like module_ns Arc clones).
 /// Scoped mode (`scope = Some(young)`): seeds and walk cover only young
 /// objects. An old->young edge is invisible to `counts`, so the young
 /// object's strong count exceeds its (lower) internal count and it seeds —
@@ -656,7 +656,7 @@ fn mark_reachable_scoped(
     // Explicit roots (globals dicts, module namespaces, sys.modules).
     // C3 (memperf audit 2026-11-06): the old path cloned every (key,
     // value) pair of every root dict into a `Vec<Value>` snapshot per
-    // pass (x2 Rc bumps per pair through `items()`), then probed each
+    // pass (x2 Arc bumps per pair through `items()`), then probed each
     // clone — on gen-0 too, ~every 700 allocations. Now: a persistent
     // per-dict seed cache maps the dict's payload address to
     // (mutation epoch, child addresses). PyDict bumps its epoch on every
@@ -672,7 +672,7 @@ fn mark_reachable_scoped(
     // (epoch bump, cache rebuild) — the cache can never name a dead slot.
     // sys.modules still clones (the bridge seam + importer's exposed
     // getter are Vec-returning; importer.rs is a sibling's live edit —
-    // the O(#modules) Rc bumps stay until it exposes a borrow-based read).
+    // the O(#modules) Arc bumps stay until it exposes a borrow-based read).
     let mut root_hits = 0usize;
     let root_gen = ROOT_GEN.with(|g| g.get());
     ROOT_DICTS.with(|r| {
@@ -693,7 +693,7 @@ fn mark_reachable_scoped(
         let r = r.borrow();
         for ns in r.iter() {
             seed_root_dict(
-                std::rc::Rc::as_ptr(ns) as *const u8 as usize,
+                std::sync::Arc::as_ptr(ns) as *const u8 as usize,
                 ns,
                 root_gen,
                 registry,
@@ -900,7 +900,7 @@ fn collect_gen_inner(generation: usize, scratch: &mut Scratch) -> usize {
     }
 
     // 2. Sweep list: drop registry handles for unreachable, unfrozen
-    //    objects. Acyclic garbage dies by the Rc cascade when the LAST
+    //    objects. Acyclic garbage dies by the Arc cascade when the LAST
     //    clone (the registry's) drops in the retain below; cycles break
     //    because all member clones drop together. We collect the garbage
     //    Values first so finalizers can still see their objects.
@@ -1066,7 +1066,7 @@ fn collect_gen_inner(generation: usize, scratch: &mut Scratch) -> usize {
                 .retain(|a, _| reachable.contains(a) || truly_resurrected.contains(a))
         });
         // C-21 once-only is per-OBJECT, not per-address: swept addresses
-        // return to the allocator and get reused by new objects (Rc allocs
+        // return to the allocator and get reused by new objects (Arc allocs
         // recycle slots). Leaving a dead addr in FINALIZED_ADDRS poisons the
         // successor object — its __del__ would be skipped forever (observed:
         // with threshold 50, blocks of instances created after each
@@ -1258,7 +1258,7 @@ pub fn get_objects() -> Vec<Value> {
 
 /// C1 (memperf audit 2026-11-06): O(1) registry projection by address.
 /// Same key the allocation registry already indexes (`value_addr` of the
-/// Rc payload). Used by the weakref surface's `target_value_by_addr` —
+/// Arc payload). Used by the weakref surface's `target_value_by_addr` —
 /// previously a full `get_objects()` clone + linear find per call.
 pub fn get_object_by_addr(addr: usize) -> Option<Value> {
     if addr == 0 {
@@ -1485,7 +1485,7 @@ mod unit_tests {
         assert_ne!(value_addr(&Value::Set(PySet::new())), 0);
         // Distinct LIVE allocations get distinct addresses (registry keying).
         // Both values must stay alive while their addresses are compared —
-        // freed Rc slots are recycled.
+        // freed Arc slots are recycled.
         let keep_a = list_val();
         let keep_b = list_val();
         assert_ne!(value_addr(&keep_a), value_addr(&keep_b));

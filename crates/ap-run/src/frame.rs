@@ -5,7 +5,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::exc_hier::ExceptionValue;
 use ap_obj::dict::PyDict;
@@ -13,22 +13,22 @@ use ap_obj::int::Gc;
 use ap_obj::value::Value;
 
 /// One shared cell: closure variable storage (S-02-12/13).
-pub type CellSlot = Rc<RefCell<Option<Value>>>;
+pub type CellSlot = Arc<RefCell<Option<Value>>>;
 
-/// A6: an Rc-shared declared-names set. Resolved ONCE when a FnEntry is
+/// A6: an Arc-shared declared-names set. Resolved ONCE when a FnEntry is
 /// registered (from the scope classification) and shared by every frame
-/// built from it — building a function frame is an Rc clone, not a
+/// built from it — building a function frame is an Arc clone, not a
 /// HashSet<String> rebuild, per call.
-pub type DeclaredNames = std::rc::Rc<std::collections::HashSet<String>>;
+pub type DeclaredNames = std::sync::Arc<std::collections::HashSet<String>>;
 
 pub fn empty_declared() -> DeclaredNames {
-    std::rc::Rc::new(std::collections::HashSet::new())
+    std::sync::Arc::new(std::collections::HashSet::new())
 }
 
 thread_local! {
     /// E8/M2-adj: monotone counter minting Frame::frame_id (unique per
     /// thread; frame ids are never reused, so keyed side tables can't
-    /// alias a recycled Rc address to a fresh frame's entries).
+    /// alias a recycled Arc address to a fresh frame's entries).
     static NEXT_FRAME_ID: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
 }
 
@@ -51,9 +51,9 @@ pub struct Frame {
     /// link, `lookup` falls through the parent's live locals/cells instead
     /// — zero per-run allocations, and reads see the CURRENT values
     /// (closer to CPython 3 cell-based comprehension semantics).
-    pub parent: Option<Rc<Frame>>,
+    pub parent: Option<Arc<Frame>>,
     /// E8/M2-adj (memperf audit): monotone frame identity, unique across a
-    /// thread's lifetime (Rc addresses get recycled once a module frame
+    /// thread's lifetime (Arc addresses get recycled once a module frame
     /// drops — the old (addr, name) keys on MODULE_FRAME_CELLS could then
     /// alias a fresh frame's cells).
     pub frame_id: u64,
@@ -74,10 +74,10 @@ pub struct Frame {
     /// plumbed from FnEntry.scope_table. Nested-def/lambda scope-path
     /// classification prefers THIS table (exact, no cross-module
     /// richest-wins collision), falling back to the global scan. Cell
-    /// because the call site sets it after the Rc<Frame> exists.
+    /// because the call site sets it after the Arc<Frame> exists.
     pub scope_table: std::cell::Cell<Option<&'static ap_parse::ScopeInfoModule>>,
     /// Names declared `global` in this scope (S-02-3): stores go to globals.
-    /// A6 (memperf audit 2026-11-06): `DeclaredNames` is an Rc-shared set —
+    /// A6 (memperf audit 2026-11-06): `DeclaredNames` is an Arc-shared set —
     /// the registry caches one per scope path so per-call frames no longer
     /// rebuild two fresh HashSet<String> (2× |names| String allocs per call).
     pub declared_globals: DeclaredNames,
@@ -118,7 +118,7 @@ pub struct Frame {
 #[derive(Clone)]
 pub enum Loc {
     /// Direct value slot (None = unbound → UnboundLocalError on read).
-    Slot(Rc<RefCell<Option<Value>>>),
+    Slot(Arc<RefCell<Option<Value>>>),
     /// A shared cell (closure traffic).
     CellSlot(CellSlot),
 }
@@ -185,7 +185,7 @@ impl Frame {
 
     /// A comprehension/child scope that falls back to `parent` (v0: the
     /// child shares the parent's globals; comp locals are isolated here).
-    pub fn new_child(parent: &Rc<Frame>) -> Frame {
+    pub fn new_child(parent: &Arc<Frame>) -> Frame {
         Frame {
             locals: RefCell::new(HashMap::new()),
             parent: Some(parent.clone()),
@@ -213,7 +213,7 @@ impl Frame {
     /// (S-03-3); the namespace is NOT consulted for name LOOKUPS (class
     /// scope reads go straight to globals — S-03-3's "not an enclosing
     /// scope" rule, and CPython class-body semantics).
-    pub fn new_class(parent: &Rc<Frame>, ns: Gc<PyDict>) -> Frame {
+    pub fn new_class(parent: &Arc<Frame>, ns: Gc<PyDict>) -> Frame {
         Frame {
             locals: RefCell::new(HashMap::new()),
             parent: None,
@@ -243,7 +243,7 @@ impl Frame {
             Some(Loc::Slot(slot)) => *slot.borrow_mut() = Some(v),
             Some(Loc::CellSlot(cell)) => *cell.borrow_mut() = Some(v),
             None => {
-                locals.insert(name.to_string(), Loc::Slot(Rc::new(RefCell::new(Some(v)))));
+                locals.insert(name.to_string(), Loc::Slot(Arc::new(RefCell::new(Some(v)))));
             }
         }
     }
@@ -387,7 +387,7 @@ impl Frame {
 
 impl Drop for Frame {
     /// M2-adj (memperf audit 2026-11-06): MODULE_FRAME_CELLS entries keyed
-    /// by this frame's id become unreachable the moment the last Rc<Frame>
+    /// by this frame's id become unreachable the moment the last Arc<Frame>
     /// drops (every consult path goes through a LIVE defining frame), so
     /// retire them here. Failed-import frames are additionally retired
     /// eagerly at the importer's failed-body arm because `defining_frames`
@@ -411,16 +411,16 @@ pub enum Lookup {
 }
 
 /// A registered function (function-table entry).
-/// A2 (memperf audit 2026-11-06): `def` is an `Rc<FnDef>` — the registry
+/// A2 (memperf audit 2026-11-06): `def` is an `Arc<FnDef>` — the registry
 /// holds one copy of each function's AST and every clone of an entry (per
 /// call, per generator start) bumps a refcount instead of deep-cloning the
 /// whole body tree twice. B5/A6: the entry carries its PRE-RESOLVED scope
-/// classification (from its defining module's own table) plus Rc-shared
+/// classification (from its defining module's own table) plus Arc-shared
 /// declared-global/nonlocal sets, so call setup does zero scope lookups
 /// and zero HashSet rebuilds.
 #[derive(Clone)]
 pub struct FnEntry {
-    pub def: Rc<ap_ir::item::FnDef>,
+    pub def: Arc<ap_ir::item::FnDef>,
     /// Dotted scope path matching ScopeInfoModule.
     pub scope_path: String,
     /// Qualname for tracebacks.
@@ -436,7 +436,7 @@ pub struct FnEntry {
     /// lookups resolve against THIS table, not the global richest-wins
     /// merge — the twisted deprecate.py collision class).
     pub scope_table: Option<&'static ap_parse::ScopeInfoModule>,
-    /// A6: Rc-shared declared-names sets (see FnRegistry::declared_sets).
+    /// A6: Arc-shared declared-names sets (see FnRegistry::declared_sets).
     pub declared_globals: DeclaredNames,
     pub declared_nonlocals: DeclaredNames,
 }
@@ -454,13 +454,13 @@ impl FnEntry {
     ) -> FnEntry {
         let (dg, dn) = match scope {
             Some(s) => (
-                std::rc::Rc::new(s.globals.iter().cloned().collect()),
-                std::rc::Rc::new(s.nonlocals.iter().cloned().collect()),
+                std::sync::Arc::new(s.globals.iter().cloned().collect()),
+                std::sync::Arc::new(s.nonlocals.iter().cloned().collect()),
             ),
             None => (empty_declared(), empty_declared()),
         };
         FnEntry {
-            def: Rc::new(def),
+            def: Arc::new(def),
             scope_path,
             qualname,
             globals,
@@ -515,23 +515,23 @@ pub struct Interpreter {
     /// provides with identical logical ordering.
     pub tb_frames: RefCell<std::collections::VecDeque<(String, usize, String)>>,
     /// Per-frame current-line trackers (top = innermost frame).
-    pub frame_stack: RefCell<Vec<Rc<Cell<usize>>>>,
+    pub frame_stack: RefCell<Vec<Arc<Cell<usize>>>>,
     /// Recursion depth + limit (RecursionError at ~1000, task brief §5).
     pub depth: Cell<usize>,
     pub recursion_limit: Cell<usize>,
     /// sys.exit code (SystemExit(n)) — captured at raise site.
     pub exit_code: Cell<Option<i32>>,
     /// The in-flight exception for bare `raise` / implicit chaining.
-    pub current_exception: RefCell<Option<Rc<ExceptionValue>>>,
+    pub current_exception: RefCell<Option<Arc<ExceptionValue>>>,
     /// The module function registry (set once at entry).
-    pub registry: RefCell<Option<Rc<crate::interp::FnRegistry>>>,
+    pub registry: RefCell<Option<Arc<crate::interp::FnRegistry>>>,
     /// Lambda bodies by fn id (lambdas eval an expression, not a block).
     pub lambda_bodies: RefCell<HashMap<u32, ap_ir::Expr>>,
     /// Defining frames by fn id (closure/defaults scope wiring).
-    pub defining_frames: RefCell<HashMap<u32, std::rc::Rc<Frame>>>,
+    pub defining_frames: RefCell<HashMap<u32, std::sync::Arc<Frame>>>,
     /// Generator yield sink (v0 stream materialization).
     pub gen_sink: RefCell<Vec<Vec<ap_obj::value::Value>>>,
-    pub active_gen_sink: RefCell<Option<Rc<RefCell<Vec<ap_obj::value::Value>>>>>,
+    pub active_gen_sink: RefCell<Option<Arc<RefCell<Vec<ap_obj::value::Value>>>>>,
     /// PEP-342: the return value of the generator that JUST finished
     /// (StopIteration.value; S-02-22). Set by the yield-site return path.
     pub si_value: RefCell<Option<ap_obj::value::Value>>,
@@ -552,34 +552,34 @@ pub struct Interpreter {
     /// User class values by name (identity for __subclasses__ returns).
     pub user_class_values: RefCell<HashMap<String, Value>>,
     /// The `object` root class payload (lazy intern).
-    pub object_class: RefCell<Option<std::rc::Rc<ap_obj::classes::TypeObject>>>,
+    pub object_class: RefCell<Option<std::sync::Arc<ap_obj::classes::TypeObject>>>,
     /// The `type` metaclass payload (lazy intern).
-    pub type_class: RefCell<Option<std::rc::Rc<ap_obj::classes::TypeObject>>>,
+    pub type_class: RefCell<Option<std::sync::Arc<ap_obj::classes::TypeObject>>>,
     /// Active super() context per frame depth: (start-class, self/cls)
     /// stacked so zero-arg super() inside a method resolves (S-03-17/18).
-    pub super_stack: RefCell<Vec<(std::rc::Rc<ap_obj::classes::TypeObject>, Value, bool)>>,
+    pub super_stack: RefCell<Vec<(std::sync::Arc<ap_obj::classes::TypeObject>, Value, bool)>>,
     /// A6 (memperf audit): interned plain-function super() sentinels —
     /// (non-mcap, mcap). One full TypeObject + fresh PyDict used to be
     /// built on EVERY function call as the super_stack sentinel; nothing
     /// mutates a sentinel or compares it by identity, so the two variants
     /// are minted once per interpreter and cloned by refcount.
     pub plain_super_ctx: (
-        std::rc::Rc<ap_obj::classes::TypeObject>,
-        std::rc::Rc<ap_obj::classes::TypeObject>,
+        std::sync::Arc<ap_obj::classes::TypeObject>,
+        std::sync::Arc<ap_obj::classes::TypeObject>,
     ),
     /// Context staged by instantiate() for the __new__/__init__ call it is
     /// about to make (picked up by call_function after its sentinel push).
-    pub pending_super_ctx: RefCell<Option<(std::rc::Rc<ap_obj::classes::TypeObject>, Value, bool)>>,
+    pub pending_super_ctx: RefCell<Option<(std::sync::Arc<ap_obj::classes::TypeObject>, Value, bool)>>,
     pub source: String,
     pub script_path: String,
     /// Self handle (set at run_module entry) so &Interpreter surfaces can
-    /// reach the Rc'd interpreter for re-entrant calls.
-    pub self_rc: RefCell<Option<std::rc::Weak<Interpreter>>>,
+    /// reach the Arc'd interpreter for re-entrant calls.
+    pub self_rc: RefCell<Option<std::sync::Weak<Interpreter>>>,
 }
 
 impl Interpreter {
-    /// The Rc'd handle (panics when called before run_module sets it).
-    pub fn rc(&self) -> std::rc::Rc<Interpreter> {
+    /// The Arc'd handle (panics when called before run_module sets it).
+    pub fn rc(&self) -> std::sync::Arc<Interpreter> {
         self.self_rc
             .borrow()
             .as_ref()
@@ -670,7 +670,7 @@ impl Interpreter {
             super_stack: RefCell::new(Vec::new()),
             plain_super_ctx: {
                 let mk = |qual: &str| {
-                    std::rc::Rc::new(ap_obj::classes::TypeObject {
+                    std::sync::Arc::new(ap_obj::classes::TypeObject {
                         name: "__plain_fn__".to_string(),
                         qualname: qual.to_string(),
                         bases: vec![],
@@ -746,7 +746,7 @@ impl Interpreter {
     /// G4 (oom-bughunt-2026-11-06): re-registrations of the SAME def
     /// statement (a hot function defining a helper per call,
     /// `sorted(x, key=lambda ...)` in a loop) used to append a fresh
-    /// FnEntry (full FnDef AST clone) + defining_frames Rc entry PER
+    /// FnEntry (full FnDef AST clone) + defining_frames Arc entry PER
     /// EXECUTION — an unbounded per-call leak. G4-repair: the dedupe key
     /// is the CODE-OBJECT identity — (defining frame's scope_path,
     /// def/lambda source line, AST-node address) — all STABLE across
@@ -760,7 +760,7 @@ impl Interpreter {
         &self,
         entry: FnEntry,
         ast_node: usize,
-        defining: &Rc<Frame>,
+        defining: &Arc<Frame>,
     ) -> u32 {
         let key = (
             defining.scope_path.clone(),

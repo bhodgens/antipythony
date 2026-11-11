@@ -23,7 +23,7 @@ use crate::int::Gc;
 use crate::object::PyObject;
 use crate::value::Value;
 use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::Arc;
 
 /// Per-class flags.
 #[derive(Debug, Clone, Default)]
@@ -45,17 +45,17 @@ pub struct TypeObject {
     /// Dotted qualname (S-03-04 `__qualname__`; slot, not a dict key).
     pub qualname: String,
     /// Direct bases as type-object handles (empty => `[object]`).
-    pub bases: Vec<Rc<TypeRef>>,
+    pub bases: Vec<Arc<TypeRef>>,
     /// C3 linearization, computed at creation: [self, ..., object].
     /// RefCell because the self-reference lands after construction.
-    pub mro: std::cell::RefCell<Vec<Rc<TypeRef>>>,
+    pub mro: std::cell::RefCell<Vec<Arc<TypeRef>>>,
     /// Class-attribute namespace (`C.__dict__` reads go through a
     /// mappingproxy- façade in ap-run; the raw dict lives here).
     pub dict: Gc<PyDict>,
     pub flags: TypeFlags,
     /// The metaclass type-object handle (type(C)); None == plain `type`.
     /// RefCell: resolved/finalized after creation (02.03).
-    pub metaclass: std::cell::RefCell<Option<Rc<TypeRef>>>,
+    pub metaclass: std::cell::RefCell<Option<Arc<TypeRef>>>,
     /// Back-pointer to the class's PyObject Value (set right after
     /// creation; identity for `x.__class__ is C`).
     pub class_value: RefCell<Option<Value>>,
@@ -75,9 +75,9 @@ pub struct TypeObject {
     pub surgery_version: std::sync::atomic::AtomicU64,
 }
 
-/// A shared handle to a class. `Rc<TypeObject>` behind the same Gc pattern
+/// A shared handle to a class. `Arc<TypeObject>` behind the same Gc pattern
 /// the rest of ap-obj uses (the handle lives inside a PyObject's type_obj
-/// slot; identity comparisons compare Rc pointers).
+/// slot; identity comparisons compare Arc pointers).
 pub type TypeRef = TypeObject;
 
 impl TypeObject {
@@ -86,21 +86,21 @@ impl TypeObject {
     pub fn create(
         name: String,
         qualname: String,
-        bases: Vec<Rc<TypeRef>>,
+        bases: Vec<Arc<TypeRef>>,
         dict: Gc<PyDict>,
         flags: TypeFlags,
-        metaclass: Option<Rc<TypeRef>>,
-    ) -> Result<Rc<TypeRef>, MroError> {
+        metaclass: Option<Arc<TypeRef>>,
+    ) -> Result<Arc<TypeRef>, MroError> {
         // Duplicate base check (S-03-15, raised during base processing).
         for i in 0..bases.len() {
             for j in (i + 1)..bases.len() {
-                if Rc::ptr_eq(&bases[i], &bases[j]) {
+                if Arc::ptr_eq(&bases[i], &bases[j]) {
                     return Err(MroError::DuplicateBase(bases[i].name.clone()));
                 }
             }
         }
         let mut mro = linearize(&name, &bases)?;
-        let rc = Rc::new(TypeObject {
+        let rc = Arc::new(TypeObject {
             name,
             qualname,
             bases,
@@ -113,7 +113,7 @@ impl TypeObject {
             surgery_version: std::sync::atomic::AtomicU64::new(1),
         });
         // The class's OWN mro starts with itself (S-03-15): splice after
-        // construction (self-reference through the Rc).
+        // construction (self-reference through the Arc).
         mro.insert(0, rc.clone());
         *rc.mro.borrow_mut() = mro;
         Ok(rc)
@@ -137,7 +137,7 @@ impl TypeObject {
 
     /// The class-of record for a name PLUS the defining class (needed for
     /// descriptor `__get__(obj, owner)` binding and super() positioning).
-    pub fn lookup_with_owner(&self, name: &str) -> Option<(Value, Rc<TypeRef>)> {
+    pub fn lookup_with_owner(&self, name: &str) -> Option<(Value, Arc<TypeRef>)> {
         let mro = self.mro.borrow();
         for t in mro.iter() {
             if let Some(v) = t.dict.get_str(name) {
@@ -148,8 +148,8 @@ impl TypeObject {
     }
 
     /// Is `self` a subclass of (or equal to) `other`? MRO membership (S-03-31).
-    pub fn is_subclass(&self, other: &Rc<TypeObject>) -> bool {
-        self.mro.borrow().iter().any(|t| Rc::ptr_eq(t, other))
+    pub fn is_subclass(&self, other: &Arc<TypeObject>) -> bool {
+        self.mro.borrow().iter().any(|t| Arc::ptr_eq(t, other))
     }
 
     /// Instance dict enabled? (no __slots__, or __dict__ in slots, or a
@@ -222,7 +222,7 @@ impl TypeObject {
 mod version_tests {
     use super::*;
 
-    fn mkclass(name: &str) -> Rc<TypeRef> {
+    fn mkclass(name: &str) -> Arc<TypeRef> {
         TypeObject::create(
             name.to_string(),
             name.to_string(),
@@ -287,21 +287,21 @@ pub enum MroError {
 }
 
 /// C3 merge (S-03-15): `mro(C) = C + merge(mro(B1)..(Bn), (B1..Bn))`.
-fn linearize(_name: &str, bases: &[Rc<TypeRef>]) -> Result<Vec<Rc<TypeRef>>, MroError> {
-    let mut seqs: Vec<Vec<Rc<TypeRef>>> = bases.iter().map(|b| b.mro.borrow().clone()).collect();
+fn linearize(_name: &str, bases: &[Arc<TypeRef>]) -> Result<Vec<Arc<TypeRef>>, MroError> {
+    let mut seqs: Vec<Vec<Arc<TypeRef>>> = bases.iter().map(|b| b.mro.borrow().clone()).collect();
     seqs.push(bases.to_vec());
-    let mut out: Vec<Rc<TypeRef>> = Vec::new();
+    let mut out: Vec<Arc<TypeRef>> = Vec::new();
     loop {
         seqs.retain(|s| !s.is_empty());
         if seqs.is_empty() {
             break;
         }
         // Find a head that appears in no tail.
-        let mut found: Option<Rc<TypeRef>> = None;
+        let mut found: Option<Arc<TypeRef>> = None;
         'outer: for s in &seqs {
             let head = &s[0];
             for t in &seqs {
-                if t[1..].iter().any(|x| Rc::ptr_eq(x, head)) {
+                if t[1..].iter().any(|x| Arc::ptr_eq(x, head)) {
                     continue 'outer;
                 }
             }
@@ -316,7 +316,7 @@ fn linearize(_name: &str, bases: &[Rc<TypeRef>]) -> Result<Vec<Rc<TypeRef>>, Mro
         };
         out.push(head.clone());
         for s in &mut seqs {
-            s.retain(|x| !Rc::ptr_eq(x, &head));
+            s.retain(|x| !Arc::ptr_eq(x, &head));
         }
     }
     Ok(out)
@@ -353,7 +353,7 @@ pub enum DescrKind {
 ///
 /// Convenience: build the class Value from a created TypeRef. Wires BOTH
 /// directions (payload -> Value back-pointer, Value -> payload).
-pub fn make_class_value(type_ref: Rc<TypeRef>) -> Value {
+pub fn make_class_value(type_ref: Arc<TypeRef>) -> Value {
     let o = PyObject::new(crate::ObjKind::UserClass, type_ref.name.clone());
     *o.class_ref.borrow_mut() = Some(type_ref.clone());
     let v = Value::Obj(o);

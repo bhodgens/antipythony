@@ -4,7 +4,7 @@
 //! dispatch helpers used by interp.rs (S-03-22..26).
 //!
 //! Layout: a user class is `Value::Obj(PyObject{kind: UserClass})` whose
-//! `class_ref` holds the strong `Rc<classes::TypeObject>` payload (name,
+//! `class_ref` holds the strong `Arc<classes::TypeObject>` payload (name,
 //! bases, C3 MRO, class dict, flags). Instances are `UserInstance` values
 //! with a `Weak` `type_ref` back-pointer plus per-instance attributes in
 //! `attrs` (the compact dict; absent when `__slots__` withholds `__dict__`).
@@ -14,7 +14,7 @@
 //! `raise`/`except` keep the legacy `ExceptionValue` (class NAME + args)
 //! plumbing and translate through `exc_class`/`class_name_of`.
 
-use std::rc::Rc;
+use std::sync::Arc;
 
 pub use ap_obj::classes::TypeRef;
 use ap_obj::classes::{DescrKind, TypeFlags, TypeObject};
@@ -125,13 +125,13 @@ fn tb_node(
 }
 
 pub fn dynamic_type(
-    interp: &Rc<Interpreter>,
+    interp: &Arc<Interpreter>,
     name: &str,
     bases_v: &[Value],
     ns: Gc<PyDict>,
     kwargs: &[(String, Value)],
 ) -> EResult {
-    let mut base_types: Vec<Rc<TypeRef>> = Vec::new();
+    let mut base_types: Vec<Arc<TypeRef>> = Vec::new();
     for b in bases_v {
         match base_type_ref(interp, b)? {
             Some(t) => base_types.push(t),
@@ -144,7 +144,7 @@ pub fn dynamic_type(
         }
     }
     // Metaclass resolution: most derived among the bases' metaclasses.
-    let mut best: Option<Rc<TypeRef>> = None;
+    let mut best: Option<Arc<TypeRef>> = None;
     for b in &base_types {
         let bm = b
             .metaclass
@@ -154,7 +154,7 @@ pub fn dynamic_type(
         match (&best, bm) {
             (None, Some(m)) => best = Some(m),
             (Some(cur), Some(m)) => {
-                if !Rc::ptr_eq(cur, &m) {
+                if !Arc::ptr_eq(cur, &m) {
                     if m.is_subclass(cur) {
                         best = Some(m);
                     } else if !cur.is_subclass(&m) {
@@ -303,7 +303,7 @@ fn raise(class: &str, msg: impl Into<String>) -> Flow {
 // ===========================================================================
 
 /// The TypeObject payload behind a class Value (None for non-classes).
-pub fn type_of(_interp: &Interpreter, v: &Value) -> Option<Rc<TypeRef>> {
+pub fn type_of(_interp: &Interpreter, v: &Value) -> Option<Arc<TypeRef>> {
     match v {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass => o.class_ref.borrow().clone(),
         // T2 (wave-39): stream-derived instances are Opaque carrying the
@@ -318,14 +318,14 @@ pub fn type_of(_interp: &Interpreter, v: &Value) -> Option<Rc<TypeRef>> {
 /// The class of a VALUE: instances via their Weak back-pointer, exception
 /// instances via the interned exception classes, builtin values via the
 /// interned builtin pseudo-classes (only where a class exists).
-pub fn class_of_value(interp: &Interpreter, v: &Value) -> Option<Rc<TypeRef>> {
+pub fn class_of_value(interp: &Interpreter, v: &Value) -> Option<Arc<TypeRef>> {
     match v {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => o
             .type_ref
             .borrow()
             .as_ref()
             .and_then(|w| w.upgrade())
-            .map(|rc| rc as Rc<TypeRef>),
+            .map(|rc| rc as Arc<TypeRef>),
         Value::Obj(o) if o.kind == ap_obj::ObjKind::Exception => o
             .class_ref
             .borrow()
@@ -342,7 +342,7 @@ pub fn class_of_value(interp: &Interpreter, v: &Value) -> Option<Rc<TypeRef>> {
 }
 
 /// Interned builtin exception CLASS payload by name.
-pub fn exc_class(interp: &Interpreter, name: &str) -> Option<Rc<TypeRef>> {
+pub fn exc_class(interp: &Interpreter, name: &str) -> Option<Arc<TypeRef>> {
     interp
         .exc_classes
         .borrow()
@@ -444,10 +444,10 @@ pub const EXC_TREE: &[(&str, Option<&str>)] = &[
 
 /// Create every builtin exception class into interp.exc_classes (called
 /// from run_module entry, before any user code).
-pub fn install_exception_classes(interp: &Rc<Interpreter>) {
+pub fn install_exception_classes(interp: &Arc<Interpreter>) {
     let mut table = interp.exc_classes.borrow_mut();
     for (name, parent) in EXC_TREE {
-        let mut bases: Vec<Rc<TypeRef>> = match parent {
+        let mut bases: Vec<Arc<TypeRef>> = match parent {
             Some(p) => vec![table
                 .get(*p)
                 .and_then(|v| type_of(interp, v))
@@ -582,7 +582,7 @@ pub fn subclasses_of(interp: &Interpreter, name: &str) -> Vec<Value> {
         _ => std::cmp::Ordering::Equal,
     });
     out.dedup_by(|a, b| match (a, b) {
-        (Value::Obj(x), Value::Obj(y)) => std::rc::Rc::ptr_eq(x, y),
+        (Value::Obj(x), Value::Obj(y)) => std::sync::Arc::ptr_eq(x, y),
         _ => false,
     });
     out
@@ -606,10 +606,10 @@ pub fn current_class_ns() -> Option<Gc<PyDict>> {
 }
 
 pub fn exec_class_def(
-    interp: &Rc<Interpreter>,
-    frame: &Rc<Frame>,
+    interp: &Arc<Interpreter>,
+    frame: &Arc<Frame>,
     c: &ap_ir::item::ClassDef,
-    reg: &Rc<FnRegistry>,
+    reg: &Arc<FnRegistry>,
     bind_name: &str,
 ) -> EResult {
     // 1. Bases + explicit metaclass in the ENCLOSING frame (S-03-1).
@@ -719,7 +719,7 @@ pub fn exec_class_def(
             }
             let later_has = bases_v[i + 1..].iter().any(|later| {
                 matches!(base_type_ref(interp, later), Ok(Some(t))
-                    if t.mro.borrow().iter().any(|m| m.name == "Generic" && !std::rc::Rc::ptr_eq(m, &t)))
+                    if t.mro.borrow().iter().any(|m| m.name == "Generic" && !std::sync::Arc::ptr_eq(m, &t)))
             });
             if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::MroDbg) {
                 let lnames: Vec<String> = bases_v[i + 1..]
@@ -766,10 +766,10 @@ pub fn exec_class_def(
     // (EnumDict); rides the class frame for __setitem__ routing.
     let mut prepared_inst: Option<Value> = None;
     {
-        let effective_meta: Option<Rc<TypeRef>> = match &metaclass_v {
+        let effective_meta: Option<Arc<TypeRef>> = match &metaclass_v {
             Some(m) => base_type_ref(interp, m)?,
             None => {
-                let mut found: Option<Rc<TypeRef>> = None;
+                let mut found: Option<Arc<TypeRef>> = None;
                 for b in &bases_v {
                     if let Some(t) = base_type_ref(interp, b)? {
                         let bm = t.metaclass.borrow().clone();
@@ -777,7 +777,7 @@ pub fn exec_class_def(
                             match &found {
                                 None => found = Some(m),
                                 Some(cur) => {
-                                    if !Rc::ptr_eq(cur, &m) && m.is_subclass(cur) {
+                                    if !Arc::ptr_eq(cur, &m) && m.is_subclass(cur) {
                                         found = Some(m);
                                     }
                                 }
@@ -868,7 +868,7 @@ pub fn exec_class_def(
         format!("{}.{}", frame.scope_path, c.name)
     };
     class_frame_val.class_ns_inst = prepared_inst.clone();
-    let class_frame = Rc::new(class_frame_val);
+    let class_frame = Arc::new(class_frame_val);
     // T1-d: CPython class namespaces carry __module__ (NamedTupleMeta reads
     // ns['__module__'] at class creation).
     if class_frame
@@ -931,7 +931,7 @@ pub fn exec_class_def(
     }
 
     // 3. Resolve base TypeRefs (S-03-1: `class A:` == `class A(object):`).
-    let mut base_types: Vec<Rc<TypeRef>> = Vec::new();
+    let mut base_types: Vec<Arc<TypeRef>> = Vec::new();
     for b in &bases_v {
         match base_type_ref(interp, b)? {
             Some(t) => base_types.push(t),
@@ -953,7 +953,7 @@ pub fn exec_class_def(
     }
 
     // 4. Metaclass resolution (S-03-2).
-    let _resolved_meta: Option<Rc<TypeRef>> = match &metaclass_v {
+    let _resolved_meta: Option<Arc<TypeRef>> = match &metaclass_v {
         Some(m) => {
             let t = base_type_ref(interp, m)?
                 .ok_or_else(|| raise("TypeError", "metaclass must be a type"))?;
@@ -962,7 +962,7 @@ pub fn exec_class_def(
         None => {
             // Most derived among type(base) for every base (v0: bases'
             // metaclass pointers; plain classes carry None == type).
-            let mut best: Option<Rc<TypeRef>> = None;
+            let mut best: Option<Arc<TypeRef>> = None;
             for b in &base_types {
                 let bm = b
                     .metaclass
@@ -972,7 +972,7 @@ pub fn exec_class_def(
                 match (&best, bm) {
                     (None, Some(m)) => best = Some(m),
                     (Some(cur), Some(m)) => {
-                        if !Rc::ptr_eq(cur, &m) {
+                        if !Arc::ptr_eq(cur, &m) {
                             if m.is_subclass(cur) {
                                 best = Some(m);
                             } else if !cur.is_subclass(&m) {
@@ -1064,7 +1064,7 @@ pub fn exec_class_def(
     // staging start=M2 made super().__new__ re-bind Meta.__new__ to M2
     // (5 positional args -> "takes 4 but 5 given"). start=Meta lands the
     // scan on type.__new__ (unbound builtin), per CPython.
-    let meta_new_owner: Option<Rc<TypeRef>> = _resolved_meta
+    let meta_new_owner: Option<Arc<TypeRef>> = _resolved_meta
         .as_ref()
         .and_then(|meta| meta.lookup_with_owner("__new__"))
         .and_then(|(_, owner)| {
@@ -1537,7 +1537,7 @@ fn string_items(l: &Gc<PyList>) -> Result<Vec<String>, Flow> {
 
 /// The TypeRef behind a base-class expression value: user classes, builtin
 /// exception classes, `object`, `type`.
-pub fn base_type_ref(interp: &Interpreter, v: &Value) -> Result<Option<Rc<TypeRef>>, Flow> {
+pub fn base_type_ref(interp: &Interpreter, v: &Value) -> Result<Option<Arc<TypeRef>>, Flow> {
     match v {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass => {
             let t = o.class_ref.borrow().clone();
@@ -1722,7 +1722,7 @@ pub fn base_type_ref(interp: &Interpreter, v: &Value) -> Result<Option<Rc<TypeRe
 }
 
 /// The `object` root class (mro == [object]).
-pub fn object_class(interp: &Interpreter) -> Rc<TypeRef> {
+pub fn object_class(interp: &Interpreter) -> Arc<TypeRef> {
     if let Some(t) = interp.object_class.borrow().clone() {
         return t;
     }
@@ -1741,7 +1741,7 @@ pub fn object_class(interp: &Interpreter) -> Rc<TypeRef> {
 }
 
 /// The `type` metaclass handle (identity target for metaclass checks).
-pub fn type_class(interp: &Interpreter) -> Rc<TypeRef> {
+pub fn type_class(interp: &Interpreter) -> Arc<TypeRef> {
     if let Some(t) = interp.type_class.borrow().clone() {
         return t;
     }
@@ -1826,20 +1826,20 @@ pub fn is_data_descriptor(interp: &Interpreter, v: &Value) -> bool {
 }
 
 /// The class payload of a UserInstance PyObject.
-pub fn instance_class(_interp: &Interpreter, o: &Gc<ap_obj::PyObject>) -> Option<Rc<TypeRef>> {
+pub fn instance_class(_interp: &Interpreter, o: &Gc<ap_obj::PyObject>) -> Option<Arc<TypeRef>> {
     o.type_ref.borrow().as_ref().and_then(|w| w.upgrade())
 }
 
 /// Raw class-dict lookup that does NOT invoke descriptors (for
 /// unwrapping classmethod/staticmethod payloads).
-fn attr_on_class_raw(t: &Rc<TypeRef>, name: &str) -> Value {
+fn attr_on_class_raw(t: &Arc<TypeRef>, name: &str) -> Value {
     t.lookup(name).unwrap_or(Value::None)
 }
 
 /// Invoke a descriptor's __get__ (or return the value unchanged).
 /// `obj`: the instance (None-typed Value::None for class access),
 /// `owner`: the class Value.
-pub fn descr_get(interp: &Rc<Interpreter>, v: &Value, obj: &Value, owner: &Value) -> EResult {
+pub fn descr_get(interp: &Arc<Interpreter>, v: &Value, obj: &Value, owner: &Value) -> EResult {
     match v {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::Descriptor => {
             let f: Value = o.func.borrow().clone().unwrap_or(Value::None);
@@ -1919,7 +1919,7 @@ pub fn descr_get(interp: &Rc<Interpreter>, v: &Value, obj: &Value, owner: &Value
 /// Data-descriptor __set__ / property setter (S-03-10). Returns Err when
 /// the descriptor is read-only with the byte-exact message.
 pub fn descr_set(
-    interp: &Rc<Interpreter>,
+    interp: &Arc<Interpreter>,
     v: &Value,
     obj: &Value,
     val: Value,
@@ -1971,7 +1971,7 @@ pub fn descr_set(
 
 /// Data-descriptor __delete__ / property deleter (S-03-11).
 pub fn descr_delete(
-    interp: &Rc<Interpreter>,
+    interp: &Arc<Interpreter>,
     v: &Value,
     obj: &Value,
     cls_name: &str,
@@ -2042,7 +2042,7 @@ pub fn bind_function(f: &Value, receiver: Value) -> Value {
 }
 
 /// bind_function + the defining class (zero-arg super start point).
-pub fn bind_function_owned(f: &Value, receiver: Value, owner: Option<&Rc<TypeRef>>) -> Value {
+pub fn bind_function_owned(f: &Value, receiver: Value, owner: Option<&Arc<TypeRef>>) -> Value {
     if let Value::Obj(o) = f {
         if o.kind == ap_obj::ObjKind::Function {
             // 02.04: build the PyObject payload FIRST, mutate while owned,
@@ -2070,7 +2070,7 @@ pub fn bind_function_owned(f: &Value, receiver: Value, owner: Option<&Rc<TypeRef
                 class_ref: std::cell::RefCell::new(None),
                 type_ref: std::cell::RefCell::new(None),
                 descr_kind: std::cell::RefCell::new(None),
-                method_owner: std::cell::RefCell::new(owner.map(std::rc::Rc::downgrade)),
+                method_owner: std::cell::RefCell::new(owner.map(std::sync::Arc::downgrade)),
             };
             let mo = ap_obj::int::Gc::new(m);
             return Value::Obj(mo);
@@ -2080,11 +2080,11 @@ pub fn bind_function_owned(f: &Value, receiver: Value, owner: Option<&Rc<TypeRef
 }
 
 /// A bare module frame for hook/descriptor calls that need no caller scope.
-pub fn module_frame(interp: &Rc<Interpreter>) -> Rc<Frame> {
-    Rc::new(Frame::new_module(interp.globals.clone()))
+pub fn module_frame(interp: &Arc<Interpreter>) -> Arc<Frame> {
+    Arc::new(Frame::new_module(interp.globals.clone()))
 }
 
-fn run_set_name_hooks(interp: &Rc<Interpreter>, cls: &Value, t: &Rc<TypeRef>) -> Result<(), Flow> {
+fn run_set_name_hooks(interp: &Arc<Interpreter>, cls: &Value, t: &Arc<TypeRef>) -> Result<(), Flow> {
     for (k, v) in t.dict.items() {
         let name = match &k {
             Value::Str(s) => s.as_str().to_string(),
@@ -2250,12 +2250,12 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
                         // class-body attr pass the NamedConstant isinstance
                         // filter and explode on `_container`.
                         if let Some(tc) = base_type_ref(interp, t)? {
-                            if Rc::ptr_eq(&xc, &tc) {
+                            if Arc::ptr_eq(&xc, &tc) {
                                 let has_user_meta = xc
                                     .metaclass
                                     .borrow()
                                     .as_ref()
-                                    .map(|m| !Rc::ptr_eq(m, &type_class(interp)))
+                                    .map(|m| !Arc::ptr_eq(m, &type_class(interp)))
                                     .unwrap_or(false);
                                 if !has_user_meta {
                                     return Ok(false);
@@ -2274,7 +2274,7 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
                             // Spider) is False) — the old
                             // xc.is_subclass(&tc) wrongly walked the
                             // class's own MRO and answered True.
-                            if !Rc::ptr_eq(&xc, &tc) {
+                            if !Arc::ptr_eq(&xc, &tc) {
                                 return Ok(false);
                             }
                             return Ok(xc.is_subclass(&tc));
@@ -2583,14 +2583,14 @@ pub fn type_name_of_check(t: &Value) -> &str {
 }
 
 /// The class payload for isinstance's LEFT argument (None -> builtin path).
-fn type_for_check(interp: &Interpreter, x: &Value) -> Option<Rc<TypeRef>> {
+fn type_for_check(interp: &Interpreter, x: &Value) -> Option<Arc<TypeRef>> {
     match x {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => o
             .type_ref
             .borrow()
             .as_ref()
             .and_then(|w| w.upgrade())
-            .map(|rc| rc as Rc<TypeRef>),
+            .map(|rc| rc as Arc<TypeRef>),
         Value::Obj(o) if o.kind == ap_obj::ObjKind::Exception => exc_class(interp, &o.name),
         _ => None,
     }
@@ -2690,7 +2690,7 @@ pub fn value_issubclass(interp: &Interpreter, a: &Value, b: &Value) -> Result<bo
 
 /// Look a special method up on the value's TYPE (MRO scan). Returns the
 /// raw function value (unbound) + defining class.
-pub fn special_lookup(interp: &Interpreter, v: &Value, name: &str) -> Option<(Value, Rc<TypeRef>)> {
+pub fn special_lookup(interp: &Interpreter, v: &Value, name: &str) -> Option<(Value, Arc<TypeRef>)> {
     match v {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
             let t = o.type_ref.borrow().as_ref().and_then(|w| w.upgrade())?;
@@ -2795,7 +2795,7 @@ pub fn special_lookup(interp: &Interpreter, v: &Value, name: &str) -> Option<(Va
 /// `obj.name` full protocol. Returns Err(Flow) only for real errors;
 /// misses raise AttributeError with the pinned text (caller distinguishes
 /// via the `quiet` form below when it needs Option semantics).
-pub fn attr_get_protocol(interp: &Rc<Interpreter>, obj: &Value, name: &str) -> EResult {
+pub fn attr_get_protocol(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> EResult {
     match attr_get_opt(interp, obj, name)? {
         Some(v) => Ok(v),
         // T2 fix: frame-protocol attrs must never AttributeError on ANY
@@ -2857,7 +2857,7 @@ fn type_name_of(v: &Value) -> String {
 
 /// Option-form attribute read (for hasattr / import surfaces).
 pub fn attr_get_opt(
-    interp: &Rc<Interpreter>,
+    interp: &Arc<Interpreter>,
     obj: &Value,
     name: &str,
 ) -> Result<Option<Value>, Flow> {
@@ -2962,10 +2962,10 @@ pub fn attr_get_opt(
 /// S-03-09 on an instance: MRO data descriptor -> instance dict ->
 /// non-data descriptor __get__ -> __getattr__ -> AttributeError.
 fn instance_attr(
-    interp: &Rc<Interpreter>,
+    interp: &Arc<Interpreter>,
     obj: &Value,
     o: &Gc<ap_obj::PyObject>,
-    t: &Rc<TypeRef>,
+    t: &Arc<TypeRef>,
     name: &str,
 ) -> EResult {
     // Dunder bookkeeping names answer from the class before everything.
@@ -3210,11 +3210,11 @@ fn instance_attr(
 /// The class VALUE for a payload reached via an MRO walk (the back-pointer
 /// is set by make_class_value at creation).
 /// Public wrapper: the registered class Value for a payload.
-pub fn class_value_for_public(t: &Rc<TypeRef>) -> Value {
+pub fn class_value_for_public(t: &Arc<TypeRef>) -> Value {
     class_value_for(t)
 }
 
-fn class_value_for(t: &Rc<TypeRef>) -> Value {
+fn class_value_for(t: &Arc<TypeRef>) -> Value {
     // Two-step: the read borrow must DROP before make_class_value takes
     // the write borrow (same RefCell).
     let existing = t.class_value.borrow().clone();
@@ -3223,7 +3223,7 @@ fn class_value_for(t: &Rc<TypeRef>) -> Value {
 
 /// `C.name` protocol (S-03-12): type slots -> MRO data descriptor
 /// __get__(None, C) -> class dict -> metaclass fallback.
-fn class_attr_get(interp: &Rc<Interpreter>, cls_v: &Value, t: &Rc<TypeRef>, name: &str) -> EResult {
+fn class_attr_get(interp: &Arc<Interpreter>, cls_v: &Value, t: &Arc<TypeRef>, name: &str) -> EResult {
     // type's own slots resolve FIRST (S-03-12: __name__, __bases__,
     // __mro__, __qualname__, __dict__ ...).
     match name {
@@ -3292,7 +3292,7 @@ fn class_attr_get(interp: &Rc<Interpreter>, cls_v: &Value, t: &Rc<TypeRef>, name
         if name == "__new__" {
             if let Some(owner_t) = t.lookup_with_owner(name).map(|(_, o)| o) {
                 let mro = t.mro.borrow();
-                let owner_idx = mro.iter().position(|m| Rc::ptr_eq(m, &owner_t));
+                let owner_idx = mro.iter().position(|m| Arc::ptr_eq(m, &owner_t));
                 let cont_idx = mro
                     .iter()
                     .position(|m| m.name == "list" || m.name == "tuple");
@@ -3509,7 +3509,7 @@ fn type_class_value(interp: &Interpreter) -> Value {
 // ===========================================================================
 
 pub fn attr_set_protocol(
-    interp: &Rc<Interpreter>,
+    interp: &Arc<Interpreter>,
     obj: &Value,
     name: &str,
     v: Value,
@@ -3528,7 +3528,7 @@ pub fn attr_set_protocol(
     // update the LIVE closure cell via the CELL_BACKING registry.
     if let Value::Obj(o) = obj {
         if o.kind == ap_obj::ObjKind::Namespace && o.name == "cell" && name == "cell_contents" {
-            let key = std::rc::Rc::as_ptr(o) as usize;
+            let key = std::sync::Arc::as_ptr(o) as usize;
             let live = crate::interp::CELL_BACKING.with(|reg| reg.borrow().get(&key).cloned());
             if let Some(cell) = live {
                 if matches!(v, Value::None) {
@@ -3739,7 +3739,7 @@ fn is_user_function(v: &Value) -> bool {
     matches!(v, Value::Obj(o) if o.kind == ap_obj::ObjKind::Function)
 }
 
-pub fn attr_del_protocol(interp: &Rc<Interpreter>, obj: &Value, name: &str) -> Result<(), Flow> {
+pub fn attr_del_protocol(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<(), Flow> {
     match obj {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
             let t = o
@@ -3849,9 +3849,9 @@ pub fn attr_del_protocol(interp: &Rc<Interpreter>, obj: &Value, name: &str) -> R
 /// __init__ (S-03-06); arity fast-path errors (S-03-07); __init__ returning
 /// non-None raises (S-03-08).
 pub fn instantiate(
-    interp: &Rc<Interpreter>,
+    interp: &Arc<Interpreter>,
     cls: &Value,
-    t: &Rc<TypeRef>,
+    t: &Arc<TypeRef>,
     args: &[Value],
     kwargs: &[(String, Value)],
 ) -> EResult {
@@ -3998,7 +3998,7 @@ pub fn instantiate(
                 if fo.kind == ap_obj::ObjKind::Function)
                 && {
                     let mro = t.mro.borrow();
-                    let owner_idx = mro.iter().position(|m| std::rc::Rc::ptr_eq(m, &owner));
+                    let owner_idx = mro.iter().position(|m| std::sync::Arc::ptr_eq(m, &owner));
                     let cont_idx = mro
                         .iter()
                         .position(|m| m.name == "list" || m.name == "tuple");
@@ -4112,7 +4112,7 @@ pub fn instantiate(
         if let Some(doc) = args.get(1) {
             let _ = ns.set(Value::Str(PyString::new("__doc__")), doc.clone());
         }
-        *io.type_ref.borrow_mut() = Some(std::rc::Rc::downgrade(t));
+        *io.type_ref.borrow_mut() = Some(std::sync::Arc::downgrade(t));
         *io.module_ns.borrow_mut() = Some(ns);
         return Ok(Value::Obj(io));
     }
@@ -4222,7 +4222,7 @@ pub fn instantiate(
                 };
                 if let Some(v) = built {
                     let io = ap_obj::PyObject::new(ap_obj::ObjKind::UserInstance, t.name.clone());
-                    *io.type_ref.borrow_mut() = Some(std::rc::Rc::downgrade(t));
+                    *io.type_ref.borrow_mut() = Some(std::sync::Arc::downgrade(t));
                     *io.class_ref.borrow_mut() = Some(t.clone());
                     // T2 (pygments _TokenType): keep a TUPLE-typed backing so
                     // the derived-instance protocol (len/slice/contains/+)
@@ -4424,9 +4424,9 @@ fn check_init_return(r: &Value, f: &Value) -> Result<(), Flow> {
 
 /// Allocate a bare instance of `t` (dict-enabled classes get their attrs
 /// dict via PyObject's default).
-pub fn alloc_instance(t: &Rc<TypeRef>) -> Value {
+pub fn alloc_instance(t: &Arc<TypeRef>) -> Value {
     let o = ap_obj::PyObject::new(ap_obj::ObjKind::UserInstance, t.name.clone());
-    *o.type_ref.borrow_mut() = Some(Rc::downgrade(t));
+    *o.type_ref.borrow_mut() = Some(Arc::downgrade(t));
     // 02.03b: dict-subclass instances carry a REAL backing dict in
     // attrs["__ap_dict__"] (EnumDict and friends): item traffic routes
     // through it, attribute traffic through attrs as before.
@@ -4446,7 +4446,7 @@ pub fn alloc_instance(t: &Rc<TypeRef>) -> Value {
 /// Does this class derive from the builtin `dict`? (02.03b: the synthesized
 /// dict base from `class X(dict)` carries the name "dict" and descends from
 /// object directly — the marker we key the backing-dict model on.)
-pub fn is_dict_derived(t: &Rc<TypeRef>) -> bool {
+pub fn is_dict_derived(t: &Arc<TypeRef>) -> bool {
     t.mro.borrow().iter().any(|m| m.name == "dict")
 }
 
@@ -4503,7 +4503,7 @@ pub fn is_list_derived_instance(v: &Value) -> bool {
 /// object allocator — CPython resolves `cls.__new__` to tuple.__new__
 /// there, which materializes the payload the derived instance carries.
 /// Returns 'static marker name or None (no container base in MRO).
-fn container_new_marker(t: &Rc<TypeRef>) -> Option<&'static str> {
+fn container_new_marker(t: &Arc<TypeRef>) -> Option<&'static str> {
     let has = |n: &str| t.mro.borrow().iter().any(|m| m.name == n);
     if has("tuple") {
         Some("__tuple__new__")
@@ -4622,7 +4622,7 @@ pub fn is_exception_value(v: &Value) -> bool {
 }
 
 /// (helper) class payload of a value via the back-pointers.
-pub fn class_of_value_here(v: &Value) -> Option<Rc<TypeRef>> {
+pub fn class_of_value_here(v: &Value) -> Option<Arc<TypeRef>> {
     match v {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
             o.type_ref.borrow().as_ref().and_then(|w| w.upgrade())
@@ -4633,6 +4633,6 @@ pub fn class_of_value_here(v: &Value) -> Option<Rc<TypeRef>> {
 }
 
 /// The interned exception class payload by name (must exist).
-pub fn exception_payload(interp: &Interpreter, name: &str) -> std::rc::Rc<TypeRef> {
+pub fn exception_payload(interp: &Interpreter, name: &str) -> std::sync::Arc<TypeRef> {
     exc_class(interp, name).expect("builtin exception class")
 }

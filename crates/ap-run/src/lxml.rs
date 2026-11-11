@@ -39,7 +39,7 @@
 //! as nodes, iterparse streaming.
 
 use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::exc_hier::ExceptionValue;
 use crate::Flow;
@@ -119,7 +119,7 @@ impl LxDoc {
 }
 
 /// The shared document every element object of one parse points at.
-pub type SharedDoc = Rc<RefCell<LxDoc>>;
+pub type SharedDoc = Arc<RefCell<LxDoc>>;
 
 // ===========================================================================
 // HTML tokenizer + lenient tree builder (libxml2-recover-flavored subset)
@@ -1495,8 +1495,8 @@ pub fn is_lx_element(v: &Value) -> bool {
 }
 
 /// Element identity: the shared doc handle + arena index ride the object's
-/// attrs (`<shared>` Namespace holder with a direct Rc pointer parked via the
-/// attrs dict is NOT possible — Value has no Rc<T> carrier — so the doc lives
+/// attrs (`<shared>` Namespace holder with a direct Arc pointer parked via the
+/// attrs dict is NOT possible — Value has no Arc<T> carrier — so the doc lives
 /// in a thread-local registry keyed by a fresh id; elements carry that id).
 ///
 /// G3 (oom-bughunt 2026-11-06 static audit): the registry WAS a push-only
@@ -1519,8 +1519,8 @@ pub fn is_lx_element(v: &Value) -> bool {
 /// address CANNOT alias an old element because old elements' lookups fail
 /// on upgrade() before any indexing).
 struct DocRegistry {
-    docs: Vec<Option<std::rc::Weak<RefCell<LxDoc>>>>,
-    /// Pin window: doc ids whose strong Rc is retained, oldest-first.
+    docs: Vec<Option<std::sync::Weak<RefCell<LxDoc>>>>,
+    /// Pin window: doc ids whose strong Arc is retained, oldest-first.
     pins: std::collections::VecDeque<SharedDoc>,
     /// E9 (memperf audit 2026-11-06): indexes of slots whose Weak is dead —
     /// the freed-slot list the G3 comment anticipated. register_doc takes one
@@ -1555,7 +1555,7 @@ static DOCS: std::sync::LazyLock<crate::gcsupport::GilSendPub<std::sync::Mutex<D
 const DOC_PIN_WINDOW: usize = 64;
 
 fn register_doc(doc: LxDoc) -> usize {
-    let rc = Rc::new(RefCell::new(doc));
+    let rc = Arc::new(RefCell::new(doc));
     let mut r = DOCS.0.lock().unwrap();
     // E9 harvest: released-while-in-flight slots whose doc has since died.
     if !r.awaiting.is_empty() {
@@ -1577,11 +1577,11 @@ fn register_doc(doc: LxDoc) -> usize {
     // E9: prefer a known-freed slot (O(1)).
     let id = match r.free.pop() {
         Some(pos) => {
-            r.docs[pos] = Some(Rc::downgrade(&rc));
+            r.docs[pos] = Some(Arc::downgrade(&rc));
             pos
         }
         None => {
-            r.docs.push(Some(Rc::downgrade(&rc)));
+            r.docs.push(Some(Arc::downgrade(&rc)));
             r.docs.len() - 1
         }
     };
@@ -1591,15 +1591,15 @@ fn register_doc(doc: LxDoc) -> usize {
     r.pins.push_back(rc);
     while r.pins.len() > DOC_PIN_WINDOW {
         let old = r.pins.pop_front().expect("pin window nonempty");
-        // Find the old doc's slot via strong-ptr identity (the Rc is still
+        // Find the old doc's slot via strong-ptr identity (the Arc is still
         // alive inside `old`; no upgrade-scan of Weaks needed).
         for (i, slot) in r.docs.iter().enumerate() {
             if slot
                 .as_ref()
                 .and_then(|w| w.upgrade())
-                .is_some_and(|x| Rc::ptr_eq(&x, &old))
+                .is_some_and(|x| Arc::ptr_eq(&x, &old))
             {
-                if std::rc::Rc::strong_count(&old) == 1 {
+                if std::sync::Arc::strong_count(&old) == 1 {
                     // Only the popped pin held the doc: dropping `old` at
                     // the end of this scope frees the DOM — claim the slot
                     // dead and recycle it (E9 freed-slot list).
@@ -1681,7 +1681,7 @@ fn elem_repr(o: &Gc<PyObject>, doc: &LxDoc, idx: usize) -> String {
     } else {
         "Element"
     };
-    let addr = std::rc::Rc::as_ptr(o) as usize;
+    let addr = std::sync::Arc::as_ptr(o) as usize;
     format!("<{} {} at {:#x}>", cls, doc.get(idx).tag, addr)
 }
 
@@ -2907,7 +2907,7 @@ pub fn call_elem(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Op
 }
 
 fn css_to_xpath_via_bridge(
-    interp: &Rc<crate::frame::Interpreter>,
+    interp: &Arc<crate::frame::Interpreter>,
     css: &str,
 ) -> Result<String, Flow> {
     // Import cssselect and call HTMLTranslator().css_to_xpath(css).
@@ -2983,7 +2983,7 @@ fn urljoin_simple(base: &str, href: &str) -> String {
 ///    the marker dies, it dies with the object graph (no registry pin).
 struct XPathRow {
     query: String,
-    marker: std::rc::Weak<PyObject>,
+    marker: std::sync::Weak<PyObject>,
 }
 
 static XPATH_OBJECTS: std::sync::LazyLock<
@@ -3027,7 +3027,7 @@ pub fn make_xpath_object(query: String, namespaces: Option<Value>) -> Value {
             id,
             XPathRow {
                 query,
-                marker: Rc::downgrade(&o),
+                marker: Arc::downgrade(&o),
             },
         );
         // Soft cap: prune dead rows when the table grows past 256
