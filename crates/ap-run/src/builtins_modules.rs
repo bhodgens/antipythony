@@ -504,11 +504,19 @@ impl NativeIterState {
 
 thread_local! {
     static NAMED_CALLABLES: RefCell<HashMap<String, Value>> = RefCell::new(HashMap::new());
-    static NAMED_COUNTER: Cell<u64> = const { Cell::new(0) };
     static CURRENT: RefCell<Option<Rc<crate::frame::Interpreter>>> =
         const { RefCell::new(None) };
-    static NEXT_ITER: Cell<u64> = const { Cell::new(0x5000_0000_0000_0000) };
 }
+
+// 02.09a P1-rest (docs/0209-object-state-audit.md punch-list P1): the id
+// minters were thread-local Cells — two threads minting concurrently handed
+// out COLLIDING ids (the NEXT_FIBER->PENDING_GEN_ERROR key aliasing is the
+// audit's named bug). They are process-atomic now; fetch_add is
+// behavior-identical under the GIL (accesses were serialized) and
+// process-unique once ids cross threads.
+static NAMED_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static NEXT_ITER: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0x5000_0000_0000_0000);
 
 /// Public wrapper for parser hooks (parse_float etc).
 pub fn callable_name_pub(v: &Value) -> Result<String, Flow> {
@@ -570,11 +578,7 @@ fn name_callable(v: &Value) -> String {
             return name;
         }
     }
-    let id = NAMED_COUNTER.with(|c| {
-        let n = c.get() + 1;
-        c.set(n);
-        n
-    });
+    let id = NAMED_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
     let name = format!("<ap-named-{id}>");
     NAMED_CALLABLES.with(|t| {
         t.borrow_mut().insert(name.clone(), v.clone());
@@ -659,11 +663,7 @@ pub fn set_current_interp(interp: &Rc<crate::frame::Interpreter>) {
 pub(crate) fn make_iter(state: NativeIterState) -> Value {
     let obj = PyObject::new(ap_obj::ObjKind::Iterator, "iterator");
     let it = crate::iter::PyIterator::new(crate::iter::IterState::Native(Box::new(state)));
-    let id = NEXT_ITER.with(|c| {
-        let n = c.get();
-        c.set(n + 1);
-        n
-    });
+    let id = NEXT_ITER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     if let Some(interp) = CURRENT.with(|c| c.borrow().clone()) {
         // Fence-perf fix 2026-11-06: tag the handle so its Drop prunes this
         // table entry (same F5 contract as register_shared_iter_pub). Untagged
@@ -5126,10 +5126,13 @@ pub fn sort_by_cmp_wrappers(wrapped: &[(Value, Value)]) -> Option<Result<Vec<Val
     Some(result.map(|_| out.into_iter().map(|(_, v)| v).collect()))
 }
 
+// 02.09a P1-rest: id minter process-atomic (was thread-local Cell —
+// concurrent threads minted colliding singledispatch wrapper ids).
+static SD_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 thread_local! {
     /// s013: singledispatch registries keyed by the `_sd_<id>` marker id.
     static SD_REGISTRY: RefCell<HashMap<String, SdRegistry>> = RefCell::new(HashMap::new());
-    static SD_COUNTER: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     /// s014: maxsize/typed parked between the two-stage lru_cache calls.
     static LRU_PENDING: RefCell<Option<(Option<i64>, bool)>> = const { RefCell::new(None) };
 }
@@ -5313,11 +5316,7 @@ pub fn call_functools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
                         ) {
                             let id = format!(
                                 "{}",
-                                SD_COUNTER.with(|c| {
-                                    let n = c.get();
-                                    c.set(n + 1);
-                                    n
-                                })
+                                SD_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                             );
                             SD_REGISTRY.with(|t| {
                                 t.borrow_mut().insert(
@@ -13515,11 +13514,7 @@ pub(crate) fn lru_wrapper_of(f: &Value) -> Value {
 pub(crate) fn lru_wrapper_of_typed(f: &Value, maxsize: Option<i64>, typed: bool) -> Value {
     let id = format!(
         "_lruwrapper_{}",
-        SD_COUNTER.with(|c| {
-            let n = c.get();
-            c.set(n + 1);
-            n
-        })
+        SD_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     );
     LRU_STATE.with(|t| {
         t.borrow_mut().insert(

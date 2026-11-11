@@ -89,8 +89,12 @@ thread_local! {
     static PARKED: RefCell<Vec<(u64, *const FiberYielder)>> = const { RefCell::new(Vec::new()) };
     /// The fiber id whose body is executing on this stack segment.
     static CURRENT: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
-    static NEXT_FIBER: std::cell::Cell<u64> = const { std::cell::Cell::new(1) };
 }
+
+// 02.09a P1-rest: fiber-id minter process-atomic (was thread-local Cell —
+// colliding fiber ids across threads aliased PENDING_GEN_ERROR keys,
+// interp.rs:7556 — the audit's named cross-thread id-aliasing bug).
+static NEXT_FIBER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// Run the fiber body with its identity established as the ACTIVE top.
 /// The fiber id of the generator body CURRENTLY executing on this
@@ -772,11 +776,7 @@ pub fn make_fiber(
     args: Vec<Value>,
     kwargs: Vec<(String, Value)>,
 ) -> GenFiber {
-    let fiber_id = NEXT_FIBER.with(|n| {
-        let id = n.get();
-        n.set(id + 1);
-        id
-    });
+    let fiber_id = NEXT_FIBER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let stack = PooledStack::new(gen_stack_size()).expect("generator fiber stack");
     Coroutine::with_stack(stack, move |y, _first_input| {
         let yptr: *const FiberYielder = y;
