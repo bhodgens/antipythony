@@ -31,11 +31,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use ap_obj::PyObject;
 use ap_obj::value::Value;
+use ap_obj::PyObject;
 
 use crate::builtins_modules::{i as vi, raise, s as vs, tuple as vtuple};
-use crate::sre_tables::{DIGIT_RANGES, SPACE_RANGES, WORD_RANGES, in_ranges};
+use crate::sre_tables::{in_ranges, DIGIT_RANGES, SPACE_RANGES, WORD_RANGES};
 
 // ===========================================================================
 // Flags (values match re._constants SRE_FLAG_*)
@@ -2070,7 +2070,7 @@ pub(crate) fn pattern_object(compiled: Compiled) -> Value {
     let key = compiled_identity(&o);
     let pat_rc: PatRc = Arc::new(PatBox { compiled });
     {
-        let a = o.attrs.borrow_mut();
+        let a = o.attrs.lock().unwrap_or_else(|p| p.into_inner());
         let _ = a.set(vs("pattern"), vs(pat_rc.compiled.pattern.clone()));
         let _ = a.set(vs("flags"), vi(pat_rc.compiled.flags as i64));
         let _ = a.set(vs("groups"), vi(pat_rc.compiled.groups as i64));
@@ -2080,7 +2080,7 @@ pub(crate) fn pattern_object(compiled: Compiled) -> Value {
         }
         let _ = a.set(vs("groupindex"), Value::Dict(gd));
     }
-    *o.repr_text.borrow_mut() = Some(pattern_repr(&pat_rc.compiled));
+    *o.repr_text.lock().unwrap_or_else(|p| p.into_inner()) = Some(pattern_repr(&pat_rc.compiled));
     pat_table_insert(key, pat_rc);
     Value::Obj(o)
 }
@@ -2313,7 +2313,7 @@ pub(crate) fn match_object(mb: Arc<MatchBox>) -> Value {
     let key = compiled_identity(&o);
     let repr = match_repr(&mb);
     match_table_insert(key, mb);
-    *o.repr_text.borrow_mut() = Some(repr);
+    *o.repr_text.lock().unwrap_or_else(|p| p.into_inner()) = Some(repr);
     Value::Obj(o)
 }
 
@@ -2764,7 +2764,7 @@ pub(crate) fn pattern_object_patbox(pat: PatRc) -> Value {
     let o = PyObject::new(ap_obj::ObjKind::Opaque, "re.Pattern");
     let key = compiled_identity(&o);
     {
-        let a = o.attrs.borrow_mut();
+        let a = o.attrs.lock().unwrap_or_else(|p| p.into_inner());
         let _ = a.set(vs("pattern"), vs(pat.compiled.pattern.clone()));
         let _ = a.set(vs("flags"), vi(pat.compiled.flags as i64));
         let _ = a.set(vs("groups"), vi(pat.compiled.groups as i64));
@@ -2774,7 +2774,7 @@ pub(crate) fn pattern_object_patbox(pat: PatRc) -> Value {
         }
         let _ = a.set(vs("groupindex"), Value::Dict(gd));
     }
-    *o.repr_text.borrow_mut() = Some(pattern_repr(&pat.compiled));
+    *o.repr_text.lock().unwrap_or_else(|p| p.into_inner()) = Some(pattern_repr(&pat.compiled));
     pat_table_insert(key, pat);
     Value::Obj(o)
 }

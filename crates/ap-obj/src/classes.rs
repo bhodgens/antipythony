@@ -24,6 +24,7 @@ use crate::object::PyObject;
 use crate::value::Value;
 use std::cell::RefCell;
 use std::sync::Arc;
+use std::sync::Mutex;
 
 /// Per-class flags.
 #[derive(Debug, Clone, Default)]
@@ -382,7 +383,7 @@ pub enum DescrKind {
 /// directions (payload -> Value back-pointer, Value -> payload).
 pub fn make_class_value(type_ref: Arc<TypeRef>) -> Value {
     let o = PyObject::new(crate::ObjKind::UserClass, type_ref.name.clone());
-    *o.class_ref.borrow_mut() = Some(type_ref.clone());
+    *o.class_ref.lock().unwrap_or_else(|p| p.into_inner()) = Some(type_ref.clone());
     let v = Value::Obj(o);
     *type_ref.class_value.borrow_mut() = Some(v.clone());
     v

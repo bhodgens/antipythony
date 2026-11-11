@@ -40,10 +40,15 @@ pub(crate) fn call_struct(name: &str, args: &[Value]) -> Option<crate::builtins_
     // Opaque self (attrs `<fmt>`) first.
     let (fmt, rest): (String, &[Value]) = match args.first() {
         Some(Value::Obj(o)) if o.name == "struct.Struct" => {
-            let f = o.attrs.borrow().get(&s("<fmt>")).and_then(|v| match v {
-                Value::Str(x) => Some(x.as_str().to_string()),
-                _ => None,
-            });
+            let f = o
+                .attrs
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(&s("<fmt>"))
+                .and_then(|v| match v {
+                    Value::Str(x) => Some(x.as_str().to_string()),
+                    _ => None,
+                });
             match f {
                 Some(f) => (f, &args[1..]),
                 None => return None,
@@ -92,7 +97,12 @@ pub(crate) fn call_struct(name: &str, args: &[Value]) -> Option<crate::builtins_
                     ));
                 }
                 if let Value::Obj(bo) = buf {
-                    if let Some(Value::List(l)) = bo.attrs.borrow().get(&s("<data>")) {
+                    if let Some(Value::List(l)) = bo
+                        .attrs
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .get(&s("<data>"))
+                    {
                         while l.len() < off + packed.len() {
                             l.append(Value::Int(ap_obj::Int::from_i64(0)));
                         }
@@ -163,7 +173,12 @@ fn buffer_bytes(buf: &Value) -> BResultV<Vec<u8>> {
     match buf {
         Value::Bytes(b) => Ok(b.iter().cloned().collect()),
         Value::Obj(o) => {
-            if let Some(Value::List(l)) = o.attrs.borrow().get(&s("<data>")) {
+            if let Some(Value::List(l)) = o
+                .attrs
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(&s("<data>"))
+            {
                 let mut out = Vec::new();
                 for it in l.items().iter() {
                     if let Value::Int(n) = it {
@@ -438,7 +453,7 @@ pub(crate) fn struct_ctor(args: &[Value]) -> Option<crate::builtins_modules::BRe
     };
     let o = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "struct.Struct");
     {
-        let attrs = o.attrs.borrow_mut();
+        let attrs = o.attrs.lock().unwrap_or_else(|p| p.into_inner());
         let _ = attrs.set(s("<fmt>"), Value::Str(PyString::new(fmt)));
     }
     Some(Ok(Value::Obj(o)))
@@ -452,14 +467,19 @@ pub(crate) fn struct_attr(obj: &Value, name: &str) -> Option<Value> {
                     format!("struct.{name}")
                 }
                 "format" => {
-                    let fmt = o.attrs.borrow().get(&s("<fmt>"));
+                    let fmt = o
+                        .attrs
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .get(&s("<fmt>"));
                     return Some(fmt.unwrap_or(Value::None));
                 }
                 "size" => {
                     // s036: Struct(fmt).size = calcsize(fmt).
                     let sz = o
                         .attrs
-                        .borrow()
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
                         .get(&s("<fmt>"))
                         .and_then(|v| match v {
                             Value::Str(x) => Some(x.as_str().to_string()),

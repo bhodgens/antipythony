@@ -1704,7 +1704,7 @@ fn elem_parts(v: &Value) -> Option<(SharedDoc, usize, bool)> {
         if o.kind == ap_obj::ObjKind::Opaque
             && (o.name == "lxml.etree._Element" || o.name == "lxml.html.HtmlElement")
         {
-            let attrs = o.attrs.borrow();
+            let attrs = o.attrs.lock().unwrap_or_else(|p| p.into_inner());
             let doc_id = attrs
                 .get(&s("<doc_id>"))
                 .and_then(|v| v.as_int())?
@@ -1732,7 +1732,7 @@ fn make_element(doc_id: usize, idx: usize, html: bool) -> Value {
     };
     let o = PyObject::new(ap_obj::ObjKind::Opaque, name);
     {
-        let a = o.attrs.borrow_mut();
+        let a = o.attrs.lock().unwrap_or_else(|p| p.into_inner());
         let _ = a.set(s("<doc_id>"), i(doc_id as i64));
         let _ = a.set(s("<idx>"), i(idx as i64));
     }
@@ -1927,11 +1927,16 @@ pub fn build_etree(_i: &crate::frame::Interpreter) -> Value {
     // — plain Type marker whose attribute reads resolve in the call layer.
     let et = PyObject::new(ap_obj::ObjKind::Namespace, "ErrorTypes");
     {
-        let a = et.attrs.borrow_mut();
+        let a = et.attrs.lock().unwrap_or_else(|p| p.into_inner());
         ERROR_TYPES_FOR_EACH(|name, code| {
             let member = PyObject::new(ap_obj::ObjKind::Opaque, format!("ErrorTypes.{name}"));
-            *member.repr_text.borrow_mut() = Some(format!("<ErrorTypes.{name}: {code}>"));
-            let _ = member.attrs.borrow_mut().set(s("<int_value>"), i(code));
+            *member.repr_text.lock().unwrap_or_else(|p| p.into_inner()) =
+                Some(format!("<ErrorTypes.{name}: {code}>"));
+            let _ = member
+                .attrs
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .set(s("<int_value>"), i(code));
             let _ = a.set(s(name), Value::Obj(member));
         });
     }
@@ -2373,7 +2378,8 @@ fn doc_id_of(v: &Value) -> usize {
         {
             return o
                 .attrs
-                .borrow()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
                 .get(&s("<doc_id>"))
                 .and_then(|x| x.as_int())
                 .and_then(|n| n.to_i64())
@@ -2615,7 +2621,8 @@ pub fn elem_attr(obj: &Value, name: &str) -> Option<Value> {
         if methods.contains(&name) {
             let full = format!("__ap_lxml__.{name}");
             let bm = PyObject::with_self(ap_obj::ObjKind::BoundMethod, full.clone(), obj.clone());
-            *bm.func.borrow_mut() = Some(crate::builtins_modules::marker(&full));
+            *bm.func.lock().unwrap_or_else(|p| p.into_inner()) =
+                Some(crate::builtins_modules::marker(&full));
             return Some(Value::Obj(bm));
         }
     }
@@ -3081,7 +3088,7 @@ pub fn make_xpath_object(query: String, namespaces: Option<Value>) -> Value {
         // (call_xpath_object) works without the registry; the registry row
         // exists only because the marker call arm sees the NAME, not the
         // object.
-        let a = o.attrs.borrow_mut();
+        let a = o.attrs.lock().unwrap_or_else(|p| p.into_inner());
         let _ = a.set(s("<query>"), s(query.clone()));
         let _ = a.set(s("<namespaces>"), namespaces.unwrap_or(Value::None));
     }
@@ -3127,10 +3134,15 @@ pub fn call_xpath_object(
     args: &[Value],
     _kwargs: &[(String, Value)],
 ) -> Option<BResult> {
-    let query = o.attrs.borrow().get(&s("<query>")).and_then(|v| match v {
-        Value::Str(x) => Some(x.as_str().to_string()),
-        _ => None,
-    })?;
+    let query = o
+        .attrs
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(&s("<query>"))
+        .and_then(|v| match v {
+            Value::Str(x) => Some(x.as_str().to_string()),
+            _ => None,
+        })?;
     let recv = args.first()?.clone();
     let (doc, idx, html) = elem_parts(&recv)?;
     let doc_id = doc_id_of(&recv);

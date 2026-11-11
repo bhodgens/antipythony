@@ -8,6 +8,7 @@
 //! `Value::Obj(ObjKind::Iterator)` is the opaque handle.
 
 use std::cell::RefCell;
+use std::sync::Mutex;
 
 use crate::exc_hier::ExceptionValue;
 use crate::Flow;
@@ -51,7 +52,9 @@ pub enum IterState {
 
 /// A materialized iterator.
 pub struct PyIterator {
-    pub state: std::cell::RefCell<IterState>,
+    /// 02.09b P7 (decision 2): Mutex — iterators legally cross threads
+    /// (queue/T103); next() state is interior-mutable shared state.
+    pub state: Mutex<IterState>,
     /// G1/F5 (oom-bughunt 2026-11-06): the registered table id this
     /// iterator was inserted under (None for unregistered/anon handles).
     /// On Drop, the id lands in DEAD_ITER_IDS for the next registry prune —
@@ -103,7 +106,7 @@ pub fn queue_dead_iter_id(id: u64) {
 impl PyIterator {
     pub fn new(state: IterState) -> Gc<PyIterator> {
         Gc::new(PyIterator {
-            state: std::cell::RefCell::new(state),
+            state: Mutex::new(state),
             table_id: std::cell::Cell::new(None),
         })
     }
@@ -139,7 +142,7 @@ impl PyIterator {
             }
             Value::Obj(o) => match o.kind {
                 ap_obj::ObjKind::Range => {
-                    let ints = o.ints.borrow();
+                    let ints = o.ints.lock().unwrap_or_else(|p| p.into_inner());
                     let (start, stop, step) = (ints[0], ints[1], ints[2]);
                     Ok(PyIterator::new(IterState::Range {
                         cur: start,
@@ -150,7 +153,11 @@ impl PyIterator {
                 }
                 ap_obj::ObjKind::Iterator => {
                     // Iterating an iterator returns itself.
-                    let existing = o.gen_id.borrow().map(|_| ());
+                    let existing = o
+                        .gen_id
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .map(|_| ());
                     let _ = existing;
                     // Reconstruct: iterators store their own id in gen_id.
                     Err(ExceptionValue::msg(
@@ -183,7 +190,7 @@ impl PyIterator {
 
     /// Pull the next value: None = exhausted.
     pub fn next(&self) -> Option<Value> {
-        let mut st = self.state.borrow_mut();
+        let mut st = self.state.lock().unwrap_or_else(|p| p.into_inner());
         let out = match &mut *st {
             IterState::Seq(items, cur) => {
                 if *cur < items.len() {

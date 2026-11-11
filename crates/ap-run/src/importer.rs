@@ -23,15 +23,15 @@
 
 use std::sync::Arc;
 
-use ap_obj::PyObject;
 use ap_obj::dict::PyDict;
 use ap_obj::int::Gc;
 use ap_obj::value::{PyString, Value};
+use ap_obj::PyObject;
 
 use crate::exc_hier::ExceptionValue;
 use crate::frame::{FnEntry, Frame, Interpreter};
-use crate::interp::{FnRegistry, exec_block};
-use crate::{Flow, builtins, builtins_modules};
+use crate::interp::{exec_block, FnRegistry};
+use crate::{builtins, builtins_modules, Flow};
 
 type EResult = Result<Value, Flow>;
 
@@ -542,7 +542,8 @@ fn load_into(
                 let id = reg.by_path_lookup(&f.name).unwrap_or(0);
                 interp
                     .defining_frames
-                    .borrow_mut()
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
                     .insert(id, frame.clone());
                 stmts.push(ap_ir::Stmt::LocalDef(Box::new(f.clone())));
             }
@@ -592,8 +593,13 @@ pub fn import_module(interp: &Arc<Interpreter>, name: &str) -> EResult {
     // emptied the CALLER's staged __init__ context. Snapshot and restore the
     // stack around the whole import so the enclosing method's context survives
     // anything the imported module does.
-    let saved_super: Vec<(std::sync::Arc<ap_obj::classes::TypeRef>, Value, bool)> =
-        interp.super_stack.borrow().iter().cloned().collect();
+    let saved_super: Vec<(std::sync::Arc<ap_obj::classes::TypeRef>, Value, bool)> = interp
+        .super_stack
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .iter()
+        .cloned()
+        .collect();
     let _super_guard = SuperStackGuard {
         interp: std::sync::Arc::downgrade(interp),
         saved: saved_super,
@@ -626,7 +632,8 @@ pub fn import_module(interp: &Arc<Interpreter>, name: &str) -> EResult {
             // importlib/_bootstrap and globals-echo paths read it).
             if sys_modules_get("__main__").is_none() {
                 let m = ap_obj::PyObject::new(ap_obj::ObjKind::Module, "__main__");
-                *m.module_ns.borrow_mut() = Some(interp.globals.clone());
+                *m.module_ns.lock().unwrap_or_else(|p| p.into_inner()) =
+                    Some(interp.globals.clone());
                 let _ = interp.globals.set(
                     Value::Str(PyString::new("__name__")),
                     Value::Str(PyString::new("__main__")),
@@ -647,7 +654,7 @@ struct SuperStackGuard {
 impl Drop for SuperStackGuard {
     fn drop(&mut self) {
         if let Some(rc) = self.interp.upgrade() {
-            let mut st = rc.super_stack.borrow_mut();
+            let mut st = rc.super_stack.lock().unwrap_or_else(|p| p.into_inner());
             if st.len() != self.saved.len() {
                 st.clear();
                 for entry in self.saved.drain(..) {
@@ -717,7 +724,8 @@ pub fn import_module_inner(interp: &Arc<Interpreter>, name: &str) -> EResult {
                         // module_ns SHARES loaded.ns (not a snapshot).
                         let m = PyObject::new(ap_obj::ObjKind::Module, name);
                         let mv = Value::Obj(m.clone());
-                        *m.module_ns.borrow_mut() = Some(loaded.ns.clone());
+                        *m.module_ns.lock().unwrap_or_else(|p| p.into_inner()) =
+                            Some(loaded.ns.clone());
                         sys_modules_insert(name, &mv);
                         let stmts = module_stmts(interp, &compiled, &loaded.reg, &loaded.frame);
                         let outcome = run_loaded(interp, &loaded, &stmts);
@@ -725,7 +733,8 @@ pub fn import_module_inner(interp: &Arc<Interpreter>, name: &str) -> EResult {
                         // exec_compiled) and drop the partial module on a
                         // failed body so the native/next-base fallback
                         // re-imports cleanly.
-                        *m.module_ns.borrow_mut() = Some(loaded.ns.clone());
+                        *m.module_ns.lock().unwrap_or_else(|p| p.into_inner()) =
+                            Some(loaded.ns.clone());
                         if outcome.is_ok() {
                             return Ok(mv);
                         }
@@ -778,7 +787,8 @@ pub fn import_module_inner(interp: &Arc<Interpreter>, name: &str) -> EResult {
                             for (k, v) in loaded.ns.items() {
                                 let _ = mns.set(k, v);
                             }
-                            *m.module_ns.borrow_mut() = Some(std::sync::Arc::new((*mns).clone()));
+                            *m.module_ns.lock().unwrap_or_else(|p| p.into_inner()) =
+                                Some(std::sync::Arc::new((*mns).clone()));
                             let mv = Value::Obj(m);
                             link_parent_attr(name, &mv);
                             sys_modules_insert(name, &mv);
@@ -857,7 +867,8 @@ pub fn import_module_inner(interp: &Arc<Interpreter>, name: &str) -> EResult {
                 if let (Some(Value::Obj(frozen_m)), Some(Value::Obj(ext_m))) = (frozen, ext) {
                     let install = ext_m
                         .module_ns
-                        .borrow()
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
                         .as_ref()
                         .and_then(|ns| ns.get(&s("_install")));
                     if let Some(install) = install {
@@ -965,7 +976,7 @@ pub(crate) fn import_file_module(interp: &Arc<Interpreter>, name: &str) -> EResu
             if let (Some((parent_name, child_name)), Value::Obj(_po)) = (full.rsplit_once('.'), &m)
             {
                 if let Some(Value::Obj(pp)) = sys_modules_get(parent_name) {
-                    if let Some(pns) = &*pp.module_ns.borrow_mut() {
+                    if let Some(pns) = &*pp.module_ns.lock().unwrap_or_else(|p| p.into_inner()) {
                         let _ = pns.set(s(child_name), m.clone());
                     }
                 }
@@ -1048,17 +1059,21 @@ pub(crate) fn import_file_module(interp: &Arc<Interpreter>, name: &str) -> EResu
                     if let Some(Value::Obj(pp)) = sys_modules_get(pname) {
                         let attr = pp
                             .module_ns
-                            .borrow()
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
                             .as_ref()
                             .and_then(|ns| ns.get(&s(part.to_string())));
                         if let Some(Value::Obj(am)) = attr {
                             let is_module = am.kind == ap_obj::ObjKind::Module
                                 || am
                                     .type_ref
-                                    .borrow()
+                                    .lock()
+                                    .unwrap_or_else(|p| p.into_inner())
                                     .as_ref()
                                     .and_then(|tr| tr.upgrade())
-                                    .map(|tr| tr.mro.lock().unwrap().iter().any(|m| m.name == "module"))
+                                    .map(|tr| {
+                                        tr.mro.lock().unwrap().iter().any(|m| m.name == "module")
+                                    })
                                     .unwrap_or(false);
                             if is_module {
                                 let mv = Value::Obj(am);
@@ -1095,15 +1110,17 @@ pub(crate) fn import_file_module(interp: &Arc<Interpreter>, name: &str) -> EResu
         // (import a.b makes a.b reachable as a.b after `import a.b`).
         if let (Some((parent_name, child_name)), Value::Obj(_po)) = (full.rsplit_once('.'), &m) {
             if let Some(Value::Obj(pp)) = sys_modules_get(parent_name) {
-                // W112: try_borrow_mut — a re-entrant import (module body
-                // importing a sibling while the parent link is already
-                // held) panics the whole run on a plain borrow_mut; the
-                // link is idempotent so skipping a contended write is
-                // safe (the winner sets the same value).
-                if let Ok(pns_ref) = pp.module_ns.try_borrow_mut() {
-                    if let Some(pns) = &*pns_ref {
-                        let _ = pns.set(s(child_name), m.clone());
-                    }
+                // W112: the contended-write skip was a RefCell-era guard
+                // (a re-entrant import would panic on a plain borrow).
+                // 02.09b P7: Mutex — plain lock; the link is idempotent and
+                // the parent link write is now serialized, not skipped.
+                let pns_opt = pp
+                    .module_ns
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone();
+                if let Some(pns) = pns_opt {
+                    let _ = pns.set(s(child_name), m.clone());
                 }
             }
         }
@@ -1122,14 +1139,14 @@ pub(crate) fn import_file_module(interp: &Arc<Interpreter>, name: &str) -> EResu
 /// CPython behavior our probe pins (files(...) is a PosixPath, not callable).
 fn attach_module_spec(name: &str) {
     if let Some(Value::Obj(m)) = sys_modules_get(name) {
-        if let Some(ns) = &*m.module_ns.borrow_mut() {
+        if let Some(ns) = &*m.module_ns.lock().unwrap_or_else(|p| p.into_inner()) {
             if ns.get(&s("__spec__")).is_some() {
                 return;
             }
         }
         let spec = PyObject::new(ap_obj::ObjKind::Namespace, "ModuleSpec");
         {
-            let attrs = spec.attrs.borrow_mut();
+            let attrs = spec.attrs.lock().unwrap_or_else(|p| p.into_inner());
             let _ = attrs.set(s("name"), s(name));
             let _ = attrs.set(s("origin"), Value::None);
         }
@@ -1141,35 +1158,45 @@ fn attach_module_spec(name: &str) {
             let loader = PyObject::new(ap_obj::ObjKind::Namespace, "SourceFileLoader");
             let reader = PyObject::new(ap_obj::ObjKind::Namespace, "ResourceReader");
             if let Some(Value::List(pl)) = {
-                let b = m.module_ns.borrow();
+                let b = m.module_ns.lock().unwrap_or_else(|p| p.into_inner());
                 b.as_ref().and_then(|ns| ns.get(&s("__path__")))
             } {
                 if let Some(Value::Str(pdir)) = pl.items().first() {
                     let files_fn =
                         PyObject::new(ap_obj::ObjKind::BuiltinFn, "__ap_resreader__.files");
-                    *files_fn.slice_parts.borrow_mut() = vec![s(pdir.as_str().to_string())];
+                    *files_fn
+                        .slice_parts
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner()) = vec![s(pdir.as_str().to_string())];
                     let _ = reader
                         .attrs
-                        .borrow_mut()
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
                         .set(s("files"), Value::Obj(files_fn));
                     let get_rr = PyObject::new(
                         ap_obj::ObjKind::BuiltinFn,
                         "__ap_loader__.get_resource_reader",
                     );
-                    *get_rr.slice_parts.borrow_mut() = vec![Value::Obj(reader.clone())];
+                    *get_rr.slice_parts.lock().unwrap_or_else(|p| p.into_inner()) =
+                        vec![Value::Obj(reader.clone())];
                     let _ = loader
                         .attrs
-                        .borrow_mut()
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
                         .set(s("get_resource_reader"), Value::Obj(get_rr));
-                    let _ = spec.attrs.borrow_mut().set(s("loader"), Value::Obj(loader));
+                    let _ = spec
+                        .attrs
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .set(s("loader"), Value::Obj(loader));
                 }
             }
         }
         let sv = Value::Obj(spec.clone());
-        if let Some(ns) = &*m.module_ns.borrow_mut() {
+        if let Some(ns) = &*m.module_ns.lock().unwrap_or_else(|p| p.into_inner()) {
             if let Some(Value::List(pl)) = ns.get(&s("__path__")) {
                 if let Some(Value::Str(p)) = pl.items().first() {
-                    let _ = spec.attrs.borrow_mut().set(
+                    let _ = spec.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
                         s("submodule_search_locations"),
                         Value::List(ap_obj::value::PyList::from_vec(vec![s(p
                             .as_str()
@@ -1178,7 +1205,7 @@ fn attach_module_spec(name: &str) {
                 }
             }
         }
-        if let Some(ns) = &*m.module_ns.borrow_mut() {
+        if let Some(ns) = &*m.module_ns.lock().unwrap_or_else(|p| p.into_inner()) {
             let _ = ns.set(s("__spec__"), sv);
         }
     }
@@ -1196,7 +1223,7 @@ fn attach_native_vendored_path(m: &Value) {
     if o.kind != ap_obj::ObjKind::Module {
         return;
     }
-    let Some(ns) = &*o.module_ns.borrow() else {
+    let Some(ns) = &*o.module_ns.lock().unwrap_or_else(|p| p.into_inner()) else {
         return;
     };
     let Some(Value::Str(name)) = ns.get(&s("__name__")) else {
@@ -1227,7 +1254,7 @@ fn attach_native_vendored_path(m: &Value) {
 /// Extract `[pkg_dir]` from a module value's `__path__` (packages only).
 fn module_path_dir(m: &Value) -> Option<String> {
     if let Value::Obj(o) = m {
-        let ns = o.module_ns.borrow();
+        let ns = o.module_ns.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(ns) = &*ns {
             let pv = ns.get(&s("__path__"))?;
             if let Value::List(l) = pv {
@@ -1267,7 +1294,8 @@ fn exec_found(interp: &Arc<Interpreter>, name: &str, found: &Found) -> Result<()
             );
             let _ = ns.set(s("__doc__"), Value::None);
             let v = Value::Obj(m.clone());
-            *m.module_ns.borrow_mut() = Some(std::sync::Arc::new((*ns).clone()));
+            *m.module_ns.lock().unwrap_or_else(|p| p.into_inner()) =
+                Some(std::sync::Arc::new((*ns).clone()));
             sys_modules_insert(name, &v);
             Ok(())
         }
@@ -1294,7 +1322,7 @@ fn exec_compiled(
     // self-referential reads (warnings.py: `_wm = sys.modules[__name__]`,
     // then `_wm.filterwarnings`) an EMPTY snapshot; sys is a PyDict clone so
     // the clone never sees body writes.
-    *m.module_ns.borrow_mut() = Some(loaded.ns.clone());
+    *m.module_ns.lock().unwrap_or_else(|p| p.into_inner()) = Some(loaded.ns.clone());
     if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::ModDbg) {
         eprintln!(
             "[EXECDBG] {} ns_ptr={:p} frame_g={:p}",
@@ -1316,7 +1344,7 @@ fn exec_compiled(
     let outcome = run_loaded(interp, &loaded, &stmts);
     // Refresh the module's namespace view after body execution (the module
     // stores a by-value PyDict; body writes landed in `loaded.ns`).
-    *m.module_ns.borrow_mut() = Some(loaded.ns.clone());
+    *m.module_ns.lock().unwrap_or_else(|p| p.into_inner()) = Some(loaded.ns.clone());
     if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::ModDbg)
         && name == "_py_warnings"
     {
@@ -1374,7 +1402,8 @@ fn module_stmts(
                 let id = reg.by_path_lookup(&f.name).unwrap_or(0);
                 interp
                     .defining_frames
-                    .borrow_mut()
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
                     .insert(id, frame.clone());
                 // T1-d: pre-create the fn's CELL storage on the module
                 // frame — nested defs wire their free vars from
@@ -1414,7 +1443,7 @@ fn module_stmts(
 /// Attach `sys.path` / `sys.modules` onto the sys module namespace.
 pub fn attach_sys_extras(_interp: &Arc<Interpreter>, sys_m: &Value) {
     if let Value::Obj(o) = sys_m {
-        let mut ns_ref = o.module_ns.borrow_mut();
+        let mut ns_ref = o.module_ns.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(ns) = &mut *ns_ref {
             let _ = ns.set(s("path"), sys_path_value());
             let view = match ns.get(&s("modules")) {
@@ -1570,13 +1599,15 @@ pub fn import_from_module(
                     if let Value::Obj(o) = mv {
                         let n = o
                             .module_ns
-                            .borrow()
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
                             .as_ref()
                             .map(|ns| ns.items().len())
                             .unwrap_or(usize::MAX);
                         let keys = o
                             .module_ns
-                            .borrow()
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
                             .as_ref()
                             .map(|ns| {
                                 ns.items()
@@ -1609,7 +1640,7 @@ pub fn import_from_module(
 /// Attribute read on a module value (module_ns dict), native modules included.
 fn attr_on_module(_interp: &Arc<Interpreter>, mv: &Value, name: &str) -> Option<Value> {
     if let Value::Obj(o) = mv {
-        let ns = o.module_ns.borrow();
+        let ns = o.module_ns.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(ns) = &*ns {
             return ns.get(&s(name));
         }
@@ -1620,7 +1651,7 @@ fn attr_on_module(_interp: &Arc<Interpreter>, mv: &Value, name: &str) -> Option<
 /// `__file__` of a module value (CPython error messages include the file).
 fn module_file_repr(mv: &Value) -> Option<String> {
     if let Value::Obj(o) = mv {
-        let ns = o.module_ns.borrow();
+        let ns = o.module_ns.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(ns) = &*ns {
             if let Some(Value::Str(f)) = ns.get(&s("__file__")) {
                 return Some(f.as_str().to_string());
@@ -1655,7 +1686,7 @@ fn _fn_entry_parity(_e: FnEntry) {}
 pub fn import_star(_interp: &Arc<Interpreter>, frame: &Arc<Frame>, mv: &Value) -> Result<(), Flow> {
     let names: Vec<String> = match mv {
         Value::Obj(o) => {
-            let ns = o.module_ns.borrow();
+            let ns = o.module_ns.lock().unwrap_or_else(|p| p.into_inner());
             match &*ns {
                 Some(ns) => ns
                     .keys()
@@ -1692,7 +1723,8 @@ fn builtins_module(interp: &Arc<Interpreter>) -> Value {
     }
     let _ = ns.set(s("__name__"), s("builtins"));
     let _ = ns.set(s("__doc__"), Value::None);
-    *m.module_ns.borrow_mut() = Some(std::sync::Arc::new((*ns).clone()));
+    *m.module_ns.lock().unwrap_or_else(|p| p.into_inner()) =
+        Some(std::sync::Arc::new((*ns).clone()));
     Value::Obj(m)
 }
 
@@ -1735,7 +1767,8 @@ fn thread_stub_module(interp: &crate::frame::Interpreter) -> Value {
     let lock_class_value = ap_obj::classes::make_class_value(lock_type);
     let _ = ns.set(s("RLock"), lock_class_value.clone());
     let _ = ns.set(s("allocate_lock"), lock_class_value);
-    *m.module_ns.borrow_mut() = Some(std::sync::Arc::new((*ns).clone()));
+    *m.module_ns.lock().unwrap_or_else(|p| p.into_inner()) =
+        Some(std::sync::Arc::new((*ns).clone()));
     Value::Obj(m)
 }
 
@@ -1766,7 +1799,8 @@ fn weakref_stub_module() -> Value {
     for t in ["CallableProxyType", "ProxyType", "ReferenceType"] {
         let _ = ns.set(s(t), s(t));
     }
-    *m.module_ns.borrow_mut() = Some(std::sync::Arc::new((*ns).clone()));
+    *m.module_ns.lock().unwrap_or_else(|p| p.into_inner()) =
+        Some(std::sync::Arc::new((*ns).clone()));
     Value::Obj(m)
 }
 
@@ -1783,7 +1817,8 @@ fn typing_stub_module(interp: &crate::frame::Interpreter) -> Value {
         // T2 gate finding 3: these markers ARE classes in CPython — repr
         // is <class 'typing.X'> (union __origin__ renders byte-exact).
         if let Value::Obj(mo) = &mv {
-            *mo.repr_text.borrow_mut() = Some(format!("<class 'typing.{n}'>"));
+            *mo.repr_text.lock().unwrap_or_else(|p| p.into_inner()) =
+                Some(format!("<class 'typing.{n}'>"));
         }
         let _ = ns.set(s(n), mv);
     }
@@ -1814,7 +1849,8 @@ fn typing_stub_module(interp: &crate::frame::Interpreter) -> Value {
     )
     .expect("Generic mro");
     let _ = ns.set(s("Generic"), ap_obj::classes::make_class_value(generic));
-    *m.module_ns.borrow_mut() = Some(std::sync::Arc::new((*ns).clone()));
+    *m.module_ns.lock().unwrap_or_else(|p| p.into_inner()) =
+        Some(std::sync::Arc::new((*ns).clone()));
     Value::Obj(m)
 }
 
@@ -1829,7 +1865,7 @@ fn link_parent_attr(full: &str, m: &Value) {
         return;
     };
     if let Some(Value::Obj(pp)) = sys_modules_get(parent_name) {
-        if let Some(pns) = &*pp.module_ns.borrow_mut() {
+        if let Some(pns) = &*pp.module_ns.lock().unwrap_or_else(|p| p.into_inner()) {
             let _ = pns.set(s(child_name), m.clone());
         }
     }
@@ -1841,7 +1877,7 @@ fn link_parent_attr(full: &str, m: &Value) {
 pub(crate) fn augment_with_vendored(interp: &Arc<Interpreter>, name: &str, m: &Value) {
     // Already augmented?
     if let Value::Obj(o) = m {
-        if let Some(ns) = &*o.module_ns.borrow() {
+        if let Some(ns) = &*o.module_ns.lock().unwrap_or_else(|p| p.into_inner()) {
             if ns.get(&s("_ap_vendored_augmented")).is_some() {
                 return;
             }
@@ -1898,7 +1934,7 @@ pub(crate) fn augment_with_vendored(interp: &Arc<Interpreter>, name: &str, m: &V
         // would keep the broken stub. Vendored names overwrite all.
         let wholesale = name == "functools";
         if let Value::Obj(mo) = m {
-            if let Some(cns) = &*mo.module_ns.borrow_mut() {
+            if let Some(cns) = &*mo.module_ns.lock().unwrap_or_else(|p| p.into_inner()) {
                 for (k, v) in loaded.ns.items() {
                     let wins = wholesale
                         || matches!(&k, Value::Str(kv) if VENDORED_WINS.contains(&kv.as_str()));

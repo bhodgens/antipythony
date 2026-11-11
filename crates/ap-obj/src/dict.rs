@@ -35,6 +35,7 @@ use crate::int::Gc;
 use crate::int::Int;
 use crate::value::Value;
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 /// Index-table sentinel: empty slot.
 const DKIX_EMPTY: isize = -1;
@@ -62,9 +63,14 @@ struct Probe {
 /// reference lives inside another container). The whole state is one
 /// `RefCell<DictState>` so probes can't observe half-mutations; 02.07 picks
 /// the concurrent wrapper.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct PyDict {
-    state: std::cell::RefCell<DictState>,
+    /// 02.09b P7 (decision 2): Mutex — the dict/set state is multi-word
+    /// algorithmic state mutated by every worker (audit entry 23/26); the
+    /// GIL-era RefCell borrow-flag discipline becomes real locking. The
+    /// epoch counter above stays a lock-free AtomicU64 (the GC's seed-cache
+    /// key reads it WITHOUT this lock — replay validation is registry-side).
+    state: Mutex<DictState>,
     /// 02.09 phase 1 (docs/no-gil-object-audit.md entry 23): `Cell<u64>` ->
     /// `AtomicU64` (Relaxed). Pure single-word mutation counter; under GIL v1
     /// the lock provided the ordering Relaxed now names explicitly, so the
@@ -78,10 +84,22 @@ pub struct PyDict {
     epoch: std::sync::atomic::AtomicU64,
 }
 
+impl std::fmt::Debug for PyDict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // pre-02.09b derive shape: `PyDict { state: <len> }`
+        f.debug_struct("PyDict")
+            .field(
+                "used",
+                &self.state.lock().unwrap_or_else(|p| p.into_inner()).used,
+            )
+            .finish()
+    }
+}
+
 impl Clone for PyDict {
     fn clone(&self) -> Self {
         PyDict {
-            state: std::cell::RefCell::new(self.state.borrow().clone()),
+            state: Mutex::new(self.state.lock().unwrap_or_else(|p| p.into_inner()).clone()),
             epoch: std::sync::atomic::AtomicU64::new(
                 self.epoch.load(std::sync::atomic::Ordering::Relaxed),
             ),
@@ -107,7 +125,7 @@ struct DictState {
 impl PyDict {
     pub fn new() -> Gc<PyDict> {
         let d = Gc::new(PyDict {
-            state: std::cell::RefCell::new(DictState {
+            state: Mutex::new(DictState {
                 entries: Vec::new(),
                 indices: vec![DKIX_EMPTY; 8],
                 mask: 7,
@@ -121,7 +139,7 @@ impl PyDict {
     }
 
     pub fn len(&self) -> usize {
-        self.state.borrow().used
+        self.state.lock().unwrap_or_else(|p| p.into_inner()).used
     }
 
     pub fn is_empty(&self) -> bool {
@@ -220,7 +238,7 @@ impl PyDict {
         // a sibling thread's read borrow clears within a scheduler quantum
         // (readers never block while holding the state borrow).
         let mut state = loop {
-            match self.state.try_borrow_mut() {
+            match self.state.try_lock() {
                 Ok(s) => break s,
                 Err(_) => std::thread::sleep(std::time::Duration::from_micros(50)),
             }
@@ -265,7 +283,7 @@ impl PyDict {
     /// the GIL v1 lookup path).
     pub fn try_get(&self, key: &Value) -> Option<Option<Value>> {
         let h = Self::hash_of(key).ok()? as u64;
-        let state = self.state.try_borrow().ok()?;
+        let state = self.state.try_lock().ok()?;
         let probe = Self::probe(&state, key, h);
         Some(probe.slot.and_then(|slot| {
             state
@@ -278,7 +296,7 @@ impl PyDict {
 
     pub fn get(&self, key: &Value) -> Option<Value> {
         let h = Self::hash_of(key).ok()? as u64;
-        let state = self.state.borrow();
+        let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         let probe = Self::probe(&state, key, h);
         probe.slot.and_then(|slot| {
             state
@@ -296,7 +314,7 @@ impl PyDict {
         let Ok(h) = Self::hash_of(key) else {
             return false;
         };
-        let state = self.state.borrow();
+        let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         Self::probe(&state, key, h as u64).slot.is_some()
     }
 
@@ -309,7 +327,7 @@ impl PyDict {
     /// is FALSE in the probe arms).
     pub fn get_str(&self, name: &str) -> Option<Value> {
         let h = str_key_hash(name) as u64;
-        let state = self.state.borrow();
+        let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         let mut i = (h as usize) & state.mask;
         let mut perturb = h as usize;
         loop {
@@ -334,7 +352,7 @@ impl PyDict {
     /// `name in d` for the `&str` fast path (no key mint, no value clone).
     pub fn contains_str(&self, name: &str) -> bool {
         let h = str_key_hash(name) as u64;
-        let state = self.state.borrow();
+        let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         let mut i = (h as usize) & state.mask;
         let mut perturb = h as usize;
         loop {
@@ -366,7 +384,7 @@ impl PyDict {
     /// `d.pop(key)` — remove and return the value; `None` when absent.
     pub fn pop(&self, key: &Value) -> Option<Value> {
         let h = Self::hash_of(key).ok()? as u64;
-        let mut state = self.state.borrow_mut();
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         let probe = Self::probe(&state, key, h);
         let slot = probe.slot?;
         state.indices[probe.table_pos] = DKIX_DUMMY;
@@ -394,7 +412,7 @@ impl PyDict {
     /// `d.popitem()` — remove and return the LAST inserted (key, value)
     /// pair (CPython 3.7+ LIFO); None when empty.
     pub fn popitem(&self) -> Option<(Value, Value)> {
-        let mut state = self.state.borrow_mut();
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         let slot = state.entries.iter().rposition(|e| e.is_some())?;
         let entry = state.entries[slot].take();
         // Find the index slot pointing at this entry and mark it dummy.
@@ -421,7 +439,8 @@ impl PyDict {
     /// recursion through a value whose `__repr__` mutates this dict).
     pub fn items(&self) -> Vec<(Value, Value)> {
         self.state
-            .borrow()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
             .entries
             .iter()
             .filter_map(|e| e.as_ref().map(|e| (e.key.clone(), e.value.clone())))
@@ -439,7 +458,7 @@ impl PyDict {
     /// snapshots do (minus the clone cost). Returns Err (borrow panicked
     /// guard) never — `f` is infallible by construction.
     pub fn foreach<F: FnMut(&Value, &Value)>(&self, mut f: F) {
-        let state = self.state.borrow();
+        let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         for e in state.entries.iter().flatten() {
             f(&e.key, &e.value);
         }
@@ -600,7 +619,8 @@ pub(crate) fn int_payload(v: &Value) -> Option<Int> {
     match v {
         Value::Obj(o) if o.kind == crate::object::ObjKind::UserInstance => o
             .attrs
-            .borrow()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
             .get_str("__ap_int__")
             .and_then(|p| p.as_int()),
         _ => None,
@@ -609,7 +629,7 @@ pub(crate) fn int_payload(v: &Value) -> Option<Int> {
 
 pub(crate) fn bytearray_data(o: &crate::object::PyObject) -> Option<Gc<Vec<u8>>> {
     if o.kind == crate::object::ObjKind::Opaque && o.name == "bytearray" {
-        let ab = o.attrs.borrow();
+        let ab = o.attrs.lock().unwrap_or_else(|p| p.into_inner());
         match ab.get_str("<data>") {
             Some(Value::Bytes(b)) => Some(b.clone()),
             _ => None,
@@ -732,7 +752,11 @@ pub fn values_cmp(a: &Value, b: &Value) -> Result<std::cmp::Ordering, PyExceptio
         (Value::Obj(o), _) | (_, Value::Obj(o)) if o.kind == crate::object::ObjKind::NamedTuple => {
             let a_is_nt =
                 matches!(a, Value::Obj(ao) if ao.kind == crate::object::ObjKind::NamedTuple);
-            let vals = o.attrs.borrow().get_str("<values>");
+            let vals = o
+                .attrs
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get_str("<values>");
             let tup = match vals {
                 Some(Value::List(l)) => {
                     Value::Tuple(std::sync::Arc::new(crate::value::Tuple(l.items().to_vec())))
@@ -764,9 +788,36 @@ fn seq_cmp(a: &[Value], b: &[Value]) -> Result<std::cmp::Ordering, PyException> 
 /// Hash-based unordered set (S-01-25/26). Iteration order is UNSPECIFIED
 /// (C-26) — reprs and tests sort; internally hash → bucket → eq resolves.
 /// Interior-mutable through shared handles, like `PyList`.
-#[derive(Debug, Clone, Default)]
 pub struct PySet {
-    state: std::cell::RefCell<SetState>,
+    /// 02.09b P7 (decision 2): Mutex — see the PyDict.state note.
+    state: Mutex<SetState>,
+}
+
+impl Clone for PySet {
+    fn clone(&self) -> Self {
+        PySet {
+            state: Mutex::new(self.state.lock().unwrap_or_else(|p| p.into_inner()).clone()),
+        }
+    }
+}
+
+impl std::fmt::Debug for PySet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PySet")
+            .field(
+                "size",
+                &self.state.lock().unwrap_or_else(|p| p.into_inner()).size,
+            )
+            .finish()
+    }
+}
+
+impl Default for PySet {
+    fn default() -> Self {
+        PySet {
+            state: Mutex::new(SetState::default()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -778,7 +829,7 @@ struct SetState {
 impl PySet {
     pub fn new() -> Gc<PySet> {
         let s = Gc::new(PySet {
-            state: std::cell::RefCell::new(SetState::default()),
+            state: Mutex::new(SetState::default()),
         });
         crate::gc_gate::gc_register_pub(&Value::Set(s.clone()));
         s
@@ -786,7 +837,7 @@ impl PySet {
 
     #[allow(clippy::len_without_is_empty)] // is_empty would extend the public surface beyond the CPython-parity API
     pub fn len(&self) -> usize {
-        self.state.borrow().size
+        self.state.lock().unwrap_or_else(|p| p.into_inner()).size
     }
 
     /// `s.add(x)`; unhashable raises the SET-ELEMENT phrasing — probed
@@ -796,7 +847,7 @@ impl PySet {
     pub fn add(&self, v: Value) -> Result<(), PyException> {
         let h =
             hash::py_hash(&v).map_err(|_| PyException::unhashable_set_element(v.type_name()))?;
-        let mut state = self.state.borrow_mut();
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         let bucket = state.elements.entry(h as u64).or_default();
         if bucket.iter().any(|e| values_eq(e, &v)) {
             return Ok(());
@@ -809,7 +860,7 @@ impl PySet {
     /// `x in s` (raises for unhashable x, like CPython).
     pub fn contains(&self, v: &Value) -> Result<bool, PyException> {
         let h = hash::py_hash(v)?;
-        let state = self.state.borrow();
+        let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         Ok(state
             .elements
             .get(&(h as u64))
@@ -825,7 +876,8 @@ impl PySet {
 
     fn elements_snapshot(&self) -> Vec<Value> {
         self.state
-            .borrow()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
             .elements
             .values()
             .flatten()
@@ -846,7 +898,7 @@ impl PySet {
     /// must not mutate this set inside `f` (the RefCell borrow panics —
     /// same discipline as `PyDict::foreach`).
     pub fn foreach_ref<F: FnMut(&Value)>(&self, mut f: F) {
-        let state = self.state.borrow();
+        let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         for bucket in state.elements.values() {
             for e in bucket.iter() {
                 f(e);
@@ -869,7 +921,7 @@ impl PySet {
             Ok(h) => h as u64,
             Err(_) => return false,
         };
-        let mut state = self.state.borrow_mut();
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         let mut removed = false;
         if let Some(bucket) = state.elements.get_mut(&h) {
             if let Some(pos) = bucket.iter().position(|e| values_eq(e, v)) {

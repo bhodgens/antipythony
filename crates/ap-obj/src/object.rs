@@ -23,7 +23,7 @@
 use crate::int::Gc;
 use crate::value::Value;
 use std::cell::RefCell;
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, Mutex, Weak};
 
 /// What kind of object this is. The executor matches on this to dispatch
 /// calls/methods; the tag also names the type (`type(v).__name__`).
@@ -78,47 +78,47 @@ pub struct PyObject {
     /// For Function: index into the executor's function table.
     pub fn_id: Option<u32>,
     /// For BoundMethod: the receiver.
-    pub self_value: RefCell<Option<Value>>,
+    pub self_value: Mutex<Option<Value>>,
     /// For BoundMethod/BuiltinFn: the underlying callable.
-    pub func: RefCell<Option<Value>>,
+    pub func: Mutex<Option<Value>>,
     /// For Range: (start, stop, step) ints. For NamedTuple: field names.
-    pub ints: RefCell<Vec<i64>>,
+    pub ints: Mutex<Vec<i64>>,
     /// For SliceObj: (lower, upper, step) as Values.
-    pub slice_parts: RefCell<Vec<Value>>,
+    pub slice_parts: Mutex<Vec<Value>>,
     /// Attribute namespace (UserInstance, Module, Namespace, UserClass
     /// method tables). Identity map by string key; last write wins.
-    pub attrs: RefCell<Gc<crate::dict::PyDict>>,
+    pub attrs: Mutex<Gc<crate::dict::PyDict>>,
     /// For Exception: the args tuple (str(exc) renders per S-06-7).
-    pub args: RefCell<Vec<Value>>,
+    pub args: Mutex<Vec<Value>>,
     /// For Exception: `__cause__` / `__context__` handles (chaining).
-    pub cause: RefCell<Option<Value>>,
-    pub context: RefCell<Option<Value>>,
+    pub cause: Mutex<Option<Value>>,
+    pub context: Mutex<Option<Value>>,
     /// For UserClass: which dunders are defined (name -> fn Value).
-    pub dunders: RefCell<crate::dict::PyDict>,
+    pub dunders: Mutex<crate::dict::PyDict>,
     /// For Generator: executor-resumable state (opaque handle id).
-    pub gen_id: RefCell<Option<u64>>,
+    pub gen_id: Mutex<Option<u64>>,
     /// For Namespace (sys.float_info etc.): printable repr override.
-    pub repr_text: RefCell<Option<String>>,
+    pub repr_text: Mutex<Option<String>>,
     /// For Module: exported names dict (lazy attribute reads).
-    pub module_ns: RefCell<Option<std::sync::Arc<crate::dict::PyDict>>>,
+    pub module_ns: Mutex<Option<std::sync::Arc<crate::dict::PyDict>>>,
     /// For Function: executor-side closure state slot (defining-frame id
     /// in the interpreter's frame table; the executor owns the typing).
-    pub closure_slot: RefCell<Option<u64>>,
+    pub closure_slot: Mutex<Option<u64>>,
     /// For Function: default argument values, evaluated at DEF time.
-    pub defaults: RefCell<Vec<Value>>,
+    pub defaults: Mutex<Vec<Value>>,
     /// For UserClass: the class payload (TypeObject: MRO, dict, flags).
     /// Strong handle — the TypeObject never points back at the PyObject.
-    pub class_ref: RefCell<Option<Arc<crate::classes::TypeObject>>>,
+    pub class_ref: Mutex<Option<Arc<crate::classes::TypeObject>>>,
     /// For UserInstance: a WEAK back-pointer to the instance's class
     /// payload (the strong handle lives on the class PyObject; instances
     /// must not keep their class's payload alive solo — no cycles).
-    pub type_ref: RefCell<Option<Weak<crate::classes::TypeObject>>>,
+    pub type_ref: Mutex<Option<Weak<crate::classes::TypeObject>>>,
     /// For Descriptor: which descriptor kind ("property"/"classmethod"/
     /// "staticmethod"/"member").
-    pub descr_kind: RefCell<Option<String>>,
+    pub descr_kind: Mutex<Option<String>>,
     /// For BoundMethod: the class whose dict the function was found in
     /// (zero-arg super() start-class, S-03-17/18).
-    pub method_owner: RefCell<Option<std::sync::Weak<crate::classes::TypeObject>>>,
+    pub method_owner: Mutex<Option<std::sync::Weak<crate::classes::TypeObject>>>,
 }
 
 impl PyObject {
@@ -127,24 +127,24 @@ impl PyObject {
             kind,
             name: name.into(),
             fn_id: None,
-            self_value: RefCell::new(None),
-            func: RefCell::new(None),
-            ints: RefCell::new(Vec::new()),
-            slice_parts: RefCell::new(Vec::new()),
-            attrs: RefCell::new(crate::dict::PyDict::new()),
-            args: RefCell::new(Vec::new()),
-            cause: RefCell::new(None),
-            context: RefCell::new(None),
-            dunders: RefCell::new((*crate::dict::PyDict::new()).clone()),
-            gen_id: RefCell::new(None),
-            repr_text: RefCell::new(None),
-            module_ns: RefCell::new(None),
-            closure_slot: RefCell::new(None),
-            defaults: RefCell::new(Vec::new()),
-            class_ref: RefCell::new(None),
-            type_ref: RefCell::new(None),
-            descr_kind: RefCell::new(None),
-            method_owner: RefCell::new(None),
+            self_value: Mutex::new(None),
+            func: Mutex::new(None),
+            ints: Mutex::new(Vec::new()),
+            slice_parts: Mutex::new(Vec::new()),
+            attrs: Mutex::new(crate::dict::PyDict::new()),
+            args: Mutex::new(Vec::new()),
+            cause: Mutex::new(None),
+            context: Mutex::new(None),
+            dunders: Mutex::new((*crate::dict::PyDict::new()).clone()),
+            gen_id: Mutex::new(None),
+            repr_text: Mutex::new(None),
+            module_ns: Mutex::new(None),
+            closure_slot: Mutex::new(None),
+            defaults: Mutex::new(Vec::new()),
+            class_ref: Mutex::new(None),
+            type_ref: Mutex::new(None),
+            descr_kind: Mutex::new(None),
+            method_owner: Mutex::new(None),
         });
         crate::gc_gate::gc_register_pub(&Value::Obj(o.clone()));
         o
@@ -153,7 +153,7 @@ impl PyObject {
     /// Constructor with the receiver preset (bound methods).
     pub fn with_self(kind: ObjKind, name: impl Into<String>, self_value: Value) -> Gc<PyObject> {
         let o = PyObject::new(kind, name);
-        *o.self_value.borrow_mut() = Some(self_value);
+        *o.self_value.lock().unwrap_or_else(|p| p.into_inner()) = Some(self_value);
         o
     }
 
@@ -163,24 +163,24 @@ impl PyObject {
             kind,
             name: name.into(),
             fn_id: Some(fn_id),
-            self_value: RefCell::new(None),
-            func: RefCell::new(None),
-            ints: RefCell::new(Vec::new()),
-            slice_parts: RefCell::new(Vec::new()),
-            attrs: RefCell::new(crate::dict::PyDict::new()),
-            args: RefCell::new(Vec::new()),
-            cause: RefCell::new(None),
-            context: RefCell::new(None),
-            dunders: RefCell::new((*crate::dict::PyDict::new()).clone()),
-            gen_id: RefCell::new(None),
-            repr_text: RefCell::new(None),
-            module_ns: RefCell::new(None),
-            closure_slot: RefCell::new(None),
-            defaults: RefCell::new(Vec::new()),
-            class_ref: RefCell::new(None),
-            type_ref: RefCell::new(None),
-            descr_kind: RefCell::new(None),
-            method_owner: RefCell::new(None),
+            self_value: Mutex::new(None),
+            func: Mutex::new(None),
+            ints: Mutex::new(Vec::new()),
+            slice_parts: Mutex::new(Vec::new()),
+            attrs: Mutex::new(crate::dict::PyDict::new()),
+            args: Mutex::new(Vec::new()),
+            cause: Mutex::new(None),
+            context: Mutex::new(None),
+            dunders: Mutex::new((*crate::dict::PyDict::new()).clone()),
+            gen_id: Mutex::new(None),
+            repr_text: Mutex::new(None),
+            module_ns: Mutex::new(None),
+            closure_slot: Mutex::new(None),
+            defaults: Mutex::new(Vec::new()),
+            class_ref: Mutex::new(None),
+            type_ref: Mutex::new(None),
+            descr_kind: Mutex::new(None),
+            method_owner: Mutex::new(None),
         });
         crate::gc_gate::gc_register_pub(&Value::Obj(o.clone()));
         o
@@ -212,7 +212,7 @@ impl PyObject {
     pub fn default_repr(&self, ptr: usize) -> String {
         // Explicit repr_text (native markers, T2 union surfaces) wins at
         // EVERY layer so container/print reprs agree with builtin repr().
-        if let Some(t) = &*self.repr_text.borrow() {
+        if let Some(t) = &*self.repr_text.lock().unwrap_or_else(|p| p.into_inner()) {
             return t.clone();
         }
         // collections.deque: render from live state at REPR time (D-fix
@@ -224,12 +224,14 @@ impl PyObject {
         if self.kind == ObjKind::Opaque && self.name == "deque" {
             let items = self
                 .attrs
-                .borrow()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
                 .get(&crate::value::Value::Str(crate::PyString::new("<items>")))
                 .unwrap_or(Value::None);
             let maxlen = self
                 .attrs
-                .borrow()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
                 .get(&crate::value::Value::Str(crate::PyString::new("<maxlen>")))
                 .unwrap_or(Value::None);
             let mut out = String::from("deque([");

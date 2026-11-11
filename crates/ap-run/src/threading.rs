@@ -55,28 +55,31 @@ fn raise(class: &str, msg: impl Into<String>) -> Flow {
 }
 
 // ===========================================================================
-// The GIL (global interpreter lock), v1
+// THE GIL IS GONE (02.09b P7 — the flip).
+//
+// The old GIL v1 (GilState mu/cv, acquire_gil/release_gil, GilGuard,
+// GIL_HELD/GIL_DEPTH thread-locals) is DELETED. Every prior acquire/release
+// call site dissolved with it:
+// - threading_call.rs blocking ops keep their primitive Mutex+Condvar waits
+//   (the release/re-acquire brackets are gone — the primitive's own lock is
+//   the synchronization now);
+// - interp.rs's daemon wait keeps wait_for_non_daemons minus the GIL bracket;
+// - worker_bootstrap keeps install_current_interp + install_worker_thread
+//   (02.09a confinement plumbing, not GIL plumbing).
+//
+// Soundness post-flip (recorded for the leaf gate):
+// - Gc<T> = Arc<T> (02.09a decision 1): refcount traffic is atomic;
+// - the (c)-class interiors are real Mutexes (02.09b decision 2);
+// - the collector serializes its pass on the process-global COLLECT mutex
+//   and aborts on interior-borrow contention (SCAN_CONTENDED, now
+//   process-global) — decision 3's abort-on-contention posture;
+// - worker GC allocations forward through per-worker channels drained at
+//   every collect (02.09b P6).
 // ===========================================================================
-
-struct GilState {
-    mu: Mutex<u64>, // 0 = free, else owner os-tid
-    cv: Condvar,
-}
-
-static GIL: std::sync::LazyLock<GilState> = std::sync::LazyLock::new(|| GilState {
-    mu: Mutex::new(0),
-    cv: Condvar::new(),
-});
-
-thread_local! {
-    static GIL_HELD: Cell<bool> = const { Cell::new(false) };
-    static GIL_DEPTH: Cell<usize> = const { Cell::new(0) };
-}
 
 thread_local! {
     /// E7 (memperf audit 2026-11-06): the minted os-tid, cached per thread.
-    /// current_os_tid used to lock the global TIDMAP on EVERY acquire_gil /
-    /// release_gil / local op / rlock op; the mint is once-per-thread now.
+    /// (Survives the flip: thread identity is registry/prim plumbing.)
     static OS_TID: Cell<u64> = const { Cell::new(0) };
 }
 
@@ -100,67 +103,6 @@ pub fn current_os_tid() -> u64 {
     };
     OS_TID.with(|c| c.set(tid));
     tid
-}
-
-/// Acquire the GIL (re-entrant on one thread via depth).
-pub fn acquire_gil() {
-    GIL_HELD.with(|h| {
-        if h.get() {
-            GIL_DEPTH.with(|d| d.set(d.get() + 1));
-            return;
-        }
-        let me = current_os_tid();
-        let mut g = GIL.mu.lock().unwrap();
-        while *g != 0 && *g != me {
-            g = GIL.cv.wait(g).unwrap();
-        }
-        *g = me;
-        h.set(true);
-    });
-}
-
-/// Release the GIL (re-entrant: only the outermost release lets others in).
-pub fn release_gil() {
-    GIL_HELD.with(|h| {
-        if !h.get() {
-            return;
-        }
-        let still_nested = GIL_DEPTH.with(|d| {
-            let v = d.get();
-            if v == 0 {
-                false
-            } else {
-                d.set(v - 1);
-                v > 1
-            }
-        });
-        if still_nested {
-            return;
-        }
-        h.set(false);
-        let me = current_os_tid();
-        let mut g = GIL.mu.lock().unwrap();
-        if *g == me {
-            *g = 0;
-            GIL.cv.notify_all();
-        }
-    });
-}
-
-/// RAII: hold the GIL for a scope.
-pub struct GilGuard;
-
-impl GilGuard {
-    pub fn take() -> GilGuard {
-        acquire_gil();
-        GilGuard
-    }
-}
-
-impl Drop for GilGuard {
-    fn drop(&mut self) {
-        release_gil();
-    }
 }
 
 // ===========================================================================
@@ -718,7 +660,7 @@ pub(crate) fn thread_obj(
 ) -> Value {
     let o = PyObject::new(ObjKind::Opaque, "thread");
     {
-        let a = o.attrs.borrow_mut();
+        let a = o.attrs.lock().unwrap_or_else(|p| p.into_inner());
         let _ = a.set(s("<name>"), s(name));
         let _ = a.set(s("<target>"), target.unwrap_or(Value::None));
         let _ = a.set(s("<args>"), Value::Tuple(Gc::new(Tuple(args))));
@@ -744,7 +686,10 @@ fn thread_entry_for_obj(o: &Gc<PyObject>) -> Option<EntryArc> {
 #[allow(dead_code)] // kept: part of an unfinished surface (robustness-ci 02.x burn-down leaf)
 fn thread_state(o: &Gc<PyObject>) -> (&'static str, bool) {
     let daemon = matches!(
-        o.attrs.borrow().get(&s("<daemon>")),
+        o.attrs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&s("<daemon>")),
         Some(Value::Bool(true))
     );
     let st = match thread_entry_for_obj(o) {
@@ -780,7 +725,8 @@ pub fn thread_start(interp: &Arc<Interpreter>, o: &Gc<PyObject>) -> EvalResult {
     // construction and lives in the object attrs).
     let my_serial = o
         .attrs
-        .borrow()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
         .get(&s("<serial>"))
         .and_then(|v| v.as_int())
         .and_then(|i| i.to_i64());
@@ -821,12 +767,28 @@ pub fn thread_start(interp: &Arc<Interpreter>, o: &Gc<PyObject>) -> EvalResult {
     let _ = addr;
     let name = attr_str(o, "<name>");
     let daemon = attr_bool(o, "<daemon>");
-    let target = o.attrs.borrow().get(&s("<target>")).unwrap_or(Value::None);
-    let args_v = o.attrs.borrow().get(&s("<args>")).unwrap_or(Value::None);
-    let kwargs_v = o.attrs.borrow().get(&s("<kwargs>")).unwrap_or(Value::None);
+    let target = o
+        .attrs
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(&s("<target>"))
+        .unwrap_or(Value::None);
+    let args_v = o
+        .attrs
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(&s("<args>"))
+        .unwrap_or(Value::None);
+    let kwargs_v = o
+        .attrs
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(&s("<kwargs>"))
+        .unwrap_or(Value::None);
     let interval = o
         .attrs
-        .borrow()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
         .get(&s("<interval>"))
         .and_then(|v| match v {
             Value::Float(f) => Some(f),
@@ -943,8 +905,11 @@ pub fn thread_start(interp: &Arc<Interpreter>, o: &Gc<PyObject>) -> EvalResult {
     // for immediately-joined threads is handled by join_wait's done flag).
 }
 
-/// Worker entry: install thread-locals (GIL identity, interp handle), run
-/// the body, honor excepthook, mark done, wake joiners.
+/// Worker entry: install thread-locals (interp handle), run the body, honor
+/// excepthook, mark done, wake joiners. 02.09b P7: the acquire/release GIL
+/// brackets are GONE — the worker is a full mutator from birth (census-
+/// registered at install_worker_thread), and the interp TLS handles install
+/// directly (Arc counts are atomic; 02.09a decision 1).
 fn worker_bootstrap(
     interp: Arc<Interpreter>,
     target: Value,
@@ -953,22 +918,15 @@ fn worker_bootstrap(
     self_addr: usize,
     interval: Option<f64>,
 ) {
-    // Fresh thread-local slots for THIS OS thread (gc registry view).
-    GIL_HELD.with(|h| h.set(false));
-    GIL_DEPTH.with(|d| d.set(0));
-    // WORKER_INTERP is (re)installed by the SPAWNER under the GIL (see
-    // thread_start): a worker-side interp.clone() is off-lock Arc traffic.
+    // WORKER_INTERP is (re)installed by the SPAWNER (see thread_start);
+    // this worker's GC view (per-worker registration channel + census
+    // entry) wires here.
     crate::gcsupport::install_worker_thread();
-    // E-safety: the identity stamp is deferred to AFTER acquire_gil
-    // (below) — pre-GIL it cloned/dropped entry Arc's, racing main-side
-    // mutation (the stress-probe UB class; baseline had the same hole).
-    // Nothing between here and acquire_gil touches Arc counts.
 
     // Timer semantics: wait BEFORE the target (finished.wait(interval)).
     if let Some(dur) = interval {
         // E-safety: read the serial from the SLOT MIRROR under the table
-        // lock — entry_for() clones an Arc, and pre-GIL Arc traffic is the
-        // stress-probe UB class (see WORKER_RECLAIM).
+        // lock (the table's own Mutex serializes; Arc counts are atomic).
         let my_serial = {
             let t = THREADS.lock().unwrap();
             t.by_addr
@@ -981,28 +939,19 @@ fn worker_bootstrap(
         wait_cancellable(Duration::from_secs_f64(dur.max(0.0)), self_addr, my_serial);
         let cancelled = timer_cancelled(self_addr, my_serial);
         if cancelled {
-            acquire_gil();
             stamp_worker_identity(self_addr);
             mark_done(self_addr);
             // E-safety: move the Arc payloads to the main thread's reclaim
-            // queue instead of dropping them at the post-release_gil tail
-            // (see WORKER_RECLAIM).
+            // queue (see WORKER_RECLAIM).
             reclaim_worker_payload((interp, target, args, kwargs));
-            release_gil();
             return;
         }
     }
 
-    acquire_gil();
-    // E-safety: the TLS interp handles (each holds an Arc clone) install
-    // AFTER the GIL is held — their strong_count writes then serialize
-    // with every main-side mutation (baseline installed them pre-GIL).
     crate::builtins_modules::set_current_interp(&interp);
     crate::interp::install_current_interp(&interp);
     // Stamp THIS OS thread's identity into its registry entry (the spawner
     // could only record a placeholder — the worker tid exists only here).
-    // GIL-held now: the entry Arc clone/drop inside is serialized like
-    // every other graph mutation.
     stamp_worker_identity(self_addr);
     let outcome = if matches!(target, Value::None) {
         Ok(Value::None)
@@ -1022,10 +971,11 @@ fn worker_bootstrap(
     }
     mark_done(self_addr);
     // E-safety: the tail payloads move to the main thread's reclaim queue
-    // (dropping them here or after release_gil — the baseline pattern —
-    // mutates shared non-atomic refcounts off-lock; see WORKER_RECLAIM).
+    // (see WORKER_RECLAIM).
     reclaim_worker_payload((interp, target, args, kwargs));
-    release_gil();
+    // 02.09b: leave the census (this thread's capture slot + registry view
+    // retire; its Arc payload drops land via the reclaim queue on main).
+    crate::gcsupport::uninstall_worker_thread();
 }
 
 /// E7: read the cancel state for a Timer addr (post-wait confirmation).
@@ -1181,7 +1131,7 @@ fn invoke_excepthook(interp: &Arc<Interpreter>, exc: &crate::exc_hier::Exception
     if let Some(hook) = hook {
         let args_obj = PyObject::new(ObjKind::Namespace, "ExceptHookArgs");
         {
-            let a = args_obj.attrs.borrow_mut();
+            let a = args_obj.attrs.lock().unwrap_or_else(|p| p.into_inner());
             let _ = a.set(
                 s("exc_type"),
                 crate::classes::exc_class_value(interp, &exc.class)
@@ -1306,7 +1256,8 @@ fn mirror_alive_with_serial(addr: usize, serial: i64) -> bool {
     match obj {
         Some(o) => {
             o.attrs
-                .borrow()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
                 .get(&s("<serial>"))
                 .and_then(|v| v.as_int())
                 .and_then(|i| i.to_i64())
@@ -1332,7 +1283,12 @@ fn render_thread_exc_report(
     // REFERENCE's bootstrap frames embed its own threading.py install path
     // and line numbers (G-1, documented gap); ours identify OUR bootstrap.
     let mut out = String::from("Traceback (most recent call last):\n");
-    for (qualname, line, file) in interp.tb_frames.borrow().iter() {
+    for (qualname, line, file) in interp
+        .tb_frames
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .iter()
+    {
         let file = if file.is_empty() {
             interp.script_path.as_str()
         } else {
@@ -1360,7 +1316,7 @@ fn render_thread_exc_report(
 
 fn exception_instance_value(exc: &crate::exc_hier::ExceptionValue) -> Value {
     let o = PyObject::new(ObjKind::Exception, exc.class.clone());
-    *o.args.borrow_mut() = exc.args.clone();
+    *o.args.lock().unwrap_or_else(|p| p.into_inner()) = exc.args.clone();
     Value::Obj(o)
 }
 
@@ -1372,31 +1328,17 @@ fn exception_instance_value(exc: &crate::exc_hier::ExceptionValue) -> Value {
 const ATTR_PROBE_RETRIES: usize = 200;
 
 fn attr_str(o: &PyObject, key: &str) -> String {
-    // A second OS thread can momentarily hold this RefCell (make_thread_value
-    // constructs under a single borrow). We hold the GIL here, so the other
-    // holder must be a brief native-only span; retry instead of panicking.
-    for _ in 0..ATTR_PROBE_RETRIES {
-        match o.attrs.try_borrow() {
-            Ok(a) => {
-                return match a.get(&s(key)) {
-                    Some(Value::Str(v)) => v.as_str().to_string(),
-                    _ => String::new(),
-                }
-            }
-            Err(_) => std::thread::sleep(std::time::Duration::from_micros(50)),
-        }
+    // 02.09b P7: Mutex — plain lock (the GIL-era retry loop dissolved).
+    let a = o.attrs.lock().unwrap_or_else(|p| p.into_inner());
+    match a.get(&s(key)) {
+        Some(Value::Str(v)) => v.as_str().to_string(),
+        _ => String::new(),
     }
-    String::new()
 }
 
 fn attr_bool(o: &PyObject, key: &str) -> bool {
-    for _ in 0..ATTR_PROBE_RETRIES {
-        match o.attrs.try_borrow() {
-            Ok(a) => return matches!(a.get(&s(key)), Some(Value::Bool(true))),
-            Err(_) => std::thread::sleep(std::time::Duration::from_micros(50)),
-        }
-    }
-    false
+    let a = o.attrs.lock().unwrap_or_else(|p| p.into_inner());
+    matches!(a.get(&s(key)), Some(Value::Bool(true)))
 }
 
 // ===========================================================================
@@ -1849,7 +1791,8 @@ pub fn cancel_timer(addr: usize) {
     let serial = match mirror_get(addr) {
         Some(Value::Obj(o)) => o
             .attrs
-            .borrow()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
             .get(&s("<serial>"))
             .and_then(|v| v.as_int())
             .and_then(|i| i.to_i64())
@@ -1893,7 +1836,8 @@ pub fn make_thread_value(
         let serial = NEXT_SERIAL.fetch_add(1, std::sync::atomic::Ordering::SeqCst) as i64;
         let _ = o
             .attrs
-            .borrow_mut()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
             .set(s("<serial>"), Value::Int(ap_obj::Int::from_i64(serial)));
     }
     v

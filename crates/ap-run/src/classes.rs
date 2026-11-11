@@ -24,8 +24,8 @@ use ap_obj::value::{PyList, PyString, Tuple, Value};
 
 use crate::exc_hier::ExceptionValue;
 use crate::frame::{Frame, Interpreter};
-use crate::interp::{FnRegistry, call_value, eval_expr, exec_block, store_name};
-use crate::{Flow, builtins};
+use crate::interp::{call_value, eval_expr, exec_block, store_name, FnRegistry};
+use crate::{builtins, Flow};
 
 type EResult = Result<Value, Flow>;
 
@@ -39,7 +39,11 @@ type EResult = Result<Value, Flow>;
 /// single stub frame had no f_code and no chain. Shared by both exception
 /// attr paths (classes.rs class-instance arm + interp.rs Exception arm).
 pub fn traceback_value(interp: &crate::frame::Interpreter) -> Value {
-    let entries = interp.tb_frames.borrow().clone();
+    let entries = interp
+        .tb_frames
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
     let script = interp.script_path.clone();
     let mut next: Value = Value::None;
     for (qualname, line, file) in entries.iter().rev() {
@@ -63,7 +67,7 @@ fn tb_node(
     let frame = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<frame>");
     let code = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<code>");
     {
-        let cattrs = code.attrs.borrow_mut();
+        let cattrs = code.attrs.lock().unwrap_or_else(|p| p.into_inner());
         let _ = cattrs.set(
             Value::Str(PyString::new("co_filename")),
             Value::Str(PyString::new(script.to_string())),
@@ -91,7 +95,7 @@ fn tb_node(
         );
     }
     {
-        let attrs = frame.attrs.borrow_mut();
+        let attrs = frame.attrs.lock().unwrap_or_else(|p| p.into_inner());
         let _ = attrs.set(Value::Str(PyString::new("f_code")), Value::Obj(code));
         let _ = attrs.set(
             Value::Str(PyString::new("f_lineno")),
@@ -109,7 +113,7 @@ fn tb_node(
     }
     let tb = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<traceback>");
     {
-        let attrs = tb.attrs.borrow_mut();
+        let attrs = tb.attrs.lock().unwrap_or_else(|p| p.into_inner());
         let _ = attrs.set(Value::Str(PyString::new("tb_frame")), Value::Obj(frame));
         let _ = attrs.set(Value::Str(PyString::new("tb_next")), next);
         let _ = attrs.set(
@@ -200,12 +204,12 @@ pub fn dynamic_type(
             kwargs,
         )?;
         match created {
-            Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass => {
-                o.class_ref
-                    .borrow()
-                    .clone()
-                    .ok_or_else(|| raise("SystemError", "created class without payload"))?
-            }
+            Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass => o
+                .class_ref
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
+                .ok_or_else(|| raise("SystemError", "created class without payload"))?,
             other => {
                 return Err(raise(
                     "TypeError",
@@ -305,11 +309,24 @@ fn raise(class: &str, msg: impl Into<String>) -> Flow {
 /// The TypeObject payload behind a class Value (None for non-classes).
 pub fn type_of(_interp: &Interpreter, v: &Value) -> Option<Arc<TypeRef>> {
     match v {
-        Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass => o.class_ref.borrow().clone(),
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass => o
+            .class_ref
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone(),
         // T2 (wave-39): stream-derived instances are Opaque carrying the
         // user class ref; super()/isinstance must see the user class.
-        Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque && o.class_ref.borrow().is_some() => {
-            o.class_ref.borrow().clone()
+        Value::Obj(o)
+            if o.kind == ap_obj::ObjKind::Opaque
+                && o.class_ref
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .is_some() =>
+        {
+            o.class_ref
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
         }
         _ => None,
     }
@@ -322,20 +339,35 @@ pub fn class_of_value(interp: &Interpreter, v: &Value) -> Option<Arc<TypeRef>> {
     match v {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => o
             .type_ref
-            .borrow()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
             .as_ref()
             .and_then(|w| w.upgrade())
             .map(|rc| rc as Arc<TypeRef>),
         Value::Obj(o) if o.kind == ap_obj::ObjKind::Exception => o
             .class_ref
-            .borrow()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
             .clone()
             .or_else(|| exc_class(interp, &o.name)),
-        Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass => o.class_ref.borrow().clone(),
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass => o
+            .class_ref
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone(),
         // T2 (wave-39): stream-derived instances are Opaque carrying the
         // user class ref; super()/isinstance must see the user class.
-        Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque && o.class_ref.borrow().is_some() => {
-            o.class_ref.borrow().clone()
+        Value::Obj(o)
+            if o.kind == ap_obj::ObjKind::Opaque
+                && o.class_ref
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .is_some() =>
+        {
+            o.class_ref
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
         }
         _ => None,
     }
@@ -345,14 +377,20 @@ pub fn class_of_value(interp: &Interpreter, v: &Value) -> Option<Arc<TypeRef>> {
 pub fn exc_class(interp: &Interpreter, name: &str) -> Option<Arc<TypeRef>> {
     interp
         .exc_classes
-        .borrow()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
         .get(name)
         .and_then(|v| type_of(interp, v))
 }
 
 /// The exception class VALUE for a name (for except-name reads, raise).
 pub fn exc_class_value(interp: &Interpreter, name: &str) -> Option<Value> {
-    interp.exc_classes.borrow().get(name).cloned()
+    interp
+        .exc_classes
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(name)
+        .cloned()
 }
 
 /// Class Value for an exception INSTANCE's class (for type(e) etc.).
@@ -445,15 +483,13 @@ pub const EXC_TREE: &[(&str, Option<&str>)] = &[
 /// Create every builtin exception class into interp.exc_classes (called
 /// from run_module entry, before any user code).
 pub fn install_exception_classes(interp: &Arc<Interpreter>) {
-    let mut table = interp.exc_classes.borrow_mut();
+    let mut table = interp.exc_classes.lock().unwrap_or_else(|p| p.into_inner());
     for (name, parent) in EXC_TREE {
         let mut bases: Vec<Arc<TypeRef>> = match parent {
-            Some(p) => vec![
-                table
-                    .get(*p)
-                    .and_then(|v| type_of(interp, v))
-                    .expect("parent created first"),
-            ],
+            Some(p) => vec![table
+                .get(*p)
+                .and_then(|v| type_of(interp, v))
+                .expect("parent created first")],
             None => vec![object_class(interp)],
         };
         // CPython: class ExceptionGroup(BaseExceptionGroup, Exception).
@@ -547,7 +583,7 @@ pub fn install_exception_classes(interp: &Arc<Interpreter>) {
 /// Direct subclasses recorded for `__subclasses__` (exception tree only in
 /// v1; user subclasses append at creation).
 pub fn subclasses_of(interp: &Interpreter, name: &str) -> Vec<Value> {
-    let table = interp.exc_classes.borrow();
+    let table = interp.exc_classes.lock().unwrap_or_else(|p| p.into_inner());
     let is_child = |(_, p): &(&str, Option<&str>)| {
         *p == Some(name)
         // CPython: class ExceptionGroup(BaseExceptionGroup, Exception) —
@@ -572,9 +608,19 @@ pub fn subclasses_of(interp: &Interpreter, name: &str) -> Vec<Value> {
     }
     drop(table);
     // User subclasses registered at class-creation time:
-    for (child, parent) in interp.user_subclasses.borrow().iter() {
+    for (child, parent) in interp
+        .user_subclasses
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .iter()
+    {
         if parent == name {
-            if let Some(v) = interp.user_class_values.borrow().get(child) {
+            if let Some(v) = interp
+                .user_class_values
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(child)
+            {
                 out.push(v.clone());
             }
         }
@@ -623,7 +669,7 @@ pub fn exec_class_def(
         // boundary=/_simple= ride this path).
         if let Value::Obj(o) = &v {
             if o.kind == ap_obj::ObjKind::BuiltinFn && o.name.starts_with("__ap_classkw__") {
-                let parts = o.slice_parts.borrow();
+                let parts = o.slice_parts.lock().unwrap_or_else(|p| p.into_inner());
                 if parts.len() == 2 {
                     if let Value::Str(kn) = &parts[0] {
                         class_kwargs.push((kn.as_str().to_string(), parts[1].clone()));
@@ -644,7 +690,13 @@ pub fn exec_class_def(
         // check depends on seeing the origin, not the alias.
         if let Value::Obj(ga) = &v {
             if ga.kind == ap_obj::ObjKind::Opaque && ga.name == "typing._GenericAlias" {
-                if let Some(origin) = ga.slice_parts.borrow().first().cloned() {
+                if let Some(origin) = ga
+                    .slice_parts
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .first()
+                    .cloned()
+                {
                     bases_v.push(origin);
                 }
                 continue;
@@ -660,12 +712,19 @@ pub fn exec_class_def(
                 {
                     let mut me_opt = bo
                         .attrs
-                        .borrow()
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
                         .get(&Value::Str(PyString::new("__mro_entries__")));
                     if me_opt.is_none() && bo.kind == ap_obj::ObjKind::UserInstance {
                         // T1-d: class-level __mro_entries__ must bind to
                         // the INSTANCE (zope Interface shim).
-                        if let Some(t) = bo.type_ref.borrow().as_ref().and_then(|w| w.upgrade()) {
+                        if let Some(t) = bo
+                            .type_ref
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .as_ref()
+                            .and_then(|w| w.upgrade())
+                        {
                             if let Some(f) = t.lookup("__mro_entries__") {
                                 me_opt = Some(bind_function_owned(&f, v.clone(), Some(&t)));
                             }
@@ -796,9 +855,15 @@ pub fn exec_class_def(
                 let prep_fn = match &prep {
                     Value::Obj(o)
                         if o.kind == ap_obj::ObjKind::Descriptor
-                            && matches!(o.descr_kind.borrow().as_deref(), Some("classmethod")) =>
+                            && matches!(
+                                o.descr_kind
+                                    .lock()
+                                    .unwrap_or_else(|p| p.into_inner())
+                                    .as_deref(),
+                                Some("classmethod")
+                            ) =>
                     {
-                        o.func.borrow().clone()
+                        o.func.lock().unwrap_or_else(|p| p.into_inner()).clone()
                     }
                     _ => {
                         if is_user_function(&prep) {
@@ -838,7 +903,9 @@ pub fn exec_class_def(
                                 ns = backing;
                                 prepared_inst = Some(Value::Obj(io.clone()));
                             } else {
-                                for (k, v) in io.attrs.borrow().items() {
+                                for (k, v) in
+                                    io.attrs.lock().unwrap_or_else(|p| p.into_inner()).items()
+                                {
                                     let _ = ns.set(k, v);
                                 }
                             }
@@ -1133,7 +1200,8 @@ pub fn exec_class_def(
             Value::Obj(ref o) if o.kind == ap_obj::ObjKind::UserClass => {
                 let t = o
                     .class_ref
-                    .borrow()
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
                     .clone()
                     .ok_or_else(|| raise("SystemError", "created class without payload"))?;
                 t
@@ -1165,7 +1233,8 @@ pub fn exec_class_def(
                     if fo.kind == ap_obj::ObjKind::Function {
                         let dotted = fo
                             .attrs
-                            .borrow()
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
                             .get(&Value::Str(PyString::new("__qualname__")))
                             .map(|q| match q {
                                 Value::Str(s) => s.as_str().contains('.'),
@@ -1181,7 +1250,7 @@ pub fn exec_class_def(
             for k in keys {
                 if let Some(Value::Obj(fo)) = ns.get(&k) {
                     let fname = fo.name.clone();
-                    let _ = fo.attrs.borrow_mut().set(
+                    let _ = fo.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
                         Value::Str(PyString::new("__qualname__")),
                         Value::Str(PyString::new(format!("{}.{}", c.name, fname))),
                     );
@@ -1269,7 +1338,8 @@ pub fn exec_class_def(
                 if fo.kind == ap_obj::ObjKind::Function {
                     let dotted = fo
                         .attrs
-                        .borrow()
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
                         .get(&Value::Str(PyString::new("__qualname__")))
                         .map(|q| match q {
                             Value::Str(s) => s.as_str().contains('.'),
@@ -1285,7 +1355,7 @@ pub fn exec_class_def(
         for k in keys {
             if let Some(Value::Obj(fo)) = t.dict.get(&k) {
                 let fname = fo.name.clone();
-                let _ = fo.attrs.borrow_mut().set(
+                let _ = fo.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
                     Value::Str(PyString::new("__qualname__")),
                     Value::Str(PyString::new(format!("{}.{}", t.name, fname))),
                 );
@@ -1335,7 +1405,7 @@ pub fn exec_class_def(
                 continue;
             }
             let d = ap_obj::PyObject::new(ap_obj::ObjKind::Descriptor, "member_descriptor");
-            *d.descr_kind.borrow_mut() = Some("member".to_string());
+            *d.descr_kind.lock().unwrap_or_else(|p| p.into_inner()) = Some("member".to_string());
             let _ = t
                 .dict
                 .set(Value::Str(PyString::new(sname.clone())), Value::Obj(d));
@@ -1409,7 +1479,10 @@ pub fn exec_class_def(
             // zero-arg super() inside the hook resolves (typing:
             // super().__init_subclass__() in Protocol.__init_subclass__).
             if let Some(parent_t) = base_types.first() {
-                *interp.pending_super_ctx.borrow_mut() =
+                *interp
+                    .pending_super_ctx
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner()) =
                     Some((parent_t.clone(), class_v.clone(), true));
             }
             call_value(
@@ -1452,7 +1525,10 @@ pub fn exec_class_def(
                     let kwargs: Vec<(String, Value)> = meta_init_kwargs.clone();
                     // Stage the super context: zero-arg super() inside the
                     // metaclass __init__ (typing: super().__init__()).
-                    *interp.pending_super_ctx.borrow_mut() =
+                    *interp
+                        .pending_super_ctx
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner()) =
                         Some((minit_owner, class_v.clone(), true));
                     let _ = call_value(
                         interp,
@@ -1477,12 +1553,14 @@ pub fn exec_class_def(
     for b in &base_types {
         interp
             .user_subclasses
-            .borrow_mut()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
             .push((c.name.clone(), b.name.clone()));
     }
     interp
         .user_class_values
-        .borrow_mut()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
         .insert(c.name.clone(), class_v.clone());
 
     // 9. Seed the __class__ cell for zero-arg super() (S-03-17): every
@@ -1568,7 +1646,11 @@ fn string_items(l: &Gc<PyList>) -> Result<Vec<String>, Flow> {
 pub fn base_type_ref(interp: &Interpreter, v: &Value) -> Result<Option<Arc<TypeRef>>, Flow> {
     match v {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass => {
-            let t = o.class_ref.borrow().clone();
+            let t = o
+                .class_ref
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone();
             if t.is_none() {
                 // Exception classes created by install_exception_classes.
                 return Ok(exc_class(interp, &o.name));
@@ -1600,7 +1682,12 @@ pub fn base_type_ref(interp: &Interpreter, v: &Value) -> Result<Option<Arc<TypeR
         // native bases) reuses ONE TypeRef per base type instead of
         // allocating a fresh object-derived clone per resolution.
         Value::Obj(o) if o.kind == ap_obj::ObjKind::Type => {
-            if let Some(t) = o.class_ref.borrow().clone() {
+            if let Some(t) = o
+                .class_ref
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
+            {
                 return Ok(Some(t));
             }
             let flags = TypeFlags {
@@ -1632,7 +1719,7 @@ pub fn base_type_ref(interp: &Interpreter, v: &Value) -> Result<Option<Arc<TypeR
                     Value::Str(PyString::new(o.name.clone())),
                 );
             }
-            *o.class_ref.borrow_mut() = Some(t.clone());
+            *o.class_ref.lock().unwrap_or_else(|p| p.into_inner()) = Some(t.clone());
             Ok(Some(t))
         }
         // T1 (scrapy fix pass): `class Foo(Generic[T])` - the Generic alias
@@ -1646,13 +1733,15 @@ pub fn base_type_ref(interp: &Interpreter, v: &Value) -> Result<Option<Arc<TypeR
         {
             let origin = if o.kind == ap_obj::ObjKind::Opaque {
                 o.slice_parts
-                    .borrow()
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
                     .first()
                     .cloned()
                     .unwrap_or(Value::None)
             } else {
                 o.attrs
-                    .borrow()
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
                     .get(&Value::Str(PyString::new("__origin__")))
                     .unwrap_or(Value::None)
             };
@@ -1751,7 +1840,12 @@ pub fn base_type_ref(interp: &Interpreter, v: &Value) -> Result<Option<Arc<TypeR
 
 /// The `object` root class (mro == [object]).
 pub fn object_class(interp: &Interpreter) -> Arc<TypeRef> {
-    if let Some(t) = interp.object_class.borrow().clone() {
+    if let Some(t) = interp
+        .object_class
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone()
+    {
         return t;
     }
     let t = TypeObject::create(
@@ -1764,13 +1858,21 @@ pub fn object_class(interp: &Interpreter) -> Arc<TypeRef> {
     )
     .expect("object mro");
     let _ = ap_obj::classes::make_class_value(t.clone()); // wire the Value back-pointer
-    *interp.object_class.borrow_mut() = Some(t.clone());
+    *interp
+        .object_class
+        .lock()
+        .unwrap_or_else(|p| p.into_inner()) = Some(t.clone());
     t
 }
 
 /// The `type` metaclass handle (identity target for metaclass checks).
 pub fn type_class(interp: &Interpreter) -> Arc<TypeRef> {
-    if let Some(t) = interp.type_class.borrow().clone() {
+    if let Some(t) = interp
+        .type_class
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone()
+    {
         return t;
     }
     let obj = object_class(interp);
@@ -1794,7 +1896,7 @@ pub fn type_class(interp: &Interpreter) -> Arc<TypeRef> {
     )
     .expect("type mro");
     let _ = ap_obj::classes::make_class_value(t.clone()); // wire the Value back-pointer
-    *interp.type_class.borrow_mut() = Some(t.clone());
+    *interp.type_class.lock().unwrap_or_else(|p| p.into_inner()) = Some(t.clone());
     t
 }
 
@@ -1806,7 +1908,12 @@ pub fn type_class(interp: &Interpreter) -> Arc<TypeRef> {
 pub fn descriptor_kind(interp: &Interpreter, v: &Value) -> Option<DescrKind> {
     match v {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::Descriptor => {
-            match o.descr_kind.borrow().as_deref() {
+            match o
+                .descr_kind
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_deref()
+            {
                 Some("property") => Some(DescrKind::Property),
                 Some("classmethod") => Some(DescrKind::ClassMethod),
                 Some("staticmethod") => Some(DescrKind::StaticMethod),
@@ -1830,7 +1937,10 @@ pub fn descriptor_kind(interp: &Interpreter, v: &Value) -> Option<DescrKind> {
 pub fn is_data_descriptor(interp: &Interpreter, v: &Value) -> bool {
     match v {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::Descriptor => matches!(
-            o.descr_kind.borrow().as_deref(),
+            o.descr_kind
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_deref(),
             Some("property") | Some("member")
         ),
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
@@ -1843,7 +1953,8 @@ pub fn is_data_descriptor(interp: &Interpreter, v: &Value) -> bool {
         Value::Obj(o)
             if o.kind == ap_obj::ObjKind::Function
                 && o.attrs
-                    .borrow()
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
                     .get(&Value::Str(PyString::new("__ap_cached_property__")))
                     .is_some_and(|x| x.is_truthy()) =>
         {
@@ -1855,7 +1966,11 @@ pub fn is_data_descriptor(interp: &Interpreter, v: &Value) -> bool {
 
 /// The class payload of a UserInstance PyObject.
 pub fn instance_class(_interp: &Interpreter, o: &Gc<ap_obj::PyObject>) -> Option<Arc<TypeRef>> {
-    o.type_ref.borrow().as_ref().and_then(|w| w.upgrade())
+    o.type_ref
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .as_ref()
+        .and_then(|w| w.upgrade())
 }
 
 /// Raw class-dict lookup that does NOT invoke descriptors (for
@@ -1870,8 +1985,18 @@ fn attr_on_class_raw(t: &Arc<TypeRef>, name: &str) -> Value {
 pub fn descr_get(interp: &Arc<Interpreter>, v: &Value, obj: &Value, owner: &Value) -> EResult {
     match v {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::Descriptor => {
-            let f: Value = o.func.borrow().clone().unwrap_or(Value::None);
-            match o.descr_kind.borrow().as_deref() {
+            let f: Value = o
+                .func
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
+                .unwrap_or(Value::None);
+            match o
+                .descr_kind
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_deref()
+            {
                 Some("staticmethod") => Ok(f),
                 Some("classmethod") => call_value(
                     interp,
@@ -1893,7 +2018,8 @@ pub fn descr_get(interp: &Arc<Interpreter>, v: &Value, obj: &Value, owner: &Valu
                             if io.kind == ap_obj::ObjKind::UserInstance {
                                 let upgrade_ok = io
                                     .type_ref
-                                    .borrow()
+                                    .lock()
+                                    .unwrap_or_else(|p| p.into_inner())
                                     .as_ref()
                                     .map(|w| w.upgrade().is_some())
                                     .unwrap_or(false);
@@ -1909,7 +2035,12 @@ pub fn descr_get(interp: &Arc<Interpreter>, v: &Value, obj: &Value, owner: &Valu
                                 }
                             }
                         }
-                        let fget = o.self_value.borrow().clone().unwrap_or(Value::None);
+                        let fget = o
+                            .self_value
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .clone()
+                            .unwrap_or(Value::None);
                         call_value(
                             interp,
                             &module_frame(interp),
@@ -1956,9 +2087,19 @@ pub fn descr_set(
 ) -> Result<(), Flow> {
     match v {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::Descriptor => {
-            match o.descr_kind.borrow().as_deref() {
+            match o
+                .descr_kind
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_deref()
+            {
                 Some("property") | Some("member") => {
-                    let fset = o.func.borrow().clone().unwrap_or(Value::None);
+                    let fset = o
+                        .func
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .clone()
+                        .unwrap_or(Value::None);
                     if matches!(fset, Value::None) {
                         return Err(raise(
                             "AttributeError",
@@ -2007,9 +2148,18 @@ pub fn descr_delete(
 ) -> Result<(), Flow> {
     match v {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::Descriptor => {
-            match o.descr_kind.borrow().as_deref() {
+            match o
+                .descr_kind
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_deref()
+            {
                 Some("property") | Some("member") => {
-                    let fdel = o.dunders.borrow().get(&Value::Str(PyString::new("fdel")));
+                    let fdel = o
+                        .dunders
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .get(&Value::Str(PyString::new("fdel")));
                     if let Some(f) = fdel {
                         return call_value(
                             interp,
@@ -2053,9 +2203,15 @@ pub fn descr_delete(
 pub fn unwrap_classmethod(v: &Value, cls: Value) -> Value {
     if let Value::Obj(o) = v {
         if o.kind == ap_obj::ObjKind::Descriptor
-            && matches!(o.descr_kind.borrow().as_deref(), Some("classmethod"))
+            && matches!(
+                o.descr_kind
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .as_deref(),
+                Some("classmethod")
+            )
         {
-            if let Some(f) = o.func.borrow().clone() {
+            if let Some(f) = o.func.lock().unwrap_or_else(|p| p.into_inner()).clone() {
                 return bind_function(&f, cls);
             }
         }
@@ -2081,24 +2237,24 @@ pub fn bind_function_owned(f: &Value, receiver: Value, owner: Option<&Arc<TypeRe
                 kind: ap_obj::ObjKind::BoundMethod,
                 name: o.name.clone(),
                 fn_id: None,
-                self_value: std::cell::RefCell::new(Some(receiver)),
-                func: std::cell::RefCell::new(Some(f.clone())),
-                ints: std::cell::RefCell::new(Vec::new()),
-                slice_parts: std::cell::RefCell::new(Vec::new()),
-                attrs: std::cell::RefCell::new(ap_obj::dict::PyDict::new()),
-                args: std::cell::RefCell::new(Vec::new()),
-                cause: std::cell::RefCell::new(None),
-                context: std::cell::RefCell::new(None),
-                dunders: std::cell::RefCell::new((*ap_obj::dict::PyDict::new()).clone()),
-                gen_id: std::cell::RefCell::new(None),
-                repr_text: std::cell::RefCell::new(None),
-                module_ns: std::cell::RefCell::new(None),
-                closure_slot: std::cell::RefCell::new(None),
-                defaults: std::cell::RefCell::new(Vec::new()),
-                class_ref: std::cell::RefCell::new(None),
-                type_ref: std::cell::RefCell::new(None),
-                descr_kind: std::cell::RefCell::new(None),
-                method_owner: std::cell::RefCell::new(owner.map(std::sync::Arc::downgrade)),
+                self_value: std::sync::Mutex::new(Some(receiver)),
+                func: std::sync::Mutex::new(Some(f.clone())),
+                ints: std::sync::Mutex::new(Vec::new()),
+                slice_parts: std::sync::Mutex::new(Vec::new()),
+                attrs: std::sync::Mutex::new(ap_obj::dict::PyDict::new()),
+                args: std::sync::Mutex::new(Vec::new()),
+                cause: std::sync::Mutex::new(None),
+                context: std::sync::Mutex::new(None),
+                dunders: std::sync::Mutex::new((*ap_obj::dict::PyDict::new()).clone()),
+                gen_id: std::sync::Mutex::new(None),
+                repr_text: std::sync::Mutex::new(None),
+                module_ns: std::sync::Mutex::new(None),
+                closure_slot: std::sync::Mutex::new(None),
+                defaults: std::sync::Mutex::new(Vec::new()),
+                class_ref: std::sync::Mutex::new(None),
+                type_ref: std::sync::Mutex::new(None),
+                descr_kind: std::sync::Mutex::new(None),
+                method_owner: std::sync::Mutex::new(owner.map(std::sync::Arc::downgrade)),
             };
             let mo = ap_obj::int::Gc::new(m);
             return Value::Obj(mo);
@@ -2150,7 +2306,11 @@ fn run_set_name_hooks(
 pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bool, Flow> {
     if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::GenDebug) {
         if let Value::Obj(xo) = x {
-            let has_cr = xo.class_ref.borrow().is_some();
+            let has_cr = xo
+                .class_ref
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .is_some();
             eprintln!(
                 "[VI] xkind={:?} xname={} has_cr={} tname={}",
                 xo.kind,
@@ -2175,7 +2335,12 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
         if (o.kind == ap_obj::ObjKind::Opaque && o.name == "__union__")
             || (o.kind == ap_obj::ObjKind::Namespace && o.name == "_Union")
         {
-            for arm in o.slice_parts.borrow().iter() {
+            for arm in o
+                .slice_parts
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .iter()
+            {
                 // PEP 604: `X | None` parks None as a Value::None arm —
                 // the arm matches NoneType (isinstance(None, int|None)).
                 if matches!(arm, Value::None) {
@@ -2327,7 +2492,12 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
                 // __subclasshook__, and scrapy Headers.update's Mapping
                 // branch died on the miss ('too many values to unpack').
                 if let Value::Obj(xo) = x {
-                    if let Some(cr) = xo.class_ref.borrow().as_ref() {
+                    if let Some(cr) = xo
+                        .class_ref
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .as_ref()
+                    {
                         let want = type_name_of_check(t);
                         let mro_names: Vec<String> = cr
                             .mro
@@ -2542,12 +2712,19 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
                                 Value::Obj(o)
                                     if o.kind == ap_obj::ObjKind::Descriptor
                                         && matches!(
-                                            o.descr_kind.borrow().as_deref(),
+                                            o.descr_kind
+                                                .lock()
+                                                .unwrap_or_else(|p| p.into_inner())
+                                                .as_deref(),
                                             Some("classmethod")
                                         ) =>
                                 {
                                     (
-                                        o.func.borrow().clone().unwrap_or_else(|| subhook.clone()),
+                                        o.func
+                                            .lock()
+                                            .unwrap_or_else(|p| p.into_inner())
+                                            .clone()
+                                            .unwrap_or_else(|| subhook.clone()),
                                         vec![t.clone(), xcls.clone()],
                                     )
                                 }
@@ -2624,7 +2801,8 @@ fn type_for_check(interp: &Interpreter, x: &Value) -> Option<Arc<TypeRef>> {
     match x {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => o
             .type_ref
-            .borrow()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
             .as_ref()
             .and_then(|w| w.upgrade())
             .map(|rc| rc as Arc<TypeRef>),
@@ -2734,7 +2912,12 @@ pub fn special_lookup(
 ) -> Option<(Value, Arc<TypeRef>)> {
     match v {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
-            let t = o.type_ref.borrow().as_ref().and_then(|w| w.upgrade())?;
+            let t = o
+                .type_ref
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_ref()
+                .and_then(|w| w.upgrade())?;
             t.lookup_with_owner(name)
         }
         // T1-d fix (incremental/_Inf inside Version tuples): elementwise
@@ -2774,7 +2957,11 @@ pub fn special_lookup(
             {
                 return None;
             }
-            let t = o.class_ref.borrow().clone()?;
+            let t = o
+                .class_ref
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()?;
             t.lookup_with_owner(name)
         }
         // 02.08-c: lxml elements answer len()/iter() dunders natively.
@@ -2785,7 +2972,7 @@ pub fn special_lookup(
         {
             let marker =
                 ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, format!("lxml.elem.{}", name));
-            *marker.slice_parts.borrow_mut() = vec![v.clone()];
+            *marker.slice_parts.lock().unwrap_or_else(|p| p.into_inner()) = vec![v.clone()];
             // owner type is unused by the marker dispatch path
             Some((Value::Obj(marker), object_class(interp)))
         }
@@ -2809,7 +2996,7 @@ pub fn special_lookup(
                 ap_obj::ObjKind::BuiltinFn,
                 format!("__ap_base_{}__init__", o.name),
             );
-            *marker.slice_parts.borrow_mut() = vec![v.clone()];
+            *marker.slice_parts.lock().unwrap_or_else(|p| p.into_inner()) = vec![v.clone()];
             Some((Value::Obj(marker), object_class(interp)))
         }
         // T2 (pytest collection): os.ScandirIterator iterates its cached
@@ -2822,7 +3009,7 @@ pub fn special_lookup(
         {
             let marker =
                 ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "os.ScandirIterator.__iter__");
-            *marker.slice_parts.borrow_mut() = vec![v.clone()];
+            *marker.slice_parts.lock().unwrap_or_else(|p| p.into_inner()) = vec![v.clone()];
             Some((Value::Obj(marker), object_class(interp)))
         }
         _ => None,
@@ -2847,7 +3034,7 @@ pub fn attr_get_protocol(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> 
         None if name == "f_code" && matches!(obj, Value::Obj(_)) => {
             let code = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<code>");
             {
-                let cattrs = code.attrs.borrow_mut();
+                let cattrs = code.attrs.lock().unwrap_or_else(|p| p.into_inner());
                 let _ = cattrs.set(
                     Value::Str(PyString::new("co_filename")),
                     Value::Str(PyString::new("<antipythony>")),
@@ -2904,14 +3091,25 @@ pub fn attr_get_opt(
 ) -> Result<Option<Value>, Flow> {
     match obj {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
-            let t = match o.type_ref.borrow().as_ref().and_then(|w| w.upgrade()) {
+            let t = match o
+                .type_ref
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_ref()
+                .and_then(|w| w.upgrade())
+            {
                 Some(t) => t,
                 // W112: dead type_ref (dropped weakref) - the instance
                 // keeps its attrs; consult them before giving up so
                 // slot/attr reads survive class-weakref drops in
                 // long pytest flows (unraisable collector family).
                 None => {
-                    if let Some(v) = o.attrs.borrow().get(&Value::Str(PyString::new(name))) {
+                    if let Some(v) = o
+                        .attrs
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .get(&Value::Str(PyString::new(name)))
+                    {
                         return Ok(Some(v));
                     }
                     return Ok(None);
@@ -2920,7 +3118,12 @@ pub fn attr_get_opt(
             instance_attr(interp, obj, o, &t, name).map(Some)
         }
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass => {
-            let Some(t) = o.class_ref.borrow().clone() else {
+            let Some(t) = o
+                .class_ref
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
+            else {
                 return Ok(None);
             };
             class_attr_get(interp, obj, &t, name).map(Some)
@@ -2966,8 +3169,19 @@ pub fn attr_get_opt(
         // methods from that class FIRST (subclass overrides win —
         // CaptureIO.getvalue must beat the native TextIOWrapper one);
         // misses fall through to the native stream surface below.
-        Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque && o.class_ref.borrow().is_some() => {
-            let t = o.class_ref.borrow().clone().unwrap();
+        Value::Obj(o)
+            if o.kind == ap_obj::ObjKind::Opaque
+                && o.class_ref
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .is_some() =>
+        {
+            let t = o
+                .class_ref
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
+                .unwrap();
             match instance_attr(interp, obj, o, &t, name) {
                 Ok(v) => Ok(Some(v)),
                 Err(Flow::Raise(e)) if e.class == "AttributeError" => Ok(None),
@@ -2982,12 +3196,18 @@ pub fn attr_get_opt(
         // and a class-receiver read (self mis-bound to the class in
         // wrapper teardown) must find them.
         Value::Obj(o) => {
-            if let Some(v) = o.attrs.borrow().get(&Value::Str(PyString::new(name))) {
+            if let Some(v) = o
+                .attrs
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(&Value::Str(PyString::new(name)))
+            {
                 return Ok(Some(v));
             }
             if let Some(Value::Dict(d)) = o
                 .attrs
-                .borrow()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
                 .get(&Value::Str(PyString::new("__ap_dict__")))
             {
                 if let Some(v) = d.get(&Value::Str(PyString::new(name.to_string()))) {
@@ -3025,7 +3245,12 @@ fn instance_attr(
     }
     // Slot members: storage IS the instance dict slot (member descriptors
     // materialize only for introspection; reads/writes are plain).
-    if let Some(v) = o.attrs.borrow().get(&Value::Str(PyString::new(name))) {
+    if let Some(v) = o
+        .attrs
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(&Value::Str(PyString::new(name)))
+    {
         if t.is_slot(name) {
             return Ok(v);
         }
@@ -3033,9 +3258,14 @@ fn instance_attr(
     // T2 (pytest exit codes): SystemExit instances answer .code from the
     // constructor arg (CPython: SystemExit() -> None, SystemExit(n) -> n).
     if t.flags.is_exception && name == "code" && t.name == "SystemExit" {
-        let argvals: Vec<Value> = match o.attrs.borrow().get(&Value::Str(PyString::new("args"))) {
+        let argvals: Vec<Value> = match o
+            .attrs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&Value::Str(PyString::new("args")))
+        {
             Some(Value::Tuple(t)) => t.0.clone(),
-            _ => o.args.borrow().clone(),
+            _ => o.args.lock().unwrap_or_else(|p| p.into_inner()).clone(),
         };
         return Ok(argvals.into_iter().next().unwrap_or(Value::None));
     }
@@ -3073,10 +3303,14 @@ fn instance_attr(
         if os_family {
             // Prefer the instance-dict 'args' (set by BaseException init);
             // the payload o.args may be empty for UserInstance exceptions.
-            let argvals: Vec<Value> = match o.attrs.borrow().get(&Value::Str(PyString::new("args")))
+            let argvals: Vec<Value> = match o
+                .attrs
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(&Value::Str(PyString::new("args")))
             {
                 Some(Value::Tuple(t)) => t.0.clone(),
-                _ => o.args.borrow().clone(),
+                _ => o.args.lock().unwrap_or_else(|p| p.into_inner()).clone(),
             };
             if let Some(v) = argvals.get(idx) {
                 return Ok(v.clone());
@@ -3091,7 +3325,12 @@ fn instance_attr(
         }
     }
     // 2. Instance dict.
-    if let Some(v) = o.attrs.borrow().get(&Value::Str(PyString::new(name))) {
+    if let Some(v) = o
+        .attrs
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(&Value::Str(PyString::new(name)))
+    {
         return Ok(v);
     }
     // 3. Non-data descriptor / plain class attribute. Plain functions bind
@@ -3102,7 +3341,12 @@ fn instance_attr(
             Some(DescrKind::ClassMethod) => {
                 // c.cm -> the CLS-bound method (cls = type(self), S-03-21).
                 if let Value::Obj(o) = &entry {
-                    let f = o.func.borrow().clone().unwrap_or(Value::None);
+                    let f = o
+                        .func
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .clone()
+                        .unwrap_or(Value::None);
                     let cls_v = class_value_for(t);
                     return Ok(bind_function_owned(&f, cls_v, Some(&owner)));
                 }
@@ -3159,7 +3403,7 @@ fn instance_attr(
                             mo.name.clone(),
                             obj.clone(),
                         );
-                        *bm.func.borrow_mut() = Some(entry.clone());
+                        *bm.func.lock().unwrap_or_else(|p| p.into_inner()) = Some(entry.clone());
                         return Ok(Value::Obj(bm));
                     }
                 }
@@ -3313,7 +3557,7 @@ fn class_attr_get(
             // Bound builtin: list direct subclasses (S-03-29/e002 surface);
             // the call site (interp) reads the parked owner name.
             let f = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "__subclasses__");
-            *f.slice_parts.borrow_mut() = vec![cls_v.clone()];
+            *f.slice_parts.lock().unwrap_or_else(|p| p.into_inner()) = vec![cls_v.clone()];
             return Ok(Value::Obj(f));
         }
         _ => {}
@@ -3358,14 +3602,24 @@ fn class_attr_get(
         }
         return match descriptor_kind(interp, &entry) {
             Some(DescrKind::StaticMethod) => match &entry {
-                Value::Obj(o) => Ok(o.func.borrow().clone().unwrap_or(Value::None)),
+                Value::Obj(o) => Ok(o
+                    .func
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone()
+                    .unwrap_or(Value::None)),
                 _ => Ok(entry),
             },
             Some(DescrKind::ClassMethod) => {
                 // C.cm -> cls-bound method (S-03-21: same cls on C and C());
                 // the defining class rides for zero-arg super (c023).
                 if let Value::Obj(o) = &entry {
-                    let f = o.func.borrow().clone().unwrap_or(Value::None);
+                    let f = o
+                        .func
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .clone()
+                        .unwrap_or(Value::None);
                     let owner = t.lookup_with_owner(name).map(|(_, o)| o);
                     return Ok(bind_function_owned(&f, cls_v.clone(), owner.as_ref()));
                 }
@@ -3424,7 +3678,7 @@ fn class_attr_get(
             // die with "object of type 'object' has no len()").
             let is_prop = matches!(&mv, Value::Obj(d)
                 if d.kind == ap_obj::ObjKind::Descriptor
-                    && d.descr_kind.borrow().as_deref() == Some("property"));
+                    && d.descr_kind.lock().unwrap_or_else(|p| p.into_inner()).as_deref() == Some("property"));
             if is_prop {
                 let meta_cls_v = class_value_for(&meta);
                 return descr_get(interp, &mv, cls_v, &meta_cls_v);
@@ -3604,9 +3858,16 @@ pub fn attr_set_protocol(
         if o.kind == ap_obj::ObjKind::UserClass {
             let t = o
                 .class_ref
-                .borrow()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
                 .clone()
-                .or_else(|| o.type_ref.borrow().as_ref().and_then(|w| w.upgrade()));
+                .or_else(|| {
+                    o.type_ref
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .as_ref()
+                        .and_then(|w| w.upgrade())
+                });
             if let Some(t) = t {
                 let _ = t.dict.set(Value::Str(PyString::new(name.to_string())), v);
                 t.bump_class_versions();
@@ -3624,9 +3885,15 @@ pub fn attr_set_protocol(
         if o.kind == ap_obj::ObjKind::Type {
             let _ = o
                 .attrs
-                .borrow_mut()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
                 .set(Value::Str(PyString::new(name.to_string())), v);
-            if let Some(t) = o.class_ref.borrow().clone() {
+            if let Some(t) = o
+                .class_ref
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
+            {
                 t.bump_class_versions();
             }
             return Ok(());
@@ -3636,7 +3903,8 @@ pub fn attr_set_protocol(
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
             let t = o
                 .type_ref
-                .borrow()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
                 .as_ref()
                 .and_then(|w| w.upgrade())
                 .ok_or_else(|| raise("SystemError", "instance without class"))?;
@@ -3648,7 +3916,10 @@ pub fn attr_set_protocol(
                     // T1 (scrapy fix pass): stage the method super context so
                     // zero-arg super() inside __setattr__ works (typing.py's
                     // _BaseGenericAlias.__setattr__ calls super().__setattr__).
-                    *interp.pending_super_ctx.borrow_mut() = Some((owner, obj.clone(), false));
+                    *interp
+                        .pending_super_ctx
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner()) = Some((owner, obj.clone(), false));
                     let r = call_value(
                         interp,
                         &module_frame(interp),
@@ -3675,7 +3946,8 @@ pub fn attr_set_protocol(
             if t.is_slot(name) {
                 return o
                     .attrs
-                    .borrow_mut()
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
                     .set(Value::Str(PyString::new(name)), v)
                     .map_err(Flow::from_py);
             }
@@ -3686,14 +3958,15 @@ pub fn attr_set_protocol(
                 }
             }
             o.attrs
-                .borrow_mut()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
                 .set(Value::Str(PyString::new(name)), v)
                 .map_err(Flow::from_py)
         }
         // 02.03b: module-attribute writes (warnings: `_wm._filters_version
         // += 1` where _wm is the warnings module object).
         Value::Obj(o) if o.kind == ap_obj::ObjKind::Module => {
-            let ns = o.module_ns.borrow();
+            let ns = o.module_ns.lock().unwrap_or_else(|p| p.into_inner());
             if let Some(ns) = &*ns {
                 ns.set(Value::Str(PyString::new(name)), v)
                     .map_err(Flow::from_py)
@@ -3707,7 +3980,12 @@ pub fn attr_set_protocol(
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass => {
             // Class-attribute write: plain dict set (C.x = 5 succeeds even
             // over a property — S-03-10 observed).
-            let Some(t) = o.class_ref.borrow().clone() else {
+            let Some(t) = o
+                .class_ref
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
+            else {
                 return Err(raise("SystemError", "class without payload"));
             };
             t.dict
@@ -3727,7 +4005,8 @@ pub fn attr_set_protocol(
             if o.kind == ap_obj::ObjKind::Function || o.kind == ap_obj::ObjKind::BuiltinFn =>
         {
             o.attrs
-                .borrow_mut()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
                 .set(Value::Str(PyString::new(name)), v)
                 .map_err(Flow::from_py)
         }
@@ -3736,7 +4015,8 @@ pub fn attr_set_protocol(
         // the descriptor __doc__ read arm already prefers o.attrs.
         Value::Obj(o) if o.kind == ap_obj::ObjKind::Descriptor => o
             .attrs
-            .borrow_mut()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
             .set(Value::Str(PyString::new(name)), v)
             .map_err(Flow::from_py),
         // 02.07: threading.local per-thread namespace writes; Thread
@@ -3772,7 +4052,8 @@ pub fn attr_set_protocol(
                 // Python-visible setattr/read path rejected it).
                 let _ = o
                     .attrs
-                    .borrow_mut()
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
                     .set(Value::Str(PyString::new(name.to_string())), v);
                 return Ok(());
             }
@@ -3797,7 +4078,8 @@ pub fn attr_del_protocol(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> 
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
             let t = o
                 .type_ref
-                .borrow()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
                 .as_ref()
                 .and_then(|w| w.upgrade())
                 .ok_or_else(|| raise("SystemError", "instance without class"))?;
@@ -3820,7 +4102,8 @@ pub fn attr_del_protocol(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> 
                     let has_del = match &entry {
                         Value::Obj(d) if d.kind == ap_obj::ObjKind::Descriptor => d
                             .dunders
-                            .borrow()
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
                             .contains(&Value::Str(PyString::new("fdel"))),
                         Value::Obj(d) if d.kind == ap_obj::ObjKind::UserInstance => {
                             instance_class(interp, d)
@@ -3840,7 +4123,8 @@ pub fn attr_del_protocol(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> 
             // Instance dict must hold the name (deleting an INHERITED attr
             // reports the instance class — S-03-11).
             if o.attrs
-                .borrow()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
                 .pop(&Value::Str(PyString::new(name)))
                 .is_none()
             {
@@ -3852,7 +4136,12 @@ pub fn attr_del_protocol(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> 
             Ok(())
         }
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass => {
-            let Some(t) = o.class_ref.borrow().clone() else {
+            let Some(t) = o
+                .class_ref
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
+            else {
                 return Err(raise("SystemError", "class without payload"));
             };
             if t.dict.pop(&Value::Str(PyString::new(name))).is_none() {
@@ -3873,12 +4162,17 @@ pub fn attr_del_protocol(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> 
         // raises AttributeError when absent — same message shape as the read
         // path ("module' object has no attribute").
         Value::Obj(o) if o.kind == ap_obj::ObjKind::Module => {
-            let ns = o.module_ns.borrow().clone().ok_or_else(|| {
-                raise(
-                    "AttributeError",
-                    format!("'module' object has no attribute '{}'", name),
-                )
-            })?;
+            let ns = o
+                .module_ns
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
+                .ok_or_else(|| {
+                    raise(
+                        "AttributeError",
+                        format!("'module' object has no attribute '{}'", name),
+                    )
+                })?;
             if ns.pop(&Value::Str(PyString::new(name))).is_none() {
                 return Err(raise(
                     "AttributeError",
@@ -3990,7 +4284,8 @@ pub fn instantiate(
                     .unwrap_or(Value::None);
                 let _ = io
                     .attrs
-                    .borrow_mut()
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
                     .set(Value::Str(PyString::new(f.clone())), v);
             }
         }
@@ -4057,7 +4352,11 @@ pub fn instantiate(
                         .position(|m| m.name == "list" || m.name == "tuple");
                     matches!(owner_idx.zip(cont_idx), Some((oi, ci)) if ci < oi)
                 };
-            if shadowed { None } else { Some((nv, owner)) }
+            if shadowed {
+                None
+            } else {
+                Some((nv, owner))
+            }
         }
         None => None,
     };
@@ -4088,9 +4387,10 @@ pub fn instantiate(
             let argv = Value::Tuple(Gc::new(Tuple(args.to_vec())));
             let _ = io
                 .attrs
-                .borrow_mut()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
                 .set(Value::Str(PyString::new("args")), argv);
-            *io.class_ref.borrow_mut() = Some(t.clone());
+            *io.class_ref.lock().unwrap_or_else(|p| p.into_inner()) = Some(t.clone());
             // CPython: BaseExceptionGroup(...) with all-Exception excs
             // derives to ExceptionGroup (e008).
             if t.name == "BaseExceptionGroup" {
@@ -4102,7 +4402,12 @@ pub fn instantiate(
                     _ => false,
                 });
                 if all_exc {
-                    let eg = interp.exc_classes.borrow().get("ExceptionGroup").cloned();
+                    let eg = interp
+                        .exc_classes
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .get("ExceptionGroup")
+                        .cloned();
                     if let Some(eg) = eg {
                         if let Some(egt) = type_of(interp, &eg) {
                             return instantiate(interp, &eg, &egt, args, kwargs);
@@ -4115,13 +4420,15 @@ pub fn instantiate(
                 if let Some(m) = args.first() {
                     let _ = io
                         .attrs
-                        .borrow_mut()
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
                         .set(Value::Str(PyString::new("message")), m.clone());
                 }
                 if let Some(ex) = args.get(1) {
                     let _ = io
                         .attrs
-                        .borrow_mut()
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
                         .set(Value::Str(PyString::new("exceptions")), ex.clone());
                 }
             }
@@ -4162,8 +4469,8 @@ pub fn instantiate(
         if let Some(doc) = args.get(1) {
             let _ = ns.set(Value::Str(PyString::new("__doc__")), doc.clone());
         }
-        *io.type_ref.borrow_mut() = Some(std::sync::Arc::downgrade(t));
-        *io.module_ns.borrow_mut() = Some(ns);
+        *io.type_ref.lock().unwrap_or_else(|p| p.into_inner()) = Some(std::sync::Arc::downgrade(t));
+        *io.module_ns.lock().unwrap_or_else(|p| p.into_inner()) = Some(ns);
         return Ok(Value::Obj(io));
     }
     // T1-d (attr/_make.py _make_attr_tuple_class + twisted
@@ -4264,16 +4571,18 @@ pub fn instantiate(
                     // property(fget): the fget rides the descriptor.
                     "property" => {
                         let o = ap_obj::PyObject::new(ap_obj::ObjKind::Descriptor, "property");
-                        *o.descr_kind.borrow_mut() = Some("property".to_string());
-                        *o.self_value.borrow_mut() = Some(p.clone());
+                        *o.descr_kind.lock().unwrap_or_else(|p| p.into_inner()) =
+                            Some("property".to_string());
+                        *o.self_value.lock().unwrap_or_else(|p| p.into_inner()) = Some(p.clone());
                         Some(Value::Obj(o))
                     }
                     _ => None,
                 };
                 if let Some(v) = built {
                     let io = ap_obj::PyObject::new(ap_obj::ObjKind::UserInstance, t.name.clone());
-                    *io.type_ref.borrow_mut() = Some(std::sync::Arc::downgrade(t));
-                    *io.class_ref.borrow_mut() = Some(t.clone());
+                    *io.type_ref.lock().unwrap_or_else(|p| p.into_inner()) =
+                        Some(std::sync::Arc::downgrade(t));
+                    *io.class_ref.lock().unwrap_or_else(|p| p.into_inner()) = Some(t.clone());
                     // T2 (pygments _TokenType): keep a TUPLE-typed backing so
                     // the derived-instance protocol (len/slice/contains/+)
                     // can see the ctor contents; the payload below answers
@@ -4285,7 +4594,7 @@ pub fn instantiate(
                             Value::Str(sv) => {
                                 // str subclasses park the string under
                                 // __ap_str__ so eq/repr/concat normalize.
-                                let _ = io.attrs.borrow_mut().set(
+                                let _ = io.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
                                     Value::Str(PyString::new("__ap_str__")),
                                     Value::Str(sv.clone()),
                                 );
@@ -4305,7 +4614,8 @@ pub fn instantiate(
                             };
                             let _ = io
                                 .attrs
-                                .borrow_mut()
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner())
                                 .set(Value::Str(PyString::new(key)), backing);
                         }
                     }
@@ -4315,7 +4625,8 @@ pub fn instantiate(
                     if builtin == "dict" {
                         let _ = io
                             .attrs
-                            .borrow_mut()
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
                             .set(Value::Str(PyString::new("__ap_dict__")), v.clone());
                     }
                     // W111: int-derived instances park the numeric payload
@@ -4324,12 +4635,14 @@ pub fn instantiate(
                     if builtin == "int" {
                         let _ = io
                             .attrs
-                            .borrow_mut()
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
                             .set(Value::Str(PyString::new("__ap_int__")), v.clone());
                     }
                     let _ = io
                         .attrs
-                        .borrow_mut()
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
                         .set(Value::Str(PyString::new("__ap_tuple_payload__")), v);
                     return Ok(Value::Obj(io));
                 }
@@ -4357,7 +4670,10 @@ pub fn instantiate(
             .as_ref()
             .map(|(_, o)| o.clone())
             .unwrap_or_else(|| t.clone());
-        *interp.pending_super_ctx.borrow_mut() = Some((new_start, cls.clone(), true));
+        *interp
+            .pending_super_ctx
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some((new_start, cls.clone(), true));
         let obj = call_value(interp, &module_frame(interp), nf, &new_args, kwargs);
         let obj = qualify_newinit_error(obj, "__new__", &t.name)?;
         // isinstance(obj, cls) decides whether __init__ runs (S-03-06).
@@ -4369,7 +4685,10 @@ pub fn instantiate(
                     .as_ref()
                     .map(|(_, o)| o.clone())
                     .unwrap_or_else(|| t.clone());
-                *interp.pending_super_ctx.borrow_mut() = Some((init_start, obj.clone(), false));
+                *interp
+                    .pending_super_ctx
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner()) = Some((init_start, obj.clone(), false));
                 let r = call_value(interp, &module_frame(interp), inf, &init_args, kwargs);
                 // 02.03b: call_function balances the staged ctx itself; the
                 // extra pop here removed the ENCLOSING frame's context
@@ -4394,15 +4713,20 @@ pub fn instantiate(
         };
         if let Value::Obj(old_o) = &obj {
             let fresh = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, kind);
-            *fresh.type_ref.borrow_mut() = old_o.type_ref.borrow().clone();
+            *fresh.type_ref.lock().unwrap_or_else(|p| p.into_inner()) = old_o
+                .type_ref
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone();
             let cr = old_o
                 .class_ref
-                .borrow()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
                 .clone()
                 .unwrap_or_else(|| t.clone());
-            *fresh.class_ref.borrow_mut() = Some(cr);
+            *fresh.class_ref.lock().unwrap_or_else(|p| p.into_inner()) = Some(cr);
             {
-                let attrs = fresh.attrs.borrow_mut();
+                let attrs = fresh.attrs.lock().unwrap_or_else(|p| p.into_inner());
                 let _ = attrs.set(
                     Value::Str(PyString::new("<buf>".to_string())),
                     Value::Bytes(Gc::new(vec![])),
@@ -4431,7 +4755,10 @@ pub fn instantiate(
                 .as_ref()
                 .map(|(_, o)| o.clone())
                 .unwrap_or_else(|| t.clone());
-            *interp.pending_super_ctx.borrow_mut() = Some((init_start2, obj.clone(), false));
+            *interp
+                .pending_super_ctx
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()) = Some((init_start2, obj.clone(), false));
             let r = call_value(interp, &module_frame(interp), inf, &a, kwargs);
             // 02.03b: call_function balances the staged ctx itself (see the
             // custom-__new__ path note).
@@ -4476,12 +4803,12 @@ fn check_init_return(r: &Value, f: &Value) -> Result<(), Flow> {
 /// dict via PyObject's default).
 pub fn alloc_instance(t: &Arc<TypeRef>) -> Value {
     let o = ap_obj::PyObject::new(ap_obj::ObjKind::UserInstance, t.name.clone());
-    *o.type_ref.borrow_mut() = Some(Arc::downgrade(t));
+    *o.type_ref.lock().unwrap_or_else(|p| p.into_inner()) = Some(Arc::downgrade(t));
     // 02.03b: dict-subclass instances carry a REAL backing dict in
     // attrs["__ap_dict__"] (EnumDict and friends): item traffic routes
     // through it, attribute traffic through attrs as before.
     if is_dict_derived(t) {
-        let _ = o.attrs.borrow_mut().set(
+        let _ = o.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
             Value::Str(PyString::new("__ap_dict__")),
             Value::Dict(PyDict::new()),
         );
@@ -4505,7 +4832,8 @@ pub fn dict_backing(v: &Value) -> Option<Gc<PyDict>> {
     match v {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => o
             .attrs
-            .borrow()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
             .get(&Value::Str(PyString::new("__ap_dict__")))
             .and_then(|d| match d {
                 Value::Dict(d) => Some(d.clone()),
@@ -4520,7 +4848,12 @@ pub fn dict_backing(v: &Value) -> Option<Gc<PyDict>> {
 pub fn userclass_module(v: &Value) -> Option<Value> {
     match v {
         Value::Obj(o) => {
-            let t = o.type_ref.borrow().as_ref().and_then(|w| w.upgrade())?;
+            let t = o
+                .type_ref
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_ref()
+                .and_then(|w| w.upgrade())?;
             t.dict.get(&Value::Str(PyString::new("__module__")))
         }
         _ => None,
@@ -4533,7 +4866,13 @@ pub fn userclass_module(v: &Value) -> Option<Value> {
 pub fn is_list_derived_instance(v: &Value) -> bool {
     match v {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
-            match o.type_ref.borrow().as_ref().and_then(|w| w.upgrade()) {
+            match o
+                .type_ref
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_ref()
+                .and_then(|w| w.upgrade())
+            {
                 Some(t) => t.mro.lock().unwrap().iter().any(|m| m.name == "list"),
                 None => false,
             }
@@ -4567,7 +4906,13 @@ fn container_new_marker(t: &Arc<TypeRef>) -> Option<&'static str> {
 pub fn is_tuple_derived_instance(v: &Value) -> bool {
     match v {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
-            match o.type_ref.borrow().as_ref().and_then(|w| w.upgrade()) {
+            match o
+                .type_ref
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_ref()
+                .and_then(|w| w.upgrade())
+            {
                 Some(t) => t.mro.lock().unwrap().iter().any(|m| m.name == "tuple"),
                 None => false,
             }
@@ -4582,13 +4927,14 @@ pub fn tuple_backing_or_new(v: &Value) -> Gc<Tuple> {
     if let Value::Obj(o) = v {
         if let Some(Value::Tuple(t)) = o
             .attrs
-            .borrow()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
             .get(&Value::Str(PyString::new("__ap_tuple__")))
         {
             return t.clone();
         }
         let t = Gc::new(Tuple(Vec::new()));
-        let _ = o.attrs.borrow_mut().set(
+        let _ = o.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
             Value::Str(PyString::new("__ap_tuple__")),
             Value::Tuple(t.clone()),
         );
@@ -4603,13 +4949,14 @@ pub fn list_backing_or_new(v: &Value) -> Gc<PyList> {
     if let Value::Obj(o) = v {
         if let Some(Value::List(l)) = o
             .attrs
-            .borrow()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
             .get(&Value::Str(PyString::new("__ap_list__")))
         {
             return l.clone();
         }
         let l = PyList::new();
-        let _ = o.attrs.borrow_mut().set(
+        let _ = o.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
             Value::Str(PyString::new("__ap_list__")),
             Value::List(l.clone()),
         );
@@ -4636,7 +4983,7 @@ pub fn display_type_name(v: &Value) -> String {
 /// this). v0: PyDict clones share the RefCell state, so a clone IS live.
 fn instance_dict_handle(o: &Gc<ap_obj::PyObject>) -> Gc<PyDict> {
     // attrs is the live Gc<PyDict> handle: clones share the state.
-    o.attrs.borrow().clone()
+    o.attrs.lock().unwrap_or_else(|p| p.into_inner()).clone()
 }
 
 /// The binding TypeErrors from __new__/__init__ carry the QUALIFIED name
@@ -4663,7 +5010,8 @@ pub fn is_exception_value(v: &Value) -> bool {
     match v {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => o
             .type_ref
-            .borrow()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
             .as_ref()
             .and_then(|w| w.upgrade())
             .is_some_and(|t| t.flags.is_exception),
@@ -4674,10 +5022,17 @@ pub fn is_exception_value(v: &Value) -> bool {
 /// (helper) class payload of a value via the back-pointers.
 pub fn class_of_value_here(v: &Value) -> Option<Arc<TypeRef>> {
     match v {
-        Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
-            o.type_ref.borrow().as_ref().and_then(|w| w.upgrade())
-        }
-        Value::Obj(o) if o.kind == ap_obj::ObjKind::Exception => o.class_ref.borrow().clone(),
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => o
+            .type_ref
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .and_then(|w| w.upgrade()),
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::Exception => o
+            .class_ref
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone(),
         _ => None,
     }
 }
