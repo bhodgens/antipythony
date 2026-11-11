@@ -61,11 +61,14 @@ pub struct TypeObject {
     pub dict: Gc<PyDict>,
     pub flags: TypeFlags,
     /// The metaclass type-object handle (type(C)); None == plain `type`.
-    /// RefCell: resolved/finalized after creation (02.03).
-    pub metaclass: std::cell::RefCell<Option<Arc<TypeRef>>>,
+    /// 02.09b P7 (decision 2): Mutex — resolved/finalized after creation
+    /// (02.03) and read on EVERY instantiation by every worker.
+    pub metaclass: std::sync::Mutex<Option<Arc<TypeRef>>>,
     /// Back-pointer to the class's PyObject Value (set right after
     /// creation; identity for `x.__class__ is C`).
-    pub class_value: RefCell<Option<Value>>,
+    /// 02.09b P7 (decision 2): Mutex (set-once after creation; read per
+    /// instantiation).
+    pub class_value: Mutex<Option<Value>>,
     /// 02.05b Risk 4 (docs/ic-version-audit.md "Type version" domain, audit
     /// rows 11+16): per-class version counter bumped when the class's
     /// attribute surface mutates (`type.__setattr__` — method add/remove,
@@ -116,8 +119,8 @@ impl TypeObject {
             mro: std::sync::Mutex::new(Vec::new()),
             dict,
             flags,
-            metaclass: std::cell::RefCell::new(metaclass),
-            class_value: std::cell::RefCell::new(None),
+            metaclass: std::sync::Mutex::new(metaclass),
+            class_value: std::sync::Mutex::new(None),
             type_version: std::sync::atomic::AtomicU64::new(1),
             surgery_version: std::sync::atomic::AtomicU64::new(1),
         });
@@ -385,6 +388,9 @@ pub fn make_class_value(type_ref: Arc<TypeRef>) -> Value {
     let o = PyObject::new(crate::ObjKind::UserClass, type_ref.name.clone());
     *o.class_ref.lock().unwrap_or_else(|p| p.into_inner()) = Some(type_ref.clone());
     let v = Value::Obj(o);
-    *type_ref.class_value.borrow_mut() = Some(v.clone());
+    *type_ref
+        .class_value
+        .lock()
+        .unwrap_or_else(|p| p.into_inner()) = Some(v.clone());
     v
 }

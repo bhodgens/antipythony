@@ -7190,10 +7190,12 @@ fn call_value_inner_impl(
                                         if is_instance {
                                             return Ok(crate::classes::class_value_for_public(&ct));
                                         }
-                                        let meta =
-                                            ct.metaclass.borrow().clone().unwrap_or_else(|| {
-                                                crate::classes::type_class(interp)
-                                            });
+                                        let meta = ct
+                                            .metaclass
+                                            .lock()
+                                            .unwrap_or_else(|p| p.into_inner())
+                                            .clone()
+                                            .unwrap_or_else(|| crate::classes::type_class(interp));
                                         Ok(crate::classes::class_value_for_public(&meta))
                                     }
                                     None => {
@@ -9879,7 +9881,11 @@ fn iterable_of(v: &Value) -> Result<Gc<PyIterator>, Flow> {
                 .unwrap_or_else(|p| p.into_inner())
                 .clone()
             {
-                let meta = t.metaclass.borrow().clone();
+                let meta = t
+                    .metaclass
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone();
                 if let Some(meta) = meta {
                     let it_fn = meta.lookup_with_owner("__iter__").map(|(f, _)| f);
                     if let Some(it_fn) = it_fn {
@@ -11208,7 +11214,8 @@ fn class_protocol_builtin(
                 Some(t) => {
                     let meta = t
                         .metaclass
-                        .borrow()
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
                         .clone()
                         .unwrap_or_else(|| crate::classes::type_class(interp));
                     Some(Ok(crate::classes::class_value_for_public(&meta)))
@@ -11588,7 +11595,12 @@ fn class_isinstance(interp: &Arc<Interpreter>, args: &[Value]) -> EResult {
     if let Value::Obj(to) = t {
         if to.kind == ap_obj::ObjKind::UserClass {
             if let Some(tc) = crate::classes::type_of(interp, t) {
-                if let Some(meta) = tc.metaclass.borrow().clone() {
+                if let Some(meta) = tc
+                    .metaclass
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone()
+                {
                     if let Some((hook, owner)) = meta.lookup_with_owner("__instancecheck__") {
                         if matches!(&hook, Value::Obj(f) if f.kind == ap_obj::ObjKind::Function) {
                             // Zero-arg super() inside __instancecheck__
@@ -11840,7 +11852,12 @@ fn class_issubclass(interp: &Arc<Interpreter>, args: &[Value]) -> EResult {
     if let Value::Obj(to) = b {
         if to.kind == ap_obj::ObjKind::UserClass {
             if let Some(tc) = crate::classes::type_of(interp, b) {
-                if let Some(meta) = tc.metaclass.borrow().clone() {
+                if let Some(meta) = tc
+                    .metaclass
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone()
+                {
                     if let Some(hook) = meta.lookup("__subclasscheck__") {
                         if matches!(&hook, Value::Obj(f) if f.kind == ap_obj::ObjKind::Function) {
                             return call_value(
@@ -13491,12 +13508,16 @@ fn attr_get(_interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Optio
                     // shaped); treat any subject whose class-of has a
                     // metaclass as a class for super-scan routing.
                     || crate::classes::class_of_value(_interp, &subject)
-                        .and_then(|st| st.metaclass.borrow().clone())
+                        .and_then(|st| st.metaclass.lock().unwrap_or_else(|p| p.into_inner()).clone())
                         .map(|m| m.name != "type")
                         .unwrap_or(false);
                 let meta_of_subject = if subject_is_class {
-                    crate::classes::type_of(_interp, &subject)
-                        .and_then(|st| st.metaclass.borrow().clone())
+                    crate::classes::type_of(_interp, &subject).and_then(|st| {
+                        st.metaclass
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .clone()
+                    })
                 } else {
                     None
                 };
@@ -14549,7 +14570,12 @@ fn attr_get(_interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Optio
                             .unwrap_or_else(|p| p.into_inner())
                             .clone()
                         {
-                            if let Some(meta) = t.metaclass.borrow().clone() {
+                            if let Some(meta) = t
+                                .metaclass
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner())
+                                .clone()
+                            {
                                 if let Some(v) = meta.lookup(name) {
                                     return Ok(Some(v));
                                 }
