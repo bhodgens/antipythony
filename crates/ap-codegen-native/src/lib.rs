@@ -20,6 +20,9 @@
 //!
 //! SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
+pub mod aot;
+pub mod link;
+
 pub mod audit_probe;
 pub mod cfg;
 pub mod clif;

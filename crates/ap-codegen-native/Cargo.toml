@@ -23,6 +23,8 @@ cranelift = "0.134"
 cranelift-frontend = "0.134"
 cranelift-jit = "0.134"
 cranelift-module = "0.134"
+# 02.06: the AoT object emitter (cranelift-object, same 0.134 line).
+cranelift-object = "0.134"
 cranelift-native = "0.134"
 
 [dev-dependencies]
