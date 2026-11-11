@@ -28,12 +28,12 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::exc_hier::ExceptionValue;
 use crate::Flow;
+use crate::exc_hier::ExceptionValue;
+use ap_obj::PyObject;
 use ap_obj::dict::PyDict;
 use ap_obj::int::{Gc, Int};
 use ap_obj::value::{PyList, PyString, Tuple, Value};
-use ap_obj::PyObject;
 
 pub type BResult = Result<Value, Flow>;
 
@@ -160,11 +160,7 @@ fn int_gcd(mut a: Int, mut b: Int) -> Int {
             b = b.neg();
         }
     }
-    if a.is_negative() {
-        a.neg()
-    } else {
-        a
-    }
+    if a.is_negative() { a.neg() } else { a }
 }
 
 fn int_isqrt(n: &Int) -> Int {
@@ -502,12 +498,14 @@ impl NativeIterState {
 // keep their names and route through builtins dispatch.
 // ---------------------------------------------------------------------------
 
-thread_local! {
-    static NAMED_CALLABLES: RefCell<HashMap<String, Value>> = RefCell::new(HashMap::new());
-    static CURRENT: RefCell<Option<Arc<crate::frame::Interpreter>>> =
-        const { RefCell::new(None) };
-}
-
+// 02.09a P3: NAMED_CALLABLES moved to the RuntimeState table
+// (runtime_state.rs::NAMED_CALLABLES_T) — the marker-name -> callable map
+// was thread-local, so marker-callable identity broke across threads
+// (audit row: builtins_modules.rs:503). CURRENT (the 2nd interp handle) is
+// the census's named dual-handle seam: set_current_interp now routes
+// through runtime_state::set_active_interp, and current_interp() falls
+// back to the ACTIVE handle. The thread_local is deleted.
+//
 // 02.09a P1-rest (docs/0209-object-state-audit.md punch-list P1): the id
 // minters were thread-local Cells — two threads minting concurrently handed
 // out COLLIDING ids (the NEXT_FIBER->PENDING_GEN_ERROR key aliasing is the
@@ -517,6 +515,20 @@ thread_local! {
 static NAMED_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static NEXT_ITER: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0x5000_0000_0000_0000);
+
+/// 02.09a P3: register into the RuntimeState NAMED_CALLABLES row.
+fn named_callables_insert(name: &str, v: &Value) {
+    use crate::runtime_state as rs;
+    rs::with_active_mut(rs::NAMED_CALLABLES_T_acc(), |t| {
+        t.insert(name.to_string(), v.clone());
+    });
+}
+
+/// 02.09a P3: lookup in the RuntimeState NAMED_CALLABLES row.
+fn named_callables_get(name: &str) -> Option<Value> {
+    use crate::runtime_state as rs;
+    rs::with_active(rs::NAMED_CALLABLES_T_acc(), |t| t.get(name).cloned())
+}
 
 /// Public wrapper for parser hooks (parse_float etc).
 pub fn callable_name_pub(v: &Value) -> Result<String, Flow> {
@@ -537,7 +549,7 @@ fn name_callable(v: &Value) -> String {
             "str" | "int" | "float" | "bool" | "list" | "tuple" | "repr"
         ) {
             let name = format!("<ap-ctor-{}>", o.name);
-            NAMED_CALLABLES.with(|t| t.borrow_mut().insert(name.clone(), v.clone()));
+            named_callables_insert(&name, &v);
             return name;
         }
         // User functions get a STABLE synthetic name keyed by fn_id so
@@ -545,7 +557,7 @@ fn name_callable(v: &Value) -> String {
         if o.kind == ap_obj::ObjKind::Function {
             if let Some(id) = o.fn_id {
                 let name = format!("<ap-fn-{id}>");
-                NAMED_CALLABLES.with(|t| t.borrow_mut().insert(name.clone(), v.clone()));
+                named_callables_insert(&name, &v);
                 return name;
             }
         }
@@ -559,33 +571,33 @@ fn name_callable(v: &Value) -> String {
     // looked up later), but the per-call mint is gone, which is the growth
     // class that mattered (bounded by distinct live callables used in
     // native-dispatch positions).
-    thread_local! {
-        static NAMED_BY_ADDR: RefCell<HashMap<usize, String>> = RefCell::new(HashMap::new());
-    }
+    // 02.09a P3: NAMED_BY_ADDR moved to the RuntimeState table (was a
+    // fn-local thread_local — the dedupe keys didn't survive a worker
+    // re-registering the same callable).
     let obj_addr = if let Value::Obj(o) = &v {
         std::sync::Arc::as_ptr(o) as *const u8 as usize
     } else {
         0
     };
     if obj_addr != 0 {
-        let existing = NAMED_BY_ADDR.with(|t| t.borrow().get(&obj_addr).cloned());
+        let existing = {
+            use crate::runtime_state as rs;
+            rs::with_active(rs::NAMED_BY_ADDR_T_acc(), |t| t.get(&obj_addr).cloned())
+        };
         if let Some(name) = existing {
             // Refresh the stored value (the callable may have been re-bound
             // attrs-wise; same identity, cheapest correct answer).
-            NAMED_CALLABLES.with(|t| {
-                t.borrow_mut().insert(name.clone(), v.clone());
-            });
+            named_callables_insert(&name, &v);
             return name;
         }
     }
     let id = NAMED_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
     let name = format!("<ap-named-{id}>");
-    NAMED_CALLABLES.with(|t| {
-        t.borrow_mut().insert(name.clone(), v.clone());
-    });
+    named_callables_insert(&name, &v);
     if obj_addr != 0 {
-        NAMED_BY_ADDR.with(|t| {
-            t.borrow_mut().insert(obj_addr, name.clone());
+        use crate::runtime_state as rs;
+        rs::with_active_mut(rs::NAMED_BY_ADDR_T_acc(), |t| {
+            t.insert(obj_addr, name.clone());
         });
     }
     name
@@ -620,8 +632,8 @@ pub fn call_named_kw(
             }
         }
     }
-    if let Some(v) = NAMED_CALLABLES.with(|t| t.borrow().get(name).cloned()) {
-        let interp = CURRENT.with(|c| c.borrow().clone());
+    if let Some(v) = named_callables_get(name) {
+        let interp = current_interp();
         let interp = match interp {
             Some(i) => i,
             None => return Err(raise("RuntimeError", "no interpreter on this thread")),
@@ -654,9 +666,11 @@ pub fn call_named_kw(
 }
 
 /// Publish the running interpreter (called from the import hook, which fires
-/// on the first import of every run).
+/// on the first import of every run; also the worker-bootstrap seam).
+/// 02.09a P3: routes to the process-global ACTIVE handle — the thread_local
+/// CURRENT is gone (see current_interp).
 pub fn set_current_interp(interp: &Arc<crate::frame::Interpreter>) {
-    CURRENT.with(|c| *c.borrow_mut() = Some(interp.clone()));
+    crate::runtime_state::set_active_interp(interp);
 }
 
 /// Build an iterator object over a native state (public: builtin_zip).
@@ -664,7 +678,7 @@ pub(crate) fn make_iter(state: NativeIterState) -> Value {
     let obj = PyObject::new(ap_obj::ObjKind::Iterator, "iterator");
     let it = crate::iter::PyIterator::new(crate::iter::IterState::Native(Box::new(state)));
     let id = NEXT_ITER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    if let Some(interp) = CURRENT.with(|c| c.borrow().clone()) {
+    if let Some(interp) = current_interp() {
         // Fence-perf fix 2026-11-06: tag the handle so its Drop prunes this
         // table entry (same F5 contract as register_shared_iter_pub). Untagged
         // entries pinned the table forever on native-drain workloads —
@@ -715,7 +729,7 @@ fn lazy_iter(v: &Value) -> Result<NativeIterState, Flow> {
     if let Value::Obj(o) = v {
         if o.kind == ap_obj::ObjKind::Iterator {
             if let Some(id) = *o.gen_id.borrow() {
-                if let Some(interp) = CURRENT.with(|c| c.borrow().clone()) {
+                if let Some(interp) = current_interp() {
                     let probe = {
                         let its = interp.iterators.borrow();
                         its.get(&id).map(|it| match &*it.state.borrow() {
@@ -753,8 +767,22 @@ fn lazy_iter(v: &Value) -> Result<NativeIterState, Flow> {
 
 type ModuleBuilder = fn(&crate::frame::Interpreter) -> Value;
 
-thread_local! {
-    static MODULE_CACHE: RefCell<HashMap<String, Value>> = RefCell::new(HashMap::new());
+// 02.09a P3: MODULE_CACHE moved to the RuntimeState table
+// (runtime_state.rs::MODULE_CACHE_T). The thread_local made `import math`
+// identity differ across threads (audit row: builtins_modules.rs:704,
+// "(c)-borderline ... needs interpreter-confinement with SYS_MODULES for
+// identity") — the per-interp row fixes exactly that.
+
+fn module_cache_get(name: &str) -> Option<Value> {
+    use crate::runtime_state as rs;
+    rs::with_active(rs::MODULE_CACHE_T_acc(), |c| c.get(name).cloned())
+}
+
+fn module_cache_insert(name: &str, v: &Value) {
+    use crate::runtime_state as rs;
+    rs::with_active_mut(rs::MODULE_CACHE_T_acc(), |c| {
+        c.insert(name.to_string(), v.clone());
+    });
 }
 
 fn registry() -> &'static [(&'static str, ModuleBuilder)] {
@@ -863,7 +891,7 @@ pub fn get_or_make_module(interp: &Arc<crate::frame::Interpreter>, name: &str) -
     // `posixpath` and `os.path` are the SAME module object (CPython:
     // os.path is posixpath), so `posixpath.join is os.path.join` holds.
     let name = if name == "posixpath" { "os.path" } else { name };
-    if let Some(v) = MODULE_CACHE.with(|c| c.borrow().get(name).cloned()) {
+    if let Some(v) = module_cache_get(name) {
         return Some(v);
     }
     let builder = registry()
@@ -887,7 +915,7 @@ pub fn get_or_make_module(interp: &Arc<crate::frame::Interpreter>, name: &str) -
     }
     // Submodule links: `os.path`, `encodings.aliases` style attribute access.
     if let Some((parent, child)) = name.rsplit_once('.') {
-        let pv = MODULE_CACHE.with(|c| c.borrow().get(parent).cloned());
+        let pv = module_cache_get(parent);
         if let Some(Value::Obj(po)) = pv {
             if po.kind == ap_obj::ObjKind::Module {
                 if let Some(ns) = &*po.module_ns.borrow() {
@@ -896,7 +924,7 @@ pub fn get_or_make_module(interp: &Arc<crate::frame::Interpreter>, name: &str) -
             }
         }
     }
-    MODULE_CACHE.with(|c| c.borrow_mut().insert(name.to_string(), m.clone()));
+    module_cache_insert(name, &m);
     Some(m)
 }
 
@@ -987,7 +1015,7 @@ fn build_re(_i: &crate::frame::Interpreter) -> Value {
         let _ = ns.set(Value::Str(PyString::new(n)), Value::Obj(f));
     }
     // error/PatternError exception class + Pattern/Match type objects.
-    let err_v = if let Some(interp) = CURRENT.with(|c| c.borrow().clone()) {
+    let err_v = if let Some(interp) = current_interp() {
         crate::classes::exc_class_value(&interp, "PatternError")
             .unwrap_or_else(|| Value::Obj(PyObject::new(ap_obj::ObjKind::Type, "PatternError")))
     } else {
@@ -2732,7 +2760,7 @@ fn re_op_form(
                             "repl must be a string or callable, not {}",
                             other.type_name()
                         ),
-                    ))
+                    ));
                 }
             };
             if op == "sub" {
@@ -2917,7 +2945,7 @@ fn arg2_f64(args: &[Value], fname: &str) -> Result<(f64, f64), Flow> {
             return Err(raise(
                 "TypeError",
                 format!("{fname}() missing required argument"),
-            ))
+            ));
         }
         Some(v) => as_f64(v)?,
     };
@@ -3826,14 +3854,14 @@ fn callable_name(v: &Value) -> Result<String, Flow> {
         // 02.08-full part 1: user classes are callable (json cls=SetEnc).
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass => {
             let name = format!("<ap-cls-{}>", o.name);
-            NAMED_CALLABLES.with(|t| t.borrow_mut().insert(name.clone(), v.clone()));
+            named_callables_insert(&name, &v);
             Ok(name)
         }
         // 02.08-full part 1: interned name-Types are conversion callables
         // (json.loads(..., parse_float=str) — s008 pin).
         Value::Obj(o) if o.kind == ap_obj::ObjKind::Type => {
             let name = format!("<ap-ctor-{}>", o.name);
-            NAMED_CALLABLES.with(|t| t.borrow_mut().insert(name.clone(), v.clone()));
+            named_callables_insert(&name, &v);
             Ok(name)
         }
         Value::Obj(o)
@@ -3994,7 +4022,7 @@ pub fn call_itertools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
                             return Err(raise(
                                 "TypeError",
                                 "islice expected at least 2 arguments, got 0",
-                            ))
+                            ));
                         }
                         2 => (0, Some(as_int_i64(&args[1])?), 1),
                         _ => (
@@ -4329,7 +4357,7 @@ fn call_unicodedata(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> 
             return Some(Err(raise(
                 "TypeError",
                 "normalize() argument 1 must be str",
-            )))
+            )));
         }
     };
     let text = match args.get(1) {
@@ -4338,7 +4366,7 @@ fn call_unicodedata(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> 
             return Some(Err(raise(
                 "TypeError",
                 "normalize() argument 2 must be str",
-            )))
+            )));
         }
     };
     use unicode_normalization::UnicodeNormalization;
@@ -4351,7 +4379,7 @@ fn call_unicodedata(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> 
             return Some(Err(raise(
                 "ValueError",
                 format!("invalid normalization form {other}"),
-            )))
+            )));
         }
     };
     Some(Ok(s(out)))
@@ -4543,7 +4571,7 @@ pub fn call_operator(name: &str, args: &[Value], _kwargs: &[(String, Value)]) ->
                             return Err(raise(
                                 "TypeError",
                                 format!("attribute name must be string, not {}", other.type_name()),
-                            ))
+                            ));
                         }
                     });
                 }
@@ -4592,7 +4620,7 @@ pub fn call_operator(name: &str, args: &[Value], _kwargs: &[(String, Value)]) ->
                         return Err(raise(
                             "TypeError",
                             format!("method name must be string, not {}", other.type_name()),
-                        ))
+                        ));
                     }
                 };
                 // Extras serialize into the marker name (the `<partial:...>`
@@ -4948,7 +4976,7 @@ pub fn call_bisect(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Op
                 return Err(raise(
                     "TypeError",
                     format!("must be a list, not {}", other.type_name()),
-                ))
+                ));
             }
         };
         let x = args
@@ -5086,7 +5114,7 @@ pub fn sort_by_cmp_wrappers(wrapped: &[(Value, Value)]) -> Option<Result<Vec<Val
     if !wrapped.iter().all(|(k, _)| cmp_to_key_cmp(k).is_some()) {
         return None;
     }
-    let interp = CURRENT.with(|c| c.borrow().clone())?;
+    let interp = current_interp()?;
     let mut result: Result<(), Flow> = Ok(());
     out.sort_by(|a, b| {
         if result.is_err() {
@@ -5130,12 +5158,12 @@ pub fn sort_by_cmp_wrappers(wrapped: &[(Value, Value)]) -> Option<Result<Vec<Val
 // concurrent threads minted colliding singledispatch wrapper ids).
 static SD_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-thread_local! {
-    /// s013: singledispatch registries keyed by the `_sd_<id>` marker id.
-    static SD_REGISTRY: RefCell<HashMap<String, SdRegistry>> = RefCell::new(HashMap::new());
-    /// s014: maxsize/typed parked between the two-stage lru_cache calls.
-    static LRU_PENDING: RefCell<Option<(Option<i64>, bool)>> = const { RefCell::new(None) };
-}
+// 02.09a P3: SD_REGISTRY / LRU_PENDING moved to the RuntimeState tables
+// (runtime_state.rs::SD_REGISTRY_T / LRU_PENDING_T). The thread_locals made
+// singledispatch registries and lru wrapper parking invisible across
+// threads (audit row: builtins_modules.rs:4589-4592, "(c) for SD_REGISTRY/
+// LRU_STATE ... holds Values -> also (d)"). A worker registering an
+// implementation now lands in the SAME registry the dispatcher reads.
 
 /// s013: state for one `functools.singledispatch` registry.
 pub(crate) struct SdRegistry {
@@ -5156,10 +5184,9 @@ pub fn tokenizer_iter_obj(_source: &str) -> Value {
 /// T1: interp.rs singledispatch register-by-annotation path needs the
 /// registered impl for (id, key) - exposed through this pub wrapper.
 pub fn sd_registry_lookup_pub(id: &str, key: &str) -> Option<Value> {
-    SD_REGISTRY.with(|t| {
-        t.borrow()
-            .get(id)
-            .and_then(|reg| reg.impls.get(key).cloned())
+    use crate::runtime_state as rs;
+    rs::with_active(rs::SD_REGISTRY_T_acc(), |t| {
+        t.get(id).and_then(|reg| reg.impls.get(key).cloned())
     })
 }
 
@@ -5171,11 +5198,14 @@ pub fn call_functools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
         // impl and return it (CPython register semantics).
         let (id, key) = rest.split_once('_')?;
         let f = args.first().cloned().unwrap_or(Value::None);
-        SD_REGISTRY.with(|t| {
-            if let Some(reg) = t.borrow_mut().get_mut(id) {
-                reg.impls.insert(key.to_string(), f.clone());
-            }
-        });
+        {
+            use crate::runtime_state as rs;
+            rs::with_active_mut(rs::SD_REGISTRY_T_acc(), |t| {
+                if let Some(reg) = t.get_mut(id) {
+                    reg.impls.insert(key.to_string(), f.clone());
+                }
+            });
+        }
         return Some(Ok(f));
     }
     if let Some(rest) = name.strip_prefix("_sd_") {
@@ -5195,33 +5225,35 @@ pub fn call_functools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
         // D4 (memperf audit 2026-11-06): choose INSIDE the borrow — the old
         // path cloned the entire impls HashMap per dispatch call (pathlib/
         // json/pytest plugin hot path).
-        let chosen = SD_REGISTRY.with(|t| {
-            let t = t.borrow();
-            let r = t.get(&id)?;
-            let mut chosen = r.default.clone();
-            if let Some(first) = args.first() {
-                // s013b: dispatch by the receiver's FULL MRO (exact type first,
-                // then bases) — pathlib.Path-registered impls must catch PosixPath
-                // instances (importlib.resources._common as_file).
-                let mut keys: Vec<String> = vec![first.type_name().to_string()];
-                if let Some(interp) = CURRENT.with(|c| c.borrow().clone()) {
-                    if let Some(ct) = crate::classes::class_of_value(&interp, first) {
-                        for m in ct.mro.borrow().iter() {
-                            if !keys.iter().any(|k| k == &m.name) {
-                                keys.push(m.name.clone());
+        let chosen = {
+            use crate::runtime_state as rs;
+            rs::with_active(rs::SD_REGISTRY_T_acc(), |t| {
+                let r = t.get(&id)?;
+                let mut chosen = r.default.clone();
+                if let Some(first) = args.first() {
+                    // s013b: dispatch by the receiver's FULL MRO (exact type first,
+                    // then bases) — pathlib.Path-registered impls must catch PosixPath
+                    // instances (importlib.resources._common as_file).
+                    let mut keys: Vec<String> = vec![first.type_name().to_string()];
+                    if let Some(interp) = current_interp() {
+                        if let Some(ct) = crate::classes::class_of_value(&interp, first) {
+                            for m in ct.mro.borrow().iter() {
+                                if !keys.iter().any(|k| k == &m.name) {
+                                    keys.push(m.name.clone());
+                                }
                             }
                         }
                     }
-                }
-                for key in &keys {
-                    if let Some(f) = r.impls.get(key) {
-                        chosen = f.clone();
-                        break;
+                    for key in &keys {
+                        if let Some(f) = r.impls.get(key) {
+                            chosen = f.clone();
+                            break;
+                        }
                     }
                 }
-            }
-            Some(chosen)
-        });
+                Some(chosen)
+            })
+        };
         let Some(chosen) = chosen else {
             return Some(Err(raise(
                 "RuntimeError",
@@ -5318,15 +5350,18 @@ pub fn call_functools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
                                 "{}",
                                 SD_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                             );
-                            SD_REGISTRY.with(|t| {
-                                t.borrow_mut().insert(
-                                    id.clone(),
-                                    SdRegistry {
-                                        default: f.clone(),
-                                        impls: HashMap::new(),
-                                    },
-                                );
-                            });
+                            {
+                                use crate::runtime_state as rs;
+                                rs::with_active_mut(rs::SD_REGISTRY_T_acc(), |t| {
+                                    t.insert(
+                                        id.clone(),
+                                        SdRegistry {
+                                            default: f.clone(),
+                                            impls: HashMap::new(),
+                                        },
+                                    );
+                                });
+                            }
                             let o = PyObject::new(
                                 ap_obj::ObjKind::Opaque,
                                 format!("functools._sd_{id}"),
@@ -5395,9 +5430,12 @@ pub fn call_functools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
                         None => Some(128),
                     };
                     let typed = kw(kwargs, "typed").map(truthy).unwrap_or(false);
-                    LRU_PENDING.with(|c| {
-                        *c.borrow_mut() = Some((maxsize, typed));
-                    });
+                    {
+                        use crate::runtime_state as rs;
+                        rs::with_active_mut(rs::LRU_PENDING_T_acc(), |c| {
+                            *c = Some((maxsize, typed));
+                        });
+                    }
                     return Ok(marker("functools.__ap_lru_deco__"));
                 }
             }
@@ -5405,9 +5443,11 @@ pub fn call_functools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
             // dispatch name (functools.__ap_lru_deco__) — unwrap it here so
             // `dec = lru_cache(); @dec` reaches the wrapper builder.
             "__ap_lru_deco__" | "functools.__ap_lru_deco__" => {
-                let (maxsize, typed) = LRU_PENDING
-                    .with(|c| c.borrow_mut().take())
-                    .unwrap_or((Some(128), false));
+                let (maxsize, typed) = {
+                    use crate::runtime_state as rs;
+                    rs::with_active_mut(rs::LRU_PENDING_T_acc(), |c| c.take())
+                }
+                .unwrap_or((Some(128), false));
                 if let Some(f) = args.first() {
                     if callable_value(f) {
                         return Ok(lru_wrapper_of_typed(f, maxsize, typed));
@@ -5427,7 +5467,7 @@ pub fn call_functools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
                         .trim_start_matches("functools.__ap_wraps_apply__:")
                         .trim_start_matches("__ap_wraps_apply__:")
                         .to_string();
-                    if let Some(src) = NAMED_CALLABLES.with(|t| t.borrow().get(&srcname).cloned()) {
+                    if let Some(src) = named_callables_get(&srcname) {
                         let read_attr = |attr: &str| -> Option<Value> {
                             let interp = current_interp()?;
                             let rc = std::sync::Arc::new(interp);
@@ -5511,7 +5551,7 @@ pub fn call_functools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
                             return Err(raise(
                                 "TypeError",
                                 "reduce() of empty iterable with no initial value",
-                            ))
+                            ));
                         }
                     },
                 };
@@ -5698,7 +5738,7 @@ pub fn call_functools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
                     .cloned()
                     .ok_or_else(|| raise("TypeError", "update_wrapper expected 2 arguments"))?;
                 let wrapped = args.get(1).cloned().unwrap_or(Value::None);
-                let interp = CURRENT.with(|c| c.borrow().clone());
+                let interp = current_interp();
                 for attr in [
                     "__module__",
                     "__name__",
@@ -5735,8 +5775,8 @@ pub fn call_functools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
 /// module construction; import order guarantees functools is built first).
 #[allow(dead_code)] // kept: part of an unfinished surface (robustness-ci 02.x burn-down leaf)
 fn get_functools_attr(name: &str) -> Value {
-    if let Some(interp) = CURRENT.with(|c| c.borrow().clone()) {
-        if let Some(Value::Obj(mo)) = MODULE_CACHE.with(|c| c.borrow().get("functools").cloned()) {
+    if let Some(interp) = current_interp() {
+        if let Some(Value::Obj(mo)) = module_cache_get("functools") {
             if let Some(ns) = &*mo.module_ns.borrow() {
                 if let Some(v) = ns.get(&s(name)) {
                     return v;
@@ -5794,7 +5834,9 @@ fn build_string(_i: &crate::frame::Interpreter) -> Value {
     ns_const(
         &ns,
         "printable",
-        s("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~ \t\n\r\u{0b}\u{0c}"),
+        s(
+            "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~ \t\n\r\u{0b}\u{0c}",
+        ),
     );
     fn1(&ns, "string", "capwords");
     fn1(&ns, "string", "_ap_raise_keyerror");
@@ -5827,7 +5869,7 @@ pub fn call_string(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> O
                 return Err(raise(
                     "TypeError",
                     format!("bad operand type for capwords(): '{}'", other.type_name()),
-                ))
+                ));
             }
         };
         let sep = match args.get(1) {
@@ -5837,7 +5879,7 @@ pub fn call_string(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> O
                 return Err(raise(
                     "TypeError",
                     format!("bad operand type for capwords(): '{}'", other.type_name()),
-                ))
+                ));
             }
         };
         let parts: Vec<String> = text
@@ -6133,7 +6175,7 @@ fn build_collections_abc(_i: &crate::frame::Interpreter) -> Value {
     for base in crate::importer::sys_path_entries() {
         let f = std::path::Path::new(&base).join("_collections_abc.py");
         if f.is_file() {
-            if let Some(interp) = CURRENT.with(|c| c.borrow().clone()) {
+            if let Some(interp) = current_interp() {
                 if let Ok(m) = crate::importer::import_file_module(&interp, "_collections_abc") {
                     return m;
                 }
@@ -6178,7 +6220,7 @@ fn build_collections(_i: &crate::frame::Interpreter) -> Value {
         fn1(&ns, "collections", n);
     }
     // s015: `abc` submodule surface (collections.abc import identity).
-    if let Some(interp) = CURRENT.with(|c| c.borrow().clone()) {
+    if let Some(interp) = current_interp() {
         if let Some(abc_mod) = get_or_make_module(&interp, "collections.abc") {
             let _ = ns.set(s("abc"), abc_mod);
         }
@@ -6434,7 +6476,7 @@ where
             return Err(raise(
                 "TypeError",
                 format!("expected bytearray, not {}", other.type_name()),
-            ))
+            ));
         }
     };
     let buf = match o.attrs.borrow().get(&s("<data>")) {
@@ -6522,7 +6564,7 @@ fn call_bytearray_method(
                         "fromhex() argument must be str or bytes-like, not {}",
                         other.type_name()
                     ),
-                )))
+                )));
             }
         };
         return Some(bytes_fromhex(&txt).map(|v| match v {
@@ -6936,7 +6978,7 @@ fn build_json(_i: &crate::frame::Interpreter) -> Value {
 }
 
 pub(crate) fn interned_type_pub(name: &str) -> Value {
-    if let Some(interp) = CURRENT.with(|c| c.borrow().clone()) {
+    if let Some(interp) = current_interp() {
         return crate::builtins::interned_type(&interp, name);
     }
     Value::Obj(PyObject::new(ap_obj::ObjKind::Type, name))
@@ -7177,7 +7219,7 @@ impl<'a> JsonParser<'a> {
                         "Unterminated string starting at",
                         self.doc,
                         self.pos,
-                    ))
+                    ));
                 }
                 Some(b'"') => {
                     self.pos += 1;
@@ -7341,7 +7383,7 @@ fn json_loads(v: &Value, kwargs: &[(String, Value)]) -> BResult {
                     "the JSON object must be str, bytes or bytearray, not {}",
                     other.type_name()
                 ),
-            ))
+            ));
         }
     };
     // 02.08-full part 1: cls=<JSONEncoder subclass> default() hook.
@@ -7547,7 +7589,7 @@ fn dump_value(
                                 "keys must be str, int, float, bool or None, not {}",
                                 other.type_name()
                             ),
-                        ))
+                        ));
                     }
                 };
                 dump_string(&ks, ensure_ascii, out);
@@ -7869,7 +7911,7 @@ fn build_os(_i: &crate::frame::Interpreter) -> Value {
     // os.path submodule link + os.error is OSError (SAME object as the
     // builtin OSError name — pull it from the builtins dict so identity
     // holds under 02.03's class registry too).
-    let err_v = CURRENT.with(|c| c.borrow().clone()).and_then(|interp| {
+    let err_v = current_interp().and_then(|interp| {
         interp
             .builtins
             .get(&s("OSError"))
@@ -7887,7 +7929,7 @@ fn build_os(_i: &crate::frame::Interpreter) -> Value {
 }
 
 fn get_or_make_module_cached(name: &str) -> Option<Value> {
-    let interp = CURRENT.with(|c| c.borrow().clone())?;
+    let interp = current_interp()?;
     get_or_make_module(&interp, name)
 }
 
@@ -8586,13 +8628,13 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                             return Err(raise(
                                 "TypeError",
                                 "utime: 'ns' must be a tuple of two ints",
-                            ))
+                            ));
                         }
                         _ => {
                             return Err(raise(
                                 "TypeError",
                                 "utime: 'ns' must be a tuple of two ints",
-                            ))
+                            ));
                         }
                     }
                 } else if let Some(v) = times {
@@ -8611,13 +8653,13 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                             return Err(raise(
                                 "TypeError",
                                 "utime: 'times' must be either a tuple of two ints or None",
-                            ))
+                            ));
                         }
                         _ => {
                             return Err(raise(
                                 "TypeError",
                                 "utime: 'times' must be either a tuple of two ints or None",
-                            ))
+                            ));
                         }
                     }
                 } else {
@@ -9260,7 +9302,7 @@ pub fn call_posixpath(
                             return Err(raise(
                                 "TypeError",
                                 format!("sequence item must be str, not {}", other.type_name()),
-                            ))
+                            ));
                         }
                     });
                 }
@@ -10063,9 +10105,9 @@ pub fn call_platform(name: &str, _args: &[Value], _kwargs: &[(String, Value)]) -
                 );
             }
             *obj.repr_text.borrow_mut() = Some(format!(
-                    "uname_result(system='{}', node='{}', release='{}', version='{}', machine='{}', processor='{}')",
-                    u[0], u[1], u[2], u[3], u[4], u[5]
-                ));
+                "uname_result(system='{}', node='{}', release='{}', version='{}', machine='{}', processor='{}')",
+                u[0], u[1], u[2], u[3], u[4], u[5]
+            ));
             Ok(Value::Obj(obj))
         }
         // Wave-82: scrapy's log_scrapy_info → get_versions →
@@ -10160,7 +10202,14 @@ fn make_struct_time(fields: [i64; 9]) -> Value {
     }
     *obj.repr_text.borrow_mut() = Some(format!(
         "time.struct_time(tm_year={}, tm_mon={}, tm_mday={}, tm_hour={}, tm_min={}, tm_sec={}, tm_wday={}, tm_yday={}, tm_isdst={})",
-        fields[0], fields[1], fields[2], fields[3], fields[4], fields[5], fields[6], fields[7],
+        fields[0],
+        fields[1],
+        fields[2],
+        fields[3],
+        fields[4],
+        fields[5],
+        fields[6],
+        fields[7],
         fields[8]
     ));
     Value::Obj(obj)
@@ -10568,19 +10617,27 @@ fn build_queue(_i: &crate::frame::Interpreter) -> Value {
     crate::threading_call::build_queue_module(_i)
 }
 
-pub fn call_atexit(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Option<BResult> {
+fn call_atexit(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Option<BResult> {
     let r: BResult = (|| -> BResult {
         match name {
             "register" => {
                 let f = required(args, "register")?;
                 let fname = name_callable(f);
-                ATEXIT_FNS.with(|t| t.borrow_mut().push((fname, args[1..].to_vec())));
+                {
+                    use crate::runtime_state as rs;
+                    rs::with_active_mut(rs::ATEXIT_FNS_T_acc(), |t| {
+                        t.push((fname, args[1..].to_vec()))
+                    });
+                }
                 Ok(f.clone())
             }
             "unregister" => {
                 let f = required(args, "unregister")?;
                 let fname = name_callable(f);
-                ATEXIT_FNS.with(|t| t.borrow_mut().retain(|(n, _)| *n != fname));
+                {
+                    use crate::runtime_state as rs;
+                    rs::with_active_mut(rs::ATEXIT_FNS_T_acc(), |t| t.retain(|(n, _)| *n != fname));
+                }
                 Ok(Value::None)
             }
             "exit" => Ok(Value::None),
@@ -10596,7 +10653,10 @@ pub fn call_atexit(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> O
 /// Drain atexit callbacks LIFO (called from the run_module tail hook).
 pub fn drain_atexit() {
     loop {
-        let entry = ATEXIT_FNS.with(|t| t.borrow_mut().pop());
+        let entry = {
+            use crate::runtime_state as rs;
+            rs::with_active_mut(rs::ATEXIT_FNS_T_acc(), |t| t.pop())
+        };
         match entry {
             Some((name, args)) => {
                 let _ = call_named(&name, &args);
@@ -11480,7 +11540,7 @@ fn build_zlib(_i: &crate::frame::Interpreter) -> Value {
         fn1(&ns, "zlib", n);
     }
     // zlib.error — a real exception class so `except zlib.error` binds.
-    if let Some(interp) = CURRENT.with(|c| c.borrow().clone()) {
+    if let Some(interp) = current_interp() {
         let parent = crate::classes::exc_class_value(&interp, "Exception")
             .and_then(|v| crate::classes::type_of(&interp, &v));
         let base = parent.unwrap_or_else(|| crate::classes::object_class(&interp));
@@ -11578,11 +11638,7 @@ pub fn call_zlib(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opt
                             .and_then(|_| e.finish())
                             .map_err(|e| zlib_error(e.to_string()))?
                     }
-                    _ => {
-                        return Err(zlib_error(
-                            "Bad value for wbits parameter".to_string(),
-                        ))
-                    }
+                    _ => return Err(zlib_error("Bad value for wbits parameter".to_string())),
                 };
                 Ok(Value::Bytes(Gc::new(out)))
             }
@@ -11722,7 +11778,7 @@ fn build_select(_i: &crate::frame::Interpreter) -> Value {
     fn1(&ns, "select", "poll");
     fn1(&ns, "select", "kqueue");
     // select.error IS OSError in CPython (identity probed on 3.14.7).
-    if let Some(ev) = CURRENT.with(|c| c.borrow().clone()).and_then(|interp| {
+    if let Some(ev) = current_interp().and_then(|interp| {
         interp
             .builtins
             .get(&s("OSError"))
@@ -11941,11 +11997,7 @@ fn select_poll_method(m: &str, args: &[Value]) -> Option<BResult> {
                         Ok(x) => x,
                         Err(f) => return Some(Err(f)),
                     };
-                    if t < 0.0 {
-                        -1
-                    } else {
-                        t.ceil() as i32
-                    }
+                    if t < 0.0 { -1 } else { t.ceil() as i32 }
                 }
                 _ => -1, // block
             };
@@ -12040,7 +12092,7 @@ fn build_binascii(_i: &crate::frame::Interpreter) -> Value {
     }
     // error/Incomplete exception classes (real Type payloads so
     // `except binascii.Error` binds + matches).
-    let err_v = if let Some(interp) = CURRENT.with(|c| c.borrow().clone()) {
+    let err_v = if let Some(interp) = current_interp() {
         let parent = crate::classes::exc_class_value(&interp, "ValueError")
             .and_then(|v| crate::classes::type_of(&interp, &v));
         let base = parent.unwrap_or_else(|| crate::classes::object_class(&interp));
@@ -12279,7 +12331,7 @@ pub fn call_binascii(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> 
                             return Err(raise(
                                 "TypeError",
                                 format!("newline must be bool, not {}", v.type_name()),
-                            ))
+                            ));
                         }
                     },
                     None => true,
@@ -12325,7 +12377,7 @@ pub fn call_binascii(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> 
                             return Err(raise(
                                 "TypeError",
                                 format!("strict_mode must be bool, not {}", v.type_name()),
-                            ))
+                            ));
                         }
                     },
                     None => false,
@@ -12440,7 +12492,7 @@ pub fn call_binascii(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> 
                         return Err(raise(
                             "TypeError",
                             format!("expected bytes or str, not {}", other.type_name()),
-                        ))
+                        ));
                     }
                 };
                 let txt: String = txt.chars().filter(|c| !c.is_whitespace()).collect();
@@ -13516,32 +13568,35 @@ pub(crate) fn lru_wrapper_of_typed(f: &Value, maxsize: Option<i64>, typed: bool)
         "_lruwrapper_{}",
         SD_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     );
-    LRU_STATE.with(|t| {
-        t.borrow_mut().insert(
-            id.clone(),
-            LruState {
-                wrapped: f.clone(),
-                maxsize,
-                typed,
-                cache: std::collections::HashMap::new(),
-                nodes: std::collections::HashMap::new(),
-                node_key: Vec::new(),
-                node_prev: Vec::new(),
-                node_next: Vec::new(),
-                head: LRU_NIL,
-                tail: LRU_NIL,
-                free: Vec::new(),
-                hits: 0,
-                misses: 0,
-            },
-        );
-    });
+    {
+        use crate::runtime_state as rs;
+        rs::with_active_mut(rs::LRU_STATE_T_acc(), |t| {
+            t.insert(
+                id.clone(),
+                LruState {
+                    wrapped: f.clone(),
+                    maxsize,
+                    typed,
+                    cache: std::collections::HashMap::new(),
+                    nodes: std::collections::HashMap::new(),
+                    node_key: Vec::new(),
+                    node_prev: Vec::new(),
+                    node_next: Vec::new(),
+                    head: LRU_NIL,
+                    tail: LRU_NIL,
+                    free: Vec::new(),
+                    hits: 0,
+                    misses: 0,
+                },
+            );
+        });
+    }
     marker(&format!("functools.{id}"))
 }
-thread_local! {
-    /// s014: lru wrapper state keyed by the `_lruwrapper_<id>` marker id.
-    static LRU_STATE: RefCell<HashMap<String, LruState>> = RefCell::new(HashMap::new());
-}
+// 02.09a P3: LRU_STATE moved to the RuntimeState table
+// (runtime_state.rs::LRU_STATE_T). The thread_local made wrapper memo
+// state diverge across threads (audit row: builtins_modules.rs:12793,
+// "(c)+(d) — memoization caches Values ... not for wrapper identity").
 
 /// s014: one lru_cache wrapper's memoization state.
 pub(crate) struct LruState {
@@ -13657,8 +13712,9 @@ impl LruState {
 /// `_sd_register_deco` arm mirrors registrations here so the `_sd_<id>`
 /// dispatch sees them).
 pub fn sd_registry_insert_pub(id: &str, key: &str, f: Value) {
-    SD_REGISTRY.with(|t| {
-        if let Some(reg) = t.borrow_mut().get_mut(id) {
+    use crate::runtime_state as rs;
+    rs::with_active_mut(rs::SD_REGISTRY_T_acc(), |t| {
+        if let Some(reg) = t.get_mut(id) {
             reg.impls.insert(key.to_string(), f);
         }
     });
@@ -13669,78 +13725,86 @@ pub fn lru_wrapper_call_id(id: &str, args: &[Value], kwargs: &[(String, Value)])
     for (k, v) in kwargs {
         key_parts.push(format!("{k}={}", encode_key_part(v)));
     }
-    let hit = LRU_STATE.with(|t| {
-        let mut m = t.borrow_mut();
-        let st = m.get_mut(id);
-        match st {
-            Some(s) => {
-                if s.typed {
-                    key_parts.push(format!(
-                        "#types:{}",
-                        args.iter()
-                            .map(|v| v.type_name())
-                            .collect::<Vec<_>>()
-                            .join(",")
-                    ));
+    let hit = {
+        use crate::runtime_state as rs;
+        rs::with_active_mut(rs::LRU_STATE_T_acc(), |m| {
+            let st = m.get_mut(id);
+            match st {
+                Some(s) => {
+                    if s.typed {
+                        key_parts.push(format!(
+                            "#types:{}",
+                            args.iter()
+                                .map(|v| v.type_name())
+                                .collect::<Vec<_>>()
+                                .join(",")
+                        ));
+                    }
+                    let key = key_parts.join("\u{1f}");
+                    if s.nodes.contains_key(&key) {
+                        // Hit: LRU refresh + counter (O(1); was a linear
+                        // `order.iter().position` scan + O(n) Vec shift).
+                        s.hits += 1;
+                        s.lru_touch(&key);
+                        Some(s.cache.get(&key).cloned().unwrap_or(Value::None))
+                    } else {
+                        s.misses += 1;
+                        None
+                    }
                 }
-                let key = key_parts.join("\u{1f}");
-                if s.nodes.contains_key(&key) {
-                    // Hit: LRU refresh + counter (O(1); was a linear
-                    // `order.iter().position` scan + O(n) Vec shift).
-                    s.hits += 1;
-                    s.lru_touch(&key);
-                    Some(s.cache.get(&key).cloned().unwrap_or(Value::None))
-                } else {
-                    s.misses += 1;
-                    None
-                }
+                None => None,
             }
-            None => None,
-        }
-    });
+        })
+    };
     if let Some(hit_val) = hit {
         return Ok(hit_val);
     }
-    let fv = LRU_STATE.with(|t| {
-        t.borrow()
-            .get(id)
-            .map(|s| s.wrapped.clone())
-            .unwrap_or(Value::None)
-    });
+    let fv = {
+        use crate::runtime_state as rs;
+        rs::with_active(rs::LRU_STATE_T_acc(), |t| {
+            t.get(id).map(|s| s.wrapped.clone()).unwrap_or(Value::None)
+        })
+    };
     let key = key_parts.join("\u{1f}");
     let val = crate::interp::call_value_pub2(&fv, args, kwargs)?;
-    LRU_STATE.with(|t| {
-        if let Some(s) = t.borrow_mut().get_mut(id) {
-            let maxsize = s.maxsize;
-            // G9 (oom-bughunt 2026-11-06): `maxsize=0` means DO NOT CACHE
-            // (CPython lru_cache: `if maxsize == 0: ... don't insert`). The
-            // old gate `maxsize.map(|m| m > 0).unwrap_or(false)` still
-            // inserted unconditionally and only skipped EVICTION — an
-            // unbounded pin of every distinct result. Some(0) and any
-            // negative maxsize insert nothing; maxsize=None stays unbounded.
-            if matches!(maxsize, Some(m) if m > 0) {
-                s.cache.insert(key.clone(), val.clone());
-                s.lru_push_new(key);
-                let limit = maxsize.unwrap_or(0);
-                while s.lru_len() as i64 > limit {
-                    if let Some(oldest) = s.lru_evict_oldest() {
-                        s.cache.remove(&oldest);
-                    } else {
-                        break;
+    {
+        use crate::runtime_state as rs;
+        rs::with_active_mut(rs::LRU_STATE_T_acc(), |t| {
+            if let Some(s) = t.get_mut(id) {
+                let maxsize = s.maxsize;
+                // G9 (oom-bughunt 2026-11-06): `maxsize=0` means DO NOT CACHE
+                // (CPython lru_cache: `if maxsize == 0: ... don't insert`). The
+                // old gate `maxsize.map(|m| m > 0).unwrap_or(false)` still
+                // inserted unconditionally and only skipped EVICTION — an
+                // unbounded pin of every distinct result. Some(0) and any
+                // negative maxsize insert nothing; maxsize=None stays unbounded.
+                if matches!(maxsize, Some(m) if m > 0) {
+                    s.cache.insert(key.clone(), val.clone());
+                    s.lru_push_new(key);
+                    let limit = maxsize.unwrap_or(0);
+                    while s.lru_len() as i64 > limit {
+                        if let Some(oldest) = s.lru_evict_oldest() {
+                            s.cache.remove(&oldest);
+                        } else {
+                            break;
+                        }
                     }
                 }
             }
-        }
-    });
+        });
+    }
     Ok(val)
 }
 
 /// s014: cache_info for a wrapper id (NamedTuple with live stats).
 pub(crate) fn lru_cache_info_id(id: &str) -> Value {
-    let (hits, misses, maxsize, currsize) = LRU_STATE.with(|t| match t.borrow().get(id) {
-        Some(s) => (s.hits, s.misses, s.maxsize, s.cache.len() as i64),
-        None => (0, 0, None, 0),
-    });
+    let (hits, misses, maxsize, currsize) = {
+        use crate::runtime_state as rs;
+        rs::with_active(rs::LRU_STATE_T_acc(), |t| match t.get(id) {
+            Some(s) => (s.hits, s.misses, s.maxsize, s.cache.len() as i64),
+            None => (0, 0, None, 0),
+        })
+    };
     // NOTE: the payload is named "tuple" so isinstance(ci, tuple) holds
     // (type_name rides the NamedTuple name); the repr_text override keeps
     // the CPython "CacheInfo(...)" display form.
@@ -13784,8 +13848,9 @@ pub(crate) fn lru_cache_info_id(id: &str) -> Value {
 
 /// s014: cache_clear for a wrapper id.
 pub(crate) fn lru_cache_clear_id(id: &str) {
-    LRU_STATE.with(|t| {
-        if let Some(s) = t.borrow_mut().get_mut(id) {
+    use crate::runtime_state as rs;
+    rs::with_active_mut(rs::LRU_STATE_T_acc(), |t| {
+        if let Some(s) = t.get_mut(id) {
             s.cache.clear();
             s.lru_clear_all();
             s.hits = 0;
@@ -13797,8 +13862,9 @@ pub(crate) fn lru_cache_clear_id(id: &str) {
 /// s014: cache_parameters for a wrapper id (maxsize/typed dict).
 pub(crate) fn lru_cache_parameters_id(id: &str) -> Value {
     let d = ap_obj::dict::PyDict::new();
-    LRU_STATE.with(|t| {
-        if let Some(st) = t.borrow().get(id) {
+    use crate::runtime_state as rs;
+    rs::with_active(rs::LRU_STATE_T_acc(), |t| {
+        if let Some(st) = t.get(id) {
             let _ = d.set(
                 s("maxsize"),
                 match st.maxsize {
@@ -14004,14 +14070,14 @@ pub fn call_native(
     match mod_name {
         // 02.07: threading + queue take the CURRENT interpreter handle.
         "threading" => {
-            let interp = CURRENT.with(|c| c.borrow().clone());
+            let interp = current_interp();
             match interp {
                 Some(i) => crate::threading_call::call_threading(&i, fname, args, kwargs),
                 None => Some(Err(raise("RuntimeError", "no interpreter on this thread"))),
             }
         }
         "queue" => {
-            let interp = CURRENT.with(|c| c.borrow().clone());
+            let interp = current_interp();
             match interp {
                 Some(i) => crate::threading_call::call_queue(&i, fname, args, kwargs),
                 None => Some(Err(raise("RuntimeError", "no interpreter on this thread"))),
@@ -14495,9 +14561,7 @@ pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
                     let (fname, argstr) = body.split_once(':')?;
                     return match name {
                         "func" => {
-                            if let Some(v) =
-                                NAMED_CALLABLES.with(|t| t.borrow().get(fname).cloned())
-                            {
+                            if let Some(v) = named_callables_get(fname) {
                                 Some(v)
                             } else if fname.contains('.') {
                                 Some(marker(fname))
@@ -14548,12 +14612,12 @@ pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
                         "cache_info" => return Some(marker(&format!("functools._lruci_{st_key}"))),
                         "cache_clear" => return Some(marker(&format!("functools._lruc_{st_key}"))),
                         "cache_parameters" => {
-                            return Some(marker(&format!("functools._lrup_{st_key}")))
+                            return Some(marker(&format!("functools._lrup_{st_key}")));
                         }
                         "__wrapped__" => {
-                            return LRU_STATE.with(|t| {
-                                t.borrow()
-                                    .get(&format!("_lruwrapper_{id}"))
+                            use crate::runtime_state as rs;
+                            return rs::with_active(rs::LRU_STATE_T_acc(), |t| {
+                                t.get(&format!("_lruwrapper_{id}"))
                                     .map(|s| s.wrapped.clone())
                             });
                         }
@@ -14641,7 +14705,7 @@ pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
                         return Some(Value::Obj(pm));
                     }
                     match name {
-                        "func" => NAMED_CALLABLES.with(|t| t.borrow().get(fid).cloned()),
+                        "func" => named_callables_get(fid),
                         "args" => {
                             let vals: Vec<Value> = if argstr.is_empty() {
                                 vec![]
@@ -14905,11 +14969,7 @@ pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
                                 any = true;
                             }
                         }
-                        if any {
-                            i(last)
-                        } else {
-                            Value::None
-                        }
+                        if any { i(last) } else { Value::None }
                     }),
                     "lastgroup" => crate::sre::match_of(obj).map(|mb| {
                         let mut last: Option<usize> = None;
@@ -15196,7 +15256,7 @@ fn builtin_value_method_exists(tag: &str, name: &str) -> bool {
 fn resolve_callable_marker(v: &Value) -> Option<Value> {
     if let Value::Str(n) = v {
         let name = n.as_str();
-        if let Some(v2) = NAMED_CALLABLES.with(|t| t.borrow().get(name).cloned()) {
+        if let Some(v2) = named_callables_get(name) {
             return Some(v2);
         }
         if name.contains('.') && crate::builtins::is_builtin_marker_name(name) {
@@ -15317,7 +15377,7 @@ pub fn call_native_marker(full: &str, args: &[Value]) -> Option<BResult> {
                             return Some(Err(raise(
                                 "TypeError",
                                 "not enough positional arguments during partial call",
-                            )))
+                            )));
                         }
                     }
                 } else {
@@ -15462,7 +15522,7 @@ pub fn call_native_marker(full: &str, args: &[Value]) -> Option<BResult> {
                         return Some(Err(raise(
                             "TypeError",
                             "hexdigest() missing required argument 'length' (pos 1)",
-                        )))
+                        )));
                     }
                 };
                 let data = match args.first() {
@@ -15547,7 +15607,7 @@ fn blake2_variable_hex(
     // Keyed/parameterized: Mac cores are generic over the output SIZE as a
     // typenum; dispatch the common sizes and clamp the rest to the max
     // (digest_size was already range-validated 1..=max by the caller).
-    use blake2::digest::consts::{U16, U20, U24, U28, U32, U48, U64, U8};
+    use blake2::digest::consts::{U8, U16, U20, U24, U28, U32, U48, U64};
     macro_rules! keyed_hex {
         ($core:ty) => {{
             use blake2::digest::FixedOutput;
@@ -15589,7 +15649,7 @@ fn attr_lookup_value(v: &Value, name: &str) -> Result<Value, Flow> {
             return Ok(x);
         }
     }
-    let interp = match CURRENT.with(|c| c.borrow().clone()) {
+    let interp = match current_interp() {
         Some(i) => i,
         None => return Err(raise("RuntimeError", "no interpreter on this thread")),
     };
@@ -15648,8 +15708,15 @@ thread_local! {
 }
 
 /// Public handle to the thread-current interpreter.
+/// 02.09a P3 (the census's dual-handle seam): CURRENT was the SECOND
+/// thread_local interp binding (interp.rs's CURRENT_INTERP is the first) —
+/// two parallel bindings of one concept, each with its own set-at-wrong-
+/// moment window. Both now route to the process-global ACTIVE handle
+/// (runtime_state.rs), seeded at run entry by gcsupport::install and at
+/// worker bootstrap. current_interp() is the read seam for every call site
+/// that used to read CURRENT.
 pub fn current_interp() -> Option<Arc<crate::frame::Interpreter>> {
-    CURRENT.with(|c| c.borrow().clone())
+    crate::runtime_state::active_interp_opt().map(|(_, i)| i)
 }
 
 /// Call-marker dispatch for object-shaped callees (deque methods etc).
@@ -15865,7 +15932,7 @@ pub fn call_builtin_values(
                                 fname,
                                 recv.type_name()
                             ),
-                        ))
+                        ));
                     }
                 };
                 match a(1) {
@@ -15902,7 +15969,7 @@ pub fn call_builtin_values(
                                 return Err(raise(
                                     "SystemError",
                                     "no interpreter for pydict.update",
-                                ))
+                                ));
                             }
                         };
                         let keys_f = match crate::builtins::attr_get_pub(&interp, &other, "keys") {
@@ -15911,7 +15978,7 @@ pub fn call_builtin_values(
                                 return Err(raise(
                                     "TypeError",
                                     format!("'{}' object is not a mapping", other.type_name()),
-                                ))
+                                ));
                             }
                         };
                         let keys_v = crate::interp::call_value_pub2(&keys_f, &[], &[])?;
@@ -15928,7 +15995,7 @@ pub fn call_builtin_values(
                                                 "'{}' object is not a mapping",
                                                 other.type_name()
                                             ),
-                                        ))
+                                        ));
                                     }
                                 };
                             let v = crate::interp::call_value_pub2(
@@ -15999,7 +16066,7 @@ pub fn call_builtin_values(
                                 fname,
                                 recv.type_name()
                             ),
-                        ))
+                        ));
                     }
                 };
                 // D9 (memperf audit 2026-11-06): iterator passes over the
@@ -16060,7 +16127,7 @@ pub fn call_builtin_values(
                                 fname,
                                 recv.type_name()
                             ),
-                        ))
+                        ));
                     }
                 };
                 let mut out = Vec::with_capacity(len);
@@ -16089,7 +16156,7 @@ pub fn call_builtin_values(
                                 fname,
                                 recv.type_name()
                             ),
-                        ))
+                        ));
                     }
                 };
                 Ok(Value::Int(ap_obj::Int::from_i64(
@@ -16108,7 +16175,7 @@ pub fn call_builtin_values(
                                 fname,
                                 recv.type_name()
                             ),
-                        ))
+                        ));
                     }
                 };
                 let pv = a(1).ok_or_else(|| raise("TypeError", "expected prefix argument"))?;
@@ -16150,7 +16217,7 @@ pub fn call_builtin_values(
                         return Err(raise(
                             "TypeError",
                             "startswith first arg must be str or a tuple of str",
-                        ))
+                        ));
                     }
                 };
                 Ok(Value::Bool(hit))
@@ -16168,7 +16235,7 @@ pub fn call_builtin_values(
                                 fname,
                                 recv.type_name()
                             ),
-                        ))
+                        ));
                     }
                 };
                 // D6 (memperf audit 2026-11-06): 256-entry bitmap membership
@@ -16222,7 +16289,7 @@ pub fn call_builtin_values(
                                 fname,
                                 recv.type_name()
                             ),
-                        ))
+                        ));
                     }
                 };
                 let sep_v = a(1);
@@ -16550,7 +16617,7 @@ pub fn call_builtin_values(
                                     "sep must be a 1-byte value, got bytes of length {}",
                                     x.len()
                                 ),
-                            ))
+                            ));
                         }
                         Some(Value::Str(x)) => {
                             return Err(raise(
@@ -16559,13 +16626,13 @@ pub fn call_builtin_values(
                                     "sep must be a 1-byte value, got str of length {}",
                                     x.as_str().len()
                                 ),
-                            ))
+                            ));
                         }
                         Some(other) => {
                             return Err(raise(
                                 "TypeError",
                                 format!("sep must be a 1-byte value, got {}", other.type_name()),
-                            ))
+                            ));
                         }
                         None => None,
                     };
@@ -16601,11 +16668,7 @@ pub fn call_builtin_values(
                         if matches!(args.first(), Some(Value::Bytes(_)) | Some(Value::Str(_))) {
                             // UNBOUND spelling: receiver slot already carries the
                             // (empty) instance — the string arg follows it.
-                            if args.len() >= 2 {
-                                1
-                            } else {
-                                0
-                            }
+                            if args.len() >= 2 { 1 } else { 0 }
                         } else {
                             0
                         },
@@ -16623,7 +16686,7 @@ pub fn call_builtin_values(
                                 "fromhex() argument must be str or bytes-like, not {}",
                                 other.type_name()
                             ),
-                        ))
+                        ));
                     }
                 };
                 // bytearray.fromhex returns a BYTEARRAY (CPython); only the
@@ -16645,7 +16708,7 @@ pub fn call_builtin_values(
                     if let Some(kv) = kw(kwargs, "key") {
                         if cmp_to_key_cmp(kv).is_some() {
                             let cmp = cmp_to_key_cmp(kv).unwrap();
-                            let interp = CURRENT.with(|c| c.borrow().clone());
+                            let interp = current_interp();
                             let Some(interp) = interp else {
                                 return Err(raise("RuntimeError", "no interpreter on this thread"));
                             };
@@ -16697,11 +16760,7 @@ pub fn call_builtin_values(
                                 } else {
                                     std::cmp::Ordering::Equal
                                 };
-                                if reverse {
-                                    ord.reverse()
-                                } else {
-                                    ord
-                                }
+                                if reverse { ord.reverse() } else { ord }
                             });
                             items = wrapped.into_iter().map(|(_, v)| v).collect();
                             // D2: batch in-place rewrite (one clear + appends
@@ -16734,11 +16793,7 @@ pub fn call_builtin_values(
                         } else {
                             std::cmp::Ordering::Greater
                         };
-                        if reverse {
-                            ord.reverse()
-                        } else {
-                            ord
-                        }
+                        if reverse { ord.reverse() } else { ord }
                     });
                     keyed.reverse();
                     l.clear();
@@ -17469,7 +17524,7 @@ pub fn call_builtin_values(
                                         "sequence item {n}: expected a bytes-like object, {} found",
                                         other.type_name()
                                     ),
-                                ))
+                                ));
                             }
                         }
                     }
@@ -17824,7 +17879,7 @@ pub fn call_builtin_values(
                         return Err(raise(
                             "TypeError",
                             "maketrans arguments must be a mapping or sequences",
-                        ))
+                        ));
                     }
                 }
                 if let Some(Value::Str(z)) = &z_v {
@@ -18028,7 +18083,7 @@ pub fn call_builtin_values(
                                 fname,
                                 recv.type_name()
                             ),
-                        ))
+                        ));
                     }
                 };
                 let is_frozen = matches!(&recv, Value::Frozen(_));
@@ -18110,7 +18165,7 @@ pub fn call_builtin_values(
                                 fname,
                                 recv.type_name()
                             ),
-                        ))
+                        ));
                     }
                 };
                 let other = match a(1) {
@@ -18136,7 +18191,7 @@ pub fn call_builtin_values(
                                 fname,
                                 recv.type_name()
                             ),
-                        ))
+                        ));
                     }
                 };
                 let other = match a(1) {
@@ -18431,7 +18486,7 @@ pub fn call_builtin_values(
                                                 _ => String::new(),
                                             })
                                             .unwrap_or_default(),
-                                    ))
+                                    ));
                                 }
                             }
                         };
@@ -18556,7 +18611,7 @@ pub(crate) fn decode_arg(tok: &str) -> Value {
         return Value::Bool(rest == "1");
     }
     if let Some(rest) = tok.strip_prefix("c:") {
-        if let Some(v) = NAMED_CALLABLES.with(|t| t.borrow().get(rest).cloned()) {
+        if let Some(v) = named_callables_get(rest) {
             return v;
         }
     }
@@ -19159,7 +19214,7 @@ fn build_jmespath_shim(_i: &crate::frame::Interpreter) -> Value {
         "LexerError",
         "EmptyExpressionError",
     ] {
-        let ev = if let Some(interp) = CURRENT.with(|c| c.borrow().clone()) {
+        let ev = if let Some(interp) = current_interp() {
             crate::classes::exc_class_value(&interp, exc)
                 .unwrap_or_else(|| Value::Obj(PyObject::new(ap_obj::ObjKind::Type, exc)))
         } else {
