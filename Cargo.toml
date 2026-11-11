@@ -10,6 +10,7 @@ members = [
     "crates/ap-codegen-native",
     "crates/ap-codegen-wasm",
     "crates/ap-host",
+    "crates/ap-aot-crt",
     "crates/ap-cli",
     "crates/ap-conform",
     "crates/xtask",

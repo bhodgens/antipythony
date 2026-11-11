@@ -1,0 +1,17 @@
+[package]
+name = "ap-aot-crt"
+description = "staticlib CRT for AoT binaries: main + gc init + catch_unwind + manifest registration"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+# staticlib: the linker pulls only the objects it needs (dead-strip keeps
+# the rest out of the final binary).
+crate-type = ["staticlib"]
+
+[dependencies]
+ap-run = { path = "../ap-run" }
+
+[lints]
+workspace = true  # robustness-ci 02.01 - see root Cargo.toml [workspace.lints]

@@ -69,7 +69,24 @@ fn raise(class: &str, msg: impl Into<String>) -> Flow {
 // Entry
 // ===========================================================================
 
-/// Parse + lower + run a module.
+thread_local! {
+    /// 02.06 CRT seam: argv words after the binary path (the sys module's
+    /// argv builder appends these after script_path; empty in run verb).
+    static ARGV_TAIL: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// 02.06: the binary's argv tail (called by ap-aot-crt before run_module).
+pub fn set_argv_tail(tail: Vec<String>) {
+    ARGV_TAIL.with(|c| *c.borrow_mut() = tail);
+}
+
+/// The argv tail for builtins::sys (empty outside the AoT binary).
+pub fn argv_tail() -> Vec<String> {
+    ARGV_TAIL.with(|c| c.borrow().clone())
+}
+
+/// Parse + lower + run a module (the tier-0 / AoT-binary entry seam).
 pub fn run_module(
     source: &str,
     script_path: &str,
@@ -196,6 +213,12 @@ pub fn run_module(
     }
     // 02.05a-residual: JIT-exercise report at exit (APX_TIER_STATS=1).
     crate::jit_hook::report_line();
+    // 02.06: AOT dispatch report (same knob; separate [AOT-STATS] line).
+    if std::env::var("APX_TIER_STATS").map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false) {
+        if let Some(line) = crate::aot_runtime::stats_line() {
+            eprintln!("{line}");
+        }
+    }
     // 02.05e: join the background tier-up compiler before the interpreter
     // state drops (pon shutdown discipline — join before dropping retained
     // modules; happens once per process, at the exit seam).
@@ -7766,6 +7789,13 @@ fn call_function(
     }
     let result: Result<Value, Flow> = if let Some(body) = lambda_body {
         eval_expr(interp, &frame, &body, &current_registry(interp))
+    } else if let Some(aot_idx) = crate::aot_runtime::entry_for(&def.name) {
+        // 02.06 AOT entry hook (the FIRST dispatch arm): a registered
+        // binary body executes through the linked object code — the same
+        // lowering + host seams as the JIT route. Only MAIN-module defs
+        // resolve (manifest qualnames are main-module def names);
+        // everything else falls through the routes below untouched.
+        crate::aot_runtime::call_body(aot_idx, interp, &frame, &entry)
     } else if crate::jit_hook::tier_mode().jit_enabled() {
         // 02.05a JIT entry hook (the ONE dispatch arm): route the body
         // through the compiled cfg::Func baseline. Ok(None) = fallback
