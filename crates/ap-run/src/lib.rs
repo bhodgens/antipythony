@@ -35,6 +35,7 @@ pub mod lxml;
 pub mod mbc;
 pub mod methods;
 pub mod rss_guard;
+pub mod send_value;
 pub mod sre;
 pub mod sre_tables;
 pub mod structmod;

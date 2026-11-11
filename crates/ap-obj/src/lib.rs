@@ -100,6 +100,7 @@ pub mod gc_gate;
 pub mod hash;
 pub mod int;
 pub mod list_repr;
+pub mod markers;
 pub mod object;
 pub mod ops;
 pub mod str_repr;

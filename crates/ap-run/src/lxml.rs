@@ -109,6 +109,14 @@ pub struct LxDoc {
     pub base_url: Option<String>,
 }
 
+// 02.09a P4/P5 staged marker (see ap_obj::markers + int.rs contract):
+// LxDoc itself is an immutable arena; the RefCell the compiler flags lives
+// in the DOCS table's Arc<RefCell<LxDoc>> slots. All slot mutation happens
+// under the process-global DOCS Mutex (the table's lock is the
+// serialization the type system cannot see); refcount traffic is Arc.
+unsafe impl Send for LxDoc {}
+unsafe impl Sync for LxDoc {}
+
 impl LxDoc {
     fn get(&self, idx: usize) -> &LxNode {
         &self.nodes[idx]
@@ -119,7 +127,30 @@ impl LxDoc {
 }
 
 /// The shared document every element object of one parse points at.
-pub type SharedDoc = Arc<RefCell<LxDoc>>;
+/// Strong doc slot: newtype over `Arc<RefCell<LxDoc>` so the DOCS registry
+/// (process-global, Mutex-guarded) can claim Send/Sync. 02.09a P4/P5 staged
+/// marker (see ap_obj::markers + int.rs contract): the slot's RefCell is
+/// touched ONLY under the DOCS table Mutex (and the historical GIL before
+/// this leaf); borrow-flag UB stays unreachable by protocol. Orphan rules
+/// forbid marking `RefCell` itself, hence the wrapper. Deref keeps every
+/// existing borrow()/borrow_mut() call site unchanged.
+pub struct SharedDoc(pub Arc<std::cell::RefCell<LxDoc>>);
+
+impl std::ops::Deref for SharedDoc {
+    type Target = std::cell::RefCell<LxDoc>;
+    fn deref(&self) -> &std::cell::RefCell<LxDoc> {
+        &self.0
+    }
+}
+
+impl Clone for SharedDoc {
+    fn clone(&self) -> Self {
+        SharedDoc(self.0.clone())
+    }
+}
+
+unsafe impl Send for SharedDoc {}
+unsafe impl Sync for SharedDoc {}
 
 // ===========================================================================
 // HTML tokenizer + lenient tree builder (libxml2-recover-flavored subset)
@@ -1518,8 +1549,27 @@ pub fn is_lx_element(v: &Value) -> bool {
 /// are reusable but the id field rides the slot index; a reused slot
 /// address CANNOT alias an old element because old elements' lookups fail
 /// on upgrade() before any indexing).
+/// Weak doc slot: the SharedDoc newtype's weak twin (same lock protocol;
+/// the DOCS table Mutex serializes every slot touch).
+pub struct WeakDoc(pub std::sync::Weak<std::cell::RefCell<LxDoc>>);
+
+impl WeakDoc {
+    fn upgrade(&self) -> Option<SharedDoc> {
+        self.0.upgrade().map(SharedDoc)
+    }
+}
+
+unsafe impl Send for WeakDoc {}
+unsafe impl Sync for WeakDoc {}
+
+impl Clone for WeakDoc {
+    fn clone(&self) -> Self {
+        WeakDoc(self.0.clone())
+    }
+}
+
 struct DocRegistry {
-    docs: Vec<Option<std::sync::Weak<RefCell<LxDoc>>>>,
+    docs: Vec<Option<WeakDoc>>,
     /// Pin window: doc ids whose strong Arc is retained, oldest-first.
     pins: std::collections::VecDeque<SharedDoc>,
     /// E9 (memperf audit 2026-11-06): indexes of slots whose Weak is dead —
@@ -1539,24 +1589,33 @@ struct DocRegistry {
 // GIL: a doc parsed on a worker thread used to land in that thread's local
 // Vec, and any later element read from another thread resolved doc_id in
 // the WRONG table (None, or a different document). GIL-serialized access
-// throughout, same GilSendPub contract as the threading tables.
-static DOCS: std::sync::LazyLock<crate::gcsupport::GilSendPub<std::sync::Mutex<DocRegistry>>> =
-    std::sync::LazyLock::new(|| {
-        crate::gcsupport::GilSendPub(std::sync::Mutex::new(DocRegistry {
-            docs: Vec::new(),
-            pins: std::collections::VecDeque::new(),
-            free: Vec::new(),
-            awaiting: Vec::new(),
-        }))
-    });
+// throughout, same retired unsafe carrier as the threading tables.
+// 02.09a P4/P5 staged marker: the DocRegistry pins hold Arc<RefCell<LxDoc>>
+// slots; every slot mutation happens under the DOCS Mutex (the table's lock
+// is the serialization the type system cannot see). LxDoc's own marker is
+// at its definition.
+struct PinsAreTableLocked {
+    _p: std::marker::PhantomData<Arc<std::cell::RefCell<LxDoc>>>,
+}
+unsafe impl Send for PinsAreTableLocked {}
+unsafe impl Sync for PinsAreTableLocked {}
+static DOCS: std::sync::LazyLock<std::sync::Mutex<DocRegistry>> = std::sync::LazyLock::new(|| {
+    std::sync::Mutex::new(DocRegistry {
+        docs: Vec::new(),
+        pins: std::collections::VecDeque::new(),
+        free: Vec::new(),
+        awaiting: Vec::new(),
+    })
+});
 
 /// Max simultaneously-pinned document DOMs (the working set). Scrapy/pytest
 /// touch one page at a time; 64 covers any table-heavy script too.
 const DOC_PIN_WINDOW: usize = 64;
 
 fn register_doc(doc: LxDoc) -> usize {
-    let rc = Arc::new(RefCell::new(doc));
-    let mut r = DOCS.0.lock().unwrap();
+    let rc = SharedDoc(Arc::new(RefCell::new(doc)));
+    let rc_arc = Arc::clone(&rc.0);
+    let mut r = DOCS.lock().unwrap();
     // E9 harvest: released-while-in-flight slots whose doc has since died.
     if !r.awaiting.is_empty() {
         let pending = std::mem::take(&mut r.awaiting);
@@ -1564,7 +1623,11 @@ fn register_doc(doc: LxDoc) -> usize {
             let dead = r
                 .docs
                 .get(i)
-                .map(|slot| slot.as_ref().and_then(|w| w.upgrade()).is_none())
+                .map(|slot| {
+                    slot.as_ref()
+                        .map(|w| w.0.strong_count() == 0)
+                        .unwrap_or(true)
+                })
                 .unwrap_or(true);
             if dead {
                 r.docs[i] = None;
@@ -1577,17 +1640,18 @@ fn register_doc(doc: LxDoc) -> usize {
     // E9: prefer a known-freed slot (O(1)).
     let id = match r.free.pop() {
         Some(pos) => {
-            r.docs[pos] = Some(Arc::downgrade(&rc));
+            r.docs[pos] = Some(WeakDoc(Arc::downgrade(&rc.0)));
             pos
         }
         None => {
-            r.docs.push(Some(Arc::downgrade(&rc)));
+            r.docs.push(Some(WeakDoc(Arc::downgrade(&rc.0))));
             r.docs.len() - 1
         }
     };
     // Pin the new doc; release the oldest pin beyond the window. A released
     // pin whose Weak stays alive via live element handles keeps its slot; a
     // slot whose doc fully dies goes on the free list (E9 bookkeeping).
+    let rc_arc = Arc::clone(&rc.0);
     r.pins.push_back(rc);
     while r.pins.len() > DOC_PIN_WINDOW {
         let old = r.pins.pop_front().expect("pin window nonempty");
@@ -1597,9 +1661,9 @@ fn register_doc(doc: LxDoc) -> usize {
             if slot
                 .as_ref()
                 .and_then(|w| w.upgrade())
-                .is_some_and(|x| Arc::ptr_eq(&x, &old))
+                .is_some_and(|x| std::ptr::eq(x.0.as_ref(), rc_arc.as_ref() as *const _))
             {
-                if std::sync::Arc::strong_count(&old) == 1 {
+                if std::sync::Arc::strong_count(&old.0) == 1 {
                     // Only the popped pin held the doc: dropping `old` at
                     // the end of this scope frees the DOM — claim the slot
                     // dead and recycle it (E9 freed-slot list).
@@ -1620,10 +1684,11 @@ fn register_doc(doc: LxDoc) -> usize {
 /// G3: strong handle for a registered doc (pin window / live Weak). None
 /// when the doc was released (pin evicted AND no live element handles).
 fn doc_by_id(doc_id: usize) -> Option<SharedDoc> {
-    let r = DOCS.0.lock().unwrap();
+    let r = DOCS.lock().unwrap();
     r.docs
         .get(doc_id)
-        .and_then(|slot| slot.as_ref().and_then(|w| w.upgrade()))
+        .and_then(|slot| slot.as_ref())
+        .and_then(|w| w.upgrade())
 }
 
 /// G3: set base_url on a freshly-parsed doc (always inside the pin window).
@@ -1647,10 +1712,11 @@ fn elem_parts(v: &Value) -> Option<(SharedDoc, usize, bool)> {
             let idx = attrs.get(&s("<idx>")).and_then(|v| v.as_int())?.to_i64()? as usize;
             let html = o.name == "lxml.html.HtmlElement";
             let doc = {
-                let r = DOCS.0.lock().unwrap();
+                let r = DOCS.lock().unwrap();
                 r.docs
                     .get(doc_id)
-                    .and_then(|slot| slot.as_ref().and_then(|w| w.upgrade()))
+                    .and_then(|slot| slot.as_ref())
+                    .and_then(|w| w.upgrade())
             }?;
             return Some((doc, idx, html));
         }
@@ -2987,17 +3053,15 @@ struct XPathRow {
 }
 
 static XPATH_OBJECTS: std::sync::LazyLock<
-    crate::gcsupport::GilSendPub<std::sync::Mutex<std::collections::HashMap<u64, XPathRow>>>,
-> = std::sync::LazyLock::new(|| {
-    crate::gcsupport::GilSendPub(std::sync::Mutex::new(std::collections::HashMap::new()))
-});
+    std::sync::Mutex<std::collections::HashMap<u64, XPathRow>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 static XPATH_NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// Drop rows whose marker object is gone (Weak dead). O(live rows); called
 /// from make_xpath_object past the soft cap and from the shared GC-drain
 /// eviction sweep (threading::evict_stale_tables).
 pub fn prune_xpath_registry() -> usize {
-    let mut t = XPATH_OBJECTS.0.lock().unwrap();
+    let mut t = XPATH_OBJECTS.lock().unwrap();
     let before = t.len();
     t.retain(|_, row| row.marker.upgrade().is_some());
     before - t.len()
@@ -3022,7 +3086,7 @@ pub fn make_xpath_object(query: String, namespaces: Option<Value>) -> Value {
         let _ = a.set(s("<namespaces>"), namespaces.unwrap_or(Value::None));
     }
     {
-        let mut t = XPATH_OBJECTS.0.lock().unwrap();
+        let mut t = XPATH_OBJECTS.lock().unwrap();
         t.insert(
             id,
             XPathRow {
@@ -3048,7 +3112,6 @@ pub fn make_xpath_object(query: String, namespaces: Option<Value>) -> Value {
 /// registered query against the receiver element (args[0]).
 pub fn call_xpath_by_id(id: usize, args: &[Value]) -> Option<BResult> {
     let query = XPATH_OBJECTS
-        .0
         .lock()
         .unwrap()
         .get(&(id as u64))

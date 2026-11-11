@@ -1357,8 +1357,9 @@ fn module_stmts(
                     crate::interp::MODULE_FRAME_CELLS.with(|reg2| {
                         let mut m = reg2.borrow_mut();
                         for cname in &scope.cells {
-                            m.entry((key, cname.clone()))
-                                .or_insert_with(|| std::sync::Arc::new(std::cell::RefCell::new(None)));
+                            m.entry((key, cname.clone())).or_insert_with(|| {
+                                std::sync::Arc::new(std::cell::RefCell::new(None))
+                            });
                         }
                     });
                 }

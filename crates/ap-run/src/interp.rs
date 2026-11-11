@@ -8555,7 +8555,11 @@ fn ensure_fiber(interp: &Arc<Interpreter>, id: u64) -> Result<(), Flow> {
 }
 
 /// send(v) into generator `id` (PEP-342 / S-02-24).
-pub(crate) fn gen_send(interp: &Arc<Interpreter>, id: u64, v: Value) -> Result<Option<Value>, Flow> {
+pub(crate) fn gen_send(
+    interp: &Arc<Interpreter>,
+    id: u64,
+    v: Value,
+) -> Result<Option<Value>, Flow> {
     ensure_fiber(interp, id)?;
     {
         let gens = interp.generators.borrow();
@@ -11288,7 +11292,11 @@ pub fn supercall_flag_take() -> bool {
     SUPERCALL_SKIP.with(|f| std::mem::replace(&mut f.get(), false))
 }
 
-fn builtin_super(interp: &Arc<Interpreter>, args: &[Value], _kwargs: &[(String, Value)]) -> EResult {
+fn builtin_super(
+    interp: &Arc<Interpreter>,
+    args: &[Value],
+    _kwargs: &[(String, Value)],
+) -> EResult {
     match args.len() {
         0 => {
             // Zero-arg super(): the innermost active method context
@@ -12404,9 +12412,9 @@ fn attr_get(_interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Optio
                                     let cached = CELL_WRAPPER_CACHE.with(|reg| {
                                         let mut m = reg.borrow_mut();
                                         m.retain(|_, w| {
-                                            ap_gc::weakref_alive(
-                                                std::sync::Arc::as_ptr(w) as *const u8 as usize,
-                                            )
+                                            ap_gc::weakref_alive(std::sync::Arc::as_ptr(w)
+                                                as *const u8
+                                                as usize)
                                         });
                                         m.get(&cache_key).cloned()
                                     });
@@ -12704,7 +12712,8 @@ fn attr_get(_interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Optio
                         let mut after = false;
                         for cls in mro.iter() {
                             if !after {
-                                if std::sync::Arc::ptr_eq(cls, &start_t) || cls.name == start_t.name {
+                                if std::sync::Arc::ptr_eq(cls, &start_t) || cls.name == start_t.name
+                                {
                                     after = true;
                                 }
                                 continue;

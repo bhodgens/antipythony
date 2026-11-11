@@ -27,8 +27,8 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use ap_codegen_native::cfg;
 use ap_codegen_native::clif::{compile_tier1, JitFunc};

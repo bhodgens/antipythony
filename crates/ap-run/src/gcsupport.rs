@@ -1765,49 +1765,33 @@ fn weakbridge_callback(cb: &Value, args: &[Value]) -> Result<Value, String> {
 // 02.07 threading: worker-thread GC view
 // ---------------------------------------------------------------------------
 
-// A worker allocates values that must join the MAIN thread's gc registry.
-// Value (Arc-based) is !Send by construction — but under GIL v1 all threads
-// touch the graph only while holding the lock, so the transfer is
-// GIL-serialized by protocol. The compiler cannot see the lock protocol;
-// this crate declares the GIL-protocol-validated Send wrapper (a documented,
-// audited unsafety, same class as CPython's own GIL-protected globals).
-pub struct GilSendPub<T>(pub T);
-// C9 (memperf audit 2026-11-06, SAFETY-GATE): this impl is the sole thing
-// preventing UB when `Value` (Arc — !Send by construction) crosses worker
-// threads. It is sound ONLY under the 02.07 GIL v1 protocol: every thread
-// touches the shared heap graph exclusively while holding the GIL, so the
-// refcount traffic is serialized by protocol, not by the type system.
-// The hook swap in `install_worker_thread` forwards main-thread
-// registrations through the same channel — `gc_register`'s thread-locals
-// remain main-thread-only (the drain hop restores that).
-// GATE for 02.09 (no-GIL swap): this wrapper must be DELETED (or replaced
-// by real atomic refcounting / a sendable handle) before worker threads can
-// run without the GIL; keeping it past 02.09 is UB. docs/0209-object-state-
-// audit.md tracks the per-registry audit.
-unsafe impl<T> Send for GilSendPub<T> {}
-unsafe impl<T> Sync for GilSendPub<T> {}
-impl<T> Clone for GilSendPub<T>
-where
-    T: Clone,
-{
-    fn clone(&self) -> Self {
-        GilSendPub(self.0.clone())
-    }
-}
+// 02.09a P5 (SPLIT-02.09.md; census punch-list P5): the blanket-unsafety
+// Send+Sync carrier is RETIRED. It was `pub struct GilSendCarrier<T>(pub T);
+// unsafe impl Send/Sync for GilSendCarrier<T>` — sound only while a
+// process-wide lock serializes every access.
+// Decision 1 landed first (Gc<T> = Arc<T>): refcount traffic is now atomic
+// in the type system, so the plain Arc payloads behind the table Mutexes
+// (THREADS/LOCALS/EXCEPTHOOK/WORKER_INTERP/PRIMS/OBJ_MIRROR) satisfy Sync
+// through their own locks, and the two CROSS-THREAD TRANSFER crossings
+// (the gc-registration channel and the worker reclaim queue) carry their
+// payloads in the Send-only `SendValue`/`SendBox` wrappers
+// (crate::send_value) — Send is sound now that counts are atomic; Sync is
+// deliberately NOT claimed. The worker closure transmute at the spawn site
+// died with it. Grep gate: this name must not reappear in any crate.
 
 #[allow(clippy::type_complexity)] // interpreter plumbing type; factoring out would obscure the signature
 static WORKER_REG_IN: std::sync::LazyLock<
-    GilSendPub<std::sync::Mutex<Option<std::sync::mpsc::Sender<GilSendPub<Value>>>>>,
-> = std::sync::LazyLock::new(|| GilSendPub(std::sync::Mutex::new(None)));
+    std::sync::Mutex<Option<std::sync::mpsc::Sender<crate::send_value::SendValue>>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
 #[allow(clippy::type_complexity)] // interpreter plumbing type; factoring out would obscure the signature
 static WORKER_REG_OUT: std::sync::LazyLock<
-    GilSendPub<std::sync::Mutex<Option<std::sync::mpsc::Receiver<GilSendPub<Value>>>>>,
-> = std::sync::LazyLock::new(|| GilSendPub(std::sync::Mutex::new(None)));
+    std::sync::Mutex<Option<std::sync::mpsc::Receiver<crate::send_value::SendValue>>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
 
 fn gc_register_forward_worker(v: &Value) {
-    let guard = WORKER_REG_IN.0.lock().unwrap();
+    let guard = WORKER_REG_IN.lock().unwrap();
     if let Some(tx) = guard.as_ref() {
-        let _ = tx.send(GilSendPub(v.clone()));
+        let _ = tx.send(crate::send_value::SendValue(v.clone()));
         return;
     }
     drop(guard);
@@ -1817,13 +1801,13 @@ fn gc_register_forward_worker(v: &Value) {
 /// Drain worker registrations into the MAIN thread's registry (main-thread
 /// turns: every threading dispatch + collect).
 pub fn drain_worker_registrations() -> usize {
-    let rx_slot = WORKER_REG_OUT.0.lock().unwrap();
+    let rx_slot = WORKER_REG_OUT.lock().unwrap();
     let Some(rx) = rx_slot.as_ref() else {
         return 0;
     };
     let mut n = 0;
-    while let Ok(GilSendPub(v)) = rx.try_recv() {
-        ap_gc::gc_register(&v);
+    while let Ok(v) = rx.try_recv() {
+        ap_gc::gc_register(&v.0);
         n += 1;
     }
     n
@@ -1832,9 +1816,9 @@ pub fn drain_worker_registrations() -> usize {
 /// Worker-thread GC wiring (called from threading::worker_bootstrap before
 /// the GIL is ever taken on that thread).
 pub fn install_worker_thread() {
-    let (tx, rx) = std::sync::mpsc::channel::<GilSendPub<Value>>();
-    *WORKER_REG_IN.0.lock().unwrap() = Some(tx);
-    *WORKER_REG_OUT.0.lock().unwrap() = Some(rx);
+    let (tx, rx) = std::sync::mpsc::channel::<crate::send_value::SendValue>();
+    *WORKER_REG_IN.lock().unwrap() = Some(tx);
+    *WORKER_REG_OUT.lock().unwrap() = Some(rx);
     // The hook fn pointer is process-global; from here on, allocations made
     // BY ANY thread forward through the channel — the main thread drains.
     ap_obj::gc_gate::set_hook(gc_register_forward_worker);
