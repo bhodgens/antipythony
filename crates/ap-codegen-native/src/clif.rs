@@ -383,7 +383,14 @@ fn ctx_less(name: &str) -> bool {
 /// Helpers whose CLIF signature returns i64 (the unboxed smi value) rather
 /// than the i32 status convention.
 fn i64_return(name: &str) -> bool {
-    matches!(name, "apjit_h_slot_smi_v" | "apjit_h_mul_smi")
+    // 02.05f: the OSR poll returns the ENTRY POINTER (i64, possibly NULL)
+    // — an I32 CLIF result would truncate the pointer and the indirect
+    // call would jump to garbage (the smoke-probe segfault, fixed by
+    // declaring the i64 return).
+    matches!(
+        name,
+        "apjit_h_slot_smi_v" | "apjit_h_mul_smi" | "apjit_h_osr_poll"
+    )
 }
 
 fn extra_params(name: &'static str) -> &'static [usize] {
@@ -424,6 +431,11 @@ fn extra_params(name: &'static str) -> &'static [usize] {
         // 02.05d: the deopt note keys the per-function thrash state (the
         // fn identity rides the key field — see emit_fastpath_body).
         "apjit_h_deopt_note" => &[0],
+        // 02.05f OSR: poll(ctx, fn_key, header)->i64; fill(ctx, buf, src,
+        // idx); load(ctx, buf, idx, dst).
+        "apjit_h_osr_poll" => &[0, 0],
+        "apjit_h_osr_fill" => &[0, 0, 0],
+        "apjit_h_osr_load" => &[0, 0, 0],
         "apjit_h_match_exc" => &[0, 0, 0],
         "apjit_h_raise" | "apjit_h_suspend" => &[0, 0],
         "apjit_h_reraise" => &[],
@@ -469,6 +481,10 @@ fn helper_symbols() -> Vec<(&'static str, *const u8)> {
         ("apjit_h_return", h_return as *const u8),
         ("apjit_h_raise", h_raise as *const u8),
         ("apjit_h_suspend", h_suspend as *const u8),
+        // 02.05f boxed OSR (poll/fill/load — osr.rs).
+        ("apjit_h_osr_poll", h_osr_poll as *const u8),
+        ("apjit_h_osr_fill", h_osr_fill as *const u8),
+        ("apjit_h_osr_load", h_osr_load as *const u8),
     ]
 }
 
@@ -491,6 +507,181 @@ fn emit_cfg(
     module: &mut cranelift_jit::JITModule,
     helpers: &HashMap<&'static str, FuncRef>,
     state: &mut EmitState<'_>,
+) -> Result<(), CodegenError> {
+    // 02.05f: the default emit compiles OSR poll sites as no-ops
+    // (osr_fn_key = 0 — no registry probe baked in). Only
+    // `compile_baseline_with_osr` (the tier-0 OSR route, jit_hook's
+    // cache-insert path) passes a real fn key.
+    emit_cfg_with_osr(
+        fb,
+        func,
+        blocks,
+        ctx_ptr,
+        module,
+        helpers,
+        state,
+        0,
+        &mut 0usize,
+    )
+}
+
+/// The tier-0 baseline WITH live OSR polls: identical to
+/// [`compile_baseline`] except the poll sites probe the host OSR
+/// registry under `fn_key` (the executing function's stable identity,
+/// the same key jit_hook's cache + the tier-up driver use) and, on a
+/// non-null entry pointer, run the boxed transfer + OSR-BY-CALL. Every
+/// other byte of the compile is the deterministic baseline lowering.
+pub fn compile_baseline_with_osr(func: &Func, fn_key: u64) -> Result<JitFunc, CodegenError> {
+    let slot_plan = SlotPlan::assign(func);
+
+    let mut flag_builder = settings::builder();
+    flag_builder
+        .set("use_colocated_libcalls", "false")
+        .expect("clif.rs:119");
+    flag_builder.set("is_pic", "false").expect("clif.rs:120");
+    let flags = settings::Flags::new(flag_builder);
+    let isa = cranelift_native::builder()
+        .map_err(|_| CodegenError::Unsupported("native ISA unavailable"))?
+        .finish(flags)
+        .map_err(|_| CodegenError::Unsupported("ISA finish failed"))?;
+
+    let mut module =
+        cranelift_jit::JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+    for (name, ptr) in helper_symbols() {
+        module.symbol(name, ptr);
+    }
+    let mut module = cranelift_jit::JITModule::new(module);
+
+    let mut name_table: Vec<String> = Vec::new();
+
+    let sig = {
+        let mut s = cranelift::codegen::ir::Signature::new(module.isa().default_call_conv());
+        s.params.push(cranelift::codegen::ir::AbiParam::new(
+            module.isa().pointer_type(),
+        ));
+        s.returns
+            .push(cranelift::codegen::ir::AbiParam::new(types::I32));
+        s
+    };
+    let func_id = module
+        .declare_function("apjit_fn", cranelift_module::Linkage::Local, &sig)
+        .map_err(|e| CodegenError::Verify(format!("declare_function: {e}")))?;
+    #[allow(unused_assignments)]
+    let mut site_count: Option<usize> = None;
+
+    let frontend_config = module.isa().frontend_config();
+    let mut ctx = cranelift::codegen::Context::new();
+    ctx.func = Function::with_name_signature(
+        cranelift::codegen::ir::UserFuncName::user(0, func_id.as_u32()),
+        sig.clone(),
+    );
+    let mut fb_ctx = FunctionBuilderContext::new();
+    // GC declared set: EMPTY (identical reasoning to compile_baseline —
+    // OSR frames stay on the conservative-scan path; pon discipline).
+    let gc_value_declarations: Vec<cranelift::codegen::ir::Value> = Vec::new();
+    {
+        let mut fb = FunctionBuilder::new(&mut ctx.func, &mut fb_ctx);
+        let entry = fb.create_block();
+        fb.append_block_params_for_function_params(entry);
+        fb.switch_to_block(entry);
+        fb.seal_block(entry);
+        let ctx_ptr = fb.block_params(entry)[0];
+
+        let mut helper_refs: std::collections::HashMap<&'static str, FuncRef> =
+            std::collections::HashMap::new();
+        for (name, _) in helper_symbols() {
+            let hsig = helper_sig(module.isa(), name);
+            let fid = module
+                .declare_function(name, cranelift_module::Linkage::Import, &hsig)
+                .map_err(|e| CodegenError::Verify(format!("declare helper {name}: {e}")))?;
+            let fref = module.declare_func_in_func(fid, fb.func);
+            helper_refs.insert(name, fref);
+        }
+
+        let mut clif_blocks = Vec::with_capacity(func.blocks.len());
+        for _ in 0..func.blocks.len() {
+            clif_blocks.push(fb.create_block());
+        }
+        let mut site_counter = SiteCounter {
+            idx: 0,
+            plan: &slot_plan,
+        };
+        let mut emit_state = EmitState {
+            name_table: &mut name_table,
+            site_counter: &mut site_counter,
+        };
+        fb.switch_to_block(entry);
+        fb.ins().jump(clif_blocks[0], &[]);
+
+        // THE difference vs compile_baseline: the poll sites probe the
+        // host OSR registry under this function's key. The header cursor
+        // starts fresh; loop_headers() must resolve one header per poll
+        // (the while-shape invariant — a body whose polls outnumber the
+        // resolved headers degrades those extra polls to no-ops, reported
+        // via the OSR eligibility report at compile_osr_entry time).
+        emit_cfg_with_osr(
+            &mut fb,
+            func,
+            &mut clif_blocks,
+            ctx_ptr,
+            &mut module,
+            &helper_refs,
+            &mut emit_state,
+            fn_key,
+            &mut 0usize,
+        )?;
+
+        for v in &gc_value_declarations {
+            fb.declare_value_needs_stack_map(*v);
+        }
+
+        fb.seal_all_blocks();
+        fb.finalize(frontend_config);
+        site_count = Some(emit_state.site_counter.idx);
+    }
+    let site_count = site_count.expect("emit_cfg always runs");
+    if let Err(e) = module.define_function(func_id, &mut ctx) {
+        let detail = match &e {
+            cranelift_module::ModuleError::Compilation(c) => format!("{c:?}"),
+            other => format!("{other}"),
+        };
+        return Err(CodegenError::Verify(format!("define_function: {detail}")));
+    }
+    register_compiled_safepoints(&ctx);
+    module
+        .finalize_definitions()
+        .map_err(|e| CodegenError::Verify(format!("finalize_definitions: {e}")))?;
+    let code_ptr = module.get_finalized_function(func_id);
+    debug_assert_eq!(
+        site_count,
+        slot_plan.len(),
+        "clif: emitted site count drifted from SlotPlan::assign"
+    );
+    Ok(JitFunc {
+        code_ptr,
+        slots: slot_plan,
+        name_table,
+        feedback_cells: (0..site_count).map(|_| FeedbackCell::new()).collect(),
+        _blob: module,
+    })
+}
+
+/// The OSR-parameterized emit body (see emit_cfg). `osr_fn_key` == 0
+/// disables the OSR poll semantics entirely (poll sites emit as no-ops):
+/// the tier-1 fast-path emitter walks the SAME cfg but never executes
+/// polls, and unit tests that count sites without compiling OSR entries
+/// pass `0` so no registry probe is baked in.
+#[allow(clippy::too_many_arguments)]
+fn emit_cfg_with_osr(
+    fb: &mut FunctionBuilder,
+    func: &Func,
+    blocks: &mut [Block],
+    ctx_ptr: Value,
+    module: &mut cranelift_jit::JITModule,
+    helpers: &HashMap<&'static str, FuncRef>,
+    state: &mut EmitState<'_>,
+    osr_fn_key: u64,
+    osr_header_cursor: &mut usize,
 ) -> Result<(), CodegenError> {
     let i64_t = types::I64;
     let i32_t = types::I32;
@@ -758,13 +949,166 @@ fn emit_cfg(
                     let r = fb.ins().call(f, &[ctx_ptr, a1]);
                     check_status(fb, r, raise_target);
                 }
-                Inst::SuspendMarker | Inst::OsrPoll => {
-                    // Boxed OSR poll: h_osr_poll returns the OSR entry
-                    // pointer or NULL; non-NULL → build buffer + call
-                    // (leaf phase 5). The v0 baseline treats both as no-ops
-                    // at the poll site — the poll PROBE lands with the
-                    // OSR entry work (documented; not silent wrong-code:
-                    // the poll has no semantics beyond tiering).
+                Inst::SuspendMarker => {
+                    // Generator suspend marker: the state-machine transform
+                    // rewrites these before emission; a residual one in a
+                    // non-generator body is a no-op (the terminator arm
+                    // owns actual suspension).
+                }
+                Inst::OsrPoll => {
+                    // 02.05f — the boxed OSR back-edge poll + transfer.
+                    // Emitted at every loop back-edge (the cfg stage places
+                    // OsrPoll there). Shape (osr.rs module docs):
+                    //
+                    //   entry = h_osr_poll(ctx, fn_key, header)  // i64
+                    //   if entry == 0: continue the loop in tier-0 (the
+                    //       poll fast path: one helper call + one branch).
+                    //   else: build an OsrTransferBuffer in an Explicit
+                    //       stack slot, fill it via the canonical table
+                    //       (locals in LocalId order, then live-ins
+                    //       ascending — ONE shared OsrPlan), and CALL the
+                    //       entry (OSR-BY-CALL). Its statuses:
+                    //         0 → completed, ret parked — forward as OUR
+                    //             return (this tier-0 frame is abandoned);
+                    //         1 → exception in flight — forward likewise.
+                    //         anything else → fail-closed to the exception
+                    //             exit (host reports the unparked
+                    //             SystemError — the OSR body, a full
+                    //             baseline lowering, never emits these).
+                    //
+                    // osr_fn_key == 0 (unit-test/emit-only paths) keeps the
+                    // whole arm a no-op: no registry probe is baked in.
+                    if osr_fn_key != 0 {
+                        let headers = crate::osr::loop_headers(func);
+                        if *osr_header_cursor < headers.len() {
+                            let osr_header = headers[*osr_header_cursor];
+                            *osr_header_cursor += 1;
+                            let entry_v = {
+                                let f = helpers["apjit_h_osr_poll"];
+                                let a1 = iconst!(fb, osr_fn_key as i64);
+                                let a2 = iconst!(fb, osr_header.0 as i64);
+                                let call = fb.ins().call(f, &[ctx_ptr, a1, a2]);
+                                fb.inst_results(call)[0]
+                            };
+                            let has_entry = fb.ins().icmp_imm_s(IntCC::NotEqual, entry_v, 0);
+                            let osr_b = fb.create_block();
+                            let cont_b = fb.create_block();
+                            fb.ins().brif(has_entry, osr_b, &[], cont_b, &[]);
+                            // --- transfer path ---
+                            fb.switch_to_block(osr_b);
+                            // The entry pointer can only arrive for a
+                            // header whose compile PASSED the eligibility
+                            // gate (the registry's compile arm refuses
+                            // ineligible headers), so osr_plan_resolved
+                            // must succeed here; a None would mean the
+                            // registry and this table disagree — fail
+                            // closed by terminating the frame (the host
+                            // reads it as a helper-failure SystemError),
+                            // never a mis-transfer.
+                            let plan = match crate::osr::osr_plan_resolved(func, osr_header) {
+                                Some(p) => p,
+                                None => {
+                                    let one = fb.ins().iconst(i32_t, 1);
+                                    fb.ins().return_(&[one]);
+                                    return Ok(());
+                                }
+                            };
+                            let buf_size =
+                                std::mem::size_of::<crate::osr::OsrTransferBuffer>() as u32;
+                            let slot = fb.create_sized_stack_slot(
+                                cranelift::codegen::ir::StackSlotData::new(
+                                    cranelift::codegen::ir::StackSlotKind::ExplicitSlot,
+                                    buf_size,
+                                    0, // natural alignment (align_shift)
+                                ),
+                            );
+                            let buf_addr = fb.ins().stack_addr(i64_t, slot, 0);
+                            // Header + live_count: one combined i64
+                            // store at offset 0 — repr(C) puts the two
+                            // u32 fields (header, live_count) at bytes
+                            // 0..4 / 4..8, which is exactly the
+                            // little-endian i64 layout
+                            // (header | count << 32). Two separate
+                            // i64 stores would stomp bytes 4..12 (the
+                            // second store's high half lands INSIDE
+                            // slots[0]'s Value — the smoke-probe
+                            // corruption).
+                            let flags = cranelift::codegen::ir::MemFlagsData::new();
+                            let hdr_cnt = iconst!(
+                                fb,
+                                (osr_header.0 as i64) | ((plan.live_count() as i64) << 32)
+                            );
+                            fb.ins().store(flags, hdr_cnt, buf_addr, 0);
+                            // ZERO the slot array before any fill: the
+                            // Explicit stack slot starts UNINITIALIZED,
+                            // and the conservative GC scan (osr frames
+                            // are deliberately ON that path — pon
+                            // discipline) reads the whole native stack
+                            // region including this buffer. Garbage
+                            // bytes misread as Gc pointers = crash on
+                            // the first allocation inside the fill
+                            // stream (observed live). Two zero words
+                            // per slot covers the 16-byte Value.
+                            for k in 0..crate::osr::OSR_MAX_LIVE {
+                                let zero = iconst!(fb, 0);
+                                fb.ins().store(flags, zero, buf_addr, (8 + k * 16) as i32);
+                                fb.ins().store(flags, zero, buf_addr, (16 + k * 16) as i32);
+                            }
+                            // Fill the slots through the canonical table:
+                            // locals first (LocalId order), then live-ins
+                            // (ascending TempId). Each fill is a Rust-side
+                            // 16-byte Value clone from ctx.slots[src] into
+                            // buf.slots[idx] (h_osr_fill — the Value layout
+                            // is shared by construction, both sides Rust).
+                            let mut idx = 0usize;
+                            for l in &plan.locals {
+                                let f = helpers["apjit_h_osr_fill"];
+                                let a1 = buf_addr;
+                                let a2 = iconst!(fb, local_slot(*l));
+                                let a3 = iconst!(fb, idx as i64);
+                                fb.ins().call(f, &[ctx_ptr, a1, a2, a3]);
+                                idx += 1;
+                            }
+                            for t in &plan.live_in {
+                                let f = helpers["apjit_h_osr_fill"];
+                                let a1 = buf_addr;
+                                let a2 = iconst!(fb, temp_slot(*t));
+                                let a3 = iconst!(fb, idx as i64);
+                                fb.ins().call(f, &[ctx_ptr, a1, a2, a3]);
+                                idx += 1;
+                            }
+                            // OSR-BY-CALL: entry ABI `(ctx, buf) -> i32`,
+                            // indirect through the poll's returned pointer.
+                            let mut sig =
+                                cranelift::codegen::ir::Signature::new(fb.func.signature.call_conv);
+                            sig.params
+                                .push(cranelift::codegen::ir::AbiParam::new(i64_t));
+                            sig.params
+                                .push(cranelift::codegen::ir::AbiParam::new(i64_t));
+                            sig.returns
+                                .push(cranelift::codegen::ir::AbiParam::new(i32_t));
+                            let sigref = fb.import_signature(sig);
+                            let r = fb
+                                .ins()
+                                .call_indirect(sigref, entry_v, &[ctx_ptr, buf_addr]);
+                            let status = fb.inst_results(r)[0];
+                            // Forward 0/1 as our own exit; anything else is
+                            // fail-closed to the exception exit.
+                            let ok = fb
+                                .ins()
+                                .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, status, 1);
+                            let ok_b = fb.create_block();
+                            let bad_b = fb.create_block();
+                            fb.ins().brif(ok, ok_b, &[], bad_b, &[]);
+                            fb.switch_to_block(bad_b);
+                            let one = fb.ins().iconst(i32_t, 1);
+                            fb.ins().return_(&[one]);
+                            fb.switch_to_block(ok_b);
+                            fb.ins().return_(&[status]);
+                            // --- continue the loop in tier-0 ---
+                            fb.switch_to_block(cont_b);
+                        }
+                    }
                 }
             }
         }
@@ -1405,6 +1749,200 @@ fn guard_or_tail(fb: &mut FunctionBuilder, bad: Value, tail: Block) {
     fb.switch_to_block(fail_b);
     fb.ins().jump(tail, &[]);
     fb.switch_to_block(cont_b);
+}
+
+// ===========================================================================
+// 02.05f — boxed OSR entry compilation.
+//
+// The OSR entry is a BASELINE compile of the SAME cfg::Func in the OSR
+// ABI: `(ctx: *mut ExecCtx, buf: *const OsrTransferBuffer) -> i32`.
+// Prologue: load the transfer (locals in LocalId order, then live-ins at
+// the header, ascending — the SAME osr::OsrPlan table the tier-0 poll
+// emitter filled) into ctx slot space via h_osr_load, then jump to the
+// header's CLIF block. From there the ordinary emit_cfg machinery runs
+// the loop body to the function's end; the boxed return/raise
+// terminators park ret/pending_exc and exit with 0/1 exactly as a call
+// would. OSR frames are never GC-map-registered: they share the
+// baseline's empty declared set (the conservative-scan floor — pon
+// discipline, osr.rs module docs).
+//
+// One entry per (function, loop header); a single JITModule per
+// compilation (the poll's call is indirect through the registry pointer,
+// so entries are independent blobs).
+// ===========================================================================
+
+/// A compiled OSR entry: raw pointer + owning blob (pin-until-retire on
+/// the compiler thread — same ownership discipline as Tier1Func).
+pub struct OsrEntryFunc {
+    /// `extern "C" fn(*mut ExecCtx, *const OsrTransferBuffer) -> i32`.
+    pub ptr: *const u8,
+    /// The entry header this compilation enters at.
+    pub header: crate::cfg::BlockId,
+    /// Owning blob (kept mapped for the process lifetime per the
+    /// cranelift-jit leak-on-drop provider design).
+    pub _blob: cranelift_jit::JITModule,
+}
+
+/// Compile one OSR entry for `func` entering at `header` (the loop
+/// header whose poll will return this pointer). Fails closed on any
+/// lowering error — the caller disables OSR for the header, never
+/// mis-transfers.
+pub fn compile_osr_entry(
+    func: &Func,
+    header: crate::cfg::BlockId,
+) -> Result<OsrEntryFunc, CodegenError> {
+    // The eligibility gate: refuse (report) over-cap live sets. The
+    // registry arm treats Err as "no entry, stay tier-0" — documented,
+    // never silent (the caller logs under APX_TIER_DEBUG).
+    let plan = crate::osr::osr_plan_resolved(func, header).ok_or(CodegenError::Unsupported(
+        "OSR: live set exceeds OSR_MAX_LIVE",
+    ))?;
+    if header.0 >= func.blocks.len() as u32 {
+        return Err(CodegenError::Verify(format!(
+            "OSR header {} out of range (blocks: {})",
+            header.0,
+            func.blocks.len()
+        )));
+    }
+
+    let mut flag_builder = settings::builder();
+    flag_builder
+        .set("use_colocated_libcalls", "false")
+        .expect("clif.rs:1300");
+    flag_builder.set("is_pic", "false").expect("clif.rs:1302");
+    let flags = settings::Flags::new(flag_builder);
+    let isa = cranelift_native::builder()
+        .map_err(|_| CodegenError::Unsupported("native ISA unavailable"))?
+        .finish(flags)
+        .map_err(|_| CodegenError::Unsupported("ISA finish failed"))?;
+
+    let mut module =
+        cranelift_jit::JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+    for (name, ptr) in helper_symbols() {
+        module.symbol(name, ptr);
+    }
+    let mut module = cranelift_jit::JITModule::new(module);
+
+    // OSR ABI: (ctx, buf) -> i32.
+    let sig = {
+        let mut s = cranelift::codegen::ir::Signature::new(module.isa().default_call_conv());
+        s.params.push(cranelift::codegen::ir::AbiParam::new(
+            module.isa().pointer_type(),
+        ));
+        s.params.push(cranelift::codegen::ir::AbiParam::new(
+            module.isa().pointer_type(),
+        ));
+        s.returns
+            .push(cranelift::codegen::ir::AbiParam::new(types::I32));
+        s
+    };
+    let func_id = module
+        .declare_function("apjit_fn_osr", cranelift_module::Linkage::Local, &sig)
+        .map_err(|e| CodegenError::Verify(format!("declare_function osr: {e}")))?;
+
+    let frontend_config = module.isa().frontend_config();
+    let mut ctx = cranelift::codegen::Context::new();
+    ctx.func = Function::with_name_signature(
+        cranelift::codegen::ir::UserFuncName::user(2, func_id.as_u32()),
+        sig,
+    );
+    let mut fb_ctx = FunctionBuilderContext::new();
+    {
+        let mut fb = FunctionBuilder::new(&mut ctx.func, &mut fb_ctx);
+        let abi_entry = fb.create_block();
+        fb.append_block_params_for_function_params(abi_entry);
+        fb.switch_to_block(abi_entry);
+        fb.seal_block(abi_entry);
+        let ctx_ptr = fb.block_params(abi_entry)[0];
+        let buf_ptr = fb.block_params(abi_entry)[1];
+
+        // Declare helpers.
+        let mut helper_refs: HashMap<&'static str, FuncRef> = HashMap::new();
+        for (name, _) in helper_symbols() {
+            let hsig = helper_sig(module.isa(), name);
+            let fid = module
+                .declare_function(name, cranelift_module::Linkage::Import, &hsig)
+                .map_err(|e| CodegenError::Verify(format!("declare helper {name}: {e}")))?;
+            let fref = module.declare_func_in_func(fid, fb.func);
+            helper_refs.insert(name, fref);
+        }
+
+        // Prologue: transfer load. Locals first (LocalId order), then
+        // live-ins (ascending) — index arithmetic via the SAME OsrPlan
+        // the tier-0 poll emitter used (the shared-table rule).
+        let mut idx = 0usize;
+        for l in &plan.locals {
+            let f = helper_refs["apjit_h_osr_load"];
+            let a1 = buf_ptr;
+            let a2 = fb.ins().iconst(types::I64, idx as i64);
+            let a3 = fb.ins().iconst(types::I64, l.0 as i64);
+            fb.ins().call(f, &[ctx_ptr, a1, a2, a3]);
+            idx += 1;
+        }
+        for t in &plan.live_in {
+            let f = helper_refs["apjit_h_osr_load"];
+            let a1 = buf_ptr;
+            let a2 = fb.ins().iconst(types::I64, idx as i64);
+            let a3 = fb
+                .ins()
+                .iconst(types::I64, func.num_locals as i64 + t.0 as i64);
+            fb.ins().call(f, &[ctx_ptr, a1, a2, a3]);
+            idx += 1;
+        }
+
+        // CFG blocks → CLIF blocks (same order as the baseline emit).
+        let mut clif_blocks = Vec::with_capacity(func.blocks.len());
+        for _ in 0..func.blocks.len() {
+            clif_blocks.push(fb.create_block());
+        }
+        // Jump to the HEADER (not block 0) — that is the OSR entry point.
+        // NO twin-start dispatcher here: OSR entries always run from the
+        // top of the entry compile; ctx.twin_start is untouched.
+        let name_table = Vec::new();
+        fb.ins().jump(clif_blocks[header.0 as usize], &[]);
+        let mut site_counter = SiteCounter {
+            idx: 0,
+            plan: &SlotPlan::assign(func),
+        };
+        let mut emit_state = EmitState {
+            name_table: Box::leak(Box::new(name_table)),
+            site_counter: &mut site_counter,
+        };
+        // The OSR body executes the full baseline lowering with the OSR
+        // poll sites DISABLED (osr_fn_key = 0: an OSR-entry frame that
+        // re-enters a loop never OSRs again — it already IS tier-1-grade
+        // code for this loop, and a nested transfer would abandon THIS
+        // frame's stack slot that the still-running prologue belongs to).
+        emit_cfg_with_osr(
+            &mut fb,
+            func,
+            &mut clif_blocks,
+            ctx_ptr,
+            &mut module,
+            &helper_refs,
+            &mut emit_state,
+            0,
+            &mut 0usize,
+        )?;
+        fb.seal_all_blocks();
+        fb.finalize(frontend_config);
+    }
+    if let Err(e) = module.define_function(func_id, &mut ctx) {
+        let detail = match &e {
+            cranelift_module::ModuleError::Compilation(c) => format!("{c:?}"),
+            other => format!("{other}"),
+        };
+        return Err(CodegenError::Verify(format!("define osr: {detail}")));
+    }
+    module
+        .finalize_definitions()
+        .map_err(|e| CodegenError::Verify(format!("finalize osr: {e}")))?;
+    let ptr = module.get_finalized_function(func_id);
+    Ok(OsrEntryFunc {
+        ptr,
+        header,
+        _blob: module,
+    })
 }
 
 /// Typed BinOp: native i64 where exact, guard-checked where Python

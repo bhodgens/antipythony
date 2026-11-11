@@ -148,6 +148,61 @@ pub struct FastPathHandle {
 // after finalize_definitions. Nothing is mutated through it.
 unsafe impl Send for FastPathHandle {}
 
+// ===========================================================================
+// 02.05f — OSR-entry compile requests (through the SAME driver: the OSR
+// entry compile is the expensive half moved off the mutator, exactly the
+// discipline the tier-1 fast path follows).
+// ===========================================================================
+
+/// An OSR-entry compile request (mutator → compiler thread): the fn
+/// identity the registry keys on (the def-pointer fn_key) + the header
+/// to enter at + the lowered cfg (moved; deterministic lowering).
+pub struct OsrCompileRequest {
+    pub fn_key: u64,
+    pub fn_name: String,
+    pub header: u32,
+    pub func: crate::cfg::Func,
+}
+
+/// A finished OSR entry, shipped from the compiler thread to a mutator.
+/// Plain data (blob pinned on the compiler thread — pin-until-retire).
+#[derive(Debug, Clone, Copy)]
+pub struct OsrEntryHandle {
+    /// `extern "C" fn(*mut ExecCtx, *const OsrTransferBuffer) -> i32`.
+    pub ptr: *const u8,
+    pub header: u32,
+}
+
+// SAFETY: same reasoning as FastPathHandle — never-freed JIT memory,
+// immutable after finalize.
+unsafe impl Send for OsrEntryHandle {}
+
+/// Compiler-thread OSR completion: the handle or a disable marker
+/// (ineligible live set / compile error — never retried; the poll then
+/// answers null forever for that header).
+pub type OsrCompletion = Result<OsrEntryHandle, ()>;
+
+/// Call an OSR entry with a transfer buffer, returning its raw status
+/// (0 = completed — ret parked in ctx; 1 = exception parked in
+/// ctx.pending_exc). The mutator's dispatch arm consumes the status.
+///
+/// # Safety
+///
+/// `ptr` must be a live finalized OSR entry (an `OsrEntryHandle` the
+/// driver handed out); `buf` a populated `OsrTransferBuffer`, live for
+/// the whole call (the tier-0 frame parking discipline — osr.rs).
+pub unsafe fn call_osr_status(
+    ptr: *const u8,
+    ctx: &mut crate::runtime::ExecCtx,
+    buf: *const crate::osr::OsrTransferBuffer,
+) -> i32 {
+    let f: extern "C" fn(
+        *mut crate::runtime::ExecCtx,
+        *const crate::osr::OsrTransferBuffer,
+    ) -> i32 = std::mem::transmute(ptr);
+    f(ctx as *mut crate::runtime::ExecCtx, buf)
+}
+
 /// Run an async-compiled fast path with the mutator's own baseline as the
 /// cold twin. Status contract identical to [`crate::clif::Tier1Func::call`]
 /// (0 = done, 2 = guard failure at region entry → zero observable progress
@@ -203,6 +258,11 @@ struct CompileRequest {
     fn_name: String,
     func: crate::cfg::Func,
     snapshots: Vec<crate::feedback::CellSnapshot>,
+    /// 02.05f: Some when this request is an OSR-ENTRY compile for
+    /// (fn_key, header) instead of a tier-1 fast-path compile. The OSR
+    /// route needs no feedback snapshot (the entry is a baseline
+    /// lowering — no guards, no regions), so `snapshots` stays empty.
+    osr: Option<(u64, u32)>,
 }
 
 /// One pinned finished compilation on the compiler thread.
@@ -282,6 +342,32 @@ pub struct TierUpDriver {
     sync_mode: bool,
     /// Compiler → mutator completion hand-off (per-instance).
     completions: Arc<Completions>,
+    /// 02.05f: the OSR-entry completion hand-off, keyed (fn_key, header).
+    /// Per-instance like `completions`; the disable marker inside
+    /// `Err(())` permanently blacklists the header (failed-tier-up-
+    /// disables, same discipline).
+    osr_completions: Arc<OsrCompletions>,
+}
+
+/// OSR completion hand-off (compiler → mutator), keyed (fn_key, header).
+#[derive(Default)]
+struct OsrCompletions {
+    inner: Mutex<HashMap<(u64, u32), OsrCompletion>>,
+    ready: AtomicU64,
+}
+
+impl OsrCompletions {
+    fn publish(&self, key: (u64, u32), c: OsrCompletion) {
+        let mut q = self.inner.lock().expect("osr completions lock");
+        q.insert(key, c);
+        drop(q);
+        self.ready.fetch_add(1, Ordering::Release);
+    }
+
+    fn take(&self, key: (u64, u32)) -> Option<OsrCompletion> {
+        let mut q = self.inner.lock().expect("osr completions lock");
+        q.remove(&key)
+    }
 }
 
 impl TierUpDriver {
@@ -305,14 +391,16 @@ impl TierUpDriver {
     fn start_with(sync_mode: bool) -> Arc<TierUpDriver> {
         let (tx, rx) = std::sync::mpsc::channel::<CompileRequest>();
         let completions = Arc::new(Completions::default());
+        let osr_completions = Arc::new(OsrCompletions::default());
         let compiler = if sync_mode {
             None
         } else {
             let completions = completions.clone();
+            let osr_completions = osr_completions.clone();
             Some(
                 std::thread::Builder::new()
                     .name("apjit-tierup".to_string())
-                    .spawn(move || compiler_loop(rx, completions))
+                    .spawn(move || compiler_loop(rx, completions, osr_completions))
                     .expect("spawn tier-up compiler thread"),
             )
         };
@@ -323,6 +411,7 @@ impl TierUpDriver {
             retained: AtomicU64::new(0),
             sync_mode,
             completions,
+            osr_completions,
         })
     }
 
@@ -407,6 +496,7 @@ impl TierUpDriver {
             fn_name: fn_name.to_string(),
             func,
             snapshots,
+            osr: None,
         };
         let sent = match self.tx.lock().expect("tierup tx lock").as_ref() {
             Some(tx) => tx.send(req).is_ok(),
@@ -470,6 +560,56 @@ impl TierUpDriver {
         }
     }
 
+    // -----------------------------------------------------------------
+    // 02.05f — OSR-entry compiles through the SAME driver.
+    // -----------------------------------------------------------------
+
+    /// Enqueue an OSR-entry compile for (fn_key, header). Exactly-once
+    /// per key via the osr-completion map's presence (an in-flight or
+    /// completed key is never re-sent — the caller's registry arm treats
+    /// "request sent" as the blacklisted-pending state). Returns false
+    /// when the key is already in flight/completed or the channel is
+    /// gone (fail safe: no entry, tier-0 continues).
+    pub fn request_osr(
+        &self,
+        fn_key: u64,
+        fn_name: &str,
+        header: u32,
+        func: crate::cfg::Func,
+        in_flight: &mut std::collections::HashSet<(u64, u32)>,
+    ) -> bool {
+        let key = (fn_key, header);
+        if !in_flight.insert(key) {
+            return false; // already requested (pending or answered)
+        }
+        let req = CompileRequest {
+            fn_id: usize::MAX, // OSR requests do not occupy the tier states
+            fn_name: fn_name.to_string(),
+            func,
+            snapshots: Vec::new(),
+            osr: Some(key),
+        };
+        match self.tx.lock().expect("tierup tx lock").as_ref() {
+            Some(tx) => tx.send(req).is_ok(),
+            None => {
+                in_flight.remove(&key);
+                false // compiler shut down: never OSR
+            }
+        }
+    }
+
+    /// Poll for a finished OSR-entry compile for (fn_key, header).
+    /// Installs on hit (returns the handle exactly once); a disable
+    /// marker is consumed and returned as `Some(Err(()))` so the caller
+    /// can blacklist the header (never re-requested — see the registry
+    /// arm in jit_hook). `Ok(None)` = nothing finished yet.
+    pub fn poll_osr(&self, fn_key: u64, header: u32) -> Option<OsrCompletion> {
+        if self.osr_completions.ready.load(Ordering::Acquire) == 0 {
+            return None;
+        }
+        self.osr_completions.take((fn_key, header))
+    }
+
     /// Bookkeeping for the APX_SYNC_TIERUP=1 inline path (jit_hook
     /// compiles synchronously exactly as 02.05c did; the driver still
     /// owns the state machine so stats and the failed-disable rule have a
@@ -526,7 +666,11 @@ fn tier_debug() -> bool {
         .unwrap_or(false)
 }
 
-fn compiler_loop(rx: Receiver<CompileRequest>, completions: Arc<Completions>) {
+fn compiler_loop(
+    rx: Receiver<CompileRequest>,
+    completions: Arc<Completions>,
+    osr_completions: Arc<OsrCompletions>,
+) {
     // Pin-until-retire: every finished compilation is retained HERE, on
     // the compiler thread, until the loop exits (shutdown join). Mapped
     // code stays valid even after this map drops — cranelift-jit 0.134's
@@ -535,13 +679,40 @@ fn compiler_loop(rx: Receiver<CompileRequest>, completions: Arc<Completions>) {
     // this codebase calls free_memory. So handed-out entry pointers are
     // valid for the process lifetime in every drop order.
     let mut pinned: HashMap<usize, PinnedFastPath> = HashMap::new();
+    let mut pinned_osr: HashMap<(u64, u32), crate::clif::OsrEntryFunc> = HashMap::new();
     while let Ok(req) = rx.recv() {
         let CompileRequest {
             fn_id,
             fn_name,
             func,
             snapshots,
+            osr,
         } = req;
+        // 02.05f: the OSR-ENTRY compile route (no feedback, no regions —
+        // a baseline lowering in the OSR ABI). Failure blacklists the
+        // header (Err marker; the poll arm never re-requests it).
+        if let Some((fn_key, header)) = osr {
+            let outcome = match crate::clif::compile_osr_entry(&func, crate::cfg::BlockId(header)) {
+                Ok(entry) => {
+                    pinned_osr.insert((fn_key, header), entry);
+                    Ok(OsrEntryHandle {
+                        ptr: pinned_osr[&(fn_key, header)].ptr,
+                        header,
+                    })
+                }
+                Err(e) => {
+                    if tier_debug() {
+                        eprintln!(
+                            "[OSR-ASYNC] fn {fn_name} header {header} compile failed \
+                             (header blacklisted): {e:?}"
+                        );
+                    }
+                    Err(())
+                }
+            };
+            osr_completions.publish((fn_key, header), outcome);
+            continue;
+        }
         // The expensive half of the pipeline, ON THE COMPILER THREAD, from
         // the frozen snapshot: baseline twin + infer + plan + typed
         // emission. The twin half of the returned pair is deliberately
