@@ -166,6 +166,12 @@ fn parse_tier(m: &str) -> Option<TierMode> {
     match m {
         "0" => Some(TierMode::Tree),
         "jit" | "adaptive" => Some(TierMode::Adaptive),
+        // 02.06: the AoT binary's mode — the dispatch arm consults the
+        // registered manifest FIRST (aot_runtime::entry_for), falling
+        // back to this same adaptive/JIT route (the tree-walker twin is
+        // the last resort). Gate parity: the tier flag must never let a
+        // silent "no JIT" mode masquerade as AoT.
+        "aot" => Some(TierMode::Adaptive),
         _ => None,
     }
 }
@@ -393,11 +399,49 @@ pub fn report_line() {
 
 /// Host state one JIT frame runs against (ptr-shared via
 /// ExecCtx::host_data — the runtime ABI carries no Rust generics).
-struct HostState {
-    interp: Rc<Interpreter>,
-    frame: Rc<Frame>,
+/// 02.06: `pub` — the AOT dispatch arm (aot_runtime::call_body) runs the
+/// SAME host surfaces; a separate private clone would be a byte-identity
+/// drift surface, not a seam.
+pub struct HostState {
+    pub(crate) interp: Rc<Interpreter>,
+    pub(crate) frame: Rc<Frame>,
     /// Interned name table in compile-assigned id order.
-    names: Vec<String>,
+    pub(crate) names: Vec<String>,
+}
+
+impl HostState {
+    /// 02.06: the AOT arm's constructor (same shape as jit_call_body's).
+    pub fn new(interp: Rc<Interpreter>, frame: Rc<Frame>, names: Vec<String>) -> Self {
+        HostState { interp, frame, names }
+    }
+}
+
+/// 02.06: the host callbacks the AOT dispatch arm runs its bodies with —
+/// the SAME function pointers `host_callbacks()` hands the JIT route
+/// (byte-identity by construction; a fork here would be a transparency
+/// divergence between `antipythony run` and the built binary).
+pub fn aot_host_callbacks() -> HostCallbacks {
+    host_callbacks()
+}
+
+/// 02.06: frame → slot sync for the AOT arm (load_slots_into_ctx).
+pub fn aot_load_slots(ctx: &mut ExecCtx, frame: &Frame, names: &[String]) {
+    load_slots_into_ctx(ctx, frame, names);
+}
+
+/// 02.06: slot → frame sync for the AOT arm (store_slots_into_frame).
+pub fn aot_store_slots(
+    frame: &Frame,
+    names: &[String],
+    ctx: &ExecCtx,
+    frame_rc: &Rc<Frame>,
+) {
+    store_slots_into_frame(frame, names, ctx, frame_rc);
+}
+
+/// 02.06: PyException → ExceptionValue rebuild for the AOT arm (rebuild).
+pub fn aot_rebuild(ev: PyException) -> crate::exc_hier::ExceptionValue {
+    rebuild(ev)
 }
 
 /// Read the HostState out of an ExecCtx (raw-pointer seam).

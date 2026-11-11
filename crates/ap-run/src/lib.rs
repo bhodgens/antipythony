@@ -15,6 +15,7 @@
 )]
 //! The tier-0 tree-walking executor (leaf 02.02).
 
+pub mod aot_runtime;
 pub mod ast_bridge;
 pub mod builtins;
 pub mod builtins_modules;
@@ -44,6 +45,41 @@ use ap_obj::exc::PyException;
 pub use exc_hier::ExceptionValue;
 pub use frame::Interpreter;
 pub use interp::run_module;
+pub use aot_runtime::AotFnEntry;
+
+/// CRT seam: register the linked AOT manifest (once, before run_module).
+pub fn aot_set_manifest(entries: Vec<AotFnEntry>) {
+    aot_runtime::set_manifest(entries);
+}
+
+/// CRT seam: the registered manifest (empty when unset).
+pub fn aot_manifest_slice() -> &'static [AotFnEntry] {
+    // The Vec lives in the OnceLock for the process lifetime.
+    let s: &'static [AotFnEntry] = aot_runtime::manifest_slice();
+    s
+}
+
+/// CRT seam: sys.argv tail (everything after the binary path). argv[0]
+/// stays the binary path (CPython's sys.argv[0] = script path convention
+/// for `./app` runs — the runtime's sys module builds argv from
+/// script_path + this tail).
+pub fn set_argv_tail(tail: Vec<String>) {
+    interp::set_argv_tail(tail);
+}
+
+/// CRT seam: run_module with the AOT dispatch seam pre-armed (the tier
+/// flag set to "aot" routes module-level def bodies through the
+/// registered manifest first). Byte-identical output contract as
+/// run_module; the ONLY difference is the dispatch arm's source.
+pub fn run_module_embedded(
+    source: &str,
+    script_path: &str,
+    _manifest: &'static [AotFnEntry],
+    stdout: &mut dyn std::io::Write,
+    stderr: &mut dyn std::io::Write,
+) -> RunOutcome {
+    run_module(source, script_path, stdout, stderr)
+}
 
 /// Leaf 02.05a: the bins' `--tier <mode>` flag rides this one-shot cell
 /// into run_module's tier init seam (a static because run_module takes

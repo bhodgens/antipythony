@@ -453,6 +453,7 @@ fn cmd_run(rest: &[&str], _wasm: bool) -> Result<i32, String> {
 fn cmd_build(rest: &[&str]) -> Result<i32, String> {
     let mut path: Option<String> = None;
     let mut out: Option<PathBuf> = None;
+    let mut target: Option<ap_codegen_native::aot::AotTarget> = None;
     let mut i = 0;
     while i < rest.len() {
         match rest[i] {
@@ -462,6 +463,32 @@ fn cmd_build(rest: &[&str]) -> Result<i32, String> {
                         .ok_or("antipythony: -o requires a path")?
                         .to_string(),
                 ));
+                i += 2;
+                continue;
+            }
+            "--target" => {
+                let v = rest
+                    .get(i + 1)
+                    .ok_or("antipythony: --target requires a triple (macos | linux-musl)")?;
+                let t = ap_codegen_native::aot::AotTarget::parse(v).ok_or_else(|| {
+                    format!(
+                        "antipythony: unknown --target '{v}' (supported: macos, linux-musl)"
+                    )
+                })?;
+                // Fail loudly on a missing toolchain (no silent fallback).
+                if t == ap_codegen_native::aot::AotTarget::LinuxMusl
+                    && which("musl-gcc").is_none()
+                    && which("x86_64-linux-musl-gcc").is_none()
+                    && which("musl-clang").is_none()
+                {
+                    return Err(
+                        "antipythony: --target linux-musl needs a musl cross toolchain \
+                         (musl-gcc / musl-clang on PATH) — not found; install one or build \
+                         with --target macos"
+                            .to_string(),
+                    );
+                }
+                target = Some(t);
                 i += 2;
                 continue;
             }
@@ -475,13 +502,19 @@ fn cmd_build(rest: &[&str]) -> Result<i32, String> {
         i += 1;
     }
     let Some(path) = path else {
-        return Err("usage: antipythony build <file.py> [-o out]".to_string());
+        return Err("usage: antipythony build <file.py> [-o out] [--target <triple>]".to_string());
     };
     let source = std::fs::read_to_string(&path)
         .map_err(|e| format!("antipythony: cannot read {path}: {e}"))?;
     let script_dir = Path::new(&path)
         .parent()
-        .map(|p| p.to_path_buf())
+        .map(|p| {
+            if p.as_os_str().is_empty() {
+                std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+            } else {
+                p.to_path_buf()
+            }
+        })
         .unwrap_or_else(|| PathBuf::from("."));
     let lock_bytes = ap_pack::manifest::find_project_dir(&script_dir)
         .and_then(|d| std::fs::read(d.join(ap_pack::manifest::LOCK_FILE)).ok())
@@ -490,7 +523,7 @@ fn cmd_build(rest: &[&str]) -> Result<i32, String> {
         source.as_bytes(),
         &lock_bytes,
         env!("CARGO_PKG_VERSION"),
-        "native",
+        "native-aot",
         2,
     );
     let out_path = out.unwrap_or_else(|| {
@@ -499,37 +532,30 @@ fn cmd_build(rest: &[&str]) -> Result<i32, String> {
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("app"))
     });
-    if let Some(dir) = ap_pack::cache::entry_dir(&key) {
-        // Content-addressed staging: identical input -> identical artifact
-        // bytes (04.02 reproducibility). The tier-0 artifact is the source
-        // marker; the OUTPUT is a self-contained runner script pointing at
-        // this binary — byte-identical across clean caches by construction.
-        let marker = dir.join("artifact");
-        let _ = std::fs::write(&marker, source.as_bytes());
-        // B4 seam (mirrors cmd_run): `compiled.bin` + matching embedded key
-        // = serialized-IR hit. Writer half (`ap_pack::cache::
-        // write_compiled_payload`) fires when the IR serializer lands;
-        // until then a hit is surfaced under AP_DEBUG_CACHE and build
-        // proceeds with the marker payload (behavior unchanged).
-        if let Some(payload) = ap_pack::cache::compiled_hit(&dir, &key) {
-            if std::env::var_os("AP_DEBUG_CACHE").is_some() {
-                eprintln!(
-                    "antipythony: build compile-cache hit {} (payload not yet consumed — \
-                     see docs/compile-cache-design.md)",
-                    payload.display()
-                );
-            }
-        }
-    }
-    // Emit a deterministic launcher (no timestamps, no absolute paths except
-    // the interpreter the launcher execs — resolved at run time).
-    std::fs::write(
-        &out_path,
-        "#!/bin/sh\nexec antipythony run \"$0.py\" \"$@\"\n",
-    )
-    .map_err(|e| format!("antipythony: cannot write {}: {e}", out_path.display()))?;
-    println!("built {}", out_path.display());
+    // Build staging: the content-addressed cache entry holds the program
+    // object + the build log (identical input -> identical staging, the
+    // 04.02 reproducibility seam).
+    let build_dir = ap_pack::cache::entry_dir(&key).unwrap_or_else(|| {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!("apbuild-{}-{nanos}", std::process::id()))
+    });
+    std::fs::create_dir_all(&build_dir)
+        .map_err(|e| format!("antipythony: build dir {}: {e}", build_dir.display()))?;
+    let t = target.unwrap_or(ap_codegen_native::aot::AotTarget::MacosNative);
+    ap_cli::build::build_binary(&source, &path, &out_path, t, &build_dir)?;
+    println!("built {} ({t:?})", out_path.display());
     Ok(0)
+}
+
+/// Minimal PATH probe (no out-of-crate dep for one lookup).
+fn which(prog: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join(prog))
+        .find(|cand| cand.is_file())
 }
 
 // ---------------------------------------------------------------------------

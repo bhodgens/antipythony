@@ -11,6 +11,9 @@ path = "src/lib.rs"
 [dependencies]
 ap-pack = { path = "../ap-pack" }
 ap-run = { path = "../ap-run" }
+# 02.06: the AoT build pipeline (cfg lowering + cranelift-object + link).
+ap-codegen-native = { path = "../ap-codegen-native" }
+ap-parse = { path = "../ap-parse" }
 clap = { version = "4", features = ["derive"] }
 
 [dev-dependencies]

@@ -95,10 +95,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
+name = "ap-aot-crt"
+version = "0.1.0"
+dependencies = [
+ "ap-run",
+]
+
+[[package]]
 name = "ap-cli"
 version = "0.1.0"
 dependencies = [
+ "ap-codegen-native",
  "ap-pack",
+ "ap-parse",
  "ap-run",
  "clap",
  "libc",
@@ -117,6 +126,7 @@ dependencies = [
  "cranelift-jit",
  "cranelift-module",
  "cranelift-native",
+ "cranelift-object",
  "num-bigint",
 ]
 
@@ -779,6 +789,22 @@ checksum = "16a41083b1fd953debd6f32d21fcda765b258f323ce907fdd6b4715f2769c478"
 dependencies = [
  "cranelift-codegen",
  "libc",
+ "target-lexicon",
+]
+
+[[package]]
+name = "cranelift-object"
+version = "0.134.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bfa81fb9bd399209e79235d490b0edf6d2d4a6408268f1e491487338cb2b6749"
+dependencies = [
+ "anyhow",
+ "cranelift-codegen",
+ "cranelift-control",
+ "cranelift-module",
+ "gimli",
+ "log",
+ "object",
  "target-lexicon",
 ]
 
