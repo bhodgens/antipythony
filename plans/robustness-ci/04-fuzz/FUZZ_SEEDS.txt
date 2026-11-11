@@ -5065,7 +5065,6 @@ findall	"\\d*?"	"0@k ß1 "	0
 findall	"(\\Wa){0,2}|a|\\s"	"c0xx-c.b\n---b.bb\n1kb@"	8
 search	"(?<=[^ab])"	"ßä ß kxx١0ä0 ."	10
 search	"(?<!\\w)"	"中kcxc-@.cc\n@b10äb\na"	0
-<<<<<<< Updated upstream
 subn1	"\\s*+"	"xb0ß"	64
 subn1	"(\\sa)*?"	" ß1käc@b1c-k中\n0"	0
 subn1	"(?:a){0,2}"	"ä"	0
@@ -5187,7 +5186,6 @@ COMPILE_TEXT	"(?<=(?P<a>a)(?:x*)?(?P=a)+)x"	" ä @cx١11a"	0
 COMPILE_MISSED	"(b)\\1+{2,}?"	"x0c中ß- ١b\n0--x"	24
 findall	"(?P<a>c)*?"	"0  0k@c@kbkk@@xb"	64
 search	"(?<=\\w)"	"中1ä中\nkßa .ac0xä١中0\nkx1١"	0
-=======
 subn1	"(?:0)"	"中0k-\n١.@中0\nßak-b "	64
 subn1	"x-|\\b"	"ß.\nä"	24
 subn1	"[^abc]|[^a-c0-9]|(?P<grp>b)ä"	"\nb\n١\n-käbc@ -\na"	10
@@ -5206,4 +5204,20 @@ findall	"\\b|b"	" @ß中ac@-bx0.-0١kbcx..c"	10
 COMPILE_TEXT	"\\A*?"	"10k@äbß."	0
 search	"(?<!\\w)"	"a@-äbb-0١1xc01cß١.101b"	10
 search	"(?<=\\w)"	"käaä@ßc@ b中.kc-a 01"	0
->>>>>>> Stashed changes
+subn1	"(?<=b)"	"1@b b\n."	16
+subn1	"(\\d)\\1?"	"äbbäß@1axk @01 -.kxß"	0
+subn1	"(\\s)"	"\näxßbkb@x\ncbä١0k0ßkxk"	0
+subn1	"(?<![abc])"	"k\n١x\nc-@c\n ka@@-ßxa-中x--"	0
+findall	"1?|\\D+"	"1a中0äß c "	80
+subn1	"(?>\\S)"	"--ä .bc\n١1 11äxb"	0
+subn1	"[0-9]*+(?i:\\W)"	"x@0中中ß@c@aabak\nkäk@١\n"	0
+subn1	"\\w{2,}"	"中 .-c 00١bb. abc1-中ä0ß"	16
+subn1	"(?![abc])"	"k-x١k@ßac.\n0"	0
+search	"(?<![^ab])"	"ßäb-"	0
+search	"(?<=[abc])"	"c c ß@1ka1"	0
+search	"(?<=.){2}"	"ßk1c@k.1@1k\nß.@"	0
+COMPILE_MISSED	"\\W??{0,2}"	"- bab.\n-k1中kkax00"	0
+COMPILE_MISSED	"(\\ba)*{0,2}"	"k.-0a@k中b-\n x1@x中@1١"	8
+findall	"\\w*?"	"ß-cäa١ä0-"	24
+search	"(?<=\\w)"	"b\n中b1@-x@@.x c@0.cbbk中"	0
+search	"(?<=a)"	"a١@k١c1ax.\nx中١.ck kak-@"	0
