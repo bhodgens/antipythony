@@ -273,7 +273,14 @@ pub fn builtin_len(args: &[Value]) -> BResult {
                     .class_ref
                     .borrow()
                     .as_ref()
-                    .map(|t| t.mro.borrow().iter().map(|c| c.name.clone()).collect())
+                    .map(|t| {
+                        t.mro
+                            .lock()
+                            .unwrap()
+                            .iter()
+                            .map(|c| c.name.clone())
+                            .collect()
+                    })
                     .unwrap_or_default();
                 eprintln!(
                     "[LEN-USER] n={} mro={:?}",
@@ -476,7 +483,7 @@ pub fn builtin_int(interp: &Interpreter, args: &[Value]) -> BResult {
         2 if matches!(&args[0], Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass) => {
             let cls_v = args[0].clone();
             if let Some(t) = crate::classes::class_of_value(interp, &cls_v) {
-                if t.mro.borrow().iter().any(|m| m.name == "int") {
+                if t.mro.lock().unwrap().iter().any(|m| m.name == "int") {
                     let io = ap_obj::PyObject::new(ap_obj::ObjKind::UserInstance, t.name.clone());
                     *io.type_ref.borrow_mut() = Some(std::sync::Arc::downgrade(&t));
                     *io.class_ref.borrow_mut() = Some(t.clone());
@@ -1360,7 +1367,7 @@ pub fn type_matches(v: &Value, want: &str) -> bool {
             // SysCapture.snap asserts it).
             if o.kind == ap_obj::ObjKind::Opaque {
                 if let Some(t) = o.class_ref.borrow().clone() {
-                    for m in t.mro.borrow().iter() {
+                    for m in t.mro.lock().unwrap().iter() {
                         if m.name.as_str() == b {
                             return true;
                         }
@@ -3541,7 +3548,7 @@ fn dir_surface(v: &Value) -> Vec<String> {
             let mut names: Vec<String> = Vec::new();
             let handled = if let Some(ic) = interp {
                 if let Some(t) = crate::classes::class_of_value(&ic, v) {
-                    for m in t.mro.borrow().iter() {
+                    for m in t.mro.lock().unwrap().iter() {
                         for (k, _) in m.dict.items() {
                             if let Value::Str(x) = k {
                                 names.push(x.as_str().to_string());
@@ -3569,7 +3576,7 @@ fn dir_surface(v: &Value) -> Vec<String> {
         if o.kind == ap_obj::ObjKind::UserClass {
             let mut names: Vec<String> = Vec::new();
             if let Some(t) = o.class_ref.borrow().clone() {
-                for m in t.mro.borrow().iter() {
+                for m in t.mro.lock().unwrap().iter() {
                     for (k, _) in m.dict.items() {
                         if let Value::Str(x) = k {
                             names.push(x.as_str().to_string());
@@ -3593,7 +3600,7 @@ fn dir_surface(v: &Value) -> Vec<String> {
             let mut names: Vec<String> = Vec::new();
             if let Some(ic) = crate::builtins_modules::current_interp() {
                 if let Some(t) = crate::classes::class_of_value(&ic, v) {
-                    for m in t.mro.borrow().iter() {
+                    for m in t.mro.lock().unwrap().iter() {
                         for (k, _) in m.dict.items() {
                             if let Value::Str(x) = k {
                                 names.push(x.as_str().to_string());
@@ -5261,7 +5268,7 @@ fn builtin_type_new(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
             if let Value::Obj(bo) = b {
                 if bo.kind == ap_obj::ObjKind::Type {
                     if let Some(tr) = bo.type_ref.borrow().as_ref().and_then(|w| w.upgrade()) {
-                        for m in tr.mro.borrow().iter() {
+                        for m in tr.mro.lock().unwrap().iter() {
                             if let Some((_f, owner)) = m.lookup_with_owner("__init_subclass__") {
                                 if owner.name != "object" {
                                     hook_found = true;

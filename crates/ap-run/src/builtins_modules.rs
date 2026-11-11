@@ -5237,7 +5237,7 @@ pub fn call_functools(name: &str, args: &[Value], kwargs: &[(String, Value)]) ->
                     let mut keys: Vec<String> = vec![first.type_name().to_string()];
                     if let Some(interp) = current_interp() {
                         if let Some(ct) = crate::classes::class_of_value(&interp, first) {
-                            for m in ct.mro.borrow().iter() {
+                            for m in ct.mro.lock().unwrap().iter() {
                                 if !keys.iter().any(|k| k == &m.name) {
                                     keys.push(m.name.clone());
                                 }

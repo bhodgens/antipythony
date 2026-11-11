@@ -3,9 +3,9 @@
 //! (`__len__`, `__bool__`, `__str__`, `__repr__` — the V048/V050/V066/f12
 //! surface; the full class model is 02.03).
 
+use crate::Flow;
 use crate::exc_hier::ExceptionValue;
 use crate::frame::Interpreter;
-use crate::Flow;
 use ap_obj::int::{Gc, Int};
 use ap_obj::value::{PyList, PyString, Tuple, Value};
 
@@ -45,11 +45,7 @@ pub fn slice_indices(
             if v < 0 {
                 (v + len).max(if step < 0 { -1 } else { 0 })
             } else if v > len {
-                if step < 0 {
-                    len - 1
-                } else {
-                    len
-                }
+                if step < 0 { len - 1 } else { len }
             } else {
                 v
             }
@@ -67,11 +63,7 @@ pub fn slice_indices(
             if v < 0 {
                 (v + len).max(if step < 0 { -1 } else { 0 })
             } else if v > len {
-                if step < 0 {
-                    len - 1
-                } else {
-                    len
-                }
+                if step < 0 { len - 1 } else { len }
             } else {
                 v
             }
@@ -376,13 +368,13 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
                     return Err(raise(
                         "TypeError",
                         "group() argument must be str or int, not float",
-                    ))
+                    ));
                 }
                 Key::Slice { .. } => {
                     return Err(raise(
                         "TypeError",
                         "group() argument must be str or int, not slice",
-                    ))
+                    ));
                 }
             };
             crate::builtins_modules::re_dispatch("Match.__getitem__", &[obj.clone(), kv], &[])
@@ -513,7 +505,7 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
                 // Plan-02 gap; scrapy's annotations only need the object to
                 // EXIST and be inert).
                 let _is_generic = t.lookup("__class_getitem__").is_some()
-                    || t.mro.borrow().iter().any(|m| m.name == "Generic")
+                    || t.mro.lock().unwrap().iter().any(|m| m.name == "Generic")
                     || o.name == "Generic";
                 // 02.08-c fix: classes deriving from builtin containers
                 // (`class SelectorList(list)`) get PEP 560
@@ -2041,7 +2033,7 @@ fn decode_bytes_err(b: &[u8], codec: &str, errors: &str) -> MResult {
                                 "UnicodeDecodeError",
                                 "'utf-8' codec can't decode bytes: invalid continuation byte"
                                     .to_string(),
-                            ))
+                            ));
                         }
                     }
                     rest = &rest[(valid + bad).min(rest.len())..];

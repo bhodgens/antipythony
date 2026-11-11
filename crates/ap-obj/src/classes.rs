@@ -47,8 +47,14 @@ pub struct TypeObject {
     /// Direct bases as type-object handles (empty => `[object]`).
     pub bases: Vec<Arc<TypeRef>>,
     /// C3 linearization, computed at creation: [self, ..., object].
-    /// RefCell because the self-reference lands after construction.
-    pub mro: std::cell::RefCell<Vec<Arc<TypeRef>>>,
+    /// 02.09a P4 write-once freeze: the field is constructed FULL inside
+    /// `create` (the self-reference is spliced into the local Vec before
+    /// the Arc even exists), so post-construction it is immutable — the
+    /// Mutex is read-optimized (contended reads take the lock briefly and
+    /// clone nothing; no write site exists after `create` returns). The
+    /// audit's "MRO patching" mutator never existed in this tree (bases/
+    /// MRO immutable post-creation per surgery_version's doc row).
+    pub mro: std::sync::Mutex<Vec<Arc<TypeRef>>>,
     /// Class-attribute namespace (`C.__dict__` reads go through a
     /// mappingproxy- façade in ap-run; the raw dict lives here).
     pub dict: Gc<PyDict>,
@@ -104,7 +110,9 @@ impl TypeObject {
             name,
             qualname,
             bases,
-            mro: std::cell::RefCell::new(Vec::new()),
+            // 02.09a P4: seeded empty, filled via the lock BELOW before any
+            // other thread can observe the Arc (the self-reference splice).
+            mro: std::sync::Mutex::new(Vec::new()),
             dict,
             flags,
             metaclass: std::cell::RefCell::new(metaclass),
@@ -115,7 +123,7 @@ impl TypeObject {
         // The class's OWN mro starts with itself (S-03-15): splice after
         // construction (self-reference through the Arc).
         mro.insert(0, rc.clone());
-        *rc.mro.borrow_mut() = mro;
+        *rc.mro.lock().unwrap() = mro;
         Ok(rc)
     }
 
@@ -126,7 +134,7 @@ impl TypeObject {
     /// PER MRO ENTRY per lookup, and the `__del__` probe in ap-gc paid it
     /// for every garbage instance on every collect.
     pub fn lookup(&self, name: &str) -> Option<Value> {
-        let mro = self.mro.borrow();
+        let mro = self.mro.lock().unwrap();
         for t in mro.iter() {
             if let Some(v) = t.dict.get_str(name) {
                 return Some(v);
@@ -138,7 +146,7 @@ impl TypeObject {
     /// The class-of record for a name PLUS the defining class (needed for
     /// descriptor `__get__(obj, owner)` binding and super() positioning).
     pub fn lookup_with_owner(&self, name: &str) -> Option<(Value, Arc<TypeRef>)> {
-        let mro = self.mro.borrow();
+        let mro = self.mro.lock().unwrap();
         for t in mro.iter() {
             if let Some(v) = t.dict.get_str(name) {
                 return Some((v, t.clone()));
@@ -149,7 +157,11 @@ impl TypeObject {
 
     /// Is `self` a subclass of (or equal to) `other`? MRO membership (S-03-31).
     pub fn is_subclass(&self, other: &Arc<TypeObject>) -> bool {
-        self.mro.borrow().iter().any(|t| Arc::ptr_eq(t, other))
+        self.mro
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|t| Arc::ptr_eq(t, other))
     }
 
     /// Instance dict enabled? (no __slots__, or __dict__ in slots, or a
@@ -160,7 +172,7 @@ impl TypeObject {
             Some(slots) => {
                 slots.iter().any(|s| s == "__dict__")
                     // A base without __slots__ gives every subclass a dict.
-                    || self.mro.borrow().iter().skip(1).any(|t| {
+                    || self.mro.lock().unwrap().iter().skip(1).any(|t| {
                         // The object root never confers a dict by itself.
                         t.name != "object"
                             && (t.flags.slots.is_none()
@@ -176,7 +188,7 @@ impl TypeObject {
     /// Is `name` a declared slot on this class chain? (only meaningful when
     /// the instance has no dict).
     pub fn is_slot(&self, name: &str) -> bool {
-        self.mro.borrow().iter().any(|t| {
+        self.mro.lock().unwrap().iter().any(|t| {
             t.flags
                 .slots
                 .as_ref()
@@ -190,7 +202,8 @@ impl TypeObject {
     /// the cache site. Relaxed reads (02.09 epoch-pattern contract).
     pub fn chain_surgery_version(&self) -> u64 {
         self.mro
-            .borrow()
+            .lock()
+            .unwrap()
             .iter()
             .map(|t| t.class_version())
             .max()
@@ -238,9 +251,20 @@ mod version_tests {
     /// the subclass chain sees it through `chain_surgery_version`.
     #[test]
     fn counters_seed_and_bump_through_chain() {
+        // 02.09a P4: the MRO field is write-once (filled inside `create`);
+        // the test seeds a custom chain through a CHILD-of construct —
+        // build it via create(parent) instead of mutating mro directly.
         let parent = mkclass("P");
-        let child = mkclass("C");
-        *child.mro.borrow_mut() = vec![child.clone(), parent.clone(), mkclass("object")];
+        let grand = mkclass("O2");
+        let child = TypeObject::create(
+            "C".to_string(),
+            "C".to_string(),
+            vec![parent.clone(), grand.clone()],
+            PyDict::new(),
+            TypeFlags::default(),
+            None,
+        )
+        .expect("acyclic");
         assert_eq!(child.chain_surgery_version(), 1);
         let before = parent
             .type_version
@@ -288,7 +312,10 @@ pub enum MroError {
 
 /// C3 merge (S-03-15): `mro(C) = C + merge(mro(B1)..(Bn), (B1..Bn))`.
 fn linearize(_name: &str, bases: &[Arc<TypeRef>]) -> Result<Vec<Arc<TypeRef>>, MroError> {
-    let mut seqs: Vec<Vec<Arc<TypeRef>>> = bases.iter().map(|b| b.mro.borrow().clone()).collect();
+    let mut seqs: Vec<Vec<Arc<TypeRef>>> = bases
+        .iter()
+        .map(|b| b.mro.lock().unwrap().clone())
+        .collect();
     seqs.push(bases.to_vec());
     let mut out: Vec<Arc<TypeRef>> = Vec::new();
     loop {

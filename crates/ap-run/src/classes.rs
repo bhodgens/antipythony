@@ -718,7 +718,7 @@ pub fn exec_class_def(
             }
             let later_has = bases_v[i + 1..].iter().any(|later| {
                 matches!(base_type_ref(interp, later), Ok(Some(t))
-                    if t.mro.borrow().iter().any(|m| m.name == "Generic" && !std::sync::Arc::ptr_eq(m, &t)))
+                    if t.mro.lock().unwrap().iter().any(|m| m.name == "Generic" && !std::sync::Arc::ptr_eq(m, &t)))
             });
             if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::MroDbg) {
                 let lnames: Vec<String> = bases_v[i + 1..]
@@ -728,7 +728,8 @@ pub fn exec_class_def(
                             "{}[mro={:?}]",
                             t.name,
                             t.mro
-                                .borrow()
+                                .lock()
+                                .unwrap()
                                 .iter()
                                 .map(|m| m.name.clone())
                                 .collect::<Vec<_>>()
@@ -2328,8 +2329,13 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
                 if let Value::Obj(xo) = x {
                     if let Some(cr) = xo.class_ref.borrow().as_ref() {
                         let want = type_name_of_check(t);
-                        let mro_names: Vec<String> =
-                            cr.mro.borrow().iter().map(|m| m.name.clone()).collect();
+                        let mro_names: Vec<String> = cr
+                            .mro
+                            .lock()
+                            .unwrap()
+                            .iter()
+                            .map(|m| m.name.clone())
+                            .collect();
                         // Structural protocol: a dict-rooted class is a
                         // Mapping/MutableMapping/Collection/Iterable/
                         // Sized/Container/Hashable (CPython ABCMeta
@@ -3295,7 +3301,7 @@ fn class_attr_get(
             return Ok(Value::Tuple(Gc::new(Tuple(items))));
         }
         "__mro__" => {
-            let items: Vec<Value> = t.mro.borrow().iter().map(class_value_for).collect();
+            let items: Vec<Value> = t.mro.lock().unwrap().iter().map(class_value_for).collect();
             return Ok(Value::Tuple(Gc::new(Tuple(items))));
         }
         "__dict__" => {
@@ -3331,7 +3337,7 @@ fn class_attr_get(
         // container, serve the container marker instead.
         if name == "__new__" {
             if let Some(owner_t) = t.lookup_with_owner(name).map(|(_, o)| o) {
-                let mro = t.mro.borrow();
+                let mro = t.mro.lock().unwrap();
                 let owner_idx = mro.iter().position(|m| Arc::ptr_eq(m, &owner_t));
                 let cont_idx = mro
                     .iter()
@@ -3386,10 +3392,11 @@ fn class_attr_get(
             // (the metatype is consulted only for names absent from the
             // MRO) — the metaclass __new__ must NOT win the lookup.
             if name == "__new__" {
-                let mro_len = t.mro.borrow().len();
+                let mro_len = t.mro.lock().unwrap().len();
                 let mro_has_own_new = t
                     .mro
-                    .borrow()
+                    .lock()
+                    .unwrap()
                     .iter()
                     .take(mro_len.saturating_sub(1))
                     .any(|c| c.dict.get(&Value::Str(PyString::new("__new__"))).is_some());
@@ -3428,11 +3435,13 @@ fn class_attr_get(
             // consults the metatype only for names absent from the MRO).
             // Same for the type.__new__ marker case below.
             if name == "__new__" {
+                let mro_len2 = t.mro.lock().unwrap().len();
                 let mro_has_own_new = t
                     .mro
-                    .borrow()
+                    .lock()
+                    .unwrap()
                     .iter()
-                    .take(t.mro.borrow().len().saturating_sub(1))
+                    .take(mro_len2.saturating_sub(1))
                     .any(|c| c.dict.get(&Value::Str(PyString::new("__new__"))).is_some());
                 if !mro_has_own_new {
                     let f = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "__object_new2__");
@@ -3498,7 +3507,7 @@ fn class_attr_get(
             // 02.03b-fix: _py_abc.__subclasscheck__ probes
             // cls.__subclasshook__ (object's classmethod default: None).
             | "__subclasshook__"
-    ) && t.mro.borrow().iter().any(|m| m.name == "object")
+    ) && t.mro.lock().unwrap().iter().any(|m| m.name == "object")
     {
         if name == "__doc__" {
             return Ok(Value::None);
@@ -3946,7 +3955,7 @@ pub fn instantiate(
             .dict
             .get(&Value::Str(PyString::new("__ap_namedtuple_fields__")));
         if hit.is_none() {
-            for m in t.mro.borrow().iter() {
+            for m in t.mro.lock().unwrap().iter() {
                 if let Some(v) = m
                     .dict
                     .get(&Value::Str(PyString::new("__ap_namedtuple_fields__")))
@@ -4001,7 +4010,7 @@ pub fn instantiate(
             _ => None,
         })
         .or_else(|| {
-            t.mro.borrow().iter().find_map(|m| {
+            t.mro.lock().unwrap().iter().find_map(|m| {
                 m.dict
                     .get(&Value::Str(PyString::new("__ap_stream_base__")))
                     .and_then(|v| match v {
@@ -4041,7 +4050,7 @@ pub fn instantiate(
             let shadowed = matches!(&nv, Value::Obj(fo)
                 if fo.kind == ap_obj::ObjKind::Function)
                 && {
-                    let mro = t.mro.borrow();
+                    let mro = t.mro.lock().unwrap();
                     let owner_idx = mro.iter().position(|m| std::sync::Arc::ptr_eq(m, &owner));
                     let cont_idx = mro
                         .iter()
@@ -4129,7 +4138,8 @@ pub fn instantiate(
     // allocate the instance, set __name__/__doc__.
     // 02.08-c fix: `type(sys)("name")` DIRECTLY (types.ModuleType("x")) —
     // the interned module-type payload. Same allocation as the subclass path.
-    let is_module_type = t.name == "module" || t.mro.borrow().iter().any(|b| b.name == "module");
+    let is_module_type =
+        t.name == "module" || t.mro.lock().unwrap().iter().any(|b| b.name == "module");
     if is_module_type && new_f.is_none() && init_f.is_none() {
         // Allocate a REAL module object (six.moves must pass ObjKind::Module
         // checks in the importer's submodule adoption + attr protocol);
@@ -4185,7 +4195,7 @@ pub fn instantiate(
                     "bytes",
                     "frozenset",
                 ];
-                t.mro.borrow().iter().find_map(|m| {
+                t.mro.lock().unwrap().iter().find_map(|m| {
                     if BUILTIN_NAMES.contains(&m.name.as_str()) {
                         Some(m.name.clone())
                     } else {
@@ -4487,7 +4497,7 @@ pub fn alloc_instance(t: &Arc<TypeRef>) -> Value {
 /// dict base from `class X(dict)` carries the name "dict" and descends from
 /// object directly — the marker we key the backing-dict model on.)
 pub fn is_dict_derived(t: &Arc<TypeRef>) -> bool {
-    t.mro.borrow().iter().any(|m| m.name == "dict")
+    t.mro.lock().unwrap().iter().any(|m| m.name == "dict")
 }
 
 /// The backing dict of a dict-derived instance (None for other values).
@@ -4524,7 +4534,7 @@ pub fn is_list_derived_instance(v: &Value) -> bool {
     match v {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
             match o.type_ref.borrow().as_ref().and_then(|w| w.upgrade()) {
-                Some(t) => t.mro.borrow().iter().any(|m| m.name == "list"),
+                Some(t) => t.mro.lock().unwrap().iter().any(|m| m.name == "list"),
                 None => false,
             }
         }
@@ -4544,7 +4554,7 @@ pub fn is_list_derived_instance(v: &Value) -> bool {
 /// there, which materializes the payload the derived instance carries.
 /// Returns 'static marker name or None (no container base in MRO).
 fn container_new_marker(t: &Arc<TypeRef>) -> Option<&'static str> {
-    let has = |n: &str| t.mro.borrow().iter().any(|m| m.name == n);
+    let has = |n: &str| t.mro.lock().unwrap().iter().any(|m| m.name == n);
     if has("tuple") {
         Some("__tuple__new__")
     } else if has("list") {
@@ -4558,7 +4568,7 @@ pub fn is_tuple_derived_instance(v: &Value) -> bool {
     match v {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
             match o.type_ref.borrow().as_ref().and_then(|w| w.upgrade()) {
-                Some(t) => t.mro.borrow().iter().any(|m| m.name == "tuple"),
+                Some(t) => t.mro.lock().unwrap().iter().any(|m| m.name == "tuple"),
                 None => false,
             }
         }
