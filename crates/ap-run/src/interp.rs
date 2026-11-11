@@ -203,6 +203,11 @@ pub fn run_module(
     // state drops (pon shutdown discipline — join before dropping retained
     // modules; happens once per process, at the exit seam).
     crate::jit_hook::shutdown_tierup_driver();
+    // 02.09a P3: drop this run's rows in every RuntimeState registry (the
+    // tables are keyed by the interp payload address, which RECYCLES —
+    // a second in-process run must not inherit this run's sys.modules /
+    // class-kwargs staging). MUST run before the interp Arc drops.
+    crate::runtime_state::retire_runtime_state(&interp);
     match outcome {
         Ok(()) => RunOutcome {
             stdout: out_bytes,
