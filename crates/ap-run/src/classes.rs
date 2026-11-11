@@ -2084,7 +2084,11 @@ pub fn module_frame(interp: &Arc<Interpreter>) -> Arc<Frame> {
     Arc::new(Frame::new_module(interp.globals.clone()))
 }
 
-fn run_set_name_hooks(interp: &Arc<Interpreter>, cls: &Value, t: &Arc<TypeRef>) -> Result<(), Flow> {
+fn run_set_name_hooks(
+    interp: &Arc<Interpreter>,
+    cls: &Value,
+    t: &Arc<TypeRef>,
+) -> Result<(), Flow> {
     for (k, v) in t.dict.items() {
         let name = match &k {
             Value::Str(s) => s.as_str().to_string(),
@@ -2690,7 +2694,11 @@ pub fn value_issubclass(interp: &Interpreter, a: &Value, b: &Value) -> Result<bo
 
 /// Look a special method up on the value's TYPE (MRO scan). Returns the
 /// raw function value (unbound) + defining class.
-pub fn special_lookup(interp: &Interpreter, v: &Value, name: &str) -> Option<(Value, Arc<TypeRef>)> {
+pub fn special_lookup(
+    interp: &Interpreter,
+    v: &Value,
+    name: &str,
+) -> Option<(Value, Arc<TypeRef>)> {
     match v {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
             let t = o.type_ref.borrow().as_ref().and_then(|w| w.upgrade())?;
@@ -3223,7 +3231,12 @@ fn class_value_for(t: &Arc<TypeRef>) -> Value {
 
 /// `C.name` protocol (S-03-12): type slots -> MRO data descriptor
 /// __get__(None, C) -> class dict -> metaclass fallback.
-fn class_attr_get(interp: &Arc<Interpreter>, cls_v: &Value, t: &Arc<TypeRef>, name: &str) -> EResult {
+fn class_attr_get(
+    interp: &Arc<Interpreter>,
+    cls_v: &Value,
+    t: &Arc<TypeRef>,
+    name: &str,
+) -> EResult {
     // type's own slots resolve FIRST (S-03-12: __name__, __bases__,
     // __mro__, __qualname__, __dict__ ...).
     match name {

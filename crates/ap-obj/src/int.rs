@@ -90,6 +90,25 @@ pub enum Int {
 /// (leaf report; geomean delta within noise).
 pub type Gc<T> = std::sync::Arc<T>;
 
+// ===========================================================================
+// 02.09a P4/P5: staged Send/Sync markers (SPLIT-02.09.md:127-134 — the
+// markers may land in this leaf only BEHIND the Decision-1 refcount swap,
+// which landed in the same leaf).
+//
+// CONTRACT (applies to every `unsafe impl Sync` below and to the ap-run
+// markers on Interpreter/ThreadEntry/LxDoc): the struct carries RefCell/
+// Cell interiors whose borrow flags are thread-local, so a concurrent
+// borrow from two threads is UB. Today that cannot happen: GIL v1
+// serializes every mutator thread that touches the shared graph, and each
+// process-global table holding these payloads carries its own Mutex (the
+// happens-before the type system cannot see). Markers claim Send+Sync for
+// the HANDLE GRAPH only — move + atomic-refcount traffic is sound since
+// Gc<T> = Arc<T> (Decision 1). 02.09-b owns the per-object lock story
+// (census punch-list P4); until then every cross-thread touch stays
+// GIL/mutex-serialized by protocol. No blanket wrapper is reinstated:
+// each marker names its type and its serialization story.
+// ===========================================================================
+
 impl Int {
     /// Build from any i64, normalizing into the smi fast path when it fits.
     pub fn from_i64(v: i64) -> Int {

@@ -569,13 +569,22 @@ pub struct Interpreter {
     ),
     /// Context staged by instantiate() for the __new__/__init__ call it is
     /// about to make (picked up by call_function after its sentinel push).
-    pub pending_super_ctx: RefCell<Option<(std::sync::Arc<ap_obj::classes::TypeObject>, Value, bool)>>,
+    pub pending_super_ctx:
+        RefCell<Option<(std::sync::Arc<ap_obj::classes::TypeObject>, Value, bool)>>,
     pub source: String,
     pub script_path: String,
     /// Self handle (set at run_module entry) so &Interpreter surfaces can
     /// reach the Arc'd interpreter for re-entrant calls.
     pub self_rc: RefCell<Option<std::sync::Weak<Interpreter>>>,
 }
+
+// 02.09a P4/P5 staged marker (see ap_obj::markers + int.rs contract):
+// Interpreter carries RefCell/Cell executor state. Sound because every
+// cross-thread touch is GIL-serialized (worker_bootstrap takes the lock as
+// its first act; the process-global tables holding the handle carry their
+// own Mutex). Refcount traffic is Arc (Decision 1).
+unsafe impl Send for Interpreter {}
+unsafe impl Sync for Interpreter {}
 
 impl Interpreter {
     /// The Arc'd handle (panics when called before run_module sets it).
