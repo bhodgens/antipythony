@@ -57,36 +57,56 @@ GIL, uv-backed deps at build time. Byte-exact differential conformance vs CPytho
   deopt + 02.05e driver + 02.05f OSR + 02.05h bench) + 02.06 AoT + 02.08
   method surfaces + 02.09 no-GIL swap (T121 >=3x GREEN gate) + 02.10
   Go-scheduler (stretch).
-- 02.05 SPLIT STATUS 2026-11-09 (all merged to main): 02.05a DONE;
-  t1_016 FIXED - root cause was NOT frame/stack sizing: clif.rs emit_cfg
-  emitted Inst::LoadGlobal's dst as the RAW TempId instead of temp_slot()
-  (86d0c09), so ANY JIT-routed call site crashed TypeError 'NoneType'
-  not callable; min repro depth-independent `def k(n): return len(n)`;
-  ignored differential test re-enabled (2/2 green). 02.05b DONE (a4cfea3):
+- 02.05 SPLIT COMPLETE 2026-11-11 (all merged to main; exit gate PASSED):
+  02.05a DONE; t1_016 FIXED - root cause was NOT frame/stack sizing: clif.rs
+  emit_cfg emitted Inst::LoadGlobal's dst as the RAW TempId instead of
+  temp_slot() (86d0c09), so ANY JIT-routed call site crashed TypeError
+  'NoneType' not callable; min repro depth-independent `def k(n): return
+  len(n)`; ignored differential test re-enabled. 02.05b DONE (a4cfea3):
   TypeObject type_version + surgery_version AtomicU64 counters (ap-obj
   versioning.rs builtins_version for row 18), bump sites bound in
-  ap-run/classes.rs, ALL ic-version-audit rows now COVERED/documented-N/A
-  (13 super_stack = documented interaction, keyable off chain_surgery_version);
-  Risk-4 probe matrix verdict-identical vs CPython in tier 0/jit/APX_IC_AUDIT;
-  IC recording lands in FeedbackCells - guard consumption is 02.05c's job.
-  02.05g DONE (d42212d): ap-gc/rootscan.rs SafepointMap registry + fp-chain
-  walker (fp-chain SHIPPED, measured ~2-4% FP cost; NOT force-enabled until
-  02.05c has real pointer declarations), collector root feed
-  (augment-not-replace over the subtract-refs floor), clif.rs additive
-  declare_gc_values + stack-map tail, gcsupport clear_safepoints at install;
-  gc family 20/20 adaptive; alloc-under-recursion + del/collect probes
-  byte-identical vs CPython. En-route fix: h_subscript was a fail-closed
-  SystemError stub -> routed via methods::subscript_get process-global seam
-  (2df7e9d). Merged-trunk gates: ap-gc 35/0, ap-obj 66/0, ap-codegen-native
-  26/0, ap-run 194/0/1, tier_mode_differential 2/2, clippy -D clean, fmt clean.
-  02.05c OPEN ITEMS from 02.05g: flip gc_value_declarations non-empty,
-  replace PENDING_MAP_BASE pre-finalize registration with real blob-base
-  keys, enable -C force-frame-pointers in the JIT flag builder.
-  KNOWN RESIDUALS (filed, pre-existing): t1_007 format_decimal round()
-  bug (values-leaf ownership call); fix_pass_differential ENOENT was a
-  CARGO_TARGET_DIR-relative harness artifact (use ABSOLUTE CARGO_TARGET_DIR
-  when running cargo test manually), not a code bug; adaptive-mode traceback
-  frame linenos imprecise (JIT frames attributed to def line).
+  ap-run/classes.rs, ALL ic-version-audit rows COVERED/documented-N/A;
+  IC recording lands in FeedbackCells. 02.05g DONE (d42212d):
+  ap-gc/rootscan.rs SafepointMap registry + fp-chain walker (fp-chain
+  SHIPPED, ~2-4% FP cost, not force-enabled until pointer-typed CLIF values
+  exist - 02.05c resolved: i64 repr has none, conservative floor is the
+  root story, documented-N/A). 02.05c DONE (104f76c/a912979/e25fa20):
+  typed regions i64-smi repr, VALUE-level guards (deliberate divergence
+  from pon's counter-guarded temps - recorded in PROGRESS-0205c.md),
+  region-entry==block0 soundness rule, cold-twin CONTINUATION at exit block
+  (not restart-from-entry), h_call ABI arity bug fixed (call bodies had
+  silently tree-walked since 02.05a). 02.05d DONE (7fb7337/154e51c):
+  deopt.rs epoch/thrash backoff (threshold 64, shift cap 6, DISABLED pin
+  after 8 epochs) + en-route fix: SSA temp map cleared per emit (stale-temp
+  wrong-value hazard). 02.05e DONE (bfa9f9c/66fcf77): tierup.rs background
+  TierUpDriver (CAS install, snapshot-at-enqueue, pin-until-retire,
+  APX_SYNC_TIERUP=1 debug mode); UNION FIXES (orchestrator-hand-merged
+  after leaf + fixer both failed): (1) DEOPT_TABLE was thread_local! -
+  compiler thread's Tier1 store invisible to mutator, notes no-oped, pin
+  never fired -> now process-global OnceLock<Mutex>; (2) unconditional
+  per-call CALLFAST-DBG eprintln filled the stderr pipe and deadlocked
+  race-stress at its own 300s deadline -> env-gated (APX_CALLDBG) + race
+  harness drains pipes concurrently. 02.05f DONE (9d0a9f4): boxed OSR
+  end-to-end - back-edge poll (no-op in plain baseline), OsrTransferBuffer
+  canonical layout, OSR-BY-CALL entry ABI, routed through the background
+  driver, [OSR-STATS] under APX_OSR_STATS; typed-OSR stays out (study
+  problem #2); For-loop OSR + generator OSR + no-GIL registry filed as
+  follow-ups. 02.05h DONE (1732b51): BENCH GATE PASS - 2.07x conservative
+  geomean (min/max estimator, 3 runs), 2.20x median/median, >=1.5x floor
+  cleared; per-probe int-sum 3.20x, int-mul 2.65x, str-len 1.68x, str-concat
+  1.24x; slice is FUNCTION-shaped (module-level loops never reach
+  jit_call_body - the old bench corpus measured startup noise at 0.96x);
+  docs/tier1-bench.md + tests/bench/tier1/. Merged-trunk gates after f+h:
+  356 passed / 0 failed / 1 ignored (35 suites); tier_mode_differential 3/3;
+  race-stress 100/100; osr_gate 2/2; orchestrator re-measured geomean 2.14x
+  byte-identical. FILED (post-split): 02.05f emit bug - builtin
+  Call(local-Name arg) feeding BinOp in while loop fails Cranelift verify
+  (invalid block ref block3), transparent tier-0 fallback, byte-identical
+  (caps tier-1 coverage for that shape); adaptive-mode traceback linenos
+  imprecise (JIT frames attributed to def line).
+  PLAN 02 REMAINING: 02.06 AoT (prereqs 02.05a+02.05g DONE - dispatchable)
+  + 02.08 method surfaces + 02.09 no-GIL swap (T121 >=3x GREEN gate)
+  + 02.10 Go-scheduler (stretch).
 - ROBUSTNESS-CI CAMPAIGN: plan tree at `plans/robustness-ci/` (master.md +
   7 branches, 24 leaves) implements ALL findings of
   .hermes/audits/robustness-review-2026-10-19.md (CI core, test integrity,
