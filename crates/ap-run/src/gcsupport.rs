@@ -98,7 +98,13 @@ fn weakrefable(v: &Value) -> bool {
         // WeakKeyDictionary depends on it). An instance-dict or a
         // dict-bearing base also weakrefables (existing behavior).
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
-            if let Some(t) = o.type_ref.borrow().as_ref().and_then(|w| w.upgrade()) {
+            if let Some(t) = o
+                .type_ref
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_ref()
+                .and_then(|w| w.upgrade())
+            {
                 if t.has_instance_dict() {
                     return true;
                 }
@@ -153,7 +159,7 @@ pub fn weakref_ref(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
     let entry_index = ap_gc::weakref_entry_count();
     let wseq = ap_gc::weakref_next_seq();
     {
-        let tattrs = token.attrs.borrow_mut();
+        let tattrs = token.attrs.lock().unwrap_or_else(|p| p.into_inner());
         let _ = tattrs.set(interned_key("<target_addr>"), i(target_addr as i64));
     }
     if !untracked_immortal {
@@ -205,7 +211,7 @@ pub fn weakref_proxy(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
     let target_addr = target_addr_of(target);
     let token = PyObject::new(ap_obj::ObjKind::Opaque, "_weakref_proxy");
     {
-        let tattrs = token.attrs.borrow_mut();
+        let tattrs = token.attrs.lock().unwrap_or_else(|p| p.into_inner());
         let _ = tattrs.set(interned_key("<target_addr>"), i(target_addr as i64));
     }
     let wseq = ap_gc::weakref_next_seq();
@@ -276,7 +282,8 @@ pub fn weakref_call(token: &Gc<PyObject>) -> Value {
 fn target_addr_of_token(token: &Gc<PyObject>) -> usize {
     token
         .attrs
-        .borrow()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
         .get_str("<target_addr>")
         .and_then(|v| v.as_int())
         .and_then(|iv| iv.to_i64())
@@ -401,7 +408,12 @@ pub fn bridge_del(v: &Value) {
 fn lookup_del(_interp: &Arc<Interpreter>, v: &Value) -> Option<Value> {
     match v {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
-            let t = o.type_ref.borrow().as_ref().and_then(|w| w.upgrade())?;
+            let t = o
+                .type_ref
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_ref()
+                .and_then(|w| w.upgrade())?;
             let (f, _owner) = t.lookup_with_owner("__del__")?;
             Some(f)
         }
@@ -434,7 +446,7 @@ fn report_unraisable(interp: &Arc<Interpreter>, del_f: &Value, exc: &ExceptionVa
             .clone()
             .unwrap_or_else(|| crate::interp::exception_instance_value(exc));
         {
-            let a = args_obj.attrs.borrow_mut();
+            let a = args_obj.attrs.lock().unwrap_or_else(|p| p.into_inner());
             let _ = a.set(s("exc_type"), exc_type);
             let _ = a.set(s("exc_value"), exc_value.clone());
             // W112: real tb chain (was a BuiltinFn marker object -
@@ -457,9 +469,10 @@ fn report_unraisable(interp: &Arc<Interpreter>, del_f: &Value, exc: &ExceptionVa
             if let Value::Obj(iov) = &exc_value {
                 let _ = iov
                     .attrs
-                    .borrow_mut()
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
                     .set(Value::Str(PyString::new("__traceback__")), exc_tb.clone());
-                let _ = iov.attrs.borrow_mut().set(
+                let _ = iov.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
                     Value::Str(PyString::new("__ap_tb__")),
                     Value::List(PyList::from_vec(Vec::new())),
                 );
@@ -515,7 +528,8 @@ fn report_unraisable(interp: &Arc<Interpreter>, del_f: &Value, exc: &ExceptionVa
     } else {
         interp
             .frame_stack
-            .borrow()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
             .first()
             .map(|c| c.get())
             .filter(|n| *n > 0)
@@ -544,11 +558,16 @@ fn report_unraisable(interp: &Arc<Interpreter>, del_f: &Value, exc: &ExceptionVa
 }
 
 fn sys_attr(interp: &Arc<Interpreter>, name: &str) -> Option<Value> {
-    let sys_v = interp.sys_module.borrow().clone()?;
+    let sys_v = interp
+        .sys_module
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone()?;
     match sys_v {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::Module => o
             .module_ns
-            .borrow()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
             .as_ref()
             .and_then(|ns| ns.get(&Value::Str(PyString::new(name)))),
         _ => None,
@@ -623,7 +642,11 @@ fn build_gc_module_inner() -> Value {
     let _ = ns.set(s("DEBUG_UNCOLLECTABLE"), i(4));
     let _ = ns.set(s("DEBUG_SAVEALL"), i(32));
     let _ = ns.set(s("DEBUG_LEAK"), i(37));
-    let _ = m.module_ns.borrow_mut().replace(Arc::new((*ns).clone()));
+    let _ = m
+        .module_ns
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .replace(Arc::new((*ns).clone()));
     Value::Obj(m)
 }
 
@@ -811,7 +834,11 @@ pub fn build_weakref_module_pub() -> Value {
             Value::Obj(PyObject::new(ap_obj::ObjKind::Type, cls)),
         );
     }
-    let _ = m.module_ns.borrow_mut().replace(Arc::new((*ns).clone()));
+    let _ = m
+        .module_ns
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .replace(Arc::new((*ns).clone()));
     Value::Obj(m)
 }
 
@@ -905,7 +932,7 @@ pub fn call_weakref_finalize(args: &[Value], kwargs: &[(String, Value)]) -> Opti
     let target_addr = target_addr_of(&obj);
     let token = PyObject::new(ap_obj::ObjKind::Opaque, "_finalize_token");
     {
-        let tattrs = token.attrs.borrow_mut();
+        let tattrs = token.attrs.lock().unwrap_or_else(|p| p.into_inner());
         let _ = tattrs.set(interned_key("<target_addr>"), i(target_addr as i64));
         let _ = tattrs.set(s("alive"), Value::Bool(true));
     }
@@ -1077,7 +1104,7 @@ pub fn is_weak_container(name: &str) -> bool {
 fn container_new(cls: &str) -> Value {
     let o = PyObject::new(ap_obj::ObjKind::Opaque, cls);
     {
-        let attrs = o.attrs.borrow_mut();
+        let attrs = o.attrs.lock().unwrap_or_else(|p| p.into_inner());
         if cls == WS {
             let _ = attrs.set(
                 interned_key("<data>"),
@@ -1089,17 +1116,22 @@ fn container_new(cls: &str) -> Value {
     }
     // CPython repr form (WeakKeyDictionary.__repr__): "<%s at %#x>".
     let addr = Arc::as_ptr(&o) as *const u8 as usize;
-    *o.repr_text.borrow_mut() = Some(format!("<{cls} at 0x{addr:x}>"));
+    *o.repr_text.lock().unwrap_or_else(|p| p.into_inner()) = Some(format!("<{cls} at 0x{addr:x}>"));
     Value::Obj(o)
 }
 
 /// The backing dict of a weak container instance.
 fn container_data(v: &Value) -> Option<Gc<PyDict>> {
     match v {
-        Value::Obj(o) => o.attrs.borrow().get_str("<data>").and_then(|d| match d {
-            Value::Dict(d) => Some(d.clone()),
-            _ => None,
-        }),
+        Value::Obj(o) => o
+            .attrs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get_str("<data>")
+            .and_then(|d| match d {
+                Value::Dict(d) => Some(d.clone()),
+                _ => None,
+            }),
         _ => None,
     }
 }
@@ -1107,10 +1139,15 @@ fn container_data(v: &Value) -> Option<Gc<PyDict>> {
 /// WeakSet storage: the `<data>` PySet of tokens.
 fn weakset_data(v: &Value) -> Option<Gc<ap_obj::dict::PySet>> {
     match v {
-        Value::Obj(o) => o.attrs.borrow().get_str("<data>").and_then(|d| match d {
-            Value::Set(set) => Some(set.clone()),
-            _ => None,
-        }),
+        Value::Obj(o) => o
+            .attrs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get_str("<data>")
+            .and_then(|d| match d {
+                Value::Set(set) => Some(set.clone()),
+                _ => None,
+            }),
         _ => None,
     }
 }
@@ -1130,7 +1167,8 @@ fn make_token(target: &Value) -> BResult {
             let token = PyObject::new(ap_obj::ObjKind::Opaque, "_weakref_token");
             let _ = token
                 .attrs
-                .borrow_mut()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
                 .set(interned_key("<target_addr>"), i(addr as i64));
             return Ok(Value::Obj(token));
         }
@@ -1149,11 +1187,16 @@ thread_local! {
 fn token_target(token: &Value) -> Option<usize> {
     match token {
         Value::Obj(o) => {
-            let a = o.attrs.borrow().get_str("<target_addr>").and_then(|v| {
-                v.as_int()
-                    .and_then(|iv| iv.to_i64())
-                    .map(|n| n.max(0) as usize)
-            });
+            let a = o
+                .attrs
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get_str("<target_addr>")
+                .and_then(|v| {
+                    v.as_int()
+                        .and_then(|iv| iv.to_i64())
+                        .map(|n| n.max(0) as usize)
+                });
             a
         }
         _ => None,
@@ -1624,7 +1667,8 @@ fn weakset_surface(self_v: &Value, op: &str, args: &[Value]) -> BResult {
             if let Value::Obj(co) = &c {
                 let _ = co
                     .attrs
-                    .borrow_mut()
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
                     .set(interned_key("<data>"), Value::Set(set.clone()));
             }
             Ok(c)
@@ -1645,8 +1689,16 @@ pub fn weakmethod_ctor(args: &[Value]) -> BResult {
         .ok_or_else(|| raise("TypeError", "WeakMethod needs a method"))?;
     let (recv, func, name) = match &meth {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::BoundMethod => (
-            o.self_value.borrow().clone().unwrap_or(Value::None),
-            o.func.borrow().clone().unwrap_or(Value::None),
+            o.self_value
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
+                .unwrap_or(Value::None),
+            o.func
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
+                .unwrap_or(Value::None),
             o.name.clone(),
         ),
         _ => {
@@ -1665,7 +1717,7 @@ pub fn weakmethod_ctor(args: &[Value]) -> BResult {
     let target_addr = target_addr_of(&recv);
     let token = PyObject::new(ap_obj::ObjKind::Opaque, "_weakmethod_token");
     {
-        let tattrs = token.attrs.borrow_mut();
+        let tattrs = token.attrs.lock().unwrap_or_else(|p| p.into_inner());
         let _ = tattrs.set(interned_key("<target_addr>"), i(target_addr as i64));
         let _ = tattrs.set(interned_key("<func>"), func);
         let _ = tattrs.set(interned_key("<name>"), s(name));
@@ -1686,7 +1738,8 @@ pub fn weakmethod_ctor(args: &[Value]) -> BResult {
 pub fn weakmethod_call(token: &Gc<PyObject>) -> Value {
     let addr = token
         .attrs
-        .borrow()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
         .get_str("<target_addr>")
         .and_then(|v| v.as_int())
         .and_then(|iv| iv.to_i64())
@@ -1700,15 +1753,21 @@ pub fn weakmethod_call(token: &Gc<PyObject>) -> Value {
     };
     let func = token
         .attrs
-        .borrow()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
         .get_str("<func>")
         .unwrap_or(Value::None);
-    let name = match token.attrs.borrow().get_str("<name>") {
+    let name = match token
+        .attrs
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get_str("<name>")
+    {
         Some(Value::Str(x)) => x.as_str().to_string(),
         _ => String::new(),
     };
     let m = PyObject::with_self(ap_obj::ObjKind::BoundMethod, name, recv);
-    *m.func.borrow_mut() = Some(func);
+    *m.func.lock().unwrap_or_else(|p| p.into_inner()) = Some(func);
     Value::Obj(m)
 }
 
@@ -1795,15 +1854,6 @@ fn weakbridge_callback(cb: &Value, args: &[Value]) -> Result<Value, String> {
 // deliberately NOT claimed. The worker closure transmute at the spawn site
 // died with it. Grep gate: this name must not reappear in any crate.
 
-#[allow(clippy::type_complexity)] // interpreter plumbing type; factoring out would obscure the signature
-static WORKER_REG_IN: std::sync::LazyLock<
-    std::sync::Mutex<Option<std::sync::mpsc::Sender<crate::send_value::SendValue>>>,
-> = std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
-#[allow(clippy::type_complexity)] // interpreter plumbing type; factoring out would obscure the signature
-static WORKER_REG_OUT: std::sync::LazyLock<
-    std::sync::Mutex<Option<std::sync::mpsc::Receiver<crate::send_value::SendValue>>>,
-> = std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
-
 // 02.09b P6 (audit §1.3 finding 3 — the hook-clobber): the registration hook
 // fn pointer is ONE process-global slot; install_worker_thread used to
 // overwrite it unconditionally, so the LAST spawned worker's channel won and
@@ -1813,7 +1863,6 @@ static WORKER_REG_OUT: std::sync::LazyLock<
 // hook fn stays the ONE forward fn, which routes to the CALLING thread's
 // channel. The main thread registers directly (no channel).
 struct WorkerReg {
-    tx: std::sync::mpsc::Sender<crate::send_value::SendValue>,
     rx: std::sync::mpsc::Receiver<crate::send_value::SendValue>,
 }
 
@@ -1850,10 +1899,6 @@ fn gc_register_routed(v: &Value) {
 
 fn gc_bridge_drain_impl() -> usize {
     drain_worker_registrations()
-}
-
-fn gc_register_forward_worker(v: &Value) {
-    gc_register_routed(v);
 }
 
 /// Drain worker registrations into the MAIN registry (main-thread turns +
@@ -1898,16 +1943,21 @@ pub fn drain_worker_registrations() -> usize {
 pub fn install_worker_thread() {
     let (tx, rx) = std::sync::mpsc::channel::<crate::send_value::SendValue>();
     let tid = crate::threading::current_os_tid();
-    worker_regs()
-        .lock()
-        .unwrap()
-        .insert(tid, WorkerReg { tx: tx.clone(), rx });
+    worker_regs().lock().unwrap().insert(tid, WorkerReg { rx });
     MY_REG.with(|m| *m.borrow_mut() = Some(tx));
     // Census: this thread is now a live mutator (its root-bearing state and
     // JIT capture point join the collector's walk).
     ap_gc::register();
     ap_gc::set_thread_id(tid);
     install_capture_mirror();
+}
+
+/// 02.09b P7: worker exit — retire the census entry + this thread's channel
+/// handle (the receiver stays in the table until the next drain finds it
+/// empty; the table never grows per-run beyond the thread count).
+pub fn uninstall_worker_thread() {
+    ap_gc::unregister();
+    MY_REG.with(|m| *m.borrow_mut() = None);
 }
 
 /// 02.09b P6: mirror THIS thread's rootscan capture point into its census

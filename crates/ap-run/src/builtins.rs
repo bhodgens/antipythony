@@ -5,9 +5,9 @@
 //! stdout byte gate). Numeric routes delegate to ap-obj ops (the C-12..C-16
 //! surface proven in 02.01).
 
-use crate::Flow;
 use crate::exc_hier::ExceptionValue;
 use crate::frame::Interpreter;
+use crate::Flow;
 use ap_obj::dict::{PyDict, PySet};
 use ap_obj::int::{Gc, Int};
 use ap_obj::value::{PyList, PyString, Tuple, Value};
@@ -59,7 +59,10 @@ pub fn py_str_of(v: &Value) -> Result<String, ap_obj::exc::PyException> {
                             // (owner, receiver) context like the BoundMethod
                             // call site does; call_function's sentinel
                             // consumes it on entry.
-                            *interp.pending_super_ctx.borrow_mut() =
+                            *interp
+                                .pending_super_ctx
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner()) =
                                 Some((owner.clone(), v.clone(), false));
                             if ap_obj::debug_flags::debug_flag(
                                 ap_obj::debug_flags::ApxFlag::SuperDbg,
@@ -91,11 +94,14 @@ pub fn py_str_of(v: &Value) -> Result<String, ap_obj::exc::PyException> {
     }
     if let Value::Obj(o) = v {
         // 02.08-lite native types carry a precomputed repr (struct_time etc).
-        if let Some(txt) = &*o.repr_text.borrow() {
+        if let Some(txt) = &*o.repr_text.lock().unwrap_or_else(|p| p.into_inner()) {
             return Ok(txt.clone());
         }
         if o.kind == ap_obj::ObjKind::Exception {
-            let exc = crate::exc_hier::ExceptionValue::new(&o.name, o.args.borrow().clone());
+            let exc = crate::exc_hier::ExceptionValue::new(
+                &o.name,
+                o.args.lock().unwrap_or_else(|p| p.into_inner()).clone(),
+            );
             return exc.py_str();
         }
         // Real-class exception instances (S-03-32 UserInstance payloads):
@@ -123,11 +129,16 @@ pub fn print(interp: &Interpreter, args: &[Value], kwargs: &[(String, Value)]) -
         crate::builtins_modules::current_interp()
             .as_ref()
             .and_then(|ic| {
-                let sys_v = ic.sys_module.borrow().clone()?;
+                let sys_v = ic
+                    .sys_module
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone()?;
                 match sys_v {
                     Value::Obj(o) if o.kind == ap_obj::ObjKind::Module => o
                         .module_ns
-                        .borrow()
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
                         .as_ref()
                         .and_then(|ns| ns.get(&Value::Str(PyString::new("stdout")))),
                     _ => None,
@@ -264,14 +275,20 @@ pub fn builtin_len(args: &[Value]) -> BResult {
         // - len reads the backing slice_parts filled via
         // __ap_base_<base>__init__.
         Value::Obj(o)
-            if o.kind == ap_obj::ObjKind::UserInstance && !o.slice_parts.borrow().is_empty() =>
+            if o.kind == ap_obj::ObjKind::UserInstance
+                && !o
+                    .slice_parts
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .is_empty() =>
         {
             // T2: builtin-derived instances - len reads the backing
             // slice_parts (filled via __ap_base_<base>__init__).
             if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::TbDbg) {
                 let mro_names: Vec<String> = o
                     .class_ref
-                    .borrow()
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
                     .as_ref()
                     .map(|t| {
                         t.mro
@@ -284,11 +301,17 @@ pub fn builtin_len(args: &[Value]) -> BResult {
                     .unwrap_or_default();
                 eprintln!(
                     "[LEN-USER] n={} mro={:?}",
-                    o.slice_parts.borrow().len(),
+                    o.slice_parts
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .len(),
                     mro_names
                 );
             }
-            o.slice_parts.borrow().len()
+            o.slice_parts
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .len()
         }
         Value::Obj(o) if o.kind == ap_obj::ObjKind::Namespace && o.name == "<traceback>" => {
             if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::TbDbg) {
@@ -335,7 +358,8 @@ pub fn builtin_len(args: &[Value]) -> BResult {
                 // setitem through the len error path).
                 let n = o
                     .attrs
-                    .borrow()
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
                     .get(&Value::Str(PyString::new("<payload>")))
                     .map(|pv| match pv {
                         Value::List(l) => l.len(),
@@ -347,7 +371,12 @@ pub fn builtin_len(args: &[Value]) -> BResult {
             ap_obj::ObjKind::Opaque if o.name == "bytearray" => {
                 let _ = 0;
                 // A-4 item 1: len(bytearray) over the <data> buffer.
-                match o.attrs.borrow().get(&Value::Str(PyString::new("<data>"))) {
+                match o
+                    .attrs
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .get(&Value::Str(PyString::new("<data>")))
+                {
                     Some(Value::Bytes(b)) => b.len(),
                     _ => {
                         return Err(raise(
@@ -360,7 +389,7 @@ pub fn builtin_len(args: &[Value]) -> BResult {
             ap_obj::ObjKind::Opaque => {
                 // 02.08-lite native types (struct_time, uname_result) expose
                 // their field tuple under the <values> key.
-                let attrs = o.attrs.borrow();
+                let attrs = o.attrs.lock().unwrap_or_else(|p| p.into_inner());
                 match attrs
                     .get(&Value::Str(PyString::new("<values>")))
                     .or_else(|| attrs.get(&Value::Str(PyString::new("<items>"))))
@@ -370,7 +399,11 @@ pub fn builtin_len(args: &[Value]) -> BResult {
                         // A-3 item 5: stat_result (and friends) carry their
                         // sequence in slice_parts, not attrs.
                         drop(attrs);
-                        let n = o.slice_parts.borrow().len();
+                        let n = o
+                            .slice_parts
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .len();
                         if n > 0 {
                             n
                         } else {
@@ -383,13 +416,13 @@ pub fn builtin_len(args: &[Value]) -> BResult {
                 }
             }
             ap_obj::ObjKind::Range => {
-                let ints = o.ints.borrow();
+                let ints = o.ints.lock().unwrap_or_else(|p| p.into_inner());
                 crate::iter::range_len(ints[0], ints[1], ints[2]) as usize
             }
             ap_obj::ObjKind::NamedTuple => {
                 // 02.08-lite: uname_result-style named tuples are sized via
                 // their <values> field list.
-                let attrs = o.attrs.borrow();
+                let attrs = o.attrs.lock().unwrap_or_else(|p| p.into_inner());
                 match attrs
                     .get(&Value::Str(PyString::new("<values>")))
                     .or_else(|| attrs.get(&Value::Str(PyString::new("<items>"))))
@@ -436,13 +469,19 @@ pub fn builtin_repr(args: &[Value]) -> BResult {
     let v = one(args, "repr")?;
     // Exception instances repr as ClassName('arg', ...) (V043: repr(e)).
     if let Value::Obj(o) = v {
-        if let Some(txt) = &*o.repr_text.borrow() {
+        if let Some(txt) = &*o.repr_text.lock().unwrap_or_else(|p| p.into_inner()) {
             return Ok(Value::Str(PyString::new(txt.clone())));
         }
         if o.kind == ap_obj::ObjKind::Exception {
             let mut out = o.name.clone();
             out.push('(');
-            for (i, a) in o.args.borrow().iter().enumerate() {
+            for (i, a) in o
+                .args
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .iter()
+                .enumerate()
+            {
                 if i > 0 {
                     out.push_str(", ");
                 }
@@ -485,11 +524,13 @@ pub fn builtin_int(interp: &Interpreter, args: &[Value]) -> BResult {
             if let Some(t) = crate::classes::class_of_value(interp, &cls_v) {
                 if t.mro.lock().unwrap().iter().any(|m| m.name == "int") {
                     let io = ap_obj::PyObject::new(ap_obj::ObjKind::UserInstance, t.name.clone());
-                    *io.type_ref.borrow_mut() = Some(std::sync::Arc::downgrade(&t));
-                    *io.class_ref.borrow_mut() = Some(t.clone());
+                    *io.type_ref.lock().unwrap_or_else(|p| p.into_inner()) =
+                        Some(std::sync::Arc::downgrade(&t));
+                    *io.class_ref.lock().unwrap_or_else(|p| p.into_inner()) = Some(t.clone());
                     let _ = io
                         .attrs
-                        .borrow_mut()
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
                         .set(Value::Str(PyString::new("__ap_int__")), args[1].clone());
                     return Ok(Value::Obj(io));
                 }
@@ -507,13 +548,13 @@ pub fn builtin_int(interp: &Interpreter, args: &[Value]) -> BResult {
                 Value::Obj(o)
                     if o.kind == ap_obj::ObjKind::UserInstance
                         && o.attrs
-                            .borrow()
+                            .lock().unwrap_or_else(|p| p.into_inner())
                             .get(&Value::Str(PyString::new("__ap_int__")))
                             .is_some() =>
                 {
                     match o
                         .attrs
-                        .borrow()
+                        .lock().unwrap_or_else(|p| p.into_inner())
                         .get(&Value::Str(PyString::new("__ap_int__")))
                     {
                         Some(p @ Value::Int(_)) => Ok(p.clone()),
@@ -529,7 +570,7 @@ pub fn builtin_int(interp: &Interpreter, args: &[Value]) -> BResult {
                 Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque => {
                     match o
                         .attrs
-                        .borrow()
+                        .lock().unwrap_or_else(|p| p.into_inner())
                         .get(&Value::Str(PyString::new("<int_value>")))
                     {
                         Some(v @ Value::Int(_)) => Ok(v.clone()),
@@ -570,7 +611,7 @@ pub fn builtin_int(interp: &Interpreter, args: &[Value]) -> BResult {
                     // ARE ints. int(member) == member._value_.
                     if let Value::Obj(o) = v {
                         if let Some(Value::Int(i)) =
-                            o.attrs.borrow().get(&Value::Str(PyString::new("_value_")))
+                            o.attrs.lock().unwrap_or_else(|p| p.into_inner()).get(&Value::Str(PyString::new("_value_")))
                         {
                             return Ok(Value::Int(i.clone()));
                         }
@@ -704,7 +745,8 @@ pub fn builtin_bool(args: &[Value]) -> BResult {
         if o.kind == ap_obj::ObjKind::Opaque && o.name == "bytearray" {
             let n = o
                 .attrs
-                .borrow()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
                 .get(&Value::Str(PyString::new("<data>")))
                 .map(|v| match v {
                     Value::Bytes(b) => !b.is_empty(),
@@ -718,7 +760,8 @@ pub fn builtin_bool(args: &[Value]) -> BResult {
         if o.kind == ap_obj::ObjKind::Opaque && o.name == "deque" {
             let n = o
                 .attrs
-                .borrow()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
                 .get(&Value::Str(PyString::new("<items>")))
                 .map(|v| match v {
                     Value::List(l) => l.len(),
@@ -747,7 +790,7 @@ pub fn builtin_list(args: &[Value]) -> BResult {
             // sees an empty Seq). Drive gen pulls directly.
             if let Value::Obj(o) = v {
                 if o.kind == ap_obj::ObjKind::Generator {
-                    if let Some(id) = *o.gen_id.borrow() {
+                    if let Some(id) = *o.gen_id.lock().unwrap_or_else(|p| p.into_inner()) {
                         let interp = crate::builtins_modules::current_interp();
                         let Some(interp) = interp else {
                             // No interpreter on this thread: legacy path.
@@ -764,8 +807,16 @@ pub fn builtin_list(args: &[Value]) -> BResult {
                             // after one item. Keep pulling while either the
                             // generator entry or the materialized iterator
                             // still exists.
-                            let alive = interp.generators.borrow().contains_key(&id)
-                                || interp.iterators.borrow().contains_key(&id);
+                            let alive = interp
+                                .generators
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner())
+                                .contains_key(&id)
+                                || interp
+                                    .iterators
+                                    .lock()
+                                    .unwrap_or_else(|p| p.into_inner())
+                                    .contains_key(&id);
                             let r = if alive {
                                 let rc = interp.rc();
                                 crate::interp::gen_pull_public(&rc, id)
@@ -794,7 +845,7 @@ pub fn builtin_tuple(args: &[Value]) -> BResult {
         None => Ok(Value::Tuple(Gc::new(Tuple(vec![])))),
         Some(Value::Obj(o)) if o.kind == ap_obj::ObjKind::Opaque => {
             // 02.08-lite native types: tuple(struct_time) over <values>.
-            let attrs = o.attrs.borrow();
+            let attrs = o.attrs.lock().unwrap_or_else(|p| p.into_inner());
             match attrs.get(&Value::Str(PyString::new("<values>"))) {
                 Some(Value::List(l)) => Ok(Value::Tuple(Gc::new(Tuple(l.items().to_vec())))),
                 // T2 (inspect._signature_bound_method: tuple(
@@ -1274,7 +1325,7 @@ fn check_isinstance(v: &Value, t: &Value) -> Result<Value, Flow> {
                 Value::Obj(vo) if vo.kind == ap_obj::ObjKind::Function
                     && vo
                         .attrs
-                        .borrow()
+                        .lock().unwrap_or_else(|p| p.into_inner())
                         .get(&Value::Str(PyString::new("__ap_cached_property__")))
                         .is_some_and(|x| x.is_truthy())
             )))
@@ -1287,7 +1338,12 @@ fn check_isinstance(v: &Value, t: &Value) -> Result<Value, Flow> {
             if (o.kind == ap_obj::ObjKind::Namespace && o.name == "_Union")
                 || (o.kind == ap_obj::ObjKind::Opaque && o.name == "__union__") =>
         {
-            for p in o.slice_parts.borrow().iter() {
+            for p in o
+                .slice_parts
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .iter()
+            {
                 // PEP 604: `X | None` parks None as a Value::None arm —
                 // it matches NoneType (isinstance(None, int|None)).
                 if matches!(p, Value::None) {
@@ -1366,7 +1422,12 @@ pub fn type_matches(v: &Value, want: &str) -> bool {
             // so isinstance(c, CaptureIO) holds (pytest's
             // SysCapture.snap asserts it).
             if o.kind == ap_obj::ObjKind::Opaque {
-                if let Some(t) = o.class_ref.borrow().clone() {
+                if let Some(t) = o
+                    .class_ref
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone()
+                {
                     for m in t.mro.lock().unwrap().iter() {
                         if m.name.as_str() == b {
                             return true;
@@ -1379,7 +1440,12 @@ pub fn type_matches(v: &Value, want: &str) -> bool {
         // T1-d (attrs _create_slots_class): Descriptor instances answer
         // classmethod/staticmethod/property isinstance probes by descr kind.
         (Value::Obj(o), b) if o.kind == ap_obj::ObjKind::Descriptor => {
-            let kind = o.descr_kind.borrow().clone().unwrap_or_default();
+            let kind = o
+                .descr_kind
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
+                .unwrap_or_default();
             match b {
                 "classmethod" => kind == "classmethod",
                 "staticmethod" => kind == "staticmethod",
@@ -1398,7 +1464,8 @@ pub fn type_matches(v: &Value, want: &str) -> bool {
         // answers True only when it was wrapped (marker attr).
         (Value::Obj(o), "cached_property") if o.kind == ap_obj::ObjKind::Function => o
             .attrs
-            .borrow()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
             .get(&Value::Str(PyString::new("__ap_cached_property__")))
             .is_some_and(|x| x.is_truthy()),
         // T1-d (scrapy.http.Headers.update): CPython registers dict as a
@@ -1470,7 +1537,12 @@ pub fn builtin_type(interp: &Interpreter, args: &[Value], kwargs: &[(String, Val
             // broke that and double-wrapped staticmethods).
             if let Value::Obj(o) = v {
                 if o.kind == ap_obj::ObjKind::UserClass {
-                    if let Some(t) = o.class_ref.borrow().clone() {
+                    if let Some(t) = o
+                        .class_ref
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .clone()
+                    {
                         if let Some(cv) = t.class_value.borrow().clone() {
                             return Ok(cv);
                         }
@@ -1485,7 +1557,8 @@ pub fn builtin_type(interp: &Interpreter, args: &[Value], kwargs: &[(String, Val
                 {
                     let t = interned_type(interp, "UnionType");
                     if let Value::Obj(to) = &t {
-                        *to.repr_text.borrow_mut() = Some("<class 'typing.Union'>".to_string());
+                        *to.repr_text.lock().unwrap_or_else(|p| p.into_inner()) =
+                            Some("<class 'typing.Union'>".to_string());
                     }
                     return Ok(t);
                 }
@@ -1502,7 +1575,8 @@ pub fn builtin_type(interp: &Interpreter, args: &[Value], kwargs: &[(String, Val
                 // (type(me).__name__ == "_MainThread" — T108).
                 Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque && o.name == "thread" => o
                     .attrs
-                    .borrow()
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
                     .get(&Value::Str(PyString::new("<class>")))
                     .and_then(|v| match v {
                         Value::Str(sv) => Some(sv.as_str().to_string()),
@@ -1582,7 +1656,7 @@ pub fn builtin_iter(args: &[Value]) -> BResult {
     // materialized snapshot.
     if let Value::Obj(o) = v {
         if o.kind == ap_obj::ObjKind::Generator {
-            if let Some(id) = *o.gen_id.borrow() {
+            if let Some(id) = *o.gen_id.lock().unwrap_or_else(|p| p.into_inner()) {
                 // Ensure the lazy anchor exists (iterable_of installs it).
                 let interp = crate::builtins_modules::current_interp();
                 if let Some(interp) = interp {
@@ -1590,7 +1664,7 @@ pub fn builtin_iter(args: &[Value]) -> BResult {
                     let _ = interp;
                 }
                 let obj = ap_obj::PyObject::new(ap_obj::ObjKind::Iterator, "iterator");
-                *obj.gen_id.borrow_mut() = Some(id);
+                *obj.gen_id.lock().unwrap_or_else(|p| p.into_inner()) = Some(id);
                 return Ok(Value::Obj(obj));
             }
         }
@@ -1598,7 +1672,7 @@ pub fn builtin_iter(args: &[Value]) -> BResult {
     let it = iterable_of(v)?;
     let id = crate::builtins_modules::register_shared_iter(it);
     let obj = ap_obj::PyObject::new(ap_obj::ObjKind::Iterator, "iterator");
-    *obj.gen_id.borrow_mut() = Some(id);
+    *obj.gen_id.lock().unwrap_or_else(|p| p.into_inner()) = Some(id);
     Ok(Value::Obj(obj))
 }
 
@@ -1610,18 +1684,29 @@ pub fn builtin_next(interp: &Interpreter, args: &[Value]) -> BResult {
         {
             let id = o
                 .gen_id
-                .borrow()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
                 .ok_or_else(|| raise("TypeError", "'iterator' object is not an iterator"))?;
             // Generators (PEP-342): a body exception propagates; clean
             // exhaustion maps to StopIteration carrying si_value as .value.
-            if interp.generators.borrow().contains_key(&id) {
+            if interp
+                .generators
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .contains_key(&id)
+            {
                 let rc = interp.rc();
                 match crate::interp::gen_pull_public(&rc, id) {
                     Ok(Some(x)) => return Ok(x),
                     Ok(None) => match args.get(1) {
                         Some(default) => return Ok(default.clone()),
                         None => {
-                            let val = interp.si_value.borrow_mut().take().unwrap_or(Value::None);
+                            let val = interp
+                                .si_value
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner())
+                                .take()
+                                .unwrap_or(Value::None);
                             let mut e = ExceptionValue::new("StopIteration", vec![]);
                             if !matches!(val, Value::None) {
                                 e.args.push(val);
@@ -1658,7 +1743,7 @@ fn next_registered(interp: &Interpreter, id: u64) -> Option<Value> {
     // pull_iter (abandoned iter()/next() chains no longer pin state).
     let dead = crate::iter::take_dead_iter_ids();
     if !dead.is_empty() {
-        let mut its = interp.iterators.borrow_mut();
+        let mut its = interp.iterators.lock().unwrap_or_else(|p| p.into_inner());
         for d in dead {
             if d % 2 == 0 {
                 its.remove(&d);
@@ -1666,11 +1751,16 @@ fn next_registered(interp: &Interpreter, id: u64) -> Option<Value> {
         }
     }
     // Generators route through the executor (materialize + advance).
-    if interp.generators.borrow().contains_key(&id) {
+    if interp
+        .generators
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .contains_key(&id)
+    {
         let rc = interp.rc();
         return crate::interp::gen_pull_public(&rc, id).ok().flatten();
     }
-    let its = interp.iterators.borrow();
+    let its = interp.iterators.lock().unwrap_or_else(|p| p.into_inner());
     its.get(&id).and_then(|it| it.next())
 }
 
@@ -2150,8 +2240,8 @@ pub fn builtin_enumerate(
         c += 1;
     }
     let obj = ap_obj::PyObject::new(ap_obj::ObjKind::Iterator, "enumerate");
-    *obj.ints.borrow_mut() = vec![start];
-    *obj.gen_id.borrow_mut() = Some(register_iter(
+    *obj.ints.lock().unwrap_or_else(|p| p.into_inner()) = vec![start];
+    *obj.gen_id.lock().unwrap_or_else(|p| p.into_inner()) = Some(register_iter(
         interp,
         &Value::List(PyList::from_vec(pairs)),
     )?);
@@ -2233,13 +2323,21 @@ pub fn builtin_zip(interp: &Interpreter, args: &[Value]) -> BResult {
     // zip() with no args: exhausted.
     if args.is_empty() {
         let it = crate::iter::PyIterator::new(crate::iter::IterState::Seq(Vec::new(), 0));
-        let id = interp.next_iter_id.get();
-        interp.next_iter_id.set(id + 2);
+        let id = interp
+            .next_iter_id
+            .load(std::sync::atomic::Ordering::Relaxed);
+        interp
+            .next_iter_id
+            .store(id + 2, std::sync::atomic::Ordering::Relaxed);
         // Fence-perf fix 2026-11-06: tag for Drop-prune (F5 contract).
         it.table_id.set(Some(id));
-        interp.iterators.borrow_mut().insert(id, it);
+        interp
+            .iterators
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(id, it);
         let obj = ap_obj::PyObject::new(ap_obj::ObjKind::Iterator, "zip");
-        *obj.gen_id.borrow_mut() = Some(id);
+        *obj.gen_id.lock().unwrap_or_else(|p| p.into_inner()) = Some(id);
         return Ok(Value::Obj(obj));
     }
     let mut parts: Vec<std::vec::IntoIter<Value>> = Vec::with_capacity(args.len());
@@ -2262,15 +2360,27 @@ pub fn register_iter(interp: &Interpreter, v: &Value) -> Result<u64, Flow> {
             o.kind,
             ap_obj::ObjKind::Iterator | ap_obj::ObjKind::Generator
         ) {
-            return o.gen_id.borrow().ok_or_else(stop_iter_flow_cloned);
+            return o
+                .gen_id
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .ok_or_else(stop_iter_flow_cloned);
         }
     }
     let it = iterable_of(v)?;
-    let id = interp.next_iter_id.get();
-    interp.next_iter_id.set(id + 1);
+    let id = interp
+        .next_iter_id
+        .load(std::sync::atomic::Ordering::Relaxed);
+    interp
+        .next_iter_id
+        .store(id + 1, std::sync::atomic::Ordering::Relaxed);
     // Fence-perf fix 2026-11-06: tag for Drop-prune (F5 contract).
     it.table_id.set(Some(id));
-    interp.iterators.borrow_mut().insert(id, it);
+    interp
+        .iterators
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(id, it);
     Ok(id)
 }
 
@@ -2414,7 +2524,7 @@ pub fn make_sys_module(interp: &Interpreter) -> Value {
     {
         let flags = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "flags");
         {
-            let fa = flags.attrs.borrow_mut();
+            let fa = flags.attrs.lock().unwrap_or_else(|p| p.into_inner());
             for (k, v) in [
                 ("debug", 0i64),
                 ("inspect", 0),
@@ -2466,9 +2576,9 @@ pub fn make_sys_module(interp: &Interpreter) -> Value {
     );
     // version_info: named-tuple-like namespace.
     let vi = ap_obj::PyObject::new(ap_obj::ObjKind::NamedTuple, "version_info");
-    *vi.ints.borrow_mut() = vec![3, 14, 0, 3]; // major, minor, micro, releaselevel-index
+    *vi.ints.lock().unwrap_or_else(|p| p.into_inner()) = vec![3, 14, 0, 3]; // major, minor, micro, releaselevel-index
     {
-        let attrs = vi.attrs.borrow_mut();
+        let attrs = vi.attrs.lock().unwrap_or_else(|p| p.into_inner());
         let _ = attrs.set(
             Value::Str(PyString::new("releaselevel")),
             Value::Str(PyString::new("final")),
@@ -2490,7 +2600,7 @@ pub fn make_sys_module(interp: &Interpreter) -> Value {
     // hash_info
     let hi = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "hash_info");
     {
-        let attrs = hi.attrs.borrow_mut();
+        let attrs = hi.attrs.lock().unwrap_or_else(|p| p.into_inner());
         let _ = attrs.set(
             Value::Str(PyString::new("modulus")),
             Value::Int(Int::from_i64(ap_obj::hash::HASH_MODULUS as i64)),
@@ -2522,7 +2632,7 @@ pub fn make_sys_module(interp: &Interpreter) -> Value {
     // float_info (subset V056-adjacent corpus uses mant_dig)
     let fi = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "float_info");
     {
-        let attrs = fi.attrs.borrow_mut();
+        let attrs = fi.attrs.lock().unwrap_or_else(|p| p.into_inner());
         let _ = attrs.set(
             Value::Str(PyString::new("mant_dig")),
             Value::Int(Int::Smi(53)),
@@ -2542,7 +2652,7 @@ pub fn make_sys_module(interp: &Interpreter) -> Value {
     // int_info
     let ii = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "int_info");
     {
-        let attrs = ii.attrs.borrow_mut();
+        let attrs = ii.attrs.lock().unwrap_or_else(|p| p.into_inner());
         let _ = attrs.set(
             Value::Str(PyString::new("bits_per_digit")),
             Value::Int(Int::Smi(30)),
@@ -2565,19 +2675,19 @@ pub fn make_sys_module(interp: &Interpreter) -> Value {
     // 02.03b: a write() marker on each — warnings' _showwarnmsg_impl does
     // `file.write(text)` on sys.stderr.
     let so = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "stdout");
-    let _ = so.attrs.borrow_mut().set(
+    let _ = so.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
         Value::Str(PyString::new("write")),
         builtin_marker("__ap_stream_write__"),
     );
-    let _ = so.attrs.borrow_mut().set(
+    let _ = so.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
         Value::Str(PyString::new("fileno")),
         builtin_marker("sys.stdout.fileno"),
     );
-    let _ = so.attrs.borrow_mut().set(
+    let _ = so.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
         Value::Str(PyString::new("isatty")),
         builtin_marker("sys.stdout.isatty"),
     );
-    let _ = so.attrs.borrow_mut().set(
+    let _ = so.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
         Value::Str(PyString::new("flush")),
         builtin_marker("__ap_stream_flush__"),
     );
@@ -2585,7 +2695,7 @@ pub fn make_sys_module(interp: &Interpreter) -> Value {
     let _ = ns.set(Value::Str(PyString::new("__stdout__")), Value::Obj(so));
     let se = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "stderr");
     {
-        let se_attrs = se.attrs.borrow_mut();
+        let se_attrs = se.attrs.lock().unwrap_or_else(|p| p.into_inner());
         let _ = se_attrs.set(
             Value::Str(PyString::new("write")),
             builtin_marker("__ap_stream_write__stderr__"),
@@ -2615,7 +2725,7 @@ pub fn make_sys_module(interp: &Interpreter) -> Value {
     // sys.implementation (02.04a: enum.py reads it at import).
     let impl_ns = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "implementation");
     {
-        let attrs = impl_ns.attrs.borrow_mut();
+        let attrs = impl_ns.attrs.lock().unwrap_or_else(|p| p.into_inner());
         let _ = attrs.set(
             Value::Str(PyString::new("name")),
             Value::Str(PyString::new("cpython")),
@@ -2708,13 +2818,13 @@ pub fn make_sys_module(interp: &Interpreter) -> Value {
     {
         let mon = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "monitoring");
         {
-            let ma = mon.attrs.borrow_mut();
+            let ma = mon.attrs.lock().unwrap_or_else(|p| p.into_inner());
             let _ = ma.set(Value::Str(PyString::new("DEBUGGER_ID")), {
                 Value::Int(ap_obj::Int::from_i64(0))
             });
             let ev = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "monitoring.events");
             {
-                let eva = ev.attrs.borrow_mut();
+                let eva = ev.attrs.lock().unwrap_or_else(|p| p.into_inner());
                 // CPython 3.14 sys.monitoring.events int members (bdb reads
                 // them at import: E = sys.monitoring.events).
                 for (i, name) in [
@@ -2820,10 +2930,12 @@ pub fn make_sys_module(interp: &Interpreter) -> Value {
     );
     let _ = m
         .module_ns
-        .borrow_mut()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
         .replace(std::sync::Arc::new((*ns).clone()));
     // Store the ns for attribute reads.
-    *m.module_ns.borrow_mut() = Some(std::sync::Arc::new((*ns).clone()));
+    *m.module_ns.lock().unwrap_or_else(|p| p.into_inner()) =
+        Some(std::sync::Arc::new((*ns).clone()));
     Value::Obj(m)
 }
 
@@ -2907,7 +3019,7 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
             {
                 let code = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<code>");
                 {
-                    let cattrs = code.attrs.borrow_mut();
+                    let cattrs = code.attrs.lock().unwrap_or_else(|p| p.into_inner());
                     let _ = cattrs.set(
                         Value::Str(PyString::new("co_filename")),
                         Value::Str(PyString::new(interp.script_path.clone())),
@@ -2941,10 +3053,11 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
                     let positions: Vec<Value> = (0..1024).map(|_| none4()).collect();
                     let cp =
                         ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "__ap_code_positions__");
-                    *cp.slice_parts.borrow_mut() = vec![Value::Tuple(Gc::new(Tuple(positions)))];
+                    *cp.slice_parts.lock().unwrap_or_else(|p| p.into_inner()) =
+                        vec![Value::Tuple(Gc::new(Tuple(positions)))];
                     let _ = cattrs.set(Value::Str(PyString::new("co_positions")), Value::Obj(cp));
                 }
-                let attrs = frame.attrs.borrow_mut();
+                let attrs = frame.attrs.lock().unwrap_or_else(|p| p.into_inner());
                 let _ = attrs.set(
                     Value::Str(PyString::new("f_locals")),
                     Value::Dict(PyDict::new()),
@@ -2960,7 +3073,8 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
                 // itself, which CPython's stacklevel skips.
                 let lineno = interp
                     .frame_stack
-                    .borrow()
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
                     .first()
                     .map(|c| c.get())
                     .filter(|n| *n > 0)
@@ -2974,12 +3088,17 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
                 // rides slice_parts so repeated f_back walks outward.
                 let depth = frame
                     .slice_parts
-                    .borrow()
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
                     .first()
                     .and_then(|v| v.as_int())
                     .and_then(|i| i.to_i64())
                     .unwrap_or(0);
-                let stack_len = interp.frame_stack.borrow().len();
+                let stack_len = interp
+                    .frame_stack
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .len();
                 // Generous cap: twisted.compat.currentframe(2)+ walks past
                 // the import machinery; always allow a stub chain long
                 // enough (min 32) — the walk ends at None.
@@ -2988,10 +3107,12 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
                     let fb = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<frame>");
                     let _ = fb
                         .attrs
-                        .borrow_mut()
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
                         .set(Value::Str(PyString::new("f_back")), Value::None);
-                    *fb.slice_parts.borrow_mut() = vec![Value::Int(Int::from_i64(depth + 1))];
-                    let _ = fb.attrs.borrow_mut().set(
+                    *fb.slice_parts.lock().unwrap_or_else(|p| p.into_inner()) =
+                        vec![Value::Int(Int::from_i64(depth + 1))];
+                    let _ = fb.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
                         Value::Str(PyString::new("f_globals")),
                         Value::Dict(interp.globals.clone()),
                     );
@@ -3001,7 +3122,7 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
                     // replaced the in-flight exception (pytest Skipped).
                     let code = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<code>");
                     {
-                        let cattrs = code.attrs.borrow_mut();
+                        let cattrs = code.attrs.lock().unwrap_or_else(|p| p.into_inner());
                         let _ = cattrs.set(
                             Value::Str(PyString::new("co_filename")),
                             Value::Str(PyString::new(interp.script_path.clone())),
@@ -3013,7 +3134,8 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
                     }
                     let _ = fb
                         .attrs
-                        .borrow_mut()
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
                         .set(Value::Str(PyString::new("f_code")), Value::Obj(code));
                     Value::Obj(fb)
                 } else {
@@ -3064,7 +3186,7 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
                 .and_then(|v| v.as_int())
                 .and_then(|i| i.to_i64())
                 .unwrap_or(0) as i32;
-            interp.exit_code.set(Some(code));
+            *interp.exit_code.lock().unwrap_or_else(|p| p.into_inner()) = Some(code);
             // SystemExit unwinds: uncaught → exit code per C-29 (SystemExit
             // does NOT print a traceback).
             Some(Err(Flow::Raise(ExceptionValue::new(
@@ -3073,7 +3195,10 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
             ))))
         }
         "getrecursionlimit" => Some(Ok(Value::Int(Int::from_i64(
-            interp.recursion_limit.get() as i64
+            *interp
+                .recursion_limit
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()) as i64,
         )))),
         "setrecursionlimit" => {
             let n = args
@@ -3081,7 +3206,10 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
                 .and_then(|v| v.as_int())
                 .and_then(|i| i.to_i64())
                 .unwrap_or(1000);
-            interp.recursion_limit.set(n as usize);
+            *interp
+                .recursion_limit
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()) = n as usize;
             Some(Ok(Value::None))
         }
         "set_int_max_str_digits" => {
@@ -3117,7 +3245,11 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
                     ])))));
                 }
             };
-            let inflight = interp2.current_exception.borrow().clone();
+            let inflight = interp2
+                .current_exception
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone();
             if let Some(ev) = inflight {
                 let cls = crate::classes::exc_class_value(&interp2, &ev.class)
                     .or_else(|| crate::classes::exc_class_value(&interp2, "Exception"))
@@ -3131,7 +3263,7 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
                 // one (identity + user-class isinstance preserved).
                 let inst = ev.instance.clone().unwrap_or_else(|| {
                     let i = ap_obj::PyObject::new(ap_obj::ObjKind::Exception, ev.class.clone());
-                    *i.args.borrow_mut() = ev.args.clone();
+                    *i.args.lock().unwrap_or_else(|p| p.into_inner()) = ev.args.clone();
                     Value::Obj(i)
                 });
                 // W112: record the in-flight tb entries onto the
@@ -3153,7 +3285,7 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
                             ])))
                         })
                         .collect();
-                    let _ = io.attrs.borrow_mut().set(
+                    let _ = io.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
                         Value::Str(PyString::new("__ap_tb__")),
                         Value::List(PyList::from_vec(entries)),
                     );
@@ -3190,12 +3322,16 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
                 Some(i) => i,
                 None => return Some(Ok(Value::None)),
             };
-            let inflight = interp2.current_exception.borrow().clone();
+            let inflight = interp2
+                .current_exception
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone();
             match inflight {
                 Some(ev) => {
                     let inst = ev.instance.clone().unwrap_or_else(|| {
                         let i = ap_obj::PyObject::new(ap_obj::ObjKind::Exception, ev.class.clone());
-                        *i.args.borrow_mut() = ev.args.clone();
+                        *i.args.lock().unwrap_or_else(|p| p.into_inner()) = ev.args.clone();
                         Value::Obj(i)
                     });
                     Some(Ok(inst))
@@ -3383,7 +3519,12 @@ pub fn install_builtins(interp: &Interpreter) {
 
 /// Interned type object (x.__class__ is T identity, V045).
 pub fn interned_type(interp: &Interpreter, name: &str) -> Value {
-    if let Some(t) = interp.type_objects.borrow().get(name) {
+    if let Some(t) = interp
+        .type_objects
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(name)
+    {
         return t.clone();
     }
     // Issue #13: the _multibytecodec mixin types need REAL class payloads
@@ -3430,14 +3571,16 @@ pub fn interned_type(interp: &Interpreter, name: &str) -> Value {
         let v = ap_obj::classes::make_class_value(t);
         interp
             .type_objects
-            .borrow_mut()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
             .insert(name.to_string(), v.clone());
         return v;
     }
     let t = Value::Obj(ap_obj::PyObject::new(ap_obj::ObjKind::Type, name));
     interp
         .type_objects
-        .borrow_mut()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
         .insert(name.to_string(), t.clone());
     t
 }
@@ -3450,11 +3593,11 @@ pub fn make_function(fn_id: u32, name: &str) -> Value {
 
 /// Lazy sys-module singleton (import sys).
 pub fn get_or_make_sys(interp: &Interpreter) -> Value {
-    if let Some(m) = &*interp.sys_module.borrow() {
+    if let Some(m) = &*interp.sys_module.lock().unwrap_or_else(|p| p.into_inner()) {
         return m.clone();
     }
     let m = make_sys_module(interp);
-    *interp.sys_module.borrow_mut() = Some(m.clone());
+    *interp.sys_module.lock().unwrap_or_else(|p| p.into_inner()) = Some(m.clone());
     m
 }
 
@@ -3513,7 +3656,7 @@ pub fn builtin_dir(interp: &Interpreter, args: &[Value]) -> BResult {
             }
         }
         Some(Value::Obj(o)) if o.kind == ap_obj::ObjKind::Module => {
-            if let Some(ns) = &*o.module_ns.borrow() {
+            if let Some(ns) = &*o.module_ns.lock().unwrap_or_else(|p| p.into_inner()) {
                 for (k, _) in ns.items() {
                     if let Value::Str(x) = k {
                         names.push(x.as_str().to_string());
@@ -3565,7 +3708,7 @@ fn dir_surface(v: &Value) -> Vec<String> {
             if !handled {
                 return names;
             }
-            let attrs = o.attrs.borrow();
+            let attrs = o.attrs.lock().unwrap_or_else(|p| p.into_inner());
             for (k, _) in attrs.items() {
                 if let Value::Str(x) = k {
                     names.push(x.as_str().to_string());
@@ -3575,7 +3718,12 @@ fn dir_surface(v: &Value) -> Vec<String> {
         }
         if o.kind == ap_obj::ObjKind::UserClass {
             let mut names: Vec<String> = Vec::new();
-            if let Some(t) = o.class_ref.borrow().clone() {
+            if let Some(t) = o
+                .class_ref
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
+            {
                 for m in t.mro.lock().unwrap().iter() {
                     for (k, _) in m.dict.items() {
                         if let Value::Str(x) = k {
@@ -3584,7 +3732,7 @@ fn dir_surface(v: &Value) -> Vec<String> {
                     }
                 }
             }
-            let attrs = o.attrs.borrow();
+            let attrs = o.attrs.lock().unwrap_or_else(|p| p.into_inner());
             for (k, _) in attrs.items() {
                 if let Value::Str(x) = k {
                     names.push(x.as_str().to_string());
@@ -3609,7 +3757,7 @@ fn dir_surface(v: &Value) -> Vec<String> {
                     }
                 }
             }
-            let attrs = o.attrs.borrow();
+            let attrs = o.attrs.lock().unwrap_or_else(|p| p.into_inner());
             for (k, _) in attrs.items() {
                 if let Value::Str(x) = k {
                     names.push(x.as_str().to_string());
@@ -3721,7 +3869,7 @@ pub fn builtin_vars(interp: &Interpreter, args: &[Value]) -> BResult {
         }
         Some(Value::Obj(o)) if o.kind == ap_obj::ObjKind::Module => {
             let d = PyDict::new();
-            if let Some(ns) = &*o.module_ns.borrow() {
+            if let Some(ns) = &*o.module_ns.lock().unwrap_or_else(|p| p.into_inner()) {
                 for (k, v) in ns.items() {
                     let _ = d.set(k, v);
                 }
@@ -3756,7 +3904,7 @@ pub fn builtin_vars(interp: &Interpreter, args: &[Value]) -> BResult {
                 }
             }
             let d = PyDict::new();
-            for (k, v) in o.attrs.borrow().items() {
+            for (k, v) in o.attrs.lock().unwrap_or_else(|p| p.into_inner()).items() {
                 let _ = d.set(k, v);
             }
             Ok(Value::Dict(d))
@@ -3802,7 +3950,8 @@ pub fn builtin_callable(args: &[Value]) -> BResult {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
             let has_call = o
                 .type_ref
-                .borrow()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
                 .as_ref()
                 .and_then(|w| w.upgrade())
                 .map(|t| t.lookup("__call__").is_some())
@@ -3906,7 +4055,7 @@ pub fn builtin_delattr(_interp: &Interpreter, args: &[Value]) -> BResult {
     };
     if let Value::Obj(o) = obj {
         if o.kind == ap_obj::ObjKind::Module {
-            if let Some(ns) = &*o.module_ns.borrow() {
+            if let Some(ns) = &*o.module_ns.lock().unwrap_or_else(|p| p.into_inner()) {
                 let _ = ns.pop(&Value::Str(PyString::new(name.clone())));
                 return Ok(Value::None);
             }
@@ -3943,7 +4092,7 @@ pub fn builtin_setattr(_interp: &Interpreter, args: &[Value]) -> BResult {
         .ok_or_else(|| raise("TypeError", "setattr expected 3 arguments, got 2"))?;
     if let Value::Obj(o) = obj {
         if o.kind == ap_obj::ObjKind::Module {
-            if let Some(ns) = &*o.module_ns.borrow() {
+            if let Some(ns) = &*o.module_ns.lock().unwrap_or_else(|p| p.into_inner()) {
                 let _ = ns.set(Value::Str(PyString::new(name.clone())), v.clone());
                 return Ok(Value::None);
             }
@@ -3956,7 +4105,8 @@ pub fn builtin_setattr(_interp: &Interpreter, args: &[Value]) -> BResult {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::Function => {
             let _ = o
                 .attrs
-                .borrow_mut()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
                 .set(Value::Str(PyString::new(name.clone())), v.clone());
             Ok(Value::None)
         }
@@ -3967,7 +4117,8 @@ pub fn builtin_setattr(_interp: &Interpreter, args: &[Value]) -> BResult {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::BuiltinFn => {
             let _ = o
                 .attrs
-                .borrow_mut()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
                 .set(Value::Str(PyString::new(name.clone())), v.clone());
             Ok(Value::None)
         }
@@ -4085,7 +4236,8 @@ pub fn call_builtin(
         if let Some(target) = args.first() {
             let _ = token
                 .attrs
-                .borrow_mut()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
                 .set(Value::Str(PyString::new("_ap_wrapped")), target.clone());
         }
         return Ok(Value::Obj(token));
@@ -4170,7 +4322,7 @@ pub fn call_builtin(
         }
         let o = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, format!("_typing.{rest} instance"));
         {
-            let a = o.attrs.borrow_mut();
+            let a = o.attrs.lock().unwrap_or_else(|p| p.into_inner());
             let nm = args.first().and_then(|v| match v {
                 Value::Str(sv) => Some(Value::Str(PyString::new(sv.as_str().to_string()))),
                 _ => None,
@@ -4200,13 +4352,14 @@ pub fn call_builtin(
         // unions (`_VT | None` in scrapy.utils.datatypes generics). Park the
         // class-like marker so the BitOr union interception accepts them.
         if rest == "TypeVar" || rest == "ParamSpec" || rest == "TypeVarTuple" {
-            *o.slice_parts.borrow_mut() = vec![Value::Str(PyString::new("__ap_typevar__"))];
+            *o.slice_parts.lock().unwrap_or_else(|p| p.into_inner()) =
+                vec![Value::Str(PyString::new("__ap_typevar__"))];
             // T2 (typing_extensions 4.16 sentinel/ParamSpec): attr WRITES on
             // the TypeVar-like marker land in o.attrs (Opaque early-attr arm
             // reads them back). Seed the PEP 696 surface the backported
             // classes write/read right after construction:
             // __infer_variance__, __default__, has_default, __module__.
-            let a2 = o.attrs.borrow_mut();
+            let a2 = o.attrs.lock().unwrap_or_else(|p| p.into_inner());
             let _ = a2.set(
                 Value::Str(PyString::new("__infer_variance__")),
                 Value::Bool(false),
@@ -4362,14 +4515,14 @@ pub fn call_builtin(
             fn bytearray_value(data: Vec<u8>) -> Value {
                 use ap_obj::PyString;
                 let obj = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "bytearray");
-                let _ = obj.attrs.borrow_mut().set(
+                let _ = obj.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
                     Value::Str(PyString::new("<data>")),
                     Value::Bytes(Gc::new(data.clone())),
                 );
                 let mut repr = "bytearray(".to_string();
                 repr.push_str(&ap_obj::str_repr::bytes_repr(&data));
                 repr.push(')');
-                *obj.repr_text.borrow_mut() = Some(repr);
+                *obj.repr_text.lock().unwrap_or_else(|p| p.into_inner()) = Some(repr);
                 Value::Obj(obj)
             }
             match args.first() {
@@ -4646,7 +4799,7 @@ pub fn call_builtin(
                     args.get(2).cloned().unwrap_or(Value::None),
                 ),
             };
-            *obj.slice_parts.borrow_mut() = vec![lo, hi, st];
+            *obj.slice_parts.lock().unwrap_or_else(|p| p.into_inner()) = vec![lo, hi, st];
             Ok(Value::Obj(obj))
         }
         // 02.08-full part 1: io stream classes are type values; constructor
@@ -4716,7 +4869,7 @@ pub fn call_builtin(
             }
             let code = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<code>");
             {
-                let attrs = code.attrs.borrow_mut();
+                let attrs = code.attrs.lock().unwrap_or_else(|p| p.into_inner());
                 let _ = attrs.set(
                     Value::Str(PyString::new("co_filename")),
                     Value::Str(PyString::new(filename)),
@@ -4756,7 +4909,7 @@ pub fn call_builtin(
             let inst = args.first().cloned().unwrap_or(Value::None);
             let m =
                 ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "__object_virtual___setattr____");
-            *m.slice_parts.borrow_mut() = vec![inst];
+            *m.slice_parts.lock().unwrap_or_else(|p| p.into_inner()) = vec![inst];
             Ok(Value::Obj(m))
         }
         _ => Err(raise("NameError", format!("name '{name}' is not defined"))),
@@ -4785,7 +4938,11 @@ pub fn builtin_range(args: &[Value]) -> crate::EvalResult {
             Ok(v.as_int().and_then(|i| i.to_i64()).unwrap_or_else(|| {
                 // clamp by sign of the bigint
                 let neg = v.as_int().map(|i| i.is_negative()).unwrap_or(false);
-                if neg { i64::MIN } else { i64::MAX }
+                if neg {
+                    i64::MIN
+                } else {
+                    i64::MAX
+                }
             }))
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -4806,7 +4963,7 @@ pub fn builtin_range(args: &[Value]) -> crate::EvalResult {
         }
     };
     let o = ap_obj::PyObject::new(ap_obj::ObjKind::Range, "range");
-    *o.ints.borrow_mut() = vec![start, stop, step];
+    *o.ints.lock().unwrap_or_else(|p| p.into_inner()) = vec![start, stop, step];
     Ok(Value::Obj(o))
 }
 
@@ -4826,7 +4983,7 @@ pub fn builtin_eval(interp: &Interpreter, args: &[Value]) -> crate::EvalResult {
         Some(Value::Obj(o))
             if o.kind == ap_obj::ObjKind::Namespace
                 && o.name == "<code>"
-                && o.attrs.borrow().get(&Value::Str(PyString::new("co_source"))).is_some()
+                && o.attrs.lock().unwrap_or_else(|p| p.into_inner()).get(&Value::Str(PyString::new("co_source"))).is_some()
     );
     if is_code_marker {
         return builtin_exec(interp, args);
@@ -4920,7 +5077,8 @@ pub fn builtin_exec(interp: &Interpreter, args: &[Value]) -> crate::EvalResult {
         Some(Value::Obj(o)) if o.kind == ap_obj::ObjKind::Namespace && o.name == "<code>" => {
             match o
                 .attrs
-                .borrow()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
                 .get(&Value::Str(PyString::new("co_source")))
             {
                 Some(Value::Str(s)) => s.as_str().to_string(),
@@ -5018,7 +5176,8 @@ pub fn builtin_exec(interp: &Interpreter, args: &[Value]) -> crate::EvalResult {
                             let df = crate::frame::Frame::new_module(globals.clone());
                             rc_interp
                                 .defining_frames
-                                .borrow_mut()
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner())
                                 .insert(id, std::sync::Arc::new(df));
                         }
                     }
@@ -5038,7 +5197,8 @@ pub fn builtin_exec(interp: &Interpreter, args: &[Value]) -> crate::EvalResult {
                     // defaults evaluate against MAIN globals and NameError
                     // (attrs attr_dict pattern).
                     if let Value::Obj(fo) = &func {
-                        *fo.closure_slot.borrow_mut() = Some(id as u64);
+                        *fo.closure_slot.lock().unwrap_or_else(|p| p.into_inner()) =
+                            Some(id as u64);
                     }
                     let _ = globals.set(Value::Str(PyString::new(f.name.clone())), func.clone());
                     if let Some(loc) = &locals {
@@ -5212,7 +5372,11 @@ pub fn interp_register_iter(id: u64, it: std::sync::Arc<crate::iter::PyIterator>
     if let Some(interp) = crate::builtins_modules::current_interp() {
         // Fence-perf fix 2026-11-06: tag for Drop-prune (F5 contract).
         it.table_id.set(Some(id));
-        interp.iterators.borrow_mut().insert(id, it);
+        interp
+            .iterators
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(id, it);
     }
 }
 
@@ -5267,7 +5431,13 @@ fn builtin_type_new(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
         'outer: for b in &bases {
             if let Value::Obj(bo) = b {
                 if bo.kind == ap_obj::ObjKind::Type {
-                    if let Some(tr) = bo.type_ref.borrow().as_ref().and_then(|w| w.upgrade()) {
+                    if let Some(tr) = bo
+                        .type_ref
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .as_ref()
+                        .and_then(|w| w.upgrade())
+                    {
                         for m in tr.mro.lock().unwrap().iter() {
                             if let Some((_f, owner)) = m.lookup_with_owner("__init_subclass__") {
                                 if owner.name != "object" {

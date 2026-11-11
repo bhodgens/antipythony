@@ -201,7 +201,8 @@ fn gen_fiber_body(
     let def = entry.def.clone();
     let lambda_body = interp
         .lambda_bodies
-        .borrow()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
         .get(&func_obj.fn_id.unwrap_or(u32::MAX))
         .cloned();
     let bound =
@@ -227,7 +228,7 @@ fn gen_fiber_body(
     ));
     let line_track = std::sync::Arc::new(std::cell::Cell::new(0usize));
     for _ in 0..2000 {
-        match interp.frame_stack.try_borrow_mut() {
+        match interp.frame_stack.lock() {
             Ok(mut fs) => {
                 fs.push(line_track.clone());
                 break;
@@ -243,7 +244,7 @@ fn gen_fiber_body(
             .map(|_| Value::None)
     };
     for _ in 0..2000 {
-        match interp.frame_stack.try_borrow_mut() {
+        match interp.frame_stack.lock() {
             Ok(mut fs) => {
                 let _ = fs.pop();
                 break;
@@ -272,7 +273,11 @@ fn gen_fiber_body(
             // PEP-342: `return X` == StopIteration(X) (S-02-22). Park X for
             // the resumer; a plain Ok/None return parks nothing (None).
             if let Err(Flow::Return(v)) = result {
-                interp.si_value.borrow_mut().replace(v);
+                interp
+                    .si_value
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .replace(v);
             }
         }
         Err(Flow::Raise(mut e)) => {
@@ -324,10 +329,17 @@ fn gen_fiber_body(
             }
             e.tb.insert(0, (entry.qualname.clone(), line, file.clone()));
             let base = GEN_TB_BASE.get();
-            let idx = base.min(interp.tb_frames.borrow().len());
+            let idx = base.min(
+                interp
+                    .tb_frames
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .len(),
+            );
             interp
                 .tb_frames
-                .borrow_mut()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
                 .insert(idx, (entry.qualname.clone(), line, file));
             // fiber_id is owned by run_fiber_body's closure scope; the
             // CURRENT stack still holds it while the body executes.
@@ -349,7 +361,7 @@ pub fn resume_live(
     // Pull the live state out of the registry for the duration of the
     // resume (a re-entrant resume of the SAME generator must not find it).
     let mut live = {
-        let mut gens = interp.generators.borrow_mut();
+        let mut gens = interp.generators.lock().unwrap_or_else(|p| p.into_inner());
         match gens.remove(&id) {
             Some(crate::interp::GenFrame::Live(st)) => st,
             other => {
@@ -360,7 +372,11 @@ pub fn resume_live(
                 // (G001 pins "exhausted-throw late": the thrown ValueError
                 // propagates), close() -> Ok.
                 if let Some(g) = other {
-                    interp.generators.borrow_mut().insert(id, g);
+                    interp
+                        .generators
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .insert(id, g);
                 }
                 return match input {
                     GenInput::Throw(e) => Err(Flow::Raise(e)),
@@ -372,7 +388,8 @@ pub fn resume_live(
     if live.running {
         interp
             .generators
-            .borrow_mut()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
             .insert(id, crate::interp::GenFrame::Live(live));
         return Err(Flow::Raise(crate::exc_hier::ExceptionValue::msg(
             "ValueError",
@@ -382,7 +399,8 @@ pub fn resume_live(
     let Some(mut fiber) = live.fiber.take() else {
         interp
             .generators
-            .borrow_mut()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
             .insert(id, crate::interp::GenFrame::Live(live));
         return match input {
             GenInput::Throw(e) => Err(Flow::Raise(e)),
@@ -393,7 +411,8 @@ pub fn resume_live(
         live.fiber = Some(fiber);
         interp
             .generators
-            .borrow_mut()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
             .insert(id, crate::interp::GenFrame::Live(live));
         return match input {
             GenInput::Throw(e) => {
@@ -416,7 +435,15 @@ pub fn resume_live(
     // G10: record the tb_frames depth AT resume entry — the fiber-raise arm
     // inserts its frame here (not at 0), keeping it inside the driver's
     // cleanup window (see GEN_TB_BASE docs).
-    GEN_TB_BASE.with(|b| b.set(interp.tb_frames.borrow().len()));
+    GEN_TB_BASE.with(|b| {
+        b.set(
+            interp
+                .tb_frames
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .len(),
+        )
+    });
     // PEP-342: a throw()/close() into a NOT-YET-STARTED generator never
     // runs the body. Stage the error for the resumer; the single resume
     // starts the closure, which unwinds immediately without body effects
@@ -455,7 +482,8 @@ pub fn resume_live(
             live.retired = true;
             interp
                 .generators
-                .borrow_mut()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
                 .insert(id, crate::interp::GenFrame::Live(live));
             interp.exit_call();
             if let Some(f) = crate::interp::take_pending_generator_error() {
@@ -473,11 +501,19 @@ pub fn resume_live(
         // body finally suspends — the pop below restores parity.
         let ctx = live.super_ctx.clone();
         if let Some(c) = &ctx {
-            interp.super_stack.borrow_mut().push(c.clone());
+            interp
+                .super_stack
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(c.clone());
         }
         let r = fiber.resume(input);
         if ctx.is_some() {
-            interp.super_stack.borrow_mut().pop();
+            interp
+                .super_stack
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .pop();
         }
         r
     };
@@ -494,7 +530,11 @@ pub fn resume_live(
         // resume_live's callers answer None / StopIteration exactly as
         // the fiber:None re-insert path did (verify: gen_send/gen_throw/
         // gen_close look up the entry — absent = already-exhausted arm).
-        interp.generators.borrow_mut().remove(&id);
+        interp
+            .generators
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&id);
         live.retired = true;
         return match out {
             CoroutineResult::Yield(GenOutput::Yield(v)) => Ok(Some(v)),
@@ -510,7 +550,8 @@ pub fn resume_live(
     live.started = true;
     interp
         .generators
-        .borrow_mut()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
         .insert(id, crate::interp::GenFrame::Live(live));
     match out {
         CoroutineResult::Yield(GenOutput::Yield(v)) => Ok(Some(v)),

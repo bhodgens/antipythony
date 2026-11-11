@@ -579,12 +579,12 @@ fn edges_of(v: &Value, registry: &HashMap<usize, Tracked>, out: &mut Vec<usize>)
             // attrs dict (identity per object) + payload values.
             // Contention pre-check: if ANY field is borrowed elsewhere
             // (heap mid-mutation), abort this scan cycle via the flag.
-            if o.attrs.try_borrow().is_err()
-                || o.func.try_borrow().is_err()
-                || o.self_value.try_borrow().is_err()
-                || o.cause.try_borrow().is_err()
-                || o.context.try_borrow().is_err()
-                || o.dunders.try_borrow().is_err()
+            if o.attrs.try_lock().is_err()
+                || o.func.try_lock().is_err()
+                || o.self_value.try_lock().is_err()
+                || o.cause.try_lock().is_err()
+                || o.context.try_lock().is_err()
+                || o.dunders.try_lock().is_err()
             {
                 SCAN_CONTENDED.store(true, std::sync::atomic::Ordering::Relaxed);
                 return;
@@ -592,7 +592,7 @@ fn edges_of(v: &Value, registry: &HashMap<usize, Tracked>, out: &mut Vec<usize>)
             // try_borrow: GC can trigger while another borrow is live
             // (e.g. class-body exec mid-__setitem__); skip contended objects
             // (conservative - they are reachable from the live frame anyway).
-            let Ok(attrs_guard) = o.attrs.try_borrow() else {
+            let Ok(attrs_guard) = o.attrs.try_lock() else {
                 SCAN_CONTENDED.store(true, std::sync::atomic::Ordering::Relaxed);
                 return;
             };
@@ -608,28 +608,28 @@ fn edges_of(v: &Value, registry: &HashMap<usize, Tracked>, out: &mut Vec<usize>)
             // try_borrow: GC can trigger while another borrow is live
             // (class-body exec mid-__setitem__); contended => skip (the
             // object is reachable from a live frame anyway).
-            if let Ok(f_guard) = o.func.try_borrow() {
+            if let Ok(f_guard) = o.func.try_lock() {
                 if let Some(f) = f_guard.as_ref() {
                     push_tracked(f, registry, out);
                 }
             }
-            if let Ok(s_guard) = o.self_value.try_borrow() {
+            if let Ok(s_guard) = o.self_value.try_lock() {
                 if let Some(s) = s_guard.as_ref() {
                     push_tracked(s, registry, out);
                 }
             }
-            if let Ok(c_guard) = o.cause.try_borrow() {
+            if let Ok(c_guard) = o.cause.try_lock() {
                 if let Some(c) = c_guard.as_ref() {
                     push_tracked(c, registry, out);
                 }
             }
-            if let Ok(cx_guard) = o.context.try_borrow() {
+            if let Ok(cx_guard) = o.context.try_lock() {
                 if let Some(c) = cx_guard.as_ref() {
                     push_tracked(c, registry, out);
                 }
             }
             // UserClass method table (dunders dict).
-            if let Ok(dunders) = o.dunders.try_borrow() {
+            if let Ok(dunders) = o.dunders.try_lock() {
                 dunders.foreach(|k, v| {
                     push_tracked(k, registry, out);
                     push_tracked(v, registry, out);
@@ -1308,13 +1308,12 @@ fn collect_gen_inner(generation: usize, scratch: &mut Scratch) -> usize {
 
 fn has_del(v: &Value) -> bool {
     match v {
-        Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => o
-            .type_ref
-            .borrow()
-            .as_ref()
-            .and_then(|w| w.upgrade())
-            .map(|t| t.lookup("__del__").is_some())
-            .unwrap_or(false),
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
+            let tr = o.type_ref.lock().unwrap_or_else(|p| p.into_inner()).clone();
+            tr.and_then(|w| w.upgrade())
+                .map(|t| t.lookup("__del__").is_some())
+                .unwrap_or(false)
+        }
         _ => false,
     }
 }

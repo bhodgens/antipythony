@@ -86,7 +86,8 @@ pub fn py_hash(v: &Value) -> Result<i64, PyException> {
             if o.kind == crate::object::ObjKind::UserInstance {
                 if let Some(crate::Value::Int(n)) = o
                     .attrs
-                    .borrow()
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
                     .get(&crate::Value::Str(crate::PyString::new("__ap_int__")))
                 {
                     return hash_int(&n);

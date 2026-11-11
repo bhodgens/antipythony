@@ -5,7 +5,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::exc_hier::ExceptionValue;
 use ap_obj::dict::PyDict;
@@ -481,17 +481,25 @@ pub struct Interpreter {
     pub globals: Gc<PyDict>,
     pub builtins: Gc<PyDict>,
     /// Module-level function table (index == fn_id).
-    pub functions: RefCell<Vec<FnEntry>>,
+    /// 02.09b P7 (decision 2): Mutex (shared executor state).
+    pub functions: Mutex<Vec<FnEntry>>,
     /// Nested/lambda functions (ids offset by NESTED_BASE).
-    pub nested_functions: RefCell<Vec<FnEntry>>,
-    pub iterators: RefCell<HashMap<u64, Gc<crate::iter::PyIterator>>>,
-    pub generators: RefCell<HashMap<u64, crate::interp::GenFrame>>,
+    /// 02.09b P7 (decision 2): Mutex (shared executor state).
+    pub nested_functions: Mutex<Vec<FnEntry>>,
+    /// 02.09b P7 (decision 2): Mutex — every worker's for-loops register
+    /// iterators here (the GIL-era try_borrow/sleep retry loops dissolve).
+    pub iterators: Mutex<HashMap<u64, Gc<crate::iter::PyIterator>>>,
+    pub generators: Mutex<HashMap<u64, crate::interp::GenFrame>>,
     /// Iterator ids are EVEN, generator ids ODD (both share the iterators
     /// table; disjoint namespaces prevent key collisions).
-    pub next_iter_id: Cell<u64>,
-    pub next_gen_id: Cell<u64>,
+    /// 02.09b P7: atomics — two workers minting ids concurrently must never
+    /// collide (the id spaces are process-unique; Cell read-modify-write
+    /// raced under the flip).
+    pub next_iter_id: std::sync::atomic::AtomicU64,
+    pub next_gen_id: std::sync::atomic::AtomicU64,
     /// stdout accumulation (S-06-2 byte gate).
-    pub stdout: RefCell<Vec<u8>>,
+    /// 02.09b P7 (decision 2): Mutex (shared executor state).
+    pub stdout: Mutex<Vec<u8>>,
     /// G6: bytes already drained to fd 1 by the mid-run threshold flush —
     /// re-prepended into RunOutcome.stdout at the end-of-run flush so the
     /// outcome is byte-identical to the unbuffered behavior. G6-repair:
@@ -499,7 +507,8 @@ pub struct Interpreter {
     /// bytes are already on fd 1, and no production caller reads
     /// RunOutcome.stdout, so the unconditional copy kept ~2x the full
     /// output resident.
-    pub stdout_flushed_prefix: RefCell<Vec<u8>>,
+    /// 02.09b P7 (decision 2): Mutex (shared executor state).
+    pub stdout_flushed_prefix: Mutex<Vec<u8>>,
     /// G6-repair: opt-in RunOutcome.stdout capture (prefix + tail). Set
     /// only by embedders that actually consume RunOutcome.stdout (none of
     /// the production binaries do — they read exit_code and write to fd 1
@@ -516,51 +525,80 @@ pub struct Interpreter {
     /// old Vec::insert(0, ...) made a depth-d unwind O(depth^2)). All
     /// consumers use len()/iter()/insert(idx)/truncate/drain, which VecDeque
     /// provides with identical logical ordering.
-    pub tb_frames: RefCell<std::collections::VecDeque<(String, usize, String)>>,
+    /// 02.09b P7 (decision 2): Mutex (shared executor state).
+    pub tb_frames: Mutex<std::collections::VecDeque<(String, usize, String)>>,
     /// Per-frame current-line trackers (top = innermost frame).
-    pub frame_stack: RefCell<Vec<Arc<Cell<usize>>>>,
+    /// 02.09b P7 (decision 2): Mutex — worker executors share the
+    /// Interpreter; this stack is per-mutator execution state that other
+    /// threads legitimately read (f_back stubs).
+    pub frame_stack: Mutex<Vec<Arc<Cell<usize>>>>,
     /// Recursion depth + limit (RecursionError at ~1000, task brief §5).
-    pub depth: Cell<usize>,
-    pub recursion_limit: Cell<usize>,
+    /// 02.09b P7: Mutex — the counter is shared (workers' depths sum; a
+    /// false RecursionError would only fire under extreme concurrency, and
+    /// the sum is actually the RIGHT process bound for the 256MB stack
+    /// shared by... no: each worker has its OWN stack. The Mutex keeps the
+    /// accounting sound without per-thread tables; enter/exit park rarely.
+    pub depth: Mutex<usize>,
+    pub recursion_limit: Mutex<usize>,
     /// sys.exit code (SystemExit(n)) — captured at raise site.
-    pub exit_code: Cell<Option<i32>>,
+    /// 02.09b P7: Mutex (SystemExit code capture).
+    pub exit_code: Mutex<Option<i32>>,
     /// The in-flight exception for bare `raise` / implicit chaining.
-    pub current_exception: RefCell<Option<Arc<ExceptionValue>>>,
+    /// 02.09b P7 (decision 2): Mutex (shared executor state).
+    pub current_exception: Mutex<Option<Arc<ExceptionValue>>>,
     /// The module function registry (set once at entry).
-    pub registry: RefCell<Option<Arc<crate::interp::FnRegistry>>>,
+    /// 02.09b P7 (decision 2): Mutex (shared executor state).
+    pub registry: Mutex<Option<Arc<crate::interp::FnRegistry>>>,
     /// Lambda bodies by fn id (lambdas eval an expression, not a block).
-    pub lambda_bodies: RefCell<HashMap<u32, ap_ir::Expr>>,
+    /// 02.09b P7 (decision 2): Mutex (shared executor state).
+    pub lambda_bodies: Mutex<HashMap<u32, ap_ir::Expr>>,
     /// Defining frames by fn id (closure/defaults scope wiring).
-    pub defining_frames: RefCell<HashMap<u32, std::sync::Arc<Frame>>>,
+    /// 02.09b P7 (decision 2): Mutex (shared executor state).
+    pub defining_frames: Mutex<HashMap<u32, std::sync::Arc<Frame>>>,
     /// Generator yield sink (v0 stream materialization).
-    pub gen_sink: RefCell<Vec<Vec<ap_obj::value::Value>>>,
-    pub active_gen_sink: RefCell<Option<Arc<RefCell<Vec<ap_obj::value::Value>>>>>,
+    /// 02.09b P7 (decision 2): Mutex (shared executor state).
+    pub gen_sink: Mutex<Vec<Vec<ap_obj::value::Value>>>,
+    /// 02.09b P7 (decision 2): Mutex (shared executor state).
+    pub active_gen_sink: Mutex<Option<Arc<RefCell<Vec<ap_obj::value::Value>>>>>,
     /// PEP-342: the return value of the generator that JUST finished
     /// (StopIteration.value; S-02-22). Set by the yield-site return path.
-    pub si_value: RefCell<Option<ap_obj::value::Value>>,
+    /// 02.09b P7 (decision 2): Mutex (shared executor state).
+    pub si_value: Mutex<Option<ap_obj::value::Value>>,
     /// The sys module object (lazy singleton for `import sys`).
-    pub sys_module: RefCell<Option<Value>>,
+    /// 02.09b P7 (decision 2): Mutex (shared executor state).
+    pub sys_module: Mutex<Option<Value>>,
     /// Interned builtin type objects (__class__ returns the SAME object
     /// every call so `x.__class__ is T` holds; V045).
-    pub type_objects: RefCell<HashMap<String, Value>>,
+    /// 02.09b P7 (decision 2): Mutex (shared executor state).
+    pub type_objects: Mutex<HashMap<String, Value>>,
     /// Statement start-lines in source order + running ordinal (traceback
     /// line mapping; the IR is span-free).
-    pub stmt_lines: RefCell<Vec<usize>>,
-    pub stmt_ordinal: Cell<usize>,
+    pub stmt_lines: Mutex<Vec<usize>>,
+    /// 02.09b P7 (decision 2): Mutex — the statement ordinal is
+    /// execution-order state shared across worker executors (traceback
+    /// line mapping).
+    pub stmt_ordinal: Mutex<usize>,
     /// Real exception CLASSES by name (02.03: the BaseException tree as
     /// TypeObject-backed class values; populated at entry).
-    pub exc_classes: RefCell<HashMap<String, Value>>,
+    /// 02.09b P7 (decision 2): Mutex (shared executor state).
+    pub exc_classes: Mutex<HashMap<String, Value>>,
     /// User-subclass edges (child name -> parent name) for __subclasses__.
-    pub user_subclasses: RefCell<Vec<(String, String)>>,
+    /// 02.09b P7 (decision 2): Mutex (shared executor state).
+    pub user_subclasses: Mutex<Vec<(String, String)>>,
     /// User class values by name (identity for __subclasses__ returns).
-    pub user_class_values: RefCell<HashMap<String, Value>>,
+    /// 02.09b P7 (decision 2): Mutex (shared executor state).
+    pub user_class_values: Mutex<HashMap<String, Value>>,
     /// The `object` root class payload (lazy intern).
-    pub object_class: RefCell<Option<std::sync::Arc<ap_obj::classes::TypeObject>>>,
+    /// 02.09b P7 (decision 2): Mutex (shared executor state).
+    pub object_class: Mutex<Option<std::sync::Arc<ap_obj::classes::TypeObject>>>,
     /// The `type` metaclass payload (lazy intern).
-    pub type_class: RefCell<Option<std::sync::Arc<ap_obj::classes::TypeObject>>>,
+    /// 02.09b P7 (decision 2): Mutex (shared executor state).
+    pub type_class: Mutex<Option<std::sync::Arc<ap_obj::classes::TypeObject>>>,
     /// Active super() context per frame depth: (start-class, self/cls)
     /// stacked so zero-arg super() inside a method resolves (S-03-17/18).
-    pub super_stack: RefCell<Vec<(std::sync::Arc<ap_obj::classes::TypeObject>, Value, bool)>>,
+    /// 02.09b P7 (decision 2): Mutex — the super() context stack is shared
+    /// executor state (every worker's method calls push/pop it).
+    pub super_stack: Mutex<Vec<(std::sync::Arc<ap_obj::classes::TypeObject>, Value, bool)>>,
     /// A6 (memperf audit): interned plain-function super() sentinels —
     /// (non-mcap, mcap). One full TypeObject + fresh PyDict used to be
     /// built on EVERY function call as the super_stack sentinel; nothing
@@ -573,12 +611,13 @@ pub struct Interpreter {
     /// Context staged by instantiate() for the __new__/__init__ call it is
     /// about to make (picked up by call_function after its sentinel push).
     pub pending_super_ctx:
-        RefCell<Option<(std::sync::Arc<ap_obj::classes::TypeObject>, Value, bool)>>,
+        Mutex<Option<(std::sync::Arc<ap_obj::classes::TypeObject>, Value, bool)>>,
     pub source: String,
     pub script_path: String,
     /// Self handle (set at run_module entry) so &Interpreter surfaces can
     /// reach the Arc'd interpreter for re-entrant calls.
-    pub self_rc: RefCell<Option<std::sync::Weak<Interpreter>>>,
+    /// 02.09b P7 (decision 2): Mutex (shared executor state).
+    pub self_rc: Mutex<Option<std::sync::Weak<Interpreter>>>,
 }
 
 // 02.09a P4/P5 staged marker (see ap_obj::markers + int.rs contract):
@@ -593,7 +632,8 @@ impl Interpreter {
     /// The Arc'd handle (panics when called before run_module sets it).
     pub fn rc(&self) -> std::sync::Arc<Interpreter> {
         self.self_rc
-            .borrow()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
             .as_ref()
             .and_then(|w| w.upgrade())
             .expect("interpreter self handle set at entry")
@@ -649,37 +689,37 @@ impl Interpreter {
         Interpreter {
             globals,
             builtins: builtins_d,
-            functions: RefCell::new(Vec::new()),
-            nested_functions: RefCell::new(Vec::new()),
-            iterators: RefCell::new(HashMap::new()),
-            generators: RefCell::new(HashMap::new()),
-            next_iter_id: Cell::new(2),
-            next_gen_id: Cell::new(1),
-            stdout: RefCell::new(Vec::new()),
-            stdout_flushed_prefix: RefCell::new(Vec::new()),
+            functions: Mutex::new(Vec::new()),
+            nested_functions: Mutex::new(Vec::new()),
+            iterators: Mutex::new(HashMap::new()),
+            generators: Mutex::new(HashMap::new()),
+            next_iter_id: std::sync::atomic::AtomicU64::new(2),
+            next_gen_id: std::sync::atomic::AtomicU64::new(1),
+            stdout: Mutex::new(Vec::new()),
+            stdout_flushed_prefix: Mutex::new(Vec::new()),
             stdout_capture: false,
-            tb_frames: RefCell::new(std::collections::VecDeque::new()),
-            frame_stack: RefCell::new(Vec::new()),
-            depth: Cell::new(0),
-            recursion_limit: Cell::new(1000),
-            exit_code: Cell::new(None),
-            current_exception: RefCell::new(None),
-            registry: RefCell::new(None),
-            lambda_bodies: RefCell::new(HashMap::new()),
-            defining_frames: RefCell::new(HashMap::new()),
-            gen_sink: RefCell::new(Vec::new()),
-            active_gen_sink: RefCell::new(None),
-            si_value: RefCell::new(None),
-            sys_module: RefCell::new(None),
-            type_objects: RefCell::new(HashMap::new()),
-            stmt_lines: RefCell::new(Vec::new()),
-            stmt_ordinal: Cell::new(0),
-            exc_classes: RefCell::new(HashMap::new()),
-            user_subclasses: RefCell::new(Vec::new()),
-            user_class_values: RefCell::new(HashMap::new()),
-            object_class: RefCell::new(None),
-            type_class: RefCell::new(None),
-            super_stack: RefCell::new(Vec::new()),
+            tb_frames: Mutex::new(std::collections::VecDeque::new()),
+            frame_stack: Mutex::new(Vec::new()),
+            depth: Mutex::new(0),
+            recursion_limit: Mutex::new(1000),
+            exit_code: Mutex::new(None),
+            current_exception: Mutex::new(None),
+            registry: Mutex::new(None),
+            lambda_bodies: Mutex::new(HashMap::new()),
+            defining_frames: Mutex::new(HashMap::new()),
+            gen_sink: Mutex::new(Vec::new()),
+            active_gen_sink: Mutex::new(None),
+            si_value: Mutex::new(None),
+            sys_module: Mutex::new(None),
+            type_objects: Mutex::new(HashMap::new()),
+            stmt_lines: Mutex::new(Vec::new()),
+            stmt_ordinal: Mutex::new(0),
+            exc_classes: Mutex::new(HashMap::new()),
+            user_subclasses: Mutex::new(Vec::new()),
+            user_class_values: Mutex::new(HashMap::new()),
+            object_class: Mutex::new(None),
+            type_class: Mutex::new(None),
+            super_stack: Mutex::new(Vec::new()),
             plain_super_ctx: {
                 // 02.09a P4: build the sentinel in two steps so the MRO
                 // Mutex can be seeded with the Arc itself (write-once, same
@@ -707,16 +747,16 @@ impl Interpreter {
                 };
                 (mk(""), mk("__mcap__"))
             },
-            pending_super_ctx: RefCell::new(None),
+            pending_super_ctx: Mutex::new(None),
             source,
             script_path,
-            self_rc: RefCell::new(None),
+            self_rc: Mutex::new(None),
         }
     }
 
     pub fn write_out(&self, s: &str) {
         const STDOUT_FLUSH_THRESHOLD: usize = 1 << 20; // 1MB (G6)
-        let mut buf = self.stdout.borrow_mut();
+        let mut buf = self.stdout.lock().unwrap_or_else(|p| p.into_inner());
         buf.extend_from_slice(s.as_bytes());
         // G6 (oom-bughunt-2026-11-06 static audit): the buffer used to grow
         // for the WHOLE run (1GB of print output = 1GB RSS before the single
@@ -734,7 +774,8 @@ impl Interpreter {
             if ok == n as isize {
                 if self.stdout_capture {
                     self.stdout_flushed_prefix
-                        .borrow_mut()
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
                         .extend_from_slice(&buf[..]);
                 }
                 buf.clear();
@@ -751,13 +792,23 @@ impl Interpreter {
     pub fn fn_entry(&self, fn_id: u32) -> Option<FnEntry> {
         if fn_id >= NESTED_BASE {
             self.nested_functions
-                .borrow()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
                 .get((fn_id - NESTED_BASE) as usize)
                 .cloned()
-        } else if let Some(reg) = self.registry.borrow().as_ref() {
+        } else if let Some(reg) = self
+            .registry
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+        {
             reg.entry(fn_id)
         } else {
-            self.functions.borrow().get(fn_id as usize).cloned()
+            self.functions
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(fn_id as usize)
+                .cloned()
         }
     }
 
@@ -797,7 +848,10 @@ impl Interpreter {
     }
 
     pub fn register_nested(&self, entry: FnEntry) -> u32 {
-        let mut t = self.nested_functions.borrow_mut();
+        let mut t = self
+            .nested_functions
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let id = NESTED_BASE + t.len() as u32;
         t.push(entry);
         id
@@ -805,7 +859,10 @@ impl Interpreter {
 
     /// Advance depth for a call; Err when over the recursion limit.
     pub fn enter_call(&self) -> Result<(), crate::Flow> {
-        let d = self.depth.get() + 1;
+        // 02.09b P7: Mutex (see the field note) — read + write under one
+        // critical section so concurrent workers cannot lose an increment.
+        let mut dg = self.depth.lock().unwrap_or_else(|p| p.into_inner());
+        let d = *dg + 1;
         // F4 (oom-bughunt-2026-11-06 RSS doc): the Python limit is
         // user-settable (setrecursionlimit(5000)) but the interpreter thread
         // has a FIXED stack (256MB reservation; ~50KB native per Python
@@ -820,17 +877,23 @@ impl Interpreter {
         #[cfg(not(debug_assertions))]
         const BYTES_PER_FRAME: usize = 50 * 1024;
         let hard_cap = (FRAME_STACK_BYTES / BYTES_PER_FRAME).max(1000);
-        if d > self.recursion_limit.get() || d > hard_cap {
+        if d > *self
+            .recursion_limit
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            || d > hard_cap
+        {
             return Err(crate::Flow::Raise(ExceptionValue::msg(
                 "RecursionError",
                 "maximum recursion depth exceeded",
             )));
         }
-        self.depth.set(d);
+        *dg = d;
         Ok(())
     }
 
     pub fn exit_call(&self) {
-        self.depth.set(self.depth.get().saturating_sub(1));
+        let mut dg = self.depth.lock().unwrap_or_else(|p| p.into_inner());
+        *dg = dg.saturating_sub(1);
     }
 }

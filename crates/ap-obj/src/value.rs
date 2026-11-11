@@ -5,6 +5,7 @@ use crate::dict::PyDict;
 use crate::int::{Gc, Int};
 use crate::object::ObjKind;
 use crate::object::PyObject;
+use std::sync::Mutex;
 
 // ---------------------------------------------------------------------------
 // A4 (memperf audit 2026-11-06): per-thread interned name handles.
@@ -69,7 +70,8 @@ pub fn weakref_target_addr(o: &PyObject) -> Option<usize> {
         return None;
     }
     o.attrs
-        .borrow()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
         .get_str("<target_addr>")
         .and_then(|v| v.as_int())
         .and_then(|i| i.to_i64())
@@ -382,19 +384,32 @@ impl Tuple {
 /// (pattern documented in crate docs; growth factor is unobservable).
 pub struct PyList {
     /// Interior-mutable through shared `Gc` handles: `ys = xs; ys.append(4)`
-    /// mutates `xs` (S-01-19 aliasing). `RefCell` today; 02.07's
-    /// thread-safety audit picks the concurrent wrapper.
-    items: std::cell::RefCell<Vec<Value>>,
+    /// mutates `xs` (S-01-19 aliasing).
+    /// 02.09b P7 (decision 2, audit entry 26): Mutex — items + allocated
+    /// move under the SAME lock so the capacity invariant cannot tear
+    /// between a growing worker and a reading one (the GC's `items()`
+    /// scan reads under the same lock; contention flips SCAN_CONTENDED).
+    items: Mutex<Vec<Value>>,
     /// Capacity actually reserved (CPython `allocated`); kept so growth
     /// mirrors CPython's `newsize + newsize>>3 + 6` pattern, though the
     /// exact values are unobservable (S-01-31-adjacent).
     allocated: std::cell::Cell<usize>,
 }
 
+/// 02.09b P7: read guard for `PyList::items()` — Deref to `[Value]`.
+pub struct ItemsRef<'a>(std::sync::MutexGuard<'a, Vec<Value>>);
+
+impl std::ops::Deref for ItemsRef<'_> {
+    type Target = [Value];
+    fn deref(&self) -> &[Value] {
+        &self.0[..]
+    }
+}
+
 impl Clone for PyList {
     fn clone(&self) -> Self {
         PyList {
-            items: std::cell::RefCell::new(self.items.borrow().clone()),
+            items: Mutex::new(self.items.lock().unwrap_or_else(|p| p.into_inner()).clone()),
             allocated: std::cell::Cell::new(0),
         }
     }
@@ -403,7 +418,10 @@ impl Clone for PyList {
 impl std::fmt::Debug for PyList {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PyList")
-            .field("len", &self.items.borrow().len())
+            .field(
+                "len",
+                &self.items.lock().unwrap_or_else(|p| p.into_inner()).len(),
+            )
             .finish()
     }
 }
@@ -411,7 +429,7 @@ impl std::fmt::Debug for PyList {
 impl PyList {
     pub fn new() -> Gc<PyList> {
         let l = Gc::new(PyList {
-            items: std::cell::RefCell::new(Vec::new()),
+            items: Mutex::new(Vec::new()),
             allocated: std::cell::Cell::new(0),
         });
         crate::gc_gate::gc_register_pub(&Value::List(l.clone()));
@@ -420,7 +438,7 @@ impl PyList {
 
     pub fn from_vec(items: Vec<Value>) -> Gc<PyList> {
         let l = Gc::new(PyList {
-            items: std::cell::RefCell::new(items),
+            items: Mutex::new(items),
             allocated: std::cell::Cell::new(0),
         });
         crate::gc_gate::gc_register_pub(&Value::List(l.clone()));
@@ -429,11 +447,14 @@ impl PyList {
 
     #[allow(clippy::len_without_is_empty)] // is_empty would extend the public surface beyond the CPython-parity API
     pub fn len(&self) -> usize {
-        self.items.borrow().len()
+        self.items.lock().unwrap_or_else(|p| p.into_inner()).len()
     }
 
-    pub fn items(&self) -> std::cell::Ref<'_, [Value]> {
-        std::cell::Ref::map(self.items.borrow(), |v| &v[..])
+    /// 02.09b P7: was `Ref<'_, [Value]>` (RefCell); the Mutex version wraps
+    /// the guard — `Deref<Target = [Value]>` keeps every read site source-
+    /// compatible (`.iter()`, `.len()`, indexing, `.to_vec()`).
+    pub fn items(&self) -> ItemsRef<'_> {
+        ItemsRef(self.items.lock().unwrap_or_else(|p| p.into_inner()))
     }
 
     /// CPython's over-allocation formula (listobject.c list_resize):
@@ -442,35 +463,48 @@ impl PyList {
     fn reserve_for(&self, newsize: usize) {
         if newsize > self.allocated.get() {
             let new_allocated = (newsize + (newsize >> 3) + 6) & !3;
-            self.items.borrow_mut().reserve(new_allocated - newsize);
+            self.items
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .reserve(new_allocated - newsize);
             self.allocated.set(new_allocated);
         }
     }
 
     pub fn append(&self, v: Value) {
-        let n = self.items.borrow().len() + 1;
+        let n = self.items.lock().unwrap_or_else(|p| p.into_inner()).len() + 1;
         self.reserve_for(n);
-        self.items.borrow_mut().push(v);
+        self.items.lock().unwrap_or_else(|p| p.into_inner()).push(v);
     }
 
     pub fn get(&self, i: usize) -> Option<Value> {
-        self.items.borrow().get(i).cloned()
+        self.items
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(i)
+            .cloned()
     }
 
     /// Overwrite `items[i]` (in-bounds assignment; caller validated).
     pub fn set_at(&self, i: usize, v: Value) {
-        self.items.borrow_mut()[i] = v;
+        self.items.lock().unwrap_or_else(|p| p.into_inner())[i] = v;
     }
 
     /// Remove `items[i]` (`del xs[i]`; caller validated the index).
     pub fn remove_at(&self, i: usize) {
-        self.items.borrow_mut().remove(i);
+        self.items
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(i);
     }
 
     /// Remove `items[lo..hi]` (`del xs[lo:hi]`; caller validated the range).
     pub fn remove_range(&self, lo: usize, hi: usize) {
         if lo < hi {
-            self.items.borrow_mut().drain(lo..hi);
+            self.items
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .drain(lo..hi);
         }
     }
 
@@ -479,21 +513,27 @@ impl PyList {
     /// out, inserted, cleared, and re-appended — O(n) clones per op,
     /// O(n²) for `insert(0, x)` loops.
     pub fn insert_at(&self, i: usize, v: Value) {
-        let n = self.items.borrow().len() + 1;
+        let n = self.items.lock().unwrap_or_else(|p| p.into_inner()).len() + 1;
         self.reserve_for(n);
-        self.items.borrow_mut().insert(i, v);
+        self.items
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(i, v);
     }
 
     /// D2: in-place `xs.remove(i)` returning the removed value
     /// (caller validated the index).
     pub fn remove_take(&self, i: usize) -> Value {
-        let mut b = self.items.borrow_mut();
+        let mut b = self.items.lock().unwrap_or_else(|p| p.into_inner());
         b.remove(i)
     }
 
     /// D2: in-place `xs.reverse()` under one borrow.
     pub fn reverse_in_place(&self) {
-        self.items.borrow_mut().reverse();
+        self.items
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .reverse();
     }
 
     /// `xs.clear()`.
@@ -503,7 +543,7 @@ impl PyList {
     /// — a lie (capacity != 0) that also pinned the whole peak buffer
     /// forever. CPython's `list_clear` frees the item array; match it.
     pub fn clear(&self) {
-        *self.items.borrow_mut() = Vec::new();
+        *self.items.lock().unwrap_or_else(|p| p.into_inner()) = Vec::new();
         self.allocated.set(0);
     }
 
@@ -520,7 +560,7 @@ impl PyList {
             return;
         }
         out.push('[');
-        let items = self.items.borrow();
+        let items = self.items.lock().unwrap_or_else(|p| p.into_inner());
         for (i, item) in items.iter().enumerate() {
             if i > 0 {
                 out.push_str(", ");

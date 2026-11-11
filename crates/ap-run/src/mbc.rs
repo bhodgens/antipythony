@@ -1376,7 +1376,8 @@ pub fn call_bridge(fname: &str, args: &[Value], kwargs: &[(String, Value)]) -> O
     let codec_name = match &codec_v {
         Value::Obj(o) => o
             .attrs
-            .borrow()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
             .get(&s("name"))
             .and_then(|v| match v {
                 Value::Str(x) => Some(x.as_str().to_string()),
@@ -1502,7 +1503,7 @@ fn pending_str_of(text: &str, consumed_chars: usize) -> String {
 fn getcodec_value(name: &str, canon: &str) -> Value {
     let o = PyObject::new(ObjKind::Namespace, format!("multibyte_codec_{}", name));
     {
-        let a = o.attrs.borrow_mut();
+        let a = o.attrs.lock().unwrap_or_else(|p| p.into_inner());
         let _ = a.set(s("name"), s(canon));
         let _ = a.set(s("encode"), marker(&format!("_mbc.{}.encode", name)));
         let _ = a.set(s("decode"), marker(&format!("_mbc.{}.decode", name)));
@@ -1744,7 +1745,8 @@ fn mbc_incremental_method(recv: &Value, method: &str, args: &[Value]) -> Option<
     let codec_name = match &codec_v {
         Value::Obj(o) => o
             .attrs
-            .borrow()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
             .get(&s("name"))
             .and_then(|v| match v {
                 Value::Str(x) => Some(x.as_str().to_string()),
@@ -1870,14 +1872,22 @@ fn decode_prefix(name: &str, b: &[u8], errors: &str) -> Option<(String, usize)> 
 
 fn incr_attr_get(recv: &Value, key: &str) -> Option<Value> {
     if let Value::Obj(o) = recv {
-        return o.attrs.borrow().get(&s(key));
+        return o
+            .attrs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&s(key));
     }
     None
 }
 
 fn incr_attr_set(recv: &Value, key: &str, v: Value) {
     if let Value::Obj(o) = recv {
-        let _ = o.attrs.borrow_mut().set(s(key), v);
+        let _ = o
+            .attrs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .set(s(key), v);
     }
 }
 

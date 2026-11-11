@@ -781,14 +781,14 @@ fn bytearray_buf(o: &crate::object::PyObject) -> Vec<u8> {
 fn make_bytearray_value(data: Vec<u8>) -> Value {
     use crate::PyString;
     let obj = crate::object::PyObject::new(crate::object::ObjKind::Opaque, "bytearray");
-    let _ = obj.attrs.borrow_mut().set(
+    let _ = obj.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
         Value::Str(PyString::new("<data>")),
         Value::Bytes(Gc::new(data.clone())),
     );
     let mut repr = "bytearray(".to_string();
     repr.push_str(&crate::str_repr::bytes_repr(&data));
     repr.push(')');
-    *obj.repr_text.borrow_mut() = Some(repr);
+    *obj.repr_text.lock().unwrap_or_else(|p| p.into_inner()) = Some(repr);
     Value::Obj(obj)
 }
 

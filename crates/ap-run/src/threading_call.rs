@@ -3,15 +3,14 @@
 //!
 //! Every entry point here is reached from builtins_modules::call_native via
 //! the "threading.*" / "queue.*" dotted markers. The GIL discipline:
-//! blocking ops call crate::threading::release_gil() BEFORE parking and
+//! blocking ops park on the primitive's own Mutex+Condvar (02.09b: the
 //! re-acquire AFTER waking (the re-entrant depth counter makes nested
 //! dispatches safe).
 
 use crate::builtins_modules::{i as smi, kw, required, s, str_arg, BResult};
 use crate::exc_hier::ExceptionValue;
 use crate::threading::{
-    acquire_gil, prim_of, prim_put, release_gil, BarrierPrim, CondPrim, EventPrim, LockPrim,
-    QueuePrim, RLockPrim, SemPrim,
+    prim_of, prim_put, BarrierPrim, CondPrim, EventPrim, LockPrim, QueuePrim, RLockPrim, SemPrim,
 };
 use crate::Flow;
 use ap_obj::dict::PyDict;
@@ -35,11 +34,18 @@ fn obj_addr(v: &Value) -> Result<usize, Flow> {
 }
 
 fn attr_v(o: &PyObject, key: &str) -> Option<Value> {
-    o.attrs.borrow().get(&s(key))
+    o.attrs
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(&s(key))
 }
 
 fn attr_set(o: &PyObject, key: &str, v: Value) {
-    let _ = o.attrs.borrow_mut().set(s(key), v);
+    let _ = o
+        .attrs
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .set(s(key), v);
 }
 
 fn f64_arg(v: &Value) -> Result<f64, Flow> {
@@ -169,7 +175,8 @@ fn threading_exc_class(interp: &crate::frame::Interpreter, name: &str) -> Value 
     // which requires registration in interp.exc_classes.
     interp
         .exc_classes
-        .borrow_mut()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
         .insert(name.to_string(), v.clone());
     v
 }
@@ -638,9 +645,7 @@ fn thread_method(
             // (borrow uncontended), release the GIL, then park on the
             // condvar reading ONLY atomics off-lock.
             let flag = crate::threading::entry_done_flag(&entry);
-            release_gil();
             let _got = crate::threading::join_wait_flag(flag, timeout);
-            acquire_gil();
             // E1-E4: the eviction sweep (evict_stale_tables) is EXPORTED
             // for the orchestrator's major-GC drain hook (gcsupport
             // collect) — deliberately NOT called from the join path: the
@@ -758,12 +763,10 @@ fn lock_method(
                 }
             };
             let _ = crate::threading::current_os_tid();
-            release_gil(); // GIL FIRST
             let mut locked = prim.locked.lock().unwrap();
             if *locked {
                 if !blocking {
                     drop(locked);
-                    acquire_gil();
                     return Ok(Value::Bool(false));
                 }
                 let deadline =
@@ -778,25 +781,21 @@ fn lock_method(
                     };
                     if left.is_zero() {
                         drop(locked);
-                        acquire_gil();
                         return Ok(Value::Bool(false));
                     }
                     let (g, t) = prim.cv.wait_timeout(locked, left).unwrap();
                     locked = g;
                     if t.timed_out() && *locked {
                         drop(locked);
-                        acquire_gil();
                         return Ok(Value::Bool(false));
                     }
                     if !*locked {
                         break;
                     }
                 }
-                acquire_gil();
             }
             *locked = true;
             drop(locked);
-            acquire_gil();
             Ok(Value::Bool(true))
         }
         "release" | "__exit__" => {
@@ -845,7 +844,6 @@ fn rlock_method(o: &Gc<PyObject>, method: &str, args: &[Value]) -> BResult {
                 }
                 let deadline =
                     timeout.map(|t| Instant::now() + Duration::from_secs_f64(t.max(0.0)));
-                release_gil();
                 loop {
                     if st.0 == crate::threading::RLockOwner::None {
                         break;
@@ -855,20 +853,17 @@ fn rlock_method(o: &Gc<PyObject>, method: &str, args: &[Value]) -> BResult {
                         None => Duration::from_secs(3600),
                     };
                     if left.is_zero() {
-                        acquire_gil();
                         return Ok(Value::Bool(false));
                     }
                     let (g, t) = prim.cv.wait_timeout(st, left).unwrap();
                     st = g;
                     if t.timed_out() && st.0 != crate::threading::RLockOwner::None {
-                        acquire_gil();
                         return Ok(Value::Bool(false));
                     }
                     if st.0 == crate::threading::RLockOwner::None {
                         break;
                     }
                 }
-                acquire_gil();
             }
             st.0 = crate::threading::RLockOwner::Owned(me);
             st.1 = 1;
@@ -929,10 +924,8 @@ fn cond_acquire_lock(cond: &CondPrim) -> BResult {
 fn lock_acquire_blocking(lk: Arc<LockPrim>) -> BResult {
     let mut locked = lk.locked.lock().unwrap();
     while *locked {
-        release_gil();
         let g = lk.cv.wait(locked).unwrap();
         locked = g;
-        acquire_gil();
     }
     *locked = true;
     Ok(Value::Bool(true))
@@ -942,12 +935,10 @@ fn rlock_acquire(rl: Arc<RLockPrim>) -> BResult {
     let me = crate::threading::current_os_tid();
     // GIL FIRST: never take the primitive's lock holding the interpreter
     // lock — a parked path would hold the GIL and starve the owner.
-    release_gil();
     let mut st = rl.st.lock().unwrap();
     if matches!(st.0, crate::threading::RLockOwner::Owned(t) if t == me) {
         st.1 += 1;
         drop(st);
-        acquire_gil();
         return Ok(Value::Bool(true));
     }
     while st.0 != crate::threading::RLockOwner::None {
@@ -957,7 +948,6 @@ fn rlock_acquire(rl: Arc<RLockPrim>) -> BResult {
     st.0 = crate::threading::RLockOwner::Owned(me);
     st.1 = 1;
     drop(st);
-    acquire_gil();
     Ok(Value::Bool(true))
 }
 
@@ -1126,11 +1116,9 @@ fn cond_wait(
         let _ = left;
         // GIL FIRST: the parked waiter must not hold the interpreter lock —
         // the notifier needs it to run and call notify_all.
-        release_gil();
         let (g, t) = prim.cv.wait_timeout(w, left).unwrap();
         let timed_out = t.timed_out();
         drop(g);
-        acquire_gil();
         got = !timed_out;
     }
     {
@@ -1194,10 +1182,8 @@ fn event_wait(o: &Gc<PyObject>, timeout: Option<f64>) -> BResult {
     let Some(prim) = prim_of::<EventPrim>(addr) else {
         return Err(raise("SystemError", "event primitive missing"));
     };
-    release_gil(); // GIL FIRST (parked party must not hold the lock)
     let mut st = prim.st.lock().unwrap();
     if *st {
-        acquire_gil();
         return Ok(Value::Bool(true));
     }
     let deadline = timeout.map(|t| Instant::now() + Duration::from_secs_f64(t.max(0.0)));
@@ -1208,17 +1194,14 @@ fn event_wait(o: &Gc<PyObject>, timeout: Option<f64>) -> BResult {
         };
         if left.is_zero() {
             let v = *st;
-            acquire_gil();
             return Ok(Value::Bool(v));
         }
         let (g, t) = prim.cv.wait_timeout(st, left).unwrap();
         st = g;
         if *st {
-            acquire_gil();
             return Ok(Value::Bool(true));
         }
         if t.timed_out() {
-            acquire_gil();
             return Ok(Value::Bool(false));
         }
     }
@@ -1260,17 +1243,14 @@ fn sem_method(
                     Some(Value::Int(n)) => n.to_f64(),
                     _ => None,
                 });
-            release_gil(); // GIL FIRST
             let mut val = prim.value.lock().unwrap();
             if *val > 0 {
                 *val -= 1;
                 drop(val);
-                acquire_gil();
                 return Ok(Value::Bool(true));
             }
             if !blocking {
                 drop(val);
-                acquire_gil();
                 return Ok(Value::Bool(false));
             }
             let deadline = timeout.map(|t| Instant::now() + Duration::from_secs_f64(t.max(0.0)));
@@ -1281,7 +1261,6 @@ fn sem_method(
                 };
                 if left.is_zero() {
                     drop(val);
-                    acquire_gil();
                     return Ok(Value::Bool(false));
                 }
                 let (g, t) = prim.cv.wait_timeout(val, left).unwrap();
@@ -1289,12 +1268,10 @@ fn sem_method(
                 if *val > 0 {
                     *val -= 1;
                     drop(val);
-                    acquire_gil();
                     return Ok(Value::Bool(true));
                 }
                 if t.timed_out() {
                     drop(val);
-                    acquire_gil();
                     return Ok(Value::Bool(false));
                 }
             }
@@ -1337,16 +1314,13 @@ fn barrier_method(
             // GIL FIRST: every blocking entry releases the interpreter lock
             // BEFORE taking the primitive's own mutex (the parked party must
             // not hold the GIL — nobody else could reach their rendezvous).
-            release_gil();
             let mut st = prim.st.lock().unwrap();
             // _enter: block while draining/resetting.
             loop {
                 let (_, state, _) = *st;
                 if state == -1 || state == 1 {
-                    release_gil();
                     let g = prim.cv.wait(st).unwrap();
                     st = g;
-                    acquire_gil();
                     continue;
                 }
                 break;
@@ -1378,7 +1352,6 @@ fn barrier_method(
                         st.2 += 1;
                         drop(st);
                         prim.cv.notify_all();
-                        acquire_gil();
                         return Err(e);
                     }
                 }
@@ -1395,7 +1368,6 @@ fn barrier_method(
                 if drained {
                     prim.cv.notify_all();
                 }
-                acquire_gil();
                 return Ok(smi(index as i64));
             }
             // _wait: predicate state != 0 (or generation advance), timeout.
@@ -1433,7 +1405,6 @@ fn barrier_method(
                     broke = true;
                     break;
                 }
-                release_gil();
                 let (g, t) = prim.cv.wait_timeout(st, left).unwrap();
                 st = g;
                 let (_, wstate, wgen) = *st;
@@ -1447,11 +1418,9 @@ fn barrier_method(
                     st2.2 += 1;
                     drop(st2);
                     prim.cv.notify_all();
-                    acquire_gil();
                     broke = true;
                     break;
                 }
-                acquire_gil();
                 if wdone {
                     break;
                 }
@@ -1468,10 +1437,8 @@ fn barrier_method(
                 }
             }
             if broke {
-                acquire_gil();
                 return Err(raise("BrokenBarrierError", ""));
             }
-            acquire_gil();
             Ok(smi(index as i64))
         }
         "reset" => {
@@ -1585,7 +1552,8 @@ fn queue_exc_class(interp: &crate::frame::Interpreter, name: &str) -> Value {
     let v = ap_obj::classes::make_class_value(t);
     interp
         .exc_classes
-        .borrow_mut()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
         .insert(name.to_string(), v.clone());
     v
 }
@@ -1613,9 +1581,13 @@ fn queue_ctor(args: &[Value], kwargs: &[(String, Value)], class: &str) -> BResul
         None => 0,
     };
     let o = PyObject::new(ObjKind::Opaque, "queue");
-    *o.repr_text.borrow_mut() = None;
+    *o.repr_text.lock().unwrap_or_else(|p| p.into_inner()) = None;
     // class marker for type(x).__name__ and reprs.
-    let _ = o.attrs.borrow_mut().set(s("<class>"), s(class));
+    let _ = o
+        .attrs
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .set(s("<class>"), s(class));
     let addr = Arc::as_ptr(&o).addr();
     prim_put(
         addr,
@@ -1701,12 +1673,10 @@ pub fn call_queue_method(
                     || matches!(args.get(1), Some(Value::Bool(false)))
                     || matches!(kw(kwargs, "block"), Some(Value::Bool(false)));
                 let timeout = timeout_of(&args[2.min(args.len())..], kwargs, 0)?;
-                release_gil(); // GIL FIRST (parked party must not hold the GIL)
                 let mut items = prim.items.lock().unwrap();
                 if prim.cap > 0 && items.len() >= prim.cap as usize {
                     if nowait {
                         drop(items);
-                        acquire_gil();
                         return Err(raise("Full", ""));
                     }
                     let deadline =
@@ -1718,7 +1688,6 @@ pub fn call_queue_method(
                         };
                         if left.is_zero() {
                             drop(items);
-                            acquire_gil();
                             return Err(raise("Full", ""));
                         }
                         let (g, t) = prim.not_full.wait_timeout(items, left).unwrap();
@@ -1728,7 +1697,6 @@ pub fn call_queue_method(
                         }
                         if t.timed_out() {
                             drop(items);
-                            acquire_gil();
                             return Err(raise("Full", ""));
                         }
                     }
@@ -1751,7 +1719,6 @@ pub fn call_queue_method(
                 }
                 drop(items);
                 prim.not_empty.notify_one();
-                acquire_gil();
                 Ok(Value::None)
             }
             "get" | "get_nowait" => {
@@ -1759,12 +1726,10 @@ pub fn call_queue_method(
                     || matches!(args.first(), Some(Value::Bool(false)))
                     || matches!(kw(kwargs, "block"), Some(Value::Bool(false)));
                 let timeout = timeout_of(&args[1.min(args.len())..], kwargs, 0)?;
-                release_gil(); // GIL FIRST
                 let mut items = prim.items.lock().unwrap();
                 if items.is_empty() {
                     if nowait {
                         drop(items);
-                        acquire_gil();
                         return Err(raise("Empty", ""));
                     }
                     let deadline =
@@ -1776,7 +1741,6 @@ pub fn call_queue_method(
                         };
                         if left.is_zero() {
                             drop(items);
-                            acquire_gil();
                             return Err(raise("Empty", ""));
                         }
                         let (g, t) = prim.not_empty.wait_timeout(items, left).unwrap();
@@ -1786,7 +1750,6 @@ pub fn call_queue_method(
                         }
                         if t.timed_out() {
                             drop(items);
-                            acquire_gil();
                             return Err(raise("Empty", ""));
                         }
                     }
@@ -1798,7 +1761,6 @@ pub fn call_queue_method(
                 };
                 drop(items);
                 prim.not_full.notify_one();
-                acquire_gil();
                 Ok(item)
             }
             "task_done" => {
@@ -1817,9 +1779,7 @@ pub fn call_queue_method(
             "join" => {
                 let mut u = prim.unfinished.lock().unwrap();
                 while *u > 0 {
-                    release_gil();
                     let g = prim.all_tasks_done.wait(u).unwrap();
-                    acquire_gil();
                     u = g;
                 }
                 Ok(Value::None)
@@ -1956,10 +1916,9 @@ pub fn native_thread_attr(obj: &Value, name: &str) -> Option<Value> {
 /// through call_native_marker into threading_method_by_addr.
 fn bound_method(obj: &Value, name: &str) -> Value {
     let bm = PyObject::with_self(ObjKind::BoundMethod, name.to_string(), obj.clone());
-    *bm.func.borrow_mut() = Some(crate::builtins_modules::marker(&format!(
-        "__ap_threading__.{}",
-        name
-    )));
+    *bm.func.lock().unwrap_or_else(|p| p.into_inner()) = Some(crate::builtins_modules::marker(
+        &format!("__ap_threading__.{}", name),
+    ));
     Value::Obj(bm)
 }
 
@@ -1990,7 +1949,11 @@ pub fn native_thread_attr_set(obj: &Value, name: &str, v: Value) -> Result<(), F
         }
         "thread" => match name {
             "name" => {
-                let _ = o.attrs.borrow_mut().set(s("<name>"), v);
+                let _ = o
+                    .attrs
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .set(s("<name>"), v);
                 Ok(())
             }
             "daemon" => {
@@ -2001,7 +1964,11 @@ pub fn native_thread_attr_set(obj: &Value, name: &str, v: Value) -> Result<(), F
                         "cannot set daemon status of active thread",
                     ));
                 }
-                let _ = o.attrs.borrow_mut().set(s("<daemon>"), v);
+                let _ = o
+                    .attrs
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .set(s("<daemon>"), v);
                 Ok(())
             }
             other => Err(raise(
