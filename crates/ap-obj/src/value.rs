@@ -211,7 +211,11 @@ const LEN_UNKNOWN: usize = usize::MAX;
 pub struct PyString {
     repr: StrRepr,
     cached_len: std::sync::atomic::AtomicUsize,
-    cached_hash: std::cell::Cell<Option<i64>>,
+    /// 02.09a P4 (entry 28, hash-domain audit passed — see py_hash): the
+    /// cache is AtomicI64 with 0 = "not yet computed" and the CPython
+    /// -1 => -2 normalization applied before every store. Same-value race
+    /// writes the same bits (idempotent, like entry 27's cached_len).
+    cached_hash: std::sync::atomic::AtomicI64,
 }
 
 // Manual Clone (cached values copy over — pure optimization).
@@ -235,7 +239,7 @@ impl PyString {
         Gc::new(PyString {
             repr,
             cached_len: std::sync::atomic::AtomicUsize::new(LEN_UNKNOWN),
-            cached_hash: std::cell::Cell::new(None),
+            cached_hash: std::sync::atomic::AtomicI64::new(0),
         })
     }
 
@@ -282,12 +286,28 @@ impl PyString {
     /// UTF-8 bytes (CPython's UCS4 hashes differ from UTF-8 bytes, but both
     /// are UNSPECIFIED per S-01-38 — only equal-content-equal-hash matters,
     /// and pinned-seed-0 reproducibility is per-implementation).
+    ///
+    /// 02.09a P4 hash-domain audit (the phase-1 doc's explicit
+    /// precondition): the cache is AtomicI64 with the -1 => None sentinel
+    /// mapping. PROOF the domain never collides with the sentinel:
+    ///   1. `crate::hash::hash_bytes` returns `r as i64` where r:u64 from
+    ///      siphash13 — the only value that reinterprets to -1 is
+    ///      u64::MAX (0xFFFF...F), i.e. the FULL siphash output.
+    ///   2. CPython applies the same -1 => -2 mapping to str hashes
+    ///      (unicodeobject.c: `if (x == -1) x = -2`) — we mirror it
+    ///      BELOW (normalize -1 to -2 before caching), so -1 can never
+    ///      enter the cache.
+    ///   3. The empty string short-circuits to 0 (hash_bytes returns 0).
+    /// Therefore cached values are in [-2^61..2^61] \ {-1} ∪ {0} and the
+    /// 0 sentinel for "not yet computed" is unambiguous (any hash == 0
+    /// recomputes to 0 — idempotent, benign).
     pub fn py_hash(&self) -> i64 {
-        if let Some(h) = self.cached_hash.get() {
-            return h;
+        let cached = self.cached_hash.load(std::sync::atomic::Ordering::Relaxed);
+        if cached != 0 {
+            return cached;
         }
         let text = self.as_str();
-        let h = if self.is_ascii() {
+        let mut h = if self.is_ascii() {
             crate::hash::hash_bytes(text.as_bytes())
         } else if text.chars().all(|c| (c as u32) <= 0xFF) {
             let latin1: Vec<u8> = text.chars().map(|c| c as u8).collect();
@@ -295,7 +315,12 @@ impl PyString {
         } else {
             crate::hash::hash_bytes(text.as_bytes())
         };
-        self.cached_hash.set(Some(h));
+        if h == -1 {
+            // CPython parity: -1 is the error/sentinel slot; map to -2.
+            h = -2;
+        }
+        self.cached_hash
+            .store(h, std::sync::atomic::Ordering::Relaxed);
         h
     }
 }
@@ -307,7 +332,9 @@ impl Clone for PyString {
             cached_len: std::sync::atomic::AtomicUsize::new(
                 self.cached_len.load(std::sync::atomic::Ordering::Relaxed),
             ),
-            cached_hash: std::cell::Cell::new(self.cached_hash.get()),
+            cached_hash: std::sync::atomic::AtomicI64::new(
+                self.cached_hash.load(std::sync::atomic::Ordering::Relaxed),
+            ),
         }
     }
 }

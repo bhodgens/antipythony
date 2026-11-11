@@ -102,7 +102,7 @@ fn weakrefable(v: &Value) -> bool {
                 if t.has_instance_dict() {
                     return true;
                 }
-                return t.mro.borrow().iter().any(|c| {
+                return t.mro.lock().unwrap().iter().any(|c| {
                     c.flags
                         .slots
                         .as_ref()

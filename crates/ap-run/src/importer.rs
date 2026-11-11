@@ -1058,7 +1058,7 @@ pub(crate) fn import_file_module(interp: &Arc<Interpreter>, name: &str) -> EResu
                                     .borrow()
                                     .as_ref()
                                     .and_then(|tr| tr.upgrade())
-                                    .map(|tr| tr.mro.borrow().iter().any(|m| m.name == "module"))
+                                    .map(|tr| tr.mro.lock().unwrap().iter().any(|m| m.name == "module"))
                                     .unwrap_or(false);
                             if is_module {
                                 let mv = Value::Obj(am);

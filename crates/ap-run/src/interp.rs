@@ -9229,7 +9229,7 @@ fn iterable_of(v: &Value) -> Result<Gc<PyIterator>, Flow> {
                     .dict
                     .get(&Value::Str(PyString::new("__ap_namedtuple_fields__")));
                 if fields_hit.is_none() {
-                    for m in t.mro.borrow().iter() {
+                    for m in t.mro.lock().unwrap().iter() {
                         if let Some(v) = m
                             .dict
                             .get(&Value::Str(PyString::new("__ap_namedtuple_fields__")))
@@ -9273,13 +9273,19 @@ fn iterable_of(v: &Value) -> Result<Gc<PyIterator>, Flow> {
         })() {
             let has_iter = t.dict.get(&Value::Str(PyString::new("__iter__"))).is_some()
                 || t.mro
-                    .borrow()
+                    .lock()
+                    .unwrap()
                     .iter()
                     .any(|m| m.dict.get(&Value::Str(PyString::new("__iter__"))).is_some());
             // Restrict to zope InterfaceClass-derived tokens (the gate's
             // proxyForInterface `for name in iface`); enum/Flag classes
             // rely on the metaclass iter path.
-            let zopeish = t.mro.borrow().iter().any(|m| m.name == "InterfaceClass");
+            let zopeish = t
+                .mro
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|m| m.name == "InterfaceClass");
             let found = has_iter && zopeish;
             if found {
                 // v0: zope Interface tokens iterate EMPTY (proxyForInterface
@@ -10902,8 +10908,13 @@ fn class_isinstance(interp: &Arc<Interpreter>, args: &[Value]) -> EResult {
                 .and_then(|w| w.upgrade())
                 .or_else(|| vo.class_ref.borrow().clone());
             if let Some(cr) = cr_opt {
-                let mro_names: Vec<String> =
-                    cr.mro.borrow().iter().map(|m| m.name.clone()).collect();
+                let mro_names: Vec<String> = cr
+                    .mro
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .map(|m| m.name.clone())
+                    .collect();
                 if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::GenDebug) {
                     eprintln!("[ABC-TOP] mro={:?}", mro_names);
                 }
@@ -12705,7 +12716,7 @@ fn attr_get(_interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Optio
                         // (class values cache independently); match by name.
                         || meta.name == start_t.name
                     {
-                        scan_mro = meta.mro.borrow().clone();
+                        scan_mro = meta.mro.lock().unwrap().clone();
                         borrowed = scan_mro;
                         // fall through to the shared scan below using `borrowed`
                         let mro = &borrowed;
@@ -12789,7 +12800,7 @@ fn attr_get(_interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Optio
                         return Ok(None);
                     }
                 }
-                let mro = subj_t.mro.borrow();
+                let mro = subj_t.mro.lock().unwrap();
                 let mut after = false;
                 for cls in mro.iter() {
                     if !after {

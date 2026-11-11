@@ -681,12 +681,15 @@ impl Interpreter {
             type_class: RefCell::new(None),
             super_stack: RefCell::new(Vec::new()),
             plain_super_ctx: {
-                let mk = |qual: &str| {
-                    std::sync::Arc::new(ap_obj::classes::TypeObject {
+                // 02.09a P4: build the sentinel in two steps so the MRO
+                // Mutex can be seeded with the Arc itself (write-once, same
+                // shape as TypeObject::create's self-reference splice).
+                let mk = |qual: &str| -> std::sync::Arc<ap_obj::classes::TypeObject> {
+                    let placeholder = std::sync::Arc::new(ap_obj::classes::TypeObject {
                         name: "__plain_fn__".to_string(),
                         qualname: qual.to_string(),
                         bases: vec![],
-                        mro: std::cell::RefCell::new(Vec::new()),
+                        mro: std::sync::Mutex::new(Vec::new()),
                         dict: ap_obj::dict::PyDict::new(),
                         flags: ap_obj::classes::TypeFlags::default(),
                         metaclass: std::cell::RefCell::new(None),
@@ -696,7 +699,11 @@ impl Interpreter {
                         // stay at seed and never guard an IC.
                         type_version: std::sync::atomic::AtomicU64::new(1),
                         surgery_version: std::sync::atomic::AtomicU64::new(1),
-                    })
+                    });
+                    // Seed the write-once MRO = [self] BEFORE any observer
+                    // can see the Arc (identical discipline to `create`).
+                    *placeholder.mro.lock().unwrap() = vec![placeholder.clone()];
+                    placeholder
                 };
                 (mk(""), mk("__mcap__"))
             },
