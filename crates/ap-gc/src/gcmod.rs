@@ -300,26 +300,34 @@ pub fn gc_register(v: &Value) {
         // CPython's ladder: every t1 gen-0 passes fire a gen-1 pass; every
         // t2 gen-1 passes fire a full gen-2 pass. THRESHOLDS already
         // carries (t0, t1, t2) = (700, 10, 10).
-        let (g0, g1, reg_len, last_full) = {
-            let st = reg_state().lock().unwrap_or_else(|p| p.into_inner());
-            (
-                st.young.len(),
-                st.mid.len(),
-                st.registry.len(),
-                LAST_FULL_LEN.load(std::sync::atomic::Ordering::Relaxed),
-            )
-        };
+        // 02.09b: the cascade counters stay EXPLICIT pass counters (was
+        // thread_local Cells; the process-global semantics are identical —
+        // the cadence, and therefore which garbage dies at which pass, is
+        // an observable of finalizer timing per gc014's once-only pin).
+        let g0 = GEN0_COUNT.fetch_add(0, std::sync::atomic::Ordering::Relaxed);
+        let g1 = GEN1_COUNT.fetch_add(0, std::sync::atomic::Ordering::Relaxed);
+        let reg_len = reg_state()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .registry
+            .len();
+        let last_full = LAST_FULL_LEN.load(std::sync::atomic::Ordering::Relaxed);
         // Growth-triggered major GC: registry doubled since the last full
         // pass (floor 100k entries so small heaps keep the cheap ladder).
         // Amortized O(1): a doubling epoch pays one full scan, the same
         // bound real-time collectors use.
         let growth_major = reg_len > 100_000 && reg_len > last_full.saturating_mul(2);
         if growth_major || g1 >= t2.max(1) {
+            GEN1_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+            GEN0_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
             LAST_FULL_LEN.store(reg_len, std::sync::atomic::Ordering::Relaxed);
             collect_gen(2); // full: reclaims old garbage + re-seeds YOUNG
         } else if g0 >= t1.max(1) {
+            GEN1_COUNT.store(g1 + 1, std::sync::atomic::Ordering::Relaxed);
+            GEN0_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
             collect_gen(1); // gen-1: scans young + mid-age (see MID set)
         } else {
+            GEN0_COUNT.store(g0 + 1, std::sync::atomic::Ordering::Relaxed);
             collect_gen(0); // gen-0: young only
         }
     }
@@ -959,6 +967,14 @@ fn strong_count_of(v: &Value) -> usize {
 /// a heap-growth-triggered major GC (browser-style). This bounds
 /// memory under slow-leak workloads without scanning on every fire.
 static LAST_FULL_LEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Completed gen-0 passes since the last gen-1 pass (cascade counter,
+/// CPython gc.generations[0].count). At t1, a gen-1 pass fires.
+/// 02.09b: process-global atomics (was thread_local Cells).
+static GEN0_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// Completed gen-1 (or higher) passes since the last full pass
+/// (gc.generations[1].count). At t2, a full gen-2 pass fires.
+static GEN1_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// One FULL collection (explicit gc.collect()). Returns the number of
 /// unreachable objects reclaimed (CPython's gc.collect() return: OBJECTS,

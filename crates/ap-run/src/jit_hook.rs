@@ -73,6 +73,19 @@ thread_local! {
     /// function).
     static JIT_CACHE: RefCell<HashMap<usize, Option<Arc<JitEntry>>>> =
         RefCell::new(HashMap::new());
+    /// 02.09b P6: this thread's mutator-census capture slot (its census
+    /// entry's Arc<AtomicUsize> — installed by gcsupport at worker/main
+    /// census registration). The set/clear seams in jit_call_body mirror
+    /// the thread-local CAPTURE_POINT into it so the COLLECTING thread can
+    /// walk every mutator's JIT frames, not only its own.
+    static CAPTURE_MIRROR: std::cell::RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// 02.09b P6: install this thread's census capture-slot mirror (called from
+/// gcsupport::install / install_worker_thread after ap_gc::register()).
+pub fn set_capture_mirror(slot: std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    CAPTURE_MIRROR.with(|m| *m.borrow_mut() = Some(slot));
 }
 
 /// One cached JIT compilation for a function.
@@ -862,6 +875,13 @@ pub fn jit_call_body(
     // frame stays live across `je.jit.call` (all exits clear before
     // returning).
     unsafe { ap_gc::set_capture_point(ap_gc::caller_frame_pointer()) };
+    // 02.09b P6: mirror the capture into this thread's census slot (the
+    // collector reads every mutator's slot; see gcsupport::install_worker_thread).
+    CAPTURE_MIRROR.with(|m| {
+        if let Some(slot) = m.borrow().as_ref() {
+            slot.store(ap_gc::capture_point(), std::sync::atomic::Ordering::Release);
+        }
+    });
     // 02.05e: run the typed fast path when an install has landed; its
     // status-2 hand-off falls back to THIS entry's own baseline twin
     // (slot-identical by the deterministic lowering — see tierup.rs).
@@ -895,6 +915,14 @@ pub fn jit_call_body(
     // call never inherits a stale start block.
     ctx.twin_start = 0;
     ap_gc::clear_capture_point();
+    // 02.09b P6: clear the census mirror too (a stale foreign fp would make
+    // the collector walk a dead frame — the per-thread CAPTURE_POINT clear
+    // already happened; keep the process-visible slot in lockstep).
+    CAPTURE_MIRROR.with(|m| {
+        if let Some(slot) = m.borrow().as_ref() {
+            slot.store(0, std::sync::atomic::Ordering::Release);
+        }
+    });
 
     // Sync locals back BEFORE mapping the result: an exception unwind
     // still leaves partially-updated locals observable to except blocks.

@@ -1724,7 +1724,17 @@ pub fn install(interp: &Arc<Interpreter>) {
     // this is the explicit equivalent (interp.rs's run_module body belongs
     // to 02.09-b, so the seeding rides this already-wired entry hook).
     crate::runtime_state::set_active_interp(interp);
-    ap_obj::gc_gate::set_hook(ap_gc::gc_register);
+    // 02.09b P6: the ONE routed registration hook (main = direct insert,
+    // workers forward via their per-worker channels — see the hook-clobber
+    // note at gc_register_routed) + the collect-time drain seam + the MAIN
+    // thread's census registration (workers register at install_worker_thread).
+    ap_obj::gc_gate::set_hook(gc_register_routed);
+    ap_gc::set_bridge_drain(gc_bridge_drain_impl);
+    ap_gc::register();
+    ap_gc::set_thread_id(crate::threading::current_os_tid());
+    if let Some(slot) = ap_gc::my_capture_slot() {
+        crate::jit_hook::set_capture_mirror(slot);
+    }
     ap_gc::set_bridge(
         weakbridge_sys_modules,
         weakbridge_frame_values,
@@ -1794,38 +1804,117 @@ static WORKER_REG_OUT: std::sync::LazyLock<
     std::sync::Mutex<Option<std::sync::mpsc::Receiver<crate::send_value::SendValue>>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
 
-fn gc_register_forward_worker(v: &Value) {
-    let guard = WORKER_REG_IN.lock().unwrap();
-    if let Some(tx) = guard.as_ref() {
+// 02.09b P6 (audit §1.3 finding 3 — the hook-clobber): the registration hook
+// fn pointer is ONE process-global slot; install_worker_thread used to
+// overwrite it unconditionally, so the LAST spawned worker's channel won and
+// every OTHER worker's allocations silently dropped off the channel (or, with
+// two workers, raced the swap mid-flight). The channel endpoints are now
+// PER-WORKER (each worker gets its own pair, indexed by OS thread id); the
+// hook fn stays the ONE forward fn, which routes to the CALLING thread's
+// channel. The main thread registers directly (no channel).
+struct WorkerReg {
+    tx: std::sync::mpsc::Sender<crate::send_value::SendValue>,
+    rx: std::sync::mpsc::Receiver<crate::send_value::SendValue>,
+}
+
+fn worker_regs() -> &'static std::sync::Mutex<std::collections::HashMap<u64, WorkerReg>> {
+    static WORKER_REGS: std::sync::LazyLock<
+        std::sync::Mutex<std::collections::HashMap<u64, WorkerReg>>,
+    > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    &WORKER_REGS
+}
+
+thread_local! {
+    /// THIS worker's channel endpoints (set at install_worker_thread).
+    static MY_REG: std::cell::RefCell<Option<std::sync::mpsc::Sender<crate::send_value::SendValue>>> =
+        const { std::cell::RefCell::new(None) };
+    /// Re-entrancy gate for drain_worker_registrations (gc_register inside
+    /// a drain can fire an auto-collect whose bridge-drain re-enters here).
+    static DRAINING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The ONE registration hook (installed once at run entry). Routes: on a
+/// worker thread -> its own channel; on the main thread (or an unregistered
+/// thread) -> straight into the registry.
+fn gc_register_routed(v: &Value) {
+    let tx = MY_REG.with(|m| m.borrow().clone());
+    if let Some(tx) = tx {
         let _ = tx.send(crate::send_value::SendValue(v.clone()));
         return;
     }
-    drop(guard);
+    // Main thread / pre-registration: direct insert. Drain any queued worker
+    // registrations first so the registry stays insertion-ordered.
+    drain_worker_registrations();
     ap_gc::gc_register(v);
 }
 
-/// Drain worker registrations into the MAIN thread's registry (main-thread
-/// turns: every threading dispatch + collect).
+fn gc_bridge_drain_impl() -> usize {
+    drain_worker_registrations()
+}
+
+fn gc_register_forward_worker(v: &Value) {
+    gc_register_routed(v);
+}
+
+/// Drain worker registrations into the MAIN registry (main-thread turns +
+/// every collect via the 02.09b bridge-drain seam). NOTE: gc_register runs
+/// OUTSIDE the worker_regs critical section — it can trigger an auto-collect
+/// whose bridge-drain re-enters here, and a std::sync::Mutex is not
+/// reentrant (the T102 hang class). The DRAINING gate makes the re-entrant
+/// inner call a no-op (the outer drain loop re-checks until the channels
+/// stay empty).
 pub fn drain_worker_registrations() -> usize {
-    let rx_slot = WORKER_REG_OUT.lock().unwrap();
-    let Some(rx) = rx_slot.as_ref() else {
-        return 0;
-    };
-    let mut n = 0;
-    while let Ok(v) = rx.try_recv() {
-        ap_gc::gc_register(&v.0);
-        n += 1;
+    if DRAINING.with(|d| d.replace(true)) {
+        return 0; // re-entrant drain: the outer loop owns the channels
     }
+    let mut n = 0;
+    loop {
+        let mut got: Vec<crate::send_value::SendValue> = Vec::new();
+        {
+            let regs = worker_regs().lock().unwrap();
+            for reg in regs.values() {
+                while let Ok(v) = reg.rx.try_recv() {
+                    got.push(v);
+                }
+            }
+        } // lock released before any registration
+        let drained_this_round = got.len();
+        for v in got {
+            ap_gc::gc_register(&v.0);
+            n += 1;
+        }
+        if drained_this_round == 0 {
+            break;
+        }
+    }
+    DRAINING.with(|d| d.set(false));
     n
 }
 
 /// Worker-thread GC wiring (called from threading::worker_bootstrap before
-/// the GIL is ever taken on that thread).
+/// the worker runs its body). 02.09b P6: per-worker channel (no process-
+/// global HOOK clobber — audit §1.3 finding 3) + mutator census registration
+/// (decision 3: the collector must see every live mutator).
 pub fn install_worker_thread() {
     let (tx, rx) = std::sync::mpsc::channel::<crate::send_value::SendValue>();
-    *WORKER_REG_IN.lock().unwrap() = Some(tx);
-    *WORKER_REG_OUT.lock().unwrap() = Some(rx);
-    // The hook fn pointer is process-global; from here on, allocations made
-    // BY ANY thread forward through the channel — the main thread drains.
-    ap_obj::gc_gate::set_hook(gc_register_forward_worker);
+    let tid = crate::threading::current_os_tid();
+    worker_regs()
+        .lock()
+        .unwrap()
+        .insert(tid, WorkerReg { tx: tx.clone(), rx });
+    MY_REG.with(|m| *m.borrow_mut() = Some(tx));
+    // Census: this thread is now a live mutator (its root-bearing state and
+    // JIT capture point join the collector's walk).
+    ap_gc::register();
+    ap_gc::set_thread_id(tid);
+    install_capture_mirror();
+}
+
+/// 02.09b P6: mirror THIS thread's rootscan capture point into its census
+/// slot whenever jit_hook sets/clears it (called from the jit_hook seam —
+/// see install_capture_mirror wiring at the end of this file).
+fn install_capture_mirror() {
+    if let Some(slot) = ap_gc::my_capture_slot() {
+        crate::jit_hook::set_capture_mirror(slot);
+    }
 }
