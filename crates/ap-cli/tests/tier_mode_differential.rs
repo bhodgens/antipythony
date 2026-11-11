@@ -405,3 +405,43 @@ fn test_jit_path_is_exercised_not_silent_fallback() {
          entries; the dispatch arm is unreachable despite successful lowers."
     );
 }
+
+// ---------------------------------------------------------------------------
+// Gate 3 (02.05d): the deliberate-thrash probe ends DISABLED — the
+// machine-parseable [TIER1-STATS] pin line must appear under
+// APX_TIER1_STATS=1 — with byte-identical results (covered by gate 1,
+// which now includes t1_017 via the glob). This is the SPLIT-02.05
+// §02.05d gate: "deliberate-thrash probe (function flapping between
+// int/str) ends DISABLED with tier-0 results still byte-identical".
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_deliberate_thrash_probe_ends_disabled() {
+    interpreter_gate();
+    let thrash = probe_dir().join("t1_017_thrash_backoff_disable.py");
+    assert!(
+        thrash.is_file(),
+        "the deliberate-thrash probe is missing: {}",
+        thrash.display()
+    );
+    let (_o, err, rc, _w) = run_tier(
+        "adaptive",
+        &thrash,
+        &[("APX_TIER1_STATS", "1"), ("APX_TIER_STATS", "1")],
+    );
+    let text = String::from_utf8_lossy(&err);
+    assert_eq!(rc, 0, "thrash probe exited {rc} (stderr: {text})");
+    let installed = text.contains("[TIER1-STATS] install fn=mix regions=");
+    assert!(
+        installed,
+        "thrash probe never installed tier-1 (no install line) — the probe \
+         shape drifted and no longer exercises the backoff\nstderr: {text}"
+    );
+    let pinned = text.contains("[TIER1-STATS] pin key=");
+    assert!(
+        pinned,
+        "thrash probe did NOT reach the DISABLED pin (no pin line) — the \
+         epoch/backoff machine is not firing on the deliberate-thrash shape\n\
+         stderr: {text}"
+    );
+}

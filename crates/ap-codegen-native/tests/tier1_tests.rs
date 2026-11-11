@@ -216,7 +216,7 @@ fn compile_tier1_none_for_cold_body() {
     let f = fn_def(arith_body());
     let func = lower_fn(&f).expect("lower");
     // Cold snapshots → no hotness → no typed region plan → None.
-    let out = compile_tier1(&func, &[]);
+    let out = compile_tier1(&func, &[], 0);
     // Even without hotness the plan may still form (SmiLocal admissions),
     // but compile must not fail either way; the hotness GATE is the
     // caller's (jit_hook) decision.
@@ -231,7 +231,8 @@ fn compile_tier1_succeeds_on_hot_arithmetic() {
     let f = fn_def(arith_body());
     let func = lower_fn(&f).expect("lower");
     let snaps = mono_int_snapshots(&func);
-    let t1 = compile_tier1(&func, &snaps).expect("tier-1 compile must succeed on typed arithmetic");
+    let t1 =
+        compile_tier1(&func, &snaps, 0).expect("tier-1 compile must succeed on typed arithmetic");
     let t1 = t1.expect("mono int-int snapshots must admit a region");
     assert!(t1.regions >= 1, "expected >=1 typed region");
     // The twin must exist and be a full baseline compilation.
@@ -245,7 +246,7 @@ fn baseline_and_twin_slot_plans_match() {
     let f = fn_def(arith_body());
     let func = lower_fn(&f).expect("lower");
     let snaps = mono_int_snapshots(&func);
-    let t1 = compile_tier1(&func, &snaps)
+    let t1 = compile_tier1(&func, &snaps, 0)
         .expect("compile")
         .expect("region expected");
     let direct = compile_baseline(&func).expect("baseline");
@@ -263,7 +264,7 @@ fn compile_tier1_with_empty_snapshots_admits_or_fails_closed() {
     // impossible, which is the Risk-5 point). The body still admits a
     // region through SmiLocal admissions; what is pinned here is that the
     // outcome is either a valid tier-1 pair or None — never an error.
-    let out = compile_tier1(&func, &[]);
+    let out = compile_tier1(&func, &[], 0);
     match out {
         Ok(None) => {}
         Ok(Some(t1)) => assert!(t1.regions >= 1),
@@ -302,5 +303,31 @@ fn compare_admission_requires_relational_ops() {
     assert!(
         !info.temps.iter().any(|t| t.is_bool()),
         "Is-compare must stay boxed"
+    );
+}
+
+// 02.05d diagnostics: pin the region shape of `def double(x): return x + x`
+// (the thrash-probe shape) — asserts the guard-load is INSIDE the region.
+
+// 02.05d diagnostics: the fast path must emit a nonempty guard chain when
+// the region loads a local — asserted structurally via EntryGuards (the
+// emitter consumes exactly this vec).
+#[test]
+fn entry_guards_carry_the_loaded_slots() {
+    let f = fn_def(arith_body());
+    let func = lower_fn(&f).expect("lower");
+    let snaps = mono_int_snapshots(&func);
+    let t1 = compile_tier1(&func, &snaps, 7)
+        .expect("compile")
+        .expect("region expected");
+    let _ = t1;
+    let info = infer(&func, &snaps);
+    let plan =
+        ap_codegen_native::optimizing::plan_function(&func, info, compile_baseline(&func).unwrap());
+    let guards = plan.fast_path.guards.first().expect("guard plan");
+    assert!(
+        !guards.guarded_slots.is_empty(),
+        "region loads locals (a, b) — the guard chain must be nonempty: {:?}",
+        guards.guarded_slots
     );
 }

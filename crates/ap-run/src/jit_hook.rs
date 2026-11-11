@@ -93,6 +93,11 @@ struct JitEntry {
     /// this true and the tier-up probe never fires again for the body
     /// (pon's failed-tier-up-disables discipline).
     tier1_failed: std::cell::Cell<bool>,
+    /// 02.05d thrash backoff: the function's deopt state word (deopt.rs
+    /// table cell), cached at tier-1 install so the per-call dispatch
+    /// gate is ONE relaxed load. None until a tier-1 exists (a boxed-only
+    /// body has no fast path to gate).
+    deopt_word: std::cell::RefCell<Option<&'static std::sync::atomic::AtomicU64>>,
 }
 
 /// Resolve the tier mode from an explicit flag, falling back to APX_TIER,
@@ -185,6 +190,15 @@ static JIT_FALLBACKS: AtomicU64 = AtomicU64::new(0);
 /// jit_call_body invocations that RAN compiled code (cache hits + first
 /// calls on a fresh compile; the actual exercise count).
 static JIT_EXECS: AtomicU64 = AtomicU64::new(0);
+
+/// 02.05d: read the process-wide exec counter as the deopt backoff's
+/// progress signal. Monotonic and cheap (one relaxed load per tier-up
+/// probe); per-function fairness comes from the per-key epoch word —
+/// this is only the "has enough work happened since" term of
+/// `tier_up_allowed`.
+fn jit_execs_now() -> u64 {
+    JIT_EXECS.load(Ordering::Relaxed)
+}
 
 /// Read the stats knobs once per call site (cheap env lookups; the stats
 /// path is diagnostic-only).
@@ -579,8 +593,18 @@ pub fn jit_call_body(
     // steady-state arithmetic loop shape tier-1 exists for — compile the
     // typed fast path ONCE and cache it. Failure records tier1_failed and
     // never retries (pon's failed-tier-up-disables discipline).
-    if je.tier1_cell.borrow().is_none() && !je.tier1_failed.get() {
-        try_tier_up(entry, &je);
+    //
+    // 02.05d thrash backoff: the probe consults the per-function deopt
+    // state FIRST — a Deferred function waits out `threshold << epoch`
+    // calls (deopt::tier_up_allowed with this body's lifetime exec
+    // counter as the progress signal) and a Disabled one never tiers up
+    // again.
+    let fn_key = fn_id as u64;
+    if je.tier1_cell.borrow().is_none()
+        && !je.tier1_failed.get()
+        && ap_codegen_native::deopt::tier_up_allowed(fn_key, jit_execs_now())
+    {
+        try_tier_up(entry, &je, fn_key);
     }
     let tier1 = je.tier1_cell.borrow().clone();
 
@@ -615,6 +639,22 @@ pub fn jit_call_body(
     // 02.05c: run the typed fast path when the tier-1 pair exists; its
     // call() falls back to the boxed twin internally on guard failure
     // (status 2) — one entry point, byte-identical results either way.
+    //
+    // 02.05d thrash backoff dispatch gate: once the pin lands (state ==
+    // Disabled after DEOPT_PIN_EPOCH deferred epochs), the fast path is
+    // bypassed and the boxed twin runs directly — the pon entry-pointer
+    // restore analogue. Semantically free either way (the twin IS the
+    // same lowering tier-0 executes), so the gate is a pure de-cost.
+    let tier1: Option<&std::rc::Rc<ap_codegen_native::clif::Tier1Func>> =
+        match (&tier1, je.deopt_word.borrow().as_ref()) {
+            (Some(t1), Some(w))
+                if ap_codegen_native::deopt::state_byte_of(w)
+                    == ap_codegen_native::deopt::TierState::Disabled =>
+            {
+                None // pinned: run the twin (== tier-0 code)
+            }
+            (other, _) => other.as_ref(),
+        };
     let call_r = match &tier1 {
         Some(t1) => unsafe { t1.call(&mut ctx) },
         None => unsafe { je.jit.call(&mut ctx) },
@@ -655,7 +695,7 @@ pub fn jit_call_body(
 ///    until this compile succeeds, then `tier1` routes all future calls.
 /// 4. Failure: record `tier1_failed` and never retry (pon
 ///    failed-tier-up-disables discipline).
-fn try_tier_up(entry: &FnEntry, je: &Rc<JitEntry>) {
+fn try_tier_up(entry: &FnEntry, je: &Rc<JitEntry>, fn_key: u64) {
     // Never retry a failed tier-1 compile (failed-tier-up-disables).
     if je.tier1_failed.get() {
         return;
@@ -673,10 +713,14 @@ fn try_tier_up(entry: &FnEntry, je: &Rc<JitEntry>) {
         Ok(f) => f,
         Err(_) => return,
     };
-    match compile_tier1(&func, &snapshots) {
+    match compile_tier1(&func, &snapshots, fn_key) {
         Ok(Some(t1)) => {
             ap_codegen_native::runtime::note_tier1_install(t1.regions, &entry.def.name);
             *je.tier1_cell.borrow_mut() = Some(Rc::new(t1));
+            // 02.05d: cache the deopt state word so the dispatch loop
+            // gates the fast path on it (pon's entry-pointer restore
+            // analogue: a DISABLED function dispatches to the twin).
+            *je.deopt_word.borrow_mut() = Some(ap_codegen_native::deopt::word_cell(fn_key));
         }
         Ok(None) => {
             // No typed region in this body — mark as permanently boxed
@@ -743,6 +787,7 @@ fn compile_for(entry: &FnEntry) -> Option<JitEntry> {
         local_names: func.local_names.clone(),
         tier1_cell: std::cell::RefCell::new(None),
         tier1_failed: std::cell::Cell::new(false),
+        deopt_word: std::cell::RefCell::new(None),
     })
 }
 
