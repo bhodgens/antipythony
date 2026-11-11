@@ -5138,7 +5138,7 @@ thread_local! {
 }
 
 /// s013: state for one `functools.singledispatch` registry.
-struct SdRegistry {
+pub(crate) struct SdRegistry {
     default: Value,
     impls: HashMap<String, Value>,
 }
@@ -13544,7 +13544,7 @@ thread_local! {
 }
 
 /// s014: one lru_cache wrapper's memoization state.
-struct LruState {
+pub(crate) struct LruState {
     wrapped: Value,
     maxsize: Option<i64>,
     typed: bool,

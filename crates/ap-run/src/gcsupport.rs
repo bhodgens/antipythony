@@ -1718,6 +1718,12 @@ pub fn weakmethod_call(token: &Gc<PyObject>) -> Value {
 
 /// Wire the collector to this interpreter: roots + the weakbridge fns.
 pub fn install(interp: &Arc<Interpreter>) {
+    // 02.09a P3: seed the per-interpreter RuntimeState (the (c)-class
+    // registry confinement) BEFORE any module-body allocation can touch a
+    // registry. The old thread_locals were implicitly "set at run entry";
+    // this is the explicit equivalent (interp.rs's run_module body belongs
+    // to 02.09-b, so the seeding rides this already-wired entry hook).
+    crate::runtime_state::set_active_interp(interp);
     ap_obj::gc_gate::set_hook(ap_gc::gc_register);
     ap_gc::set_bridge(
         weakbridge_sys_modules,

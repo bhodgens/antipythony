@@ -1568,7 +1568,7 @@ impl Clone for WeakDoc {
     }
 }
 
-struct DocRegistry {
+pub(crate) struct DocRegistry {
     docs: Vec<Option<WeakDoc>>,
     /// Pin window: doc ids whose strong Arc is retained, oldest-first.
     pins: std::collections::VecDeque<SharedDoc>,
@@ -1594,6 +1594,7 @@ struct DocRegistry {
 // slots; every slot mutation happens under the DOCS Mutex (the table's lock
 // is the serialization the type system cannot see). LxDoc's own marker is
 // at its definition.
+#[allow(dead_code)] // witness type: carries the marker, never constructed
 struct PinsAreTableLocked {
     _p: std::marker::PhantomData<Arc<std::cell::RefCell<LxDoc>>>,
 }
@@ -1614,7 +1615,6 @@ const DOC_PIN_WINDOW: usize = 64;
 
 fn register_doc(doc: LxDoc) -> usize {
     let rc = SharedDoc(Arc::new(RefCell::new(doc)));
-    let rc_arc = Arc::clone(&rc.0);
     let mut r = DOCS.lock().unwrap();
     // E9 harvest: released-while-in-flight slots whose doc has since died.
     if !r.awaiting.is_empty() {
@@ -3047,7 +3047,7 @@ fn urljoin_simple(base: &str, href: &str) -> String {
 ///    `evict_stale_tables` sweep) drops rows whose marker died. The
 ///    namespaces dict rides the MARKER's own attrs (`<namespaces>`) — when
 ///    the marker dies, it dies with the object graph (no registry pin).
-struct XPathRow {
+pub(crate) struct XPathRow {
     query: String,
     marker: std::sync::Weak<PyObject>,
 }
