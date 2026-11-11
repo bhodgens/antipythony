@@ -22,7 +22,7 @@ use cranelift::codegen::ir::{types, BlockArg, FuncRef, Function, InstBuilder};
 use cranelift::codegen::isa::TargetIsa;
 use cranelift::frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift::prelude::*;
-use cranelift_module::Module;
+use cranelift_module::{Module, ModuleError};
 
 /// Assigned feedback slot for one specializable site + the whole-plan
 /// count (Risk-5: snapshot carries slot-count; mismatch = compile
@@ -157,8 +157,6 @@ impl SiteCounter<'_> {
 ///
 /// Signature: `(ctx: *mut ExecCtx) -> i32`.
 pub fn compile_baseline(func: &Func) -> Result<JitFunc, CodegenError> {
-    let slot_plan = SlotPlan::assign(func);
-
     let mut flag_builder = settings::builder();
     flag_builder
         .set("use_colocated_libcalls", "false")
@@ -170,18 +168,45 @@ pub fn compile_baseline(func: &Func) -> Result<JitFunc, CodegenError> {
         .finish(flags)
         .map_err(|_| CodegenError::Unsupported("ISA finish failed"))?;
 
-    let mut module =
+    let mut jb =
         cranelift_jit::JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
     // Helper symbols: declare the runtime helpers once.
     for (name, ptr) in helper_symbols() {
-        module.symbol(name, ptr);
+        jb.symbol(name, ptr);
     }
-    let mut module = cranelift_jit::JITModule::new(module);
+    let mut module = cranelift_jit::JITModule::new(jb);
 
-    // Interned name table (02.05a): filled in emit_cfg first-appearance
-    // order; the entry hook copies it into ExecCtx::names so host helpers
-    // resolve name ids against the same table the code embedded.
     let mut name_table: Vec<String> = Vec::new();
+    let compiled = jit_compile_module(&mut module, func, &mut name_table)?;
+    Ok(JitFunc {
+        code_ptr: compiled.code_ptr,
+        slots: compiled.slot_plan,
+        name_table: compiled.name_table,
+        feedback_cells: (0..compiled.site_count).map(|_| FeedbackCell::new()).collect(),
+        _blob: module,
+    })
+}
+
+/// The shared emit pipeline's product (the JIT-shape pieces).
+pub struct CompiledFn {
+    pub code_ptr: *const u8,
+    pub slot_plan: SlotPlan,
+    pub name_table: Vec<String>,
+    pub site_count: usize,
+}
+
+/// THE SHARED PIPELINE (leaf 02.06 rebase, JIT shape): SlotPlan::assign →
+/// flags → declare fn + helpers → emit_cfg_with_osr (no OSR polls: fn_key
+/// 0) → define → finalize → code pointer. The object shape (link.rs's
+/// emit_program_object) reuses declare/emit/define through
+/// emit_cfg_into_object — same emit_cfg stage, same helper signatures, no
+/// duplicated lowering.
+fn jit_compile_module(
+    module: &mut cranelift_jit::JITModule,
+    func: &Func,
+    name_table: &mut Vec<String>,
+) -> Result<CompiledFn, CodegenError> {
+    let slot_plan = SlotPlan::assign(func);
 
     let sig = {
         let mut s = cranelift::codegen::ir::Signature::new(module.isa().default_call_conv());
@@ -253,7 +278,7 @@ pub fn compile_baseline(func: &Func) -> Result<JitFunc, CodegenError> {
             plan: &slot_plan,
         };
         let mut emit_state = EmitState {
-            name_table: &mut name_table,
+            name_table,
             site_counter: &mut site_counter,
         };
         // ABI entry hand-off: emit the jump to the lowered CFG's block 0
@@ -275,7 +300,7 @@ pub fn compile_baseline(func: &Func) -> Result<JitFunc, CodegenError> {
             func,
             &mut clif_blocks,
             ctx_ptr,
-            &mut module,
+            module,
             &helper_refs,
             &mut emit_state,
         )?;
@@ -341,13 +366,153 @@ pub fn compile_baseline(func: &Func) -> Result<JitFunc, CodegenError> {
         slot_plan.len(),
         "clif: emitted site count drifted from SlotPlan::assign"
     );
-    Ok(JitFunc {
+    Ok(CompiledFn {
         code_ptr,
-        slots: slot_plan,
-        name_table,
-        feedback_cells: (0..site_count).map(|_| FeedbackCell::new()).collect(),
-        _blob: module,
+        slot_plan,
+        name_table: std::mem::take(name_table),
+        site_count,
     })
+}
+
+/// 02.06 helper-table plumbing: the object backend's per-function symbol
+/// name for `apjit_fn` (linkage name `ap_aot+<FuncId>` — cranelift-object
+/// reserves namespace 0 for functions). The CRT manifest references this
+/// name; a signature mismatch is a link error, never a silent ABI drift.
+pub fn fn_linkage_name(func_id: u32) -> String {
+    format!("ap_aot+{func_id}")
+}
+
+// ===========================================================================
+// 02.06 — the object-shape emit entry (the shared lowering, object module).
+// ===========================================================================
+
+/// Emit ONE function body into a caller-owned object module (link.rs's
+/// assembler). Declares the helpers as Imports on `module` (cranelift
+/// dedupes by name), emits through the SAME emit_cfg stage, defines the
+/// function. The interned name table is captured in LAST_EMIT_NAMES.
+pub fn emit_cfg_into_object<M: Module>(
+    module: &mut M,
+    func_id: cranelift_module::FuncId,
+    func: &Func,
+) -> Result<(), CodegenError> {
+    let slot_plan = SlotPlan::assign(func);
+    let mut name_table: Vec<String> = Vec::new();
+
+    let sig = {
+        let mut s = cranelift::codegen::ir::Signature::new(module.isa().default_call_conv());
+        s.params.push(cranelift::codegen::ir::AbiParam::new(
+            module.isa().pointer_type(),
+        ));
+        s.returns
+            .push(cranelift::codegen::ir::AbiParam::new(types::I32));
+        s
+    };
+    let mut ctx = cranelift::codegen::Context::new();
+    ctx.func = Function::with_name_signature(
+        cranelift::codegen::ir::UserFuncName::user(0, func_id.as_u32()),
+        sig,
+    );
+    let mut fb_ctx = FunctionBuilderContext::new();
+    // GC declared set: EMPTY (identical reasoning to compile_baseline —
+    // boxed i64 reprs carry no pointer-typed CLIF values).
+    let gc_value_declarations: Vec<cranelift::codegen::ir::Value> = Vec::new();
+    {
+        let mut fb = FunctionBuilder::new(&mut ctx.func, &mut fb_ctx);
+        let entry = fb.create_block();
+        fb.append_block_params_for_function_params(entry);
+        fb.switch_to_block(entry);
+        fb.seal_block(entry);
+        let ctx_ptr = fb.block_params(entry)[0];
+
+        let mut helper_refs: std::collections::HashMap<&'static str, FuncRef> =
+            std::collections::HashMap::new();
+        for (name, _) in helper_symbols() {
+            let hsig = helper_sig(module.isa(), name);
+            let fid = module
+                .declare_function(name, cranelift_module::Linkage::Import, &hsig)
+                .map_err(|e| CodegenError::Verify(format!("declare helper {name}: {e}")))?;
+            let fref = module.declare_func_in_func(fid, fb.func);
+            helper_refs.insert(name, fref);
+        }
+
+        let mut clif_blocks = Vec::with_capacity(func.blocks.len());
+        for _ in 0..func.blocks.len() {
+            clif_blocks.push(fb.create_block());
+        }
+        let mut site_counter = SiteCounter {
+            idx: 0,
+            plan: &slot_plan,
+        };
+        let mut emit_state = EmitState {
+            name_table: &mut name_table,
+            site_counter: &mut site_counter,
+        };
+        // ABI entry hand-off (identical to compile_baseline — the layout
+        // entry block jumps to clif_blocks[0], whose body opens with the
+        // twin-start dispatcher; a no-op without typed regions).
+        fb.switch_to_block(entry);
+        fb.ins().jump(clif_blocks[0], &[]);
+
+        emit_cfg(
+            &mut fb,
+            func,
+            &mut clif_blocks,
+            ctx_ptr,
+            module,
+            &helper_refs,
+            &mut emit_state,
+        )?;
+
+        for v in &gc_value_declarations {
+            fb.declare_value_needs_stack_map(*v);
+        }
+        fb.seal_all_blocks();
+        fb.finalize(module.isa().frontend_config());
+        // Lockstep assertion (Risk-5, same as the JIT path).
+        debug_assert_eq!(
+            emit_state.site_counter.idx,
+            slot_plan.len(),
+            "clif(object): emitted site count drifted from SlotPlan::assign"
+        );
+    }
+    if let Err(e) = module.define_function(func_id, &mut ctx) {
+        let detail = match &e {
+            ModuleError::Compilation(c) => format!("{c:?}"),
+            other => format!("{other}"),
+        };
+        return Err(CodegenError::Verify(format!("define_function: {detail}")));
+    }
+    // Capture the interned table for link.rs's manifest (the assembler
+    // reads it after ALL emissions; single-threaded per build).
+    LAST_EMIT_NAMES.with(|c| {
+        let mut v = c.borrow_mut();
+        v.push(std::mem::take(&mut name_table));
+    });
+    Ok(())
+}
+
+thread_local! {
+    /// The name tables of the most recent emit_cfg_into_object batch (one
+    /// per emitted function, in emission order). Cleared by the assembler
+    /// before each batch; consumed once after.
+    static LAST_EMIT_NAMES: std::cell::RefCell<Vec<Vec<String>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Reset the name-table capture (call before each emission batch).
+pub fn reset_emit_name_tables() {
+    LAST_EMIT_NAMES.with(|c| c.borrow_mut().clear());
+}
+
+/// Take the captured name tables (call once after the batch).
+pub fn last_emit_name_tables() -> Vec<Vec<String>> {
+    LAST_EMIT_NAMES.with(|c| std::mem::take(&mut *c.borrow_mut()))
+}
+
+/// The SlotPlan site count for a cfg WITHOUT compiling (link.rs sizes
+/// the static IC payload with it — one walk, same predicate).
+pub fn slot_plan_len(func: &Func) -> usize {
+    SlotPlan::assign(func).len()
 }
 
 fn helper_sig(isa: &dyn TargetIsa, name: &'static str) -> cranelift::codegen::ir::Signature {
@@ -499,12 +664,12 @@ struct EmitState<'a> {
 /// Emit the whole CFG. Fail-closed on any unhandled inst/terminator.
 /// 02.05b: `state.site_counter` carries the running SlotPlan id so every
 /// specializable site embeds its own slot id as the first helper immediate.
-fn emit_cfg(
+fn emit_cfg<M: Module>(
     fb: &mut FunctionBuilder,
     func: &Func,
     blocks: &mut [Block],
     ctx_ptr: Value,
-    module: &mut cranelift_jit::JITModule,
+    module: &mut M,
     helpers: &HashMap<&'static str, FuncRef>,
     state: &mut EmitState<'_>,
 ) -> Result<(), CodegenError> {
@@ -672,12 +837,12 @@ pub fn compile_baseline_with_osr(func: &Func, fn_key: u64) -> Result<JitFunc, Co
 /// polls, and unit tests that count sites without compiling OSR entries
 /// pass `0` so no registry probe is baked in.
 #[allow(clippy::too_many_arguments)]
-fn emit_cfg_with_osr(
+fn emit_cfg_with_osr<M: Module>(
     fb: &mut FunctionBuilder,
     func: &Func,
     blocks: &mut [Block],
     ctx_ptr: Value,
-    module: &mut cranelift_jit::JITModule,
+    module: &mut M,
     helpers: &HashMap<&'static str, FuncRef>,
     state: &mut EmitState<'_>,
     osr_fn_key: u64,
