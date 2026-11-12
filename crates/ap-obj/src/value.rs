@@ -747,7 +747,7 @@ impl PyList {
     /// O(n²) for `insert(0, x)` loops.
     /// 02.09c write gate: non-Smi inserts demote (same critical section).
     pub fn insert_at(&self, i: usize, v: Value) {
-        let mut b = self.items.lock().unwrap_or_else(|p| p.into_inner());
+        let b = self.items.lock().unwrap_or_else(|p| p.into_inner());
         let n = b.len() + 1;
         drop(b);
         self.reserve_for(n);
