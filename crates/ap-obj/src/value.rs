@@ -382,6 +382,37 @@ impl Tuple {
 
 /// Insertion-ordered mutable list with CPython's over-allocation growth
 /// (pattern documented in crate docs; growth factor is unobservable).
+///
+/// 02.09c — unboxed Smi storage (SPLIT-02.09 §02.09c; audit doc §4, census
+/// verdict GO, Smi-only v1): the payload is a [`ListStorage`] enum. A list
+/// whose every element is `Value::Int(Int::Smi(_))` stores a raw `Vec<i64>`
+/// (8 B/elem, no per-element `Value` tag) — the tier-0 half of master.md's
+/// compact-layout intent. `Value::Bool` is deliberately NOT unboxed (bool ⊂
+/// int for arithmetic but `type()`/repr must keep saying `bool`), and
+/// `Int::Big`/str/float/etc. never are.
+///
+/// **Write gate / demotion (one-way):** any insertion of a non-Smi value
+/// (`append`/`set_at`/`insert_at`) demotes the storage Smi → Boxed inside
+/// the same lock critical section. Demotion never happens on read: reads of
+/// an unboxed list materialize a temporary boxed snapshot under the lock
+/// (see [`ItemsRef`]) while the persistent storage stays raw i64.
+///
+/// **Post-no-GIL lock discipline (02.09b decision-2, inherited):** items
+/// storage + growth bookkeeping synchronize on this ONE `Mutex` — the
+/// variant adds no lock of its own; a demotion and a concurrent `items()`
+/// read are serialized by the same critical section that boxed lists use,
+/// so T120/T122 cross-thread mutation semantics are unchanged.
+///
+/// **GC fence invariant (audit §4, pinned by
+/// `gcmod::unboxed_list_stays_registered_with_zero_internal_edges`):**
+/// unboxed ⇒ the list holds NO `Value` refs ⇒ its internal-element edges
+/// vanish from `count_internal_refs`. The list must therefore stay
+/// REGISTERED with the collector for container identity (gc.is_tracked
+/// parity, gc007) — registration happens in the constructors independent of
+/// storage arm — and subtract-refs must still collect it when the last
+/// external handle drops (sc == 1 > internal == 0 would be wrong only if an
+/// edge were invisible that someone else counts; Smi elements have no
+/// registry address, so no edge can be missed).
 pub struct PyList {
     /// Interior-mutable through shared `Gc` handles: `ys = xs; ys.append(4)`
     /// mutates `xs` (S-01-19 aliasing).
@@ -389,20 +420,124 @@ pub struct PyList {
     /// move under the SAME lock so the capacity invariant cannot tear
     /// between a growing worker and a reading one (the GC's `items()`
     /// scan reads under the same lock; contention flips SCAN_CONTENDED).
-    items: Mutex<Vec<Value>>,
+    /// 02.09c: the guard payload is the [`ListStorage`] enum; the demote
+    /// transition happens under this lock, so no reader can observe a
+    /// half-migrated list.
+    items: Mutex<ListStorage>,
     /// Capacity actually reserved (CPython `allocated`); kept so growth
     /// mirrors CPython's `newsize + newsize>>3 + 6` pattern, though the
     /// exact values are unobservable (S-01-31-adjacent).
     allocated: std::cell::Cell<usize>,
 }
 
+/// 02.09c: the list payload. `Smi` is the unboxed fast path — an exact
+/// invariant `every element was Value::Int(Int::Smi(_))` holds by
+/// construction (the write gate maintains it); `Boxed` is the general
+/// `Vec<Value>` form. The transition is ONE-WAY Smi → Boxed (never
+/// re-unbox: proving re-unboxability after arbitrary writes would cost the
+/// same scan the gate avoids).
+enum ListStorage {
+    Boxed(Vec<Value>),
+    Smi(Vec<i64>),
+}
+
+impl ListStorage {
+    fn len(&self) -> usize {
+        match self {
+            ListStorage::Boxed(v) => v.len(),
+            ListStorage::Smi(v) => v.len(),
+        }
+    }
+
+    /// Demote Smi → Boxed in place (no-op when already boxed). Caller holds
+    /// the items lock; the rebuilt Vec preserves element order exactly.
+    fn demote(&mut self) {
+        if let ListStorage::Smi(s) = self {
+            *self = ListStorage::Boxed(
+                s.iter()
+                    .map(|&n| Value::Int(crate::int::Int::Smi(n)))
+                    .collect(),
+            );
+        }
+    }
+
+    /// 02.09c write gate: prepare the storage for inserting `v` and return
+    /// the boxed vec to push into. A Smi element into Smi storage pushes
+    /// into the raw array (caller handles that arm); anything else demotes
+    /// first. Caller holds the items lock.
+    fn write_gate(&mut self, v: &Value) {
+        if !matches!(v, Value::Int(crate::int::Int::Smi(_))) {
+            self.demote();
+        }
+    }
+
+    /// Best-effort capacity pre-reserve (see `PyList::reserve_for`): sizes
+    /// whichever arm is live. Caller holds the items lock.
+    fn reserve_tail(&mut self, additional: usize) {
+        match self {
+            ListStorage::Boxed(v) => v.reserve(additional),
+            ListStorage::Smi(v) => v.reserve(additional),
+        }
+    }
+}
+
+/// Classify a freshly built item vector for unboxed storage (02.09c):
+/// `Some(raw)` iff EVERY element is an inline small int. Bools and bigints
+/// force the boxed arm (see the PyList doc: type()/repr must stay exact).
+fn smi_storage_of(items: &[Value]) -> Option<Vec<i64>> {
+    let mut raw = Vec::with_capacity(items.len());
+    for v in items {
+        match v {
+            Value::Int(crate::int::Int::Smi(n)) => raw.push(*n),
+            _ => return None,
+        }
+    }
+    Some(raw)
+}
+
 /// 02.09b P7: read guard for `PyList::items()` — Deref to `[Value]`.
-pub struct ItemsRef<'a>(std::sync::MutexGuard<'a, Vec<Value>>);
+///
+/// 02.09c: boxed lists deref the locked storage directly (zero-copy, the
+/// 02.09b behavior every one of the ~180 `.items()` call sites was written
+/// against). Unboxed lists materialize a temporary boxed snapshot at
+/// acquisition, UNDER the same lock guard — so the snapshot cannot race a
+/// concurrent writer, the persistent raw-i64 storage stays untouched (no
+/// read-demotion), and every call site stays source-identical (census §4
+/// option (iii): the escape hatch lives in the guard, not at the sites).
+pub struct ItemsRef<'a> {
+    guard: std::sync::MutexGuard<'a, ListStorage>,
+    materialized: Option<Vec<Value>>,
+}
+
+impl<'a> ItemsRef<'a> {
+    fn new(guard: std::sync::MutexGuard<'a, ListStorage>) -> Self {
+        let materialized = match &*guard {
+            ListStorage::Boxed(_) => None,
+            ListStorage::Smi(s) => Some(
+                s.iter()
+                    .map(|&n| Value::Int(crate::int::Int::Smi(n)))
+                    .collect::<Vec<Value>>(),
+            ),
+        };
+        ItemsRef {
+            guard,
+            materialized,
+        }
+    }
+}
 
 impl std::ops::Deref for ItemsRef<'_> {
     type Target = [Value];
     fn deref(&self) -> &[Value] {
-        &self.0[..]
+        match &self.materialized {
+            Some(v) => v,
+            None => match &*self.guard {
+                ListStorage::Boxed(v) => v,
+                ListStorage::Smi(_) => {
+                    unreachable!("unboxed storage always materializes in ItemsRef::new")
+                }
+            },
+        }
     }
 }
 
@@ -411,6 +546,17 @@ impl Clone for PyList {
         PyList {
             items: Mutex::new(self.items.lock().unwrap_or_else(|p| p.into_inner()).clone()),
             allocated: std::cell::Cell::new(0),
+        }
+    }
+}
+
+impl Clone for ListStorage {
+    fn clone(&self) -> Self {
+        match self {
+            ListStorage::Boxed(v) => ListStorage::Boxed(v.clone()),
+            // i64 copies — the unboxed clone is a memcpy, not a per-element
+            // Value clone (part of the 02.09c win).
+            ListStorage::Smi(v) => ListStorage::Smi(v.clone()),
         }
     }
 }
@@ -429,7 +575,7 @@ impl std::fmt::Debug for PyList {
 impl PyList {
     pub fn new() -> Gc<PyList> {
         let l = Gc::new(PyList {
-            items: Mutex::new(Vec::new()),
+            items: Mutex::new(ListStorage::Boxed(Vec::new())),
             allocated: std::cell::Cell::new(0),
         });
         crate::gc_gate::gc_register_pub(&Value::List(l.clone()));
@@ -437,8 +583,16 @@ impl PyList {
     }
 
     pub fn from_vec(items: Vec<Value>) -> Gc<PyList> {
+        // 02.09c: an all-Smi constructor input takes the unboxed arm (the
+        // GC registration below is identical — see the struct doc for the
+        // fence invariant; the elements are not Values, so they contribute
+        // no internal edges either way).
+        let storage = match smi_storage_of(&items) {
+            Some(raw) => ListStorage::Smi(raw),
+            None => ListStorage::Boxed(items),
+        };
         let l = Gc::new(PyList {
-            items: Mutex::new(items),
+            items: Mutex::new(storage),
             allocated: std::cell::Cell::new(0),
         });
         crate::gc_gate::gc_register_pub(&Value::List(l.clone()));
@@ -453,58 +607,98 @@ impl PyList {
     /// 02.09b P7: was `Ref<'_, [Value]>` (RefCell); the Mutex version wraps
     /// the guard — `Deref<Target = [Value]>` keeps every read site source-
     /// compatible (`.iter()`, `.len()`, indexing, `.to_vec()`).
+    /// 02.09c: an unboxed list materializes a boxed snapshot under the lock
+    /// (see [`ItemsRef`]) — reads never demote the raw storage.
     pub fn items(&self) -> ItemsRef<'_> {
-        ItemsRef(self.items.lock().unwrap_or_else(|p| p.into_inner()))
+        ItemsRef::new(self.items.lock().unwrap_or_else(|p| p.into_inner()))
     }
 
     /// CPython's over-allocation formula (listobject.c list_resize):
     /// `new_allocated = (newsize + newsize>>3 + 6) & !3` — replicated for
     /// capacity discipline; `Vec` does the actual (re)allocation.
+    ///
+    /// 02.09c note: this pre-reserve is now best-effort — the demote fast
+    /// path (`append`/`insert_at` under one lock) skips it entirely; a
+    /// reserve through here takes the lock, sizes whichever arm is live,
+    /// and drops the guard before the caller's second lock. Capacity values
+    /// are unobservable (S-01-31-adjacent), so the extra lock hop is sound.
     fn reserve_for(&self, newsize: usize) {
         if newsize > self.allocated.get() {
             let new_allocated = (newsize + (newsize >> 3) + 6) & !3;
             self.items
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
-                .reserve(new_allocated - newsize);
+                .reserve_tail(new_allocated - newsize);
             self.allocated.set(new_allocated);
         }
     }
 
+    /// 02.09c write gate: append a Smi onto the unboxed array in place; any
+    /// other value (or already-boxed storage) goes through the demote path.
+    /// All in ONE lock critical section — the lock acquisition at the top
+    /// covers the gate + push so a concurrent `items()` reader can never
+    /// see the demotion mid-flight (02.09b decision-2 discipline).
     pub fn append(&self, v: Value) {
-        let n = self.items.lock().unwrap_or_else(|p| p.into_inner()).len() + 1;
-        self.reserve_for(n);
-        self.items.lock().unwrap_or_else(|p| p.into_inner()).push(v);
+        let mut b = self.items.lock().unwrap_or_else(|p| p.into_inner());
+        if let (ListStorage::Smi(s), Value::Int(crate::int::Int::Smi(n))) = (&mut *b, &v) {
+            s.push(*n);
+            return;
+        }
+        b.write_gate(&v);
+        match &mut *b {
+            ListStorage::Boxed(vec) => vec.push(v),
+            ListStorage::Smi(_) => unreachable!("write_gate demoted non-Smi insert"),
+        }
     }
 
     pub fn get(&self, i: usize) -> Option<Value> {
-        self.items
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(i)
-            .cloned()
+        let b = self.items.lock().unwrap_or_else(|p| p.into_inner());
+        match &*b {
+            ListStorage::Boxed(v) => v.get(i).cloned(),
+            ListStorage::Smi(s) => s.get(i).map(|&n| Value::Int(crate::int::Int::Smi(n))),
+        }
     }
 
     /// Overwrite `items[i]` (in-bounds assignment; caller validated).
+    /// 02.09c write gate: a non-Smi assignment demotes the storage.
     pub fn set_at(&self, i: usize, v: Value) {
-        self.items.lock().unwrap_or_else(|p| p.into_inner())[i] = v;
+        let mut b = self.items.lock().unwrap_or_else(|p| p.into_inner());
+        if let (ListStorage::Smi(s), Value::Int(crate::int::Int::Smi(n))) = (&mut *b, &v) {
+            s[i] = *n;
+            return;
+        }
+        b.write_gate(&v);
+        match &mut *b {
+            ListStorage::Boxed(vec) => vec[i] = v,
+            ListStorage::Smi(_) => unreachable!("write_gate demoted non-Smi write"),
+        }
     }
 
     /// Remove `items[i]` (`del xs[i]`; caller validated the index).
     pub fn remove_at(&self, i: usize) {
-        self.items
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(i);
+        let mut b = self.items.lock().unwrap_or_else(|p| p.into_inner());
+        match &mut *b {
+            ListStorage::Boxed(v) => {
+                v.remove(i);
+            }
+            ListStorage::Smi(s) => {
+                s.remove(i);
+            }
+        }
     }
 
     /// Remove `items[lo..hi]` (`del xs[lo:hi]`; caller validated the range).
     pub fn remove_range(&self, lo: usize, hi: usize) {
         if lo < hi {
-            self.items
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .drain(lo..hi);
+            let mut b = self.items.lock().unwrap_or_else(|p| p.into_inner());
+            match &mut *b {
+                ListStorage::Boxed(v) => {
+                    v.drain(lo..hi);
+                }
+                ListStorage::Smi(s) => {
+                    s.drain(lo..hi);
+                }
+            }
         }
     }
 
@@ -512,28 +706,41 @@ impl PyList {
     /// borrow (caller clamps the index). The old path copied the whole list
     /// out, inserted, cleared, and re-appended — O(n) clones per op,
     /// O(n²) for `insert(0, x)` loops.
+    /// 02.09c write gate: non-Smi inserts demote (same critical section).
     pub fn insert_at(&self, i: usize, v: Value) {
-        let n = self.items.lock().unwrap_or_else(|p| p.into_inner()).len() + 1;
+        let mut b = self.items.lock().unwrap_or_else(|p| p.into_inner());
+        let n = b.len() + 1;
+        drop(b);
         self.reserve_for(n);
-        self.items
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(i, v);
+        let mut b = self.items.lock().unwrap_or_else(|p| p.into_inner());
+        if let (ListStorage::Smi(s), Value::Int(crate::int::Int::Smi(m))) = (&mut *b, &v) {
+            s.insert(i, *m);
+            return;
+        }
+        b.write_gate(&v);
+        match &mut *b {
+            ListStorage::Boxed(vec) => vec.insert(i, v),
+            ListStorage::Smi(_) => unreachable!("write_gate demoted non-Smi insert"),
+        }
     }
 
     /// D2: in-place `xs.remove(i)` returning the removed value
     /// (caller validated the index).
     pub fn remove_take(&self, i: usize) -> Value {
         let mut b = self.items.lock().unwrap_or_else(|p| p.into_inner());
-        b.remove(i)
+        match &mut *b {
+            ListStorage::Boxed(v) => v.remove(i),
+            ListStorage::Smi(s) => Value::Int(crate::int::Int::Smi(s.remove(i))),
+        }
     }
 
     /// D2: in-place `xs.reverse()` under one borrow.
     pub fn reverse_in_place(&self) {
-        self.items
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .reverse();
+        let mut b = self.items.lock().unwrap_or_else(|p| p.into_inner());
+        match &mut *b {
+            ListStorage::Boxed(v) => v.reverse(),
+            ListStorage::Smi(s) => s.reverse(),
+        }
     }
 
     /// `xs.clear()`.
@@ -543,12 +750,16 @@ impl PyList {
     /// — a lie (capacity != 0) that also pinned the whole peak buffer
     /// forever. CPython's `list_clear` frees the item array; match it.
     pub fn clear(&self) {
-        *self.items.lock().unwrap_or_else(|p| p.into_inner()) = Vec::new();
+        *self.items.lock().unwrap_or_else(|p| p.into_inner()) = ListStorage::Boxed(Vec::new());
         self.allocated.set(0);
     }
 
     /// Shared `repr` recursion helper: format with CPython punctuation
     /// (`[a, b]`), cycle-protecting self-references with `[...]` (S-01-44).
+    /// 02.09c: an unboxed list cannot self-reference (raw i64s hold no
+    /// handles), but the `active` protocol is kept — the list is still
+    /// registered for container identity and the repr path is shared with
+    /// boxed lists that CAN cycle.
     pub(crate) fn fmt_repr(
         &self,
         out: &mut String,
@@ -560,7 +771,7 @@ impl PyList {
             return;
         }
         out.push('[');
-        let items = self.items.lock().unwrap_or_else(|p| p.into_inner());
+        let items = self.items();
         for (i, item) in items.iter().enumerate() {
             if i > 0 {
                 out.push_str(", ");
@@ -657,6 +868,7 @@ pub fn addr_of_value(v: &Value) -> usize {
 #[cfg(test)]
 mod unit_tests {
     use super::*;
+    use crate::int::{SMI_MAX, SMI_MIN};
 
     #[test]
     fn value_size_is_16_bytes_doc_pinned() {
@@ -680,5 +892,169 @@ mod unit_tests {
         assert_eq!(a.as_str(), b.as_str());
         let c = PyString::new("<<intern_test_name>>");
         assert_eq!(&*a, &*c, "interned == fresh (content)");
+    }
+
+    // ------------------------------------------------------------- 02.09c
+    // Unboxed Smi storage rider (SPLIT-02.09 §02.09c, audit doc §4). These
+    // pins live at the value layer (no collector hook installed in unit
+    // context, so registration is inert here — the GC-facing fence lives in
+    // ap-gc). Every assertion is a byte-exact-surface proxy: the boxed and
+    // unboxed arms must be observationally identical. Value has no
+    // PartialEq (equality is the Python surface, crate::ops::eq), so the
+    // value-level asserts go through it.
+
+    /// Storage-arm selection: an all-Smi from_vec goes unboxed; bools (not
+    /// Int::Smi in the Value model), bigints, and any other type force the
+    /// boxed arm. Not directly spec-pinned (internal representation) — this
+    /// pins the invariant the write gate and demote rely on.
+    fn storage_is_smi(l: &PyList) -> bool {
+        matches!(
+            &*l.items.lock().unwrap_or_else(|p| p.into_inner()),
+            ListStorage::Smi(_)
+        )
+    }
+
+    fn veq(a: &Value, b: &Value) -> bool {
+        crate::ops::eq(a, b)
+    }
+
+    #[test]
+    fn smi_storage_arm_selection_and_demote_triggers() {
+        let smi = PyList::from_vec(vec![
+            Value::Int(Int::Smi(1)),
+            Value::Int(Int::Smi(-2)),
+            Value::Int(Int::Smi(SMI_MAX)),
+            Value::Int(Int::Smi(SMI_MIN)),
+        ]);
+        assert!(storage_is_smi(&smi), "all-Smi constructor => unboxed");
+
+        // Boundary: 2**59 (just past the smi max) is a Big => boxed.
+        let big = PyList::from_vec(vec![
+            Value::Int(Int::Smi(1)),
+            Value::Int(crate::int::Int::from_i64(1 << 59)),
+        ]);
+        assert!(!storage_is_smi(&big), "bigint element => boxed");
+
+        // Bool is NOT unboxed (type()/repr must keep saying bool).
+        let bools = PyList::from_vec(vec![Value::Int(Int::Smi(1)), Value::Bool(true)]);
+        assert!(!storage_is_smi(&bools), "bool element => boxed");
+
+        // Empty lists stay boxed (an empty raw array saves nothing and the
+        // first append hits the gate either way).
+        assert!(!storage_is_smi(&PyList::new()));
+
+        // append: Smi keeps unboxed; the first non-Smi demotes in place.
+        let l = PyList::from_vec(vec![Value::Int(Int::Smi(1))]);
+        l.append(Value::Int(Int::Smi(2)));
+        assert!(storage_is_smi(&l));
+        l.append(Value::Str(PyString::new("x")));
+        assert!(!storage_is_smi(&l), "non-Smi append must demote");
+
+        // set_at: same gate.
+        let l = PyList::from_vec(vec![Value::Int(Int::Smi(1)), Value::Int(Int::Smi(2))]);
+        l.set_at(1, Value::Int(Int::Smi(9)));
+        assert!(storage_is_smi(&l));
+        l.set_at(0, Value::None);
+        assert!(!storage_is_smi(&l), "non-Smi set_at must demote");
+
+        // insert_at: same gate.
+        let l = PyList::from_vec(vec![Value::Int(Int::Smi(1))]);
+        l.insert_at(0, Value::Int(Int::Smi(0)));
+        assert!(storage_is_smi(&l));
+        l.insert_at(1, Value::Float(2.5));
+        assert!(!storage_is_smi(&l), "non-Smi insert_at must demote");
+    }
+
+    #[test]
+    fn unboxed_observably_identical_to_boxed() {
+        // The fence in miniature: build the same logical list both ways and
+        // require identical reads through every accessor.
+        let unboxed = PyList::from_vec(vec![
+            Value::Int(Int::Smi(3)),
+            Value::Int(Int::Smi(1)),
+            Value::Int(Int::Smi(2)),
+        ]);
+        let boxed = PyList::from_vec(vec![
+            Value::Str(PyString::new("3")),
+            Value::Int(Int::Smi(1)),
+            Value::Str(PyString::new("2")),
+        ]);
+        boxed.set_at(0, Value::Int(Int::Smi(3)));
+        boxed.set_at(2, Value::Int(Int::Smi(2)));
+        // (boxed is now logically [3, 1, 2] but still boxed — mixed history)
+
+        assert_eq!(unboxed.len(), boxed.len());
+        for i in 0..3 {
+            assert!(
+                veq(&unboxed.get(i).unwrap(), &boxed.get(i).unwrap()),
+                "get({i}) must not distinguish storage arms"
+            );
+        }
+        let (u, b) = (unboxed.items(), boxed.items());
+        assert_eq!(u.len(), b.len());
+        for (x, y) in u.iter().zip(b.iter()) {
+            assert!(veq(x, y), "items() snapshots must be identical");
+        }
+        drop((u, b));
+
+        // repr path (fmt_repr) — byte-exact surface.
+        let mut ru = String::new();
+        let mut rb = String::new();
+        let mut active = std::collections::HashSet::new();
+        let ua = unboxed.clone();
+        let ba = boxed.clone();
+        unboxed.fmt_repr(&mut ru, &mut active, addr_of(&ua));
+        boxed.fmt_repr(&mut rb, &mut active, addr_of(&ba));
+        assert_eq!(ru, "[3, 1, 2]");
+        assert_eq!(ru, rb);
+
+        // remove paths.
+        assert!(
+            veq(&unboxed.remove_take(1), &Value::Int(Int::Smi(1)),),
+            "remove_take on unboxed returns the exact Smi"
+        );
+        assert_eq!(unboxed.len(), 2);
+        unboxed.remove_at(0);
+        unboxed.remove_range(0, 1);
+        assert_eq!(unboxed.len(), 0);
+        unboxed.reverse_in_place(); // empty, no-op — exercises the arm
+        unboxed.clear();
+        assert_eq!(unboxed.len(), 0);
+
+        // Clone of an unboxed list is deep (i64 copy) and independent.
+        // NOTE: `Gc<PyList>` is `Arc<PyList>` — `orig.clone()` would clone
+        // the HANDLE (aliasing, S-01-19); the DEEP clone needs the inner
+        // PyList's Clone impl explicitly.
+        let orig = PyList::from_vec(vec![Value::Int(Int::Smi(7))]);
+        let copy = PyList::from_vec(vec![Value::Int(Int::Smi(7))]);
+        let cloned = (*orig).clone();
+        cloned.append(Value::Str(PyString::new("demote-clone-only")));
+        assert!(storage_is_smi(&orig), "clone mutation must not leak back");
+        assert_eq!(
+            cloned.len(),
+            2,
+            "the deep clone took the demote, orig did not"
+        );
+        assert!(
+            !storage_is_smi(&cloned),
+            "clone took the demote; orig stayed Smi"
+        );
+        assert!(veq(&orig.get(0).unwrap(), &copy.get(0).unwrap()));
+    }
+
+    #[test]
+    fn demoted_values_are_exact_smis_not_normalized_bools() {
+        // Demotion rebuilds Value::Int(Int::Smi(n)) from raw i64 — the
+        // round trip must be exact for both smi boundary values.
+        let l = PyList::from_vec(vec![
+            Value::Int(Int::Smi(SMI_MIN)),
+            Value::Int(Int::Smi(SMI_MAX)),
+        ]);
+        l.append(Value::Float(0.0)); // demote
+        assert!(veq(&l.get(0).unwrap(), &Value::Int(Int::Smi(SMI_MIN))));
+        assert!(veq(&l.get(1).unwrap(), &Value::Int(Int::Smi(SMI_MAX))));
+        let items = l.items();
+        assert!(matches!(items[0], Value::Int(Int::Smi(v)) if v == SMI_MIN));
+        assert!(matches!(items[1], Value::Int(Int::Smi(v)) if v == SMI_MAX));
     }
 }

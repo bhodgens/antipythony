@@ -2247,4 +2247,96 @@ mod unit_tests {
         assert_eq!(now.objects_reclaimed - before.objects_reclaimed, 2);
         assert_eq!(now.cycles_collected - before.cycles_collected, 2);
     }
+
+    #[test]
+    fn unboxed_list_stays_registered_with_zero_internal_edges() {
+        let _ser = test_lock();
+        fresh_heap();
+        // 02.09c GC FENCE (audit doc §4; SPLIT-02.09 §02.09c risk block):
+        // unboxed ⇒ the list holds NO Value refs ⇒ its internal-element
+        // edges vanish from count_internal_refs. The gated invariant:
+        //
+        //   unboxed ⇒ no refs ⇒ STILL REGISTERED for container identity
+        //
+        // Registration happens in the constructors independent of storage
+        // arm (gc.is_tracked parity, corpus gc007 pins `[1, 2]` tracked).
+        // Soundness of the missing edges: a raw i64 element has no registry
+        // address, so no edge COULD have been counted — subtract-refs never
+        // under-counts fan-in for anyone else. Part 1 pins the edge count;
+        // parts 2-3 pin that collection still works identically for
+        // unboxed lists (external-holder survival + registry-only death).
+        set_threshold(0, 10, 10);
+
+        // Part 1 — an unboxed list contributes ZERO internal edges (the
+        // boxed twin contributes one toward its tracked child).
+        let unboxed = PyList::from_vec(vec![
+            Value::Int(ap_obj::Int::Smi(1)),
+            Value::Int(ap_obj::Int::Smi(2)),
+            Value::Int(ap_obj::Int::Smi(3)),
+        ]);
+        let boxed_holder = PyList::new();
+        let child = list_val();
+        boxed_holder.append(child.clone());
+        let registry = local_registry(&[child.clone()]);
+        let mut counts = HashMap::new();
+        count_internal_refs(&registry, &mut counts);
+        // boxed holder would count 1 toward `child`; the unboxed list is
+        // not even in this registry scan — count its edges directly.
+        let unboxed_v = Value::List(unboxed.clone());
+        let mut ub_counts = HashMap::new();
+        let ub_reg = local_registry(std::slice::from_ref(&unboxed_v));
+        count_internal_refs(&ub_reg, &mut ub_counts);
+        assert_eq!(
+            ub_counts.get(&value_addr(&unboxed_v)).copied().unwrap_or(0),
+            0,
+            "unboxed list's element edges must vanish from count_internal_refs"
+        );
+        let mut edges = Vec::new();
+        edges_of(&unboxed_v, &registry, &mut edges);
+        assert!(
+            edges.is_empty(),
+            "edges_of over an unboxed list must produce no edges (raw i64s are not Values)"
+        );
+
+        // Part 2 — container identity: the unboxed list IS a registry
+        // member. (Unit context: the ap-obj allocation hook is NOT
+        // installed, so registration goes through gc_register EXPLICITLY —
+        // the same discipline as gc016. The hook-installed path registers
+        // in the constructor regardless of arm; gc007's corpus bytes pin
+        // that surface.)
+        let unboxed_addr = value_addr(&unboxed_v);
+        gc_register(&unboxed_v.clone());
+        assert!(
+            reg_state()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .registry
+                .contains_key(&unboxed_addr),
+            "unboxed list must stay registered for container identity"
+        );
+
+        // Part 3 — collection semantics identical: externally-held unboxed
+        // list survives a pass; registry-only unboxed list is swept.
+        // (Every test-side clone — ub_reg's Tracked row included — must be
+        // dropped first or it IS an external holder by definition; the
+        // cycle test at subtract_refs_seed_reachable_and_cycle_is_not has
+        // the same discipline.)
+        assert_eq!(collect(), 0, "external handle (test clone) keeps it alive");
+        let unboxed_addr2 = value_addr(&unboxed_v);
+        drop(ub_reg);
+        drop(unboxed_v);
+        drop(unboxed); // registry clone is now the ONLY holder
+        assert!(
+            collect() >= 1,
+            "registry-only unboxed list must be swept (sc 1 > internal 0, not seeded)"
+        );
+        assert!(
+            !reg_state()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .registry
+                .contains_key(&unboxed_addr2),
+            "swept unboxed list drops its registry handle"
+        );
+    }
 }
