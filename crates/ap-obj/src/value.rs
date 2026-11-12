@@ -482,17 +482,34 @@ impl ListStorage {
 }
 
 /// Classify a freshly built item vector for unboxed storage (02.09c):
-/// `Some(raw)` iff EVERY element is an inline small int. Bools and bigints
+/// unboxed iff EVERY element is an inline small int; bools and bigints
 /// force the boxed arm (see the PyList doc: type()/repr must stay exact).
-fn smi_storage_of(items: &[Value]) -> Option<Vec<i64>> {
+/// CONSUMING form: on the Smi arm the caller's `Vec<Value>` is drained into
+/// the raw `Vec<i64>` — a `list(range(N))`-shaped build never holds the
+/// boxed vec and the raw array simultaneously (the borrowing variant
+/// double-materialized at peak: 32 MB boxed + 16 MB raw for a 2M-element
+/// list, +50% RSS over the pre-rider baseline on the memory probe). On the
+/// boxed arm the original vec is returned unchanged (zero copy).
+fn smi_storage_of(items: Vec<Value>) -> (ListStorage, Vec<Value>) {
     let mut raw = Vec::with_capacity(items.len());
-    for v in items {
+    let mut rest = items.into_iter();
+    for v in rest.by_ref() {
         match v {
-            Value::Int(crate::int::Int::Smi(n)) => raw.push(*n),
-            _ => return None,
+            Value::Int(crate::int::Int::Smi(n)) => raw.push(n),
+            other => {
+                // First non-Smi: put it back and hand the remainder back as
+                // boxed storage without a second allocation.
+                let mut boxed = Vec::with_capacity(raw.len() + 1 + rest.len());
+                for n in raw {
+                    boxed.push(Value::Int(crate::int::Int::Smi(n)));
+                }
+                boxed.push(other);
+                boxed.extend(rest);
+                return (ListStorage::Boxed(boxed), Vec::new());
+            }
         }
     }
-    Some(raw)
+    (ListStorage::Smi(raw), Vec::new())
 }
 
 /// 02.09b P7: read guard for `PyList::items()` — Deref to `[Value]`.
@@ -582,15 +599,37 @@ impl PyList {
         l
     }
 
+    /// 02.09c: build directly from pre-classified raw smi storage — the
+    /// `list(range(N))` fast path. Building through `from_vec` would
+    /// materialize the boxed `Vec<Value>` first (32 MB for a 2M-element
+    /// range) and only then drain it into the raw array, doubling the peak
+    /// footprint; a range has no boxed phase at all. Every element must be
+    /// in smi range (SMI_MIN..=SMI_MAX) — callers validate (range bounds
+    /// are i64-clamped but values outside the smi window must NOT take this
+    /// constructor; `from_i64`-style normalization would silently change
+    /// the int/bigint split the corpus pins).
+    pub fn from_smi_raw(raw: Vec<i64>) -> Option<Gc<PyList>> {
+        if raw
+            .iter()
+            .any(|&n| !(crate::int::SMI_MIN..=crate::int::SMI_MAX).contains(&n))
+        {
+            return None;
+        }
+        let l = Gc::new(PyList {
+            items: Mutex::new(ListStorage::Smi(raw)),
+            allocated: std::cell::Cell::new(0),
+        });
+        crate::gc_gate::gc_register_pub(&Value::List(l.clone()));
+        Some(l)
+    }
+
     pub fn from_vec(items: Vec<Value>) -> Gc<PyList> {
         // 02.09c: an all-Smi constructor input takes the unboxed arm (the
         // GC registration below is identical — see the struct doc for the
         // fence invariant; the elements are not Values, so they contribute
-        // no internal edges either way).
-        let storage = match smi_storage_of(&items) {
-            Some(raw) => ListStorage::Smi(raw),
-            None => ListStorage::Boxed(items),
-        };
+        // no internal edges either way). The classifier CONSUMES the input
+        // so the Smi arm never holds boxed + raw simultaneously.
+        let (storage, _) = smi_storage_of(items);
         let l = Gc::new(PyList {
             items: Mutex::new(storage),
             allocated: std::cell::Cell::new(0),
