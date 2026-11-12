@@ -813,7 +813,7 @@ pub fn builtin_list(args: &[Value]) -> BResult {
                             let len = crate::iter::range_len(start, stop, step);
                             // Overflow-safe cap: only take the fast path
                             // when the count is sane.
-                            if len >= 0 && len <= (1i64 << 40) {
+                            if (0..=(1i64 << 40)).contains(&len) {
                                 let mut raw = Vec::with_capacity(len as usize);
                                 let mut cur = start;
                                 let mut ok = true;
