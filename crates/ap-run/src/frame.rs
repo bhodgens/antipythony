@@ -620,11 +620,15 @@ pub struct Interpreter {
     pub self_rc: Mutex<Option<std::sync::Weak<Interpreter>>>,
 }
 
-// 02.09a P4/P5 staged marker (see ap_obj::markers + int.rs contract):
-// Interpreter carries RefCell/Cell executor state. Sound because every
-// cross-thread touch is GIL-serialized (worker_bootstrap takes the lock as
-// its first act; the process-global tables holding the handle carry their
-// own Mutex). Refcount traffic is Arc (Decision 1).
+// 02.09b P7 post-flip marker (supersedes the 02.09a GIL-era justification —
+// that contract is DELETED with the GIL). Soundness now rests on decision 2:
+// every shared executor interior on Interpreter (frame_stack, registry,
+// iterators, generators, super_stack, current_exception, stdout, tb_frames,
+// depth, exit_code, ...) is a Mutex/RwLock with a documented cross-thread
+// contract at the field; FnRegistry is RwLock (F1); refcount traffic is Arc
+// (Decision 1). The remaining Cell fields (depth/recursion_limit/exit_code
+// were converted too) — no Cell remains on a cross-thread path. Any new
+// RefCell/Cell added to this struct breaks the marker's soundness proof.
 unsafe impl Send for Interpreter {}
 unsafe impl Sync for Interpreter {}
 
@@ -732,8 +736,8 @@ impl Interpreter {
                         mro: std::sync::Mutex::new(Vec::new()),
                         dict: ap_obj::dict::PyDict::new(),
                         flags: ap_obj::classes::TypeFlags::default(),
-                        metaclass: std::sync::Mutex::new(None),
-                        class_value: std::sync::Mutex::new(None),
+                        metaclass: std::sync::RwLock::new(None),
+                        class_value: std::sync::RwLock::new(None),
                         // 02.05b: super_stack sentinels never mutate (A6
                         // audit: "nothing mutates a sentinel") — counters
                         // stay at seed and never guard an IC.

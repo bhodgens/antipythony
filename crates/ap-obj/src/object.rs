@@ -22,8 +22,7 @@
 
 use crate::int::Gc;
 use crate::value::Value;
-use std::cell::RefCell;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, RwLock, Weak};
 
 /// What kind of object this is. The executor matches on this to dispatch
 /// calls/methods; the tag also names the type (`type(v).__name__`).
@@ -108,11 +107,11 @@ pub struct PyObject {
     pub defaults: Mutex<Vec<Value>>,
     /// For UserClass: the class payload (TypeObject: MRO, dict, flags).
     /// Strong handle — the TypeObject never points back at the PyObject.
-    pub class_ref: Mutex<Option<Arc<crate::classes::TypeObject>>>,
+    pub class_ref: RwLock<Option<Arc<crate::classes::TypeObject>>>,
     /// For UserInstance: a WEAK back-pointer to the instance's class
     /// payload (the strong handle lives on the class PyObject; instances
     /// must not keep their class's payload alive solo — no cycles).
-    pub type_ref: Mutex<Option<Weak<crate::classes::TypeObject>>>,
+    pub type_ref: RwLock<Option<Weak<crate::classes::TypeObject>>>,
     /// For Descriptor: which descriptor kind ("property"/"classmethod"/
     /// "staticmethod"/"member").
     pub descr_kind: Mutex<Option<String>>,
@@ -141,8 +140,8 @@ impl PyObject {
             module_ns: Mutex::new(None),
             closure_slot: Mutex::new(None),
             defaults: Mutex::new(Vec::new()),
-            class_ref: Mutex::new(None),
-            type_ref: Mutex::new(None),
+            class_ref: RwLock::new(None),
+            type_ref: RwLock::new(None),
             descr_kind: Mutex::new(None),
             method_owner: Mutex::new(None),
         });
@@ -177,8 +176,8 @@ impl PyObject {
             module_ns: Mutex::new(None),
             closure_slot: Mutex::new(None),
             defaults: Mutex::new(Vec::new()),
-            class_ref: Mutex::new(None),
-            type_ref: Mutex::new(None),
+            class_ref: RwLock::new(None),
+            type_ref: RwLock::new(None),
             descr_kind: Mutex::new(None),
             method_owner: Mutex::new(None),
         });

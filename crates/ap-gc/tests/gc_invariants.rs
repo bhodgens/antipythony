@@ -151,7 +151,7 @@ fn make_del_instance(name: &str) -> Value {
     .expect("gc_invariants.rs:131");
     STICKY_TYPES.with(|s| s.borrow_mut().push(to.clone()));
     let inst = PyObject::new(ObjKind::UserInstance, name);
-    *inst.type_ref.borrow_mut() = Some(Arc::downgrade(&to));
+    *inst.type_ref.write().unwrap_or_else(|p| p.into_inner()) = Some(Arc::downgrade(&to));
     Value::Obj(inst)
 }
 
@@ -523,7 +523,8 @@ fn collect_aborts_on_mid_mutation_contention_never_skips() {
     let victim = list_val();
     let victim_addr = addr_of(&victim);
     obj.attrs
-        .borrow_mut()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
         .set(Value::Str(PyString::new("keep")), victim.clone())
         .expect("gc_invariants.rs:510");
     drop(victim);
@@ -532,7 +533,7 @@ fn collect_aborts_on_mid_mutation_contention_never_skips() {
 
     // Mutate `obj` while a collection runs (the real-world shape: class-
     // body exec holding attrs.borrow_mut() across an allocation past t0).
-    let held_borrow = obj.attrs.borrow_mut();
+    let held_borrow = obj.attrs.lock().unwrap_or_else(|p| p.into_inner());
     assert_eq!(
         collect(),
         0,
@@ -591,7 +592,8 @@ fn collect_aborts_on_mid_mutation_contention_never_skips() {
     let victim2 = list_val();
     let victim2_addr = addr_of(&victim2);
     obj2.attrs
-        .borrow_mut()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
         .set(Value::Str(PyString::new("keep")), victim2.clone())
         .expect("gc_invariants.rs:578");
     root2

@@ -933,8 +933,8 @@ fn lock_acquire_blocking(lk: Arc<LockPrim>) -> BResult {
 
 fn rlock_acquire(rl: Arc<RLockPrim>) -> BResult {
     let me = crate::threading::current_os_tid();
-    // GIL FIRST: never take the primitive's lock holding the interpreter
-    // lock — a parked path would hold the GIL and starve the owner.
+    // 02.09b: the primitive's own mutex is the only serialization (the GIL
+    // is gone) — no interpreter-lock bracketing exists anymore.
     let mut st = rl.st.lock().unwrap();
     if matches!(st.0, crate::threading::RLockOwner::Owned(t) if t == me) {
         st.1 += 1;
@@ -1113,9 +1113,8 @@ fn cond_wait(
             Some(d) => d.saturating_duration_since(Instant::now()),
             None => Duration::from_secs(3600),
         };
-        let _ = left;
-        // GIL FIRST: the parked waiter must not hold the interpreter lock —
-        // the notifier needs it to run and call notify_all.
+        // 02.09b: cv.wait_timeout atomically releases the `waiters` guard
+        // while parked — the notifier's lock path stays free.
         let (g, t) = prim.cv.wait_timeout(w, left).unwrap();
         let timed_out = t.timed_out();
         drop(g);
@@ -1309,11 +1308,9 @@ fn barrier_method(
     match method {
         "wait" => {
             let timeout = timeout_of(args, kwargs, 0)?.or(prim.default_timeout);
-            let me = crate::threading::current_os_tid();
-            let _ = me;
-            // GIL FIRST: every blocking entry releases the interpreter lock
-            // BEFORE taking the primitive's own mutex (the parked party must
-            // not hold the GIL — nobody else could reach their rendezvous).
+            // 02.09b: the primitive's own mutex serializes the rendezvous
+            // (cv.wait releases it atomically while parked — peers reach
+            // their rendezvous freely).
             let mut st = prim.st.lock().unwrap();
             // _enter: block while draining/resetting.
             loop {

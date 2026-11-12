@@ -9,7 +9,7 @@
 
 use std::cell::{Cell as RustCell, RefCell};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use ap_obj::dict::PyDict;
 use ap_obj::int::{Gc, Int};
@@ -370,27 +370,29 @@ struct RegisteredScopes {
 /// registered per module — no union, no re-leak, and the path caches
 /// survive imports instead of being wiped by each rebuild.
 pub struct FnRegistry {
-    /// Module-level defs, append-only (fn_id = index). RefCell so
-    /// extend_current appends IN PLACE — the Arc<FnRegistry> identity never
-    /// changes, so handles held by live frames/generators see the appends.
-    entries: RefCell<Vec<FnEntry>>,
-    by_path: RefCell<HashMap<String, u32>>,
+    /// Module-level defs, append-only (fn_id = index). RwLock (02.09b P7 F1)
+    /// so extend_current appends IN PLACE — the Arc<FnRegistry> identity
+    /// never changes, so handles held by live frames/generators see the
+    /// appends. RwLock not Mutex: reads (fn_entry per call, every worker)
+    /// dominate; concurrent readers are the flip's hot path.
+    entries: RwLock<Vec<FnEntry>>,
+    by_path: RwLock<HashMap<String, u32>>,
     /// Process-lifetime scope tables, one registration per module.
-    scope_tables: RefCell<Vec<RegisteredScopes>>,
+    scope_tables: RwLock<Vec<RegisteredScopes>>,
     /// T2-perf: memoized richest-wins scope path -> candidate ScopeInfos.
     /// Interior mutable so scope_of can populate lazily. B5: misses are
     /// cached too (empty Vec = "no scope with this path in any registered
     /// table") so repeated lambda/LocalDef gates don't rescan.
-    scope_cache: RefCell<HashMap<String, Vec<&'static ap_parse::ScopeInfo>>>,
+    scope_cache: RwLock<HashMap<String, Vec<&'static ap_parse::ScopeInfo>>>,
 }
 
 impl FnRegistry {
     pub fn empty() -> FnRegistry {
         FnRegistry {
-            entries: RefCell::new(Vec::new()),
-            by_path: RefCell::new(HashMap::new()),
-            scope_tables: RefCell::new(Vec::new()),
-            scope_cache: RefCell::new(HashMap::new()),
+            entries: RwLock::new(Vec::new()),
+            by_path: RwLock::new(HashMap::new()),
+            scope_tables: RwLock::new(Vec::new()),
+            scope_cache: RwLock::new(HashMap::new()),
         }
     }
 
@@ -422,17 +424,20 @@ impl FnRegistry {
                 }
             }
         }
-        self.scope_tables.borrow_mut().push(RegisteredScopes {
-            table: leaked,
-            index,
-        });
+        self.scope_tables
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(RegisteredScopes {
+                table: leaked,
+                index,
+            });
         // B1/B5: the memo survives imports (that's the point), but a path
         // that was a NEGATIVE hit before this module registered it must be
         // reconsidered — drop exactly the keys this table defines.
         {
-            let tables = self.scope_tables.borrow();
+            let tables = self.scope_tables.read().unwrap_or_else(|p| p.into_inner());
             let index = &tables.last().expect("just pushed").index;
-            let mut cache = self.scope_cache.borrow_mut();
+            let mut cache = self.scope_cache.write().unwrap_or_else(|p| p.into_inner());
             for k in index.keys() {
                 cache.remove(k);
             }
@@ -449,7 +454,7 @@ impl FnRegistry {
         table: &'static ScopeInfoModule,
         path: &str,
     ) -> Option<&'static ap_parse::ScopeInfo> {
-        let tables = self.scope_tables.borrow();
+        let tables = self.scope_tables.read().unwrap_or_else(|p| p.into_inner());
         for t in tables.iter() {
             if std::ptr::addr_eq(t.table as *const ScopeInfoModule, table as *const _) {
                 return t.index.get(path).copied();
@@ -504,15 +509,18 @@ impl FnRegistry {
             index.entry(sp.path.join(".")).or_insert(sp);
         }
         let reg = FnRegistry {
-            entries: RefCell::new(Vec::new()),
-            by_path: RefCell::new(HashMap::new()),
-            scope_tables: RefCell::new(Vec::new()),
-            scope_cache: RefCell::new(HashMap::new()),
+            entries: RwLock::new(Vec::new()),
+            by_path: RwLock::new(HashMap::new()),
+            scope_tables: RwLock::new(Vec::new()),
+            scope_cache: RwLock::new(HashMap::new()),
         };
-        reg.scope_tables.borrow_mut().push(RegisteredScopes {
-            table: scopes,
-            index,
-        });
+        reg.scope_tables
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(RegisteredScopes {
+                table: scopes,
+                index,
+            });
         for item in items {
             if let ap_ir::Item::FnDef(f) = item {
                 let id = entries.len() as u32;
@@ -528,8 +536,8 @@ impl FnRegistry {
                 ));
             }
         }
-        *reg.entries.borrow_mut() = entries;
-        *reg.by_path.borrow_mut() = by_path;
+        *reg.entries.write().unwrap_or_else(|p| p.into_inner()) = entries;
+        *reg.by_path.write().unwrap_or_else(|p| p.into_inner()) = by_path;
         reg
     }
 
@@ -539,11 +547,21 @@ impl FnRegistry {
         // built from the precomputed per-table path indexes (no per-miss
         // String joins), and misses are CACHED (empty Vec) so the
         // lambda/LocalDef gates don't rescan every table per execution.
-        if let Some(hit) = self.scope_cache.borrow().get(path) {
+        if let Some(hit) = self
+            .scope_cache
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(path)
+        {
             return hit.first().copied();
         }
         let mut cands: Vec<&'static ap_parse::ScopeInfo> = Vec::new();
-        for t in self.scope_tables.borrow().iter() {
+        for t in self
+            .scope_tables
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+        {
             if let Some(sp) = t.index.get(path) {
                 cands.push(*sp);
             }
@@ -591,7 +609,8 @@ impl FnRegistry {
         };
         // Cache BOTH hits and misses (B5 negative caching).
         self.scope_cache
-            .borrow_mut()
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
             .insert(path.to_string(), best.map(|s| vec![s]).unwrap_or_default());
         best
     }
@@ -600,19 +619,22 @@ impl FnRegistry {
     /// being loaded). Module frames adopt it so nested-def classification
     /// resolves EXACTLY against their own module.
     pub fn last_table(&self) -> Option<&'static ScopeInfoModule> {
-        self.scope_tables.borrow().last().map(|t| t.table)
+        self.scope_tables
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .last()
+            .map(|t| t.table)
     }
 
     /// 02.04a: module-level fn-id lookup for an IMPORTED module's defs
     /// (mirror of the `by_path` map the builder maintains).
     pub(crate) fn by_path_lookup(&self, name: &str) -> Option<u32> {
-        for _ in 0..2000 {
-            match self.by_path.try_borrow() {
-                Ok(bp) => return bp.get(name).copied(),
-                Err(_) => std::thread::sleep(std::time::Duration::from_micros(50)),
-            }
-        }
-        self.by_path.borrow().get(name).copied()
+        // 02.09b P7 (F1): RwLock read — no retry loop, no panic fallback.
+        self.by_path
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(name)
+            .copied()
     }
 
     /// A2: borrowed entry access for hot paths — returns a CLONE of the
@@ -621,19 +643,21 @@ impl FnRegistry {
     /// mutated in place during imports while worker threads read them —
     /// transient-borrow retry (writes are entry-atomic).
     pub(crate) fn entry(&self, fn_id: u32) -> Option<FnEntry> {
-        for _ in 0..2000 {
-            match self.entries.try_borrow() {
-                Ok(e) => return e.get(fn_id as usize).cloned(),
-                Err(_) => std::thread::sleep(std::time::Duration::from_micros(50)),
-            }
-        }
-        self.entries.borrow().get(fn_id as usize).cloned()
+        // 02.09b P7 (F1): RwLock read — no retry loop, no panic fallback.
+        self.entries
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(fn_id as usize)
+            .cloned()
     }
 
     /// Snapshot of the module-level entries (legacy `interp.functions`
     /// seed; taken once per run at exec_module).
     pub(crate) fn entries_snapshot(&self) -> Vec<FnEntry> {
-        self.entries.borrow().clone()
+        self.entries
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
     }
 
     /// 02.04a: append an imported module's defs to the CURRENT registry,
@@ -677,32 +701,12 @@ impl FnRegistry {
             }
         }
         {
-            // 02.07: retry the mutation borrows against worker readers
-            // (all holders run under the GIL, so a contention window is
-            // transient; the post-loop direct borrow matches the old
-            // immediate-borrow panic semantics if it ever persists).
-            let mut entries = None;
-            for _ in 0..2000 {
-                match cur.entries.try_borrow_mut() {
-                    Ok(e) => {
-                        entries = Some(e);
-                        break;
-                    }
-                    Err(_) => std::thread::sleep(std::time::Duration::from_micros(50)),
-                }
-            }
-            let mut entries = entries.unwrap_or_else(|| cur.entries.borrow_mut());
-            let mut by_path = None;
-            for _ in 0..2000 {
-                match cur.by_path.try_borrow_mut() {
-                    Ok(b) => {
-                        by_path = Some(b);
-                        break;
-                    }
-                    Err(_) => std::thread::sleep(std::time::Duration::from_micros(50)),
-                }
-            }
-            let mut by_path = by_path.unwrap_or_else(|| cur.by_path.borrow_mut());
+            // 02.09b P7 (F1/§1.4): entries/by_path are RwLocks — write()
+            // blocks until the readers drain; the GIL-era spin-retry-then-
+            // panic fallbacks are gone (a BorrowError panic under sustained
+            // cross-thread contention was the failure mode they carried).
+            let mut entries = cur.entries.write().unwrap_or_else(|p| p.into_inner());
+            let mut by_path = cur.by_path.write().unwrap_or_else(|p| p.into_inner());
             for (name, entry) in new {
                 let id = entries.len() as u32;
                 by_path.insert(name, id);
@@ -1283,7 +1287,7 @@ fn exec_stmt(
             let user_async_iter = matches!(&iterable, Value::Obj(o)
                 if (o.kind == ap_obj::ObjKind::UserInstance
                     || (o.kind == ap_obj::ObjKind::Opaque
-                        && o.class_ref.lock().unwrap_or_else(|p| p.into_inner()).is_some())))
+                        && o.class_ref.read().unwrap_or_else(|p| p.into_inner()).is_some())))
                 && crate::classes::special_lookup(interp, &iterable, "__aiter__").is_some()
                 && crate::classes::special_lookup(interp, &iterable, "__iter__").is_none()
                 && crate::classes::special_lookup(interp, &iterable, "__next__").is_none();
@@ -2626,11 +2630,11 @@ fn exception_instance(exc: &ExceptionValue) -> Value {
     if let Some(Value::Obj(co)) = crate::classes::exc_class_value(&interp, &exc.class) {
         if let Some(t) = co
             .class_ref
-            .lock()
+            .read()
             .unwrap_or_else(|p| p.into_inner())
             .clone()
         {
-            *o.class_ref.lock().unwrap_or_else(|p| p.into_inner()) = Some(t);
+            *(o.class_ref.write().unwrap_or_else(|p| p.into_inner())) = Some(t);
         }
     }
     // W112: fallback materialization (class-raised exceptions carry no
@@ -2841,7 +2845,7 @@ fn raise_from_value(v: &Value) -> Result<ExceptionValue, Flow> {
             // identity preserved at the handler).
             let t = o
                 .type_ref
-                .lock()
+                .read()
                 .unwrap_or_else(|p| p.into_inner())
                 .as_ref()
                 .and_then(|w| w.upgrade());
@@ -2947,7 +2951,7 @@ fn exception_value_of_instance(v: &Value) -> Result<ExceptionValue, Flow> {
     // the class_ref back-ref first (user exception classes).
     if let Some(t) = o
         .class_ref
-        .lock()
+        .read()
         .unwrap_or_else(|p| p.into_inner())
         .clone()
         .or_else(|| crate::classes::class_of_value(&interp, v))
@@ -3218,15 +3222,23 @@ pub fn store_name(
         // 02.03b: a dict-subclass namespace instance (EnumDict) intercepts
         // the store through its __setitem__ (member tracking); with no
         // instance or no override, the plain dict write stands.
+        // 02.09b P7 (decision 2): the TypeObject payload is cloned OUT of
+        // the MutexGuard scope — the pre-flip shared RefCell borrow was
+        // reentrant (attribute probes on the same class re-borrowed
+        // shared), the Mutex is exclusive; holding it across the
+        // __setitem__ call self-deadlocks on the body's first attribute
+        // read (import enum / unittest hang).
         if let Some(inst) = &frame.class_ns_inst {
             if let Value::Obj(io) = inst {
-                if let Some(t) = io
-                    .type_ref
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .as_ref()
-                    .and_then(|w| w.upgrade())
-                {
+                let t = {
+                    let g = io
+                        .type_ref
+                        .read()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .clone();
+                    g.and_then(|w| w.upgrade())
+                };
+                if let Some(t) = t {
                     if let Some((sf, _)) = t.lookup_with_owner("__setitem__") {
                         let is_fn =
                             matches!(&sf, Value::Obj(fo) if fo.kind == ap_obj::ObjKind::Function);
@@ -5044,15 +5056,15 @@ pub(crate) fn eval_binop(a: &Value, op: BinOp, b: &Value) -> EResult {
             if let (Value::Obj(ao), payload) = (&a, &joined) {
                 let t = ao
                     .type_ref
-                    .lock()
+                    .read()
                     .unwrap_or_else(|p| p.into_inner())
                     .as_ref()
                     .and_then(|w| w.upgrade())
                     .ok_or_else(|| raise("SystemError", "derived instance without class"))?;
                 let io = ap_obj::PyObject::new(ap_obj::ObjKind::UserInstance, t.name.clone());
-                *io.type_ref.lock().unwrap_or_else(|p| p.into_inner()) =
+                *(io.type_ref.write().unwrap_or_else(|p| p.into_inner())) =
                     Some(std::sync::Arc::downgrade(&t));
-                *io.class_ref.lock().unwrap_or_else(|p| p.into_inner()) = Some(t.clone());
+                *(io.class_ref.write().unwrap_or_else(|p| p.into_inner())) = Some(t.clone());
                 let key = if crate::classes::is_tuple_derived_instance(a) {
                     "__ap_tuple__"
                 } else {
@@ -6366,22 +6378,30 @@ fn call_value_inner_impl(
                     // the class MRO. Bare int stays a plain value.
                     if o.name == "__int__new__" {
                         if let Some(Value::Obj(co)) = args.first() {
+                            // 02.09b P7: separate statements — the type_ref
+                            // guard temporary would otherwise stay alive across
+                            // the class_ref.lock() in .or_else() (same-object
+                            // two-mutex nesting; see the ABC-TOP note).
                             let t_opt = match co.kind {
-                                ap_obj::ObjKind::UserClass => co
-                                    .type_ref
-                                    .lock()
-                                    .unwrap_or_else(|p| p.into_inner())
-                                    .as_ref()
-                                    .and_then(|w| w.upgrade())
-                                    .or_else(|| {
-                                        co.class_ref
-                                            .lock()
+                                ap_obj::ObjKind::UserClass => {
+                                    let tr = co
+                                        .type_ref
+                                        .read()
+                                        .unwrap_or_else(|p| p.into_inner())
+                                        .as_ref()
+                                        .and_then(|w| w.upgrade());
+                                    match tr {
+                                        Some(t) => Some(t),
+                                        None => co
+                                            .class_ref
+                                            .read()
                                             .unwrap_or_else(|p| p.into_inner())
-                                            .clone()
-                                    }),
+                                            .clone(),
+                                    }
+                                }
                                 _ => co
                                     .class_ref
-                                    .lock()
+                                    .read()
                                     .unwrap_or_else(|p| p.into_inner())
                                     .clone(),
                             };
@@ -6394,9 +6414,9 @@ fn call_value_inner_impl(
                                     ap_obj::ObjKind::UserInstance,
                                     t.name.clone(),
                                 );
-                                *io.type_ref.lock().unwrap_or_else(|p| p.into_inner()) =
+                                *(io.type_ref.write().unwrap_or_else(|p| p.into_inner())) =
                                     Some(std::sync::Arc::downgrade(&t));
-                                *io.class_ref.lock().unwrap_or_else(|p| p.into_inner()) =
+                                *(io.class_ref.write().unwrap_or_else(|p| p.into_inner())) =
                                     Some(t.clone());
                                 let _ = io
                                     .attrs
@@ -6453,26 +6473,33 @@ fn call_value_inner_impl(
                             // class_ref (type_ref is the instance-side slot);
                             // check both or tuple-derived classes (cssselect
                             // Token) fall through to the bare payload.
-                            let cref = co
+                            // 02.09b P7 (audit D3): sequenced — the type_ref
+                            // read guard is a statement temporary that would
+                            // otherwise stay alive across the class_ref read
+                            // inside .or_else() (same-object two-mutex
+                            // nesting; same shape as the ABC-TOP fix).
+                            let t_upgrade = co
                                 .type_ref
-                                .lock()
+                                .read()
                                 .unwrap_or_else(|p| p.into_inner())
                                 .as_ref()
-                                .and_then(|w| w.upgrade())
-                                .or_else(|| {
-                                    co.class_ref
-                                        .lock()
-                                        .unwrap_or_else(|p| p.into_inner())
-                                        .clone()
-                                });
+                                .and_then(|w| w.upgrade());
+                            let cref = match t_upgrade {
+                                Some(t) => Some(t),
+                                None => co
+                                    .class_ref
+                                    .read()
+                                    .unwrap_or_else(|p| p.into_inner())
+                                    .clone(),
+                            };
                             if let Some(t) = cref {
                                 let io = ap_obj::PyObject::new(
                                     ap_obj::ObjKind::UserInstance,
                                     t.name.clone(),
                                 );
-                                *io.type_ref.lock().unwrap_or_else(|p| p.into_inner()) =
+                                *(io.type_ref.write().unwrap_or_else(|p| p.into_inner())) =
                                     Some(std::sync::Arc::downgrade(&t));
-                                *io.class_ref.lock().unwrap_or_else(|p| p.into_inner()) =
+                                *(io.class_ref.write().unwrap_or_else(|p| p.into_inner())) =
                                     Some(t.clone());
                                 let key = if is_tuple {
                                     "__ap_tuple__"
@@ -7192,7 +7219,7 @@ fn call_value_inner_impl(
                                         }
                                         let meta = ct
                                             .metaclass
-                                            .lock()
+                                            .read()
                                             .unwrap_or_else(|p| p.into_inner())
                                             .clone()
                                             .unwrap_or_else(|| crate::classes::type_class(interp));
@@ -9790,7 +9817,7 @@ fn iterable_of(v: &Value) -> Result<Gc<PyIterator>, Flow> {
         if let Value::Obj(o) = v {
             if let Some(t) = o
                 .type_ref
-                .lock()
+                .read()
                 .unwrap_or_else(|p| p.into_inner())
                 .as_ref()
                 .and_then(|w| w.upgrade())
@@ -9838,7 +9865,7 @@ fn iterable_of(v: &Value) -> Result<Gc<PyIterator>, Flow> {
             if let Value::Obj(o) = v {
                 if let Some(t) = o
                     .class_ref
-                    .lock()
+                    .read()
                     .unwrap_or_else(|p| p.into_inner())
                     .clone()
                 {
@@ -9877,13 +9904,13 @@ fn iterable_of(v: &Value) -> Result<Gc<PyIterator>, Flow> {
         if o.kind == ap_obj::ObjKind::UserClass {
             if let Some(t) = o
                 .class_ref
-                .lock()
+                .read()
                 .unwrap_or_else(|p| p.into_inner())
                 .clone()
             {
                 let meta = t
                     .metaclass
-                    .lock()
+                    .read()
                     .unwrap_or_else(|p| p.into_inner())
                     .clone();
                 if let Some(meta) = meta {
@@ -10265,7 +10292,7 @@ fn str_of_value(interp: &Arc<Interpreter>, _frame: &Arc<Frame>, v: &Value) -> Re
             // though the value is a real user-class instance (e007).
             let is_exc = o
                 .type_ref
-                .lock()
+                .read()
                 .unwrap_or_else(|p| p.into_inner())
                 .as_ref()
                 .and_then(|w| w.upgrade())
@@ -11214,7 +11241,7 @@ fn class_protocol_builtin(
                 Some(t) => {
                     let meta = t
                         .metaclass
-                        .lock()
+                        .read()
                         .unwrap_or_else(|p| p.into_inner())
                         .clone()
                         .unwrap_or_else(|| crate::classes::type_class(interp));
@@ -11526,24 +11553,31 @@ fn class_isinstance(interp: &Arc<Interpreter>, args: &[Value]) -> EResult {
         if let Value::Obj(vo) = v {
             let has_cr = vo
                 .class_ref
-                .lock()
+                .read()
                 .unwrap_or_else(|p| p.into_inner())
                 .is_some();
             if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::GenDebug) {
                 eprintln!("[ABC-TOP] vname={} has_cr={}", vo.name, has_cr);
             }
-            let cr_opt = vo
+            // 02.09b P7: the type_ref guard is a statement-lifetime TEMPORARY;
+            // calling class_ref.lock() inside .or_else() keeps that guard alive
+            // while taking the second lock (the same object's OTHER mutex —
+            // a lock-order inversion the flip turns into a hang when any
+            // nested probe re-enters). Sequence them as separate statements.
+            let t_upgrade = vo
                 .type_ref
-                .lock()
+                .read()
                 .unwrap_or_else(|p| p.into_inner())
                 .as_ref()
-                .and_then(|w| w.upgrade())
-                .or_else(|| {
-                    vo.class_ref
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .clone()
-                });
+                .and_then(|w| w.upgrade());
+            let cr_opt = match t_upgrade {
+                Some(t) => Some(t),
+                None => vo
+                    .class_ref
+                    .read()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone(),
+            };
             if let Some(cr) = cr_opt {
                 let mro_names: Vec<String> = cr
                     .mro
@@ -11597,7 +11631,7 @@ fn class_isinstance(interp: &Arc<Interpreter>, args: &[Value]) -> EResult {
             if let Some(tc) = crate::classes::type_of(interp, t) {
                 if let Some(meta) = tc
                     .metaclass
-                    .lock()
+                    .read()
                     .unwrap_or_else(|p| p.into_inner())
                     .clone()
                 {
@@ -11854,7 +11888,7 @@ fn class_issubclass(interp: &Arc<Interpreter>, args: &[Value]) -> EResult {
             if let Some(tc) = crate::classes::type_of(interp, b) {
                 if let Some(meta) = tc
                     .metaclass
-                    .lock()
+                    .read()
                     .unwrap_or_else(|p| p.into_inner())
                     .clone()
                 {
@@ -12837,7 +12871,7 @@ fn attr_get(_interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Optio
     if let Value::Obj(o) = obj {
         if o.kind == ap_obj::ObjKind::Opaque
             && o.class_ref
-                .lock()
+                .read()
                 .unwrap_or_else(|p| p.into_inner())
                 .is_some()
         {
@@ -12900,7 +12934,7 @@ fn attr_get(_interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Optio
     if let Value::Obj(o) = obj {
         let is_prop_sub = o.kind == ap_obj::ObjKind::UserInstance
             && o.type_ref
-                .lock()
+                .read()
                 .unwrap_or_else(|p| p.into_inner())
                 .as_ref()
                 .and_then(|w| w.upgrade())
@@ -13508,13 +13542,13 @@ fn attr_get(_interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Optio
                     // shaped); treat any subject whose class-of has a
                     // metaclass as a class for super-scan routing.
                     || crate::classes::class_of_value(_interp, &subject)
-                        .and_then(|st| st.metaclass.lock().unwrap_or_else(|p| p.into_inner()).clone())
+                        .and_then(|st| st.metaclass.read().unwrap_or_else(|p| p.into_inner()).clone())
                         .map(|m| m.name != "type")
                         .unwrap_or(false);
                 let meta_of_subject = if subject_is_class {
                     crate::classes::type_of(_interp, &subject).and_then(|st| {
                         st.metaclass
-                            .lock()
+                            .read()
                             .unwrap_or_else(|p| p.into_inner())
                             .clone()
                     })
@@ -14566,13 +14600,13 @@ fn attr_get(_interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Optio
                         // Plain class: no metaclass protocol → fall through.
                         if let Some(t) = o
                             .class_ref
-                            .lock()
+                            .read()
                             .unwrap_or_else(|p| p.into_inner())
                             .clone()
                         {
                             if let Some(meta) = t
                                 .metaclass
-                                .lock()
+                                .read()
                                 .unwrap_or_else(|p| p.into_inner())
                                 .clone()
                             {
@@ -14584,7 +14618,7 @@ fn attr_get(_interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Optio
                         // fall through to the non-dunder surfaces below
                     } else if let Some(t) = o
                         .class_ref
-                        .lock()
+                        .read()
                         .unwrap_or_else(|p| p.into_inner())
                         .clone()
                     {
@@ -14994,7 +15028,7 @@ fn attr_get(_interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Optio
             if let Value::Obj(bo) = obj {
                 if let Some(ct) = bo
                     .class_ref
-                    .lock()
+                    .read()
                     .unwrap_or_else(|p| p.into_inner())
                     .clone()
                 {

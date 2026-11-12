@@ -22,9 +22,9 @@ use crate::dict::PyDict;
 use crate::int::Gc;
 use crate::object::PyObject;
 use crate::value::Value;
-use std::cell::RefCell;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::RwLock;
 
 /// Per-class flags.
 #[derive(Debug, Clone, Default)]
@@ -63,12 +63,12 @@ pub struct TypeObject {
     /// The metaclass type-object handle (type(C)); None == plain `type`.
     /// 02.09b P7 (decision 2): Mutex — resolved/finalized after creation
     /// (02.03) and read on EVERY instantiation by every worker.
-    pub metaclass: std::sync::Mutex<Option<Arc<TypeRef>>>,
+    pub metaclass: std::sync::RwLock<Option<Arc<TypeRef>>>,
     /// Back-pointer to the class's PyObject Value (set right after
     /// creation; identity for `x.__class__ is C`).
     /// 02.09b P7 (decision 2): Mutex (set-once after creation; read per
     /// instantiation).
-    pub class_value: Mutex<Option<Value>>,
+    pub class_value: RwLock<Option<Value>>,
     /// 02.05b Risk 4 (docs/ic-version-audit.md "Type version" domain, audit
     /// rows 11+16): per-class version counter bumped when the class's
     /// attribute surface mutates (`type.__setattr__` — method add/remove,
@@ -119,8 +119,8 @@ impl TypeObject {
             mro: std::sync::Mutex::new(Vec::new()),
             dict,
             flags,
-            metaclass: std::sync::Mutex::new(metaclass),
-            class_value: std::sync::Mutex::new(None),
+            metaclass: std::sync::RwLock::new(metaclass),
+            class_value: std::sync::RwLock::new(None),
             type_version: std::sync::atomic::AtomicU64::new(1),
             surgery_version: std::sync::atomic::AtomicU64::new(1),
         });
@@ -385,12 +385,24 @@ pub enum DescrKind {
 /// Convenience: build the class Value from a created TypeRef. Wires BOTH
 /// directions (payload -> Value back-pointer, Value -> payload).
 pub fn make_class_value(type_ref: Arc<TypeRef>) -> Value {
+    // 02.09b P7: class_ref/class_value are RwLock (write-once at creation;
+    // read-mostly everywhere else — read() reentrancy keeps recursive attr
+    // probes on the same class deadlock-free).
     let o = PyObject::new(crate::ObjKind::UserClass, type_ref.name.clone());
-    *o.class_ref.lock().unwrap_or_else(|p| p.into_inner()) = Some(type_ref.clone());
+    *o.class_ref.write().unwrap_or_else(|p| p.into_inner()) = Some(type_ref.clone());
     let v = Value::Obj(o);
-    *type_ref
+    // 02.09b P7 (audit O1): install-if-None compare-exchange — two workers
+    // lazily materializing the same class must land on ONE Value (identity:
+    // `x.__class__ is C` and ptr-keyed caches). The winner installs; the
+    // loser adopts the existing Value and drops its fresh copy (the
+    // write-once pattern mro's freeze already uses).
+    let mut existing = type_ref
         .class_value
-        .lock()
-        .unwrap_or_else(|p| p.into_inner()) = Some(v.clone());
-    v
+        .write()
+        .unwrap_or_else(|p| p.into_inner());
+    if existing.is_none() {
+        *existing = Some(v.clone());
+    }
+    let adopted = existing.clone().unwrap_or_else(|| v);
+    adopted
 }

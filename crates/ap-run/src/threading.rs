@@ -373,12 +373,6 @@ pub fn drain_worker_reclaim() -> usize {
     n
 }
 
-/// The interpreter the WORKER threads evaluate through (set by the main
-/// thread at spawn; read by workers — the interp object itself is only
-/// touched under the GIL).
-static WORKER_INTERP: std::sync::LazyLock<Mutex<Option<Arc<Interpreter>>>> =
-    std::sync::LazyLock::new(|| Mutex::new(None));
-
 pub fn is_main_os_thread() -> bool {
     MAIN_TID
         .lock()
@@ -860,7 +854,6 @@ pub fn thread_start(interp: &Arc<Interpreter>, o: &Gc<PyObject>) -> EvalResult {
     // E-safety: publish the worker-interp handle HERE (main side, GIL
     // held) — the clone is a GIL-ordered refcount write; workers only
     // read the Arc pointer under the GIL afterwards.
-    *WORKER_INTERP.lock().unwrap() = Some(interp.clone());
     // E1-E4 parity: pin the mirror while the thread runs — enumerate()/
     // active_count()/excepthook must see a RUNNING thread even when the
     // script dropped its reference (CPython's _active holds it). The
@@ -918,9 +911,8 @@ fn worker_bootstrap(
     self_addr: usize,
     interval: Option<f64>,
 ) {
-    // WORKER_INTERP is (re)installed by the SPAWNER (see thread_start);
-    // this worker's GC view (per-worker registration channel + census
-    // entry) wires here.
+    // The worker's GC view (per-worker registration channel + census
+    // entry) wires here; the interp handle is the spawner-passed Arc.
     crate::gcsupport::install_worker_thread();
 
     // Timer semantics: wait BEFORE the target (finished.wait(interval)).
@@ -1325,7 +1317,6 @@ fn exception_instance_value(exc: &crate::exc_hier::ExceptionValue) -> Value {
 /// attr_bool run 3x per thread start). 200 x 50us = 10 ms caps a pathological
 /// contention without ever hanging the GIL, then degrades to the empty/false
 /// default exactly like the old exhausted loop did.
-const ATTR_PROBE_RETRIES: usize = 200;
 
 fn attr_str(o: &PyObject, key: &str) -> String {
     // 02.09b P7: Mutex — plain lock (the GIL-era retry loop dissolved).

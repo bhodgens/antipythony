@@ -6422,7 +6422,7 @@ fn collections_namedtuple(
     if let Value::Obj(co) = &class_v {
         if let Some(t) = co
             .class_ref
-            .lock()
+            .read()
             .unwrap_or_else(|p| p.into_inner())
             .clone()
         {
