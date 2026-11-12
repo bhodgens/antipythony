@@ -10188,7 +10188,13 @@ fn iterable_of(v: &Value) -> Result<Gc<PyIterator>, Flow> {
             // register_iter re-locks the SAME generator's gen_id =>
             // single-thread self-deadlock. Copy the id out and drop the
             // guard before any call that can re-enter.
-            let id = *o.gen_id.lock().unwrap_or_else(|p| p.into_inner());
+            // EXPLICIT SCOPE (02.08 iter-wedge, release-build deadlock): the
+            // guard temporary's drop was sunk past gen_materialize by the
+            // optimizer in release builds (dropping an unlocked MutexGuard
+            // looks side-effect-free), re-locking gen_id inside the genexp
+            // clause evaluation (register_iter) and self-deadlocking s030.
+            // The inner block forces the drop BEFORE gen_materialize.
+            let id = { *o.gen_id.lock().unwrap_or_else(|p| p.into_inner()) };
             if let Some(id) = id {
                 // T2 root fix (pytest genitems/extend): the old path installed
                 // an EMPTY Seq anchor for def-generators, so every collector
