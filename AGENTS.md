@@ -127,8 +127,50 @@ GIL, uv-backed deps at build time. Byte-exact differential conformance vs CPytho
   not embedded yet (native registry unconditional; embedding = future
   work); Stmt::For at module level AOT-unsupported (tree-walk fallback);
   For-loop OSR + generator OSR + no-GIL OSR registry (from 02.05f).
-  PLAN 02 REMAINING: 02.08 method surfaces + 02.09 no-GIL swap (T121 >=3x
-  GREEN gate) + 02.10 Go-scheduler (stretch).
+- 02.09 NO-GIL SWAP 2026-11-11 (SPLIT COMPLETE a+b+c; THE GIL IS GONE):
+  SPLIT-02.09.md design leaf (a9fc81ea) -> three sub-leaves, all merged.
+  02.09a DONE (76e25c2a..fd53fa54, completion-agent finish): P1 minters
+  atomic, Decision-1 Gc<T> Rc->Arc, GilSendPub retired (grep=0), P3 all 21
+  (c)-class registries -> runtime_state.rs per-interp rows keyed Arc::as_ptr
+  (~90 accessor sites, seeded gcsupport::install, retired at run exit),
+  P4 mro write-once freeze + cached_hash AtomicI64 (siphash -1=>-2 sentinel
+  audit PASSED), P2 decision = worker-only-serialization accepted interim
+  (C-BUG-1 fix lands with b's bracket removal). 02.09b DONE (f452a117..e664aa9a,
+  audit-reconciled): P6 gcmod collector process-global + mutator census +
+  per-worker registration channels (hook-clobber fix); P7 THE FLIP - GIL
+  deleted (GilState + 54 call sites), decision-2 RwLock story (FnRegistry
+  RefCell->RwLock post-audit-F1, PyDict/PySet/PyList/PyObject/Interpreter
+  interiors), iterator/gen id mints -> atomics; INDEPENDENT AUDIT
+  (/tmp/0209b_audit.md + audit agent) verified scaling-harness change sound,
+  found F1/O1/D3/L1 - ALL RECONCILED in 26dfcc37 (FnRegistry RwLock,
+  make_class_value compare-exchange, D3 sequenced, L1 try_lock invariant
+  comment, WORKER_INTERP deleted, stale GIL comments removed). T121 GATE
+  GREEN: 3.31x/3.30x best-of-3 quiet window + pytest 3.22x/3.30x; xfail
+  mark FLIPPED; harness fix verified sound (old wall-clock shape included
+  mode-independent baseline capping ratio at ~1.5x regardless of scaling -
+  audit independently confirmed; >=3.0 assertion + best-of-3 untouched).
+  KNOWN T121 measurement caveat: noise-sensitive - my trunk re-verify runs
+  measured 2.53-2.96x under external meept go-test load spikes (9-11 load);
+  re-verify in a quiet window (<4 load). 02.09c DONE (c9d490cf..02c7ab0f):
+  unboxed PyList-of-Smi (raw i64 Vec, one-way demote on non-Smi, consuming
+  smi_storage_of + list(range) fast path), gc fence invariant pinned
+  (unboxed => zero internal edges + stays registered), memory -32..-36% on
+  2M-int lists; method_surface 34/34, gc 20/20, corpus zero-new-failures.
+  Merged-trunk gates: ap-obj+ap-gc 105/0, ap-run+ap-cli 260/0, T10 slice
+  105 passed/2 xfail (T109 pre-existing); T121 quiet-window re-verify
+  PENDING (external meept go-lane load spikes 9-11 during session).
+  02.08 COVERAGE AUDIT (read-only, .hermes/audits/2026-11-11-0208-stdlib-
+  coverage-audit.md): spec-05 IN-list 53 modules: 31 native + 22 vendored,
+  ZERO missing; ap-conform stdlib slice tier-0 30/48 (16 fail + 2 timeout),
+  adaptive byte-identical, BINARY 29/48 (binary-only s021_linecache __file__
+  semantics); GATE RED - 02.08-full remaining work ranked in the audit:
+  iter(<genexpr>) wedge (hangs s030/s044, likely blocks much downstream),
+  OUT-face spec amendment (51 modules import fine but xfail), ~16 named
+  surface gaps (Counter repr, functools CacheInfo, ast.unparse, typing
+  repr/origin, enum mangle bug, pprint, argparse, warnings attribution),
+  AOT source embedding for linecache, ap-conform --tier forwarding order.
+  PLAN 02 REMAINING: 02.08-full per audit gap list + T121 quiet re-verify
+  + 02.10 Go-scheduler (stretch, unblocked by the flip).
 - ROBUSTNESS-CI CAMPAIGN: plan tree at `plans/robustness-ci/` (master.md +
   7 branches, 24 leaves) implements ALL findings of
   .hermes/audits/robustness-review-2026-10-19.md (CI core, test integrity,
