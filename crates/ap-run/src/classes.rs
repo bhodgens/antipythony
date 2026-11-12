@@ -152,7 +152,7 @@ pub fn dynamic_type(
     for b in &base_types {
         let bm = b
             .metaclass
-            .lock()
+            .read()
             .unwrap_or_else(|p| p.into_inner())
             .clone()
             .or_else(|| Some(type_class(interp)));
@@ -207,7 +207,7 @@ pub fn dynamic_type(
         match created {
             Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass => o
                 .class_ref
-                .lock()
+                .read()
                 .unwrap_or_else(|p| p.into_inner())
                 .clone()
                 .ok_or_else(|| raise("SystemError", "created class without payload"))?,
@@ -276,15 +276,15 @@ pub fn dynamic_type(
                 }
             }
         }
-        *t.metaclass.lock().unwrap_or_else(|p| p.into_inner()) = Some(resolved.clone());
+        *(t.metaclass.write().unwrap_or_else(|p| p.into_inner())) = Some(resolved.clone());
         t
     };
     if t.metaclass
-        .lock()
+        .read()
         .unwrap_or_else(|p| p.into_inner())
         .is_none()
     {
-        *t.metaclass.lock().unwrap_or_else(|p| p.into_inner()) = Some(resolved.clone());
+        *(t.metaclass.write().unwrap_or_else(|p| p.into_inner())) = Some(resolved.clone());
     }
     let class_v = ap_obj::classes::make_class_value(t.clone());
     // 02.08-c: exec_class_def seeds __module__ from the DEFINING frame's
@@ -316,7 +316,7 @@ pub fn type_of(_interp: &Interpreter, v: &Value) -> Option<Arc<TypeRef>> {
     match v {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass => o
             .class_ref
-            .lock()
+            .read()
             .unwrap_or_else(|p| p.into_inner())
             .clone(),
         // T2 (wave-39): stream-derived instances are Opaque carrying the
@@ -324,12 +324,12 @@ pub fn type_of(_interp: &Interpreter, v: &Value) -> Option<Arc<TypeRef>> {
         Value::Obj(o)
             if o.kind == ap_obj::ObjKind::Opaque
                 && o.class_ref
-                    .lock()
+                    .read()
                     .unwrap_or_else(|p| p.into_inner())
                     .is_some() =>
         {
             o.class_ref
-                .lock()
+                .read()
                 .unwrap_or_else(|p| p.into_inner())
                 .clone()
         }
@@ -344,20 +344,20 @@ pub fn class_of_value(interp: &Interpreter, v: &Value) -> Option<Arc<TypeRef>> {
     match v {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => o
             .type_ref
-            .lock()
+            .read()
             .unwrap_or_else(|p| p.into_inner())
             .as_ref()
             .and_then(|w| w.upgrade())
             .map(|rc| rc as Arc<TypeRef>),
         Value::Obj(o) if o.kind == ap_obj::ObjKind::Exception => o
             .class_ref
-            .lock()
+            .read()
             .unwrap_or_else(|p| p.into_inner())
             .clone()
             .or_else(|| exc_class(interp, &o.name)),
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass => o
             .class_ref
-            .lock()
+            .read()
             .unwrap_or_else(|p| p.into_inner())
             .clone(),
         // T2 (wave-39): stream-derived instances are Opaque carrying the
@@ -365,12 +365,12 @@ pub fn class_of_value(interp: &Interpreter, v: &Value) -> Option<Arc<TypeRef>> {
         Value::Obj(o)
             if o.kind == ap_obj::ObjKind::Opaque
                 && o.class_ref
-                    .lock()
+                    .read()
                     .unwrap_or_else(|p| p.into_inner())
                     .is_some() =>
         {
             o.class_ref
-                .lock()
+                .read()
                 .unwrap_or_else(|p| p.into_inner())
                 .clone()
         }
@@ -725,7 +725,7 @@ pub fn exec_class_def(
                         // the INSTANCE (zope Interface shim).
                         if let Some(t) = bo
                             .type_ref
-                            .lock()
+                            .read()
                             .unwrap_or_else(|p| p.into_inner())
                             .as_ref()
                             .and_then(|w| w.upgrade())
@@ -838,7 +838,7 @@ pub fn exec_class_def(
                     if let Some(t) = base_type_ref(interp, b)? {
                         let bm = t
                             .metaclass
-                            .lock()
+                            .read()
                             .unwrap_or_else(|p| p.into_inner())
                             .clone();
                         if let Some(m) = bm {
@@ -1049,7 +1049,7 @@ pub fn exec_class_def(
             for b in &base_types {
                 let bm = b
                     .metaclass
-                    .lock()
+                    .read()
                     .unwrap_or_else(|p| p.into_inner())
                     .clone()
                     .or_else(|| Some(type_class(interp)));
@@ -1210,7 +1210,7 @@ pub fn exec_class_def(
             Value::Obj(ref o) if o.kind == ap_obj::ObjKind::UserClass => {
                 let t = o
                     .class_ref
-                    .lock()
+                    .read()
                     .unwrap_or_else(|p| p.into_inner())
                     .clone()
                     .ok_or_else(|| raise("SystemError", "created class without payload"))?;
@@ -1335,7 +1335,7 @@ pub fn exec_class_def(
             }
         }
         // The RESOLVED metaclass rides the payload (type(C), meta hook lookup).
-        *t.metaclass.lock().unwrap_or_else(|p| p.into_inner()) = _resolved_meta.clone();
+        *(t.metaclass.write().unwrap_or_else(|p| p.into_inner())) = _resolved_meta.clone();
         t
     };
     // T2 (pluggy varnames): the class-body __qualname__ rewrite must cover
@@ -1377,12 +1377,12 @@ pub fn exec_class_def(
     // left it None, breaking isinstance(C, EnumType)-style checks and any
     // metaclass hook dispatch on the new class).
     if t.metaclass
-        .lock()
+        .read()
         .unwrap_or_else(|p| p.into_inner())
         .is_none()
     {
         if let Some(meta) = &_resolved_meta {
-            *t.metaclass.lock().unwrap_or_else(|p| p.into_inner()) = Some(meta.clone());
+            *(t.metaclass.write().unwrap_or_else(|p| p.into_inner())) = Some(meta.clone());
         }
     }
     let class_v = ap_obj::classes::make_class_value(t.clone());
@@ -1534,7 +1534,7 @@ pub fn exec_class_def(
     {
         let meta = t
             .metaclass
-            .lock()
+            .read()
             .unwrap_or_else(|p| p.into_inner())
             .clone();
         if let Some(mt) = meta {
@@ -1666,7 +1666,7 @@ pub fn base_type_ref(interp: &Interpreter, v: &Value) -> Result<Option<Arc<TypeR
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass => {
             let t = o
                 .class_ref
-                .lock()
+                .read()
                 .unwrap_or_else(|p| p.into_inner())
                 .clone();
             if t.is_none() {
@@ -1702,7 +1702,7 @@ pub fn base_type_ref(interp: &Interpreter, v: &Value) -> Result<Option<Arc<TypeR
         Value::Obj(o) if o.kind == ap_obj::ObjKind::Type => {
             if let Some(t) = o
                 .class_ref
-                .lock()
+                .read()
                 .unwrap_or_else(|p| p.into_inner())
                 .clone()
             {
@@ -1737,7 +1737,7 @@ pub fn base_type_ref(interp: &Interpreter, v: &Value) -> Result<Option<Arc<TypeR
                     Value::Str(PyString::new(o.name.clone())),
                 );
             }
-            *o.class_ref.lock().unwrap_or_else(|p| p.into_inner()) = Some(t.clone());
+            *(o.class_ref.write().unwrap_or_else(|p| p.into_inner())) = Some(t.clone());
             Ok(Some(t))
         }
         // T1 (scrapy fix pass): `class Foo(Generic[T])` - the Generic alias
@@ -1985,7 +1985,7 @@ pub fn is_data_descriptor(interp: &Interpreter, v: &Value) -> bool {
 /// The class payload of a UserInstance PyObject.
 pub fn instance_class(_interp: &Interpreter, o: &Gc<ap_obj::PyObject>) -> Option<Arc<TypeRef>> {
     o.type_ref
-        .lock()
+        .read()
         .unwrap_or_else(|p| p.into_inner())
         .as_ref()
         .and_then(|w| w.upgrade())
@@ -2036,7 +2036,7 @@ pub fn descr_get(interp: &Arc<Interpreter>, v: &Value, obj: &Value, owner: &Valu
                             if io.kind == ap_obj::ObjKind::UserInstance {
                                 let upgrade_ok = io
                                     .type_ref
-                                    .lock()
+                                    .read()
                                     .unwrap_or_else(|p| p.into_inner())
                                     .as_ref()
                                     .map(|w| w.upgrade().is_some())
@@ -2269,8 +2269,8 @@ pub fn bind_function_owned(f: &Value, receiver: Value, owner: Option<&Arc<TypeRe
                 module_ns: std::sync::Mutex::new(None),
                 closure_slot: std::sync::Mutex::new(None),
                 defaults: std::sync::Mutex::new(Vec::new()),
-                class_ref: std::sync::Mutex::new(None),
-                type_ref: std::sync::Mutex::new(None),
+                class_ref: std::sync::RwLock::new(None),
+                type_ref: std::sync::RwLock::new(None),
                 descr_kind: std::sync::Mutex::new(None),
                 method_owner: std::sync::Mutex::new(owner.map(std::sync::Arc::downgrade)),
             };
@@ -2326,7 +2326,7 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
         if let Value::Obj(xo) = x {
             let has_cr = xo
                 .class_ref
-                .lock()
+                .read()
                 .unwrap_or_else(|p| p.into_inner())
                 .is_some();
             eprintln!(
@@ -2468,7 +2468,7 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
                             if Arc::ptr_eq(&xc, &tc) {
                                 let has_user_meta = xc
                                     .metaclass
-                                    .lock()
+                                    .read()
                                     .unwrap_or_else(|p| p.into_inner())
                                     .as_ref()
                                     .map(|m| !Arc::ptr_eq(m, &type_class(interp)))
@@ -2479,7 +2479,7 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
                             }
                             if let Some(meta) = xc
                                 .metaclass
-                                .lock()
+                                .read()
                                 .unwrap_or_else(|p| p.into_inner())
                                 .clone()
                             {
@@ -2518,7 +2518,7 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
                 if let Value::Obj(xo) = x {
                     if let Some(cr) = xo
                         .class_ref
-                        .lock()
+                        .read()
                         .unwrap_or_else(|p| p.into_inner())
                         .as_ref()
                     {
@@ -2706,7 +2706,7 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
                 let is_abc = base_type_ref(interp, t)?.map(|tc| {
                     let meta_name = tc
                         .metaclass
-                        .lock()
+                        .read()
                         .unwrap_or_else(|p| p.into_inner())
                         .as_ref()
                         .map(|m| m.name.clone())
@@ -2789,7 +2789,7 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
             // Custom metaclass __instancecheck__ (S-03-31; c033 Weird).
             if let Some(meta) = xc
                 .metaclass
-                .lock()
+                .read()
                 .unwrap_or_else(|p| p.into_inner())
                 .clone()
             {
@@ -2811,7 +2811,7 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
             if matches!(x, Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass) {
                 if let Some(meta) = xc
                     .metaclass
-                    .lock()
+                    .read()
                     .unwrap_or_else(|p| p.into_inner())
                     .clone()
                 {
@@ -2836,7 +2836,7 @@ fn type_for_check(interp: &Interpreter, x: &Value) -> Option<Arc<TypeRef>> {
     match x {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => o
             .type_ref
-            .lock()
+            .read()
             .unwrap_or_else(|p| p.into_inner())
             .as_ref()
             .and_then(|w| w.upgrade())
@@ -2894,7 +2894,7 @@ pub fn value_issubclass(interp: &Interpreter, a: &Value, b: &Value) -> Result<bo
             if let Some(bct) = base_type_ref(interp, b)? {
                 let meta = bct
                     .metaclass
-                    .lock()
+                    .read()
                     .unwrap_or_else(|p| p.into_inner())
                     .clone();
                 if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::DbgHook) {
@@ -2953,7 +2953,7 @@ pub fn special_lookup(
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
             let t = o
                 .type_ref
-                .lock()
+                .read()
                 .unwrap_or_else(|p| p.into_inner())
                 .as_ref()
                 .and_then(|w| w.upgrade())?;
@@ -2998,7 +2998,7 @@ pub fn special_lookup(
             }
             let t = o
                 .class_ref
-                .lock()
+                .read()
                 .unwrap_or_else(|p| p.into_inner())
                 .clone()?;
             t.lookup_with_owner(name)
@@ -3132,7 +3132,7 @@ pub fn attr_get_opt(
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
             let t = match o
                 .type_ref
-                .lock()
+                .read()
                 .unwrap_or_else(|p| p.into_inner())
                 .as_ref()
                 .and_then(|w| w.upgrade())
@@ -3157,12 +3157,16 @@ pub fn attr_get_opt(
             instance_attr(interp, obj, o, &t, name).map(Some)
         }
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass => {
-            let Some(t) = o
+            // 02.09b P7: RwLock read — reentrant-safe for recursive attr
+            // probes on the same class (the pre-flip shared RefCell borrow
+            // semantics); the enum/unittest import path self-deadlocked on
+            // an exclusive Mutex here.
+            let t = o
                 .class_ref
-                .lock()
+                .read()
                 .unwrap_or_else(|p| p.into_inner())
-                .clone()
-            else {
+                .clone();
+            let Some(t) = t else {
                 return Ok(None);
             };
             class_attr_get(interp, obj, &t, name).map(Some)
@@ -3211,13 +3215,13 @@ pub fn attr_get_opt(
         Value::Obj(o)
             if o.kind == ap_obj::ObjKind::Opaque
                 && o.class_ref
-                    .lock()
+                    .read()
                     .unwrap_or_else(|p| p.into_inner())
                     .is_some() =>
         {
             let t = o
                 .class_ref
-                .lock()
+                .read()
                 .unwrap_or_else(|p| p.into_inner())
                 .clone()
                 .unwrap();
@@ -3543,7 +3547,7 @@ fn class_value_for(t: &Arc<TypeRef>) -> Value {
     // the write borrow (same RefCell).
     let existing = t
         .class_value
-        .lock()
+        .read()
         .unwrap_or_else(|p| p.into_inner())
         .clone();
     existing.unwrap_or_else(|| ap_obj::classes::make_class_value(t.clone()))
@@ -3676,7 +3680,7 @@ fn class_attr_get(
     //    then metaclass __getattr__.
     if let Some(meta) = t
         .metaclass
-        .lock()
+        .read()
         .unwrap_or_else(|p| p.into_inner())
         .clone()
         .or_else(|| Some(type_class(interp)))
@@ -3902,12 +3906,12 @@ pub fn attr_set_protocol(
         if o.kind == ap_obj::ObjKind::UserClass {
             let t = o
                 .class_ref
-                .lock()
+                .read()
                 .unwrap_or_else(|p| p.into_inner())
                 .clone()
                 .or_else(|| {
                     o.type_ref
-                        .lock()
+                        .read()
                         .unwrap_or_else(|p| p.into_inner())
                         .as_ref()
                         .and_then(|w| w.upgrade())
@@ -3934,7 +3938,7 @@ pub fn attr_set_protocol(
                 .set(Value::Str(PyString::new(name.to_string())), v);
             if let Some(t) = o
                 .class_ref
-                .lock()
+                .read()
                 .unwrap_or_else(|p| p.into_inner())
                 .clone()
             {
@@ -3947,7 +3951,7 @@ pub fn attr_set_protocol(
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
             let t = o
                 .type_ref
-                .lock()
+                .read()
                 .unwrap_or_else(|p| p.into_inner())
                 .as_ref()
                 .and_then(|w| w.upgrade())
@@ -4026,7 +4030,7 @@ pub fn attr_set_protocol(
             // over a property — S-03-10 observed).
             let Some(t) = o
                 .class_ref
-                .lock()
+                .read()
                 .unwrap_or_else(|p| p.into_inner())
                 .clone()
             else {
@@ -4122,7 +4126,7 @@ pub fn attr_del_protocol(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> 
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
             let t = o
                 .type_ref
-                .lock()
+                .read()
                 .unwrap_or_else(|p| p.into_inner())
                 .as_ref()
                 .and_then(|w| w.upgrade())
@@ -4182,7 +4186,7 @@ pub fn attr_del_protocol(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> 
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass => {
             let Some(t) = o
                 .class_ref
-                .lock()
+                .read()
                 .unwrap_or_else(|p| p.into_inner())
                 .clone()
             else {
@@ -4256,7 +4260,7 @@ pub fn instantiate(
     if !skip_meta_call {
         if let Some(meta) = t
             .metaclass
-            .lock()
+            .read()
             .unwrap_or_else(|p| p.into_inner())
             .clone()
         {
@@ -4439,7 +4443,7 @@ pub fn instantiate(
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .set(Value::Str(PyString::new("args")), argv);
-            *io.class_ref.lock().unwrap_or_else(|p| p.into_inner()) = Some(t.clone());
+            *(io.class_ref.write().unwrap_or_else(|p| p.into_inner())) = Some(t.clone());
             // CPython: BaseExceptionGroup(...) with all-Exception excs
             // derives to ExceptionGroup (e008).
             if t.name == "BaseExceptionGroup" {
@@ -4518,7 +4522,8 @@ pub fn instantiate(
         if let Some(doc) = args.get(1) {
             let _ = ns.set(Value::Str(PyString::new("__doc__")), doc.clone());
         }
-        *io.type_ref.lock().unwrap_or_else(|p| p.into_inner()) = Some(std::sync::Arc::downgrade(t));
+        *(io.type_ref.write().unwrap_or_else(|p| p.into_inner())) =
+            Some(std::sync::Arc::downgrade(t));
         *io.module_ns.lock().unwrap_or_else(|p| p.into_inner()) = Some(ns);
         return Ok(Value::Obj(io));
     }
@@ -4629,9 +4634,9 @@ pub fn instantiate(
                 };
                 if let Some(v) = built {
                     let io = ap_obj::PyObject::new(ap_obj::ObjKind::UserInstance, t.name.clone());
-                    *io.type_ref.lock().unwrap_or_else(|p| p.into_inner()) =
+                    *(io.type_ref.write().unwrap_or_else(|p| p.into_inner())) =
                         Some(std::sync::Arc::downgrade(t));
-                    *io.class_ref.lock().unwrap_or_else(|p| p.into_inner()) = Some(t.clone());
+                    *(io.class_ref.write().unwrap_or_else(|p| p.into_inner())) = Some(t.clone());
                     // T2 (pygments _TokenType): keep a TUPLE-typed backing so
                     // the derived-instance protocol (len/slice/contains/+)
                     // can see the ctor contents; the payload below answers
@@ -4762,18 +4767,18 @@ pub fn instantiate(
         };
         if let Value::Obj(old_o) = &obj {
             let fresh = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, kind);
-            *fresh.type_ref.lock().unwrap_or_else(|p| p.into_inner()) = old_o
+            *(fresh.type_ref.write().unwrap_or_else(|p| p.into_inner())) = old_o
                 .type_ref
-                .lock()
+                .read()
                 .unwrap_or_else(|p| p.into_inner())
                 .clone();
             let cr = old_o
                 .class_ref
-                .lock()
+                .read()
                 .unwrap_or_else(|p| p.into_inner())
                 .clone()
                 .unwrap_or_else(|| t.clone());
-            *fresh.class_ref.lock().unwrap_or_else(|p| p.into_inner()) = Some(cr);
+            *(fresh.class_ref.write().unwrap_or_else(|p| p.into_inner())) = Some(cr);
             {
                 let attrs = fresh.attrs.lock().unwrap_or_else(|p| p.into_inner());
                 let _ = attrs.set(
@@ -4852,7 +4857,7 @@ fn check_init_return(r: &Value, f: &Value) -> Result<(), Flow> {
 /// dict via PyObject's default).
 pub fn alloc_instance(t: &Arc<TypeRef>) -> Value {
     let o = ap_obj::PyObject::new(ap_obj::ObjKind::UserInstance, t.name.clone());
-    *o.type_ref.lock().unwrap_or_else(|p| p.into_inner()) = Some(Arc::downgrade(t));
+    *(o.type_ref.write().unwrap_or_else(|p| p.into_inner())) = Some(Arc::downgrade(t));
     // 02.03b: dict-subclass instances carry a REAL backing dict in
     // attrs["__ap_dict__"] (EnumDict and friends): item traffic routes
     // through it, attribute traffic through attrs as before.
@@ -4899,7 +4904,7 @@ pub fn userclass_module(v: &Value) -> Option<Value> {
         Value::Obj(o) => {
             let t = o
                 .type_ref
-                .lock()
+                .read()
                 .unwrap_or_else(|p| p.into_inner())
                 .as_ref()
                 .and_then(|w| w.upgrade())?;
@@ -4917,7 +4922,7 @@ pub fn is_list_derived_instance(v: &Value) -> bool {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
             match o
                 .type_ref
-                .lock()
+                .read()
                 .unwrap_or_else(|p| p.into_inner())
                 .as_ref()
                 .and_then(|w| w.upgrade())
@@ -4957,7 +4962,7 @@ pub fn is_tuple_derived_instance(v: &Value) -> bool {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
             match o
                 .type_ref
-                .lock()
+                .read()
                 .unwrap_or_else(|p| p.into_inner())
                 .as_ref()
                 .and_then(|w| w.upgrade())
@@ -5059,7 +5064,7 @@ pub fn is_exception_value(v: &Value) -> bool {
     match v {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => o
             .type_ref
-            .lock()
+            .read()
             .unwrap_or_else(|p| p.into_inner())
             .as_ref()
             .and_then(|w| w.upgrade())
@@ -5073,13 +5078,13 @@ pub fn class_of_value_here(v: &Value) -> Option<Arc<TypeRef>> {
     match v {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => o
             .type_ref
-            .lock()
+            .read()
             .unwrap_or_else(|p| p.into_inner())
             .as_ref()
             .and_then(|w| w.upgrade()),
         Value::Obj(o) if o.kind == ap_obj::ObjKind::Exception => o
             .class_ref
-            .lock()
+            .read()
             .unwrap_or_else(|p| p.into_inner())
             .clone(),
         _ => None,

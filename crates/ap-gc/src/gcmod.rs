@@ -535,6 +535,18 @@ fn seed_root_dict(
 
 /// Outbound edges of a value: every registry-tracked child it holds.
 ///
+/// ⚠ INVARIANT (audit 02.09b L1 — HIGH, load-bearing): the collector holds
+/// REG_STATE across the WHOLE count+mark pass, and the per-object probes in
+/// this function are `try_lock()` — FAILING locks set SCAN_CONTENDED and the
+/// pass aborts. A mutator holds per-object locks (attrs/dict state) across
+/// Python-level work that allocates → gc_register → REG_STATE: order
+/// (object-lock → reg_state) vs (reg_state → object-lock try_lock) is a
+/// deliberate ABBA whose ONLY defense is try_lock. CONVERTING THESE
+/// try_lock PROBES TO BLOCKING lock() IS AN INSTANT PROCESS-WIDE DEADLOCK.
+/// Never do it. Shrinking the REG_STATE critical section (clone the scope
+/// addrs out, run counts/mark on cloned handles) is the sanctioned future
+/// fix for both this hazard and the mutator stall cost.
+///
 /// C2 (memperf audit 2026-11-06): every container arm iterates UNDER the
 /// existing borrow via a ref-yielding iterator (`PyDict::foreach`,
 /// `PySet::foreach_ref`, `PyList::items` Ref) instead of snapshotting.
@@ -1309,7 +1321,7 @@ fn collect_gen_inner(generation: usize, scratch: &mut Scratch) -> usize {
 fn has_del(v: &Value) -> bool {
     match v {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
-            let tr = o.type_ref.lock().unwrap_or_else(|p| p.into_inner()).clone();
+            let tr = o.type_ref.read().unwrap_or_else(|p| p.into_inner()).clone();
             tr.and_then(|w| w.upgrade())
                 .map(|t| t.lookup("__del__").is_some())
                 .unwrap_or(false)
@@ -1916,7 +1928,8 @@ mod unit_tests {
         drop(victim);
 
         // Mutate `obj` mid-scan: hold its attrs borrow across collect().
-        let held = obj.attrs.borrow_mut();
+        // 02.09b: attrs is a Mutex — hold the lock to simulate contention.
+        let held = obj.attrs.lock().unwrap_or_else(|p| p.into_inner());
         assert_eq!(collect(), 0, "contended scan must abort, not skip");
         assert!(
             reg_state()

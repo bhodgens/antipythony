@@ -1067,7 +1067,7 @@ pub(crate) fn import_file_module(interp: &Arc<Interpreter>, name: &str) -> EResu
                             let is_module = am.kind == ap_obj::ObjKind::Module
                                 || am
                                     .type_ref
-                                    .lock()
+                                    .read()
                                     .unwrap_or_else(|p| p.into_inner())
                                     .as_ref()
                                     .and_then(|tr| tr.upgrade())

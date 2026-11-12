@@ -100,7 +100,7 @@ fn weakrefable(v: &Value) -> bool {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
             if let Some(t) = o
                 .type_ref
-                .lock()
+                .read()
                 .unwrap_or_else(|p| p.into_inner())
                 .as_ref()
                 .and_then(|w| w.upgrade())
@@ -410,7 +410,7 @@ fn lookup_del(_interp: &Arc<Interpreter>, v: &Value) -> Option<Value> {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
             let t = o
                 .type_ref
-                .lock()
+                .read()
                 .unwrap_or_else(|p| p.into_inner())
                 .as_ref()
                 .and_then(|w| w.upgrade())?;

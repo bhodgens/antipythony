@@ -287,7 +287,7 @@ pub fn builtin_len(args: &[Value]) -> BResult {
             if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::TbDbg) {
                 let mro_names: Vec<String> = o
                     .class_ref
-                    .lock()
+                    .read()
                     .unwrap_or_else(|p| p.into_inner())
                     .as_ref()
                     .map(|t| {
@@ -524,9 +524,9 @@ pub fn builtin_int(interp: &Interpreter, args: &[Value]) -> BResult {
             if let Some(t) = crate::classes::class_of_value(interp, &cls_v) {
                 if t.mro.lock().unwrap().iter().any(|m| m.name == "int") {
                     let io = ap_obj::PyObject::new(ap_obj::ObjKind::UserInstance, t.name.clone());
-                    *io.type_ref.lock().unwrap_or_else(|p| p.into_inner()) =
+                    *(io.type_ref.write().unwrap_or_else(|p| p.into_inner())) =
                         Some(std::sync::Arc::downgrade(&t));
-                    *io.class_ref.lock().unwrap_or_else(|p| p.into_inner()) = Some(t.clone());
+                    *(io.class_ref.write().unwrap_or_else(|p| p.into_inner())) = Some(t.clone());
                     let _ = io
                         .attrs
                         .lock()
@@ -1424,7 +1424,7 @@ pub fn type_matches(v: &Value, want: &str) -> bool {
             if o.kind == ap_obj::ObjKind::Opaque {
                 if let Some(t) = o
                     .class_ref
-                    .lock()
+                    .read()
                     .unwrap_or_else(|p| p.into_inner())
                     .clone()
                 {
@@ -1539,13 +1539,13 @@ pub fn builtin_type(interp: &Interpreter, args: &[Value], kwargs: &[(String, Val
                 if o.kind == ap_obj::ObjKind::UserClass {
                     if let Some(t) = o
                         .class_ref
-                        .lock()
+                        .read()
                         .unwrap_or_else(|p| p.into_inner())
                         .clone()
                     {
                         if let Some(cv) = t
                             .class_value
-                            .lock()
+                            .read()
                             .unwrap_or_else(|p| p.into_inner())
                             .clone()
                         {
@@ -3725,7 +3725,7 @@ fn dir_surface(v: &Value) -> Vec<String> {
             let mut names: Vec<String> = Vec::new();
             if let Some(t) = o
                 .class_ref
-                .lock()
+                .read()
                 .unwrap_or_else(|p| p.into_inner())
                 .clone()
             {
@@ -3955,7 +3955,7 @@ pub fn builtin_callable(args: &[Value]) -> BResult {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
             let has_call = o
                 .type_ref
-                .lock()
+                .read()
                 .unwrap_or_else(|p| p.into_inner())
                 .as_ref()
                 .and_then(|w| w.upgrade())
@@ -5438,7 +5438,7 @@ fn builtin_type_new(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
                 if bo.kind == ap_obj::ObjKind::Type {
                     if let Some(tr) = bo
                         .type_ref
-                        .lock()
+                        .read()
                         .unwrap_or_else(|p| p.into_inner())
                         .as_ref()
                         .and_then(|w| w.upgrade())
@@ -5604,7 +5604,7 @@ fn builtin_type_new(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
     }
     // The creating metaclass rides the payload.
     if let Some(m) = class_of_value(&interp, &args[0]) {
-        *t.metaclass.lock().unwrap_or_else(|p| p.into_inner()) = Some(m);
+        *(t.metaclass.write().unwrap_or_else(|p| p.into_inner())) = Some(m);
     }
     Ok(ap_obj::classes::make_class_value(t))
 }

@@ -513,13 +513,13 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
             // 02.03b: metaclass __getitem__ (enum: Color["GREEN"]).
             if let Some(t) = o
                 .class_ref
-                .lock()
+                .read()
                 .unwrap_or_else(|p| p.into_inner())
                 .clone()
             {
                 if let Some(meta) = t
                     .metaclass
-                    .lock()
+                    .read()
                     .unwrap_or_else(|p| p.into_inner())
                     .clone()
                 {
@@ -708,13 +708,15 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
             }
             // T1-d (typing.NamedTuple): namedtuple instances ARE tuples —
             // index into the declared field order (n[0] == n.<field0>).
-            if let Some(t) = o
-                .type_ref
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .as_ref()
-                .and_then(|w| w.upgrade())
-            {
+            // 02.09b P7 (decision 2): clone the payload out of the guard
+            // scope — holding the exclusive lock across the __setitem__
+            // call self-deadlocks on the callee's first attr probe of the
+            // same class (enum.EnumDict store hang).
+            let t = {
+                let g = o.type_ref.read().unwrap_or_else(|p| p.into_inner()).clone();
+                g.and_then(|w| w.upgrade())
+            };
+            if let Some(t) = t {
                 if let Some(Value::List(fields)) = t
                     .dict
                     .get(&Value::Str(PyString::new("__ap_namedtuple_fields__")))
@@ -747,13 +749,15 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
             }
             // 02.03b: subscript read on dict-derived instances — the
             // subclass __getitem__ (if any) first, else the backing dict.
-            if let Some(t) = o
-                .type_ref
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .as_ref()
-                .and_then(|w| w.upgrade())
-            {
+            // 02.09b P7 (decision 2): clone the payload out of the guard
+            // scope — holding the exclusive lock across the __setitem__
+            // call self-deadlocks on the callee's first attr probe of the
+            // same class (enum.EnumDict store hang).
+            let t = {
+                let g = o.type_ref.read().unwrap_or_else(|p| p.into_inner()).clone();
+                g.and_then(|w| w.upgrade())
+            };
+            if let Some(t) = t {
                 if crate::classes::is_dict_derived(&t) {
                     if let Some((gf, gowner)) = t.lookup_with_owner("__getitem__") {
                         if matches!(&gf, Value::Obj(fo) if fo.kind == ap_obj::ObjKind::Function) {
@@ -1070,13 +1074,15 @@ pub fn subscript_set(obj: &Value, key: &Value, v: Value) -> Result<(), Flow> {
             // 02.03b: __setitem__ on dict-derived instances — the subclass
             // override (EnumDict) runs first; with none, the backing dict
             // takes the write (dict semantics).
-            if let Some(t) = o
-                .type_ref
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .as_ref()
-                .and_then(|w| w.upgrade())
-            {
+            // 02.09b P7 (decision 2): clone the payload out of the guard
+            // scope — holding the exclusive lock across the __setitem__
+            // call self-deadlocks on the callee's first attr probe of the
+            // same class (enum.EnumDict store hang).
+            let t = {
+                let g = o.type_ref.read().unwrap_or_else(|p| p.into_inner()).clone();
+                g.and_then(|w| w.upgrade())
+            };
+            if let Some(t) = t {
                 let overridden = t
                     .lookup_with_owner("__setitem__")
                     .map(|(f, _)| matches!(&f, Value::Obj(fo) if fo.kind == ap_obj::ObjKind::Function))
@@ -1266,7 +1272,7 @@ pub fn subscript_del(obj: &Value, key: &Value) -> Result<(), Flow> {
                 .ok_or_else(|| raise("TypeError", "no interpreter for __delitem__"))?;
             let t = o
                 .type_ref
-                .lock()
+                .read()
                 .unwrap_or_else(|p| p.into_inner())
                 .as_ref()
                 .and_then(|w| w.upgrade());
