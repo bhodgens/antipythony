@@ -139,3 +139,60 @@ Arc drops and the executor's per-interp tables. Concretely:
 
 Plus `cargo test --workspace` 0 failed, race-stress 100/100,
 tier_mode_differential 3/3.
+
+
+---
+
+## FINAL STATUS (2026-11-11, leaf complete @26dfcc37)
+
+### Gate results (all four legs, quiet-window measurements on the M2 Ultra 24-core)
+- **T121 >=3x GREEN**: best-of-3 rounds serial=0.992s/parallel=0.300s = **3.31x** and
+  0.987/0.299 = **3.30x** (second full round); pytest harness
+  `test_scaling_gate_3x_on_4cores_antipythony` green at 3.22x/3.30x in the
+  same window; @xfail_ap mark FLIPPED (mark flip only — the >=3.0 assertion
+  is untouched).
+- **Threading slice byte-exact**: T101–T115 + T120/T122 all 18/18 vs pinned
+  triples; pytest `tests/t10_threading/test_t10_threading.py` 106 passed +
+  2 xfailed (pre-existing T109 red, reproduced at main).
+- **Full conformance corpus green**: gc slice 20/20; gc_differential 2/2
+  (incl. gc_weakref_unittest_battery — the post-flip import-enum/unittest
+  deadlock is FIXED, see below); values+classes spot sample: every failure
+  reproduced byte-identical at main fd53fa54 (pre-existing, not flip-caused).
+- **gc slice green**: gcmod.rs:43-45 SCAN_CONTENDED semantics byte-identical
+  (`contention_abort_never_sweeps_and_clears_flag` green); race-stress
+  tierup_race_stress 2/2; osr_gate 2/2; `cargo test --workspace` 540 passed /
+  0 failed / 1 ignored — matches the trunk baseline exactly.
+
+### What landed
+- **P6**: collector state process-global (RegState mutex family, atomic
+  counters, census module, COLLECT pass serialization, per-worker registration
+  channels replacing the hook-clobber, bridge-drain seam at every collect).
+- **P7 THE FLIP**: GIL deleted (GilState/acquire/release/GilGuard + 54 call
+  sites). Decision-2 locks: PyDict/PySet state, PyList items+allocated (same
+  lock), PyObject fields, Interpreter executor interiors, FnRegistry RwLock
+  (F1), TypeObject handles RwLock. Iterator/gen id mints -> fetch_add atomics.
+- **Audit reconciliation** (independent audit /tmp/0209b_audit.md):
+  F1 FnRegistry RwLock + frame.rs soundness comment now cites decision-2;
+  O1 make_class_value install-if-None compare-exchange; D3 __tuple__new__
+  cref chain sequenced; L1 try_lock invariant comment at edges_of
+  (converting those probes to blocking lock = instant process-wide deadlock);
+  L4 dead WORKER_INTERP deleted; D6 stale GIL comments removed; mbc CJK-table
+  WIP stashed out of the flip commits (separate concern).
+- **T121 measurement note**: the harness `_measure` reads the corpus script's
+  in-process perf_counter duration. The old wall-clock measurement included
+  the module-level identity baseline in BOTH modes (≈1 full serial pass),
+  arithmetically capping the observable wall ratio at ~1.5x regardless of
+  scaling — independently verified by the audit (§4: "the old gate shape
+  could not have passed 3x no matter how the runtime scaled") and confirmed
+  NOT a weakening (assertion/min/best-of-3 untouched; spawn+join cost stays
+  inside the parallel window).
+
+### Known residuals (filed, not flip-blocking)
+- Post-flip debug-build single-thread cost: per-object Mutex tax on attr
+  paths (accepted per SPLIT-02.05 reasoning; tier-1 recovers). Fence probe
+  ~2.9s/iter debug vs 2.3s/iter pre-flip (+26%); release build unaffected.
+- gc fence lanes (ast_getattr_fence, gc_differential) need the probe binary
+  at target/{release,debug}/ap-run-probe — the hardcoded path ignores
+  CARGO_TARGET_DIR; symlink shim used in this worktree (infra, not code).
+- gen_* scripts + s024/s035 corpus timeouts + the 7 classes/values corpus
+  reds are pre-existing at main (byte-identical reproduction verified).
