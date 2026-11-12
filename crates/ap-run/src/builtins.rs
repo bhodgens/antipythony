@@ -5,9 +5,9 @@
 //! stdout byte gate). Numeric routes delegate to ap-obj ops (the C-12..C-16
 //! surface proven in 02.01).
 
+use crate::Flow;
 use crate::exc_hier::ExceptionValue;
 use crate::frame::Interpreter;
-use crate::Flow;
 use ap_obj::dict::{PyDict, PySet};
 use ap_obj::int::{Gc, Int};
 use ap_obj::value::{PyList, PyString, Tuple, Value};
@@ -548,13 +548,15 @@ pub fn builtin_int(interp: &Interpreter, args: &[Value]) -> BResult {
                 Value::Obj(o)
                     if o.kind == ap_obj::ObjKind::UserInstance
                         && o.attrs
-                            .lock().unwrap_or_else(|p| p.into_inner())
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
                             .get(&Value::Str(PyString::new("__ap_int__")))
                             .is_some() =>
                 {
                     match o
                         .attrs
-                        .lock().unwrap_or_else(|p| p.into_inner())
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
                         .get(&Value::Str(PyString::new("__ap_int__")))
                     {
                         Some(p @ Value::Int(_)) => Ok(p.clone()),
@@ -570,7 +572,8 @@ pub fn builtin_int(interp: &Interpreter, args: &[Value]) -> BResult {
                 Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque => {
                     match o
                         .attrs
-                        .lock().unwrap_or_else(|p| p.into_inner())
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
                         .get(&Value::Str(PyString::new("<int_value>")))
                     {
                         Some(v @ Value::Int(_)) => Ok(v.clone()),
@@ -610,8 +613,11 @@ pub fn builtin_int(interp: &Interpreter, args: &[Value]) -> BResult {
                     // instance attr (enum.py __set_name__); CPython members
                     // ARE ints. int(member) == member._value_.
                     if let Value::Obj(o) = v {
-                        if let Some(Value::Int(i)) =
-                            o.attrs.lock().unwrap_or_else(|p| p.into_inner()).get(&Value::Str(PyString::new("_value_")))
+                        if let Some(Value::Int(i)) = o
+                            .attrs
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .get(&Value::Str(PyString::new("_value_")))
                         {
                             return Ok(Value::Int(i.clone()));
                         }
@@ -785,6 +791,51 @@ pub fn builtin_list(args: &[Value]) -> BResult {
     match args.first() {
         None => Ok(Value::List(PyList::new())),
         Some(v) => {
+            // 02.09c unboxed-storage fast path: `list(range(...))` is THE
+            // bulk small-int list producer. Materialize straight into the
+            // raw i64 storage — no boxed Vec<Value> phase at all (the
+            // generic path below transiently holds 32 MB boxed + 16 MB raw
+            // for a 2M-element range). Bounds come from the range object's
+            // own `<start>/<stop>/<step>` ints, so element values are
+            // exactly what iteration would produce; a value outside the
+            // smi window (bigint-clamped bounds) falls back to the generic
+            // path — byte-identical semantics, just boxed.
+            if let Value::Obj(o) = v {
+                if o.kind == ap_obj::ObjKind::Range && o.name == "range" {
+                    let ints = o.ints.lock().unwrap_or_else(|p| p.into_inner());
+                    if ints.len() == 3 {
+                        let (start, stop, step) = (ints[0], ints[1], ints[2]);
+                        drop(ints);
+                        if step != 0 {
+                            // Same length arithmetic as IterState::Range
+                            // (crate::iter::range_len) — the fast path must
+                            // agree with the generic path on every input.
+                            let len = crate::iter::range_len(start, stop, step);
+                            // Overflow-safe cap: only take the fast path
+                            // when the count is sane.
+                            if len >= 0 && len <= (1i64 << 40) {
+                                let mut raw = Vec::with_capacity(len as usize);
+                                let mut cur = start;
+                                let mut ok = true;
+                                for _ in 0..len {
+                                    if !(ap_obj::SMI_MIN..=ap_obj::SMI_MAX).contains(&cur) {
+                                        ok = false;
+                                        break;
+                                    }
+                                    raw.push(cur);
+                                    cur = cur.wrapping_add(step);
+                                }
+                                if ok {
+                                    if let Some(l) = PyList::from_smi_raw(raw) {
+                                        return Ok(Value::List(l));
+                                    }
+                                }
+                                // fall through to the generic path
+                            }
+                        }
+                    }
+                }
+            }
             // PEP-342: generators must drain LAZILY through the executor
             // (iterable_of would hand back the lazy anchor; collect() on it
             // sees an empty Seq). Drive gen pulls directly.
@@ -4943,11 +4994,7 @@ pub fn builtin_range(args: &[Value]) -> crate::EvalResult {
             Ok(v.as_int().and_then(|i| i.to_i64()).unwrap_or_else(|| {
                 // clamp by sign of the bigint
                 let neg = v.as_int().map(|i| i.is_negative()).unwrap_or(false);
-                if neg {
-                    i64::MIN
-                } else {
-                    i64::MAX
-                }
+                if neg { i64::MIN } else { i64::MAX }
             }))
         })
         .collect::<Result<Vec<_>, _>>()?;
