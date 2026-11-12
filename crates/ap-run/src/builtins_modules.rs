@@ -6431,6 +6431,21 @@ fn collections_namedtuple(
                 list(fields.iter().map(|f| s(f.clone())).collect()),
             );
             let _ = t.dict.set(s("__tupleclass__"), Value::Bool(true));
+            // CPython 3.14: namedtuple classes carry _replace(self, **changes)
+            // AND the copy.replace protocol alias __replace__ = _replace (3.14
+            // added __replace__; s030 copy.replace(NT(1,2), a=9) needs it).
+            // Native marker: the class value rides slice_parts like
+            // __ap_namedtuple_make__.
+            let marker =
+                PyObject::new(ap_obj::ObjKind::BuiltinFn, "__ap_namedtuple_replace__");
+            *marker.slice_parts.lock().unwrap_or_else(|p| p.into_inner()) =
+                vec![class_v.clone()];
+            let _ = t.dict.set(s("_replace"), Value::Obj(marker.clone()));
+            let _ = t.dict.set(s("__replace__"), Value::Obj(marker));
+            // CPython namedtuple __repr__: "NT(a=1, b=2)" from field values.
+            let rm = PyObject::new(ap_obj::ObjKind::BuiltinFn, "__ap_namedtuple_repr__");
+            *rm.slice_parts.lock().unwrap_or_else(|p| p.into_inner()) = vec![class_v.clone()];
+            let _ = t.dict.set(s("__repr__"), Value::Obj(rm));
         }
     }
     Some(Ok(class_v))
