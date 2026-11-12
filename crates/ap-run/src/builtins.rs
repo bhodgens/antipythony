@@ -114,6 +114,28 @@ pub fn py_str_of(v: &Value) -> Result<String, ap_obj::exc::PyException> {
                 }
             }
         }
+        // CPython object.__str__ FALLBACK: a UserInstance with no user
+        // __str__ renders via __repr__ (namedtuple has only __repr__ —
+        // print(NT(1,2)) must show NT(a=1, b=2), not the default form).
+        // PurePath-style classes with a real __str__ took the dispatch
+        // above and never reach this arm.
+        if o.kind == ap_obj::ObjKind::UserInstance {
+            if let Some(interp) = crate::builtins_modules::current_interp() {
+                let has_user_str = crate::classes::special_lookup(&interp, v, "__str__")
+                    .map(|(_, owner)| {
+                        !matches!(owner.name.as_str(), "object" | "Exception" | "BaseException")
+                    })
+                    .unwrap_or(false);
+                if !has_user_str {
+                    if let Some(s) = crate::interp::user_repr_pub(&interp, v, "__repr__")
+                        .ok()
+                        .flatten()
+                    {
+                        return Ok(s);
+                    }
+                }
+            }
+        }
     }
     ap_obj::ops::to_str(v)
 }
@@ -1712,13 +1734,18 @@ pub fn builtin_iter(args: &[Value]) -> BResult {
     // materialized snapshot.
     if let Value::Obj(o) = v {
         if o.kind == ap_obj::ObjKind::Generator {
-            if let Some(id) = *o.gen_id.lock().unwrap_or_else(|p| p.into_inner()) {
+            // DEADLOCK FIX (02.08 audit row 1): the guard below MUST be
+            // dropped before calling iterable_of_public — it locks the same
+            // `o.gen_id` mutex, and the `if let` temporary guard lives to
+            // the end of the block (Rust 2021), so the inner lock() spins
+            // forever: iter(<genexpr>) hung the whole run (s030/s044).
+            // CPython semantics: iter(gen) returns a handle onto the SAME
+            // lazy state, never a fresh wrapper over a materialized snapshot.
+            let id = *o.gen_id.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(id) = id {
                 // Ensure the lazy anchor exists (iterable_of installs it).
-                let interp = crate::builtins_modules::current_interp();
-                if let Some(interp) = interp {
-                    let _ = crate::interp::iterable_of_public(v)?;
-                    let _ = interp;
-                }
+                // Guard is dropped by now — no re-entrant self-deadlock.
+                let _ = crate::interp::iterable_of_public(v)?;
                 let obj = ap_obj::PyObject::new(ap_obj::ObjKind::Iterator, "iterator");
                 *obj.gen_id.lock().unwrap_or_else(|p| p.into_inner()) = Some(id);
                 return Ok(Value::Obj(obj));

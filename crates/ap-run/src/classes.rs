@@ -3051,13 +3051,23 @@ pub fn special_lookup(
             *marker.slice_parts.lock().unwrap_or_else(|p| p.into_inner()) = vec![v.clone()];
             Some((Value::Obj(marker), object_class(interp)))
         }
+        // 02.08 copy-gate (s030): collections.namedtuple classes carry
+        // __repr__/_replace/__replace__ native markers in the class dict;
+        // NamedTuple-kind instances must resolve them through the same
+        // class-dict lookup UserInstance uses (the default `<NT object at>`
+        // repr broke copy.replace output byte-parity).
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::NamedTuple => {
+            let t = o
+                .type_ref
+                .read()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_ref()
+                .and_then(|w| w.upgrade())?;
+            t.lookup_with_owner(name)
+        }
         _ => None,
     }
 }
-
-// ===========================================================================
-// Attribute protocol (S-03-09..12)
-// ===========================================================================
 
 /// `obj.name` full protocol. Returns Err(Flow) only for real errors;
 /// misses raise AttributeError with the pinned text (caller distinguishes
@@ -3440,7 +3450,14 @@ fn instance_attr(
                 // so the interp call arm routes them to the mbc engine (a bare
                 // BuiltinFn would NameError in the caller's globals).
                 if let Value::Obj(mo) = &entry {
-                    if mo.kind == ap_obj::ObjKind::BuiltinFn && mo.name.starts_with("__ap_mbc__.") {
+                    if mo.kind == ap_obj::ObjKind::BuiltinFn
+                        && (mo.name.starts_with("__ap_mbc__.")
+                            // 02.08 copy-gate (s030): namedtuple class-level
+                            // native methods (_replace/__replace__/__repr__)
+                            // bind to the instance — unbound, the handler has
+                            // no receiver and reads None fields.
+                            || mo.name.starts_with("__ap_namedtuple_"))
+                    {
                         let bm = ap_obj::PyObject::with_self(
                             ap_obj::ObjKind::BoundMethod,
                             mo.name.clone(),

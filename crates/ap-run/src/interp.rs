@@ -3871,6 +3871,17 @@ pub(crate) fn eval_expr(
             // first pulled; v0 materializes its value stream on first pull
             // then streams (documented: single-threaded v0, no observable
             // difference for the corpus).
+            // CPython parity fix (02.08 s030): the OUTERMOST clause's
+            // iterable is evaluated EAGERLY, here, before the genexp object
+            // exists — later rebinding of the source name must not affect
+            // the stream (`args = (f(a) for a in args)` sees the ORIGINAL
+            // args). Errors raise at creation like CPython's.
+            let eager_iter = if clauses.is_empty() {
+                None
+            } else {
+                let it_val = eval_expr(interp, frame, &clauses[0].iter, reg)?;
+                Some(register_iter(interp, &it_val)?)
+            };
             // 02.09b P7: fetch_add — concurrent worker mints must never collide.
             let gen_id = interp
                 .next_gen_id
@@ -3886,6 +3897,7 @@ pub(crate) fn eval_expr(
                         clauses: clauses.clone(),
                         defining: frame.clone(),
                         reg: reg.clone(),
+                        eager_iter,
                     },
                 );
             let obj = ap_obj::PyObject::new(ap_obj::ObjKind::Generator, "<genexpr>");
@@ -5967,6 +5979,88 @@ fn call_value_inner_impl(
                         }
                         return Ok(Value::None);
                     }
+                    // CPython 3.14 namedtuple._replace(self, **changes) /
+                    // __replace__ (copy.replace protocol): current field
+                    // values with the named changes applied, field order
+                    // preserved. Raises ValueError on unknown field names
+                    // (CPython semantics; s030 copy.replace gate).
+                    if o.name == "__ap_namedtuple_replace__" {
+                        let recv = args.first().cloned().unwrap_or(Value::None);
+                        let fields: Vec<String> = {
+                            let class_v = o
+                                .slice_parts
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner())
+                                .first()
+                                .cloned()
+                                .unwrap_or(Value::None);
+                            match crate::classes::type_of(interp, &class_v) {
+                                Some(t) => match t
+                                    .dict
+                                    .get(&Value::Str(PyString::new(
+                                        "__ap_namedtuple_fields__",
+                                    ))) {
+                                    Some(Value::List(l)) => l
+                                        .items()
+                                        .iter()
+                                        .filter_map(|v| match v {
+                                            Value::Str(sv) => Some(sv.as_str().to_string()),
+                                            _ => None,
+                                        })
+                                        .collect(),
+                                    _ => Vec::new(),
+                                },
+                                None => Vec::new(),
+                            }
+                        };
+                        // Current values in field order (instance attrs carry
+                        // the fields; fall back to the tuple payload).
+                        let mut values: Vec<Value> = match &recv {
+                            Value::Obj(io) => fields
+                                .iter()
+                                .map(|f| {
+                                    io.attrs
+                                        .lock()
+                                        .unwrap_or_else(|p| p.into_inner())
+                                        .get(&Value::Str(PyString::new(f.as_str())))
+                                        .map(|v| v.clone())
+                                        .unwrap_or(Value::None)
+                                })
+                                .collect(),
+                            Value::Tuple(t) => t.0.clone(),
+                            _ => Vec::new(),
+                        };
+                        for (k, v) in kwargs {
+                            match fields.iter().position(|f| f == k) {
+                                Some(i) => values[i] = v.clone(),
+                                None => {
+                                    return Err(raise(
+                                        "ValueError",
+                                        format!(
+                                            "Got unexpected field names: {k:?}"
+                                        ),
+                                    ));
+                                }
+                            }
+                        }
+                        let class_v = o
+                            .slice_parts
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .first()
+                            .cloned()
+                            .unwrap_or(Value::None);
+                        if let Some(t) = crate::classes::type_of(interp, &class_v) {
+                            return crate::classes::instantiate(
+                                interp,
+                                &class_v,
+                                &t,
+                                &values,
+                                &[],
+                            );
+                        }
+                        return Ok(Value::None);
+                    }
                     // T1-d: namedtuple protocol dunders (urllib SplitResult:
                     // len()/iteration/indexing over the parked tuple payload).
                     if o.name == "__ap_namedtuple_len__" {
@@ -6021,6 +6115,67 @@ fn call_value_inner_impl(
                             return Err(raise("IndexError", "namedtuple index out of range"));
                         }
                         return Err(raise("TypeError", "namedtuple index must be int"));
+                    }
+                    // CPython namedtuple __repr__: "NT(a=1, b=2)" (field=value
+                    // pairs in declaration order; typename from the class).
+                    if o.name == "__ap_namedtuple_repr__" {
+                        let recv = args.first().cloned().unwrap_or(Value::None);
+                        let class_v = o
+                            .slice_parts
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .first()
+                            .cloned()
+                            .unwrap_or(Value::None);
+                        let (typename, fields): (String, Vec<String>) = match crate::classes::type_of(interp, &class_v) {
+                            Some(t) => {
+                                let fs = t
+                                    .dict
+                                    .get(&Value::Str(PyString::new("__ap_namedtuple_fields__")))
+                                    .and_then(|v| match v {
+                                        Value::List(l) => Some(
+                                            l.items()
+                                                .iter()
+                                                .filter_map(|x| match x {
+                                                    Value::Str(sv) => {
+                                                        Some(sv.as_str().to_string())
+                                                    }
+                                                    _ => None,
+                                                })
+                                                .collect::<Vec<String>>(),
+                                        ),
+                                        _ => None,
+                                    })
+                                    .unwrap_or_default();
+                                (t.name.clone(), fs)
+                            }
+                            None => (String::new(), Vec::new()),
+                        };
+                        let mut out = format!("{typename}(");
+                        for (i, f) in fields.iter().enumerate() {
+                            if i > 0 {
+                                out.push_str(", ");
+                            }
+                            let val = match &recv {
+                                Value::Obj(io) => io
+                                    .attrs
+                                    .lock()
+                                    .unwrap_or_else(|p| p.into_inner())
+                                    .get(&Value::Str(PyString::new(f.as_str())))
+                                    .map(|v| v.clone())
+                                    .unwrap_or(Value::None),
+                                other => other.clone(),
+                            };
+                            let rendered = crate::interp::repr_with_classes_public(interp, &val)?;
+                            let rendered = match &rendered {
+                                Value::Str(sv) => sv.as_str().to_string(),
+                                other => crate::builtins::py_str_of(other)
+                                    .unwrap_or_default(),
+                            };
+                            out.push_str(&format!("{f}={rendered}"));
+                        }
+                        out.push(')');
+                        return Ok(Value::Str(PyString::new(out)));
                     }
                     if o.name == "__ap_namedtuple_getter__" {
                         let field = match o
@@ -6918,6 +7073,41 @@ fn call_value_inner_impl(
                             return Ok(mk_setattr(inst));
                         }
                         match base.trim_start_matches('_') {
+                            // 02.08 copy-gate (s030): set/frozenset.__reduce__
+                            // (copy.py dispatch_table miss falls to the reduce
+                            // protocol). CPython 3.14 shape: fs.__reduce__()
+                            // == (frozenset, ([1],), None). __reduce_ex__(4)
+                            // answers the same tuple. Old path fabricated a
+                            // dead marker -> NameError.
+                            "reduce" | "reduce_ex" => {
+                                let subject = o
+                                    .slice_parts
+                                    .lock()
+                                    .unwrap_or_else(|p| p.into_inner())
+                                    .first()
+                                    .cloned()
+                                    .unwrap_or_else(|| {
+                                        args.first().cloned().unwrap_or(Value::None)
+                                    });
+                                let items: Vec<Value> = match &subject {
+                                    Value::Set(st) => st.iter().collect(),
+                                    Value::Frozen(st) => st.iter().collect(),
+                                    _ => Vec::new(),
+                                };
+                                let cls = match &subject {
+                                    Value::Set(_) => "set",
+                                    _ => "frozenset",
+                                };
+                                let cls_v =
+                                    crate::builtins_modules::interned_type_pub(cls);
+                                return Ok(Value::Tuple(Gc::new(Tuple(vec![
+                                    cls_v,
+                                    Value::List(ap_obj::value::PyList::from_vec(vec![
+                                        Value::List(ap_obj::value::PyList::from_vec(items)),
+                                    ])),
+                                    Value::None,
+                                ]))));
+                            }
                             "init" | "delattr" => {
                                 return Ok(Value::None);
                             }
@@ -8687,6 +8877,15 @@ pub enum GenFrame {
         clauses: Vec<ap_ir::expr::CompClause>,
         defining: Arc<Frame>,
         reg: Arc<FnRegistry>,
+        /// CPython genexp semantics: the OUTERMOST clause's iterable is
+        /// evaluated IMMEDIATELY at genexp creation (the only eagerly
+        /// evaluated part of a genexp). copy.py `_reconstruct` rebinds
+        /// `args = (deepcopy(a, memo) for a in args)` then star-calls —
+        /// pull-time re-evaluation would see the REBOUND name (the genexp
+        /// itself) and yield nothing (s030 deepcopy(frozenset) -> empty).
+        /// None = legacy pull-time eval (kept for frames built before this
+        /// change; the constructor always sets Some on success).
+        eager_iter: Option<u64>,
     },
     /// def-generator: resumable fiber state (PEP-342). The fiber is created
     /// at call time but NOT started — the body runs on first resume.
@@ -8958,6 +9157,7 @@ fn gen_pull(interp: &Arc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> {
                 clauses,
                 defining,
                 reg,
+                eager_iter,
             }) = take
             else {
                 return Ok(None);
@@ -8972,6 +9172,7 @@ fn gen_pull(interp: &Arc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> {
                     &clauses,
                     &reg,
                     &mut sink.borrow_mut(),
+                    eager_iter,
                 )
             })?;
             let values: Vec<Value> = sink.borrow().clone();
@@ -9190,6 +9391,7 @@ fn gen_materialize(interp: &Arc<Interpreter>, id: u64) -> Result<(), Flow> {
         clauses,
         defining,
         reg,
+        eager_iter,
     }) = take
     else {
         return Ok(());
@@ -9200,7 +9402,7 @@ fn gen_materialize(interp: &Arc<Interpreter>, id: u64) -> Result<(), Flow> {
     // yields went nowhere and materialized an EMPTY Seq — map/list/tuple over
     // a not-yet-started genexp all saw zero items.
     run_gen_body(interp, &defining, |cf| {
-        run_comp_clauses_into(interp, cf, &elt, None, &clauses, &reg, &mut sink)
+        run_comp_clauses_into(interp, cf, &elt, None, &clauses, &reg, &mut sink, eager_iter)
     })?;
     let it = PyIterator::new(IterState::Seq(sink, 0));
     // Fence-perf fix 2026-11-06: tag for Drop-prune (F5 contract).
@@ -9588,6 +9790,7 @@ fn run_comp(
         &mut list_out,
         &set_out,
         &dict_out,
+        None,
     )?;
     Ok(match kind {
         CompKind::List => Value::List(PyList::from_vec(list_out)),
@@ -9606,6 +9809,7 @@ fn run_comp_clauses_into(
     clauses: &[ap_ir::expr::CompClause],
     reg: &Arc<FnRegistry>,
     sink: &mut Vec<Value>,
+    pre_iter: Option<u64>,
 ) -> Result<(), Flow> {
     let mut out = Vec::new();
     let set_out = ap_obj::PySet::new();
@@ -9623,6 +9827,7 @@ fn run_comp_clauses_into(
         &mut out,
         &set_out,
         &dict_out,
+        pre_iter,
     )?;
     sink.append(&mut out);
     Ok(())
@@ -9642,6 +9847,7 @@ fn run_comp_clauses(
     list_out: &mut Vec<Value>,
     set_out: &ap_obj::PySet,
     dict_out: &PyDict,
+    pre_iter: Option<u64>,
 ) -> Result<(), Flow> {
     if ci == clauses.len() {
         let e = eval_expr(interp, cf, elt, reg)?;
@@ -9660,12 +9866,22 @@ fn run_comp_clauses(
     // scope; nested clause iterables reference names bound by earlier
     // clauses in the comp frame (dis: {s: b for b, fam in d.items() for s in
     // fam}).
-    let iterable = if ci == 0 {
-        eval_expr(interp, outer, &clause.iter, reg)?
+    // 02.08 CPython-parity (s030): a GENEXP's clause-0 iterable was already
+    // evaluated + registered EAGERLY at genexp creation (GenFrame::GenExpr
+    // .eager_iter) — re-evaluating at pull time would read REBOUND names
+    // (`args = (f(a) for a in args)` self-iterates => empty stream).
+    let id = if ci == 0 {
+        match pre_iter {
+            Some(pid) => pid,
+            None => {
+                let iterable = eval_expr(interp, outer, &clause.iter, reg)?;
+                register_iter(interp, &iterable)?
+            }
+        }
     } else {
-        eval_expr(interp, cf, &clause.iter, reg)?
+        let iterable = eval_expr(interp, cf, &clause.iter, reg)?;
+        register_iter(interp, &iterable)?
     };
-    let id = register_iter(interp, &iterable)?;
     loop {
         let next = match pull_iter(interp, id)? {
             Some(v) => v,
@@ -9693,6 +9909,7 @@ fn run_comp_clauses(
                 list_out,
                 set_out,
                 dict_out,
+                pre_iter,
             )?;
         }
     }
@@ -9964,7 +10181,15 @@ fn iterable_of(v: &Value) -> Result<Gc<PyIterator>, Flow> {
     // arm). No eager materialization.
     if let Value::Obj(o) = v {
         if o.kind == ap_obj::ObjKind::Generator {
-            if let Some(id) = *o.gen_id.lock().unwrap_or_else(|p| p.into_inner()) {
+            // DEADLOCK FIX (02.08 audit row 1, s030 copy.deepcopy): the
+            // `if let ... = *o.gen_id.lock()` scrutinee temporary (the
+            // MutexGuard) lives to the END of the if-let body (Rust 2021),
+            // and the body's gen_materialize -> genexp clauses ->
+            // register_iter re-locks the SAME generator's gen_id =>
+            // single-thread self-deadlock. Copy the id out and drop the
+            // guard before any call that can re-enter.
+            let id = *o.gen_id.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(id) = id {
                 // T2 root fix (pytest genitems/extend): the old path installed
                 // an EMPTY Seq anchor for def-generators, so every collector
                 // that used iterable_of + collect (tuple/set/sorted/
@@ -10625,16 +10850,14 @@ fn user_len(interp: &Arc<Interpreter>, v: &Value) -> Result<Option<i64>, Flow> {
 }
 
 /// User-protocol repr/str. `which`: "__repr__" or "__str__".
-fn user_repr(interp: &Arc<Interpreter>, v: &Value, which: &str) -> Result<Option<String>, Flow> {
-    // __str__ falls back to __repr__ only through object.__str__ semantics
+fn user_repr(interp: &Arc<Interpreter>, v: &Value, which: &str) -> Result<Option<String>, Flow> {    // __str__ falls back to __repr__ only through object.__str__ semantics
     // (S-03-24): an explicit __str__ must return str; missing __str__ with
     // a class __repr__ uses it; neither -> default form.
     let lookup = |name: &str| crate::classes::special_lookup(interp, v, name);
     let target = match which {
         "__str__" => lookup("__str__").or_else(|| lookup("__repr__")),
         other => lookup(other),
-    };
-    match target {
+    };    match target {
         Some((f, owner)) => {
             // W113 (parsel XPathExpr.__str__ via str(x)): calling the raw
             // class-dict function bypasses the BoundMethod dispatch that
@@ -11298,6 +11521,16 @@ pub fn repr_with_classes_public(interp: &Arc<Interpreter>, v: &Value) -> EResult
     repr_with_classes(interp, v)
 }
 
+/// Public wrapper for py_str_of's object.__str__ -> __repr__ fallback
+/// (02.08 copy-gate: print(NT(1,2)) must honor the class __repr__).
+pub fn user_repr_pub(
+    interp: &Arc<Interpreter>,
+    v: &Value,
+    which: &str,
+) -> Result<Option<String>, Flow> {
+    user_repr(interp, v, which)
+}
+
 /// repr() that renders user __repr__ through containers (V066's
 /// `repr([Both()])` -> `[REPR]`): walks the value tree, pre-rendering
 /// user instances, then splices them into the structural form.
@@ -11315,7 +11548,15 @@ fn repr_with_classes(interp: &Arc<Interpreter>, v: &Value) -> EResult {
                     return Ok(());
                 }
                 out.push('[');
-                for (i, item) in l.items().iter().enumerate() {
+                // DEADLOCK FIX (02.08 audit row 1 follow-up): SNAPSHOT the
+                // items — do NOT hold the ItemsRef guard across the recursive
+                // render calls. An element's user __repr__ can allocate, which
+                // fires gc_register -> auto-collect -> edges_of(Value::List)
+                // -> l.items().lock() on THIS SAME list (it is registry-
+                // tracked) => single-thread self-deadlock (s044 pathlib,
+                // hang #2; first hang was builtin_iter's gen_id guard).
+                let snapshot: Vec<Value> = l.items().to_vec();
+                for (i, item) in snapshot.iter().enumerate() {
                     if i > 0 {
                         out.push_str(", ");
                     }
@@ -11346,6 +11587,9 @@ fn repr_with_classes(interp: &Arc<Interpreter>, v: &Value) -> EResult {
                     return Ok(());
                 }
                 out.push('{');
+                // Same deadlock class as the List arm below: snapshot before
+                // rendering (element __repr__ can re-enter GC -> edges_of on
+                // this dict/list family). Dict::items returns owned pairs.
                 for (i, (k, val)) in d.items().iter().enumerate() {
                     if i > 0 {
                         out.push_str(", ");
@@ -11439,6 +11683,21 @@ fn repr_with_classes(interp: &Arc<Interpreter>, v: &Value) -> EResult {
                     }
                     None => {
                         out.push_str(&default_instance_repr(v));
+                        Ok(())
+                    }
+                }
+            }
+            // 02.08 copy-gate (s030): namedtuple instances consult a class
+            // __repr__ (CPython: "NT(a=1, b=2)") before the default form.
+            Value::Obj(no) if no.kind == ap_obj::ObjKind::NamedTuple => {
+                let _ = no;
+                match user_repr(interp, v, "__repr__")? {
+                    Some(s) => {
+                        out.push_str(&s);
+                        Ok(())
+                    }
+                    None => {
+                        out.push_str(&ap_obj::ops::repr(v).map_err(Flow::from_py)?);
                         Ok(())
                     }
                 }
@@ -14246,6 +14505,33 @@ fn attr_get(_interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Optio
                 {
                     return Ok(Some(v));
                 }
+                // 02.08 copy-gate (s030): class-level native methods
+                // (_replace/__replace__/__repr__) bind to the INSTANCE like
+                // UserInstance class-dict methods do — the raw class attr
+                // called unbound has no receiver and reads None fields.
+                if let Some(t) = o
+                    .type_ref
+                    .read()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .as_ref()
+                    .and_then(|w| w.upgrade())
+                {
+                    if let Some(cv) = t.lookup_with_owner(name).map(|(v, _)| v) {
+                        if let Value::Obj(m) = &cv {
+                            if m.kind == ap_obj::ObjKind::BuiltinFn {
+                                let bm = ap_obj::PyObject::with_self(
+                                    ap_obj::ObjKind::BoundMethod,
+                                    name,
+                                    obj.clone(),
+                                );
+                                *bm.func.lock().unwrap_or_else(|p| p.into_inner()) =
+                                    Some(cv.clone());
+                                return Ok(Some(Value::Obj(bm)));
+                            }
+                        }
+                        return Ok(Some(cv));
+                    }
+                }
                 // T2 (typing NamedTupleMeta `nm_tpl.__init_subclass__()`):
                 // namedtuple CLASS payloads answer the implicit object hooks.
                 if matches!(name, "__init_subclass__" | "__subclasshook__") {
@@ -15125,11 +15411,19 @@ fn attr_get(_interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Optio
             // object-virtual markers so the class-level virtual path answers.
             // SCOPE: set/frozenset only — blanket dunder markers on str/dict/
             // list broke enum's class-iteration paths (list(C) lost members).
+            // EXCLUDED: the copy protocol names (__deepcopy__/__copy__/
+            // __reduce__ family) — CPython's set/frozenset do NOT define
+            // them, and fabricating markers made copy.py's getattr(x,
+            // "__deepcopy__") return a callable-shaped marker whose call
+            // died as NameError (s030 deepcopy(frozenset)).
             if matches!(obj, Value::Set(_) | Value::Frozen(_))
                 && name.starts_with("__")
                 && name.ends_with("__")
                 && name.len() > 4
-                && !matches!(name, "__class__" | "__dict__" | "__doc__")
+                && !matches!(
+                    name,
+                    "__class__" | "__dict__" | "__doc__" | "__deepcopy__" | "__copy__"
+                )
             {
                 let m = ap_obj::PyObject::new(
                     ap_obj::ObjKind::BuiltinFn,
