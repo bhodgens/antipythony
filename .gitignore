@@ -1,4 +1,5 @@
 /target
+/target-*/
 __pycache__/
 *.pyc
 # robustness-ci 01.05: machine-regenerated timing artifact, trend-only, never a gate

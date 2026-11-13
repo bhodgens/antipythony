@@ -1,3 +1,0 @@
-vec![
-  "/Users/caimlas/.git/worktrees/leaf-0205g/target-0205g/debug/build/cranelift-assembler-x64-a3eb4975aa4dcb9c/out/assembler.rs".into(),
-]
