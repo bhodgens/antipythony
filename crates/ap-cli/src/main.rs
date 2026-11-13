@@ -79,9 +79,15 @@ fn run(args: &[String]) -> Result<i32, String> {
     }
 
     let verb = args.get(i).map(|s| s.as_str());
-    let rest: Vec<&str> = args[i + 1..].iter().map(|s| s.as_str()).collect();
+    // args[i + 1..] panics when i == args.len() (bare `antipythony` with no
+    // verb) — clamp the range so verb=None reaches the usage arm instead.
+    let rest_start = (i + 1).min(args.len());
+    let rest: Vec<&str> = args[rest_start..].iter().map(|s| s.as_str()).collect();
     match verb {
+        // No verb (or only flags): print usage instead of panicking on the
+        // empty-args slice index (found when writing the README quick-start).
         None => Ok(usage()),
+        Some("") | Some("--help") | Some("-h") => Ok(usage()),
         Some("new") => cmd_new(&rest),
         Some("add") => cmd_add(&rest),
         Some("run") => cmd_run(&rest, false),
