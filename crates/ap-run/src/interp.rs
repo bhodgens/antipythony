@@ -13321,8 +13321,31 @@ fn attr_get(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Option
     if name == "__class__" {
         // 02.03: user classes/instances answer from the real class table
         // (identity: x.__class__ is C, type(A) is A.__class__).
-        if matches!(obj, Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass || o.kind == ap_obj::ObjKind::UserInstance)
+        if matches!(obj, Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass
+            || o.kind == ap_obj::ObjKind::UserInstance
+            // s030: namedtuple instances too — copy.replace does
+            // cls = obj.__class__; getattr(cls, '__replace__') on the
+            // degenerated `object` answer then TypeError'd.
+            || o.kind == ap_obj::ObjKind::NamedTuple)
         {
+            // s030: NamedTuple answers __class__ DIRECTLY from the type
+            // table — attr_get_opt's MRO walk finds object's __class__ slot
+            // first and degenerates to <class 'object'>, breaking
+            // copy.replace's cls = obj.__class__ + getattr(cls,
+            // '__replace__') protocol.
+            if let Value::Obj(no) = obj {
+                if no.kind == ap_obj::ObjKind::NamedTuple && name == "__class__" {
+                    if let Some(t) = no
+                        .type_ref
+                        .read()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .as_ref()
+                        .and_then(|w| w.upgrade())
+                    {
+                        return Ok(Some(crate::classes::class_value_for_public(&t)));
+                    }
+                }
+            }
             if let Some(v) = crate::classes::attr_get_opt(interp, obj, name)? {
                 return Ok(Some(v));
             }
@@ -15088,6 +15111,20 @@ fn attr_get(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 Ok(None)
             }
             ap_obj::ObjKind::NamedTuple => {
+                // s030: identity first — copy.replace does cls = obj.__class__
+                // then getattr(cls, '__replace__'); a degenerated answer broke
+                // the protocol (TypeError "replace() does not support object").
+                if name == "__class__" {
+                    if let Some(t) = o
+                        .type_ref
+                        .read()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .as_ref()
+                        .and_then(|w| w.upgrade())
+                    {
+                        return Ok(Some(crate::classes::class_value_for_public(&t)));
+                    }
+                }
                 if let Some(v) = o
                     .attrs
                     .lock()
