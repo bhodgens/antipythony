@@ -94,8 +94,9 @@ CPython reference: 3.14.0 (codecs ground-truthed against 3.14.7).
   0 failed; T10 threading slice 105 passed / 2 xfail; xtask notices --check OK (345 deps).
 - stdlib import coverage 53/53: the spec-05 module list resolves entirely — 31 native
   modules + 22 vendored, zero missing. The honest caveat is depth: the tier-0 ap-conform
-  stdlib behavioral slice is 30/48 (16 fail + 2 timeout), adaptive mode is
-  byte-identical, and the binary is 29/48. (.hermes/audits/2026-11-11-0208-stdlib-
+  stdlib behavioral slice is 41/48 (6 fail + 1 timeout) after the 02.08
+  gaps wave (2026-11-13); adaptive mode is byte-identical, and the binary
+  is 29/48 (linecache __file__ semantics). (.hermes/audits/2026-11-11-0208-stdlib-
   coverage-audit.md, landed 0ed927fa)
 - Ecosystem tiers T1 and T2 green: scrapy 2.19.0 crawls file:// and produces
   byte-identical items.jsonl (docs/t1-gate.md, ~25 blockers cleared); pytest 9.1.1 runs
@@ -143,9 +144,13 @@ CPython reference: 3.14.0 (codecs ground-truthed against 3.14.7).
 - musl static-linux builds unverified: no musl toolchain on the host; --target linux-musl
   is implemented and fails loudly naming the missing toolchain. The 15 MB size gate is a
   musl bound, unmeasurable here — macOS is report-only for size.
-- stdlib behavioral depth: tier-0 ap-conform slice 30/48 (16 fail + 2 timeout); ~16 named
-  surface gaps (Counter repr, functools CacheInfo, ast.unparse, typing repr/origin, an
-  enum mangling bug, pprint, argparse, warnings attribution) — a fix wave is in flight;
+- stdlib behavioral depth: tier-0 ap-conform slice 41/48 (6 fail + 1 timeout)
+  after the 02.08 gaps wave (2026-11-13: 9 cases newly byte-exact green, incl.
+  functools/collections/enum/operator/struct/argparse/pathlib/tokenize/
+  contextlib; the iter(<genexpr>) wedge also fixed — s030/s044 un-hang);
+  7 cases still need deeper native work (inspect, ast.unparse, dataclasses
+  __init__, pprint key dispatch in module frames, copy.replace on namedtuples,
+  s016 warning-line attribution, s026 typing import hang — pre-existing);
   stdlib .py payloads are not embedded in AoT binaries yet.
   [UPDATE 2026-11-13: the iter(<genexpr>) wedge listed by the earlier audit was FIXED
   this session — three re-entrant mutex self-deadlocks + genexp eager-clause semantics

@@ -161,9 +161,9 @@ GIL, uv-backed deps at build time. Byte-exact differential conformance vs CPytho
   PENDING (external meept go-lane load spikes 9-11 during session).
   02.08 COVERAGE AUDIT (read-only, .hermes/audits/2026-11-11-0208-stdlib-
   coverage-audit.md): spec-05 IN-list 53 modules: 31 native + 22 vendored,
-  ZERO missing; ap-conform stdlib slice tier-0 30/48 (16 fail + 2 timeout),
+  ZERO missing; ap-conform stdlib slice tier-0 41/48 after the 02.08 gaps wave (6 fail + 1 timeout; was 30/48),
   adaptive byte-identical, BINARY 29/48 (binary-only s021_linecache __file__
-  semantics); GATE RED - 02.08-full remaining work ranked in the audit:
+  semantics); GATE RED->IMPROVED (41/48 after gaps wave a3e851ec, 2026-11-13) - remaining work ranked in the audit:
   iter(<genexpr>) wedge (hangs s030/s044, likely blocks much downstream),
   OUT-face spec amendment (51 modules import fine but xfail), ~16 named
   surface gaps (Counter repr, functools CacheInfo, ast.unparse, typing
