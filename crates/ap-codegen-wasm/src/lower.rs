@@ -239,6 +239,11 @@ pub fn lower_module(module: &IrModule) -> Result<Vec<u8>, CodegenError> {
         locals.push((1, ValType::I32)); // 40
         locals.push((1, ValType::I64)); // 41
         locals.push((5, pyobj_ref())); // 42..46
+        locals.push((1, ValType::I32)); // 47: compare-result spill (TEMP_LOCAL_CMP)
+        locals.push((1, ValType::Ref(wasm_encoder::RefType {
+            nullable: true,
+            heap_type: wasm_encoder::HeapType::Concrete(T_OBJ_ARR_RO),
+        }))); // 48: array.new_fixed result stash (TEMP_LOCAL_OBJARR_RO)
         funcs.function(FT_VOID); // _start (fn-section entry)
         let mut f = Function::new(locals);
         f.instruction(&Instruction::Call(fx::FN_RT_INIT));
@@ -656,14 +661,22 @@ fn emit_expr(
             }
             // i32 -> bool object: BOOL_OBJ (FT_U_O) takes (unused-i32, x-o)
             // and re-truthies x itself; for a compare RESULT that would
-            // double-negate. Build the bool $int directly: (bool-type,
-            // kind 0, smi payload, null big).
+            // double-negate. Build the bool $int directly in field order
+            // (bool-type, kind 0, smi payload, null big). The folded
+            // compare-result i32 is on the stack TOP here and must become
+            // the smi field, but the type/kind args have to be pushed
+            // FIRST — so spill the result into a dedicated i32 temp (47),
+            // push type+kind, then reload and extend. (The b13ed8f3 shape
+            // pushed type/kind first and left the folded i32 buried — the
+            // V051/V052/V055 validate errors.)
+            f.instruction(&Instruction::LocalSet(TEMP_LOCAL_CMP));
             f.instruction(&Instruction::GlobalGet(crate::types::builtin_type_global(
                 "bool",
             )
             .expect("TYPE_ORDER carries bool")));
-            f.instruction(&Instruction::I32Const(0));
-            f.instruction(&Instruction::I64ExtendI32U);
+            f.instruction(&Instruction::I32Const(0)); // kind = smi
+            f.instruction(&Instruction::LocalGet(TEMP_LOCAL_CMP));
+            f.instruction(&Instruction::I64ExtendI32U); // smi = folded result
             f.instruction(&Instruction::RefNull(prelude::hc(
                 crate::types::T_BIGINT,
             )));
@@ -754,32 +767,40 @@ fn emit_expr(
             }
         }
         Expr::List(items) => {
-            // $list { len, cap, items-array }
+            // $list { len, cap, items-array }. Items are array.new_fixed
+            // over the RO array type (WasmGC requires an immutable array
+            // type there); stashed through the array-typed temp (an oref
+            // local cannot hold an array ref — array refs are not $pyobj
+            // subtypes).
             for it in items {
                 emit_expr(f, it, names, strs, buf_ptr, tab);
             }
             f.instruction(&Instruction::ArrayNewFixed {
-                array_type_index: T_OBJ_ARR,
+                array_type_index: T_OBJ_ARR_RO,
                 array_size: items.len() as u32,
             });
-            f.instruction(&Instruction::LocalSet(TEMP_LOCAL_OBJARR));
+            f.instruction(&Instruction::LocalSet(TEMP_LOCAL_OBJARR_RO));
             f.instruction(&Instruction::GlobalGet(
                 builtin_type_global("list").unwrap_or(0),
             ));
             f.instruction(&Instruction::I32Const(items.len() as i32));
             f.instruction(&Instruction::I32Const(items.len() as i32));
-            f.instruction(&Instruction::LocalGet(TEMP_LOCAL_OBJARR));
+            f.instruction(&Instruction::LocalGet(TEMP_LOCAL_OBJARR_RO));
             f.instruction(&Instruction::StructNew(T_LIST));
         }
         Expr::Tuple(items) => {
             for it in items {
                 emit_expr(f, it, names, strs, buf_ptr, tab);
             }
-            f.instruction(&Instruction::LocalSet(TEMP_LOCAL_OBJARR));
+            f.instruction(&Instruction::ArrayNewFixed {
+                array_type_index: T_OBJ_ARR_RO,
+                array_size: items.len() as u32,
+            });
+            f.instruction(&Instruction::LocalSet(TEMP_LOCAL_OBJARR_RO));
             f.instruction(&Instruction::GlobalGet(
                 builtin_type_global("tuple").unwrap_or(0),
             ));
-            f.instruction(&Instruction::LocalGet(TEMP_LOCAL_OBJARR));
+            f.instruction(&Instruction::LocalGet(TEMP_LOCAL_OBJARR_RO));
             f.instruction(&Instruction::StructNew(T_TUPLE));
         }
         Expr::Dict(items) => {
@@ -834,6 +855,8 @@ const TEMP_LOCAL_A: u32 = 42;
 const TEMP_LOCAL_B: u32 = 43;
 const TEMP_LOCAL_OBJARR: u32 = 44;
 const TEMP_LOCAL_S: u32 = 45; // $str stash for print arg reorder ($str <: $pyobj)
+const TEMP_LOCAL_CMP: u32 = 47; // compare-result spill (i32) for the bool build
+const TEMP_LOCAL_OBJARR_RO: u32 = 48; // array.new_fixed stash ($obj_arr_ro)
 
 fn binop_op(op: BinOp) -> i32 {
     match op {
