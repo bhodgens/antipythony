@@ -39,7 +39,19 @@ pub const FN_BIG_BITS: u32 = 31;
 pub const FN_BIG_CMP: u32 = 32;
 pub const FN_BINOP: u32 = 33;
 pub const FN_UNARY: u32 = 34;
-pub const FN_LEN: u32 = 35;
+// Leaf 03.02b bigint limb arithmetic (V001 exactness gate). Appended AFTER
+// the original prelude block; FN_START shifts accordingly.
+pub const FN_BIG_UADD: u32 = 36; // (a,b) -> |a|+|b|
+pub const FN_BIG_USUB: u32 = 37; // (a,b) -> |a|-|b| (|a|>=|b|, caller checks)
+pub const FN_BIG_UMUL: u32 = 38; // (a,b) -> |a|*|b|
+pub const FN_BIG_ADD: u32 = 39;  // (a,b) -> signed a+b
+pub const FN_BIG_SUB: u32 = 40;  // (a,b) -> signed a-b
+pub const FN_BIG_MUL: u32 = 41;  // (a,b) -> signed a*b
+pub const FN_BIG_SHL: u32 = 42;  // (a, i64 n) -> a<<n (n>=0)
+pub const FN_BIG_SHR: u32 = 43;  // (a, i64 n) -> a>>n (a>=0 path; arithmetic)
+pub const FN_BIG_FROM_U64: u32 = 44; // (u64 magnitude) -> +big (normalized)
+pub const FN_BIG_MOD_SMI: u32 = 45;  // (a, i64 m) -> i64 remainder (a>=0, m>0)
+pub const FN_LEN: u32 = 45;
 
 pub const FN_START: u32 = FN_LEN + 1;
 

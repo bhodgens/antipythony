@@ -543,11 +543,14 @@ pub fn build_type_section_with_prefix(prefix: usize) -> wasm_encoder::TypeSectio
         array_ty(field_i16(false)),
         // 12 $i32_arr
         array_ty(field(field_i32_val(), false)),
-        // 13 $list sub $pyobj
+        // 13 $list sub $pyobj — items are the RO array type: literals are
+        // built with array.new_fixed (WasmGC requires an immutable array
+        // type there); v1 lists on this slice never mutate in place, and
+        // mutation (03.02c) rebuilds via array.new_fixed as well.
         sub(vec![
             field_i32(false),      // len
             field_i32(false),      // cap
-            fr(T_OBJ_ARR, false),  // items (mut array)
+            fr(T_OBJ_ARR_RO, false), // items
         ]),
         // 14 $obj_arr — mut pyobj array
         array_ty(field(pyobj_ref(), true)),
@@ -767,4 +770,10 @@ pub fn append_prelude_fts(types: &mut wasm_encoder::TypeSection) {
     types.ty().function([i32v(), o(), o()], [o()]);
     // 57 FT_O_O: (o) -> o                        len / passthrough
     types.ty().function([o()], [o()]);
+    // 58 FT_BB_B: (big, big) -> big              bigint limb arithmetic
+    types.ty().function([big(), big()], [big()]);
+    // 59 FT_BI_B: (big, i64) -> big              shift by immediate
+    types.ty().function([big(), i64v()], [big()]);
+    // 60 FT_BI_L: (big, i64) -> i64              mod-smi remainder
+    types.ty().function([big(), i64v()], [i64v()]);
 }
