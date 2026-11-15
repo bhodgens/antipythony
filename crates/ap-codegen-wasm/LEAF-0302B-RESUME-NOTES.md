@@ -1,61 +1,59 @@
-# Leaf 03.02b resume — WasmGC values/arithmetic/containers
+# Leaf 03.02b resume — WasmGC values/arithmetic/containers (2026-11-15 closeout)
 
-Corpus slice scope (diag_run.rs, the byte-exact gate set):
-- MUST be green byte-exact: V001, V051, V052, V055 (the parked blockers) —
-  plus V056/V060 IF reachable with current lowerable surface.
-- Explicitly UNSUPPORTED (fail-closed, fine): V047 (set/frozenset calls),
-  V054/V012 (Try = 03.02c), V003 (For = 03.02c), V056 (Assign-aug forms?),
-  V050/V059/V058 (class def / subscript calls), V005/V002/V004/V007/V010/
-  V011 (divmod/round/int()/format builtins not on the slice), V008/V060
-  (isinstance/format/f-string).
+## DONE (byte-exact vs expected/, verified via diag_run + ap-host)
+- V051-eq-vs-identity, V052-cross-type-numeric-eq, V055-hash-eq-invariant:
+  BYTE-EXACT. Commits 019020ff, b6cdceb0, f1859d4f on tier1-0302b-resume.
+- Root causes fixed en route (see git log for details):
+  (1) eq() was a bisect stub -> wired to eq_full; eq_full's local map was
+      WRONG (assumed 1=a 2=b 3=sel-a 4=sel-b; FT_OO_I params land 0=a 1=b,
+      locals now 2=a 3=b 4=sel-a 5=sel-b, second type_sel scratch=6 so
+      sel-a is NOT clobbered — the clobber made None==False dispatch into
+      int_eq -> ref.cast trap). Outer Block(I32) needs a fallthrough const.
+  (2) compare() rewritten: EQ/NE via FN_EQ; ordering via f64 promotion
+      (bool normalize, I32LeU sel guards, LT/LE/GT/GE If-chain with
+      Unreachable fillers); locals (2,oref),(2,I32),(2,F64)=7,8.
+  (3) float_py_eq: old body cast BOTH sides to $float unconditionally
+      (null-cast trap); rewrote with type_sel promotion: float direct,
+      int/bool via smi->f64, non-numeric -> 0/0 NaN (compares false).
+      Locals (2,oref),(2,F64),(1,I32)=6=sel.
+  (4) int_to_str digit DIRECTION: append_i64 copy loop was fine — the
+      real symptom was V001 lines 2-4 (bigints), NOT the digit order;
+      line 1 multi-digit prints byte-exact (1000000, 57005, 3735928559).
+  (5) dict_eq was a stub -> real linear-scan implementation (entry local
+      typed (ref null $dict_entry) — $dict_entry is a BARE struct, NOT a
+      $pyobj, so oref locals cannot hold it; matched flag = local 13).
+  (6) hash(): bool (sel 2) now rides the $int payload path (sel 0||2).
+  (7) unary(): float arm must use RefTestNullable (ref.cast traps on
+      non-float operands); big NEG/INVERT removed (see below).
+  (8) lower.rs: list/tuple literals must build items via ArrayNewFixed
+      over T_OBJ_ARR_RO (WasmGC: array.new_fixed requires immutable
+      array type); $list.items field = T_OBJ_ARR_RO; stash in local 48
+      (limb/array refs are not $pyobj subtypes). The compare bool-build
+      spills the folded i32 into local 47 (TEMP_LOCAL_CMP) before
+      pushing bool-type/kind — the b13ed8f3 shape left the folded i32
+      buried under type/kind (the V051/V052/V055 validate errors).
 
-## Root causes found (2026-11-14 resume)
+## V001 status (NOT byte-exact, fail-closed acceptable per notes scope)
+- Line 1 (smi path: 1000000, bin/oct/hex, 0xDEAD/0Xdead_beef) byte-exact.
+- Lines 2-4 need MULTI-LIMB BIGINT arithmetic (2**100, n*n, x<<200>>200,
+  ~x, 123456789012345678901234567890 literal, 2**200*3**150 % m).
+- Attempted this session: full limb core (uadd/usub/umul/add/sub/mul/
+  shl/shr/and/or/xor/mod-smi) hand-emitted in bigint_wasm.rs + binop/
+  unary hooks. REVERTED: multiple validator mismatches fixed, but then
+  runtime HANGS appeared in the mul/usub loops (probe hang at 240s) —
+  not shippable. File is still in the tree (unregistered, compiles,
+  harmless) as a starting point; emitter_state FN 36..47 constants are
+  RESERVED (FN_LEN kept at 35 so FN_START stays 36 — do NOT register
+  without appending the emit calls AFTER len() in prelude::emit and
+  bumping FN_LEN).
+- Also needed: LitBigInt exact literals (>i64 currently clamp to 0),
+  big AND/OR/XOR for negatives (two's complement), print of -0 handling.
 
-1. V052/V055 "expected i32, found (ref null $type)" @ _start: the bool
-   $int build after FN_COMPARE (b13ed8f3) emits GlobalGet(bool),
-   I32Const(0), I64ExtendI32U, RefNull(big), StructNew($int) — FIVE
-   operands for a FOUR-field struct ($int = type,kind,smi,big). The smi
-   payload is I64 but the code extends the unused-arg I32Const(0) and
-   omits the kind field. The compare result i32 is left stranded on the
-   stack; the validator reports the shift at the NEXT GlobalGet.
-2. V051 "expected (ref null $type), found (ref $type)": the SAME block
-   emits GlobalGet(<bool global>) whose global TYPE is `(ref null $type)`
-   — GlobalGet returns non-nullable matching the declared type; the
-   StructNew field-0 needs (ref null $type)... actually: validator says
-   found (ref $type) vs expected (ref null $type) — global.get on a
-   `(ref null $type)`-declared global yields the declared type; the
-   mismatch is the StructNew(T_INT) field 0 expecting `(ref null $type)`.
-   Resolved by matching the working emit shape (see bool_obj/truthy).
-3. compare() stub (FT_TOP_I) returns constant 0 — V051/V052/V055 need
-   the real dispatch (eq via FN_EQ + eq_full re-enabled; ordering ops
-   stay unsupported on this slice but V051 uses `is`/== only).
-4. int_to_str multi-digit bug: append_i64 writes digits BACKWARDS into
-   scratch from DIGIT_SCRATCH-1 down, then copies cursor..DIGIT_SCRATCH
-   — but stores '-' at ptr AFTER digits in output order... verified by
-   V001 output "3 -3 9" for "1000000 -1000000 511": single digit ok,
-   multi-digit reversed. Root: the copy loop emits cursor..END (most
-   significant first at cursor) — check loop direction (br_if polarity).
-5. eq()/compare() were left as BISECT STUBS at 8477cf2a (I32Const(0));
-   eq_full() + real compare() bodies exist dead in the file.
-
-## Engine notes
-- wasmparser::TypeSection has no into_iter_count in 0.263 — collect
-  into Vec then index (diag_types.rs).
-- wasmparser 0.252 (wasmtime's vendored) vs crate 0.263 agree on the
-  errors above; offsets differ slightly (validator frame attribution).
-
-## Session log (2026-11-14, continued)
-- diag tooling: diag_dump.rs (dump fn N of /tmp/dbg3.wasm) + diag_types.rs
-  (type-section dump) landed as test files.
-- Hand-decoded _start (V052): @1aa0 error sits at the FIRST
-  `GlobalGet(g_bool)` of the compare-result bool build. The strand is the
-  compare-link i32s: `for links { call FN_COMPARE }` pushes N i32s, the
-  AND-reduce folds them, but the bool build (added in b13ed8f3) starts
-  GlobalGet WITHOUT consuming the folded result — the emitted sequence is
-  [i32(leftover)] GlobalGet I32Const I64ExtendI32U RefNull StructNew.
-  I.e. SIX stack items for a 4-field struct: the folded i32 was never
-  consumed as the smi payload; instead a FRESH I32Const(0) is extended.
-  The V051 variant reports the same site one field earlier.
-- Fix plan (next): in Expr::Compare, order = GlobalGet(bool-type), kind 0,
-  <folded i32 -> I64ExtendI32U> as smi, RefNull big, StructNew(T_INT).
-  The folded result must be stacked AFTER the GlobalGet/kind pushes.
+## Diag tooling (tests/, kept)
+- diag_run.rs: the gate (DIAG_ONLY=case filter; writes /tmp/dbg3.wasm).
+- diag_dump.rs: dump fn N of DIAG_FILE (default /tmp/dbg3.wasm).
+- diag_offset.rs / diag_ranges.rs / diag_types.rs / diag_fvalidate.rs /
+  diag_validate.rs: offset->function mapping, type-section dump, full
+  validation. NOTE: wasmparser error offsets LAG the real failing op
+  by ~1-3 instructions; "(ref null $type)" renders BOTH $pyobj(0) and
+  $bigint(3) concretely — identical strings, different indices.
