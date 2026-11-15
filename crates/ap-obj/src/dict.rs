@@ -560,12 +560,41 @@ pub fn values_eq(a: &Value, b: &Value) -> bool {
         (Value::Tuple(x), Value::Tuple(y)) => {
             x.len() == y.len() && x.0.iter().zip(y.0.iter()).all(|(a, b)| values_eq(a, b))
         }
+        // T1-d (namedtuple tuple-eq): a NamedTuple-kind instance equals the
+        // plain tuple of its <values> — NT(1, 2) == (1, 2) (CPython: namedtuple
+        // subclasses tuple; tuple.__eq__ compares elementwise).
+        (Value::Obj(o), Value::Tuple(t)) | (Value::Tuple(t), Value::Obj(o))
+            if o.kind == crate::object::ObjKind::NamedTuple =>
+        {
+            match o
+                .attrs
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get_str("<values>")
+            {
+                Some(Value::List(l)) => {
+                    let items = l.items();
+                    items.len() == t.0.len()
+                        && items.iter().zip(t.0.iter()).all(|(a, b)| values_eq(a, b))
+                }
+                _ => false,
+            }
+        }
         (Value::Dict(x), Value::Dict(y)) => x.py_eq(y),
         (Value::Set(x), Value::Set(y)) => x.set_eq(y),
         (Value::Frozen(x), Value::Frozen(y)) => x.set_eq(y),
         (Value::Ellipsis, Value::Ellipsis) => true,
         // W111: int-payload instances (IntEnum members) equal their numeric
         // value — HTTPStatus.OK == 200 (dict lookups by plain int).
+        // 02.08 (s024 StrEnum): str-payload members (member IS a str in
+        // CPython) equal their string — SC.A == "a".
+        (Value::Str(_), Value::Obj(_)) | (Value::Obj(_), Value::Str(_)) => {
+            match (str_payload(a), str_payload(b), a, b) {
+                (Some(p), _, Value::Str(i), _) => p == i.as_str(),
+                (_, Some(p), Value::Str(i), _) => p == i.as_str(),
+                _ => false,
+            }
+        }
         (Value::Int(_), Value::Obj(_)) | (Value::Obj(_), Value::Int(_)) => {
             // W111: int-payload instances (IntEnum members) equal their
             // numeric value — HTTPStatus.OK == 200 (dict lookups by int).
@@ -623,6 +652,26 @@ pub(crate) fn int_payload(v: &Value) -> Option<Int> {
             .unwrap_or_else(|p| p.into_inner())
             .get_str("__ap_int__")
             .and_then(|p| p.as_int()),
+        _ => None,
+    }
+}
+
+/// 02.08 (s024 StrEnum): the string payload of a str-derived member
+/// (parked under _value_; CPython: the member IS the string). None for
+/// plain objects.
+pub(crate) fn str_payload(v: &Value) -> Option<String> {
+    match v {
+        Value::Obj(o) if o.kind == crate::object::ObjKind::UserInstance => {
+            match o
+                .attrs
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get_str("_value_")
+            {
+                Some(Value::Str(s)) => Some(s.as_str().to_string()),
+                _ => None,
+            }
+        }
         _ => None,
     }
 }

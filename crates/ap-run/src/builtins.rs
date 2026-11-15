@@ -33,7 +33,22 @@ fn one<'a, T>(args: &'a [T], name: &str) -> Result<&'a T, Flow> {
 pub fn py_str_of(v: &Value) -> Result<String, ap_obj::exc::PyException> {
     // 02.04: user __str__ dispatches BEFORE the default (CPython: str(x)
     // calls type(x).__str__; TestCase.__str__ is the canonical consumer).
+    // s013 (rr39): CPython str(CONTAINER) == repr(CONTAINER) — element
+    // __repr__s render through str([user_obj]). The value layer's to_str
+    // is repr for builtins anyway, but its list render uses the DEFAULT
+    // element form (no interpreter access there). Route containers through
+    // the interpreter's repr_with_classes when a current interp exists.
     if let Some(interp) = crate::builtins_modules::current_interp() {
+        if matches!(
+            v,
+            Value::List(_) | Value::Tuple(_) | Value::Dict(_) | Value::Set(_) | Value::Frozen(_)
+        ) {
+            if let Ok(rv) = crate::interp::repr_with_classes_public(&interp, v) {
+                if let Value::Str(sv) = &rv {
+                    return Ok(sv.as_str().to_string());
+                }
+            }
+        }
         if matches!(
             v,
             Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance
@@ -44,12 +59,58 @@ pub fn py_str_of(v: &Value) -> Result<String, ap_obj::exc::PyException> {
                 // object/Exception-chain __str__ is the C-level renderer
                 // (args text); our v0 special_lookup synthesizes a marker
                 // for it — skip so the legacy args-text path below answers.
+                // 02.08 (s024 enum) EXCEPTION to the skip: an int/float/str-
+                // derived instance (D.A.value wrapper) parks its numeric
+                // payload under __ap_int__ — CPython's int.__str__ renders
+                // the PAYLOAD ("1"), not the wrapper repr. Call the marker
+                // (the virtual str arm unwraps __ap_int__ payloads) so
+                // print(member.value) and Enum.__repr__'s repr(_value_)
+                // agree with CPython.
                 let owner_is_object = matches!(
                     owner.name.as_str(),
                     "object" | "Exception" | "BaseException"
                 );
-                if !owner_is_object {
+                let numeric_payload = matches!(v, Value::Obj(io) if io.kind == ap_obj::ObjKind::UserInstance)
+                    && matches!(
+                        &*v,
+                        Value::Obj(io) if io
+                            .attrs
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .get(&Value::Str(PyString::new("__ap_int__")))
+                            .is_some()
+                    );
+                if !owner_is_object || numeric_payload {
                     if let Value::Obj(fo) = &f {
+                        // 02.08 (s024 enum): int/str-derived members inherit
+                        // IntEnum/StrEnum.__str__ as an object-virtual MARKER
+                        // (BuiltinFn kind, "__object_virtual___str____").
+                        // The Function-only branch below skipped markers, so
+                        // print(member) fell to the repr fallback and printed
+                        // the wrapper repr instead of CPython's "1"/"'a'".
+                        // The marker call arm handles str/repr/hash/eq —
+                        // route BuiltinFn markers through call_value too.
+                        if fo.kind == ap_obj::ObjKind::BuiltinFn
+                            && fo.name.starts_with("__object_virtual_")
+                        {
+                            let r = crate::interp::call_value_pub(
+                                &interp,
+                                &f,
+                                std::slice::from_ref(v),
+                                &[],
+                            )
+                            .map_err(|f| match f {
+                                Flow::Raise(e) => ap_obj::exc::PyException::new(
+                                    Box::leak(e.class.clone().into_boxed_str()),
+                                    e.args
+                                        .first()
+                                        .map(|a| crate::builtins::py_str_of(a).unwrap_or_default())
+                                        .unwrap_or_default(),
+                                ),
+                                _ => ap_obj::exc::PyException::new("SystemError", ""),
+                            })?;
+                            return crate::builtins::py_str_of(&r);
+                        }
                         if fo.kind == ap_obj::ObjKind::Function {
                             // W113: native str()/f-string dispatch calls the
                             // RAW function, bypassing the bound-method path
@@ -118,14 +179,34 @@ pub fn py_str_of(v: &Value) -> Result<String, ap_obj::exc::PyException> {
         // __str__ renders via __repr__ (namedtuple has only __repr__ —
         // print(NT(1,2)) must show NT(a=1, b=2), not the default form).
         // PurePath-style classes with a real __str__ took the dispatch
-        // above and never reach this arm.
-        if o.kind == ap_obj::ObjKind::UserInstance {
+        // above and never reach this arm. NamedTuple-kind instances
+        // (collections.namedtuple products) hit the same fallback: their
+        // class dict carries the native __repr__ marker.
+        if matches!(
+            o.kind,
+            ap_obj::ObjKind::UserInstance | ap_obj::ObjKind::NamedTuple
+        ) {
+            // 02.08 (s024): int-derived wrappers (member .value) — CPython
+            // renders the numeric PAYLOAD for both str and repr.
+            let int_payload = if o.kind == ap_obj::ObjKind::UserInstance {
+                o.attrs
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .get(&Value::Str(PyString::new("__ap_int__")))
+                    .map(|p| p.clone())
+            } else {
+                None
+            };
+            if let Some(p) = int_payload {
+                return ap_obj::ops::to_str(&p);
+            }
             if let Some(interp) = crate::builtins_modules::current_interp() {
-                let has_user_str = crate::classes::special_lookup(&interp, v, "__str__")
-                    .map(|(_, owner)| {
-                        !matches!(owner.name.as_str(), "object" | "Exception" | "BaseException")
-                    })
-                    .unwrap_or(false);
+                let has_user_str = o.kind == ap_obj::ObjKind::UserInstance
+                    && crate::classes::special_lookup(&interp, v, "__str__")
+                        .map(|(_, owner)| {
+                            !matches!(owner.name.as_str(), "object" | "Exception" | "BaseException")
+                        })
+                        .unwrap_or(false);
                 if !has_user_str {
                     if let Some(s) = crate::interp::user_repr_pub(&interp, v, "__repr__")
                         .ok()
@@ -489,8 +570,57 @@ pub fn builtin_len(args: &[Value]) -> BResult {
 /// repr(v) with the C-14 int-limit sweep (ops::repr handles it).
 pub fn builtin_repr(args: &[Value]) -> BResult {
     let v = one(args, "repr")?;
-    // Exception instances repr as ClassName('arg', ...) (V043: repr(e)).
+    // 02.08 (s024 enum): a UserClass VALUE whose metaclass defines
+    // __repr__ (EnumType → "<enum 'SC'>") must route through it — CPython
+    // repr(cls) == type(cls).__repr__(cls).
     if let Value::Obj(o) = v {
+        if o.kind == ap_obj::ObjKind::UserClass {
+            // 02.08 (s024): metaclass __repr__ (EnumType.__repr__ →
+            // "<enum 'SC'>") — CPython repr(cls) == type(cls).__repr__(cls).
+            // Route via the vendored enum module's EnumType.__repr__ when
+            // present (its body answers "<enum %r>" % cls.__name__), else
+            // fall back to the default class repr.
+            if let Some(interp) = crate::builtins_modules::current_interp() {
+                // 02.08 (s024): metaclass __repr__ (EnumType.__repr__ →
+                // "<enum 'SC'>") — CPython repr(cls) == type(cls).__repr__(cls).
+                // Read the enum module from sys.modules (works whether enum
+                // was imported as vendored or native; get_or_make_module
+                // only knows NATIVE modules).
+                let mt_repr = crate::importer::sys_modules_get("enum").and_then(|em| {
+                    crate::interp::attr_get_public(&interp, &em, "EnumType")
+                        .ok()
+                        .flatten()
+                        .and_then(|mt| {
+                            crate::interp::attr_get_public(&interp, &mt, "__repr__").ok()
+                        })
+                        .flatten()
+                });
+                if let Some(f) = mt_repr {
+                    let args = [v.clone()];
+                    if let Ok(r) = crate::interp::call_value_pub(&interp, &f, &args, &[]) {
+                        if let Value::Str(s) = r {
+                            return Ok(Value::Str(s));
+                        }
+                    }
+                }
+            }
+        }
+        // 02.08 (s024 enum): int/float/str-derived instance wrappers park
+        // their payload under __ap_int__ (W111) — CPython's int.__repr__
+        // renders the PAYLOAD ("1"), so Enum.__repr__'s repr(_value_) must
+        // not show the wrapper form.
+        if o.kind == ap_obj::ObjKind::UserInstance {
+            if let Some(payload) = o
+                .attrs
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(&Value::Str(PyString::new("__ap_int__")))
+            {
+                return Ok(Value::Str(PyString::new(
+                    ap_obj::ops::repr(&payload).map_err(Flow::from_py)?,
+                )));
+            }
+        }
         if let Some(txt) = &*o.repr_text.lock().unwrap_or_else(|p| p.into_inner()) {
             return Ok(Value::Str(PyString::new(txt.clone())));
         }
@@ -1452,6 +1582,42 @@ pub fn type_matches(v: &Value, want: &str) -> bool {
     }
     match (v, want) {
         (_, "object") => true,
+        // s016: dict views satisfy their collections.abc views (KeysView/
+        // ItemsView/ValuesView + the bases Collection/Set/MappingView) —
+        // CPython registers the builtin view types on the ABCs; our registry
+        // is inert, so answer structurally here.
+        (Value::Obj(o), "KeysView")
+            if o.kind == ap_obj::ObjKind::Opaque && o.name == "dict_keys" =>
+        {
+            true
+        }
+        (Value::Obj(o), "ItemsView")
+            if o.kind == ap_obj::ObjKind::Opaque && o.name == "dict_items" =>
+        {
+            true
+        }
+        (Value::Obj(o), "ValuesView")
+            if o.kind == ap_obj::ObjKind::Opaque && o.name == "dict_values" =>
+        {
+            true
+        }
+        (Value::Obj(o), "MappingView")
+            if o.kind == ap_obj::ObjKind::Opaque
+                && matches!(o.name.as_str(), "dict_keys" | "dict_items" | "dict_values") =>
+        {
+            true
+        }
+        (Value::Obj(o), "Set")
+            if o.kind == ap_obj::ObjKind::Opaque && o.name == "dict_keys" =>
+        {
+            true
+        }
+        (Value::Obj(o), "Collection")
+            if o.kind == ap_obj::ObjKind::Opaque
+                && matches!(o.name.as_str(), "dict_keys" | "dict_items" | "dict_values") =>
+        {
+            true
+        }
         // T2: fake-native traceback objects. The chain nodes are
         // Namespace("<traceback>") values; types.TracebackType is the
         // auto-class of the same shape, so isinstance must accept them
@@ -1665,7 +1831,10 @@ pub fn builtin_type(interp: &Interpreter, args: &[Value], kwargs: &[(String, Val
                 // name (type(os.uname()) == "uname_result"; stat_result too).
                 Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque => match o.name.as_str() {
                     "uname_result" | "stat_result" | "statvfs_result" | "struct_time"
-                    | "bytearray" => o.name.clone(),
+                    | "bytearray"
+                    // s016: dict views report dict_keys/values/items (protocol
+                    // dicts seeded in interned_type for the ABC hooks).
+                    | "dict_keys" | "dict_values" | "dict_items" => o.name.clone(),
                     _ => o.type_name(),
                 },
                 Value::Obj(o) => o.type_name(),
@@ -2451,12 +2620,19 @@ pub fn register_iter(interp: &Interpreter, v: &Value) -> Result<u64, Flow> {
         }
     }
     let it = iterable_of(v)?;
+    // 02.08 s017/s024 ID-COLLISION FIX: this mint used load/store(id+1) — it
+    // can hand out ODD ids, which live in the SEPARATE next_gen_id space
+    // (fetch_add(2) from 1). A live def-generator holding the same id made
+    // builtin_next/next_registered route the enumerate pairs list to
+    // gen_pull -> generator values/None (observed: enumerate(...)[next]
+    // returned a generator's yield value, then None — s017 types.resolve_bases
+    // `for i, base in enumerate(bases)` pulled None from an empty tuple).
+    // Mint EVEN ids only, same discipline as interp.rs::register_iter /
+    // register_shared_iter_pub (fetch_add(2) from an even base; the odd
+    // half-space belongs to next_gen_id forever).
     let id = interp
         .next_iter_id
-        .load(std::sync::atomic::Ordering::Relaxed);
-    interp
-        .next_iter_id
-        .store(id + 1, std::sync::atomic::Ordering::Relaxed);
+        .fetch_add(2, std::sync::atomic::Ordering::Relaxed);
     // Fence-perf fix 2026-11-06: tag for Drop-prune (F5 contract).
     it.table_id.set(Some(id));
     interp
@@ -2496,13 +2672,35 @@ pub fn builtin_sorted(interp: &Interpreter, args: &[Value], kwargs: &[(String, V
         if let Some(r) = crate::builtins_modules::sort_by_cmp_wrappers(&decorated) {
             items = r?;
         } else {
+            // s013: user __lt__ must win over the native values_cmp (a key
+            // fn returning user objects — cmp_to_key wrappers, reprlib K —
+            // otherwise sorted in insertion order). py_lt falls back to
+            // values_cmp semantics via ap_obj::ops::lt when no slot exists;
+            // Ordering::Equal on error keeps the stable-sort behavior.
             decorated.sort_by(|a, b| {
-                ap_obj::dict::values_cmp(&a.0, &b.0).unwrap_or(std::cmp::Ordering::Equal)
+                match crate::builtins_modules::py_lt_public(&a.0, &b.0) {
+                    Ok(true) => std::cmp::Ordering::Less,
+                    Ok(false) => match crate::builtins_modules::py_lt_public(&b.0, &a.0) {
+                        Ok(true) => std::cmp::Ordering::Greater,
+                        _ => std::cmp::Ordering::Equal,
+                    },
+                    Err(_) => std::cmp::Ordering::Equal,
+                }
             });
             items = decorated.into_iter().map(|(_, v)| v).collect();
         }
     } else {
-        items.sort_by(|a, b| ap_obj::dict::values_cmp(a, b).unwrap_or(std::cmp::Ordering::Equal));
+        // s013: no-key path — same user-__lt__-first discipline.
+        items.sort_by(|a, b| {
+            match crate::builtins_modules::py_lt_public(a, b) {
+                Ok(true) => std::cmp::Ordering::Less,
+                Ok(false) => match crate::builtins_modules::py_lt_public(b, a) {
+                    Ok(true) => std::cmp::Ordering::Greater,
+                    _ => std::cmp::Ordering::Equal,
+                },
+                Err(_) => std::cmp::Ordering::Equal,
+            }
+        });
     }
     if reverse {
         items.reverse();
@@ -2729,6 +2927,32 @@ pub fn make_sys_module(interp: &Interpreter) -> Value {
         let _ = attrs.set(
             Value::Str(PyString::new("epsilon")),
             Value::Float(f64::EPSILON),
+        );
+        // CPython float_info exposes the full field set; _ast_unparse reads
+        // max_10_exp for INFSTR. Values match IEEE-754 binary64 exactly.
+        let _ = attrs.set(
+            Value::Str(PyString::new("max_10_exp")),
+            Value::Int(Int::Smi(308)),
+        );
+        let _ = attrs.set(
+            Value::Str(PyString::new("min_10_exp")),
+            Value::Int(Int::Smi(-307)),
+        );
+        let _ = attrs.set(
+            Value::Str(PyString::new("max_exp")),
+            Value::Int(Int::Smi(1024)),
+        );
+        let _ = attrs.set(
+            Value::Str(PyString::new("min_exp")),
+            Value::Int(Int::Smi(-1021)),
+        );
+        let _ = attrs.set(
+            Value::Str(PyString::new("radix")),
+            Value::Int(Int::Smi(2)),
+        );
+        let _ = attrs.set(
+            Value::Str(PyString::new("rounds")),
+            Value::Int(Int::Smi(1)),
         );
     }
     let _ = ns.set(Value::Str(PyString::new("float_info")), Value::Obj(fi));
@@ -3616,6 +3840,105 @@ pub fn interned_type(interp: &Interpreter, name: &str) -> Value {
     // so a missing attr here falls through to the NotImplementedError base).
     // Build object-derived TypeObjects; method calls on instances route via
     // methods.rs's mbc arm (the instance is bound into the call).
+    // s016 (Callable subclasshook): the interned `function` Type mirrors
+    // CPython's function type dict — `__call__` present so
+    // collections.abc.Callable's _check_methods('__call__') answers True
+    // for plain functions and bound methods (isinstance(len, Callable)).
+    if name == "function" {
+        let t = ap_obj::classes::TypeObject::create(
+            "function".to_string(),
+            "function".to_string(),
+            vec![crate::classes::object_class(interp)],
+            PyDict::new(),
+            ap_obj::classes::TypeFlags::default(),
+            None,
+        )
+        .expect("function mro");
+        let _ = t.dict.set(
+            Value::Str(PyString::new("__call__")),
+            Value::Obj(ap_obj::PyObject::new(
+                ap_obj::ObjKind::BuiltinFn,
+                "__function_call__",
+            )),
+        );
+        let _ = t.dict.set(
+            Value::Str(PyString::new("__name__")),
+            Value::Obj(ap_obj::PyObject::new(
+                ap_obj::ObjKind::BuiltinFn,
+                "__function_name__",
+            )),
+        );
+        let v = ap_obj::classes::make_class_value(t);
+        interp
+            .type_objects
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(name.to_string(), v.clone());
+        return v;
+    }
+    // s016: the interned `method` Type (bound methods) carries __call__ too
+    // — collections.abc.Callable answers True for bound methods in CPython.
+    if name == "method" {
+        let t = ap_obj::classes::TypeObject::create(
+            "method".to_string(),
+            "method".to_string(),
+            vec![crate::classes::object_class(interp)],
+            PyDict::new(),
+            ap_obj::classes::TypeFlags::default(),
+            None,
+        )
+        .expect("method mro");
+        let _ = t.dict.set(
+            Value::Str(PyString::new("__call__")),
+            Value::Obj(ap_obj::PyObject::new(
+                ap_obj::ObjKind::BuiltinFn,
+                "__function_call__",
+            )),
+        );
+        let v = ap_obj::classes::make_class_value(t);
+        interp
+            .type_objects
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(name.to_string(), v.clone());
+        return v;
+    }
+    // s016 (KeysView/ItemsView/ValuesView subclasshook): dict-view types
+    // (dict_keys/dict_values/dict_items) carry the len/iter/contains protocol
+    // markers in their type dicts — CPython registers these types as virtual
+    // subclasses of the views; _check_methods over the MRO answers True here.
+    if matches!(name, "dict_keys" | "dict_values" | "dict_items") {
+        let t = ap_obj::classes::TypeObject::create(
+            name.to_string(),
+            name.to_string(),
+            vec![crate::classes::object_class(interp)],
+            PyDict::new(),
+            ap_obj::classes::TypeFlags::default(),
+            None,
+        )
+        .expect("dict view mro");
+        for m in [
+            "__len__",
+            "__iter__",
+            "__contains__",
+            "__getitem__",
+        ] {
+            let _ = t.dict.set(
+                Value::Str(PyString::new(m)),
+                Value::Obj(ap_obj::PyObject::new(
+                    ap_obj::ObjKind::BuiltinFn,
+                    format!("__dict_view_{}__", m.trim_matches('_')),
+                )),
+            );
+        }
+        let v = ap_obj::classes::make_class_value(t);
+        interp
+            .type_objects
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(name.to_string(), v.clone());
+        return v;
+    }
     if matches!(
         name,
         "MultibyteIncrementalEncoder"
@@ -4474,8 +4797,18 @@ pub fn call_builtin(
                 return r;
             }
         }
-        if let Some(r) = crate::builtins_modules::call_native_marker(name, args) {
-            return r;
+        {
+            let marker_obj = args.first().and_then(|v| match v {
+                Value::Obj(o) if o.kind == ap_obj::ObjKind::BuiltinFn && o.name == name => {
+                    Some(o.clone())
+                }
+                _ => None,
+            });
+            if let Some(r) =
+                crate::builtins_modules::call_native_marker_impl(name, marker_obj, args)
+            {
+                return r;
+            }
         }
         if let Some(r) = crate::builtins_modules::call_native_marker_obj(name, args, kwargs) {
             return r;

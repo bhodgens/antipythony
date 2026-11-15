@@ -80,21 +80,31 @@ pub(crate) fn call_struct(name: &str, args: &[Value]) -> Option<crate::builtins_
                 let buf = rest
                     .first()
                     .ok_or_else(|| raise("TypeError", "pack_into needs a buffer"))?;
-                let off = match rest.get(2) {
+                // 02.08 (s036) fix: layout is pack_into(fmt, buf, offset,
+                // *vals) — offset is rest[1] (the old rest[2] read the
+                // FIRST VALUE as the offset and pushed 258 zero bytes).
+                let off = match rest.get(1) {
                     Some(Value::Int(n)) => n.to_i64().unwrap_or(0).max(0) as usize,
                     _ => 0,
                 };
                 let vals: Vec<Value> = rest.iter().skip(2).cloned().collect();
                 let packed = pack_bytes(&fmt, &vals)?;
-                if let Value::Bytes(b) = buf {
-                    // bytearray is bytes-backed (immutable Vec) at v0 — the
-                    // payload may be aliased, so in-place write is unsound
-                    // (documented divergence; fail loud like the other gaps).
-                    let _ = b;
-                    return Err(raise(
-                        "NotImplementedError",
-                        "ap: struct.pack_into bytearray mutation unsupported (v0 shim)",
-                    ));
+                // 02.08 gap (s036): bytearray IS the CPython-required
+                // pack_into target. Mutate in place via the D1
+                // bytearray_mutate helper (clone-modify-set for aliased
+                // buffers — byte-identical either way).
+                if matches!(buf, Value::Obj(bo)
+                    if bo.kind == ap_obj::ObjKind::Opaque && bo.name == "bytearray")
+                {
+                    let packed2 = packed.clone();
+                    return crate::builtins_modules::bytearray_mutate_pub(buf, |data| {
+                        while data.len() < off + packed2.len() {
+                            data.push(0);
+                        }
+                        data[off..off + packed2.len()].copy_from_slice(&packed2);
+                        Ok(())
+                    })
+                    .map(|_| Value::None);
                 }
                 if let Value::Obj(bo) = buf {
                     if let Some(Value::List(l)) = bo
@@ -119,7 +129,9 @@ pub(crate) fn call_struct(name: &str, args: &[Value]) -> Option<crate::builtins_
                 let buf = rest
                     .first()
                     .ok_or_else(|| raise("TypeError", "unpack_from needs a buffer"))?;
-                let off = match rest.get(2) {
+                // 02.08 (s036): rest excludes fmt — offset is rest[1]
+                // (the old rest[2] read the first value past the offset).
+                let off = match rest.get(1) {
                     Some(Value::Int(n)) => n.to_i64().unwrap_or(0).max(0) as usize,
                     _ => 0,
                 };
@@ -130,8 +142,9 @@ pub(crate) fn call_struct(name: &str, args: &[Value]) -> Option<crate::builtins_
             // s036: iter_unpack(fmt, buffer) — repeated unpack over the whole
             // buffer; size must divide evenly.
             "iter_unpack" => {
+                // 02.08 (s036): rest excludes fmt — buffer is rest.first().
                 let buf = rest
-                    .get(1)
+                    .first()
                     .ok_or_else(|| raise("TypeError", "iter_unpack needs a buffer"))?;
                 let data = buffer_bytes(buf)?;
                 let size = match calcsize(&fmt)? {
@@ -173,21 +186,23 @@ fn buffer_bytes(buf: &Value) -> BResultV<Vec<u8>> {
     match buf {
         Value::Bytes(b) => Ok(b.iter().cloned().collect()),
         Value::Obj(o) => {
-            if let Some(Value::List(l)) = o
-                .attrs
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .get(&s("<data>"))
-            {
-                let mut out = Vec::new();
-                for it in l.items().iter() {
-                    if let Value::Int(n) = it {
-                        out.push(n.to_i64().unwrap_or(0) as u8);
+            // 02.08 (s036): bytearray payloads live under <data> as
+            // Value::Bytes (Bytes-backed ctor); legacy list-backed
+            // shape still supported.
+            let attrs = o.attrs.lock().unwrap_or_else(|p| p.into_inner());
+            match attrs.get(&s("<data>")) {
+                Some(Value::Bytes(b)) => Ok(b.as_ref().clone()),
+                Some(Value::List(l)) => {
+                    let mut out = Vec::new();
+                    for it in l.items().iter() {
+                        if let Value::Int(n) = it {
+                            out.push(n.to_i64().unwrap_or(0) as u8);
+                        }
                     }
+                    Ok(out)
                 }
-                return Ok(out);
+                _ => Err(raise("TypeError", "expected a bytes-like object")),
             }
-            Err(raise("TypeError", "expected a bytes-like object"))
         }
         _ => Err(raise("TypeError", "expected a bytes-like object")),
     }
@@ -318,6 +333,33 @@ fn pack(fmt: &str, vals: &[Value]) -> crate::builtins_modules::BResult {
                         }
                     };
                     vi += 1;
+                    // 02.08 (s036): CPython-exact range checks — struct.error
+                    // "requires 0 <= number <= 2**k-1" for unsigned formats,
+                    // "-2**(k-1) <= number <= 2**(k-1)-1" for signed.
+                    // (lo, hi, hi_override): Q's 2**64-1 exceeds i128's
+                    // displayable shift chain — hi_override carries the
+                    // CPython-exact decimal for the message; the RANGE
+                    // test uses hi (n <= 2**64-1 fits i128's 2**127).
+                    let (lo, hi, hi_override): (i128, i128, Option<&str>) = match c {
+                        'b' => (-(1i128 << 7), (1i128 << 7) - 1, None),
+                        'B' => (0, (1i128 << 8) - 1, None),
+                        'h' => (-(1i128 << 15), (1i128 << 15) - 1, None),
+                        'H' => (0, (1i128 << 16) - 1, None),
+                        'i' | 'l' => (-(1i128 << 31), (1i128 << 31) - 1, None),
+                        'I' | 'L' => (0, (1i128 << 32) - 1, None),
+                        'q' | 'n' | 'N' => (-(1i128 << 63), (1i128 << 63) - 1, None),
+                        'Q' => (0, (1i128 << 64) - 1, Some("18446744073709551615")),
+                        _ => (i128::MIN, i128::MAX, None),
+                    };
+                    if !(lo..=hi).contains(&n) {
+                        let hi_s = hi_override.map(|s| s.to_string()).unwrap_or_else(|| hi.to_string());
+                        let what = if lo == 0 {
+                            format!("'{}' format requires 0 <= number <= {hi_s}", c)
+                        } else {
+                            format!("'{}' format requires {lo} <= number <= {hi_s}", c)
+                        };
+                        return Err(raise("struct.error", what));
+                    }
                     let be = n.to_be_bytes();
                     let field = &be[16 - width.min(16)..];
                     if little {

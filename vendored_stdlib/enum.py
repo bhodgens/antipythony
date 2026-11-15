@@ -26,9 +26,19 @@ class nonmember(object):
     def __init__(self, value):
         self.value = value
     def __eq__(self, other):
+        # 02.08 (s024): CPython 3.14's nonmember only compares EQUAL to
+        # another nonmember with the same value; anything else falls
+        # through to the reflected op (int.__eq__ → NotImplemented →
+        # False). The old `self.value == other` made nonmember(1) == 1
+        # True (wrong).
         if isinstance(other, nonmember):
             return self.value == other.value
-        return self.value == other
+        return NotImplemented
+    def __ne__(self, other):
+        result = self.__eq__(other)
+        if result is NotImplemented:
+            return NotImplemented
+        return not result
     def __hash__(self):
         return hash(self.value)
 
@@ -279,6 +289,16 @@ class _proto_member:
         enum_member._sort_order_ = len(enum_class._member_names_)
 
         if Flag is not None and issubclass(enum_class, Flag):
+            # 02.08 (s024 IntFlag): the member value may be the int-wrapper
+            # payload (__ap_int__) in our runtime — normalize before the
+            # bit-mask arithmetic (CPython sees plain ints).
+            if isinstance(value, int):
+                pass
+            else:
+                try:
+                    value = int(value.__ap_int__)
+                except AttributeError:
+                    pass
             if isinstance(value, int):
                 enum_class._flag_mask_ |= value
                 if _is_single_bit(value):
@@ -1381,6 +1401,24 @@ class StrEnum(str, ReprEnum):
     Enum where members are also (and must be) strings
     """
 
+    # 02.08 (s024): in CPython a StrEnum member IS a str instance —
+    # str.__eq__/str.__hash__ win via the MRO (str base precedes Enum).
+    # Our runtime represents members as instances with a _value_ payload;
+    # replicate the str-base semantics here so member == str compares the
+    # value and hash(member) == hash(value).
+    def __eq__(self, other):
+        if isinstance(other, str):
+            return self._value_ == other
+        return NotImplemented
+
+    def __ne__(self, other):
+        if isinstance(other, str):
+            return self._value_ != other
+        return NotImplemented
+
+    def __hash__(self):
+        return hash(self._value_)
+
     def __new__(cls, *values):
         "values must already be of type `str`"
         if len(values) > 3:
@@ -1527,6 +1565,13 @@ class Flag(Enum, boundary=STRICT):
             neg_value = value
             value = all_bits + 1 + value
         # get members and unknown
+        # 02.08 (s024 IntFlag): ~flag_mask on a plain int with a wrapper
+        # flag_mask raises ('int' and 'object'); masks are plain ints now
+        # (payload normalization at class creation), so this works — but
+        # normalize defensively.
+        flag_mask = int(flag_mask)
+        singles_mask = int(singles_mask)
+        all_bits = int(all_bits)
         unknown = value & ~flag_mask
         aliases = value & ~singles_mask
         member_value = value & singles_mask
@@ -1548,13 +1593,15 @@ class Flag(Enum, boundary=STRICT):
             combined_value = 0
             for m in cls._iter_member_(member_value):
                 members.append(m)
-                combined_value |= m._value_
+                # 02.08 (s024 IntFlag): m._value_ may be a wrapper — int()
+                # normalizes so the | BinOp sees real ints.
+                combined_value |= int(m._value_)
             if aliases:
                 value = member_value | aliases
                 for n, pm in cls._member_map_.items():
-                    if pm not in members and pm._value_ and pm._value_ & value == pm._value_:
+                    if pm not in members and pm._value_ and int(pm._value_) & value == int(pm._value_):
                         members.append(pm)
-                        combined_value |= pm._value_
+                        combined_value |= int(pm._value_)
             unknown = value ^ combined_value
             pseudo_member._name_ = '|'.join([m._name_ for m in members])
             if not combined_value:
@@ -1581,7 +1628,8 @@ class Flag(Enum, boundary=STRICT):
             raise TypeError(
                 "unsupported operand type(s) for 'in': %r and %r" % (
                     type(other).__qualname__, self.__class__.__qualname__))
-        return other._value_ & self._value_ == other._value_
+        # 02.08 (s024 IntFlag): normalize wrapper payloads for the bitop.
+        return int(other._value_) & int(self._value_) == int(other._value_)
 
     def __iter__(self):
         """
@@ -1612,7 +1660,15 @@ class Flag(Enum, boundary=STRICT):
 
     def _get_value(self, flag):
         if isinstance(flag, self.__class__):
-            return flag._value_
+            # 02.08 (s024 IntFlag): the member's _value_ may be the
+            # int-wrapper payload (__ap_int__) — unwrap for numeric ops.
+            v = flag._value_
+            if isinstance(v, int):
+                return v
+            try:
+                return v.__ap_int__
+            except AttributeError:
+                return v
         elif self._member_type_ is not object and isinstance(flag, self._member_type_):
             return flag
         return NotImplemented
@@ -1625,7 +1681,11 @@ class Flag(Enum, boundary=STRICT):
         for flag in self, other:
             if self._get_value(flag) is None:
                 raise TypeError(f"'{flag}' cannot be combined with other flags with |")
-        value = self._value_
+        # 02.08 (s024 IntFlag): the payloads are int-wrapper instances in
+        # our runtime — int(...) normalizes them so the BinOp sees real
+        # ints (CPython's int.__or__ on raw payloads).
+        value = int(self._get_value(self))
+        other_value = int(other_value)
         return self.__class__(value | other_value)
 
     def __and__(self, other):
@@ -1636,7 +1696,9 @@ class Flag(Enum, boundary=STRICT):
         for flag in self, other:
             if self._get_value(flag) is None:
                 raise TypeError(f"'{flag}' cannot be combined with other flags with &")
-        value = self._value_
+        # 02.08 (s024 IntFlag): int(...) normalizes wrapper payloads.
+        value = int(self._get_value(self))
+        other_value = int(other_value)
         return self.__class__(value & other_value)
 
     def __xor__(self, other):
@@ -1647,7 +1709,9 @@ class Flag(Enum, boundary=STRICT):
         for flag in self, other:
             if self._get_value(flag) is None:
                 raise TypeError(f"'{flag}' cannot be combined with other flags with ^")
-        value = self._value_
+        # 02.08 (s024 IntFlag): int(...) normalizes wrapper payloads.
+        value = int(self._get_value(self))
+        other_value = int(other_value)
         return self.__class__(value ^ other_value)
 
     def __invert__(self):
@@ -1655,10 +1719,12 @@ class Flag(Enum, boundary=STRICT):
             raise TypeError(f"'{self}' cannot be inverted")
 
         if self._inverted_ is None:
+            # 02.08 (s024 IntFlag): normalize the wrapper payload before
+            # the unary ~ (CPython sees plain ints).
             if self._boundary_ in (EJECT, KEEP):
-                self._inverted_ = self.__class__(~self._value_)
+                self._inverted_ = self.__class__(~int(self._value_))
             else:
-                self._inverted_ = self.__class__(self._singles_mask_ & ~self._value_)
+                self._inverted_ = self.__class__(int(self._singles_mask_) & ~int(self._value_))
         return self._inverted_
 
     __rand__ = __and__
@@ -1670,6 +1736,17 @@ class IntFlag(int, ReprEnum, Flag, boundary=KEEP):
     """
     Support for integer-based Flags
     """
+
+    # 02.08 (s024): in CPython an IntFlag member IS an int —
+    # int.__str__/int.__int__ win via the MRO (int base precedes Enum).
+    # Our runtime represents members as instances with a payload; mirror
+    # the int-base semantics so str(member) is the number and int(member)
+    # is the payload.
+    def __str__(self):
+        return str(int(self._value_))
+
+    def __int__(self):
+        return int(self._value_)
 
 
 def _high_bit(value):
@@ -1689,8 +1766,11 @@ def unique(enumeration):
     if duplicates:
         alias_details = ', '.join(
                 ["%s -> %s" % (alias, name) for (alias, name) in duplicates])
-        raise ValueError('duplicate values found in %r: %s' %
-                (enumeration, alias_details))
+        # 02.08 (s024): repr(enumeration) via the builtin (metaclass
+        # __repr__ route) instead of %r — the runtime's % operator uses
+        # the value-layer repr which lacks the metaclass dispatch.
+        raise ValueError('duplicate values found in %s: %s' %
+                (repr(enumeration), alias_details))
     return enumeration
 
 def _dataclass_repr(self):

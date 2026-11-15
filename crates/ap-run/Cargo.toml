@@ -23,6 +23,7 @@ ap-ir = { path = "../ap-ir" }
 ap-obj = { path = "../ap-obj" }
 ap-pack = { path = "../ap-pack" }
 ap-parse = { path = "../ap-parse" }
+ruff_python_parser = "0.0.4"
 # 02.05a: the JIT entry hook (cfg lower + baseline compile + ExecCtx run).
 ap-codegen-native = { path = "../ap-codegen-native" }
 ruff_python_ast = "0.0.4"

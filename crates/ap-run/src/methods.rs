@@ -2075,7 +2075,7 @@ fn super_user_method(
     interp: &Interpreter,
     o: &Gc<ap_obj::PyObject>,
     name: &str,
-    _args: &[Value],
+    args: &[Value],
 ) -> MResult {
     // Arbitrary method read on an instance: look up __dict__ first.
     if let Some(v) = o
@@ -2085,9 +2085,22 @@ fn super_user_method(
         .get(&Value::Str(PyString::new(name)))
     {
         // Bound method call: self is implicit.
-        return crate::interp::call_value_pub(&interp.rc(), &v, &[Value::Obj(o.clone())], &[])
-            .map(|_| Value::None)
-            .map(|_| Value::None);
+        let mut call_args: Vec<Value> = vec![Value::Obj(o.clone())];
+        call_args.extend_from_slice(args);
+        return crate::interp::call_value_pub(&interp.rc(), &v, &call_args, &[]);
+
+    }
+    // 02.08 gap (s029): instance __dict__ miss — consult the CLASS MRO
+    // (methodcaller("shout", 3)(thing) dispatches a user method that
+    // lives on the class, not the instance dict). Bind over the
+    // receiver and forward the parked args.
+    let recv = Value::Obj(o.clone());
+    if let Some((f, _owner)) =
+        crate::classes::special_lookup(&interp.rc(), &recv, name)
+    {
+        let mut call_args: Vec<Value> = vec![recv.clone()];
+        call_args.extend_from_slice(args);
+        return crate::interp::call_value_pub(&interp.rc(), &f, &call_args, &[]);
     }
     Err(raise(
         "AttributeError",

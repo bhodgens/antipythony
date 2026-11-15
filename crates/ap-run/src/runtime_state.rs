@@ -217,6 +217,12 @@ registry_table!(
     String,
     "t-string raw-span source (ast_bridge.rs thread_local)"
 );
+registry_table!(
+    RECURSIVE_REPR_T,
+    RECURSIVE_REPR_T_acc,
+    std::collections::HashSet<usize>,
+    "s013: functools.recursive_repr active-instance ids (interp.rs process table)"
+);
 
 // ---------------------------------------------------------------------------
 // Active handle (the seed point; replaced per in-process run).
@@ -315,6 +321,7 @@ pub fn retire_runtime_state(interp: &Arc<Interpreter>) {
     let _ = CLASS_KWARGS_T_acc().lock().unwrap().remove(&key);
     let _ = CURRENT_CLASS_NS_T_acc().lock().unwrap().remove(&key);
     let _ = BRIDGE_SOURCE_T_acc().lock().unwrap().remove(&key);
+    let _ = RECURSIVE_REPR_T_acc().lock().unwrap().remove(&key);
     let _ = NAMED_BY_ADDR_T_acc().lock().unwrap().remove(&key);
     // CELL_BACKING / MODULE_FRAME_CELLS / CELL_BACKING_PINS hold CellSlots
     // and Weak pins keyed by OBJECT addresses (not interp keys): dropping a

@@ -938,10 +938,16 @@ pub fn exec_class_def(
     // parent-path JOIN (module-level classes have an empty parent, so the
     // bare name happened to match there) — the real delta is tested by the
     // metaclass/enum differential suites below.
+    // s013/s024 closure fix: the lowering's open_scope pushes "<locals>"
+    // between a FUNCTION parent and the class name (outer.<locals>.L), and
+    // again for methods (outer.<locals>.L.<locals>.get). The old join here
+    // produced "outer.L" — the method's scope_of missed, its frees never
+    // wired, and every closure read in a class-body def died NameError
+    // (functools.cmp_to_key's K.__lt__, enum member __str__).
     class_frame_val.scope_path = if frame.scope_path.is_empty() {
         c.name.clone()
     } else {
-        format!("{}.{}", frame.scope_path, c.name)
+        format!("{}.<locals>.{}", frame.scope_path, c.name)
     };
     class_frame_val.class_ns_inst = prepared_inst.clone();
     let class_frame = Arc::new(class_frame_val);
@@ -1676,6 +1682,19 @@ pub fn base_type_ref(interp: &Interpreter, v: &Value) -> Result<Option<Arc<TypeR
             Ok(t)
         }
         Value::Obj(o) if o.kind == ap_obj::ObjKind::Type && o.name == "object" => {
+            // s016: a SEEDED interned Type named 'object' (dict_keys reuses
+            // the bare Type fallback) carries its own payload in class_ref —
+            // honor it before the name shortcut, or issubclass(KeysView, dk)
+            // wrongly sees the object root and ABCMeta.register declares an
+            // inheritance cycle.
+            if let Some(t) = o
+                .class_ref
+                .read()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
+            {
+                return Ok(Some(t));
+            }
             Ok(Some(object_class(interp)))
         }
         Value::Obj(o) if o.kind == ap_obj::ObjKind::Type && o.name == "type" => {
@@ -1875,6 +1894,26 @@ pub fn object_class(interp: &Interpreter) -> Arc<TypeRef> {
         None,
     )
     .expect("object mro");
+    // s016 (ABC subclasshook): CPython's object type dict exposes __hash__
+    // (and __eq__) — collections.abc._check_methods probes
+    // "__hash__ in B.__dict__" over C.__mro__ to decide Hashable. Our
+    // object dict lacked it, so Hashable subclass checks answered False.
+    {
+        let _ = t.dict.set(
+            Value::Str(PyString::new("__hash__")),
+            Value::Obj(ap_obj::PyObject::new(
+                ap_obj::ObjKind::BuiltinFn,
+                "__object_virtual_hash__",
+            )),
+        );
+        let _ = t.dict.set(
+            Value::Str(PyString::new("__eq__")),
+            Value::Obj(ap_obj::PyObject::new(
+                ap_obj::ObjKind::BuiltinFn,
+                "__object_virtual_eq__",
+            )),
+        );
+    }
     let _ = ap_obj::classes::make_class_value(t.clone()); // wire the Value back-pointer
     *interp
         .object_class
@@ -3133,6 +3172,53 @@ fn type_name_of(v: &Value) -> String {
 }
 
 /// Option-form attribute read (for hasattr / import surfaces).
+
+/// 02.08 gap (s017/s031): slot-wrapper dunder table for interned builtin
+/// types. CPython exposes arithmetic/conversion dunders on int/float/etc
+/// as wrapper_descriptor objects; ours had no type-level answer, so
+/// `getattr(int, "__add__")` raised AttributeError (s017 line 28) and
+/// `int.__add__`-style capability probes (numbers ABC registration,
+/// operator paths) failed. Only covers names that are NOT already
+/// answered elsewhere (__repr__/__str__/__eq__/__hash__ keep their
+/// existing surfaces). Returns a Descriptor whose type name is
+/// "wrapper_descriptor" (PyObject::type_name Descriptor arm reports
+/// self.name).
+fn slot_wrapper_marker(type_name: &str, attr: &str) -> Option<Value> {
+    use ap_obj::{ObjKind, PyObject};
+    use ap_obj::value::PyString;
+    const NUMERIC_TYPES: &[&str] = &["int", "float", "bool"];
+    const SEQ_TYPES: &[&str] = &["str", "bytes", "list", "tuple"];
+    const NUMERIC_DUNDERS: &[&str] = &[
+        "__add__", "__radd__", "__sub__", "__rsub__", "__mul__", "__rmul__",
+        "__truediv__", "__rtruediv__", "__floordiv__", "__rfloordiv__",
+        "__mod__", "__rmod__", "__divmod__", "__rdivmod__", "__pow__",
+        "__rpow__", "__lshift__", "__rlshift__", "__rshift__", "__rrshift__",
+        "__and__", "__rand__", "__or__", "__ror__", "__xor__", "__rxor__",
+        "__neg__", "__pos__", "__abs__", "__invert__", "__int__", "__float__",
+        "__index__", "__round__", "__trunc__", "__floor__", "__ceil__",
+    ];
+    const SEQ_DUNDERS: &[&str] = &["__add__", "__mul__", "__rmul__"];
+    let is_num = NUMERIC_TYPES.contains(&type_name);
+    let is_seq = SEQ_TYPES.contains(&type_name);
+    let hit = if is_num {
+        NUMERIC_DUNDERS.contains(&attr)
+    } else if is_seq {
+        SEQ_DUNDERS.contains(&attr)
+    } else {
+        false
+    };
+    if hit {
+        let w = PyObject::new(ObjKind::Descriptor, "wrapper_descriptor");
+        // type(x).__name__ routes through descr_kind (interp.rs type arm
+        // 11798); CPython names slot wrappers "wrapper_descriptor".
+        *w.descr_kind.lock().unwrap_or_else(|p| p.into_inner()) =
+            Some("wrapper_descriptor".to_string());
+        Some(Value::Obj(w))
+    } else {
+        None
+    }
+}
+
 pub fn attr_get_opt(
     interp: &Arc<Interpreter>,
     obj: &Value,
@@ -3214,7 +3300,20 @@ pub fn attr_get_opt(
             let cls_v = ap_obj::classes::make_class_value(t.clone());
             match class_attr_get(interp, &cls_v, &t, name) {
                 Ok(v) => Ok(Some(v)),
-                Err(_) => Ok(None),
+                Err(_) => {
+                    // 02.08 gap (s017/s031): slot-wrapper dunders on interned
+                    // builtin types (int.__add__ etc). These currently raise
+                    // AttributeError; CPython answers every arithmetic/
+                    // conversion dunder with a wrapper_descriptor. Synthesize
+                    // a Descriptor marker named "wrapper_descriptor" so
+                    // type(int.__add__).__name__ matches CPython; the actual
+                    // BINOP dispatch never routes through these markers
+                    // (native paths handle arithmetic directly).
+                    if let Some(w) = slot_wrapper_marker(&o.name, name) {
+                        return Ok(Some(w));
+                    }
+                    Ok(None)
+                }
             }
         }
         // Wave-58: stream-subclass instances (CaptureIO(TextIOWrapper) &
@@ -3514,11 +3613,10 @@ fn instance_attr(
                 | "__setattr__" | "__getattribute__"
         )
     {
-        let f = ap_obj::PyObject::new(
-            ap_obj::ObjKind::BuiltinFn,
-            format!("__object_virtual_{name}__"),
-        );
-        return Ok(Value::Obj(f));
+        // 02.08 gap (s028): stable marker (see object_virtual_marker_cached).
+        return Ok(object_virtual_marker_cached(&format!(
+            "__object_virtual_{name}__"
+        )));
     }
     // T2 (typing NamedTupleMeta: `nm_tpl.__init_subclass__()`): the implicit
     // subclass hook is readable (and callable) on every class — v0 default
@@ -3572,6 +3670,26 @@ fn class_value_for(t: &Arc<TypeRef>) -> Value {
 
 /// `C.name` protocol (S-03-12): type slots -> MRO data descriptor
 /// __get__(None, C) -> class dict -> metaclass fallback.
+/// 02.08 gap (s028): object-virtual dunder markers must be STABLE
+/// process-wide objects — pprint._dispatch keys on type(x).__repr__
+/// function objects; a fresh marker per access made every dict keyed
+/// by them miss (no dict sorting, no width breaking, no recursion
+/// detection in pprint, and identity checks `f1 is f2` failing).
+pub fn object_virtual_marker_cached(name: &str) -> Value {
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, Value>>,
+    > = std::sync::OnceLock::new();
+    let cache = CACHE
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let mut guard = cache.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(v) = guard.get(name) {
+        return v.clone();
+    }
+    let f = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, name.to_string());
+    guard.insert(name.to_string(), Value::Obj(f.clone()));
+    Value::Obj(f)
+}
+
 fn class_attr_get(
     interp: &Arc<Interpreter>,
     cls_v: &Value,
@@ -3842,11 +3960,10 @@ fn class_attr_get(
             );
             return Ok(Value::Obj(f));
         }
-        let f = ap_obj::PyObject::new(
-            ap_obj::ObjKind::BuiltinFn,
-            format!("__object_virtual_{name}__"),
-        );
-        return Ok(Value::Obj(f));
+        // 02.08 gap (s028): stable marker (see object_virtual_marker_cached).
+        return Ok(object_virtual_marker_cached(&format!(
+            "__object_virtual_{name}__"
+        )));
     }
     // 02.04a (interp bug #4c): types.py reads FunctionType.__code__ and
     // FunctionType.__globals__ at import (GetSet/MemberDescriptorType).
@@ -3921,6 +4038,49 @@ pub fn attr_set_protocol(
     // subclass).
     if let Value::Obj(o) = obj {
         if o.kind == ap_obj::ObjKind::UserClass {
+            // 02.08 (s024): metaclass __setattr__ dispatch (EnumType.
+            // __setattr__ raises "cannot reassign member") — CPython
+            // class-attr writes go through type(cls).__setattr__. Dispatch
+            // ONLY for enum classes (they carry _member_map_); plain
+            // classes keep the plain class-dict write (dispatching
+            // everything made super().__setattr__ recurse forever).
+            let is_enum_class = o
+                .class_ref
+                .read()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_ref()
+                .map(|t| {
+                    t.dict
+                        .get(&Value::Str(PyString::new("_member_map_")))
+                        .is_some()
+                })
+                .unwrap_or(false);
+            if is_enum_class {
+                // Rust-side member-reassign guard (mirrors
+                // EnumType.__setattr__): dispatching the Python body
+                // recursed — our zero-arg super() inside the vendored
+                // __setattr__ re-resolved to the same Python function.
+                let member_map = o
+                    .class_ref
+                    .read()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .as_ref()
+                    .and_then(|t| match t
+                        .dict
+                        .get(&Value::Str(PyString::new("_member_map_")))
+                    {
+                        Some(v) => Some(v.clone()),
+                        None => None,
+                    });
+                if let Some(Value::Dict(mm)) = member_map {
+                    if mm.get_str(name).is_some() {
+                        return Err(raise(
+                            "AttributeError",
+                            format!("cannot reassign member '{}'", name),
+                        ));
+                    }
+                }
+            }
             let t = o
                 .class_ref
                 .read()
@@ -4290,6 +4450,48 @@ pub fn instantiate(
             }
         }
     }
+    // 02.08 gap (s031): ABC abstract-method enforcement — CPython's
+    // object.__new__ raises TypeError when __abstractmethods__ is
+    // non-empty. Message format (3.14): single method → "...without an
+    // implementation for abstract method 'foo'"; multiple →
+    // "...without implementations for abstract methods 'a', 'b'".
+    {
+        let abs_set: Vec<String> = {
+            let mut names: Vec<String> = Vec::new();
+            if let Some(Value::Frozen(fs)) = t
+                .dict
+                .get(&Value::Str(PyString::new("__abstractmethods__")))
+            {
+                for v in fs.iter() {
+                    if let Value::Str(s) = v {
+                        names.push(s.as_str().to_string());
+                    }
+                }
+            }
+            names
+        };
+        if !abs_set.is_empty() {
+            let mut sorted_names = abs_set.clone();
+            sorted_names.sort();
+            let quoted: Vec<String> = sorted_names
+                .iter()
+                .map(|n| format!("'{}'", n))
+                .collect();
+            let msg = if sorted_names.len() == 1 {
+                format!(
+                    "Can't instantiate abstract class {} without an implementation for abstract method {}",
+                    t.name, quoted[0]
+                )
+            } else {
+                format!(
+                    "Can't instantiate abstract class {} without implementations for abstract methods {}",
+                    t.name,
+                    quoted.join(", ")
+                )
+            };
+            return Err(raise("TypeError", msg));
+        }
+    }
     // 02.03b: 3-arg type(name, bases, dict, **kwds) — dynamic class
     // creation (enum._simple_enum). The `type` payload has no real
     // __new__/__init__ plumbing for the arity-3 form.
@@ -4343,21 +4545,39 @@ pub fn instantiate(
                 .collect(),
             _ => vec![],
         };
-        let obj = alloc_instance(t);
+        // s014: CPython namedtuple instances carry the NamedTuple payload
+        // kind (methods.rs subscript, builtin_len <values>, tuple-eq, repr).
+        // alloc_instance makes UserInstance — construct directly with the
+        // NamedTuple kind (kind is not assignable through the Arc'd PyObject).
+        let obj = {
+            let o = ap_obj::PyObject::new(ap_obj::ObjKind::NamedTuple, t.name.clone());
+            *(o.type_ref.write().unwrap_or_else(|p| p.into_inner())) = Some(Arc::downgrade(t));
+            Value::Obj(o)
+        };
         if let Value::Obj(io) = &obj {
             let kwmap: Vec<(String, Value)> = kwargs.to_vec();
+            let mut values: Vec<Value> = Vec::with_capacity(fields.len());
             for (i, f) in fields.iter().enumerate() {
                 let v = args
                     .get(i)
                     .cloned()
                     .or_else(|| kwmap.iter().find(|(k, _)| k == f).map(|(_, v)| v.clone()))
                     .unwrap_or(Value::None);
+                values.push(v.clone());
                 let _ = io
                     .attrs
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
                     .set(Value::Str(PyString::new(f.clone())), v);
             }
+            // s014: CPython namedtuples are tuples — methods.rs subscript,
+            // len(), iter() and tuple-eq all read the parked <values> list.
+            // Without it n[0]/len(n)/n == (1, 2) failed while n.a/n.b worked.
+            let _ = io
+                .attrs
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .set(Value::Str(PyString::new("<values>")), crate::builtins_modules::list(values));
         }
         return Ok(obj);
     }

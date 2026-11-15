@@ -219,12 +219,22 @@ impl Frame {
     pub fn new_class(parent: &Arc<Frame>, ns: Gc<PyDict>) -> Frame {
         Frame {
             locals: RefCell::new(HashMap::new()),
-            parent: None,
+            // s013/s024: the class body executes inside a FUNCTION that has
+            // its own locals (closure vars, params). CPython's class body
+            // reads enclosing-function names through the runtime dynamic
+            // chain (class scope is not lexically visible to methods, but
+            // the BODY itself resolves enclosing locals at exec time —
+            // functools.cmp_to_key's `class K` reads `mycmp`, enum's
+            // `__str__` reads closure cell values). parent: None made every
+            // closure read a NameError; keep the link (lookups walk
+            // locals-only up the chain — the class ns itself stays
+            // out of the lookup path per S-03-3).
+            parent: Some(parent.clone()),
             frame_id: next_frame_id(),
             globals: parent.globals.clone(),
             scope_path: parent.scope_path.clone(),
             my_cells: HashMap::new(),
-            free_cells: HashMap::new(),
+            free_cells: parent.my_cells.clone(),
             scope_table: std::cell::Cell::new(parent.scope_table.get()),
             has_frame_cells: std::cell::Cell::new(false),
             declared_globals: empty_declared(),

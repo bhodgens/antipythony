@@ -86,7 +86,13 @@ class Counter(dict):
     def __repr__(self):
         if not self:
             return '%s()' % (self.__class__.__name__,)
-        return '%s(%r)' % (self.__class__.__name__, dict(self))
+        try:
+            # CPython 3.14: dict() preserves the ordering from most_common().
+            d = dict(self.most_common())
+        except TypeError:
+            # values not orderable — fall back to insertion order.
+            d = dict(self)
+        return '%s(%r)' % (self.__class__.__name__, d)
 
     def __sub__(self, other):
         out = self.__class__()
@@ -137,6 +143,76 @@ class OrderedDict(dict):
         k, v = items[-1] if last else items[0]
         del self[k]
         return (k, v)
+
+
+class ChainMap(dict):
+    """Ordered dict subclass chaining several mappings (CPython 3.14 subset).
+
+    v0: the __getitem__/get/__contains__/__len__/__iter__ family reads
+    through the .maps list front-to-back; writes land in maps[0]. The
+    merged dict backing serves the plain-dict surface (repr, keys, items).
+    """
+
+    def __init__(self, *maps):
+        self.maps = list(maps) or [{}]
+        self._refresh()
+
+    def _refresh(self):
+        merged = {}
+        for m in reversed(self.maps):
+            merged.update(m)
+        dict.clear(self)
+        for k, v in merged.items():
+            dict.__setitem__(self, k, v)
+
+    def __getitem__(self, key):
+        for m in self.maps:
+            if key in m:
+                return m[key]
+        raise KeyError(key)
+
+    def get(self, key, default=None):
+        for m in self.maps:
+            if key in m:
+                return m[key]
+        return default
+
+    def __contains__(self, key):
+        return any(key in m for m in self.maps)
+
+    def __setitem__(self, key, value):
+        self.maps[0][key] = value
+        dict.__setitem__(self, key, value)
+
+    def __delitem__(self, key):
+        for m in self.maps:
+            if key in m:
+                del m[key]
+                self._refresh()
+                return
+        raise KeyError(key)
+
+    def pop(self, key, *default):
+        try:
+            v = self[key]
+        except KeyError:
+            if default:
+                return default[0]
+            raise
+        del self[key]
+        return v
+
+    def clear(self):
+        self.maps[0].clear()
+        self._refresh()
+
+    def new_child(self, m=None, **kwargs):
+        merged = dict(m or {})
+        merged.update(kwargs)
+        return self.__class__(merged, *self.maps)
+
+    def __repr__(self):
+        return '%s(%s)' % (self.__class__.__name__, ', '.join(repr(m) for m in self.maps))
 
 
 # T1-d (scrapy.utils.datatypes CaseInsensitiveDict): real UserDict/UserList/
@@ -226,6 +302,16 @@ class UserList(list):
 
     def __iter__(self):
         return iter(self.data)
+
+    def __add__(self, other):
+        if isinstance(other, UserList):
+            return self.__class__(self.data + other.data)
+        if isinstance(other, list):
+            return self.__class__(self.data + other)
+        return NotImplemented
+
+    def __repr__(self):
+        return repr(self.data)
 
 
 class UserString(str):
