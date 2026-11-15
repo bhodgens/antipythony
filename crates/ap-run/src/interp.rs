@@ -16406,6 +16406,13 @@ pub fn user_lt_public(a: &Value, b: &Value) -> Option<Result<bool, Flow>> {
     user_compare(&interp, CmpOp::Lt, a, b)
 }
 
+/// s028: public __eq__ dispatch (used_lt's eq counterpart) — user
+/// __eq__/reflected __eq__ when a slot exists, None otherwise.
+pub fn user_eq_public(a: &Value, b: &Value) -> Option<Result<bool, Flow>> {
+    let interp = current_interp_for_bindings();
+    user_compare(&interp, CmpOp::Eq, a, b)
+}
+
 /// Does this name exist in the v0 builtin-method surface? Permissive by
 /// design (receiver-shape errors surface at dispatch; 02.03 tightens).
 fn builtin_method_exists(name: &str) -> bool {

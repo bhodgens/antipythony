@@ -3704,6 +3704,26 @@ fn class_attr_get(
             // 02.08-full p2: stdlib-exception classes report their home
             // module (re.error.__module__ == 're', json.JSONDecodeError 'json').
             const STDLIB_EXC_MODULES: &[(&str, &str)] = &[("PatternError", "re")];
+            // s028: INTERNED BUILTIN types (list/dict/str/int/...) must
+            // report __module__ == "builtins" (reprlib's _lookup gate:
+            // typename -> expected home module) or the gate falls through
+            // to the native truncated instance repr.
+            const BUILTIN_TYPE_NAMES: &[&str] = &[
+                "object", "type", "str", "bytes", "bytearray", "int",
+                "float", "bool", "complex", "list", "tuple", "dict", "set",
+                "frozenset", "range", "slice", "BaseException", "Exception",
+                "NoneType", "module", "function", "builtin_function_or_method",
+                "dict_keys", "dict_values", "dict_items", "mappingproxy",
+                "SimpleNamespace", "super", "property", "classmethod",
+                "staticmethod", "Generator", "coroutine", "OrderedDict",
+                "defaultdict", "Counter", "ChainMap", "UserDict", "UserList",
+                "UserString", "deque",
+            ];
+            if t.dict.get(&Value::Str(PyString::new("__module__"))).is_none()
+                && BUILTIN_TYPE_NAMES.iter().any(|n| *n == t.name)
+            {
+                return Ok(Value::Str(PyString::new("builtins")));
+            }
             return Ok(t
                 .dict
                 .get(&Value::Str(PyString::new("__module__")))

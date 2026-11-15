@@ -135,10 +135,31 @@ pub(crate) fn py_lt(a: &Value, b: &Value) -> Result<bool, Flow> {
     // user_lt_public dispatches __lt__/reflected __gt__ and returns None
     // when no slot exists (then the builtin path keeps its exact errors).
     let user_hit = crate::interp::user_lt_public(a, b);
-    match user_hit {
-        Some(r) => r,
-        None => ap_obj::ops::lt(a, b).map_err(Flow::from_py),
+    if let Some(r) = user_hit {
+        return r;
     }
+    // s028 (pprint sort_dicts): tuple/tuple < recurses ELEMENT-WISE through
+    // py_lt (full user dispatch per element) — ap-obj values_cmp compares
+    // user-instance elements by identity, so sorted() over tuples holding
+    // _safe_key instances silently kept insertion order. CPython:
+    // tuple.__lt__ IS elementwise with full dispatch. Equality per element
+    // via py_eq_semantics: user __eq__ first, then ap-obj eq.
+    if let (Value::Tuple(x), Value::Tuple(y)) = (a, b) {
+        let n = x.0.len().min(y.0.len());
+        for i in 0..n {
+            let (ea, eb) = (&x.0[i], &y.0[i]);
+            let eqv = crate::interp::user_eq_public(ea, eb);
+            let eq = match eqv {
+                Some(r) => r?,
+                None => ap_obj::ops::eq(ea, eb),
+            };
+            if !eq {
+                return py_lt(ea, eb);
+            }
+        }
+        return Ok(x.0.len() < y.0.len());
+    }
+    ap_obj::ops::lt(a, b).map_err(Flow::from_py)
 }
 
 /// s013: public bridge for builtin_sorted — the sort path used raw
