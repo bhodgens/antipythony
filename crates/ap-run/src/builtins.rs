@@ -1453,6 +1453,57 @@ fn check_isinstance(v: &Value, t: &Value) -> Result<Value, Flow> {
                     eprintln!("[UC-DELEGATE] target={} vkind={}", want, vkind);
                 }
                 let interp_rc = crate::interp::current_interp_handle();
+                // s016: CPython consults type(C).__instancecheck__(C, x) for
+                // EVERY subject (not just user instances) — the vendored
+                // _DeprecateByteStringMeta.__instancecheck__ fires the
+                // ByteString DeprecationWarning and then super()-delegates
+                // to ABCMeta's registry walk. Primitive subjects (bytes vs
+                // collections.abc.ByteString) hit this path in CPython;
+                // value_isinstance's hook arm covers UserInstance subjects
+                // only, so consult the hook here for the rest.
+                if let Some(meta_v) = (|| {
+                    // The __class__ attr degenerates to the interned `type`
+                    // for imported-module classes (the _collections_abc
+                    // import flow loses the metaclass pointer in type_of's
+                    // row) — resolve through the class_ref's class_value
+                    // (what builtin_type/type() answers) and look the hook
+                    // up there. CPython: type(C).__instancecheck__(C, x).
+                    let tcls = crate::interp::attr_get_public(&interp_rc, t, "__class__")
+                        .ok()
+                        .flatten()?;
+                    if let Value::Obj(mo) = &tcls {
+                        if mo.name != "type" {
+                            return crate::interp::attr_get_public(&interp_rc, &tcls, "__instancecheck__")
+                                .ok()
+                                .flatten();
+                        }
+                    }
+                    // Degenerated: fall back to the real metaclass value.
+                    let to = match t {
+                        Value::Obj(o) => o,
+                        _ => return None,
+                    };
+                    let cv = to
+                        .class_ref
+                        .read()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .as_ref()?
+                        .class_value
+                        .read()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .clone()?;
+                    crate::interp::attr_get_public(&interp_rc, &cv, "__instancecheck__")
+                        .ok()
+                        .flatten()
+                })() {
+                    let r = crate::interp::call_value_pub(
+                        &interp_rc,
+                        &meta_v,
+                        &[t.clone(), v.clone()],
+                        &[],
+                    )?;
+                    return Ok(Value::Bool(r.is_truthy()));
+                }
                 if let Ok(true) = crate::classes::value_isinstance(&interp_rc, v, t) {
                     return Ok(Value::Bool(true));
                 }
@@ -1734,15 +1785,13 @@ pub fn type_matches(v: &Value, want: &str) -> bool {
         | (Value::Str(_), "Container")
         | (Value::Str(_), "Sized")
         | (Value::Str(_), "Sequence")
-        | (Value::Str(_), "Hashable")
-        | (Value::Str(_), "ByteString") => true,
+        | (Value::Str(_), "Hashable") => true,
         (Value::Bytes(_), "Iterable")
         | (Value::Bytes(_), "Collection")
         | (Value::Bytes(_), "Container")
         | (Value::Bytes(_), "Sized")
         | (Value::Bytes(_), "Sequence")
-        | (Value::Bytes(_), "Hashable")
-        | (Value::Bytes(_), "ByteString") => true,
+        | (Value::Bytes(_), "Hashable") => true,
         (Value::Set(_), "Iterable")
         | (Value::Set(_), "Collection")
         | (Value::Set(_), "Container")
@@ -3251,6 +3300,200 @@ fn builtin_marker(name: &str) -> Value {
     Value::Obj(o)
 }
 
+/// s016: materialize the CPython frame surface (f_code/f_lineno/f_globals/
+/// f_locals/f_back) over the LIVE python frame at `idx` in interp.py_frames
+/// (outermost first). co_filename is the DEFINING module's __file__
+/// (fn_entry_file semantics) so vendored-stdlib callers attribute warnings
+/// to their own file and user callers to the script. f_back chains outward
+/// as `<frame>` stubs whose depth rides slice_parts (interp.rs's
+/// `<frame>.f_back` attr arm resolves them against py_frames too).
+pub(crate) fn py_frame_stub(interp: &Interpreter, idx: usize) -> Value {
+    let fr = {
+        let st = interp.py_frames.lock().unwrap_or_else(|p| p.into_inner());
+        match st.get(idx) {
+            Some(f) => f.clone(),
+            None => return Value::None,
+        }
+    };
+    let file = fr
+        .globals
+        .get(&Value::Str(PyString::new("__file__")))
+        .and_then(|v| match v {
+            Value::Str(sv) => Some(sv.as_str().to_string()),
+            _ => None,
+        })
+        .unwrap_or_else(|| interp.script_path.clone());
+    let code = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<code>");
+    {
+        let cattrs = code.attrs.lock().unwrap_or_else(|p| p.into_inner());
+        let _ = cattrs.set(
+            Value::Str(PyString::new("co_filename")),
+            Value::Str(PyString::new(file.as_str())),
+        );
+        let _ = cattrs.set(
+            Value::Str(PyString::new("co_name")),
+            Value::Str(PyString::new(fr.qualname.as_str())),
+        );
+        // T1 (inspect.signature on marker fns): minimal signature surface.
+        let _ = cattrs.set(
+            Value::Str(PyString::new("co_argcount")),
+            Value::Int(Int::from_i64(0)),
+        );
+        // s020: inspect.getargs computes nargs+nkwargs — a MISSING
+        // co_kwonlyargcount (reading as None through the safe-default arm)
+        // TypeError'd int+None. Zero is the CPython value for a no-args stub.
+        let _ = cattrs.set(
+            Value::Str(PyString::new("co_kwonlyargcount")),
+            Value::Int(Int::from_i64(0)),
+        );
+        // s020: getargs reads co_flags & CO_VARARGS — same None-&-int hazard.
+        let _ = cattrs.set(
+            Value::Str(PyString::new("co_flags")),
+            Value::Int(Int::from_i64(0)),
+        );
+        let _ = cattrs.set(
+            Value::Str(PyString::new("co_varnames")),
+            Value::Tuple(Gc::new(Tuple(Vec::new()))),
+        );
+        // T1 (inspect.stack): co_positions() — (None,)*4 tuples; islice
+        // indexes into it. 1024 covers any stub f_lasti.
+        let none4 = || {
+            Value::Tuple(Gc::new(Tuple(vec![
+                Value::None,
+                Value::None,
+                Value::None,
+                Value::None,
+            ])))
+        };
+        let positions: Vec<Value> = (0..1024).map(|_| none4()).collect();
+        let cp = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "__ap_code_positions__");
+        *cp.slice_parts.lock().unwrap_or_else(|p| p.into_inner()) =
+            vec![Value::Tuple(Gc::new(Tuple(positions)))];
+        let _ = cattrs.set(Value::Str(PyString::new("co_positions")), Value::Obj(cp));
+        // s020: inspect.getclosurevars -> dis.get_instructions walks the
+        // code object. An EMPTY bytecode surface (b'' co_code, empty
+        // co_lines, no-op _varname_from_oparg) yields zero instructions,
+        // so getclosurevars answers all-empty ClosureVars — byte-identical
+        // with CPython for the corpus's global-reference lambda (f is a
+        // global, so CPython's nonlocals is ALSO empty). _co_code_adaptive
+        // mirrors co_code (dis._get_code_array probes it under adaptive).
+        let empty_bytes = Value::Bytes(Gc::new(Vec::new()));
+        let _ = cattrs.set(Value::Str(PyString::new("co_code")), empty_bytes.clone());
+        let _ = cattrs.set(
+            Value::Str(PyString::new("_co_code_adaptive")),
+            empty_bytes,
+        );
+        let _ = cattrs.set(
+            Value::Str(PyString::new("co_firstlineno")),
+            Value::Int(Int::from_i64(1)),
+        );
+        // co_lines() -> empty iterator (a marker BuiltinFn called with no
+        // args yields nothing — the generic iterator surface treats an
+        // empty tuple payload as exhausted).
+        let cl = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "__ap_code_lines__");
+        *cl.slice_parts.lock().unwrap_or_else(|p| p.into_inner()) =
+            vec![Value::Tuple(Gc::new(Tuple(Vec::new())))];
+        let _ = cattrs.set(Value::Str(PyString::new("co_lines")), Value::Obj(cl));
+        // _varname_from_oparg(oparg) -> None (no varname table on a stub).
+        let vf = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "__ap_code_varname__");
+        let _ = cattrs.set(
+            Value::Str(PyString::new("_varname_from_oparg")),
+            Value::Obj(vf),
+        );
+        let _ = cattrs.set(
+            Value::Str(PyString::new("co_consts")),
+            Value::Tuple(Gc::new(Tuple(Vec::new()))),
+        );
+        let _ = cattrs.set(
+            Value::Str(PyString::new("co_names")),
+            Value::Tuple(Gc::new(Tuple(Vec::new()))),
+        );
+    }
+    let frame = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<frame>");
+    // The frame's own py_frames index rides slice_parts: the interp.rs
+    // `<frame>.f_back` arm resolves chained walks against it.
+    *frame.slice_parts.lock().unwrap_or_else(|p| p.into_inner()) =
+        vec![Value::Int(Int::from_i64(idx as i64))];
+    {
+        let attrs = frame.attrs.lock().unwrap_or_else(|p| p.into_inner());
+        let _ = attrs.set(Value::Str(PyString::new("f_locals")), {
+            // Module frames keep locals in globals; function frames expose
+            // their live local slots (CPython f_locals semantics).
+            if fr.is_module {
+                Value::Dict(fr.globals.clone())
+            } else {
+                let d = PyDict::new();
+                for (k, loc) in fr.locals.borrow().iter() {
+                    let v = match loc {
+                        crate::frame::Loc::Slot(c) => c.borrow().clone(),
+                        crate::frame::Loc::CellSlot(c) => c.borrow().clone(),
+                    };
+                    if let Some(v) = v {
+                        let _ = d.set(Value::Str(PyString::new(k.as_str())), v);
+                    }
+                }
+                Value::Dict(d)
+            }
+        });
+        let _ = attrs.set(
+            Value::Str(PyString::new("f_globals")),
+            Value::Dict(fr.globals.clone()),
+        );
+        let _ = attrs.set(Value::Str(PyString::new("f_code")), Value::Obj(code));
+        // The LIVE frame's current statement line (Stmt::Line markers keep
+        // this exact on every frame kind).
+        let lineno = fr.last_line.get().max(1);
+        let _ = attrs.set(
+            Value::Str(PyString::new("f_lineno")),
+            Value::Int(Int::from_i64(lineno as i64)),
+        );
+        // s016-fix2: the frame's own py_frames index ALSO rides the frame
+        // attr (`<frame>.f_lineno` re-resolves LIVE through it in interp.rs's
+        // Namespace arm — CPython f_lineno is read-fresh, so a build-time
+        // snapshot goes stale the moment the frame executes its next
+        // statement; warn()'s stacklevel walk reads it mid-statement and a
+        // stale snapshot attributed the warning to the wrong line).
+        let _ = attrs.set(
+            Value::Str(PyString::new("__ap_pf_index__")),
+            Value::Int(Int::from_i64(idx as i64)),
+        );
+        // f_back: the next-outer LIVE frame as a stub (index rides
+        // slice_parts; interp.rs's `<frame>.f_back` attr arm resolves it
+        // through py_frame_stub as well).
+        let f_back = if idx > 0 {
+            let fb = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<frame>");
+            *fb.slice_parts.lock().unwrap_or_else(|p| p.into_inner()) =
+                vec![Value::Int(Int::from_i64(idx as i64))];
+            let outer = py_frame_stub(interp, idx - 1);
+            if let Value::Obj(ofb) = &outer {
+                // Copy the represented frame's f_lineno/f_globals/f_code
+                // onto the stub (multi-step stacklevel walks and
+                // inspect.stack() read each element directly).
+                let oattrs = ofb.attrs.lock().unwrap_or_else(|p| p.into_inner());
+                let fbattrs = fb.attrs.lock().unwrap_or_else(|p| p.into_inner());
+                for name in ["f_lineno", "f_globals", "f_code"] {
+                    if let Some(v) =
+                        oattrs.get(&Value::Str(PyString::new(name)))
+                    {
+                        let _ = fbattrs.set(Value::Str(PyString::new(name)), v.clone());
+                    }
+                }
+            }
+            Value::Obj(fb)
+        } else {
+            Value::None
+        };
+        let _ = attrs.set(Value::Str(PyString::new("f_back")), f_back);
+        // T1 (importlib.resources._infer_caller): inspect.stack() reads
+        // f_lasti + code.co_positions().
+        let _ = attrs.set(
+            Value::Str(PyString::new("f_lasti")),
+            Value::Int(Int::from_i64(0)),
+        );
+    }
+    Value::Obj(frame)
+}
+
 /// Dispatch a sys-module attribute access that is a function marker.
 pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<BResult> {
     match name {
@@ -3322,142 +3565,63 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
         // path + line 1 (warn() stacklevel walks land on the caller, which
         // for the gate IS the script).
         "_getframe" | "_getframemodulename" => {
-            let frame = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<frame>");
-            {
-                let code = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<code>");
-                {
-                    let cattrs = code.attrs.lock().unwrap_or_else(|p| p.into_inner());
-                    let _ = cattrs.set(
-                        Value::Str(PyString::new("co_filename")),
-                        Value::Str(PyString::new(interp.script_path.clone())),
-                    );
-                    let _ = cattrs.set(
-                        Value::Str(PyString::new("co_name")),
-                        Value::Str(PyString::new("<module>")),
-                    );
-                    // T1 (inspect.signature on marker fns, e.g.
-                    // xmlrpclib.dumps via scrapy get_func_args): minimal
-                    // signature surface.
-                    let _ = cattrs.set(
-                        Value::Str(PyString::new("co_argcount")),
-                        Value::Int(Int::from_i64(0)),
-                    );
-                    let _ = cattrs.set(
-                        Value::Str(PyString::new("co_varnames")),
-                        Value::Tuple(Gc::new(Tuple(Vec::new()))),
-                    );
-                    // T1 (inspect.stack): co_positions() — a long tuple of
-                    // (None, None, None, None); islice indexes into it. 1024
-                    // covers any stub-frame f_lasti the runtime produces.
-                    let none4 = || {
-                        Value::Tuple(Gc::new(Tuple(vec![
-                            Value::None,
-                            Value::None,
-                            Value::None,
-                            Value::None,
-                        ])))
-                    };
-                    let positions: Vec<Value> = (0..1024).map(|_| none4()).collect();
-                    let cp =
-                        ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "__ap_code_positions__");
-                    *cp.slice_parts.lock().unwrap_or_else(|p| p.into_inner()) =
-                        vec![Value::Tuple(Gc::new(Tuple(positions)))];
-                    let _ = cattrs.set(Value::Str(PyString::new("co_positions")), Value::Obj(cp));
-                }
-                let attrs = frame.attrs.lock().unwrap_or_else(|p| p.into_inner());
-                let _ = attrs.set(
-                    Value::Str(PyString::new("f_locals")),
-                    Value::Dict(PyDict::new()),
-                );
-                let _ = attrs.set(
-                    Value::Str(PyString::new("f_globals")),
-                    Value::Dict(interp.globals.clone()),
-                );
-                let _ = attrs.set(Value::Str(PyString::new("f_code")), Value::Obj(code));
-                // 02.03b: _py_warnings walks to the USER caller — the
-                // OUTERMOST real frame (the script) carries its current
-                // statement line; inner frames are the warnings machinery
-                // itself, which CPython's stacklevel skips.
-                let lineno = interp
-                    .frame_stack
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .first()
-                    .map(|c| c.get())
-                    .filter(|n| *n > 0)
-                    .unwrap_or(1);
-                let _ = attrs.set(
-                    Value::Str(PyString::new("f_lineno")),
-                    Value::Int(Int::from_i64(lineno as i64)),
-                );
-                // T1-d fix (twisted.compat.currentframe walks f_back):
-                // chain to the next-outer frame as a synthetic stub. Depth
-                // rides slice_parts so repeated f_back walks outward.
-                let depth = frame
-                    .slice_parts
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .first()
-                    .and_then(|v| v.as_int())
-                    .and_then(|i| i.to_i64())
-                    .unwrap_or(0);
-                let stack_len = interp
-                    .frame_stack
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .len();
-                // Generous cap: twisted.compat.currentframe(2)+ walks past
-                // the import machinery; always allow a stub chain long
-                // enough (min 32) — the walk ends at None.
-                let outer_exists = (depth as usize + 1) < (stack_len.max(32));
-                let f_back = if outer_exists {
-                    let fb = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<frame>");
-                    let _ = fb
-                        .attrs
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .set(Value::Str(PyString::new("f_back")), Value::None);
-                    *fb.slice_parts.lock().unwrap_or_else(|p| p.into_inner()) =
-                        vec![Value::Int(Int::from_i64(depth + 1))];
-                    let _ = fb.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
-                        Value::Str(PyString::new("f_globals")),
-                        Value::Dict(interp.globals.clone()),
-                    );
-                    // T2 fix: chained frames need f_code - _py_warnings
-                    // reads frame.f_code.co_filename on every walk step;
-                    // missing f_code raised AttributeError mid-unwind and
-                    // replaced the in-flight exception (pytest Skipped).
-                    let code = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<code>");
-                    {
-                        let cattrs = code.attrs.lock().unwrap_or_else(|p| p.into_inner());
-                        let _ = cattrs.set(
-                            Value::Str(PyString::new("co_filename")),
-                            Value::Str(PyString::new(interp.script_path.clone())),
-                        );
-                        let _ = cattrs.set(
-                            Value::Str(PyString::new("co_name")),
-                            Value::Str(PyString::new("<module>")),
-                        );
-                    }
-                    let _ = fb
-                        .attrs
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .set(Value::Str(PyString::new("f_code")), Value::Obj(code));
-                    Value::Obj(fb)
-                } else {
-                    Value::None
-                };
-                let _ = attrs.set(Value::Str(PyString::new("f_back")), f_back);
-                // T1 (importlib.resources._infer_caller): inspect.stack()
-                // reads f_lasti + code.co_positions(); the stub serves
-                // position 0 / an empty positions iterator respectively.
-                let _ = attrs.set(
-                    Value::Str(PyString::new("f_lasti")),
-                    Value::Int(Int::from_i64(0)),
-                );
+            if name == "_getframemodulename" {
+                // CPython: module __name__ of the frame at depth (v0: the
+                // running script's module).
+                let mn = interp
+                    .globals
+                    .get(&Value::Str(PyString::new("__name__")))
+                    .unwrap_or_else(|| Value::Str(PyString::new("__main__")));
+                return Some(Ok(mn));
             }
-            Some(Ok(Value::Obj(frame)))
+            // s016 (02.08 gaps wave 2): resolve through the LIVE python
+            // frame chain (interp.py_frames, outermost first). CPython
+            // semantics: _getframe(0) = the CALLER of _getframe (the
+            // frame executing the call), _getframe(d) = d frames out.
+            // _collections_abc (import-time probe), _py_warnings.warn
+            // (stacklevel walk), inspect.currentframe and
+            // twisted.compat.currentframe all route through here.
+            let depth = args
+                .first()
+                .and_then(|v| v.as_int())
+                .and_then(|i| i.to_i64())
+                .unwrap_or(0);
+            // s016-fix3: CPython's _getframe(depth) counts from the CALLER
+            // of _getframe — depth=1 (the default) IS the caller itself
+            // (the C function adds no Python frame). Our previous
+            // `py_len-1-depth` with a default depth of 1 skipped the caller
+            // and landed on its parent (outer's f_back answered the module
+            // stub as None; warn()'s stacklevel walk missed by one frame,
+            // attributing the warning to the wrong line AND the wrong
+            // source line). The live model: idx = py_len-1-depth with the
+            // no-arg default depth=0 (the builtin-call frame is NOT a
+            // Python frame on our stack, unlike CPython's C frame).
+            let py_len = {
+                let st = interp.py_frames.lock().unwrap_or_else(|p| p.into_inner());
+                st.len()
+            };
+            // The _getframe CALL itself is one python frame in CPython's
+            // model (the builtin call site executes inside the caller's
+            // frame, which sits at py_frames.top). index = py_len - 1
+            // (caller) - depth.
+            let idx_i = py_len as i64 - 1 - depth;
+            // Over-walks (stacklevel deeper than our visible python frames)
+            // clamp to the OUTERMOST frame instead of ValueError: CPython's
+            // native/C dispatch frames are invisible to _getframe, and OUR
+            // native special-method dispatch (metaclass __instancecheck__,
+            // etc.) likewise adds no python frame — a warn() stacklevel
+            // crossing such a boundary must land on the user frame, not
+            // raise (raising makes warn() fall back to filename="<sys>",
+            // module="sys", and the DeprecationWarning default filter then
+            // swallows the warning — observed: s016's ByteString warning
+            // vanished). py_frames empty = no python frame at all (native
+            // probe) → CPython-matching ValueError.
+            let idx = idx_i.max(0) as usize;
+            let frame = py_frame_stub(interp, idx);
+            if matches!(frame, Value::None) {
+                return Some(Err(raise("ValueError", "call stack is not deep enough")));
+            }
+            Some(Ok(frame))
         }
         // T1-d (scrapy chain, orchestrator handoff): `input([prompt])` —
         // print the prompt to stdout WITHOUT a trailing newline, read one
@@ -4691,8 +4855,18 @@ pub fn call_builtin(
         return Ok(Value::Dict(d));
     }
     // T1 (inspect.stack): stub code object co_positions() → parked tuple.
+    // s020: co_lines() on the SAME stub — an empty tuple payload makes the
+    // marker call return an exhausted iterator, so dis.findlinestarts
+    // yields nothing (zero instructions on the empty-bytecode stub).
+    if name == "__ap_code_lines__" {
+        return Ok(Value::Tuple(Gc::new(Tuple(Vec::new()))));
+    }
+    // s020: _varname_from_oparg(oparg) on the stub — no varname table,
+    // CPython-matching None answer.
+    if name == "__ap_code_varname__" {
+        return Ok(Value::None);
+    }
     if name == "__ap_code_positions__" {
-        // Wave-57 fix: bound dispatch passes no args, so the old
         // args.first() shape returned an EMPTY tuple ->
         // itertools.islice(positions_gen, ...) exhausted immediately ->
         // StopIteration (and PEP-479 RuntimeError inside pytest's
@@ -5273,8 +5447,18 @@ pub fn call_builtin(
                 _ => 0,
             };
             if flags & 0x400 != 0 {
-                let tree = crate::ast_bridge::native_parse_tree(&src)
-                    .map_err(|m| raise("SyntaxError", m))?;
+                // s023: mode='eval' wraps in an Expression node (CPython
+                // compile semantics); literal_eval (isinstance Expression)
+                // and ast.unparse rely on the wrapper shape.
+                let tree = crate::ast_bridge::native_parse_tree_mode(
+                    &src,
+                    &filename,
+                    match args.get(2) {
+                        Some(Value::Str(m)) if m.as_str() == "eval" => "eval",
+                        _ => "exec",
+                    },
+                )
+                .map_err(|m| raise("SyntaxError", m))?;
                 let interp = crate::builtins_modules::current_interp()
                     .ok_or_else(|| raise("RuntimeError", "no interpreter"))?;
                 let interp = std::sync::Arc::new(interp);

@@ -100,6 +100,24 @@ pub fn binop(a: &Value, op: BinOp, b: &Value) -> Result<Value, PyException> {
                 items.extend(y.0.iter().cloned());
                 Ok(Value::Tuple(Gc::new(Tuple(items))))
             }
+            // s020: tuple + namedtuple-instance (inspect.getouterframes does
+            // `(frame,) + getframeinfo(frame)` — a Traceback IS a
+            // _Traceback-namedtuple instance in CPython and tuple-concat
+            // walks its payload). Result is a TUPLE per the left operand.
+            (Value::Tuple(x), Value::Obj(no))
+                if no.kind == crate::object::ObjKind::NamedTuple =>
+            {
+                let mut items = x.0.clone();
+                if let Some(Value::List(l)) = no
+                    .attrs
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .get(&Value::Str(PyString::new("<values>")))
+                {
+                    items.extend(l.items().iter().cloned());
+                }
+                Ok(Value::Tuple(Gc::new(Tuple(items))))
+            }
             // 02.03b-fix: tuple + list — vendored importlib concatenates
             // suffix sequences whose tuple-ness differs across the v0 module
             // shims (machinery.all_suffixes paths). Result is a TUPLE,

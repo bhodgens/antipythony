@@ -184,7 +184,13 @@ class PrettyPrinter:
         rep = self._repr(object, context, level)
         max_width = self._width - indent - allowance
         if len(rep) > max_width:
-            p = self._dispatch.get(type(object).__repr__, None)
+            # antipythony deviation (s028): this runtime shares ONE function
+            # object across every builtin type's __repr__ (str.__repr__ is
+            # list.__repr__), so CPython's function-identity keys collapse
+            # _dispatch to a single handler (the last insert wins =
+            # _pprint_user_string → AttributeError on lists/dicts). Key by
+            # type name instead; _dispatch is module-private.
+            p = self._dispatch.get(type(object).__name__, None)
             # Lazy import to improve module import time
             from dataclasses import is_dataclass
 
@@ -233,7 +239,7 @@ class PrettyPrinter:
                                     context, level)
         write('}')
 
-    _dispatch[dict.__repr__] = _pprint_dict
+    _dispatch["dict"] = _pprint_dict
 
     def _pprint_ordered_dict(self, object, stream, indent, allowance, context, level):
         if not len(object):
@@ -246,7 +252,7 @@ class PrettyPrinter:
                      context, level)
         stream.write(')')
 
-    _dispatch[_collections.OrderedDict.__repr__] = _pprint_ordered_dict
+    _dispatch["OrderedDict"] = _pprint_ordered_dict
 
     def _pprint_list(self, object, stream, indent, allowance, context, level):
         stream.write('[')
@@ -254,7 +260,7 @@ class PrettyPrinter:
                            context, level)
         stream.write(']')
 
-    _dispatch[list.__repr__] = _pprint_list
+    _dispatch["list"] = _pprint_list
 
     def _pprint_tuple(self, object, stream, indent, allowance, context, level):
         stream.write('(')
@@ -263,7 +269,7 @@ class PrettyPrinter:
                            context, level)
         stream.write(endchar)
 
-    _dispatch[tuple.__repr__] = _pprint_tuple
+    _dispatch["tuple"] = _pprint_tuple
 
     def _pprint_set(self, object, stream, indent, allowance, context, level):
         if not len(object):
@@ -282,8 +288,8 @@ class PrettyPrinter:
                            context, level)
         stream.write(endchar)
 
-    _dispatch[set.__repr__] = _pprint_set
-    _dispatch[frozenset.__repr__] = _pprint_set
+    _dispatch["set"] = _pprint_set
+    _dispatch["frozenset"] = _pprint_set
 
     def _pprint_str(self, object, stream, indent, allowance, context, level):
         write = stream.write
@@ -337,7 +343,7 @@ class PrettyPrinter:
         if level == 1:
             write(')')
 
-    _dispatch[str.__repr__] = _pprint_str
+    _dispatch["str"] = _pprint_str
 
     def _pprint_bytes(self, object, stream, indent, allowance, context, level):
         write = stream.write
@@ -358,7 +364,7 @@ class PrettyPrinter:
         if parens:
             write(')')
 
-    _dispatch[bytes.__repr__] = _pprint_bytes
+    _dispatch["bytes"] = _pprint_bytes
 
     def _pprint_bytearray(self, object, stream, indent, allowance, context, level):
         write = stream.write
@@ -367,7 +373,7 @@ class PrettyPrinter:
                            allowance + 1, context, level + 1)
         write(')')
 
-    _dispatch[bytearray.__repr__] = _pprint_bytearray
+    _dispatch["bytearray"] = _pprint_bytearray
 
     def _pprint_mappingproxy(self, object, stream, indent, allowance, context, level):
         stream.write('mappingproxy(')
@@ -375,7 +381,7 @@ class PrettyPrinter:
                      context, level)
         stream.write(')')
 
-    _dispatch[_types.MappingProxyType.__repr__] = _pprint_mappingproxy
+    _dispatch["mappingproxy"] = _pprint_mappingproxy
 
     def _pprint_simplenamespace(self, object, stream, indent, allowance, context, level):
         if type(object) is _types.SimpleNamespace:
@@ -390,7 +396,7 @@ class PrettyPrinter:
         self._format_namespace_items(items, stream, indent, allowance, context, level)
         stream.write(')')
 
-    _dispatch[_types.SimpleNamespace.__repr__] = _pprint_simplenamespace
+    _dispatch["SimpleNamespace"] = _pprint_simplenamespace
 
     def _format_dict_items(self, items, stream, indent, allowance, context,
                            level):
@@ -496,7 +502,7 @@ class PrettyPrinter:
         self._pprint_dict(object, stream, indent, allowance + 1, context, level)
         stream.write(')')
 
-    _dispatch[_collections.defaultdict.__repr__] = _pprint_default_dict
+    _dispatch["defaultdict"] = _pprint_default_dict
 
     def _pprint_counter(self, object, stream, indent, allowance, context, level):
         if not len(object):
@@ -512,7 +518,7 @@ class PrettyPrinter:
                                 context, level)
         stream.write('})')
 
-    _dispatch[_collections.Counter.__repr__] = _pprint_counter
+    _dispatch["Counter"] = _pprint_counter
 
     def _pprint_chain_map(self, object, stream, indent, allowance, context, level):
         if not len(object.maps):
@@ -529,7 +535,7 @@ class PrettyPrinter:
                 self._format(m, stream, indent, 1, context, level)
                 stream.write(',\n' + ' ' * indent)
 
-    _dispatch[_collections.ChainMap.__repr__] = _pprint_chain_map
+    _dispatch["ChainMap"] = _pprint_chain_map
 
     def _pprint_deque(self, object, stream, indent, allowance, context, level):
         if not len(object):
@@ -549,22 +555,22 @@ class PrettyPrinter:
             rml = self._repr(object.maxlen, context, level)
             stream.write('],\n%smaxlen=%s)' % (' ' * indent, rml))
 
-    _dispatch[_collections.deque.__repr__] = _pprint_deque
+    _dispatch["deque"] = _pprint_deque
 
     def _pprint_user_dict(self, object, stream, indent, allowance, context, level):
         self._format(object.data, stream, indent, allowance, context, level - 1)
 
-    _dispatch[_collections.UserDict.__repr__] = _pprint_user_dict
+    _dispatch["UserDict"] = _pprint_user_dict
 
     def _pprint_user_list(self, object, stream, indent, allowance, context, level):
         self._format(object.data, stream, indent, allowance, context, level - 1)
 
-    _dispatch[_collections.UserList.__repr__] = _pprint_user_list
+    _dispatch["UserList"] = _pprint_user_list
 
     def _pprint_user_string(self, object, stream, indent, allowance, context, level):
         self._format(object.data, stream, indent, allowance, context, level - 1)
 
-    _dispatch[_collections.UserString.__repr__] = _pprint_user_string
+    _dispatch["UserString"] = _pprint_user_string
 
     def _safe_repr(self, object, context, maxlevels, level):
         # Return triple (repr_string, isreadable, isrecursive).

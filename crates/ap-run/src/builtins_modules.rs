@@ -135,10 +135,31 @@ pub(crate) fn py_lt(a: &Value, b: &Value) -> Result<bool, Flow> {
     // user_lt_public dispatches __lt__/reflected __gt__ and returns None
     // when no slot exists (then the builtin path keeps its exact errors).
     let user_hit = crate::interp::user_lt_public(a, b);
-    match user_hit {
-        Some(r) => r,
-        None => ap_obj::ops::lt(a, b).map_err(Flow::from_py),
+    if let Some(r) = user_hit {
+        return r;
     }
+    // s028 (pprint sort_dicts): tuple/tuple < recurses ELEMENT-WISE through
+    // py_lt (full user dispatch per element) — ap-obj values_cmp compares
+    // user-instance elements by identity, so sorted() over tuples holding
+    // _safe_key instances silently kept insertion order. CPython:
+    // tuple.__lt__ IS elementwise with full dispatch. Equality per element
+    // via py_eq_semantics: user __eq__ first, then ap-obj eq.
+    if let (Value::Tuple(x), Value::Tuple(y)) = (a, b) {
+        let n = x.0.len().min(y.0.len());
+        for i in 0..n {
+            let (ea, eb) = (&x.0[i], &y.0[i]);
+            let eqv = crate::interp::user_eq_public(ea, eb);
+            let eq = match eqv {
+                Some(r) => r?,
+                None => ap_obj::ops::eq(ea, eb),
+            };
+            if !eq {
+                return py_lt(ea, eb);
+            }
+        }
+        return Ok(x.0.len() < y.0.len());
+    }
+    ap_obj::ops::lt(a, b).map_err(Flow::from_py)
 }
 
 /// s013: public bridge for builtin_sorted — the sort path used raw
@@ -15801,6 +15822,18 @@ pub fn call_native_marker_impl(
     if full == "importlib.machinery.PathFinder.find_spec" {
         return Some(Ok(Value::None));
     }
+    // s020: importlib.machinery.all_suffixes() — SOURCE+BYTECODE+EXTENSION
+    // (CPython order). inspect.getmodulename sorts longest-first, so the
+    // extension suffixes must be present for getfile/getmodulename probes.
+    if full == "importlib.machinery.all_suffixes" {
+        let items = vec![
+            crate::builtins_modules::s(".py"),
+            crate::builtins_modules::s(".pyc"),
+            crate::builtins_modules::s(".so"),
+            crate::builtins_modules::s(".dylib"),
+        ];
+        return Some(Ok(crate::builtins_modules::list(items)));
+    }
     // s013/s014: functools stateful markers route through the functools
     // dispatcher. Only STATEFUL names (lru wrappers/sentinels/CacheInfo);
     // regular module fns (lru_cache etc) must fall through so kwargs reach
@@ -19655,7 +19688,11 @@ fn build_importlib_machinery(_i: &crate::frame::Interpreter) -> Value {
     ns_const(&ns, "EXTENSION_SUFFIXES", list(vec![s(".so"), s(".dylib")]));
     ns_const(&ns, "SOURCE_SUFFIXES", list(vec![s(".py")]));
     ns_const(&ns, "BYTECODE_SUFFIXES", list(vec![s(".pyc")]));
-    ns_const(&ns, "all_suffixes", list(vec![s(".py"), s(".pyc")]));
+    // s020: all_suffixes must be CALLABLE (CPython: a function returning
+    // SOURCE+BYTECODE+EXTENSION suffixes). The v0 list constant broke
+    // inspect.getmodulename ('list' object is not callable) — and with it
+    // inspect.getfile on every module object.
+    let _ = ns.set(s("all_suffixes"), marker("importlib.machinery.all_suffixes"));
     finish(m, ns)
 }
 

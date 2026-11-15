@@ -566,7 +566,19 @@ fn run_loaded(
     // runs (token.py builds tok_name from globals().items()).
     let saved = builtins_modules::CURRENT_MODULE_GLOBALS
         .with(|c| c.borrow_mut().replace(loaded.frame.globals.clone()));
+    // s016: the module frame is python frame depth 0 for imported modules
+    // too (warn() inside a module body attributes to the module's file).
+    interp
+        .py_frames
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .push(loaded.frame.clone());
     let r = exec_block(interp, &loaded.frame, stmts, &loaded.reg);
+    interp
+        .py_frames
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .pop();
     if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::ModDbg) {
         if let Err(ref _e) = r {
             eprintln!("[MODDBG] module exec failed (see traceback above)");

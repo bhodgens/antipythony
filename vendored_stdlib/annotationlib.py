@@ -115,6 +115,35 @@ def get_annotations(obj, *, globals=None, locals=None, eval_str=False,
         if own is not None:
             return own
         if isinstance(obj, type):
+            # s025 (PEP 649/749): a class may carry its annotations in
+            # __annotate__ (make_dataclass sets cls.__annotate__) with no
+            # __annotations__ dict at all — consult the callable before
+            # answering empty (the old shape returned {} and
+            # _process_class then raised "'y' is a field but has no type
+            # annotation" for make_dataclass-created classes).
+            annotate_fn = None
+            try:
+                annotate_fn = d.get("__annotate__")
+            except Exception:
+                annotate_fn = None
+            if annotate_fn is None:
+                try:
+                    annotate_fn = getattr(obj, "__annotate__", None)
+                except Exception:
+                    annotate_fn = None
+            if callable(annotate_fn):
+                try:
+                    # pass the RESOLVED format (dataclasses calls with
+                    # format=FORWARDREF; annotation_format defaults to VALUE
+                    # and would trip make_dataclass's value_blocked guard).
+                    res = annotate_fn(format if format is not None else annotation_format)
+                    if _ga:
+                        _sys_ga.stderr.write("[GA] annotate_fn ok %r\n" % (type(res).__name__,))
+                    if isinstance(res, dict):
+                        return res
+                except Exception as _e:
+                    if _ga:
+                        _sys_ga.stderr.write("[GA] annotate_fn ERR %s %r\n" % (type(_e).__name__, str(_e)[:120]))
             return {}
     anns = getattr(obj, "__annotations__", None)
     if anns is None:
