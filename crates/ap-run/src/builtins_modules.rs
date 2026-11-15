@@ -141,6 +141,13 @@ pub(crate) fn py_lt(a: &Value, b: &Value) -> Result<bool, Flow> {
     }
 }
 
+/// s013: public bridge for builtin_sorted — the sort path used raw
+/// values_cmp, which ignores user __lt__ (cmp_to_key wrappers and any key
+/// fn returning user objects silently kept insertion order).
+pub fn py_lt_public(a: &Value, b: &Value) -> Result<bool, Flow> {
+    py_lt(a, b)
+}
+
 pub(crate) fn py_eq(a: &Value, b: &Value) -> bool {
     ap_obj::ops::eq(a, b)
 }
@@ -2612,6 +2619,12 @@ pub fn re_dispatch(fname: &str, args: &[Value], kwargs: &[(String, Value)]) -> B
 fn re_str_arg(v: &Value, fname: &str) -> Result<String, Flow> {
     match v {
         Value::Str(x) => Ok(x.as_str().to_string()),
+        // 02.08 gap (s022): re over BYTES subjects (tokenize
+        // detect_encoding's cookie_re on bytes lines). Decode latin-1
+        // (1 byte == 1 char) so the char-based engine matches byte
+        // values; group text renders as str — callers that need bytes
+        // re-encode (vendored tokenize.py find_cookie handles this).
+        Value::Bytes(b) => Ok(b.iter().map(|&c| c as char).collect()),
         other => {
             let _ = fname;
             Err(raise(
@@ -4315,7 +4328,6 @@ fn build_operator(_i: &crate::frame::Interpreter) -> Value {
         "iadd",
         "iand",
         "iconcat",
-        "idiv",
         "ilshift",
         "imatmul",
         "imod",
@@ -4356,6 +4368,24 @@ fn build_operator(_i: &crate::frame::Interpreter) -> Value {
     ] {
         fn1(&ns, "operator", n);
     }
+    // 02.08 (s029): CPython 3.14 operator.__all__ (byte-exact order).
+    let _ = ns.set(
+        s("__all__"),
+        crate::builtins_modules::list(vec![
+            s("abs"), s("add"), s("and_"), s("attrgetter"), s("call"),
+            s("concat"), s("contains"), s("countOf"), s("delitem"), s("eq"),
+            s("floordiv"), s("ge"), s("getitem"), s("gt"), s("iadd"),
+            s("iand"), s("iconcat"), s("ifloordiv"), s("ilshift"),
+            s("imatmul"), s("imod"), s("imul"), s("index"), s("indexOf"),
+            s("inv"), s("invert"), s("ior"), s("ipow"), s("irshift"),
+            s("is_"), s("is_none"), s("is_not"), s("is_not_none"), s("isub"),
+            s("itemgetter"), s("itruediv"), s("ixor"), s("le"),
+            s("length_hint"), s("lshift"), s("lt"), s("matmul"),
+            s("methodcaller"), s("mod"), s("mul"), s("ne"), s("neg"),
+            s("not_"), s("or_"), s("pos"), s("pow"), s("rshift"),
+            s("setitem"), s("sub"), s("truediv"), s("truth"), s("xor"),
+        ]),
+    );
     finish(m, ns)
 }
 
@@ -4650,13 +4680,18 @@ pub fn call_operator(name: &str, args: &[Value], _kwargs: &[(String, Value)]) ->
                         ));
                     }
                 };
-                // Extras serialize into the marker name (the `<partial:...>`
-                // pattern) — call_native_marker sees only the name.
-                let mut extras: Vec<String> = Vec::new();
-                for a in &args[1..] {
-                    extras.push(crate::builtins::py_str_of(a).map_err(Flow::from_py)?);
-                }
-                let mc = marker(&format!("<methodcaller:{mname}:{}>", extras.join("\u{1f}")));
+                // 02.08 (s029): extras park as VALUES on the marker's
+                // slice_parts — the old name-string serialization turned
+                // methodcaller("shout", 3) into shout("3") (str not int).
+                // The name keeps a count-only suffix for debuggability.
+                let extras: Vec<Value> = args[1..].to_vec();
+                let name_full = format!("<methodcaller:{mname}:{}>", extras.len());
+                METHODCALLER_EXTRAS
+                    .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .insert(name_full.clone(), extras);
+                let mc = marker(&name_full);
                 Ok(mc)
             }
             "matmul" | "imatmul" => Err(raise(
@@ -4684,7 +4719,19 @@ pub fn call_operator(name: &str, args: &[Value], _kwargs: &[(String, Value)]) ->
                 }
                 let (a, b) = two()?;
                 let base2 = if base == "iconcat" { "concat" } else { base };
-                binop_by_name(base2, &a, &b)
+                // 02.08 (s029): CPython's list iadd/iconcat mutates the
+                // list IN PLACE (list.__iadd__ = extend) and returns the
+                // SAME object — operator.iadd(ia, [2]) must extend ia.
+                if name.starts_with('i') {
+                    if let (Value::List(dst), Value::List(src)) = (&a, &b) {
+                        for it in src.items().to_vec() {
+                            dst.append(it);
+                        }
+                        return Ok(a.clone());
+                    }
+                }
+                let result = binop_by_name(base2, &a, &b)?;
+                Ok(result)
             }
         }
     })();
@@ -5088,6 +5135,9 @@ fn build_functools(_i: &crate::frame::Interpreter) -> Value {
     // s013: WRAPPER_ASSIGNMENTS/WRAPPER_UPDATES constants (3.14 pins; the
     // corpus compares against the 3.12-style 5-tuple form via a boolean on
     // the old tuple — equality, not identity, so value here is what matters).
+    // The wholesale vendored augmentation below overwrites these with the
+    // vendored 3.14 values (incl. __annotate__/__type_params__/__wrapped__)
+    // — these natives only seed the pre-augmentation import face.
     ns_const(
         &ns,
         "WRAPPER_ASSIGNMENTS",
@@ -5109,14 +5159,10 @@ fn build_functools(_i: &crate::frame::Interpreter) -> Value {
     }
     // s013: RLock — a real (no-op) lock ctor over the threading prim table.
     let _ = ns.set(s("RLock"), interned_type_pub("RLock"));
-    // s014: CacheInfo — the uname_result-style NamedTuple VALUE-FACTORY
-    // marker: calling it builds a NamedTuple instance with the pinned
-    // repr/._fields/isinstance-tuple semantics (collections.namedtuple's
-    // dynamic class path is v0-broken for attr reads — pre-existing gap).
-    {
-        let ci = PyObject::new(ap_obj::ObjKind::BuiltinFn, "functools.CacheInfo");
-        ns_const(&ns, "CacheInfo", Value::Obj(ci));
-    }
+    // 02.08 (s013): CPython 3.14 has NO functools.CacheInfo (the audit
+    // originally asked for its repr; the 3.14 reference binary removed
+    // the name — dir(functools) must NOT list it). The vendored module
+    // keeps _CacheInfo internally for lru_cache cache_info() results.
     finish(m, ns)
 }
 
@@ -5208,6 +5254,86 @@ pub(crate) struct SdRegistry {
 /// T1: interp.rs tokenize-path helper - returns an iterator object over the
 /// source's tokens by delegating to the vendored tokenize module through the
 /// runtime (a BuiltinFn marker that call_value_inner resolves lazily).
+/// 02.08 gap (s022): lex `source` with the ruff parser and emit
+/// CPython-tokenize-shaped 5-tuples (type, string, start, end, line).
+/// Token type ids follow CPython 3.14's token module (NAME=1, NUMBER=2,
+/// STRING=3, NEWLINE=4, INDENT=5, DEDENT=6, ENDMARKER=0, COMMENT=60,
+/// NL=61, OP=55, FSTRING_START=63, FSTRING_MIDDLE=64, FSTRING_END=65);
+/// every remaining kind is OP. Positions are (row 1-based, col 0-based).
+/// `line` is the physical source line containing the token start.
+pub fn python_tokens_of(source: &str) -> Result<Vec<Value>, Flow> {
+    use ruff_python_ast::token::TokenKind;
+    use ruff_python_parser::{parse_unchecked, Mode, ParseOptions};
+    use ruff_text_size::Ranged;
+
+    let options = ParseOptions::from(Mode::Module);
+    let parsed = parse_unchecked(source, options);
+    let raw: &[ruff_python_ast::token::Token] = &parsed.tokens();
+    // Precompute line start offsets for (row, col) + line text lookups.
+    let mut line_starts: Vec<usize> = vec![0];
+    for (idx, b) in source.bytes().enumerate() {
+        if b == b'\n' {
+            line_starts.push(idx + 1);
+        }
+    }
+    let line_of_off = |off: usize| -> (i64, i64, usize, usize) {
+        // (row, col, line_start, line_end_exclusive)
+        let idx = match line_starts.binary_search(&off) {
+            Ok(i) => i,
+            Err(i) => i - 1,
+        };
+        let ls = line_starts[idx];
+        let le = line_starts.get(idx + 1).copied().unwrap_or(source.len());
+        let col = source[ls..off].chars().count() as i64;
+        ((idx + 1) as i64, col, ls, le)
+    };
+    let mut out: Vec<Value> = Vec::new();
+    for t in raw.iter() {
+        let kind: TokenKind = t.kind();
+        let r = t.range();
+        let text = &source[r.start().to_usize()..r.end().to_usize()];
+        // CPython's tokenize reports KEYWORDS (and soft keywords) as NAME.
+        let (cp_type, keep): (i64, bool) = if kind.is_keyword() || matches!(kind, TokenKind::Name) {
+            (1, true)
+        } else {
+            match kind {
+            TokenKind::Int | TokenKind::Float | TokenKind::Complex => (2, true),
+            TokenKind::String => (3, true),
+            TokenKind::FStringStart => (63, true),
+            TokenKind::FStringMiddle => (64, true),
+            TokenKind::FStringEnd => (65, true),
+            TokenKind::Newline => (4, true),
+            TokenKind::Indent => (5, true),
+            TokenKind::Dedent => (6, true),
+            TokenKind::Comment => (60, true),
+            TokenKind::NonLogicalNewline => (61, true),
+            TokenKind::EndOfFile => (0, false),
+            _ => (55, true),
+            }
+        };
+        if !keep {
+            continue;
+        }
+        let (row, col, ls, le) = line_of_off(r.start().to_usize());
+        let line_text = source[ls..le].to_string();
+        let string_val = if kind == TokenKind::Dedent {
+            String::new()
+        } else {
+            text.to_string()
+        };
+        let end_col = (r.end().to_usize().saturating_sub(ls)) as i64;
+        let tup = Value::Tuple(Gc::new(Tuple(vec![
+            i(cp_type),
+            Value::Str(PyString::new(string_val.as_str())),
+            Value::Tuple(Gc::new(Tuple(vec![i(row), i(col)]))),
+            Value::Tuple(Gc::new(Tuple(vec![i(row), i(end_col)]))),
+            Value::Str(PyString::new(line_text.as_str())),
+        ])));
+        out.push(tup);
+    }
+    Ok(out)
+}
+
 pub fn tokenizer_iter_obj(_source: &str) -> Value {
     // Marker: the interp arm stores it; iteration dispatches through the
     // vendored tokenize.generate_tokens at call time via call_tokenize.
@@ -6407,12 +6533,18 @@ fn collections_namedtuple(
     // The class body: __init__ handled natively by the namedtuple instance
     // shim (alloc as NamedTuple kind with slot names); property reads go
     // through the NamedTuple attr path already in interp.
+    // s014: CPython namedtuples subclass tuple — isinstance(nt(), tuple)
+    // and issubclass(NT, tuple) must answer True (functools CacheInfo,
+    // os.stat, sys.version_info all ride this).
     let class_v = match crate::classes::dynamic_type(
         interp,
         &typename,
-        &[crate::classes::class_value_for_public(
-            &crate::classes::object_class(interp),
-        )],
+        &[
+            crate::builtins_modules::interned_type_pub("tuple"),
+            crate::classes::class_value_for_public(
+                &crate::classes::object_class(interp),
+            ),
+        ],
         ns,
         &[],
     ) {
@@ -6442,6 +6574,25 @@ fn collections_namedtuple(
                 vec![class_v.clone()];
             let _ = t.dict.set(s("_replace"), Value::Obj(marker.clone()));
             let _ = t.dict.set(s("__replace__"), Value::Obj(marker));
+            // s015/s014: CPython namedtuple classes also carry _asdict() and
+            // _fields (a TUPLE of field names — NT._fields == ('a', 'b');
+            // the s014 slice asserts isinstance(g.cache_info(), tuple) via
+            // the vendored namedtuple's _fields).
+            let _ = t.dict.set(
+                s("_fields"),
+                Value::Tuple(Gc::new(Tuple(
+                    fields.iter().map(|f| s(f.clone())).collect(),
+                ))),
+            );
+            let am = PyObject::new(ap_obj::ObjKind::BuiltinFn, "__ap_namedtuple_asdict__");
+            *am.slice_parts.lock().unwrap_or_else(|p| p.into_inner()) =
+                vec![class_v.clone()];
+            let _ = t.dict.set(s("_asdict"), Value::Obj(am));
+            // CPython namedtuple classes carry _make(iterable) — classmethod
+            // making a new instance from an iterable of field values (s015).
+            let mm = PyObject::new(ap_obj::ObjKind::BuiltinFn, "__ap_namedtuple_make__");
+            *mm.slice_parts.lock().unwrap_or_else(|p| p.into_inner()) = vec![class_v.clone()];
+            let _ = t.dict.set(s("_make"), Value::Obj(mm));
             // CPython namedtuple __repr__: "NT(a=1, b=2)" from field values.
             let rm = PyObject::new(ap_obj::ObjKind::BuiltinFn, "__ap_namedtuple_repr__");
             *rm.slice_parts.lock().unwrap_or_else(|p| p.into_inner()) = vec![class_v.clone()];
@@ -6553,6 +6704,14 @@ fn deque_state(v: &Value) -> Result<(Vec<Value>, Option<i64>), Flow> {
 // in the "<data>" attr as a plain Value::Bytes — see builtins.rs ctor for the
 // choice rationale). Shared state accessors for len/bool/subscript/methods.
 // ===========================================================================
+
+/// 02.08 (s036): public pack_into mutation entry (structmod.rs).
+pub fn bytearray_mutate_pub<F>(v: &Value, f: F) -> Result<(), Flow>
+where
+    F: FnOnce(&mut Vec<u8>) -> Result<(), Flow>,
+{
+    bytearray_mutate(v, f)
+}
 
 /// Read the buffer of a bytearray object (Err for non-bytearrays).
 pub fn bytearray_state(v: &Value) -> Result<Vec<u8>, Flow> {
@@ -15540,7 +15699,21 @@ fn builtinfn_attr(full: &str, name: &str) -> Option<Value> {
 }
 
 /// Call an attrgetter/itemgetter marker (received as the function Value).
+/// 02.08 (s029): methodcaller factory extras — typed values parked
+/// process-global (marker objects aren't reachable at dispatch time).
+static METHODCALLER_EXTRAS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, Vec<Value>>>,
+> = std::sync::OnceLock::new();
+
 pub fn call_native_marker(full: &str, args: &[Value]) -> Option<BResult> {
+    call_native_marker_impl(full, None, args)
+}
+
+pub fn call_native_marker_impl(
+    full: &str,
+    marker_obj: Option<ap_obj::Gc<ap_obj::PyObject>>,
+    args: &[Value],
+) -> Option<BResult> {
     // Issue #13: multibyte codec bound surfaces (`_mbc.<codec>.encode|decode`
     // over the getcodec namespace receiver riding args[0]).
     if let Some(rest) = full.strip_prefix("_mbc.") {
@@ -15676,16 +15849,18 @@ pub fn call_native_marker(full: &str, args: &[Value]) -> Option<BResult> {
         return crate::structmod::call_struct("calcsize", args);
     }
     if let Some(rest) = full.strip_prefix("<methodcaller:") {
-        let (mname, extra_str) = rest.split_once(':')?;
+        let rest = rest.strip_suffix('>').unwrap_or(rest);
+        let (mname, _extra_str) = rest.split_once(':')?;
         let recv = args.first()?;
-        let extras: Vec<Value> = if extra_str.is_empty() {
-            vec![]
-        } else {
-            extra_str
-                .split('\u{1f}')
-                .map(|x| Value::Str(PyString::new(x.to_string())))
-                .collect()
-        };
+        // 02.08 (s029): typed extras ride the process-global table keyed
+        // by the full marker name (the marker object isn't in call args).
+        let extras: Vec<Value> = METHODCALLER_EXTRAS
+            .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(full)
+            .cloned()
+            .unwrap_or_default();
         let mut call_args: Vec<Value> = extras;
         call_args.extend_from_slice(&args[1..]);
         return Some(crate::builtins::call_method_pub(recv, mname, &call_args));

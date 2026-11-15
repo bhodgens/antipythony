@@ -689,6 +689,10 @@ pub fn import_module_inner(interp: &Arc<Interpreter>, name: &str) -> EResult {
         // over the native engine bridges; the vendored file must exec INTO the
         // native module so wrapper class bases resolve.
         | "_multibytecodec"
+        // 02.08 gap (s028): pprint/reprlib — the native top-level stubs
+        // don't sort dicts, break width, or detect recursion; the vendored
+        // module implements the pinned semantics.
+        | "pprint" | "reprlib"
     ) {
         if let Some(m) = builtins_modules::get_or_make_module(interp, name) {
             augment_with_vendored(interp, name, &m);
@@ -1917,6 +1921,11 @@ pub(crate) fn augment_with_vendored(interp: &Arc<Interpreter>, name: &str, m: &V
         // this override list (native identity for everything else).
         const VENDORED_WINS: &[&str] = &[
             "defaultdict",
+            // s015: the vendored Counter is a REAL dict subclass with
+            // __repr__/most_common/total/__sub__/__missing__; the native
+            // interned Type stub constructs plain dicts and prints as a
+            // bare dict (CPython prints `Counter({...})`).
+            "Counter",
             // T1-d (scrapy.utils.datatypes CaseInsensitiveDict): the native
             // UserDict interned Type has no data-dict behavior; the vendored
             // Python class (dict subclass) makes super().__setitem__ work.
@@ -1928,6 +1937,25 @@ pub(crate) fn augment_with_vendored(interp: &Arc<Interpreter>, name: &str, m: &V
             // interned Type stub lacks it. The vendored class is a real
             // dict subclass with the full surface.
             "OrderedDict",
+            // s015: the native interned ChainMap Type has no __getitem__
+            // chain-through-.maps behavior; the vendored class carries it.
+            "ChainMap",
+            // 02.08 gap (s028): the native pprint top-level stubs (pformat/
+            // pprint/saferepr/isrecursive/isreadable) don't sort dicts or
+            // break width; the vendored module implements the full
+            // PrettyPrinter semantics. Vendored must win.
+            "pprint",
+            "pformat",
+            "saferepr",
+            "isreadable",
+            "isrecursive",
+            "PrettyPrinter",
+            "pp",
+            // 02.08 (s028): reprlib.aRepr/Repr — native stubs lack the
+            // width-based ellipsis truncation the corpus pins.
+            "Repr",
+            "aRepr",
+            "recursive_repr",
         ];
         // W110 (T2): functools augmentation must be wholesale — the native
         // WRAPPER_ASSIGNMENTS stub lacks '__wrapped__' so a name-gated copy

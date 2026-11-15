@@ -401,7 +401,13 @@ def detect_encoding(readline):
         match = cookie_re.match(line)
         if not match:
             return None
-        encoding = _get_normal_name(match.group(1).decode())
+        # antipythony (02.08 s022): the native re returns str groups for
+        # bytes subjects (latin-1); re-encode before .decode() so the
+        # CPython byte path is preserved.
+        _g = match.group(1)
+        if isinstance(_g, str):
+            _g = _g.encode('latin-1')
+        encoding = _get_normal_name(_g.decode())
         try:
             codec = lookup(encoding)
         except LookupError:

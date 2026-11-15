@@ -20,8 +20,44 @@ except ImportError:
     # type whose instances answered no mapping methods — .pop on a
     # Signature's parameters proxy died with SystemError. Alias to
     # dict (read-only enforcement not needed by our targets).
-    MappingProxyType = dict
-    SimpleNamespace = type(sys.implementation)
+    # 02.08 gap (s017): real pure-python surfaces — the dict alias made
+    # type(mp).__name__ == "dict" (CPython: "mappingproxy") and
+    # SimpleNamespace = type(sys.implementation) handed back the MODULE
+    # type, so SimpleNamespace(a=1).a raised AttributeError.
+    class mappingproxy:
+        def __init__(self, mapping):
+            self._mapping = dict(mapping)
+        def __getitem__(self, k):
+            return self._mapping[k]
+        def get(self, k, default=None):
+            return self._mapping.get(k, default)
+        def __contains__(self, k):
+            return k in self._mapping
+        def __iter__(self):
+            return iter(self._mapping)
+        def __len__(self):
+            return len(self._mapping)
+        def keys(self):
+            return self._mapping.keys()
+        def values(self):
+            return self._mapping.values()
+        def items(self):
+            return self._mapping.items()
+        def copy(self):
+            return dict(self._mapping)
+        def __repr__(self):
+            return f"mappingproxy({self._mapping!r})"
+    MappingProxyType = mappingproxy
+    class SimpleNamespace:
+        def __init__(self, *args, **kwargs):
+            if args:
+                self.__dict__.update(args[0])
+            self.__dict__.update(kwargs)
+        def __repr__(self):
+            items = ", ".join(
+                f"{k}={v!r}" for k, v in self.__dict__.items()
+            )
+            return f"namespace({items})"
 
     def _cell_factory():
         a = 1

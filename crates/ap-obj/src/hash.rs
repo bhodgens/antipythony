@@ -84,6 +84,9 @@ pub fn py_hash(v: &Value) -> Result<i64, PyException> {
             // CPython: hash(member) == hash(int value); dict keys keyed by
             // the numeric value (http.client.responses[200]).
             if o.kind == crate::object::ObjKind::UserInstance {
+                if std::env::var_os("APX_HASHDBG").is_some() {
+                    eprintln!("[HASHDBG] py_hash user-instance {}", o.name);
+                }
                 if let Some(crate::Value::Int(n)) = o
                     .attrs
                     .lock()
@@ -91,6 +94,29 @@ pub fn py_hash(v: &Value) -> Result<i64, PyException> {
                     .get(&crate::Value::Str(crate::PyString::new("__ap_int__")))
                 {
                     return hash_int(&n);
+                }
+                // 02.08 (s024 StrEnum): members whose class MRO contains
+                // "StrEnum" hash by their _value_ (str.__hash__ via the str
+                // base) — hash(SC.A) == hash("a"). Str-derived wrappers ALSO
+                // park __ap_str__ (str.__new__(cls, v) path).
+                // 02.08 deadlock fix: the chained `.get(..).or_else(|| re-lock)`
+                // held the first attrs guard across the or_else re-lock —
+                // self-deadlock on ANY instance without _value_ (every plain
+                // user instance hashed → hang). Sequence the two probes so
+                // each guard drops before the next lock.
+                let str_payload = {
+                    let via_value = {
+                        let a1 = o.attrs.lock().unwrap_or_else(|p| p.into_inner());
+                        a1.get(&crate::Value::Str(crate::PyString::new("_value_")))
+                    };
+                    // a1 dropped above — safe to re-lock for __ap_str__.
+                    via_value.or_else(|| {
+                        let a2 = o.attrs.lock().unwrap_or_else(|p| p.into_inner());
+                        a2.get(&crate::Value::Str(crate::PyString::new("__ap_str__")))
+                    })
+                };
+                if let Some(crate::Value::Str(s)) = str_payload {
+                    return Ok(s.py_hash());
                 }
             }
             let h = crate::value::addr_of(o) as i64;

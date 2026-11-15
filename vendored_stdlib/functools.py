@@ -34,8 +34,12 @@ from _thread import RLock
 # FixtureFunctionDefinition + get_real_func/inspect.unwrap chain breaks
 # without it). Our vendored copy drops it → fixture signature lookups
 # die with "no signature found for builtin".
+# s013 (2026-11-12): drop '__wrapped__' — CPython 3.14 WRAPPER_ASSIGNMENTS
+# is exactly ('__module__','__name__','__qualname__','__doc__',
+# '__annotate__','__type_params__'); __wrapped__ is assigned SEPARATELY in
+# update_wrapper (not via the tuple). The corpus byte-compares this tuple.
 WRAPPER_ASSIGNMENTS = ('__module__', '__name__', '__qualname__', '__doc__',
-                       '__annotate__', '__type_params__', '__wrapped__')
+                       '__annotate__', '__type_params__')
 WRAPPER_UPDATES = ('__dict__',)
 def update_wrapper(wrapper,
                    wrapped,
