@@ -175,6 +175,7 @@ fn term_temp_of(t: &crate::cfg::Terminator) -> Option<crate::cfg::TempId> {
 pub fn build_program_object(
     module: &ap_ir::Module,
     source: &str,
+    script_path: &str,
     pic: bool,
 ) -> Result<(Vec<u8>, Vec<u32>), CodegenError> {
     let (mut lowered, _tree_walk) = lower_module_functions(module)?;
@@ -192,7 +193,7 @@ pub fn build_program_object(
             num_slots: f.num_slots,
         })
         .collect();
-    let (bytes, outs) = emit_program_object(&inputs, source, pic)?;
+    let (bytes, outs) = emit_program_object(&inputs, source, script_path, pic)?;
     // Post-emit: pull the interned name tables back out (the shared emit
     // stage collected them in emit order — the runtime seam needs the
     // SAME tables jit_hook would have used).
@@ -334,7 +335,7 @@ mod tests {
     fn program_object_emits_and_carries_manifest() {
         let src = "def add(a, b):\n    return a + b\n\nprint(add(1, 2))\n";
         let module = probe_module(src);
-        let (bytes, outs) = build_program_object(&module, src, false).expect("emit");
+        let (bytes, outs) = build_program_object(&module, src, "test.py", false).expect("emit");
         assert!(!bytes.is_empty());
         assert_eq!(outs.len(), 1); // one module-level def
                                    // The object carries the manifest + program-fn symbols.

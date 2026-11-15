@@ -71,7 +71,7 @@ fn crt_staticlib(target: AotTarget) -> Result<PathBuf, String> {
 /// The build verb body (called from main.rs's cmd_build).
 pub fn build_binary(
     source: &str,
-    _script_path: &str,
+    script_path: &str,
     out_path: &Path,
     target: AotTarget,
     build_dir: &Path,
@@ -89,7 +89,8 @@ pub fn build_binary(
     //    discipline, byte-identical output. Remaining codegen failures
     //    (object emit / verify) stay fail-closed build errors.
     let pic = target.pic();
-    let (prog_obj, _ic_counts) = ap_codegen_native::aot::build_program_object(&module, source, pic)
+    let (prog_obj, _ic_counts) =
+        ap_codegen_native::aot::build_program_object(&module, source, script_path, pic)
         .map_err(|e| match e {
             CodegenError::Unsupported(what) => format!(
                 "antipythony: build: unsupported construct in a module-level function body: {what} \

@@ -74,6 +74,7 @@ pub struct AotFnOutputs {
 pub fn emit_program_object(
     fns: &[AotFnInput<'_>],
     source: &str,
+    script_path: &str,
     pic: bool,
 ) -> Result<(Vec<u8>, Vec<AotFnOutputs>), CodegenError> {
     use cranelift::codegen::settings::{self, Configurable};
@@ -287,6 +288,31 @@ pub fn emit_program_object(
     let src_len_id = module
         .declare_data("ap_aot_source_len", Linkage::Export, false, false)
         .map_err(|e| CodegenError::Verify(format!("source len decl: {e}")))?;
+    // ---- the original .py path (0206-embed): the CRT reports THIS as
+    //      script_path/__file__ (CPython semantics: __file__ names the
+    //      source file), while sys.argv[0] stays the artifact path. ----
+    let sp_id = module
+        .declare_data("ap_aot_script_path", Linkage::Export, false, false)
+        .map_err(|e| CodegenError::Verify(format!("script path decl: {e}")))?;
+    {
+        let mut desc = cranelift_module::DataDescription::new();
+        let mut sp_bytes = script_path.as_bytes().to_vec();
+        sp_bytes.push(0); // NUL terminator for the CRT's strlen-style read
+        desc.define(sp_bytes.into_boxed_slice());
+        module
+            .define_data(sp_id, &desc)
+            .map_err(|e| CodegenError::Verify(format!("script path def: {e}")))?;
+    }
+    let sp_len_id = module
+        .declare_data("ap_aot_script_path_len", Linkage::Export, false, false)
+        .map_err(|e| CodegenError::Verify(format!("script path len decl: {e}")))?;
+    {
+        let mut desc = cranelift_module::DataDescription::new();
+        desc.define((script_path.len() as u64).to_le_bytes().to_vec().into_boxed_slice());
+        module
+            .define_data(sp_len_id, &desc)
+            .map_err(|e| CodegenError::Verify(format!("script path len def: {e}")))?;
+    }
     {
         let mut desc = cranelift_module::DataDescription::new();
         let mut b = source.len().to_le_bytes().to_vec();

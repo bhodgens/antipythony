@@ -51,6 +51,10 @@ extern "C" {
     /// u64 byte length of ap_aot_source + the "APSRCEND" sentinel (the
     /// length word lets the CRT read exactly the embedded program bytes).
     static ap_aot_source_len: u8;
+    /// 0206-embed: the ORIGINAL .py path recorded at build time — reported
+    /// as script_path/__file__ (CPython: __file__ names the source file).
+    /// NUL-terminated (no separate length needed).
+    static ap_aot_script_path: u8;
 }
 
 /// Safety-net panic message (the exception-format abort, review box 4).
@@ -103,7 +107,23 @@ fn aot_run() -> i32 {
     // runtime reports: the binary's argv[0], matching CPython's
     // sys.argv[0] = script path convention for `./app` runs).
     let args: Vec<String> = std::env::args().collect();
-    let script_path = args.first().cloned().unwrap_or_else(|| "app".to_string());
+    // 0206-embed: __file__ must name the ORIGINAL source file (CPython
+    // semantics), not the artifact path. The linker embeds the build-time
+    // .py path as a NUL-terminated blob; fall back to argv[0] if absent
+    // (defensive — the blob is always emitted by link.rs today).
+    let script_path = unsafe {
+        let start = std::ptr::addr_of!(ap_aot_script_path) as *const u8;
+        let mut end = start;
+        while *end != 0 {
+            end = end.add(1);
+        }
+        let n = end as usize - start as usize;
+        if n > 0 {
+            String::from_utf8_lossy(std::slice::from_raw_parts(start, n)).into_owned()
+        } else {
+            args.first().cloned().unwrap_or_else(|| "app".to_string())
+        }
+    };
 
     let thread_args = (
         script_path.clone(),
