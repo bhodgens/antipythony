@@ -94,8 +94,8 @@ CPython reference: 3.14.0 (codecs ground-truthed against 3.14.7).
   0 failed; T10 threading slice 105 passed / 2 xfail; xtask notices --check OK (345 deps).
 - stdlib import coverage 53/53: the spec-05 module list resolves entirely — 31 native
   modules + 22 vendored, zero missing. The honest caveat is depth: the tier-0 ap-conform
-  stdlib behavioral slice is 41/48 (6 fail + 1 timeout) after the 02.08
-  gaps wave (2026-11-13); adaptive mode is byte-identical, and the binary
+  stdlib behavioral slice is 45/48 (3 fail + 1 timeout) after gaps waves
+  1+2 (2026-11-13/14); adaptive mode is byte-identical, and the binary
   is 29/48 (linecache __file__ semantics). (.hermes/audits/2026-11-11-0208-stdlib-
   coverage-audit.md, landed 0ed927fa)
 - Ecosystem tiers T1 and T2 green: scrapy 2.19.0 crawls file:// and produces
