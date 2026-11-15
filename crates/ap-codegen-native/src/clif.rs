@@ -604,7 +604,15 @@ fn extra_params(name: &'static str) -> &'static [usize] {
         "apjit_h_osr_fill" => &[0, 0, 0],
         "apjit_h_osr_load" => &[0, 0, 0],
         "apjit_h_match_exc" => &[0, 0, 0],
-        "apjit_h_raise" | "apjit_h_suspend" => &[0, 0],
+        // 0206-embed en-route fix: h_raise is ctx + 1 param (the exception
+        // value temp) — it was grouped with h_suspend (ctx + 2) here, so
+        // the DECLARED helper signature took 3 params while every Raise
+        // terminator call site passed 2. Any lowered body containing
+        // `raise` failed Cranelift verify: in JIT mode this hid behind the
+        // silent tree-walk fallback; in AoT builds it was a fail-closed
+        // build error (found by the traceback-verify probe wave).
+        "apjit_h_raise" => &[0],
+        "apjit_h_suspend" => &[0, 0],
         "apjit_h_reraise" => &[],
         _ => &[],
     }

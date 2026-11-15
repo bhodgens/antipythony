@@ -116,6 +116,12 @@ pub fn run_module(
         source.to_string(),
         script_path.to_string(),
     ));
+    // 0206-embed: the entry source is available in memory keyed by the
+    // script path BEFORE any module code runs — the AoT binary's __file__
+    // is the artifact path (no .py bytes behind it), so linecache/traceback
+    // consumers resolve it through the embedded-source registry instead of
+    // the filesystem (CPython semantics: linecache lazily reads __file__).
+    crate::builtins_modules::set_embedded_source(script_path, source);
     CURRENT_INTERP.with(|c| *c.borrow_mut() = Some(interp.clone()));
     *interp.self_rc.lock().unwrap_or_else(|p| p.into_inner()) = Some(Arc::downgrade(&interp));
     builtins::install_builtins(&interp);

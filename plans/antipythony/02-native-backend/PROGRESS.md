@@ -918,3 +918,45 @@ alloc probe green (roots + heap sizing live); catch_unwind unit-tested.
 musl: --target implemented, blocked on host toolchain (no rustup/musl-gcc;
 orchestrator decision). Sizes: 16.90 MiB dead-stripped macOS (musl 15MB
 gate not measurable on this host — blocked, report-only per T-09 GAP-2).
+
+## Leaf tier1-0206-embed — embedded user-module source (linecache/traceback
+## semantics in AoT binaries; closes the binary-only s021_linecache failure)
+
+The program source was ALREADY embedded (link.rs ap_aot_source blob → CRT
+→ run_module) but `__file__` — the binary's argv[0] — resolved through
+linecache's filesystem path, returning '' for getline/getlines (a Mach-O
+is not UTF-8 source) and '' from updatecache. Fix: a process-global
+embedded-source registry (builtins_modules::EMBEDDED_SOURCE, keyed by the
+entry's script_path) registered by run_module BEFORE module exec;
+cache_lines/updatecache resolve the key in memory first, byte-identical
+to the fs path in run mode. Self-contained: no dependency on the original
+.py path. Traceback source echo already served interp.source for script
+frames (unchanged).
+
+EN-ROUTE FIXES (found by the verify wave, all block AoT builds):
+1. clif.rs extra_params: apjit_h_raise was grouped with h_suspend
+   (ctx+2 params) but the helper is ctx+1 — EVERY lowered body containing
+   `raise` failed Cranelift verify (JIT hid it behind the silent tree-walk
+   fallback; AoT is fail-closed).
+2. runtime.rs h_raise dropped the raised exception instance (the body
+   constructs it via a SUCCESSFUL Call — pending_exc never parked);
+   call_body mapped to a generic SystemError. Now parks the instance;
+   aot_runtime::call_body converts via exception_value_of_instance_pub
+   (raise-line preserved). The adaptive JIT arm has the same latent bug
+   (filed 02.05f family).
+3. link.rs: the IC blob (Vec<u8>, align 1) is dereferenced as 32-byte
+   FeedbackCells — set_align(8) or the first tagged deref panics.
+4. ap-cli build.rs crt_staticlib: probe CARGO_TARGET_DIR + the running
+   exe's own target dir (T-09's _clean_env strips env; leaf worktrees
+   build into target-<name>/ the hardcoded paths never saw).
+
+GATES (this leaf): s021_linecache byte-identical vs CPython 3.14 THROUGH
+THE BINARY (was: lines 9-10 False/False True); binary stdlib slice 40/48
+(passed; 7 fail + 1 timeout — was 29/48 with s021 the binary-only
+failure) — remaining binary fails are pre-existing family gaps
+(metaclass bodies, singledispatch '_' name-collision in the by-name AOT
+registry = new finding, V016); T-09 suite 90 passed/0 failed; t11 stdlib
+suite green except the pre-existing typing/iter wedge (hangs at main too);
+tier_mode_differential 3/3; ap-run/ap-codegen-native/ap-cli lib tests
+green; raise-bearing AoT bodies now build AND are byte-exact vs CPython
+(they failed to build at all before fix 1).

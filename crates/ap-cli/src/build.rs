@@ -30,17 +30,35 @@ fn crt_staticlib(target: AotTarget) -> Result<PathBuf, String> {
     // correctness (debug ships debug asserts — recorded in the gate doc).
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
     let profiles = ["release", "debug"];
-    for prof in profiles {
-        let cand = manifest
-            .join("target-0206")
-            .join(prof)
-            .join("libap_aot_crt.a");
-        if cand.exists() {
-            return Ok(cand);
+    // Candidate roots: the checkout's canonical target dirs PLUS the live
+    // CARGO_TARGET_DIR when set (leaf worktrees build into their own
+    // target-<name>/ dir — the hardcoded paths miss and the build verb
+    // refuses despite the staticlib being fresh on disk).
+    let mut roots = Vec::new();
+    if let Ok(ctd) = std::env::var("CARGO_TARGET_DIR") {
+        if !ctd.is_empty() {
+            roots.push(PathBuf::from(ctd));
         }
-        let cand2 = manifest.join("target").join(prof).join("libap_aot_crt.a");
-        if cand2.exists() {
-            return Ok(cand2);
+    }
+    // The running CLI lives at <target>/<profile>/<bin> — its own target
+    // dir always holds the CRT built from the same tree. This keeps the
+    // build verb self-contained when callers sanitize the environment
+    // (T-09's _clean_env drops CARGO_TARGET_DIR; leaf worktrees build
+    // into target-<name>/ the hardcoded paths never see).
+    if let Ok(exe) = std::env::current_exe() {
+        if let (Some(profile), Some(root)) = (exe.parent(), exe.parent().and_then(Path::parent)) {
+            let _ = profile;
+            roots.push(root.to_path_buf());
+        }
+    }
+    roots.push(manifest.join("target-0206"));
+    roots.push(manifest.join("target"));
+    for root in &roots {
+        for prof in profiles {
+            let cand = root.join(prof).join("libap_aot_crt.a");
+            if cand.exists() {
+                return Ok(cand);
+            }
         }
     }
     Err(

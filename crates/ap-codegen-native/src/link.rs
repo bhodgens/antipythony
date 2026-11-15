@@ -205,6 +205,12 @@ pub fn emit_program_object(
             .map_err(|e| CodegenError::Verify(format!("ic decl: {e}")))?;
         let mut desc = cranelift_module::DataDescription::new();
         desc.define(vec![0u8; ic_len].into_boxed_slice());
+        // 0206-embed en-route fix: the blob is dereferenced at runtime as
+        // 32-byte FeedbackCells (aot_runtime ic_cell → &*ic_base.add(slot))
+        // — declared alignment must match the cell's 8-byte field alignment
+        // or the first tagged deref panics (misaligned-pointer panic on the
+        // uncaught-raise probe wave; a u8 blob defaults to align 1).
+        desc.set_align(8);
         module
             .define_data(ic_id, &desc)
             .map_err(|e| CodegenError::Verify(format!("ic def: {e}")))?;
