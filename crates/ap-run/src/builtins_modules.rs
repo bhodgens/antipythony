@@ -10981,6 +10981,37 @@ thread_local! {
     static LINECACHE_BYTES: Cell<usize> = const { Cell::new(0) };
 }
 
+/// Leaf 0206-embed: the entry seam's in-memory source, keyed by the script
+/// path the entry reported. The AoT binary carries its program source as
+/// the ap_aot_source blob (link.rs), so `__file__` — the binary's argv[0],
+/// an artifact path with no .py bytes behind it — must resolve through this
+/// registry instead of the filesystem. The `run` verb registers too (same
+/// bytes the disk read returns; byte-identical). Process-global (not a
+/// thread_local like LINECACHE): worker OS threads that call linecache on
+/// `__file__` must see the same embedded source in binary mode.
+static EMBEDDED_SOURCE: std::sync::Mutex<Option<(String, std::sync::Arc<Vec<String>>, usize)>> =
+    std::sync::Mutex::new(None);
+
+/// Register the entry source for `__file__`-keyed linecache reads (called
+/// from run_module, before the module body executes). `nbytes` is the full
+/// source byte length (updatecache's CPython return is the file size).
+pub fn set_embedded_source(path: &str, source: &str) {
+    let lines: std::sync::Arc<Vec<String>> = std::sync::Arc::new(
+        source.lines().map(|l| format!("{l}\n")).collect::<Vec<_>>(),
+    );
+    let nbytes = source.as_bytes().len();
+    if let Ok(mut g) = EMBEDDED_SOURCE.lock() {
+        *g = Some((path.to_string(), lines, nbytes));
+    }
+}
+
+/// The registered entry source for `path`, if any (leaf 0206-embed).
+fn embedded_source_for(path: &str) -> Option<(std::sync::Arc<Vec<String>>, usize)> {
+    let g = EMBEDDED_SOURCE.lock().ok()?;
+    let (p, lines, nbytes) = g.as_ref()?;
+    (p == path).then(|| (lines.clone(), *nbytes))
+}
+
 /// 64MB cache ceiling (M6: traceback-heavy runs over many files stay
 /// bounded; CPython's linecache is unbounded but runs short-lived).
 const LINECACHE_MAX_BYTES: usize = 64 * 1024 * 1024;
@@ -11021,6 +11052,14 @@ pub fn call_linecache(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -
                 let p = str_arg(required(args, "updatecache")?, "updatecache")?;
                 // CPython returns the file SIZE (as str) on success, "" on
                 // miss — s021 pins the miss as falsy.
+                // 0206-embed: the entry source resolves from memory (the
+                // binary's __file__ is an artifact path, not .py bytes);
+                // the size returned is the ORIGINAL source's byte length,
+                // matching what CPython reports for the .py on disk.
+                if let Some((_, nbytes)) = embedded_source_for(&p) {
+                    let _ = cache_lines(&p);
+                    return Ok(s(nbytes.to_string()));
+                }
                 match std::fs::read_to_string(&p) {
                     Ok(text) => {
                         let _ = cache_lines(&p);
@@ -11084,6 +11123,18 @@ fn cache_lines(path: &str) -> std::sync::Arc<Vec<String>> {
         let mut m = c.borrow_mut();
         if let Some(v) = m.get(path) {
             return v.clone();
+        }
+        // 0206-embed: the entry source resolves from memory first — the
+        // AoT binary's __file__ is the artifact path (Mach-O bytes, not
+        // source); the embedded blob is the only ground truth. The cache
+        // entry shape is identical to the fs path (Arc<Vec<String>>), so
+        // getline/getlines are byte-identical in both modes.
+        if let Some((lines, _nbytes)) = embedded_source_for(path) {
+            let bytes = lines.iter().map(|l| l.len()).sum::<usize>();
+            m.insert(path.to_string(), lines.clone());
+            LINECACHE_BYTES.with(|b| b.set(b.get() + bytes));
+            LINECACHE_ORDER.with(|o| o.borrow_mut().push(path.to_string()));
+            return lines;
         }
         let lines: std::sync::Arc<Vec<String>> = std::sync::Arc::new(
             std::fs::read_to_string(path)

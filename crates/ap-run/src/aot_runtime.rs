@@ -154,10 +154,22 @@ pub fn call_body(
         0 => Ok(std::mem::replace(&mut ctx.ret, Value::None)),
         _ => match ctx.pending_exc.take() {
             Some(e) => Err(crate::Flow::Raise(crate::jit_hook::aot_rebuild(e))),
-            None => Err(crate::Flow::Raise(crate::exc_hier::ExceptionValue::msg(
-                "SystemError",
-                "AOT body failed without parking an exception",
-            ))),
+            None => {
+                // 0206-embed: the h_raise terminator parks the raised
+                // exception INSTANCE in ret (the body constructed it via
+                // a successful Call — no helper failure ever parked
+                // pending_exc). Convert through the interpreter's
+                // instance-of-instance surface (identity + __ap_tb__
+                // preserved, matching raise_from_value semantics).
+                let raised = std::mem::replace(&mut ctx.ret, Value::None);
+                match crate::interp::exception_value_of_instance_pub(&raised) {
+                    Ok(mut ev) => {
+                        ev.raise_line = frame.last_line.get();
+                        Err(crate::Flow::Raise(ev))
+                    }
+                    Err(other) => Err(other),
+                }
+            }
         },
     }
 }

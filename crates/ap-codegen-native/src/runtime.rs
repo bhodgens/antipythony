@@ -978,13 +978,15 @@ pub extern "C" fn h_return(ctx: &mut ExecCtx, v: u32) -> HelperStatus {
 /// re-materializes the traceback-wrapped exception at the boundary.
 #[export_name = "apjit_h_raise"]
 pub extern "C" fn h_raise(ctx: &mut ExecCtx, v: u32) -> HelperStatus {
-    let v = ctx.slots[v as usize].clone();
-    // The boxed value IS the exception instance (Obj arm) in real runs;
-    // converting to the PyException payload layer is host-owned. v0:
-    // raise sites raise pre-constructed exception objects via Call, so
-    // the pending exception was parked by the raising helper already;
-    // this helper is the terminator-side marker (returns raise status).
-    let _ = v;
+    // 0206-embed en-route fix: the raised value is the exception INSTANCE
+    // the body constructed via a Call inst (ValueError("kaboom") lowers to
+    // LoadGlobal + Call + Terminator::Raise(call_t)) — the call SUCCEEDS,
+    // so h_call never parks pending_exc, and this terminator used to drop
+    // the value entirely (call_body then failed with the generic
+    // "AOT body failed without parking an exception" SystemError). Park
+    // the instance in ret (a free temp-shaped slot the raise edge never
+    // reads as a return value) for the host boundary to convert.
+    ctx.ret = ctx.slots[v as usize].clone();
     1
 }
 
