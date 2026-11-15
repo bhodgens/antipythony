@@ -542,6 +542,12 @@ pub struct Interpreter {
     /// Interpreter; this stack is per-mutator execution state that other
     /// threads legitimately read (f_back stubs).
     pub frame_stack: Mutex<Vec<Arc<Cell<usize>>>>,
+    /// s016 (02.08 gaps wave 2): LIVE python frames (outermost first) —
+    /// module bodies + call_function frames. sys._getframe /
+    /// warnings.warn stacklevel walks / inspect.currentframe resolve
+    /// through THIS chain (the old synthetic stub ignored the depth arg
+    /// and attributed every warning to the script's `<module>` line).
+    pub py_frames: Mutex<Vec<Arc<Frame>>>,
     /// Recursion depth + limit (RecursionError at ~1000, task brief §5).
     /// 02.09b P7: Mutex — the counter is shared (workers' depths sum; a
     /// false RecursionError would only fire under extreme concurrency, and
@@ -714,6 +720,7 @@ impl Interpreter {
             stdout_capture: false,
             tb_frames: Mutex::new(std::collections::VecDeque::new()),
             frame_stack: Mutex::new(Vec::new()),
+            py_frames: Mutex::new(Vec::new()),
             depth: Mutex::new(0),
             recursion_limit: Mutex::new(1000),
             exit_code: Mutex::new(None),

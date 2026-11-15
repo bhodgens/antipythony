@@ -756,6 +756,12 @@ fn exec_module(
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .push(line_track.clone());
+    // s016: the module frame is python frame depth 0.
+    interp
+        .py_frames
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .push(frame.clone());
 
     // Bind module defs; class statements become LocalClass (02.03 diag).
     let mut stmts: Vec<Stmt> = Vec::new();
@@ -854,6 +860,12 @@ fn exec_module(
     // for the atexit drain.
     builtins_modules::set_current_interp(interp);
     let outcome = exec_block(interp, &frame, &stmts, &reg);
+    // s016: retire the module's python frame (mirror of the push above).
+    interp
+        .py_frames
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .pop();
     // 02.08-lite: atexit callbacks drain LIFO on every exit path (sys.exit /
     // uncaught / clean), matching CPython's interpreter-finalization order.
     builtins_modules::set_current_interp(interp);
@@ -8706,6 +8718,19 @@ fn call_function(
             Err(_) => std::thread::sleep(std::time::Duration::from_micros(50)),
         }
     }
+    // s016: the LIVE python frame rides the interpreter's py_frames stack
+    // for the call's whole lifetime (sys._getframe / warn stacklevel walk /
+    // inspect.currentframe resolve through it). Same contention retry
+    // discipline as the line-cell push above.
+    for _ in 0..2000 {
+        match interp.py_frames.lock() {
+            Ok(mut pf) => {
+                pf.push(frame.clone());
+                break;
+            }
+            Err(_) => std::thread::sleep(std::time::Duration::from_micros(50)),
+        }
+    }
     // Plain (non-method) function frame: zero-arg super() inside it (even
     // nested) sees NO method context -> RuntimeError (c021).
     // Whether instantiate() staged a context for THIS call (the sentinel is
@@ -8786,6 +8811,14 @@ fn call_function(
     if let Some(body) = &lambda_body {
         if matches!(body, Expr::Yield(_) | Expr::YieldFrom(_)) {
             frame_stack_pop(interp);
+            // s016: mirror the py_frames push above (an unbalanced push here
+            // left a stale frame on the walk chain and s016's warning
+            // attribution walked into imported-module frames).
+            interp
+                .py_frames
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .pop();
             return start_generator(interp, entry, o, args, kwargs);
         }
     }
@@ -8815,6 +8848,12 @@ fn call_function(
     };
 
     frame_stack_pop(interp);
+    // s016: pop the live python frame (the py_frames push above).
+    interp
+        .py_frames
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .pop();
     interp
         .super_stack
         .lock()
@@ -14721,9 +14760,13 @@ fn attr_get(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 Ok(None)
             }
             ap_obj::ObjKind::Namespace if o.name == "<frame>" && name == "f_back" => {
-                // T1-d: synthetic frame stubs (sys._getframe) chain f_back
-                // through here; depth rides slice_parts[0].
-                let depth = o
+                // s016: synthetic frame stubs (sys._getframe / py_frame_stub)
+                // chain f_back through here. slice_parts[0] = the py_frames
+                // INDEX this stub represents; f_back resolves to the stub
+                // for index-1 (or None past the outermost — Wave-108: the
+                // chain END must answer None, an AttributeError here kills
+                // logging/traceback stack walkers mid-walk).
+                let idx = o
                     .slice_parts
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
@@ -14731,65 +14774,11 @@ fn attr_get(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                     .and_then(|v| v.as_int())
                     .and_then(|i| i.to_i64())
                     .unwrap_or(0);
-                let interp2 = crate::builtins_modules::current_interp().unwrap_or_else(interp_rc);
-                let stack_len = interp2
-                    .frame_stack
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .len();
-                let outer_exists = ((depth + 1) as usize) < stack_len.max(32);
-                if !outer_exists {
-                    // Wave-108: chain END must answer f_back=None (CPython
-                    // semantics). An attr MISS raises AttributeError here and
-                    // the logging/traceback stack walkers die mid-walk
-                    // ("'object' object has no attribute 'f_back'").
+                if idx <= 0 {
                     return Ok(Some(Value::None));
                 }
-                let fb = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<frame>");
-                *fb.slice_parts.lock().unwrap_or_else(|p| p.into_inner()) =
-                    vec![Value::Int(Int::from_i64(depth + 1))];
-                let _ = fb.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
-                    Value::Str(PyString::new("f_globals")),
-                    Value::Dict(interp2.globals.clone()),
-                );
-                // s016/s013 (warnings attribution): the chain must carry the
-                // RUNNING SCRIPT's path — CPython's stacklevel walk lands on
-                // real caller frames whose co_filename is the script. The
-                // old "<antipythony>:1" chain made warn() attribute warnings
-                // to a nonexistent file.
-                let outer_lineno = interp2
-                    .frame_stack
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .get(depth as usize + 1)
-                    .map(|c| c.get())
-                    .filter(|n| *n > 0)
-                    .unwrap_or(1);
-                let _ = fb.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
-                    Value::Str(PyString::new("f_lineno")),
-                    Value::Int(Int::from_i64(outer_lineno as i64)),
-                );
-                // T2 fix: chained frames need f_code - frame walkers read
-                // frame.f_code.co_filename on every step; a miss replaced
-                // the in-flight exception (pytest Skipped).
-                let code2 = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<code>");
-                {
-                    let cattrs = code2.attrs.lock().unwrap_or_else(|p| p.into_inner());
-                    let _ = cattrs.set(
-                        Value::Str(PyString::new("co_filename")),
-                        Value::Str(PyString::new(interp2.script_path.clone())),
-                    );
-                    let _ = cattrs.set(
-                        Value::Str(PyString::new("co_name")),
-                        Value::Str(PyString::new("<module>")),
-                    );
-                }
-                let _ = fb
-                    .attrs
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .set(Value::Str(PyString::new("f_code")), Value::Obj(code2));
-                Ok(Some(Value::Obj(fb)))
+                let interp2 = crate::builtins_modules::current_interp().unwrap_or_else(interp_rc);
+                Ok(Some(crate::builtins::py_frame_stub(&interp2, (idx - 1) as usize)))
             }
             ap_obj::ObjKind::Module => {
                 let ns = o.module_ns.lock().unwrap_or_else(|p| p.into_inner());

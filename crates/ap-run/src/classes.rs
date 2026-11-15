@@ -2622,7 +2622,6 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
                                     | "Container"
                                     | "Sized"
                                     | "Hashable"
-                                    | "ByteString"
                             )
                         {
                             return Ok(true);
@@ -3734,7 +3733,25 @@ fn class_attr_get(
             // mappingproxy façade: reads pass, writes raise (S-03-04).
             return Ok(Value::Dict(t.dict.clone()));
         }
-        "__class__" => return Ok(type_class_value(interp)),
+        "__class__" => {
+            // s016: a class with a USER metaclass answers __class__ with the
+            // metaclass (CPython type(C) semantics). The old arm always
+            // answered the interned `type`, degenerating
+            // _DeprecateByteStringMeta (vendored _collections_abc) to type —
+            // its __instancecheck__ (the ByteString deprecation hook) then
+            // never resolved.
+            let meta = t
+                .metaclass
+                .read()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone();
+            if let Some(m) = meta {
+                if m.name != "type" {
+                    return Ok(class_value_for(&m));
+                }
+            }
+            return Ok(type_class_value(interp));
+        }
         "__subclasses__" => {
             // Bound builtin: list direct subclasses (S-03-29/e002 surface);
             // the call site (interp) reads the parked owner name.
