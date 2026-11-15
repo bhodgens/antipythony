@@ -5107,12 +5107,69 @@ pub(crate) fn eval_binop(a: &Value, op: BinOp, b: &Value) -> EResult {
     // on a UserInstance converts via __int__/__index__. ap-obj's percent
     // formatter can't dispatch user dunders (leaf crate); normalize here.
     if op == BinOp::Mod {
-        if let Value::Str(_) = a {
-            let interp = current_interp_for_bindings();
-            let norm = |v: &Value| -> Value {
-                if !matches!(v, Value::Obj(_)) {
-                    return v.clone();
-                }
+     if let Value::Str(_) = a {
+         let interp = current_interp_for_bindings();
+         // s023: %r over user instances must dispatch user __repr__ —
+         // ap-obj's percent_format renders through the value layer
+         // (fmt_repr/default_repr), which misses class-level __repr__.
+         // Pre-compute the runtime repr (repr_with_classes walks the
+         // MRO) and stash it in repr_text — default_repr consults that
+         // first, so the format layer renders the user repr. Only when
+         // a user __repr__ exists (otherwise the dynamic default is
+         // already correct).
+         {
+             fn stash_recursive(interp: &std::sync::Arc<crate::frame::Interpreter>, v: &Value) {
+                 match v {
+                     Value::List(l) => {
+                         for x in l.items().iter() {
+                             stash_recursive(interp, x);
+                         }
+                     }
+                     Value::Tuple(t) => {
+                         for x in t.0.iter() {
+                             stash_recursive(interp, x);
+                         }
+                     }
+                     Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
+                         // Leave already-stashed reprs alone (idempotent;
+                         // the container path re-stashes every arg).
+                         if o.repr_text
+                             .lock()
+                             .unwrap_or_else(|p| p.into_inner())
+                             .is_some()
+                         {
+                             return;
+                         }
+                         if let Some((f, _)) =
+                             crate::classes::special_lookup(interp, v, "__repr__")
+                         {
+                             if let Ok(rv) =
+                                 crate::interp::call_value_pub(interp, &f, &[v.clone()], &[])
+                             {
+                                 if let Value::Str(sv) = rv {
+                                     *o.repr_text
+                                         .lock()
+                                         .unwrap_or_else(|p| p.into_inner()) =
+                                         Some(sv.as_str().to_string());
+                                 }
+                             }
+                         }
+                     }
+                     _ => {}
+                 }
+             }
+             if let Value::Tuple(t) = b {
+                 for x in t.0.iter() {
+                     stash_recursive(&interp, x);
+                 }
+             } else {
+                 stash_recursive(&interp, b);
+             }
+         }
+         let norm = |v: &Value| -> Value {
+             if !matches!(v, Value::Obj(_)) {
+                 return v.clone();
+             }
                 for slot in ["__int__", "__index__"] {
                     if let Some((f, _)) = crate::classes::special_lookup(&interp, v, slot) {
                         if let Ok(r) = call_value_pub3(&f, std::slice::from_ref(v)) {

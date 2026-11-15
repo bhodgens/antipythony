@@ -71,6 +71,14 @@ deviated_sha256 = "4fc16e8045e38a552753c06068ce36bc877c940dd76e6270646545223623c
 note = "antipythony shim: native bridge module (class hierarchy + from_native dict→AST converter consumed by compile(PyCF_ONLY_AST)). W114: adds AST._field_types (ASDL list-typed fields) and per-class _optional_fields (ASDL `?` fields) so ast.dump matches CPython omit semantics; no CPython Lib/_ast.py counterpart to hash."
 
 [[file]]
+path = "_ast_unparse.py"
+upstream_path = "_ast_unparse.py"
+status = "pristine"
+upstream_sha256 = "2c477f40fe644f8e8454e8af97aaf3de90579bdce5ddfe597f29d3012d10443f"
+deviated_sha256 = "2c477f40fe644f8e8454e8af97aaf3de90579bdce5ddfe597f29d3012d10443f"
+note = ""
+
+[[file]]
 path = "_collections_abc.py"
 upstream_path = "_collections_abc.py"
 status = "deviated"
@@ -117,6 +125,14 @@ status = "pristine"
 upstream_sha256 = "01046da4883344a898fb1261a0805a7ab1bae371e95ade31311ac03b43b33c98"
 deviated_sha256 = "01046da4883344a898fb1261a0805a7ab1bae371e95ade31311ac03b43b33c98"
 note = ""
+
+[[file]]
+path = "_multibytecodec.py"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "5e889ae21858005e9a5249a076780cdcdda8fb94881d5eccc4600aeab5200afa"
+note = "antipythony shim with no CPython counterpart: docstring + empty exec body satisfying the native-module augment hook; the _multibytecodec mixin surface is carried by the native engine (crates/ap-run/src/mbc.rs, issue #13, a8841dc)."
 
 [[file]]
 path = "_opcode_metadata.py"
@@ -3487,14 +3503,6 @@ deviated_sha256 = "61d4270311099c8a0c0b2e45fb363fd1c4e347a720bcc25f682b63dc28c34
 note = ""
 
 [[file]]
-path = "tokenize.py"
-upstream_path = "tokenize.py"
-status = "pristine"
-upstream_sha256 = "65ba1bacdc42e768382208ff27f3001ee77d9d61aafba686c67652d22b84b330"
-deviated_sha256 = "65ba1bacdc42e768382208ff27f3001ee77d9d61aafba686c67652d22b84b330"
-note = ""
-
-[[file]]
 path = "traceback.py"
 upstream_path = "traceback.py"
 status = "deviated"
@@ -3989,14 +3997,6 @@ status = "deviated"
 upstream_sha256 = ""
 deviated_sha256 = "30dd49baa3468801293cabda14f45ac9f9bc4927a296e1c596145ea12f74a074"
 note = "antipythony shim with no CPython counterpart (zope.interface is third-party): inert InterfaceClass/Attribute/implementer declaration surfaces for twisted.python.components (4b228b8)."
-
-[[file]]
-path = "_multibytecodec.py"
-upstream_path = ""
-status = "deviated"
-upstream_sha256 = ""
-deviated_sha256 = "5e889ae21858005e9a5249a076780cdcdda8fb94881d5eccc4600aeab5200afa"
-note = "antipythony shim with no CPython counterpart: docstring + empty exec body satisfying the native-module augment hook; the _multibytecodec mixin surface is carried by the native engine (crates/ap-run/src/mbc.rs, issue #13, a8841dc)."
 
 [[file]]
 path = "zope/interface/interface.py"

@@ -11,6 +11,9 @@ isinstance, _fields, and ast.walk behave like upstream.
 
 class AST:
     _fields = ()
+    # CPython: position attributes every AST node reports (fix_missing_locations
+    # probes `'lineno' in node._attributes`; s023).
+    _attributes = ("lineno", "col_offset", "end_lineno", "end_col_offset")
     # W114: list-typed fields per the CPython ASDL grammar (Parser/Python.asdl,
     # `field*` = zero-or-more = Python list). ast.dump omits empty-list fields
     # when annotate_fields is off; the bridge leaves them as [] (no None class
@@ -50,22 +53,56 @@ class AST:
     def __init__(self, *args, **kwargs):
         fields = type(self)._fields
         if args:
-            if len(args) != len(fields):
+            # CPython: trailing optional (ASDL `?`) fields default to None,
+            # so Constant(1) is valid (kind=None) — reject only TOO MANY.
+            if len(args) > len(fields):
                 raise TypeError(
-                    "%s constructor takes %d positional arguments"
+                    "%s constructor takes at most %d positional arguments"
                     % (type(self).__name__, len(fields))
                 )
-            for name, value in zip(fields, args):
+            for idx, (name, value) in enumerate(zip(fields, args)):
                 setattr(self, name, value)
         _positional = (
             "lineno", "col_offset", "end_lineno", "end_col_offset"
         )
+        # CPython 3.14: non-field kwargs are ACCEPTED (set as plain attrs)
+        # but DeprecationWarning'd (removal in 3.15); a missing required
+        # field is likewise accepted + warned. The pinned s023 corpus
+        # constructs ast.Expression(value=...) — stdout prints "Expression()"
+        # (dump walks _fields only) AND stderr carries the two warnings.
+        import warnings as _warnings
         for name, value in kwargs.items():
             if name not in fields and name not in _positional:
-                raise TypeError(
-                    "%s has no field %r" % (type(self).__name__, name)
+                _warnings.warn(
+                    f"{type(self).__name__}.__init__ got an unexpected keyword "
+                    f"argument {name!r}. Support for arbitrary keyword arguments "
+                    f"is deprecated and will be removed in Python 3.15.",
+                    DeprecationWarning,
+                    stacklevel=2,
                 )
             setattr(self, name, value)
+        optional = set(getattr(type(self), "_optional_fields", ()))
+        for name in fields:
+            if name in kwargs:
+                continue
+            if name in optional:
+                continue
+            if not hasattr(self, name):
+                _warnings.warn(
+                    f"{type(self).__name__}.__init__ missing 1 required "
+                    f"positional argument: {name!r}. This will become an error "
+                    f"in Python 3.15.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+        # CPython: optional (ASDL `?`) fields always exist on the C node,
+        # defaulting to None. The native bridge omits None-valued optional
+        # fields from the dict tree, so materialize them here — without
+        # this, _ast_unparse's `Constant.kind` read AttributeErrors
+        # (s023 unparse of default args).
+        for name in getattr(type(self), "_optional_fields", ()):
+            if not hasattr(self, name):
+                setattr(self, name, None)
 
     def __repr__(self):
         parts = []
@@ -82,7 +119,10 @@ class mod(AST):
 
 
 class Module(mod):
-    _fields = ("body",)
+    # CPython 3.14 ASDL: Module(body, type_ignores) — the type_ignores
+    # field was missing (s023: _ast_unparse visit_Module reads it and
+    # AST.__init__ rejected the kwarg).
+    _fields = ("body", "type_ignores")
 
 
 class Interactive(mod):
@@ -91,6 +131,12 @@ class Interactive(mod):
 
 class Expression(mod):
     _fields = ("body",)
+
+
+class FunctionType(mod):
+    # CPython ASDL: FunctionType(argtypes, returns) — name-surface missing
+    # (s023 corpus probes ast.FunctionType).
+    _fields = ("argtypes", "returns")
 
 
 class stmt(AST):
@@ -139,7 +185,9 @@ class Assign(stmt):
     # W114: optional (ASDL `?`) fields; None values are
     # omitted by ast.dump without field-name annotation.
     _optional_fields = ("type_comment", )
-    _fields = ("targets", "value")
+    # CPython 3.14 ASDL: Assign(targets, value, type_comment?) — type_comment
+    # was missing from _fields (iter_fields output must include it as None).
+    _fields = ("targets", "value", "type_comment")
 
 
 class AugAssign(stmt):

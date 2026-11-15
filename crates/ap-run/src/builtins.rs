@@ -5367,8 +5367,18 @@ pub fn call_builtin(
                 _ => 0,
             };
             if flags & 0x400 != 0 {
-                let tree = crate::ast_bridge::native_parse_tree(&src)
-                    .map_err(|m| raise("SyntaxError", m))?;
+                // s023: mode='eval' wraps in an Expression node (CPython
+                // compile semantics); literal_eval (isinstance Expression)
+                // and ast.unparse rely on the wrapper shape.
+                let tree = crate::ast_bridge::native_parse_tree_mode(
+                    &src,
+                    &filename,
+                    match args.get(2) {
+                        Some(Value::Str(m)) if m.as_str() == "eval" => "eval",
+                        _ => "exec",
+                    },
+                )
+                .map_err(|m| raise("SyntaxError", m))?;
                 let interp = crate::builtins_modules::current_interp()
                     .ok_or_else(|| raise("RuntimeError", "no interpreter"))?;
                 let interp = std::sync::Arc::new(interp);

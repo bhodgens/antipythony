@@ -60,6 +60,11 @@ fn pos_fields(
 ) -> Vec<(&'static str, Value)> {
     let (sl, sc) = line_col(range.0);
     let (el, ec) = line_col(range.1);
+    // s023: CPython AST col_offset/end_col_offset are 0-BASED; ap-parse's
+    // line_col is 1-based (SyntaxError caret semantics). get_source_segment
+    // slices source[col_offset:end_col_offset] — off-by-one gave "ello ".
+    let sc = sc.saturating_sub(1);
+    let ec = ec.saturating_sub(1);
     vec![
         ("lineno", i(sl)),
         ("col_offset", i(sc)),
@@ -73,6 +78,42 @@ fn rng(node: &impl ruff_text_size::Ranged) -> (usize, usize) {
         node.range().start().to_u32() as usize,
         node.range().end().to_u32() as usize,
     )
+}
+
+/// Entry point: source text -> generic node dict tree.
+/// s023: `mode='eval'` wraps the single expression in an Expression node
+/// (CPython compile semantics — literal_eval isinstance-checks Expression,
+/// and its error repr showed Module(...) for eval sources before this).
+pub fn native_parse_tree_mode(source: &str, _filename: &str, mode: &str) -> Result<Value, String> {
+    let tree = native_parse_tree(source)?;
+    if mode != "eval" {
+        return Ok(tree);
+    }
+    // Extract the single expression statement's value from the Module body.
+    let body = match &tree {
+        Value::Dict(d) => d.get(&Value::Str(PyString::new("body"))),
+        _ => None,
+    };
+    let Some(Value::List(l)) = body else {
+        return Ok(tree);
+    };
+    let items = l.items();
+    if items.len() != 1 {
+        return Ok(tree);
+    }
+    // Expr stmt node: dict with _type=Expr and value=<expr>.
+    let expr_value = match &items[0] {
+        Value::Dict(d) => d.get(&Value::Str(PyString::new("value"))),
+        _ => None,
+    };
+    let Some(expr_value) = expr_value else {
+        return Ok(tree);
+    };
+    let line_col = |_: usize| (1usize, 0usize);
+    let mut fields = pos_fields((0, source.len()), &line_col);
+    fields.push(("_type", s("Expression")));
+    fields.push(("body", expr_value));
+    Ok(dict_of(fields))
 }
 
 /// Entry point: source text -> generic node dict tree (Module root).
@@ -91,6 +132,9 @@ pub fn native_parse_tree(source: &str) -> Result<Value, String> {
     let mut fields = pos_fields((0, source.len()), &line_col);
     fields.push(("_type", s("Module")));
     fields.push(("body", list_of(body)));
+    // s023: CPython Module nodes carry type_ignores (empty unless
+    // TYPE_COMMENT parsing is on); _ast_unparse's visit_Module reads it.
+    fields.push(("type_ignores", list_of(Vec::new())));
     Ok(dict_of(fields))
 }
 
@@ -138,6 +182,9 @@ fn stmt_node(st: &ruff_python_ast::Stmt, line_col: &dyn Fn(usize) -> (usize, usi
             }
             f.push(("targets", list_of(targets)));
             f.push(("value", expr_node(&a.value, line_col)?));
+            // s023: ASDL Assign has optional type_comment (iter_fields
+            // includes it as None — the pinned dump output shows it).
+            f.push(("type_comment", Value::None));
             Ok(dict_of(f))
         }
         ruff_python_ast::Stmt::AugAssign(a) => {
