@@ -435,7 +435,16 @@ fn cmd_run(rest: &[&str], _wasm: bool) -> Result<i32, String> {
     // The tier-0 interpreter consumes ~50KB of native stack per Python frame
     // (recursion_limit 1000 needs ~50MB): run the module on a dedicated
     // thread with a 256MB stack (same contract as ap-run-eval).
-    let script_path = path.clone();
+    // s016/s023: absolutize the script path — CPython 3.11+ absolutizes
+    // __main__.__file__ (warning filenames / linecache keys carry the
+    // absolute path) but does NOT resolve symlinks: the INVOKED path with
+    // a cwd prefix is what CPython reports (/tmp/x.py stays /tmp/x.py on
+    // macOS where /tmp -> /private/tmp). canonicalize() would resolve the
+    // symlink and diverge. std::path::absolute has the exact CPython
+    // semantics (lexical absolutization, no symlink resolution).
+    let script_path = std::path::absolute(&path)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| path.clone());
     let exit_code = std::thread::Builder::new()
         .stack_size(256 << 20)
         .spawn(move || {

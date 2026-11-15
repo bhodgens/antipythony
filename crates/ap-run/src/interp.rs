@@ -14588,6 +14588,52 @@ fn attr_get(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                             },
                         );
                     }
+                    // s020: empty-bytecode surface so dis.get_instructions
+                    // yields zero instructions — getclosurevars then answers
+                    // all-empty ClosureVars (CPython-identical for stubs:
+                    // the corpus lambda references a GLOBAL, so CPython's
+                    // nonlocals set is ALSO empty).
+                    let empty_bytes: Value = Value::Bytes(Gc::new(Vec::new()));
+                    let _ = code.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
+                        Value::Str(PyString::new("co_code")),
+                        empty_bytes.clone(),
+                    );
+                    let _ = code.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
+                        Value::Str(PyString::new("_co_code_adaptive")),
+                        empty_bytes,
+                    );
+                    let _ = code.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
+                        Value::Str(PyString::new("co_consts")),
+                        Value::Tuple(Gc::new(Tuple(Vec::new()))),
+                    );
+                    let cl = ap_obj::PyObject::new(
+                        ap_obj::ObjKind::BuiltinFn,
+                        "__ap_code_lines__",
+                    );
+                    let _ = code.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
+                        Value::Str(PyString::new("co_lines")),
+                        Value::Obj(cl),
+                    );
+                    let vf = ap_obj::PyObject::new(
+                        ap_obj::ObjKind::BuiltinFn,
+                        "__ap_code_varname__",
+                    );
+                    let _ = code.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
+                        Value::Str(PyString::new("_varname_from_oparg")),
+                        Value::Obj(vf),
+                    );
+                    // dis.get_instructions also CALLS co_positions() and
+                    // passes the result as an iterator; the function-stub
+                    // code object needs the same marker the frame stub
+                    // carries (the parked-tuple payload).
+                    let cp = ap_obj::PyObject::new(
+                        ap_obj::ObjKind::BuiltinFn,
+                        "__ap_code_positions__",
+                    );
+                    let _ = code.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
+                        Value::Str(PyString::new("co_positions")),
+                        Value::Obj(cp),
+                    );
                     return Ok(Some(Value::Obj(code)));
                 }
                 _ => {}
@@ -15197,6 +15243,41 @@ fn attr_get(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 // Generic namespace attr reads (coroutine stub close/send/
                 // throw markers, ModuleSpec surfaces) — creation-stored
                 // attrs answer by name.
+                // s016-fix2: `<frame>.f_lineno` must NOT hit the frozen
+                // attrs snapshot below — the LIVE read (py_frames walk via
+                // slice_parts[0]) comes first, matching CPython's
+                // read-fresh f_lineno. Falls through to the snapshot only
+                // when the frame has retired.
+                if o.name == "<frame>" && name == "f_lineno" {
+                    let idx = o
+                        .slice_parts
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .first()
+                        .and_then(|v| v.as_int())
+                        .and_then(|i| i.to_i64());
+                    let live = idx.and_then(|i| {
+                        if i < 0 {
+                            return None;
+                        }
+                        let interp2 =
+                            crate::builtins_modules::current_interp().unwrap_or_else(interp_rc);
+                        let st = interp2.py_frames.lock().unwrap_or_else(|p| p.into_inner());
+                        st.get(i as usize).map(|f| f.last_line.get().max(1))
+                    });
+                    if let Some(l) = live {
+                        return Ok(Some(Value::Int(ap_obj::Int::from_i64(l as i64))));
+                    }
+                    if let Some(v) = o
+                        .attrs
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .get(&Value::Str(PyString::new(name)))
+                    {
+                        return Ok(Some(v.clone()));
+                    }
+                    return Ok(Some(Value::Int(ap_obj::Int::from_i64(1))));
+                }
                 if let Some(v) = o
                     .attrs
                     .lock()
@@ -15231,6 +15312,46 @@ fn attr_get(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 // exception unwinds; a miss REPLACES the in-flight
                 // exception (pytest Skipped) and derails the runtest
                 // protocol.
+                // s016-fix2: a `<frame>` stub must answer f_lineno LIVE.
+                // The stub carries the py_frames index in slice_parts[0];
+                // re-resolving it here makes repeated reads observe the
+                // frame's progress (CPython f_lineno is read-fresh —
+                // warn()'s stacklevel walk reads it mid-statement, and a
+                // build-time snapshot attributed the warning to the frame's
+                // CURRENT statement-start line instead of the executing
+                // expression line).
+                if o.name == "<frame>" && name == "f_lineno" {
+                    // s016-fix2: prefer the LIVE py_frames read; fall back
+                    // to the creation snapshot when the index is gone.
+                    let idx = o
+                        .slice_parts
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .first()
+                        .and_then(|v| v.as_int())
+                        .and_then(|i| i.to_i64());
+                    let live = idx.and_then(|i| {
+                        if i < 0 {
+                            return None;
+                        }
+                        let interp2 =
+                            crate::builtins_modules::current_interp().unwrap_or_else(interp_rc);
+                        let st = interp2.py_frames.lock().unwrap_or_else(|p| p.into_inner());
+                        st.get(i as usize).map(|f| f.last_line.get().max(1))
+                    });
+                    if let Some(l) = live {
+                        return Ok(Some(Value::Int(ap_obj::Int::from_i64(l as i64))));
+                    }
+                    if let Some(v) = o
+                        .attrs
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .get(&Value::Str(PyString::new(name)))
+                    {
+                        return Ok(Some(v.clone()));
+                    }
+                    return Ok(Some(Value::Int(ap_obj::Int::from_i64(1))));
+                }
                 if name == "f_back" {
                     return Ok(Some(Value::None));
                 }

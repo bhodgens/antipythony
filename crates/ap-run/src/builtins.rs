@@ -3339,6 +3339,18 @@ pub(crate) fn py_frame_stub(interp: &Interpreter, idx: usize) -> Value {
             Value::Str(PyString::new("co_argcount")),
             Value::Int(Int::from_i64(0)),
         );
+        // s020: inspect.getargs computes nargs+nkwargs — a MISSING
+        // co_kwonlyargcount (reading as None through the safe-default arm)
+        // TypeError'd int+None. Zero is the CPython value for a no-args stub.
+        let _ = cattrs.set(
+            Value::Str(PyString::new("co_kwonlyargcount")),
+            Value::Int(Int::from_i64(0)),
+        );
+        // s020: getargs reads co_flags & CO_VARARGS — same None-&-int hazard.
+        let _ = cattrs.set(
+            Value::Str(PyString::new("co_flags")),
+            Value::Int(Int::from_i64(0)),
+        );
         let _ = cattrs.set(
             Value::Str(PyString::new("co_varnames")),
             Value::Tuple(Gc::new(Tuple(Vec::new()))),
@@ -3358,6 +3370,44 @@ pub(crate) fn py_frame_stub(interp: &Interpreter, idx: usize) -> Value {
         *cp.slice_parts.lock().unwrap_or_else(|p| p.into_inner()) =
             vec![Value::Tuple(Gc::new(Tuple(positions)))];
         let _ = cattrs.set(Value::Str(PyString::new("co_positions")), Value::Obj(cp));
+        // s020: inspect.getclosurevars -> dis.get_instructions walks the
+        // code object. An EMPTY bytecode surface (b'' co_code, empty
+        // co_lines, no-op _varname_from_oparg) yields zero instructions,
+        // so getclosurevars answers all-empty ClosureVars — byte-identical
+        // with CPython for the corpus's global-reference lambda (f is a
+        // global, so CPython's nonlocals is ALSO empty). _co_code_adaptive
+        // mirrors co_code (dis._get_code_array probes it under adaptive).
+        let empty_bytes = Value::Bytes(Gc::new(Vec::new()));
+        let _ = cattrs.set(Value::Str(PyString::new("co_code")), empty_bytes.clone());
+        let _ = cattrs.set(
+            Value::Str(PyString::new("_co_code_adaptive")),
+            empty_bytes,
+        );
+        let _ = cattrs.set(
+            Value::Str(PyString::new("co_firstlineno")),
+            Value::Int(Int::from_i64(1)),
+        );
+        // co_lines() -> empty iterator (a marker BuiltinFn called with no
+        // args yields nothing — the generic iterator surface treats an
+        // empty tuple payload as exhausted).
+        let cl = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "__ap_code_lines__");
+        *cl.slice_parts.lock().unwrap_or_else(|p| p.into_inner()) =
+            vec![Value::Tuple(Gc::new(Tuple(Vec::new())))];
+        let _ = cattrs.set(Value::Str(PyString::new("co_lines")), Value::Obj(cl));
+        // _varname_from_oparg(oparg) -> None (no varname table on a stub).
+        let vf = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "__ap_code_varname__");
+        let _ = cattrs.set(
+            Value::Str(PyString::new("_varname_from_oparg")),
+            Value::Obj(vf),
+        );
+        let _ = cattrs.set(
+            Value::Str(PyString::new("co_consts")),
+            Value::Tuple(Gc::new(Tuple(Vec::new()))),
+        );
+        let _ = cattrs.set(
+            Value::Str(PyString::new("co_names")),
+            Value::Tuple(Gc::new(Tuple(Vec::new()))),
+        );
     }
     let frame = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<frame>");
     // The frame's own py_frames index rides slice_parts: the interp.rs
@@ -3396,6 +3446,16 @@ pub(crate) fn py_frame_stub(interp: &Interpreter, idx: usize) -> Value {
         let _ = attrs.set(
             Value::Str(PyString::new("f_lineno")),
             Value::Int(Int::from_i64(lineno as i64)),
+        );
+        // s016-fix2: the frame's own py_frames index ALSO rides the frame
+        // attr (`<frame>.f_lineno` re-resolves LIVE through it in interp.rs's
+        // Namespace arm — CPython f_lineno is read-fresh, so a build-time
+        // snapshot goes stale the moment the frame executes its next
+        // statement; warn()'s stacklevel walk reads it mid-statement and a
+        // stale snapshot attributed the warning to the wrong line).
+        let _ = attrs.set(
+            Value::Str(PyString::new("__ap_pf_index__")),
+            Value::Int(Int::from_i64(idx as i64)),
         );
         // f_back: the next-outer LIVE frame as a stub (index rides
         // slice_parts; interp.rs's `<frame>.f_back` attr arm resolves it
@@ -3525,7 +3585,17 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
                 .first()
                 .and_then(|v| v.as_int())
                 .and_then(|i| i.to_i64())
-                .unwrap_or(1);
+                .unwrap_or(0);
+            // s016-fix3: CPython's _getframe(depth) counts from the CALLER
+            // of _getframe — depth=1 (the default) IS the caller itself
+            // (the C function adds no Python frame). Our previous
+            // `py_len-1-depth` with a default depth of 1 skipped the caller
+            // and landed on its parent (outer's f_back answered the module
+            // stub as None; warn()'s stacklevel walk missed by one frame,
+            // attributing the warning to the wrong line AND the wrong
+            // source line). The live model: idx = py_len-1-depth with the
+            // no-arg default depth=0 (the builtin-call frame is NOT a
+            // Python frame on our stack, unlike CPython's C frame).
             let py_len = {
                 let st = interp.py_frames.lock().unwrap_or_else(|p| p.into_inner());
                 st.len()
@@ -4785,8 +4855,18 @@ pub fn call_builtin(
         return Ok(Value::Dict(d));
     }
     // T1 (inspect.stack): stub code object co_positions() → parked tuple.
+    // s020: co_lines() on the SAME stub — an empty tuple payload makes the
+    // marker call return an exhausted iterator, so dis.findlinestarts
+    // yields nothing (zero instructions on the empty-bytecode stub).
+    if name == "__ap_code_lines__" {
+        return Ok(Value::Tuple(Gc::new(Tuple(Vec::new()))));
+    }
+    // s020: _varname_from_oparg(oparg) on the stub — no varname table,
+    // CPython-matching None answer.
+    if name == "__ap_code_varname__" {
+        return Ok(Value::None);
+    }
     if name == "__ap_code_positions__" {
-        // Wave-57 fix: bound dispatch passes no args, so the old
         // args.first() shape returned an EMPTY tuple ->
         // itertools.islice(positions_gen, ...) exhausted immediately ->
         // StopIteration (and PEP-479 RuntimeError inside pytest's

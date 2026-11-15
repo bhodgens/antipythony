@@ -15771,6 +15771,18 @@ pub fn call_native_marker_impl(
     if full == "importlib.machinery.PathFinder.find_spec" {
         return Some(Ok(Value::None));
     }
+    // s020: importlib.machinery.all_suffixes() — SOURCE+BYTECODE+EXTENSION
+    // (CPython order). inspect.getmodulename sorts longest-first, so the
+    // extension suffixes must be present for getfile/getmodulename probes.
+    if full == "importlib.machinery.all_suffixes" {
+        let items = vec![
+            crate::builtins_modules::s(".py"),
+            crate::builtins_modules::s(".pyc"),
+            crate::builtins_modules::s(".so"),
+            crate::builtins_modules::s(".dylib"),
+        ];
+        return Some(Ok(crate::builtins_modules::list(items)));
+    }
     // s013/s014: functools stateful markers route through the functools
     // dispatcher. Only STATEFUL names (lru wrappers/sentinels/CacheInfo);
     // regular module fns (lru_cache etc) must fall through so kwargs reach
@@ -19625,7 +19637,11 @@ fn build_importlib_machinery(_i: &crate::frame::Interpreter) -> Value {
     ns_const(&ns, "EXTENSION_SUFFIXES", list(vec![s(".so"), s(".dylib")]));
     ns_const(&ns, "SOURCE_SUFFIXES", list(vec![s(".py")]));
     ns_const(&ns, "BYTECODE_SUFFIXES", list(vec![s(".pyc")]));
-    ns_const(&ns, "all_suffixes", list(vec![s(".py"), s(".pyc")]));
+    // s020: all_suffixes must be CALLABLE (CPython: a function returning
+    // SOURCE+BYTECODE+EXTENSION suffixes). The v0 list constant broke
+    // inspect.getmodulename ('list' object is not callable) — and with it
+    // inspect.getfile on every module object.
+    let _ = ns.set(s("all_suffixes"), marker("importlib.machinery.all_suffixes"));
     finish(m, ns)
 }
 
