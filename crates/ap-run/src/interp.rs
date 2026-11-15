@@ -15251,10 +15251,20 @@ fn attr_get(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                     // Unknown probes on these synthetic objects get a
                     // harmless None rather than AttributeError, which
                     // would replace the in-flight exception.
-                    if name.starts_with("_")
-                        || name.starts_with("co_")
-                        || name.starts_with("tb_")
-                        || name.starts_with("f_")
+                    // s020: EXCEPT __func__ on <code> — dis._get_code_object
+                    // treats hasattr(x, "__func__") as "it's a bound method"
+                    // and extracts x.__func__ (None here) → NoneType
+                    // TypeError, killing getclosurevars/get_instructions.
+                    // s020: ALL dunder probes must MISS (AttributeError)
+                    // rather than answer None — dis._get_code_object checks
+                    // hasattr(x, "__func__") / hasattr(x, "__code__") /
+                    // hasattr(x, "gi_code") in sequence; a truthy hasattr
+                    // with a None value makes each check "pass" and unwraps
+                    // the None forward until NoneType TypeError.
+                    if name.starts_with("__") {
+                        return Ok(None);
+                    }
+                    if name.starts_with("f_") || name.starts_with("co_") || name.starts_with("tb_")
                     {
                         return Ok(Some(Value::None));
                     }
