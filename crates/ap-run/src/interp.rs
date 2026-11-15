@@ -4302,6 +4302,46 @@ fn eval_compare(left: &Value, op: CmpOp, right: &Value) -> Result<bool, Flow> {
             return Ok(if matches!(op, CmpOp::Eq) { eq } else { !eq });
         }
     }
+    // s025: CPython list/tuple == recurses ELEMENT-WISE through the FULL
+    // eq protocol — a dataclass element's __eq__ must dispatch. The
+    // ap-obj values_eq recursion is identity-only for user instances, so
+    // [P(1)] == [P(1)] was False while P(1) == P(1) was True.
+    if matches!(op, CmpOp::Eq | CmpOp::NotEq) {
+        let pairwise = match (left, right) {
+            (Value::List(x), Value::List(y)) => {
+                let (a, b) = (x.items(), y.items());
+                a.len() == b.len() && {
+                    let pairs = a.iter().zip(b.iter());
+                    let mut all = true;
+                    for (ea, eb) in pairs {
+                        if !eval_compare(ea, CmpOp::Eq, eb)? {
+                            all = false;
+                            break;
+                        }
+                    }
+                    all
+                }
+            }
+            (Value::Tuple(x), Value::Tuple(y)) => {
+                x.0.len() == y.0.len() && {
+                    let pairs = x.0.iter().zip(y.0.iter());
+                    let mut all = true;
+                    for (ea, eb) in pairs {
+                        if !eval_compare(ea, CmpOp::Eq, eb)? {
+                            all = false;
+                            break;
+                        }
+                    }
+                    all
+                }
+            }
+            _ => true, // not a container pair — fall through untouched
+        };
+        if let (Value::List(_), Value::List(_)) | (Value::Tuple(_), Value::Tuple(_)) = (left, right)
+        {
+            return Ok(if matches!(op, CmpOp::Eq) { pairwise } else { !pairwise });
+        }
+    }
     match op {
         CmpOp::Eq => Ok(ap_obj::ops::eq(left, right)),
         CmpOp::NotEq => Ok(!ap_obj::ops::eq(left, right)),
@@ -9080,6 +9120,55 @@ fn bind_params(
         .filter(|p| matches!(p.kind, ParamKind::PosOnly | ParamKind::PosOrKw))
         .collect();
     let mut pos_consumed = 0usize;
+    // s025: CPython checks TOO-MANY-POSITIONAL before binding (a kw_only
+    // field after the KW_ONLY marker must NOT count as a positional slot,
+    // and the arity error must fire before any missing-kw-only error — the
+    // KWO(1, 2) probe: CPython "takes 2 positional arguments but 3 were
+    // given" vs the old order's missing-kw-only message).
+    {
+        let has_vararg_early = def.params.iter().any(|p| p.kind == ParamKind::VarArg);
+        let pos_slots_early = pos_consumable.len();
+        if !has_vararg_early && args.len() > pos_slots_early {
+            let required = pos_consumable
+                .iter()
+                .filter(|p| p.default.is_none())
+                .count();
+            let display_name = o
+                .attrs
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(&Value::Str(PyString::new("__qualname__")))
+                .and_then(|v| match v {
+                    Value::Str(sv) => Some(sv.as_str().to_string()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| entry.qualname.clone());
+            if required < pos_slots_early {
+                return Err(raise(
+                    "TypeError",
+                    format!(
+                        "{}() takes from {} to {} positional arguments but {} {} given",
+                        display_name,
+                        required,
+                        pos_slots_early,
+                        args.len(),
+                        if args.len() == 1 { "was" } else { "were" }
+                    ),
+                ));
+            }
+            return Err(raise(
+                "TypeError",
+                format!(
+                    "{}() takes {} positional argument{} but {} {} given",
+                    display_name,
+                    pos_slots_early,
+                    if pos_slots_early == 1 { "" } else { "s" },
+                    args.len(),
+                    if args.len() == 1 { "was" } else { "were" }
+                ),
+            ));
+        }
+    }
     for p in &pos_consumable {
         if let Some(v) = args.get(pos_consumed) {
             if kwargs.iter().any(|(k, _)| k == &p.name) {
@@ -9166,11 +9255,31 @@ fn bind_params(
         .filter(|p| matches!(p.kind, ParamKind::PosOnly | ParamKind::PosOrKw))
         .count();
     if !has_vararg && args.len() > pos_slots {
+        // CPython message forms: with defaulted positional params the range
+        // form ("takes from MIN to MAX positional arguments"); MIN counts
+        // positionals WITHOUT defaults. The fixed-count form only when none
+        // has a default. (s025: the generated dataclass __init__ has
+        // defaults — the old fixed form printed
+        // "__create_fn__.__init__() takes 4 positional..." instead of
+        // "DC.__init__() takes from 2 to 4 positional arguments but 5 were
+        // given" and the kw_only "positional" substring probe diverged.)
+        // s025: unreachable for the >pos_slots case (the early check above
+        // returned); kept as a defensive tail.
+        let display_name = o
+            .attrs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&Value::Str(PyString::new("__qualname__")))
+            .and_then(|v| match v {
+                Value::Str(sv) => Some(sv.as_str().to_string()),
+                _ => None,
+            })
+            .unwrap_or_else(|| entry.qualname.clone());
         return Err(raise(
             "TypeError",
             format!(
                 "{}() takes {} positional argument{} but {} {} given",
-                entry.qualname,
+                display_name,
                 pos_slots,
                 if pos_slots == 1 { "" } else { "s" },
                 args.len(),
