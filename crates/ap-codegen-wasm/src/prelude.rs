@@ -2096,8 +2096,9 @@ fn py_str(
     let (lp_off, lp_len) = strings.push("(");
     let (rp_off, rp_len) = strings.push(")");
     let (c_off, c_len) = strings.push(", ");
-    let (q_off, q_len) = strings.push("TUP");
+    let (q_off, q_len) = strings.push("?");
     let (q1_off, q1_len) = strings.push("'");
+    let (c1_off, c1_len) = strings.push(",");
     add(
         funcs,
         code,
@@ -2240,13 +2241,14 @@ fn py_str(
             f.instruction(&Instruction::Br(0));
             f.instruction(&Instruction::End); // loop
             f.instruction(&Instruction::End); // block
-            // 1-tuple trailing comma: ("x",) prints the comma (CPython)
+            // 1-tuple trailing comma: ('v',) — comma WITHOUT space (CPython;
+            // 03.03c fix: the separator ', ' leaked into the 1-tuple tail)
             f.instruction(&Instruction::LocalGet(10));
             f.instruction(&Instruction::I32Const(1));
             f.instruction(&Instruction::I32Eq);
             f.instruction(&Instruction::If(BlockType::Empty));
             f.instruction(&Instruction::LocalGet(6));
-            push_str_literal_seg(f, c_off, c_len);
+            push_str_literal_seg(f, c1_off, c1_len);
             f.instruction(&Instruction::Call(fx::FN_STR_CAT));
             f.instruction(&Instruction::LocalSet(6));
             f.instruction(&Instruction::End);

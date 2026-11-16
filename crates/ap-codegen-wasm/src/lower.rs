@@ -301,11 +301,17 @@ fn collect_stmt(
             collect_expr(value, refs, bound, nonlocal, scan)?;
             // 03.03c: attr targets read their object (obj.attr = v) — the
             // attr name rides FN_ATTR_SET as an interned $str at emit time.
+            // Name targets are interned too: class-body assigns bind via
+            // attr_set(cls, name, v) with an interned name $str.
             for t in targets {
                 match t {
                     ap_ir::item::Target::Attribute(obj, name) => {
                         scan.intern_str(name.as_str());
                         collect_expr(obj, refs, bound, nonlocal, scan)?;
+                    }
+                    ap_ir::item::Target::Name(n) => {
+                        scan.intern_str(n.as_str());
+                        collect_target(t, bound, scan)?;
                     }
                     _ => collect_target(t, bound, scan)?,
                 }
@@ -414,6 +420,9 @@ fn scan_class_def(
     scan: &mut Scan,
 ) -> Result<(), CodegenError> {
     let n = cd.name.to_string();
+    // intern the class name (emit builds the class via FN_CLS_NEW's name $str —
+    // nested class defs never ran the Item::ClassDef intern)
+    scan.intern_str(&n);
     if !bound.contains(&n) {
         bound.push(n);
     }
@@ -497,6 +506,13 @@ fn collect_expr(
         Expr::LitBytes(_) => Err(CodegenError::Unsupported("bytes literal (03.03 surface)")),
         Expr::Name(n) => {
             let n = n.to_string();
+            // 03.03c fail-closed: names this slice cannot resolve at emit
+            // (emit_name_load would panic) reject at scan instead.
+            if matches!(n.as_str(), "super" | "NotImplemented") {
+                return Err(CodegenError::Unsupported(
+                    "name beyond the 03.03 slice (super/NotImplemented)",
+                ));
+            }
             if !refs.contains(&n) {
                 refs.push(n);
             }
@@ -2008,7 +2024,7 @@ fn push_interned_str(f: &mut Function, s: &str, ctx: &EmitCtx) {
         .strs
         .iter()
         .position(|b| b.as_slice() == s.as_bytes())
-        .expect("scan interned all strings");
+        .unwrap_or_else(|| panic!("scan interned all strings: missing {s:?}"));
     // passive-segment base = the combined name blob (TYPE_ORDER + the
     // EXC_TREE names, leaf 03.03)
     let mut off = TYPE_ORDER
@@ -2070,9 +2086,20 @@ fn emit_stmt(f: &mut Function, stmt: &Stmt, ctx: &mut EmitCtx) {
         Stmt::Assign(targets, value) => {
             emit_expr(f, value, ctx);
             let t = &targets[0];
-            // 03.03c: attr targets store via FN_ATTR_SET (S-03-10) — value,
-            // then obj, then the interned name (attr_set(obj, name, v)).
-            if let ap_ir::item::Target::Attribute(obj, name) = t {
+            // 03.03c: class-body plain assigns bind into the class namespace
+            // dict (k = 42 under `class C:`) — attr_set(cls, name, v), same
+            // shape as method defs. (Previously they leaked into the module
+            // namespace, so instance/class reads of the name returned null.)
+            if let (Some(cls), ap_ir::item::Target::Name(n)) = (ctx.cls_obj, t) {
+                // stash via TEMP_LOCAL_B: cls itself rides TEMP_LOCAL_A inside
+                // the class body (emit_class_def's stash) — clobbering A here
+                // would pass the VALUE as attr_set's obj operand.
+                f.instruction(&Instruction::LocalSet(TEMP_LOCAL_B));
+                f.instruction(&Instruction::LocalGet(cls));
+                push_interned_str(f, n.as_str(), ctx);
+                f.instruction(&Instruction::LocalGet(TEMP_LOCAL_B));
+                f.instruction(&Instruction::Call(fx::FN_ATTR_SET));
+            } else if let ap_ir::item::Target::Attribute(obj, name) = t {
                 f.instruction(&Instruction::LocalSet(TEMP_LOCAL_A));
                 emit_expr(f, obj, ctx);
                 push_interned_str(f, name.as_str(), ctx);
@@ -2297,14 +2324,29 @@ fn emit_raise(f: &mut Function, e: Option<&Expr>, cause: Option<&Expr>, ctx: &mu
 /// try/except/else[/finally] (S-02-30..33).
 fn emit_try(f: &mut Function, ts: &ap_ir::item::TryStmt, ctx: &mut EmitCtx) {
     if ts.finalbody.is_empty() {
-        emit_try_handlers(f, ts, ctx);
+        if ts.orelse.is_empty() {
+            emit_try_handlers(f, ts, ctx, false);
+        } else {
+            // 03.03c: else (S-02-32) runs only on the success path. Wrap the
+            // handler chain in one extra Block: the success Br and the
+            // handler-completion Br both deepen by one, so success now lands
+            // AFTER the inner block (orelse) while handlers still exit all.
+            f.instruction(&Instruction::Block(BlockType::Empty));
+            ctx.depth += 1;
+            emit_try_handlers(f, ts, ctx, true);
+            for s in &ts.orelse {
+                emit_stmt(f, s, ctx);
+            }
+            ctx.depth -= 1;
+            f.instruction(&Instruction::End);
+        }
         return;
     }
     // finally (S-02-33): normal path runs finalbody inline; the exception
     // path re-raises through the handler chain — finalbody-on-exception is
     // the catch_all_ref surface, deferred (documented; corpus slice has
     // finally only on the normal path).
-    emit_try_handlers(f, ts, ctx);
+    emit_try_handlers(f, ts, ctx, false);
     for s in &ts.finalbody {
         emit_stmt(f, s, ctx);
     }
@@ -2324,7 +2366,7 @@ fn emit_try(f: &mut Function, ts: &ap_ir::item::TryStmt, ctx: &mut EmitCtx) {
 ///     End
 ///     handler chain (payload in A); unmatched -> rethrow
 ///   end
-fn emit_try_handlers(f: &mut Function, ts: &ap_ir::item::TryStmt, ctx: &mut EmitCtx) {
+fn emit_try_handlers(f: &mut Function, ts: &ap_ir::item::TryStmt, ctx: &mut EmitCtx, extra_wrap: bool) {
     f.instruction(&Instruction::Block(BlockType::Empty)); // $out
     ctx.depth += 1;
     f.instruction(&Instruction::Block(BlockType::Result(
@@ -2358,7 +2400,8 @@ fn emit_try_handlers(f: &mut Function, ts: &ap_ir::item::TryStmt, ctx: &mut Emit
     f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
     f.instruction(&Instruction::RefIsNull);
     f.instruction(&Instruction::If(BlockType::Empty));
-    // success: exit the whole try (0 = this If, 1 = $out)
+    // success: exit the whole try (0 = this If, 1 = $out; +1 under the
+    // orelse wrap where it lands ON the orelse — $out end — instead)
     f.instruction(&Instruction::Br(1));
     f.instruction(&Instruction::End);
     // handler chain (S-02-30)
@@ -2382,7 +2425,8 @@ fn emit_try_handlers(f: &mut Function, ts: &ap_ir::item::TryStmt, ctx: &mut Emit
         for s in &h.body {
             emit_stmt(f, s, ctx);
         }
-        f.instruction(&Instruction::Br(1)); // exit try: 0=this If, 1=$out
+        // exit try: 0=this If, 1=$out, 2=orelse wrap outer (skip the orelse)
+        f.instruction(&Instruction::Br(if extra_wrap { 2 } else { 1 }));
         ctx.depth -= 1;
         f.instruction(&Instruction::End);
     }
