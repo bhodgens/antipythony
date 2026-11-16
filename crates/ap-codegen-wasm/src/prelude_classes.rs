@@ -107,6 +107,11 @@ pub fn emit_all(
             frame_line(funcs, code, g);
         issub(funcs, code);
         isinst(funcs, code);
+    exc_raise(funcs, code, g);
+    exc_match(funcs, code);
+    exc_msg(funcs, code);
+    exc_repr(funcs, code);
+    exc_ctx_set(funcs, code);
 }
 
 // ---------------------------------------------------------------------------
@@ -843,3 +848,496 @@ fn isinst(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::Co
     );
 }
 
+// ---------------------------------------------------------------------------
+// exc_raise (FN_EXC_RAISE): (exc) -> o — snapshot the CURRENT frame chain
+// into $exception.$tb (S-07-28) and `throw $tag_pyexc` (S-07-28/30).
+// Derivedness is lowering-validated (only known exception classes lower);
+// the RefCast here traps fail-loud on anything else.
+// Locals (pad (2,oref)): 3=exc($exception)
+// ---------------------------------------------------------------------------
+fn exc_raise(
+    funcs: &mut wasm_encoder::FunctionSection,
+    code: &mut wasm_encoder::CodeSection,
+    g: &FrameGlobals,
+) {
+    add(
+        funcs,
+        code,
+        FT_EXC_RAISE,
+        &[
+            (2, oref()),
+            (
+                1,
+                ValType::Ref(wasm_encoder::RefType {
+                    nullable: true,
+                    heap_type: hc(T_EXCEPTION),
+                }),
+            ),
+        ],
+        |f| {
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
+            f.instruction(&Instruction::LocalSet(3));
+            // exc.tb = current frame chain head
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::GlobalGet(g.frame_head));
+            f.instruction(&Instruction::StructSet {
+                struct_type_index: T_EXCEPTION,
+                field_index: F_EXC_TB,
+            });
+            // throw $tag_pyexc exc
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::Throw(TAG_PYEXC));
+            // type-correct unreachable fall-through
+            f.instruction(&Instruction::RefNull(hc(T_PYOBJ)));
+        },
+    );
+}
+
+// ---------------------------------------------------------------------------
+// exc_match (FN_EXC_MATCH): (exc, target) -> i32 — the S-02-30/S-03-34
+// except-target match. Targets reaching here are lowering-validated
+// (builtin exception class or a flat tuple literal of those); a tuple
+// matches any element.
+// Locals (pad (1,oref)): 3=exc 4=target 5=i
+// ---------------------------------------------------------------------------
+fn exc_match(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
+    // (exc, target) -> i32 — single-class match (S-03-31 MRO walk via
+    // FN_ISINST). Tuple except-targets are EXPANDED by the lowering into
+    // per-element handler dispatch (first-match order preserved), so the
+    // runtime only ever sees class targets. The lowering validates that
+    // every target derives from BaseException (S-03-34); the cast here
+    // traps fail-loud otherwise.
+    add(funcs, code, FT_EXC_MATCH, &[(2, oref()), (1, oref())], |f| {
+        f.instruction(&Instruction::LocalGet(0));
+        f.instruction(&Instruction::LocalGet(1));
+        f.instruction(&Instruction::RefCastNullable(hc(T_TYPE)));
+        f.instruction(&Instruction::Call(fx::FN_ISINST));
+    });
+}
+
+fn push_exc_args(f: &mut Function, exc_local: u32) {
+    f.instruction(&Instruction::LocalGet(exc_local));
+    f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
+    sget(f, T_EXCEPTION, F_EXC_ARGS);
+    f.instruction(&Instruction::RefCastNullable(hc(T_TUPLE)));
+    sget(f, T_TUPLE, F_TUPLE_ITEMS);
+}
+
+fn exc_ref() -> ValType {
+    ValType::Ref(wasm_encoder::RefType {
+        nullable: true,
+        heap_type: hc(T_EXCEPTION),
+    })
+}
+fn str_ref() -> ValType {
+    ValType::Ref(wasm_encoder::RefType {
+        nullable: true,
+        heap_type: hc(T_STR),
+    })
+}
+fn barr_ref() -> ValType {
+    ValType::Ref(wasm_encoder::RefType {
+        nullable: true,
+        heap_type: hc(T_BYTE_ARR),
+    })
+}
+fn roarr_ref() -> ValType {
+    ValType::Ref(wasm_encoder::RefType {
+        nullable: true,
+        heap_type: hc(T_OBJ_ARR_RO),
+    })
+}
+
+/// push an empty $str (field order: type, hash, kind, len, data).
+fn push_empty_str(f: &mut Function) {
+    push_null(f, T_TYPE);
+    f.instruction(&Instruction::I64Const(0));
+    f.instruction(&Instruction::I32Const(0));
+    f.instruction(&Instruction::I32Const(0));
+    f.instruction(&Instruction::I32Const(0));
+    f.instruction(&Instruction::ArrayNewDefault(T_BYTE_ARR));
+    f.instruction(&Instruction::StructNew(T_STR));
+}
+
+/// push a 1-byte $str for `b` (scratch local `tmp_arr` = $byte_arr).
+fn push_str_byte(f: &mut Function, b: u8, tmp_arr: u32) {
+    f.instruction(&Instruction::I32Const(1));
+    f.instruction(&Instruction::ArrayNewDefault(T_BYTE_ARR));
+    f.instruction(&Instruction::LocalSet(tmp_arr));
+    f.instruction(&Instruction::LocalGet(tmp_arr));
+    f.instruction(&Instruction::I32Const(0));
+    f.instruction(&Instruction::I32Const(b as i32));
+    f.instruction(&Instruction::ArraySet(T_BYTE_ARR));
+    push_null(f, T_TYPE);
+    f.instruction(&Instruction::I64Const(0));
+    f.instruction(&Instruction::I32Const(0));
+    f.instruction(&Instruction::I32Const(1));
+    f.instruction(&Instruction::LocalGet(tmp_arr));
+    f.instruction(&Instruction::StructNew(T_STR));
+}
+
+/// push the ", " $str (scratch local `tmp_arr`).
+fn push_str_comma(f: &mut Function, tmp_arr: u32) {
+    f.instruction(&Instruction::I32Const(2));
+    f.instruction(&Instruction::ArrayNewDefault(T_BYTE_ARR));
+    f.instruction(&Instruction::LocalSet(tmp_arr));
+    f.instruction(&Instruction::LocalGet(tmp_arr));
+    f.instruction(&Instruction::I32Const(0));
+    f.instruction(&Instruction::I32Const(b',' as i32));
+    f.instruction(&Instruction::ArraySet(T_BYTE_ARR));
+    f.instruction(&Instruction::LocalGet(tmp_arr));
+    f.instruction(&Instruction::I32Const(1));
+    f.instruction(&Instruction::I32Const(b' ' as i32));
+    f.instruction(&Instruction::ArraySet(T_BYTE_ARR));
+    push_null(f, T_TYPE);
+    f.instruction(&Instruction::I64Const(0));
+    f.instruction(&Instruction::I32Const(0));
+    f.instruction(&Instruction::I32Const(2));
+    f.instruction(&Instruction::LocalGet(tmp_arr));
+    f.instruction(&Instruction::StructNew(T_STR));
+}
+
+/// push the "()" 2-byte $str (scratch local `tmp_arr`).
+fn push_str_parens(f: &mut Function, tmp_arr: u32) {
+    push_str_comma_raw(f, tmp_arr, b'(', b')');
+}
+
+fn push_str_comma_raw(f: &mut Function, tmp_arr: u32, a: u8, b: u8) {
+    f.instruction(&Instruction::I32Const(2));
+    f.instruction(&Instruction::ArrayNewDefault(T_BYTE_ARR));
+    f.instruction(&Instruction::LocalSet(tmp_arr));
+    f.instruction(&Instruction::LocalGet(tmp_arr));
+    f.instruction(&Instruction::I32Const(0));
+    f.instruction(&Instruction::I32Const(a as i32));
+    f.instruction(&Instruction::ArraySet(T_BYTE_ARR));
+    f.instruction(&Instruction::LocalGet(tmp_arr));
+    f.instruction(&Instruction::I32Const(1));
+    f.instruction(&Instruction::I32Const(b as i32));
+    f.instruction(&Instruction::ArraySet(T_BYTE_ARR));
+    push_null(f, T_TYPE);
+    f.instruction(&Instruction::I64Const(0));
+    f.instruction(&Instruction::I32Const(0));
+    f.instruction(&Instruction::I32Const(2));
+    f.instruction(&Instruction::LocalGet(tmp_arr));
+    f.instruction(&Instruction::StructNew(T_STR));
+}
+
+/// INLINE into the caller: acc(local `acc`) += repr(value on stack).
+/// Repr per arg (v1 slice: str/int/bool/None): str -> 'quoted'; else py_str.
+/// Consumes locals: `tmp_str`, `tmp_arr`.
+/// Caller stack contract: [acc, value] -> [acc].
+fn inline_acc_repr_push(f: &mut Function, acc: u32, tmp_str: u32, tmp_arr: u32) {
+    // value is on the stack above acc; stash value into tmp_str? value may
+    // be non-str. Stash in a dedicated slot the caller provides: `tmp_val`.
+    unreachable!("superseded: use inline_join_arg");
+}
+
+/// INLINE into the caller: append "(" + join(repr(args), ", ") + ")" to
+/// acc (local `acc`), reading items RO-array (local `items`, len `n`).
+/// Locals consumed: i=`idx`, tmp_str, tmp_arr, tmp_val.
+fn inline_tuple_join(
+    f: &mut Function,
+    items: u32,
+    n: u32,
+    acc: u32,
+    idx: u32,
+    tmp_str: u32,
+    tmp_arr: u32,
+    tmp_val: u32,
+) {
+    // acc = "("
+    f.instruction(&Instruction::LocalGet(acc));
+    push_str_byte(f, b'(', tmp_arr);
+    f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+    f.instruction(&Instruction::LocalSet(acc));
+    f.instruction(&Instruction::I32Const(0));
+    f.instruction(&Instruction::LocalSet(idx));
+    f.instruction(&Instruction::Block(BlockType::Empty));
+    f.instruction(&Instruction::Loop(BlockType::Empty));
+    f.instruction(&Instruction::LocalGet(idx));
+    f.instruction(&Instruction::LocalGet(n));
+    f.instruction(&Instruction::I32GeU);
+    f.instruction(&Instruction::BrIf(1));
+    // sep (i>0): acc += ", "
+    f.instruction(&Instruction::LocalGet(idx));
+    f.instruction(&Instruction::I32Eqz);
+    f.instruction(&Instruction::If(BlockType::Empty));
+    f.instruction(&Instruction::LocalGet(acc));
+    push_str_comma(f, tmp_arr);
+    f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+    f.instruction(&Instruction::LocalSet(acc));
+    f.instruction(&Instruction::End);
+    // acc += repr(items[idx])
+    f.instruction(&Instruction::LocalGet(items));
+    f.instruction(&Instruction::LocalGet(idx));
+    f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
+    f.instruction(&Instruction::LocalSet(tmp_val));
+    inline_repr_value(f, tmp_val, tmp_str, tmp_arr);
+    f.instruction(&Instruction::LocalGet(acc));
+    f.instruction(&Instruction::LocalGet(tmp_str));
+    f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+    f.instruction(&Instruction::LocalSet(acc));
+    f.instruction(&Instruction::LocalGet(idx));
+    f.instruction(&Instruction::I32Const(1));
+    f.instruction(&Instruction::I32Add);
+    f.instruction(&Instruction::LocalSet(idx));
+    f.instruction(&Instruction::Br(0));
+    f.instruction(&Instruction::End);
+    f.instruction(&Instruction::End);
+    // acc += ")"
+    f.instruction(&Instruction::LocalGet(acc));
+    push_str_byte(f, b')', tmp_arr);
+    f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+    f.instruction(&Instruction::LocalSet(acc));
+}
+
+/// INLINE: tmp_str(local) = repr(value in local `val`).
+fn inline_repr_value(f: &mut Function, val: u32, tmp_str: u32, tmp_arr: u32) {
+    // str? -> "'" + py_str(val) + "'"
+    f.instruction(&Instruction::LocalGet(val));
+    f.instruction(&Instruction::RefTestNullable(hc(T_STR)));
+    f.instruction(&Instruction::If(BlockType::Empty));
+    f.instruction(&Instruction::LocalGet(val));
+    f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
+    f.instruction(&Instruction::Call(fx::FN_PY_STR));
+    f.instruction(&Instruction::LocalSet(tmp_str));
+    // tmp_str = "'" + tmp_str
+    push_str_byte(f, b'\'', tmp_arr);
+    f.instruction(&Instruction::LocalGet(tmp_str));
+    f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+    f.instruction(&Instruction::LocalSet(tmp_str));
+    // tmp_str = tmp_str + "'"
+    f.instruction(&Instruction::LocalGet(tmp_str));
+    push_str_byte(f, b'\'', tmp_arr);
+    f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+    f.instruction(&Instruction::LocalSet(tmp_str));
+    f.instruction(&Instruction::Else);
+    f.instruction(&Instruction::LocalGet(val));
+    f.instruction(&Instruction::Call(fx::FN_PY_STR));
+    f.instruction(&Instruction::LocalSet(tmp_str));
+    f.instruction(&Instruction::End);
+}
+
+// ---------------------------------------------------------------------------
+// exc_msg (FN_EXC_MSG): (exc) -> str — S-02-29: 1 arg -> str(args[0]);
+// 0 args -> ""; 2+ -> "(" + join(repr(args), ", ") + ")".
+// Locals (pad (2,oref)): 3=exc 4=items 5=n 6=acc 7=i 8=tmp_str 9=tmp_val
+// 10=tmp_arr
+// ---------------------------------------------------------------------------
+fn exc_msg(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
+    add(
+        funcs,
+        code,
+        FT_EXC_MSG,
+        &[
+            (2, oref()),       // 1,2 dummies
+            (1, exc_ref()),    // 3 exc ($exception)
+            (1, roarr_ref()),  // 4 items
+            (1, ValType::I32), // 5 n
+            (1, str_ref()),    // 6 acc
+            (1, str_ref()),    // 7 tmp_str
+            (1, oref()),       // 8 tmp_val
+            (1, ValType::I32), // 9 i
+            (1, barr_ref()),   // 10 tmp_arr
+        ],
+        |f| {
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
+            f.instruction(&Instruction::LocalSet(3));
+            // items = exc.args.items
+            f.instruction(&Instruction::LocalGet(3));
+            sget(f, T_EXCEPTION, F_EXC_ARGS);
+            f.instruction(&Instruction::RefCastNullable(hc(T_TUPLE)));
+            sget(f, T_TUPLE, F_TUPLE_ITEMS);
+            f.instruction(&Instruction::LocalSet(4));
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::ArrayLen);
+            f.instruction(&Instruction::LocalSet(5));
+            // 1 arg: str(args[0]) — via the shared repr (str keeps quotes?
+            // NO: str(e) is str(args[0]) RAW — py_str directly)
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
+            f.instruction(&Instruction::Call(fx::FN_PY_STR));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // 0 args: ""
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::I32Eqz);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            push_empty_str(f);
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // 2+: "(" + join(repr(args), ", ") + ")"
+            push_empty_str(f);
+            f.instruction(&Instruction::LocalSet(6));
+            inline_tuple_join_raw(f, 4, 5, 6, 9, 7, 10, 8);
+            f.instruction(&Instruction::LocalGet(6));
+        },
+    );
+}
+
+/// like inline_tuple_join but args render via py_str RAW (no quoting) —
+/// the S-02-29 tuple form `(1, 2)` prints values unquoted unless str.
+fn inline_tuple_join_raw(
+    f: &mut Function,
+    items: u32,
+    n: u32,
+    acc: u32,
+    idx: u32,
+    tmp_str: u32,
+    tmp_arr: u32,
+    tmp_val: u32,
+) {
+    f.instruction(&Instruction::LocalGet(acc));
+    push_str_byte(f, b'(', tmp_arr);
+    f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+    f.instruction(&Instruction::LocalSet(acc));
+    f.instruction(&Instruction::I32Const(0));
+    f.instruction(&Instruction::LocalSet(idx));
+    f.instruction(&Instruction::Block(BlockType::Empty));
+    f.instruction(&Instruction::Loop(BlockType::Empty));
+    f.instruction(&Instruction::LocalGet(idx));
+    f.instruction(&Instruction::LocalGet(n));
+    f.instruction(&Instruction::I32GeU);
+    f.instruction(&Instruction::BrIf(1));
+    f.instruction(&Instruction::LocalGet(idx));
+    f.instruction(&Instruction::I32Eqz);
+    f.instruction(&Instruction::If(BlockType::Empty));
+    f.instruction(&Instruction::LocalGet(acc));
+    push_str_comma(f, tmp_arr);
+    f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+    f.instruction(&Instruction::LocalSet(acc));
+    f.instruction(&Instruction::End);
+    f.instruction(&Instruction::LocalGet(items));
+    f.instruction(&Instruction::LocalGet(idx));
+    f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
+    f.instruction(&Instruction::LocalSet(tmp_val));
+    // raw: str args render WITHOUT quotes in tuple form? CPython renders
+    // str args with quotes inside tuples: ('a', 2). Use full repr.
+    inline_repr_value(f, tmp_val, tmp_str, tmp_arr);
+    f.instruction(&Instruction::LocalGet(acc));
+    f.instruction(&Instruction::LocalGet(tmp_str));
+    f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+    f.instruction(&Instruction::LocalSet(acc));
+    f.instruction(&Instruction::LocalGet(idx));
+    f.instruction(&Instruction::I32Const(1));
+    f.instruction(&Instruction::I32Add);
+    f.instruction(&Instruction::LocalSet(idx));
+    f.instruction(&Instruction::Br(0));
+    f.instruction(&Instruction::End);
+    f.instruction(&Instruction::End);
+    f.instruction(&Instruction::LocalGet(acc));
+    push_str_byte(f, b')', tmp_arr);
+    f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+    f.instruction(&Instruction::LocalSet(acc));
+}
+
+// ---------------------------------------------------------------------------
+// exc_repr (FN_EXC_REPR): (exc) -> str — repr(e) == ClassName(<args repr>):
+// 0 args -> "Name()"; else "Name(" + join(repr, ", ") + ")" (S-02-29).
+// Locals (pad (3,oref)): 4=exc 5=name 6=items 7=n 8=acc 9=i 10=tmp_str
+// 11=tmp_val 12=tmp_arr
+// ---------------------------------------------------------------------------
+fn exc_repr(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
+    add(
+        funcs,
+        code,
+        FT_EXC_REPR,
+        &[
+            (2, oref()),       // 1,2 dummies
+            (1, exc_ref()),    // 3 exc ($exception)
+            (3, str_ref()),    // 4 name, 5 acc, 6 tmp_str
+            (2, ValType::I32), // 7 n, 8 i
+            (1, oref()),       // 9 tmp_val
+            (1, barr_ref()),   // 10 tmp_arr
+            (1, roarr_ref()),  // 11 items
+        ],
+        |f| {
+            // name = type_name(exc)
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::Call(fx::FN_TYPE_NAME));
+            f.instruction(&Instruction::LocalSet(4));
+            // items + n
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
+            f.instruction(&Instruction::LocalSet(3));
+            f.instruction(&Instruction::LocalGet(3));
+            sget(f, T_EXCEPTION, F_EXC_ARGS);
+            f.instruction(&Instruction::RefCastNullable(hc(T_TUPLE)));
+            sget(f, T_TUPLE, F_TUPLE_ITEMS);
+            f.instruction(&Instruction::LocalSet(11));
+            f.instruction(&Instruction::LocalGet(11));
+            f.instruction(&Instruction::ArrayLen);
+            f.instruction(&Instruction::LocalSet(7));
+            // 0 args: name + "()"
+            f.instruction(&Instruction::LocalGet(7));
+            f.instruction(&Instruction::I32Eqz);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(4));
+            push_str_parens(f, 10);
+            f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // name + "(" + join(repr, ", ") + ")"
+            f.instruction(&Instruction::LocalGet(4));
+            push_str_byte(f, b'(', 10);
+            f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+            f.instruction(&Instruction::LocalSet(5));
+            inline_tuple_join(f, 11, 7, 5, 8, 6, 10, 9);
+            f.instruction(&Instruction::LocalGet(5));
+        },
+    );
+}
+
+// ---------------------------------------------------------------------------
+// exc_ctx_set (FN_EXC_CTX_SET): (new, ctx, cause) -> new — `raise X from Y`
+// sets cause + suppress=1 (S-02-34); an in-flight exception sets context.
+// Locals (pad (3,oref)): 3,4,5 dummies (params are 0,1,2).
+// ---------------------------------------------------------------------------
+fn exc_ctx_set(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
+    add(funcs, code, FT_EXC_CTX_SET, &[(3, oref())], |f| {
+        // NOTE: struct.set's OBJ operand must be EXACTLY (ref null $exception);
+        // a local routed through a (ref null $pyobj) slot loses the refinement
+        // (locals are statically their declared type), so the cast result is
+        // kept ON THE STACK under the value — never via local 3.
+        // cause (param 2) null?
+        f.instruction(&Instruction::LocalGet(2));
+        f.instruction(&Instruction::RefIsNull);
+        f.instruction(&Instruction::If(BlockType::Empty));
+        // context = ctx: [obj=param0 cast, value=param1 cast] struct.set
+        f.instruction(&Instruction::LocalGet(0));
+        f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
+        f.instruction(&Instruction::LocalGet(1));
+        f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
+        f.instruction(&Instruction::StructSet {
+            struct_type_index: T_EXCEPTION,
+            field_index: F_EXC_CONTEXT,
+        });
+        f.instruction(&Instruction::LocalGet(0));
+        f.instruction(&Instruction::Return);
+        f.instruction(&Instruction::End);
+        // cause + suppress_context = 1
+        f.instruction(&Instruction::LocalGet(0));
+        f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
+        f.instruction(&Instruction::LocalGet(2));
+        f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
+        f.instruction(&Instruction::StructSet {
+            struct_type_index: T_EXCEPTION,
+            field_index: F_EXC_CAUSE,
+        });
+        f.instruction(&Instruction::LocalGet(0));
+        f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
+        f.instruction(&Instruction::I32Const(1));
+        f.instruction(&Instruction::StructSet {
+            struct_type_index: T_EXCEPTION,
+            field_index: F_EXC_SUPPRESS,
+        });
+        f.instruction(&Instruction::LocalGet(0));
+    });
+}

@@ -1,7 +1,7 @@
 
 #[test]
 fn print_fns() {
-    let bytes = std::fs::read("/tmp/min.wasm").unwrap();
+    let bytes = std::fs::read("/tmp/min033.wasm").unwrap();
     let out = wasmprinter::print_bytes(&bytes).unwrap();
     for (i, line_block) in out.split("(func ").enumerate() {
         if i >= 1 {

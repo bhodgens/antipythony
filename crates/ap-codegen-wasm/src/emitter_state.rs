@@ -63,10 +63,16 @@ pub const FN_FRAME_POP: u32 = 43; // () -> ()
 pub const FN_FRAME_LINE: u32 = 44; // (i32 line) -> ()
 pub const FN_ISSUB: u32 = 45; // (ty, ty) -> i32
 pub const FN_ISINST: u32 = 46; // (o, ty) -> i32
+// exceptions slice (03.03 continuation of the append):
+pub const FN_EXC_RAISE: u32 = 47; // (o) -> o  (validate + tb + throw)
+pub const FN_EXC_MATCH: u32 = 48; // (o exc, o target) -> i32
+pub const FN_EXC_MSG: u32 = 49; // (o) -> str  (S-02-29 str(e))
+pub const FN_EXC_REPR: u32 = 50; // (o) -> str  (repr(e))
+pub const FN_EXC_CTX_SET: u32 = 51; // (o new, o ctx, o cause) -> o
 /// First wasm function index of the EMITTED user functions (Item::FnDef /
 /// Stmt::LocalDef), which follow the prelude densely. `_start` is
 /// computed at emit time as FN_FIRST_USER + n_user_fns.
-pub const FN_FIRST_USER: u32 = 47;
+pub const FN_FIRST_USER: u32 = 52;
 
 /// rt_init stays at index 2 (03.02a layout: 0/1 imports, 2 rt_init).
 pub const FN_RT_INIT: u32 = 2;

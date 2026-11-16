@@ -645,13 +645,14 @@ pub fn build_type_section_with_prefix(prefix: usize) -> wasm_encoder::TypeSectio
         array_ty(field_i32(true)),
         // 21 $set sub $pyobj — same probing fields, no values (S-07-16)
         sub(dict_fields()),
-        // 22 $exception sub $pyobj
+        // 22 $exception sub $pyobj (context/cause/suppress MUTABLE: the
+        // raise-site chaining writes them, leaf 03.03 / S-02-34)
         sub(vec![
             fr(T_TUPLE, false),     // args
             fr(T_TB_FRAME, true),   // tb
-            fr(T_EXCEPTION, false), // context
-            fr(T_EXCEPTION, false), // cause
-            field_i32(false),       // suppress_context
+            fr(T_EXCEPTION, true),  // context
+            fr(T_EXCEPTION, true),  // cause
+            field_i32(true),        // suppress_context
         ]),
         // 23 $tb_frame — bare struct (lineno MUTABLE: Stmt::Line pokes the
         // current frame's line, leaf 03.03; filename filled at _start)
