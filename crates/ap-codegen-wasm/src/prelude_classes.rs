@@ -1151,8 +1151,9 @@ fn inline_tuple_join(
     f.instruction(&Instruction::LocalGet(n));
     f.instruction(&Instruction::I32GeU);
     f.instruction(&Instruction::BrIf(1));
-    // sep (i>0): acc += ", "
+    // sep (i>0): acc += ", " (Eqz+Eqz = i != 0)
     f.instruction(&Instruction::LocalGet(idx));
+    f.instruction(&Instruction::I32Eqz);
     f.instruction(&Instruction::I32Eqz);
     f.instruction(&Instruction::If(BlockType::Empty));
     f.instruction(&Instruction::LocalGet(acc));
@@ -1298,7 +1299,9 @@ fn inline_tuple_join_raw(
     f.instruction(&Instruction::LocalGet(n));
     f.instruction(&Instruction::I32GeU);
     f.instruction(&Instruction::BrIf(1));
+    // sep (i>0): acc += ", " (Eqz+Eqz = i != 0)
     f.instruction(&Instruction::LocalGet(idx));
+    f.instruction(&Instruction::I32Eqz);
     f.instruction(&Instruction::I32Eqz);
     f.instruction(&Instruction::If(BlockType::Empty));
     f.instruction(&Instruction::LocalGet(acc));
