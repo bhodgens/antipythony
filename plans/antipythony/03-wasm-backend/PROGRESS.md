@@ -102,3 +102,67 @@ DEFERRED (03.03 remainder, in order):
 5. __init__ arity >3 (static cascade bound) -> needs a dynamic RO-array
    constructor (wasm GC has none; options: slice switch extension or an
    aprt host helper).
+
+## 2026-11-16: leaf 03.04 session (generators/comprehensions/match — INFRASTRUCTURE LANDED, corpus gates NOT green)
+
+STARTING STATE: HEAD 13344585 WIP snapshot (prelude_gen.rs stub + types.rs
+$generator mutability). FIRST FINDING (commit 09e5f89b): the parked
+/tmp/lower_wip.diff rescued in d6176427 is STRUCTURALLY BROKEN — 3-way
+apply produced an unbalanced EH-wrap Block/TryTable shape + a brace
+mismerge that moved code.function inside a dropped block (fnsec/code
+length mismatch, "operators remaining" on every module). REVERTED to the
+HEAD gate-green lower.rs; the diff file stays in git history (d6176427)
+for reference only — do NOT re-apply it. Also unblocked the host: disk
+was 100% full (errno=28 link failures); cargo clean on merged leaf
+worktrees (leaf-0206/0209a/0209b/0302b/0205e) reclaimed 39GB.
+
+CORPUS COMMITTED (5303a051): generators_wasm GE001-005 + match_wasm
+MA001 with CPython 3.14.7 pins (stdout/stderr/exit triples; pins recorded
+by /opt/homebrew/bin/python3.14 per the corpus rules). Corpus only grows.
+
+DRIVER PRELUDE LANDED (d0f79315, ALL VALIDATING, CF 18/18 intact):
+emit_gen_prelude registers 7 drivers at FN 62..68 (gen_send, iter_of,
+iter_next, iter_contains, stop_iter, gen_throw, gen_close);
+FN_FIRST_USER 62->69; FTs 99..109 (GEN_STEP/GEN_NEW/GEN_SEND/GEN_THROW/
+GEN_CLOSE/ITER_OF/ITER_NEXT/LIST_FROM_ITER/TUPLE_FROM_ITER/ITER_CONTAINS/
+STOP_ITER) declared in append_class_exc_fts. Container iterators reuse
+$generator (fn=null, state=len, locals=snapshot, value=$int cursor).
+
+WasmGC validator lessons (each cost a bisect cycle — recording ALL):
+1. add() locals pairs START at the first PARAM-FREE slot: (o,o)->o fns
+   start locals at 2, (o)->o and (o)->() at 1. Mismatches surface as
+   "unknown local N: out of bounds" or silent wrong-type LocalSets.
+2. If(Empty) arms must leave []: calls returning values need Drop even
+   when they throw at runtime (the validator checks the fall-through).
+3. Array refs are NOT $pyobj: array-stash locals need dedicated
+   (ref null $obj_arr[_ro]) declarations — oref cannot hold them.
+4. Refinements are lost through locals (35f2ace0 restated): EVERY
+   struct.get/struct.set on a stashed oref needs cast-on-stack
+   (lget_gen helper added for $generator).
+5. call_indirect needs the i32 table idx pushed LAST (on top of params).
+6. $exn-field writes need the value cast to (ref null $exception) on the
+   stack — param oref is NOT the field type.
+7. wasmparser renders EVERY concrete heap type as "(ref null $type)" in
+   error text — identical strings, different indices (extends the
+   0302b note); error text alone cannot disambiguate, dump operands.
+8. stop_iter builds args=[value] straight-line; the empty-flag input is
+   kept in the FT for 03.05 but ignored (the If(Result(RO)) empty-vs-
+   value shape failed validation unlocatably within the timebox).
+
+HONEST STATE vs the leaf exit gate: NOT MET. What is NOT done:
+a. The LOWERING arms (generator defs -> FT_GEN_STEP state machines;
+   yield/yield-from emission; comprehensions; match; For-over-iterable)
+   are NOT started — scan still rejects them fail-closed. The prelude
+   drivers have no callers yet.
+b. iter_of body is STUBBED passthrough (commit d0f79315) — the full body
+   (snapshot copy + cursor box + $generator build) was drafted but its
+   local layout must be RE-DERIVED under lesson 1 before landing.
+c. GE001-GE004 + MA001 gates: NOT run through ap-host (they will fail
+   Unsupported at scan until (a) lands). GE005 likewise.
+d. The 03.03 EH boundary (top-level try_table wrap) remains unwired —
+   gen.throw/close paths need it for byte-exact uncaught rendering.
+NEXT (03.04b): re-land iter_of per lesson 1; then lowering arms in
+order: yield state-machine -> for-over-generator -> comprehensions ->
+match (control-flow only, no EH) -> throw/close wiring with 03.03b's
+EH wrap. Each with its corpus gate before the next.
+
