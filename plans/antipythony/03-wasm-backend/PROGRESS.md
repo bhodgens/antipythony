@@ -57,3 +57,48 @@ segment (index 1) for array.new_data. DEVIATION for 03.05 review:
 aprt.abort_msg declared param is anyref instead of spec-07-41 (ref $str)
 — wasmtime host-func matching cannot express the self-referential
 concrete type; call sites still pass $str values.
+
+## 2026-11-15: leaf 03.03 session (classes/EH slice — PARTIAL, honest state)
+
+WEDGE ROOT FIXED (commit 35f2ace0): the prior agent's 45-min silent wedge
++ "fn[51] failed to compile across ALL modules" was exc_ctx_set routing
+its struct.set OBJ through a (ref null $pyobj) local — locals are
+statically their DECLARED type, so the ref.cast refinement was lost.
+Fix: cast kept on the operand stack. Engine fact locked: a refinement
+routed through a local slot is LOST; struct.set obj needs the cast result
+stack-resident.
+
+CORE PRELUDE LANDED (5d26110e): FN_EXC_NEW..FN_TB_RENDER (52..60):
+mro_dict_get (MRO dict walk), exc_new ($excinst w/ args tuple), cls_new
+(single-base C3), instance_new/attr_get/attr_set (S-03-9/10 v1), cls_call
+(BaseException-derived -> exc instances w/ e.args; plain -> __init__
+static-arity 0..=3 cascade), call_of, tb_render (CPython-format traceback
+to fd 2, single-frame v1). types.rs: $excinst(35) sub $exception
+($exception made non-final); FTs 93..97; FT ids bumped +1 for the rec
+growth. rt_init builds the EXC_TREE (24 classes) with real MRO chains.
+
+COMMITTED STABLE POINT (this commit): gate-green state with proc_exit
+import (fn indices +1: rt_init=3, prelude 4..61, _start=62), exc globals
+section, combined name blob, FRAME_LINE null-head guard. The lowering
+arms (Item::ClassDef / Stmt::Try / Stmt::Raise / Expr::Attribute /
+Line->FRAME_LINE pokes / user-fn frame push-pop) were implemented and
+debugged to validating-wasm EXCEPT the _start top-level try_table wrap,
+which hits a residual wasmparser 'operators remaining' rejection — that
+work is parked in /tmp/lower_wip.diff (40KB) and NOT in this commit;
+without the wrap the modules stay gate-green and fail-closed on
+try/raise (Unsupported), never miscompiling.
+
+DEFERRED (03.03 remainder, in order):
+1. Re-land the lowering arms from the parked diff; crack the try_table
+   wrap validation (likely a label/type subtlety in the Catch::One shape
+   vs the $catch block result).
+2. EH-wrap ON by default + exceptions_wasm/classes_wasm corpus families
+   with CPython pins (controlflow_wasm pattern) + ap-conform --filter
+   slices byte-identical.
+3. Descriptor split (data/non-data), property/staticmethod/classmethod
+   dispatch, multi-base C3 merge, metaclass hooks (S-03-1/2).
+4. Multi-frame traceback + source echo + 3.11+ caret anchors (needs
+   per-frame source spans); tb_render is single-frame v1.
+5. __init__ arity >3 (static cascade bound) -> needs a dynamic RO-array
+   constructor (wasm GC has none; options: slice switch extension or an
+   aprt host helper).

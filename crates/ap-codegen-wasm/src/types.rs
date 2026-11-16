@@ -280,7 +280,9 @@ pub fn builtin_type_global(name: &str) -> Option<u32> {
         .map(|i| G_TYPE_BASE + i as u32)
 }
 
-pub const GLOBAL_COUNT: u32 = G_TYPE_BASE + TYPE_ORDER.len() as u32;
+/// Total builtin $type globals: the TYPE_ORDER list + the exception tree
+/// (leaf 03.03 — rt_init builds both; module namespace starts after).
+pub const GLOBAL_COUNT: u32 = G_TYPE_BASE + TYPE_ORDER.len() as u32 + EXC_TREE.len() as u32;
 
 // ---------------------------------------------------------------------------
 // Leaf 03.03: the builtin EXCEPTION class tree (S-03-32). rt_init builds
@@ -999,6 +1001,7 @@ pub const FT_CLS_NEW1: u32 = 94; // (str, ty) -> ty     (name, base|null)
 pub const FT_INSTANCE_NEW: u32 = 95; // (ty) -> o        $instance factory
 pub const FT_MRO_DICT_GET: u32 = 96; // (ty, str) -> o   mro dict walk
 pub const FT_TB_RENDER: u32 = 97; // () -> i32           stderr render, rc 1
+pub const FT_PROC_EXIT: u32 = 98; // (i32) -> ()         wasi proc_exit
 
 pub fn append_class_exc_fts(types: &mut wasm_encoder::TypeSection) {
     let o = || pyobj_ref();
@@ -1082,6 +1085,8 @@ pub fn append_class_exc_fts(types: &mut wasm_encoder::TypeSection) {
     // 97 FT_TB_RENDER: () -> i32 — render the active exception's traceback to
     //    fd 2 in CPython format; returns the process exit code (1).
     types.ty().function([], [i32v()]);
+    // 98 FT_PROC_EXIT: (i32) -> () — wasi proc_exit import (rc 1 boundary)
+    types.ty().function([i32v()], []);
 }
 
 /// The `$tag_pyexc` wasm tag index (declared once, payload FT_TAG).

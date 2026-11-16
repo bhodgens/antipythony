@@ -670,6 +670,7 @@ pub fn lower_module(module: &IrModule) -> Result<Vec<u8>, CodegenError> {
     // ---- data-segment image: [name blob][module literals][prelude] ----
     let name_blob: Vec<u8> = TYPE_ORDER
         .iter()
+        .chain(EXC_TREE.iter().map(|(n, _)| n))
         .flat_map(|n| n.as_bytes())
         .copied()
         .collect();
@@ -691,6 +692,13 @@ pub fn lower_module(module: &IrModule) -> Result<Vec<u8>, CodegenError> {
         "aprt",
         "abort_msg",
         wasm_encoder::EntityType::Function(FT_ABORT_MSG),
+    );
+    // 03.03: proc_exit import (index 2 — the fn-index consts in
+    // emitter_state.rs assume exactly these 3 imports)
+    imports.import(
+        "wasi_snapshot_preview1",
+        "proc_exit",
+        wasm_encoder::EntityType::Function(FT_PROC_EXIT),
     );
 
     // ---- function section: rt_init(2), prelude, user fns, _start ----
@@ -717,6 +725,7 @@ pub fn lower_module(module: &IrModule) -> Result<Vec<u8>, CodegenError> {
         cur_line: G_MOD_BASE + scan.module_names.len() as u32 + 2,
         source_file: G_MOD_BASE + scan.module_names.len() as u32 + 3,
         active_exc: G_MOD_BASE + scan.module_names.len() as u32 + 4,
+        pending_exc: G_MOD_BASE + scan.module_names.len() as u32 + 5,
     };
     crate::prelude_classes::emit_all(&mut funcs, &mut code, &mut tab, &g);
 
@@ -787,7 +796,9 @@ pub fn lower_module(module: &IrModule) -> Result<Vec<u8>, CodegenError> {
         },
         &ConstExpr::extended([Instruction::I32Const(0)]),
     ); // rt_done
-    for _ in 0..TYPE_ORDER.len() {
+    // builtin types + the exception tree (leaf 03.03: rt_init builds the
+    // EXC_TREE $type objects into these slots)
+    for _ in 0..TYPE_ORDER.len() + EXC_TREE.len() {
         add_global(
             &mut globals,
             ValType::Ref(RefType {
@@ -864,6 +875,16 @@ pub fn lower_module(module: &IrModule) -> Result<Vec<u8>, CodegenError> {
             T_PYOBJ,
         ))]),
     ); // G_ACTIVE_EXC
+    globals.global(
+        GlobalType {
+            val_type: pyobj_ref(),
+            mutable: true,
+            shared: false,
+        },
+        &ConstExpr::extended([Instruction::RefNull(wasm_encoder::HeapType::Concrete(
+            T_PYOBJ,
+        ))]),
+    ); // G_PENDING_EXC (module-boundary escape hatch for tb_render)
 
     let blob = tab.bytes.clone();
 
@@ -1067,7 +1088,7 @@ fn mod_global(name: &str, module_names: &[String]) -> u32 {
 fn emit_rt_init_ordered(f: &mut Function) {
     let mut str_off = 0u32;
     let mut name_offsets: Vec<u32> = Vec::new();
-    for name in TYPE_ORDER.iter() {
+    for name in TYPE_ORDER.iter().chain(EXC_TREE.iter().map(|(n, _)| n)) {
         name_offsets.push(str_off);
         str_off += name.len() as u32;
     }
@@ -1510,7 +1531,13 @@ fn push_interned_str(f: &mut Function, s: &str, ctx: &EmitCtx) {
         .iter()
         .position(|b| b.as_slice() == s.as_bytes())
         .expect("scan interned all strings");
-    let mut off = TYPE_ORDER.iter().map(|n| n.len() as u32).sum::<u32>();
+    // passive-segment base = the combined name blob (TYPE_ORDER + the
+    // EXC_TREE names, leaf 03.03)
+    let mut off = TYPE_ORDER
+        .iter()
+        .chain(EXC_TREE.iter().map(|(n, _)| n))
+        .map(|n| n.len() as u32)
+        .sum::<u32>();
     for b in ctx.strs.iter().take(idx) {
         off += b.len() as u32;
     }

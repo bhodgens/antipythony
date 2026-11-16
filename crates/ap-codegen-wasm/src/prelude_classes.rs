@@ -699,8 +699,19 @@ fn frame_push(
         |f| {
             f.instruction(&Instruction::LocalGet(0));
             f.instruction(&Instruction::LocalSet(3));
+            // old head; NULL = empty stack (the RefCastNullable+sget would
+            // trap on null — guard with is_null)
             f.instruction(&Instruction::GlobalGet(g.frame_head));
+            f.instruction(&Instruction::RefIsNull);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::RefNull(hc(T_TB_FRAME)));
             f.instruction(&Instruction::LocalSet(5));
+            f.instruction(&Instruction::Else);
+            f.instruction(&Instruction::GlobalGet(g.frame_head));
+            f.instruction(&Instruction::RefCastNullable(hc(T_TB_FRAME)));
+            sget(f, T_TB_FRAME, F_TB_NEXT);
+            f.instruction(&Instruction::LocalSet(5));
+            f.instruction(&Instruction::End);
             // frame = $tb_frame { next: old, filename: null (lowered fill),
             // funcname: name, lineno: 0, col: 0, end_lineno: 0 }
             f.instruction(&Instruction::LocalGet(5));
@@ -745,10 +756,15 @@ fn frame_pop(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder:
 fn frame_line(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection, g: &FrameGlobals) {
     add(funcs, code, FT_FRAME_LINE, &[
             (2, oref()),(1, ValType::I32)], |f| {
-        // G_CUR_LINE = line (frames read it at push; poke the head too for
-        // throws from the current frame)
+        // G_CUR_LINE = line (frames read it at push; poke the head too
+        // for throws from the current frame). Head NULL = no frame pushed
+        // (module body with the EH wrap gated off) — the poke is a no-op.
         f.instruction(&Instruction::LocalGet(0));
         f.instruction(&Instruction::GlobalSet(g.cur_line));
+        f.instruction(&Instruction::GlobalGet(g.frame_head));
+        f.instruction(&Instruction::RefIsNull);
+        f.instruction(&Instruction::If(BlockType::Empty));
+        f.instruction(&Instruction::Else);
         f.instruction(&Instruction::GlobalGet(g.frame_head));
         f.instruction(&Instruction::RefCastNullable(hc(T_TB_FRAME)));
         f.instruction(&Instruction::LocalGet(0));
@@ -756,6 +772,7 @@ fn frame_line(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder
             struct_type_index: T_TB_FRAME,
             field_index: F_TB_LINENO,
         });
+        f.instruction(&Instruction::End);
     });
 }
 
