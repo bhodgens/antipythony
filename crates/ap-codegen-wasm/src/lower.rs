@@ -561,10 +561,6 @@ fn collect_expr(
 fn stmt_unsupported(s: &Stmt) -> &'static str {
     match s {
         Stmt::For(..) => "Stmt::For (leaf 03.04: iterators)",
-        Stmt::Try(ts) => {
-            let _ = ts;
-            "Stmt::Try surface beyond the slice (03.05)"
-        }
         Stmt::Raise(..) => "Stmt::Raise form beyond the slice (post-03.03)",
         Stmt::Match(..) => "Stmt::Match (leaf 03.04)",
         Stmt::With(..) => "Stmt::With (03.03)",
@@ -3153,7 +3149,9 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_node_is_reported_not_miscompiled() {
+    fn try_lowering_landed_03_03b() {
+        // 03.03b landed emit_try — bare try/except/pass now lowers (no
+        // Unsupported). The module must build AND validate.
         let b = Builder::new();
         let mut module = Module::new();
         module.items.push(Item::Stmt(b.try_(
@@ -3162,8 +3160,10 @@ mod tests {
             vec![],
             vec![],
         )));
-        let err = lower_module(&module).expect_err("Try must not silently lower");
-        assert!(matches!(err, CodegenError::Unsupported(_)));
+        let bytes = lower_module(&module).expect("Try lowers since 03.03b");
+        wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::default())
+            .validate_all(&bytes)
+            .expect("emitted module must validate");
     }
 
     #[test]
