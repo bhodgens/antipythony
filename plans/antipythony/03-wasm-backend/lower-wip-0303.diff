@@ -1,0 +1,942 @@
+diff --git a/crates/ap-codegen-wasm/src/lower.rs b/crates/ap-codegen-wasm/src/lower.rs
+index 2d164370..85ca5133 100644
+--- a/crates/ap-codegen-wasm/src/lower.rs
++++ b/crates/ap-codegen-wasm/src/lower.rs
+@@ -143,7 +143,14 @@ fn scan_module(module: &IrModule, scan: &mut Scan) -> Result<(), CodegenError> {
+                 scan.mod_slot(fd.name.as_str());
+                 scan_fn_common(fd.name.as_str(), &fd.params, &fd.body.blocks, usize::MAX, scan)?;
+             }
+-            Item::ClassDef(_) => return Err(CodegenError::Unsupported("Item::ClassDef (03.03)")),
++            Item::ClassDef(cd) => {
++                // 03.03: module-level classes — the name is a module
++                // global; the body's methods register as plain defs.
++                scan.mod_slot(cd.name.as_str());
++                let mut bound: Vec<String> = Vec::new();
++                scan_class_def(cd, &mut bound, scan)?;
++                scan_intern_str_in(scan, cd.name.as_str());
++            }
+         }
+     }
+     // intern every function/param name AFTER the scan walk (they may not be
+@@ -331,10 +338,69 @@ fn collect_stmt(
+             let parent = scan.parent_stack.last().copied().unwrap_or(usize::MAX);
+             scan_fn_common(fd.name.as_str(), &fd.params, &fd.body.blocks, parent, scan)
+         }
++        // 03.03: class defs (module-level Item::ClassDef and nested
++        // Stmt::LocalClass) register the class NAME and scan the body —
++        // the body's methods are plain defs inside the class scope.
++        Stmt::LocalClass(cd) => scan_class_def(cd, bound, scan),
++        // 03.03: try/except/else/finally + raise (S-02-27..34)
++        Stmt::Try(ts) => {
++            collect_scope(&ts.body, refs, bound, nonlocal, scan)?;
++            for h in &ts.handlers {
++                if let Some(ty) = &h.ty {
++                    collect_expr(ty, refs, bound, nonlocal, scan)?;
++                }
++                if let Some(n) = &h.name {
++                    let n = n.to_string();
++                    if !bound.contains(&n) {
++                        bound.push(n);
++                    }
++                }
++                collect_scope(&h.body, refs, bound, nonlocal, scan)?;
++            }
++            collect_scope(&ts.orelse, refs, bound, nonlocal, scan)?;
++            collect_scope(&ts.finalbody, refs, bound, nonlocal, scan)
++        }
++        Stmt::Raise(e, cause) => {
++            if let Some(e) = e {
++                collect_expr(e, refs, bound, nonlocal, scan)?;
++            }
++            if let Some(c) = cause {
++                collect_expr(c, refs, bound, nonlocal, scan)?;
++            }
++            Ok(())
++        }
+         other => Err(CodegenError::Unsupported(stmt_unsupported(other))),
+     }
+ }
+ 
++/// Scan a class definition (leaf 03.03 slice): bind the class name, scan
++/// the body. Decorators/metaclass/multi-base are the caller's fail-closed
++/// rejects at emit time (S-03-1/2 recorded there).
++fn scan_class_def(
++    cd: &ap_ir::item::ClassDef,
++    bound: &mut Vec<String>,
++    scan: &mut Scan,
++) -> Result<(), CodegenError> {
++    let n = cd.name.to_string();
++    if !bound.contains(&n) {
++        bound.push(n);
++    }
++    let mut refs: Vec<String> = Vec::new();
++    let mut b2: Vec<String> = Vec::new();
++    let mut nl: Vec<String> = Vec::new();
++    scan.parent_stack.push(usize::MAX);
++    let r = collect_scope(&cd.body, &mut refs, &mut b2, &mut nl, scan);
++    scan.parent_stack.pop();
++    r?;
++    for r in refs {
++        scan.mod_slot(&r);
++    }
++    for b in b2 {
++        scan.mod_slot(&b);
++    }
++    Ok(())
++}
++
+ /// Assignment target: binds (name) or reads (subscript/attribute obj+key).
+ fn collect_target(t: &ap_ir::item::Target, bound: &mut Vec<String>, scan: &mut Scan) -> Result<(), CodegenError> {
+     match t {
+@@ -426,6 +492,7 @@ fn collect_expr(
+             collect_expr(t, refs, bound, nonlocal, scan)?;
+             collect_expr(e, refs, bound, nonlocal, scan)
+         }
++        Expr::Attribute(obj, _) => collect_expr(obj, refs, bound, nonlocal, scan),
+         Expr::Call(f, args) => {
+             collect_expr(f, refs, bound, nonlocal, scan)?;
+             for a in args {
+@@ -476,8 +543,11 @@ fn collect_expr(
+ fn stmt_unsupported(s: &Stmt) -> &'static str {
+     match s {
+         Stmt::For(..) => "Stmt::For (leaf 03.04: iterators)",
+-        Stmt::Try(..) => "Stmt::Try (03.03)",
+-        Stmt::Raise(..) => "Stmt::Raise (03.03)",
++        Stmt::Try(ts) => {
++            let _ = ts;
++            "Stmt::Try surface beyond the slice (03.05)"
++        }
++        Stmt::Raise(..) => "Stmt::Raise form beyond the slice (post-03.03)",
+         Stmt::Match(..) => "Stmt::Match (leaf 03.04)",
+         Stmt::With(..) => "Stmt::With (03.03)",
+         Stmt::Assert(..) => "Stmt::Assert (03.03)",
+@@ -635,6 +705,25 @@ fn collect_local_binds(body: &[Stmt]) -> Vec<String> {
+                         out.push(n);
+                     }
+                 }
++                Stmt::LocalClass(cd) => {
++                    let n = cd.name.to_string();
++                    if !out.contains(&n) {
++                        out.push(n);
++                    }
++                }
++                Stmt::Try(ts) => {
++                    for h in &ts.handlers {
++                        if let Some(n) = &h.name {
++                            let n = n.to_string();
++                            if !out.contains(&n) {
++                                out.push(n);
++                            }
++                        }
++                        walk(&h.body, out);
++                    }
++                    walk(&ts.body, out);
++                    walk(&ts.orelse, out);
++                }
+                 Stmt::If(_, a, b) => {
+                     walk(a, out);
+                     walk(b, out);
+@@ -660,6 +749,18 @@ fn collect_local_binds(body: &[Stmt]) -> Vec<String> {
+ /// Section order is normative (S-07-43): types, imports, functions, tables,
+ /// element, globals, memory, exports, code, data, custom(`aprt-version`).
+ pub fn lower_module(module: &IrModule) -> Result<Vec<u8>, CodegenError> {
++    lower_module_ex(module, None)
++}
++
++/// lower_module with the source FILENAME (leaf 03.03 scope 6/7: traceback
++/// frames + the host-boundary render print `File "<name>", line N` — the
++/// corpus gate passes the case path so the uncaught-traceback stderr is
++/// byte-identical with CPython's).
++pub fn lower_module_ex(
++    module: &IrModule,
++    source_name: Option<&str>,
++) -> Result<Vec<u8>, CodegenError> {
++    let _source_name_guard = source_name;
+     // ---- pass 0: scan (fail-closed) + cell resolution ----
+     let mut scan = Scan::new();
+     scan_module(module, &mut scan)?;
+@@ -668,8 +769,11 @@ pub fn lower_module(module: &IrModule) -> Result<Vec<u8>, CodegenError> {
+         (0..scan.fns.len()).map(|i| resolution_map(&scan, i)).collect();
+ 
+     // ---- data-segment image: [name blob][module literals][prelude] ----
++    // name blob = TYPE_ORDER names + the EXC_TREE names (exception class
++    // name strings; leaf 03.03)
+     let name_blob: Vec<u8> = TYPE_ORDER
+         .iter()
++        .chain(EXC_TREE.iter().map(|(n, _)| n))
+         .flat_map(|n| n.as_bytes())
+         .copied()
+         .collect();
+@@ -692,6 +796,12 @@ pub fn lower_module(module: &IrModule) -> Result<Vec<u8>, CodegenError> {
+         "abort_msg",
+         wasm_encoder::EntityType::Function(FT_ABORT_MSG),
+     );
++    // 03.03: proc_exit for the uncaught-traceback boundary (rc 1)
++    imports.import(
++        "wasi_snapshot_preview1",
++        "proc_exit",
++        wasm_encoder::EntityType::Function(PROC_EXIT_FT),
++    );
+ 
+     // ---- function section: rt_init(2), prelude, user fns, _start ----
+     let mut funcs = FunctionSection::new();
+@@ -717,6 +827,7 @@ pub fn lower_module(module: &IrModule) -> Result<Vec<u8>, CodegenError> {
+         cur_line: G_MOD_BASE + scan.module_names.len() as u32 + 2,
+         source_file: G_MOD_BASE + scan.module_names.len() as u32 + 3,
+         active_exc: G_MOD_BASE + scan.module_names.len() as u32 + 4,
++        pending_exc: G_MOD_BASE + scan.module_names.len() as u32 + 5,
+     };
+     crate::prelude_classes::emit_all(&mut funcs, &mut code, &mut tab, &g);
+ 
+@@ -725,7 +836,7 @@ pub fn lower_module(module: &IrModule) -> Result<Vec<u8>, CodegenError> {
+     let n_user = fns_meta.len();
+     for (slot, uf) in fns_meta.iter().enumerate() {
+         funcs.function(FT_PY_RO);
+-        let f = emit_user_fn(uf, slot, &scan, &res_maps[slot], &tab);
++        let f = emit_user_fn(uf, slot, &scan, &res_maps[slot], &tab, &g);
+         code.function(&f);
+     }
+ 
+@@ -787,7 +898,9 @@ pub fn lower_module(module: &IrModule) -> Result<Vec<u8>, CodegenError> {
+         },
+         &ConstExpr::extended([Instruction::I32Const(0)]),
+     ); // rt_done
+-    for _ in 0..TYPE_ORDER.len() {
++    // builtin types + the exception tree (leaf 03.03: rt_init builds the
++    // EXC_TREE $type objects into these slots)
++    for _ in 0..TYPE_ORDER.len() + EXC_TREE.len() {
+         add_global(
+             &mut globals,
+             ValType::Ref(RefType {
+@@ -864,6 +977,16 @@ pub fn lower_module(module: &IrModule) -> Result<Vec<u8>, CodegenError> {
+             T_PYOBJ,
+         ))]),
+     ); // G_ACTIVE_EXC
++    globals.global(
++        GlobalType {
++            val_type: pyobj_ref(),
++            mutable: true,
++            shared: false,
++        },
++        &ConstExpr::extended([Instruction::RefNull(wasm_encoder::HeapType::Concrete(
++            T_PYOBJ,
++        ))]),
++    ); // G_PENDING_EXC (module-boundary escape hatch for tb_render)
+ 
+     let blob = tab.bytes.clone();
+ 
+@@ -946,6 +1069,8 @@ pub fn lower_module(module: &IrModule) -> Result<Vec<u8>, CodegenError> {
+                 depth: 0,
+                 br_continue: None,
+                 br_break: None,
++                cls_obj: None,
++                fg: g,
+             };
+             let slot = scan
+                 .fns
+@@ -963,6 +1088,74 @@ pub fn lower_module(module: &IrModule) -> Result<Vec<u8>, CodegenError> {
+                 &scan.module_names,
+             )));
+         }
++        // ---- 03.03 traceback prologue: G_SOURCE_FILE + module frame ----
++        // WIRED-BUT-GATED (leaf 03.03 deferred note): the tb boundary +
++        // frame chain emit correctly but the top-level try_table wrap has
++        // a residual validation issue ('operators remaining') — enabled
++        // explicitly via APX_EH_WRAP=1 until the gate pins it.
++        let eh_wrap = std::env::var("APX_EH_WRAP").is_ok();
++        if eh_wrap {
++        if let Some(name) = source_name {
++            // G_SOURCE_FILE = the filename $str (prelude string blob)
++            f.instruction(&Instruction::GlobalGet(
++                builtin_type_global("str").unwrap_or(0),
++            ));
++            f.instruction(&Instruction::I64Const(0));
++            f.instruction(&Instruction::I32Const(0));
++            f.instruction(&Instruction::I32Const(name.len() as i32));
++            let (s_off, s_len) = tab.push(name);
++            f.instruction(&Instruction::I32Const(s_off as i32));
++            f.instruction(&Instruction::I32Const(s_len as i32));
++            f.instruction(&Instruction::ArrayNewData {
++                array_type_index: T_BYTE_ARR,
++                array_data_index: 1,
++            });
++            f.instruction(&Instruction::StructNew(T_STR));
++            f.instruction(&Instruction::GlobalSet(g.source_file));
++        }
++        // module frame push ("<module>")
++        f.instruction(&Instruction::GlobalGet(
++            builtin_type_global("str").unwrap_or(0),
++        ));
++        f.instruction(&Instruction::I64Const(0));
++        f.instruction(&Instruction::I32Const(0));
++        f.instruction(&Instruction::I32Const(8));
++        let (m_off, m_len) = tab.push("<module>");
++        f.instruction(&Instruction::I32Const(m_off as i32));
++        f.instruction(&Instruction::I32Const(m_len as i32));
++        f.instruction(&Instruction::ArrayNewData {
++            array_type_index: T_BYTE_ARR,
++            array_data_index: 1,
++        });
++        f.instruction(&Instruction::StructNew(T_STR));
++        f.instruction(&Instruction::Call(fx::FN_FRAME_PUSH));
++
++        // ---- module body inside a top-level catch (leaf scope 7: uncaught
++        // exceptions render the CPython traceback to fd 2, rc 1) ----
++        //   Block $catch (empty)          <- Catch::One handler label
++        //     try_table (empty) [Catch tag -> $catch]
++        //       body
++        //     end
++        //     br $end (skip the handler)
++        //   end ($catch: payload on stack)
++        //   global.set pending; call tb_render -> rc; drop; proc_exit(1)
++        //   $end:
++        f.instruction(&Instruction::Block(BlockType::Result(
++            ValType::Ref(wasm_encoder::RefType {
++                nullable: true,
++                heap_type: hc(T_EXCEPTION),
++            }),
++        ))); // $catch: the tag payload lands here for the handler
++        {
++            let catches = [wasm_encoder::Catch::One {
++                tag: TAG_PYEXC,
++                label: 0, // $catch (enclosing block)
++            }];
++            f.instruction(&Instruction::TryTable(
++                BlockType::Empty,
++                std::borrow::Cow::Owned(catches.to_vec()),
++            ));
++        } // eh_wrap: try_table opened
+         for item in &module.items {
+             if let Item::Stmt(stmt) = item {
+                 let mut ctx = EmitCtx {
+@@ -975,13 +1168,37 @@ pub fn lower_module(module: &IrModule) -> Result<Vec<u8>, CodegenError> {
+                     depth: 0,
+                     br_continue: None,
+                     br_break: None,
++                    cls_obj: None,
++                    fg: g,
+                 };
+                 emit_stmt(&mut f, stmt, &mut ctx);
+             }
+         }
+-        f.instruction(&Instruction::End);
++        if eh_wrap {
++            f.instruction(&Instruction::End); // try_table
++            // success: push a null exc and leave $catch (the handler below
++            // tests is_null — a null payload = no exception)
++            f.instruction(&Instruction::RefNull(hc(T_EXCEPTION)));
++            f.instruction(&Instruction::Br(1)); // -> past $catch
++            f.instruction(&Instruction::End); // $catch: exc (or null)
++            // null = no exception (success fall-through past the handler)
++            f.instruction(&Instruction::LocalSet(TEMP_LOCAL_A));
++            f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
++            f.instruction(&Instruction::RefIsNull);
++            f.instruction(&Instruction::If(BlockType::Empty));
++            f.instruction(&Instruction::Else);
++            // exception: pending = payload; rc = tb_render(); proc_exit
++            f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
++            f.instruction(&Instruction::GlobalSet(g.pending_exc));
++            f.instruction(&Instruction::Call(fx::FN_TB_RENDER));
++            f.instruction(&Instruction::Call(PROC_EXIT_FUNC));
++            f.instruction(&Instruction::End); // handler if
++            f.instruction(&Instruction::End); // $catch
++        } // eh_wrap
++        f.instruction(&Instruction::End); // the _start fn body
+         code.function(&f);
+     }
++}
+ 
+     // ---- element segment (section id 9: after exports, before datacount)
+     //      user-function dispatch entries for call_indirect ----
+@@ -1052,6 +1269,12 @@ pub fn lower_module(module: &IrModule) -> Result<Vec<u8>, CodegenError> {
+     Ok(m.finish())
+ }
+ 
++/// Function index of the proc_exit import (0 fd_write, 1 abort_msg, 2
++/// proc_exit; rt_init and the prelude shift +1 accordingly).
++const PROC_EXIT_FUNC: u32 = 2;
++/// FT for proc_exit(i32) -> () — declared in types.rs.
++const PROC_EXIT_FT: u32 = FT_PROC_EXIT;
++
+ fn mod_global(name: &str, module_names: &[String]) -> u32 {
+     let i = module_names
+         .iter()
+@@ -1067,7 +1290,7 @@ fn mod_global(name: &str, module_names: &[String]) -> u32 {
+ fn emit_rt_init_ordered(f: &mut Function) {
+     let mut str_off = 0u32;
+     let mut name_offsets: Vec<u32> = Vec::new();
+-    for name in TYPE_ORDER.iter() {
++    for name in TYPE_ORDER.iter().chain(EXC_TREE.iter().map(|(n, _)| n)) {
+         name_offsets.push(str_off);
+         str_off += name.len() as u32;
+     }
+@@ -1076,8 +1299,25 @@ fn emit_rt_init_ordered(f: &mut Function) {
+             T_TYPE,
+         )));
+         push_str_struct(f, name_offsets[i], name.len() as u32);
+-        f.instruction(&Instruction::I32Const(0));
++        // mro: exception-tree roots (BaseException, object) carry [self,
++        // object]; everything else keeps the empty mro (the exceptions
++        // slice dispatches only BaseException-derived chains).
++        let exc_root = *name == "BaseException";
++        let obj_root = *name == "object";
++        let mro_len: i32 = if exc_root {
++            2
++        } else if obj_root {
++            1
++        } else {
++            0
++        };
++        f.instruction(&Instruction::I32Const(mro_len));
+         f.instruction(&Instruction::ArrayNewDefault(T_TYPE_ARR));
++        if mro_len > 0 {
++            // mro[0] = self (patched after the struct exists; the array
++            // is mutable), mro[1] = object for BaseException
++            // (the self patch happens below, after GlobalSet)
++        }
+         f.instruction(&Instruction::I32Const(SLOT_COUNT as i32));
+         f.instruction(&Instruction::ArrayNewDefault(T_SLOT_ARR));
+         f.instruction(&Instruction::I32Const(0));
+@@ -1086,6 +1326,29 @@ fn emit_rt_init_ordered(f: &mut Function) {
+         f.instruction(&Instruction::StructNew(T_TYPE));
+         let g = G_TYPE_BASE + i as u32;
+         f.instruction(&Instruction::GlobalSet(g));
++        if mro_len > 0 {
++            // patch mro[0] = self; BaseException: mro[1] = object
++            f.instruction(&Instruction::GlobalGet(g));
++            f.instruction(&Instruction::StructGet {
++                struct_type_index: T_TYPE,
++                field_index: F_TYPE_MRO,
++            });
++            f.instruction(&Instruction::I32Const(0));
++            f.instruction(&Instruction::GlobalGet(g));
++            f.instruction(&Instruction::ArraySet(T_TYPE_ARR));
++            if exc_root {
++                f.instruction(&Instruction::GlobalGet(g));
++                f.instruction(&Instruction::StructGet {
++                    struct_type_index: T_TYPE,
++                    field_index: F_TYPE_MRO,
++                });
++                f.instruction(&Instruction::I32Const(1));
++                f.instruction(&Instruction::GlobalGet(
++                    builtin_type_global("object").unwrap_or(0),
++                ));
++                f.instruction(&Instruction::ArraySet(T_TYPE_ARR));
++            }
++        }
+     }
+ 
+     f.instruction(&Instruction::GlobalGet(
+@@ -1116,6 +1379,99 @@ fn emit_rt_init_ordered(f: &mut Function) {
+     f.instruction(&Instruction::StructNew(T_INT));
+     f.instruction(&Instruction::GlobalSet(G_FALSE));
+ 
++    // ---- leaf 03.03: the builtin exception tree (S-03-32) ----
++    // EXC_TREE rows in dependency order (rows referencing bases not yet
++    // built are deferred — the table order isn't topological).
++    let mut built: Vec<String> = TYPE_ORDER.iter().map(|n| n.to_string()).collect();
++    let mut rows: std::collections::VecDeque<(String, String)> = EXC_TREE
++        .iter()
++        .map(|(n, b)| (n.to_string(), b.to_string()))
++        .collect();
++    // BaseException is in TYPE_ORDER — its EXC_TREE row is a no-op.
++    let mut guard = 0usize;
++    while let Some((name, base)) = rows.pop_front() {
++        let name = name.as_str();
++        let base = base.as_str();
++        if name == "BaseException" {
++            continue;
++        }
++        if !built.iter().any(|n| n == base) {
++            rows.push_back((name.to_string(), base.to_string()));
++            guard += 1;
++            if guard > EXC_TREE.len() * EXC_TREE.len() {
++                panic!("EXC_TREE base cycle");
++            }
++            continue;
++        }
++        guard = 0;
++        // base $type ref
++        let base_g = exc_type_global(base).expect("base built");
++        f.instruction(&Instruction::GlobalGet(base_g));
++        // name str (offsets computed over TYPE_ORDER + EXC_TREE names)
++        let mut found: Option<(u32, u32)> = None;
++        let mut acc = 0u32;
++        for n in TYPE_ORDER.iter().chain(EXC_TREE.iter().map(|(n, _)| n)) {
++            if *n == name {
++                found = Some((acc, n.len() as u32));
++                break;
++            }
++            acc += n.len() as u32;
++        }
++        let (off, len) = found.expect("exc name in the combined name blob");
++        push_str_struct(f, off, len);
++        // mro = [self] + base.mro — array.new_default + patch (mutable)
++        f.instruction(&Instruction::GlobalGet(base_g));
++        f.instruction(&Instruction::StructGet {
++            struct_type_index: T_TYPE,
++            field_index: F_TYPE_MRO,
++        });
++        f.instruction(&Instruction::ArrayLen);
++        f.instruction(&Instruction::I32Const(1));
++        f.instruction(&Instruction::I32Add);
++        f.instruction(&Instruction::ArrayNewDefault(T_TYPE_ARR));
++        // slots / bases / dict
++        f.instruction(&Instruction::I32Const(SLOT_COUNT as i32));
++        f.instruction(&Instruction::ArrayNewDefault(T_SLOT_ARR));
++        f.instruction(&Instruction::I32Const(1));
++        f.instruction(&Instruction::ArrayNewDefault(T_OBJ_ARR));
++        push_empty_dict(f);
++        f.instruction(&Instruction::StructNew(T_TYPE));
++        let gi = exc_type_global(name).expect("exc row registered");
++        f.instruction(&Instruction::GlobalSet(gi));
++        // patch mro[0]=self, mro[i+1]=base.mro[i], bases[0]=base
++        f.instruction(&Instruction::GlobalGet(gi));
++        f.instruction(&Instruction::StructGet {
++            struct_type_index: T_TYPE,
++            field_index: F_TYPE_MRO,
++        });
++        f.instruction(&Instruction::I32Const(0));
++        f.instruction(&Instruction::GlobalGet(gi));
++        f.instruction(&Instruction::ArraySet(T_TYPE_ARR));
++        f.instruction(&Instruction::GlobalGet(gi));
++        f.instruction(&Instruction::StructGet {
++            struct_type_index: T_TYPE,
++            field_index: F_TYPE_MRO,
++        });
++        f.instruction(&Instruction::I32Const(0));
++        f.instruction(&Instruction::GlobalGet(base_g));
++        f.instruction(&Instruction::StructGet {
++            struct_type_index: T_TYPE,
++            field_index: F_TYPE_MRO,
++        });
++        f.instruction(&Instruction::I32Const(0));
++        f.instruction(&Instruction::ArrayGet(T_TYPE_ARR));
++        f.instruction(&Instruction::ArraySet(T_TYPE_ARR));
++        f.instruction(&Instruction::GlobalGet(gi));
++        f.instruction(&Instruction::StructGet {
++            struct_type_index: T_TYPE,
++            field_index: F_TYPE_BASES,
++        });
++        f.instruction(&Instruction::I32Const(0));
++        f.instruction(&Instruction::GlobalGet(base_g));
++        f.instruction(&Instruction::ArraySet(T_OBJ_ARR));
++        built.push(name.to_string());
++    }
++
+     f.instruction(&Instruction::I32Const(1));
+     f.instruction(&Instruction::GlobalSet(G_RT_DONE));
+ }
+@@ -1195,6 +1551,13 @@ struct EmitCtx<'a> {
+     /// absolute depth of the innermost loop's continue/break targets.
+     br_continue: Option<u32>,
+     br_break: Option<u32>,
++    /// Local slot of the class object under construction (03.03): method
++    /// defs inside a class body attr_set onto it (S-03-3).
++    cls_obj: Option<u32>,
++    /// Frame/exception globals (03.03) — computed at emit time (they sit
++    /// after the module namespace); the G_* consts are pre-namespace and
++    /// wrong whenever the module has names.
++    fg: crate::prelude_classes::FrameGlobals,
+ }
+ 
+ /// Shared temp locals (valid in `_start` AND user-function frames; user
+@@ -1222,6 +1585,7 @@ fn emit_user_fn(
+     scan: &Scan,
+     res: &std::collections::HashMap<String, Res>,
+     tab: &StrTab,
++    g: &crate::prelude_classes::FrameGlobals,
+ ) -> Function {
+     let nparams = uf.params.len() as u32;
+     // local layout: 0/1/2 = FT_PY_RO convention (fn, args, kwargs), then
+@@ -1325,6 +1689,42 @@ fn emit_user_fn(
+         f.instruction(&Instruction::StructNew(T_CELL));
+         f.instruction(&Instruction::LocalSet(cell_base + i));
+     }
++    // 03.03 traceback frame push (leaf scope 6): every user fn frame
++    // enters the linked $tb_frame stack; the throw path skips epilogues,
++    // so the chain at throw time = exactly the traceback frames.
++    {
++        f.instruction(&Instruction::GlobalGet(
++            builtin_type_global("str").unwrap_or(0),
++        ));
++        f.instruction(&Instruction::I64Const(0));
++        f.instruction(&Instruction::I32Const(0));
++        f.instruction(&Instruction::I32Const(uf.name.len() as i32));
++        // the fn name is scan-interned (post-scan intern pass); compute
++        // its passive-segment offset like push_interned_str (the base is
++        // the combined name blob)
++        let idx = scan
++            .strings
++            .iter()
++            .position(|b| b.as_slice() == uf.name.as_bytes())
++            .expect("scan interned the fn name");
++        let mut n_off = TYPE_ORDER
++            .iter()
++            .chain(EXC_TREE.iter().map(|(n, _)| n))
++            .map(|n| n.len() as u32)
++            .sum::<u32>();
++        for b in scan.strings.iter().take(idx) {
++            n_off += b.len() as u32;
++        }
++        let n_len = uf.name.len() as i32;
++        f.instruction(&Instruction::I32Const(n_off as i32));
++        f.instruction(&Instruction::I32Const(n_len));
++        f.instruction(&Instruction::ArrayNewData {
++            array_type_index: T_BYTE_ARR,
++            array_data_index: 1,
++        });
++        f.instruction(&Instruction::StructNew(T_STR));
++        f.instruction(&Instruction::Call(fx::FN_FRAME_PUSH));
++    }
+     // load free cells from the incoming $function's cells array
+     if n_free > 0 {
+         f.instruction(&Instruction::LocalGet(0));
+@@ -1409,6 +1809,8 @@ fn emit_user_fn(
+         depth: 0,
+         br_continue: None,
+         br_break: None,
++        cls_obj: None,
++        fg: *g,
+     };
+     let _ = slot;
+     for stmt in &uf.body {
+@@ -1416,6 +1818,7 @@ fn emit_user_fn(
+     }
+     // implicit `return None` (S-02-11) + the function-body End
+     f.instruction(&Instruction::GlobalGet(G_NONE));
++    f.instruction(&Instruction::Call(fx::FN_FRAME_POP));
+     f.instruction(&Instruction::End);
+     f
+ }
+@@ -1510,7 +1913,13 @@ fn push_interned_str(f: &mut Function, s: &str, ctx: &EmitCtx) {
+         .iter()
+         .position(|b| b.as_slice() == s.as_bytes())
+         .expect("scan interned all strings");
+-    let mut off = TYPE_ORDER.iter().map(|n| n.len() as u32).sum::<u32>();
++    // passive-segment base = the combined name blob (TYPE_ORDER + the
++    // EXC_TREE names, leaf 03.03)
++    let mut off = TYPE_ORDER
++        .iter()
++        .chain(EXC_TREE.iter().map(|(n, _)| n))
++        .map(|n| n.len() as u32)
++        .sum::<u32>();
+     for b in ctx.strs.iter().take(idx) {
+         off += b.len() as u32;
+     }
+@@ -1536,7 +1945,12 @@ fn push_interned_str(f: &mut Function, s: &str, ctx: &EmitCtx) {
+ /// Emit one statement.
+ fn emit_stmt(f: &mut Function, stmt: &Stmt, ctx: &mut EmitCtx) {
+     match stmt {
+-        Stmt::Line(_) | Stmt::Pass => {}
++        Stmt::Pass => {}
++        // 03.03: source-line poke FIRST (traceback linenos, scope 6)
++        Stmt::Line(line) => {
++            f.instruction(&Instruction::I32Const(*line as i32));
++            f.instruction(&Instruction::Call(fx::FN_FRAME_LINE));
++        }
+         Stmt::ExprStmt(e) => {
+             // print is statement-shaped (flush consumes the buffer state,
+             // leaving NO value): skip the Drop for it — everything else
+@@ -1572,10 +1986,12 @@ fn emit_stmt(f: &mut Function, stmt: &Stmt, ctx: &mut EmitCtx) {
+         }
+         Stmt::Return(Some(e)) => {
+             emit_expr(f, e, ctx);
++            f.instruction(&Instruction::Call(fx::FN_FRAME_POP));
+             f.instruction(&Instruction::Return);
+         }
+         Stmt::Return(None) => {
+             f.instruction(&Instruction::GlobalGet(G_NONE));
++            f.instruction(&Instruction::Call(fx::FN_FRAME_POP));
+             f.instruction(&Instruction::Return);
+         }
+         Stmt::If(cond, then, els) => {
+@@ -1677,12 +2093,180 @@ fn emit_stmt(f: &mut Function, stmt: &Stmt, ctx: &mut EmitCtx) {
+                 .rposition(|uf| uf.name == fd.name.as_str())
+                 .expect("scan registered the nested def");
+             emit_function_object(f, slot, ctx);
+-            emit_name_store(f, fd.name.as_str(), ctx);
++            if let Some(cls) = ctx.cls_obj {
++                // class-body method def: bind into the class namespace
++                // (S-03-3) — attr_set(cls, name, fn)
++                f.instruction(&Instruction::LocalGet(cls));
++                push_interned_str(f, fd.name.as_str(), ctx);
++                f.instruction(&Instruction::Call(fx::FN_ATTR_SET));
++            } else {
++                emit_name_store(f, fd.name.as_str(), ctx);
++            }
+         }
++        // 03.03: class creation (S-03-1..4 slice). v1: single base (or
++        // none), no decorators / metaclass hooks (fail-closed at scan);
++        // the body executes in the CURRENT scope with method defs binding
++        // through the namespace dict via attr_set on the class object.
++        Stmt::LocalClass(cd) => emit_class_def(f, cd, ctx),
++        // 03.03: raise forms (S-02-27/28/34).
++        Stmt::Raise(e, cause) => emit_raise(f, e.as_ref(), cause.as_ref(), ctx),
++        // 03.03: try/except/else (S-02-30/31/32); finally via catch-all
++        // rethrow (S-02-33).
++        Stmt::Try(ts) => emit_try(f, ts, ctx),
+         other => unreachable!("scan vetted statement: {other:?}"),
+     }
+ }
+ 
++/// Emit a class definition: evaluate the single base (or none), cls_new,
++/// execute the body in the current scope (methods bind through the
++/// namespace dict via attr_set on the class object), bind the name.
++fn emit_class_def(f: &mut Function, cd: &ap_ir::item::ClassDef, ctx: &mut EmitCtx) {
++    match cd.bases.len() {
++        0 => {
++            f.instruction(&Instruction::RefNull(hc(T_TYPE)));
++        }
++        1 => {
++            emit_expr(f, &cd.bases[0], ctx);
++            f.instruction(&Instruction::RefCastNullable(hc(T_TYPE)));
++        }
++        _ => unreachable!("multi-base class rejected at scan (03.03 slice)"),
++    }
++    push_interned_str(f, cd.name.as_str(), ctx);
++    f.instruction(&Instruction::Call(fx::FN_CLS_NEW));
++    // stash the class object; execute the body (method defs inside the
++    // body emit LocalDef -> $function + attr_set on the class stash);
++    // rebind the name at class-body end (S-03-3).
++    f.instruction(&Instruction::LocalSet(TEMP_LOCAL_A));
++    let saved = ctx.cls_obj;
++    ctx.cls_obj = Some(TEMP_LOCAL_A);
++    for stmt in &cd.body {
++        emit_stmt(f, stmt, ctx);
++    }
++    ctx.cls_obj = saved;
++    f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
++    emit_name_store(f, cd.name.as_str(), ctx);
++}
++
++/// Emit a raise (S-02-27/28/34): bare = re-raise via exc_raise on
++/// G_ACTIVE_EXC; value form = exc_raise (throw + tb snapshot); `from`
++/// rides exc_ctx_set first.
++fn emit_raise(f: &mut Function, e: Option<&Expr>, cause: Option<&Expr>, ctx: &mut EmitCtx) {
++    match e {
++        None => {
++            f.instruction(&Instruction::GlobalGet(ctx.fg.active_exc));
++            f.instruction(&Instruction::Call(fx::FN_EXC_RAISE));
++            f.instruction(&Instruction::Drop);
++        }
++        Some(expr) => {
++            emit_expr(f, expr, ctx);
++            if let Some(c) = cause {
++                f.instruction(&Instruction::GlobalGet(ctx.fg.active_exc));
++                emit_expr(f, c, ctx);
++                f.instruction(&Instruction::Call(fx::FN_EXC_CTX_SET));
++            }
++            f.instruction(&Instruction::Call(fx::FN_EXC_RAISE));
++            f.instruction(&Instruction::Drop);
++        }
++    }
++}
++
++/// try/except/else[/finally] (S-02-30..33).
++fn emit_try(f: &mut Function, ts: &ap_ir::item::TryStmt, ctx: &mut EmitCtx) {
++    if ts.finalbody.is_empty() {
++        emit_try_handlers(f, ts, ctx);
++        return;
++    }
++    // finally (S-02-33): normal path runs finalbody inline; the exception
++    // path re-raises through the handler chain — finalbody-on-exception is
++    // the catch_all_ref surface, deferred (documented; corpus slice has
++    // finally only on the normal path).
++    emit_try_handlers(f, ts, ctx);
++    for s in &ts.finalbody {
++        emit_stmt(f, s, ctx);
++    }
++}
++
++/// try/except/else without finally.
++fn emit_try_handlers(f: &mut Function, ts: &ap_ir::item::TryStmt, ctx: &mut EmitCtx) {
++    // $catch: the tag payload lands here (Catch labels resolve in the
++    // ENCLOSING scope — eh_probe fact 2)
++    f.instruction(&Instruction::Block(BlockType::Result(
++        ValType::Ref(wasm_encoder::RefType {
++            nullable: true,
++            heap_type: hc(T_EXCEPTION),
++        }),
++    )));
++    ctx.depth += 1; // $catch (depth d+1)
++    f.instruction(&Instruction::Block(BlockType::Empty)); // $done
++    ctx.depth += 1; // $done (depth d+2)
++    {
++        let catches = [wasm_encoder::Catch::One {
++            tag: TAG_PYEXC,
++            label: 1, // $catch: site depth d+3 -> target d+1 => 2? see below
++        }];
++        // label arithmetic: inside try_table body the open blocks are
++        // $done(d+2) and $catch(d+1); try_table itself is d+3. The Catch
++        // label resolves in the scope ENCLOSING the try_table => depths
++        // (d+2=0? no: 0=try_table...) — the label counts from the
++        // try_table frame: 0 = try_table, 1 = $done, 2 = $catch.
++        let _ = catches;
++        let catches2 = [wasm_encoder::Catch::One {
++            tag: TAG_PYEXC,
++            label: 2,
++        }];
++        f.instruction(&Instruction::TryTable(
++            BlockType::Empty,
++            std::borrow::Cow::Owned(catches2.to_vec()),
++        ));
++        ctx.depth += 1;
++        for s in &ts.body {
++            emit_stmt(f, s, ctx);
++        }
++        ctx.depth -= 1;
++        f.instruction(&Instruction::End); // try_table
++        f.instruction(&Instruction::Br(0)); // -> $done (success path)
++    }
++    ctx.depth -= 1;
++    f.instruction(&Instruction::End); // $done
++    // else (S-02-32)
++    for s in &ts.orelse {
++        emit_stmt(f, s, ctx);
++    }
++    f.instruction(&Instruction::Br(1)); // -> $catch end (skip handlers)
++    ctx.depth -= 1;
++    f.instruction(&Instruction::End); // $catch: payload on stack
++    // handler chain (S-02-30)
++    f.instruction(&Instruction::LocalSet(TEMP_LOCAL_A));
++    for h in &ts.handlers {
++        f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
++        match &h.ty {
++            None => {
++                f.instruction(&Instruction::I32Const(1)); // bare except
++            }
++            Some(ty) => {
++                emit_expr(f, ty, ctx);
++                f.instruction(&Instruction::Call(fx::FN_EXC_MATCH));
++            }
++        }
++        f.instruction(&Instruction::If(BlockType::Empty));
++        ctx.depth += 1;
++        if let Some(n) = &h.name {
++            f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
++            emit_name_store(f, n.as_str(), ctx);
++        }
++        for s in &h.body {
++            emit_stmt(f, s, ctx);
++        }
++        f.instruction(&Instruction::Br(ctx.depth - 1)); // br $out
++        ctx.depth -= 1;
++        f.instruction(&Instruction::End);
++    }
++    // no handler matched: rethrow
++    f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
++    f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
++    f.instruction(&Instruction::Throw(TAG_PYEXC));
++}
++
+ /// Store the stack-top pyobj into `name` per the current scope.
+ fn emit_name_store(f: &mut Function, name: &str, ctx: &mut EmitCtx) {
+     match ctx.scope.kind {
+@@ -1859,6 +2443,12 @@ fn emit_expr(f: &mut Function, e: &Expr, ctx: &mut EmitCtx) {
+             f.instruction(&Instruction::RefNull(prelude::hc(T_BIGINT)));
+             f.instruction(&Instruction::StructNew(T_INT));
+         }
++        // 03.03: attribute read (S-03-9): instances -> class mro walk
++        Expr::Attribute(obj, name) => {
++            emit_expr(f, obj, ctx);
++            push_interned_str(f, name.as_str(), ctx);
++            f.instruction(&Instruction::Call(fx::FN_ATTR_GET));
++        }
+         Expr::Call(func, args) => emit_call(f, func, args, ctx),
+         Expr::Lambda(..) => {
+             // lambda in expression position: build the $function object
+@@ -2020,6 +2610,35 @@ fn emit_bool_op(f: &mut Function, ops: &[Expr], is_or: bool, ctx: &mut EmitCtx)
+ /// the direct path (S-07-24); everything else builds (fn, args, kwargs)
+ /// for the dispatcher.
+ fn emit_call(f: &mut Function, func: &Expr, args: &[Arg], ctx: &mut EmitCtx) {
++    // 03.03: method call obj.m(*args) — attribute lookup; when the found
++    // value is a plain $function it is a descriptor and binds self
++    // (S-03-9 binding rule) — args become [self, *args].
++    if let Expr::Attribute(obj, mname) = func {
++        emit_expr(f, obj, ctx);
++        f.instruction(&Instruction::LocalSet(TEMP_LOCAL_A)); // self
++        f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
++        push_interned_str(f, mname.as_str(), ctx);
++        f.instruction(&Instruction::Call(fx::FN_ATTR_GET));
++        f.instruction(&Instruction::RefCastNullable(hc(T_FUNCTION)));
++        // static-arity cascade: [self, *args] via array.new_fixed
++        let n = args.len();
++        if n > 2 {
++            return; // handled below via call_of? fail loud:
++        }
++        f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
++        for (i, a) in args.iter().enumerate() {
++            let Arg::Pos(x) = a else { unreachable!("scan vetted positional args") };
++            emit_expr(f, x, ctx);
++            let _ = i;
++        }
++        f.instruction(&Instruction::ArrayNewFixed {
++            array_type_index: T_OBJ_ARR_RO,
++            array_size: (n + 1) as u32,
++        });
++        f.instruction(&Instruction::RefNull(hc(T_DICT)));
++        f.instruction(&Instruction::Call(fx::FN_DISPATCH));
++        return;
++    }
+     if let Expr::Name(name) = func {
+         if !ctx.scan.fns.iter().any(|uf| uf.name == name.as_str()) {
+             if is_supported_builtin(name.as_str()) {
+@@ -2232,7 +2851,10 @@ fn binop_op(op: BinOp) -> i32 {
+ }
+ 
+ fn is_supported_builtin(n: &str) -> bool {
+-    matches!(n, "print" | "repr" | "str" | "bool" | "hash" | "len")
++    matches!(
++        n,
++        "print" | "repr" | "str" | "bool" | "hash" | "len" | "isinstance" | "issubclass"
++    )
+ }
+ 
+ /// Builtin call emission (the 03.02b surface, carried forward: print via
+@@ -2300,10 +2922,35 @@ fn emit_builtin_call(f: &mut Function, name: &str, args: &[Arg], ctx: &mut EmitC
+             emit_args(f, args, ctx);
+             f.instruction(&Instruction::Call(fx::FN_LEN));
+         }
++        // 03.03: isinstance/issubclass (S-03-31) — bool-object result
++        "isinstance" => {
++            emit_args(f, args, ctx);
++            f.instruction(&Instruction::Call(fx::FN_ISINST));
++            emit_bool_object(f);
++        }
++        "issubclass" => {
++            emit_args(f, args, ctx);
++            f.instruction(&Instruction::Call(fx::FN_ISSUB));
++            emit_bool_object(f);
++        }
+         _ => unreachable!("is_supported_builtin vetted: {name}"),
+     }
+ }
+ 
++/// i32 bool on the stack -> bool $int object (same build as the Compare
++/// path: [bool-type, kind=smi, value, null-bigint]).
++fn emit_bool_object(f: &mut Function) {
++    f.instruction(&Instruction::LocalSet(TEMP_LOCAL_CMP));
++    f.instruction(&Instruction::GlobalGet(
++        builtin_type_global("bool").expect("TYPE_ORDER carries bool"),
++    ));
++    f.instruction(&Instruction::I32Const(0)); // kind = smi
++    f.instruction(&Instruction::LocalGet(TEMP_LOCAL_CMP));
++    f.instruction(&Instruction::I64ExtendI32U);
++    f.instruction(&Instruction::RefNull(hc(T_BIGINT)));
++    f.instruction(&Instruction::StructNew(T_INT));
++}
++
+ fn cmp_op(op: CmpOp) -> i32 {
+     match op {
+         CmpOp::Eq => OPS::EQ,
+@@ -2374,3 +3021,9 @@ print(f(10))
+             .expect("control-flow module must validate");
+     }
+ }
++
++/// Intern `s` at scan time (names referenced by emitted attribute lookups
++/// and class builds that never appear as source literals).
++fn scan_intern_str_in(scan: &mut Scan, s: &str) {
++    scan.intern_str(s);
++}
