@@ -98,9 +98,9 @@ pub const T_TYPE_ARR: u32 = 29;
 pub const T_METHOD: u32 = 30;
 pub const T_GENERATOR: u32 = 31;
 pub const T_INSTANCE: u32 = 32;
-/// Types 0..=34 ride the single rec group (34 = `$descriptor`, leaf 03.03 —
+/// Types 0..=35 ride the single rec group (35 = `$excinst`, leaf 03.03 —
 /// append-only, nothing renumbered).
-pub const REC_GROUP_LEN: u32 = 35;
+pub const REC_GROUP_LEN: u32 = 36;
 /// `$complex` rec-group index (S-07 §9: two binary64 halves).
 pub const T_COMPLEX: u32 = 33;
 /// `$descriptor` rec-group index (leaf 03.03: property/staticmethod/
@@ -111,40 +111,43 @@ pub const F_DESCR_KIND: u32 = 1;
 pub const F_DESCR_FGET: u32 = 2;
 pub const F_DESCR_FSET: u32 = 3;
 pub const F_DESCR_FDEL: u32 = 4;
+/// `$excinst` rec-group index (leaf 03.03: exception instances w/ attrs).
+pub const T_EXCINST: u32 = 35;
+pub const F_EXCINST_ATTRS: u32 = 1;
 
 /// Function types (declared AFTER the rec group; ids start at 34 =
 /// REC_GROUP_LEN — the rec group grew by `$complex` in leaf 03.02b).
-pub const FT_FD_WRITE: u32 = 35;
-pub const FT_ABORT_MSG: u32 = 36;
-pub const FT_VOID: u32 = 37;
-pub const FT_PYCALL: u32 = 38;
+pub const FT_FD_WRITE: u32 = 36;
+pub const FT_ABORT_MSG: u32 = 37;
+pub const FT_VOID: u32 = 38;
+pub const FT_PYCALL: u32 = 39;
 // ---------------------------------------------------------------------------
 // Prelude function types (leaf 03.02b; appended, existing ids untouched).
 // `o` = (ref null $pyobj), `big` = (ref null $bigint), `str` = (ref null $str).
 // ---------------------------------------------------------------------------
-pub const FT_U_O: u32 = 39; // (i32 unused, o) -> o          bool_obj
-pub const FT_IOP_O: u32 = 57; // (i32 op, o, o) -> o         binop dispatch
-pub const FT_O_O: u32 = 58; // (o) -> o                       len
-pub const FT_O_STR: u32 = 40; // (o) -> $str                 py_str/int_to_str
-pub const FT_O_L: u32 = 41; // (o) -> i64                    hash
-pub const FT_O_I: u32 = 42; // (o) -> i32                    truthy/type_index
-pub const FT_OO_I: u32 = 43; // (o, o) -> i32               eq primitives
-pub const FT_TOP_I: u32 = 44; // (i32 op, o, o) -> i32       compare dispatch
-pub const FT_PL_ONE: u32 = 45; // (i32 bufptr, o $pyobj) -> i32  print_one (casts to $str inside)
-pub const FT_PL_FLUSH: u32 = 46; // (i32 bufptr, i32 end) -> ()
-pub const FT_L_O: u32 = 47; // (i64) -> o                    int/float from i64
-pub const FT_L_OI2: u32 = 48; // (i64, i32 ptr) -> i32       append digits
-pub const FT_F_O: u32 = 49; // (f64) -> o                    float_from_i64 is L_O; this is float->obj (unused v1)
-pub const FT_SFB: u32 = 50; // (i32 ptr, i32 len) -> str     str_from_bytes
-pub const FT_BIG_NORM: u32 = 51; // (big) -> big
-pub const FT_BIG_FI64: u32 = 52; // (i64) -> big
-pub const FT_BIG_CMP: u32 = 53; // (big, big) -> i32
-pub const FT_BIG_BITS: u32 = 54; // (big) -> i64
+pub const FT_U_O: u32 = 40; // (i32 unused, o) -> o          bool_obj
+pub const FT_IOP_O: u32 = 58; // (i32 op, o, o) -> o         binop dispatch
+pub const FT_O_O: u32 = 59; // (o) -> o                       len
+pub const FT_O_STR: u32 = 41; // (o) -> $str                 py_str/int_to_str
+pub const FT_O_L: u32 = 42; // (o) -> i64                    hash
+pub const FT_O_I: u32 = 43; // (o) -> i32                    truthy/type_index
+pub const FT_OO_I: u32 = 44; // (o, o) -> i32               eq primitives
+pub const FT_TOP_I: u32 = 45; // (i32 op, o, o) -> i32       compare dispatch
+pub const FT_PL_ONE: u32 = 46; // (i32 bufptr, o $pyobj) -> i32  print_one (casts to $str inside)
+pub const FT_PL_FLUSH: u32 = 47; // (i32 bufptr, i32 end) -> ()
+pub const FT_L_O: u32 = 48; // (i64) -> o                    int/float from i64
+pub const FT_L_OI2: u32 = 49; // (i64, i32 ptr) -> i32       append digits
+pub const FT_F_O: u32 = 50; // (f64) -> o                    float_from_i64 is L_O; this is float->obj (unused v1)
+pub const FT_SFB: u32 = 51; // (i32 ptr, i32 len) -> str     str_from_bytes
+pub const FT_BIG_NORM: u32 = 52; // (big) -> big
+pub const FT_BIG_FI64: u32 = 53; // (i64) -> big
+pub const FT_BIG_CMP: u32 = 54; // (big, big) -> i32
+pub const FT_BIG_BITS: u32 = 55; // (big) -> i64
 /// 61 FT_PY_RO: the uniform user-function calling convention (S-07-23,
 /// args array immutable — see the append_prelude_fts tail comment).
-pub const FT_PY_RO: u32 = 62;
-pub const FT_L_L: u32 = 55; // (i64) -> i64                    hash_i64 core
-pub const FT_F_L: u32 = 56; // (f64) -> i64                   float_hash
+pub const FT_PY_RO: u32 = 63;
+pub const FT_L_L: u32 = 56; // (i64) -> i64                    hash_i64 core
+pub const FT_F_L: u32 = 57; // (f64) -> i64                   float_hash
 
 // ---------------------------------------------------------------------------
 // Struct field indices (spec-07 layouts, declared order).
@@ -646,14 +649,30 @@ pub fn build_type_section_with_prefix(prefix: usize) -> wasm_encoder::TypeSectio
         // 21 $set sub $pyobj — same probing fields, no values (S-07-16)
         sub(dict_fields()),
         // 22 $exception sub $pyobj (context/cause/suppress MUTABLE: the
-        // raise-site chaining writes them, leaf 03.03 / S-02-34)
-        sub(vec![
-            fr(T_TUPLE, false),     // args
-            fr(T_TB_FRAME, true),   // tb
-            fr(T_EXCEPTION, true),  // context
-            fr(T_EXCEPTION, true),  // cause
-            field_i32(true),        // suppress_context
-        ]),
+        // raise-site chaining writes them, leaf 03.03 / S-02-34). OPEN
+        // (non-final): $excinst (exception instances w/ an attrs dict)
+        // subtypes it — the tag payload is (ref null $exception) and every
+        // raised instance flows through it.
+        SubType {
+            is_final: false,
+            supertype_idxs: vec![T_PYOBJ],
+            composite_type: CompositeType {
+                inner: CompositeInnerType::Struct(StructType {
+                    fields: vec![
+                        field_ref(T_TYPE, false),
+                        fr(T_TUPLE, false),    // args
+                        fr(T_TB_FRAME, true),  // tb
+                        fr(T_EXCEPTION, true), // context
+                        fr(T_EXCEPTION, true), // cause
+                        field_i32(true),       // suppress_context
+                    ]
+                    .into_boxed_slice(),
+                }),
+                shared: false,
+                descriptor: None,
+                describes: None,
+            },
+        },
         // 23 $tb_frame — bare struct (lineno MUTABLE: Stmt::Line pokes the
         // current frame's line, leaf 03.03; filename filled at _start)
         bare(vec![
@@ -733,6 +752,36 @@ pub fn build_type_section_with_prefix(prefix: usize) -> wasm_encoder::TypeSectio
             field_pyobj_ref(), // fset
             field_pyobj_ref(), // fdel
         ]),
+        // 35 $excinst sub $exception (leaf 03.03): instances of USER exception
+        // classes — the tag payload must be a $exception, and user classes
+        // need per-instance attribute storage (self.x = v in __init__), so
+        // the exc instance shape carries a lazy attrs dict like $instance.
+        // Builtin-exc instances (raise ValueError(..)) ALSO ride this shape
+        // (uniform $exception payload; the attrs dict stays null when unused).
+        // Explicit SubType (NOT the `sub` helper): the supertype is
+        // $exception, not $pyobj — fields = [type, exc.args, exc.tb,
+        // exc.context, exc.cause, exc.suppress, attrs].
+        SubType {
+            is_final: true,
+            supertype_idxs: vec![T_EXCEPTION],
+            composite_type: CompositeType {
+                inner: CompositeInnerType::Struct(StructType {
+                    fields: vec![
+                        field_ref(T_TYPE, false),
+                        fr(T_TUPLE, false),
+                        fr(T_TB_FRAME, true),
+                        fr(T_EXCEPTION, true),
+                        fr(T_EXCEPTION, true),
+                        field_i32(true),
+                        fr(T_DICT, true),
+                    ]
+                    .into_boxed_slice(),
+                }),
+                shared: false,
+                descriptor: None,
+                describes: None,
+            },
+        },
     ];
 
     let mut types = wasm_encoder::TypeSection::new();
@@ -823,8 +872,11 @@ pub const G_SOURCE_FILE: u32 = G_MOD_BASE + 3;
 /// The in-flight exception being handled by the INNERMOST active handler
 /// (bare `raise` re-raises this; S-02-28). Null = no active except.
 pub const G_ACTIVE_EXC: u32 = G_MOD_BASE + 4;
+/// The exception that escaped to the module boundary (set by `_start`'s
+/// top-level catch; read by FN_TB_RENDER for the host-boundary render).
+pub const G_PENDING_EXC: u32 = G_MOD_BASE + 5;
 /// Count of globals this leaf adds after the module namespace.
-pub const G_LEAF03_COUNT: u32 = 5;
+pub const G_LEAF03_COUNT: u32 = 6;
 
 /// Append the prelude FT declarations (FT_IOP_O..FT_L_L) to the type
 /// section — called by `build_type_section` after FT_PYCALL.
@@ -911,35 +963,42 @@ pub fn append_prelude_fts(types: &mut wasm_encoder::TypeSection) {
 // `typarr` = (ref null $type_arr), `tb` = (ref null $tb_frame).
 // ---------------------------------------------------------------------------
 
-pub const FT_TAG: u32 = 63; // (exc) -> ()        the $tag_pyexc payload type
-pub const FT_ATTR_GET: u32 = 64; // (o, str) -> o         S-03-9/12 lookup
-pub const FT_ATTR_SET: u32 = 65; // (o, str, o) -> ()     S-03-10
-pub const FT_ATTR_DEL: u32 = 66; // (o, str) -> ()        S-03-11
-pub const FT_CLS_NEW: u32 = 67; // (str, typarr-basis...) -> type
-pub const FT_CLS_CALL: u32 = 68; // (ty, roarr) -> o      instantiation S-03-05/06
-pub const FT_ISINST: u32 = 69; // (o, ty) -> i32          S-03-31
-pub const FT_ISSUB: u32 = 70; // (ty, ty) -> i32          S-03-31
-pub const FT_EXC_RAISE: u32 = 71; // (o) -> o           fill tb + throw
-pub const FT_EXC_MATCH: u32 = 72; // (o, o) -> i32      except-target match
-pub const FT_EXC_MSG: u32 = 73; // (o) -> str           S-02-29 message rules
-pub const FT_EXC_REPR: u32 = 74; // (o) -> str           repr(e) rules
-pub const FT_DICT_GET: u32 = 75; // (dict, str) -> o     linear name lookup
-pub const FT_DICT_SET: u32 = 76; // (dict, str, o) -> () insert/overwrite
-pub const FT_DICT_HAS: u32 = 77; // (dict, str) -> i32   membership
-pub const FT_FRAME_PUSH: u32 = 78; // (str fn) -> ()     prologue frame push
-pub const FT_FRAME_POP: u32 = 79; // () -> ()            epilogue pop
-pub const FT_FRAME_LINE: u32 = 80; // (i32 line) -> ()   Stmt::Line update
-pub const FT_FRAME_CUT: u32 = 81; // () -> ()            handler truncation
-pub const FT_STR_CAT: u32 = 82; // (str, str) -> str    message building
-pub const FT_TYPE_NAME: u32 = 83; // (o) -> str         type(x).__name__
-pub const FT_EXC_STR_OF: u32 = 84; // (o) -> str         str(x) dispatch w/ classes
-pub const FT_BOOL_OF: u32 = 85; // (o) -> i32           truthy through classes
-pub const FT_CALL_OF: u32 = 86; // (o, roarr) -> o      generic callable dispatch
-pub const FT_LEN_OF: u32 = 87; // (o) -> o              len via slot + TypeError
-pub const FT_GLOBAL_GET: u32 = 88; // (i32 slot) -> o    module-namespace read w/ NameError
-pub const FT_GLOBAL_SET_EXC: u32 = 89; // (i32 slot, o) -> () reserved
-pub const FT_EXC_CTX_SET: u32 = 90; // (o, o, o) -> o    context/cause chaining
-pub const FT_GETATTR_SLOT: u32 = 91; // (o, str) -> o    __getattr__ hook path
+pub const FT_TAG: u32 = 64; // (exc) -> ()        the $tag_pyexc payload type
+pub const FT_ATTR_GET: u32 = 65; // (o, str) -> o         S-03-9/12 lookup
+pub const FT_ATTR_SET: u32 = 66; // (o, str, o) -> ()     S-03-10
+pub const FT_ATTR_DEL: u32 = 67; // (o, str) -> ()        S-03-11
+pub const FT_CLS_NEW: u32 = 68; // (str, typarr-basis...) -> type
+pub const FT_CLS_CALL: u32 = 69; // (ty, roarr) -> o      instantiation S-03-05/06
+pub const FT_ISINST: u32 = 70; // (o, ty) -> i32          S-03-31
+pub const FT_ISSUB: u32 = 71; // (ty, ty) -> i32          S-03-31
+pub const FT_EXC_RAISE: u32 = 72; // (o) -> o           fill tb + throw
+pub const FT_EXC_MATCH: u32 = 73; // (o, o) -> i32      except-target match
+pub const FT_EXC_MSG: u32 = 74; // (o) -> str           S-02-29 message rules
+pub const FT_EXC_REPR: u32 = 75; // (o) -> str           repr(e) rules
+pub const FT_DICT_GET: u32 = 76; // (dict, str) -> o     linear name lookup
+pub const FT_DICT_SET: u32 = 77; // (dict, str, o) -> () insert/overwrite
+pub const FT_DICT_HAS: u32 = 78; // (dict, str) -> i32   membership
+pub const FT_FRAME_PUSH: u32 = 79; // (str fn) -> ()     prologue frame push
+pub const FT_FRAME_POP: u32 = 80; // () -> ()            epilogue pop
+pub const FT_FRAME_LINE: u32 = 81; // (i32 line) -> ()   Stmt::Line update
+pub const FT_FRAME_CUT: u32 = 82; // () -> ()            handler truncation
+pub const FT_STR_CAT: u32 = 83; // (str, str) -> str    message building
+pub const FT_TYPE_NAME: u32 = 84; // (o) -> str         type(x).__name__
+pub const FT_EXC_STR_OF: u32 = 85; // (o) -> str         str(x) dispatch w/ classes
+pub const FT_BOOL_OF: u32 = 86; // (o) -> i32           truthy through classes
+pub const FT_CALL_OF: u32 = 87; // (o, roarr) -> o      generic callable dispatch
+pub const FT_LEN_OF: u32 = 88; // (o) -> o              len via slot + TypeError
+pub const FT_GLOBAL_GET: u32 = 89; // (i32 slot) -> o    module-namespace read w/ NameError
+pub const FT_GLOBAL_SET_EXC: u32 = 90; // (i32 slot, o) -> () reserved
+pub const FT_EXC_CTX_SET: u32 = 91; // (o, o, o) -> o    context/cause chaining
+pub const FT_GETATTR_SLOT: u32 = 92; // (o, str) -> o    __getattr__ hook path
+// Leaf 03.03 classes-slice FTs (appended; ids never move; FT_CLS_NEW=67 kept
+// for its original 4-arg shape — the classes-slice build rides 94):
+pub const FT_EXC_NEW: u32 = 93; // (ty, roarr) -> o     exc instance w/ args
+pub const FT_CLS_NEW1: u32 = 94; // (str, ty) -> ty     (name, base|null)
+pub const FT_INSTANCE_NEW: u32 = 95; // (ty) -> o        $instance factory
+pub const FT_MRO_DICT_GET: u32 = 96; // (ty, str) -> o   mro dict walk
+pub const FT_TB_RENDER: u32 = 97; // () -> i32           stderr render, rc 1
 
 pub fn append_class_exc_fts(types: &mut wasm_encoder::TypeSection) {
     let o = || pyobj_ref();
@@ -1012,6 +1071,17 @@ pub fn append_class_exc_fts(types: &mut wasm_encoder::TypeSection) {
     types.ty().function([o(), o(), o()], [o()]);
     // 90 FT_GETATTR_SLOT: reserved (user __getattr__ objects, v1 dict walk)
     types.ty().function([o(), sg()], [o()]);
+    // 93 FT_EXC_NEW: (ty, roarr args) -> o — $excinst build (args tuple)
+    types.ty().function([ty(), ro()], [o()]);
+    // 94 FT_CLS_NEW1: (str name, ty base|null) -> ty — single-base C3 build
+    types.ty().function([sg(), ty()], [ty()]);
+    // 95 FT_INSTANCE_NEW: (ty) -> o — $instance with an empty attrs dict
+    types.ty().function([ty()], [o()]);
+    // 96 FT_MRO_DICT_GET: (ty, str) -> o — first dict hit along the mro
+    types.ty().function([ty(), sg()], [o()]);
+    // 97 FT_TB_RENDER: () -> i32 — render the active exception's traceback to
+    //    fd 2 in CPython format; returns the process exit code (1).
+    types.ty().function([], [i32v()]);
 }
 
 /// The `$tag_pyexc` wasm tag index (declared once, payload FT_TAG).

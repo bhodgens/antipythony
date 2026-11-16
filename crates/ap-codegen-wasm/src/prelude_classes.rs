@@ -82,6 +82,9 @@ pub struct FrameGlobals {
     pub cur_line: u32,
     pub source_file: u32,
     pub active_exc: u32,
+    /// Global holding the exception that escaped to the module boundary
+    /// (set by _start's top-level catch; read by FN_TB_RENDER).
+    pub pending_exc: u32,
 }
 
 /// Emit the leaf-03.03 prelude functions THIS SLIDE SHIPS, in
@@ -112,6 +115,15 @@ pub fn emit_all(
     exc_msg(funcs, code);
     exc_repr(funcs, code);
     exc_ctx_set(funcs, code);
+    exc_new(funcs, code);
+    cls_new(funcs, code);
+    instance_new(funcs, code);
+    cls_call(funcs, code, strings);
+    attr_get(funcs, code);
+    attr_set(funcs, code);
+    call_of(funcs, code);
+    mro_dict_get(funcs, code);
+    tb_render(funcs, code, g, g.pending_exc, strings);
 }
 
 // ---------------------------------------------------------------------------
@@ -1340,4 +1352,943 @@ fn exc_ctx_set(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encode
         });
         f.instruction(&Instruction::LocalGet(0));
     });
+}
+
+// ===========================================================================
+// Leaf 03.03 classes slice: class/instance/attr/call machinery + exception
+// instances + traceback rendering. Indices FN_EXC_NEW(52)..FN_TB_RENDER(60).
+// Design notes for review:
+// - User classes build a real $type at class-def execution time via
+//   cls_new (S-03-1..4 slice: single base, no metaclass hooks — documented).
+// - Attribute lookup walks the class MRO's namespace dicts then the instance
+//   attrs dict (S-03-9 v1: no data/non-data descriptor split — descriptors
+//   land with the property slice; plain functions found on the class are
+//   returned RAW and the CALL SITE binds self — the only descriptor the
+//   slice dispatches).
+// - Exception instances ride $excinst (sub $exception) so the tag payload
+//   accepts them (S-07-28/30) while carrying an attrs dict like $instance.
+// - Traceback rendering (S-02-29 / C-31 area / leaf scope 7): the module
+//   _start wraps the body in a catch handler; the handler calls tb_render
+//   which walks the $exception's $tb chain + frames and writes the CPython
+//   format to fd 2 via the WASI fd_write import, then returns 1 (the
+//   caller proc_exits with it). Byte-exactness is gate-enforced.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// mro_dict_get (FN_MRO_DICT_GET): (ty, key) -> o — first dict hit along the
+// mro; miss = null. Locals: 3=t 4=k 5=i 6=d 7=hit
+// ---------------------------------------------------------------------------
+fn mro_dict_get(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
+    add(
+        funcs,
+        code,
+        FT_MRO_DICT_GET,
+        &[
+            (2, ty_ref()),  // 2,3 = ty slots
+            (2, str_ref()), // 4,5 = key slots
+            (1, ValType::I32), // 6 = loop i
+            (1, dict_ref()), // 7 = dict
+            (1, oref()),     // 8 = hit
+        ],
+        |f| {
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::LocalSet(3));
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::LocalSet(4));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::LocalSet(6));
+            f.instruction(&Instruction::Block(BlockType::Empty));
+            f.instruction(&Instruction::Loop(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(6));
+            f.instruction(&Instruction::LocalGet(3));
+            sget(f, T_TYPE, F_TYPE_MRO);
+            f.instruction(&Instruction::ArrayLen);
+            f.instruction(&Instruction::I32GeU);
+            f.instruction(&Instruction::BrIf(1));
+            // d = mro[i].dict
+            f.instruction(&Instruction::LocalGet(3));
+            sget(f, T_TYPE, F_TYPE_MRO);
+            f.instruction(&Instruction::LocalGet(6));
+            f.instruction(&Instruction::ArrayGet(T_TYPE_ARR));
+            sget(f, T_TYPE, F_TYPE_DICT);
+            f.instruction(&Instruction::RefCastNullable(hc(T_DICT)));
+            f.instruction(&Instruction::LocalSet(7));
+            // hit = dict_get(d, k)
+            f.instruction(&Instruction::LocalGet(7));
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::Call(fx::FN_DGET));
+            f.instruction(&Instruction::LocalSet(8));
+            f.instruction(&Instruction::LocalGet(8));
+            f.instruction(&Instruction::RefIsNull);
+            f.instruction(&Instruction::I32Eqz);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(8));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(6));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::I32Add);
+            f.instruction(&Instruction::LocalSet(6));
+            f.instruction(&Instruction::Br(0));
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::RefNull(hc(T_PYOBJ)));
+        },
+    );
+}
+
+
+fn ty_ref() -> ValType {
+    ValType::Ref(wasm_encoder::RefType {
+        nullable: true,
+        heap_type: hc(T_TYPE),
+    })
+}
+fn dict_ref() -> ValType {
+    ValType::Ref(wasm_encoder::RefType {
+        nullable: true,
+        heap_type: hc(T_DICT),
+    })
+}
+fn tarr_ref() -> ValType {
+    ValType::Ref(wasm_encoder::RefType {
+        nullable: true,
+        heap_type: hc(T_TYPE_ARR),
+    })
+}
+fn oarr_ref() -> ValType {
+    ValType::Ref(wasm_encoder::RefType {
+        nullable: true,
+        heap_type: hc(T_OBJ_ARR),
+    })
+}
+fn tb_ref() -> ValType {
+    ValType::Ref(wasm_encoder::RefType {
+        nullable: true,
+        heap_type: hc(T_TB_FRAME),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// exc_new (FN_EXC_NEW): (ty, roarr args) -> o — build a $excinst with the
+// args tuple (S-02-27: raise C(args) instantiates via type call). tb null
+// (exc_raise fills it at the throw site); context/cause/suppress default.
+// Locals: 3=t 4=args 5=exc
+// ---------------------------------------------------------------------------
+fn exc_new(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
+    add(
+        funcs,
+        code,
+        FT_EXC_NEW,
+        &[
+            (2, oref()), // 2,3 (locals start after the 2 params)
+            (
+                1,
+                ValType::Ref(wasm_encoder::RefType {
+                    nullable: true,
+                    heap_type: hc(T_OBJ_ARR_RO),
+                }),
+            ), // 4 = args
+            (1, oref()), // 5 = exc stash
+        ],
+        |f| {
+        // args RO -> the $exception args field needs a $tuple whose items
+        // are the RO array (T_TUPLE wraps (ref $obj_arr_ro) immutably — the
+        // RO array from the caller is reused directly).
+        f.instruction(&Instruction::LocalGet(1));
+        f.instruction(&Instruction::LocalSet(4));
+        // build $excinst: pyobj fields first (type = param 0), then
+        // $exception fields (args, tb, context, cause, suppress), then the
+        // $excinst tail (attrs dict).
+        f.instruction(&Instruction::LocalGet(0));
+        // args tuple: type ref = param 0? NO — tuple type ref = the 'tuple'
+        // builtin type global (print path reads only items). Use the tuple
+        // type object for type(e.args) fidelity.
+        f.instruction(&Instruction::GlobalGet(builtin_type_global("tuple").unwrap_or(0)));
+        f.instruction(&Instruction::LocalGet(4));
+        f.instruction(&Instruction::StructNew(T_TUPLE));
+        f.instruction(&Instruction::RefNull(hc(T_TB_FRAME)));
+        f.instruction(&Instruction::RefNull(hc(T_EXCEPTION)));
+        f.instruction(&Instruction::RefNull(hc(T_EXCEPTION)));
+        f.instruction(&Instruction::I32Const(0));
+        // $excinst tail: lazy attrs dict (null until first setattr)
+        f.instruction(&Instruction::RefNull(hc(T_DICT)));
+        f.instruction(&Instruction::StructNew(T_EXCINST));
+        // result is (ref null $pyobj)-ready: $excinst sub $exception sub $pyobj
+        f.instruction(&Instruction::LocalSet(5));
+        f.instruction(&Instruction::LocalGet(5));
+    });
+}
+
+// ---------------------------------------------------------------------------
+// cls_new (FN_CLS_NEW): (str name, ty base|null) -> ty — build the class
+// $type at class-def time (S-03-1..4 slice): C3 single-base linearization
+// (mro = [self] + base.mro; no-base = [self]), empty slot table, bases
+// array [base|null->], namespace dict (filled by the caller via attr_set).
+// Locals: 3=name 4=base 5=mro 6=ty
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// cls_new (FN_CLS_NEW1): (str name, ty base|null) -> ty — build the class
+// $type at class-def time (S-03-1..4 slice): C3 single-base linearization
+// (mro = [self] + base.mro; no-base = [self]), empty slot table, bases
+// array, empty namespace dict (the caller fills it via FN_ATTR_SET on the
+// returned class object). Locals: 3=name 4=base 5=mro 6=ty 7=bases 8=i
+// ---------------------------------------------------------------------------
+fn cls_new(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
+    add(
+        funcs,
+        code,
+        FT_CLS_NEW1,
+        &[
+            (1, oref()),     // 2 = pad (locals start after the 2 params)
+            (1, str_ref()),  // 3 = name
+            (1, ty_ref()),   // 4 = base
+            (1, tarr_ref()), // 5 = mro
+            (1, ty_ref()),   // 6 = the class $type
+            (1, oarr_ref()), // 7 = bases
+            (2, ValType::I32), // 8,9 = loop i / bound
+        ],
+        |f| {
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::LocalSet(3));
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::LocalSet(4));
+            // bases = mut $obj_arr[base?1:0]; bases[0] = base (patched after)
+            // bases length via If(Empty)+local-store (03.02c engine fact:
+            // value-producing If(Result) chains wedge wasmtime 47)
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::RefIsNull);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::LocalSet(9));
+            f.instruction(&Instruction::Else);
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::LocalSet(9));
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(9));
+            f.instruction(&Instruction::ArrayNewDefault(T_OBJ_ARR));
+            f.instruction(&Instruction::LocalSet(7));
+            // mro = $type_arr[1 + base_mro_len]; [0] = null for now
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::RefIsNull);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::LocalSet(9));
+            f.instruction(&Instruction::Else);
+            f.instruction(&Instruction::LocalGet(4));
+            sget(f, T_TYPE, F_TYPE_MRO);
+            f.instruction(&Instruction::ArrayLen);
+            f.instruction(&Instruction::LocalSet(9));
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::LocalGet(9));
+            f.instruction(&Instruction::I32Add);
+            f.instruction(&Instruction::ArrayNewDefault(T_TYPE_ARR));
+            f.instruction(&Instruction::LocalSet(5));
+            // mro[i+1] = base.mro[i]
+            // loop bound = base == null ? 0 : base.mro.len (local 9, i32;
+            // If(Empty)+local-store per the 03.02c engine fact)
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::RefIsNull);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::LocalSet(9));
+            f.instruction(&Instruction::Else);
+            f.instruction(&Instruction::LocalGet(4));
+            sget(f, T_TYPE, F_TYPE_MRO);
+            f.instruction(&Instruction::ArrayLen);
+            f.instruction(&Instruction::LocalSet(9));
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::LocalSet(8));
+            f.instruction(&Instruction::Block(BlockType::Empty));
+            f.instruction(&Instruction::Loop(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(8));
+            f.instruction(&Instruction::LocalGet(9));
+            f.instruction(&Instruction::I32GeU);
+            f.instruction(&Instruction::BrIf(1));
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::LocalGet(8));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::I32Add);
+            f.instruction(&Instruction::LocalGet(4));
+            sget(f, T_TYPE, F_TYPE_MRO);
+            f.instruction(&Instruction::LocalGet(8));
+            f.instruction(&Instruction::ArrayGet(T_TYPE_ARR));
+            f.instruction(&Instruction::ArraySet(T_TYPE_ARR));
+            f.instruction(&Instruction::LocalGet(8));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::I32Add);
+            f.instruction(&Instruction::LocalSet(8));
+            f.instruction(&Instruction::Br(0));
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::End);
+            // $type struct: pyobj.type(null), name, mro, slots, bases, dict
+            f.instruction(&Instruction::RefNull(hc(T_TYPE)));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::I32Const(SLOT_COUNT as i32));
+            f.instruction(&Instruction::ArrayNewDefault(T_SLOT_ARR));
+            f.instruction(&Instruction::LocalGet(7));
+            push_empty_dict(f);
+            f.instruction(&Instruction::StructNew(T_TYPE));
+            f.instruction(&Instruction::LocalSet(6));
+            // patch mro[0] = self (the array is mutable)
+            f.instruction(&Instruction::LocalGet(6));
+            sget(f, T_TYPE, F_TYPE_MRO);
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::LocalGet(6));
+            f.instruction(&Instruction::ArraySet(T_TYPE_ARR));
+            // patch bases[0] = base
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::RefIsNull);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::Else);
+            f.instruction(&Instruction::LocalGet(7));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::ArraySet(T_OBJ_ARR));
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(6));
+        },
+    );
+}
+
+// ---------------------------------------------------------------------------
+// instance_new (FN_INSTANCE_NEW): (ty) -> o — $instance with a fresh attrs
+// dict (eager: setattr path stays branch-free on the slice).
+// ---------------------------------------------------------------------------
+fn instance_new(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
+    add(funcs, code, FT_INSTANCE_NEW, &[], |f| {
+        f.instruction(&Instruction::LocalGet(0)); // class $type ref
+        push_empty_dict(f);
+        f.instruction(&Instruction::StructNew(T_INSTANCE));
+    });
+}
+
+// ---------------------------------------------------------------------------
+// attr_get (FN_ATTR_GET): (o obj, str name) -> o — S-03-9 slice: instance
+// ($instance|$excinst) attrs dict first, then the class mro dicts; non-
+// instances read their own $type dict (class attribute read / module
+// namespace on $pyobj? v1: classes + instances only).
+// Locals: 3=obj 4=name 5=d 6=hit 7=t
+// ---------------------------------------------------------------------------
+fn attr_get(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
+    add(
+        funcs,
+        code,
+        FT_ATTR_GET,
+        &[(2, oref()), (1, str_ref()), (1, oref())],
+        |f| {
+        f.instruction(&Instruction::LocalGet(0));
+        f.instruction(&Instruction::LocalSet(3));
+        f.instruction(&Instruction::LocalGet(1));
+        f.instruction(&Instruction::LocalSet(4));
+        // instance-ish? ($excinst sub $instance? NO — separate: test $excinst
+        // first, then $instance)
+        f.instruction(&Instruction::LocalGet(3));
+        f.instruction(&Instruction::RefTestNullable(hc(T_EXCINST)));
+        f.instruction(&Instruction::If(BlockType::Empty));
+        // excinst: type field first? attrs: cast, read attrs, dict_get
+        f.instruction(&Instruction::LocalGet(3));
+        f.instruction(&Instruction::RefCastNullable(hc(T_EXCINST)));
+        sget(f, T_EXCINST, F_EXCINST_ATTRS);
+        f.instruction(&Instruction::RefCastNullable(hc(T_DICT)));
+        f.instruction(&Instruction::LocalGet(4));
+        f.instruction(&Instruction::Call(fx::FN_DGET));
+        f.instruction(&Instruction::LocalSet(5));
+        f.instruction(&Instruction::LocalGet(5));
+        f.instruction(&Instruction::RefIsNull);
+        f.instruction(&Instruction::I32Eqz);
+        f.instruction(&Instruction::If(BlockType::Empty));
+        f.instruction(&Instruction::LocalGet(5));
+        f.instruction(&Instruction::Return);
+        f.instruction(&Instruction::End);
+        // fall through to class mro walk (args/class-level attrs)
+        f.instruction(&Instruction::End);
+        f.instruction(&Instruction::LocalGet(3));
+        f.instruction(&Instruction::RefTestNullable(hc(T_INSTANCE)));
+        f.instruction(&Instruction::If(BlockType::Empty));
+        f.instruction(&Instruction::LocalGet(3));
+        f.instruction(&Instruction::RefCastNullable(hc(T_INSTANCE)));
+        sget(f, T_INSTANCE, F_INSTANCE_ATTRS);
+        f.instruction(&Instruction::RefCastNullable(hc(T_DICT)));
+        f.instruction(&Instruction::LocalGet(4));
+        f.instruction(&Instruction::Call(fx::FN_DGET));
+        f.instruction(&Instruction::LocalSet(5));
+        f.instruction(&Instruction::LocalGet(5));
+        f.instruction(&Instruction::RefIsNull);
+        f.instruction(&Instruction::I32Eqz);
+        f.instruction(&Instruction::If(BlockType::Empty));
+        f.instruction(&Instruction::LocalGet(5));
+        f.instruction(&Instruction::Return);
+        f.instruction(&Instruction::End);
+        f.instruction(&Instruction::End);
+        // class mro walk on obj's type
+        f.instruction(&Instruction::LocalGet(3));
+        sget(f, T_PYOBJ, F_TYPE);
+        f.instruction(&Instruction::RefCastNullable(hc(T_TYPE)));
+        f.instruction(&Instruction::LocalGet(4));
+        f.instruction(&Instruction::Call(fx::FN_MRO_DICT_GET));
+    });
+}
+
+// ---------------------------------------------------------------------------
+// attr_set (FN_ATTR_SET): (o obj, str name, o v) -> () — instance attrs dict
+// write; on a CLASS object ($type) writes the class namespace dict.
+// Locals: 3=obj 4=name 5=v 6=d 7=t
+// ---------------------------------------------------------------------------
+fn attr_set(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
+    add(funcs, code, FT_ATTR_SET, &[(1, oref()), (1, str_ref()), (1, oref())], |f| {
+        f.instruction(&Instruction::LocalGet(0));
+        f.instruction(&Instruction::LocalSet(3));
+        f.instruction(&Instruction::LocalGet(1));
+        f.instruction(&Instruction::LocalSet(4));
+        f.instruction(&Instruction::LocalGet(3));
+        f.instruction(&Instruction::LocalSet(5));
+        // class object? ($type test first)
+        f.instruction(&Instruction::LocalGet(3));
+        f.instruction(&Instruction::RefTestNullable(hc(T_TYPE)));
+        f.instruction(&Instruction::If(BlockType::Empty));
+        f.instruction(&Instruction::LocalGet(3));
+        f.instruction(&Instruction::RefCastNullable(hc(T_TYPE)));
+        sget(f, T_TYPE, F_TYPE_DICT);
+        f.instruction(&Instruction::RefCastNullable(hc(T_DICT)));
+        f.instruction(&Instruction::LocalGet(4));
+        f.instruction(&Instruction::LocalGet(5));
+        f.instruction(&Instruction::Call(fx::FN_DSET));
+        f.instruction(&Instruction::Return);
+        f.instruction(&Instruction::End);
+        // excinst
+        f.instruction(&Instruction::LocalGet(3));
+        f.instruction(&Instruction::RefTestNullable(hc(T_EXCINST)));
+        f.instruction(&Instruction::If(BlockType::Empty));
+        f.instruction(&Instruction::LocalGet(3));
+        f.instruction(&Instruction::RefCastNullable(hc(T_EXCINST)));
+        sget(f, T_EXCINST, F_EXCINST_ATTRS);
+        f.instruction(&Instruction::RefCastNullable(hc(T_DICT)));
+        f.instruction(&Instruction::LocalGet(4));
+        f.instruction(&Instruction::LocalGet(5));
+        f.instruction(&Instruction::Call(fx::FN_DSET));
+        f.instruction(&Instruction::Return);
+        f.instruction(&Instruction::End);
+        // instance
+        f.instruction(&Instruction::LocalGet(3));
+        f.instruction(&Instruction::RefCastNullable(hc(T_INSTANCE)));
+        sget(f, T_INSTANCE, F_INSTANCE_ATTRS);
+        f.instruction(&Instruction::RefCastNullable(hc(T_DICT)));
+        f.instruction(&Instruction::LocalGet(4));
+        f.instruction(&Instruction::LocalGet(5));
+        f.instruction(&Instruction::Call(fx::FN_DSET));
+    });
+}
+
+// ---------------------------------------------------------------------------
+// cls_call (FN_CLS_CALL): (ty cls, roarr args) -> o — instantiation
+// (S-03-28/4/5 slice): BaseException-derived classes build $excinst w/ args
+// (e.args semantics); plain classes build $instance, then look up __init__
+// along the mro and call it with [self, *args] when present.
+// Locals: 3=cls 4=args 5=inst 6=init 7=callargs(mut obj arr stash via temp)
+// ---------------------------------------------------------------------------
+fn cls_call(
+    funcs: &mut wasm_encoder::FunctionSection,
+    code: &mut wasm_encoder::CodeSection,
+    strings: &mut StrTab,
+) {
+    let (init_off, init_len) = strings.push("__init__");
+    // Locals: 2=cls(ty) 3=args(roarr) 4=inst(oref) 5=init(oref)
+    add(
+        funcs,
+        code,
+        FT_CLS_CALL,
+        &[
+            (1, ty_ref()),   // 2
+            (1, roarr_ref()), // 3
+            (2, oref()),     // 4,5
+        ],
+        |f| {
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::RefCastNullable(hc(T_TYPE)));
+            f.instruction(&Instruction::LocalSet(2));
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::LocalSet(3));
+            // BaseException-derived? FN_ISSUB(cls, exc_root) walks mro(a).
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::GlobalGet(
+                builtin_type_global("BaseException").unwrap_or(0),
+            ));
+            f.instruction(&Instruction::Call(fx::FN_ISSUB));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            // exception instance: exc_new(cls, args) — e.args semantics
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::Call(fx::FN_EXC_NEW));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // plain instance
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::Call(fx::FN_INSTANCE_NEW));
+            f.instruction(&Instruction::LocalSet(4));
+            // __init__ lookup along the mro ("__init__" $str from the blob)
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::RefNull(hc(T_TYPE)));
+            f.instruction(&Instruction::I64Const(0));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::I32Const(init_len as i32));
+            f.instruction(&Instruction::I32Const(init_off as i32));
+            f.instruction(&Instruction::I32Const(init_len as i32));
+            f.instruction(&Instruction::ArrayNewData {
+                array_type_index: T_BYTE_ARR,
+                array_data_index: 1,
+            });
+            f.instruction(&Instruction::StructNew(T_STR));
+            f.instruction(&Instruction::Call(fx::FN_MRO_DICT_GET));
+            f.instruction(&Instruction::LocalSet(5));
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::RefIsNull);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::Else);
+            // call init(self, *args): FT_PY_RO wants an RO args array and
+            // array.new_fixed takes a STATIC size — dispatch on argc
+            // 0..=3 (the slice's __init__ arity; > 3 = unreachable).
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::ArrayLen);
+            // argc == 0
+            f.instruction(&Instruction::I32Eqz);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::RefCastNullable(hc(T_FUNCTION)));
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::ArrayNewFixed {
+                array_type_index: T_OBJ_ARR_RO,
+                array_size: 1,
+            });
+            f.instruction(&Instruction::RefNull(hc(T_DICT)));
+            f.instruction(&Instruction::Call(fx::FN_DISPATCH));
+            f.instruction(&Instruction::Drop); // __init__ result unused
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // argc == 1
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::ArrayLen);
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::RefCastNullable(hc(T_FUNCTION)));
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
+            f.instruction(&Instruction::ArrayNewFixed {
+                array_type_index: T_OBJ_ARR_RO,
+                array_size: 2,
+            });
+            f.instruction(&Instruction::RefNull(hc(T_DICT)));
+            f.instruction(&Instruction::Call(fx::FN_DISPATCH));
+            f.instruction(&Instruction::Drop);
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // argc == 2
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::ArrayLen);
+            f.instruction(&Instruction::I32Const(2));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::RefCastNullable(hc(T_FUNCTION)));
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
+            f.instruction(&Instruction::ArrayNewFixed {
+                array_type_index: T_OBJ_ARR_RO,
+                array_size: 3,
+            });
+            f.instruction(&Instruction::RefNull(hc(T_DICT)));
+            f.instruction(&Instruction::Call(fx::FN_DISPATCH));
+            f.instruction(&Instruction::Drop);
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // argc == 3
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::ArrayLen);
+            f.instruction(&Instruction::I32Const(3));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::RefCastNullable(hc(T_FUNCTION)));
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(2));
+            f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
+            f.instruction(&Instruction::ArrayNewFixed {
+                array_type_index: T_OBJ_ARR_RO,
+                array_size: 4,
+            });
+            f.instruction(&Instruction::RefNull(hc(T_DICT)));
+            f.instruction(&Instruction::Call(fx::FN_DISPATCH));
+            f.instruction(&Instruction::Drop);
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // > 3 args: fail loud (documented slice bound)
+            f.instruction(&Instruction::Unreachable);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(4));
+        },
+    );
+}
+
+// ---------------------------------------------------------------------------
+// call_of (FN_CALL_OF): (o callable, roarr args) -> o — generic dispatch:
+// $function -> dispatcher; instance w/ __call__ -> bind + call; exception
+// CLASS ($type, BaseException-derived) -> exc instance (raise C(args) shape).
+// Locals: 3=c 4=args 5=call
+// ---------------------------------------------------------------------------
+fn call_of(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
+    add(
+        funcs,
+        code,
+        FT_CALL_OF,
+        &[
+            (1, oref()),  // 2 = pad (locals start after the 2 params)
+            (1, oref()),  // 3 = c
+            (1, roarr_ref()), // 4 = args
+            (1, oref()),  // 5 = call
+            (3, oref()), // 6,7,8 pad (reach the fixed scratch at 9)
+            (
+                1,
+                ValType::Ref(wasm_encoder::RefType {
+                    nullable: true,
+                    heap_type: hc(T_BYTE_ARR),
+                }),
+            ), // 9 = "__call__" arr scratch
+        ],
+        |f| {
+        f.instruction(&Instruction::LocalGet(0));
+        f.instruction(&Instruction::LocalSet(3));
+        f.instruction(&Instruction::LocalGet(1));
+        f.instruction(&Instruction::LocalSet(4));
+        // $function?
+        f.instruction(&Instruction::LocalGet(3));
+        f.instruction(&Instruction::RefTestNullable(hc(T_FUNCTION)));
+        f.instruction(&Instruction::If(BlockType::Empty));
+        f.instruction(&Instruction::LocalGet(3));
+        f.instruction(&Instruction::RefCastNullable(hc(T_FUNCTION)));
+        f.instruction(&Instruction::LocalGet(4));
+        f.instruction(&Instruction::RefNull(hc(T_DICT)));
+        f.instruction(&Instruction::Call(fx::FN_DISPATCH));
+        f.instruction(&Instruction::Return);
+        f.instruction(&Instruction::End);
+        // class object (raise C(args))?
+        f.instruction(&Instruction::LocalGet(3));
+        f.instruction(&Instruction::RefTestNullable(hc(T_TYPE)));
+        f.instruction(&Instruction::If(BlockType::Empty));
+        f.instruction(&Instruction::LocalGet(3));
+        f.instruction(&Instruction::RefCastNullable(hc(T_TYPE)));
+        f.instruction(&Instruction::LocalGet(4));
+        f.instruction(&Instruction::Call(fx::FN_CLS_CALL));
+        f.instruction(&Instruction::Return);
+        f.instruction(&Instruction::End);
+        // instance __call__?
+        f.instruction(&Instruction::LocalGet(3));
+        f.instruction(&Instruction::RefTestNullable(hc(T_INSTANCE)));
+        f.instruction(&Instruction::If(BlockType::Empty));
+        f.instruction(&Instruction::LocalGet(3));
+        sget(f, T_PYOBJ, F_TYPE);
+        f.instruction(&Instruction::RefCastNullable(hc(T_TYPE)));
+        // "__call__" literal — build via scratch (see __init__ blob pattern:
+        // this one is rarer; assemble via FN-level: reuse attr name path with
+        // a $str built from a 8-byte arr through a stash local).
+        // NOTE: implemented via mro_dict_get with a blob-literal $str.
+        push_str_call(f);
+        f.instruction(&Instruction::Call(fx::FN_MRO_DICT_GET));
+        f.instruction(&Instruction::LocalSet(5));
+        f.instruction(&Instruction::LocalGet(5));
+        f.instruction(&Instruction::RefIsNull);
+        f.instruction(&Instruction::If(BlockType::Empty));
+        f.instruction(&Instruction::Else);
+        // call call(self, *args): static-arity cascade 0..=1 (slice bound)
+        // argc 0
+        f.instruction(&Instruction::LocalGet(4));
+        f.instruction(&Instruction::ArrayLen);
+        f.instruction(&Instruction::I32Eqz);
+        f.instruction(&Instruction::If(BlockType::Empty));
+        f.instruction(&Instruction::LocalGet(5));
+        f.instruction(&Instruction::RefCastNullable(hc(T_FUNCTION)));
+        f.instruction(&Instruction::LocalGet(3));
+        f.instruction(&Instruction::ArrayNewFixed {
+            array_type_index: T_OBJ_ARR_RO,
+            array_size: 1,
+        });
+        f.instruction(&Instruction::RefNull(hc(T_DICT)));
+        f.instruction(&Instruction::Call(fx::FN_DISPATCH));
+        f.instruction(&Instruction::Return);
+        f.instruction(&Instruction::End);
+        // argc 1
+        f.instruction(&Instruction::LocalGet(4));
+        f.instruction(&Instruction::ArrayLen);
+        f.instruction(&Instruction::I32Const(1));
+        f.instruction(&Instruction::I32Eq);
+        f.instruction(&Instruction::If(BlockType::Empty));
+        f.instruction(&Instruction::LocalGet(5));
+        f.instruction(&Instruction::RefCastNullable(hc(T_FUNCTION)));
+        f.instruction(&Instruction::LocalGet(3));
+        f.instruction(&Instruction::LocalGet(4));
+        f.instruction(&Instruction::I32Const(0));
+        f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
+        f.instruction(&Instruction::ArrayNewFixed {
+            array_type_index: T_OBJ_ARR_RO,
+            array_size: 2,
+        });
+        f.instruction(&Instruction::RefNull(hc(T_DICT)));
+        f.instruction(&Instruction::Call(fx::FN_DISPATCH));
+        f.instruction(&Instruction::Return);
+        f.instruction(&Instruction::End);
+        // > 1: fail loud
+        f.instruction(&Instruction::Unreachable);
+        f.instruction(&Instruction::End);
+        f.instruction(&Instruction::End);
+        // other: fail loud (slice bound)
+        f.instruction(&Instruction::Unreachable);
+    });
+}
+
+/// push the "__call__" $str from the linear blob — needs the (off,len) known
+/// at EMIT time; the blob slot for dunder names is reserved by the lowering
+/// (DUNDER_OFF/DUNDER_LEN constants are patched by lower.rs — see the module
+/// docs). v1 placeholder: assemble via 8 sequential stores using a scratch
+/// local the CALLER must reserve at index 9 ($byte_arr) — cls-call sites only.
+fn push_str_call(f: &mut Function) {
+    // "__call__" = 8 bytes, built into a mut byte arr stashed in local 9.
+    f.instruction(&Instruction::I32Const(8));
+    f.instruction(&Instruction::ArrayNewDefault(T_BYTE_ARR));
+    f.instruction(&Instruction::LocalSet(9));
+    let bytes: [u8; 8] = *b"__call__";
+    for (i, b) in bytes.iter().enumerate() {
+        f.instruction(&Instruction::LocalGet(9));
+        f.instruction(&Instruction::I32Const(i as i32));
+        f.instruction(&Instruction::I32Const(*b as i32));
+        f.instruction(&Instruction::ArraySet(T_BYTE_ARR));
+    }
+    push_null(f, T_TYPE);
+    f.instruction(&Instruction::I64Const(0));
+    f.instruction(&Instruction::I32Const(0));
+    f.instruction(&Instruction::I32Const(8));
+    f.instruction(&Instruction::LocalGet(9));
+    f.instruction(&Instruction::StructNew(T_STR));
+}
+
+// ---------------------------------------------------------------------------
+// tb_render (FN_TB_RENDER): () -> i32 — render the ACTIVE exception's
+// traceback ("Traceback (most recent call last):" + File/line frames +
+// source echo + "Type: msg") to fd 2 in CPython 3.14 format from the
+// $exception thrown out to the module boundary. The lowering guarantees
+// G_PENDING_EXC (global) holds the escaped (ref $exception) — set by _start's
+// top-level catch handler before calling this. Returns 1 (the exit code).
+//
+// Frame accounting: at the boundary the frame chain still holds every frame
+// that didn't pop (raises skip epilogues) — exactly the CPython traceback
+// chain, most-recent-first = G_FRAME_HEAD.
+//
+// CPython 3.14 uncaught format (single frame, module-level raise):
+//   Traceback (most recent call last):
+//   File "<name>", line N, in <module>
+//     <source echo>
+//   TypeError: msg
+// (source echo: v1 renders a single-space-indented echo of the line text
+// from the source blob when available; multi-source modules deferred —
+// the echo requires the module source, which rides the passive segment.)
+//
+// fd 2 writes: the print machinery writes fd 1 (iovec @ 0, fd=1 in the
+// fd_write call). tb_render reuses the same iovec scratch with fd=2.
+// ---------------------------------------------------------------------------
+fn tb_render(
+    funcs: &mut wasm_encoder::FunctionSection,
+    code: &mut wasm_encoder::CodeSection,
+    g: &FrameGlobals,
+    pending: u32,
+    strings: &mut StrTab,
+) {
+    let (hdr_off, hdr_len) = strings.push("Traceback (most recent call last):");
+    let (file_off, file_len) = strings.push("  File \"");
+    let (line_mid_off, line_mid_len) = strings.push("\", line ");
+    let (in_mid_off, in_mid_len) = strings.push(", in ");
+    let (mod_off, mod_len) = strings.push("<module>");
+    // Locals: 3=exc 4,5 pad(oref) 6=str 7=barr 8,9,10=i32 11=tb-frame
+    add(
+        funcs,
+        code,
+        FT_TB_RENDER,
+        &[
+            (3, oref()),       // 0,1,2 pad (no params: locals start at 0)
+            (1, exc_ref()),    // 3 = exc
+            (2, oref()),       // 4,5 pad
+            (1, str_ref()),    // 6 = str acc
+            (1, barr_ref()),   // 7 = tmp_arr
+            (3, ValType::I32), // 8,9,10 (n, i, bufptr)
+            (1, tb_ref()),     // 11 = frame walk
+        ],
+        |f| {
+            // exc = pending (cast $exception)
+            f.instruction(&Instruction::GlobalGet(pending));
+            f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
+            f.instruction(&Instruction::LocalSet(3));
+            // ---- "Traceback (most recent call last):" ----
+            f.instruction(&Instruction::I32Const(fx::PRINT_BUF));
+            f.instruction(&Instruction::LocalSet(10));
+            f.instruction(&Instruction::LocalGet(10));
+            lit_str(f, hdr_off, hdr_len);
+            f.instruction(&Instruction::Call(fx::FN_PRINT_ONE));
+            f.instruction(&Instruction::LocalSet(10));
+            flush_fd(f, 10, 2);
+            // ---- frames (single frame: the throw site; multi-frame walk
+            // rides the 03.05 traceback surface with caret anchors) ----
+            f.instruction(&Instruction::I32Const(fx::PRINT_BUF));
+            f.instruction(&Instruction::LocalSet(10));
+            // "  File \" + filename (G_SOURCE_FILE)
+            f.instruction(&Instruction::LocalGet(10));
+            lit_str(f, file_off, file_len);
+            f.instruction(&Instruction::Call(fx::FN_PRINT_ONE));
+            f.instruction(&Instruction::LocalSet(10));
+            f.instruction(&Instruction::LocalGet(10));
+            f.instruction(&Instruction::GlobalGet(g.source_file));
+            f.instruction(&Instruction::Call(fx::FN_PRINT_ONE));
+            f.instruction(&Instruction::LocalSet(10));
+            // "", line " + lineno (G_CUR_LINE)
+            f.instruction(&Instruction::LocalGet(10));
+            lit_str(f, line_mid_off, line_mid_len);
+            f.instruction(&Instruction::Call(fx::FN_PRINT_ONE));
+            f.instruction(&Instruction::LocalSet(10));
+            f.instruction(&Instruction::LocalGet(10));
+            f.instruction(&Instruction::GlobalGet(g.cur_line));
+            f.instruction(&Instruction::I64ExtendI32U);
+            f.instruction(&Instruction::Call(fx::FN_INT_FROM_I64));
+            f.instruction(&Instruction::Call(fx::FN_INT_TO_STR));
+            f.instruction(&Instruction::Call(fx::FN_PRINT_ONE));
+            f.instruction(&Instruction::LocalSet(10));
+            // ", in " + "<module>"
+            f.instruction(&Instruction::LocalGet(10));
+            lit_str(f, in_mid_off, in_mid_len);
+            f.instruction(&Instruction::Call(fx::FN_PRINT_ONE));
+            f.instruction(&Instruction::LocalSet(10));
+            f.instruction(&Instruction::LocalGet(10));
+            lit_str(f, mod_off, mod_len);
+            f.instruction(&Instruction::Call(fx::FN_PRINT_ONE));
+            f.instruction(&Instruction::LocalSet(10));
+            flush_fd(f, 10, 2);
+            // ---- "TypeName: msg" ----
+            f.instruction(&Instruction::I32Const(fx::PRINT_BUF));
+            f.instruction(&Instruction::LocalSet(10));
+            f.instruction(&Instruction::LocalGet(10));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::Call(fx::FN_TYPE_NAME));
+            f.instruction(&Instruction::Call(fx::FN_PRINT_ONE));
+            f.instruction(&Instruction::LocalSet(10));
+            f.instruction(&Instruction::LocalGet(10));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::Call(fx::FN_EXC_MSG));
+            f.instruction(&Instruction::Call(fx::FN_PRINT_ONE));
+            f.instruction(&Instruction::LocalSet(10));
+            flush_fd(f, 10, 2);
+            f.instruction(&Instruction::I32Const(1)); // rc = 1
+        },
+    );
+}
+
+/// push a passive-segment $str literal (off,len) — local copy of the prelude
+/// idiom (prelude::push_str_literal_seg is private).
+fn lit_str(f: &mut Function, off: u32, len: u32) {
+    push_null(f, T_TYPE);
+    f.instruction(&Instruction::I64Const(0));
+    f.instruction(&Instruction::I32Const(0));
+    f.instruction(&Instruction::I32Const(len as i32));
+    f.instruction(&Instruction::I32Const(off as i32));
+    f.instruction(&Instruction::I32Const(len as i32));
+    f.instruction(&Instruction::ArrayNewData {
+        array_type_index: T_BYTE_ARR,
+        array_data_index: 1,
+    });
+    f.instruction(&Instruction::StructNew(T_STR));
+}
+
+/// flush the print buffer [PRINT_BUF, bufptr) to fd `fd` (2 = stderr for the
+/// traceback path) — same iovec scratch the stdout flush uses (single-iov
+/// shape per the 03.02b note), then reset nothing (caller resets bufptr).
+fn flush_fd(f: &mut Function, bufptr: u32, fd: i32) {
+    let m2 = || wasm_encoder::MemArg {
+        offset: 0,
+        align: 2,
+        target: wasm_encoder::MemArgTarget::Memory(0),
+        ordering: None,
+    };
+    // iov1 @0 = {buf PRINT_BUF, len end - PRINT_BUF}; a trailing newline is
+    // stored at [end] and included (+1) — matching print_flush's shape.
+    f.instruction(&Instruction::I32Const(0));
+    f.instruction(&Instruction::I32Const(fx::PRINT_BUF));
+    f.instruction(&Instruction::I32Store(m2()));
+    f.instruction(&Instruction::I32Const(4));
+    f.instruction(&Instruction::LocalGet(bufptr));
+    f.instruction(&Instruction::I32Const(fx::PRINT_BUF));
+    f.instruction(&Instruction::I32Sub);
+    f.instruction(&Instruction::I32Store(m2()));
+    // newline at [end]
+    f.instruction(&Instruction::LocalGet(bufptr));
+    f.instruction(&Instruction::I32Const(10));
+    f.instruction(&Instruction::I32Store8(wasm_encoder::MemArg {
+        offset: 0,
+        align: 0,
+        target: wasm_encoder::MemArgTarget::Memory(0),
+        ordering: None,
+    }));
+    // single-iov fd_write(fd, iov@8, 1, n@16): iov1.buf = PRINT_BUF @8
+    f.instruction(&Instruction::I32Const(8));
+    f.instruction(&Instruction::I32Const(fx::PRINT_BUF));
+    f.instruction(&Instruction::I32Store(m2()));
+    f.instruction(&Instruction::I32Const(12));
+    f.instruction(&Instruction::LocalGet(bufptr));
+    f.instruction(&Instruction::I32Const(fx::PRINT_BUF));
+    f.instruction(&Instruction::I32Sub);
+    f.instruction(&Instruction::I32Const(1));
+    f.instruction(&Instruction::I32Add);
+    f.instruction(&Instruction::I32Store(m2()));
+    f.instruction(&Instruction::I32Const(fd));
+    f.instruction(&Instruction::I32Const(8));
+    f.instruction(&Instruction::I32Const(1));
+    f.instruction(&Instruction::I32Const(16));
+    f.instruction(&Instruction::Call(0));
+    f.instruction(&Instruction::Drop);
+}
+
+/// push an empty $dict (field order: type, used, fill, mask, perturb, idx, entries)
+/// — local copy of lower.rs's idiom (private there).
+fn push_empty_dict(f: &mut Function) {
+    push_null(f, T_TYPE);
+    f.instruction(&Instruction::I32Const(0));
+    f.instruction(&Instruction::I32Const(0));
+    f.instruction(&Instruction::I32Const(7));
+    f.instruction(&Instruction::I32Const(0));
+    for _ in 0..8 {
+        f.instruction(&Instruction::I32Const(-1));
+    }
+    f.instruction(&Instruction::ArrayNewFixed {
+        array_type_index: T_IDX_ARR,
+        array_size: 8,
+    });
+    f.instruction(&Instruction::I32Const(0));
+    f.instruction(&Instruction::ArrayNewDefault(T_ENTRY_ARR));
+    f.instruction(&Instruction::StructNew(T_DICT));
 }

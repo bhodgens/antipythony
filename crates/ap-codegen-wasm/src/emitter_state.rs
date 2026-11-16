@@ -69,10 +69,20 @@ pub const FN_EXC_MATCH: u32 = 48; // (o exc, o target) -> i32
 pub const FN_EXC_MSG: u32 = 49; // (o) -> str  (S-02-29 str(e))
 pub const FN_EXC_REPR: u32 = 50; // (o) -> str  (repr(e))
 pub const FN_EXC_CTX_SET: u32 = 51; // (o new, o ctx, o cause) -> o
+// classes slice (03.03 continuation of the append):
+pub const FN_EXC_NEW: u32 = 52; // (ty, roarr) -> o   exc instance w/ args
+pub const FN_CLS_NEW: u32 = 53; // (str, ty|null) -> ty  C3 single-base build
+pub const FN_INSTANCE_NEW: u32 = 54; // (ty) -> o     $instance w/ empty attrs
+pub const FN_CLS_CALL: u32 = 55; // (ty, roarr) -> o  instantiate + __init__
+pub const FN_ATTR_GET: u32 = 56; // (o, str) -> o     S-03-9 lookup chain
+pub const FN_ATTR_SET: u32 = 57; // (o, str, o) -> () S-03-10
+pub const FN_CALL_OF: u32 = 58; // (o, roarr) -> o    $function | __call__ | exc
+pub const FN_MRO_DICT_GET: u32 = 59; // (ty, str) -> o first dict hit along mro
+pub const FN_TB_RENDER: u32 = 60; // () -> i32        stderr traceback, rc 1
 /// First wasm function index of the EMITTED user functions (Item::FnDef /
 /// Stmt::LocalDef), which follow the prelude densely. `_start` is
 /// computed at emit time as FN_FIRST_USER + n_user_fns.
-pub const FN_FIRST_USER: u32 = 52;
+pub const FN_FIRST_USER: u32 = 61;
 
 /// rt_init stays at index 2 (03.02a layout: 0/1 imports, 2 rt_init).
 pub const FN_RT_INIT: u32 = 2;
