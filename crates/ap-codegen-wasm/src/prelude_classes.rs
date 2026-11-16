@@ -110,7 +110,7 @@ pub fn emit_all(
             frame_line(funcs, code, g);
         issub(funcs, code);
         isinst(funcs, code);
-    exc_raise(funcs, code, g);
+    exc_raise(funcs, code, g, strings);
     exc_match(funcs, code);
     exc_msg(funcs, code);
     exc_repr(funcs, code);
@@ -738,6 +738,15 @@ fn frame_push(
 fn frame_pop(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection, g: &FrameGlobals) {
     add(funcs, code, FT_FRAME_POP, &[
             (3, oref()),], |f| {
+        // NULL-HEAD SAFE: the dead-epilogue pop CAN execute when a body ends
+        // in `return` whose emitted wasm return the emitter folded (03.03b
+        // observed on 2-level calls) — and a traceback frame chain is a
+        // best-effort surface: an extra pop must never trap, only no-op.
+        f.instruction(&Instruction::GlobalGet(g.frame_head));
+        f.instruction(&Instruction::RefIsNull);
+        f.instruction(&Instruction::If(BlockType::Empty));
+        f.instruction(&Instruction::Return);
+        f.instruction(&Instruction::End);
         f.instruction(&Instruction::GlobalGet(g.frame_head));
         f.instruction(&Instruction::RefCastNullable(hc(T_TB_FRAME)));
         sget(f, T_TB_FRAME, F_TB_NEXT);
@@ -892,7 +901,9 @@ fn exc_raise(
     funcs: &mut wasm_encoder::FunctionSection,
     code: &mut wasm_encoder::CodeSection,
     g: &FrameGlobals,
+    strings: &mut StrTab,
 ) {
+    let (msg_off, msg_len) = strings.push("exceptions must derive from BaseException");
     add(
         funcs,
         code,
@@ -908,17 +919,65 @@ fn exc_raise(
             ),
         ],
         |f| {
+            // Validate BaseException-derivedness at RAISE time (S-03-33):
+            // non-exception -> build TypeError("exceptions must derive from
+            // BaseException") and throw THAT (the corpus pin surface); the
+            // old RefCast trapped fail-loud instead (03.03b).
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::RefTestNullable(hc(T_EXCEPTION)));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            // exception path: cast, tb snapshot, throw. Local 3 is the
+            // exception-typed scratch ((1, exc_ref) in the locals decl —
+            // locals start after the single param), so the throw tag
+            // payload keeps its (ref null $exception) type.
             f.instruction(&Instruction::LocalGet(0));
             f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
             f.instruction(&Instruction::LocalSet(3));
-            // exc.tb = current frame chain head
             f.instruction(&Instruction::LocalGet(3));
             f.instruction(&Instruction::GlobalGet(g.frame_head));
             f.instruction(&Instruction::StructSet {
                 struct_type_index: T_EXCEPTION,
                 field_index: F_EXC_TB,
             });
-            // throw $tag_pyexc exc
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::Throw(TAG_PYEXC));
+            f.instruction(&Instruction::End);
+            // non-exception path: throw a fresh TypeError with the CPython
+            // message; args = ("exceptions must derive from BaseException",)
+            // Two copies of the ty ref: the FIRST is exc_new's arg0 (call
+            // args push left-to-right; roarr must end up on top), the SECOND
+            // is consumed by struct.new $str's type field.
+            f.instruction(&Instruction::GlobalGet(
+                crate::types::exc_type_global("TypeError").unwrap_or(0),
+            ));
+            f.instruction(&Instruction::GlobalGet(
+                crate::types::exc_type_global("TypeError").unwrap_or(0),
+            ));
+            f.instruction(&Instruction::I64Const(0));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::I32Const(41));
+            f.instruction(&Instruction::I32Const(msg_off as i32));
+            f.instruction(&Instruction::I32Const(msg_len as i32));
+            f.instruction(&Instruction::ArrayNewData {
+                array_type_index: T_BYTE_ARR,
+                array_data_index: 1,
+            });
+            f.instruction(&Instruction::StructNew(T_STR));
+            f.instruction(&Instruction::ArrayNewFixed {
+                array_type_index: T_OBJ_ARR_RO,
+                array_size: 1,
+            });
+            f.instruction(&Instruction::Call(fx::FN_EXC_NEW));
+            // stack is now [excinst]: cast + tb + throw. (The ty ref under
+            // the args array was exc_new's arg0 — consumed by the call.)
+            f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
+            f.instruction(&Instruction::LocalSet(3));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::GlobalGet(g.frame_head));
+            f.instruction(&Instruction::StructSet {
+                struct_type_index: T_EXCEPTION,
+                field_index: F_EXC_TB,
+            });
             f.instruction(&Instruction::LocalGet(3));
             f.instruction(&Instruction::Throw(TAG_PYEXC));
             // type-correct unreachable fall-through
@@ -1710,10 +1769,19 @@ fn attr_get(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::
         f.instruction(&Instruction::LocalGet(3));
         f.instruction(&Instruction::RefTestNullable(hc(T_EXCINST)));
         f.instruction(&Instruction::If(BlockType::Empty));
-        // excinst: type field first? attrs: cast, read attrs, dict_get
+        // excinst: attrs dict (field 6, LAZY — null until first setattr;
+        // the RefIsNull + If(Empty) below skips the lookup when null —
+        // If(Empty) runs its body when the CONDITION IS NONZERO, so the
+        // test is `!is_null`) then fall through to `args` (field 1)
         f.instruction(&Instruction::LocalGet(3));
         f.instruction(&Instruction::RefCastNullable(hc(T_EXCINST)));
-        sget(f, T_EXCINST, F_EXCINST_ATTRS);
+        sget(f, T_EXCINST, 6);
+        f.instruction(&Instruction::RefIsNull);
+        f.instruction(&Instruction::I32Eqz);
+        f.instruction(&Instruction::If(BlockType::Empty));
+        f.instruction(&Instruction::LocalGet(3));
+        f.instruction(&Instruction::RefCastNullable(hc(T_EXCINST)));
+        sget(f, T_EXCINST, 6);
         f.instruction(&Instruction::RefCastNullable(hc(T_DICT)));
         f.instruction(&Instruction::LocalGet(4));
         f.instruction(&Instruction::Call(fx::FN_DGET));
@@ -1725,7 +1793,19 @@ fn attr_get(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::
         f.instruction(&Instruction::LocalGet(5));
         f.instruction(&Instruction::Return);
         f.instruction(&Instruction::End);
-        // fall through to class mro walk (args/class-level attrs)
+        f.instruction(&Instruction::End);
+        f.instruction(&Instruction::LocalGet(3));
+        f.instruction(&Instruction::RefCastNullable(hc(T_EXCINST)));
+        sget(f, T_EXCINST, 1);
+        f.instruction(&Instruction::LocalSet(5));
+        f.instruction(&Instruction::LocalGet(5));
+        f.instruction(&Instruction::RefIsNull);
+        f.instruction(&Instruction::I32Eqz);
+        f.instruction(&Instruction::If(BlockType::Empty));
+        f.instruction(&Instruction::LocalGet(5));
+        f.instruction(&Instruction::Return);
+        f.instruction(&Instruction::End);
+        // fall through to class mro walk (class-level attrs)
         f.instruction(&Instruction::End);
         f.instruction(&Instruction::LocalGet(3));
         f.instruction(&Instruction::RefTestNullable(hc(T_INSTANCE)));
@@ -1780,13 +1860,23 @@ fn attr_set(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::
         f.instruction(&Instruction::Call(fx::FN_DSET));
         f.instruction(&Instruction::Return);
         f.instruction(&Instruction::End);
-        // excinst
+        // excinst — attrs dict is field 6 (layout [type, args, tb, ctx,
+        // cause, suppress, attrs]; the lazy dict is null until first set,
+        // so materialize an empty dict on first write)
         f.instruction(&Instruction::LocalGet(3));
         f.instruction(&Instruction::RefTestNullable(hc(T_EXCINST)));
         f.instruction(&Instruction::If(BlockType::Empty));
+        // materialize the lazy attrs dict on FIRST write (null until now)
         f.instruction(&Instruction::LocalGet(3));
         f.instruction(&Instruction::RefCastNullable(hc(T_EXCINST)));
-        sget(f, T_EXCINST, F_EXCINST_ATTRS);
+        push_empty_dict(f);
+        f.instruction(&Instruction::StructSet {
+            struct_type_index: T_EXCINST,
+            field_index: 6,
+        });
+        f.instruction(&Instruction::LocalGet(3));
+        f.instruction(&Instruction::RefCastNullable(hc(T_EXCINST)));
+        sget(f, T_EXCINST, 6);
         f.instruction(&Instruction::RefCastNullable(hc(T_DICT)));
         f.instruction(&Instruction::LocalGet(4));
         f.instruction(&Instruction::LocalGet(5));
@@ -2150,6 +2240,7 @@ fn tb_render(
     let (in_mid_off, in_mid_len) = strings.push(", in ");
     let (mod_off, mod_len) = strings.push("<module>");
     let (colon_off, colon_len) = strings.push(": ");
+    let (unknown_off, unknown_len) = strings.push("?");
     // Locals: 3=exc 4,5 pad(oref) 6=str 7=barr 8,9,10=i32 11=tb-frame
     add(
         funcs,
@@ -2186,10 +2277,19 @@ fn tb_render(
             lit_str(f, file_off, file_len);
             f.instruction(&Instruction::Call(fx::FN_PRINT_ONE));
             f.instruction(&Instruction::LocalSet(10));
+            f.instruction(&Instruction::GlobalGet(g.source_file));
+            f.instruction(&Instruction::RefIsNull);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(10));
+            lit_str(f, unknown_off, unknown_len);
+            f.instruction(&Instruction::Call(fx::FN_PRINT_ONE));
+            f.instruction(&Instruction::LocalSet(10));
+            f.instruction(&Instruction::Else);
             f.instruction(&Instruction::LocalGet(10));
             f.instruction(&Instruction::GlobalGet(g.source_file));
             f.instruction(&Instruction::Call(fx::FN_PRINT_ONE));
             f.instruction(&Instruction::LocalSet(10));
+            f.instruction(&Instruction::End);
             // "", line " + lineno (G_CUR_LINE)
             f.instruction(&Instruction::LocalGet(10));
             lit_str(f, line_mid_off, line_mid_len);

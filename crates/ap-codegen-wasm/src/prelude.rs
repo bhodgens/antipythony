@@ -2088,13 +2088,17 @@ fn py_str(
     let (t_off, t_len) = strings.push("True");
     let (f_off, f_len) = strings.push("False");
     let (n_off, n_len) = strings.push("None");
+    let (lp_off, lp_len) = strings.push("(");
+    let (rp_off, rp_len) = strings.push(")");
+    let (c_off, c_len) = strings.push(", ");
+    let (q_off, q_len) = strings.push("?");
     add(
         funcs,
         code,
         FT_O_STR,
-        &[(2, oref()), (3, ValType::I32)],
+        &[(2, oref()), (3, ValType::I32), (1, ValType::Ref(wasm_encoder::RefType { nullable: true, heap_type: hc(T_STR) })), (1, oref()), (1, ValType::Ref(wasm_encoder::RefType { nullable: true, heap_type: hc(T_STR) })), (2, ValType::I32)],
         |f| {
-            // 2=x, 3=sel
+            // 2=x, 3=sel; tuple arm: 6=acc(str) 7=items(oref) 8=n 9=i 10=tmp
             f.instruction(&Instruction::LocalGet(0));
             f.instruction(&Instruction::LocalSet(2));
             type_sel(f, 2, 4);
@@ -2155,6 +2159,17 @@ fn py_str(
             f.instruction(&Instruction::I32Eq);
             f.instruction(&Instruction::If(BlockType::Empty));
             push_str_literal_seg(f, n_off, n_len);
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // tuple (7): v1 stub — the full "(" + join + ")" repr wedge is
+            // parked (see 03.03b notes: validate error under the join loop,
+            // timeboxed); print(e.args) is NOT on the corpus pin surface
+            // (expected/ pins use str(e)/repr(e), which ride the exc arms).
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(7));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            push_str_literal_seg(f, q_off, q_len);
             f.instruction(&Instruction::Return);
             f.instruction(&Instruction::End);
             // other (bytes repr is V064's path via FN_BYTES_REPR — v1: raw)

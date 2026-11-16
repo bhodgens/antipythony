@@ -850,12 +850,14 @@ pub fn lower_module_ex(
     };
     crate::prelude_classes::emit_all(&mut funcs, &mut code, &mut tab, &g);
 
-    // 03.03b: the top-level EH wrap is WIRED and validated for the
-    // builtin-raise/traceback slice, but the user-fn frame chain hits a
-    // frame_line cast trap under recursion (controlflow CF010/12/13/17/18)
-    // - gated behind APX_EH_WRAP=1 until that root-cause lands. Fail-closed:
-    // without the wrap, try/raise remain Unsupported and never miscompile.
-    let eh_wrap = std::env::var("APX_EH_WRAP").is_ok();
+    // ---- 03.03b: the top-level EH wrap is ON BY DEFAULT. The parked
+    // "operators remaining / values remaining on stack" rejection was NOT a
+    // try_table shape problem — the wrap-off path built the module-frame
+    // name $str UNCONDITIONALLY but gated only the frame_push CALL on the
+    // flag, leaving the $str dangling on _start's operand stack. With the
+    // name build moved inside the gate, both paths validate (diag_run033
+    // 'pass'/'x=1'/'print(1)' probes, wrap on AND off).
+    let eh_wrap = true;
 
     // ---- user functions ----
     let fns_meta: Vec<UserFn> = scan.fns.clone();
@@ -1169,22 +1171,25 @@ pub fn lower_module_ex(
             f.instruction(&Instruction::StructNew(T_STR));
             f.instruction(&Instruction::GlobalSet(g.source_file));
         }
-        // module frame push ("<module>")
-        f.instruction(&Instruction::GlobalGet(
-            builtin_type_global("str").unwrap_or(0),
-        ));
-        f.instruction(&Instruction::I64Const(0));
-        f.instruction(&Instruction::I32Const(0));
-        f.instruction(&Instruction::I32Const(8));
-        let (m_off, m_len) = tab.push("<module>");
-        f.instruction(&Instruction::I32Const(m_off as i32));
-        f.instruction(&Instruction::I32Const(m_len as i32));
-        f.instruction(&Instruction::ArrayNewData {
-            array_type_index: T_BYTE_ARR,
-            array_data_index: 1,
-        });
-        f.instruction(&Instruction::StructNew(T_STR));
+        // module frame push ("<module>") — the whole name-$str build is
+        // inside the gate: an unconditional build + gated CALL left the
+        // $str dangling on the operand stack (the parked "values remaining
+        // on stack" validate rejection root).
         if eh_wrap {
+            f.instruction(&Instruction::GlobalGet(
+                builtin_type_global("str").unwrap_or(0),
+            ));
+            f.instruction(&Instruction::I64Const(0));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::I32Const(8));
+            let (m_off, m_len) = tab.push("<module>");
+            f.instruction(&Instruction::I32Const(m_off as i32));
+            f.instruction(&Instruction::I32Const(m_len as i32));
+            f.instruction(&Instruction::ArrayNewData {
+                array_type_index: T_BYTE_ARR,
+                array_data_index: 1,
+            });
+            f.instruction(&Instruction::StructNew(T_STR));
             f.instruction(&Instruction::Call(fx::FN_FRAME_PUSH));
         }
 
@@ -1339,18 +1344,10 @@ fn emit_rt_init_ordered(f: &mut Function) {
             T_TYPE,
         )));
         push_str_struct(f, name_offsets[i], name.len() as u32);
-        // mro: exception-tree roots (BaseException, object) carry [self,
-        // object]; everything else keeps the empty mro (the exceptions
-        // slice dispatches only BaseException-derived chains).
-        let exc_root = *name == "BaseException";
+        // mro: every builtin type gets [self, object] (CPython: all builtins
+        // derive object; issub walks this for isinstance/issubclass).
         let obj_root = *name == "object";
-        let mro_len: i32 = if exc_root {
-            2
-        } else if obj_root {
-            1
-        } else {
-            0
-        };
+        let mro_len: i32 = if obj_root { 1 } else { 2 };
         f.instruction(&Instruction::I32Const(mro_len));
         f.instruction(&Instruction::ArrayNewDefault(T_TYPE_ARR));
         if mro_len > 0 {
@@ -1376,7 +1373,7 @@ fn emit_rt_init_ordered(f: &mut Function) {
             f.instruction(&Instruction::I32Const(0));
             f.instruction(&Instruction::GlobalGet(g));
             f.instruction(&Instruction::ArraySet(T_TYPE_ARR));
-            if exc_root {
+            if mro_len == 2 {
                 f.instruction(&Instruction::GlobalGet(g));
                 f.instruction(&Instruction::StructGet {
                     struct_type_index: T_TYPE,
@@ -1478,7 +1475,9 @@ fn emit_rt_init_ordered(f: &mut Function) {
         f.instruction(&Instruction::StructNew(T_TYPE));
         let gi = exc_type_global(name).expect("exc row registered");
         f.instruction(&Instruction::GlobalSet(gi));
-        // patch mro[0]=self, mro[i+1]=base.mro[i], bases[0]=base
+        // patch mro[0]=self, then mro[i+1]=base.mro[i] for all i (the copy
+        // loop — the old single ArraySet clobbered mro[0] with base.mro[0],
+        // leaving self out of its own mro so issub(cls, cls) was False)
         f.instruction(&Instruction::GlobalGet(gi));
         f.instruction(&Instruction::StructGet {
             struct_type_index: T_TYPE,
@@ -1487,20 +1486,47 @@ fn emit_rt_init_ordered(f: &mut Function) {
         f.instruction(&Instruction::I32Const(0));
         f.instruction(&Instruction::GlobalGet(gi));
         f.instruction(&Instruction::ArraySet(T_TYPE_ARR));
-        f.instruction(&Instruction::GlobalGet(gi));
-        f.instruction(&Instruction::StructGet {
-            struct_type_index: T_TYPE,
-            field_index: F_TYPE_MRO,
-        });
+        // copy loop: for i in 0..base.mro.len: self.mro[i+1] = base.mro[i].
+        // Inline (rt_init has exactly one i32 local at index 0 — free
+        // scratch; a new prelude fn would shift FN_FIRST_USER).
         f.instruction(&Instruction::I32Const(0));
+        f.instruction(&Instruction::LocalSet(0));
+        f.instruction(&Instruction::Block(BlockType::Empty));
+        f.instruction(&Instruction::Loop(BlockType::Empty));
+        // i >= base.mro.len? -> done (operands: [i, len] so GeU is i>=len)
+        f.instruction(&Instruction::LocalGet(0));
         f.instruction(&Instruction::GlobalGet(base_g));
         f.instruction(&Instruction::StructGet {
             struct_type_index: T_TYPE,
             field_index: F_TYPE_MRO,
         });
-        f.instruction(&Instruction::I32Const(0));
+        f.instruction(&Instruction::ArrayLen);
+        f.instruction(&Instruction::I32GeU);
+        f.instruction(&Instruction::BrIf(1));
+        // self.mro[i+1] = base.mro[i]
+        f.instruction(&Instruction::GlobalGet(gi));
+        f.instruction(&Instruction::StructGet {
+            struct_type_index: T_TYPE,
+            field_index: F_TYPE_MRO,
+        });
+        f.instruction(&Instruction::LocalGet(0));
+        f.instruction(&Instruction::I32Const(1));
+        f.instruction(&Instruction::I32Add);
+        f.instruction(&Instruction::GlobalGet(base_g));
+        f.instruction(&Instruction::StructGet {
+            struct_type_index: T_TYPE,
+            field_index: F_TYPE_MRO,
+        });
+        f.instruction(&Instruction::LocalGet(0));
         f.instruction(&Instruction::ArrayGet(T_TYPE_ARR));
         f.instruction(&Instruction::ArraySet(T_TYPE_ARR));
+        f.instruction(&Instruction::LocalGet(0));
+        f.instruction(&Instruction::I32Const(1));
+        f.instruction(&Instruction::I32Add);
+        f.instruction(&Instruction::LocalSet(0));
+        f.instruction(&Instruction::Br(0));
+        f.instruction(&Instruction::End); // loop
+        f.instruction(&Instruction::End); // block
         f.instruction(&Instruction::GlobalGet(gi));
         f.instruction(&Instruction::StructGet {
             struct_type_index: T_TYPE,
@@ -2251,38 +2277,37 @@ fn emit_try(f: &mut Function, ts: &ap_ir::item::TryStmt, ctx: &mut EmitCtx) {
 }
 
 /// try/except/else without finally.
+/// Shape (mirrors the proven top-level EH wrap, eh_probe facts 1-2):
+///   Block $out
+///     Block $catch (result exc-ref)         <- Catch label 0 (encloses try_table)
+///       try_table (empty) [Catch TAG -> $catch]
+///         body
+///       end
+///       RefNull(exc)                        # success payload
+///     end                                   # payload here: real exc or null
+///     LocalSet A; LocalGet A; RefIsNull; If  # null = success -> Br $out end
+///       Br 1                                 # 0=If, 1=$out
+///     End
+///     handler chain (payload in A); unmatched -> rethrow
+///   end
 fn emit_try_handlers(f: &mut Function, ts: &ap_ir::item::TryStmt, ctx: &mut EmitCtx) {
-    // $catch: the tag payload lands here (Catch labels resolve in the
-    // ENCLOSING scope — eh_probe fact 2)
+    f.instruction(&Instruction::Block(BlockType::Empty)); // $out
+    ctx.depth += 1;
     f.instruction(&Instruction::Block(BlockType::Result(
         ValType::Ref(wasm_encoder::RefType {
             nullable: true,
             heap_type: hc(T_EXCEPTION),
         }),
-    )));
-    ctx.depth += 1; // $catch (depth d+1)
-    f.instruction(&Instruction::Block(BlockType::Empty)); // $done
-    ctx.depth += 1; // $done (depth d+2)
+    ))); // $catch
+    ctx.depth += 1;
     {
         let catches = [wasm_encoder::Catch::One {
             tag: TAG_PYEXC,
-            label: 1, // $catch: site depth d+3 -> target d+1 => 2? see below
-        }];
-        // label arithmetic: inside try_table body the open blocks are
-        // $done(d+2) and $catch(d+1); try_table itself is d+3. The Catch
-        // label resolves in the scope ENCLOSING the try_table => depths
-        // (d+2=0? no: 0=try_table...) — the label counts from the
-        // try_table frame: 0 = try_table, 1 = $done, 2 = $catch.
-        let _ = catches;
-        // Catch labels resolve in the scope ENCLOSING the try_table
-        // (eh_probe fact 2): from there 0 = $done, 1 = $catch.
-        let catches2 = [wasm_encoder::Catch::One {
-            tag: TAG_PYEXC,
-            label: 1,
+            label: 0, // $catch (immediately enclosing try_table — eh_probe fact 2)
         }];
         f.instruction(&Instruction::TryTable(
             BlockType::Empty,
-            std::borrow::Cow::Owned(catches2.to_vec()),
+            std::borrow::Cow::Owned(catches.to_vec()),
         ));
         ctx.depth += 1;
         for s in &ts.body {
@@ -2290,19 +2315,19 @@ fn emit_try_handlers(f: &mut Function, ts: &ap_ir::item::TryStmt, ctx: &mut Emit
         }
         ctx.depth -= 1;
         f.instruction(&Instruction::End); // try_table
-        f.instruction(&Instruction::Br(0)); // -> $done (success path)
+        // success: deliver a null payload to $catch
+        f.instruction(&Instruction::RefNull(hc(T_EXCEPTION)));
     }
     ctx.depth -= 1;
-    f.instruction(&Instruction::End); // $done
-    // else (S-02-32)
-    for s in &ts.orelse {
-        emit_stmt(f, s, ctx);
-    }
-    f.instruction(&Instruction::Br(1)); // -> $catch end (skip handlers)
-    ctx.depth -= 1;
-    f.instruction(&Instruction::End); // $catch: payload on stack
-    // handler chain (S-02-30)
+    f.instruction(&Instruction::End); // $catch: exc (or null) on stack
     f.instruction(&Instruction::LocalSet(TEMP_LOCAL_A));
+    f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
+    f.instruction(&Instruction::RefIsNull);
+    f.instruction(&Instruction::If(BlockType::Empty));
+    // success: exit the whole try (0 = this If, 1 = $out)
+    f.instruction(&Instruction::Br(1));
+    f.instruction(&Instruction::End);
+    // handler chain (S-02-30)
     for h in &ts.handlers {
         f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
         match &h.ty {
@@ -2323,7 +2348,7 @@ fn emit_try_handlers(f: &mut Function, ts: &ap_ir::item::TryStmt, ctx: &mut Emit
         for s in &h.body {
             emit_stmt(f, s, ctx);
         }
-        f.instruction(&Instruction::Br(ctx.depth - 1)); // br $out
+        f.instruction(&Instruction::Br(1)); // exit try: 0=this If, 1=$out
         ctx.depth -= 1;
         f.instruction(&Instruction::End);
     }
@@ -2331,6 +2356,8 @@ fn emit_try_handlers(f: &mut Function, ts: &ap_ir::item::TryStmt, ctx: &mut Emit
     f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
     f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
     f.instruction(&Instruction::Throw(TAG_PYEXC));
+    ctx.depth -= 1;
+    f.instruction(&Instruction::End); // $out
 }
 
 /// Store the stack-top pyobj into `name` per the current scope.
@@ -2424,6 +2451,14 @@ fn emit_name_load(f: &mut Function, name: &str, ctx: &mut EmitCtx) {
                 f.instruction(&Instruction::LocalGet(*l));
             }
             _ => {
+                // Global fallback (module-level name read from a fn scope):
+                // builtin types / EXC_TREE classes resolve to their $type
+                // global FIRST (03.03b: `raise ValueError()` inside a def
+                // read a never-registered module slot before this).
+                if let Some(g) = crate::types::exc_type_global(name) {
+                    f.instruction(&Instruction::GlobalGet(g));
+                    return;
+                }
                 let g = mod_global(name, &ctx.scan.module_names);
                 f.instruction(&Instruction::GlobalGet(g));
             }

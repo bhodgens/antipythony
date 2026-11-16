@@ -46,7 +46,7 @@ fn corpus_wasm_sweep() {
                             ok_out.unwrap_or(false), ok_err.unwrap_or(false), o.exit_code);
                     }
                 }
-                Err(e) => eprintln!("{fam}/{name}: HOST-ERR {}", format!("{}", e).lines().next().unwrap_or("")),
+                Err(e) => eprintln!("{fam}/{name}: HOST-ERR {e:#}"),
             }
         }
     }
