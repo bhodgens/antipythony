@@ -14,4 +14,4 @@ pub mod prelude;
 pub mod prelude_classes;
 pub mod types;
 
-pub use lower::{lower_module, CodegenError};
+pub use lower::{lower_module, lower_module_ex, CodegenError};

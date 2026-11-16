@@ -972,7 +972,7 @@ pub const FT_ATTR_DEL: u32 = 67; // (o, str) -> ()        S-03-11
 pub const FT_CLS_NEW: u32 = 68; // (str, typarr-basis...) -> type
 pub const FT_CLS_CALL: u32 = 69; // (ty, roarr) -> o      instantiation S-03-05/06
 pub const FT_ISINST: u32 = 70; // (o, ty) -> i32          S-03-31
-pub const FT_ISSUB: u32 = 71; // (ty, ty) -> i32          S-03-31
+pub const FT_ISSUB: u32 = 71; // (o, o) -> i32            S-03-31 (runtime casts to $type)
 pub const FT_EXC_RAISE: u32 = 72; // (o) -> o           fill tb + throw
 pub const FT_EXC_MATCH: u32 = 73; // (o, o) -> i32      except-target match
 pub const FT_EXC_MSG: u32 = 74; // (o) -> str           S-02-29 message rules
@@ -1028,8 +1028,8 @@ pub fn append_class_exc_fts(types: &mut wasm_encoder::TypeSection) {
     types.ty().function([ty(), ro()], [o()]);
     // 68 FT_ISINST: (o, ty) -> i32
     types.ty().function([o(), ty()], [i32v()]);
-    // 69 FT_ISSUB: (ty, ty) -> i32
-    types.ty().function([ty(), ty()], [i32v()]);
+    // 69 FT_ISSUB: (o, o) -> i32 (the runtime casts operands to $type itself)
+    types.ty().function([o(), o()], [i32v()]);
     // 70 FT_EXC_RAISE: (o) -> o — raises through the tag; return type keeps
     // call sites type-correct on the unreachable fall-through.
     types.ty().function([o()], [o()]);

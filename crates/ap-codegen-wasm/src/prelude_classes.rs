@@ -797,9 +797,13 @@ fn issub(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::Cod
             (1, ValType::I32), // 5
         ],
         |f| {
+            // (o, o) params: cast both operands to $type (module-global
+            // class loads arrive as $pyobj)
             f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::RefCastNullable(hc(T_TYPE)));
             f.instruction(&Instruction::LocalSet(3));
             f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::RefCastNullable(hc(T_TYPE)));
             f.instruction(&Instruction::LocalSet(4));
             f.instruction(&Instruction::I32Const(0));
             f.instruction(&Instruction::LocalSet(5));
@@ -2145,6 +2149,7 @@ fn tb_render(
     let (line_mid_off, line_mid_len) = strings.push("\", line ");
     let (in_mid_off, in_mid_len) = strings.push(", in ");
     let (mod_off, mod_len) = strings.push("<module>");
+    let (colon_off, colon_len) = strings.push(": ");
     // Locals: 3=exc 4,5 pad(oref) 6=str 7=barr 8,9,10=i32 11=tb-frame
     add(
         funcs,
@@ -2215,11 +2220,27 @@ fn tb_render(
             f.instruction(&Instruction::Call(fx::FN_TYPE_NAME));
             f.instruction(&Instruction::Call(fx::FN_PRINT_ONE));
             f.instruction(&Instruction::LocalSet(10));
-            f.instruction(&Instruction::LocalGet(10));
+            // msg; CPython final line = "TypeName: msg" (bare TypeName when
+            // the message is empty) — one flush, one line
             f.instruction(&Instruction::LocalGet(3));
             f.instruction(&Instruction::Call(fx::FN_EXC_MSG));
+            f.instruction(&Instruction::LocalSet(4));
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
+            f.instruction(&Instruction::StructGet {
+                struct_type_index: T_STR,
+                field_index: F_STR_LEN,
+            });
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(10));
+            lit_str(f, colon_off, colon_len);
             f.instruction(&Instruction::Call(fx::FN_PRINT_ONE));
             f.instruction(&Instruction::LocalSet(10));
+            f.instruction(&Instruction::LocalGet(10));
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::Call(fx::FN_PRINT_ONE));
+            f.instruction(&Instruction::LocalSet(10));
+            f.instruction(&Instruction::End);
             flush_fd(f, 10, 2);
             f.instruction(&Instruction::I32Const(1)); // rc = 1
         },
