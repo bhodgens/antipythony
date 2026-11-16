@@ -1043,6 +1043,10 @@ pub const FT_TUPLE_FROM_ITER: u32 = 107;
 /// (o iterable, o item) -> i32 — membership scan (list/tuple; dict/set via
 /// their key probes on the corpus slice; str substring).
 pub const FT_ITER_CONTAINS: u32 = 108;
+/// (o value, i32 empty-flag) -> o — build+throw StopIteration(args); never
+/// returns (wasm `throw` is stack-polymorphic; the trailing null filler is
+/// validator-visible but unreachable).
+pub const FT_STOP_ITER: u32 = 109;
 
 pub fn append_class_exc_fts(types: &mut wasm_encoder::TypeSection) {
     let o = || pyobj_ref();
@@ -1128,6 +1132,34 @@ pub fn append_class_exc_fts(types: &mut wasm_encoder::TypeSection) {
     types.ty().function([], [i32v()]);
     // 98 FT_PROC_EXIT: (i32) -> () — wasi proc_exit import (rc 1 boundary)
     types.ty().function([i32v()], []);
+    // ------------------------------------------------------------------
+    // Leaf 03.04 (generators/iterators/comprehensions): appended after 98;
+    // ids never move.
+    // ------------------------------------------------------------------
+    // 99 FT_GEN_STEP: (gen, input) -> o — the generator BODY step function
+    types.ty().function([o(), o()], [o()]);
+    // 100 FT_GEN_NEW: (fn, roarr) -> o — generator-object factory (unused on
+    //     this slice: the lowering builds the struct inline; declared+reserved)
+    types.ty().function([o(), ro()], [o()]);
+    // 101 FT_GEN_SEND: (gen o, input o) -> o — PEP-342 resume
+    types.ty().function([o(), o()], [o()]);
+    // 102 FT_GEN_THROW: (gen o, exc o) -> o
+    types.ty().function([o(), o()], [o()]);
+    // 103 FT_GEN_CLOSE: (gen o) -> ()
+    types.ty().function([o()], []);
+    // 104 FT_ITER_OF: (o iterable) -> o
+    types.ty().function([o()], [o()]);
+    // 105 FT_ITER_NEXT: (o iterator) -> o
+    types.ty().function([o()], [o()]);
+    // 106 FT_LIST_FROM_ITER: (o iterable) -> o — list() snapshot
+    types.ty().function([o()], [o()]);
+    // 107 FT_TUPLE_FROM_ITER: (o iterable) -> o — tuple() snapshot
+    types.ty().function([o()], [o()]);
+    // 108 FT_ITER_CONTAINS: (o iterable, o item) -> i32
+    types.ty().function([o(), o()], [i32v()]);
+    // 109 FT_STOP_ITER: (o value, i32 empty-flag) -> o — build+throw
+    //     StopIteration(args); never returns (throw is stack-polymorphic)
+    types.ty().function([o(), i32v()], [o()]);
 }
 
 /// The `$tag_pyexc` wasm tag index (declared once, payload FT_TAG).

@@ -79,10 +79,21 @@ pub const FN_ATTR_SET: u32 = 58; // (o, str, o) -> () S-03-10
 pub const FN_CALL_OF: u32 = 59; // (o, roarr) -> o    $function | __call__ | exc
 pub const FN_MRO_DICT_GET: u32 = 60; // (ty, str) -> o first dict hit along mro
 pub const FN_TB_RENDER: u32 = 61; // () -> i32        stderr traceback, rc 1
+// ---------------------------------------------------------------------------
+// Leaf 03.04 prelude drivers (generators/iterators), appended after 61 —
+// dense, never renumbered. FN_FIRST_USER moves +7 for this block.
+// ---------------------------------------------------------------------------
+pub const FN_GEN_SEND: u32 = 62; // (gen o, input o) -> o   PEP-342 resume
+pub const FN_ITER_OF: u32 = 63; // (o iterable) -> o       iter()
+pub const FN_ITER_NEXT: u32 = 64; // (o iterator) -> o     next()
+pub const FN_ITER_CONTAINS: u32 = 65; // (o, o) -> i32     `in`
+pub const FN_STOP_ITER: u32 = 66; // (o value, i32 empty) -> o  StopIteration throw
+pub const FN_GEN_THROW: u32 = 67; // (gen o, exc o) -> o   throw-at-point
+pub const FN_GEN_CLOSE: u32 = 68; // (gen o) -> ()         close/GeneratorExit
 /// First wasm function index of the EMITTED user functions (Item::FnDef /
 /// Stmt::LocalDef), which follow the prelude densely. `_start` is
 /// computed at emit time as FN_FIRST_USER + n_user_fns.
-pub const FN_FIRST_USER: u32 = 62;
+pub const FN_FIRST_USER: u32 = 69;
 
 /// rt_init is index 3 (03.03 layout: 0 fd_write, 1 abort_msg, 2 proc_exit,
 /// 3 rt_init — proc_exit joined the imports for the uncaught-traceback

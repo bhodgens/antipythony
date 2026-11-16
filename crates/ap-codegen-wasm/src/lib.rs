@@ -12,6 +12,7 @@ pub mod emitter_state;
 pub mod lower;
 pub mod prelude;
 pub mod prelude_classes;
+pub mod prelude_gen;
 pub mod types;
 
 pub use lower::{lower_module, CodegenError};
