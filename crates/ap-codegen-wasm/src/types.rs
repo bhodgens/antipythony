@@ -732,13 +732,16 @@ pub fn build_type_section_with_prefix(prefix: usize) -> wasm_encoder::TypeSectio
             field_pyobj_ref(), // self (never null once built)
             fr(T_FUNCTION, false),
         ]),
-        // 31 $generator sub $pyobj (S-07 §8)
+        // 31 $generator sub $pyobj (S-07 §8) — leaf 03.04: state/locals/value/
+        // exn are MUTABLE (the state machine advances $state, spills to
+        // $locals, parks send input in $value, stages throw-ins in $exn);
+        // $fn stays immutable (the code+cells identity of the generator).
         sub(vec![
             fr(T_FUNCTION, false),  // fn
-            field_i32(false),       // state
-            fr(T_OBJ_ARR, false),   // locals
-            field_pyobj_ref_mut(),  // value
-            fr(T_EXCEPTION, false), // exn
+            field_i32(true),        // state (0=start, N=yield site N, -1 done)
+            fr(T_OBJ_ARR, true),    // locals (spilled frame + sub-iter slot)
+            field_pyobj_ref_mut(),  // value (send input / return value)
+            fr(T_EXCEPTION, true),  // exn (pending throw-in)
         ]),
         // 32 $instance sub $pyobj (S-07-17)
         sub(vec![fr(T_DICT, true)]), // attrs (lazy, null until first set)
@@ -1002,6 +1005,44 @@ pub const FT_INSTANCE_NEW: u32 = 95; // (ty) -> o        $instance factory
 pub const FT_MRO_DICT_GET: u32 = 96; // (ty, str) -> o   mro dict walk
 pub const FT_TB_RENDER: u32 = 97; // () -> i32           stderr render, rc 1
 pub const FT_PROC_EXIT: u32 = 98; // (i32) -> ()         wasi proc_exit
+// Leaf 03.04 (generators/iterators/comprehensions): appended after 98; ids never move.
+/// (gen $generator, input o) -> o — the generator BODY step function. The
+/// body dispatches on $state (0 = start, N = yield site N), runs to the
+/// next yield (returns it) or to completion (sets state=-1, returns null
+/// input as the sentinel the resume wrapper translates to StopIteration).
+pub const FT_GEN_STEP: u32 = 99;
+/// (o fn-obj, roarr args) -> o — generator-object factory: binds params into
+/// the $generator's locals array WITHOUT running the body (state 0), like
+/// CPython's PyGen_New. The body runs on the first resume.
+pub const FT_GEN_NEW: u32 = 100;
+/// (gen) -> o — gen_send/gen_next: resume with $value (first resume uses
+/// null => None per PEP-342 first-send-None). Returns the yielded value; a
+/// finished body raises StopIteration (empty) through the tag.
+pub const FT_GEN_SEND: u32 = 101;
+/// (gen, o exc) -> o — gen_throw: raise exc AT the suspension point.
+/// Exhausted/closed generator => raise StopIteration per CPython (G8 arm).
+pub const FT_GEN_THROW: u32 = 102;
+/// (gen) -> () — gen_close: throw-in GeneratorExit; a body that exits
+/// (GeneratorExit escaping, or already exhausted/closed) completes the
+/// close silently; any OTHER exception propagates.
+pub const FT_GEN_CLOSE: u32 = 103;
+/// (o iterable) -> o — iter(): $list/$tuple/$dict/$set/$str/args arrays /
+/// user generator -> an ITERATOR object (a $generator over the materialized
+/// snapshot for containers; identity for a generator). Returns the object
+/// unchanged for iterators.
+pub const FT_ITER_OF: u32 = 104;
+/// (o iterator) -> o — next(): the $generator-aware next (state machine
+/// advance); raises StopIteration when exhausted. Non-generator iterator
+/// shapes ride the same struct on this slice.
+pub const FT_ITER_NEXT: u32 = 105;
+/// (o) -> o — list constructor snapshot from an iterable (comprehension
+/// accumulator output + list(x) surface); builds a fresh $list.
+pub const FT_LIST_FROM_ITER: u32 = 106;
+/// (o) -> o — tuple constructor snapshot from an iterable.
+pub const FT_TUPLE_FROM_ITER: u32 = 107;
+/// (o iterable, o item) -> i32 — membership scan (list/tuple; dict/set via
+/// their key probes on the corpus slice; str substring).
+pub const FT_ITER_CONTAINS: u32 = 108;
 
 pub fn append_class_exc_fts(types: &mut wasm_encoder::TypeSection) {
     let o = || pyobj_ref();
