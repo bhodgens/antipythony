@@ -45,10 +45,28 @@ pub const FN_LEN: u32 = 35;
 /// Registered by appending `prelude::dispatch` AFTER `len()` in prelude::emit
 /// (function-table discipline: indices are dense, never renumbered).
 pub const FN_DISPATCH: u32 = 36;
+// ---------------------------------------------------------------------------
+// Leaf 03.03 prelude functions SHIPPED (exceptions slice): dense append
+// after FN_DISPATCH. The class-creation machinery (class_new C3 merge,
+// instance_new, attr_get/set/del, cls_call, descriptor ctors, exc_raise/
+// match/msg/repr/ctx, call_of, global_get, subcls registry) lands with the
+// classes continuation — its function indices APPEND after FN_ISINST
+// (46..) so these shipped ids never move.
+// ---------------------------------------------------------------------------
+pub const FN_DGET: u32 = 37; // (dict, str) -> o   (str-keyed linear)
+pub const FN_DSET: u32 = 38; // (dict, str, o) -> ()
+pub const FN_DHAS: u32 = 39; // (dict, str) -> i32
+pub const FN_STR_CAT: u32 = 40; // (str, str) -> str
+pub const FN_TYPE_NAME: u32 = 41; // (o) -> str
+pub const FN_FRAME_PUSH: u32 = 42; // (str fn-name) -> ()
+pub const FN_FRAME_POP: u32 = 43; // () -> ()
+pub const FN_FRAME_LINE: u32 = 44; // (i32 line) -> ()
+pub const FN_ISSUB: u32 = 45; // (ty, ty) -> i32
+pub const FN_ISINST: u32 = 46; // (o, ty) -> i32
 /// First wasm function index of the EMITTED user functions (Item::FnDef /
-/// Stmt::LocalDef), which follow the dispatcher densely. `_start` is
+/// Stmt::LocalDef), which follow the prelude densely. `_start` is
 /// computed at emit time as FN_FIRST_USER + n_user_fns.
-pub const FN_FIRST_USER: u32 = 37;
+pub const FN_FIRST_USER: u32 = 47;
 
 /// rt_init stays at index 2 (03.02a layout: 0/1 imports, 2 rt_init).
 pub const FN_RT_INIT: u32 = 2;

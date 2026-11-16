@@ -19,4 +19,6 @@ wasm-encoder = "0.263.0"
 ap-parse = { path = "../ap-parse" }
 wasmparser = "0.263"
 ap-host = { path = "../ap-host" }
+wasmtime = "47"
+wasmprinter = "0.263"
 

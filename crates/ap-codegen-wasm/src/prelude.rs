@@ -193,7 +193,7 @@ fn with_body(locals: &[(u32, ValType)], body: impl FnOnce(&mut Function)) -> Fun
     f
 }
 
-fn add(
+pub(crate) fn add(
     funcs: &mut wasm_encoder::FunctionSection,
     code: &mut wasm_encoder::CodeSection,
     ft: u32,

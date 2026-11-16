@@ -140,6 +140,8 @@ dependencies = [
  "ap-parse",
  "wasm-encoder 0.263.0",
  "wasmparser 0.263.0",
+ "wasmprinter 0.263.0",
+ "wasmtime",
 ]
 
 [[package]]
@@ -2838,6 +2840,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasmprinter"
+version = "0.263.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b40c3aedc383a68866a7bae302578765c3f05c9e11ea6d242e5cc450f8300a26"
+dependencies = [
+ "anyhow",
+ "termcolor",
+ "wasmparser 0.263.0",
+]
+
+[[package]]
 name = "wasmtime"
 version = "47.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2916,7 +2929,7 @@ dependencies = [
  "target-lexicon",
  "wasm-encoder 0.252.0",
  "wasmparser 0.252.0",
- "wasmprinter",
+ "wasmprinter 0.252.0",
  "wasmtime-internal-component-util",
  "wasmtime-internal-core",
 ]

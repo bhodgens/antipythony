@@ -708,6 +708,17 @@ pub fn lower_module(module: &IrModule) -> Result<Vec<u8>, CodegenError> {
         code.function(&f);
     }
     prelude::emit(&mut funcs, &mut code, &mut tab);
+    // leaf 03.03: classes + exceptions prelude (frames, dict ops, MRO walk).
+    // FN_FIRST_USER (emitter_state) is the tail of this block. Frame
+    // globals sit AFTER the module namespace — indices computed at scan.
+    let g = crate::prelude_classes::FrameGlobals {
+        frame_head: G_MOD_BASE + scan.module_names.len() as u32,
+        frame_depth: G_MOD_BASE + scan.module_names.len() as u32 + 1,
+        cur_line: G_MOD_BASE + scan.module_names.len() as u32 + 2,
+        source_file: G_MOD_BASE + scan.module_names.len() as u32 + 3,
+        active_exc: G_MOD_BASE + scan.module_names.len() as u32 + 4,
+    };
+    crate::prelude_classes::emit_all(&mut funcs, &mut code, &mut tab, &g);
 
     // ---- user functions ----
     let fns_meta: Vec<UserFn> = scan.fns.clone();
@@ -799,6 +810,60 @@ pub fn lower_module(module: &IrModule) -> Result<Vec<u8>, CodegenError> {
             wasm_encoder::HeapType::Concrete(T_PYOBJ),
         );
     }
+    // leaf 03.03: frame-stack head ($tb_frame ref), frame depth (i32),
+    // current line (i32), source filename ($str), active exception (oref).
+    globals.global(
+        GlobalType {
+            val_type: ValType::Ref(RefType {
+                nullable: true,
+                heap_type: wasm_encoder::HeapType::Concrete(T_TB_FRAME),
+            }),
+            mutable: true,
+            shared: false,
+        },
+        &ConstExpr::extended([Instruction::RefNull(wasm_encoder::HeapType::Concrete(
+            T_TB_FRAME,
+        ))]),
+    ); // G_FRAME_HEAD
+    globals.global(
+        GlobalType {
+            val_type: ValType::I32,
+            mutable: true,
+            shared: false,
+        },
+        &ConstExpr::extended([Instruction::I32Const(0)]),
+    ); // G_FRAME_DEPTH
+    globals.global(
+        GlobalType {
+            val_type: ValType::I32,
+            mutable: true,
+            shared: false,
+        },
+        &ConstExpr::extended([Instruction::I32Const(0)]),
+    ); // G_CUR_LINE
+    globals.global(
+        GlobalType {
+            val_type: ValType::Ref(RefType {
+                nullable: true,
+                heap_type: wasm_encoder::HeapType::Concrete(T_STR),
+            }),
+            mutable: true,
+            shared: false,
+        },
+        &ConstExpr::extended([Instruction::RefNull(wasm_encoder::HeapType::Concrete(
+            T_STR,
+        ))]),
+    ); // G_SOURCE_FILE
+    globals.global(
+        GlobalType {
+            val_type: pyobj_ref(),
+            mutable: true,
+            shared: false,
+        },
+        &ConstExpr::extended([Instruction::RefNull(wasm_encoder::HeapType::Concrete(
+            T_PYOBJ,
+        ))]),
+    ); // G_ACTIVE_EXC
 
     let blob = tab.bytes.clone();
 
@@ -955,11 +1020,18 @@ pub fn lower_module(module: &IrModule) -> Result<Vec<u8>, CodegenError> {
     });
 
     // ---- canonical section emission order (S-07-43) ----
+    // tags (id 13, canonical slot between memory and globals; S-07-28)
+    let mut tags = wasm_encoder::TagSection::new();
+    tags.tag(wasm_encoder::TagType {
+        kind: wasm_encoder::TagKind::Exception,
+        func_type_idx: FT_TAG,
+    });
     m.section(&build_type_section());
     m.section(&imports);
     m.section(&funcs);
     m.section(&tables);
     m.section(&mems);
+    m.section(&tags);
     m.section(&globals);
     m.section(&exports);
     m.section(&elems);
