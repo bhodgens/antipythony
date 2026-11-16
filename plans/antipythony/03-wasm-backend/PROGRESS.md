@@ -216,3 +216,68 @@ fn); wasmparser validates some things wasmtime rejects, so wasmparser
 pass != pass. GeU/Ge_s operand order bugs (a>=b vs b>=a) produce silent
 wrong-branch bugs — check operand order FIRST when a wasm loop guards
 wrong.
+
+
+## 2026-11-16: leaf 03.03c session (leaf-0303c worktree — classes/exceptions lowering landed)
+
+COMMITS f16c3932, 57f46a76, 935850d5 (branch tier1-0303c off 472ec565).
+
+LANDED (all byte-exact vs CPython 3.14.7 through ap-host):
+1. attr-assign targets: self.x = v lowers via FN_ATTR_SET (scan interns
+   the attr name; emit stashes value → obj → name). The parked-diff
+   replacement (structural per 03.04's finding) was REIMPLEMENTED fresh —
+   the parked diff was NOT applied.
+2. ROOT-CAUSE FIXES that unblocked class __init__ dispatch (the fn63+
+   HOST-ERRs): (a) attr_set stored the OBJECT as the value (LocalGet(3)
+   → LocalSet(5); value is param 2) — every class-body bind wrote the
+   class itself, so the later __init__ RefCast($function) trap-failed;
+   (b) Stmt::LocalDef's class-body binding pushed [fn, cls, name] but
+   attr_set takes (obj, name, v) — validation failed; (c) user-class
+   Name-calls route through FN_CALL_OF → cls_call (Scan.classes); the
+   $function cast trapped on $type objects.
+3. Class-body plain assigns (k = 42) bind via attr_set through
+   TEMP_LOCAL_B (A holds the class stash; clobbering A passed the value
+   as obj). scan interns Name-assign targets.
+4. py_str: str_from_bytes stamps the str TYPE global (null type field
+   made re-dispatch fall through — str(1) printed "None"); tuple join
+   quotes str items (repr semantics); 1-tuple tail comma without space
+   (('v',) byte-exact).
+5. try/else (S-02-32): orelse on the success path only — handler chain
+   wrapped in one extra Block; success Br lands on the orelse, handler
+   completion Brs exit the whole try.
+6. scan fail-closed rejects for super/NotImplemented name reads (were
+   emit-time panics); nested class names interned (class-in-try swept
+   clean — corpus_wasm_sweep no longer panics).
+
+GATES: classes_exceptions_wasm_gate 16/16 (NEW corpus families
+classes_wasm CLW001-008 + exceptions_wasm EXW001-008, controlflow_wasm
+pattern, CPython 3.14.7 pins); controlflow_wasm_gate 18/18 held;
+ap-codegen-wasm all suites 0 failed; ap-host 3/3.
+
+HONEST STATE vs the leaf title: attr-assign ✓, class __init__ dispatch ✓
+(0..=3 static arity as built), repr item quoting ✓ (print path; no
+quote/backslash ESCAPING inside items — deferred), multi-raise: raise e
+re-raise ✓, raise from still HOST-ERRs (FN_EXC_CTX_SET path), bare
+raise inside except still HOST-ERRs (G_ACTIVE_EXC not maintained by
+handlers). super cases: fail-closed UNSUPPORTED (documented, honest).
+e str() message: FN_EXC_MSG wired into py_str via an excinst arm —
+arm is IN but shadowed by the NoneType arm at runtime: the caught exc's
+observed type-sel is 8 (NoneType) — root cause NOT cracked in-session;
+print(e) prints "None" (deferred, top of the 03.03d list).
+NOTE: corpus_wasm_sweep (classes/exceptions native families) remains
+diagnostic-only — those families cover the FULL S-03 surface (decorators,
+descriptors, slots, metaclass) far beyond the wasm slice; 0 of 48 pass
+there and that is expected/honest for this leaf.
+
+Tool notes: wasmtime trap Display lacks the reason — format {e:?} for
+"wasm trap: <reason>". cargo test test-binaries CAN cache stale content
+but the EXAMPLE binary rebuilt fine each time; the real trap this
+session was COMMITTING A STALE prelude.rs (57f46a76 lacks its claimed
+fixes — a later full-file write overwrote them; the fixes re-landed in
+935850d5). Lesson: re-read the diff BEFORE committing after
+full-file-write edit cycles.
+
+NEXT (03.03d): e-str sel==8 root cause (check exc_raise payload type
+field / rt_init EXC_TREE aliasing — print(ValueError-instance) hits
+sel==8); bare-raise + raise-from (G_ACTIVE_EXC maintenance in
+emit_try_handlers); __init__ arity >3; multi-base C3; descriptor split.
