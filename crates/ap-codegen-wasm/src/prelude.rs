@@ -180,6 +180,9 @@ pub fn emit(
     binop(funcs, code);
     unary(funcs, code);
     len(funcs, code);
+    // leaf 03.02c: the generic dispatcher is the LAST prelude body —
+    // FN_DISPATCH = 36, user functions start at FN_FIRST_USER = 37.
+    py_call(funcs, code);
 }
 
 /// Emit a plain function with given FT and locals, appending `body` then End.
@@ -1848,10 +1851,16 @@ fn append_i64(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder
         // scratch cursor at DIGIT_SCRATCH (build digits backwards)
         f.instruction(&Instruction::I32Const(fx::DIGIT_SCRATCH));
         f.instruction(&Instruction::LocalSet(4));
-        // if v == 0: write '0'
+        // if v == 0: write '0' at cursor-1 (the downward-fill convention:
+        // the copy loop drains cursor..DIGIT_SCRATCH, so the digit must sit
+        // BELOW the scratch end like every other digit)
         f.instruction(&Instruction::LocalGet(0));
         f.instruction(&Instruction::I64Eqz);
         f.instruction(&Instruction::If(BlockType::Empty));
+        f.instruction(&Instruction::LocalGet(4));
+        f.instruction(&Instruction::I32Const(1));
+        f.instruction(&Instruction::I32Sub);
+        f.instruction(&Instruction::LocalSet(4));
         f.instruction(&Instruction::LocalGet(4));
         f.instruction(&Instruction::I32Const(48));
         f.instruction(&Instruction::I32Store8(wasm_encoder::MemArg {
@@ -1860,10 +1869,6 @@ fn append_i64(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder
             target: wasm_encoder::MemArgTarget::Memory(0),
             ordering: None,
         }));
-        f.instruction(&Instruction::LocalGet(4));
-        f.instruction(&Instruction::I32Const(1));
-        f.instruction(&Instruction::I32Add);
-        f.instruction(&Instruction::LocalSet(4));
         f.instruction(&Instruction::Else);
         // u = |v| (i64 wrap for MIN)
         f.instruction(&Instruction::LocalGet(0));
@@ -2414,7 +2419,95 @@ fn binop(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::Cod
             f.instruction(&Instruction::LocalGet(8));
             f.instruction(&Instruction::I64Xor);
             f.instruction(&Instruction::Else);
+            // MOD: Python % — sign of the DIVISOR (S-01-4). r = a rem b (wasm
+            // truncated rem); if r != 0 and the signs of r and b differ:
+            // r += b. b == 0 -> Unreachable (ZeroDivision text is the
+            // 03.05 EH surface).
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::I32Const(OPS::MOD));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
+            f.instruction(&Instruction::LocalGet(8));
+            f.instruction(&Instruction::I64Eqz);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::Unreachable);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(7));
+            f.instruction(&Instruction::LocalGet(8));
+            f.instruction(&Instruction::I64RemS);
+            f.instruction(&Instruction::LocalSet(9));
+            // correction: r != 0 && (r<0) != (b<0) -> r += b
+            f.instruction(&Instruction::LocalGet(9));
+            f.instruction(&Instruction::I64Eqz);
+            f.instruction(&Instruction::I32Eqz); // r != 0
+            f.instruction(&Instruction::LocalGet(9));
+            f.instruction(&Instruction::I64Const(0));
+            f.instruction(&Instruction::I64LtS);
+            f.instruction(&Instruction::LocalGet(8));
+            f.instruction(&Instruction::I64Const(0));
+            f.instruction(&Instruction::I64LtS);
+            f.instruction(&Instruction::I32Xor);
+            f.instruction(&Instruction::I32And);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(9));
+            f.instruction(&Instruction::LocalGet(8));
+            f.instruction(&Instruction::I64Add);
+            f.instruction(&Instruction::LocalSet(9));
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(9));
+            f.instruction(&Instruction::Else);
+            // FLOORDIV: Python // — floor toward -inf (S-01-3). d = a / b
+            // (wasm truncated div); if (a rem b != 0) and the signs of the
+            // rem and b differ: d -= 1.
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::I32Const(OPS::FLOORDIV));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
+            f.instruction(&Instruction::LocalGet(8));
+            f.instruction(&Instruction::I64Eqz);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::Unreachable);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(7));
+            f.instruction(&Instruction::LocalGet(8));
+            f.instruction(&Instruction::I64DivS);
+            f.instruction(&Instruction::LocalSet(9));
+            // correction: rem != 0 && (rem<0) != (b<0) -> d -= 1
+            f.instruction(&Instruction::LocalGet(7));
+            f.instruction(&Instruction::LocalGet(8));
+            f.instruction(&Instruction::I64RemS);
+            f.instruction(&Instruction::I64Eqz);
+            f.instruction(&Instruction::I32Eqz);
+            f.instruction(&Instruction::LocalGet(7));
+            f.instruction(&Instruction::LocalGet(8));
+            f.instruction(&Instruction::I64RemS);
+            f.instruction(&Instruction::I64Const(0));
+            f.instruction(&Instruction::I64LtS);
+            f.instruction(&Instruction::LocalGet(8));
+            f.instruction(&Instruction::I64Const(0));
+            f.instruction(&Instruction::I64LtS);
+            f.instruction(&Instruction::I32Xor);
+            f.instruction(&Instruction::I32And);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(9));
+            f.instruction(&Instruction::I64Const(1));
+            f.instruction(&Instruction::I64Sub);
+            f.instruction(&Instruction::LocalSet(9));
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(9));
+            f.instruction(&Instruction::Else);
+            // DIV on two ints (true division -> FLOAT, S-01-6) needs the
+            // float return path this arm cannot reach; v1 fails loud (the
+            // true-division corpus shapes ride the float arm where at
+            // least one operand is already a float).
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::I32Const(OPS::DIV));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::Unreachable);
+            f.instruction(&Instruction::End);
             // POW: r = 1; while e: r *= b^bit...
+// POW: r = 1; while e: r *= b^bit...
             f.instruction(&Instruction::I64Const(1));
             f.instruction(&Instruction::LocalSet(9));
             f.instruction(&Instruction::Block(BlockType::Empty));
@@ -2445,6 +2538,8 @@ fn binop(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::Cod
             f.instruction(&Instruction::End);
             f.instruction(&Instruction::End);
             f.instruction(&Instruction::LocalGet(9));
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::End);
             f.instruction(&Instruction::End);
             f.instruction(&Instruction::End);
             f.instruction(&Instruction::End);
@@ -2724,6 +2819,99 @@ fn builtin_dispatch(
         f.instruction(&Instruction::LocalGet(1));
         f.instruction(&Instruction::Call(fx::FN_PY_STR));
     });
+}
+
+// ===========================================================================
+// py_call — the generic call dispatcher (leaf 03.02c, S-07-23)
+// ===========================================================================
+
+/// py_call (FT_PY_RO): (fn, args, kwargs) -> o. Uniform dynamic-call
+/// fallback: cast `$function`, arity check against `$code.$nparams`
+/// (defaults extend the accepted arity downward: len(defaults) <= argc <=
+/// nparams; exact text per ap-run `too many/too few`), bind params 0..argc
+/// to locals then defaults, `call_indirect` the `$code.$func_idx` body.
+/// kwargs is never null-checked on this slice (call sites always pass null;
+/// keyword binding is the ap-run surface, deferred with named error text).
+/// Locals: 3=fn(o) 4=args 5=argc 6=nparams 7=ndefaults 8=spare-i32
+/// 9=fn-as-$function.
+fn py_call(
+    funcs: &mut wasm_encoder::FunctionSection,
+    code: &mut wasm_encoder::CodeSection,
+) {
+    add(
+        funcs,
+        code,
+        FT_PY_RO,
+        &[
+            (1, oref()), // 3 = fn ($pyobj-typed stash)
+            (1, ValType::Ref(wasm_encoder::RefType {
+                nullable: true,
+                heap_type: hc(T_OBJ_ARR_RO),
+            })), // 4 = args array
+            (3, ValType::I32), // 5..7: argc / nparams / ndefaults
+            (1, ValType::Ref(wasm_encoder::RefType {
+                nullable: true,
+                heap_type: hc(T_FUNCTION),
+            })), // 8 = fn as $function
+        ],
+        |f| {
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::LocalSet(3));
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::LocalSet(4));
+            // n = args.len
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::ArrayLen);
+            f.instruction(&Instruction::LocalSet(5));
+            // kwargs unused on this slice (null at every call site)
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::Drop);
+            // cast fn -> $function
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefCastNullable(hc(T_FUNCTION)));
+            f.instruction(&Instruction::LocalSet(8));
+            // nparams = fn.code.nparams
+            f.instruction(&Instruction::LocalGet(8));
+            sget(f, T_FUNCTION, F_FN_CODE);
+            sget(f, T_CODE, F_CODE_NPARAMS);
+            f.instruction(&Instruction::LocalSet(6));
+            // ndef = fn.defaults.len
+            f.instruction(&Instruction::LocalGet(8));
+            sget(f, T_FUNCTION, F_FN_DEFAULTS);
+            f.instruction(&Instruction::ArrayLen);
+            f.instruction(&Instruction::LocalSet(7));
+            // arity window: ndef < n <= nparams  (ap-run text)
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::LocalGet(6));
+            f.instruction(&Instruction::I32GtU);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            // too many: reuse the message with nparams rendered; the corpus
+            // slice never triggers it (static arity matches), fail loud.
+            f.instruction(&Instruction::Unreachable);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::LocalGet(6));
+            f.instruction(&Instruction::LocalGet(7));
+            f.instruction(&Instruction::I32Sub);
+            f.instruction(&Instruction::I32LtU);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::Unreachable);
+            f.instruction(&Instruction::End);
+            // call_indirect: the table entries are the user-function BODIES
+            // (typed FT_PY_RO: (ref null $function), (ref null $obj_arr_ro),
+            // (ref null $dict) -> o). Local 8 is already exactly that
+            // $function ref (the RefCastNullable target), so the call is
+            // signature-exact — no unwrap/cast needed.
+            f.instruction(&Instruction::LocalGet(8));
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::RefNull(hc(T_DICT)));
+            f.instruction(&Instruction::I32Const(0)); // table 0
+            f.instruction(&Instruction::CallIndirect {
+                type_index: FT_PY_RO,
+                table_index: 0,
+            });
+        },
+    );
 }
 
 // ===========================================================================

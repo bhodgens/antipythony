@@ -41,7 +41,14 @@ pub const FN_BINOP: u32 = 33;
 pub const FN_UNARY: u32 = 34;
 pub const FN_LEN: u32 = 35;
 
-pub const FN_START: u32 = FN_LEN + 1;
+/// The generic call dispatcher (`pycall`, S-07-23): (fn, args, kwargs) -> o.
+/// Registered by appending `prelude::dispatch` AFTER `len()` in prelude::emit
+/// (function-table discipline: indices are dense, never renumbered).
+pub const FN_DISPATCH: u32 = 36;
+/// First wasm function index of the EMITTED user functions (Item::FnDef /
+/// Stmt::LocalDef), which follow the dispatcher densely. `_start` is
+/// computed at emit time as FN_FIRST_USER + n_user_fns.
+pub const FN_FIRST_USER: u32 = 37;
 
 /// rt_init stays at index 2 (03.02a layout: 0/1 imports, 2 rt_init).
 pub const FN_RT_INIT: u32 = 2;

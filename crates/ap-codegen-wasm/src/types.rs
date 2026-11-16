@@ -132,6 +132,9 @@ pub const FT_BIG_NORM: u32 = 50; // (big) -> big
 pub const FT_BIG_FI64: u32 = 51; // (i64) -> big
 pub const FT_BIG_CMP: u32 = 52; // (big, big) -> i32
 pub const FT_BIG_BITS: u32 = 53; // (big) -> i64
+/// 61 FT_PY_RO: the uniform user-function calling convention (S-07-23,
+/// args array immutable — see the append_prelude_fts tail comment).
+pub const FT_PY_RO: u32 = 61;
 pub const FT_L_L: u32 = 54; // (i64) -> i64                    hash_i64 core
 pub const FT_F_L: u32 = 55; // (f64) -> i64                   float_hash
 
@@ -716,6 +719,13 @@ pub const G_COMPLEX: u32 = GLOBAL_COUNT;
 /// Total globals emitted: singletons + rt_done + 16 builtin types + complex.
 pub const GLOBAL_COUNT_TOTAL: u32 = GLOBAL_COUNT + 1;
 
+/// First MODULE-NAMESPACE global slot (leaf 03.02c): every module-level
+/// Python name gets one `(ref null $pyobj)` global here, in first-assignment
+/// order. Function bodies read/write these (LEGB: locals shadow by living in
+/// wasm locals), and unbound reads test the rt_init null before the error
+/// path (fail-loud, never null propagation — design §1).
+pub const G_MOD_BASE: u32 = GLOBAL_COUNT_TOTAL;
+
 /// Append the prelude FT declarations (FT_IOP_O..FT_L_L) to the type
 /// section — called by `build_type_section` after FT_PYCALL.
 pub fn append_prelude_fts(types: &mut wasm_encoder::TypeSection) {
@@ -773,4 +783,20 @@ pub fn append_prelude_fts(types: &mut wasm_encoder::TypeSection) {
     types.ty().function([big(), i64v()], [big()]);
     // 60 FT_BI_L: (big, i64) -> i64              mod-smi remainder
     types.ty().function([big(), i64v()], [i64v()]);
+    // 61 FT_PY_RO (leaf 03.02c): the uniform user-function calling
+    // convention (S-07-23). Args ride the RO array type because call sites
+    // build them with array.new_fixed (WasmGC requires an immutable array
+    // type there); callees only READ args (params bind to locals), so the
+    // mutability the spec-07 `(ref $obj_arr)` spelling implies is never
+    // exercised. DEVIATION from S-07-23's `(ref $obj_arr)` recorded here:
+    // same layout, immutable — swap is a one-line FT change if a later
+    // leaf needs a mutable args array (RO->mut copy at the boundary).
+    types.ty().function(
+        [
+            nullable_concrete(T_FUNCTION),
+            nullable_concrete(T_OBJ_ARR_RO),
+            nullable_concrete(T_DICT),
+        ],
+        [o()],
+    );
 }

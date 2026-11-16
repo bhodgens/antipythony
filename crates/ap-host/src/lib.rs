@@ -74,6 +74,15 @@ fn shared_engine() -> Result<Engine, HostError> {
     Ok(engine)
 }
 
+/// Compile-only probe (leaf 03.02c diagnostics): build the module without
+/// instantiating or running. Distinguishes a cranelift compile hang from an
+/// execution hang.
+pub fn compile_only(wasm_bytes: &[u8]) -> Result<(), HostError> {
+    let engine = shared_engine()?;
+    let _ = WasmModule::new(&engine, wasm_bytes).map_err(|e| HostError::Wasm(e.to_string()))?;
+    Ok(())
+}
+
 /// Run `wasm_bytes` (as emitted by ap-codegen-wasm) with piped stdio,
 /// reusing the process-wide [`Engine`].
 ///
