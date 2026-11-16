@@ -1579,11 +1579,21 @@ fn compare(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::C
             f.instruction(&Instruction::RefCastNullable(hc(T_FLOAT)));
             sget(f, T_FLOAT, F_FLOAT_VAL);
             f.instruction(&Instruction::Else);
-            // int smi payload (big ordering is 03.03; the slice's ordering
-            // operands are smi-range)
+            // int payload: smi direct; BIG via BIG_BITS (low <= 2 limbs
+            // sign-applied — exact for i64-range ordering operands)
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
+            sget(f, T_INT, F_INT_KIND);
+            f.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
+            int_big(f);
+            f.instruction(&Instruction::Call(fx::FN_BIG_BITS));
+            f.instruction(&Instruction::Else);
             f.instruction(&Instruction::LocalGet(3));
             f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
             int_smi(f);
+            f.instruction(&Instruction::End);
             f.instruction(&Instruction::F64ConvertI64S);
             f.instruction(&Instruction::End);
             f.instruction(&Instruction::LocalSet(7));
@@ -1598,7 +1608,17 @@ fn compare(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::C
             f.instruction(&Instruction::Else);
             f.instruction(&Instruction::LocalGet(4));
             f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
+            sget(f, T_INT, F_INT_KIND);
+            f.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
+            int_big(f);
+            f.instruction(&Instruction::Call(fx::FN_BIG_BITS));
+            f.instruction(&Instruction::Else);
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
             int_smi(f);
+            f.instruction(&Instruction::End);
             f.instruction(&Instruction::F64ConvertI64S);
             f.instruction(&Instruction::End);
             f.instruction(&Instruction::LocalSet(8));
@@ -2079,12 +2099,6 @@ fn py_str(
             f.instruction(&Instruction::LocalSet(2));
             type_sel(f, 2, 4);
             f.instruction(&Instruction::LocalSet(3));
-            let sref = || {
-                BlockType::Result(wasm_encoder::ValType::Ref(wasm_encoder::RefType {
-                    nullable: true,
-                    heap_type: hc(T_STR),
-                }))
-            };
             // int (0): int_to_str
             f.instruction(&Instruction::LocalGet(3));
             f.instruction(&Instruction::I32Const(0));
@@ -2905,7 +2919,22 @@ fn py_call(
             f.instruction(&Instruction::LocalGet(8));
             f.instruction(&Instruction::LocalGet(4));
             f.instruction(&Instruction::RefNull(hc(T_DICT)));
-            f.instruction(&Instruction::I32Const(0)); // table 0
+            // call_indirect's i32 operand = the FUNCTION INDEX WITHIN THE
+            // TABLE — read it from the callee's $code.$func_idx (the
+            // table's element segment layout is fn_idx(slot) - FN_FIRST_USER,
+            // i.e. exactly the slot's table position).
+            f.instruction(&Instruction::LocalGet(8));
+            f.instruction(&Instruction::StructGet {
+                struct_type_index: T_FUNCTION,
+                field_index: F_FN_CODE,
+            });
+            f.instruction(&Instruction::StructGet {
+                struct_type_index: T_CODE,
+                field_index: F_CODE_FUNC_IDX,
+            });
+            // table position = absolute fn idx - FN_FIRST_USER
+            f.instruction(&Instruction::I32Const(fx::FN_FIRST_USER as i32));
+            f.instruction(&Instruction::I32Sub);
             f.instruction(&Instruction::CallIndirect {
                 type_index: FT_PY_RO,
                 table_index: 0,

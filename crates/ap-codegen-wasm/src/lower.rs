@@ -35,7 +35,7 @@
 //! SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 use crate::emitter_state::{self as fx, OPS};
-use crate::prelude::{self, hc, sset, StrTab};
+use crate::prelude::{self, hc, StrTab};
 use crate::types::*;
 use ap_ir::expr::{Arg, BinOp, BoolOp, CmpOp, Expr, UnaryOp};
 use ap_ir::item::{Item, Param, Stmt};
@@ -140,6 +140,7 @@ fn scan_module(module: &IrModule, scan: &mut Scan) -> Result<(), CodegenError> {
         match item {
             Item::Stmt(stmt) => scan_module_stmt(stmt, scan)?,
             Item::FnDef(fd) => {
+                scan.mod_slot(fd.name.as_str());
                 scan_fn_common(fd.name.as_str(), &fd.params, &fd.body.blocks, usize::MAX, scan)?;
             }
             Item::ClassDef(_) => return Err(CodegenError::Unsupported("Item::ClassDef (03.03)")),
@@ -203,12 +204,19 @@ fn scan_fn_common(
     let r = collect_scope(body, &mut refs, &mut bound, &mut nonlocal, scan);
     scan.parent_stack.pop();
     r?;
-    scan.fns[slot].nonlocal = nonlocal;
+    scan.fns[slot].nonlocal = nonlocal.clone();
     for r in refs {
         if bound.contains(&r) || scan.fns[slot].free.contains(&r) {
             continue;
         }
         scan.fns[slot].free.push(r);
+    }
+    // `nonlocal x` binds x in the ENCLOSING scope (S-02-3/13): force the
+    // name into free even though the body assigns it locally.
+    for n in &nonlocal {
+        if !scan.fns[slot].free.contains(n) {
+            scan.fns[slot].free.push(n.clone());
+        }
     }
     Ok(())
 }
@@ -579,6 +587,9 @@ fn resolution_map(scan: &Scan, slot: usize) -> std::collections::HashMap<String,
         if f.own_cells.contains(&n) {
             continue; // cell-backed plain local: no separate local slot
         }
+        if f.free.contains(&n) || f.free_cells.contains(&n) {
+            continue; // free variable: enclosing cell, not a local (S-02-12)
+        }
         map.entry(n).or_insert(Res::Local(
             py_param_base + f.params.len() as u32 + plain,
         ));
@@ -830,6 +841,13 @@ pub fn lower_module(module: &IrModule) -> Result<Vec<u8>, CodegenError> {
                 heap_type: wasm_encoder::HeapType::Concrete(T_OBJ_ARR),
             }),
         )); // 50: second mut $obj_arr stash (param_names)
+        locals.push((
+            1,
+            ValType::Ref(RefType {
+                nullable: true,
+                heap_type: wasm_encoder::HeapType::Concrete(T_CELL_ARR),
+            }),
+        )); // 51: $cell_arr stash (free-cell load; unused in _start)
         funcs.function(FT_VOID); // _start entry
         let mut f = Function::new(locals);
         f.instruction(&Instruction::Call(fx::FN_RT_INIT));
@@ -848,7 +866,9 @@ pub fn lower_module(module: &IrModule) -> Result<Vec<u8>, CodegenError> {
             params: 0,
         };
         for uf in &fns_meta {
-            if uf.parent != usize::MAX {
+            if uf.parent != usize::MAX || uf.name == "<lambda>" {
+                // lambdas build their object at the use site (no def-time
+                // name binding); nested defs bind inside their parent body
                 continue;
             }
             let mut ctx = EmitCtx {
@@ -964,7 +984,7 @@ fn mod_global(name: &str, module_names: &[String]) -> u32 {
     let i = module_names
         .iter()
         .position(|n| n == name)
-        .expect("scan registered every module name read");
+        .unwrap_or_else(|| panic!("scan registered every module name read: missing '{name}' (registered: {module_names:?})"));
     G_MOD_BASE + i as u32
 }
 
@@ -1077,6 +1097,7 @@ struct Scope {
     cell_base: u32,
     /// own-cell count (free cells start at cell_base + n_own).
     n_own: u32,
+    #[allow(dead_code)]
     params: usize,
 }
 
@@ -1089,9 +1110,12 @@ enum ScopeKind {
 /// Per-function emission context.
 struct EmitCtx<'a> {
     scan: &'a Scan,
+    #[allow(dead_code)]
     res_maps: &'a [std::collections::HashMap<String, Res>],
+    #[allow(dead_code)]
     tab: &'a StrTab,
     strs: &'a [Vec<u8>],
+    #[allow(dead_code)]
     buf_ptr: *mut i32,
     scope: &'a Scope,
     /// number of currently OPEN structured blocks (br-depth arithmetic).
@@ -1104,6 +1128,7 @@ struct EmitCtx<'a> {
 /// Shared temp locals (valid in `_start` AND user-function frames; user
 /// frames reserve the same indices at their local-block tail).
 const TEMP_LOCAL: u32 = 40; // print-buffer end (i32)
+#[allow(dead_code)]
 const TEMP_LOCAL_I64: u32 = 41;
 const TEMP_LOCAL_A: u32 = 42; // oref stash
 const TEMP_LOCAL_B: u32 = 43;
@@ -1111,10 +1136,10 @@ const TEMP_LOCAL_OBJARR: u32 = 44; // mut $obj_arr stash
 const TEMP_LOCAL_S: u32 = 45; // $str stash
 const TEMP_LOCAL_CMP: u32 = 47; // compare spill (i32)
 const TEMP_LOCAL_OBJARR_RO: u32 = 48; // RO array stash
-const TEMP_LOCAL_FN: u32 = 49; // $function stash
+#[allow(dead_code)]
+const TEMP_LOCAL_FN: u32 = 49; // $function stash (reserved)
 const TEMP_LOCAL_OBJARR2: u32 = 50; // second mut $obj_arr stash (param_names)
-/// temps per frame after the scope-specific locals (42..49 window).
-const N_TEMPS: u32 = 10;
+
 
 /// Emit one user function under the uniform convention:
 /// params: 0 = $function (free-cell source), 1 = args RO array, 2 = kwargs
@@ -1142,7 +1167,11 @@ fn emit_user_fn(
     // plain locals
     let mut plain_idx = 3 + nparams;
     for n in collect_local_binds(&uf.body) {
-        if uf.params.iter().any(|p| p.name == n) || uf.own_cells.contains(&n) {
+        if uf.params.iter().any(|p| p.name == n)
+            || uf.own_cells.contains(&n)
+            || uf.free.contains(&n)
+            || uf.free_cells.contains(&n)
+        {
             continue;
         }
         order.push((1, pyobj_ref()));
@@ -1160,50 +1189,60 @@ fn emit_user_fn(
             }),
         ));
     }
-    // temps: pad to the shared ABSOLUTE window (42..49) so every frame —
-    // _start and user fns — addresses temps identically (TEMP_LOCAL_A=42
-    // etc. are module constants).
-    let used = 3 + nparams + (plain_idx - (3 + nparams)) + n_own + n_free;
-    let _ = used;
+    // temps: pad to the shared ABSOLUTE window (40..51) so every frame —
+    // _start and user fns — addresses temps identically (TEMP_LOCAL=40,
+    // TEMP_LOCAL_A=42 etc. are module constants). Filler types mirror
+    // _start's: 40=i32, 41=i64, 42/43/45=oref, 44=mut obj_arr, 46=i64,
+    // 47=i32, 48=RO arr, 49=$function, 50=obj_arr2, 51=cell_arr.
     {
-        let pad = 42u32.saturating_sub(3 + nparams + (plain_idx - (3 + nparams)) + n_own + n_free);
+        let used = 3 + nparams + (plain_idx - (3 + nparams)) + n_own + n_free;
+        let pad = 40u32.saturating_sub(used);
         for _ in 0..pad {
             order.push((1, pyobj_ref()));
         }
+        order.push((1, ValType::I32)); // 40
+        order.push((1, ValType::I64)); // 41
+        order.push((1, pyobj_ref())); // 42
+        order.push((1, pyobj_ref())); // 43
+        order.push((
+            1,
+            ValType::Ref(RefType {
+                nullable: true,
+                heap_type: wasm_encoder::HeapType::Concrete(T_OBJ_ARR),
+            }),
+        )); // 44
+        order.push((1, pyobj_ref())); // 45
+        order.push((1, ValType::I64)); // 46
+        order.push((1, ValType::I32)); // 47
+        order.push((
+            1,
+            ValType::Ref(RefType {
+                nullable: true,
+                heap_type: wasm_encoder::HeapType::Concrete(T_OBJ_ARR_RO),
+            }),
+        )); // 48
+        order.push((
+            1,
+            ValType::Ref(RefType {
+                nullable: true,
+                heap_type: wasm_encoder::HeapType::Concrete(T_FUNCTION),
+            }),
+        )); // 49
+        order.push((
+            1,
+            ValType::Ref(RefType {
+                nullable: true,
+                heap_type: wasm_encoder::HeapType::Concrete(T_OBJ_ARR),
+            }),
+        )); // 50
+        order.push((
+            1,
+            ValType::Ref(RefType {
+                nullable: true,
+                heap_type: wasm_encoder::HeapType::Concrete(T_CELL_ARR),
+            }),
+        )); // 51
     }
-    order.push((1, pyobj_ref())); // 42
-    order.push((1, pyobj_ref())); // 43
-    order.push((
-        1,
-        ValType::Ref(RefType {
-            nullable: true,
-            heap_type: wasm_encoder::HeapType::Concrete(T_OBJ_ARR),
-        }),
-    )); // 44
-    order.push((1, pyobj_ref())); // 45
-    order.push((1, ValType::I64)); // 46
-    order.push((1, ValType::I32)); // 47
-    order.push((
-        1,
-        ValType::Ref(RefType {
-            nullable: true,
-            heap_type: wasm_encoder::HeapType::Concrete(T_OBJ_ARR_RO),
-        }),
-    )); // 48
-    order.push((
-        1,
-        ValType::Ref(RefType {
-            nullable: true,
-            heap_type: wasm_encoder::HeapType::Concrete(T_FUNCTION),
-        }),
-    )); // 49
-    order.push((
-        1,
-        ValType::Ref(RefType {
-            nullable: true,
-            heap_type: wasm_encoder::HeapType::Concrete(T_OBJ_ARR),
-        }),
-    )); // 50: second mut $obj_arr stash (param_names)
 
     let mut f = Function::new(order);
     // prologue: allocate OWN cells fresh per call (recursion reentrancy)
@@ -1221,20 +1260,52 @@ fn emit_user_fn(
             struct_type_index: T_FUNCTION,
             field_index: F_FN_CELLS,
         });
-        f.instruction(&Instruction::LocalSet(TEMP_LOCAL_OBJARR)); // $cell_arr rides the obj-arr stash (readonly use)
+        f.instruction(&Instruction::LocalSet(51)); // $cell_arr stash
         for i in 0..n_free {
-            f.instruction(&Instruction::LocalGet(TEMP_LOCAL_OBJARR));
+            f.instruction(&Instruction::LocalGet(51));
             f.instruction(&Instruction::I32Const(i as i32));
             f.instruction(&Instruction::ArrayGet(T_CELL_ARR));
             f.instruction(&Instruction::LocalSet(cell_base + n_own + i));
         }
     }
-    // bind Python params from the args array: local 3+i = args[i]
-    for i in 0..uf.params.len() {
-        f.instruction(&Instruction::LocalGet(1)); // args array
+    // bind Python params: args[i] when provided, else the def-time default
+    // (S-02-7/8: defaults extend the accepted arity downward). argc is
+    // args.len; defaults live on the $function (param 0) -> defaults[i].
+    // Locals: 5=argc scratch, 6=default temp (the shared i64/oref temp
+    // window is at 42+; 5/6 are reserved i32/i64 in every frame by the pad
+    // — no, the pad reaches 42 exactly, so use the temp locals 42/43.)
+    for (i, p) in uf.params.iter().enumerate() {
+        // if argc > i: local(3+i) = args[i]; else = defaults[d] where d is
+        // the param's compact default_index (S-02-7: defaults only for
+        // params WITH defaults). A default-less out-of-range index cannot
+        // reach here: the dispatcher's arity window gates dynamic calls;
+        // static calls are exact-arity by construction.
+        let has_default = p.default_index.is_some();
+        if has_default {
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::ArrayLen);
+            f.instruction(&Instruction::I32Const(i as i32));
+            f.instruction(&Instruction::I32GtU);
+            f.instruction(&Instruction::If(BlockType::Empty));
+        }
+        f.instruction(&Instruction::LocalGet(1));
         f.instruction(&Instruction::I32Const(i as i32));
         f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
         f.instruction(&Instruction::LocalSet(3 + i as u32));
+        if has_default {
+            f.instruction(&Instruction::Else);
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::StructGet {
+                struct_type_index: T_FUNCTION,
+                field_index: F_FN_DEFAULTS,
+            });
+            f.instruction(&Instruction::I32Const(
+                p.default_index.unwrap() as i32,
+            ));
+            f.instruction(&Instruction::ArrayGet(T_OBJ_ARR));
+            f.instruction(&Instruction::LocalSet(3 + i as u32));
+            f.instruction(&Instruction::End);
+        }
     }
     // bind cell-backed params into their cells
     for (pi, p) in uf.params.iter().enumerate() {
@@ -1472,7 +1543,10 @@ fn emit_stmt(f: &mut Function, stmt: &Stmt, ctx: &mut EmitCtx) {
             //   else-body                   <- runs on normal exit (S-02-16)
             // break jumps past the If (skips else, S-02-18); the first
             // cond evaluation and every re-test evaluate the SAME expr.
-            let entry = ctx.depth;
+            // $exit wraps Loop AND else: break targets its end (skips
+            // else); normal cond-false exit falls into the else (S-02-16).
+            f.instruction(&Instruction::Block(BlockType::Empty));
+            ctx.depth += 1; // $exit label (break target; depth recorded below)
             emit_cond_i32(f, cond, ctx);
             f.instruction(&Instruction::If(BlockType::Empty));
             ctx.depth += 1;
@@ -1482,14 +1556,12 @@ fn emit_stmt(f: &mut Function, stmt: &Stmt, ctx: &mut EmitCtx) {
             ctx.depth += 1;
             f.instruction(&Instruction::Block(BlockType::Empty));
             ctx.depth += 1;
-            // label depths: at body-emit time ctx.depth = e+3 with the
-            // body Block as the nearest enclosing label. A continue site
-            // INSIDE a nested If sits one deeper; the Br arithmetic is
-            // site-depth minus the recorded label depth, so record the
-            // label's own absolute depth: body Block = ctx.depth,
-            // exit If = ctx.depth - 2.
+            // label depths: at body-emit time ctx.depth = e+4 — body
+            // Block label = e+4, Loop = e+3, entry If = e+2, $exit = e+1.
+            // The Br arithmetic at a site is site-depth minus the label's
+            // depth.
             ctx.br_continue = Some(ctx.depth); // body-Block end -> bottom test
-            ctx.br_break = Some(ctx.depth - 2); // If end -> loop exit
+            ctx.br_break = Some(ctx.depth - 3); // $exit end -> skips else
             for s in body {
                 emit_stmt(f, s, ctx);
             }
@@ -1502,10 +1574,12 @@ fn emit_stmt(f: &mut Function, stmt: &Stmt, ctx: &mut EmitCtx) {
             ctx.depth -= 1;
             f.instruction(&Instruction::End); // Loop
             ctx.depth -= 1;
-            f.instruction(&Instruction::End); // If
+            f.instruction(&Instruction::End); // entry If
             for s in els {
                 emit_stmt(f, s, ctx); // normal-exit only (S-02-16)
             }
+            ctx.depth -= 1;
+            f.instruction(&Instruction::End); // $exit
         }
         Stmt::Break => {
             let target = ctx.br_break.expect("scan tracked loop nesting");
@@ -1515,7 +1589,24 @@ fn emit_stmt(f: &mut Function, stmt: &Stmt, ctx: &mut EmitCtx) {
             let target = ctx.br_continue.expect("scan tracked loop nesting");
             f.instruction(&Instruction::Br(ctx.depth - target));
         }
-        Stmt::LocalDef(_) => unreachable!("LocalDef handled by the LocalDef arm below"),
+        // `global`/`nonlocal` are compile-time declarations: the name
+        // resolution (scan/resolution_map) already routes reads/writes to
+        // the module global or the enclosing cell — nothing to emit.
+        Stmt::Global(_) | Stmt::Nonlocal(_) => {}
+        Stmt::LocalDef(fd) => {
+            // def-time binding (S-02-7): build the $function object HERE
+            // (defaults evaluate at this execution point) and bind the name
+            // in the current scope. Cells: the child's free_cells reference
+            // THIS scope's cells — resolved at build time (S-02-13).
+            let slot = ctx
+                .scan
+                .fns
+                .iter()
+                .rposition(|uf| uf.name == fd.name.as_str())
+                .expect("scan registered the nested def");
+            emit_function_object(f, slot, ctx);
+            emit_name_store(f, fd.name.as_str(), ctx);
+        }
         other => unreachable!("scan vetted statement: {other:?}"),
     }
 }
@@ -1697,6 +1788,26 @@ fn emit_expr(f: &mut Function, e: &Expr, ctx: &mut EmitCtx) {
             f.instruction(&Instruction::StructNew(T_INT));
         }
         Expr::Call(func, args) => emit_call(f, func, args, ctx),
+        Expr::Lambda(..) => {
+            // lambda in expression position: build the $function object
+            // (cells resolved against the current scope — S-02-12)
+            let (sig, body) = match e {
+                Expr::Lambda(s, b) => (s.clone(), b.clone()),
+                _ => unreachable!(),
+            };
+            let body_stmts = vec![Stmt::Return(Some(*body))];
+            let slot = ctx
+                .scan
+                .fns
+                .iter()
+                .rposition(|uf| {
+                    uf.name == "<lambda>"
+                        && uf.params.len() == sig.params.len()
+                        && uf.body == body_stmts
+                })
+                .expect("scan registered this lambda");
+            emit_lambda_object(f, slot, ctx);
+        }
         Expr::List(items) => {
             for it in items {
                 emit_expr(f, it, ctx);
@@ -1819,7 +1930,9 @@ fn emit_bool_op(f: &mut Function, ops: &[Expr], is_or: bool, ctx: &mut EmitCtx) 
             f.instruction(&Instruction::Else);
             ctx.depth += 1;
             f.instruction(&Instruction::LocalGet(res));
-            f.instruction(&Instruction::Br(ctx.depth - entry)); // out of Block
+            // exit the BoolOp Block (label depth = entry): site depth is
+            // entry+2 (Block + If), so Br = site - entry - 1 = 1
+            f.instruction(&Instruction::Br(ctx.depth - entry - 1));
             ctx.depth -= 1;
             f.instruction(&Instruction::End);
         } else {
@@ -1857,8 +1970,18 @@ fn emit_call(f: &mut Function, func: &Expr, args: &[Arg], ctx: &mut EmitCtx) {
             .collect();
         let shadowed = ctx.scope.res.get(name.as_str()).is_some()
             && !matches!(ctx.scope.res.get(name.as_str()), Some(Res::Global) | None);
+        // A call argument containing a nested Call would clobber the A/B
+        // stashes mid-evaluation — route those through the generic path
+        // (stack-ordered, no stashes). Same observable behavior (S-01-31).
+        let arg_has_nested_call = args.iter().any(|a| matches!(
+            a,
+            Arg::Pos(Expr::Call(..))
+                | Arg::Pos(Expr::BinOp(..))
+                | Arg::Pos(Expr::UnaryOp(..))
+        ));
         if slots.len() == 1
             && !shadowed
+            && !arg_has_nested_call
             && args.iter().all(|a| matches!(a, Arg::Pos(_)))
             && args.len() == ctx.scan.fns[slots[0]].params.len()
         {
@@ -1883,7 +2006,9 @@ fn emit_call(f: &mut Function, func: &Expr, args: &[Arg], ctx: &mut EmitCtx) {
                         _ => TEMP_LOCAL_B,
                     }));
                 }
-                f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
+                if args.len() >= 1 {
+                    f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
+                }
                 if args.len() == 2 {
                     f.instruction(&Instruction::LocalGet(TEMP_LOCAL_B));
                 }
@@ -1921,16 +2046,14 @@ fn emit_call(f: &mut Function, func: &Expr, args: &[Arg], ctx: &mut EmitCtx) {
 /// (def-time object); lambda -> fresh object built here.
 fn emit_function_ref(f: &mut Function, func: &Expr, ctx: &mut EmitCtx) {
     if let Expr::Name(name) = func {
-        if ctx.scan.fns.iter().any(|uf| uf.name == name.as_str()) {
-            // nested defs re-bind the name when their def statement
-            // executes; the namespace/local load is the uniform,
-            // order-correct path (builtins never collide: scan keeps the
-            // slice's builtin names out of the function table)
-            emit_name_load(f, name.as_str(), ctx);
-            return;
-        }
-        // not a registered function: builtin / value call
+        // nested defs re-bind the name when their def statement executes;
+        // the namespace/local load is the uniform, order-correct path
+        // (builtins never collide: scan keeps the slice's builtin names
+        // out of the function table). The dispatcher wants a $function —
+        // cast (traps fail-loud on a non-callable, matching the slice's
+        // callable surface).
         emit_name_load(f, name.as_str(), ctx);
+        f.instruction(&Instruction::RefCastNullable(hc(T_FUNCTION)));
         return;
     }
     if let Expr::Lambda(..) = func {
@@ -1956,8 +2079,11 @@ fn emit_function_ref(f: &mut Function, func: &Expr, ctx: &mut EmitCtx) {
         emit_lambda_object(f, slot, ctx);
         return;
     }
-    // callable VALUE expression
+    // callable VALUE expression: cast to $function for the convention
+    // (fail-loud trap on a non-callable — the slice's callable surface is
+    // functions only)
     emit_expr(f, func, ctx);
+    f.instruction(&Instruction::RefCastNullable(hc(T_FUNCTION)));
 }
 
 /// Build a `$function` for a lambda at the current execution point
