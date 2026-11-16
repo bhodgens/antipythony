@@ -1848,7 +1848,10 @@ fn attr_set(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::
         f.instruction(&Instruction::LocalSet(3));
         f.instruction(&Instruction::LocalGet(1));
         f.instruction(&Instruction::LocalSet(4));
-        f.instruction(&Instruction::LocalGet(3));
+        // 03.03c fix: the VALUE is param 2 (the previous LocalGet(3) stored
+        // the OBJECT as the value — every class-body attr_set wrote the class
+        // itself, and the later __init__ RefCast($function) trap-failed).
+        f.instruction(&Instruction::LocalGet(2));
         f.instruction(&Instruction::LocalSet(5));
         // class object? ($type test first)
         f.instruction(&Instruction::LocalGet(3));

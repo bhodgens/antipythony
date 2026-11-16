@@ -107,6 +107,10 @@ struct Scan {
     /// any other name that names a builtin/exc class resolves to that
     /// class's builtin $type global, not a (never-written) module slot.
     module_binds: Vec<String>,
+    /// USER class names (03.03c): a Name-call of one of these routes to
+    /// FN_CALL_OF ($type arm -> cls_call __init__ dispatch) instead of the
+    /// $function cast (which traps on a class object).
+    classes: Vec<String>,
     strings: Vec<Vec<u8>>,
     /// Registration-stack parent slots (nested-def parent links).
     parent_stack: Vec<usize>,
@@ -118,6 +122,7 @@ impl Scan {
             fns: Vec::new(),
             module_names: Vec::new(),
             module_binds: Vec::new(),
+            classes: Vec::new(),
             strings: Vec::new(),
             parent_stack: Vec::new(),
         }
@@ -157,6 +162,11 @@ fn scan_module(module: &IrModule, scan: &mut Scan) -> Result<(), CodegenError> {
                 scan.mod_slot(cd.name.as_str());
                 if !scan.module_binds.iter().any(|n| n == cd.name.as_str()) {
                     scan.module_binds.push(cd.name.to_string());
+                }
+                // 03.03c: register as a USER class (Name-call instantiation
+                // routes through FN_CALL_OF, see emit_call).
+                if !scan.classes.iter().any(|c| c == cd.name.as_str()) {
+                    scan.classes.push(cd.name.to_string());
                 }
                 let mut bound: Vec<String> = Vec::new();
                 scan_class_def(cd, &mut bound, scan)?;
@@ -289,8 +299,16 @@ fn collect_stmt(
         Stmt::ExprStmt(e) => collect_expr(e, refs, bound, nonlocal, scan),
         Stmt::Assign(targets, value) => {
             collect_expr(value, refs, bound, nonlocal, scan)?;
+            // 03.03c: attr targets read their object (obj.attr = v) — the
+            // attr name rides FN_ATTR_SET as an interned $str at emit time.
             for t in targets {
-                collect_target(t, bound, scan)?;
+                match t {
+                    ap_ir::item::Target::Attribute(obj, name) => {
+                        scan.intern_str(name.as_str());
+                        collect_expr(obj, refs, bound, nonlocal, scan)?;
+                    }
+                    _ => collect_target(t, bound, scan)?,
+                }
             }
             Ok(())
         }
@@ -2051,10 +2069,21 @@ fn emit_stmt(f: &mut Function, stmt: &Stmt, ctx: &mut EmitCtx) {
         }
         Stmt::Assign(targets, value) => {
             emit_expr(f, value, ctx);
-            let ap_ir::item::Target::Name(n) = &targets[0] else {
-                unreachable!("scan vetted assign targets");
-            };
-            emit_name_store(f, n.as_str(), ctx);
+            let t = &targets[0];
+            // 03.03c: attr targets store via FN_ATTR_SET (S-03-10) — value,
+            // then obj, then the interned name (attr_set(obj, name, v)).
+            if let ap_ir::item::Target::Attribute(obj, name) = t {
+                f.instruction(&Instruction::LocalSet(TEMP_LOCAL_A));
+                emit_expr(f, obj, ctx);
+                push_interned_str(f, name.as_str(), ctx);
+                f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
+                f.instruction(&Instruction::Call(fx::FN_ATTR_SET));
+            } else {
+                let ap_ir::item::Target::Name(n) = t else {
+                    unreachable!("scan vetted assign targets");
+                };
+                emit_name_store(f, n.as_str(), ctx);
+            }
         }
         Stmt::AugAssign(t, op, v) => {
             let ap_ir::item::Target::Name(n) = t else {
@@ -2181,9 +2210,15 @@ fn emit_stmt(f: &mut Function, stmt: &Stmt, ctx: &mut EmitCtx) {
             emit_function_object(f, slot, ctx);
             if let Some(cls) = ctx.cls_obj {
                 // class-body method def: bind into the class namespace
-                // (S-03-3) — attr_set(cls, name, fn)
+                // (S-03-3) — attr_set(cls, name, fn). Operand order matters:
+                // attr_set takes (obj, name, v) so the $function built above
+                // rides a stash and is pushed LAST (03.03c fix: the previous
+                // order [fn, cls, name] failed validation — attr_set's $str
+                // param got the class $type ref).
+                f.instruction(&Instruction::LocalSet(TEMP_LOCAL_FN));
                 f.instruction(&Instruction::LocalGet(cls));
                 push_interned_str(f, fd.name.as_str(), ctx);
+                f.instruction(&Instruction::LocalGet(TEMP_LOCAL_FN));
                 f.instruction(&Instruction::Call(fx::FN_ATTR_SET));
             } else {
                 emit_name_store(f, fd.name.as_str(), ctx);
@@ -2841,10 +2876,14 @@ fn emit_call(f: &mut Function, func: &Expr, args: &[Arg], ctx: &mut EmitCtx) {
     // Builtin exception classes are CALLED to instantiate (call_of routes
     // $type BaseException-derived through exc_new): FT_CALL_OF takes a
     // plain $pyobj callable, no $function cast (a $type would trap it).
+    // 03.03c: USER classes ride the same path — a bound class NAME holds a
+    // $type, and casting that to $function traps (call_of's $type arm ->
+    // cls_call does __init__ dispatch).
     if let Expr::Name(name) = func {
-        if !ctx.scan.module_binds.iter().any(|n| n == name.as_str())
-            && crate::types::exc_type_global(name.as_str()).is_some()
-        {
+        let is_class = !ctx.scan.module_binds.iter().any(|n| n == name.as_str())
+            && crate::types::exc_type_global(name.as_str()).is_some();
+        let is_user_class = ctx.scan.classes.iter().any(|c| c == name.as_str());
+        if is_class || is_user_class {
             emit_name_load(f, name.as_str(), ctx);
             for a in args {
                 let Arg::Pos(x) = a else {
