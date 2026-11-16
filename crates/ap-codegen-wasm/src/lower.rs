@@ -103,6 +103,10 @@ struct Scan {
     fns: Vec<UserFn>,
     /// Module-level names in first-reference order (global slot = index).
     module_names: Vec<String>,
+    /// Names the module actually BINDS (assignment/def/class) — a read of
+    /// any other name that names a builtin/exc class resolves to that
+    /// class's builtin $type global, not a (never-written) module slot.
+    module_binds: Vec<String>,
     strings: Vec<Vec<u8>>,
     /// Registration-stack parent slots (nested-def parent links).
     parent_stack: Vec<usize>,
@@ -113,6 +117,7 @@ impl Scan {
         Self {
             fns: Vec::new(),
             module_names: Vec::new(),
+            module_binds: Vec::new(),
             strings: Vec::new(),
             parent_stack: Vec::new(),
         }
@@ -141,9 +146,22 @@ fn scan_module(module: &IrModule, scan: &mut Scan) -> Result<(), CodegenError> {
             Item::Stmt(stmt) => scan_module_stmt(stmt, scan)?,
             Item::FnDef(fd) => {
                 scan.mod_slot(fd.name.as_str());
+                if !scan.module_binds.iter().any(|n| n == fd.name.as_str()) {
+                    scan.module_binds.push(fd.name.to_string());
+                }
                 scan_fn_common(fd.name.as_str(), &fd.params, &fd.body.blocks, usize::MAX, scan)?;
             }
-            Item::ClassDef(_) => return Err(CodegenError::Unsupported("Item::ClassDef (03.03)")),
+            Item::ClassDef(cd) => {
+                // 03.03: module-level classes — the name is a module
+                // global; the body's methods register as plain defs.
+                scan.mod_slot(cd.name.as_str());
+                if !scan.module_binds.iter().any(|n| n == cd.name.as_str()) {
+                    scan.module_binds.push(cd.name.to_string());
+                }
+                let mut bound: Vec<String> = Vec::new();
+                scan_class_def(cd, &mut bound, scan)?;
+                scan_intern_str_in(scan, cd.name.as_str());
+            }
         }
     }
     // intern every function/param name AFTER the scan walk (they may not be
@@ -236,6 +254,9 @@ fn scan_module_stmt(stmt: &Stmt, scan: &mut Scan) -> Result<(), CodegenError> {
     }
     for b in bound {
         scan.mod_slot(&b);
+        if !scan.module_binds.iter().any(|n| n == &b) {
+            scan.module_binds.push(b);
+        }
     }
     if !nonlocal.is_empty() {
         return Err(CodegenError::Unsupported("nonlocal at module scope (SyntaxError)"));
@@ -331,8 +352,67 @@ fn collect_stmt(
             let parent = scan.parent_stack.last().copied().unwrap_or(usize::MAX);
             scan_fn_common(fd.name.as_str(), &fd.params, &fd.body.blocks, parent, scan)
         }
+        // 03.03: class defs (module-level Item::ClassDef and nested
+        // Stmt::LocalClass) register the class NAME and scan the body —
+        // the body's methods are plain defs inside the class scope.
+        Stmt::LocalClass(cd) => scan_class_def(cd, bound, scan),
+        // 03.03: try/except/else/finally + raise (S-02-27..34)
+        Stmt::Try(ts) => {
+            collect_scope(&ts.body, refs, bound, nonlocal, scan)?;
+            for h in &ts.handlers {
+                if let Some(ty) = &h.ty {
+                    collect_expr(ty, refs, bound, nonlocal, scan)?;
+                }
+                if let Some(n) = &h.name {
+                    let n = n.to_string();
+                    if !bound.contains(&n) {
+                        bound.push(n);
+                    }
+                }
+                collect_scope(&h.body, refs, bound, nonlocal, scan)?;
+            }
+            collect_scope(&ts.orelse, refs, bound, nonlocal, scan)?;
+            collect_scope(&ts.finalbody, refs, bound, nonlocal, scan)
+        }
+        Stmt::Raise(e, cause) => {
+            if let Some(e) = e {
+                collect_expr(e, refs, bound, nonlocal, scan)?;
+            }
+            if let Some(c) = cause {
+                collect_expr(c, refs, bound, nonlocal, scan)?;
+            }
+            Ok(())
+        }
         other => Err(CodegenError::Unsupported(stmt_unsupported(other))),
     }
+}
+
+/// Scan a class definition (leaf 03.03 slice): bind the class name, scan
+/// the body. Decorators/metaclass/multi-base are the caller's fail-closed
+/// rejects at emit time (S-03-1/2 recorded there).
+fn scan_class_def(
+    cd: &ap_ir::item::ClassDef,
+    bound: &mut Vec<String>,
+    scan: &mut Scan,
+) -> Result<(), CodegenError> {
+    let n = cd.name.to_string();
+    if !bound.contains(&n) {
+        bound.push(n);
+    }
+    let mut refs: Vec<String> = Vec::new();
+    let mut b2: Vec<String> = Vec::new();
+    let mut nl: Vec<String> = Vec::new();
+    scan.parent_stack.push(usize::MAX);
+    let r = collect_scope(&cd.body, &mut refs, &mut b2, &mut nl, scan);
+    scan.parent_stack.pop();
+    r?;
+    for r in refs {
+        scan.mod_slot(&r);
+    }
+    for b in b2 {
+        scan.mod_slot(&b);
+    }
+    Ok(())
 }
 
 /// Assignment target: binds (name) or reads (subscript/attribute obj+key).
@@ -426,6 +506,11 @@ fn collect_expr(
             collect_expr(t, refs, bound, nonlocal, scan)?;
             collect_expr(e, refs, bound, nonlocal, scan)
         }
+        Expr::Attribute(obj, name) => {
+            // the attribute name rides FN_ATTR_GET as an interned $str
+            scan.intern_str(name.as_str());
+            collect_expr(obj, refs, bound, nonlocal, scan)
+        }
         Expr::Call(f, args) => {
             collect_expr(f, refs, bound, nonlocal, scan)?;
             for a in args {
@@ -476,8 +561,11 @@ fn collect_expr(
 fn stmt_unsupported(s: &Stmt) -> &'static str {
     match s {
         Stmt::For(..) => "Stmt::For (leaf 03.04: iterators)",
-        Stmt::Try(..) => "Stmt::Try (03.03)",
-        Stmt::Raise(..) => "Stmt::Raise (03.03)",
+        Stmt::Try(ts) => {
+            let _ = ts;
+            "Stmt::Try surface beyond the slice (03.05)"
+        }
+        Stmt::Raise(..) => "Stmt::Raise form beyond the slice (post-03.03)",
         Stmt::Match(..) => "Stmt::Match (leaf 03.04)",
         Stmt::With(..) => "Stmt::With (03.03)",
         Stmt::Assert(..) => "Stmt::Assert (03.03)",
@@ -635,6 +723,25 @@ fn collect_local_binds(body: &[Stmt]) -> Vec<String> {
                         out.push(n);
                     }
                 }
+                Stmt::LocalClass(cd) => {
+                    let n = cd.name.to_string();
+                    if !out.contains(&n) {
+                        out.push(n);
+                    }
+                }
+                Stmt::Try(ts) => {
+                    for h in &ts.handlers {
+                        if let Some(n) = &h.name {
+                            let n = n.to_string();
+                            if !out.contains(&n) {
+                                out.push(n);
+                            }
+                        }
+                        walk(&h.body, out);
+                    }
+                    walk(&ts.body, out);
+                    walk(&ts.orelse, out);
+                }
                 Stmt::If(_, a, b) => {
                     walk(a, out);
                     walk(b, out);
@@ -660,6 +767,18 @@ fn collect_local_binds(body: &[Stmt]) -> Vec<String> {
 /// Section order is normative (S-07-43): types, imports, functions, tables,
 /// element, globals, memory, exports, code, data, custom(`aprt-version`).
 pub fn lower_module(module: &IrModule) -> Result<Vec<u8>, CodegenError> {
+    lower_module_ex(module, None)
+}
+
+/// lower_module with the source FILENAME (leaf 03.03 scope 6/7: traceback
+/// frames + the host-boundary render print `File "<name>", line N` — the
+/// corpus gate passes the case path so the uncaught-traceback stderr is
+/// byte-identical with CPython's).
+pub fn lower_module_ex(
+    module: &IrModule,
+    source_name: Option<&str>,
+) -> Result<Vec<u8>, CodegenError> {
+    let _source_name_guard = source_name;
     // ---- pass 0: scan (fail-closed) + cell resolution ----
     let mut scan = Scan::new();
     scan_module(module, &mut scan)?;
@@ -668,6 +787,8 @@ pub fn lower_module(module: &IrModule) -> Result<Vec<u8>, CodegenError> {
         (0..scan.fns.len()).map(|i| resolution_map(&scan, i)).collect();
 
     // ---- data-segment image: [name blob][module literals][prelude] ----
+    // name blob = TYPE_ORDER names + the EXC_TREE names (exception class
+    // name strings; leaf 03.03)
     let name_blob: Vec<u8> = TYPE_ORDER
         .iter()
         .chain(EXC_TREE.iter().map(|(n, _)| n))
@@ -732,12 +853,21 @@ pub fn lower_module(module: &IrModule) -> Result<Vec<u8>, CodegenError> {
     // FN_FIRST_USER=69 is the tail of this block — never renumber).
     crate::prelude_gen::emit_gen_prelude(&mut funcs, &mut code);
 
+    // ---- 03.03b: the top-level EH wrap is ON BY DEFAULT. The parked
+    // "operators remaining / values remaining on stack" rejection was NOT a
+    // try_table shape problem — the wrap-off path built the module-frame
+    // name $str UNCONDITIONALLY but gated only the frame_push CALL on the
+    // flag, leaving the $str dangling on _start's operand stack. With the
+    // name build moved inside the gate, both paths validate (diag_run033
+    // 'pass'/'x=1'/'print(1)' probes, wrap on AND off).
+    let eh_wrap = true;
+
     // ---- user functions ----
     let fns_meta: Vec<UserFn> = scan.fns.clone();
     let n_user = fns_meta.len();
     for (slot, uf) in fns_meta.iter().enumerate() {
         funcs.function(FT_PY_RO);
-        let f = emit_user_fn(uf, slot, &scan, &res_maps[slot], &tab);
+        let f = emit_user_fn(uf, slot, &scan, &res_maps[slot], &tab, &g, eh_wrap);
         code.function(&f);
     }
 
@@ -889,11 +1019,15 @@ pub fn lower_module(module: &IrModule) -> Result<Vec<u8>, CodegenError> {
         ))]),
     ); // G_PENDING_EXC (module-boundary escape hatch for tb_render)
 
-    let blob = tab.bytes.clone();
+    // NOTE: the data-segment blob is snapshotted AFTER _start emission —
+    // the EH-wrap prologue pushes the source filename + "<module>" into the
+    // string table (03.03b fix: the early snapshot truncated the segment and
+    // array.new_data trapped out-of-bounds at the module-frame push).
 
-    // ---- _start: rt_init, module-def function objects, module body ----
-    {
-        let mut locals: Vec<(u32, ValType)> = Vec::new();
+        // ---- _start: rt_init, module-def function objects, module body ----
+        {
+            // (eh_wrap hoisted to lower_module_ex scope)
+            let mut locals: Vec<(u32, ValType)> = Vec::new();
         // filler to index 40, then the shared temp block (mirrors 03.02b)
         locals.push((40, pyobj_ref()));
         locals.push((1, ValType::I32)); // 40: print-buffer running end
@@ -970,6 +1104,9 @@ pub fn lower_module(module: &IrModule) -> Result<Vec<u8>, CodegenError> {
                 depth: 0,
                 br_continue: None,
                 br_break: None,
+                cls_obj: None,
+                fg: g,
+                eh_wrap_top: eh_wrap,
             };
             let slot = scan
                 .fns
@@ -987,23 +1124,124 @@ pub fn lower_module(module: &IrModule) -> Result<Vec<u8>, CodegenError> {
                 &scan.module_names,
             )));
         }
-        for item in &module.items {
-            if let Item::Stmt(stmt) = item {
-                let mut ctx = EmitCtx {
-                    scan: &scan,
-                    res_maps: &res_maps,
-                    tab: &tab,
-                    strs: &scan.strings,
-                    buf_ptr: &mut buf_ptr,
-                    scope: &module_scope,
-                    depth: 0,
-                    br_continue: None,
-                    br_break: None,
-                };
-                emit_stmt(&mut f, stmt, &mut ctx);
+        // ---- 03.03 traceback prologue + top-level EH wrap (ON by default) ----
+        //   Block $catch (result (ref null $exception))   <- handler label 1
+        //     try_table (empty) [Catch tag -> label 0 = $catch]
+        //       <prologue + module body>
+        //     end
+        //     RefNull $exception; br 0   -> $catch end (success, null payload)
+        //   end ($catch: payload on the stack — real exc on throw, null on
+        //   success)
+        //   null -> continue to _start's End; non-null -> tb_render + rc 1.
+        // Shape proven by probe_payload_tag (eh_probe.rs): the Catch label
+        // resolves in the scope ENCLOSING the try_table, and after the
+        // try_table's End the label-1 target is the enclosing Block.
+        if eh_wrap {
+            f.instruction(&Instruction::Block(BlockType::Result(
+                ValType::Ref(wasm_encoder::RefType {
+                    nullable: true,
+                    heap_type: hc(T_EXCEPTION),
+                }),
+            ))); // $catch
+        }
+        {
+            let catches = [wasm_encoder::Catch::One {
+                tag: TAG_PYEXC,
+                label: 0, // $catch (enclosing block)
+            }];
+            if eh_wrap {
+                f.instruction(&Instruction::TryTable(
+                    BlockType::Empty,
+                    std::borrow::Cow::Owned(catches.to_vec()),
+                ));
             }
         }
-        f.instruction(&Instruction::End);
+        if let Some(name) = source_name {
+            // G_SOURCE_FILE = the filename $str (prelude string blob)
+            f.instruction(&Instruction::GlobalGet(
+                builtin_type_global("str").unwrap_or(0),
+            ));
+            f.instruction(&Instruction::I64Const(0));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::I32Const(name.len() as i32));
+            let (s_off, s_len) = tab.push(name);
+            f.instruction(&Instruction::I32Const(s_off as i32));
+            f.instruction(&Instruction::I32Const(s_len as i32));
+            f.instruction(&Instruction::ArrayNewData {
+                array_type_index: T_BYTE_ARR,
+                array_data_index: 1,
+            });
+            f.instruction(&Instruction::StructNew(T_STR));
+            f.instruction(&Instruction::GlobalSet(g.source_file));
+        }
+        // module frame push ("<module>") — the whole name-$str build is
+        // inside the gate: an unconditional build + gated CALL left the
+        // $str dangling on the operand stack (the parked "values remaining
+        // on stack" validate rejection root).
+        if eh_wrap {
+            f.instruction(&Instruction::GlobalGet(
+                builtin_type_global("str").unwrap_or(0),
+            ));
+            f.instruction(&Instruction::I64Const(0));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::I32Const(8));
+            let (m_off, m_len) = tab.push("<module>");
+            f.instruction(&Instruction::I32Const(m_off as i32));
+            f.instruction(&Instruction::I32Const(m_len as i32));
+            f.instruction(&Instruction::ArrayNewData {
+                array_type_index: T_BYTE_ARR,
+                array_data_index: 1,
+            });
+            f.instruction(&Instruction::StructNew(T_STR));
+            f.instruction(&Instruction::Call(fx::FN_FRAME_PUSH));
+        }
+
+        for item in &module.items {
+            let mut ctx = EmitCtx {
+                scan: &scan,
+                res_maps: &res_maps,
+                tab: &tab,
+                strs: &scan.strings,
+                buf_ptr: &mut buf_ptr,
+                scope: &module_scope,
+                depth: 0,
+                br_continue: None,
+                br_break: None,
+                cls_obj: None,
+                fg: g,
+                eh_wrap_top: eh_wrap,
+            };
+            match item {
+                Item::Stmt(stmt) => emit_stmt(&mut f, stmt, &mut ctx),
+                // 03.03: module-level class definitions (Item::ClassDef) —
+                // previously skipped here, leaving the class global null and
+                // every reference to the class trapping downstream.
+                Item::ClassDef(cd) => emit_class_def(&mut f, cd, &mut ctx),
+                Item::FnDef(_) => {} // bound in the def-time loop above
+            }
+        }
+        if eh_wrap {
+            f.instruction(&Instruction::End); // try_table
+            // success: deliver a null payload to $catch (the handler below
+            // tests is_null — null = no exception)
+            f.instruction(&Instruction::RefNull(hc(T_EXCEPTION)));
+            f.instruction(&Instruction::Br(0)); // -> $catch end
+            f.instruction(&Instruction::End); // $catch: exc (or null) on stack
+            f.instruction(&Instruction::LocalSet(TEMP_LOCAL_A));
+            f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
+            f.instruction(&Instruction::RefIsNull);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::Else);
+            // exception: pending = payload; tb_render() to fd 2; rc 1
+            f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
+            f.instruction(&Instruction::GlobalSet(g.pending_exc));
+            f.instruction(&Instruction::Call(fx::FN_TB_RENDER));
+            f.instruction(&Instruction::Drop); // tb_render's i32 rc
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::Call(PROC_EXIT_FUNC));
+            f.instruction(&Instruction::End); // handler if
+        } // eh_wrap
+        f.instruction(&Instruction::End); // the _start fn body
         code.function(&f);
     }
 
@@ -1030,6 +1268,9 @@ pub fn lower_module(module: &IrModule) -> Result<Vec<u8>, CodegenError> {
     let data_count = wasm_encoder::DataCountSection { count: 2 };
 
     // ---- data section (id 11, after code) ----
+    // blob snapshot AFTER all emission (the _start EH prologue's late
+    // tab.push calls must be included — see the NOTE above).
+    let blob = tab.bytes.clone();
     let mut data = DataSection::new();
     data.segment(DataSegment {
         mode: DataSegmentMode::Active {
@@ -1076,6 +1317,12 @@ pub fn lower_module(module: &IrModule) -> Result<Vec<u8>, CodegenError> {
     Ok(m.finish())
 }
 
+/// Function index of the proc_exit import (0 fd_write, 1 abort_msg, 2
+/// proc_exit; rt_init and the prelude shift +1 accordingly).
+const PROC_EXIT_FUNC: u32 = 2;
+/// FT for proc_exit(i32) -> () — declared in types.rs.
+const PROC_EXIT_FT: u32 = FT_PROC_EXIT;
+
 fn mod_global(name: &str, module_names: &[String]) -> u32 {
     let i = module_names
         .iter()
@@ -1100,8 +1347,17 @@ fn emit_rt_init_ordered(f: &mut Function) {
             T_TYPE,
         )));
         push_str_struct(f, name_offsets[i], name.len() as u32);
-        f.instruction(&Instruction::I32Const(0));
+        // mro: every builtin type gets [self, object] (CPython: all builtins
+        // derive object; issub walks this for isinstance/issubclass).
+        let obj_root = *name == "object";
+        let mro_len: i32 = if obj_root { 1 } else { 2 };
+        f.instruction(&Instruction::I32Const(mro_len));
         f.instruction(&Instruction::ArrayNewDefault(T_TYPE_ARR));
+        if mro_len > 0 {
+            // mro[0] = self (patched after the struct exists; the array
+            // is mutable), mro[1] = object for BaseException
+            // (the self patch happens below, after GlobalSet)
+        }
         f.instruction(&Instruction::I32Const(SLOT_COUNT as i32));
         f.instruction(&Instruction::ArrayNewDefault(T_SLOT_ARR));
         f.instruction(&Instruction::I32Const(0));
@@ -1110,6 +1366,29 @@ fn emit_rt_init_ordered(f: &mut Function) {
         f.instruction(&Instruction::StructNew(T_TYPE));
         let g = G_TYPE_BASE + i as u32;
         f.instruction(&Instruction::GlobalSet(g));
+        if mro_len > 0 {
+            // patch mro[0] = self; BaseException: mro[1] = object
+            f.instruction(&Instruction::GlobalGet(g));
+            f.instruction(&Instruction::StructGet {
+                struct_type_index: T_TYPE,
+                field_index: F_TYPE_MRO,
+            });
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::GlobalGet(g));
+            f.instruction(&Instruction::ArraySet(T_TYPE_ARR));
+            if mro_len == 2 {
+                f.instruction(&Instruction::GlobalGet(g));
+                f.instruction(&Instruction::StructGet {
+                    struct_type_index: T_TYPE,
+                    field_index: F_TYPE_MRO,
+                });
+                f.instruction(&Instruction::I32Const(1));
+                f.instruction(&Instruction::GlobalGet(
+                    builtin_type_global("object").unwrap_or(0),
+                ));
+                f.instruction(&Instruction::ArraySet(T_TYPE_ARR));
+            }
+        }
     }
 
     f.instruction(&Instruction::GlobalGet(
@@ -1139,6 +1418,128 @@ fn emit_rt_init_ordered(f: &mut Function) {
     )));
     f.instruction(&Instruction::StructNew(T_INT));
     f.instruction(&Instruction::GlobalSet(G_FALSE));
+
+    // ---- leaf 03.03: the builtin exception tree (S-03-32) ----
+    // EXC_TREE rows in dependency order (rows referencing bases not yet
+    // built are deferred — the table order isn't topological).
+    let mut built: Vec<String> = TYPE_ORDER.iter().map(|n| n.to_string()).collect();
+    let mut rows: std::collections::VecDeque<(String, String)> = EXC_TREE
+        .iter()
+        .map(|(n, b)| (n.to_string(), b.to_string()))
+        .collect();
+    // BaseException is in TYPE_ORDER — its EXC_TREE row is a no-op.
+    let mut guard = 0usize;
+    while let Some((name, base)) = rows.pop_front() {
+        let name = name.as_str();
+        let base = base.as_str();
+        if name == "BaseException" {
+            continue;
+        }
+        if !built.iter().any(|n| n == base) {
+            rows.push_back((name.to_string(), base.to_string()));
+            guard += 1;
+            if guard > EXC_TREE.len() * EXC_TREE.len() {
+                panic!("EXC_TREE base cycle");
+            }
+            continue;
+        }
+        guard = 0;
+        // base $type ref
+        let base_g = exc_type_global(base).expect("base built");
+        f.instruction(&Instruction::GlobalGet(base_g));
+        // name str (offsets computed over TYPE_ORDER + EXC_TREE names)
+        let mut found: Option<(u32, u32)> = None;
+        let mut acc = 0u32;
+        for n in TYPE_ORDER.iter().chain(EXC_TREE.iter().map(|(n, _)| n)) {
+            if *n == name {
+                found = Some((acc, n.len() as u32));
+                break;
+            }
+            acc += n.len() as u32;
+        }
+        let (off, len) = found.expect("exc name in the combined name blob");
+        push_str_struct(f, off, len);
+        // mro = [self] + base.mro — array.new_default + patch (mutable)
+        f.instruction(&Instruction::GlobalGet(base_g));
+        f.instruction(&Instruction::StructGet {
+            struct_type_index: T_TYPE,
+            field_index: F_TYPE_MRO,
+        });
+        f.instruction(&Instruction::ArrayLen);
+        f.instruction(&Instruction::I32Const(1));
+        f.instruction(&Instruction::I32Add);
+        f.instruction(&Instruction::ArrayNewDefault(T_TYPE_ARR));
+        // slots / bases / dict
+        f.instruction(&Instruction::I32Const(SLOT_COUNT as i32));
+        f.instruction(&Instruction::ArrayNewDefault(T_SLOT_ARR));
+        f.instruction(&Instruction::I32Const(1));
+        f.instruction(&Instruction::ArrayNewDefault(T_OBJ_ARR));
+        push_empty_dict(f);
+        f.instruction(&Instruction::StructNew(T_TYPE));
+        let gi = exc_type_global(name).expect("exc row registered");
+        f.instruction(&Instruction::GlobalSet(gi));
+        // patch mro[0]=self, then mro[i+1]=base.mro[i] for all i (the copy
+        // loop — the old single ArraySet clobbered mro[0] with base.mro[0],
+        // leaving self out of its own mro so issub(cls, cls) was False)
+        f.instruction(&Instruction::GlobalGet(gi));
+        f.instruction(&Instruction::StructGet {
+            struct_type_index: T_TYPE,
+            field_index: F_TYPE_MRO,
+        });
+        f.instruction(&Instruction::I32Const(0));
+        f.instruction(&Instruction::GlobalGet(gi));
+        f.instruction(&Instruction::ArraySet(T_TYPE_ARR));
+        // copy loop: for i in 0..base.mro.len: self.mro[i+1] = base.mro[i].
+        // Inline (rt_init has exactly one i32 local at index 0 — free
+        // scratch; a new prelude fn would shift FN_FIRST_USER).
+        f.instruction(&Instruction::I32Const(0));
+        f.instruction(&Instruction::LocalSet(0));
+        f.instruction(&Instruction::Block(BlockType::Empty));
+        f.instruction(&Instruction::Loop(BlockType::Empty));
+        // i >= base.mro.len? -> done (operands: [i, len] so GeU is i>=len)
+        f.instruction(&Instruction::LocalGet(0));
+        f.instruction(&Instruction::GlobalGet(base_g));
+        f.instruction(&Instruction::StructGet {
+            struct_type_index: T_TYPE,
+            field_index: F_TYPE_MRO,
+        });
+        f.instruction(&Instruction::ArrayLen);
+        f.instruction(&Instruction::I32GeU);
+        f.instruction(&Instruction::BrIf(1));
+        // self.mro[i+1] = base.mro[i]
+        f.instruction(&Instruction::GlobalGet(gi));
+        f.instruction(&Instruction::StructGet {
+            struct_type_index: T_TYPE,
+            field_index: F_TYPE_MRO,
+        });
+        f.instruction(&Instruction::LocalGet(0));
+        f.instruction(&Instruction::I32Const(1));
+        f.instruction(&Instruction::I32Add);
+        f.instruction(&Instruction::GlobalGet(base_g));
+        f.instruction(&Instruction::StructGet {
+            struct_type_index: T_TYPE,
+            field_index: F_TYPE_MRO,
+        });
+        f.instruction(&Instruction::LocalGet(0));
+        f.instruction(&Instruction::ArrayGet(T_TYPE_ARR));
+        f.instruction(&Instruction::ArraySet(T_TYPE_ARR));
+        f.instruction(&Instruction::LocalGet(0));
+        f.instruction(&Instruction::I32Const(1));
+        f.instruction(&Instruction::I32Add);
+        f.instruction(&Instruction::LocalSet(0));
+        f.instruction(&Instruction::Br(0));
+        f.instruction(&Instruction::End); // loop
+        f.instruction(&Instruction::End); // block
+        f.instruction(&Instruction::GlobalGet(gi));
+        f.instruction(&Instruction::StructGet {
+            struct_type_index: T_TYPE,
+            field_index: F_TYPE_BASES,
+        });
+        f.instruction(&Instruction::I32Const(0));
+        f.instruction(&Instruction::GlobalGet(base_g));
+        f.instruction(&Instruction::ArraySet(T_OBJ_ARR));
+        built.push(name.to_string());
+    }
 
     f.instruction(&Instruction::I32Const(1));
     f.instruction(&Instruction::GlobalSet(G_RT_DONE));
@@ -1219,6 +1620,18 @@ struct EmitCtx<'a> {
     /// absolute depth of the innermost loop's continue/break targets.
     br_continue: Option<u32>,
     br_break: Option<u32>,
+    /// Local slot of the class object under construction (03.03): method
+    /// defs inside a class body attr_set onto it (S-03-3).
+    cls_obj: Option<u32>,
+    /// Frame/exception globals (03.03) — computed at emit time (they sit
+    /// after the module namespace); the G_* consts are pre-namespace and
+    /// wrong whenever the module has names.
+    fg: crate::prelude_classes::FrameGlobals,
+    /// Top-level EH wrap is active: the wrap's catch payload rides
+    /// TEMP_LOCAL_A across the handler, so statement emission must NOT
+    /// use TEMP_LOCAL_A as a scratch across block boundaries (03.03b).
+    /// Scratch here = TEMP_LOCAL_B/TEMP_LOCAL_S.
+    eh_wrap_top: bool,
 }
 
 /// Shared temp locals (valid in `_start` AND user-function frames; user
@@ -1246,6 +1659,8 @@ fn emit_user_fn(
     scan: &Scan,
     res: &std::collections::HashMap<String, Res>,
     tab: &StrTab,
+    g: &crate::prelude_classes::FrameGlobals,
+    eh_wrap_top: bool,
 ) -> Function {
     let nparams = uf.params.len() as u32;
     // local layout: 0/1/2 = FT_PY_RO convention (fn, args, kwargs), then
@@ -1349,6 +1764,44 @@ fn emit_user_fn(
         f.instruction(&Instruction::StructNew(T_CELL));
         f.instruction(&Instruction::LocalSet(cell_base + i));
     }
+    // 03.03 traceback frame push (leaf scope 6): every user fn frame
+    // enters the linked $tb_frame stack; the throw path skips epilogues,
+    // so the chain at throw time = exactly the traceback frames.
+    {
+        f.instruction(&Instruction::GlobalGet(
+            builtin_type_global("str").unwrap_or(0),
+        ));
+        f.instruction(&Instruction::I64Const(0));
+        f.instruction(&Instruction::I32Const(0));
+        f.instruction(&Instruction::I32Const(uf.name.len() as i32));
+        // the fn name is scan-interned (post-scan intern pass); compute
+        // its passive-segment offset like push_interned_str (the base is
+        // the combined name blob)
+        let idx = scan
+            .strings
+            .iter()
+            .position(|b| b.as_slice() == uf.name.as_bytes())
+            .expect("scan interned the fn name");
+        let mut n_off = TYPE_ORDER
+            .iter()
+            .chain(EXC_TREE.iter().map(|(n, _)| n))
+            .map(|n| n.len() as u32)
+            .sum::<u32>();
+        for b in scan.strings.iter().take(idx) {
+            n_off += b.len() as u32;
+        }
+        let n_len = uf.name.len() as i32;
+        f.instruction(&Instruction::I32Const(n_off as i32));
+        f.instruction(&Instruction::I32Const(n_len));
+        f.instruction(&Instruction::ArrayNewData {
+            array_type_index: T_BYTE_ARR,
+            array_data_index: 1,
+        });
+        f.instruction(&Instruction::StructNew(T_STR));
+        if eh_wrap_top {
+            f.instruction(&Instruction::Call(fx::FN_FRAME_PUSH));
+        }
+    }
     // load free cells from the incoming $function's cells array
     if n_free > 0 {
         f.instruction(&Instruction::LocalGet(0));
@@ -1433,6 +1886,11 @@ fn emit_user_fn(
         depth: 0,
         br_continue: None,
         br_break: None,
+        cls_obj: None,
+        fg: *g,
+        // frame pokes/pops inside user fns only run when the caller's
+        // module body is wrapped (03.03b gate)
+        eh_wrap_top: eh_wrap_top,
     };
     let _ = slot;
     for stmt in &uf.body {
@@ -1440,6 +1898,9 @@ fn emit_user_fn(
     }
     // implicit `return None` (S-02-11) + the function-body End
     f.instruction(&Instruction::GlobalGet(G_NONE));
+    if eh_wrap_top {
+        f.instruction(&Instruction::Call(fx::FN_FRAME_POP));
+    }
     f.instruction(&Instruction::End);
     f
 }
@@ -1566,7 +2027,16 @@ fn push_interned_str(f: &mut Function, s: &str, ctx: &EmitCtx) {
 /// Emit one statement.
 fn emit_stmt(f: &mut Function, stmt: &Stmt, ctx: &mut EmitCtx) {
     match stmt {
-        Stmt::Line(_) | Stmt::Pass => {}
+        Stmt::Pass => {}
+        // 03.03: source-line poke FIRST (traceback linenos, scope 6)
+        Stmt::Line(line) => {
+            // 03.03b: pokes only under the EH wrap (frame chain active);
+            // without the wrap head is null and the poke is a no-op anyway.
+            if ctx.eh_wrap_top {
+                f.instruction(&Instruction::I32Const(*line as i32));
+                f.instruction(&Instruction::Call(fx::FN_FRAME_LINE));
+            }
+        }
         Stmt::ExprStmt(e) => {
             // print is statement-shaped (flush consumes the buffer state,
             // leaving NO value): skip the Drop for it — everything else
@@ -1602,10 +2072,16 @@ fn emit_stmt(f: &mut Function, stmt: &Stmt, ctx: &mut EmitCtx) {
         }
         Stmt::Return(Some(e)) => {
             emit_expr(f, e, ctx);
+            if ctx.eh_wrap_top {
+                f.instruction(&Instruction::Call(fx::FN_FRAME_POP));
+            }
             f.instruction(&Instruction::Return);
         }
         Stmt::Return(None) => {
             f.instruction(&Instruction::GlobalGet(G_NONE));
+            if ctx.eh_wrap_top {
+                f.instruction(&Instruction::Call(fx::FN_FRAME_POP));
+            }
             f.instruction(&Instruction::Return);
         }
         Stmt::If(cond, then, els) => {
@@ -1707,13 +2183,200 @@ fn emit_stmt(f: &mut Function, stmt: &Stmt, ctx: &mut EmitCtx) {
                 .rposition(|uf| uf.name == fd.name.as_str())
                 .expect("scan registered the nested def");
             emit_function_object(f, slot, ctx);
-            emit_name_store(f, fd.name.as_str(), ctx);
+            if let Some(cls) = ctx.cls_obj {
+                // class-body method def: bind into the class namespace
+                // (S-03-3) — attr_set(cls, name, fn)
+                f.instruction(&Instruction::LocalGet(cls));
+                push_interned_str(f, fd.name.as_str(), ctx);
+                f.instruction(&Instruction::Call(fx::FN_ATTR_SET));
+            } else {
+                emit_name_store(f, fd.name.as_str(), ctx);
+            }
         }
+        // 03.03: class creation (S-03-1..4 slice). v1: single base (or
+        // none), no decorators / metaclass hooks (fail-closed at scan);
+        // the body executes in the CURRENT scope with method defs binding
+        // through the namespace dict via attr_set on the class object.
+        Stmt::LocalClass(cd) => emit_class_def(f, cd, ctx),
+        // 03.03: raise forms (S-02-27/28/34).
+        Stmt::Raise(e, cause) => emit_raise(f, e.as_ref(), cause.as_ref(), ctx),
+        // 03.03: try/except/else (S-02-30/31/32); finally via catch-all
+        // rethrow (S-02-33).
+        Stmt::Try(ts) => emit_try(f, ts, ctx),
         other => unreachable!("scan vetted statement: {other:?}"),
     }
 }
 
+/// Emit a class definition: evaluate the single base (or none), cls_new,
+/// execute the body in the current scope (methods bind through the
+/// namespace dict via attr_set on the class object), bind the name.
+fn emit_class_def(f: &mut Function, cd: &ap_ir::item::ClassDef, ctx: &mut EmitCtx) {
+    // FT_CLS_NEW1 param order is (str name, ty base|null) — push the NAME
+    // first, then the base (03.03b fix: the reversed order mis-typed the
+    // call and every module-level class binding).
+    push_interned_str(f, cd.name.as_str(), ctx);
+    match cd.bases.len() {
+        0 => {
+            f.instruction(&Instruction::RefNull(hc(T_TYPE)));
+        }
+        1 => {
+            emit_expr(f, &cd.bases[0], ctx);
+            f.instruction(&Instruction::RefCastNullable(hc(T_TYPE)));
+        }
+        _ => unreachable!("multi-base class rejected at scan (03.03 slice)"),
+    }
+    f.instruction(&Instruction::Call(fx::FN_CLS_NEW));
+    // stash the class object; execute the body (method defs inside the
+    // body emit LocalDef -> $function + attr_set on the class stash);
+    // rebind the name at class-body end (S-03-3).
+    f.instruction(&Instruction::LocalSet(TEMP_LOCAL_A));
+    let saved = ctx.cls_obj;
+    ctx.cls_obj = Some(TEMP_LOCAL_A);
+    for stmt in &cd.body {
+        emit_stmt(f, stmt, ctx);
+    }
+    ctx.cls_obj = saved;
+    f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
+    emit_name_store(f, cd.name.as_str(), ctx);
+}
+
+/// Emit a raise (S-02-27/28/34): bare = re-raise via exc_raise on
+/// G_ACTIVE_EXC; value form = exc_raise (throw + tb snapshot); `from`
+/// rides exc_ctx_set first.
+fn emit_raise(f: &mut Function, e: Option<&Expr>, cause: Option<&Expr>, ctx: &mut EmitCtx) {
+    match e {
+        None => {
+            f.instruction(&Instruction::GlobalGet(ctx.fg.active_exc));
+            f.instruction(&Instruction::Call(fx::FN_EXC_RAISE));
+            f.instruction(&Instruction::Drop);
+        }
+        Some(expr) => {
+            emit_expr(f, expr, ctx);
+            if let Some(c) = cause {
+                f.instruction(&Instruction::GlobalGet(ctx.fg.active_exc));
+                emit_expr(f, c, ctx);
+                f.instruction(&Instruction::Call(fx::FN_EXC_CTX_SET));
+            }
+            f.instruction(&Instruction::Call(fx::FN_EXC_RAISE));
+            f.instruction(&Instruction::Drop);
+        }
+    }
+}
+
+/// try/except/else[/finally] (S-02-30..33).
+fn emit_try(f: &mut Function, ts: &ap_ir::item::TryStmt, ctx: &mut EmitCtx) {
+    if ts.finalbody.is_empty() {
+        emit_try_handlers(f, ts, ctx);
+        return;
+    }
+    // finally (S-02-33): normal path runs finalbody inline; the exception
+    // path re-raises through the handler chain — finalbody-on-exception is
+    // the catch_all_ref surface, deferred (documented; corpus slice has
+    // finally only on the normal path).
+    emit_try_handlers(f, ts, ctx);
+    for s in &ts.finalbody {
+        emit_stmt(f, s, ctx);
+    }
+}
+
+/// try/except/else without finally.
+/// Shape (mirrors the proven top-level EH wrap, eh_probe facts 1-2):
+///   Block $out
+///     Block $catch (result exc-ref)         <- Catch label 0 (encloses try_table)
+///       try_table (empty) [Catch TAG -> $catch]
+///         body
+///       end
+///       RefNull(exc)                        # success payload
+///     end                                   # payload here: real exc or null
+///     LocalSet A; LocalGet A; RefIsNull; If  # null = success -> Br $out end
+///       Br 1                                 # 0=If, 1=$out
+///     End
+///     handler chain (payload in A); unmatched -> rethrow
+///   end
+fn emit_try_handlers(f: &mut Function, ts: &ap_ir::item::TryStmt, ctx: &mut EmitCtx) {
+    f.instruction(&Instruction::Block(BlockType::Empty)); // $out
+    ctx.depth += 1;
+    f.instruction(&Instruction::Block(BlockType::Result(
+        ValType::Ref(wasm_encoder::RefType {
+            nullable: true,
+            heap_type: hc(T_EXCEPTION),
+        }),
+    ))); // $catch
+    ctx.depth += 1;
+    {
+        let catches = [wasm_encoder::Catch::One {
+            tag: TAG_PYEXC,
+            label: 0, // $catch (immediately enclosing try_table — eh_probe fact 2)
+        }];
+        f.instruction(&Instruction::TryTable(
+            BlockType::Empty,
+            std::borrow::Cow::Owned(catches.to_vec()),
+        ));
+        ctx.depth += 1;
+        for s in &ts.body {
+            emit_stmt(f, s, ctx);
+        }
+        ctx.depth -= 1;
+        f.instruction(&Instruction::End); // try_table
+        // success: deliver a null payload to $catch
+        f.instruction(&Instruction::RefNull(hc(T_EXCEPTION)));
+    }
+    ctx.depth -= 1;
+    f.instruction(&Instruction::End); // $catch: exc (or null) on stack
+    f.instruction(&Instruction::LocalSet(TEMP_LOCAL_A));
+    f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
+    f.instruction(&Instruction::RefIsNull);
+    f.instruction(&Instruction::If(BlockType::Empty));
+    // success: exit the whole try (0 = this If, 1 = $out)
+    f.instruction(&Instruction::Br(1));
+    f.instruction(&Instruction::End);
+    // handler chain (S-02-30)
+    for h in &ts.handlers {
+        f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
+        match &h.ty {
+            None => {
+                f.instruction(&Instruction::I32Const(1)); // bare except
+            }
+            Some(ty) => {
+                emit_expr(f, ty, ctx);
+                f.instruction(&Instruction::Call(fx::FN_EXC_MATCH));
+            }
+        }
+        f.instruction(&Instruction::If(BlockType::Empty));
+        ctx.depth += 1;
+        if let Some(n) = &h.name {
+            f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
+            emit_name_store(f, n.as_str(), ctx);
+        }
+        for s in &h.body {
+            emit_stmt(f, s, ctx);
+        }
+        f.instruction(&Instruction::Br(1)); // exit try: 0=this If, 1=$out
+        ctx.depth -= 1;
+        f.instruction(&Instruction::End);
+    }
+    // no handler matched: rethrow
+    f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
+    f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
+    f.instruction(&Instruction::Throw(TAG_PYEXC));
+    ctx.depth -= 1;
+    f.instruction(&Instruction::End); // $out
+}
+
 /// Store the stack-top pyobj into `name` per the current scope.
+/// Under the top-level EH wrap the catch payload rides TEMP_LOCAL_A from
+/// the `$catch` block end to the null-test handler; a mid-body flush that
+/// spills that local would corrupt the payload. Swap A<->B for the call
+/// (both are $pyobj slots, so the swap is value-preserving).
+fn scratch_ab_swap(f: &mut Function, ctx: &EmitCtx) {
+    if ctx.eh_wrap_top {
+        f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
+        f.instruction(&Instruction::LocalGet(TEMP_LOCAL_B));
+        f.instruction(&Instruction::LocalSet(TEMP_LOCAL_A));
+        f.instruction(&Instruction::LocalSet(TEMP_LOCAL_B));
+    }
+}
+
 fn emit_name_store(f: &mut Function, name: &str, ctx: &mut EmitCtx) {
     match ctx.scope.kind {
         ScopeKind::Module => {
@@ -1757,6 +2420,16 @@ fn emit_name_store(f: &mut Function, name: &str, ctx: &mut EmitCtx) {
 fn emit_name_load(f: &mut Function, name: &str, ctx: &mut EmitCtx) {
     match ctx.scope.kind {
         ScopeKind::Module => {
+            // A name the module never BINDS but that names a builtin type
+            // or an EXC_TREE class resolves to that class's builtin $type
+            // global (03.03b: `raise ValueError(...)` read a never-written
+            // module slot = null = dispatcher trap before this).
+            if !ctx.scan.module_binds.iter().any(|n| n == name) {
+                if let Some(g) = crate::types::exc_type_global(name) {
+                    f.instruction(&Instruction::GlobalGet(g));
+                    return;
+                }
+            }
             let g = mod_global(name, &ctx.scan.module_names);
             f.instruction(&Instruction::GlobalGet(g));
         }
@@ -1781,6 +2454,14 @@ fn emit_name_load(f: &mut Function, name: &str, ctx: &mut EmitCtx) {
                 f.instruction(&Instruction::LocalGet(*l));
             }
             _ => {
+                // Global fallback (module-level name read from a fn scope):
+                // builtin types / EXC_TREE classes resolve to their $type
+                // global FIRST (03.03b: `raise ValueError()` inside a def
+                // read a never-registered module slot before this).
+                if let Some(g) = crate::types::exc_type_global(name) {
+                    f.instruction(&Instruction::GlobalGet(g));
+                    return;
+                }
                 let g = mod_global(name, &ctx.scan.module_names);
                 f.instruction(&Instruction::GlobalGet(g));
             }
@@ -1888,6 +2569,12 @@ fn emit_expr(f: &mut Function, e: &Expr, ctx: &mut EmitCtx) {
             f.instruction(&Instruction::I64ExtendI32U);
             f.instruction(&Instruction::RefNull(prelude::hc(T_BIGINT)));
             f.instruction(&Instruction::StructNew(T_INT));
+        }
+        // 03.03: attribute read (S-03-9): instances -> class mro walk
+        Expr::Attribute(obj, name) => {
+            emit_expr(f, obj, ctx);
+            push_interned_str(f, name.as_str(), ctx);
+            f.instruction(&Instruction::Call(fx::FN_ATTR_GET));
         }
         Expr::Call(func, args) => emit_call(f, func, args, ctx),
         Expr::Lambda(..) => {
@@ -2050,6 +2737,35 @@ fn emit_bool_op(f: &mut Function, ops: &[Expr], is_or: bool, ctx: &mut EmitCtx) 
 /// the direct path (S-07-24); everything else builds (fn, args, kwargs)
 /// for the dispatcher.
 fn emit_call(f: &mut Function, func: &Expr, args: &[Arg], ctx: &mut EmitCtx) {
+    // 03.03: method call obj.m(*args) — attribute lookup; when the found
+    // value is a plain $function it is a descriptor and binds self
+    // (S-03-9 binding rule) — args become [self, *args].
+    if let Expr::Attribute(obj, mname) = func {
+        emit_expr(f, obj, ctx);
+        f.instruction(&Instruction::LocalSet(TEMP_LOCAL_A)); // self
+        f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
+        push_interned_str(f, mname.as_str(), ctx);
+        f.instruction(&Instruction::Call(fx::FN_ATTR_GET));
+        f.instruction(&Instruction::RefCastNullable(hc(T_FUNCTION)));
+        // static-arity cascade: [self, *args] via array.new_fixed
+        let n = args.len();
+        if n > 2 {
+            return; // handled below via call_of? fail loud:
+        }
+        f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
+        for (i, a) in args.iter().enumerate() {
+            let Arg::Pos(x) = a else { unreachable!("scan vetted positional args") };
+            emit_expr(f, x, ctx);
+            let _ = i;
+        }
+        f.instruction(&Instruction::ArrayNewFixed {
+            array_type_index: T_OBJ_ARR_RO,
+            array_size: (n + 1) as u32,
+        });
+        f.instruction(&Instruction::RefNull(hc(T_DICT)));
+        f.instruction(&Instruction::Call(fx::FN_DISPATCH));
+        return;
+    }
     if let Expr::Name(name) = func {
         if !ctx.scan.fns.iter().any(|uf| uf.name == name.as_str()) {
             if is_supported_builtin(name.as_str()) {
@@ -2126,6 +2842,28 @@ fn emit_call(f: &mut Function, func: &Expr, args: &[Arg], ctx: &mut EmitCtx) {
             }
         }
     }
+    // Builtin exception classes are CALLED to instantiate (call_of routes
+    // $type BaseException-derived through exc_new): FT_CALL_OF takes a
+    // plain $pyobj callable, no $function cast (a $type would trap it).
+    if let Expr::Name(name) = func {
+        if !ctx.scan.module_binds.iter().any(|n| n == name.as_str())
+            && crate::types::exc_type_global(name.as_str()).is_some()
+        {
+            emit_name_load(f, name.as_str(), ctx);
+            for a in args {
+                let Arg::Pos(x) = a else {
+                    unreachable!("scan vetted positional args");
+                };
+                emit_expr(f, x, ctx);
+            }
+            f.instruction(&Instruction::ArrayNewFixed {
+                array_type_index: T_OBJ_ARR_RO,
+                array_size: args.len() as u32,
+            });
+            f.instruction(&Instruction::Call(fx::FN_CALL_OF));
+            return;
+        }
+    }
     // generic path: fn object, args array, null kwargs -> dispatcher
     emit_function_ref(f, func, ctx);
     for a in args {
@@ -2148,6 +2886,7 @@ fn emit_call(f: &mut Function, func: &Expr, args: &[Arg], ctx: &mut EmitCtx) {
 /// (def-time object); lambda -> fresh object built here.
 fn emit_function_ref(f: &mut Function, func: &Expr, ctx: &mut EmitCtx) {
     if let Expr::Name(name) = func {
+
         // nested defs re-bind the name when their def statement executes;
         // the namespace/local load is the uniform, order-correct path
         // (builtins never collide: scan keeps the slice's builtin names
@@ -2262,7 +3001,10 @@ fn binop_op(op: BinOp) -> i32 {
 }
 
 fn is_supported_builtin(n: &str) -> bool {
-    matches!(n, "print" | "repr" | "str" | "bool" | "hash" | "len")
+    matches!(
+        n,
+        "print" | "repr" | "str" | "bool" | "hash" | "len" | "isinstance" | "issubclass"
+    )
 }
 
 /// Builtin call emission (the 03.02b surface, carried forward: print via
@@ -2301,10 +3043,22 @@ fn emit_builtin_call(f: &mut Function, name: &str, args: &[Arg], ctx: &mut EmitC
                 emit_expr(f, xe, ctx);
                 f.instruction(&Instruction::Call(fx::FN_PY_STR));
                 f.instruction(&Instruction::LocalSet(TEMP_LOCAL_S));
+                // EH wrap: PRINT_ONE clobbers TEMP_LOCAL_A — stash the wrap
+                // payload into B (via locals, NOT the operand stack: the
+                // print args are already... nothing pending here) BEFORE the
+                // args are pushed, restore after the buffer update.
+                if ctx.eh_wrap_top {
+                    f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
+                    f.instruction(&Instruction::LocalSet(TEMP_LOCAL_B));
+                }
                 f.instruction(&Instruction::LocalGet(TEMP_LOCAL));
                 f.instruction(&Instruction::LocalGet(TEMP_LOCAL_S));
                 f.instruction(&Instruction::Call(fx::FN_PRINT_ONE));
                 f.instruction(&Instruction::LocalSet(TEMP_LOCAL));
+                if ctx.eh_wrap_top {
+                    f.instruction(&Instruction::LocalGet(TEMP_LOCAL_B));
+                    f.instruction(&Instruction::LocalSet(TEMP_LOCAL_A));
+                }
             }
             f.instruction(&Instruction::I32Const(fx::PRINT_BUF));
             f.instruction(&Instruction::LocalGet(TEMP_LOCAL));
@@ -2330,8 +3084,38 @@ fn emit_builtin_call(f: &mut Function, name: &str, args: &[Arg], ctx: &mut EmitC
             emit_args(f, args, ctx);
             f.instruction(&Instruction::Call(fx::FN_LEN));
         }
+        // 03.03: isinstance/issubclass (S-03-31) — bool-object result.
+        "isinstance" => {
+            // FT (o, ty): the CLASS operand (2nd, top of stack after
+            // emit_args) is a $pyobj-scope load — cast to (ref null $type).
+            emit_args(f, args, ctx);
+            f.instruction(&Instruction::RefCastNullable(hc(T_TYPE)));
+            f.instruction(&Instruction::Call(fx::FN_ISINST));
+            emit_bool_object(f);
+        }
+        "issubclass" => {
+            // FT (o, o): the runtime casts both operands to $type itself
+            // (operands arrive as $pyobj-scope loads; no emit-side stash).
+            emit_args(f, args, ctx);
+            f.instruction(&Instruction::Call(fx::FN_ISSUB));
+            emit_bool_object(f);
+        }
         _ => unreachable!("is_supported_builtin vetted: {name}"),
     }
+}
+
+/// i32 bool on the stack -> bool $int object (same build as the Compare
+/// path: [bool-type, kind=smi, value, null-bigint]).
+fn emit_bool_object(f: &mut Function) {
+    f.instruction(&Instruction::LocalSet(TEMP_LOCAL_CMP));
+    f.instruction(&Instruction::GlobalGet(
+        builtin_type_global("bool").expect("TYPE_ORDER carries bool"),
+    ));
+    f.instruction(&Instruction::I32Const(0)); // kind = smi
+    f.instruction(&Instruction::LocalGet(TEMP_LOCAL_CMP));
+    f.instruction(&Instruction::I64ExtendI32U);
+    f.instruction(&Instruction::RefNull(hc(T_BIGINT)));
+    f.instruction(&Instruction::StructNew(T_INT));
 }
 
 fn cmp_op(op: CmpOp) -> i32 {
@@ -2403,4 +3187,10 @@ print(f(10))
             .validate_all(&bytes)
             .expect("control-flow module must validate");
     }
+}
+
+/// Intern `s` at scan time (names referenced by emitted attribute lookups
+/// and class builds that never appear as source literals).
+fn scan_intern_str_in(scan: &mut Scan, s: &str) {
+    scan.intern_str(s);
 }

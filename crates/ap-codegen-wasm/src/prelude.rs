@@ -2088,13 +2088,17 @@ fn py_str(
     let (t_off, t_len) = strings.push("True");
     let (f_off, f_len) = strings.push("False");
     let (n_off, n_len) = strings.push("None");
+    let (lp_off, lp_len) = strings.push("(");
+    let (rp_off, rp_len) = strings.push(")");
+    let (c_off, c_len) = strings.push(", ");
+    let (q_off, q_len) = strings.push("?");
     add(
         funcs,
         code,
         FT_O_STR,
-        &[(2, oref()), (3, ValType::I32)],
+        &[(2, oref()), (3, ValType::I32), (1, ValType::Ref(wasm_encoder::RefType { nullable: true, heap_type: hc(T_STR) })), (1, ValType::Ref(wasm_encoder::RefType { nullable: true, heap_type: hc(T_OBJ_ARR_RO) })), (1, ValType::Ref(wasm_encoder::RefType { nullable: true, heap_type: hc(T_STR) })), (2, ValType::I32)],
         |f| {
-            // 2=x, 3=sel
+            // 2=x, 3=sel; tuple arm: 6=acc(str) 7=items(oref) 8=n 9=i 10=tmp
             f.instruction(&Instruction::LocalGet(0));
             f.instruction(&Instruction::LocalSet(2));
             type_sel(f, 2, 4);
@@ -2155,6 +2159,74 @@ fn py_str(
             f.instruction(&Instruction::I32Eq);
             f.instruction(&Instruction::If(BlockType::Empty));
             push_str_literal_seg(f, n_off, n_len);
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // tuple (7): "(" + join(py_str(item), ", ") + ")". Locals (per the
+            // decl): 6=str acc/tmp 7=oref items 8=str tmp 9,10=i32 (i, n).
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(7));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            // 7 = items roarr
+            lget_cast(f, 2, T_TUPLE);
+            sget(f, T_TUPLE, F_TUPLE_ITEMS);
+            f.instruction(&Instruction::LocalSet(7));
+            // 9 = i = 0; acc = "("
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::LocalSet(9));
+            push_str_literal_seg(f, lp_off, lp_len);
+            f.instruction(&Instruction::LocalSet(6));
+            // n = len
+            f.instruction(&Instruction::LocalGet(7));
+            f.instruction(&Instruction::ArrayLen);
+            f.instruction(&Instruction::LocalSet(10));
+            f.instruction(&Instruction::Block(BlockType::Empty));
+            f.instruction(&Instruction::Loop(BlockType::Empty));
+            // i >= n -> done
+            f.instruction(&Instruction::LocalGet(9));
+            f.instruction(&Instruction::LocalGet(10));
+            f.instruction(&Instruction::I32GeU);
+            f.instruction(&Instruction::BrIf(1));
+            // acc = acc + py_str(items[i])
+            f.instruction(&Instruction::LocalGet(6));
+            lget_cast(f, 7, T_OBJ_ARR_RO);
+            f.instruction(&Instruction::LocalGet(9));
+            f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
+            f.instruction(&Instruction::Call(fx::FN_PY_STR));
+            f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+            f.instruction(&Instruction::LocalSet(6));
+            // i += 1; if i < n: acc += ", " (GeU+Eqz = i < n)
+            f.instruction(&Instruction::LocalGet(9));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::I32Add);
+            f.instruction(&Instruction::LocalSet(9));
+            f.instruction(&Instruction::LocalGet(9));
+            f.instruction(&Instruction::LocalGet(10));
+            f.instruction(&Instruction::I32GeU);
+            f.instruction(&Instruction::I32Eqz);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(6));
+            push_str_literal_seg(f, c_off, c_len);
+            f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+            f.instruction(&Instruction::LocalSet(6));
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::Br(0));
+            f.instruction(&Instruction::End); // loop
+            f.instruction(&Instruction::End); // block
+            // 1-tuple trailing comma: ("x",) prints the comma (CPython)
+            f.instruction(&Instruction::LocalGet(10));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(6));
+            push_str_literal_seg(f, c_off, c_len);
+            f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+            f.instruction(&Instruction::LocalSet(6));
+            f.instruction(&Instruction::End);
+            // acc += ")"
+            f.instruction(&Instruction::LocalGet(6));
+            push_str_literal_seg(f, rp_off, rp_len);
+            f.instruction(&Instruction::Call(fx::FN_STR_CAT));
             f.instruction(&Instruction::Return);
             f.instruction(&Instruction::End);
             // other (bytes repr is V064's path via FN_BYTES_REPR — v1: raw)
