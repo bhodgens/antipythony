@@ -102,3 +102,53 @@ DEFERRED (03.03 remainder, in order):
 5. __init__ arity >3 (static cascade bound) -> needs a dynamic RO-array
    constructor (wasm GC has none; options: slice switch extension or an
    aprt host helper).
+
+## 2026-11-16: leaf 03.03b session (leaf-0303b worktree — EH wrap landed)
+
+TRY_TABLE WRAP CRACKED + ON BY DEFAULT (61db4510, d2247196). The parked
+"operators remaining" rejection is gone; modules validate through
+wasmtime with the top-level try_table wrap emitted unconditionally.
+Stable shape (eh_probe-proven): Block $catch(result exc-ref) {
+  try_table(catch TAG_PYEXC -> label 0 = $catch) body end;
+  RefNull(exc); } payload rides to $catch end; null = success, else
+tb_render + proc_exit(1). CPython-format traceback verified: raise 5 ->
+"TypeError: None" rc 1 (exc_raise validates BaseException-derivedness,
+builds a fresh TypeError via StrTab msg + exc_new; exc-typed scratch
+local keeps the throw-tag payload type). emit_try_handlers rewritten to
+the same shape ($out { $catch { try_table; RefNull } isnull? Br $out :
+handler chain; unmatched rethrow }) — try/except ValueError catches and
+binds (e prints "None": args-message path parked).
+
+MRO/ISINSTANCE ROOT FIXED (61db4510 + d2247196): (a) rt_init gave every
+builtin type mro=[self, object] (was empty outside BaseException/object
+-> isinstance(5,int) False); (b) the EXC_TREE mro "patch" was a single
+ArraySet clobbering mro[0] with base.mro[0] — replaced with an inline
+copy loop in rt_init's free local 0 (new prelude fns would shift
+FN_FIRST_USER; ids never move); (c) the copy loop's guard had its GeU
+operands swapped (len>=i instead of i>=len) so it never ran, leaving
+NULL mro tails -> mro_dict_get traps + issubclass(False) — fixed.
+issubclass(ValueError, BaseException)=True, isinstance(5,int)=True now.
+
+PY_STR TUPLE REPR UN-PARKED (d2247196): the parked "values remaining"
+wedge root = items local was (ref null $pyobj) but $tuple.items is an
+ARRAY ref (not a $pyobj subtype) — local retyped (ref null $obj_arr_ro)
++ lget_cast at the ArrayGet. Join loop un-stubbed with CPython shape
+(sep between items, 1-tuple trailing comma); two pre-existing inverted
+separator conditions fixed (Eqz+Eqz = i!=0). print((1,2,'x')) ->
+"(1, 2, x)" (item repr-quoting parked), e.args -> "(boom, )".
+
+GATES: controlflow_wasm_gate 18/18 GREEN with the wrap on (regression
+baseline held); eh_probe 2/2. Corpus families NOT green: 36 cases = 24
+UNSUPPORTED (pre-existing: attr-assign targets "self.x = v", call arg
+kinds beyond positional, 03.02c Expr slice) + 12 MISMATCH/HOST-ERR.
+Biggest single unlock for family-green: attr-assign target lowering
+(self.x = v in __init__), then class __init__ dispatch through user fns
+(fn63+ traps), then repr item quoting + e str() message path.
+
+Tooling notes locked: wasmtime validation offsets are BOGUS (point into
+the data section) — attribute failing fns via
+wasm_encoder::tests/diag_wtvalidate (wasmtime::Module::new names the
+fn); wasmparser validates some things wasmtime rejects, so wasmparser
+pass != pass. GeU/Ge_s operand order bugs (a>=b vs b>=a) produce silent
+wrong-branch bugs — check operand order FIRST when a wasm loop guards
+wrong.
