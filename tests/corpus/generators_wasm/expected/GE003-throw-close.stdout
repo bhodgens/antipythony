@@ -1,0 +1,10 @@
+1
+caught mid
+1
+closing
+closed ok
+B 0
+B recovered
+B end
+pre-start throw pre-start
+post-close throw re-raises post-close

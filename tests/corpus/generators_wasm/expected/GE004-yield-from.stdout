@@ -1,0 +1,7 @@
+D 1
+D 2
+sub returned 42
+D 99
+empty gave 7
+outer exhausted right away
+[10, 20]

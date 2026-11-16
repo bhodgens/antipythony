@@ -1,0 +1,9 @@
+seq3 1 2 3
+star 1 [2, 3, 4]
+map 5
+guard 7
+tuples 1 2
+lit str
+none match
+or-chain
+free 5 7
