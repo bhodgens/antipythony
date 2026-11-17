@@ -975,7 +975,7 @@ pub const FT_ATTR_DEL: u32 = 67; // (o, str) -> ()        S-03-11
 pub const FT_CLS_NEW: u32 = 68; // (str, typarr-basis...) -> type
 pub const FT_CLS_CALL: u32 = 69; // (ty, roarr) -> o      instantiation S-03-05/06
 pub const FT_ISINST: u32 = 70; // (o, ty) -> i32          S-03-31
-pub const FT_ISSUB: u32 = 71; // (o, o) -> i32            S-03-31 (runtime casts to $type)
+pub const FT_ISSUB: u32 = 71; // (ty, ty) -> i32          S-03-31
 pub const FT_EXC_RAISE: u32 = 72; // (o) -> o           fill tb + throw
 pub const FT_EXC_MATCH: u32 = 73; // (o, o) -> i32      except-target match
 pub const FT_EXC_MSG: u32 = 74; // (o) -> str           S-02-29 message rules
@@ -1043,10 +1043,6 @@ pub const FT_TUPLE_FROM_ITER: u32 = 107;
 /// (o iterable, o item) -> i32 — membership scan (list/tuple; dict/set via
 /// their key probes on the corpus slice; str substring).
 pub const FT_ITER_CONTAINS: u32 = 108;
-/// (o value, i32 empty-flag) -> o — build+throw StopIteration(args); never
-/// returns (wasm `throw` is stack-polymorphic; the trailing null filler is
-/// validator-visible but unreachable).
-pub const FT_STOP_ITER: u32 = 109;
 
 pub fn append_class_exc_fts(types: &mut wasm_encoder::TypeSection) {
     let o = || pyobj_ref();
@@ -1073,8 +1069,8 @@ pub fn append_class_exc_fts(types: &mut wasm_encoder::TypeSection) {
     types.ty().function([ty(), ro()], [o()]);
     // 68 FT_ISINST: (o, ty) -> i32
     types.ty().function([o(), ty()], [i32v()]);
-    // 69 FT_ISSUB: (o, o) -> i32 (the runtime casts operands to $type itself)
-    types.ty().function([o(), o()], [i32v()]);
+    // 69 FT_ISSUB: (ty, ty) -> i32
+    types.ty().function([ty(), ty()], [i32v()]);
     // 70 FT_EXC_RAISE: (o) -> o — raises through the tag; return type keeps
     // call sites type-correct on the unreachable fall-through.
     types.ty().function([o()], [o()]);
@@ -1132,34 +1128,6 @@ pub fn append_class_exc_fts(types: &mut wasm_encoder::TypeSection) {
     types.ty().function([], [i32v()]);
     // 98 FT_PROC_EXIT: (i32) -> () — wasi proc_exit import (rc 1 boundary)
     types.ty().function([i32v()], []);
-    // ------------------------------------------------------------------
-    // Leaf 03.04 (generators/iterators/comprehensions): appended after 98;
-    // ids never move.
-    // ------------------------------------------------------------------
-    // 99 FT_GEN_STEP: (gen, input) -> o — the generator BODY step function
-    types.ty().function([o(), o()], [o()]);
-    // 100 FT_GEN_NEW: (fn, roarr) -> o — generator-object factory (unused on
-    //     this slice: the lowering builds the struct inline; declared+reserved)
-    types.ty().function([o(), ro()], [o()]);
-    // 101 FT_GEN_SEND: (gen o, input o) -> o — PEP-342 resume
-    types.ty().function([o(), o()], [o()]);
-    // 102 FT_GEN_THROW: (gen o, exc o) -> o
-    types.ty().function([o(), o()], [o()]);
-    // 103 FT_GEN_CLOSE: (gen o) -> ()
-    types.ty().function([o()], []);
-    // 104 FT_ITER_OF: (o iterable) -> o
-    types.ty().function([o()], [o()]);
-    // 105 FT_ITER_NEXT: (o iterator) -> o
-    types.ty().function([o()], [o()]);
-    // 106 FT_LIST_FROM_ITER: (o iterable) -> o — list() snapshot
-    types.ty().function([o()], [o()]);
-    // 107 FT_TUPLE_FROM_ITER: (o iterable) -> o — tuple() snapshot
-    types.ty().function([o()], [o()]);
-    // 108 FT_ITER_CONTAINS: (o iterable, o item) -> i32
-    types.ty().function([o(), o()], [i32v()]);
-    // 109 FT_STOP_ITER: (o value, i32 empty-flag) -> o — build+throw
-    //     StopIteration(args); never returns (throw is stack-polymorphic)
-    types.ty().function([o(), i32v()], [o()]);
 }
 
 /// The `$tag_pyexc` wasm tag index (declared once, payload FT_TAG).
