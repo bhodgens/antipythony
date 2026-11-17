@@ -90,10 +90,14 @@ pub const FN_ITER_CONTAINS: u32 = 65; // (o, o) -> i32     `in`
 pub const FN_STOP_ITER: u32 = 66; // (o value, i32 empty) -> o  StopIteration throw
 pub const FN_GEN_THROW: u32 = 67; // (gen o, exc o) -> o   throw-at-point
 pub const FN_GEN_CLOSE: u32 = 68; // (gen o) -> ()         close/GeneratorExit
+// leaf 03.03d: super() build (S-03-17 slice), appended after the 03.04
+// drivers — dense, never renumbered. FN_FIRST_USER moved 69 -> 70 for it.
+pub const FN_SUPER_NEW: u32 = 69; // (S o, obj o, unused o) -> o  marker build
+pub const FN_TYPE_OF: u32 = 70; // (o) -> o                    type(x)
 /// First wasm function index of the EMITTED user functions (Item::FnDef /
 /// Stmt::LocalDef), which follow the prelude densely. `_start` is
 /// computed at emit time as FN_FIRST_USER + n_user_fns.
-pub const FN_FIRST_USER: u32 = 69;
+pub const FN_FIRST_USER: u32 = 71;
 
 /// rt_init is index 3 (03.03 layout: 0 fd_write, 1 abort_msg, 2 proc_exit,
 /// 3 rt_init — proc_exit joined the imports for the uncaught-traceback

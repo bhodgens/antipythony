@@ -2267,6 +2267,16 @@ fn py_str(
             f.instruction(&Instruction::Call(fx::FN_STR_CAT));
             f.instruction(&Instruction::Return);
             f.instruction(&Instruction::End);
+            // 03.03d: concrete-$str catch (some runtime-built $strs — early
+            // rt_init type-name strings — carry a null type field, so
+            // type_sel misses them; RefTest answers by SHAPE, not stamp).
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::RefTestNullable(hc(T_STR)));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
             // exception instance (03.03d): str(e) = the S-02-29 message
             // rules (FN_EXC_MSG: 1 arg -> str(args[0]); 0 -> ""; 2+ -> tuple
             // form). $excinst is a type-sel miss (9) — test the concrete

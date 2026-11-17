@@ -546,6 +546,45 @@ fn collect_expr(
             collect_expr(obj, refs, bound, nonlocal, scan)
         }
         Expr::Call(f, args) => {
+            // 03.03d: type(x) as a CALLEE (1 positional arg) is lowered — the
+            // raw type-field read. 3-arg metaclass form stays rejected.
+            if let Expr::Name(n) = f.as_ref() {
+                if n.as_str() == "type" {
+                    let npos = args.iter().filter(|a| matches!(a, Arg::Pos(_))).count();
+                    if args.iter().all(|a| matches!(a, Arg::Pos(_))) && npos == 1 {
+                        if let Arg::Pos(x) = &args[0] {
+                            return collect_expr(x, refs, bound, nonlocal, scan);
+                        }
+                    }
+                    return Err(CodegenError::Unsupported(
+                        "type() form beyond the 03.03d slice (n-ary/kwarg)",
+                    ));
+                }
+            }
+            // 03.03d: super(...) as a CALLEE is lowered (S-03-17 slice); the
+            // bare name outside a call stays rejected. Arity: 0 (bare, raises
+            // RuntimeError) or 2 (two-arg build), positional only.
+            if let Expr::Name(n) = f.as_ref() {
+                if n.as_str() == "super" {
+                    let npos = args
+                        .iter()
+                        .filter(|a| matches!(a, Arg::Pos(_)))
+                        .count();
+                    if !args.iter().all(|a| matches!(a, Arg::Pos(_)))
+                        || (npos != 0 && npos != 2)
+                    {
+                        return Err(CodegenError::Unsupported(
+                            "super() form beyond the 03.03d slice (kwargs/n-ary)",
+                        ));
+                    }
+                    for a in args {
+                        if let Arg::Pos(x) = a {
+                            collect_expr(x, refs, bound, nonlocal, scan)?;
+                        }
+                    }
+                    return Ok(());
+                }
+            }
             collect_expr(f, refs, bound, nonlocal, scan)?;
             for a in args {
                 match a {
@@ -882,6 +921,9 @@ pub fn lower_module_ex(
     // leaf 03.04: generators + iterator drivers (dense append after 61;
     // FN_FIRST_USER=69 is the tail of this block — never renumber).
     crate::prelude_gen::emit_gen_prelude(&mut funcs, &mut code);
+    // leaf 03.03d: super() build (FN_SUPER_NEW = 69) — dense append after the
+    // 03.04 drivers; FN_FIRST_USER moved 69 -> 70 (emitter_state).
+    crate::prelude_classes::emit_super(&mut funcs, &mut code, &g, &mut tab);
 
     // ---- 03.03b: the top-level EH wrap is ON BY DEFAULT. The parked
     // "operators remaining / values remaining on stack" rejection was NOT a
@@ -1576,9 +1618,13 @@ fn emit_rt_init_ordered(f: &mut Function) {
 }
 
 fn push_str_struct(f: &mut Function, off: u32, len: u32) {
-    f.instruction(&Instruction::RefNull(wasm_encoder::HeapType::Concrete(
-        T_TYPE,
-    )));
+    // 03.03d FIX: stamp the str TYPE global (was RefNull(T_TYPE)) — these
+    // name strings ride F_TYPE_NAME of every builtin/exception $type, and a
+    // null type field made type(x).__name__ results fall through py_str's
+    // type_sel to the null fallthrough (print trap).
+    f.instruction(&Instruction::GlobalGet(
+        builtin_type_global("str").unwrap_or(0),
+    ));
     f.instruction(&Instruction::I64Const(0));
     f.instruction(&Instruction::I32Const(0));
     f.instruction(&Instruction::I32Const(len as i32));
@@ -2812,6 +2858,37 @@ fn emit_bool_op(f: &mut Function, ops: &[Expr], is_or: bool, ctx: &mut EmitCtx) 
 /// the direct path (S-07-24); everything else builds (fn, args, kwargs)
 /// for the dispatcher.
 fn emit_call(f: &mut Function, func: &Expr, args: &[Arg], ctx: &mut EmitCtx) {
+    // 03.03d: super(S, obj) / bare super() (S-03-17 slice) — FN_SUPER_NEW.
+    // Zero-arg form passes S = null (the frame has no __class__ cell on this
+    // slice, so every bare super() raises RuntimeError at call time — the
+    // c021 observable). Only 0 or 2 positional args reach here (scan).
+    if let Expr::Name(n) = func {
+        if n.as_str() == "super" {
+            let positional: Vec<&Expr> = args
+                .iter()
+                .filter_map(|a| match a {
+                    Arg::Pos(x) => Some(x),
+                    _ => None,
+                })
+                .collect();
+            match positional.len() {
+                0 => {
+                    f.instruction(&Instruction::RefNull(hc(T_PYOBJ))); // S = null
+                    f.instruction(&Instruction::RefNull(hc(T_PYOBJ))); // obj
+                    f.instruction(&Instruction::RefNull(hc(T_PYOBJ))); // unused
+                    f.instruction(&Instruction::Call(fx::FN_SUPER_NEW));
+                }
+                2 => {
+                    emit_expr(f, positional[0], ctx);
+                    emit_expr(f, positional[1], ctx);
+                    f.instruction(&Instruction::RefNull(hc(T_PYOBJ))); // unused
+                    f.instruction(&Instruction::Call(fx::FN_SUPER_NEW));
+                }
+                _ => unreachable!("scan vetted super() arity (0 or 2)"),
+            }
+            return;
+        }
+    }
     // 03.03: method call obj.m(*args) — attribute lookup; when the found
     // value is a plain $function it is a descriptor and binds self
     // (S-03-9 binding rule) — args become [self, *args].
@@ -2840,6 +2917,19 @@ fn emit_call(f: &mut Function, func: &Expr, args: &[Arg], ctx: &mut EmitCtx) {
         f.instruction(&Instruction::RefNull(hc(T_DICT)));
         f.instruction(&Instruction::Call(fx::FN_DISPATCH));
         return;
+    }
+    // 03.03d: `type(x)` (1-arg form) — the object's $type as a VALUE (c021's
+    // type(super(..)).__name__ surface). The $type IS a $pyobj subtype; the
+    // read is a raw field-0 struct.get in the user-fn body. (The 3-arg
+    // metaclass form stays rejected — scan keeps arity 1.)
+    if let Expr::Name(n) = func {
+        if n.as_str() == "type" && args.len() == 1 {
+            if let [Arg::Pos(x)] = args {
+                emit_expr(f, x, ctx);
+                f.instruction(&Instruction::Call(fx::FN_TYPE_OF));
+                return;
+            }
+        }
     }
     if let Expr::Name(name) = func {
         if !ctx.scan.fns.iter().any(|uf| uf.name == name.as_str()) {

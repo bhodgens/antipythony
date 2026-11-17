@@ -109,7 +109,7 @@ pub fn emit_all(
         frame_pop(funcs, code, g);
             frame_line(funcs, code, g);
         issub(funcs, code);
-        isinst(funcs, code);
+        isinst(funcs, code, strings);
     exc_raise(funcs, code, g, strings);
     exc_match(funcs, code);
     exc_msg(funcs, code);
@@ -119,7 +119,7 @@ pub fn emit_all(
     cls_new(funcs, code);
     instance_new(funcs, code);
     cls_call(funcs, code, strings);
-    attr_get(funcs, code);
+    attr_get(funcs, code, strings);
     attr_set(funcs, code);
     call_of(funcs, code);
     mro_dict_get(funcs, code);
@@ -607,8 +607,12 @@ fn str_cat(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::C
             f.instruction(&Instruction::Br(0));
             f.instruction(&Instruction::End);
             f.instruction(&Instruction::End);
-            // build $str (kind 0, len la+lb)
-            push_null(f, T_TYPE);
+            // build $str (kind 0, len la+lb) — TYPE STAMPED (03.03d, same
+            // null-type re-dispatch hazard as lit_str: py_str on a concat
+            // result fell through type_sel to null)
+            f.instruction(&Instruction::GlobalGet(
+                builtin_type_global("str").unwrap_or(0),
+            ));
             f.instruction(&Instruction::I64Const(0));
             f.instruction(&Instruction::I32Const(0));
             f.instruction(&Instruction::LocalGet(5));
@@ -851,7 +855,16 @@ fn issub(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::Cod
 // isinst (FN_ISINST): (obj, cls) -> i32 — issub(type(obj), cls) (S-03-31).
 // Locals: 3=obj 4=cls(ty) 5=type(ty)
 // ---------------------------------------------------------------------------
-fn isinst(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
+fn isinst(
+    funcs: &mut wasm_encoder::FunctionSection,
+    code: &mut wasm_encoder::CodeSection,
+    strings: &mut StrTab,
+) {
+    // 03.03d: super() marker literals (S-03-17 slice) — isinstance(super(..), C)
+    // delegates to the STORED obj (CPython: super(SA, SB()) is an SA because
+    // its obj is one). Marker test: type_name(obj) == "super".
+    let (sup_off, sup_len) = strings.push("super");
+    let (ko_off, ko_len) = strings.push("__ap_obj__");
     add(
         funcs,
         code,
@@ -873,8 +886,25 @@ fn isinst(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::Co
                     heap_type: hc(T_TYPE),
                 }),
             ),
+            (1, str_ref()), // 6 = pad (original body's local grid starts at 2)
+            (1, str_ref()), // 7 = marker-name scratch
+            (1, str_ref()), // 8 = "super" literal scratch
+            (
+                1,
+                ValType::Ref(wasm_encoder::RefType {
+                    nullable: true,
+                    heap_type: hc(T_DICT),
+                }),
+            ), // 9 = marker attrs-dict scratch (dict-typed: FN_DGET param 0)
         ],
         |f| {
+            // 03.03d REVISION (EXW009 CPython 3.14 pin): isinstance(super(..), C)
+            // is FALSE in CPython — a super object's type IS `super`, never the
+            // bound class. The earlier marker-delegation draft was wrong; the
+            // stock issub(type(obj), cls) path answers False for markers
+            // naturally. No special arm. (sup/ko literals still interned for
+            // the attr paths below / other users of this StrTab region.)
+            let _ = (sup_off, sup_len, ko_off, ko_len);
             f.instruction(&Instruction::LocalGet(0));
             f.instruction(&Instruction::LocalSet(3));
             f.instruction(&Instruction::LocalGet(1));
@@ -1756,7 +1786,12 @@ fn instance_new(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encod
 // namespace on $pyobj? v1: classes + instances only).
 // Locals: 3=obj 4=name 5=d 6=hit 7=t
 // ---------------------------------------------------------------------------
-fn attr_get(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
+fn attr_get(
+    funcs: &mut wasm_encoder::FunctionSection,
+    code: &mut wasm_encoder::CodeSection,
+    strings: &mut StrTab,
+) {
+    let (nm_off, nm_len) = strings.push("__name__");
     add(
         funcs,
         code,
@@ -1767,6 +1802,39 @@ fn attr_get(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::
         f.instruction(&Instruction::LocalSet(3));
         f.instruction(&Instruction::LocalGet(1));
         f.instruction(&Instruction::LocalSet(4));
+        // null-obj guard: a (ref null $pyobj) null must answer null (the
+        // metaclass 'type' of a $type is null on this slice — type(SA) is the
+        // SA $type itself, its .type field is null) — never trap.
+        f.instruction(&Instruction::LocalGet(3));
+        f.instruction(&Instruction::RefIsNull);
+        f.instruction(&Instruction::If(BlockType::Empty));
+        f.instruction(&Instruction::RefNull(hc(T_PYOBJ)));
+        f.instruction(&Instruction::Return);
+        f.instruction(&Instruction::End);
+        // 03.03d: $type object reads (type(x).__name__, class-attr lookups):
+        // __name__ answers the name field; everything else walks the class's
+        // own namespace dicts (mro_dict_get on the $type itself).
+        f.instruction(&Instruction::LocalGet(3));
+        f.instruction(&Instruction::RefTestNullable(hc(T_TYPE)));
+        f.instruction(&Instruction::If(BlockType::Empty));
+        // __name__? (attr name == "__name__")
+        f.instruction(&Instruction::LocalGet(4));
+        lit_str(f, nm_off, nm_len);
+        f.instruction(&Instruction::Call(fx::FN_STR_EQ));
+        f.instruction(&Instruction::If(BlockType::Empty));
+        // __name__: the $type's name field
+        f.instruction(&Instruction::LocalGet(3));
+        f.instruction(&Instruction::RefCastNullable(hc(T_TYPE)));
+        sget(f, T_TYPE, F_TYPE_NAME);
+        f.instruction(&Instruction::Return);
+        f.instruction(&Instruction::End);
+        // other attr: the class namespace mro walk
+        f.instruction(&Instruction::LocalGet(3));
+        f.instruction(&Instruction::RefCastNullable(hc(T_TYPE)));
+        f.instruction(&Instruction::LocalGet(4));
+        f.instruction(&Instruction::Call(fx::FN_MRO_DICT_GET));
+        f.instruction(&Instruction::Return);
+        f.instruction(&Instruction::End);
         // instance-ish? ($excinst sub $instance? NO — separate: test $excinst
         // first, then $instance)
         f.instruction(&Instruction::LocalGet(3));
@@ -2356,7 +2424,14 @@ fn tb_render(
 /// push a passive-segment $str literal (off,len) — local copy of the prelude
 /// idiom (prelude::push_str_literal_seg is private).
 fn lit_str(f: &mut Function, off: u32, len: u32) {
-    push_null(f, T_TYPE);
+    // 03.03d FIX: stamp the str TYPE global (was push_null) — a null type
+    // field made every py_str re-dispatch on a lit_str-built $str fall
+    // through type_sel to the fallthrough (same root the 03.03c
+    // str_from_bytes stamping fixed for that path). Reached via exc_msg's
+    // py_str(args[0]) re-dispatch: print(e) trapped PRINT_ONE on the null.
+    f.instruction(&Instruction::GlobalGet(
+        builtin_type_global("str").unwrap_or(0),
+    ));
     f.instruction(&Instruction::I64Const(0));
     f.instruction(&Instruction::I32Const(0));
     f.instruction(&Instruction::I32Const(len as i32));
@@ -2419,6 +2494,251 @@ fn flush_fd(f: &mut Function, bufptr: u32, fd: i32) {
 
 /// push an empty $dict (field order: type, used, fill, mask, perturb, idx, entries)
 /// — local copy of lower.rs's idiom (private there).
+// ---------------------------------------------------------------------------
+// super_new (FN_SUPER_NEW = 69, leaf 03.03d): (S o, obj o, unused o) -> o —
+// the two-arg super() build (S-03-17 slice). Validates isinstance(obj, S) ||
+// (obj is a $type && issubclass(obj, S)); failure throws TypeError with the
+// CPython message. Success builds a marker $instance whose class is a fresh
+// $type named "super" with (__ap_s__ = S, __ap_obj__ = obj) attrs —
+// FN_ISINST answers the marker by delegating to the stored obj and
+// FN_TYPE_NAME answers "super" (c021's observable surface; the MRO-after-S
+// attribute walk is the c022 chase, deferred with that case).
+// FT: FT_EXC_CTX_SET (o, o, o) -> o; param 2 unused (null at call sites).
+// Locals: 3=ok(i32) 4=cls(ty) 5=inst(oref) 6=msg(str) 7=name-obj(str)
+// 8,9 pad(oref) 10=tmp(oref)
+// ---------------------------------------------------------------------------
+fn super_new(
+    funcs: &mut wasm_encoder::FunctionSection,
+    code: &mut wasm_encoder::CodeSection,
+    g: &FrameGlobals,
+    strings: &mut StrTab,
+) {
+    let (p1_off, p1_len) = strings.push("super(type, obj): obj (instance of ");
+    let (p2_off, p2_len) = strings.push(") is not an instance or subtype of type (");
+    let (p3_off, p3_len) = strings.push(").");
+    let (ks_off, ks_len) = strings.push("__ap_s__");
+    let (ko_off, ko_len) = strings.push("__ap_obj__");
+    let (sup_off, sup_len) = strings.push("super");
+    let (noargs_off, noargs_len) = strings.push("super(): no arguments");
+    add(
+        funcs,
+        code,
+        FT_EXC_CTX_SET,
+        &[
+            (1, ValType::I32), // 3 = ok
+            (1, ty_ref()),     // 4 = cls
+            (1, oref()),       // 5 = inst
+            (1, str_ref()),    // 6 = msg acc
+            (1, str_ref()),    // 7 = obj type name
+            (
+                1,
+                ValType::Ref(wasm_encoder::RefType {
+                    nullable: true,
+                    heap_type: hc(T_DICT),
+                }),
+            ), // 8 = marker attrs dict (DSET param 0 is $dict-typed)
+            (
+                1,
+                ValType::Ref(wasm_encoder::RefType {
+                    nullable: true,
+                    heap_type: hc(T_EXCEPTION),
+                }),
+            ), // 9 = throw-path exc scratch (tag payload type)
+            (1, str_ref()),    // 10 = pad
+            (1, ty_ref()),     // 11 = S cast to $type (ISINST param 1)
+        ],
+        |f| {
+            // zero-arg form (S = null): RuntimeError("super(): no arguments")
+            // at CALL time (S-03-17: the frame lacks the __class__ cell; this
+            // slice never provides one, so EVERY bare super() raises — the
+            // c021 observable).
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::RefIsNull);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::GlobalGet(
+                crate::types::exc_type_global("RuntimeError").unwrap_or(0),
+            ));
+            lit_str(f, noargs_off, noargs_len);
+            f.instruction(&Instruction::ArrayNewFixed {
+                array_type_index: T_OBJ_ARR_RO,
+                array_size: 1,
+            });
+            f.instruction(&Instruction::Call(fx::FN_EXC_NEW));
+            f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
+            f.instruction(&Instruction::LocalSet(9));
+            f.instruction(&Instruction::LocalGet(9));
+            f.instruction(&Instruction::GlobalGet(g.frame_head));
+            f.instruction(&Instruction::StructSet {
+                struct_type_index: T_EXCEPTION,
+                field_index: F_EXC_TB,
+            });
+            f.instruction(&Instruction::LocalGet(9));
+            f.instruction(&Instruction::Throw(TAG_PYEXC));
+            f.instruction(&Instruction::End);
+            // S arrives $pyobj-typed; cast to $type (ISINST param 1). Also
+            // reused for the message's type_name(S) — TYPE_NAME takes o, so
+            // param 0 stays the message source.
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::RefCastNullable(hc(T_TYPE)));
+            f.instruction(&Instruction::LocalSet(11));
+            // ok = isinst(obj, S)
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::LocalGet(11));
+            f.instruction(&Instruction::Call(fx::FN_ISINST));
+            f.instruction(&Instruction::LocalSet(3));
+            // || (obj is a $type && issubclass(obj, S)) — arms leave []
+            // (03.02c engine fact: If(Empty) arms must NOT leave values; the
+            // result rides local 3 via LocalSet in each arm).
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::LocalSet(3));
+            f.instruction(&Instruction::Else);
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::RefTestNullable(hc(T_TYPE)));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::LocalGet(11));
+            f.instruction(&Instruction::Call(fx::FN_ISSUB));
+            f.instruction(&Instruction::LocalSet(3));
+            f.instruction(&Instruction::Else);
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::LocalSet(3));
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            // ---- success: marker instance ----
+            // cls = cls_new("super", null)
+            push_null(f, T_TYPE);
+            f.instruction(&Instruction::I64Const(0));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::I32Const(sup_len as i32));
+            f.instruction(&Instruction::I32Const(sup_off as i32));
+            f.instruction(&Instruction::I32Const(sup_len as i32));
+            f.instruction(&Instruction::ArrayNewData {
+                array_type_index: T_BYTE_ARR,
+                array_data_index: 1,
+            });
+            f.instruction(&Instruction::StructNew(T_STR));
+            f.instruction(&Instruction::RefNull(hc(T_TYPE)));
+            f.instruction(&Instruction::Call(fx::FN_CLS_NEW));
+            f.instruction(&Instruction::LocalSet(4));
+            // inst = instance_new(cls)
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::Call(fx::FN_INSTANCE_NEW));
+            f.instruction(&Instruction::LocalSet(5));
+            // attrs dict stash (local 8)
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::RefCastNullable(hc(T_INSTANCE)));
+            sget(f, T_INSTANCE, F_INSTANCE_ATTRS);
+            f.instruction(&Instruction::RefCastNullable(hc(T_DICT)));
+            f.instruction(&Instruction::LocalSet(8));
+            // attrs["__ap_s__"] = S
+            f.instruction(&Instruction::LocalGet(8));
+            lit_str(f, ks_off, ks_len);
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::Call(fx::FN_DSET));
+            // attrs["__ap_obj__"] = obj
+            f.instruction(&Instruction::LocalGet(8));
+            lit_str(f, ko_off, ko_len);
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::Call(fx::FN_DSET));
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // ---- failure: TypeError with the CPython message ----
+            // msg = p1 + type_name(obj) + p2 + type_name(S) + p3 — local-6
+            // accumulator, pieces stash through local 10 (wasm has no Swap
+            // instruction; STR_CAT(a, b) takes (a, b) stack order).
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::Call(fx::FN_TYPE_NAME));
+            f.instruction(&Instruction::LocalSet(7)); // type_name(obj)
+            lit_str(f, p1_off, p1_len);
+            f.instruction(&Instruction::LocalSet(6)); // acc = p1
+            f.instruction(&Instruction::LocalGet(6));
+            f.instruction(&Instruction::LocalGet(7));
+            f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+            f.instruction(&Instruction::LocalSet(6));
+            lit_str(f, p2_off, p2_len);
+            f.instruction(&Instruction::LocalSet(10));
+            f.instruction(&Instruction::LocalGet(6));
+            f.instruction(&Instruction::LocalGet(10));
+            f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+            f.instruction(&Instruction::LocalSet(6));
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::Call(fx::FN_TYPE_NAME));
+            f.instruction(&Instruction::LocalSet(10));
+            f.instruction(&Instruction::LocalGet(6));
+            f.instruction(&Instruction::LocalGet(10));
+            f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+            f.instruction(&Instruction::LocalSet(6));
+            lit_str(f, p3_off, p3_len);
+            f.instruction(&Instruction::LocalSet(10));
+            f.instruction(&Instruction::LocalGet(6));
+            f.instruction(&Instruction::LocalGet(10));
+            f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+            f.instruction(&Instruction::LocalSet(6));
+            // throw TypeError(msg): [TypeError-ty, roarr(msg)] -> EXC_NEW
+            f.instruction(&Instruction::GlobalGet(
+                crate::types::exc_type_global("TypeError").unwrap_or(0),
+            ));
+            f.instruction(&Instruction::LocalGet(6));
+            f.instruction(&Instruction::ArrayNewFixed {
+                array_type_index: T_OBJ_ARR_RO,
+                array_size: 1,
+            });
+            f.instruction(&Instruction::Call(fx::FN_EXC_NEW));
+            f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
+            f.instruction(&Instruction::LocalSet(9));
+            f.instruction(&Instruction::LocalGet(9));
+            f.instruction(&Instruction::GlobalGet(g.frame_head));
+            f.instruction(&Instruction::StructSet {
+                struct_type_index: T_EXCEPTION,
+                field_index: F_EXC_TB,
+            });
+            f.instruction(&Instruction::LocalGet(9));
+            f.instruction(&Instruction::Throw(TAG_PYEXC));
+            // type-correct unreachable fall-through
+            f.instruction(&Instruction::RefNull(hc(T_PYOBJ)));
+        },
+    );
+}
+
+/// Emit the leaf-03.03d super()/type() pair (super_new handles both the
+/// two-arg build and the zero-arg RuntimeError via a null S; type_of answers
+/// type(x) — metaclass position included).
+pub fn emit_super(
+    funcs: &mut wasm_encoder::FunctionSection,
+    code: &mut wasm_encoder::CodeSection,
+    g: &FrameGlobals,
+    strings: &mut StrTab,
+) {
+    super_new(funcs, code, g, strings);
+    type_of(funcs, code);
+}
+
+// ---------------------------------------------------------------------------
+// type_of (FN_TYPE_OF = 70, leaf 03.03d): (o) -> o — type(x): a $type arg
+// answers the 'type' builtin global (metaclass position; its own .type field
+// is null on this slice), everything else answers the object's field-0 $type.
+// FT: FT_O_O (o) -> o.
+// ---------------------------------------------------------------------------
+fn type_of(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
+    add(funcs, code, FT_O_O, &[(1, oref())], |f| {
+        f.instruction(&Instruction::LocalGet(0));
+        f.instruction(&Instruction::RefTestNullable(hc(T_TYPE)));
+        f.instruction(&Instruction::If(BlockType::Empty));
+        f.instruction(&Instruction::GlobalGet(
+            builtin_type_global("type").unwrap_or(0),
+        ));
+        f.instruction(&Instruction::Return);
+        f.instruction(&Instruction::End);
+        f.instruction(&Instruction::LocalGet(0));
+        sget(f, T_PYOBJ, F_TYPE);
+    });
+}
+
 fn push_empty_dict(f: &mut Function) {
     push_null(f, T_TYPE);
     f.instruction(&Instruction::I32Const(0));
