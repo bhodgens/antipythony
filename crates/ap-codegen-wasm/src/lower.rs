@@ -1436,7 +1436,7 @@ pub fn lower_module_ex(
         // 03.04c range() scratch: 53/54/55 = i64 (start/stop/step),
         // 56/59 = i32 (count, i), 57 = mut $obj_arr snapshot.
         locals.push((3, ValType::I64)); // 53..55
-        locals.push((2, ValType::I32)); // 56,57-slot? no: 56 i32, 57 below
+        locals.push((1, ValType::I32)); // 56 = range count
         locals.push((
             1,
             ValType::Ref(RefType {
@@ -2588,30 +2588,32 @@ fn emit_stmt(f: &mut Function, stmt: &Stmt, ctx: &mut EmitCtx) {
         // leaf 03.04c: For over an iterable (S-02-17): iter() once, then
         // next() until StopIteration; target binds in the current scope and
         // LEAKS after the loop; else on NORMAL exhaustion only.
-        //   Block $exit {                       <- break target (skips else)
-        //     ;; iter = FN_ITER_OF(e)  [$it]
-        //     Block $catch (result exc) {
-        //       try_table [catch TAG -> $catch]
-        //         Loop $head {
-        //           Block $step {
-        //             x = FN_ITER_NEXT(it)       <- raises TAG = normal exit
-        //             bind target; body
-        //             br $head                   <- Br 2 from inside $step
-        //           }
-        //         }
-        //         RefNull(exc)                   <- normal-exit payload
-        //       end                              <- payload: real exc | null
-        //       is-null? -> Br $exit-end +1      <- run else (fall through)
-        //       else-branch: match StopIteration? For the corpus slice the
-        //       only TAGs escaping the try region are the exhaustion one and
-        //       body raises — body raises must PROPAGATE (rethrow), so the
-        //       null test is exhaustive here: non-null -> rethrow.
+        //
+        // The catch region wraps ONLY the next() call (not the body): a
+        // raise in the BODY propagates untouched (CPython: no else, no
+        // swallow), and exhaustion is distinguished from body raises by an
+        // exc_match against the StopIteration $type INSIDE the loop.
+        //   Block $exit {                        <- break target (skips else)
+        //     Block $brk {                       <- exhaustion target (falls to else)
+        //       it = iter_of(e) [$it]
+        //       Loop $head {
+        //         Block $cx (result exc) {
+        //           try_table [catch TAG -> $cx]
+        //             x = iter_next(it); bind target   <- the ONLY guarded ops
+        //           RefNull(exc)                 <- no-exception payload
+        //         end ($cx)
+        //         A = payload
+        //         A null? -> Br 1 (Loop: next iteration)
+        //         eq(A.type mro, StopIteration)? -> Br 2 ($brk: exhaustion, else)
+        //         else: rethrow A (body-raise semantics never reach here;
+        //              this arm catches iterator-side raises like TypeError)
+        //         br 0 (Loop)
+        //       }
         //     }
+        //     else                              <- exhaustion only (S-02-17)
         //   }
-        // NOTE the catch shape: ANY exception inside the try_table (including
-        // a raise in the BODY) lands at $catch; the null test separates
-        // normal exit from a real exception, and a real one is rethrown —
-        // byte-exact with CPython (the else does not run on body raises).
+        // The payload rides TEMP_LOCAL_A (print's arm already preserves A
+        // across the body via the A/B swap — same contract).
         Stmt::For(target, iter, body, els) => {
             let ap_ir::item::Target::Name(tname) = target else {
                 unreachable!("scan vetted For targets");
@@ -2619,16 +2621,23 @@ fn emit_stmt(f: &mut Function, stmt: &Stmt, ctx: &mut EmitCtx) {
             f.instruction(&Instruction::Block(BlockType::Empty)); // $exit
             ctx.depth += 1;
             let exit_depth = ctx.depth;
+            f.instruction(&Instruction::Block(BlockType::Empty)); // $brk
+            ctx.depth += 1;
+            let brk_depth = ctx.depth;
             // it = iter_of(e)
             emit_expr(f, iter, ctx);
             f.instruction(&Instruction::Call(fx::FN_ITER_OF));
             f.instruction(&Instruction::LocalSet(TEMP_LOCAL_IT));
+            f.instruction(&Instruction::Loop(BlockType::Empty)); // $head
+            ctx.depth += 1;
+            let head_depth = ctx.depth;
+            // per-iteration next(), guarded:
             f.instruction(&Instruction::Block(BlockType::Result(
                 ValType::Ref(wasm_encoder::RefType {
                     nullable: true,
                     heap_type: hc(T_EXCEPTION),
                 }),
-            ))); // $catch
+            ))); // $cx
             ctx.depth += 1;
             {
                 let catches = [wasm_encoder::Catch::One {
@@ -2640,50 +2649,64 @@ fn emit_stmt(f: &mut Function, stmt: &Stmt, ctx: &mut EmitCtx) {
                     std::borrow::Cow::Owned(catches.to_vec()),
                 ));
                 ctx.depth += 1;
-                f.instruction(&Instruction::Loop(BlockType::Empty));
-                ctx.depth += 1;
-                let head_depth = ctx.depth;
-                f.instruction(&Instruction::Block(BlockType::Empty)); // $step
-                ctx.depth += 1;
-                // x = next(it) — may throw (exhaustion) or propagate
                 f.instruction(&Instruction::LocalGet(TEMP_LOCAL_IT));
                 f.instruction(&Instruction::Call(fx::FN_ITER_NEXT));
                 emit_name_store(f, tname.as_str(), ctx);
-                for s in body {
-                    emit_stmt(f, s, ctx);
-                }
-                // continue -> $step end (re-test via the loop head)
-                let saved_c = ctx.br_continue;
-                let saved_b = ctx.br_break;
-                ctx.br_continue = Some(ctx.depth); // $step end
-                ctx.br_break = Some(exit_depth); // $exit end
-                let _ = head_depth;
-                ctx.depth -= 1;
-                f.instruction(&Instruction::End); // $step
-                ctx.br_continue = saved_c;
-                ctx.br_break = saved_b;
-                f.instruction(&Instruction::Br(ctx.depth - head_depth + 1)); // -> Loop head
-                ctx.depth -= 1;
-                f.instruction(&Instruction::End); // Loop
                 ctx.depth -= 1;
                 f.instruction(&Instruction::End); // try_table
-                // normal exhaustion: null payload
+                // success payload
                 f.instruction(&Instruction::RefNull(hc(T_EXCEPTION)));
             }
             ctx.depth -= 1;
-            f.instruction(&Instruction::End); // $catch: exc | null on stack
+            f.instruction(&Instruction::End); // $cx: exc | null on stack
             f.instruction(&Instruction::LocalSet(TEMP_LOCAL_A));
+            // Exception checks run ONLY when the payload is non-null; a null
+            // (success) payload skips them and falls into the body. $chk
+            // wraps the checks so the null branch can Br past them.
+            f.instruction(&Instruction::Block(BlockType::Empty)); // $chk
+            ctx.depth += 1;
+            let chk_depth = ctx.depth;
             f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
             f.instruction(&Instruction::RefIsNull);
             f.instruction(&Instruction::If(BlockType::Empty));
-            // normal exit (0 = this If, 1 = $catch, 2 = $exit): skip the
-            // rethrow, fall into the else
-            f.instruction(&Instruction::Br(2));
+            // payload NULL (success): skip the exception checks -> body.
+            // br 1 exits the If AND the $chk block (br 0 would only exit the
+            // If and fall INTO the checks — a no-op guard).
+            f.instruction(&Instruction::Br(ctx.depth - chk_depth + 1));
             f.instruction(&Instruction::End);
-            // real exception (body raise): rethrow it
+            // ---- payload NON-NULL from here: an exception fired ----
+            // StopIteration? -> exhaustion: Br $brk (0=If(SI), 1=If(null),
+            // 2=$chk, 3=Loop, 4=$brk)
+            f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
+            f.instruction(&Instruction::GlobalGet(
+                crate::types::exc_type_global("StopIteration").unwrap_or(0),
+            ));
+            f.instruction(&Instruction::Call(fx::FN_EXC_MATCH));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            // labels from inside this If: 0=If, 1=$chk, 2=Loop, 3=$brk
+            f.instruction(&Instruction::Br(ctx.depth - brk_depth + 1));
+            f.instruction(&Instruction::End);
+            // other iterator-side raise: rethrow
             f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
             f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
             f.instruction(&Instruction::Throw(TAG_PYEXC));
+            ctx.depth -= 1;
+            f.instruction(&Instruction::End); // $chk: success falls here -> body
+            // loop body
+            let saved_c = ctx.br_continue;
+            let saved_b = ctx.br_break;
+            ctx.br_continue = Some(head_depth); // br $head re-iterates
+            ctx.br_break = Some(exit_depth); // $exit end skips else
+            for s in body {
+                emit_stmt(f, s, ctx);
+            }
+            ctx.br_continue = saved_c;
+            ctx.br_break = saved_b;
+            f.instruction(&Instruction::Br(0)); // next iteration
+            ctx.depth -= 1;
+            f.instruction(&Instruction::End); // Loop
+            ctx.depth -= 1;
+            f.instruction(&Instruction::End); // $brk: exhaustion falls here
             for s in els {
                 emit_stmt(f, s, ctx); // normal-exit only (S-02-17)
             }
@@ -3598,7 +3621,7 @@ fn is_supported_builtin(n: &str) -> bool {
     matches!(
         n,
         "print" | "repr" | "str" | "bool" | "hash" | "len" | "isinstance" | "issubclass"
-            | "next" | "range" | "list" | "sum"
+            | "next" | "range" | "list" | "sum" | "iter"
     )
 }
 
@@ -3791,6 +3814,11 @@ fn emit_builtin_call(f: &mut Function, name: &str, args: &[Arg], ctx: &mut EmitC
                 f.instruction(&Instruction::Call(fx::FN_SUM_DRAIN));
             }
         }
+        // iter(x) = FN_ITER_OF (identity for generators, snapshot otherwise)
+        "iter" => {
+            emit_args(f, args, ctx);
+            f.instruction(&Instruction::Call(fx::FN_ITER_OF));
+        }
         _ => unreachable!("is_supported_builtin vetted: {name}"),
     }
 }
@@ -3854,7 +3882,10 @@ fn emit_range(f: &mut Function, pos: &[&Expr], ctx: &mut EmitCtx) {
     f.instruction(&Instruction::I32Const(0));
     f.instruction(&Instruction::LocalSet(56));
     f.instruction(&Instruction::End);
-    // 3. materialize the snapshot into a mut $obj_arr
+    // 3. materialize the snapshot into a mut $obj_arr (LOCAL 57 — NOT
+    // TEMP_LOCAL_OBJARR(44): emit_expr of a LitInt clobbers 44/45 via the
+    // int build path, so the snapshot arr must live OUTSIDE the shared
+    // temp window).
     f.instruction(&Instruction::LocalGet(56));
     f.instruction(&Instruction::ArrayNewDefault(T_OBJ_ARR));
     f.instruction(&Instruction::LocalSet(57));

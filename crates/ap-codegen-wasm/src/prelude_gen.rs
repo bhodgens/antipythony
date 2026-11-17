@@ -612,13 +612,31 @@ pub(crate) fn stop_iter(
             ), // 4 = args stash ($obj_arr_ro is NOT $pyobj — lesson 3)
         ],
         |f| {
-            // args = [value] always (the empty-flag input is IGNORED: bare vs
-            // valued StopIteration differs only in str(e), unrendered here).
+            // CPython arg semantics: a VALUED stop => args=(value,); a BARE
+            // stop (value == null, the empty-flag input) => args=() — a null
+            // in args[0] would trap py_str in str(e) paths (found via the
+            // For-exhaustion probe: tb_render -> exc_msg -> py_str(null)).
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::RefIsNull);
+            f.instruction(&Instruction::If(BlockType::Result(
+                ValType::Ref(wasm_encoder::RefType {
+                    nullable: true,
+                    heap_type: hc(T_OBJ_ARR_RO),
+                }),
+            )));
+            // bare: empty args
+            f.instruction(&Instruction::ArrayNewFixed {
+                array_type_index: T_OBJ_ARR_RO,
+                array_size: 0,
+            });
+            f.instruction(&Instruction::Else);
+            // valued: args = [value]
             f.instruction(&Instruction::LocalGet(0));
             f.instruction(&Instruction::ArrayNewFixed {
                 array_type_index: T_OBJ_ARR_RO,
                 array_size: 1,
             });
+            f.instruction(&Instruction::End);
             f.instruction(&Instruction::LocalSet(4)); // args
             // exc = exc_new(StopIteration $type, args); raise (never returns;
             // trailing null filler satisfies the FT fall-through).
