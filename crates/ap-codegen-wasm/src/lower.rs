@@ -920,7 +920,7 @@ pub fn lower_module_ex(
     crate::prelude_classes::emit_all(&mut funcs, &mut code, &mut tab, &g);
     // leaf 03.04: generators + iterator drivers (dense append after 61;
     // FN_FIRST_USER=69 is the tail of this block — never renumber).
-    crate::prelude_gen::emit_gen_prelude(&mut funcs, &mut code);
+    crate::prelude_gen::emit_gen_prelude(&mut funcs, &mut code, &mut tab);
     // leaf 03.03d: super() build (FN_SUPER_NEW = 69) — dense append after the
     // 03.04 drivers; FN_FIRST_USER moved 69 -> 70 (emitter_state).
     crate::prelude_classes::emit_super(&mut funcs, &mut code, &g, &mut tab);

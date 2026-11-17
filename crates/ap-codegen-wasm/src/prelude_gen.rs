@@ -23,7 +23,7 @@
 //! SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 use crate::emitter_state as fx;
-use crate::prelude::{add, hc, oref, sget, sset};
+use crate::prelude::{add, hc, oref, sget, sset, StrTab};
 use crate::types::*;
 use wasm_encoder::{BlockType, Function, Instruction, ValType};
 
@@ -164,23 +164,244 @@ fn lget_gen(f: &mut Function, local: u32) {
 pub(crate) fn iter_of(
     funcs: &mut wasm_encoder::FunctionSection,
     code: &mut wasm_encoder::CodeSection,
+    strings: &mut StrTab,
 ) {
+    let (msg_off, msg_len) = strings.push("object is not iterable");
+    // Locals (FT has ONE param at 0; lesson 1: param-free slots start at
+    // 1): 1,2=oref (value box / str stash) 3=mut $obj_arr snapshot (ARRAY
+    // ref, NOT $pyobj: lesson 3) 4=RO items arr 5=$byte_arr stash 6,7,8=i32.
+    // (n,i,b).
     add(
         funcs,
         code,
         FT_ITER_OF,
-        &[(2, oref()), (2, ValType::I32)], // 2,3=oref(result,pad) 4,5=i32(cursor,n)
+        &[
+            (2, oref()),
+            (
+                1,
+                ValType::Ref(wasm_encoder::RefType {
+                    nullable: true,
+                    heap_type: hc(T_OBJ_ARR),
+                }),
+            ),
+            (
+                1,
+                ValType::Ref(wasm_encoder::RefType {
+                    nullable: true,
+                    heap_type: hc(T_OBJ_ARR_RO),
+                }),
+            ),
+            (
+                1,
+                ValType::Ref(wasm_encoder::RefType {
+                    nullable: true,
+                    heap_type: hc(T_BYTE_ARR),
+                }),
+            ),
+            (3, ValType::I32),
+        ],
         |f| {
-            // BISECT: minimal body — passthrough only.
+            // already an iterator ($generator — user gens AND container
+            // iterators): identity (iter(iter(x)) is x).
             f.instruction(&Instruction::LocalGet(0));
             f.instruction(&Instruction::RefTestNullable(hc(T_GENERATOR)));
             f.instruction(&Instruction::If(BlockType::Empty));
             f.instruction(&Instruction::LocalGet(0));
             f.instruction(&Instruction::Return);
             f.instruction(&Instruction::End);
+            // $list: snapshot copy into a fresh mut $obj_arr
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::RefTestNullable(hc(T_LIST)));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            {
+                emit_items_snapshot(f, SnapshotSrc::List);
+                emit_snapshot_iterator(f);
+            }
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // $tuple: same snapshot over the tuple items
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::RefTestNullable(hc(T_TUPLE)));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            {
+                emit_items_snapshot(f, SnapshotSrc::Tuple);
+                emit_snapshot_iterator(f);
+            }
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // $str: one 1-char $str per BYTE (latin1 corpus slice)
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::RefTestNullable(hc(T_STR)));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            {
+                emit_str_snapshot(f);
+                emit_snapshot_iterator(f);
+            }
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // unsupported iterable: TypeError("... object is not iterable")
+            f.instruction(&Instruction::GlobalGet(
+                exc_type_global("TypeError").unwrap_or(0),
+            ));
+            f.instruction(&Instruction::GlobalGet(
+                builtin_type_global("str").unwrap_or(0),
+            ));
+            f.instruction(&Instruction::I64Const(0));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::I32Const(msg_len as i32));
+            f.instruction(&Instruction::I32Const(msg_off as i32));
+            f.instruction(&Instruction::I32Const(msg_len as i32));
+            f.instruction(&Instruction::ArrayNewData {
+                array_type_index: T_BYTE_ARR,
+                array_data_index: 1,
+            });
+            f.instruction(&Instruction::StructNew(T_STR));
+            f.instruction(&Instruction::ArrayNewFixed {
+                array_type_index: T_OBJ_ARR_RO,
+                array_size: 1,
+            });
+            f.instruction(&Instruction::Call(fx::FN_EXC_NEW));
+            f.instruction(&Instruction::Call(fx::FN_EXC_RAISE));
+            f.instruction(&Instruction::Drop);
             f.instruction(&Instruction::RefNull(hc(T_PYOBJ)));
         },
     );
+}
+
+/// Which container field the snapshot reads (cast-on-stack per lesson 4).
+#[derive(Clone, Copy)]
+enum SnapshotSrc {
+    List,
+    Tuple,
+}
+
+/// $list/$tuple arm body: items RO array -> local 5, n -> local 7, the mut
+/// $obj_arr copy -> local 4 (cast-on-stack at every struct.get — lesson 4).
+fn emit_items_snapshot(f: &mut Function, src: SnapshotSrc) {
+    // ACTUAL param-free locals (FT_ITER_OF has ONE param, so locals start
+    // at 1 — lesson 1): 3=mut $obj_arr snapshot, 4=RO items, 6/7=i32 (n, i).
+    let (ty, field) = match src {
+        SnapshotSrc::List => (T_LIST, F_LIST_ITEMS),
+        SnapshotSrc::Tuple => (T_TUPLE, F_TUPLE_ITEMS),
+    };
+    f.instruction(&Instruction::LocalGet(0));
+    f.instruction(&Instruction::RefCastNullable(hc(ty)));
+    sget(f, ty, field);
+    f.instruction(&Instruction::LocalSet(4)); // items RO
+    f.instruction(&Instruction::LocalGet(4));
+    f.instruction(&Instruction::ArrayLen);
+    f.instruction(&Instruction::LocalSet(6)); // n
+    f.instruction(&Instruction::LocalGet(6));
+    f.instruction(&Instruction::ArrayNewDefault(T_OBJ_ARR));
+    f.instruction(&Instruction::LocalSet(3)); // snapshot
+    f.instruction(&Instruction::I32Const(0));
+    f.instruction(&Instruction::LocalSet(7)); // i
+    f.instruction(&Instruction::Block(BlockType::Empty));
+    f.instruction(&Instruction::Loop(BlockType::Empty));
+    f.instruction(&Instruction::LocalGet(7));
+    f.instruction(&Instruction::LocalGet(6));
+    f.instruction(&Instruction::I32GeU);
+    f.instruction(&Instruction::BrIf(1));
+    f.instruction(&Instruction::LocalGet(3));
+    f.instruction(&Instruction::LocalGet(7));
+    f.instruction(&Instruction::LocalGet(4));
+    f.instruction(&Instruction::RefCastNullable(hc(T_OBJ_ARR_RO)));
+    f.instruction(&Instruction::LocalGet(7));
+    f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
+    f.instruction(&Instruction::ArraySet(T_OBJ_ARR));
+    f.instruction(&Instruction::LocalGet(7));
+    f.instruction(&Instruction::I32Const(1));
+    f.instruction(&Instruction::I32Add);
+    f.instruction(&Instruction::LocalSet(7));
+    f.instruction(&Instruction::Br(0));
+    f.instruction(&Instruction::End); // loop
+    f.instruction(&Instruction::End); // block
+}
+
+/// $str arm body: one 1-char $str per byte -> the snapshot in local 4.
+fn emit_str_snapshot(f: &mut Function) {
+    // locals (param-free from 1): 2=oref str/char stash, 3=mut obj_arr snapshot,
+    // 4=RO arr spare, 5=$byte_arr data, 6/7/8=i32 (n, i, b).
+    f.instruction(&Instruction::LocalGet(0));
+    f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
+    f.instruction(&Instruction::LocalSet(2)); // str stash
+    f.instruction(&Instruction::LocalGet(2));
+    f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
+    sget(f, T_STR, F_STR_LEN);
+    f.instruction(&Instruction::LocalSet(6)); // n
+    f.instruction(&Instruction::LocalGet(6));
+    f.instruction(&Instruction::ArrayNewDefault(T_OBJ_ARR));
+    f.instruction(&Instruction::LocalSet(3)); // snapshot
+    f.instruction(&Instruction::I32Const(0));
+    f.instruction(&Instruction::LocalSet(7)); // i
+    f.instruction(&Instruction::Block(BlockType::Empty));
+    f.instruction(&Instruction::Loop(BlockType::Empty));
+    f.instruction(&Instruction::LocalGet(7));
+    f.instruction(&Instruction::LocalGet(6));
+    f.instruction(&Instruction::I32GeU);
+    f.instruction(&Instruction::BrIf(1));
+    // b = str.data[i]
+    f.instruction(&Instruction::LocalGet(2));
+    f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
+    sget(f, T_STR, F_STR_DATA);
+    f.instruction(&Instruction::LocalSet(5)); // data byte arr
+    f.instruction(&Instruction::LocalGet(5));
+    f.instruction(&Instruction::LocalGet(7));
+    f.instruction(&Instruction::ArrayGetU(T_BYTE_ARR));
+    f.instruction(&Instruction::LocalSet(8)); // b
+    // fresh 1-byte $byte_arr
+    f.instruction(&Instruction::I32Const(1));
+    f.instruction(&Instruction::ArrayNewDefault(T_BYTE_ARR));
+    f.instruction(&Instruction::LocalSet(5));
+    f.instruction(&Instruction::LocalGet(5));
+    f.instruction(&Instruction::I32Const(0));
+    f.instruction(&Instruction::LocalGet(8));
+    f.instruction(&Instruction::ArraySet(T_BYTE_ARR));
+    // char = $str{ type=g_str, hash=0, kind=0, len=1, data }
+    f.instruction(&Instruction::GlobalGet(
+        builtin_type_global("str").unwrap_or(0),
+    ));
+    f.instruction(&Instruction::I64Const(0));
+    f.instruction(&Instruction::I32Const(0));
+    f.instruction(&Instruction::I32Const(1));
+    f.instruction(&Instruction::LocalGet(5));
+    f.instruction(&Instruction::StructNew(T_STR));
+    f.instruction(&Instruction::LocalSet(2)); // stash the char
+    f.instruction(&Instruction::LocalGet(3));
+    f.instruction(&Instruction::LocalGet(7));
+    f.instruction(&Instruction::LocalGet(2));
+    f.instruction(&Instruction::ArraySet(T_OBJ_ARR));
+    f.instruction(&Instruction::LocalGet(7));
+    f.instruction(&Instruction::I32Const(1));
+    f.instruction(&Instruction::I32Add);
+    f.instruction(&Instruction::LocalSet(7));
+    f.instruction(&Instruction::Br(0));
+    f.instruction(&Instruction::End); // loop
+    f.instruction(&Instruction::End); // block
+}
+
+/// Tail of every iter_of container arm: locals snapshot in local 4, length in
+/// local 7 — build the $generator { fn: null, state: len, locals, value:
+/// $int(0), exn: null } and return it.
+fn emit_snapshot_iterator(f: &mut Function) {
+    // locals: 2=oref (value box stash), 3=mut obj_arr snapshot, 6=n.
+    f.instruction(&Instruction::GlobalGet(
+        builtin_type_global("int").unwrap_or(0),
+    ));
+    f.instruction(&Instruction::I32Const(0));
+    f.instruction(&Instruction::I64Const(0));
+    f.instruction(&Instruction::RefNull(hc(T_BIGINT)));
+    f.instruction(&Instruction::StructNew(T_INT));
+    f.instruction(&Instruction::LocalSet(2));
+    // $generator fields: (type, fn, state, locals, value, exn)
+    f.instruction(&Instruction::RefNull(hc(T_TYPE))); // $pyobj field 0
+    f.instruction(&Instruction::RefNull(hc(T_FUNCTION)));
+    f.instruction(&Instruction::LocalGet(6)); // state = snapshot length
+    f.instruction(&Instruction::LocalGet(3)); // locals snapshot
+    f.instruction(&Instruction::LocalGet(2)); // value cursor box
+    f.instruction(&Instruction::RefNull(hc(T_EXCEPTION)));
+    f.instruction(&Instruction::StructNew(T_GENERATOR));
+    f.instruction(&Instruction::Return);
 }
 
 // ---------------------------------------------------------------------------
@@ -379,9 +600,35 @@ pub(crate) fn stop_iter(
         funcs,
         code,
         FT_STOP_ITER,
-        &[(1, oref()), (1, ValType::I32)],
+        &[
+            (1, oref()),
+            (1, ValType::I32),
+            (
+                1,
+                ValType::Ref(wasm_encoder::RefType {
+                    nullable: true,
+                    heap_type: hc(T_OBJ_ARR_RO),
+                }),
+            ), // 4 = args stash ($obj_arr_ro is NOT $pyobj — lesson 3)
+        ],
         |f| {
-            // DEBUG BISECT 3: stub body — no exc machinery.
+            // args = [value] always (the empty-flag input is IGNORED: bare vs
+            // valued StopIteration differs only in str(e), unrendered here).
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::ArrayNewFixed {
+                array_type_index: T_OBJ_ARR_RO,
+                array_size: 1,
+            });
+            f.instruction(&Instruction::LocalSet(4)); // args
+            // exc = exc_new(StopIteration $type, args); raise (never returns;
+            // trailing null filler satisfies the FT fall-through).
+            f.instruction(&Instruction::GlobalGet(
+                exc_type_global("StopIteration").unwrap_or(0),
+            ));
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::Call(fx::FN_EXC_NEW));
+            f.instruction(&Instruction::Call(fx::FN_EXC_RAISE));
+            f.instruction(&Instruction::Drop);
             f.instruction(&Instruction::RefNull(hc(T_PYOBJ)));
         },
     );
@@ -415,7 +662,7 @@ pub(crate) fn stop_iter_dead(
             // DEBUG BISECT: RefNull instead of GlobalGet (param0 is nullable;
             // if the module now validates, the GlobalGet slot/type is wrong).
             f.instruction(&Instruction::RefNull(hc(T_TYPE)));
-            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::LocalGet(4));
             f.instruction(&Instruction::Call(fx::FN_EXC_NEW));
             f.instruction(&Instruction::Call(fx::FN_EXC_RAISE));
             f.instruction(&Instruction::Drop);
@@ -446,11 +693,13 @@ pub(crate) fn gen_throw(
             lget_gen(f, 0);
             sget(f, T_GENERATOR, F_GEN_STATE);
             f.instruction(&Instruction::LocalSet(4)); // state
+            // state < 0 (dead) OR state == 0 (not started): 3.14 raises the
+            // thrown exc AT THE CALL SITE without running any body.
             f.instruction(&Instruction::LocalGet(4));
             f.instruction(&Instruction::I32Const(0));
-            f.instruction(&Instruction::I32LtS);
+            f.instruction(&Instruction::I32LeS);
             f.instruction(&Instruction::If(BlockType::Empty));
-            // dead generator: raise the thrown exc directly (3.14 arm)
+            // dead/not-started generator: raise the thrown exc directly
             f.instruction(&Instruction::LocalGet(1));
             f.instruction(&Instruction::Call(fx::FN_EXC_RAISE));
             f.instruction(&Instruction::Drop); // phantom result (validator)
@@ -523,11 +772,22 @@ pub(crate) fn gen_close(
             lget_gen(f, 0);
             sget(f, T_GENERATOR, F_GEN_STATE);
             f.instruction(&Instruction::LocalSet(3)); // state
-            // already dead: silent no-op
+            // already dead (exhausted/closed): silent no-op
             f.instruction(&Instruction::LocalGet(3));
             f.instruction(&Instruction::I32Const(0));
             f.instruction(&Instruction::I32LtS);
             f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // state == 0 (not started): close() completes WITHOUT running the
+            // body — just park closed (3.14 semantics).
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(GS_START));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            lget_gen(f, 0);
+            f.instruction(&Instruction::I32Const(GS_CLOSED));
+            sset(f, T_GENERATOR, F_GEN_STATE);
             f.instruction(&Instruction::Return);
             f.instruction(&Instruction::End);
             // build GeneratorExit() and stage it, then run one step
@@ -585,12 +845,14 @@ pub(crate) fn gen_close(
 pub fn emit_gen_prelude(
     funcs: &mut wasm_encoder::FunctionSection,
     code: &mut wasm_encoder::CodeSection,
+    strings: &mut StrTab,
 ) {
     gen_send(funcs, code);
-    iter_of(funcs, code);
+    iter_of(funcs, code, strings);
     iter_next(funcs, code);
     iter_contains(funcs, code);
     stop_iter(funcs, code);
     gen_throw(funcs, code);
     gen_close(funcs, code);
 }
+
