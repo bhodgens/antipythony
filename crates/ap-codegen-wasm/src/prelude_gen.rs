@@ -293,12 +293,9 @@ pub(crate) fn iter_contains(
                 1,
                 ValType::Ref(wasm_encoder::RefType {
                     nullable: true,
-                    heap_type: hc(T_OBJ_ARR),
+                    heap_type: hc(T_OBJ_ARR_RO),
                 }),
-            ), // local 2 = items (MUT; arrays are NOT $pyobj: dedicated slot).
-               // 03.03d: $list.items switched to MUT, so the common local type
-               // is the MUT array — the $tuple branch copies its RO items into
-               // a fresh MUT array (corpus tuples are small).
+            ), // local 2 = items RO-arr (arrays are NOT $pyobj: dedicated slot)
             (1, oref()),       // local 3 = cur
             (1, ValType::I32), // local 4 = n
             (1, ValType::I32), // local 5 = i
@@ -311,44 +308,13 @@ pub(crate) fn iter_contains(
             f.instruction(&Instruction::LocalGet(0));
             f.instruction(&Instruction::RefTestNullable(hc(T_TUPLE)));
             f.instruction(&Instruction::If(BlockType::Empty));
-            // $tuple: copy RO items -> fresh MUT array
             f.instruction(&Instruction::LocalGet(0));
             f.instruction(&Instruction::RefCastNullable(hc(T_TUPLE)));
             f.instruction(&Instruction::StructGet {
                 struct_type_index: T_TUPLE,
                 field_index: F_TUPLE_ITEMS,
             });
-            f.instruction(&Instruction::ArrayLen);
-            f.instruction(&Instruction::LocalSet(4)); // n = tuple len
-            f.instruction(&Instruction::LocalGet(4));
-            f.instruction(&Instruction::ArrayNewDefault(T_OBJ_ARR));
-            f.instruction(&Instruction::LocalSet(2)); // mut copy target
-            f.instruction(&Instruction::I32Const(0));
-            f.instruction(&Instruction::LocalSet(5));
-            f.instruction(&Instruction::Block(BlockType::Empty));
-            f.instruction(&Instruction::Loop(BlockType::Empty));
-            f.instruction(&Instruction::LocalGet(5));
-            f.instruction(&Instruction::LocalGet(4));
-            f.instruction(&Instruction::I32GeU);
-            f.instruction(&Instruction::BrIf(1));
-            f.instruction(&Instruction::LocalGet(2));
-            f.instruction(&Instruction::LocalGet(5));
-            f.instruction(&Instruction::LocalGet(0));
-            f.instruction(&Instruction::RefCastNullable(hc(T_TUPLE)));
-            f.instruction(&Instruction::StructGet {
-                struct_type_index: T_TUPLE,
-                field_index: F_TUPLE_ITEMS,
-            });
-            f.instruction(&Instruction::LocalGet(5));
-            f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
-            f.instruction(&Instruction::ArraySet(T_OBJ_ARR));
-            f.instruction(&Instruction::LocalGet(5));
-            f.instruction(&Instruction::I32Const(1));
-            f.instruction(&Instruction::I32Add);
-            f.instruction(&Instruction::LocalSet(5));
-            f.instruction(&Instruction::Br(0));
-            f.instruction(&Instruction::End);
-            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalSet(2));
             f.instruction(&Instruction::Else);
             f.instruction(&Instruction::LocalGet(0));
             f.instruction(&Instruction::RefCastNullable(hc(T_LIST)));
@@ -373,7 +339,7 @@ pub(crate) fn iter_contains(
             f.instruction(&Instruction::BrIf(1));
             f.instruction(&Instruction::LocalGet(2));
             f.instruction(&Instruction::LocalGet(5));
-            f.instruction(&Instruction::ArrayGet(T_OBJ_ARR));
+            f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
             f.instruction(&Instruction::LocalSet(3)); // cur
             // found = eq(cur, item); if found -> break with 1
             f.instruction(&Instruction::LocalGet(3));
