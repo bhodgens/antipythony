@@ -94,10 +94,15 @@ pub const FN_GEN_CLOSE: u32 = 68; // (gen o) -> ()         close/GeneratorExit
 // drivers — dense, never renumbered. FN_FIRST_USER moved 69 -> 70 for it.
 pub const FN_SUPER_NEW: u32 = 69; // (S o, obj o, unused o) -> o  marker build
 pub const FN_TYPE_OF: u32 = 70; // (o) -> o                    type(x)
+// leaf 03.03d c026 surface (special-method fallbacks): 71..74, dense append.
+pub const FN_LEN_OF: u32 = 71; // (o) -> o     len with __len__ + TypeError
+pub const FN_STR_OF: u32 = 72; // (o) -> str   __str__ + default repr
+pub const FN_REPR_OF: u32 = 73; // (o) -> str  __repr__ + default repr
+pub const FN_LIST_OF: u32 = 74; // (o) -> o    legacy __getitem__ protocol
 /// First wasm function index of the EMITTED user functions (Item::FnDef /
 /// Stmt::LocalDef), which follow the prelude densely. `_start` is
 /// computed at emit time as FN_FIRST_USER + n_user_fns.
-pub const FN_FIRST_USER: u32 = 71;
+pub const FN_FIRST_USER: u32 = 75;
 
 /// rt_init is index 3 (03.03 layout: 0 fd_write, 1 abort_msg, 2 proc_exit,
 /// 3 rt_init — proc_exit joined the imports for the uncaught-traceback

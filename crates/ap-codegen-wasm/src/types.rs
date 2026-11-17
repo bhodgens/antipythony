@@ -613,15 +613,15 @@ pub fn build_type_section_with_prefix(prefix: usize) -> wasm_encoder::TypeSectio
         array_ty(field_i16(false)),
         // 12 $i32_arr
         array_ty(field(field_i32_val(), false)),
-        // 13 $list sub $pyobj — items are the RO array type: literals are
-        // built with array.new_fixed (WasmGC requires an immutable array
-        // type there); v1 lists on this slice never mutate in place, and
-        // mutation (03.02c) rebuilds via array.new_fixed as well.
+        // 13 $list sub $pyobj — 03.03d: items switched to the MUT array
+        // (was RO): array.new_fixed accepts mutable array types too, so
+        // literal builds are unchanged in shape; the MUT type lets runtime
+        // list construction (legacy __getitem__ protocol, FN_LIST_OF) append
+        // dynamically — impossible with the immutable array.
         sub(vec![
             field_i32(false), // len
             field_i32(false), // cap
-            fr(T_OBJ_ARR_RO, false), // items (immutable: literals via
-                              // array.new_fixed; mutation rebuilds)
+            fr(T_OBJ_ARR, false), // items (mut: FN_LIST_OF appends)
         ]),
         // 14 $obj_arr — mut pyobj array
         array_ty(field(pyobj_ref(), true)),

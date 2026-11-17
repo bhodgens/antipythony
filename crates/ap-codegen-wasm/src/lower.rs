@@ -2719,20 +2719,22 @@ fn emit_expr(f: &mut Function, e: &Expr, ctx: &mut EmitCtx) {
             emit_lambda_object(f, slot, ctx);
         }
         Expr::List(items) => {
+            // 03.03d: items array is now MUT (T_OBJ_ARR) — array.new_fixed
+            // accepts it; $list.items field switched to match (types.rs).
             for it in items {
                 emit_expr(f, it, ctx);
             }
             f.instruction(&Instruction::ArrayNewFixed {
-                array_type_index: T_OBJ_ARR_RO,
+                array_type_index: T_OBJ_ARR,
                 array_size: items.len() as u32,
             });
-            f.instruction(&Instruction::LocalSet(TEMP_LOCAL_OBJARR_RO));
+            f.instruction(&Instruction::LocalSet(TEMP_LOCAL_OBJARR));
             f.instruction(&Instruction::GlobalGet(
                 builtin_type_global("list").unwrap_or(0),
             ));
             f.instruction(&Instruction::I32Const(items.len() as i32));
             f.instruction(&Instruction::I32Const(items.len() as i32));
-            f.instruction(&Instruction::LocalGet(TEMP_LOCAL_OBJARR_RO));
+            f.instruction(&Instruction::LocalGet(TEMP_LOCAL_OBJARR));
             f.instruction(&Instruction::StructNew(T_LIST));
         }
         Expr::Tuple(items) => {

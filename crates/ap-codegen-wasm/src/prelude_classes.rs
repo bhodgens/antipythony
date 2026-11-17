@@ -2739,7 +2739,259 @@ fn type_of(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::C
     });
 }
 
-fn push_empty_dict(f: &mut Function) {
+
+// ---------------------------------------------------------------------------
+// Leaf 03.03d c026 surface (special-method fallbacks, S-03-22..24 slice):
+// FN_LEN_OF (71), FN_STR_OF (72), FN_REPR_OF (73), FN_LIST_OF (74).
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// len_of (FN_LEN_OF = 71): (o) -> o — len(x) with the S-03-24 fallback:
+// containers answer from their fields (dict/list/str/bytes/tuple); anything
+// else dispatches __len__ along the mro; no __len__ -> TypeError
+// "object of type 'A' has no len()". emit_call routes len() here (the old
+// prelude::len keeps its zero-fallthrough for untouched callers).
+// FT: FT_O_O (o)->o. Locals (params=1): 2..3 pad(oref) 4=sel(i32) 5=slotfn
+// 6=r 7=ty 8=exc($exception) 9=msg(str) 10=pad(oref)
+// ---------------------------------------------------------------------------
+fn len_of(
+    funcs: &mut wasm_encoder::FunctionSection,
+    code: &mut wasm_encoder::CodeSection,
+    strings: &mut StrTab,
+) {
+    let (p1_off, p1_len) = strings.push("object of type '");
+    let (p2_off, p2_len) = strings.push("' has no len()");
+    let (gl_off, gl_len) = strings.push("__len__");
+    add(
+        funcs,
+        code,
+        FT_O_O,
+        &[
+            (2, oref()),  // 2,3 pad
+            (1, ValType::I32), // 4 = sel
+            (1, oref()),  // 5 = slot fn
+            (1, oref()),  // 6 = r
+            (1, ty_ref()), // 7 = ty
+            (1, exc_ref()), // 8 = exc scratch
+            (1, str_ref()), // 9 = msg
+            (1, oref()),  // 10 pad
+        ],
+        |f| {
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::LocalSet(2));
+            // ---- dict (5) ----
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::RefTestNullable(hc(T_DICT)));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::RefCastNullable(hc(T_DICT)));
+            sget(f, T_DICT, F_DICT_USED);
+            f.instruction(&Instruction::I64ExtendI32U);
+            f.instruction(&Instruction::Call(fx::FN_INT_FROM_I64));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // ---- list (6) ----
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::RefTestNullable(hc(T_LIST)));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::RefCastNullable(hc(T_LIST)));
+            sget(f, T_LIST, F_LIST_LEN);
+            f.instruction(&Instruction::I64ExtendI32U);
+            f.instruction(&Instruction::Call(fx::FN_INT_FROM_I64));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // ---- str (3) ----
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::RefTestNullable(hc(T_STR)));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
+            sget(f, T_STR, F_STR_LEN);
+            f.instruction(&Instruction::I64ExtendI32U);
+            f.instruction(&Instruction::Call(fx::FN_INT_FROM_I64));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // ---- bytes (4) ----
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::RefTestNullable(hc(T_BYTES)));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::RefCastNullable(hc(T_BYTES)));
+            sget(f, T_BYTES, F_BYTES_LEN);
+            f.instruction(&Instruction::I64ExtendI32U);
+            f.instruction(&Instruction::Call(fx::FN_INT_FROM_I64));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // ---- tuple (7) ----
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::RefTestNullable(hc(T_TUPLE)));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::RefCastNullable(hc(T_TUPLE)));
+            sget(f, T_TUPLE, F_TUPLE_ITEMS);
+            f.instruction(&Instruction::ArrayLen);
+            f.instruction(&Instruction::I64ExtendI32U);
+            f.instruction(&Instruction::Call(fx::FN_INT_FROM_I64));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // ---- else: __len__ dispatch / TypeError ----
+            f.instruction(&Instruction::LocalGet(2));
+            sget(f, T_PYOBJ, F_TYPE);
+            f.instruction(&Instruction::RefCastNullable(hc(T_TYPE)));
+            f.instruction(&Instruction::LocalSet(7));
+            f.instruction(&Instruction::LocalGet(7));
+            lit_str(f, gl_off, gl_len);
+            f.instruction(&Instruction::Call(fx::FN_MRO_DICT_GET));
+            f.instruction(&Instruction::LocalSet(5));
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::RefIsNull);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            // no __len__: TypeError "object of type 'NAME' has no len()"
+            lit_str(f, p1_off, p1_len);
+            f.instruction(&Instruction::LocalSet(9));
+            f.instruction(&Instruction::LocalGet(9));
+            f.instruction(&Instruction::LocalGet(7));
+            f.instruction(&Instruction::Call(fx::FN_TYPE_NAME));
+            f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+            f.instruction(&Instruction::LocalSet(9));
+            lit_str(f, p2_off, p2_len);
+            f.instruction(&Instruction::LocalSet(10));
+            f.instruction(&Instruction::LocalGet(9));
+            f.instruction(&Instruction::LocalGet(10));
+            f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+            f.instruction(&Instruction::LocalSet(9));
+            emit_type_error_throw(f, 9);
+            f.instruction(&Instruction::RefNull(hc(T_PYOBJ)));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // __len__ found: r = dispatch(fn, [x]); return r
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::ArrayNewFixed {
+                array_type_index: T_OBJ_ARR_RO,
+                array_size: 1,
+            });
+            f.instruction(&Instruction::RefNull(hc(T_DICT)));
+            f.instruction(&Instruction::Call(fx::FN_DISPATCH));
+            f.instruction(&Instruction::Return);
+        },
+    );
+}
+
+// ---------------------------------------------------------------------------
+// str_of (FN_STR_OF = 72) / repr_of (FN_REPR_OF = 73): (o) -> str — the
+// user-instance surface of S-03-22/24: __str__ (or __repr__ for repr_of)
+// dispatch along the mro; result MUST be a $str else TypeError
+// "__str__ returned non-string (type int)" (CPython text); no slot ->
+// the default repr "<__main__.NAME object at 0xHEX>" (repr masked via
+// startswith in the corpus — a fixed fake hex is byte-adequate).
+// Everything non-$instance falls through to py_str.
+// FT: FT_O_STR (o)->str. Locals (params=1): 2=ty 3=slotfn 4=r 5=acc(str)
+// 6=exc($exception) 7=msg(str) 8,9 pad(oref)
+// ---------------------------------------------------------------------------
+fn str_of(
+    funcs: &mut wasm_encoder::FunctionSection,
+    code: &mut wasm_encoder::CodeSection,
+    strings: &mut StrTab,
+    repr_mode: bool,
+) {
+    let slot_name = if repr_mode { "__repr__" } else { "__str__" };
+    let (sl_off, sl_len) = strings.push(slot_name);
+    let (r1_off, r1_len) = strings.push("<__main__.");
+    let (r2_off, r2_len) = strings.push(" object at 0x7f0042d000>");
+    let (ns_off, ns_len) = strings.push(if repr_mode { "__repr__" } else { "__str__" });
+    let (nr1_off, nr1_len) = strings.push(if repr_mode { "__repr__ returned non-string (type " } else { "__str__ returned non-string (type " });
+    let (nr2_off, nr2_len) = strings.push(")");
+    let _ = ns_off;
+    let _ = ns_len;
+    add(
+        funcs,
+        code,
+        FT_O_STR,
+        &[
+            (1, ty_ref()),  // 2 = ty
+            (2, oref()),    // 3,4 = slotfn, r
+            (1, str_ref()), // 5 = acc
+            (1, exc_ref()), // 6 = exc scratch
+            (1, str_ref()), // 7 = msg
+            (2, oref()),    // 8,9 pad
+        ],
+        |f| {
+            // non-$instance -> py_str (shared fallthrough)
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::RefTestNullable(hc(T_INSTANCE)));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::Call(fx::FN_PY_STR));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // ty = type(x)
+            f.instruction(&Instruction::LocalGet(0));
+            sget(f, T_PYOBJ, F_TYPE);
+            f.instruction(&Instruction::RefCastNullable(hc(T_TYPE)));
+            f.instruction(&Instruction::LocalSet(2));
+            // slot = mro_dict_get(ty, "__str__"/"__repr__")
+            f.instruction(&Instruction::LocalGet(2));
+            lit_str(f, sl_off, sl_len);
+            f.instruction(&Instruction::Call(fx::FN_MRO_DICT_GET));
+            f.instruction(&Instruction::LocalSet(3));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefIsNull);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            // no slot: default repr
+            lit_str(f, r1_off, r1_len);
+            f.instruction(&Instruction::LocalSet(5));
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::Call(fx::FN_TYPE_NAME));
+            f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+            f.instruction(&Instruction::LocalSet(5));
+            lit_str(f, r2_off, r2_len);
+            f.instruction(&Instruction::LocalSet(8));
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::LocalGet(8));
+            f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // slot found: r = dispatch(slot, [x])
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::ArrayNewFixed {
+                array_type_index: T_OBJ_ARR_RO,
+                array_size: 1,
+            });
+            f.instruction(&Instruction::RefNull(hc(T_DICT)));
+            f.instruction(&Instruction::Call(fx::FN_DISPATCH));
+            f.instruction(&Instruction::LocalSet(4));
+            // r must be a $str else TypeError '<slot> returned non-string (type X)'
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::RefTestNullable(hc(T_STR)));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            lit_str(f, nr1_off, nr1_len);
+            f.instruction(&Instruction::LocalSet(7));
+            f.instruction(&Instruction::LocalGet(7));
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::Call(fx::FN_TYPE_NAME));
+            f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+            f.instruction(&Instruction::LocalSet(7));
+            lit_str(f, nr2_off, nr2_len);
+            f.instruction(&Instruction::LocalSet(8));
+            f.instruction(&Instruction::LocalGet(7));
+            f.instruction(&Instruction::LocalGet(8));
+            f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+            f.instruction(&Instruction::LocalSet(7));
+            emit_type_error_throw(f, 7);
+            f.instruction(&Instruction::RefNull(hc(T_STR)));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
+        },
+    );
+}
+
+fn push_empty_dict(f: &mut Function) {fn push_empty_dict(f: &mut Function) {
     push_null(f, T_TYPE);
     f.instruction(&Instruction::I32Const(0));
     f.instruction(&Instruction::I32Const(0));

@@ -1272,14 +1272,14 @@ fn list_eq(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::C
         f.instruction(&Instruction::RefCastNullable(hc(T_LIST)));
         sget(f, T_LIST, F_LIST_ITEMS);
         f.instruction(&Instruction::LocalGet(5));
-        f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
+        f.instruction(&Instruction::ArrayGet(T_OBJ_ARR));
         f.instruction(&Instruction::LocalSet(6));
         // item-b = b.items[i]
         f.instruction(&Instruction::LocalGet(3));
         f.instruction(&Instruction::RefCastNullable(hc(T_LIST)));
         sget(f, T_LIST, F_LIST_ITEMS);
         f.instruction(&Instruction::LocalGet(5));
-        f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
+        f.instruction(&Instruction::ArrayGet(T_OBJ_ARR));
         f.instruction(&Instruction::LocalSet(7));
         // eq(item-a, item-b) == 0 -> false
         f.instruction(&Instruction::LocalGet(6));
