@@ -281,3 +281,92 @@ NEXT (03.03d): e-str sel==8 root cause (check exc_raise payload type
 field / rt_init EXC_TREE aliasing — print(ValueError-instance) hits
 sel==8); bare-raise + raise-from (G_ACTIVE_EXC maintenance in
 emit_try_handlers); __init__ arity >3; multi-base C3; descriptor split.
+
+## 2026-11-16: leaf 03.04b session (drivers real + py_str surfaces; corpus gates NOT green)
+
+COMMITS: merge 01fcdbd1 (main 520f4abe into tier1-0304b — the stale afee87ac WIP was a
+pre-main-state snapshot; merged, NOT reset), then d15b3a4f increment 1.
+
+LANDED (d15b3a4f, all validating, CF 18/18 + classes/exceptions 16/16 held):
+1. iter_of FULL BODY (was stub passthrough): $list/$tuple snapshot copy -> $generator
+   {fn:null, state:len, locals, value:$int(0), exn:null}; $str -> 1-char-per-byte
+   snapshot (latin1 slice); $generator identity; other shapes TypeError
+   ("<type> object is not iterable" via exc_new+exc_raise). LESSON-1 RE-DERIVED: the
+   parked iter_of draft assumed params 0/1 — FT_ITER_OF has ONE param so param-free
+   locals start at 1 (the snapshot helpers now use 3=snapshot 4=RO items 5=byte_arr
+   6/7/8=i32).
+2. stop_iter REAL THROW (was stub): exc_new(StopIteration, [value]) + exc_raise.
+   args stash rides a DEDICATED (ref null $obj_arr_ro) local — lesson 3 cost another
+   bisect: array refs are NOT $pyobj and storing (ref 16) into an oref local fails
+   validation as "expected (ref null $type), found (ref $type)" (both render identically).
+3. gen_throw: state<=0 (not-started OR dead) raises the thrown exc at the call site
+   without running the body (3.14 arm; GE003 pre-start throw).
+4. gen_close: state==0 parks CLOSED without running the body (3.14 close-before-start).
+5. py_str: list arm "[" + repr-join + "]" and dict arm "{k: v}" — str keys AND values
+   quote-wrapped (CPython dict repr). Dict entries fetched STACK-RESIDENT via two
+   array.gets (an $entry_arr-local + sget path was tried; $dict_entry is NOT a $pyobj
+   subtype so no local stash is possible — new lesson 9: only $pyobj-subtypes may ride
+   oref locals).
+6. attr_get: StopIteration.value = args[0] (e.value, GE002 plumbing); empty args -> None.
+
+TOOLING (worked well, record for next session): the "identical error text" ambiguity
+(lesson 7) is best cracked by wasmprinter Config.print with a Print impl that overrides
+start_line(binary_offset) — prefixes every wat line with @offset; wasmparser's error
+offset then maps to the EXACT wat line. Cycle: validate -> @offset dump -> read the
+failing instr + its operand types -> fix the Rust emit. Three type-index bugs found this
+way in ~3 cycles each.
+
+HONEST STATE vs the leaf exit gate: NOT MET. GE001-GE005 + MA001 all still fail-closed
+at scan ("generator/async def (leaf 03.04)", "Stmt::For", "Stmt::Match", comp/genexp
+Expr arm). The drivers have no lowering callers yet for user generators; iter_of/iter_next
+serve only as the For/comp targets once those land.
+
+NEXT (03.04c — design fully derived this session, see below):
+a. GENERATOR LOWERING = CFG FLATTENING (not nested resume labels: wasm br only goes
+   outward, so a resume into a While body requires flat slices). Shape:
+     block $done { loop $head {
+       block $v0 { ... block $vN { br_table [state i -> depth i] default -> $done }
+       } <slice N-1> } <slice N-2> } ... <slice 0> } }   ;; slice i inside $v(N-i-1)
+   Every slice: reload ALL slot mirrors from $gen.$locals, run its straight-line code,
+   end `br $head`. Slot mirrors = wasm oref locals 2..2+S (FT_GEN_STEP has TWO params;
+   param-free locals start at 2). Slot table = params then collect_local_binds order
+   (same filter as emit_user_fn). st scratch local after the mirrors.
+   Yield K: spill all slots; $gen.$state = K+1; $gen.$value = yieldval; Frame-safe:
+   generators must NOT push tb frames (or push/pop around each resume — decide in 03.04c);
+   return yieldval. Resume path: slice K reloads, and the yield-expression's value =
+   $gen.$value (parked by gen_send BEFORE the step — input rides $value).
+   return v: spill; state=GS_DONE; $value=v; return null. Fall-off-end: state=GS_DONE;
+   $value=null.
+   yield from e: it = FN_ITER_OF(e); loop { try_table-catch -> $yf_done { x =
+   FN_ITER_NEXT(it); <yield x as a normal site> } ; handler: r = attr_get(e_caught,
+   "value"); br loop-exit } — the Stmt::Try lowering shape works INSIDE the step body.
+   b. Def site: emit_function_object unchanged (the $code carries func_idx). CALL sites:
+   emit_call + dispatch/static paths special-case generator slots (fn.def is_generator):
+   build $generator{type, fn=$function, state=0, locals=array of bound args, value=null,
+   exn=null} instead of calling. gen_send's table idx math (func_idx - FN_FIRST_USER)
+   works because generator step fns ARE user-fn table entries (element segment has all
+   slots) — but their FT in the function SECTION must be FT_GEN_STEP (gen o, input o)->o.
+   c. FOR statement: iter = FN_ITER_OF(e) once; loop { try x=FN_ITER_NEXT(it) catch SI ->
+   br exit; bind target; body } ; else on normal exit. Unpacking targets stay fail-closed.
+   d. BUILTINS: next(x[,d]) = try FN_ITER_NEXT catch SI -> default; range(n)/list(x)/
+   sum(x) = drain via next into a growable list (rebuild-append inline — the dset rebuild
+   pattern; no new prelude fn) / sum accumulates via FN_BINOP ADD.
+   e. COMPREHENSIONS: inline loop lowering in an own-scope slice; clause 0 iter evaluated
+   in the ENCLOSING scope; nested clauses in comp scope; walrus binds ENCLOSING (S-02-2).
+   ListComp acc = growable $list rebuild-append; DictComp acc = mut $entry_arr
+   rebuild-append then StructNew(T_DICT) with used=fill=n; SetComp fail-closed this leaf.
+   Genexp = hidden generator fn with one yield inside the clause loops (reuses (a)).
+   f. MATCH (MA001 slice): per case: Literal -> FN_EQ with the lit; Capture -> bind;
+   Wildcard -> match; Or -> try each with binding rollback (bindings ride locals so
+   "rollback" = only bind on final success: evaluate alternates into scratch then bind);
+   Sequence [p...] on $list/$tuple with len checks + Starred rest (growable list);
+   Mapping {k: v} on $dict via FN_DGET (str-key slice) + FN_DICT_HAS pre-check (missing
+   key = no match); Guard after bindings; Class/Value patterns fail-closed (not in MA001).
+   g. GE002 specifics: c.send(v) = FN_GEN_SEND; first-send-None = send(None) surface;
+   StopIteration as e: print('SI value', e.value) needs `except StopIteration as e` +
+   e.value (attr arm LANDED in this increment) + FN_EXC_MSG for str(e).
+   h. GE003: e = ValueError('mid') + raise e INSIDE the generator body — the try lowering
+   inside the step body catches it via try_table ✓ (exceptions inside generators are just
+   EH inside the step fn; gen_send propagates the tag out to the resumer's handlers).
+GATES: controlflow_wasm_gate 18/18 held; classes_exceptions_wasm_gate 16/16 held;
+GE/MA status verified fail-closed via a throw-probe (report line in session log).

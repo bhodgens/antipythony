@@ -1792,6 +1792,7 @@ fn attr_get(
     strings: &mut StrTab,
 ) {
     let (nm_off, nm_len) = strings.push("__name__");
+    let (sv_off, sv_len) = strings.push("value");
     add(
         funcs,
         code,
@@ -1840,6 +1841,35 @@ fn attr_get(
         f.instruction(&Instruction::LocalGet(3));
         f.instruction(&Instruction::RefTestNullable(hc(T_EXCINST)));
         f.instruction(&Instruction::If(BlockType::Empty));
+        // leaf 03.04b: StopIteration.value (GE002 SI plumbing) — the return
+        // value of an exhausted generator rides the exc's args[0].
+        f.instruction(&Instruction::LocalGet(4));
+        lit_str(f, sv_off, sv_len);
+        f.instruction(&Instruction::Call(fx::FN_STR_EQ));
+        f.instruction(&Instruction::If(BlockType::Empty));
+        // args-items is (ref null $obj_arr_ro) — ARRAY, not $pyobj: NO local
+        // stash (lesson 3); array.len + array.get stack-resident.
+        f.instruction(&Instruction::LocalGet(3));
+        f.instruction(&Instruction::RefCastNullable(hc(T_EXCINST)));
+        sget(f, T_EXCINST, 1); // args tuple
+        f.instruction(&Instruction::RefCastNullable(hc(T_TUPLE)));
+        sget(f, T_TUPLE, F_TUPLE_ITEMS);
+        f.instruction(&Instruction::ArrayLen);
+        f.instruction(&Instruction::If(BlockType::Empty));
+        // args non-empty: args[0]
+        f.instruction(&Instruction::LocalGet(3));
+        f.instruction(&Instruction::RefCastNullable(hc(T_EXCINST)));
+        sget(f, T_EXCINST, 1);
+        f.instruction(&Instruction::RefCastNullable(hc(T_TUPLE)));
+        sget(f, T_TUPLE, F_TUPLE_ITEMS);
+        f.instruction(&Instruction::I32Const(0));
+        f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
+        f.instruction(&Instruction::Return);
+        f.instruction(&Instruction::End);
+        // empty args: None
+        f.instruction(&Instruction::GlobalGet(G_NONE));
+        f.instruction(&Instruction::Return);
+        f.instruction(&Instruction::End);
         // excinst: attrs dict (field 6, LAZY — null until first setattr;
         // the RefIsNull + If(Empty) below skips the lookup when null —
         // If(Empty) runs its body when the CONDITION IS NONZERO, so the

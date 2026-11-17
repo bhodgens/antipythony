@@ -2112,7 +2112,7 @@ fn py_str(
         funcs,
         code,
         FT_O_STR,
-        &[(2, oref()), (3, ValType::I32), (1, ValType::Ref(wasm_encoder::RefType { nullable: true, heap_type: hc(T_STR) })), (1, ValType::Ref(wasm_encoder::RefType { nullable: true, heap_type: hc(T_OBJ_ARR_RO) })), (1, ValType::Ref(wasm_encoder::RefType { nullable: true, heap_type: hc(T_STR) })), (2, ValType::I32), (1, oref())],
+        &[(2, oref()), (3, ValType::I32), (1, ValType::Ref(wasm_encoder::RefType { nullable: true, heap_type: hc(T_STR) })), (1, ValType::Ref(wasm_encoder::RefType { nullable: true, heap_type: hc(T_OBJ_ARR_RO) })), (1, ValType::Ref(wasm_encoder::RefType { nullable: true, heap_type: hc(T_STR) })), (2, ValType::I32), (1, ValType::Ref(wasm_encoder::RefType { nullable: true, heap_type: hc(T_ENTRY_ARR) })), (1, oref())],
         |f| {
             // 2=x, 3=sel; tuple arm: 6=acc(str) 7=items(oref) 8=n 9=i 10=tmp
             f.instruction(&Instruction::LocalGet(0));
@@ -2211,8 +2211,8 @@ fn py_str(
             lget_cast(f, 7, T_OBJ_ARR_RO);
             f.instruction(&Instruction::LocalGet(9));
             f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
-            f.instruction(&Instruction::LocalSet(11)); // item stash (oref)
-            type_sel(f, 11, 4);
+            f.instruction(&Instruction::LocalSet(12)); // item stash (oref)
+            type_sel(f, 12, 4);
             f.instruction(&Instruction::I32Const(3));
             f.instruction(&Instruction::I32Eq);
             f.instruction(&Instruction::If(BlockType::Empty));
@@ -2220,14 +2220,14 @@ fn py_str(
             f.instruction(&Instruction::LocalGet(6));
             push_str_literal_seg(f, q1_off, q1_len);
             f.instruction(&Instruction::Call(fx::FN_STR_CAT));
-            lget_cast(f, 11, T_STR);
+            lget_cast(f, 12, T_STR);
             f.instruction(&Instruction::Call(fx::FN_STR_CAT));
             push_str_literal_seg(f, q1_off, q1_len);
             f.instruction(&Instruction::Call(fx::FN_STR_CAT));
             f.instruction(&Instruction::LocalSet(6));
             f.instruction(&Instruction::Else);
             f.instruction(&Instruction::LocalGet(6));
-            f.instruction(&Instruction::LocalGet(11));
+            f.instruction(&Instruction::LocalGet(12));
             f.instruction(&Instruction::Call(fx::FN_PY_STR));
             f.instruction(&Instruction::Call(fx::FN_STR_CAT));
             f.instruction(&Instruction::LocalSet(6));
@@ -2266,6 +2266,193 @@ fn py_str(
             push_str_literal_seg(f, rp_off, rp_len);
             f.instruction(&Instruction::Call(fx::FN_STR_CAT));
             f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // 03.04b list (6): "[" + join(py_str(item), ", ") + "]" — items
+            // repr-form (CPython print([1, 'x']) shows the quotes). Locals:
+            // 6=acc(str) 7=items(RO arr) 9=i 10=n 12=item stash(oref).
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(6));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            {
+                let (lb_off, lb_len) = strings.push("[");
+                let (rb_off, rb_len) = strings.push("]");
+                lget_cast(f, 2, T_LIST);
+                sget(f, T_LIST, F_LIST_ITEMS);
+                f.instruction(&Instruction::LocalSet(7));
+                f.instruction(&Instruction::I32Const(0));
+                f.instruction(&Instruction::LocalSet(9));
+                push_str_literal_seg(f, lb_off, lb_len);
+                f.instruction(&Instruction::LocalSet(6));
+                f.instruction(&Instruction::LocalGet(7));
+                f.instruction(&Instruction::ArrayLen);
+                f.instruction(&Instruction::LocalSet(10));
+                f.instruction(&Instruction::Block(BlockType::Empty));
+                f.instruction(&Instruction::Loop(BlockType::Empty));
+                f.instruction(&Instruction::LocalGet(9));
+                f.instruction(&Instruction::LocalGet(10));
+                f.instruction(&Instruction::I32GeU);
+                f.instruction(&Instruction::BrIf(1));
+                // item repr with str-item quoting (tuple-arm shape)
+                lget_cast(f, 7, T_OBJ_ARR_RO);
+                f.instruction(&Instruction::LocalGet(9));
+                f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
+                f.instruction(&Instruction::LocalSet(12));
+                type_sel(f, 12, 4);
+                f.instruction(&Instruction::I32Const(3));
+                f.instruction(&Instruction::I32Eq);
+                f.instruction(&Instruction::If(BlockType::Empty));
+                f.instruction(&Instruction::LocalGet(6));
+                push_str_literal_seg(f, q1_off, q1_len);
+                f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+                lget_cast(f, 12, T_STR);
+                f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+                push_str_literal_seg(f, q1_off, q1_len);
+                f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+                f.instruction(&Instruction::LocalSet(6));
+                f.instruction(&Instruction::Else);
+                f.instruction(&Instruction::LocalGet(6));
+                f.instruction(&Instruction::LocalGet(12));
+                f.instruction(&Instruction::Call(fx::FN_PY_STR));
+                f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+                f.instruction(&Instruction::LocalSet(6));
+                f.instruction(&Instruction::End);
+                // separator ", " between items
+                f.instruction(&Instruction::LocalGet(9));
+                f.instruction(&Instruction::I32Const(1));
+                f.instruction(&Instruction::I32Add);
+                f.instruction(&Instruction::LocalSet(9));
+                f.instruction(&Instruction::LocalGet(9));
+                f.instruction(&Instruction::LocalGet(10));
+                f.instruction(&Instruction::I32GeU);
+                f.instruction(&Instruction::I32Eqz);
+                f.instruction(&Instruction::If(BlockType::Empty));
+                f.instruction(&Instruction::LocalGet(6));
+                push_str_literal_seg(f, c_off, c_len);
+                f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+                f.instruction(&Instruction::LocalSet(6));
+                f.instruction(&Instruction::End);
+                f.instruction(&Instruction::Br(0));
+                f.instruction(&Instruction::End); // loop
+                f.instruction(&Instruction::End); // block
+                f.instruction(&Instruction::LocalGet(6));
+                push_str_literal_seg(f, rb_off, rb_len);
+                f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+                f.instruction(&Instruction::Return);
+            }
+            f.instruction(&Instruction::End);
+            // 03.04b dict (5): "{" + "k: v" comma-joined + "}" — repr-form
+            // keys/values over the ordered $entry_arr (DEDICATED local 11 —
+            // the T_ENTRY_ARR array type is NOT $obj_arr_ro; storing it in
+            // local 7 broke the translator: identical-text type-index trap).
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(5));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            {
+                let (lb_off, lb_len) = strings.push("{");
+                let (rb_off, rb_len) = strings.push("}");
+                let (co_off, co_len) = strings.push(": ");
+                lget_cast(f, 2, T_DICT);
+                sget(f, T_DICT, F_DICT_ENTRIES);
+                f.instruction(&Instruction::LocalSet(11)); // entries (entry_arr)
+                lget_cast(f, 2, T_DICT);
+                sget(f, T_DICT, F_DICT_FILL);
+                f.instruction(&Instruction::LocalSet(10)); // n
+                f.instruction(&Instruction::I32Const(0));
+                f.instruction(&Instruction::LocalSet(9));
+                push_str_literal_seg(f, lb_off, lb_len);
+                f.instruction(&Instruction::LocalSet(6));
+                f.instruction(&Instruction::Block(BlockType::Empty));
+                f.instruction(&Instruction::Loop(BlockType::Empty));
+                f.instruction(&Instruction::LocalGet(9));
+                f.instruction(&Instruction::LocalGet(10));
+                f.instruction(&Instruction::I32GeU);
+                f.instruction(&Instruction::BrIf(1));
+                // entry = entries[i] — $dict_entry is NOT a $pyobj subtype:
+                // NO local stash (lesson 3/4); fetch TWICE, struct.get direct
+                // off the array.get result (stack-resident).
+                f.instruction(&Instruction::LocalGet(6));
+                // acc += repr(entries[i].key) — CPython QUOTES str keys
+                // ({"a": 1}); item branch = type_sel==3 → quote-wrap.
+                f.instruction(&Instruction::LocalGet(11));
+                f.instruction(&Instruction::LocalGet(9));
+                f.instruction(&Instruction::ArrayGet(T_ENTRY_ARR));
+                sget(f, T_DICT_ENTRY, F_ENTRY_KEY);
+                f.instruction(&Instruction::LocalSet(12)); // key (oref ✓)
+                type_sel(f, 12, 4);
+                f.instruction(&Instruction::I32Const(3));
+                f.instruction(&Instruction::I32Eq);
+                f.instruction(&Instruction::If(BlockType::Empty));
+                f.instruction(&Instruction::LocalGet(6));
+                push_str_literal_seg(f, q1_off, q1_len);
+                f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+                f.instruction(&Instruction::LocalGet(12));
+                f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
+                f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+                push_str_literal_seg(f, q1_off, q1_len);
+                f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+                f.instruction(&Instruction::LocalSet(6));
+                f.instruction(&Instruction::Else);
+                f.instruction(&Instruction::LocalGet(6));
+                f.instruction(&Instruction::LocalGet(12));
+                f.instruction(&Instruction::Call(fx::FN_PY_STR));
+                f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+                f.instruction(&Instruction::LocalSet(6));
+                f.instruction(&Instruction::End);
+                // + ": "
+                f.instruction(&Instruction::LocalGet(6));
+                push_str_literal_seg(f, co_off, co_len);
+                f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+                f.instruction(&Instruction::LocalSet(6));
+                // + repr(entries[i].value) — same quote-wrap
+                f.instruction(&Instruction::LocalGet(11));
+                f.instruction(&Instruction::LocalGet(9));
+                f.instruction(&Instruction::ArrayGet(T_ENTRY_ARR));
+                sget(f, T_DICT_ENTRY, F_ENTRY_VALUE);
+                f.instruction(&Instruction::LocalSet(12));
+                type_sel(f, 12, 4);
+                f.instruction(&Instruction::I32Const(3));
+                f.instruction(&Instruction::I32Eq);
+                f.instruction(&Instruction::If(BlockType::Empty));
+                f.instruction(&Instruction::LocalGet(6));
+                push_str_literal_seg(f, q1_off, q1_len);
+                f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+                f.instruction(&Instruction::LocalGet(12));
+                f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
+                f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+                push_str_literal_seg(f, q1_off, q1_len);
+                f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+                f.instruction(&Instruction::LocalSet(6));
+                f.instruction(&Instruction::Else);
+                f.instruction(&Instruction::LocalGet(6));
+                f.instruction(&Instruction::LocalGet(12));
+                f.instruction(&Instruction::Call(fx::FN_PY_STR));
+                f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+                f.instruction(&Instruction::LocalSet(6));
+                f.instruction(&Instruction::End);
+                f.instruction(&Instruction::LocalGet(9));
+                f.instruction(&Instruction::I32Const(1));
+                f.instruction(&Instruction::I32Add);
+                f.instruction(&Instruction::LocalSet(9));
+                f.instruction(&Instruction::LocalGet(9));
+                f.instruction(&Instruction::LocalGet(10));
+                f.instruction(&Instruction::I32GeU);
+                f.instruction(&Instruction::I32Eqz);
+                f.instruction(&Instruction::If(BlockType::Empty));
+                f.instruction(&Instruction::LocalGet(6));
+                push_str_literal_seg(f, c_off, c_len);
+                f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+                f.instruction(&Instruction::LocalSet(6));
+                f.instruction(&Instruction::End);
+                f.instruction(&Instruction::Br(0));
+                f.instruction(&Instruction::End); // loop
+                f.instruction(&Instruction::End); // block
+                f.instruction(&Instruction::LocalGet(6));
+                push_str_literal_seg(f, rb_off, rb_len);
+                f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+                f.instruction(&Instruction::Return);
+            }
             f.instruction(&Instruction::End);
             // 03.03d: concrete-$str catch (some runtime-built $strs — early
             // rt_init type-name strings — carry a null type field, so

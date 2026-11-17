@@ -90,6 +90,10 @@ pub const FN_ITER_CONTAINS: u32 = 65; // (o, o) -> i32     `in`
 pub const FN_STOP_ITER: u32 = 66; // (o value, i32 empty) -> o  StopIteration throw
 pub const FN_GEN_THROW: u32 = 67; // (gen o, exc o) -> o   throw-at-point
 pub const FN_GEN_CLOSE: u32 = 68; // (gen o) -> ()         close/GeneratorExit
+// leaf 03.04b: exc_value_of — `e.value` for StopIteration instances (GE002:
+// `except StopIteration as e: print('SI value', e.value)`). (o, str) -> o,
+// same shape as attr_get — call sites use FN_ATTR_GET (no new index; the
+// attribute surfaces here are wired through attr_get's special-name arms).
 // leaf 03.03d: super() build (S-03-17 slice), appended after the 03.04
 // drivers — dense, never renumbered. FN_FIRST_USER moved 69 -> 70 for it.
 pub const FN_SUPER_NEW: u32 = 69; // (S o, obj o, unused o) -> o  marker build
