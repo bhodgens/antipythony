@@ -238,13 +238,22 @@ fn type_sel(f: &mut Function, obj: u32, tmp: u32) {
     ];
     f.instruction(&Instruction::Block(BlockType::Empty));
     for (g, sel) in cases {
+        // 03.03d FIX (the 03.03c "observed sel==8" root cause): the old
+        // shape set tmp=sel BEFORE BrIf(eq) — the LAST case's unconditional
+        // LocalSet(8) clobbered the default 9 on every miss, so EVERY
+        // unknown-type $pyobj (user instances, exception instances) read as
+        // NoneType in py_str (print(e) printed "None"). Now the store rides
+        // INSIDE an If on the eq: no match -> tmp keeps the previous value
+        // (default 9 falls through the whole chain untouched).
         f.instruction(&Instruction::LocalGet(obj));
         obj_type(f);
         f.instruction(&Instruction::GlobalGet(g));
         f.instruction(&Instruction::RefEq);
+        f.instruction(&Instruction::If(BlockType::Empty));
         f.instruction(&Instruction::I32Const(sel));
         f.instruction(&Instruction::LocalSet(tmp));
-        f.instruction(&Instruction::BrIf(0));
+        f.instruction(&Instruction::Br(1)); // exit the Block (0 = this If)
+        f.instruction(&Instruction::End);
     }
     f.instruction(&Instruction::End);
     f.instruction(&Instruction::LocalGet(tmp));
@@ -2256,6 +2265,17 @@ fn py_str(
             f.instruction(&Instruction::LocalGet(6));
             push_str_literal_seg(f, rp_off, rp_len);
             f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // exception instance (03.03d): str(e) = the S-02-29 message
+            // rules (FN_EXC_MSG: 1 arg -> str(args[0]); 0 -> ""; 2+ -> tuple
+            // form). $excinst is a type-sel miss (9) — test the concrete
+            // subtype directly (RefTest, no cast needed for the branch).
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::RefTestNullable(hc(T_EXCINST)));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::Call(fx::FN_EXC_MSG));
             f.instruction(&Instruction::Return);
             f.instruction(&Instruction::End);
             // other (bytes repr is V064's path via FN_BYTES_REPR — v1: raw)
