@@ -370,8 +370,10 @@ fn collect_stmt(
             if !fd.decorators.is_empty() {
                 return Err(CodegenError::Unsupported("decorated def (post-03.03)"));
             }
-            if fd.is_generator || fd.is_async {
-                return Err(CodegenError::Unsupported("generator/async def (leaf 03.04)"));
+            // leaf 03.04c: generator defs LOWER (is_generator is consumed at
+            // emit: the step-fn state machine); async defs stay fail-closed.
+            if fd.is_async {
+                return Err(CodegenError::Unsupported("async def (post-03.04)"));
             }
             let parent = scan.parent_stack.last().copied().unwrap_or(usize::MAX);
             scan_fn_common(fd.name.as_str(), &fd.params, &fd.body.blocks, parent, scan)
@@ -407,7 +409,151 @@ fn collect_stmt(
             }
             Ok(())
         }
+        // leaf 03.04c: For (plain-Name targets) + Match (MA001 slice) scan
+        Stmt::For(..) => collect_for(stmt, refs, bound, nonlocal, scan),
+        Stmt::Match(..) => collect_match(stmt, refs, bound, nonlocal, scan),
         other => Err(CodegenError::Unsupported(stmt_unsupported(other))),
+    }
+}
+
+/// leaf 03.04c scan gates for the generator/match slice.
+fn collect_for(f: &Stmt, refs: &mut Vec<String>, bound: &mut Vec<String>, nonlocal: &mut Vec<String>, scan: &mut Scan) -> Result<(), CodegenError> {
+    let Stmt::For(target, iter, body, els) = f else {
+        unreachable!("collect_for on a non-For")
+    };
+    // target: plain Name only (tuple unpacking targets stay fail-closed)
+    if !matches!(target, ap_ir::item::Target::Name(_)) {
+        return Err(CodegenError::Unsupported(
+            "for target beyond a plain name (03.04c slice)",
+        ));
+    }
+    collect_expr(iter, refs, bound, nonlocal, scan)?;
+    collect_target(target, bound, scan)?;
+    collect_scope(body, refs, bound, nonlocal, scan)?;
+    collect_scope(els, refs, bound, nonlocal, scan)
+}
+
+/// leaf 03.04c match scan: subject + per-case gates (MA001 slice — Literal /
+/// Capture / Wildcard / Or / Sequence+Starred / Mapping-str-key / Group; Guard
+/// exprs collect as reads; Class/Value/Mapping-**rest fail-closed).
+fn collect_match(f: &Stmt, refs: &mut Vec<String>, bound: &mut Vec<String>, nonlocal: &mut Vec<String>, scan: &mut Scan) -> Result<(), CodegenError> {
+    let Stmt::Match(subject, cases) = f else {
+        unreachable!("collect_match on a non-Match")
+    };
+    collect_expr(subject, refs, bound, nonlocal, scan)?;
+    for case in cases {
+        collect_pattern(&case.pattern, scan)?;
+        if let Some(g) = &case.guard {
+            collect_expr(g, refs, bound, nonlocal, scan)?;
+        }
+        collect_scope(&case.body, refs, bound, nonlocal, scan)?;
+        // captures bind in the enclosing scope (PEP 634 store rules)
+        let mut names = Vec::new();
+        pattern_captures(&case.pattern, &mut names);
+        for n in names {
+            if !bound.contains(&n) {
+                bound.push(n);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn collect_pattern(p: &ap_ir::item::Pattern, scan: &mut Scan) -> Result<(), CodegenError> {
+    use ap_ir::item::Pattern;
+    match p {
+        Pattern::Literal(e) => collect_pattern_lit(e, scan),
+        Pattern::Capture(_) => Ok(()),
+        Pattern::Wildcard => Ok(()),
+        Pattern::Group(inner) => collect_pattern(inner, scan),
+        Pattern::Or(alts) => {
+            for a in alts {
+                collect_pattern(a, scan)?;
+            }
+            Ok(())
+        }
+        Pattern::Sequence(patterns, rest) => {
+            for s in patterns {
+                collect_pattern(s, scan)?;
+            }
+            if let Some(r) = rest {
+                collect_pattern(r, scan)?;
+            }
+            Ok(())
+        }
+        Pattern::Mapping(entries, rest) => {
+            if rest.is_some() {
+                return Err(CodegenError::Unsupported(
+                    "match mapping **rest pattern (03.04c slice)",
+                ));
+            }
+            for (k, v) in entries {
+                // str-literal keys only (FN_DGET slice): the key PATTERN must
+                // be a Literal; its expr gets the constant gate
+                let Pattern::Literal(ke) = k else {
+                    return Err(CodegenError::Unsupported(
+                        "match mapping key beyond a literal (03.04c)",
+                    ));
+                };
+                collect_pattern_lit(ke, scan)?;
+                collect_pattern(v, scan)?;
+            }
+            Ok(())
+        }
+        Pattern::Value(_) => Err(CodegenError::Unsupported(
+            "match Value pattern (03.04c slice)",
+        )),
+        Pattern::Class(..) => Err(CodegenError::Unsupported(
+            "match Class pattern (03.04c slice)",
+        )),
+    }
+}
+
+/// Literal-pattern expressions: the constants the FN_EQ compare slice covers
+/// (int/str/bool/None literals); anything else fails closed.
+fn collect_pattern_lit(e: &Expr, scan: &mut Scan) -> Result<(), CodegenError> {
+    match e {
+        Expr::LitInt(_) | Expr::LitBigInt(_) | Expr::LitBool(_) | Expr::LitNone => Ok(()),
+        Expr::LitStr(s) => {
+            scan.intern_str(s);
+            Ok(())
+        }
+        _ => Err(CodegenError::Unsupported(
+            "match literal pattern beyond the constant slice (03.04c)",
+        )),
+    }
+}
+
+/// Capture names under a pattern, in order (dedup).
+fn pattern_captures(p: &ap_ir::item::Pattern, out: &mut Vec<String>) {
+    use ap_ir::item::Pattern;
+    match p {
+        Pattern::Capture(n) => {
+            let n = n.to_string();
+            if !out.contains(&n) {
+                out.push(n);
+            }
+        }
+        Pattern::Group(inner) => pattern_captures(inner, out),
+        Pattern::Or(alts) => {
+            for a in alts {
+                pattern_captures(a, out);
+            }
+        }
+        Pattern::Sequence(patterns, rest) => {
+            for s in patterns {
+                pattern_captures(s, out);
+            }
+            if let Some(r) = rest {
+                pattern_captures(r, out);
+            }
+        }
+        Pattern::Mapping(entries, _) => {
+            for (_, v) in entries {
+                pattern_captures(v, out);
+            }
+        }
+        Pattern::Literal(_) | Pattern::Wildcard | Pattern::Value(_) | Pattern::Class(..) => {}
     }
 }
 
@@ -443,7 +589,11 @@ fn scan_class_def(
 }
 
 /// Assignment target: binds (name) or reads (subscript/attribute obj+key).
-fn collect_target(t: &ap_ir::item::Target, bound: &mut Vec<String>, scan: &mut Scan) -> Result<(), CodegenError> {
+fn collect_target(
+    t: &ap_ir::item::Target,
+    bound: &mut Vec<String>,
+    _scan: &mut Scan,
+) -> Result<(), CodegenError> {
     match t {
         ap_ir::item::Target::Name(n) => {
             let n = n.to_string();
@@ -627,7 +777,142 @@ fn collect_expr(
             let parent = scan.parent_stack.last().copied().unwrap_or(usize::MAX);
             scan_fn_common("<lambda>", &sig.params, &body_stmts, parent, scan)
         }
+        // leaf 03.04c: comprehension scopes. The clause-0 iterable evaluates
+        // in the ENCLOSING scope (S-02-5) — collect its reads HERE; the
+        // target/element/ifs collect as the hidden <comp> function's body
+        // via collect_comp_clause (which registers the hidden fn).
+        Expr::ListComp(elt, clauses) | Expr::Generator(elt, clauses) => {
+            collect_comp_clauses(elt, clauses, refs, bound, nonlocal, scan)
+        }
+        Expr::DictComp(key, val, clauses) => {
+            let mut dummy = Expr::Tuple(vec![(*key.clone()), (*val.clone())]);
+            let r = collect_comp_clauses(&dummy, clauses, refs, bound, nonlocal, scan);
+            drop(dummy);
+            r
+        }
+        Expr::SetComp(..) => Err(CodegenError::Unsupported(
+            "set comprehension (fail-closed, 03.04c)",
+        )),
+        // `yield` / `yield from` OUTSIDE a generator def cannot be scanned
+        // here (the generator-ness of the ENCLOSING fn decides); the
+        // fn-scan (scan_fn_common) accepts them via this same arm when its
+        // `in_generator` gate (below) allows. This arm is the SHARED gate:
+        // collect_expr doesn't know the context, so allow + collect; the
+        // module-scope reject happens via scan_module's post-check.
+        Expr::Yield(v) => {
+            if let Some(v) = v {
+                collect_expr(v, refs, bound, nonlocal, scan)?;
+            }
+            Ok(())
+        }
+        Expr::YieldFrom(v) => {
+            collect_expr(v, refs, bound, nonlocal, scan)?;
+            // iter(x) + attr reads the delegation needs (interned "value")
+            scan.intern_str("value");
+            Ok(())
+        }
+        Expr::Named(t, v) => {
+            // walrus binds the NAME in the enclosing scope (S-02-2)
+            let Expr::Name(n) = t.as_ref() else {
+                return Err(CodegenError::Unsupported("walrus non-name target"));
+            };
+            let n = n.to_string();
+            scan.intern_str(&n);
+            collect_expr(v, refs, bound, nonlocal, scan)?;
+            if !bound.contains(&n) {
+                bound.push(n);
+            }
+            Ok(())
+        }
+        Expr::Subscript(obj, key) => {
+            collect_expr(obj, refs, bound, nonlocal, scan)?;
+            collect_expr(key, refs, bound, nonlocal, scan)
+        }
+        Expr::Starred(x) => collect_expr(x, refs, bound, nonlocal, scan),
         _ => Err(CodegenError::Unsupported("Expr (03.02c slice)")),
+    }
+}
+
+/// The comprehension hidden-function walk (03.04c): registers a <comp>
+/// UserFn whose body is the nested for/if structure, then collects the
+/// element (or key/value) reads INSIDE that fn scope. Clause 0's iterable
+/// was already collected by the CALLER (enclosing scope).
+fn collect_comp_clauses(
+    elt: &Expr,
+    clauses: &[ap_ir::expr::CompClause],
+    refs: &mut Vec<String>,
+    bound: &mut Vec<String>,
+    nonlocal: &mut Vec<String>,
+    scan: &mut Scan,
+) -> Result<(), CodegenError> {
+    if clauses.is_empty() {
+        return Err(CodegenError::Unsupported("comprehension without clauses"));
+    }
+    // clause 0 iterable rides the caller's collection; nested clauses'
+    // iterables collect INSIDE the hidden fn body.
+    let mut body: Vec<Stmt> = Vec::new();
+    // innermost-first construction: element append
+    let inner = vec![Stmt::ExprStmt(elt.clone())];
+    let mut cur = inner;
+    for clause in clauses.iter().rev() {
+        // iterables of clauses >= 1 collect inside the hidden fn
+        let mut crefs: Vec<String> = Vec::new();
+        collect_expr(&clause.iter, &mut crefs, bound, nonlocal, scan)?;
+        let mut ifs = Vec::new();
+        for i in &clause.ifs {
+            let mut irefs = Vec::new();
+            collect_expr(i, &mut irefs, bound, nonlocal, scan)?;
+            ifs.push(i);
+            // the If lowering reads these through `refs` — re-add
+        }
+        body.clear();
+        // build: For(target, iter, [if-chain + cur], [])
+        let mut stmt_body = cur;
+        // wrap ifs outermost-innermost: For body = if1{if2{...cur}}
+        for i in ifs.iter().rev() {
+            stmt_body = vec![Stmt::If((**i).clone(), stmt_body, Vec::new())];
+        }
+        let target = comp_target(&clause.target)?;
+        cur = vec![Stmt::For(
+            target,
+            clause.iter.clone(),
+            stmt_body,
+            Vec::new(),
+        )];
+        body = cur.clone();
+        for r in crefs {
+            if !refs.contains(&r) {
+                refs.push(r);
+            }
+        }
+        let _ = &mut ifs;
+        let _ = &clause.iter;
+    }
+    let parent = scan.parent_stack.last().copied().unwrap_or(usize::MAX);
+    scan_fn_common("<listcomp>", &[], &body, parent, scan)
+}
+
+/// comprehension clause target: Name or 1-level Tuple of Names (the corpus
+/// slice: `for y in x` / nested `for y in [(1,2)] for y in x` unpacks via
+/// the Tuple arm only when all-Name; deeper shapes fail closed).
+fn comp_target(t: &Expr) -> Result<ap_ir::item::Target, CodegenError> {
+    match t {
+        Expr::Name(n) => Ok(ap_ir::item::Target::Name(n.clone())),
+        Expr::Tuple(items) => {
+            let mut out = Vec::new();
+            for i in items {
+                let Expr::Name(n) = i else {
+                    return Err(CodegenError::Unsupported(
+                        "comp tuple target beyond all-Name (03.04c)",
+                    ));
+                };
+                out.push(ap_ir::item::Target::Name(n.clone()));
+            }
+            Ok(ap_ir::item::Target::Tuple(out))
+        }
+        _ => Err(CodegenError::Unsupported(
+            "comp target beyond Name/Tuple-of-Names (03.04c)",
+        )),
     }
 }
 
