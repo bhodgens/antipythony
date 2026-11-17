@@ -1209,6 +1209,10 @@ pub fn lower_module_ex(
     // leaf 03.03d: super() build (FN_SUPER_NEW = 69) — dense append after the
     // 03.04 drivers; FN_FIRST_USER moved 69 -> 70 (emitter_state).
     crate::prelude_classes::emit_super(&mut funcs, &mut code, &g, &mut tab);
+    // leaf 03.04c: drain drivers (FN_LIST_DRAIN=71 / FN_SUM_DRAIN=72) —
+    // AFTER emit_super so the 69/70 constants stay true (emit order IS
+    // the index assignment).
+    crate::prelude_gen::emit_gen_drains(&mut funcs, &mut code);
 
     // ---- 03.03b: the top-level EH wrap is ON BY DEFAULT. The parked
     // "operators remaining / values remaining on stack" rejection was NOT a
@@ -1428,6 +1432,20 @@ pub fn lower_module_ex(
                 heap_type: wasm_encoder::HeapType::Concrete(T_CELL_ARR),
             }),
         )); // 51: $cell_arr stash (free-cell load; unused in _start)
+        locals.push((1, pyobj_ref())); // 52: iterator stash (03.04c For/gen)
+        // 03.04c range() scratch: 53/54/55 = i64 (start/stop/step),
+        // 56/59 = i32 (count, i), 57 = mut $obj_arr snapshot.
+        locals.push((3, ValType::I64)); // 53..55
+        locals.push((2, ValType::I32)); // 56,57-slot? no: 56 i32, 57 below
+        locals.push((
+            1,
+            ValType::Ref(RefType {
+                nullable: true,
+                heap_type: wasm_encoder::HeapType::Concrete(T_OBJ_ARR),
+            }),
+        )); // 57: range snapshot
+        locals.push((1, ValType::I32)); // 58: spare i32 (padding to 59)
+        locals.push((1, ValType::I32)); // 59: range loop i
         funcs.function(FT_VOID); // _start entry
         let mut f = Function::new(locals);
         f.instruction(&Instruction::Call(fx::FN_RT_INIT));
@@ -2009,6 +2027,9 @@ const TEMP_LOCAL_OBJARR_RO: u32 = 48; // RO array stash
 #[allow(dead_code)]
 const TEMP_LOCAL_FN: u32 = 49; // $function stash (reserved)
 const TEMP_LOCAL_OBJARR2: u32 = 50; // second mut $obj_arr stash (param_names)
+/// leaf 03.04c: iterator stash (the $generator iterator object across the
+/// For/generator resume paths). _start and every user frame reserve 52.
+const TEMP_LOCAL_IT: u32 = 52;
 
 
 /// Emit one user function under the uniform convention:
@@ -2114,6 +2135,20 @@ fn emit_user_fn(
                 heap_type: wasm_encoder::HeapType::Concrete(T_CELL_ARR),
             }),
         )); // 51
+        order.push((1, pyobj_ref())); // 52: iterator stash (03.04c For/gen)
+        // 03.04c range() scratch: 53/54/55 = i64 (start/stop/step),
+        // 56 = i32 count, 57 = mut $obj_arr snapshot, 58 = pad, 59 = i32 i.
+        order.push((3, ValType::I64)); // 53..55
+        order.push((1, ValType::I32)); // 56
+        order.push((
+            1,
+            ValType::Ref(RefType {
+                nullable: true,
+                heap_type: wasm_encoder::HeapType::Concrete(T_OBJ_ARR),
+            }),
+        )); // 57
+        order.push((1, ValType::I32)); // 58
+        order.push((1, ValType::I32)); // 59
     }
 
     let mut f = Function::new(order);
@@ -2549,6 +2584,111 @@ fn emit_stmt(f: &mut Function, stmt: &Stmt, ctx: &mut EmitCtx) {
         Stmt::Continue => {
             let target = ctx.br_continue.expect("scan tracked loop nesting");
             f.instruction(&Instruction::Br(ctx.depth - target));
+        }
+        // leaf 03.04c: For over an iterable (S-02-17): iter() once, then
+        // next() until StopIteration; target binds in the current scope and
+        // LEAKS after the loop; else on NORMAL exhaustion only.
+        //   Block $exit {                       <- break target (skips else)
+        //     ;; iter = FN_ITER_OF(e)  [$it]
+        //     Block $catch (result exc) {
+        //       try_table [catch TAG -> $catch]
+        //         Loop $head {
+        //           Block $step {
+        //             x = FN_ITER_NEXT(it)       <- raises TAG = normal exit
+        //             bind target; body
+        //             br $head                   <- Br 2 from inside $step
+        //           }
+        //         }
+        //         RefNull(exc)                   <- normal-exit payload
+        //       end                              <- payload: real exc | null
+        //       is-null? -> Br $exit-end +1      <- run else (fall through)
+        //       else-branch: match StopIteration? For the corpus slice the
+        //       only TAGs escaping the try region are the exhaustion one and
+        //       body raises — body raises must PROPAGATE (rethrow), so the
+        //       null test is exhaustive here: non-null -> rethrow.
+        //     }
+        //   }
+        // NOTE the catch shape: ANY exception inside the try_table (including
+        // a raise in the BODY) lands at $catch; the null test separates
+        // normal exit from a real exception, and a real one is rethrown —
+        // byte-exact with CPython (the else does not run on body raises).
+        Stmt::For(target, iter, body, els) => {
+            let ap_ir::item::Target::Name(tname) = target else {
+                unreachable!("scan vetted For targets");
+            };
+            f.instruction(&Instruction::Block(BlockType::Empty)); // $exit
+            ctx.depth += 1;
+            let exit_depth = ctx.depth;
+            // it = iter_of(e)
+            emit_expr(f, iter, ctx);
+            f.instruction(&Instruction::Call(fx::FN_ITER_OF));
+            f.instruction(&Instruction::LocalSet(TEMP_LOCAL_IT));
+            f.instruction(&Instruction::Block(BlockType::Result(
+                ValType::Ref(wasm_encoder::RefType {
+                    nullable: true,
+                    heap_type: hc(T_EXCEPTION),
+                }),
+            ))); // $catch
+            ctx.depth += 1;
+            {
+                let catches = [wasm_encoder::Catch::One {
+                    tag: TAG_PYEXC,
+                    label: 0,
+                }];
+                f.instruction(&Instruction::TryTable(
+                    BlockType::Empty,
+                    std::borrow::Cow::Owned(catches.to_vec()),
+                ));
+                ctx.depth += 1;
+                f.instruction(&Instruction::Loop(BlockType::Empty));
+                ctx.depth += 1;
+                let head_depth = ctx.depth;
+                f.instruction(&Instruction::Block(BlockType::Empty)); // $step
+                ctx.depth += 1;
+                // x = next(it) — may throw (exhaustion) or propagate
+                f.instruction(&Instruction::LocalGet(TEMP_LOCAL_IT));
+                f.instruction(&Instruction::Call(fx::FN_ITER_NEXT));
+                emit_name_store(f, tname.as_str(), ctx);
+                for s in body {
+                    emit_stmt(f, s, ctx);
+                }
+                // continue -> $step end (re-test via the loop head)
+                let saved_c = ctx.br_continue;
+                let saved_b = ctx.br_break;
+                ctx.br_continue = Some(ctx.depth); // $step end
+                ctx.br_break = Some(exit_depth); // $exit end
+                let _ = head_depth;
+                ctx.depth -= 1;
+                f.instruction(&Instruction::End); // $step
+                ctx.br_continue = saved_c;
+                ctx.br_break = saved_b;
+                f.instruction(&Instruction::Br(ctx.depth - head_depth + 1)); // -> Loop head
+                ctx.depth -= 1;
+                f.instruction(&Instruction::End); // Loop
+                ctx.depth -= 1;
+                f.instruction(&Instruction::End); // try_table
+                // normal exhaustion: null payload
+                f.instruction(&Instruction::RefNull(hc(T_EXCEPTION)));
+            }
+            ctx.depth -= 1;
+            f.instruction(&Instruction::End); // $catch: exc | null on stack
+            f.instruction(&Instruction::LocalSet(TEMP_LOCAL_A));
+            f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
+            f.instruction(&Instruction::RefIsNull);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            // normal exit (0 = this If, 1 = $catch, 2 = $exit): skip the
+            // rethrow, fall into the else
+            f.instruction(&Instruction::Br(2));
+            f.instruction(&Instruction::End);
+            // real exception (body raise): rethrow it
+            f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
+            f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
+            f.instruction(&Instruction::Throw(TAG_PYEXC));
+            for s in els {
+                emit_stmt(f, s, ctx); // normal-exit only (S-02-17)
+            }
+            ctx.depth -= 1;
+            f.instruction(&Instruction::End); // $exit
         }
         // `global`/`nonlocal` are compile-time declarations: the name
         // resolution (scan/resolution_map) already routes reads/writes to
@@ -3458,6 +3598,7 @@ fn is_supported_builtin(n: &str) -> bool {
     matches!(
         n,
         "print" | "repr" | "str" | "bool" | "hash" | "len" | "isinstance" | "issubclass"
+            | "next" | "range" | "list" | "sum"
     )
 }
 
@@ -3554,12 +3695,227 @@ fn emit_builtin_call(f: &mut Function, name: &str, args: &[Arg], ctx: &mut EmitC
             f.instruction(&Instruction::Call(fx::FN_ISSUB));
             emit_bool_object(f);
         }
+        // ---- leaf 03.04c iterator builtins ----
+        // next(x) / next(x, default): try FN_ITER_NEXT catch TAG -> default.
+        // 1-arg: exhaustion TAG propagates (byte-exact StopIteration); 2-arg:
+        // the TAG is swallowed and the default pushed.
+        "next" => {
+            emit_args(f, args, ctx);
+            f.instruction(&Instruction::Call(fx::FN_ITER_NEXT));
+            if args.len() == 2 {
+                // result rides A across the catch; default in B
+                f.instruction(&Instruction::LocalSet(TEMP_LOCAL_A));
+                f.instruction(&Instruction::RefNull(hc(T_PYOBJ)));
+                f.instruction(&Instruction::LocalSet(TEMP_LOCAL_B));
+                f.instruction(&Instruction::Block(BlockType::Result(
+                    ValType::Ref(wasm_encoder::RefType {
+                        nullable: true,
+                        heap_type: hc(T_EXCEPTION),
+                    }),
+                )));
+                let catches = [wasm_encoder::Catch::One {
+                    tag: TAG_PYEXC,
+                    label: 0,
+                }];
+                f.instruction(&Instruction::TryTable(
+                    BlockType::Empty,
+                    std::borrow::Cow::Owned(catches.to_vec()),
+                ));
+                // retry the next() INSIDE the try region (the operand was
+                // evaluated once above; the call itself is what throws)
+                f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
+                f.instruction(&Instruction::Drop);
+                emit_args(f, args, ctx);
+                f.instruction(&Instruction::Call(fx::FN_ITER_NEXT));
+                f.instruction(&Instruction::LocalSet(TEMP_LOCAL_A));
+                f.instruction(&Instruction::RefNull(hc(T_EXCEPTION))); // success payload
+                f.instruction(&Instruction::End);
+                // A = exc|null; null -> B = result
+                f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
+                f.instruction(&Instruction::RefIsNull);
+                f.instruction(&Instruction::If(BlockType::Empty));
+                f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
+                f.instruction(&Instruction::Drop); // clear the stack shape
+                f.instruction(&Instruction::End);
+                // reload: if null push A's saved result... shape:
+                f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
+                f.instruction(&Instruction::RefIsNull);
+                f.instruction(&Instruction::If(BlockType::Empty));
+                f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
+                f.instruction(&Instruction::Else);
+                f.instruction(&Instruction::LocalGet(TEMP_LOCAL_B));
+                f.instruction(&Instruction::End);
+            } else if args.len() != 1 {
+                unreachable!("scan vetted next() arity (1 or 2)");
+            }
+        }
+        // range(n) / range(a, b) / range(a, b, step): build the container-
+        // iterator $generator INLINE (fn=null, state=n, locals=snapshot,
+        // value=$int(0)) — the SAME shape iter_of builds for $list.
+        // Range semantics: step>0: a, a+step, ... < b; step<0: descending;
+        // step=0: ValueError. On the corpus slice step ∈ {+1, implicit}.
+        "range" => {
+            let pos: Vec<&Expr> = args
+                .iter()
+                .filter_map(|a| match a {
+                    Arg::Pos(x) => Some(x),
+                    _ => None,
+                })
+                .collect();
+            emit_range(f, &pos, ctx);
+        }
+        // list(x): iter + drain into a $list via FN_LIST_FROM_ITER? — no
+        // driver exists; drain inline (same shape as the DictComp acc):
+        // rebuild-append loop. On this slice list(x) over a $generator
+        // container-iterator = snapshot copy; over a USER generator = run it.
+        "list" => {
+            emit_args(f, args, ctx);
+            f.instruction(&Instruction::Call(fx::FN_ITER_OF));
+            f.instruction(&Instruction::Call(fx::FN_LIST_DRAIN));
+        }
+        // sum(x[, start]): acc = start (default $int 0); drain adding.
+        "sum" => {
+            emit_args(f, args, ctx);
+            f.instruction(&Instruction::Call(fx::FN_ITER_OF));
+            if args.len() == 2 {
+                let Arg::Pos(start_expr) = &args[1] else {
+                    unreachable!()
+                };
+                f.instruction(&Instruction::LocalSet(TEMP_LOCAL_A));
+                emit_expr(f, start_expr, ctx);
+                f.instruction(&Instruction::LocalSet(TEMP_LOCAL_B));
+                f.instruction(&Instruction::LocalGet(TEMP_LOCAL_B));
+                f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
+                f.instruction(&Instruction::Call(fx::FN_SUM_DRAIN));
+            } else {
+                f.instruction(&Instruction::Call(fx::FN_SUM_DRAIN));
+            }
+        }
         _ => unreachable!("is_supported_builtin vetted: {name}"),
     }
 }
 
 /// i32 bool on the stack -> bool $int object (same build as the Compare
 /// path: [bool-type, kind=smi, value, null-bigint]).
+/// range(a,b,step) / range(n): build the container-iterator $generator
+/// INLINE in the CALLER frame (locals: 53=start i64, 54=stop, 55=step,
+/// 56=count i32, 57=arr-stash, 58=cursor-box, 59=i32 scratch). Every frame
+/// (module + user) reserves 53..59 for this leaf.
+/// Locals snapshot = materialized values [start, start+step, ...]. Bounded
+/// by stop-start (no lazy range object on this slice — memory cost = the
+/// materialized list, matching iter_of's snapshot shape).
+fn emit_range(f: &mut Function, pos: &[&Expr], ctx: &mut EmitCtx) {
+    // 1. start / stop / step into i64 locals (defaults 0 / arg / 1)
+    match pos.len() {
+        1 => {
+            f.instruction(&Instruction::I64Const(0));
+            f.instruction(&Instruction::LocalSet(53));
+            emit_expr_i64(f, pos[0], ctx);
+            f.instruction(&Instruction::LocalSet(54));
+            f.instruction(&Instruction::I64Const(1));
+            f.instruction(&Instruction::LocalSet(55));
+        }
+        2 => {
+            emit_expr_i64(f, pos[0], ctx);
+            f.instruction(&Instruction::LocalSet(53));
+            emit_expr_i64(f, pos[1], ctx);
+            f.instruction(&Instruction::LocalSet(54));
+            f.instruction(&Instruction::I64Const(1));
+            f.instruction(&Instruction::LocalSet(55));
+        }
+        3 => {
+            emit_expr_i64(f, pos[0], ctx);
+            f.instruction(&Instruction::LocalSet(53));
+            emit_expr_i64(f, pos[1], ctx);
+            f.instruction(&Instruction::LocalSet(54));
+            emit_expr_i64(f, pos[2], ctx);
+            f.instruction(&Instruction::LocalSet(55));
+        }
+        _ => unreachable!("scan vetted range() arity"),
+    }
+    // 2. count = steps between start and stop (ceil for step>0: (stop-start+step-1)/step)
+    //    i64 -> i32 (bounds-checked slice)
+    f.instruction(&Instruction::LocalGet(54));
+    f.instruction(&Instruction::LocalGet(53));
+    f.instruction(&Instruction::I64Sub);
+    f.instruction(&Instruction::LocalGet(55));
+    f.instruction(&Instruction::I64Add);
+    f.instruction(&Instruction::I64Const(1));
+    f.instruction(&Instruction::I64Sub);
+    f.instruction(&Instruction::LocalGet(55));
+    f.instruction(&Instruction::I64DivS);
+    f.instruction(&Instruction::I32WrapI64);
+    f.instruction(&Instruction::LocalSet(56)); // count (i32)
+    // negative count -> 0 (clamp: LocalGet; 0 LtS; If {0})
+    f.instruction(&Instruction::LocalGet(56));
+    f.instruction(&Instruction::I32Const(0));
+    f.instruction(&Instruction::I32LtS);
+    f.instruction(&Instruction::If(BlockType::Empty));
+    f.instruction(&Instruction::I32Const(0));
+    f.instruction(&Instruction::LocalSet(56));
+    f.instruction(&Instruction::End);
+    // 3. materialize the snapshot into a mut $obj_arr
+    f.instruction(&Instruction::LocalGet(56));
+    f.instruction(&Instruction::ArrayNewDefault(T_OBJ_ARR));
+    f.instruction(&Instruction::LocalSet(57));
+    f.instruction(&Instruction::I32Const(0));
+    f.instruction(&Instruction::LocalSet(59)); // i
+    f.instruction(&Instruction::Block(BlockType::Empty));
+    f.instruction(&Instruction::Loop(BlockType::Empty));
+    f.instruction(&Instruction::LocalGet(59));
+    f.instruction(&Instruction::LocalGet(56));
+    f.instruction(&Instruction::I32GeU);
+    f.instruction(&Instruction::BrIf(1));
+    // arr[i] = $int(start + i*step) — $int build is stack-local (no stash)
+    f.instruction(&Instruction::LocalGet(57));
+    f.instruction(&Instruction::LocalGet(59));
+    f.instruction(&Instruction::GlobalGet(
+        builtin_type_global("int").unwrap_or(0),
+    ));
+    f.instruction(&Instruction::I32Const(0));
+    f.instruction(&Instruction::LocalGet(53));
+    f.instruction(&Instruction::LocalGet(59));
+    f.instruction(&Instruction::I64ExtendI32U);
+    f.instruction(&Instruction::LocalGet(55));
+    f.instruction(&Instruction::I64Mul);
+    f.instruction(&Instruction::I64Add);
+    f.instruction(&Instruction::RefNull(hc(T_BIGINT)));
+    f.instruction(&Instruction::StructNew(T_INT));
+    f.instruction(&Instruction::ArraySet(T_OBJ_ARR));
+    f.instruction(&Instruction::LocalGet(59));
+    f.instruction(&Instruction::I32Const(1));
+    f.instruction(&Instruction::I32Add);
+    f.instruction(&Instruction::LocalSet(59));
+    f.instruction(&Instruction::Br(0));
+    f.instruction(&Instruction::End); // loop
+    f.instruction(&Instruction::End); // block
+    // 4. the $generator struct { fn: null, state: count, locals: snapshot,
+    //    value: $int(0) cursor, exn: null } (iter_snapshot shape)
+    f.instruction(&Instruction::RefNull(hc(T_TYPE))); // $pyobj field 0
+    f.instruction(&Instruction::RefNull(hc(T_FUNCTION)));
+    f.instruction(&Instruction::LocalGet(56)); // state = count
+    f.instruction(&Instruction::LocalGet(57)); // locals snapshot
+    f.instruction(&Instruction::GlobalGet(
+        builtin_type_global("int").unwrap_or(0),
+    ));
+    f.instruction(&Instruction::I32Const(0));
+    f.instruction(&Instruction::I64Const(0));
+    f.instruction(&Instruction::RefNull(hc(T_BIGINT)));
+    f.instruction(&Instruction::StructNew(T_INT)); // cursor box = 0
+    f.instruction(&Instruction::RefNull(hc(T_EXCEPTION)));
+    f.instruction(&Instruction::StructNew(T_GENERATOR));
+}
+
+/// Evaluate an int expression into an i64 on the stack (emit_expr + unbox).
+fn emit_expr_i64(f: &mut Function, e: &Expr, ctx: &mut EmitCtx) {
+    emit_expr(f, e, ctx);
+    f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
+    f.instruction(&Instruction::StructGet {
+        struct_type_index: T_INT,
+        field_index: F_INT_SMI,
+    });
+}
+
 fn emit_bool_object(f: &mut Function) {
     f.instruction(&Instruction::LocalSet(TEMP_LOCAL_CMP));
     f.instruction(&Instruction::GlobalGet(

@@ -13,6 +13,7 @@ pub mod lower;
 pub mod prelude;
 pub mod prelude_classes;
 pub mod prelude_gen;
+pub(crate) mod prelude_gen_drain;
 pub mod types;
 
 pub use lower::{lower_module, lower_module_ex, CodegenError};

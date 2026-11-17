@@ -856,3 +856,15 @@ pub fn emit_gen_prelude(
     gen_close(funcs, code);
 }
 
+/// leaf 03.04c: the drain drivers (FN_LIST_DRAIN=71 / FN_SUM_DRAIN=72).
+/// SEPARATE from emit_gen_prelude: emit_super lands at 69/70 BETWEEN the
+/// two blocks (lower.rs calls emit_gen_prelude, then emit_super, then this) —
+/// the fn-index constants in emitter_state MUST match the emit order.
+pub fn emit_gen_drains(
+    funcs: &mut wasm_encoder::FunctionSection,
+    code: &mut wasm_encoder::CodeSection,
+) {
+    crate::prelude_gen_drain::list_drain(funcs, code);
+    crate::prelude_gen_drain::sum_drain(funcs, code);
+}
+
