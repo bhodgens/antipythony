@@ -275,11 +275,19 @@ enum SnapshotSrc {
     Tuple,
 }
 
-/// $list/$tuple arm body: items RO array -> local 5, n -> local 7, the mut
-/// $obj_arr copy -> local 4 (cast-on-stack at every struct.get — lesson 4).
+/// $list/$tuple arm body: items array -> local 4 (typed per source), n ->
+/// local 7, the mut $obj_arr snapshot -> local 3 (cast-on-stack at every
+/// struct.get — lesson 4). $list: the items mut $obj_arr IS the snapshot
+/// (a $list owns its fresh array — no copy needed; local 3 = items too).
+/// $tuple: the RO items still copy into a fresh mut array (iter_next
+/// mutates the cursor... no, the cursor rides $value — but the locals
+/// array is shared with user generators, so the RO array still copies).
 fn emit_items_snapshot(f: &mut Function, src: SnapshotSrc) {
     // ACTUAL param-free locals (FT_ITER_OF has ONE param, so locals start
-    // at 1 — lesson 1): 3=mut $obj_arr snapshot, 4=RO items, 6/7=i32 (n, i).
+    // at 1 — lesson 1): 3=mut $obj_arr snapshot, 4=items arr (RO local:
+    // TUPLE path; the LIST path stashes its MUT items via a direct
+    // cast-to-mut on the stack — a mut array ref cannot ride the RO local)
+    // 6/7=i32 (n, i).
     let (ty, field) = match src {
         SnapshotSrc::List => (T_LIST, F_LIST_ITEMS),
         SnapshotSrc::Tuple => (T_TUPLE, F_TUPLE_ITEMS),
@@ -287,7 +295,19 @@ fn emit_items_snapshot(f: &mut Function, src: SnapshotSrc) {
     f.instruction(&Instruction::LocalGet(0));
     f.instruction(&Instruction::RefCastNullable(hc(ty)));
     sget(f, ty, field);
-    f.instruction(&Instruction::LocalSet(4)); // items RO
+    if matches!(src, SnapshotSrc::List) {
+        // $list.items is already a mut $obj_arr ($list owns it — nobody
+        // else mutates): use it AS the snapshot, no copy loop. (Local 4 is
+        // an RO-typed local in the FT — a mut ref cannot ride it; the list
+        // path touches ONLY local 3 = snapshot + local 6 = n.)
+        f.instruction(&Instruction::RefCastNullable(hc(T_OBJ_ARR)));
+        f.instruction(&Instruction::LocalSet(3)); // snapshot = items
+        f.instruction(&Instruction::LocalGet(3));
+        f.instruction(&Instruction::ArrayLen);
+        f.instruction(&Instruction::LocalSet(6)); // n
+        return;
+    }
+    f.instruction(&Instruction::LocalSet(4)); // items RO (tuple path)
     f.instruction(&Instruction::LocalGet(4));
     f.instruction(&Instruction::ArrayLen);
     f.instruction(&Instruction::LocalSet(6)); // n
@@ -305,7 +325,6 @@ fn emit_items_snapshot(f: &mut Function, src: SnapshotSrc) {
     f.instruction(&Instruction::LocalGet(3));
     f.instruction(&Instruction::LocalGet(7));
     f.instruction(&Instruction::LocalGet(4));
-    f.instruction(&Instruction::RefCastNullable(hc(T_OBJ_ARR_RO)));
     f.instruction(&Instruction::LocalGet(7));
     f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
     f.instruction(&Instruction::ArraySet(T_OBJ_ARR));
@@ -516,16 +535,27 @@ pub(crate) fn iter_contains(
                     nullable: true,
                     heap_type: hc(T_OBJ_ARR_RO),
                 }),
-            ), // local 2 = items RO-arr (arrays are NOT $pyobj: dedicated slot)
-            (1, oref()),       // local 3 = cur
+            ), // local 2 = items RO-arr (tuples) — arrays are NOT $pyobj
+            (1, oref()), // local 3 = cur
             (1, ValType::I32), // local 4 = n
             (1, ValType::I32), // local 5 = i
             (1, ValType::I32), // local 6 = found
+            (
+                1,
+                ValType::Ref(wasm_encoder::RefType {
+                    nullable: true,
+                    heap_type: hc(T_OBJ_ARR),
+                }),
+            ), // local 7 = items MUT-arr ($list.items type — lesson 9:
+               // a mut array ref cannot ride the RO local)
         ],
         |f| {
             // items + n from $list or $tuple (If/Else probe — the Block+Br
             // shape branches out of the nesting level: wasmtime-47 rejects
-            // br-to-fn-label stack shapes; ENGINE FACT 03.02b notes)
+            // br-to-fn-label stack shapes; ENGINE FACT 03.02b notes).
+            // $list.items (MUT) and $tuple.items (RO) are DIFFERENT array
+            // types — they ride separate locals (2=RO, 7=MUT; lesson 9) and
+            // the item read branches on the source. n unifies in local 4.
             f.instruction(&Instruction::LocalGet(0));
             f.instruction(&Instruction::RefTestNullable(hc(T_TUPLE)));
             f.instruction(&Instruction::If(BlockType::Empty));
@@ -535,7 +565,7 @@ pub(crate) fn iter_contains(
                 struct_type_index: T_TUPLE,
                 field_index: F_TUPLE_ITEMS,
             });
-            f.instruction(&Instruction::LocalSet(2));
+            f.instruction(&Instruction::LocalSet(2)); // RO items (tuple)
             f.instruction(&Instruction::Else);
             f.instruction(&Instruction::LocalGet(0));
             f.instruction(&Instruction::RefCastNullable(hc(T_LIST)));
@@ -543,10 +573,19 @@ pub(crate) fn iter_contains(
                 struct_type_index: T_LIST,
                 field_index: F_LIST_ITEMS,
             });
-            f.instruction(&Instruction::LocalSet(2));
+            f.instruction(&Instruction::LocalSet(7)); // MUT items (list)
             f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::RefTestNullable(hc(T_TUPLE)));
+            f.instruction(&Instruction::If(BlockType::Result(
+                ValType::I32,
+            )));
             f.instruction(&Instruction::LocalGet(2));
             f.instruction(&Instruction::ArrayLen);
+            f.instruction(&Instruction::Else);
+            f.instruction(&Instruction::LocalGet(7));
+            f.instruction(&Instruction::ArrayLen);
+            f.instruction(&Instruction::End);
             f.instruction(&Instruction::LocalSet(4)); // n
             f.instruction(&Instruction::I32Const(0));
             f.instruction(&Instruction::LocalSet(5)); // i
@@ -558,9 +597,18 @@ pub(crate) fn iter_contains(
             f.instruction(&Instruction::LocalGet(4));
             f.instruction(&Instruction::I32GeU);
             f.instruction(&Instruction::BrIf(1));
+            // cur = is_list ? items_mut[i] : items_ro[i]
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::RefTestNullable(hc(T_LIST)));
+            f.instruction(&Instruction::If(BlockType::Result(pyobj_ref())));
+            f.instruction(&Instruction::LocalGet(7));
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::ArrayGet(T_OBJ_ARR));
+            f.instruction(&Instruction::Else);
             f.instruction(&Instruction::LocalGet(2));
             f.instruction(&Instruction::LocalGet(5));
             f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
+            f.instruction(&Instruction::End);
             f.instruction(&Instruction::LocalSet(3)); // cur
             // found = eq(cur, item); if found -> break with 1
             f.instruction(&Instruction::LocalGet(3));

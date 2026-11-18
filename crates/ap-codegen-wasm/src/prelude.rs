@@ -1272,14 +1272,14 @@ fn list_eq(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::C
         f.instruction(&Instruction::RefCastNullable(hc(T_LIST)));
         sget(f, T_LIST, F_LIST_ITEMS);
         f.instruction(&Instruction::LocalGet(5));
-        f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
+        f.instruction(&Instruction::ArrayGet(T_OBJ_ARR)); // $list.items: MUT type
         f.instruction(&Instruction::LocalSet(6));
         // item-b = b.items[i]
         f.instruction(&Instruction::LocalGet(3));
         f.instruction(&Instruction::RefCastNullable(hc(T_LIST)));
         sget(f, T_LIST, F_LIST_ITEMS);
         f.instruction(&Instruction::LocalGet(5));
-        f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
+        f.instruction(&Instruction::ArrayGet(T_OBJ_ARR)); // $list.items: MUT type
         f.instruction(&Instruction::LocalSet(7));
         // eq(item-a, item-b) == 0 -> false
         f.instruction(&Instruction::LocalGet(6));
@@ -2112,7 +2112,7 @@ fn py_str(
         funcs,
         code,
         FT_O_STR,
-        &[(2, oref()), (3, ValType::I32), (1, ValType::Ref(wasm_encoder::RefType { nullable: true, heap_type: hc(T_STR) })), (1, ValType::Ref(wasm_encoder::RefType { nullable: true, heap_type: hc(T_OBJ_ARR_RO) })), (1, ValType::Ref(wasm_encoder::RefType { nullable: true, heap_type: hc(T_STR) })), (2, ValType::I32), (1, ValType::Ref(wasm_encoder::RefType { nullable: true, heap_type: hc(T_ENTRY_ARR) })), (1, oref())],
+        &[(2, oref()), (3, ValType::I32), (1, ValType::Ref(wasm_encoder::RefType { nullable: true, heap_type: hc(T_STR) })), (1, ValType::Ref(wasm_encoder::RefType { nullable: true, heap_type: hc(T_OBJ_ARR_RO) })), (1, ValType::Ref(wasm_encoder::RefType { nullable: true, heap_type: hc(T_STR) })), (2, ValType::I32), (1, ValType::Ref(wasm_encoder::RefType { nullable: true, heap_type: hc(T_ENTRY_ARR) })), (1, oref()), (1, ValType::Ref(wasm_encoder::RefType { nullable: true, heap_type: hc(T_OBJ_ARR) }))],
         |f| {
             // 2=x, 3=sel; tuple arm: 6=acc(str) 7=items(oref) 8=n 9=i 10=tmp
             f.instruction(&Instruction::LocalGet(0));
@@ -2208,6 +2208,8 @@ fn py_str(
             // (1, x)). Item branch: type_sel(item,4)==3 → "'" + item + "'";
             // else py_str(item). (Slice bound: no quote/backslash escaping —
             // the tuple-repr corpus cases avoid embedded quotes.)
+            // Local 7 is OREF now (it serves BOTH the tuple arm's RO items
+            // and the list arm's MUT items): cast per arm on the stack.
             lget_cast(f, 7, T_OBJ_ARR_RO);
             f.instruction(&Instruction::LocalGet(9));
             f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
@@ -2269,7 +2271,9 @@ fn py_str(
             f.instruction(&Instruction::End);
             // 03.04b list (6): "[" + join(py_str(item), ", ") + "]" — items
             // repr-form (CPython print([1, 'x']) shows the quotes). Locals:
-            // 6=acc(str) 7=items(RO arr) 9=i 10=n 12=item stash(oref).
+            // 6=acc(str) 7=items(RO arr; UNUSED here — the list items are
+            // MUT $obj_arr and ride DEDICATED local 13, same lesson-9 shape
+            // as the dict arm's local 11) 9=i 10=n 12=item stash(oref).
             f.instruction(&Instruction::LocalGet(3));
             f.instruction(&Instruction::I32Const(6));
             f.instruction(&Instruction::I32Eq);
@@ -2279,12 +2283,12 @@ fn py_str(
                 let (rb_off, rb_len) = strings.push("]");
                 lget_cast(f, 2, T_LIST);
                 sget(f, T_LIST, F_LIST_ITEMS);
-                f.instruction(&Instruction::LocalSet(7));
+                f.instruction(&Instruction::LocalSet(13)); // items (mut arr)
                 f.instruction(&Instruction::I32Const(0));
                 f.instruction(&Instruction::LocalSet(9));
                 push_str_literal_seg(f, lb_off, lb_len);
                 f.instruction(&Instruction::LocalSet(6));
-                f.instruction(&Instruction::LocalGet(7));
+                f.instruction(&Instruction::LocalGet(13));
                 f.instruction(&Instruction::ArrayLen);
                 f.instruction(&Instruction::LocalSet(10));
                 f.instruction(&Instruction::Block(BlockType::Empty));
@@ -2294,9 +2298,9 @@ fn py_str(
                 f.instruction(&Instruction::I32GeU);
                 f.instruction(&Instruction::BrIf(1));
                 // item repr with str-item quoting (tuple-arm shape)
-                lget_cast(f, 7, T_OBJ_ARR_RO);
+                f.instruction(&Instruction::LocalGet(13)); // items: MUT type
                 f.instruction(&Instruction::LocalGet(9));
-                f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
+                f.instruction(&Instruction::ArrayGet(T_OBJ_ARR));
                 f.instruction(&Instruction::LocalSet(12));
                 type_sel(f, 12, 4);
                 f.instruction(&Instruction::I32Const(3));
