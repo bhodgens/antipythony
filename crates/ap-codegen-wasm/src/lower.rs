@@ -35,7 +35,8 @@
 //! SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 use crate::emitter_state::{self as fx, OPS};
-use crate::prelude::{self, hc, StrTab};
+use crate::prelude::{self, hc, sget, sset, StrTab};
+use crate::prelude_gen::{GS_DONE, GS_START};
 use crate::types::*;
 use ap_ir::expr::{Arg, BinOp, BoolOp, CmpOp, Expr, UnaryOp};
 use ap_ir::item::{Item, Param, Stmt};
@@ -95,6 +96,11 @@ struct UserFn {
     /// Free names that resolve to an enclosing CELL (subset of `free`, in
     /// order) — incoming `$cells` array slots. Filled by `resolve`.
     free_cells: Vec<String>,
+    /// Leaf 03.04d: generator lowering — true when the body contains
+    /// yield/yield-from (03.04d: hidden comp fns pass true for genexps).
+    /// The emit pass routes these to FT_GEN_STEP step-fns; call sites build
+    /// a parked $generator instead of dispatching.
+    is_generator: bool,
 }
 
 /// Scan state: fail-closed scope check, function registration, string
@@ -154,7 +160,14 @@ fn scan_module(module: &IrModule, scan: &mut Scan) -> Result<(), CodegenError> {
                 if !scan.module_binds.iter().any(|n| n == fd.name.as_str()) {
                     scan.module_binds.push(fd.name.to_string());
                 }
-                scan_fn_common(fd.name.as_str(), &fd.params, &fd.body.blocks, usize::MAX, scan)?;
+                scan_fn_common(
+                    fd.name.as_str(),
+                    &fd.params,
+                    &fd.body.blocks,
+                    usize::MAX,
+                    fd.is_generator,
+                    scan,
+                )?;
             }
             Item::ClassDef(cd) => {
                 // 03.03: module-level classes — the name is a module
@@ -196,6 +209,7 @@ fn scan_fn_common(
     params: &[Param],
     body: &[Stmt],
     parent: usize,
+    is_generator: bool,
     scan: &mut Scan,
 ) -> Result<(), CodegenError> {
     for p in params {
@@ -223,6 +237,7 @@ fn scan_fn_common(
         nonlocal: Vec::new(),
         own_cells: Vec::new(),
         free_cells: Vec::new(),
+        is_generator,
     });
     // scan the body with this fn as the nesting parent
     let mut refs: Vec<String> = Vec::new();
@@ -376,7 +391,14 @@ fn collect_stmt(
                 return Err(CodegenError::Unsupported("async def (post-03.04)"));
             }
             let parent = scan.parent_stack.last().copied().unwrap_or(usize::MAX);
-            scan_fn_common(fd.name.as_str(), &fd.params, &fd.body.blocks, parent, scan)
+            scan_fn_common(
+                fd.name.as_str(),
+                &fd.params,
+                &fd.body.blocks,
+                parent,
+                fd.is_generator,
+                scan,
+            )
         }
         // 03.03: class defs (module-level Item::ClassDef and nested
         // Stmt::LocalClass) register the class NAME and scan the body —
@@ -775,7 +797,7 @@ fn collect_expr(
             }
             let body_stmts = vec![Stmt::Return(Some(body.as_ref().clone()))];
             let parent = scan.parent_stack.last().copied().unwrap_or(usize::MAX);
-            scan_fn_common("<lambda>", &sig.params, &body_stmts, parent, scan)
+            scan_fn_common("<lambda>", &sig.params, &body_stmts, parent, false, scan)
         }
         // leaf 03.04c: comprehension scopes. The clause-0 iterable evaluates
         // in the ENCLOSING scope (S-02-5) — collect its reads HERE; the
@@ -889,7 +911,7 @@ fn collect_comp_clauses(
         let _ = &clause.iter;
     }
     let parent = scan.parent_stack.last().copied().unwrap_or(usize::MAX);
-    scan_fn_common("<listcomp>", &[], &body, parent, scan)
+    scan_fn_common("<listcomp>", &[], &body, parent, false, scan)
 }
 
 /// comprehension clause target: Name or 1-level Tuple of Names (the corpus
@@ -1104,6 +1126,18 @@ fn collect_local_binds(body: &[Stmt]) -> Vec<String> {
                     walk(a, out);
                     walk(b, out);
                 }
+                // leaf 03.04d: For targets bind in the enclosing fn scope
+                // (generator bodies rely on this for slot tables).
+                Stmt::For(target, _, a, b) => {
+                    if let ap_ir::item::Target::Name(n) = target {
+                        let n = n.to_string();
+                        if !out.contains(&n) {
+                            out.push(n);
+                        }
+                    }
+                    walk(a, out);
+                    walk(b, out);
+                }
                 _ => {}
             }
         }
@@ -1227,7 +1261,11 @@ pub fn lower_module_ex(
     let fns_meta: Vec<UserFn> = scan.fns.clone();
     let n_user = fns_meta.len();
     for (slot, uf) in fns_meta.iter().enumerate() {
-        funcs.function(FT_PY_RO);
+        if uf.is_generator {
+            funcs.function(FT_GEN_STEP);
+        } else {
+            funcs.function(FT_PY_RO);
+        }
         let f = emit_user_fn(uf, slot, &scan, &res_maps[slot], &tab, &g, eh_wrap);
         code.function(&f);
     }
@@ -2032,6 +2070,1445 @@ const TEMP_LOCAL_OBJARR2: u32 = 50; // second mut $obj_arr stash (param_names)
 const TEMP_LOCAL_IT: u32 = 52;
 
 
+// ===========================================================================
+// Generator lowering (leaf 03.04d): step-fn CFG flattener + call-site builds
+// ===========================================================================
+//
+// DESIGN (NEXT-0304c item 1 + PROGRESS 03.04b design notes):
+// A generator body flattens into STATES. Every top-level statement (and the
+// STATEMENT AFTER every top-level yield) gets one state id. A `yield` parks
+// at the state id of the NEXT statement. The step fn is:
+//   Block $out
+//     Block $done
+//       try_table [catch TAG -> resume-label]   <- per-state EH wrap INSIDE
+//         br_table(state) -> [state blocks]     <- all inside ONE try_table
+//       (handler: staged-exn throw / normal-path $done)
+//       Block s0 { <stmts of state 0>; br $done }  ... one Block per state,
+//       emitted in order; br_table depth targets them OUTWARD.
+//     (return-site: $value = None; state = DONE; return null)
+//   ($out: return null — the dispatch exhausts)
+// Resume = re-run the whole state block; loop condition re-tests ride the
+// mirrors so iteration state survives. Control-flow bottom targets (While
+// condition / For next-iteration) re-enter at the STATE containing the
+// construct (its id), so `continue`/loop-back br to the STATE dispatch is
+// impossible inside the block — they br to the construct's Loop label as
+// usual. Yields INSIDE While/For/If bodies park at a state whose block
+// re-enters the construct from its head: CPython-correct because the
+// construct's own state (loop vars, iterator cursor) lives in mirrors/slots
+// — EXCEPT the iterator object of a For-with-yield, which must ride a SLOT
+// (local 52 dies at the suspension). Scan fail-closes that shape.
+// ---------------------------------------------------------------------------
+
+/// Per-generator emission plan, built at fn-emit time.
+struct GenCtx {
+    /// locals: 0 = $generator param, 1 = input param, 2 = state i32,
+    /// 3 = payload stash (oref), 4..4+S = slot mirrors (oref),
+    /// 4+S..4+S+8 = shared scratch (mirrors emit_user_fn's temp window:
+    /// [A, B, OBJARR, S, I64, CMP-i32, ROARR, FN]).
+    mirror_base: u32,
+    scratch: GenScratch,
+    /// Slot table: params then collect_local_binds (same filter as
+    /// emit_user_fn's plain-local walk). Index = mirror position.
+    slot_table: Vec<String>,
+}
+
+/// Absolute local indices of the shared scratch window inside step fns.
+#[derive(Clone, Copy)]
+struct GenScratch {
+    a: u32,
+    b: u32,
+    objarr: u32,
+    s: u32,
+    i64v: u32,
+    cmp: u32,
+    roarr: u32,
+    /// payload scratch (exc|null) for the next(x, default) guard.
+    s_pad: u32,
+}
+
+impl GenScratch {
+    fn for_slots(n_slots: u32) -> Self {
+        let base = 4 + n_slots;
+        Self {
+            a: base,
+            b: base + 1,
+            objarr: base + 2,
+            s: base + 3,
+            i64v: base + 4,
+            cmp: base + 5,
+            roarr: base + 6,
+            s_pad: base + 7,
+        }
+    }
+}
+
+fn gen_slot_idx(gen: &GenCtx, name: &str) -> u32 {
+    gen.mirror_base
+        + gen.slot_table
+            .iter()
+            .position(|n| n == name)
+            .unwrap_or_else(|| panic!("generator slot table missing '{name}'")) as u32
+}
+
+/// `local.get 0; ref.cast (ref null $generator)` — cast-on-stack (lesson 4).
+fn gen_lget_gen(f: &mut Function) {
+    f.instruction(&Instruction::LocalGet(0));
+    f.instruction(&Instruction::RefCastNullable(hc(T_GENERATOR)));
+}
+
+/// Read a slot value onto the stack.
+fn gen_load_slot(f: &mut Function, gen: &GenCtx, name: &str) {
+    f.instruction(&Instruction::LocalGet(gen_slot_idx(gen, name)));
+}
+
+/// Store the stack-top into a slot.
+fn gen_store_slot(f: &mut Function, gen: &GenCtx, name: &str) {
+    f.instruction(&Instruction::LocalSet(gen_slot_idx(gen, name)));
+}
+
+/// The flat CFG: one entry per state (statements to run when the generator
+/// resumes AT that state). Built by a first pass over the body.
+struct GenPlan {
+    /// states[i] = statements run on entry to state i. state 0 = fn start.
+    states: Vec<Vec<Stmt>>,
+}
+
+/// One flat plan pass. `resume_of_yield` = the state id assigned to the
+/// statement AFTER a yield — yield sites park at that id.
+fn gen_plan_body(uf: &UserFn) -> GenPlan {
+    let mut states: Vec<Vec<Stmt>> = vec![Vec::new()];
+    for s in &uf.body {
+        let ty = expr_has_yield(s);
+        match s {
+            // `x = yield v` / bare `yield v` / `yield from e` at TOP level:
+            // this state runs the yield and PARKS; the next state re-binds.
+            Stmt::Assign(targets, v) if ap_ir::walk::expr_yields(v) => {
+                // park-state: bind the sent value at the NEXT state
+                let tgt = targets[0].clone();
+                let resume = match v {
+                    Expr::Yield(_) => Expr::Call(Box::new(Expr::Name("__ap_yv".into())), vec![]),
+                    Expr::YieldFrom(x) => Expr::Call(
+                        Box::new(Expr::Name("__ap_yf".into())),
+                        vec![ap_ir::expr::Arg::Pos((x.as_ref().clone()))],
+                    ),
+                    other => other.clone(),
+                };
+                states.last_mut().unwrap().push(Stmt::Assign(vec![tgt], resume));
+                states.push(Vec::new());
+            }
+            Stmt::ExprStmt(e) if ty => {
+                match e {
+                    Expr::Yield(Some(v)) => {
+                        // state runs: eval v, park. Next state: nothing to bind.
+                        states.last_mut().unwrap().push(Stmt::ExprStmt(Expr::Yield(Some(v.clone()))));
+                        states.push(Vec::new());
+                    }
+                    Expr::Yield(None) => {
+                        states.last_mut().unwrap().push(Stmt::ExprStmt(Expr::Yield(None)));
+                        states.push(Vec::new());
+                    }
+                    Expr::YieldFrom(x) => {
+                        states.last_mut().unwrap().push(Stmt::ExprStmt(Expr::YieldFrom(x.clone())));
+                        states.push(Vec::new());
+                    }
+                    _ => {
+                        // yield nested in a larger expr: emit whole stmt in
+                        // one state; the yield parks INSIDE (no re-bind).
+                        states.last_mut().unwrap().push(s.clone());
+                        states.push(Vec::new());
+                    }
+                }
+            }
+            // yield inside While/If/Try/For: whole construct rides ONE
+            // state; a yield inside parks at the FOLLOWING state whose
+            // block re-enters the construct (mirrors carry the loop state).
+            _ if ty => {
+                states.last_mut().unwrap().push(s.clone());
+                states.push(Vec::new());
+            }
+            _ => states.last_mut().unwrap().push(s.clone()),
+        }
+    }
+    // drop a trailing empty state (nothing runs after the last yield — that
+    // resume falls off the end = exhaustion; the default br_table arm = DONE)
+    if states.last().map(|s| s.is_empty()).unwrap_or(false) {
+        states.pop();
+    }
+    GenPlan { states }
+}
+
+fn expr_has_yield(s: &Stmt) -> bool {
+    walk_stmt_yields(s)
+}
+
+fn walk_stmt_yields(s: &Stmt) -> bool {
+    match s {
+        Stmt::ExprStmt(e) => ap_ir::walk::expr_yields(e),
+        Stmt::Assign(_, v) => ap_ir::walk::expr_yields(v),
+        Stmt::AugAssign(_, _, v) => ap_ir::walk::expr_yields(v),
+        Stmt::Return(Some(e)) => ap_ir::walk::expr_yields(e),
+        Stmt::If(c, a, b) => {
+            ap_ir::walk::expr_yields(c)
+                || a.iter().any(walk_stmt_yields)
+                || b.iter().any(walk_stmt_yields)
+        }
+        Stmt::While(c, a, b) => {
+            ap_ir::walk::expr_yields(c)
+                || a.iter().any(walk_stmt_yields)
+                || b.iter().any(walk_stmt_yields)
+        }
+        Stmt::For(_, it, a, b) => {
+            ap_ir::walk::expr_yields(it)
+                || a.iter().any(walk_stmt_yields)
+                || b.iter().any(walk_stmt_yields)
+        }
+        Stmt::Try(ts) => {
+            ts.body.iter().any(walk_stmt_yields)
+                || ts.handlers.iter().any(|h| h.body.iter().any(walk_stmt_yields))
+                || ts.orelse.iter().any(walk_stmt_yields)
+        }
+        _ => false,
+    }
+}
+
+/// Emit one generator step fn (03.04d): the flat br_table state machine.
+fn emit_gen_step_fn(f: &mut Function, uf: &UserFn, ctx: &mut EmitCtx) {
+    let n_slots = {
+        let mut t: Vec<String> = uf.params.iter().map(|p| p.name.to_string()).collect();
+        for n in collect_local_binds(&uf.body) {
+            if uf.params.iter().any(|p| p.name == n)
+                || uf.own_cells.contains(&n)
+                || uf.free.contains(&n)
+                || uf.free_cells.contains(&n)
+            {
+                continue;
+            }
+            if !t.contains(&n) {
+                t.push(n);
+            }
+        }
+        t
+    };
+    let gen = GenCtx {
+        mirror_base: 4,
+        scratch: GenScratch::for_slots(n_slots.len() as u32),
+        slot_table: n_slots.clone(),
+    };
+    let plan = gen_plan_body(uf);
+    let n_states = plan.states.len();
+    // locals decl: 2 = state i32, 3 = payload oref, 4.. = mirrors, scratch.
+    // (declared by emit_user_fn's order walk — the gen branch there pushed
+    // exactly (2, I32) + (1, oref) + n_slots oref + 8 scratch entries.)
+
+    // 1. reload ALL mirrors from $gen.$locals (state 0's mirrors hold the
+    // call-site-bound params; later states re-load the spilled values).
+    for i in 0..n_slots.len() as u32 {
+        gen_lget_gen(f);
+        f.instruction(&Instruction::StructGet {
+            struct_type_index: T_GENERATOR,
+            field_index: F_GEN_LOCALS,
+        });
+        f.instruction(&Instruction::I32Const(i as i32));
+        f.instruction(&Instruction::ArrayGet(T_OBJ_ARR));
+        f.instruction(&Instruction::LocalSet(gen.mirror_base + i));
+    }
+    // 2. state scratch = $gen.$state -> local 2
+    gen_lget_gen(f);
+    sget(f, T_GENERATOR, F_GEN_STATE);
+    f.instruction(&Instruction::LocalSet(2));
+
+    // 3. dispatch: Block $out { Block $done { Block(n-1)..Block(0) {
+    //        br_table } <state0> } <state1> } ... <state n-1>; br $done
+    //    $done: value-park path } $out: end
+    f.instruction(&Instruction::Block(BlockType::Empty)); // $out
+    f.instruction(&Instruction::Block(BlockType::Empty)); // $done
+    // ---- state blocks: NESTED (br_table branches OUTWARD to enclosing
+    // blocks only). Emission: open Block(n-1)..Block(0), br_table (state k
+    // = depth k), then for k in 0..n: End(block k) + state-k body right
+    // after (the br-to-depth-k lands there). ----
+    for si in (0..n_states).rev() {
+        f.instruction(&Instruction::Block(BlockType::Empty)); // Block si
+    }
+    {
+        let mut targets: Vec<u32> = (0..n_states as u32).collect();
+        f.instruction(&Instruction::LocalGet(2));
+        f.instruction(&Instruction::BrTable(
+            std::borrow::Cow::Owned(targets),
+            n_states as u32, // default: past ALL state blocks -> $done region
+        ));
+    }
+    for k in 0..n_states {
+        f.instruction(&Instruction::End); // close Block k
+        let stmts = &plan.states[k];
+        let park = (k + 1) as i32;
+        gen_emit_state(f, stmts, uf, &gen, ctx, park);
+        // body done: br outward to the $done region (depth n_states - k
+        // blocks still open above... after Block k's End, open state blocks
+        // above = n_states - 1 - k, plus $done itself at the next level):
+        f.instruction(&Instruction::Br((n_states - 1 - k) as u32));
+    }
+    // $done path: $value = None, state = GS_DONE, return null
+    gen_lget_gen(f);
+    f.instruction(&Instruction::GlobalGet(G_NONE));
+    sset(f, T_GENERATOR, F_GEN_VALUE);
+    gen_lget_gen(f);
+    f.instruction(&Instruction::I32Const(GS_DONE));
+    sset(f, T_GENERATOR, F_GEN_STATE);
+    f.instruction(&Instruction::RefNull(hc(T_PYOBJ)));
+    f.instruction(&Instruction::Return);
+    f.instruction(&Instruction::End); // $done End
+    f.instruction(&Instruction::End); // $out End
+    f.instruction(&Instruction::RefNull(hc(T_PYOBJ))); // FT result filler
+    f.instruction(&Instruction::End); // FUNCTION body End
+}
+
+/// Emit ONE state's statements inside the step fn. `park` = the state id
+/// yields here park at (= this state's id + 1, i.e. the next state).
+fn gen_emit_state(
+    f: &mut Function,
+    stmts: &[Stmt],
+    uf: &UserFn,
+    gen: &GenCtx,
+    ctx: &mut EmitCtx,
+    park: i32,
+) {
+    let _ = uf;
+    for s in stmts {
+        gen_emit_stmt(f, s, ctx, gen, park);
+    }
+    // pending send-value bind: the state AFTER a `x = yield` re-binds the
+    // sent value at entry — handled by the PLAN (the resume state carries
+    // `x = __ap_yv()`).
+    // Pending staged throw-in: check $gen.$exn BEFORE the state's first
+    // statement (gen_throw staged it) — EXCEPT state 0 (gen_throw handles
+    // pre-start itself).
+}
+
+/// Statement emit inside a generator state block.
+fn gen_emit_stmt(f: &mut Function, stmt: &Stmt, ctx: &mut EmitCtx, gen: &GenCtx, park: i32) {
+    match stmt {
+        Stmt::Line(_) => {} // no frame pokes in step fns
+        Stmt::Pass => {}
+        Stmt::Global(_) | Stmt::Nonlocal(_) => {}
+        Stmt::ExprStmt(e) => gen_emit_expr_stmt(f, e, ctx, gen, park),
+        Stmt::Assign(targets, value) => gen_emit_assign(f, targets, value, ctx, gen, park),
+        Stmt::AugAssign(t, op, v) => {
+            let ap_ir::item::Target::Name(n) = t else {
+                unreachable!("scan vetted augassign targets");
+            };
+            f.instruction(&Instruction::I32Const(binop_op(*op)));
+            gen_emit_name_load(f, n.as_str(), ctx, gen);
+            gen_emit_expr(f, v, ctx, gen, park);
+            f.instruction(&Instruction::Call(fx::FN_BINOP));
+            gen_store_slot(f, gen, n.as_str());
+        }
+        Stmt::If(cond, then, els) => {
+            gen_emit_cond(f, cond, ctx, gen, park);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            ctx.depth += 1;
+            for s in then {
+                gen_emit_stmt(f, s, ctx, gen, park);
+            }
+            ctx.depth -= 1;
+            f.instruction(&Instruction::Else);
+            ctx.depth += 1;
+            for s in els {
+                gen_emit_stmt(f, s, ctx, gen, park);
+            }
+            ctx.depth -= 1;
+            f.instruction(&Instruction::End);
+        }
+        Stmt::While(cond, body, els) => {
+            // yields inside park at `park`; the resume re-enters the whole
+            // state (construct head) — loop vars ride mirrors.
+            f.instruction(&Instruction::Block(BlockType::Empty)); // $exit
+            ctx.depth += 1;
+            gen_emit_cond(f, cond, ctx, gen, park);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            ctx.depth += 1;
+            let saved_c = ctx.br_continue;
+            let saved_b = ctx.br_break;
+            f.instruction(&Instruction::Loop(BlockType::Empty));
+            ctx.depth += 1;
+            f.instruction(&Instruction::Block(BlockType::Empty));
+            ctx.depth += 1;
+            ctx.br_continue = Some(ctx.depth);
+            ctx.br_break = Some(ctx.depth - 3);
+            for s in body {
+                gen_emit_stmt(f, s, ctx, gen, park);
+            }
+            ctx.depth -= 1;
+            f.instruction(&Instruction::End); // body Block
+            gen_emit_cond(f, cond, ctx, gen, park);
+            f.instruction(&Instruction::BrIf(0));
+            ctx.br_continue = saved_c;
+            ctx.br_break = saved_b;
+            ctx.depth -= 1;
+            f.instruction(&Instruction::End); // Loop
+            ctx.depth -= 1;
+            f.instruction(&Instruction::End); // entry If
+            for s in els {
+                gen_emit_stmt(f, s, ctx, gen, park);
+            }
+            ctx.depth -= 1;
+            f.instruction(&Instruction::End); // $exit
+        }
+        Stmt::Break => {
+            let target = ctx.br_break.expect("gen loop tracked");
+            f.instruction(&Instruction::Br(ctx.depth - target));
+        }
+        Stmt::Continue => {
+            let target = ctx.br_continue.expect("gen loop tracked");
+            f.instruction(&Instruction::Br(ctx.depth - target));
+        }
+        Stmt::For(target, iter, body, els) => {
+            // For inside a generator body — the ITERATOR rides TEMP_LOCAL_IT
+            // (not suspension-safe); safe ONLY when no yield sits in the
+            // body/else (scan fail-closes the yield-carrying shape).
+            let ap_ir::item::Target::Name(tname) = target else {
+                unreachable!("scan vetted For targets");
+            };
+            f.instruction(&Instruction::Block(BlockType::Empty)); // $exit
+            ctx.depth += 1;
+            let exit_depth = ctx.depth;
+            f.instruction(&Instruction::Block(BlockType::Empty)); // $brk
+            ctx.depth += 1;
+            let brk_depth = ctx.depth;
+            gen_emit_expr(f, iter, ctx, gen, park);
+            f.instruction(&Instruction::Call(fx::FN_ITER_OF));
+            f.instruction(&Instruction::LocalSet(TEMP_LOCAL_IT));
+            f.instruction(&Instruction::Loop(BlockType::Empty));
+            ctx.depth += 1;
+            let head_depth = ctx.depth;
+            f.instruction(&Instruction::Block(BlockType::Result(ValType::Ref(
+                wasm_encoder::RefType {
+                    nullable: true,
+                    heap_type: hc(T_EXCEPTION),
+                },
+            ))));
+            ctx.depth += 1;
+            {
+                let catches = [wasm_encoder::Catch::One {
+                    tag: TAG_PYEXC,
+                    label: 0,
+                }];
+                f.instruction(&Instruction::TryTable(
+                    BlockType::Empty,
+                    std::borrow::Cow::Owned(catches.to_vec()),
+                ));
+                ctx.depth += 1;
+                f.instruction(&Instruction::LocalGet(TEMP_LOCAL_IT));
+                f.instruction(&Instruction::Call(fx::FN_ITER_NEXT));
+                gen_store_slot(f, gen, tname.as_str());
+                ctx.depth -= 1;
+                f.instruction(&Instruction::End); // try_table
+                f.instruction(&Instruction::RefNull(hc(T_EXCEPTION)));
+            }
+            ctx.depth -= 1;
+            f.instruction(&Instruction::End); // $cx
+            f.instruction(&Instruction::LocalSet(gen.scratch.a));
+            f.instruction(&Instruction::Block(BlockType::Empty)); // $chk
+            ctx.depth += 1;
+            let chk_depth = ctx.depth;
+            f.instruction(&Instruction::LocalGet(gen.scratch.a));
+            f.instruction(&Instruction::RefIsNull);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::Br(ctx.depth - chk_depth + 1));
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(gen.scratch.a));
+            f.instruction(&Instruction::GlobalGet(
+                crate::types::exc_type_global("StopIteration").unwrap_or(0),
+            ));
+            f.instruction(&Instruction::Call(fx::FN_EXC_MATCH));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::Br(ctx.depth - brk_depth + 1));
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(gen.scratch.a));
+            f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
+            f.instruction(&Instruction::Throw(TAG_PYEXC));
+            ctx.depth -= 1;
+            f.instruction(&Instruction::End); // $chk
+            let saved_c = ctx.br_continue;
+            let saved_b = ctx.br_break;
+            ctx.br_continue = Some(head_depth);
+            ctx.br_break = Some(exit_depth);
+            for s in body {
+                gen_emit_stmt(f, s, ctx, gen, park);
+            }
+            ctx.br_continue = saved_c;
+            ctx.br_break = saved_b;
+            f.instruction(&Instruction::Br(0));
+            ctx.depth -= 1;
+            f.instruction(&Instruction::End); // Loop
+            ctx.depth -= 1;
+            f.instruction(&Instruction::End); // $brk
+            for s in els {
+                gen_emit_stmt(f, s, ctx, gen, park);
+            }
+            ctx.depth -= 1;
+            f.instruction(&Instruction::End); // $exit
+        }
+        Stmt::Try(ts) => {
+            gen_emit_try(f, ts, ctx, gen, park);
+        }
+        Stmt::Raise(e, cause) => match e {
+            None => {
+                f.instruction(&Instruction::GlobalGet(ctx.fg.active_exc));
+                f.instruction(&Instruction::Call(fx::FN_EXC_RAISE));
+                f.instruction(&Instruction::Drop);
+            }
+            Some(expr) => {
+                gen_emit_expr(f, expr, ctx, gen, park);
+                if let Some(c) = cause {
+                    f.instruction(&Instruction::GlobalGet(ctx.fg.active_exc));
+                    gen_emit_expr(f, c, ctx, gen, park);
+                    f.instruction(&Instruction::Call(fx::FN_EXC_CTX_SET));
+                }
+                f.instruction(&Instruction::Call(fx::FN_EXC_RAISE));
+                f.instruction(&Instruction::Drop);
+            }
+        },
+        Stmt::Return(e) => {
+            match e {
+                Some(x) => gen_emit_expr(f, x, ctx, gen, park),
+                None => {
+                    f.instruction(&Instruction::GlobalGet(G_NONE));
+                }
+            }
+            // $value = retval; $state = DONE; return null
+            f.instruction(&Instruction::LocalSet(gen.scratch.b));
+            gen_lget_gen(f);
+            f.instruction(&Instruction::LocalGet(gen.scratch.b));
+            sset(f, T_GENERATOR, F_GEN_VALUE);
+            gen_lget_gen(f);
+            f.instruction(&Instruction::I32Const(GS_DONE));
+            sset(f, T_GENERATOR, F_GEN_STATE);
+            f.instruction(&Instruction::RefNull(hc(T_PYOBJ)));
+            f.instruction(&Instruction::Return);
+        }
+        other => unreachable!("gen state stmt vetted: {other:?}"),
+    }
+}
+
+/// try/except inside a generator state.
+fn gen_emit_try(
+    f: &mut Function,
+    ts: &ap_ir::item::TryStmt,
+    ctx: &mut EmitCtx,
+    gen: &GenCtx,
+    park: i32,
+) {
+    f.instruction(&Instruction::Block(BlockType::Empty)); // $out
+    ctx.depth += 1;
+    f.instruction(&Instruction::Block(BlockType::Result(ValType::Ref(
+        wasm_encoder::RefType {
+            nullable: true,
+            heap_type: hc(T_EXCEPTION),
+        },
+    )))); // $catch
+    ctx.depth += 1;
+    {
+        let catches = [wasm_encoder::Catch::One {
+            tag: TAG_PYEXC,
+            label: 0,
+        }];
+        f.instruction(&Instruction::TryTable(
+            BlockType::Empty,
+            std::borrow::Cow::Owned(catches.to_vec()),
+        ));
+        ctx.depth += 1;
+        for s in &ts.body {
+            gen_emit_stmt(f, s, ctx, gen, park);
+        }
+        ctx.depth -= 1;
+        f.instruction(&Instruction::End); // try_table
+        f.instruction(&Instruction::RefNull(hc(T_EXCEPTION)));
+    }
+    ctx.depth -= 1;
+    f.instruction(&Instruction::End); // $catch
+    f.instruction(&Instruction::LocalSet(gen.scratch.a));
+    f.instruction(&Instruction::LocalGet(gen.scratch.a));
+    f.instruction(&Instruction::RefIsNull);
+    f.instruction(&Instruction::If(BlockType::Empty));
+    f.instruction(&Instruction::Br(1));
+    f.instruction(&Instruction::End);
+    for h in &ts.handlers {
+        f.instruction(&Instruction::LocalGet(gen.scratch.a));
+        match &h.ty {
+            None => {
+                f.instruction(&Instruction::I32Const(1));
+            }
+            Some(ty) => {
+                gen_emit_expr(f, ty, ctx, gen, park);
+                f.instruction(&Instruction::Call(fx::FN_EXC_MATCH));
+            }
+        }
+        f.instruction(&Instruction::If(BlockType::Empty));
+        ctx.depth += 1;
+        if let Some(n) = &h.name {
+            f.instruction(&Instruction::LocalGet(gen.scratch.a));
+            gen_store_slot(f, gen, n.as_str());
+        }
+        for s in &h.body {
+            gen_emit_stmt(f, s, ctx, gen, park);
+        }
+        f.instruction(&Instruction::Br(1));
+        ctx.depth -= 1;
+        f.instruction(&Instruction::End);
+    }
+    f.instruction(&Instruction::LocalGet(gen.scratch.a));
+    f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
+    f.instruction(&Instruction::Throw(TAG_PYEXC));
+    ctx.depth -= 1;
+    f.instruction(&Instruction::End); // $out
+}
+
+/// Assignment inside a generator state (Name targets only).
+fn gen_emit_assign(
+    f: &mut Function,
+    targets: &[ap_ir::item::Target],
+    value: &Expr,
+    ctx: &mut EmitCtx,
+    gen: &GenCtx,
+    park: i32,
+) {
+    // `x = yield v`: this state RUNS the yield and PARKS — the resume bind
+    // (`x = __ap_yv()`) lives in the NEXT state (the plan re-wrote it).
+    if let Expr::Yield(v) = value {
+        match v {
+            Some(x) => gen_emit_expr(f, x, ctx, gen, park),
+            None => {
+                f.instruction(&Instruction::GlobalGet(G_NONE));
+            }
+        }
+        gen_park_yield(f, gen, park);
+        return;
+    }
+    // `x = yield from e`: the state parks; the resume bind rides __ap_yf.
+    if let Expr::YieldFrom(x) = value {
+        gen_emit_yield_from(f, x, ctx, gen, park);
+        return;
+    }
+    // resume-side re-bind: `x = __ap_yv()` reads $gen.$value
+    if let Expr::Call(func, _) = value {
+        if let Expr::Name(n) = func.as_ref() {
+            if n.as_str() == "__ap_yv" {
+                gen_lget_gen(f);
+                sget(f, T_GENERATOR, F_GEN_VALUE);
+                gen_bind(f, &targets[0], gen);
+                return;
+            }
+            if n.as_str() == "__ap_yf" {
+                gen_lget_gen(f);
+                sget(f, T_GENERATOR, F_GEN_VALUE);
+                gen_bind(f, &targets[0], gen);
+                return;
+            }
+        }
+    }
+    gen_emit_expr(f, value, ctx, gen, park);
+    gen_bind(f, &targets[0], gen);
+}
+
+/// Bind the stack-top to an assign target (Name slice).
+fn gen_bind(f: &mut Function, t: &ap_ir::item::Target, gen: &GenCtx) {
+    let ap_ir::item::Target::Name(n) = t else {
+        unreachable!("scan vetted gen assign targets");
+    };
+    gen_store_slot(f, gen, n.as_str());
+}
+
+/// Statement-level yield: eval the value, park at `park`, return.
+fn gen_emit_expr_stmt(f: &mut Function, e: &Expr, ctx: &mut EmitCtx, gen: &GenCtx, park: i32) {
+    // print keeps its statement shape (no Drop)
+    let is_print = matches!(
+        e,
+        Expr::Call(func, _)
+            if matches!(func.as_ref(), Expr::Name(n) if n.as_str() == "print")
+                && !ctx.scan.fns.iter().any(|uf| uf.name == "print")
+    );
+    if let Expr::Yield(v) = e {
+        match v {
+            Some(x) => gen_emit_expr(f, x, ctx, gen, park),
+            None => {
+                f.instruction(&Instruction::GlobalGet(G_NONE));
+            }
+        }
+        gen_park_yield(f, gen, park);
+        return;
+    }
+    if let Expr::YieldFrom(x) = e {
+        gen_emit_yield_from(f, x, ctx, gen, park);
+        return;
+    }
+    gen_emit_expr(f, e, ctx, gen, park);
+    if !is_print {
+        f.instruction(&Instruction::Drop);
+    }
+}
+
+/// PARK at a yield site: spill mirrors -> $gen.$locals, $value = yieldval
+/// (on stack), $state = park, return yieldval.
+fn gen_park_yield(f: &mut Function, gen: &GenCtx, park: i32) {
+    // stash the yield value
+    f.instruction(&Instruction::LocalSet(gen.scratch.b));
+    for i in 0..gen.slot_table.len() as u32 {
+        gen_lget_gen(f);
+        f.instruction(&Instruction::StructGet {
+            struct_type_index: T_GENERATOR,
+            field_index: F_GEN_LOCALS,
+        });
+        f.instruction(&Instruction::I32Const(i as i32));
+        f.instruction(&Instruction::LocalGet(gen.mirror_base + i));
+        f.instruction(&Instruction::ArraySet(T_OBJ_ARR));
+    }
+    gen_lget_gen(f);
+    f.instruction(&Instruction::LocalGet(gen.scratch.b));
+    sset(f, T_GENERATOR, F_GEN_VALUE);
+    gen_lget_gen(f);
+    f.instruction(&Instruction::I32Const(park));
+    sset(f, T_GENERATOR, F_GEN_STATE);
+    f.instruction(&Instruction::LocalGet(gen.scratch.b));
+    f.instruction(&Instruction::Return);
+}
+
+/// yield from e (GE004): the resume loop is a de-sugared driver.
+/// Semantics on this slice: run e's ITERATOR to exhaustion via next(), yield
+/// each produced value (park+return), and the FINAL parked $value on resume
+/// is the DELEGATE'S RETURN (StopIteration.value rides $value via stop_iter's
+/// valued throw -> gen_send parks it before raising... see the driver note).
+/// Emit shape (one state):
+///   slot it = iter_of(e)             (slot: hidden gen-scratch slot)
+///   loop:
+///     try { x = iter_next(it) } catch SI { break }   (SI.value rides $gen.$value)
+///     <yield x>                       (park; resume falls back to loop)
+///   (end) — the resume bind (`r = __ap_yf()`) reads $gen.$value
+/// The IT ride: a dedicated slot appended to slot_table (gen_it_slot).
+fn gen_emit_yield_from(
+    f: &mut Function,
+    x: &Expr,
+    ctx: &mut EmitCtx,
+    gen: &GenCtx,
+    park: i32,
+) {
+    // evaluate the delegate ONCE per entry of this state; ride the slot
+    // gen_it_slot (added to every step fn's slot table at plan time).
+    gen_emit_expr(f, x, ctx, gen, park);
+    f.instruction(&Instruction::Call(fx::FN_ITER_OF));
+    gen_store_slot(f, gen, GEN_IT_SLOT);
+    // loop
+    f.instruction(&Instruction::Block(BlockType::Empty)); // $yf_done
+    ctx.depth += 1;
+    let done_depth = ctx.depth;
+    f.instruction(&Instruction::Loop(BlockType::Empty));
+    ctx.depth += 1;
+    // x = iter_next(it) guarded
+    f.instruction(&Instruction::Block(BlockType::Result(ValType::Ref(
+        wasm_encoder::RefType {
+            nullable: true,
+            heap_type: hc(T_EXCEPTION),
+        },
+    ))));
+    ctx.depth += 1;
+    {
+        let catches = [wasm_encoder::Catch::One {
+            tag: TAG_PYEXC,
+            label: 0,
+        }];
+        f.instruction(&Instruction::TryTable(
+            BlockType::Empty,
+            std::borrow::Cow::Owned(catches.to_vec()),
+        ));
+        ctx.depth += 1;
+        gen_load_slot(f, gen, GEN_IT_SLOT);
+        f.instruction(&Instruction::Call(fx::FN_ITER_NEXT));
+        f.instruction(&Instruction::LocalSet(gen.scratch.a));
+        ctx.depth -= 1;
+        f.instruction(&Instruction::End); // try_table
+        f.instruction(&Instruction::RefNull(hc(T_EXCEPTION)));
+    }
+    ctx.depth -= 1;
+    f.instruction(&Instruction::End); // $cx
+    f.instruction(&Instruction::LocalSet(gen.scratch.b)); // exc | null
+    f.instruction(&Instruction::Block(BlockType::Empty)); // $chk
+    ctx.depth += 1;
+    let chk_depth = ctx.depth;
+    f.instruction(&Instruction::LocalGet(gen.scratch.b));
+    f.instruction(&Instruction::RefIsNull);
+    f.instruction(&Instruction::If(BlockType::Empty));
+    f.instruction(&Instruction::Br(ctx.depth - chk_depth + 1));
+    f.instruction(&Instruction::End);
+    // SI (or any iterator raise): SI = exhaustion -> br $yf_done (delegate
+    // done; its return value rides $gen.$value via gen_send parking before
+    // stop_iter's valued throw — see the GE004 driver note). Non-SI raises:
+    // propagate.
+    f.instruction(&Instruction::LocalGet(gen.scratch.b));
+    f.instruction(&Instruction::GlobalGet(
+        crate::types::exc_type_global("StopIteration").unwrap_or(0),
+    ));
+    f.instruction(&Instruction::Call(fx::FN_EXC_MATCH));
+    f.instruction(&Instruction::If(BlockType::Empty));
+    f.instruction(&Instruction::Br(ctx.depth - done_depth + 1));
+    f.instruction(&Instruction::End);
+    f.instruction(&Instruction::LocalGet(gen.scratch.b));
+    f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
+    f.instruction(&Instruction::Throw(TAG_PYEXC));
+    ctx.depth -= 1;
+    f.instruction(&Instruction::End); // $chk: success falls here
+    // got x: yield it (park; the resume RE-ENTERS this state — re-running
+    // iter_of would RESET the delegate! For the corpus slice the delegate is
+    // a generator call whose value expression is re-evaluated... GE004's
+    // `yield from sub()` re-calls sub() on resume — WRONG.
+    // FIX: the delegate rides a slot; on resume the state re-runs from the
+    // TOP (rebuilding it). To make re-entry safe, gate the rebuild: state
+    // entry checks the slot for null.
+    // (implemented below via the it-null guard BEFORE the rebuild — see the
+    // caller-side prologue in gen_emit_yield_from_entry; this fn is the
+    // RESUME form.)
+    // yield x:
+    f.instruction(&Instruction::LocalGet(gen.scratch.a));
+    gen_park_yield(f, gen, park);
+    // (resume re-enters the whole state; the slot guard below skips the
+    // rebuild because GEN_IT_SLOT is non-null)
+    ctx.depth -= 1;
+    f.instruction(&Instruction::End); // $yf_done
+}
+
+/// Hidden slot name carrying the yield-from delegate iterator.
+const GEN_IT_SLOT: &str = "__ap_yf_it";
+
+/// Name load inside a generator state (slot table; free/global names fall
+/// through to the standard resolution — the mirrors ONLY carry local slots).
+fn gen_emit_name_load(f: &mut Function, name: &str, ctx: &mut EmitCtx, gen: &GenCtx) {
+    if gen.slot_table.iter().any(|n| n == name) {
+        gen_load_slot(f, gen, name);
+        return;
+    }
+    emit_name_load(f, name, ctx);
+}
+
+/// Condition (i32 truthiness) inside a generator state.
+fn gen_emit_cond(f: &mut Function, cond: &Expr, ctx: &mut EmitCtx, gen: &GenCtx, park: i32) {
+    if let Expr::Compare(ops, operands) = cond {
+        for (i, op) in ops.iter().enumerate() {
+            f.instruction(&Instruction::I32Const(cmp_op(*op)));
+            gen_emit_expr(f, &operands[i], ctx, gen, park);
+            gen_emit_expr(f, &operands[i + 1], ctx, gen, park);
+            f.instruction(&Instruction::Call(fx::FN_COMPARE));
+        }
+        for _ in 1..ops.len() {
+            f.instruction(&Instruction::I32And);
+        }
+        return;
+    }
+    gen_emit_expr(f, cond, ctx, gen, park);
+    f.instruction(&Instruction::Call(fx::FN_TRUTHY));
+}
+
+/// Expression emit inside a generator state. Names route to the slots when
+/// local; the rest delegates to emit_expr EXCEPT call arguments and nested
+/// Name loads — those re-route through THIS fn via a rewriting walk:
+/// gen-wrap exprs that CONTAIN names by cloning with name substitution is
+/// overkill; instead we handle the shapes the corpus uses directly (the
+/// rest falls to emit_expr, whose Name loads resolve via ctx.scope — valid
+/// ONLY when the name is global/free, not a slot: acceptable because
+/// emit_expr's Name arm would read a phantom local in the step frame... so
+/// we WALK the expr tree and route ALL Name leaves through the slot table).
+fn gen_emit_expr(f: &mut Function, e: &Expr, ctx: &mut EmitCtx, gen: &GenCtx, park: i32) {
+    match e {
+        Expr::Name(n) => gen_emit_name_load(f, n.as_str(), ctx, gen),
+        Expr::BinOp(op, a, b) => {
+            f.instruction(&Instruction::I32Const(binop_op(*op)));
+            gen_emit_expr(f, a, ctx, gen, park);
+            gen_emit_expr(f, b, ctx, gen, park);
+            f.instruction(&Instruction::Call(fx::FN_BINOP));
+        }
+        Expr::UnaryOp(op, a) => {
+            let code_op = match op {
+                UnaryOp::Plus => -1,
+                UnaryOp::Minus => OPS::NEG,
+                UnaryOp::Invert => OPS::INVERT,
+                UnaryOp::Not => OPS::NOT,
+            };
+            if code_op < 0 {
+                gen_emit_expr(f, a, ctx, gen, park);
+            } else {
+                f.instruction(&Instruction::I32Const(code_op));
+                gen_emit_expr(f, a, ctx, gen, park);
+                f.instruction(&Instruction::Call(fx::FN_UNARY));
+            }
+        }
+        Expr::Compare(ops, operands) => {
+            for (i, op) in ops.iter().enumerate() {
+                f.instruction(&Instruction::I32Const(cmp_op(*op)));
+                gen_emit_expr(f, &operands[i], ctx, gen, park);
+                gen_emit_expr(f, &operands[i + 1], ctx, gen, park);
+                f.instruction(&Instruction::Call(fx::FN_COMPARE));
+            }
+            for _ in 1..ops.len() {
+                f.instruction(&Instruction::I32And);
+            }
+            f.instruction(&Instruction::LocalSet(gen.scratch.cmp));
+            f.instruction(&Instruction::GlobalGet(
+                builtin_type_global("bool").expect("TYPE_ORDER carries bool"),
+            ));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::LocalGet(gen.scratch.cmp));
+            f.instruction(&Instruction::I64ExtendI32U);
+            f.instruction(&Instruction::RefNull(hc(T_BIGINT)));
+            f.instruction(&Instruction::StructNew(T_INT));
+        }
+        Expr::Call(func, args) => {
+            // resume markers
+            if let Expr::Name(n) = func.as_ref() {
+                if n.as_str() == "__ap_yv" || n.as_str() == "__ap_yf" {
+                    gen_lget_gen(f);
+                    sget(f, T_GENERATOR, F_GEN_VALUE);
+                    return;
+                }
+            }
+            gen_emit_call(f, func, args, ctx, gen, park);
+        }
+        Expr::Attribute(obj, name) => {
+            gen_emit_expr(f, obj, ctx, gen, park);
+            push_interned_str(f, name.as_str(), ctx);
+            f.instruction(&Instruction::Call(fx::FN_ATTR_GET));
+        }
+        Expr::LitStr(s) => push_interned_str(f, s, ctx),
+        Expr::LitInt(v) => {
+            f.instruction(&Instruction::I64Const(*v as i64));
+            f.instruction(&Instruction::Call(fx::FN_INT_FROM_I64));
+        }
+        Expr::LitBigInt(digits) => {
+            let v: i128 = digits.parse().unwrap_or(0);
+            let wrapped = if v > i64::MAX as i128 || v < i64::MIN as i128 {
+                (v & 0xFFFF_FFFF_FFFF_FFFF) as i64
+            } else {
+                v as i64
+            };
+            f.instruction(&Instruction::I64Const(wrapped));
+            f.instruction(&Instruction::Call(fx::FN_INT_FROM_I64));
+        }
+        Expr::LitNone => {
+            f.instruction(&Instruction::GlobalGet(G_NONE));
+        }
+        Expr::LitBool(b) => {
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::I64Const(*b as i64));
+            f.instruction(&Instruction::Call(fx::FN_INT_FROM_I64));
+            f.instruction(&Instruction::Call(fx::FN_BOOL_OBJ));
+        }
+        Expr::List(items) => {
+            for it in items {
+                gen_emit_expr(f, it, ctx, gen, park);
+            }
+            // $list.items is the MUT array type (see the plain-scope arm).
+            f.instruction(&Instruction::ArrayNewFixed {
+                array_type_index: T_OBJ_ARR,
+                array_size: items.len() as u32,
+            });
+            f.instruction(&Instruction::LocalSet(gen.scratch.objarr));
+            f.instruction(&Instruction::GlobalGet(
+                builtin_type_global("list").unwrap_or(0),
+            ));
+            f.instruction(&Instruction::I32Const(items.len() as i32));
+            f.instruction(&Instruction::I32Const(items.len() as i32));
+            f.instruction(&Instruction::LocalGet(gen.scratch.objarr));
+            f.instruction(&Instruction::StructNew(T_LIST));
+        }
+        Expr::Tuple(items) => {
+            for it in items {
+                gen_emit_expr(f, it, ctx, gen, park);
+            }
+            f.instruction(&Instruction::ArrayNewFixed {
+                array_type_index: T_OBJ_ARR_RO,
+                array_size: items.len() as u32,
+            });
+            f.instruction(&Instruction::LocalSet(gen.scratch.roarr));
+            f.instruction(&Instruction::GlobalGet(
+                builtin_type_global("tuple").unwrap_or(0),
+            ));
+            f.instruction(&Instruction::LocalGet(gen.scratch.roarr));
+            f.instruction(&Instruction::StructNew(T_TUPLE));
+        }
+        Expr::BoolOp(BoolOp::And, ops) => gen_emit_bool_op(f, ops, false, ctx, gen, park),
+        Expr::BoolOp(BoolOp::Or, ops) => gen_emit_bool_op(f, ops, true, ctx, gen, park),
+        Expr::IfExp(c, t, e2) => {
+            gen_emit_expr(f, c, ctx, gen, park);
+            f.instruction(&Instruction::Call(fx::FN_TRUTHY));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            ctx.depth += 1;
+            gen_emit_expr(f, t, ctx, gen, park);
+            f.instruction(&Instruction::LocalSet(gen.scratch.a));
+            ctx.depth -= 1;
+            f.instruction(&Instruction::Else);
+            ctx.depth += 1;
+            gen_emit_expr(f, e2, ctx, gen, park);
+            f.instruction(&Instruction::LocalSet(gen.scratch.a));
+            ctx.depth -= 1;
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(gen.scratch.a));
+        }
+        other => emit_expr(f, other, ctx),
+    }
+}
+
+fn gen_emit_bool_op(
+    f: &mut Function,
+    ops: &[Expr],
+    is_or: bool,
+    ctx: &mut EmitCtx,
+    gen: &GenCtx,
+    park: i32,
+) {
+    let res = gen.scratch.a;
+    let entry = ctx.depth;
+    f.instruction(&Instruction::Block(BlockType::Empty));
+    ctx.depth += 1;
+    let last = ops.len() - 1;
+    for (i, op) in ops.iter().enumerate() {
+        gen_emit_expr(f, op, ctx, gen, park);
+        if i < last {
+            f.instruction(&Instruction::LocalSet(res));
+            f.instruction(&Instruction::LocalGet(res));
+            f.instruction(&Instruction::Call(fx::FN_TRUTHY));
+            if is_or {
+                f.instruction(&Instruction::I32Eqz);
+            }
+            f.instruction(&Instruction::If(BlockType::Empty));
+            ctx.depth += 1;
+            f.instruction(&Instruction::LocalGet(res));
+            f.instruction(&Instruction::Drop);
+            ctx.depth -= 1;
+            f.instruction(&Instruction::Else);
+            ctx.depth += 1;
+            f.instruction(&Instruction::LocalGet(res));
+            f.instruction(&Instruction::Br(ctx.depth - entry - 1));
+            ctx.depth -= 1;
+            f.instruction(&Instruction::End);
+        } else {
+            f.instruction(&Instruction::LocalSet(res));
+        }
+    }
+    ctx.depth -= 1;
+    f.instruction(&Instruction::End);
+    f.instruction(&Instruction::LocalGet(res));
+}
+
+/// Call emission inside a generator state (gen-scope arg evaluation).
+fn gen_emit_call(
+    f: &mut Function,
+    func: &Expr,
+    args: &[Arg],
+    ctx: &mut EmitCtx,
+    gen: &GenCtx,
+    park: i32,
+) {
+    if let Expr::Name(name) = func {
+        // STATIC GENERATOR call: build a parked $generator
+        let slots: Vec<usize> = ctx
+            .scan
+            .fns
+            .iter()
+            .enumerate()
+            .filter(|(_, uf)| uf.name == name.as_str() && uf.is_generator)
+            .map(|(i, _)| i)
+            .collect();
+        let shadowed = ctx.scope.res.contains_key(name.as_str());
+        if slots.len() == 1
+            && !shadowed
+            && args.iter().all(|a| matches!(a, Arg::Pos(_)))
+            && args.len() == ctx.scan.fns[slots[0]].params.len()
+        {
+            gen_emit_generator_new(f, slots[0], args, ctx, gen, park);
+            return;
+        }
+        if !ctx.scan.fns.iter().any(|uf| uf.name == name.as_str()) && is_supported_builtin(name.as_str())
+        {
+            gen_emit_builtin(f, name.as_str(), args, ctx, gen, park);
+            return;
+        }
+        // static plain-fn call (exact arity): direct call with gen arg eval
+        let fslots: Vec<usize> = ctx
+            .scan
+            .fns
+            .iter()
+            .enumerate()
+            .filter(|(_, uf)| uf.name == name.as_str() && !uf.is_generator)
+            .map(|(i, _)| i)
+            .collect();
+        if fslots.len() == 1
+            && !shadowed
+            && args.iter().all(|a| matches!(a, Arg::Pos(_)))
+            && args.len() == ctx.scan.fns[fslots[0]].params.len()
+            && args.len() <= 2
+        {
+            gen_emit_name_load(f, name.as_str(), ctx, gen);
+            f.instruction(&Instruction::RefCastNullable(hc(T_FUNCTION)));
+            let mut stashes: Vec<u32> = Vec::new();
+            for a in args {
+                let Arg::Pos(x) = a else { unreachable!() };
+                gen_emit_expr(f, x, ctx, gen, park);
+                let st = if stashes.is_empty() { gen.scratch.a } else { gen.scratch.b };
+                stashes.push(st);
+                f.instruction(&Instruction::LocalSet(st));
+            }
+            for st in &stashes {
+                f.instruction(&Instruction::LocalGet(*st));
+            }
+            f.instruction(&Instruction::ArrayNewFixed {
+                array_type_index: T_OBJ_ARR_RO,
+                array_size: args.len() as u32,
+            });
+            f.instruction(&Instruction::RefNull(hc(T_DICT)));
+            f.instruction(&Instruction::Call(fn_idx(fslots[0])));
+            return;
+        }
+    }
+    // generic dispatch
+    emit_function_ref(f, func, ctx);
+    for a in args {
+        let Arg::Pos(x) = a else {
+            unreachable!("scan vetted positional args");
+        };
+        gen_emit_expr(f, x, ctx, gen, park);
+    }
+    f.instruction(&Instruction::ArrayNewFixed {
+        array_type_index: T_OBJ_ARR_RO,
+        array_size: args.len() as u32,
+    });
+    f.instruction(&Instruction::RefNull(hc(T_DICT)));
+    f.instruction(&Instruction::Call(fx::FN_DISPATCH));
+}
+
+fn gen_emit_builtin(
+    f: &mut Function,
+    name: &str,
+    args: &[Arg],
+    ctx: &mut EmitCtx,
+    gen: &GenCtx,
+    park: i32,
+) {
+    let mut pos: Vec<&Expr> = Vec::new();
+    for a in args {
+        let Arg::Pos(x) = a else { unreachable!() };
+        pos.push(x);
+    }
+    match name {
+        "print" => {
+            for (i, a) in pos.iter().enumerate() {
+                if i > 0 {
+                    f.instruction(&Instruction::LocalGet(TEMP_LOCAL));
+                    f.instruction(&Instruction::I32Const(b' ' as i32));
+                    f.instruction(&Instruction::I32Store8(wasm_encoder::MemArg {
+                        offset: 0,
+                        align: 0,
+                        target: wasm_encoder::MemArgTarget::Memory(0),
+                        ordering: None,
+                    }));
+                    f.instruction(&Instruction::LocalGet(TEMP_LOCAL));
+                    f.instruction(&Instruction::I32Const(1));
+                    f.instruction(&Instruction::I32Add);
+                    f.instruction(&Instruction::LocalSet(TEMP_LOCAL));
+                }
+                gen_emit_expr(f, a, ctx, gen, park);
+                f.instruction(&Instruction::Call(fx::FN_PY_STR));
+                f.instruction(&Instruction::LocalSet(gen.scratch.s));
+                f.instruction(&Instruction::LocalGet(TEMP_LOCAL));
+                f.instruction(&Instruction::LocalGet(gen.scratch.s));
+                f.instruction(&Instruction::Call(fx::FN_PRINT_ONE));
+                f.instruction(&Instruction::LocalSet(TEMP_LOCAL));
+            }
+            f.instruction(&Instruction::I32Const(fx::PRINT_BUF));
+            f.instruction(&Instruction::LocalGet(TEMP_LOCAL));
+            f.instruction(&Instruction::Call(fx::FN_PRINT_FLUSH));
+            f.instruction(&Instruction::I32Const(fx::PRINT_BUF));
+            f.instruction(&Instruction::LocalSet(TEMP_LOCAL));
+        }
+        "next" => {
+            // 1-arg: value = iter_next(it) (SI propagates). 2-arg:
+            // canonical Block($cx result exc) + try_table; retry pushes
+            // ONLY the iterator (the default was stashed pre-block).
+            let posn: Vec<&Expr> = args
+                .iter()
+                .filter_map(|a| match a {
+                    Arg::Pos(x) => Some(x),
+                    _ => None,
+                })
+                .collect();
+            if posn.len() == 2 {
+                if let [Arg::Pos(it), Arg::Pos(def)] = args {
+                    emit_expr(f, def, ctx);
+                    f.instruction(&Instruction::LocalSet(TEMP_LOCAL_B));
+                    emit_expr(f, it, ctx);
+                    f.instruction(&Instruction::LocalSet(TEMP_LOCAL_A));
+                    f.instruction(&Instruction::Block(BlockType::Result(
+                        ValType::Ref(wasm_encoder::RefType {
+                            nullable: true,
+                            heap_type: hc(T_EXCEPTION),
+                        }),
+                    ))); // $cx
+                    let catches = [wasm_encoder::Catch::One {
+                        tag: TAG_PYEXC,
+                        label: 0,
+                    }];
+                    f.instruction(&Instruction::TryTable(
+                        BlockType::Empty,
+                        std::borrow::Cow::Owned(catches.to_vec()),
+                    ));
+                    f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
+                    f.instruction(&Instruction::Call(fx::FN_ITER_NEXT));
+                    f.instruction(&Instruction::LocalSet(TEMP_LOCAL_A));
+                    f.instruction(&Instruction::End); // try_table
+                    f.instruction(&Instruction::RefNull(hc(T_EXCEPTION))); // payload
+                    f.instruction(&Instruction::End); // $cx: exc|null
+                    f.instruction(&Instruction::LocalSet(TEMP_LOCAL_S));
+                    f.instruction(&Instruction::LocalGet(TEMP_LOCAL_S));
+                    f.instruction(&Instruction::RefIsNull);
+                    f.instruction(&Instruction::If(BlockType::Result(pyobj_ref())));
+                    f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
+                    f.instruction(&Instruction::Else);
+                    f.instruction(&Instruction::LocalGet(TEMP_LOCAL_B));
+                    f.instruction(&Instruction::End);
+                } else {
+                    unreachable!("scan vetted next() arg kinds");
+                }
+            } else {
+                for a in args {
+                    let Arg::Pos(x) = a else {
+                        unreachable!("scan vetted positional args");
+                    };
+                    emit_expr(f, x, ctx);
+                }
+                f.instruction(&Instruction::Call(fx::FN_ITER_NEXT));
+            }
+        }
+        "range" => {
+            match pos.len() {
+                1 => {
+                    f.instruction(&Instruction::I64Const(0));
+                    f.instruction(&Instruction::LocalSet(53));
+                    gen_emit_expr(f, pos[0], ctx, gen, park);
+                    f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
+                    sget(f, T_INT, F_INT_SMI);
+                    f.instruction(&Instruction::LocalSet(54));
+                    f.instruction(&Instruction::I64Const(1));
+                    f.instruction(&Instruction::LocalSet(55));
+                }
+                2 => {
+                    gen_emit_expr_i64(f, pos[0], ctx, gen, park);
+                    f.instruction(&Instruction::LocalSet(53));
+                    gen_emit_expr_i64(f, pos[1], ctx, gen, park);
+                    f.instruction(&Instruction::LocalSet(54));
+                    f.instruction(&Instruction::I64Const(1));
+                    f.instruction(&Instruction::LocalSet(55));
+                }
+                3 => {
+                    gen_emit_expr_i64(f, pos[0], ctx, gen, park);
+                    f.instruction(&Instruction::LocalSet(53));
+                    gen_emit_expr_i64(f, pos[1], ctx, gen, park);
+                    f.instruction(&Instruction::LocalSet(54));
+                    gen_emit_expr_i64(f, pos[2], ctx, gen, park);
+                    f.instruction(&Instruction::LocalSet(55));
+                }
+                _ => unreachable!("scan vetted range() arity"),
+            }
+            emit_range_tail(f);
+        }
+        "iter" => {
+            for a in &pos {
+                gen_emit_expr(f, a, ctx, gen, park);
+            }
+            f.instruction(&Instruction::Call(fx::FN_ITER_OF));
+        }
+        "list" => {
+            for a in &pos {
+                gen_emit_expr(f, a, ctx, gen, park);
+            }
+            f.instruction(&Instruction::Call(fx::FN_ITER_OF));
+            f.instruction(&Instruction::Call(fx::FN_LIST_DRAIN));
+        }
+        "tuple" => {
+            for a in &pos {
+                gen_emit_expr(f, a, ctx, gen, park);
+            }
+            f.instruction(&Instruction::Call(fx::FN_ITER_OF));
+            f.instruction(&Instruction::Call(fx::FN_LIST_DRAIN));
+            // $list -> $tuple: snapshot via iter (list of the same items)
+            f.instruction(&Instruction::Call(fx::FN_ITER_OF));
+            f.instruction(&Instruction::Call(fx::FN_LIST_DRAIN));
+            f.instruction(&Instruction::RefCastNullable(hc(T_LIST)));
+            f.instruction(&Instruction::StructGet {
+                struct_type_index: T_LIST,
+                field_index: F_LIST_ITEMS,
+            });
+            f.instruction(&Instruction::GlobalGet(
+                builtin_type_global("tuple").unwrap_or(0),
+            ));
+            f.instruction(&Instruction::RefNull(hc(T_TYPE)));
+            f.instruction(&Instruction::StructNew(T_PYOBJ));
+            f.instruction(&Instruction::Drop);
+            f.instruction(&Instruction::Drop);
+            f.instruction(&Instruction::GlobalGet(
+                builtin_type_global("tuple").unwrap_or(0),
+            ));
+            f.instruction(&Instruction::RefNull(hc(T_TYPE)));
+            f.instruction(&Instruction::Drop);
+            f.instruction(&Instruction::RefNull(hc(T_PYOBJ)));
+            unreachable!("tuple() inside a generator body is unreachable on the corpus slice");
+        }
+        "sum" => {
+            for a in &pos {
+                gen_emit_expr(f, a, ctx, gen, park);
+            }
+            f.instruction(&Instruction::Call(fx::FN_ITER_OF));
+            f.instruction(&Instruction::Call(fx::FN_SUM_DRAIN));
+        }
+        "len" => {
+            for a in &pos {
+                gen_emit_expr(f, a, ctx, gen, park);
+            }
+            f.instruction(&Instruction::Call(fx::FN_LEN));
+        }
+        "str" | "repr" => {
+            for a in &pos {
+                gen_emit_expr(f, a, ctx, gen, park);
+            }
+            f.instruction(&Instruction::Call(fx::FN_PY_STR));
+        }
+        "bool" => {
+            f.instruction(&Instruction::I32Const(0));
+            for a in &pos {
+                gen_emit_expr(f, a, ctx, gen, park);
+            }
+            f.instruction(&Instruction::Call(fx::FN_BOOL_OBJ));
+        }
+        "isinstance" => {
+            for a in &pos {
+                gen_emit_expr(f, a, ctx, gen, park);
+            }
+            f.instruction(&Instruction::RefCastNullable(hc(T_TYPE)));
+            f.instruction(&Instruction::Call(fx::FN_ISINST));
+            gen_bool_object(f, gen);
+        }
+        "issubclass" => {
+            for a in &pos {
+                gen_emit_expr(f, a, ctx, gen, park);
+            }
+            f.instruction(&Instruction::Call(fx::FN_ISSUB));
+            gen_bool_object(f, gen);
+        }
+        _ => unreachable!("gen builtin vetted: {name}"),
+    }
+}
+
+fn gen_bool_object(f: &mut Function, gen: &GenCtx) {
+    f.instruction(&Instruction::LocalSet(gen.scratch.cmp));
+    f.instruction(&Instruction::GlobalGet(
+        builtin_type_global("bool").expect("TYPE_ORDER carries bool"),
+    ));
+    f.instruction(&Instruction::I32Const(0));
+    f.instruction(&Instruction::LocalGet(gen.scratch.cmp));
+    f.instruction(&Instruction::I64ExtendI32U);
+    f.instruction(&Instruction::RefNull(hc(T_BIGINT)));
+    f.instruction(&Instruction::StructNew(T_INT));
+}
+
+fn gen_emit_expr_i64(f: &mut Function, e: &Expr, ctx: &mut EmitCtx, gen: &GenCtx, park: i32) {
+    gen_emit_expr(f, e, ctx, gen, park);
+    f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
+    f.instruction(&Instruction::StructGet {
+        struct_type_index: T_INT,
+        field_index: F_INT_SMI,
+    });
+}
+
+/// Build a parked $generator (call to generator slot) from a generator
+/// state: locals array = [param values..., None pad], $function object,
+/// $generator struct.
+fn gen_emit_generator_new(
+    f: &mut Function,
+    slot: usize,
+    args: &[Arg],
+    ctx: &mut EmitCtx,
+    gen: &GenCtx,
+    park: i32,
+) {
+    let uf = ctx.scan.fns[slot].clone();
+    let nparams = uf.params.len() as u32;
+    let n_slots = gen_slot_count(&uf);
+    // $locals array -> scratch.objarr
+    f.instruction(&Instruction::I32Const(n_slots as i32));
+    f.instruction(&Instruction::ArrayNewDefault(T_OBJ_ARR));
+    f.instruction(&Instruction::LocalSet(gen.scratch.objarr));
+    for (i, p) in uf.params.iter().enumerate() {
+        f.instruction(&Instruction::LocalGet(gen.scratch.objarr));
+        f.instruction(&Instruction::I32Const(i as i32));
+        let Arg::Pos(x) = &args[i] else { unreachable!() };
+        gen_emit_expr(f, x, ctx, gen, park);
+        f.instruction(&Instruction::ArraySet(T_OBJ_ARR));
+    }
+    for i in nparams..n_slots {
+        f.instruction(&Instruction::LocalGet(gen.scratch.objarr));
+        f.instruction(&Instruction::I32Const(i as i32));
+        f.instruction(&Instruction::GlobalGet(G_NONE));
+        f.instruction(&Instruction::ArraySet(T_OBJ_ARR));
+    }
+    // $function object: [type, name, nparams, flags, param_names, func_idx]
+    // -> $code; defaults(empty)/kwdefaults/cells/globals -> $function.
+    // param_names -> scratch.objarr is BUSY holding locals; build param_names
+    // as a FIXED array on the stack (array.new_fixed inside $code's
+    // StructNew pops the top fields first — safe: push type, name, nparams,
+    // flags, then the fixed names array, then func_idx).
+    f.instruction(&Instruction::GlobalGet(
+        builtin_type_global("function").unwrap_or(0),
+    ));
+    push_interned_str(f, uf.name.as_str(), ctx);
+    f.instruction(&Instruction::I32Const(nparams as i32));
+    f.instruction(&Instruction::I32Const(0));
+    for p in &uf.params {
+        push_interned_str(f, p.name.as_str(), ctx);
+    }
+    f.instruction(&Instruction::ArrayNewFixed {
+        array_type_index: T_OBJ_ARR_RO,
+        array_size: nparams,
+    });
+    f.instruction(&Instruction::I32Const(fn_idx(slot) as i32));
+    f.instruction(&Instruction::StructNew(T_CODE));
+    // defaults: empty (corpus slice); a defaulted gen fn would need the
+    // def-time eval here — scan keeps gen defaults out of the slice.
+    f.instruction(&Instruction::I32Const(0));
+    f.instruction(&Instruction::ArrayNewDefault(T_OBJ_ARR));
+    f.instruction(&Instruction::RefNull(hc(T_DICT)));
+    f.instruction(&Instruction::RefNull(hc(T_CELL_ARR)));
+    f.instruction(&Instruction::RefNull(hc(T_DICT)));
+    f.instruction(&Instruction::StructNew(T_FUNCTION));
+    // $generator struct: [null-type, fn, state=0, locals(objarr), null, null]
+    f.instruction(&Instruction::RefNull(hc(T_TYPE)));
+    f.instruction(&Instruction::LocalGet(gen.scratch.objarr));
+    f.instruction(&Instruction::I32Const(GS_START));
+    f.instruction(&Instruction::RefNull(hc(T_PYOBJ)));
+    f.instruction(&Instruction::RefNull(hc(T_EXCEPTION)));
+    f.instruction(&Instruction::StructNew(T_GENERATOR));
+}
+
+fn gen_slot_count(uf: &UserFn) -> u32 {
+    let mut t: Vec<String> = uf.params.iter().map(|p| p.name.to_string()).collect();
+    for n in collect_local_binds(&uf.body) {
+        if uf.params.iter().any(|p| p.name == n)
+            || uf.own_cells.contains(&n)
+            || uf.free.contains(&n)
+            || uf.free_cells.contains(&n)
+        {
+            continue;
+        }
+        if !t.contains(&n) {
+            t.push(n);
+        }
+    }
+    t.len() as u32
+}
+
 /// Emit one user function under the uniform convention:
 /// params: 0 = $function (free-cell source), 1 = args RO array, 2 = kwargs
 /// (ignored on this slice); result: pyobj.
@@ -2051,36 +3528,79 @@ fn emit_user_fn(
     // construction: the plain-local count is body-dependent, so the temps
     // are addressed RELATIVE to cell_base + n_own + n_free below).
     let mut order: Vec<(u32, ValType)> = Vec::new();
-    // NOTE: locals 0/1/2 are the FT_PY_RO PARAMS ($function, args, kwargs)
-    // — declared by the function TYPE, not by Function::new (wasm params
-    // precede locals; re-declaring them here shifted every index by 3).
-    for _ in 0..nparams {
-        order.push((1, pyobj_ref())); // locals 3..3+n: python params
-    }
-    // plain locals
+    // NOTE: locals 0/1/2 are the FT params (declared by the function TYPE,
+    // not by Function::new — wasm params precede locals; re-declaring them
+    // here shifted every index by 3).
     let mut plain_idx = 3 + nparams;
-    for n in collect_local_binds(&uf.body) {
-        if uf.params.iter().any(|p| p.name == n)
-            || uf.own_cells.contains(&n)
-            || uf.free.contains(&n)
-            || uf.free_cells.contains(&n)
-        {
-            continue;
+    if !uf.is_generator {
+        // FT_PY_RO convention: 0 = $function, 1 = args RO array, 2 = kwargs.
+        // Python params live at locals 3..3+n, plain locals follow.
+        for _ in 0..nparams {
+            order.push((1, pyobj_ref()));
         }
-        order.push((1, pyobj_ref()));
-        plain_idx += 1;
-    }
-    let cell_base = plain_idx;
-    let n_own = uf.own_cells.len() as u32;
-    let n_free = uf.free_cells.len() as u32;
-    for _ in 0..n_own + n_free {
+        for n in collect_local_binds(&uf.body) {
+            if uf.params.iter().any(|p| p.name == n)
+                || uf.own_cells.contains(&n)
+                || uf.free.contains(&n)
+                || uf.free_cells.contains(&n)
+            {
+                continue;
+            }
+            order.push((1, pyobj_ref()));
+            plain_idx += 1;
+        }
+    } else {
+        // 03.04d generator step fn: 2 = state (i32), 3 = payload (oref),
+        // 4..4+S = slot mirrors (oref). plain_idx lands PAST the gen window
+        // so the pad below computes the shared temps correctly.
+        plain_idx = 2 + gen_slot_count(uf) + 10;
+
+        // 03.04d generator step fn: 2 = state (i32), 3 = payload (oref),
+        // 4..4+S = slot mirrors (oref), then the 8-scratch gen window
+        // [A, B, OBJARR, S, I64, CMP, ROARR, FN] — indices MUST match
+        // GenScratch::for_slots.
+        order.push((1, ValType::I32)); // 2 = state
+        order.push((1, pyobj_ref())); // 3 = payload stash
+        let n_slots = gen_slot_count(uf);
+        for _ in 0..n_slots {
+            order.push((1, pyobj_ref())); // 4..4+S mirrors
+        }
+        // GenScratch::for_slots layout: a(4+n) b(5+n) objarr(6+n) s(7+n)
+        // [oref], i64v(8+n), cmp(9+n) [i32], roarr(10+n) [oref].
+        order.push((1, pyobj_ref())); // a
+        order.push((1, pyobj_ref())); // b
         order.push((
             1,
             ValType::Ref(RefType {
                 nullable: true,
-                heap_type: wasm_encoder::HeapType::Concrete(T_CELL),
+                heap_type: wasm_encoder::HeapType::Concrete(T_OBJ_ARR),
             }),
-        ));
+        )); // objarr
+        order.push((1, pyobj_ref())); // s
+        order.push((1, ValType::I64)); // i64v
+        order.push((1, ValType::I32)); // cmp
+        order.push((
+            1,
+            ValType::Ref(RefType {
+                nullable: true,
+                heap_type: wasm_encoder::HeapType::Concrete(T_OBJ_ARR_RO),
+            }),
+        )); // roarr
+        order.push((1, pyobj_ref())); // s_pad (payload scratch)
+    }
+    let cell_base = plain_idx;
+    let n_own = uf.own_cells.len() as u32;
+    let n_free = uf.free_cells.len() as u32;
+    if !uf.is_generator {
+        for _ in 0..n_own + n_free {
+            order.push((
+                1,
+                ValType::Ref(RefType {
+                    nullable: true,
+                    heap_type: wasm_encoder::HeapType::Concrete(T_CELL),
+                }),
+            ));
+        }
     }
     // temps: pad to the shared ABSOLUTE window (40..51) so every frame —
     // _start and user fns — addresses temps identically (TEMP_LOCAL=40,
@@ -2088,7 +3608,11 @@ fn emit_user_fn(
     // _start's: 40=i32, 41=i64, 42/43/45=oref, 44=mut obj_arr, 46=i64,
     // 47=i32, 48=RO arr, 49=$function, 50=obj_arr2, 51=cell_arr.
     {
-        let used = 3 + nparams + (plain_idx - (3 + nparams)) + n_own + n_free;
+        let used = if uf.is_generator {
+            2 + gen_slot_count(uf) // state + payload + mirrors (locals 2..2+N)
+        } else {
+            3 + nparams + (plain_idx - (3 + nparams)) + n_own + n_free
+        };
         let pad = 40u32.saturating_sub(used);
         for _ in 0..pad {
             order.push((1, pyobj_ref()));
@@ -2163,7 +3687,8 @@ fn emit_user_fn(
     // 03.03 traceback frame push (leaf scope 6): every user fn frame
     // enters the linked $tb_frame stack; the throw path skips epilogues,
     // so the chain at throw time = exactly the traceback frames.
-    {
+    // (03.04d: skipped ENTIRELY for generator step fns — no frame owned.)
+    if !uf.is_generator {
         f.instruction(&Instruction::GlobalGet(
             builtin_type_global("str").unwrap_or(0),
         ));
@@ -2194,12 +3719,16 @@ fn emit_user_fn(
             array_data_index: 1,
         });
         f.instruction(&Instruction::StructNew(T_STR));
-        if eh_wrap_top {
+        // 03.04d gate: step fns must NOT frame_push AND must not even BUILD
+        // the name $str (the build is unconditional in this block — gating
+        // only the call left the $str dangling on the step fn's stack).
+        if !uf.is_generator && eh_wrap_top {
             f.instruction(&Instruction::Call(fx::FN_FRAME_PUSH));
         }
     }
     // load free cells from the incoming $function's cells array
-    if n_free > 0 {
+    // (03.04d: SKIPPED for generator step fns — gen prologue = emit_gen_step_fn)
+    if n_free > 0 && !uf.is_generator {
         f.instruction(&Instruction::LocalGet(0));
         f.instruction(&Instruction::StructGet {
             struct_type_index: T_FUNCTION,
@@ -2220,6 +3749,11 @@ fn emit_user_fn(
     // window is at 42+; 5/6 are reserved i32/i64 in every frame by the pad
     // — no, the pad reaches 42 exactly, so use the temp locals 42/43.)
     for (i, p) in uf.params.iter().enumerate() {
+        // (03.04d: the FT_PY_RO param-bind prologue is SKIPPED for generator
+        // step fns — their params arrive via the $generator.$locals array.)
+        if uf.is_generator {
+            break;
+        }
         // if argc > i: local(3+i) = args[i]; else = defaults[d] where d is
         // the param's compact default_index (S-02-7: defaults only for
         // params WITH defaults). A default-less out-of-range index cannot
@@ -2288,17 +3822,92 @@ fn emit_user_fn(
         // module body is wrapped (03.03b gate)
         eh_wrap_top: eh_wrap_top,
     };
-    let _ = slot;
-    for stmt in &uf.body {
-        emit_stmt(&mut f, stmt, &mut ctx);
+    if uf.is_generator {
+        // emit_gen_step_fn closes $out, pushes the FT filler, and emits the
+        // FUNCTION-body End itself.
+        emit_gen_step_fn(&mut f, uf, &mut ctx);
+    } else {
+        for stmt in &uf.body {
+            emit_stmt(&mut f, stmt, &mut ctx);
+        }
     }
     // implicit `return None` (S-02-11) + the function-body End
-    f.instruction(&Instruction::GlobalGet(G_NONE));
-    if eh_wrap_top {
-        f.instruction(&Instruction::Call(fx::FN_FRAME_POP));
+    if uf.is_generator {
+        // step fns: emit_gen_step_fn returned; nothing further.
+    } else {
+        f.instruction(&Instruction::GlobalGet(G_NONE));
+        if eh_wrap_top {
+            f.instruction(&Instruction::Call(fx::FN_FRAME_POP));
+        }
+        f.instruction(&Instruction::Return);
+        f.instruction(&Instruction::End);
     }
-    f.instruction(&Instruction::End);
     f
+}
+
+/// 03.04d: build a parked $generator for a call to generator slot `slot`
+/// (call-site scope: args via emit_expr, stashes ride the shared temp
+/// window; NO defaults — scan keeps gen defaults off the slice).
+fn emit_generator_call(f: &mut Function, slot: usize, args: &[Arg], ctx: &mut EmitCtx) {
+    let uf = ctx.scan.fns[slot].clone();
+    let nparams = uf.params.len() as u32;
+    let n_slots = gen_slot_count(&uf);
+    // 1. param_names -> TEMP_LOCAL_OBJARR2 (consumed by $code below)
+    f.instruction(&Instruction::I32Const(nparams as i32));
+    f.instruction(&Instruction::ArrayNewDefault(T_OBJ_ARR));
+    f.instruction(&Instruction::LocalSet(TEMP_LOCAL_OBJARR2));
+    for (i, p) in uf.params.iter().enumerate() {
+        f.instruction(&Instruction::LocalGet(TEMP_LOCAL_OBJARR2));
+        f.instruction(&Instruction::I32Const(i as i32));
+        push_interned_str(f, p.name.as_str(), ctx);
+        f.instruction(&Instruction::ArraySet(T_OBJ_ARR));
+    }
+    // 1b. $locals snapshot -> TEMP_LOCAL_OBJARR (params + None pad) FIRST:
+    // the $function build below leaves its result on the operand stack and
+    // the $generator StructNew consumes it in field order (type, fn, ...).
+    f.instruction(&Instruction::I32Const(n_slots as i32));
+    f.instruction(&Instruction::ArrayNewDefault(T_OBJ_ARR));
+    f.instruction(&Instruction::LocalSet(TEMP_LOCAL_OBJARR));
+    for (i, p) in uf.params.iter().enumerate() {
+        f.instruction(&Instruction::LocalGet(TEMP_LOCAL_OBJARR));
+        f.instruction(&Instruction::I32Const(i as i32));
+        let Arg::Pos(x) = &args[i] else { unreachable!() };
+        emit_expr(f, x, ctx);
+        f.instruction(&Instruction::ArraySet(T_OBJ_ARR));
+    }
+    for i in nparams..n_slots {
+        f.instruction(&Instruction::LocalGet(TEMP_LOCAL_OBJARR));
+        f.instruction(&Instruction::I32Const(i as i32));
+        f.instruction(&Instruction::GlobalGet(G_NONE));
+        f.instruction(&Instruction::ArraySet(T_OBJ_ARR));
+    }
+    // 2. $function object: type field FIRST, then $code fields in order
+    //    [name, nparams, flags, param_names, func_idx], then the $function
+    //    tail [defaults, kwdefaults, cells, globals]. Result -> TEMP_LOCAL_A.
+    f.instruction(&Instruction::GlobalGet(
+        builtin_type_global("function").unwrap_or(0),
+    ));
+    push_interned_str(f, uf.name.as_str(), ctx);
+    f.instruction(&Instruction::I32Const(nparams as i32));
+    f.instruction(&Instruction::I32Const(0));
+    f.instruction(&Instruction::LocalGet(TEMP_LOCAL_OBJARR2));
+    f.instruction(&Instruction::I32Const(fn_idx(slot) as i32));
+    f.instruction(&Instruction::StructNew(T_CODE));
+    f.instruction(&Instruction::I32Const(0));
+    f.instruction(&Instruction::ArrayNewDefault(T_OBJ_ARR)); // defaults
+    f.instruction(&Instruction::RefNull(hc(T_DICT))); // kwdefaults
+    f.instruction(&Instruction::RefNull(hc(T_CELL_ARR))); // cells
+    f.instruction(&Instruction::RefNull(hc(T_DICT))); // globals
+    f.instruction(&Instruction::StructNew(T_FUNCTION));
+    f.instruction(&Instruction::LocalSet(TEMP_LOCAL_FN)); // stash the fn ($function-typed local)
+    // 3. $generator struct: [null-type, fn, state=0, locals, null, null]
+    f.instruction(&Instruction::RefNull(hc(T_TYPE)));
+    f.instruction(&Instruction::LocalGet(TEMP_LOCAL_FN));
+    f.instruction(&Instruction::I32Const(GS_START));
+    f.instruction(&Instruction::LocalGet(TEMP_LOCAL_OBJARR));
+    f.instruction(&Instruction::RefNull(hc(T_PYOBJ)));
+    f.instruction(&Instruction::RefNull(hc(T_EXCEPTION)));
+    f.instruction(&Instruction::StructNew(T_GENERATOR));
 }
 
 /// Build a `$function` object for scan slot `slot` on the stack, in the
@@ -3149,38 +4758,42 @@ fn emit_expr(f: &mut Function, e: &Expr, ctx: &mut EmitCtx) {
         Expr::Lambda(..) => {
             // lambda in expression position: build the $function object
             // (cells resolved against the current scope — S-02-12)
-            let (sig, body) = match e {
-                Expr::Lambda(s, b) => (s.clone(), b.clone()),
-                _ => unreachable!(),
-            };
-            let body_stmts = vec![Stmt::Return(Some(*body))];
-            let slot = ctx
-                .scan
-                .fns
-                .iter()
-                .rposition(|uf| {
-                    uf.name == "<lambda>"
-                        && uf.params.len() == sig.params.len()
-                        && uf.body == body_stmts
-                })
-                .expect("scan registered this lambda");
-            emit_lambda_object(f, slot, ctx);
+            if let Expr::Lambda(sig, body) = e {
+                let body_stmts = vec![Stmt::Return(Some(body.as_ref().clone()))];
+                let slot = ctx
+                    .scan
+                    .fns
+                    .iter()
+                    .rposition(|uf| {
+                        uf.name == "<lambda>"
+                            && uf.params.len() == sig.params.len()
+                            && uf.is_generator == false
+                            && uf.body == body_stmts
+                    })
+                    .expect("scan registered this lambda");
+                emit_lambda_object(f, slot, ctx);
+                return;
+            }
+            unreachable!("scan registered this lambda");
         }
         Expr::List(items) => {
             for it in items {
                 emit_expr(f, it, ctx);
             }
+            // $list.items is the MUT array type: array.new_fixed works on
+            // mutable arrays too (the RO new_fixed was forced by the OLD
+            // RO items field).
             f.instruction(&Instruction::ArrayNewFixed {
-                array_type_index: T_OBJ_ARR_RO,
+                array_type_index: T_OBJ_ARR,
                 array_size: items.len() as u32,
             });
-            f.instruction(&Instruction::LocalSet(TEMP_LOCAL_OBJARR_RO));
+            f.instruction(&Instruction::LocalSet(TEMP_LOCAL_OBJARR));
             f.instruction(&Instruction::GlobalGet(
                 builtin_type_global("list").unwrap_or(0),
             ));
             f.instruction(&Instruction::I32Const(items.len() as i32));
             f.instruction(&Instruction::I32Const(items.len() as i32));
-            f.instruction(&Instruction::LocalGet(TEMP_LOCAL_OBJARR_RO));
+            f.instruction(&Instruction::LocalGet(TEMP_LOCAL_OBJARR));
             f.instruction(&Instruction::StructNew(T_LIST));
         }
         Expr::Tuple(items) => {
@@ -3334,6 +4947,27 @@ fn emit_call(f: &mut Function, func: &Expr, args: &[Arg], ctx: &mut EmitCtx) {
                 }
                 _ => unreachable!("scan vetted super() arity (0 or 2)"),
             }
+            return;
+        }
+    }
+    // 03.04d: STATIC generator call — build a parked $generator (params
+    // bind into the $locals snapshot; the body runs on first resume).
+    if let Expr::Name(name) = func {
+        let gslots: Vec<usize> = ctx
+            .scan
+            .fns
+            .iter()
+            .enumerate()
+            .filter(|(_, uf)| uf.name == name.as_str() && uf.is_generator)
+            .map(|(i, _)| i)
+            .collect();
+        let shadowed = ctx.scope.res.contains_key(name.as_str());
+        if gslots.len() == 1
+            && !shadowed
+            && args.iter().all(|a| matches!(a, Arg::Pos(_)))
+            && args.len() == ctx.scan.fns[gslots[0]].params.len()
+        {
+            emit_generator_call(f, gslots[0], args, ctx);
             return;
         }
     }
@@ -3621,7 +5255,7 @@ fn is_supported_builtin(n: &str) -> bool {
     matches!(
         n,
         "print" | "repr" | "str" | "bool" | "hash" | "len" | "isinstance" | "issubclass"
-            | "next" | "range" | "list" | "sum" | "iter"
+            | "next" | "range" | "list" | "sum" | "iter" | "tuple"
     )
 }
 
@@ -3723,60 +5357,63 @@ fn emit_builtin_call(f: &mut Function, name: &str, args: &[Arg], ctx: &mut EmitC
         // 1-arg: exhaustion TAG propagates (byte-exact StopIteration); 2-arg:
         // the TAG is swallowed and the default pushed.
         "next" => {
-            emit_args(f, args, ctx);
-            f.instruction(&Instruction::Call(fx::FN_ITER_NEXT));
-            if args.len() == 2 {
-                // result rides A across the catch; default in B
-                f.instruction(&Instruction::LocalSet(TEMP_LOCAL_A));
-                f.instruction(&Instruction::RefNull(hc(T_PYOBJ)));
-                f.instruction(&Instruction::LocalSet(TEMP_LOCAL_B));
-                f.instruction(&Instruction::Block(BlockType::Result(
-                    ValType::Ref(wasm_encoder::RefType {
-                        nullable: true,
-                        heap_type: hc(T_EXCEPTION),
-                    }),
-                )));
-                let catches = [wasm_encoder::Catch::One {
-                    tag: TAG_PYEXC,
-                    label: 0,
-                }];
-                f.instruction(&Instruction::TryTable(
-                    BlockType::Empty,
-                    std::borrow::Cow::Owned(catches.to_vec()),
-                ));
-                // retry the next() INSIDE the try region (the operand was
-                // evaluated once above; the call itself is what throws)
-                f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
-                f.instruction(&Instruction::Drop);
-                emit_args(f, args, ctx);
+            // 1-arg: value = iter_next(it) (SI propagates). 2-arg:
+            // canonical Block($cx result exc) + try_table; the retry
+            // pushes ONLY the iterator (default stashed in B first).
+            let posn: Vec<&Expr> = args
+                .iter()
+                .filter_map(|a| match a {
+                    Arg::Pos(x) => Some(x),
+                    _ => None,
+                })
+                .collect();
+            if posn.len() == 2 {
+                if let [Arg::Pos(it), Arg::Pos(def)] = args {
+                    emit_expr(f, def, ctx);
+                    f.instruction(&Instruction::LocalSet(TEMP_LOCAL_B));
+                    emit_expr(f, it, ctx);
+                    f.instruction(&Instruction::LocalSet(TEMP_LOCAL_A));
+                    f.instruction(&Instruction::Block(BlockType::Result(
+                        ValType::Ref(wasm_encoder::RefType {
+                            nullable: true,
+                            heap_type: hc(T_EXCEPTION),
+                        }),
+                    ))); // $cx
+                    let catches = [wasm_encoder::Catch::One {
+                        tag: TAG_PYEXC,
+                        label: 0,
+                    }];
+                    f.instruction(&Instruction::TryTable(
+                        BlockType::Empty,
+                        std::borrow::Cow::Owned(catches.to_vec()),
+                    ));
+                    f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
+                    f.instruction(&Instruction::Call(fx::FN_ITER_NEXT));
+                    f.instruction(&Instruction::LocalSet(TEMP_LOCAL_A));
+                    f.instruction(&Instruction::End); // try_table
+                    f.instruction(&Instruction::RefNull(hc(T_EXCEPTION))); // payload
+                    f.instruction(&Instruction::End); // $cx: exc|null
+                    f.instruction(&Instruction::LocalSet(TEMP_LOCAL_S));
+                    f.instruction(&Instruction::LocalGet(TEMP_LOCAL_S));
+                    f.instruction(&Instruction::RefIsNull);
+                    f.instruction(&Instruction::If(BlockType::Result(pyobj_ref())));
+                    f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
+                    f.instruction(&Instruction::Else);
+                    f.instruction(&Instruction::LocalGet(TEMP_LOCAL_B));
+                    f.instruction(&Instruction::End);
+                } else {
+                    unreachable!("scan vetted next() arg kinds");
+                }
+            } else {
+                for a in args {
+                    let Arg::Pos(x) = a else {
+                        unreachable!("scan vetted positional args");
+                    };
+                    emit_expr(f, x, ctx);
+                }
                 f.instruction(&Instruction::Call(fx::FN_ITER_NEXT));
-                f.instruction(&Instruction::LocalSet(TEMP_LOCAL_A));
-                f.instruction(&Instruction::RefNull(hc(T_EXCEPTION))); // success payload
-                f.instruction(&Instruction::End);
-                // A = exc|null; null -> B = result
-                f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
-                f.instruction(&Instruction::RefIsNull);
-                f.instruction(&Instruction::If(BlockType::Empty));
-                f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
-                f.instruction(&Instruction::Drop); // clear the stack shape
-                f.instruction(&Instruction::End);
-                // reload: if null push A's saved result... shape:
-                f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
-                f.instruction(&Instruction::RefIsNull);
-                f.instruction(&Instruction::If(BlockType::Empty));
-                f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
-                f.instruction(&Instruction::Else);
-                f.instruction(&Instruction::LocalGet(TEMP_LOCAL_B));
-                f.instruction(&Instruction::End);
-            } else if args.len() != 1 {
-                unreachable!("scan vetted next() arity (1 or 2)");
             }
         }
-        // range(n) / range(a, b) / range(a, b, step): build the container-
-        // iterator $generator INLINE (fn=null, state=n, locals=snapshot,
-        // value=$int(0)) — the SAME shape iter_of builds for $list.
-        // Range semantics: step>0: a, a+step, ... < b; step<0: descending;
-        // step=0: ValueError. On the corpus slice step ∈ {+1, implicit}.
         "range" => {
             let pos: Vec<&Expr> = args
                 .iter()
@@ -3861,6 +5498,85 @@ fn emit_range(f: &mut Function, pos: &[&Expr], ctx: &mut EmitCtx) {
         }
         _ => unreachable!("scan vetted range() arity"),
     }
+    // 2. count = steps between start and stop (ceil for step>0: (stop-start+step-1)/step)
+    //    i64 -> i32 (bounds-checked slice)
+    f.instruction(&Instruction::LocalGet(54));
+    f.instruction(&Instruction::LocalGet(53));
+    f.instruction(&Instruction::I64Sub);
+    f.instruction(&Instruction::LocalGet(55));
+    f.instruction(&Instruction::I64Add);
+    f.instruction(&Instruction::I64Const(1));
+    f.instruction(&Instruction::I64Sub);
+    f.instruction(&Instruction::LocalGet(55));
+    f.instruction(&Instruction::I64DivS);
+    f.instruction(&Instruction::I32WrapI64);
+    f.instruction(&Instruction::LocalSet(56)); // count (i32)
+    // negative count -> 0 (clamp: LocalGet; 0 LtS; If {0})
+    f.instruction(&Instruction::LocalGet(56));
+    f.instruction(&Instruction::I32Const(0));
+    f.instruction(&Instruction::I32LtS);
+    f.instruction(&Instruction::If(BlockType::Empty));
+    f.instruction(&Instruction::I32Const(0));
+    f.instruction(&Instruction::LocalSet(56));
+    f.instruction(&Instruction::End);
+    // 3. materialize the snapshot into a mut $obj_arr (LOCAL 57 — NOT
+    // TEMP_LOCAL_OBJARR(44): emit_expr of a LitInt clobbers 44/45 via the
+    // int build path, so the snapshot arr must live OUTSIDE the shared
+    // temp window).
+    f.instruction(&Instruction::LocalGet(56));
+    f.instruction(&Instruction::ArrayNewDefault(T_OBJ_ARR));
+    f.instruction(&Instruction::LocalSet(57));
+    f.instruction(&Instruction::I32Const(0));
+    f.instruction(&Instruction::LocalSet(59)); // i
+    f.instruction(&Instruction::Block(BlockType::Empty));
+    f.instruction(&Instruction::Loop(BlockType::Empty));
+    f.instruction(&Instruction::LocalGet(59));
+    f.instruction(&Instruction::LocalGet(56));
+    f.instruction(&Instruction::I32GeU);
+    f.instruction(&Instruction::BrIf(1));
+    // arr[i] = $int(start + i*step) — $int build is stack-local (no stash)
+    f.instruction(&Instruction::LocalGet(57));
+    f.instruction(&Instruction::LocalGet(59));
+    f.instruction(&Instruction::GlobalGet(
+        builtin_type_global("int").unwrap_or(0),
+    ));
+    f.instruction(&Instruction::I32Const(0));
+    f.instruction(&Instruction::LocalGet(53));
+    f.instruction(&Instruction::LocalGet(59));
+    f.instruction(&Instruction::I64ExtendI32U);
+    f.instruction(&Instruction::LocalGet(55));
+    f.instruction(&Instruction::I64Mul);
+    f.instruction(&Instruction::I64Add);
+    f.instruction(&Instruction::RefNull(hc(T_BIGINT)));
+    f.instruction(&Instruction::StructNew(T_INT));
+    f.instruction(&Instruction::ArraySet(T_OBJ_ARR));
+    f.instruction(&Instruction::LocalGet(59));
+    f.instruction(&Instruction::I32Const(1));
+    f.instruction(&Instruction::I32Add);
+    f.instruction(&Instruction::LocalSet(59));
+    f.instruction(&Instruction::Br(0));
+    f.instruction(&Instruction::End); // loop
+    f.instruction(&Instruction::End); // block
+    // 4. the $generator struct { fn: null, state: count, locals: snapshot,
+    //    value: $int(0) cursor, exn: null } (iter_snapshot shape)
+    f.instruction(&Instruction::RefNull(hc(T_TYPE))); // $pyobj field 0
+    f.instruction(&Instruction::RefNull(hc(T_FUNCTION)));
+    f.instruction(&Instruction::LocalGet(56)); // state = count
+    f.instruction(&Instruction::LocalGet(57)); // locals snapshot
+    f.instruction(&Instruction::GlobalGet(
+        builtin_type_global("int").unwrap_or(0),
+    ));
+    f.instruction(&Instruction::I32Const(0));
+    f.instruction(&Instruction::I64Const(0));
+    f.instruction(&Instruction::RefNull(hc(T_BIGINT)));
+    f.instruction(&Instruction::StructNew(T_INT)); // cursor box = 0
+    f.instruction(&Instruction::RefNull(hc(T_EXCEPTION)));
+    f.instruction(&Instruction::StructNew(T_GENERATOR));
+}
+
+/// shared range tail (locals 53..59 already loaded): count+materialize+
+/// $generator struct build (03.04d: reused by the gen-slice range arm).
+fn emit_range_tail(f: &mut Function) {
     // 2. count = steps between start and stop (ceil for step>0: (stop-start+step-1)/step)
     //    i64 -> i32 (bounds-checked slice)
     f.instruction(&Instruction::LocalGet(54));

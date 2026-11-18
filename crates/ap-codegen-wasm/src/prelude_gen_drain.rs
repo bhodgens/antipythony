@@ -125,7 +125,19 @@ fn emit_drain_loop(f: &mut Function, accumulate: Accumulate) {
     f.instruction(&Instruction::LocalGet(2));
     f.instruction(&Instruction::RefIsNull);
     f.instruction(&Instruction::If(BlockType::Empty));
-    f.instruction(&Instruction::Br(1)); // normal exit -> $out end
+    f.instruction(&Instruction::Br(1)); // null = success -> $out end
+    f.instruction(&Instruction::End);
+    // payload non-null: StopIteration = NORMAL exhaustion (exit $out with the
+    // accumulator as-is); anything else = a real error -> rethrow. (The
+    // first draft rethrew EVERY non-null payload — list()/sum() always died
+    // with an uncaught StopIteration; found by the ge_run_probe drain cases.)
+    f.instruction(&Instruction::LocalGet(2));
+    f.instruction(&Instruction::GlobalGet(
+        crate::types::exc_type_global("StopIteration").unwrap_or(0),
+    ));
+    f.instruction(&Instruction::Call(fx::FN_EXC_MATCH));
+    f.instruction(&Instruction::If(BlockType::Empty));
+    f.instruction(&Instruction::Br(1)); // exhaustion -> $out end (If=@2, $out=@1)
     f.instruction(&Instruction::End);
     f.instruction(&Instruction::LocalGet(2));
     f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
@@ -167,6 +179,13 @@ pub(crate) fn list_drain(
                     heap_type: hc(T_OBJ_ARR),
                 }),
             ), // 6 = next buffer
+            (
+                1,
+                ValType::Ref(wasm_encoder::RefType {
+                    nullable: true,
+                    heap_type: hc(T_OBJ_ARR_RO),
+                }),
+            ), // 7 = RO items copy (the $list items field)
         ],
         |f| {
             push_drain_common(f);
@@ -175,14 +194,15 @@ pub(crate) fn list_drain(
             emit_drain_loop(f, Accumulate::Items);
             // $list { type(0), len(1), cap(2), items(3) } — StructNew pops in
             // REVERSE field order: push type first, then len, then cap, then
-            // items LAST.
+            // items LAST. The accumulator mut $obj_arr IS the $list.items
+            // type now (types.rs: items flipped to T_OBJ_ARR when the drain
+            // probes exposed ref.cast(mut->RO) as a runtime trap).
             f.instruction(&Instruction::GlobalGet(
                 builtin_type_global("list").unwrap_or(0),
             ));
             f.instruction(&Instruction::I32Const(1)); // len (py_str/eq read cap)
             f.instruction(&Instruction::LocalGet(3)); // cap = n
-            f.instruction(&Instruction::LocalGet(1));
-            f.instruction(&Instruction::RefCastNullable(hc(T_OBJ_ARR_RO)));
+            f.instruction(&Instruction::LocalGet(1)); // items
             f.instruction(&Instruction::StructNew(T_LIST));
         },
     );
