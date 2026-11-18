@@ -8,6 +8,10 @@ license.workspace = true
 [lib]
 path = "src/lib.rs"
 
+[[bin]]
+name = "ap-host"
+path = "src/main.rs"
+
 [lints]
 workspace = true  # robustness-ci 02.01 - see root Cargo.toml [workspace.lints]
 
@@ -15,6 +19,18 @@ workspace = true  # robustness-ci 02.01 - see root Cargo.toml [workspace.lints]
 ap-codegen-wasm = { path = "../ap-codegen-wasm" }
 wasmtime = "47"
 wasmtime-wasi = "47"
+# Surface validation on raw bytes (version stamp / threading / imports —
+# BEFORE compile; same parser family as the emitter's dev-deps).
+wasmparser = "0.263"
+# TTFB recording pipe (FirstBytePipe wraps a MemoryOutputPipe through the
+# wasmtime_wasi_io OutputStream trait — tokio is already in the wasmtime-wasi
+# closure with io-util on).
+tokio = { version = "1", default-features = false, features = ["io-util"] }
+async-trait = "0.1"
+bytes = "1"
+wasmtime-wasi-io = "47"
 
 [dev-dependencies]
 ap-ir = { path = "../ap-ir" }
+# The threading-refusal test builds a minimal synthetic module.
+wasm-encoder = "0.263.0"
