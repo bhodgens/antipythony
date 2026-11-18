@@ -2177,6 +2177,10 @@ fn gen_store_slot(f: &mut Function, gen: &GenCtx, name: &str) {
 struct SegPlan {
     segs: Vec<Segment>,
     wrappers: Vec<WrapRange>,
+    /// Loop-tail segment ids (while/for body ends): their fall-through is
+    /// dead (the back-chain br + break/continue cover every exit) — the
+    /// emitter unreachables it.
+    loop_tails: Vec<SegId>,
 }
 
 #[derive(Clone, Debug)]
@@ -2304,6 +2308,8 @@ struct SegPlanner {
     segs: Vec<Segment>,
     wrappers: Vec<WrapRange>,
     for_count: usize,
+    loop_depth: usize,
+    loop_tails: Vec<SegId>,
 }
 
 const YF_IT_SLOT: &str = "__ap_yf_it";
@@ -2539,10 +2545,13 @@ impl SegPlanner {
                     no: 0,
                 });
                 let body_start = self.segs.len();
+                self.loop_depth += 1;
                 let (_b0, bl, body_end) = self.plan_seq(body, None);
+                self.loop_depth -= 1;
                 let after = self.segs.len();
                 self.patch_loop_sentinels(body_start, body_end, head, after);
                 self.segs[bl].next_override = Some(head); // loop back-chain
+                self.loop_tails.push(bl);
                 self.patch(
                     head,
                     SegKind::Test {
@@ -2586,6 +2595,7 @@ impl SegPlanner {
                 let after = self.segs.len();
                 self.patch_loop_sentinels(body_start, body_end, fnx, after);
                 self.segs[bl].next_override = Some(fnx); // next iteration
+                self.loop_tails.push(bl);
                 self.patch(
                     fnx,
                     SegKind::ForNext {
@@ -2678,6 +2688,8 @@ fn gen_plan_segments(uf: &UserFn) -> SegPlan {
         segs: Vec::new(),
         wrappers: Vec::new(),
         for_count: 0,
+        loop_depth: 0,
+        loop_tails: Vec::new(),
     };
     let (_f, _l, _e) = p.plan_seq(&uf.body, None);
     let n = p.segs.len();
@@ -2695,6 +2707,7 @@ fn gen_plan_segments(uf: &UserFn) -> SegPlan {
     SegPlan {
         segs: p.segs,
         wrappers: p.wrappers,
+        loop_tails: p.loop_tails,
     }
 }
 
@@ -2744,6 +2757,8 @@ fn emit_gen_step_fn(f: &mut Function, uf: &UserFn, ctx: &mut EmitCtx) {
     };
     let plan = gen_plan_segments(uf);
     let n_segs = plan.segs.len();
+    let loop_tails: std::collections::HashSet<usize> =
+        plan.loop_tails.iter().copied().collect();
 
     // 1. reload ALL mirrors from $gen.$locals (params land here at GS_START;
     // later resumes re-load the spilled values).
@@ -2787,6 +2802,7 @@ fn emit_gen_step_fn(f: &mut Function, uf: &UserFn, ctx: &mut EmitCtx) {
         // fall-through continuation: next_override or k+1 (k+1 == n at the
         // tail = the done escape via br_table default).
         let next = seg.next_override.unwrap_or(k + 1);
+        let dead_tail = loop_tails.contains(&k);
         // Continuation emitter. Open labels at segment k's BODY level
         // (innermost first): B(k)=0, B(k+1)=1, ..., B(n-1)=n-k-1,
         // $sink=n-k, $done=n-k+1, Loop=n-k+2.
@@ -2807,7 +2823,7 @@ fn emit_gen_step_fn(f: &mut Function, uf: &UserFn, ctx: &mut EmitCtx) {
                 }
                 f.instruction(&Instruction::I32Const((k + 1) as i32));
                 f.instruction(&Instruction::LocalSet(2));
-                f.instruction(&Instruction::Br((n_segs - k + 2 + extra) as u32));
+                f.instruction(&Instruction::Br((n_segs - k + 1 + extra) as u32));
             } else if target >= n_segs {
                 f.instruction(&Instruction::Br((n_segs - k + extra) as u32));
             } else if target > k {
@@ -2815,7 +2831,7 @@ fn emit_gen_step_fn(f: &mut Function, uf: &UserFn, ctx: &mut EmitCtx) {
             } else {
                 f.instruction(&Instruction::I32Const(target as i32));
                 f.instruction(&Instruction::LocalSet(2));
-                f.instruction(&Instruction::Br((n_segs - k + 2 + extra) as u32));
+                f.instruction(&Instruction::Br((n_segs - k + 1 + extra) as u32));
             }
         };
         let mut goto = |f: &mut Function, target: usize| goto_x(f, target, 0);
@@ -2824,19 +2840,28 @@ fn emit_gen_step_fn(f: &mut Function, uf: &UserFn, ctx: &mut EmitCtx) {
                 for s in stmts {
                     gen_emit_stmt(f, s, ctx, &gen);
                 }
+                // loop tail: the back-chain goto ALWAYS emits (a backward
+                // target = state reg + Loop br). No dead-fall special case
+                // needed — the br routes every arrival back to the head.
                 goto(f, next);
             }
             SegKind::Test { cond, yes, no } => {
+                // cond ON the ground BEFORE the If: the compare chain reads
+                // (int-from-i64 + bool build) need the module-frame locals —
+                // inside an If those allocs wedged wasmtime in 03.02c (the
+                // While emitter note); the same hazard applies here.
                 gen_emit_cond(f, cond, ctx, &gen);
+                f.instruction(&Instruction::LocalSet(gen.scratch.cmp));
+                f.instruction(&Instruction::LocalGet(gen.scratch.cmp));
                 f.instruction(&Instruction::If(BlockType::Empty));
                 // inside the If: +1 label
                 goto_x(f, *yes, 1);
                 f.instruction(&Instruction::Else);
                 goto_x(f, *no, 1);
                 f.instruction(&Instruction::End); // If
-                // both arms br'd away; unreachable tail keeps the validator
-                // stack-polymorphic: fall to next.
-                goto(f, next);
+                // both arms br'd away; unreachable-tail the fall-through so
+                // no half-truthy state can ever leak into the next segment.
+                f.instruction(&Instruction::Unreachable);
             }
             SegKind::Park {
                 value_expr,
@@ -2855,7 +2880,8 @@ fn emit_gen_step_fn(f: &mut Function, uf: &UserFn, ctx: &mut EmitCtx) {
                     ParkKind::Split(_op, _lhs, _slot) => {}
                 }
                 gen_park_yield(f, &gen, *park_next as i32);
-                // after the return: nothing (control leaves the fn)
+                // control left the fn (park returned); NOTHING after — not
+                // even a validator-necessary br: the fn-end is implicit.
             }
             SegKind::Rebind { slot } => {
                 gen_lget_gen(f);
@@ -3021,15 +3047,18 @@ fn emit_gen_step_fn(f: &mut Function, uf: &UserFn, ctx: &mut EmitCtx) {
     f.instruction(&Instruction::End); // $sink End (last segment block's
     // End already closed B(n-1); falling here = done region entry, and the
     // br_table default (depth n from dispatch) lands HERE directly).
-    // done region: $value = None, state = DONE, return null
+    // done region: $value = None, state = DONE, return null. The entry is
+    // POP-INSENSITIVE: dispatch (state = n) arrives with an i32 on the
+    // stack (the br_table operand, auto-popped by the br), a resume with a
+    // pyobj — so DON'T Return (that would type-require a value); fall
+    // through $done's End instead, which pops nothing. The step fn's
+    // (result oref) contract is met by the FT filler after Loop's End.
     gen_lget_gen(f);
     f.instruction(&Instruction::GlobalGet(G_NONE));
     sset(f, T_GENERATOR, F_GEN_VALUE);
     gen_lget_gen(f);
     f.instruction(&Instruction::I32Const(GS_DONE));
     sset(f, T_GENERATOR, F_GEN_STATE);
-    f.instruction(&Instruction::RefNull(hc(T_PYOBJ)));
-    f.instruction(&Instruction::Return);
     f.instruction(&Instruction::End); // $done End
     f.instruction(&Instruction::End); // Loop End
     f.instruction(&Instruction::RefNull(hc(T_PYOBJ))); // FT result filler
@@ -3149,6 +3178,12 @@ fn gen_extract_si_payload(f: &mut Function, gen: &GenCtx) {
 fn gen_park_yield(f: &mut Function, gen: &GenCtx, park: i32) {
     // stash the yield value
     f.instruction(&Instruction::LocalSet(gen.scratch.b));
+    // clear any staged throw-in ($exn was consumed by the resume that
+    // reached this park; gen_close's GeneratorExit must not linger or the
+    // next resume re-sees it).
+    gen_lget_gen(f);
+    f.instruction(&Instruction::RefNull(hc(T_EXCEPTION)));
+    sset(f, T_GENERATOR, F_GEN_EXN);
     for i in 0..gen.slot_table.len() as u32 {
         gen_lget_gen(f);
         f.instruction(&Instruction::StructGet {
