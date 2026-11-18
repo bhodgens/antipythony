@@ -2,5 +2,7 @@
 /target-*/
 __pycache__/
 *.pyc
+# machine-regenerated wasm corpus dumps (regenerate: cli_corpus_dump test) — never a gate
+/logs/
 # robustness-ci 01.05: machine-regenerated timing artifact, trend-only, never a gate
 tests/t08_tier1/bench_report.json
