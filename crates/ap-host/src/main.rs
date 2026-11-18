@@ -78,6 +78,12 @@ fn cli_run(argv: &[String]) -> Result<(), CliError> {
     };
     let mut it = argv.iter();
     let mut no_more_flags = false;
+    // The `run` verb is optional sugar (`ap-host run x.wasm` ==
+    // `ap-host x.wasm`); the leaf brief's canonical shape is
+    // `ap-host run <module.wasm> [args...]`.
+    if argv.first().map(|s| s.as_str()) == Some("run") {
+        it.next();
+    }
     while let Some(a) = it.next() {
         if !no_more_flags && a == "--" {
             no_more_flags = true;
@@ -178,11 +184,13 @@ fn cli_run(argv: &[String]) -> Result<(), CliError> {
             if inv.ttfb {
                 match out.ttfb_us {
                     Some(us) => eprintln!(
-                        "[ap-host] ttfb {}us ({}.{:03}ms), total {}us",
+                        "[ap-host] ttfb {}us ({}.{:03}ms), total {}us ({}.{:03}ms)",
                         us,
                         us / 1000,
                         us % 1000,
-                        out.total_us
+                        out.total_us,
+                        out.total_us / 1000,
+                        out.total_us % 1000
                     ),
                     None => eprintln!("[ap-host] ttfb: module wrote nothing to stdout"),
                 }

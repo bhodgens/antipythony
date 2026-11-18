@@ -30,10 +30,12 @@ impl FirstByteStamp {
     /// Elapsed from `start` to the first write, in microseconds (None =
     /// the module never wrote to this fd).
     pub fn elapsed_us_since(&self, start: Instant) -> Option<u128> {
+        // The stamp instant is taken AFTER `start` (the run began first),
+        // so elapsed = t.saturating_duration_since(start).
         self.0
             .lock()
             .ok()?
-            .map(|t| start.saturating_duration_since(t).as_micros().max(1))
+            .map(|t| t.saturating_duration_since(start).as_micros())
     }
 }
 

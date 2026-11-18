@@ -168,8 +168,14 @@ version = "0.1.0"
 dependencies = [
  "ap-codegen-wasm",
  "ap-ir",
+ "async-trait",
+ "bytes",
+ "tokio",
+ "wasm-encoder 0.263.0",
+ "wasmparser 0.263.0",
  "wasmtime",
  "wasmtime-wasi",
+ "wasmtime-wasi-io",
 ]
 
 [[package]]
