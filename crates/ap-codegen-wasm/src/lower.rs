@@ -2228,6 +2228,15 @@ enum SegKind {
     YfDone { slot: String },
     /// Unconditional goto (forward br / backward trampoline).
     Goto(SegId),
+    /// Handler-prefix statement group: runs inside the try wrapper close
+    /// region (the handler just matched). When `park_value` is set the
+    /// group yields (parking at `resume`, which carries the post stmts).
+    HandlerPrefix {
+        stmts: Vec<Stmt>,
+        park_value: Option<Expr>,
+        park_kind: ParkKind,
+        resume: usize,
+    },
     /// state = DONE; $value = value (None when bare); return null.
     Return { value: Option<Expr> },
 }
@@ -2293,6 +2302,8 @@ struct HandlerPlan {
     prefix: Vec<Stmt>,
     park_value: Option<Expr>,
     resume: Option<SegId>,
+    /// staged HandlerPrefix segment (park-yielding handlers only).
+    prefix_seg: Option<SegId>,
 }
 
 /// Continuation sentinels staged in `Segment::next_override` during
@@ -2310,6 +2321,9 @@ struct SegPlanner {
     for_count: usize,
     loop_depth: usize,
     loop_tails: Vec<SegId>,
+    /// Handler-prefix segments staged at plan time (wired at plan end):
+    /// (prefix_seg, resume_seg, prefix_stmts, park_value, park_kind).
+    pending_prefix: Vec<(SegId, Option<SegId>, Vec<Stmt>, Option<Expr>, ParkKind)>,
 }
 
 const YF_IT_SLOT: &str = "__ap_yf_it";
@@ -2611,26 +2625,45 @@ impl SegPlanner {
                     fail_closed_gen("gen try orelse/finally");
                 }
                 let w0 = self.segs.len();
+                // 1. try body segments (each re-wrapped per-segment at emit)
                 let (_b0, _bl, _be) = self.plan_seq(&ts.body, None);
                 let after = self.segs.len();
+                // 2. handler plan: split at the yield; prefix runs inline
+                // in the wrapper close region; a yielded prefix parks at
+                // `resume` (the post segment, placed after the wrapper).
                 let mut handlers = Vec::new();
                 for h in &ts.handlers {
                     let (prefix, park_value, post) = split_handler_body(&h.body);
+                    let mut pid: Option<SegId> = None;
                     let resume = if park_value.is_some() {
                         let rid = self.push(SegKind::Seq(post));
-                        // handler resumes AFTER the try: E_PEND is resolved
-                        // by the enclosing loop pass or at plan end.
                         self.segs[rid].next_override = Some(E_PEND);
+                        // prefix segment staged now, wired at plan end
+                        let p = self.push(SegKind::Seq(Vec::new()));
+                        pid = Some(p);
+                        let pk = match &h.name {
+                            Some(n) => ParkKind::Bind(n.as_str().to_string()),
+                            None => ParkKind::Bare,
+                        };
+                        self.pending_prefix.push((
+                            pid.unwrap(),
+                            Some(rid),
+                            prefix.clone(),
+                            park_value.clone(),
+                            pk,
+                        ));
                         Some(rid)
                     } else {
                         None
                     };
+                    let prefix_seg = pid;
                     handlers.push(HandlerPlan {
                         ty: h.ty.clone(),
                         name: h.name.clone(),
                         prefix,
                         park_value,
                         resume,
+                        prefix_seg,
                     });
                 }
                 self.wrappers.push(WrapRange {
@@ -2690,6 +2723,7 @@ fn gen_plan_segments(uf: &UserFn) -> SegPlan {
         for_count: 0,
         loop_depth: 0,
         loop_tails: Vec::new(),
+        pending_prefix: Vec::new(),
     };
     let (_f, _l, _e) = p.plan_seq(&uf.body, None);
     let n = p.segs.len();
@@ -2703,6 +2737,15 @@ fn gen_plan_segments(uf: &UserFn) -> SegPlan {
             }
             _ => {}
         }
+    }
+    // wire handler-prefix segments (their ids are final now)
+    for (pid, resume, stmts, park_value, pk) in p.pending_prefix.drain(..) {
+        p.segs[pid].kind = SegKind::HandlerPrefix {
+            stmts,
+            park_value,
+            park_kind: pk,
+            resume: resume.unwrap(),
+        };
     }
     SegPlan {
         segs: p.segs,
@@ -2759,6 +2802,25 @@ fn emit_gen_step_fn(f: &mut Function, uf: &UserFn, ctx: &mut EmitCtx) {
     let n_segs = plan.segs.len();
     let loop_tails: std::collections::HashSet<usize> =
         plan.loop_tails.iter().copied().collect();
+    // try-wrapper map: wrapper id covering segment k (inner0 <= k < after).
+    // More than one nested wrapper over one segment is not planned.
+    let mut wrap_of: Vec<Option<usize>> = vec![None; n_segs];
+    for (wid, w) in plan.wrappers.iter().enumerate() {
+        for k in w.inner0..w.after {
+            wrap_of[k] = Some(wid);
+        }
+    }
+    // per-segment staged HandlerPrefix seg (first park-yield handler)
+    let mut prefix_seg_of: Vec<Option<usize>> = vec![None; n_segs];
+    for (wid, w) in plan.wrappers.iter().enumerate() {
+        let pseg = w
+            .handlers
+            .iter()
+            .find_map(|h| h.prefix_seg);
+        for k in w.inner0..w.after {
+            prefix_seg_of[k] = pseg;
+        }
+    }
 
     // 1. reload ALL mirrors from $gen.$locals (params land here at GS_START;
     // later resumes re-load the spilled values).
@@ -2834,7 +2896,28 @@ fn emit_gen_step_fn(f: &mut Function, uf: &UserFn, ctx: &mut EmitCtx) {
                 f.instruction(&Instruction::Br((n_segs - k + 1 + extra) as u32));
             }
         };
-        let mut goto = |f: &mut Function, target: usize| goto_x(f, target, 0);
+        let wrap_extra: usize = if wrap_of[k].is_some() { 2 } else { 0 };
+        let mut goto = move |f: &mut Function, target: usize| {
+            goto_x(f, target, wrap_extra);
+        };
+        // ---- per-segment try_table re-open (03.04e GE003) ----
+        let in_wrap = wrap_of[k].is_some();
+        if in_wrap {
+            f.instruction(&Instruction::Block(BlockType::Result(
+                ValType::Ref(wasm_encoder::RefType {
+                    nullable: true,
+                    heap_type: hc(T_EXCEPTION),
+                }),
+            ))); // $cx
+            let catches = [wasm_encoder::Catch::One {
+                tag: TAG_PYEXC,
+                label: 0,
+            }];
+            f.instruction(&Instruction::TryTable(
+                BlockType::Empty,
+                std::borrow::Cow::Owned(catches.to_vec()),
+            ));
+        }
         match &seg.kind {
             SegKind::Seq(stmts) => {
                 for s in stmts {
@@ -2855,9 +2938,9 @@ fn emit_gen_step_fn(f: &mut Function, uf: &UserFn, ctx: &mut EmitCtx) {
                 f.instruction(&Instruction::LocalGet(gen.scratch.cmp));
                 f.instruction(&Instruction::If(BlockType::Empty));
                 // inside the If: +1 label
-                goto_x(f, *yes, 1);
+                goto_x(f, *yes, 1 + wrap_extra);
                 f.instruction(&Instruction::Else);
-                goto_x(f, *no, 1);
+                goto_x(f, *no, 1 + wrap_extra);
                 f.instruction(&Instruction::End); // If
                 // both arms br'd away; unreachable-tail the fall-through so
                 // no half-truthy state can ever leak into the next segment.
@@ -2900,6 +2983,14 @@ fn emit_gen_step_fn(f: &mut Function, uf: &UserFn, ctx: &mut EmitCtx) {
             }
             SegKind::ForInit { iter, it_slot } => {
                 gen_emit_expr(f, iter, ctx, &gen);
+                // a generator delegate expr lowers to the parked $generator
+                // VALUE (a $function object) — call_of materializes the
+                // $generator (plain values pass through).
+                f.instruction(&Instruction::ArrayNewFixed {
+                    array_type_index: T_OBJ_ARR_RO,
+                    array_size: 0,
+                });
+                f.instruction(&Instruction::Call(fx::FN_CALL_OF));
                 f.instruction(&Instruction::Call(fx::FN_ITER_OF));
                 gen_store_slot(f, &gen, it_slot.as_str());
                 goto(f, next);
@@ -2928,30 +3019,33 @@ fn emit_gen_step_fn(f: &mut Function, uf: &UserFn, ctx: &mut EmitCtx) {
                     ));
                     gen_load_slot(f, &gen, it_slot.as_str());
                     f.instruction(&Instruction::Call(fx::FN_ITER_NEXT));
+                    // consume the result INSIDE (BlockType::Empty ends
+                    // stack-empty; the catch replaces the stack anyway)
+                    f.instruction(&Instruction::LocalSet(gen.scratch.a));
                     f.instruction(&Instruction::End); // try_table
                     f.instruction(&Instruction::RefNull(hc(T_EXCEPTION)));
                 }
                 f.instruction(&Instruction::End); // $cx: exc|null on stack
-                f.instruction(&Instruction::LocalSet(gen.scratch.a));
+                f.instruction(&Instruction::LocalSet(gen.scratch.b));
                 f.instruction(&Instruction::Block(BlockType::Empty)); // $chk
                 {
                     // null -> success: fall through to the bind
-                    f.instruction(&Instruction::LocalGet(gen.scratch.a));
+                    f.instruction(&Instruction::LocalGet(gen.scratch.b));
                     f.instruction(&Instruction::RefIsNull);
                     f.instruction(&Instruction::If(BlockType::Empty));
                     f.instruction(&Instruction::Br(1));
                     f.instruction(&Instruction::End);
                     // SI -> exhaustion: goto exit
-                    f.instruction(&Instruction::LocalGet(gen.scratch.a));
+                    f.instruction(&Instruction::LocalGet(gen.scratch.b));
                     f.instruction(&Instruction::GlobalGet(
                         crate::types::exc_type_global("StopIteration").unwrap_or(0),
                     ));
                     f.instruction(&Instruction::Call(fx::FN_EXC_MATCH));
                     f.instruction(&Instruction::If(BlockType::Empty));
-                    goto_x(f, *exit, 2);
+                    goto_x(f, *exit, 2 + wrap_extra);
                     f.instruction(&Instruction::End);
                     // other raise: rethrow
-                    f.instruction(&Instruction::LocalGet(gen.scratch.a));
+                    f.instruction(&Instruction::LocalGet(gen.scratch.b));
                     f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
                     f.instruction(&Instruction::Throw(TAG_PYEXC));
                 }
@@ -2980,21 +3074,23 @@ fn emit_gen_step_fn(f: &mut Function, uf: &UserFn, ctx: &mut EmitCtx) {
                     ));
                     gen_load_slot(f, &gen, it_slot.as_str());
                     f.instruction(&Instruction::Call(fx::FN_ITER_NEXT));
+                    // consume INSIDE (empty-stack at try_table End)
+                    f.instruction(&Instruction::LocalSet(gen.scratch.a));
                     f.instruction(&Instruction::End); // try_table
                     f.instruction(&Instruction::RefNull(hc(T_EXCEPTION)));
                 }
                 f.instruction(&Instruction::End); // $cx
-                f.instruction(&Instruction::LocalSet(gen.scratch.a));
+                f.instruction(&Instruction::LocalSet(gen.scratch.b));
                 f.instruction(&Instruction::Block(BlockType::Empty)); // $chk
                 {
-                    f.instruction(&Instruction::LocalGet(gen.scratch.a));
+                    f.instruction(&Instruction::LocalGet(gen.scratch.b));
                     f.instruction(&Instruction::RefIsNull);
                     f.instruction(&Instruction::If(BlockType::Empty));
                     f.instruction(&Instruction::Br(1));
                     f.instruction(&Instruction::End);
-                    // SI: stash payload ($gen.$value carries it per the
-                    // driver contract) then goto done
-                    f.instruction(&Instruction::LocalGet(gen.scratch.a));
+                    // SI: extract args[0] (or None) into scratch.b for
+                    // the YfDone segment, then goto done
+                    f.instruction(&Instruction::LocalGet(gen.scratch.b));
                     f.instruction(&Instruction::GlobalGet(
                         crate::types::exc_type_global("StopIteration").unwrap_or(0),
                     ));
@@ -3003,9 +3099,9 @@ fn emit_gen_step_fn(f: &mut Function, uf: &UserFn, ctx: &mut EmitCtx) {
                     // exhaustion: extract the SI payload (args[0] or None)
                     // into scratch.b for the YfDone segment.
                     gen_extract_si_payload(f, &gen);
-                    goto_x(f, *done, 2);
+                    goto_x(f, *done, 2 + wrap_extra);
                     f.instruction(&Instruction::End);
-                    f.instruction(&Instruction::LocalGet(gen.scratch.a));
+                    f.instruction(&Instruction::LocalGet(gen.scratch.b));
                     f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
                     f.instruction(&Instruction::Throw(TAG_PYEXC));
                 }
@@ -3025,6 +3121,29 @@ fn emit_gen_step_fn(f: &mut Function, uf: &UserFn, ctx: &mut EmitCtx) {
             SegKind::Goto(target) => {
                 goto(f, *target);
             }
+            SegKind::HandlerPrefix {
+                stmts,
+                park_value,
+                park_kind,
+                resume,
+            } => {
+                let _ = park_kind; // the `as n` bind rides gen_store in the
+                // resume segment via Park Bind? Simpler: bind HERE from the
+                // payload when park lands. The park's $value = yield expr;
+                // on resume gen_send parks the SENT value; the handler name
+                // binds the EXC — bound in the wrapper chain (s_pad), not
+                // from $value. So no Bind handling here: plain park.
+                for s in stmts {
+                    gen_emit_stmt(f, s, ctx, &gen);
+                }
+                match park_value {
+                    Some(x) => gen_emit_expr(f, x, ctx, &gen),
+                    None => {
+                        f.instruction(&Instruction::GlobalGet(G_NONE));
+                    }
+                }
+                gen_park_yield(f, &gen, *resume as i32);
+            }
             SegKind::Return { value } => {
                 match value {
                     Some(x) => gen_emit_expr(f, x, ctx, &gen),
@@ -3042,6 +3161,102 @@ fn emit_gen_step_fn(f: &mut Function, uf: &UserFn, ctx: &mut EmitCtx) {
                 f.instruction(&Instruction::RefNull(hc(T_PYOBJ)));
                 f.instruction(&Instruction::Return);
             }
+        }
+        if in_wrap {
+            // try_table End + null payload -> $cx End: exc|null
+            f.instruction(&Instruction::End); // try_table
+            f.instruction(&Instruction::RefNull(hc(T_EXCEPTION)));
+            f.instruction(&Instruction::End); // $cx
+            f.instruction(&Instruction::LocalSet(gen.scratch.s_pad));
+            // handler chain (scratch.s_pad = exc|null; null never reaches
+            // here — the fall-through path br'd out of $cx already... it
+            // DIDN'T: the body fall-through arrives here with NULL. Guard:
+            f.instruction(&Instruction::Block(BlockType::Empty)); // $hdone
+            {
+                f.instruction(&Instruction::LocalGet(gen.scratch.s_pad));
+                f.instruction(&Instruction::RefIsNull);
+                f.instruction(&Instruction::If(BlockType::Empty));
+                // null = body completed normally -> exit the wrapper (goto
+                // after, extra = $hdone+If = 2... reuse goto_x at chain
+                // level: labels open = $hdone(0), If(1), B.. , $done, Loop
+                {
+                    let wid = wrap_of[k].unwrap();
+                    let w = &plan.wrappers[wid];
+                    let after = w.after;
+                    if after >= n_segs {
+                        f.instruction(&Instruction::Br((n_segs - k + 2) as u32));
+                    } else if after > k {
+                        // B(after-1) sits at depth after-k from here
+                        f.instruction(&Instruction::Br((after - k) as u32));
+                    } else {
+                        f.instruction(&Instruction::I32Const(after as i32));
+                        f.instruction(&Instruction::LocalSet(2));
+                        f.instruction(&Instruction::Br((n_segs - k + 3) as u32));
+                    }
+                }
+                f.instruction(&Instruction::End);
+                // handler match chain
+                let wid = wrap_of[k].unwrap();
+                let w = &plan.wrappers[wid];
+                for (hi, h) in w.handlers.iter().enumerate() {
+                    f.instruction(&Instruction::LocalGet(gen.scratch.s_pad));
+                    match &h.ty {
+                        None => {
+                            f.instruction(&Instruction::I32Const(1));
+                        }
+                        Some(ty) => {
+                            gen_emit_expr(f, ty, ctx, &gen);
+                            f.instruction(&Instruction::Call(fx::FN_EXC_MATCH));
+                        }
+                    }
+                    f.instruction(&Instruction::If(BlockType::Empty));
+                    {
+                        // bind `as n` non-park prefix handled in the
+                        // HandlerPrefix segment; here only match routing:
+                        // run the prefix stmts (bind-name when no park)
+                        if h.resume.is_none() {
+                            // no yield in the handler: prefix stmts are the
+                            // whole body — emit inline then goto after.
+                            // (prefix carries post via HandlerPlan? No:
+                            // split_handler_body put everything in prefix
+                            // when park_value is None.)
+                            for s in &h.prefix {
+                                gen_emit_stmt(f, s, ctx, &gen);
+                            }
+                            if let Some(n) = &h.name {
+                                f.instruction(&Instruction::LocalGet(gen.scratch.s_pad));
+                                gen_store_slot(f, &gen, n.as_str());
+                            }
+                            let after = w.after;
+                            if after >= n_segs {
+                                f.instruction(&Instruction::Br((n_segs - k + 2) as u32));
+                            } else if after > k {
+                                f.instruction(&Instruction::Br((after - k) as u32));
+                            } else {
+                                f.instruction(&Instruction::I32Const(after as i32));
+                                f.instruction(&Instruction::LocalSet(2));
+                                f.instruction(&Instruction::Br((n_segs - k + 3) as u32));
+                            }
+                        } else {
+                            // park-yielding handler: dispatch to the
+                            // staged HandlerPrefix segment (it carries the
+                            // prefix stmts + park + resume wiring).
+                            let pid = prefix_seg_of[k]
+                                .expect("park-yield handler has a staged prefix seg");
+                            f.instruction(&Instruction::I32Const(pid as i32));
+                            f.instruction(&Instruction::LocalSet(2));
+                            f.instruction(&Instruction::Br((n_segs - k + 3) as u32));
+                        }
+                    }
+                    f.instruction(&Instruction::End); // If(hi)
+                    let _ = hi;
+                }
+                // unmatched: rethrow
+                f.instruction(&Instruction::LocalGet(gen.scratch.s_pad));
+                f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
+                f.instruction(&Instruction::Throw(TAG_PYEXC));
+            }
+            f.instruction(&Instruction::End); // $hdone
         }
     }
     f.instruction(&Instruction::End); // $sink End (last segment block's
@@ -3448,10 +3663,34 @@ fn gen_emit_call(
             gen_emit_generator_new(f, slots[0], args, ctx, gen);
             return;
         }
-        if !ctx.scan.fns.iter().any(|uf| uf.name == name.as_str()) && is_supported_builtin(name.as_str())
+        if !ctx.scan.fns.iter().any(|uf| uf.name == name.as_str())
+            && is_supported_builtin(name.as_str())
         {
             gen_emit_builtin(f, name.as_str(), args, ctx, gen);
             return;
+        }
+        // exception/user CLASS call (raise ValueError('mid') inside a gen
+        // body): call_of materializes the instance. NO $function cast — a
+        // $type would trap it.
+        {
+            let is_class = !ctx.scan.module_binds.iter().any(|n| n == name.as_str())
+                && crate::types::exc_type_global(name.as_str()).is_some();
+            let is_user_class = ctx.scan.classes.iter().any(|c| c == name.as_str());
+            if is_class || is_user_class {
+                gen_emit_name_load(f, name.as_str(), ctx, gen);
+                for a in args {
+                    let Arg::Pos(x) = a else {
+                        unreachable!("scan vetted positional args");
+                    };
+                    gen_emit_expr(f, x, ctx, gen);
+                }
+                f.instruction(&Instruction::ArrayNewFixed {
+                    array_type_index: T_OBJ_ARR_RO,
+                    array_size: args.len() as u32,
+                });
+                f.instruction(&Instruction::Call(fx::FN_CALL_OF));
+                return;
+            }
         }
         // static plain-fn call (exact arity): direct call with gen arg eval
         let fslots: Vec<usize> = ctx
@@ -3937,7 +4176,9 @@ fn emit_user_fn(
     // 47=i32, 48=RO arr, 49=$function, 50=obj_arr2, 51=cell_arr.
     {
         let used = if uf.is_generator {
-            2 + gen_slot_count(uf) // state + payload + mirrors (locals 2..2+N)
+            // params(0,1) + state + payload + slot mirrors + the 8-scratch
+            // gen window — everything pushed BEFORE the pad (locals 2..12+n)
+            12 + gen_slot_count(uf)
         } else {
             3 + nparams + (plain_idx - (3 + nparams)) + n_own + n_free
         };
