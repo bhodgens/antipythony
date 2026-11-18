@@ -2124,6 +2124,9 @@ struct GenScratch {
     roarr: u32,
     /// payload scratch (exc|null) for the next(x, default) guard.
     s_pad: u32,
+    /// MUT $obj_arr temp (03.04f: $code.param_names build inside
+    /// gen_emit_generator_new — scratch.objarr is busy holding $locals).
+    objarr2: u32,
 }
 
 impl GenScratch {
@@ -2138,6 +2141,7 @@ impl GenScratch {
             cmp: base + 5,
             roarr: base + 6,
             s_pad: base + 7,
+            objarr2: base + 8,
         }
     }
 }
@@ -2982,15 +2986,13 @@ fn emit_gen_step_fn(f: &mut Function, uf: &UserFn, ctx: &mut EmitCtx) {
                 goto(f, next);
             }
             SegKind::ForInit { iter, it_slot } => {
+                // 03.04f: the iter expr self-materializes — a generator
+                // delegate (`sub()`) now builds the parked $generator via the
+                // static gen-call arm, a list literal builds the list.
+                // call_of(gen) had NO matching arm (gen is neither $function,
+                // $type, nor instance) and fell into its unreachable — trap
+                // on the first delegate resume.
                 gen_emit_expr(f, iter, ctx, &gen);
-                // a generator delegate expr lowers to the parked $generator
-                // VALUE (a $function object) — call_of materializes the
-                // $generator (plain values pass through).
-                f.instruction(&Instruction::ArrayNewFixed {
-                    array_type_index: T_OBJ_ARR_RO,
-                    array_size: 0,
-                });
-                f.instruction(&Instruction::Call(fx::FN_CALL_OF));
                 f.instruction(&Instruction::Call(fx::FN_ITER_OF));
                 gen_store_slot(f, &gen, it_slot.as_str());
                 goto(f, next);
@@ -3097,7 +3099,13 @@ fn emit_gen_step_fn(f: &mut Function, uf: &UserFn, ctx: &mut EmitCtx) {
                     f.instruction(&Instruction::Call(fx::FN_EXC_MATCH));
                     f.instruction(&Instruction::If(BlockType::Empty));
                     // exhaustion: extract the SI payload (args[0] or None)
-                    // into scratch.b for the YfDone segment.
+                    // into scratch.b for the YfDone segment. The CAUGHT exc
+                    // rides scratch.b ($cx result) — the SI-match branch
+                    // must read IT, not scratch.a (which only holds the
+                    // success-path result and is null on the raise path —
+                    // 03.04f: struct.get on the null cast trapped here).
+                    f.instruction(&Instruction::LocalGet(gen.scratch.b));
+                    f.instruction(&Instruction::LocalSet(gen.scratch.a));
                     gen_extract_si_payload(f, &gen);
                     goto_x(f, *done, 2 + wrap_extra);
                     f.instruction(&Instruction::End);
@@ -3645,7 +3653,16 @@ fn gen_emit_call(
     gen: &GenCtx,
 ) {
     if let Expr::Name(name) = func {
-        // STATIC GENERATOR call: build a parked $generator
+        // STATIC GENERATOR call: build a parked $generator.
+        // Shadowing = a NON-global res entry (Local/OwnCell/FreeCell). A
+        // module-level gen name rides the child's free list as Res::Global
+        // (03.04f: contains_key flagged it shadowed, the static arm never
+        // fired, and the generic dispatch call_indirect'ed FT_PY_RO against
+        // the FT_GEN_STEP body — trap on the first delegate resume).
+        let shadowed = matches!(
+            ctx.scope.res.get(name.as_str()),
+            Some(Res::Local(_)) | Some(Res::OwnCell(_)) | Some(Res::FreeCell(_))
+        );
         let slots: Vec<usize> = ctx
             .scan
             .fns
@@ -3654,7 +3671,6 @@ fn gen_emit_call(
             .filter(|(_, uf)| uf.name == name.as_str() && uf.is_generator)
             .map(|(i, _)| i)
             .collect();
-        let shadowed = ctx.scope.res.contains_key(name.as_str());
         if slots.len() == 1
             && !shadowed
             && args.iter().all(|a| matches!(a, Arg::Pos(_)))
@@ -4018,23 +4034,30 @@ fn gen_emit_generator_new(
     }
     // $function object: [type, name, nparams, flags, param_names, func_idx]
     // -> $code; defaults(empty)/kwdefaults/cells/globals -> $function.
-    // param_names -> scratch.objarr is BUSY holding locals; build param_names
-    // as a FIXED array on the stack (array.new_fixed inside $code's
-    // StructNew pops the top fields first — safe: push type, name, nparams,
-    // flags, then the fixed names array, then func_idx).
+    // param_names -> scratch.objarr is BUSY holding locals; $code.param_names
+    // is a MUT $obj_arr (T_OBJ_ARR), so the RO array.new_fixed shape traps
+    // validation (03.04f). Build the MUT array into scratch.objarr2 (free
+    // expressions), then LocalGet it into the StructNew field.
+    f.instruction(&Instruction::I32Const(nparams as i32));
+    f.instruction(&Instruction::ArrayNewDefault(T_OBJ_ARR));
+    f.instruction(&Instruction::LocalSet(gen.scratch.objarr2));
+    for (i, p) in uf.params.iter().enumerate() {
+        f.instruction(&Instruction::LocalGet(gen.scratch.objarr2));
+        f.instruction(&Instruction::I32Const(i as i32));
+        push_interned_str(f, p.name.as_str(), ctx);
+        f.instruction(&Instruction::ArraySet(T_OBJ_ARR));
+    }
+    // $generator field0 ($type) must sit UNDER the $function build on the
+    // stack — push it before the $code build (03.04f: pushed after, so
+    // struct.new 31 popped fn-as-type → validate/trap).
+    f.instruction(&Instruction::RefNull(hc(T_TYPE)));
     f.instruction(&Instruction::GlobalGet(
         builtin_type_global("function").unwrap_or(0),
     ));
     push_interned_str(f, uf.name.as_str(), ctx);
     f.instruction(&Instruction::I32Const(nparams as i32));
     f.instruction(&Instruction::I32Const(0));
-    for p in &uf.params {
-        push_interned_str(f, p.name.as_str(), ctx);
-    }
-    f.instruction(&Instruction::ArrayNewFixed {
-        array_type_index: T_OBJ_ARR_RO,
-        array_size: nparams,
-    });
+    f.instruction(&Instruction::LocalGet(gen.scratch.objarr2));
     f.instruction(&Instruction::I32Const(fn_idx(slot) as i32));
     f.instruction(&Instruction::StructNew(T_CODE));
     // defaults: empty (corpus slice); a defaulted gen fn would need the
@@ -4045,10 +4068,10 @@ fn gen_emit_generator_new(
     f.instruction(&Instruction::RefNull(hc(T_CELL_ARR)));
     f.instruction(&Instruction::RefNull(hc(T_DICT)));
     f.instruction(&Instruction::StructNew(T_FUNCTION));
-    // $generator struct: [null-type, fn, state=0, locals(objarr), null, null]
-    f.instruction(&Instruction::RefNull(hc(T_TYPE)));
-    f.instruction(&Instruction::LocalGet(gen.scratch.objarr));
+    // $generator struct: [type(under fn), fn, state=0, locals(objarr), null,
+    // null] — type was pushed before the $function build.
     f.instruction(&Instruction::I32Const(GS_START));
+    f.instruction(&Instruction::LocalGet(gen.scratch.objarr));
     f.instruction(&Instruction::RefNull(hc(T_PYOBJ)));
     f.instruction(&Instruction::RefNull(hc(T_EXCEPTION)));
     f.instruction(&Instruction::StructNew(T_GENERATOR));
@@ -4154,6 +4177,7 @@ fn emit_user_fn(
             }),
         )); // roarr
         order.push((1, pyobj_ref())); // s_pad (payload scratch)
+        order.push((1, obj_arr_ref())); // objarr2 (MUT temp, 03.04f)
     }
     let cell_base = plain_idx;
     let n_own = uf.own_cells.len() as u32;
@@ -4176,9 +4200,10 @@ fn emit_user_fn(
     // 47=i32, 48=RO arr, 49=$function, 50=obj_arr2, 51=cell_arr.
     {
         let used = if uf.is_generator {
-            // params(0,1) + state + payload + slot mirrors + the 8-scratch
-            // gen window — everything pushed BEFORE the pad (locals 2..12+n)
-            12 + gen_slot_count(uf)
+            // params(0,1) + state + payload + slot mirrors + the 9-scratch
+            // gen window — everything pushed BEFORE the pad (locals 2..13+n;
+            // 03.04f added objarr2 at 12+n)
+            13 + gen_slot_count(uf)
         } else {
             3 + nparams + (plain_idx - (3 + nparams)) + n_own + n_free
         };

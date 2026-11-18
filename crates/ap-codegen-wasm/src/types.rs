@@ -22,6 +22,14 @@ pub fn pyobj_ref() -> ValType {
     })
 }
 
+/// Nullable MUT $obj_arr ref (03.04f: gen step scratch objarr2).
+pub(crate) fn obj_arr_ref() -> ValType {
+    ValType::Ref(RefType {
+        nullable: true,
+        heap_type: wasm_encoder::HeapType::Concrete(T_OBJ_ARR),
+    })
+}
+
 fn nullable_concrete(ty: u32) -> ValType {
     ValType::Ref(RefType {
         nullable: true,
