@@ -1,4 +1,50 @@
-# Next Steps — Plan 03 pause point (2026-11-17 ~23:30, trunk 51a93f62 + 03.05 merge)
+# Next Steps — Plan 03 pause point (2026-11-18, trunk 76d30b7b pushed)
+
+## 03.04e LANDED + MERGED + PUSHED (2026-11-18)
+
+- Leaf 03.04e verified first-hand by the orchestrator (worktree 8999f937,
+  clean), merged to main (76d30b7b), pushed. THE SEGMENT MACHINE FLATTENER
+  IS IN AND WORKING.
+- GE001 PASS, GE002 PASS — byte-exact through ap-host vs CPython 3.14.7
+  pins (verified by the orchestrator via ge_ma_probe in the worktree).
+- Baselines re-verified on trunk post-merge: controlflow 18/18,
+  classes/exceptions differential green (now 17/17 per the leaf),
+  for_probe 5/5, ap-host 8/8.
+- En-route REAL bug fixes (pre-existing, now fixed): gen_throw/gen_close
+  table-index missing FN_FIRST_USER subtract (latent since 03.04b);
+  step-fn locals pad short by 10 shifting the shared temp window (latent
+  since 03.04d); c.send/close/throw method dispatch arms; gen class-call
+  arm; ForNext/YfNext try_table stack discipline.
+- ONE deliberate design divergence (soundness-argued, in NEXT-0304e.md):
+  ONE dispatch-Loop TRAMPOLINE around the whole machine instead of
+  per-loop Loop wraps (a br_table resume cannot reach bodies inside a
+  per-loop Loop label). Verified label-depth formulas recorded.
+- HONEST GAPS (leaf 03.04 exit contract NOT fully met): GE003 MISMATCH
+  (handler-yield resume path escapes the try wrapper; minimal probe
+  recipe in NEXT-0304e.md lines 96-100), GE004 HOST-ERR (first delegate
+  resume trap; SI-payload args[0] extraction suspect, lines 101-112),
+  GE005 NOT STARTED (comp hidden-fn generator flip + walrus Named arm +
+  <listcomp> module-name registration), MA001 NOT STARTED (match emit
+  arm; design ready in NEXT-0304d.md lines 118-124).
+- CONTINUATION MANUAL: plans/antipythony/03-wasm-backend/NEXT-0304e.md
+  (146 lines: segment kinds, label math formulas, 10 en-route fixes,
+  per-gap bisect pointers, debug tooling list). Also NEXT-0304d.md
+  (segment kinds + match emit design) and NEXT-0305.md (ap-host side).
+
+## Next dispatch: leaf 03.04f (the LAST 03.04 session, expected)
+
+Scope: (1) GE003 bisect per the minimal probe recipe; (2) GE004 SI-
+payload extraction fix; (3) GE005 comp hidden-fn generator flip (yield-
+elt, is_generator=true, emit_generator_call + FN_LIST_DRAIN/SUM_DRAIN,
+DictComp dict-build, walrus Named arm binding ENCLOSING scope per
+S-02-2, <listcomp> module-name registration); (4) MA001 match emit per
+NEXT-0304d.md lines 118-124. Exit gate: GE001-GE005 + MA001 ALL
+byte-exact through ap-host + baselines held (controlflow 18/18,
+classes/exceptions 17/17, for_probe 5/5, ap-host 8/8). After 03.04f
+closes: extend the CLI corpus gate to generators/match families per
+NEXT-0305.md steps, update PROGRESS.md, leaf 03.04 CLOSES.
+Then: 03.06 (browser smoke + threading spike) -> 03.07 (differential
+exit gate) -> Plan 04 per master.md.
 
 ## 03.05 LANDED + MERGED + PUSHED (2026-11-17 late)
 
