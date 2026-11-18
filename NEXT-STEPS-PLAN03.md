@@ -1,64 +1,69 @@
-# Next Steps — Plan 03 / leaf 03.04d pause point (2026-11-17 ~10:50, session commit e699f7d7)
+# Next Steps — Plan 03 / leaf 03.04e pause point (2026-11-17 ~18:20)
 
-Supersedes the 03.04c version of this doc.
+Supersedes the 03.04d version. Trunk pushed to origin at 14307875.
 
 ## Where things stand
 
-- Trunk HEAD: merge of tier1-0304c (b99d6e8e + 5226f69c + 8fb4a7bb +
-  ad37e875). Adversarially verified by the orchestrator BEFORE merge:
-  controlflow_wasm_gate 18/18, classes_exceptions_wasm_gate 16/16,
-  for_probe 5/5, ap-host 3/3 — all re-run green in the worktree, and
-  re-run green on trunk after the merge.
-- Landed cumulative: gen-driver prelude (03.04b), scan gates for
-  generators/For/Match/comps, Stmt::For emit byte-exact (range/list/
-  tuple, else/break), range/list/sum/next/iter builtins, drains FN 71/72,
-  stop_iter bare-vs-valued fix, for_probe differential, debug tooling
-  (dump_validate_locate / dump_wat_full / dump_wat_offset).
-- CONTINUATION DESIGN (execute directly, no re-derivation):
-  plans/antipythony/03-wasm-backend/NEXT-0304c.md (74 lines) — generator
-  step-fn CFG flattener, send emit, yield-from decision rule, comp emit,
-  match emit, new gates to add, baselines to hold, 6 hard-won gotchas
-  (emit-order-is-index-contract; empty-stdout+rc=0 = swallowed bug).
-- Leaf 03.04d (the EMIT arms finale) IN FLIGHT:
-  subagent sa-0-ecde769f, delegation deleg_84c22842.
-  Transcript: /Users/caimlas/.hermes/cache/delegation/live/deleg_84c22842/task-0.log
-  Worktree: ~/.git/worktrees/leaf-0304d (branch tier1-0304d).
-  EXIT GATE: GE001-GE005 + MA001 byte-exact through ap-host + baselines held.
+- Trunk HEAD: 14307875 (merge of tier1-0304d). Adversarially verified by
+  the orchestrator BEFORE merge (worktree a2333e19) and re-run green on
+  trunk AFTER merge:
+  - controlflow_wasm_gate 18/18
+  - classes_exceptions_wasm_gate 16/16
+  - for_probe 5/5
+  - ap-host 3/3
+- Landed by 03.04d (eecf9a77): drain/list type unification — $list.items
+  rides MUT $obj_arr; 3 never-executed-path bugs fixed (drain SI-rethrow,
+  ref.cast mut->RO validates-but-traps, MUT array refs need typed locals).
+  Probes list/tuple/iter/sum all byte-exact rc=0.
+- GE001-GE005 + MA001 still NOT byte-exact (honest state, verified per-case
+  by the leaf): GE001 first next() works, second resume throws SI(42);
+  GE002 yield-in-BinOp emit panic; GE003-005/MA001 blocked behind the
+  flattener.
+- THE CONTINUATION DESIGN (execute directly, do not re-derive):
+  plans/antipythony/03-wasm-backend/NEXT-0304d.md (133 lines) — the
+  SEGMENT MACHINE flattener (numbered segments, open dispatch Blocks,
+  forward br goto, Loop wraps per loop range, segment kinds Seq/Test/
+  Park/Rebind/SplitResume/ForInit/ForNext/YfNext/TryWrap/Return, planner
+  br-depth arithmetic incl. +1 per wrapper), send/close/throw method arms,
+  comp-fn-as-generator flip, match emit chain, GE005 walrus note.
+  CRITICAL: the residual-tree flattener was attempted and REVERTED — do
+  NOT retry it (loop-yields stay live across iterations; prefix-drop
+  kills the construct).
+- New lessons (NEXT-0304d.md): ref.cast between unrelated array types
+  validates but traps (type identity = the array STRUCT); MUT array refs
+  need dedicated typed locals (lesson 9 corollary, hit twice); drain-style
+  try_table loops SI-match BEFORE rethrow. Identical-text validator trap
+  = grep the local DECLS in the wat, not the instructions.
 
 ## On resume, in order
 
-1. Check sa-0-ecde769f (delegate_task action='list'). If finished:
-   ADVERSARIALLY VERIFY in its worktree:
-   - cargo test -p ap-codegen-wasm --test generators_wasm_gate
-     --test match_wasm_gate --test controlflow_wasm_gate
-     --test classes_exceptions_wasm_gate --test for_probe
-   - cargo test -p ap-host
-   - Independent throw-probe: each of GE001-005/MA001 must report LOWERED
-     and byte-exact (NOT-LOWERED must be gone).
-   Watch for empty-stdout+rc=0 (swallowed control-flow bug signature).
-2. If gates verify: merge tier1-0304d to trunk, re-run all five gate
-   suites + ap-host on TRUNK, update PROGRESS.md session record.
-   Leaf 03.04 then closes → dispatch 03.05 (ap-host WASI + runtime
-   imports; gate = FULL corpus green in wasm mode + startup <50ms
-   measured).
-3. If gates fail or agent died: verify uncommitted work, absorb or
-   discard per NEXT-STEPS.md convention, re-dispatch citing
-   NEXT-0304c.md + PROGRESS.md lessons (they carry the full design).
-4. If still running: leave alone (one heavy cargo lane). Stall rule:
-   transcript frozen >20 min → steer once (lean responses, commit per
-   increment, finish honestly into a session record); second stall →
-   stop + salvage + re-dispatch.
-5. After 03.04 closes: 03.05 → 03.06 (browser smoke + threading spike)
-   → 03.07 (differential exit gate) → Plan 04 packaging per master.md.
-6. Machine policy binding: ONE heavy cargo lane; CARGO_BUILD_JOBS=4;
-   worktrees + gate logs under ~/.git/worktrees/, NEVER /tmp.
+1. Dispatch leaf 03.04e (deleg → new subagent) with NEXT-0304d.md as the
+   execution manual + the lessons above. Exit gate: GE001-GE005 + MA001
+   byte-exact through ap-host + the four baselines held.
+2. Worktree ~/.git/worktrees/leaf-0304e (branch tier1-0304e) off current
+   main. Machine policy: ONE heavy cargo lane; CARGO_BUILD_JOBS=4.
+3. On completion: ADVERSARIALLY VERIFY in its worktree —
+   - generators_wasm_gate + match_wasm_gate (if added) + all four baselines
+   - independent throw-probe: each GE/MA case LOWERED + byte-exact
+   - watch for empty-stdout+rc=0 (swallowed control-flow bug signature)
+   then merge tier1-0304e, re-run gates on trunk, push, update PROGRESS.md.
+4. Leaf 03.04 then CLOSES. Next: 03.05 (ap-host WASI + runtime imports;
+   gate = FULL corpus green in wasm mode + startup <50ms measured),
+   then 03.06 (browser smoke + threading spike), then 03.07 (differential
+   exit gate), then Plan 04 per master.md.
+5. Stall rule (proven across 3 sessions): transcript frozen >20 min →
+   steer once (lean responses, commit per increment, finish honestly into
+   a session record); second stall → stop + salvage + re-dispatch citing
+   the session-record design docs. Provider stalls of 5-15 min self-recover;
+   do not steer under 20.
 
-## History (for provenance)
+## History (provenance)
 
 - 03.04b (deleg_462c1174): drivers real, honest NOT-green, merged 6e638ad5.
-- 03.04c (deleg_b8ee978c): 28.5k s session, one 84-min provider stall
-  revived by steer, one 420s probe timeout self-handled (timeout 300 wrap).
-  Increments A/B/C + NEXT-0304c.md landed; GE/MA emit honestly NOT landed.
-- First 03.04b attempt (deleg_f9fbcd48) died at 395s provider stall in
-  study phase; salvage produced the context-packing convention that has
-  worked for every dispatch since.
+- 03.04c (deleg_b8ee978c): For/iter wheel + scan gates + probe tooling,
+  merged with tier1-0304d merge. One 84-min provider stall revived by steer.
+- 03.04d (deleg_84c22842, 11h43m): increment A landed (drain/list type
+  unification), flattener rewrite attempted + honestly reverted, segment
+  machine designed, baselines held, merged 14307875.
+- First 03.04b attempt (deleg_f9fbcd48): died at 395s provider stall in
+  study; salvage created the context-packing dispatch convention.
