@@ -793,7 +793,11 @@ pub(crate) fn gen_throw(
             f.instruction(&Instruction::LocalSet(5)); // step idx
             lget_gen(f, 0);
             f.instruction(&Instruction::RefNull(hc(T_PYOBJ)));
-            f.instruction(&Instruction::LocalGet(5)); // table idx (i32, on top)
+            // table idx = step abs idx - FN_FIRST_USER (the element segment
+            // stores absolute fn indices; gen_send does the same subtract).
+            f.instruction(&Instruction::LocalGet(5)); // abs idx (i32, on top)
+            f.instruction(&Instruction::I32Const(fx::FN_FIRST_USER as i32));
+            f.instruction(&Instruction::I32Sub);
             f.instruction(&Instruction::CallIndirect {
                 type_index: FT_GEN_STEP,
                 table_index: 0,
@@ -888,7 +892,11 @@ pub(crate) fn gen_close(
             f.instruction(&Instruction::LocalSet(4)); // step idx
             lget_gen(f, 0);
             f.instruction(&Instruction::RefNull(hc(T_PYOBJ)));
-            f.instruction(&Instruction::LocalGet(4)); // table idx (i32, on top)
+            // table idx = step abs idx - FN_FIRST_USER (gen_send's subtract;
+            // the element segment stores absolute fn indices).
+            f.instruction(&Instruction::LocalGet(4)); // abs idx (i32, on top)
+            f.instruction(&Instruction::I32Const(fx::FN_FIRST_USER as i32));
+            f.instruction(&Instruction::I32Sub);
             f.instruction(&Instruction::CallIndirect {
                 type_index: FT_GEN_STEP,
                 table_index: 0,
