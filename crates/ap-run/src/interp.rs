@@ -818,13 +818,25 @@ fn exec_module(
                     }
                     // W110 (PEP 649): functions carry __annotate__ (CPython
                     // 3.14). functools.singledispatch register(func) reads
-                    // it before __annotations__.
+                    // it before __annotations__. 02.08f: the marker is bound
+                    // to the function (slice_parts[0] = recv) at creation so
+                    // __ap_fn_annotate__'s dispatch can find the owner — the
+                    // unbound marker read an EMPTY slice_parts and answered {}
+                    // for every function (get_type_hints lost all hints).
+                    let annot_marker = ap_obj::PyObject::new(
+                        ap_obj::ObjKind::BuiltinFn,
+                        "__ap_fn_annotate__",
+                    );
+                    {
+                        let mut parts = annot_marker
+                            .slice_parts
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner());
+                        parts.push(func.clone());
+                    }
                     let _ = fo.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
                         Value::Str(PyString::new("__annotate__")),
-                        Value::Obj(ap_obj::PyObject::new(
-                            ap_obj::ObjKind::BuiltinFn,
-                            "__ap_fn_annotate__",
-                        )),
+                        Value::Obj(annot_marker),
                     );
                     // s013: park the DOCSTRING (first body stmt is a bare
                     // string constant; Stmt::Line markers interleave — scan
@@ -1967,26 +1979,34 @@ fn exec_stmt(
             if let Value::Obj(fo) = &func {
                 if let Some(ann) = &f.return_ann {
                     let src = Value::Str(PyString::new(ap_ir::dump_expr_inline(&ann.expr)));
-                    if let Some(d) = fo
-                        .attrs
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .get(&Value::Str(PyString::new("__annotations__")))
-                    {
-                        if let Value::Dict(dd) = d {
-                            let _ = dd.set(
-                                Value::Str(PyString::new("return")),
-                                src,
-                            );
+                    // 02.08f WEDGE FIX (s026 typing-import hang): the `if let`
+                    // scrutinee below held an `attrs` MutexGuard temporary that
+                    // (Rust 2021) lives to the END of the whole `if let`
+                    // statement — the `else` branch's second `fo.attrs.lock()`
+                    // re-locked the SAME mutex the scrutinee still held and the
+                    // single-thread run self-deadlocked. It fired only when
+                    // `__annotations__` was NOT yet set (fresh function object
+                    // with a return ann and no param anns — typing.py's first
+                    // Protocol class). Sequenced: read under the guard, DROP
+                    // the guard, then take a fresh lock for the set. Same class
+                    // as the iter(genexpr) wedge (audit row 1).
+                    let existing_anns = {
+                        let guard = fo.attrs.lock().unwrap_or_else(|p| p.into_inner());
+                        guard.get(&Value::Str(PyString::new("__annotations__")))
+                    };
+                    match existing_anns {
+                        Some(Value::Dict(dd)) => {
+                            let _ = dd.set(Value::Str(PyString::new("return")), src);
                         }
-                    } else {
-                        let d = PyDict::new();
-                        let _ = d.set(Value::Str(PyString::new("return")), src);
-                        let _ = fo
-                            .attrs
-                            .lock()
-                            .unwrap_or_else(|p| p.into_inner())
-                            .set(Value::Str(PyString::new("__annotations__")), Value::Dict(d));
+                        _ => {
+                            let d = PyDict::new();
+                            let _ = d.set(Value::Str(PyString::new("return")), src);
+                            let _ = fo
+                                .attrs
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner())
+                                .set(Value::Str(PyString::new("__annotations__")), Value::Dict(d));
+                        }
                     }
                 }
                 // Docstring: first body statement is `ExprStmt(LitStr)`.

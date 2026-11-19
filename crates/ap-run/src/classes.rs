@@ -3700,6 +3700,15 @@ fn class_attr_get(
     match name {
         "__name__" => return Ok(Value::Str(PyString::new(t.name.clone()))),
         "__qualname__" => return Ok(Value::Str(PyString::new(t.qualname.clone()))),
+        // 02.08f (s026): CPython 3.14 classes carry __type_params__ (PEP 695,
+        // () for non-generic classes); typing.get_type_hints reads it
+        // UNCONDITIONALLY on every base class (`base.__type_params__` at
+        // typing.py:2409) — the missing attr broke get_type_hints over any
+        // class with a base (s026 line 29 `get_type_hints(NT)`).
+        "__type_params__" => {
+            let _ = interp;
+            return Ok(Value::Tuple(Gc::new(Tuple(Vec::new()))));
+        }
         "__module__" => {
             // 02.08-full p2: stdlib-exception classes report their home
             // module (re.error.__module__ == 're', json.JSONDecodeError 'json').
