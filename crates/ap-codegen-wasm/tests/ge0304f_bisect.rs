@@ -49,6 +49,58 @@ fn ge0304f_bisect() {
             "def closer():\n    try:\n        yield 1\n        yield 2\n    except GeneratorExit:\n        print('closing')\n        raise\nc = closer()\nprint(next(c))\nc.close()\nprint('closed ok')\n",
         ),
         (
+            "g7-firstnext",
+            "def h():\n    try:\n        yield 0\n    except KeyError:\n        yield 'r'\nit = h()\nprint(next(it))\nprint('mid')\n",
+        ),
+        (
+            "g8-park-resume",
+            "def h():\n    try:\n        yield 0\n        yield 1\n    except KeyError:\n        yield 'r'\nit = h()\nprint(next(it))\nprint(next(it))\nprint('end')\n",
+        ),
+        (
+            "g9-nologic",
+            "def h():\n    yield 0\nit = h()\nprint(next(it))\nprint(next(it, 'ex'))\n",
+        ),
+        (
+            "g10-marks",
+            "def h():\n    try:\n        yield 0\n    except KeyError:\n        yield 'r'\nit = h()\nprint('A', next(it))\nprint('B', next(it, 'EX'))\nprint('C')\n",
+        ),
+        (
+            "g2b-handler-mark",
+            "def h():\n    try:\n        yield 0\n        raise KeyError('b')\n    except KeyError:\n        print('H')\n        yield 'r'\nfor v in h():\n    print('B', v)\n",
+        ),
+        (
+            "g2c-bare",
+            "def h():\n    try:\n        yield 0\n        raise KeyError('b')\n    except:\n        print('H')\n        yield 'r'\nfor v in h():\n    print('B', v)\n",
+        ),
+        (
+            "g11-firstraise",
+            "def h():\n    try:\n        raise KeyError('x')\n    except KeyError:\n        yield 'first'\nfor v in h():\n    print('B', v)\n",
+        ),
+        (
+            "g2d-noyield-h",
+            "def h():\n    try:\n        yield 0\n        raise KeyError('b')\n    except KeyError:\n        print('H')\nfor v in h():\n    print('B', v)\n",
+        ),
+        (
+            "g5b-baseexc",
+            "def c():\n    try:\n        yield 1\n    except BaseException:\n        print('caught-in-gen')\nc = c()\nnext(c)\nc.close()\nprint('after')\n",
+        ),
+        (
+            "f6-yf-seqs",
+            "def sub():\n    yield 1\n    yield 2\n    return 42\ndef delegate():\n    r = yield from sub()\n    print('r', r)\n    print('pre99')\n    yield 99\nfor v in delegate():\n    print('D', v)\n",
+        ),
+        (
+            "e1-comp-prefix",
+            "squares = [x * x for x in range(5)]\nprint(squares)\nevens = [x for x in range(10) if x % 2 == 0]\nprint(evens)\npair = [y for x in [(1, 2), (3, 4)] for y in x]\nprint(pair)\n",
+        ),
+        (
+            "e2-walrus",
+            "w = [y := x * 10 for x in range(3)]\nprint(w, y)\n",
+        ),
+        (
+            "e3-genexp-next",
+            "gen = (x for x in range(4))\nprint(next(gen))\nprint(list(gen))\n",
+        ),
+        (
             "g6-prethrow",
             "def pre():\n    yield 1\np = pre()\ntry:\n    p.throw(ValueError('pre-start'))\nexcept ValueError as e:\n    print('pre-start throw', e)\n",
         ),
@@ -90,6 +142,9 @@ fn ge0304f_bisect() {
         match ap_host::run(&bytes, 256 * 1024) {
             Ok(out) => {
                 println!("stdout {:?}", out.stdout);
+                if !out.stderr.is_empty() {
+                    println!("stderr {:?}", out.stderr);
+                }
                 println!("exit {}", out.exit_code);
             }
             Err(e) => println!("HOST-ERR {e:?}"),

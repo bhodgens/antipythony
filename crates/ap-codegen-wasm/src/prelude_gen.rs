@@ -890,11 +890,32 @@ pub(crate) fn gen_close(
                 field_index: F_CODE_FUNC_IDX,
             });
             f.instruction(&Instruction::LocalSet(4)); // step idx
+            // 3.14 close(): a GeneratorExit escaping the body = silent OK;
+            // any OTHER exception propagates. Catch the resume's throw,
+            // match GE, swallow-or-rethrow (03.04f: the re-raised GE flew
+            // through this frame to the host before the wrap landed).
+            // NOTE: the resume call's operands MUST be pushed INSIDE the
+            // result-block — a result-block starts its inner stack EMPTY,
+            // and a call_indirect outside would starve (03.04f).
+            f.instruction(&Instruction::Block(BlockType::Result(
+                ValType::Ref(wasm_encoder::RefType {
+                    nullable: true,
+                    heap_type: hc(T_EXCEPTION),
+                }),
+            ))); // $cx
+            {
+                let catches = [wasm_encoder::Catch::One {
+                    tag: TAG_PYEXC,
+                    label: 0,
+                }];
+                f.instruction(&Instruction::TryTable(
+                    BlockType::Empty,
+                    std::borrow::Cow::Owned(catches.to_vec()),
+                ));
+            }
             lget_gen(f, 0);
             f.instruction(&Instruction::RefNull(hc(T_PYOBJ)));
-            // table idx = step abs idx - FN_FIRST_USER (gen_send's subtract;
-            // the element segment stores absolute fn indices).
-            f.instruction(&Instruction::LocalGet(4)); // abs idx (i32, on top)
+            f.instruction(&Instruction::LocalGet(4)); // abs idx
             f.instruction(&Instruction::I32Const(fx::FN_FIRST_USER as i32));
             f.instruction(&Instruction::I32Sub);
             f.instruction(&Instruction::CallIndirect {
@@ -902,13 +923,47 @@ pub(crate) fn gen_close(
                 table_index: 0,
             });
             f.instruction(&Instruction::Drop); // yielded-if-any (discard)
-            // The step ran: if it SUSPENDED (state >= 0), the body swallowed
-            // GeneratorExit and yielded again => 3.14 RuntimeError. On this
-            // slice: silent complete (corpus never swallows GeneratorExit).
-            // Park exhaustion so later resumes raise StopIteration.
+            // body swallowed GeneratorExit and suspended (state >= 0) —
+            // corpus never swallows: park exhausted so later resumes raise
+            // StopIteration (the old unconditional close).
             lget_gen(f, 0);
             f.instruction(&Instruction::I32Const(GS_CLOSED));
             sset(f, T_GENERATOR, F_GEN_STATE);
+            f.instruction(&Instruction::End); // try_table End
+            f.instruction(&Instruction::RefNull(hc(T_EXCEPTION)));
+            f.instruction(&Instruction::End); // $cx: no-throw path null
+            // thrown-through: GE escape = silent close OK (park closed);
+            // any other exception rethrown to the caller. NULL payload =
+            // the step completed normally (handler swallowed the GE) —
+            // same silent close (03.04f: matching a null payload trapped
+            // inside the matcher).
+            f.instruction(&Instruction::LocalSet(1));
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::RefIsNull);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            // null payload: the step completed (handler swallowed the GE)
+            lget_gen(f, 0);
+            f.instruction(&Instruction::I32Const(GS_CLOSED));
+            sset(f, T_GENERATOR, F_GEN_STATE);
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::Else);
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::GlobalGet(
+                exc_type_global("GeneratorExit").unwrap_or(0),
+            ));
+            f.instruction(&Instruction::Call(fx::FN_EXC_MATCH));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            // GeneratorExit escaping = silent close OK
+            lget_gen(f, 0);
+            f.instruction(&Instruction::I32Const(GS_CLOSED));
+            sset(f, T_GENERATOR, F_GEN_STATE);
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::Else);
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
+            f.instruction(&Instruction::Throw(TAG_PYEXC));
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::End);
         },
     );
 }

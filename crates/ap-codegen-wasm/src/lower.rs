@@ -874,7 +874,11 @@ fn collect_comp_clauses(
     // iterables collect INSIDE the hidden fn body.
     let mut body: Vec<Stmt> = Vec::new();
     // innermost-first construction: element append
-    let inner = vec![Stmt::ExprStmt(elt.clone())];
+    // GE005 hidden-fn generator flip: the comprehension body is a
+    // GENERATOR body — `yield elt` per element — and the hidden fn is a
+    // module-name binding so the emit-side static gen-call arm finds it.
+    let inner = vec![Stmt::ExprStmt(Expr::Yield(Some(Box::new(elt.clone()))))];
+    scan.mod_slot("<listcomp>");
     let mut cur = inner;
     for clause in clauses.iter().rev() {
         // iterables of clauses >= 1 collect inside the hidden fn
@@ -911,7 +915,7 @@ fn collect_comp_clauses(
         let _ = &clause.iter;
     }
     let parent = scan.parent_stack.last().copied().unwrap_or(usize::MAX);
-    scan_fn_common("<listcomp>", &[], &body, parent, false, scan)
+    scan_fn_common("<listcomp>", &[], &body, parent, true, scan)
 }
 
 /// comprehension clause target: Name or 1-level Tuple of Names (the corpus
@@ -1508,6 +1512,7 @@ pub fn lower_module_ex(
                 continue;
             }
             let mut ctx = EmitCtx {
+                comp_emit_cursor: 0,
                 scan: &scan,
                 res_maps: &res_maps,
                 tab: &tab,
@@ -1611,6 +1616,7 @@ pub fn lower_module_ex(
 
         for item in &module.items {
             let mut ctx = EmitCtx {
+                comp_emit_cursor: 0,
                 scan: &scan,
                 res_maps: &res_maps,
                 tab: &tab,
@@ -2049,6 +2055,10 @@ struct EmitCtx<'a> {
     /// use TEMP_LOCAL_A as a scratch across block boundaries (03.03b).
     /// Scratch here = TEMP_LOCAL_B/TEMP_LOCAL_S.
     eh_wrap_top: bool,
+    /// Emit cursor for per-module hidden <listcomp> fns (03.04f GE005):
+    /// hidden fns register in scan (source) order; emit visits comp exprs
+    /// in the same order, so the cursor picks this call site's fn.
+    comp_emit_cursor: usize,
 }
 
 /// Shared temp locals (valid in `_start` AND user-function frames; user
@@ -2843,8 +2853,52 @@ fn emit_gen_step_fn(f: &mut Function, uf: &UserFn, ctx: &mut EmitCtx) {
     sget(f, T_GENERATOR, F_GEN_STATE);
     f.instruction(&Instruction::LocalSet(2));
 
-    // 3. the dispatch trampoline
+    // 3. the dispatch trampoline — ONE try_table wraps the whole machine
+    // (03.04e design: 'all state blocks inside ONE try_table'): every
+    // resume — whatever the state — is INSIDE the armed handler scope, so
+    // a staged throw-in ($exn, gen_throw/gen_close) re-raised at entry is
+    // seen by the handler chain no matter which segment the park parked at
+    // (03.04f: per-segment re-open left post-wrapper resumes unarmed —
+    // gen_close's GeneratorExit was swallowed silently).
+    f.instruction(&Instruction::Loop(BlockType::Empty)); // $outer (close-chain re-dispatch)
+    f.instruction(&Instruction::Block(BlockType::Result(
+        ValType::Ref(wasm_encoder::RefType {
+            nullable: true,
+            heap_type: hc(T_EXCEPTION),
+        }),
+    ))); // $cx: the machine-wide catch lands here with the exc on the stack
+    {
+        let catches = [wasm_encoder::Catch::One {
+            tag: TAG_PYEXC,
+            label: 0,
+        }];
+        f.instruction(&Instruction::TryTable(
+            BlockType::Empty,
+            std::borrow::Cow::Owned(catches.to_vec()),
+        ));
+    }
     f.instruction(&Instruction::Loop(BlockType::Empty));
+    // staged throw-in: $exn non-null -> raise it HERE (inside the armed
+    // scope). CLEAR IT FIRST — the throw is a non-local jump out of this
+    // entry pass, so an after-the-fact clear never runs and every close-
+    // chain re-dispatch re-throws the stale exc forever (03.04f hang).
+    gen_lget_gen(f);
+    sget(f, T_GENERATOR, F_GEN_EXN);
+    f.instruction(&Instruction::LocalSet(gen.scratch.s_pad));
+    gen_lget_gen(f);
+    f.instruction(&Instruction::RefNull(hc(T_EXCEPTION)));
+    sset(f, T_GENERATOR, F_GEN_EXN);
+    // test the STASHED copy (local 11) — the field was JUST cleared, a
+    // re-read would always see null (03.04f: close()'s staged throw-in was
+    // silently swallowed by exactly this double-read).
+    f.instruction(&Instruction::LocalGet(gen.scratch.s_pad));
+    f.instruction(&Instruction::RefIsNull);
+    f.instruction(&Instruction::If(BlockType::Empty));
+    f.instruction(&Instruction::Else);
+    f.instruction(&Instruction::LocalGet(gen.scratch.s_pad));
+    f.instruction(&Instruction::Call(fx::FN_EXC_RAISE));
+    f.instruction(&Instruction::Drop);
+    f.instruction(&Instruction::End);
     f.instruction(&Instruction::Block(BlockType::Empty)); // $done
     f.instruction(&Instruction::Block(BlockType::Empty)); // $sink
     for _ in (0..n_segs).rev() {
@@ -2891,7 +2945,12 @@ fn emit_gen_step_fn(f: &mut Function, uf: &UserFn, ctx: &mut EmitCtx) {
                 f.instruction(&Instruction::LocalSet(2));
                 f.instruction(&Instruction::Br((n_segs - k + 1 + extra) as u32));
             } else if target >= n_segs {
-                f.instruction(&Instruction::Br((n_segs - k + extra) as u32));
+                // $sink depth at body k = n-1-k (B(k+1)..B(n-1) are the
+                // n-1-k blocks still open above the body; B(k) closed at
+                // this slot's End). 03.04f: n-k landed at $done END —
+                // skipping the done region (state never set to DONE,
+                // step returned null with a live state = GE003 trap).
+                f.instruction(&Instruction::Br((n_segs - 1 - k + extra) as u32));
             } else if target > k {
                 f.instruction(&Instruction::Br((target - k - 1 + extra) as u32));
             } else {
@@ -2900,28 +2959,12 @@ fn emit_gen_step_fn(f: &mut Function, uf: &UserFn, ctx: &mut EmitCtx) {
                 f.instruction(&Instruction::Br((n_segs - k + 1 + extra) as u32));
             }
         };
-        let wrap_extra: usize = if wrap_of[k].is_some() { 2 } else { 0 };
+        // 03.04f: the machine-wide try_table (opened once above) arms every
+        // resume — per-segment re-opens are gone, wrap_extra is uniformly 0.
+        let wrap_extra: usize = 0;
         let mut goto = move |f: &mut Function, target: usize| {
             goto_x(f, target, wrap_extra);
         };
-        // ---- per-segment try_table re-open (03.04e GE003) ----
-        let in_wrap = wrap_of[k].is_some();
-        if in_wrap {
-            f.instruction(&Instruction::Block(BlockType::Result(
-                ValType::Ref(wasm_encoder::RefType {
-                    nullable: true,
-                    heap_type: hc(T_EXCEPTION),
-                }),
-            ))); // $cx
-            let catches = [wasm_encoder::Catch::One {
-                tag: TAG_PYEXC,
-                label: 0,
-            }];
-            f.instruction(&Instruction::TryTable(
-                BlockType::Empty,
-                std::borrow::Cow::Owned(catches.to_vec()),
-            ));
-        }
         match &seg.kind {
             SegKind::Seq(stmts) => {
                 for s in stmts {
@@ -3107,7 +3150,27 @@ fn emit_gen_step_fn(f: &mut Function, uf: &UserFn, ctx: &mut EmitCtx) {
                     f.instruction(&Instruction::LocalGet(gen.scratch.b));
                     f.instruction(&Instruction::LocalSet(gen.scratch.a));
                     gen_extract_si_payload(f, &gen);
-                    goto_x(f, *done, 2 + wrap_extra);
+                    // INLINE the YfDone bind (03.04f: the state=done
+                    // trampoline re-dispatch landed past the post-yf segs —
+                    // the print/binding segs after `yield from` were
+                    // silently skipped). Bind HERE, then continue at the
+                    // YfDone segment's successor.
+                    if let SegKind::YfDone { slot } = &plan.segs[*done].kind {
+                        f.instruction(&Instruction::LocalGet(gen.scratch.b));
+                        gen_store_slot(f, &gen, slot.as_str());
+                    }
+                    // trampoline to the YfDone successor: state = done_next;
+                    // br Loop1 (depth n-k+1+extra: If + $chk + B(k+1..n-1)
+                    // + $done + $sink between this site and Loop1)
+                    let done_next = plan.segs[*done].next_override.unwrap_or(*done + 1);
+                    f.instruction(&Instruction::I32Const(done_next as i32));
+                    f.instruction(&Instruction::LocalSet(2));
+                    // depth to Loop1 from this site: If(SI) + $chk + the
+                    // still-open seg blocks B(k+1..n-1) + $done + $sink
+                    // = 2 + (n-1-k) + 2 = n-k+3 (03.04f)
+                    f.instruction(&Instruction::Br(
+                        (n_segs - k + 3) as u32,
+                    ));
                     f.instruction(&Instruction::End);
                     f.instruction(&Instruction::LocalGet(gen.scratch.b));
                     f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
@@ -3135,6 +3198,9 @@ fn emit_gen_step_fn(f: &mut Function, uf: &UserFn, ctx: &mut EmitCtx) {
                 park_kind,
                 resume,
             } => {
+                // bare `raise` in the prefix re-raises the caught exc
+                f.instruction(&Instruction::LocalGet(gen.scratch.s_pad));
+                f.instruction(&Instruction::GlobalSet(ctx.fg.active_exc));
                 let _ = park_kind; // the `as n` bind rides gen_store in the
                 // resume segment via Park Bind? Simpler: bind HERE from the
                 // payload when park lands. The park's $value = yield expr;
@@ -3170,120 +3236,101 @@ fn emit_gen_step_fn(f: &mut Function, uf: &UserFn, ctx: &mut EmitCtx) {
                 f.instruction(&Instruction::Return);
             }
         }
-        if in_wrap {
-            // try_table End + null payload -> $cx End: exc|null
-            f.instruction(&Instruction::End); // try_table
-            f.instruction(&Instruction::RefNull(hc(T_EXCEPTION)));
-            f.instruction(&Instruction::End); // $cx
-            f.instruction(&Instruction::LocalSet(gen.scratch.s_pad));
-            // handler chain (scratch.s_pad = exc|null; null never reaches
-            // here — the fall-through path br'd out of $cx already... it
-            // DIDN'T: the body fall-through arrives here with NULL. Guard:
-            f.instruction(&Instruction::Block(BlockType::Empty)); // $hdone
-            {
-                f.instruction(&Instruction::LocalGet(gen.scratch.s_pad));
-                f.instruction(&Instruction::RefIsNull);
-                f.instruction(&Instruction::If(BlockType::Empty));
-                // null = body completed normally -> exit the wrapper (goto
-                // after, extra = $hdone+If = 2... reuse goto_x at chain
-                // level: labels open = $hdone(0), If(1), B.. , $done, Loop
-                {
-                    let wid = wrap_of[k].unwrap();
-                    let w = &plan.wrappers[wid];
-                    let after = w.after;
-                    if after >= n_segs {
-                        f.instruction(&Instruction::Br((n_segs - k + 2) as u32));
-                    } else if after > k {
-                        // B(after-1) sits at depth after-k from here
-                        f.instruction(&Instruction::Br((after - k) as u32));
-                    } else {
-                        f.instruction(&Instruction::I32Const(after as i32));
-                        f.instruction(&Instruction::LocalSet(2));
-                        f.instruction(&Instruction::Br((n_segs - k + 3) as u32));
-                    }
-                }
-                f.instruction(&Instruction::End);
-                // handler match chain
-                let wid = wrap_of[k].unwrap();
-                let w = &plan.wrappers[wid];
-                for (hi, h) in w.handlers.iter().enumerate() {
-                    f.instruction(&Instruction::LocalGet(gen.scratch.s_pad));
-                    match &h.ty {
-                        None => {
-                            f.instruction(&Instruction::I32Const(1));
-                        }
-                        Some(ty) => {
-                            gen_emit_expr(f, ty, ctx, &gen);
-                            f.instruction(&Instruction::Call(fx::FN_EXC_MATCH));
-                        }
-                    }
-                    f.instruction(&Instruction::If(BlockType::Empty));
-                    {
-                        // bind `as n` non-park prefix handled in the
-                        // HandlerPrefix segment; here only match routing:
-                        // run the prefix stmts (bind-name when no park)
-                        if h.resume.is_none() {
-                            // no yield in the handler: prefix stmts are the
-                            // whole body — emit inline then goto after.
-                            // (prefix carries post via HandlerPlan? No:
-                            // split_handler_body put everything in prefix
-                            // when park_value is None.)
-                            for s in &h.prefix {
-                                gen_emit_stmt(f, s, ctx, &gen);
-                            }
-                            if let Some(n) = &h.name {
-                                f.instruction(&Instruction::LocalGet(gen.scratch.s_pad));
-                                gen_store_slot(f, &gen, n.as_str());
-                            }
-                            let after = w.after;
-                            if after >= n_segs {
-                                f.instruction(&Instruction::Br((n_segs - k + 2) as u32));
-                            } else if after > k {
-                                f.instruction(&Instruction::Br((after - k) as u32));
-                            } else {
-                                f.instruction(&Instruction::I32Const(after as i32));
-                                f.instruction(&Instruction::LocalSet(2));
-                                f.instruction(&Instruction::Br((n_segs - k + 3) as u32));
-                            }
-                        } else {
-                            // park-yielding handler: dispatch to the
-                            // staged HandlerPrefix segment (it carries the
-                            // prefix stmts + park + resume wiring).
-                            let pid = prefix_seg_of[k]
-                                .expect("park-yield handler has a staged prefix seg");
-                            f.instruction(&Instruction::I32Const(pid as i32));
-                            f.instruction(&Instruction::LocalSet(2));
-                            f.instruction(&Instruction::Br((n_segs - k + 3) as u32));
-                        }
-                    }
-                    f.instruction(&Instruction::End); // If(hi)
-                    let _ = hi;
-                }
-                // unmatched: rethrow
-                f.instruction(&Instruction::LocalGet(gen.scratch.s_pad));
-                f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
-                f.instruction(&Instruction::Throw(TAG_PYEXC));
-            }
-            f.instruction(&Instruction::End); // $hdone
-        }
     }
     f.instruction(&Instruction::End); // $sink End (last segment block's
     // End already closed B(n-1); falling here = done region entry, and the
     // br_table default (depth n from dispatch) lands HERE directly).
-    // done region: $value = None, state = DONE, return null. The entry is
-    // POP-INSENSITIVE: dispatch (state = n) arrives with an i32 on the
-    // stack (the br_table operand, auto-popped by the br), a resume with a
-    // pyobj — so DON'T Return (that would type-require a value); fall
-    // through $done's End instead, which pops nothing. The step fn's
-    // (result oref) contract is met by the FT filler after Loop's End.
+    // done region: $value = None, state = DONE, return null. Every entry
+    // (br_table default or the goto-done escape) arrives with an empty
+    // stack, so a direct Return is safe — and REQUIRED now: the machine
+    // sits inside $outer's Loop, and falling through End($done)/End(Loop)
+    // would re-enter the dispatch forever (03.04f).
     gen_lget_gen(f);
     f.instruction(&Instruction::GlobalGet(G_NONE));
     sset(f, T_GENERATOR, F_GEN_VALUE);
     gen_lget_gen(f);
     f.instruction(&Instruction::I32Const(GS_DONE));
     sset(f, T_GENERATOR, F_GEN_STATE);
+    f.instruction(&Instruction::RefNull(hc(T_PYOBJ)));
+    f.instruction(&Instruction::Return);
     f.instruction(&Instruction::End); // $done End
     f.instruction(&Instruction::End); // Loop End
+    f.instruction(&Instruction::End); // try_table End (no catch fell through)
+    f.instruction(&Instruction::RefNull(hc(T_EXCEPTION)));
+    f.instruction(&Instruction::End); // $cx End: normal path delivers null
+    f.instruction(&Instruction::LocalSet(gen.scratch.s_pad));
+    // null payload = normal completion -> straight exit (no handler run)
+    f.instruction(&Instruction::LocalGet(gen.scratch.s_pad));
+    f.instruction(&Instruction::RefIsNull);
+    f.instruction(&Instruction::If(BlockType::Empty));
+    f.instruction(&Instruction::Br(1)); // -> $outer end (exit)
+    f.instruction(&Instruction::End);
+    // close chain: exc = TAG_PYEXC caught by the machine-wide try_table
+    // try_table (a staged throw-in or a Raise inside a body). Unmatched ->
+    // rethrow; matched no-yield handler -> run prefix, goto after via
+    // trampoline; matched park-yield handler -> dispatch the staged
+    // HandlerPrefix segment.
+    let has_wrapper = wrap_of.iter().any(|w| w.is_some());
+    if !has_wrapper {
+        // no try in this gen: any caught exc must propagate unchanged
+        f.instruction(&Instruction::LocalGet(gen.scratch.s_pad));
+        f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
+        f.instruction(&Instruction::Throw(TAG_PYEXC));
+    }
+    if has_wrapper {
+        let wid = wrap_of
+            .iter()
+            .flatten()
+            .copied()
+            .next()
+            .expect("close chain requires a wrapper");
+        let w = &plan.wrappers[wid];
+        let after = w.after;
+        // park-yield handler dispatch target (staged prefix seg), if any
+        for (hi, h) in w.handlers.iter().enumerate() {
+            f.instruction(&Instruction::LocalGet(gen.scratch.s_pad));
+            match &h.ty {
+                None => {
+                    f.instruction(&Instruction::I32Const(1));
+                }
+                Some(ty) => {
+                    gen_emit_expr(f, ty, ctx, &gen);
+                    f.instruction(&Instruction::Call(fx::FN_EXC_MATCH));
+                }
+            }
+            f.instruction(&Instruction::If(BlockType::Empty));
+            {
+                if h.resume.is_none() {
+                    // bare `raise` in the handler re-raises THIS exc
+                    f.instruction(&Instruction::LocalGet(gen.scratch.s_pad));
+                    f.instruction(&Instruction::GlobalSet(ctx.fg.active_exc));
+                    for s in &h.prefix {
+                        gen_emit_stmt(f, s, ctx, &gen);
+                    }
+                    if let Some(n) = &h.name {
+                        f.instruction(&Instruction::LocalGet(gen.scratch.s_pad));
+                        gen_store_slot(f, &gen, n.as_str());
+                    }
+                    f.instruction(&Instruction::I32Const(after as i32));
+                    f.instruction(&Instruction::LocalSet(2));
+                    f.instruction(&Instruction::Br(1)); // If(hi)=0, $outer=1 -> re-dispatch
+                } else {
+                    let p = prefix_seg_of[w.inner0]
+                        .expect("park-yield handler has a staged prefix seg");
+                    f.instruction(&Instruction::I32Const(p as i32));
+                    f.instruction(&Instruction::LocalSet(2));
+                    f.instruction(&Instruction::Br(1)); // If(hi)=0, $outer=1 -> re-dispatch
+                }
+            }
+            f.instruction(&Instruction::End); // If(hi)
+            let _ = hi;
+        }
+        // unmatched: rethrow
+        f.instruction(&Instruction::LocalGet(gen.scratch.s_pad));
+        f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
+        f.instruction(&Instruction::Throw(TAG_PYEXC));
+    }
+    f.instruction(&Instruction::End); // $outer End
     f.instruction(&Instruction::RefNull(hc(T_PYOBJ))); // FT result filler
     f.instruction(&Instruction::End); // FUNCTION body End
 }
@@ -3395,6 +3442,8 @@ fn gen_extract_si_payload(f: &mut Function, gen: &GenCtx) {
     f.instruction(&Instruction::End);
     f.instruction(&Instruction::LocalSet(gen.scratch.b));
 }
+
+
 
 /// PARK at a yield site: spill mirrors -> $gen.$locals, $value = yieldval
 /// (on stack), $state = park, return yieldval.
@@ -4401,6 +4450,7 @@ fn emit_user_fn(
     };
     let mut buf_end = fx::PRINT_BUF;
     let mut ctx = EmitCtx {
+        comp_emit_cursor: 0,
         scan,
         res_maps: &[],
         tab,
@@ -5435,6 +5485,49 @@ fn emit_expr(f: &mut Function, e: &Expr, ctx: &mut EmitCtx) {
                 array_size: items.len() as u32,
             });
             f.instruction(&Instruction::StructNew(T_DICT));
+        }
+        Expr::ListComp(elt, clauses) | Expr::Generator(elt, clauses) => {
+            // GE005: the comp lowered to the hidden <listcomp> GENERATOR fn
+            // (scan registered the name + mod slot) — emit a static
+            // generator call: `list(<listcomp>())` shape. The result is the
+            // generator object; the list() wrapper drives it (v1 slice:
+            // ListComp-as-gen — the caller wraps in list()).
+            let fake_call = Expr::Call(
+                Box::new(Expr::Name("<listcomp>".into())),
+                vec![ap_ir::expr::Arg::Pos(Expr::Tuple(Vec::new()))], // placeholder, unused
+            );
+            let _ = &fake_call;
+            // multiple comps per module each register a <listcomp>; the
+            // hidden fns are registered in source order — pick by index:
+            // count the ListComp/Generator exprs already EMITTED before
+            // this one (emit order == scan order for the module slice)
+            let idx = ctx.comp_emit_cursor;
+            ctx.comp_emit_cursor += 1;
+            let hidden: Vec<usize> = ctx
+                .scan
+                .fns
+                .iter()
+                .enumerate()
+                .filter(|(_, uf)| uf.name == "<listcomp>" && uf.is_generator)
+                .map(|(i, _)| i)
+                .collect();
+            if idx < hidden.len() {
+                emit_generator_call(f, hidden[idx], &[], ctx);
+                return;
+            }
+            unreachable!("scan vetted comp hidden fn: {idx} of {hidden:?}");
+        }
+        Expr::Named(t, v) => {
+            // walrus: eval, bind the name (enclosing scope), result = value
+            // (S-02-2; 03.04f GE005 comp-hidden-fn walrus)
+            emit_expr(f, v, ctx);
+            f.instruction(&Instruction::LocalSet(TEMP_LOCAL_A));
+            f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
+            emit_name_store(f, match t.as_ref() {
+                Expr::Name(n) => n.as_str(),
+                _ => unreachable!("scan vetted walrus non-name target"),
+            }, ctx);
+            f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
         }
         other => unreachable!("scan vetted expr: {other:?}"),
     }
