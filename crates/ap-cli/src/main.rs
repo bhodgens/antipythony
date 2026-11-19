@@ -43,6 +43,8 @@ fn usage() -> i32 {
          \x20 add <pkg>                   fetch a pure-Python package via uv + lock it\n\
          \x20 run [--no-cache] <file.py>  execute (fetched deps join sys.path)\n\
          \x20 build <file.py> [-o out]    write the cached build artifact\n\
+         \x20 build --wasm <file.py>       emit <stem>.wasm (Plan 03 backend)\n\
+         \x20 host <module.wasm> [args]    run a .wasm via the built-in ap-host\n\
          \x20 cache gc                    clear the build cache"
     );
     2
@@ -93,6 +95,7 @@ fn run(args: &[String]) -> Result<i32, String> {
         Some("run") => cmd_run(&rest, false),
         Some("build") => cmd_build(&rest),
         Some("cache") => cmd_cache(&rest),
+        Some("host") => cmd_host(&rest),
         // Single-file legacy form: `antipythony file.py` (02.02 seam).
         Some(other) if other.ends_with(".py") => {
             let r2: Vec<&str> = vec![other];
@@ -344,15 +347,18 @@ fn copy_tree(src: &Path, dst: &Path) -> Result<(), String> {
 fn cmd_run(rest: &[&str], _wasm: bool) -> Result<i32, String> {
     let mut path: Option<String> = None;
     let mut no_cache = false;
+    let mut wasm = false;
     let mut i = 0;
     while i < rest.len() {
         match rest[i] {
             "--no-cache" => no_cache = true,
+            // 04.04: compile to wasm + execute via the embedded ap-host
+            // (the Plan-04 CLI surface row; NOT the native tier-0 path —
+            // the wasm backend's supported slice applies, fail-loud).
             "--wasm" => {
-                return Err(
-                    "antipythony: --wasm is not implemented (Plan 03 / leaf 04.04 territory)"
-                        .to_string(),
-                )
+                wasm = true;
+                i += 1;
+                continue;
             }
             other if path.is_none() => path = Some(other.to_string()),
             other => return Err(format!("antipythony: unexpected argument '{other}'")),
@@ -364,6 +370,31 @@ fn cmd_run(rest: &[&str], _wasm: bool) -> Result<i32, String> {
     };
     let source = std::fs::read_to_string(&path)
         .map_err(|e| format!("antipythony: cannot read {path}: {e}"))?;
+
+    // ---- 04.04: `run --wasm` = compile to wasm + execute via ap-host ----
+    // No content-addressed cache interaction (the 04.02 cache keys the
+    // NATIVE backend; a wasm cache key lands with the Plan-04 cache
+    // extension, tracked in docs/run-wasm-anywhere.md).
+    if wasm {
+        let wasm_bytes = PathBuf::from(std::env::temp_dir()).join(format!(
+            "aprun-wasm-{}-{}",
+            std::process::id(),
+            std::process::id()
+        ));
+        ap_cli::wasm::build_wasm(&source, &path, &wasm_bytes)?;
+        let bytes = std::fs::read(&wasm_bytes).map_err(|e| format!("antipythony: {e}"))?;
+        let _ = std::fs::remove_file(&wasm_bytes);
+        let mut opts = ap_host::RunOptions::new();
+        opts.argv0 = Some(path.clone());
+        match ap_host::run_with_options(&bytes, &opts) {
+            Ok(out) => {
+                print!("{}", out.stdout);
+                eprint!("{}", out.stderr);
+                return Ok(out.exit_code.clamp(0, 255));
+            }
+            Err(e) => return Err(format!("ap-host: {e}")),
+        }
+    }
 
     // Content-addressed cache (04.02): key = (input bytes, lockfile bytes,
     // toolchain, backend, opt level). `--no-cache` bypasses both read and
@@ -469,9 +500,17 @@ fn cmd_build(rest: &[&str]) -> Result<i32, String> {
     let mut path: Option<String> = None;
     let mut out: Option<PathBuf> = None;
     let mut target: Option<ap_codegen_native::aot::AotTarget> = None;
+    let mut wasm = false;
     let mut i = 0;
     while i < rest.len() {
         match rest[i] {
+            // 04.04: the wasm distribution shape. Mutually exclusive with the
+            // native AoT flags by inspection (-o/--target/--wasm parsing).
+            "--wasm" => {
+                wasm = true;
+                i += 1;
+                continue;
+            }
             "-o" => {
                 out = Some(PathBuf::from(
                     rest.get(i + 1)
@@ -515,8 +554,24 @@ fn cmd_build(rest: &[&str]) -> Result<i32, String> {
         i += 1;
     }
     let Some(path) = path else {
-        return Err("usage: antipythony build <file.py> [-o out] [--target <triple>]".to_string());
+        return Err("usage: antipythony build <file.py> [-o out] [--target <triple>]\n       antipythony build --wasm <file.py> [-o out.wasm]".to_string());
     };
+
+    // ---- 04.04: the wasm distribution shape ----
+    if wasm {
+        let source = std::fs::read_to_string(&path)
+            .map_err(|e| format!("antipythony: cannot read {path}: {e}"))?;
+        let out_path = out.unwrap_or_else(|| {
+            Path::new(&path)
+                .file_stem()
+                .map(|s| PathBuf::from(s).with_extension("wasm"))
+                .unwrap_or_else(|| PathBuf::from("app.wasm"))
+        });
+        ap_cli::wasm::build_wasm(&source, &path, &out_path)?;
+        println!("built {} (wasm)", out_path.display());
+        return Ok(0);
+    }
+
     let source = std::fs::read_to_string(&path)
         .map_err(|e| format!("antipythony: cannot read {path}: {e}"))?;
     let script_dir = Path::new(&path)
@@ -569,6 +624,103 @@ fn which(prog: &str) -> Option<PathBuf> {
     std::env::split_paths(&path)
         .map(|dir| dir.join(prog))
         .find(|cand| cand.is_file())
+}
+
+// ---------------------------------------------------------------------------
+// host — run a .wasm through the embedded ap-host (04.04 install story)
+// ---------------------------------------------------------------------------
+
+/// `antipythony host <module.wasm> [args...]` — the ap-host runner reachable
+/// under the main CLI's name for users who only installed `antipythony`
+/// (docs/run-wasm-anywhere.md's "no separate binary" path). The standalone
+/// `ap-host` binary (same crate, `cargo build -p ap-host`) stays the
+/// canonical shipped runner; this verb forwards to the SAME library entry so
+/// the observable behavior (byte-exact stdout/stderr, rc propagation, the
+/// 126/127 refusal codes) is identical in both shapes.
+fn cmd_host(rest: &[&str]) -> Result<i32, String> {
+    // The `run` verb is optional sugar in ap-host (`ap-host run x.wasm` ==
+    // `ap-host x.wasm`) — mirror it so both spellings work identically.
+    let rest = match rest.first() {
+        Some(&"run") => &rest[1..],
+        _ => rest,
+    };
+    let mut wasm_path: Option<String> = None;
+    let mut args: Vec<String> = Vec::new();
+    let mut env: Vec<(String, String)> = Vec::new();
+    let mut argv0: Option<String> = None;
+    let mut cap: usize = 262_144;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i] {
+            "--arg" => {
+                args.push(
+                    rest.get(i + 1)
+                        .ok_or("antipythony host: --arg needs a value")?
+                        .to_string(),
+                );
+                i += 2;
+            }
+            "--env" => {
+                let kv = rest
+                    .get(i + 1)
+                    .ok_or("antipythony host: --env needs K=V")?
+                    .to_string();
+                let (k, v) = kv
+                    .split_once('=')
+                    .ok_or(format!("antipythony host: --env: {kv:?} is not K=V"))?;
+                env.push((k.to_string(), v.to_string()));
+                i += 2;
+            }
+            "--argv0" => {
+                argv0 = Some(
+                    rest.get(i + 1)
+                        .ok_or("antipythony host: --argv0 needs a value")?
+                        .to_string(),
+                );
+                i += 2;
+            }
+            "--cap" => {
+                cap = rest
+                    .get(i + 1)
+                    .ok_or("antipythony host: --cap needs a value")?
+                    .parse::<usize>()
+                    .map_err(|_| "antipythony host: --cap is not a byte count".to_string())?;
+                i += 2;
+            }
+            other if wasm_path.is_none() => wasm_path = Some(other.to_string()),
+            other => args.push(other.to_string()),
+        }
+        // positional/default advance
+        if i < rest.len() && !matches!(rest[i], "--arg" | "--env" | "--argv0" | "--cap") {
+            i += 1;
+        }
+    }
+    let Some(path) = wasm_path else {
+        return Err(
+            "usage: antipythony host <module.wasm> [--arg a] [--env K=V] [--argv0 name] [--cap n] [args...]"
+                .to_string(),
+        );
+    };
+    let bytes =
+        std::fs::read(&path).map_err(|e| format!("antipythony host: cannot read {path}: {e}"))?;
+    let mut opts = ap_host::RunOptions::new();
+    opts.capture_cap = cap;
+    opts.args = args;
+    opts.env = env;
+    opts.argv0 = Some(argv0.unwrap_or_else(|| {
+        Path::new(&path)
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.clone())
+    }));
+    match ap_host::run_with_options(&bytes, &opts) {
+        Ok(out) => {
+            print!("{}", out.stdout);
+            eprint!("{}", out.stderr);
+            Ok(out.exit_code.clamp(0, 255))
+        }
+        Err(e) => Err(format!("ap-host: {e}")),
+    }
 }
 
 // ---------------------------------------------------------------------------
