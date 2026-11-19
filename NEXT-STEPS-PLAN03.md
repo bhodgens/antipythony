@@ -32,7 +32,61 @@
   GOTCHA: dbg prints inside step fns CLOBBER mirror locals — use unique
   traps or module-level observables.
 
-## 03.04g LANDED — LEAF 03.04 CLOSED (2026-11-19, trunk 4d541fc pushed)
+## 03.07 LANDED — PLAN 03 CLOSED (2026-11-19, trunk e302aa0 pushed)
+
+- Leaf 03.07 verified first-hand (worktree e302aa0, clean): cli_corpus_gate
+  51/51 byte-exact (debug AND release), ap-host 8/8, controlflow 18/18,
+  classes/exceptions 17/17, for_probe 5/5, ge_ma_probe 6/6, ap-run suite
+  green (its 2 native fixes landed clean). Report read in full by the
+  orchestrator. Merged to main (e302aa0), PUSHED.
+- VERDICT: **PLAN 03 EXIT GATE PASS — A-3/D6 WITHDRAWN for the
+  wasm-lowered surface.** Every case that lowers is byte-exact on all
+  three channels in both engines; zero Class-X divergences on the
+  wasm-lowered surface; the remaining OPEN byte-divergence issues
+  (#2/#4/#6/#8/#9) re-scope to native surfaces wasm does not lower.
+- Key artifacts: plans/antipythony/03-wasm-backend/03.07-report.md
+  (+ .json/.md triple-diff, not-lowered.json, V016-root-cause.md,
+  NEXT-0307.md).
+- Honest post-03 backlog filed by the leaf: 146 NOT-LOWDERED cases
+  (imports/stdlib embedding dominant = 04.x packaging scope), 11
+  LOWER-PANIC scan-vet contract violations (loud aborts, emitter
+  hardening), 2 native fixes landed in ap-run (gen_throw-on-finished
+  re-raise, walrus-in-comp enclosing-scope bind), 3 extended-corpus
+  native gaps owned elsewhere (c018 vars()-slots 02.08-lite, c032
+  metaclass remainder 02.03b, t1_007 format_decimal PROGRESS-0205
+  filing), V016 = ruff parser surrogate mapping (ap-parse/upstream).
+
+## TOP-LEVEL PLAN MAP (surveyed 2026-11-19, post-Plan-03)
+
+- Plan 00/01: CLOSED (VALIDATED).
+- Plan 02: 02.05 split COMPLETE (exit gate PASSED, AGENTS.md line 60);
+  02.06 AoT COMPLETE (PROGRESS:876); 02.09 no-GIL SPLIT COMPLETE — T121
+  3.3x GREEN, GIL deleted (87ffb23, on main); 02.08 coverage audit done
+  (41/48 binary stdlib; gap list ranked in the audit). REMAINING:
+  02.08-full per the audit gap list (iter(<genexpr>) wedge top item) +
+  T121 quiet-window re-verify + 02.10 Go-scheduler (stretch, unblocked).
+- Plan 03: CLOSED this gate (see above).
+- Plan 04: 04.01+04.02 LANDED (six byte-exact e2e; packaging add/purity/
+  lock green). REMAINING: 04.03 release engineering (CI matrix,
+  checksums, install script; fresh-machine gate), 04.04 wasm distribution
+  (build --wasm + ap-host standalone + doc page; NOW unblocked — Plan 03
+  closed), 04.05 hybrid artifact.
+- Plan 05 (ecosystem T2): scrapy T1 DONE, pytest T2 gates GREEN,
+  hermes-agent T3 / fastapi T4 / comfyui T5 per master.md tier table
+  (gates on Plan 10). Continuing track, not a closure gate.
+- Plan 10 (C-extensions): v2 stretch, parked per master.md.
+
+## NEXT DISPATCHES (parallel-safe set, per the map)
+
+1. Leaf 02.08-full: close the audit gap list (iter wedge first — it
+   blocks s030/s044 and likely downstream), then T121 quiet re-verify.
+2. Leaf 04.03: release engineering (CI matrix + checksums + install
+   script + fresh-machine gate).
+3. Leaf 04.04: wasm distribution path (build --wasm + ap-host standalone
+   runner + doc page).
+4. (After 1-3) 04.05 hybrid; 02.10 scheduler as research-implement.
+
+## Standing conventions
 
 - Leaf 03.04g verified first-hand (worktree 99d1923, clean): ge_ma_probe
   6/6 (GE001-GE005 + MA001 ALL PASS byte-exact), ge0304f_bisect 25/25,
