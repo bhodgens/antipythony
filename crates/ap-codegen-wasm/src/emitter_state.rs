@@ -102,10 +102,13 @@ pub const FN_TYPE_OF: u32 = 70; // (o) -> o                    type(x)
 // FN_FIRST_USER moved 70 -> 73 for this block.
 pub const FN_LIST_DRAIN: u32 = 71; // (iterator o) -> o ($list)
 pub const FN_SUM_DRAIN: u32 = 72; // (iterator o) -> o ($int)
+// leaf 03.04g: dict-from-pairs driver, appended after 72 — dense, never
+// renumbered. FN_FIRST_USER moves 73 -> 74 for this block.
+pub const FN_DICT_DRAIN: u32 = 73; // (iterator o) -> o ($dict)
 /// First wasm function index of the EMITTED user functions (Item::FnDef /
 /// Stmt::LocalDef), which follow the prelude densely. `_start` is
 /// computed at emit time as FN_FIRST_USER + n_user_fns.
-pub const FN_FIRST_USER: u32 = 73;
+pub const FN_FIRST_USER: u32 = 74;
 
 /// rt_init is index 3 (03.03 layout: 0 fd_write, 1 abort_msg, 2 proc_exit,
 /// 3 rt_init — proc_exit joined the imports for the uncaught-traceback

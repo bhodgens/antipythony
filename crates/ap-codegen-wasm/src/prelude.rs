@@ -1374,10 +1374,66 @@ fn tuple_eq(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::
 
 /// dict_has (FT_OO_I): (d, k) -> i32 — linear scan of entries with $eq on
 /// keys (compact dict probing is 03.03's surface; V041/V052 dicts are tiny).
+/// 03.04g MA001: WAS A STUB RETURNING 0 (mapping patterns never matched).
+/// Mirrors dget's scan (str keys, the slice's only literal-key form).
 fn dict_has(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
-    add(funcs, code, FT_OO_I, &[], |f| {
-        f.instruction(&Instruction::I32Const(0));
-    });
+    add(
+        funcs,
+        code,
+        FT_OO_I,
+        &[
+            (2, oref()), // 2=dict copy, 3=key copy (casts at use)
+            (1, ValType::I32), // 4=i
+            (
+                1,
+                ValType::Ref(wasm_encoder::RefType {
+                    nullable: true,
+                    heap_type: hc(T_DICT_ENTRY),
+                }),
+            ), // 5
+        ],
+        |f| {
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::LocalSet(2));
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::LocalSet(3));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::LocalSet(4));
+            f.instruction(&Instruction::Block(BlockType::Empty));
+            f.instruction(&Instruction::Loop(BlockType::Empty));
+            // i >= fill? -> miss (0)
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::RefCastNullable(hc(T_DICT)));
+            sget(f, T_DICT, F_DICT_FILL);
+            f.instruction(&Instruction::I32GeU);
+            f.instruction(&Instruction::BrIf(1));
+            // str_eq(entry.key, k)?
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::RefCastNullable(hc(T_DICT)));
+            sget(f, T_DICT, F_DICT_ENTRIES);
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::ArrayGet(T_ENTRY_ARR));
+            f.instruction(&Instruction::LocalSet(5));
+            f.instruction(&Instruction::LocalGet(5));
+            sget(f, T_DICT_ENTRY, F_ENTRY_KEY);
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
+            f.instruction(&Instruction::Call(fx::FN_STR_EQ));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::I32Add);
+            f.instruction(&Instruction::LocalSet(4));
+            f.instruction(&Instruction::Br(0));
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::I32Const(0));
+        },
+    );
 }
 
 

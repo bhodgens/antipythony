@@ -1614,9 +1614,10 @@ pub fn lower_module_ex(
             f.instruction(&Instruction::Call(fx::FN_FRAME_PUSH));
         }
 
+        let mut comp_cursor = 0usize;
         for item in &module.items {
             let mut ctx = EmitCtx {
-                comp_emit_cursor: 0,
+                comp_emit_cursor: comp_cursor,
                 scan: &scan,
                 res_maps: &res_maps,
                 tab: &tab,
@@ -1638,6 +1639,10 @@ pub fn lower_module_ex(
                 Item::ClassDef(cd) => emit_class_def(&mut f, cd, &mut ctx),
                 Item::FnDef(_) => {} // bound in the def-time loop above
             }
+            // the comp hidden-fn cursor is MODULE-ordered, not per-statement
+            // (03.04g: a fresh cursor 0 per item made every module stmt's
+            // comp call the FIRST comp's hidden gen).
+            comp_cursor = ctx.comp_emit_cursor;
         }
         if eh_wrap {
             f.instruction(&Instruction::End); // try_table
@@ -2061,7 +2066,7 @@ struct EmitCtx<'a> {
     comp_emit_cursor: usize,
 }
 
-/// Shared temp locals (valid in `_start` AND user-function frames; user
+ /// Shared temp locals (valid in `_start` AND user-function frames; user
 /// frames reserve the same indices at their local-block tail).
 const TEMP_LOCAL: u32 = 40; // print-buffer end (i32)
 #[allow(dead_code)]
@@ -2431,12 +2436,48 @@ impl SegPlanner {
     fn plan_seq(&mut self, stmts: &[Stmt], chain: Option<SegId>) -> (SegId, SegId, SegId) {
         let mut first: Option<SegId> = None;
         let mut last: SegId = 0;
+        // 03.04g: empty streams push their (empty) seg HERE and return it as
+        // both first and last — `last` previously stayed 0 for empty input,
+        // so If arms with no else got a garbage else-tail id (0) and the
+        // REAL pushed seg never staged E_PEND: the false branch fell to the
+        // done escape and silently killed every for/while+if-yield gen
+        // (GE005 evens/pair, all hidden comps with an if-clause).
+        if stmts.is_empty() {
+            let id = self.push(SegKind::Seq(Vec::new()));
+            let end = self.segs.len();
+            return (id, id, end);
+        }
+        // 03.04g: per-statement segment ranges — E_PEND staged by stmt i
+        // (If tails, handler-park resumes) continues at the NEXT statement's
+        // first seg, NOT the stream end. Previously everything E_PEND
+        // resolved to `n` (done escape), silently skipping any statement
+        // following an If/handler in the stream (GE003's missing `B end`:
+        // inbody's handler resume jumped straight to exhaustion, skipping
+        // `yield 'end'`). The LAST statement's E_PENDs stay E_PEND: the
+        // loop passes resolve them to top/after and plan-gen resolves the
+        // top-level stream's to n — both still correct.
+        let mut stmt_first: Vec<SegId> = Vec::new();
+        let mut stmt_start: Vec<usize> = Vec::new();
         for s in stmts {
+            stmt_start.push(self.segs.len());
             let (f, l) = self.plan_stmt(s);
+            stmt_first.push(f);
             if first.is_none() {
                 first = Some(f);
             }
             last = l;
+        }
+        for (i, &start) in stmt_start.iter().enumerate() {
+            if i + 1 >= stmt_first.len() {
+                break;
+            }
+            let end = stmt_start[i + 1];
+            let tgt = stmt_first[i + 1];
+            for seg in &mut self.segs[start..end] {
+                if seg.next_override == Some(E_PEND) {
+                    seg.next_override = Some(tgt);
+                }
+            }
         }
         let first = first.unwrap_or_else(|| self.push(SegKind::Seq(Vec::new())));
         let end = self.segs.len();
@@ -2549,10 +2590,39 @@ impl SegPlanner {
                 });
                 let (tf, tl, _te) = self.plan_seq(then, None);
                 let (ef, el, _ee) = self.plan_seq(els, None);
-                // then-tail continues AFTER the whole if: stage E_PEND — the
-                // enclosing loop pass (-> loop top) or plan end (-> done
-                // escape) resolves it.
+                // then-tail AND else-tail continue AFTER the whole if: stage
+                // E_PEND — the enclosing stream (-> next stmt) or loop pass
+                // (-> loop top) resolves it. (03.04g: staging BOTH joins is
+                // what makes a FALSE comp if-clause continue the loop at the
+                // next stmt instead of falling to the done escape.)
+                // 03.04g GOTCHA: a Park seg's `next` is its RESUME pointer,
+                // not a fall-through join — when the if-body is exactly
+                // [yield] the then-tail IS the Park seg, and blindly staging
+                // E_PEND over it sent every resume to the loop top (silent
+                // generator death: all print/list comp output empty). Park
+                // keeps its own next; the enclosing chain resolves via the
+                // park's OWN continuation instead. For the [yield]-only body
+                // wire the join INTO the park's next explicitly (E_PEND
+                // staged on a shadow seg is not possible — the park is the
+                // whole body), so we leave `next` untouched here and mark
+                // the join with a dedicated flag: patch_loop_sentinels and
+                // plan_seq both rewrite E_PEND, never Park.next, so the
+                // only correct join for a Park tail is `next = k+1` … which
+                // is ALREADY what plan_stmt set. The enclosing loop/stream
+                // picks it up as the ordinary fall-through (its after/next
+                // target = seg len = the same place E_PEND would resolve).
+                // 03.04g: stage E_PEND on BOTH tails UNCONDITIONALLY —
+                // including Park tails. A Park seg's staged E_PEND is the
+                // if-JOIN for its resume (then-tail Park's physical next is
+                // the ELSE branch — resuming there would run the wrong arm,
+                // c2's phantom `99`). Resolution order: plan_seq chaining
+                // -> next stmt; the enclosing loop pass -> loop fnx (the
+                // back-chain's ownership match sees Some(E_PEND) and
+                // rewrites it to fnx); plan-gen -> n. The park's FIELD
+                // `next` (its resume pointer at emit) reads next_override
+                // first, so the staged sentinel IS the resume target.
                 self.segs[tl].next_override = Some(E_PEND);
+                self.segs[el].next_override = Some(E_PEND);
                 self.patch(
                     t,
                     SegKind::Test {
@@ -2576,9 +2646,21 @@ impl SegPlanner {
                 self.loop_depth += 1;
                 let (_b0, bl, body_end) = self.plan_seq(body, None);
                 self.loop_depth -= 1;
-                let after = self.segs.len();
+                // 03.04g: exhaustion exit = a CONTINUATION seg carrying
+                // E_PEND (same model as the For arm): nested-loop inner
+                // exits route to the enclosing pass's fnx, top-level to n.
+                let cont = self.push(SegKind::Seq(Vec::new()));
+                self.segs[cont].next_override = Some(E_PEND);
+                let after = cont;
                 self.patch_loop_sentinels(body_start, body_end, head, after);
-                self.segs[bl].next_override = Some(head); // loop back-chain
+                // back-chain: same ownership rule as the For arm (03.04g) —
+                // an inner loop's Park-tail back-chain wins over this one.
+                match self.segs[bl].next_override {
+                    None | Some(E_PEND) | Some(CONT_PEND) => {
+                        self.segs[bl].next_override = Some(head); // back-chain
+                    }
+                    _ => {}
+                }
                 self.loop_tails.push(bl);
                 self.patch(
                     head,
@@ -2620,9 +2702,32 @@ impl SegPlanner {
                 });
                 let body_start = self.segs.len();
                 let (_b0, bl, body_end) = self.plan_seq(body, None);
-                let after = self.segs.len();
+                // 03.04g: exhaustion exit = a CONTINUATION seg carrying
+                // E_PEND, not the raw after-len. For a loop nested in an
+                // outer loop body the enclosing pass rewrites the cont's
+                // E_PEND to the OUTER fnx (inner-exit -> outer-continue);
+                // top-level loops resolve to n (done) at plan end. The
+                // old exit=after wrote a HARDCODED done target into every
+                // inner loop — nested-for comps lost all but the first
+                // inner pass ([1,2] / [1,3] shapes).
+                let cont = self.push(SegKind::Seq(Vec::new()));
+                self.segs[cont].next_override = Some(E_PEND);
+                let after = cont;
                 self.patch_loop_sentinels(body_start, body_end, fnx, after);
-                self.segs[bl].next_override = Some(fnx); // next iteration
+                // back-chain: loop tail -> ForNext. Written even when the
+                // tail is a Park seg (a park inside a loop body resumes INTO
+                // the loop = the back-edge). BUT an inner loop's back-chain
+                // owns a Park tail first (nested-for comp: the outer body's
+                // tail IS the inner loop's Park) — a real override is left
+                // alone; only None and the E_PEND/CONT_PEND sentinels are
+                // rewritten. (03.04g: unconditional write made the outer
+                // back-chain swallow the inner one.)
+                match self.segs[bl].next_override {
+                    None | Some(E_PEND) | Some(CONT_PEND) => {
+                        self.segs[bl].next_override = Some(fnx); // next iteration
+                    }
+                    _ => {}
+                }
                 self.loop_tails.push(bl);
                 self.patch(
                     fnx,
@@ -2814,6 +2919,11 @@ fn emit_gen_step_fn(f: &mut Function, uf: &UserFn, ctx: &mut EmitCtx) {
     };
     let plan = gen_plan_segments(uf);
     let n_segs = plan.segs.len();
+    if std::env::var("APX_PLAN_DUMP").is_ok() {
+        for (i, s) in plan.segs.iter().enumerate() {
+            eprintln!("[PLAN] seg{i:2} {:<12?} next={:?}", s.kind, s.next_override);
+        }
+    }
     let loop_tails: std::collections::HashSet<usize> =
         plan.loop_tails.iter().copied().collect();
     // try-wrapper map: wrapper id covering segment k (inner0 <= k < after).
@@ -2852,6 +2962,13 @@ fn emit_gen_step_fn(f: &mut Function, uf: &UserFn, ctx: &mut EmitCtx) {
     gen_lget_gen(f);
     sget(f, T_GENERATOR, F_GEN_STATE);
     f.instruction(&Instruction::LocalSet(2));
+    // 2b. print-buffer pointer init (03.04g): wasm locals zero-start, so
+    // the FIRST print in a step fn concatenated at buffer 0 (garbage output,
+    // line silently lost). _start inits local 40 = PRINT_BUF; step fns
+    // never did — GE003 'closing', GE004 'sub returned 42'/'empty gave 7'
+    // were exactly this (the first print of that step fn vanished).
+    f.instruction(&Instruction::I32Const(fx::PRINT_BUF));
+    f.instruction(&Instruction::LocalSet(TEMP_LOCAL));
 
     // 3. the dispatch trampoline — ONE try_table wraps the whole machine
     // (03.04e design: 'all state blocks inside ONE try_table'): every
@@ -3009,7 +3126,11 @@ fn emit_gen_step_fn(f: &mut Function, uf: &UserFn, ctx: &mut EmitCtx) {
                     ParkKind::Bind(_slot) => {} // Rebind segment does the bind
                     ParkKind::Split(_op, _lhs, _slot) => {}
                 }
-                gen_park_yield(f, &gen, *park_next as i32);
+                gen_park_yield(
+                    f,
+                    &gen,
+                    seg.next_override.unwrap_or(*park_next) as i32,
+                );
                 // control left the fn (park returned); NOTHING after — not
                 // even a validator-necessary br: the fn-end is implicit.
             }
@@ -3646,6 +3767,28 @@ fn gen_emit_expr(f: &mut Function, e: &Expr, ctx: &mut EmitCtx, gen: &GenCtx) {
             f.instruction(&Instruction::LocalSet(gen.scratch.a));
             ctx.depth -= 1;
             f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(gen.scratch.a));
+        }
+        Expr::Named(t, v) => {
+            // walrus inside a gen seq (comp hidden fn): the VALUE must route
+            // through the slot table (plain emit_expr's Name loads use the
+            // plain-fn local numbering, base 3 — the step fn's mirror base
+            // is 4, so `x` read null and the BINOP trapped, 03.04g e2). The
+            // BIND targets the ENCLOSING scope (S-02-2): the comp walrus
+            // name is not a hidden-fn plain local (collect_local_binds
+            // skips Named), so emit_name_store answers Global -> module
+            // global store; the module's print(w, y) reads the same global.
+            gen_emit_expr(f, v, ctx, gen);
+            f.instruction(&Instruction::LocalSet(gen.scratch.a));
+            f.instruction(&Instruction::LocalGet(gen.scratch.a));
+            emit_name_store(
+                f,
+                match t.as_ref() {
+                    Expr::Name(n) => n.as_str(),
+                    _ => unreachable!("scan vetted walrus non-name target"),
+                },
+                ctx,
+            );
             f.instruction(&Instruction::LocalGet(gen.scratch.a));
         }
         other => emit_expr(f, other, ctx),
@@ -5008,7 +5151,402 @@ fn emit_stmt(f: &mut Function, stmt: &Stmt, ctx: &mut EmitCtx) {
         // 03.03: try/except/else (S-02-30/31/32); finally via catch-all
         // rethrow (S-02-33).
         Stmt::Try(ts) => emit_try(f, ts, ctx),
+        // 03.04g MA001: PEP-634 slice emit (NEXT-0304d): per case ONE
+        // Test-chain — type/len/element/guard checks feed FN_EQ/
+        // RefTestNullable/ArrayLen/FN_DGET; captures bind via
+        // emit_name_store (PEP-634 enclosing-scope store rules).
+        Stmt::Match(subject, cases) => emit_match(f, subject, cases, ctx),
         other => unreachable!("scan vetted statement: {other:?}"),
+    }
+}
+
+/// MA001 match emit (NEXT-0304d lines 118-124): subject stashed in
+/// TEMP_LOCAL_A; one Block around the whole match ($mend). Per case ONE
+/// test chain: emit_pattern_checks pushes i32 conjuncts (folded with
+/// I32And); the final i32 drives an If — matched path = captures already
+/// bound + body + `br $mend`; fall-through = next case. No-match falls out
+/// of the Block (scan requires a Wildcard for the MA001 slice).
+fn emit_match(
+    f: &mut Function,
+    subject: &Expr,
+    cases: &[ap_ir::item::MatchCase],
+    ctx: &mut EmitCtx,
+) {
+    emit_expr(f, subject, ctx);
+    f.instruction(&Instruction::LocalSet(TEMP_LOCAL_A));
+    f.instruction(&Instruction::Block(BlockType::Empty)); // $mend
+    ctx.depth += 1;
+    let mend_depth = ctx.depth;
+    for case in cases {
+        emit_pattern_checks(f, TEMP_LOCAL_A, &case.pattern, ctx);
+        // fold: I32And across the conjuncts the helper pushed
+        // (emit_pattern_checks pushes n-1 I32And itself).
+        if let Some(g) = &case.guard {
+            // guard reads the case's captures — bind them BEFORE the guard
+            // (the pattern's matched-so-far path guarantees the subject;
+            // Python's unbind-on-guard-fail nuance is unobservable in the
+            // slice: a guard-fail falls to the next case).
+            emit_seq_captures(f, TEMP_LOCAL_A, &case.pattern, ctx);
+            emit_cond_i32(f, g, ctx);
+            f.instruction(&Instruction::I32And);
+        }
+        f.instruction(&Instruction::If(BlockType::Empty));
+        ctx.depth += 1;
+        // sequence captures bind HERE (matched path): elements re-read from
+        // the stashed items array (TEMP_LOCAL_OBJARR / _RO set by the chain).
+        emit_seq_captures(f, TEMP_LOCAL_A, &case.pattern, ctx);
+        for s in &case.body {
+            emit_stmt(f, s, ctx);
+        }
+        f.instruction(&Instruction::Br(mend_depth)); // br $mend (matched)
+        ctx.depth -= 1;
+        f.instruction(&Instruction::End); // If
+    }
+    ctx.depth -= 1;
+    f.instruction(&Instruction::End); // $mend
+}
+
+/// Push the i32 conjuncts for ONE pattern against subject local `subj`
+/// (already n-1 I32And folded). Captures bind inline via emit_name_store
+/// (only reached on the matched path inside the caller's If).
+fn emit_pattern_checks(
+    f: &mut Function,
+    subj: u32,
+    p: &ap_ir::item::Pattern,
+    ctx: &mut EmitCtx,
+) {
+    use ap_ir::item::Pattern;
+    match p {
+        // Capture / Wildcard: always match (capture binds at body time via
+        // the subject: bind here — always on the matched path).
+        Pattern::Capture(_) | Pattern::Wildcard => {
+            f.instruction(&Instruction::I32Const(1));
+        }
+        Pattern::Literal(e) => {
+            emit_expr(f, e, ctx);
+            f.instruction(&Instruction::LocalGet(subj));
+            f.instruction(&Instruction::Call(fx::FN_EQ));
+        }
+        Pattern::Group(inner) => emit_pattern_checks(f, subj, inner, ctx),
+        Pattern::Or(alts) => {
+            // any-alt: fold alt results with I32Or
+            for (i, a) in alts.iter().enumerate() {
+                emit_pattern_checks(f, subj, a, ctx);
+                if i > 0 {
+                    f.instruction(&Instruction::I32Or);
+                }
+            }
+        }
+        Pattern::Sequence(patterns, rest) => {
+            // ONE If/Else chain producing the single conjunct i32:
+            //   If subj is $list: items -> TEMP_LOCAL_OBJARR (MUT);
+            //   Else If subj is $tuple: items -> TEMP_LOCAL_OBJARR_RO;
+            //   Else push 0. Length + element conjuncts folded inside each
+            //   arm (MUT ref.cast TRAPS across array types — lesson: keep
+            //   each array in its own typed stash local).
+            f.instruction(&Instruction::LocalGet(subj));
+            f.instruction(&Instruction::RefTestNullable(hc(T_LIST)));
+            f.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
+            // ---- $list arm
+            f.instruction(&Instruction::LocalGet(subj));
+            f.instruction(&Instruction::RefCastNullable(hc(T_LIST)));
+            sget(f, T_LIST, F_LIST_ITEMS);
+            f.instruction(&Instruction::LocalSet(TEMP_LOCAL_OBJARR));
+            emit_seq_shape_checks(
+                f,
+                TEMP_LOCAL_OBJARR,
+                T_OBJ_ARR,
+                patterns,
+                rest.is_some(),
+                ctx,
+            );
+            f.instruction(&Instruction::Else);
+            // ---- $tuple arm (Else-If via nested If; else -> 0)
+            f.instruction(&Instruction::LocalGet(subj));
+            f.instruction(&Instruction::RefTestNullable(hc(T_TUPLE)));
+            f.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
+            f.instruction(&Instruction::LocalGet(subj));
+            f.instruction(&Instruction::RefCastNullable(hc(T_TUPLE)));
+            sget(f, T_TUPLE, F_TUPLE_ITEMS);
+            f.instruction(&Instruction::LocalSet(TEMP_LOCAL_OBJARR_RO));
+            emit_seq_shape_checks(
+                f,
+                TEMP_LOCAL_OBJARR_RO,
+                T_OBJ_ARR_RO,
+                patterns,
+                rest.is_some(),
+                ctx,
+            );
+            f.instruction(&Instruction::Else);
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::End);
+        }
+        Pattern::Mapping(entries, _rest_none) => {
+            // dict type test + str-key FN_DGET null checks folded; value
+            // captures bind at body time (emit_map_captures mirrors this).
+            f.instruction(&Instruction::LocalGet(subj));
+            f.instruction(&Instruction::RefTestNullable(hc(T_DICT)));
+            f.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
+            for (k, _v) in entries {
+                let Pattern::Literal(ke) = k else {
+                    unreachable!("scan vetted mapping key literal");
+                };
+                // FN_DICT_HAS(dict, key): subject first, key second.
+                f.instruction(&Instruction::LocalGet(subj));
+                f.instruction(&Instruction::RefTestNullable(hc(T_DICT)));
+                f.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
+                f.instruction(&Instruction::LocalGet(subj));
+                f.instruction(&Instruction::RefCastNullable(hc(T_DICT)));
+                emit_expr(f, ke, ctx);
+                f.instruction(&Instruction::Call(fx::FN_DICT_HAS));
+                f.instruction(&Instruction::Else);
+                f.instruction(&Instruction::I32Const(0));
+                f.instruction(&Instruction::End);
+            }
+            for _ in 1..entries.len() {
+                f.instruction(&Instruction::I32And);
+            }
+            if entries.is_empty() {
+                f.instruction(&Instruction::I32Const(1));
+            }
+            f.instruction(&Instruction::Else);
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::End);
+        }
+        _ => unreachable!("scan vetted pattern: {p:?}"),
+    }
+    }
+
+/// Fold the length + prefix-element conjuncts for a sequence arm whose items
+/// array sits in stash local `arr` (array type `at`). Pushes n i32s + the
+/// I32Ands folding them (single conjunct net). Starred-rest: len >= fixed
+/// count; no star: len == count. Elements: Capture = conjunct 1; Literal =
+/// FN_EQ(item, lit); nested Sequence = recursive shape check (v1: depth-1 —
+/// MA001 only uses flat + one nested tuple level, which recurses via
+/// emit_pattern_checks against a stashed ELEMENT in TEMP_LOCAL_B as a
+/// tuple/list subject).
+fn emit_seq_shape_checks(
+    f: &mut Function,
+    arr: u32,
+    at: u32,
+    patterns: &[ap_ir::item::Pattern],
+    has_star: bool,
+    ctx: &mut EmitCtx,
+) {
+    use ap_ir::item::Pattern;
+    // len test
+    f.instruction(&Instruction::LocalGet(arr));
+    f.instruction(&Instruction::ArrayLen);
+    f.instruction(&Instruction::I32Const(patterns.len() as i32));
+    if has_star {
+        f.instruction(&Instruction::I32GeS);
+    } else {
+        f.instruction(&Instruction::I32Eq);
+    }
+    // element conjuncts
+    for (i, pat) in patterns.iter().enumerate() {
+        match pat {
+            Pattern::Capture(_) | Pattern::Wildcard => {
+                f.instruction(&Instruction::I32Const(1));
+            }
+            Pattern::Literal(e) => {
+                f.instruction(&Instruction::LocalGet(arr));
+                f.instruction(&Instruction::I32Const(i as i32));
+                f.instruction(&Instruction::ArrayGet(at));
+                emit_expr(f, e, ctx);
+                f.instruction(&Instruction::Call(fx::FN_EQ));
+            }
+            Pattern::Group(_) | Pattern::Sequence(..) => {
+                // nested (grouped) sequence: recurse against the element as
+                // subject — stash the element in TEMP_LOCAL_B (oref), then
+                // delegate (the recursion re-runs the list/tuple type+shape
+                // checks on the element itself).
+                f.instruction(&Instruction::LocalGet(arr));
+                f.instruction(&Instruction::I32Const(i as i32));
+                f.instruction(&Instruction::ArrayGet(at));
+                f.instruction(&Instruction::LocalSet(TEMP_LOCAL_B));
+                emit_pattern_checks(f, TEMP_LOCAL_B, pat, ctx);
+            }
+            other => unreachable!("scan vetted seq element: {other:?}"),
+        }
+    }
+    for _ in 0..patterns.len() {
+        f.instruction(&Instruction::I32And);
+    }
+}
+
+/// Bind the captures for a MATCHED case. For Sequence subjects this
+/// re-runs the list/tuple stash selection (matched path — the tests
+/// passed, so exactly one arm fires) and walks the shape binding
+/// Captures from array elements; Starred rest rebuilds the remaining
+/// items into a fresh $list (T_OBJ_ARR + StructNew, list-literal shape).
+fn emit_seq_captures(
+    f: &mut Function,
+    subj: u32,
+    p: &ap_ir::item::Pattern,
+    ctx: &mut EmitCtx,
+) {
+    use ap_ir::item::Pattern;
+    match p {
+        Pattern::Capture(n) => {
+            f.instruction(&Instruction::LocalGet(subj));
+            emit_name_store(f, n.as_str(), ctx);
+        }
+        Pattern::Wildcard => {}
+        Pattern::Group(inner) => emit_seq_captures(f, subj, inner, ctx),
+        Pattern::Or(alts) => {
+            // first-alt capture set (MA001 or-captures share names)
+            if let Some(a) = alts.first() {
+                emit_seq_captures(f, subj, a, ctx);
+            }
+        }
+        Pattern::Literal(_) => {}
+        Pattern::Mapping(entries, _) => {
+            for (k, v) in entries {
+                let Pattern::Literal(ke) = k else {
+                    unreachable!("scan vetted mapping key literal");
+                };
+                if let Pattern::Capture(n) = v {
+                    // FN_DGET(dict, str): subject first, key second.
+                    f.instruction(&Instruction::LocalGet(subj));
+                    f.instruction(&Instruction::RefCastNullable(hc(T_DICT)));
+                    emit_expr(f, ke, ctx);
+                    f.instruction(&Instruction::Call(fx::FN_DGET));
+                    emit_name_store(f, n.as_str(), ctx);
+                }
+            }
+        }
+        Pattern::Sequence(patterns, rest) => {
+            // re-stash: which array covers subj (matched path — one arm)
+            f.instruction(&Instruction::LocalGet(subj));
+            f.instruction(&Instruction::RefTestNullable(hc(T_LIST)));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            // list arm: items -> TEMP_LOCAL_OBJARR
+            f.instruction(&Instruction::LocalGet(subj));
+            f.instruction(&Instruction::RefCastNullable(hc(T_LIST)));
+            sget(f, T_LIST, F_LIST_ITEMS);
+            f.instruction(&Instruction::LocalSet(TEMP_LOCAL_OBJARR));
+            emit_seq_cap_arr(
+                f,
+                TEMP_LOCAL_OBJARR,
+                T_OBJ_ARR,
+                patterns,
+                rest.as_ref().map(|r| r.as_ref()),
+                ctx,
+            );
+            f.instruction(&Instruction::Else);
+            // tuple arm
+            f.instruction(&Instruction::LocalGet(subj));
+            f.instruction(&Instruction::RefCastNullable(hc(T_TUPLE)));
+            sget(f, T_TUPLE, F_TUPLE_ITEMS);
+            f.instruction(&Instruction::LocalSet(TEMP_LOCAL_OBJARR_RO));
+            emit_seq_cap_arr(
+                f,
+                TEMP_LOCAL_OBJARR_RO,
+                T_OBJ_ARR_RO,
+                patterns,
+                rest.as_ref().map(|r| r.as_ref()),
+                ctx,
+            );
+            f.instruction(&Instruction::End);
+        }
+        _ => unreachable!("scan vetted capture pattern: {p:?}"),
+    }
+}
+
+/// Capture-bind against a KNOWN items array stash (arr/at = local + array
+/// type). Elements: Capture -> array.get + name-store; nested Sequence →
+/// stash the element into TEMP_LOCAL_B and recurse via emit_seq_captures.
+/// Starred rest -> rebuild remaining items into a $list (MA001 `[first,
+/// *rest]`).
+fn emit_seq_cap_arr(
+    f: &mut Function,
+    arr: u32,
+    at: u32,
+    patterns: &[ap_ir::item::Pattern],
+    rest: Option<&ap_ir::item::Pattern>,
+    ctx: &mut EmitCtx,
+) {
+    use ap_ir::item::Pattern;
+    for (i, pat) in patterns.iter().enumerate() {
+        match pat {
+            Pattern::Capture(n) => {
+                f.instruction(&Instruction::LocalGet(arr));
+                f.instruction(&Instruction::I32Const(i as i32));
+                f.instruction(&Instruction::ArrayGet(at));
+                emit_name_store(f, n.as_str(), ctx);
+            }
+            Pattern::Wildcard | Pattern::Literal(_) => {}
+            Pattern::Group(_) | Pattern::Sequence(..) => {
+                // element subject into TEMP_LOCAL_B, bind via recursion
+                f.instruction(&Instruction::LocalGet(arr));
+                f.instruction(&Instruction::I32Const(i as i32));
+                f.instruction(&Instruction::ArrayGet(at));
+                f.instruction(&Instruction::LocalSet(TEMP_LOCAL_B));
+                emit_seq_captures(f, TEMP_LOCAL_B, pat, ctx);
+            }
+            other => unreachable!("scan vetted seq capture element: {other:?}"),
+        }
+    }
+    if let Some(rest_pat) = rest {
+        let Pattern::Capture(n) = rest_pat else {
+            unreachable!("scan vetted star rest: {rest_pat:?}")
+        };
+        {
+            // rest = items[fixed..len] -> fresh $list: count = len - fixed;
+            // array.new_default(count) + copy loop + StructNew(T_LIST).
+            let fixed = patterns.len() as i32;
+            f.instruction(&Instruction::LocalGet(arr));
+            f.instruction(&Instruction::ArrayLen);
+            f.instruction(&Instruction::I32Const(fixed));
+            f.instruction(&Instruction::I32Sub);
+            f.instruction(&Instruction::LocalSet(TEMP_LOCAL_CMP)); // count
+            f.instruction(&Instruction::LocalGet(TEMP_LOCAL_CMP));
+            f.instruction(&Instruction::ArrayNewDefault(T_OBJ_ARR));
+            f.instruction(&Instruction::LocalSet(TEMP_LOCAL_OBJARR2));
+            // copy: for i in 0..count: arr2[i] = arr[fixed + i]
+            f.instruction(&Instruction::Block(BlockType::Empty)); // $done
+            f.instruction(&Instruction::Loop(BlockType::Empty)); // $top
+            f.instruction(&Instruction::LocalGet(TEMP_LOCAL_CMP));
+            f.instruction(&Instruction::I32Eqz);
+            f.instruction(&Instruction::BrIf(1)); // -> $done
+            f.instruction(&Instruction::LocalGet(TEMP_LOCAL_OBJARR2));
+            f.instruction(&Instruction::LocalGet(TEMP_LOCAL_CMP));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::I32Sub);
+            f.instruction(&Instruction::LocalGet(arr));
+            f.instruction(&Instruction::LocalGet(TEMP_LOCAL_CMP));
+            f.instruction(&Instruction::I32Const(fixed));
+            f.instruction(&Instruction::I32Add);
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::I32Sub);
+            f.instruction(&Instruction::ArrayGet(at));
+            f.instruction(&Instruction::ArraySet(T_OBJ_ARR));
+            f.instruction(&Instruction::LocalGet(TEMP_LOCAL_CMP));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::I32Sub);
+            f.instruction(&Instruction::LocalSet(TEMP_LOCAL_CMP));
+            f.instruction(&Instruction::Br(0)); // -> $top
+            f.instruction(&Instruction::End); // $top
+            f.instruction(&Instruction::End); // $done
+            // $list build (list-literal shape: type, len, len, items).
+            // TEMP_LOCAL_CMP was drained to 0 by the loop — recompute len.
+            f.instruction(&Instruction::GlobalGet(
+                builtin_type_global("list").unwrap_or(0),
+            ));
+            f.instruction(&Instruction::LocalGet(arr));
+            f.instruction(&Instruction::ArrayLen);
+            f.instruction(&Instruction::I32Const(fixed));
+            f.instruction(&Instruction::I32Sub);
+            f.instruction(&Instruction::LocalSet(TEMP_LOCAL_CMP));
+            f.instruction(&Instruction::LocalGet(TEMP_LOCAL_CMP));
+            f.instruction(&Instruction::LocalGet(TEMP_LOCAL_CMP));
+            f.instruction(&Instruction::LocalGet(TEMP_LOCAL_OBJARR2));
+            f.instruction(&Instruction::StructNew(T_LIST));
+            emit_name_store(f, n.as_str(), ctx);
+            return;
+        }
     }
 }
 
@@ -5486,21 +6024,14 @@ fn emit_expr(f: &mut Function, e: &Expr, ctx: &mut EmitCtx) {
             });
             f.instruction(&Instruction::StructNew(T_DICT));
         }
-        Expr::ListComp(elt, clauses) | Expr::Generator(elt, clauses) => {
+        Expr::ListComp(..) => {
             // GE005: the comp lowered to the hidden <listcomp> GENERATOR fn
             // (scan registered the name + mod slot) — emit a static
-            // generator call: `list(<listcomp>())` shape. The result is the
-            // generator object; the list() wrapper drives it (v1 slice:
-            // ListComp-as-gen — the caller wraps in list()).
-            let fake_call = Expr::Call(
-                Box::new(Expr::Name("<listcomp>".into())),
-                vec![ap_ir::expr::Arg::Pos(Expr::Tuple(Vec::new()))], // placeholder, unused
-            );
-            let _ = &fake_call;
-            // multiple comps per module each register a <listcomp>; the
-            // hidden fns are registered in source order — pick by index:
-            // count the ListComp/Generator exprs already EMITTED before
-            // this one (emit order == scan order for the module slice)
+            // generator call, then DRAIN to a $list (03.04g: the bare
+            // generator object escaped into assignments/prints and every
+            // downstream py_str trapped on the null $str).
+            // 03.04g: ALL comps (listcomp/genexp/dictcomp) share ONE dense
+            // source-ordered hidden-fn list; the cursor is the index.
             let idx = ctx.comp_emit_cursor;
             ctx.comp_emit_cursor += 1;
             let hidden: Vec<usize> = ctx
@@ -5511,11 +6042,51 @@ fn emit_expr(f: &mut Function, e: &Expr, ctx: &mut EmitCtx) {
                 .filter(|(_, uf)| uf.name == "<listcomp>" && uf.is_generator)
                 .map(|(i, _)| i)
                 .collect();
-            if idx < hidden.len() {
-                emit_generator_call(f, hidden[idx], &[], ctx);
-                return;
+            if idx >= hidden.len() {
+                unreachable!("scan vetted comp hidden fn: {idx} of {hidden:?}");
             }
-            unreachable!("scan vetted comp hidden fn: {idx} of {hidden:?}");
+            emit_generator_call(f, hidden[idx], &[], ctx);
+            f.instruction(&Instruction::Call(fx::FN_ITER_OF));
+            f.instruction(&Instruction::Call(fx::FN_LIST_DRAIN));
+        }
+        Expr::Generator(..) => {
+            // genexp: the bare generator IS the value (lazy, next()-able).
+            let idx = ctx.comp_emit_cursor;
+            ctx.comp_emit_cursor += 1;
+            let hidden: Vec<usize> = ctx
+                .scan
+                .fns
+                .iter()
+                .enumerate()
+                .filter(|(_, uf)| uf.name == "<listcomp>" && uf.is_generator)
+                .map(|(i, _)| i)
+                .collect();
+            if idx >= hidden.len() {
+                unreachable!("scan vetted genexp hidden fn: {idx} of {hidden:?}");
+            }
+            emit_generator_call(f, hidden[idx], &[], ctx);
+        }
+        Expr::DictComp(_key, _val, _clauses) => {
+            // DictComp: pairs-gen (hidden fn yields [key, val] 2-lists via
+            // the dummy-Tuple collect) drained by FN_DICT_DRAIN into an
+            // insertion-ordered $dict (03.04g). Order matters for repr:
+            // insertion order = iter order.
+            let idx = ctx.comp_emit_cursor;
+            ctx.comp_emit_cursor += 1;
+            let hidden: Vec<usize> = ctx
+                .scan
+                .fns
+                .iter()
+                .enumerate()
+                .filter(|(_, uf)| uf.name == "<listcomp>" && uf.is_generator)
+                .map(|(i, _)| i)
+                .collect();
+            if idx >= hidden.len() {
+                unreachable!("scan vetted dictcomp hidden fn: {idx} of {hidden:?}");
+            }
+            emit_generator_call(f, hidden[idx], &[], ctx);
+            f.instruction(&Instruction::Call(fx::FN_ITER_OF));
+            f.instruction(&Instruction::Call(fx::FN_DICT_DRAIN));
         }
         Expr::Named(t, v) => {
             // walrus: eval, bind the name (enclosing scope), result = value

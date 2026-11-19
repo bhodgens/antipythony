@@ -251,3 +251,198 @@ pub(crate) fn sum_drain(
         },
     );
 }
+
+/// 03.04g dict_drain (FN_DICT_DRAIN / FT_O_O): (iterator of [k, v] pairs)
+/// -> $dict — pairs-gen output drained into insertion-ordered entries.
+/// Insertion = rebuild the entries array (immutable) + fill/used bump; the
+/// pair items come from the pairs-gen's 2-element $list (the dummy-Tuple
+/// collect yields a Tuple; the machine parks its RO items — normalize per
+/// iteration by reading items from either $list or $tuple shape via the
+/// RefTest branch).
+pub(crate) fn dict_drain(
+    funcs: &mut wasm_encoder::FunctionSection,
+    code: &mut wasm_encoder::CodeSection,
+) {
+    add(
+        funcs,
+        code,
+        FT_O_O,
+        &[
+            (
+                1,
+                ValType::Ref(wasm_encoder::RefType {
+                    nullable: true,
+                    heap_type: hc(T_ENTRY_ARR),
+                }),
+            ), // 1 = entries acc (DEDICATED type — lesson 3)
+            (1, oref()), // 2 = item / payload / cur entry
+            (2, ValType::I32), // 3,4 = n, i
+            (1, ValType::I64), // 5 (unused, layout parity)
+            (
+                1,
+                ValType::Ref(wasm_encoder::RefType {
+                    nullable: true,
+                    heap_type: hc(T_ENTRY_ARR),
+                }),
+            ), // 6 = next buffer
+            (1, oref()), // 7 = k
+            (1, oref()), // 8 = v
+            (1, oref()), // 9 = items (mut or RO array, cast at use)
+        ],
+        |f| {
+            // dict skeleton fields are built by the CALLER (push_empty_dict
+            // shape); here: acc = empty entries, n = 0
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::ArrayNewDefault(T_ENTRY_ARR));
+            f.instruction(&Instruction::LocalSet(1));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::LocalSet(3)); // n
+            // drain loop (same control shape as emit_drain_loop, entries-typed)
+            f.instruction(&Instruction::Block(BlockType::Empty)); // $out
+            f.instruction(&Instruction::Block(BlockType::Result(
+                ValType::Ref(wasm_encoder::RefType {
+                    nullable: true,
+                    heap_type: hc(T_EXCEPTION),
+                }),
+            ))); // $catch
+            {
+                let catches = [wasm_encoder::Catch::One {
+                    tag: TAG_PYEXC,
+                    label: 0,
+                }];
+                f.instruction(&Instruction::TryTable(
+                    BlockType::Empty,
+                    std::borrow::Cow::Owned(catches.to_vec()),
+                ));
+                f.instruction(&Instruction::Loop(BlockType::Empty));
+                // item = iter_next(0)
+                f.instruction(&Instruction::LocalGet(0));
+                f.instruction(&Instruction::Call(fx::FN_ITER_NEXT));
+                f.instruction(&Instruction::LocalSet(2)); // pair
+                // items = pair.items — $list.items (mut $obj_arr) or
+                // $tuple.items (RO): branch by shape (arrays are NOT
+                // $pyobj; no oref local, read direct off the cast)
+                // items -> local 9 as MUT (list) or... two locals would
+                // double the shape; simplest: read k/v TWICE like the dict
+                // repr does (fetch direct, no stash).
+                // k = items[0]
+                f.instruction(&Instruction::LocalGet(2));
+                f.instruction(&Instruction::RefTestNullable(hc(T_LIST)));
+                f.instruction(&Instruction::If(BlockType::Result(pyobj_ref())));
+                f.instruction(&Instruction::LocalGet(2));
+                f.instruction(&Instruction::RefCastNullable(hc(T_LIST)));
+                sget(f, T_LIST, F_LIST_ITEMS);
+                f.instruction(&Instruction::I32Const(0));
+                f.instruction(&Instruction::ArrayGet(T_OBJ_ARR));
+                f.instruction(&Instruction::Else);
+                f.instruction(&Instruction::LocalGet(2));
+                f.instruction(&Instruction::RefCastNullable(hc(T_TUPLE)));
+                sget(f, T_TUPLE, F_TUPLE_ITEMS);
+                f.instruction(&Instruction::I32Const(0));
+                f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
+                f.instruction(&Instruction::End);
+                f.instruction(&Instruction::LocalSet(7)); // k
+                // v = items[1]
+                f.instruction(&Instruction::LocalGet(2));
+                f.instruction(&Instruction::RefTestNullable(hc(T_LIST)));
+                f.instruction(&Instruction::If(BlockType::Result(pyobj_ref())));
+                f.instruction(&Instruction::LocalGet(2));
+                f.instruction(&Instruction::RefCastNullable(hc(T_LIST)));
+                sget(f, T_LIST, F_LIST_ITEMS);
+                f.instruction(&Instruction::I32Const(1));
+                f.instruction(&Instruction::ArrayGet(T_OBJ_ARR));
+                f.instruction(&Instruction::Else);
+                f.instruction(&Instruction::LocalGet(2));
+                f.instruction(&Instruction::RefCastNullable(hc(T_TUPLE)));
+                sget(f, T_TUPLE, F_TUPLE_ITEMS);
+                f.instruction(&Instruction::I32Const(1));
+                f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
+                f.instruction(&Instruction::End);
+                f.instruction(&Instruction::LocalSet(8)); // v
+                // acc rebuild-append {k, v} (entry_arr-typed)
+                f.instruction(&Instruction::LocalGet(3));
+                f.instruction(&Instruction::I32Const(1));
+                f.instruction(&Instruction::I32Add);
+                f.instruction(&Instruction::ArrayNewDefault(T_ENTRY_ARR));
+                f.instruction(&Instruction::LocalSet(6)); // next buffer
+                f.instruction(&Instruction::I32Const(0));
+                f.instruction(&Instruction::LocalSet(4)); // i
+                f.instruction(&Instruction::Block(BlockType::Empty));
+                f.instruction(&Instruction::Loop(BlockType::Empty));
+                f.instruction(&Instruction::LocalGet(4));
+                f.instruction(&Instruction::LocalGet(3));
+                f.instruction(&Instruction::I32GeU);
+                f.instruction(&Instruction::BrIf(1));
+                f.instruction(&Instruction::LocalGet(6));
+                f.instruction(&Instruction::LocalGet(4));
+                f.instruction(&Instruction::LocalGet(1));
+                f.instruction(&Instruction::LocalGet(4));
+                f.instruction(&Instruction::ArrayGet(T_ENTRY_ARR));
+                f.instruction(&Instruction::ArraySet(T_ENTRY_ARR));
+                f.instruction(&Instruction::LocalGet(4));
+                f.instruction(&Instruction::I32Const(1));
+                f.instruction(&Instruction::I32Add);
+                f.instruction(&Instruction::LocalSet(4));
+                f.instruction(&Instruction::Br(0));
+                f.instruction(&Instruction::End); // loop
+                f.instruction(&Instruction::End); // block
+                // next[n] = {hash:0, k, v}; acc = next; n += 1
+                f.instruction(&Instruction::LocalGet(6));
+                f.instruction(&Instruction::LocalGet(3));
+                f.instruction(&Instruction::I64Const(0)); // hash (v1)
+                f.instruction(&Instruction::LocalGet(7));
+                f.instruction(&Instruction::LocalGet(8));
+                f.instruction(&Instruction::StructNew(T_DICT_ENTRY));
+                f.instruction(&Instruction::ArraySet(T_ENTRY_ARR));
+                f.instruction(&Instruction::LocalGet(6));
+                f.instruction(&Instruction::LocalSet(1));
+                f.instruction(&Instruction::LocalGet(3));
+                f.instruction(&Instruction::I32Const(1));
+                f.instruction(&Instruction::I32Add);
+                f.instruction(&Instruction::LocalSet(3));
+                f.instruction(&Instruction::Br(0));
+                f.instruction(&Instruction::End); // Loop
+                f.instruction(&Instruction::End); // try_table
+                f.instruction(&Instruction::RefNull(hc(T_EXCEPTION)));
+            }
+            f.instruction(&Instruction::End); // $catch: exc | null
+            f.instruction(&Instruction::LocalSet(2));
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::RefIsNull);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::Br(1)); // null = success
+            f.instruction(&Instruction::End);
+            // SI = exhaustion; anything else rethrow
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::GlobalGet(
+                crate::types::exc_type_global("StopIteration").unwrap_or(0),
+            ));
+            f.instruction(&Instruction::Call(fx::FN_EXC_MATCH));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::Br(1));
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
+            f.instruction(&Instruction::Throw(TAG_PYEXC));
+            f.instruction(&Instruction::End); // $out
+            // $dict { type, used=n, fill=n, mask=7, perturb=0, idx=[-1;8],
+            //         entries=acc } — StructNew pops in REVERSE field order.
+            f.instruction(&Instruction::GlobalGet(
+                builtin_type_global("dict").unwrap_or(0),
+            ));
+            f.instruction(&Instruction::LocalGet(3)); // used
+            f.instruction(&Instruction::LocalGet(3)); // fill
+            f.instruction(&Instruction::I32Const(7)); // mask
+            f.instruction(&Instruction::I32Const(0)); // perturb
+            for _ in 0..8 {
+                f.instruction(&Instruction::I32Const(-1));
+            }
+            f.instruction(&Instruction::ArrayNewFixed {
+                array_type_index: T_IDX_ARR,
+                array_size: 8,
+            });
+            f.instruction(&Instruction::LocalGet(1)); // entries
+            f.instruction(&Instruction::StructNew(T_DICT));
+        },
+    );
+}

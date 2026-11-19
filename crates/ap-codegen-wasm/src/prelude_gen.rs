@@ -995,5 +995,7 @@ pub fn emit_gen_drains(
 ) {
     crate::prelude_gen_drain::list_drain(funcs, code);
     crate::prelude_gen_drain::sum_drain(funcs, code);
+    // 03.04g: dict-from-pairs (FN_DICT_DRAIN=73) — FN_FIRST_USER moves 73->74.
+    crate::prelude_gen_drain::dict_drain(funcs, code);
 }
 
