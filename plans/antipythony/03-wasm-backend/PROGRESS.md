@@ -218,6 +218,38 @@ wrong-branch bugs — check operand order FIRST when a wasm loop guards
 wrong.
 
 
+## 2026-11-18/19: leaf 03.04f + 03.04g — LEAF 03.04 CLOSED (GE001-005 + MA001 ALL byte-exact)
+
+03.04f (deleg_0ea2428a, merged 7826a14): machine-wide try_table refactor of
+emit_gen_step_fn (replaces per-segment $cx re-opens; g-probe silent-swallow
+class fixed), staged-GE entry check (close path byte-exact), gen_close
+GE-swallow wrap, YfNext SI-payload extraction from the CAUGHT exc + inline
+YfDone bind, GE005 listcomp/genexp generator flip + walrus arm, 25-probe
+ge0304f_bisect harness. Honest gaps: GE003 5/6 lines, GE004 2 lines,
+GE005 partial, MA001 open; root cause suspected depth tables.
+
+03.04g (deleg_bd639fa6, commit 99d1923, merged to trunk + pushed):
+EXIT GATE MET — ge_ma_probe 6/6 (GE001-GE005 + MA001 ALL PASS byte-exact
+through ap-host vs CPython 3.14.7 pins). 11 actual root causes documented
+in the NEXT-0304f.md 03.04g appendix (depth tables were NOT the cause —
+03.04f formulas verified correct): step-fn print-buffer init, park
+next_override/loop-tail semantics, E_PEND stream chaining, plan_seq([])
+garbage last-id, nested-loop back-chain ownership, comp cursor reset,
+FN_DICT_DRAIN=73 (FN_FIRST_USER 73->74), dict_has STUB implemented,
+DGET/DICT_HAS arg order, match $mend br depth. Baselines re-verified by
+the orchestrator on trunk post-merge: ge_ma_probe 6/6, ge0304f_bisect
+25/25, controlflow 18/18, classes/exceptions 17/17, for_probe 5/5,
+ap-host 8/8. Known unobservable divergence left as-is: guard-fail leaves
+captures bound (Python unbinds). Match Value/Class/**rest remain
+fail-closed at scan per 03.04c; dict keys str-only in the DICT_HAS/DGET
+slice (pre-existing scope).
+
+REMAINING for leaf 03.04 bookkeeping: extend the CLI corpus gate to the
+generators/match families per NEXT-0305.md steps; PROGRESS.md is this
+record. THEN: 03.06 (browser smoke + threading spike) -> 03.07
+(differential exit gate) -> Plan 04 per master.md.
+
+
 ## 2026-11-16: leaf 03.03c session (leaf-0303c worktree — classes/exceptions lowering landed)
 
 COMMITS f16c3932, 57f46a76, 935850d5 (branch tier1-0303c off 472ec565).
