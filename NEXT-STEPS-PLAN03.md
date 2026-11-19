@@ -32,23 +32,33 @@
   GOTCHA: dbg prints inside step fns CLOBBER mirror locals — use unique
   traps or module-level observables.
 
-## Next dispatch: leaf 03.04g
+## 03.04g LANDED — LEAF 03.04 CLOSED (2026-11-19, trunk 4d541fc pushed)
 
-Scope (in order): (1) recompute the goto depth tables ONCE from the new
-block nesting per the empirical anchor; re-derive all four formula cases
-(forward/fall/trampoline/done-escape) and update NEXT-0304f.md's table.
-(2) GE003 `closing` + `B end` + GE004 `sub returned 42`/`empty gave 7`
-should fall out of the depth fix — verify with ge0304f_bisect probes
-first, then the corpus cases. (3) GE005: fix the hidden-gen first-comp
-trap + resume-state preservation (list(gen) after next(gen)), then
-FN_SUM_DRAIN + DictComp pairs driver. (4) MA001 match emit per
-NEXT-0304d.md lines 118-124 (unblocked once dispatch skip is fixed).
-EXIT GATE: GE001-GE005 + MA001 ALL byte-exact + baselines held
-(controlflow 18/18, classes/exceptions 17/17, for_probe 5/5, ap-host 8/8).
-After 03.04g closes leaf 03.04: extend the CLI corpus gate to the
-generators/match families per NEXT-0305.md steps, update PROGRESS.md.
-Then: 03.06 (browser smoke + threading spike) -> 03.07 (differential
-exit gate) -> Plan 04 per master.md.
+- Leaf 03.04g verified first-hand (worktree 99d1923, clean): ge_ma_probe
+  6/6 (GE001-GE005 + MA001 ALL PASS byte-exact), ge0304f_bisect 25/25,
+  controlflow 18/18, classes/exceptions 17/17, for_probe 5/5, ap-host
+  8/8 — all re-run by the orchestrator, then re-run green on trunk
+  post-merge (4/4 suite groups + ap-host 8/8).
+- Merged 99d1923, pushed 210be74..4d541fc (incl. PROGRESS.md record).
+- LEAF 03.04 IS CLOSED. Depth tables were NOT the root cause (03.04f
+  formulas verified correct); the 11 actual root causes are in the
+  NEXT-0304f.md 03.04g appendix. Known unobservable divergence:
+  guard-fail leaves captures bound. Match Value/Class/**rest remain
+  fail-closed at scan; dict keys str-only in the DGET/DICT_HAS slice.
+- REMAINING Plan 03: (1) bookkeeping — extend the CLI corpus gate to
+  generators/match families per NEXT-0305.md steps (mechanical); 
+  (2) leaf 03.06 (browser smoke + threading spike); (3) leaf 03.07
+  (differential exit gate: full-corpus triple-diff report + Class-X
+  burn-down). Then Plan 04 per master.md.
+
+## Next dispatch: leaf 03.04-bookkeeping + 03.06 (can be one agent or two)
+
+Bookkeeping (small): extend scripts/cli_corpus_gate.py to generators_wasm
++ match_wasm families per NEXT-0305.md's steps; wire into the gate list.
+03.06 (per leaves/03.06-browser-smoke-threading.md): HTML demo embedding
+ap-host compiled to wasm, running a corpus script; wasi-threads spike
+(feasibility probe, document either way); decision recorded in the leaf.
+03.07 last (needs the full corpus): differential exit gate.
 
 ## Standing conventions
 
