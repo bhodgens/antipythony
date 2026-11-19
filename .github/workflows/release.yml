@@ -1,0 +1,212 @@
+name: release
+# Leaf 04.03 - release engineering (plans/antipythony/04-packaging-ecosystem/
+# orchestrator.md lines 46-51).
+#
+# Matrix: linux-musl (STATIC), linux-gnu, macos-arm64, macos-x86_64.
+# Artifacts per target: antipythony-<target>.tar.gz containing
+#   bin/antipythony            the driver binary
+#   bin/ap-run-eval            differential eval helper (scripts use it)
+#   vendored_stdlib/           the runtime stdlib tree (importer resolves it
+#                              via ANTIPTYHONY_STDLIB or CARGO_MANIFEST_DIR —
+#                              a bare binary on a machine without the repo
+#                              cannot serve `import os`; scripts/install.sh
+#                              unpacks the tree next to the bin dir and sets
+#                              ANTIPTYHONY_STDLIB)
+#   THIRD_PARTY_NOTICES        the xtask-generated notices file (the
+#                              `--version --notices` surface is an ap-cli
+#                              dependency — see NEXT-0403.md, item D1)
+#   SHA256SUMS                 per-artifact checksums (also emitted at the
+#                              release level as the aggregate)
+#
+# Artifact naming contract: `antipythony-<rust triple>.tar.gz` is what
+# scripts/install.sh probes; do not rename without updating both.
+#
+# Musl notes (why this target gets special config):
+# - rustup target add x86_64-unknown-linux-musl on the ubuntu runner.
+# - The runner's default linker is glibc's; static musl links need a musl
+#   cross linker. musl-tools (Debian package) ships musl-gcc; we point
+#   cargo at it via CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER and set
+#   RUSTFLAGS with -C target-feature=+crt-static (static glibc's
+#   crt-static is NOT supported — musl is the only sanctioned static path).
+# - cranelift-object + the `cc` crate adapt to musl automatically once the
+#   linker is set; no code changes expected, but the FIRST release.yml run
+#   is the proof (local musl builds are impossible on this host: no rustup,
+#   no musl toolchain — documented in NEXT-0403.md).
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch: {}   # manual trigger so the workflow is provable without a tag
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: 4     # machine load policy honoured inside runners too
+
+permissions:
+  contents: write         # needed only for the softprops release upload step
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ------------------------------------------------------------------
+          # linux-musl STATIC (tier-1 distribution shape: copy one binary,
+          # zero runtime linkage). libc + all deps statically linked.
+          # ------------------------------------------------------------------
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            notes: static musl, musl-tools linker + crt-static
+          # ------------------------------------------------------------------
+          # linux-gnu: dynamically linked against the runner's glibc; the
+          # artifact documents the glibc floor in the release notes.
+          # ------------------------------------------------------------------
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            notes: dynamic glibc (runner toolchain)
+          # ------------------------------------------------------------------
+          # macos-arm64: the PRIMARY verified target (02.06 verified Mach-O
+          # aarch64 output on this shape).
+          # ------------------------------------------------------------------
+          - target: aarch64-apple-darwin
+            os: macos-latest          # arm64 runner
+          # ------------------------------------------------------------------
+          # macos-x86_64: cross-compiled FROM the arm64 runner (no separate
+          # intel runner needed; the apple toolchain cross-links x86_64).
+          # ------------------------------------------------------------------
+          - target: x86_64-apple-darwin
+            os: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned toolchain (rust-toolchain.toml contract)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94.0"
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # ---------------------------------------------------------------------
+      # Musl static-linking configuration (see header notes). Everything
+      # else uses the platform defaults.
+      # ---------------------------------------------------------------------
+      - name: musl static linker setup (x86_64-unknown-linux-musl only)
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          sudo apt-get update && sudo apt-get install -y musl-tools
+          echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc" >> "$GITHUB_ENV"
+          echo "RUSTFLAGS=-C target-feature=+crt-static" >> "$GITHUB_ENV"
+
+      - name: Show toolchain pin took effect
+        run: |
+          rustc -vV
+          rustup target list --installed
+
+      - name: Build (release)
+        # ap-aot-crt is the staticlib `antipythony build` links user programs
+        # against; it is cross-compiled per-target and SHIPPED in the archive
+        # (scripts/package-release.sh) so installed binaries can build.
+        run: |
+          cargo build --release --target ${{ matrix.target }} -p ap-cli
+          cargo build --release --target ${{ matrix.target }} -p ap-aot-crt
+
+      # ---------------------------------------------------------------------
+      # Stage the artifact: bin + stdlib + notices, then checksum + pack.
+      # scripts/package-release.sh is the SAME script a local release run
+      # uses — CI is not a special case (single-source-of-truth packaging).
+      # ---------------------------------------------------------------------
+      - name: Package artifact (checksums + tarball)
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          chmod +x scripts/package-release.sh
+          scripts/package-release.sh "$TARGET" \
+            "target/${{ matrix.target }}/release" \
+            dist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: antipythony-${{ matrix.target }}
+          path: |
+            dist/antipythony-${{ matrix.target }}.tar.gz
+            dist/antipythony-${{ matrix.target }}.tar.gz.sha256
+          if-no-files-found: error
+
+      # Release upload on tags only (workflow_dispatch runs stop here).
+      - name: Attach to GitHub release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/antipythony-${{ matrix.target }}.tar.gz
+            dist/antipythony-${{ matrix.target }}.tar.gz.sha256
+          generate_release_notes: true
+
+  # ===========================================================================
+  # Fresh-machine smoke gate (THE 04.03 gate, scripted):
+  # install -> new -> add rich -> run -> build, in a CLEAN container with a
+  # COLD cache, using ONLY the release artifact + scripts/install.sh — the
+  # repo checkout used to build is NOT on this job's PATH.
+  # ===========================================================================
+  fresh-machine-smoke:
+    name: fresh-machine smoke (install -> new -> add rich -> run -> build)
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        # One smoke per linux shape; macos smokes run the same script on the
+        # macos runner below (container: is ubuntu-only syntax).
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    container:
+      # ubuntu:24.04 base — deliberately NOT the GH runner image: closest
+      # available proxy for "a machine that has never seen this repo".
+      # NOTE: gh CRITICAL — the runner image pre-bakes cargo/uv; this
+      # container deliberately strips both so the smoke exercises the
+      # install script's uv-bootstrap path too.
+      image: ubuntu:24.04
+    timeout-minutes: 30
+    env:
+      SMOKE_TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: antipythony-${{ matrix.target }}
+          path: dist
+
+      # The container has: bash, tar, sha256sum, curl, unzip. NO cargo, NO
+      # uv, NO rustc — verified by the assert step below.
+      - name: Assert the container is actually fresh (no cargo/uv/rustc)
+        run: |
+          set -e
+          for t in cargo uv rustc; do
+            if command -v "$t" >/dev/null 2>&1; then
+              echo "FAIL: $t is present in the 'fresh' container" >&2
+              exit 1
+            fi
+          done
+          echo "fresh-machine precondition verified: no cargo/uv/rustc on PATH"
+
+      - name: Run the scripted fresh-machine flow
+        run: |
+          chmod +x scripts/fresh-machine-smoke.sh scripts/install.sh
+          scripts/fresh-machine-smoke.sh "$SMOKE_TARGET" dist
+
+      - name: Smoke summary
+        if: always()
+        run: echo "target=${SMOKE_TARGET} flow=install->new->add rich->run->build"
