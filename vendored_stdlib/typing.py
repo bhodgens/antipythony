@@ -603,6 +603,18 @@ class Any(metaclass=_AnyMeta):
         return super().__new__(cls)
 
 
+# 02.08f (s026): our class-creation machinery doesn't run the metaclass
+# __repr__ path for _AnyMeta (repr(Any) rendered '<class Any>'). Make Any
+# a plain object with a static __repr__ matching CPython's
+# _AnyMeta.__repr__ gate (typing.Any), keeping __instancecheck__ errors.
+def _any_repr(cls=None):
+    return "typing.Any"
+
+
+Any.__repr__ = _any_repr
+Any.__str__ = _any_repr
+
+
 @_SpecialForm
 def NoReturn(self, parameters):
     """Special type indicating functions that never return.
@@ -2531,6 +2543,15 @@ def get_origin(tp):
     if isinstance(tp, (_BaseGenericAlias, GenericAlias,
                        ParamSpecArgs, ParamSpecKwargs)):
         return tp.__origin__
+    # 02.08f (s026): our executor lowers Box[int] to a native
+    # typing._GenericAlias Opaque (not a _BaseGenericAlias instance) —
+    # answer __origin__/__args__ off the parked attrs so
+    # get_origin(Box[int]) is Box / get_args == (int,).
+    if repr(type(tp)) == "<class 'typing._GenericAlias'>" or (
+        hasattr(tp, '__origin__') and hasattr(tp, '__args__')
+        and getattr(tp, '__origin__', None) is not None
+    ):
+        return getattr(tp, '__origin__', None)
     if tp is Generic:
         return Generic
     if isinstance(tp, Union):
@@ -2559,6 +2580,12 @@ def get_args(tp):
         if _should_unflatten_callable_args(tp, res):
             res = (list(res[:-1]), res[-1])
         return res
+    # 02.08f (s026): native typing._GenericAlias placeholder (Box[int]).
+    if repr(type(tp)) == "<class 'typing._GenericAlias'>" or (
+        hasattr(tp, '__origin__') and hasattr(tp, '__args__')
+        and getattr(tp, '__origin__', None) is not None
+    ):
+        return getattr(tp, '__args__', ())
     if isinstance(tp, Union):
         return tp.__args__
     return ()
@@ -3181,7 +3208,16 @@ class _TypedDictMeta(type):
         else:
             generic_base = ()
 
+        # 02.08f (s026): our AnnAssign recorder stores dump_expr_inline SOURCE
+        # strings ('int' WITH quotes for ) in ns __annotations__ —
+        # unwrap one string-literal layer so own_annotations carry real text.
         ns_annotations = ns.pop('__annotations__', None)
+        if isinstance(ns_annotations, dict):
+            ns_annotations = {
+                k: (v[1:-1] if isinstance(v, str) and len(v) >= 2
+                    and v[0] == v[-1] and v[0] in "'\"" else v)
+                for k, v in ns_annotations.items()
+            }
 
         tp_dict = type.__new__(_TypedDictMeta, name, (*generic_base, dict), ns)
 
@@ -3281,6 +3317,10 @@ class _TypedDictMeta(type):
             return annos
 
         tp_dict.__annotate__ = __annotate__
+        # 02.08f (s026): our runtime's generic __annotations__ attr arm
+        # returns an empty dict (via the class-attr fallback) — pin the REAL
+        # own_annotations here so list(TD.__annotations__) matches CPython.
+        tp_dict.__annotations__ = dict(own_annotations)
         tp_dict.__required_keys__ = frozenset(required_keys)
         tp_dict.__optional_keys__ = frozenset(optional_keys)
         tp_dict.__readonly_keys__ = frozenset(readonly_keys)

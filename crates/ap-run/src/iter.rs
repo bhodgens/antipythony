@@ -48,6 +48,10 @@ pub enum IterState {
     /// zip re-landing, str/keys views). State is self-contained; `next`
     /// delegates to builtins_modules (own file, no interp access needed).
     Native(Box<crate::builtins_modules::NativeIterState>),
+    /// 02.08f (s020): iter(callable, sentinel) — call the parked callable
+    /// until it produces the sentinel (tokenize.tokenize's
+    /// iter(readline, b"")). Exhaustion = sentinel seen.
+    CallFn { func: Value, sentinel: Value, done: bool },
 }
 
 /// A materialized iterator.
@@ -152,18 +156,56 @@ impl PyIterator {
                     }))
                 }
                 ap_obj::ObjKind::Iterator => {
-                    // Iterating an iterator returns itself.
-                    let existing = o
+                    // Iterating an iterator returns itself. 02.08f (s020):
+                    // reconstruct from the registered gen_id (tokenize's
+                    // itertools.chain(consumed, iter(readline, b"")) re-iters
+                    // nothing, but Signature's internal iter(obj) probes do).
+                    // 02.08f (s020): the iterators TABLE holds the strong
+                    // Arc<PyIterator> under this id — clone it out so
+                    // iter(it) is `it` (CPython identity).
+                    let id_opt = *o
                         .gen_id
                         .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .map(|_| ());
-                    let _ = existing;
-                    // Reconstruct: iterators store their own id in gen_id.
-                    Err(ExceptionValue::msg(
-                        "TypeError",
-                        "iter() re-entry on iterators is not supported in v0",
-                    ))
+                        .unwrap_or_else(|p| p.into_inner());
+                    match id_opt {
+                        Some(id) => {
+                            let interp = crate::interp::current_interp_for_bindings_pub();
+                            let its = interp
+                                .iterators
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner());
+                            match its.get(&id) {
+                                Some(existing) => Ok(existing.clone()),
+                                None => {
+                                    // 02.08f (s020): the entry was pruned at
+                                    // exhaustion — re-register a fresh
+                                    // EXHAUSTED iterator under the same id so
+                                    // iter(it) re-entry (zip(args, defaults)
+                                    // re-iterating the same chain) answers
+                                    // empty instead of raising.
+                                    drop(its);
+                                    let fresh =
+                                        crate::iter::PyIterator::new(IterState::Seq(
+                                            Vec::new(),
+                                            0,
+                                        ));
+                                    fresh.table_id.set(Some(id));
+                                    let interp2 =
+                                        crate::interp::current_interp_for_bindings_pub();
+                                    interp2
+                                        .iterators
+                                        .lock()
+                                        .unwrap_or_else(|p| p.into_inner())
+                                        .insert(id, fresh.clone());
+                                    Ok(fresh)
+                                }
+                            }
+                        }
+                        None => Err(ExceptionValue::msg(
+                            "TypeError",
+                            "iter() re-entry on iterators is not supported in v0",
+                        )),
+                    }
                 }
                 _ => Err(ExceptionValue::msg(
                     "TypeError",
@@ -288,6 +330,9 @@ impl PyIterator {
                 None
             }
             IterState::Native(n) => n.next(),
+            // 02.08f (s020): CallFn needs interp access — pull_iter's
+            // special-case handles it before this method is consulted.
+            IterState::CallFn { .. } => None,
         };
         if out.is_none() {
             // Fence-perf fix 2026-11-06: exhausted iterator — detach own
@@ -334,6 +379,21 @@ pub fn range_len(start: i64, stop: i64, step: i64) -> i64 {
 /// tuple(...) / sorted(...) collectors.
 pub fn collect(it: &Gc<PyIterator>) -> Vec<Value> {
     let mut out = Vec::new();
+    // 02.08f (s020): CallFn needs interp access (pull_iter special-case);
+    // pull eagerly here so zip()/list() over an iter(callable, sent) works.
+    if matches!(&*it.state.lock().unwrap_or_else(|p| p.into_inner()), IterState::CallFn { .. }) {
+        let interp = crate::interp::current_interp_for_bindings_pub();
+        let id = it.table_id.get();
+        if let Some(id) = id {
+            loop {
+                match crate::interp::pull_iter_pub(&interp, id) {
+                    Ok(Some(v)) => out.push(v),
+                    _ => break,
+                }
+            }
+            return out;
+        }
+    }
     while let Some(v) = it.next() {
         out.push(v);
     }

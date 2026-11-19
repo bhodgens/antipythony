@@ -801,30 +801,48 @@ fn exec_module(
                         if let Some(ann) = &p.ann {
                             ann_pairs.push((
                                 Value::Str(PyString::new(p.name.clone())),
-                                Value::Str(PyString::new(ap_ir::dump_expr_inline(&ann.expr))),
+                                Value::Str(PyString::new(annotation_source_text(&ann.expr))),
                             ));
                         }
                     }
-                    if !ann_pairs.is_empty() {
-                        let d = PyDict::new();
-                        for (k, v) in ann_pairs {
-                            let _ = d.set(k, v);
-                        }
-                        let _ = fo
-                            .attrs
-                            .lock()
-                            .unwrap_or_else(|p| p.into_inner())
-                            .set(Value::Str(PyString::new("__annotations__")), Value::Dict(d));
+                    // 02.08f (s026): ALWAYS create __annotations__ (even with
+                    // only a return ann — CPython carries the 'return' key).
+                    let d = PyDict::new();
+                    for (k, v) in ann_pairs {
+                        let _ = d.set(k, v);
                     }
+                    if let Some(ann) = &f.return_ann {
+                        let _ = d.set(
+                            Value::Str(PyString::new("return")),
+                            Value::Str(PyString::new(annotation_source_text(&ann.expr))),
+                        );
+                    }
+                    let _ = fo
+                        .attrs
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .set(Value::Str(PyString::new("__annotations__")), Value::Dict(d));
                     // W110 (PEP 649): functions carry __annotate__ (CPython
                     // 3.14). functools.singledispatch register(func) reads
-                    // it before __annotations__.
+                    // it before __annotations__. 02.08f: the marker is bound
+                    // to the function (slice_parts[0] = recv) at creation so
+                    // __ap_fn_annotate__'s dispatch can find the owner — the
+                    // unbound marker read an EMPTY slice_parts and answered {}
+                    // for every function (get_type_hints lost all hints).
+                    let annot_marker = ap_obj::PyObject::new(
+                        ap_obj::ObjKind::BuiltinFn,
+                        "__ap_fn_annotate__",
+                    );
+                    {
+                        let mut parts = annot_marker
+                            .slice_parts
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner());
+                        parts.push(func.clone());
+                    }
                     let _ = fo.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
                         Value::Str(PyString::new("__annotate__")),
-                        Value::Obj(ap_obj::PyObject::new(
-                            ap_obj::ObjKind::BuiltinFn,
-                            "__ap_fn_annotate__",
-                        )),
+                        Value::Obj(annot_marker),
                     );
                     // s013: park the DOCSTRING (first body stmt is a bare
                     // string constant; Stmt::Line markers interleave — scan
@@ -1202,6 +1220,10 @@ fn exec_stmt(
             }
             // Record the annotation under __annotations__ in the frame's
             // class namespace when this is a class body (locals == ns dict).
+            // 02.08f (s026 TypedDict): the recording arm below only fires when
+            // an annotated attr EXISTS; TypedDict.__new__ pops
+            // ns['__annotations__'] even for classes whose annotations were
+            // seeded elsewhere, so just ensure the ns dict always carries it.
             if let Some(cns) = &frame.class_ns {
                 let tname = match target {
                     ap_ir::Target::Name(n) => Some(n.clone()),
@@ -1934,7 +1956,7 @@ fn exec_stmt(
                     if let Some(ann) = &p.ann {
                         ann_pairs.push((
                             Value::Str(PyString::new(p.name.clone())),
-                            Value::Str(PyString::new(ap_ir::dump_expr_inline(&ann.expr))),
+                            Value::Str(PyString::new(annotation_source_text(&ann.expr))),
                         ));
                     }
                 }
@@ -1966,27 +1988,35 @@ fn exec_stmt(
             // wrapped.__doc__ after @wraps(base)).
             if let Value::Obj(fo) = &func {
                 if let Some(ann) = &f.return_ann {
-                    let src = Value::Str(PyString::new(ap_ir::dump_expr_inline(&ann.expr)));
-                    if let Some(d) = fo
-                        .attrs
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .get(&Value::Str(PyString::new("__annotations__")))
-                    {
-                        if let Value::Dict(dd) = d {
-                            let _ = dd.set(
-                                Value::Str(PyString::new("return")),
-                                src,
-                            );
+                    let src = Value::Str(PyString::new(annotation_source_text(&ann.expr)));
+                    // 02.08f WEDGE FIX (s026 typing-import hang): the `if let`
+                    // scrutinee below held an `attrs` MutexGuard temporary that
+                    // (Rust 2021) lives to the END of the whole `if let`
+                    // statement — the `else` branch's second `fo.attrs.lock()`
+                    // re-locked the SAME mutex the scrutinee still held and the
+                    // single-thread run self-deadlocked. It fired only when
+                    // `__annotations__` was NOT yet set (fresh function object
+                    // with a return ann and no param anns — typing.py's first
+                    // Protocol class). Sequenced: read under the guard, DROP
+                    // the guard, then take a fresh lock for the set. Same class
+                    // as the iter(genexpr) wedge (audit row 1).
+                    let existing_anns = {
+                        let guard = fo.attrs.lock().unwrap_or_else(|p| p.into_inner());
+                        guard.get(&Value::Str(PyString::new("__annotations__")))
+                    };
+                    match existing_anns {
+                        Some(Value::Dict(dd)) => {
+                            let _ = dd.set(Value::Str(PyString::new("return")), src);
                         }
-                    } else {
-                        let d = PyDict::new();
-                        let _ = d.set(Value::Str(PyString::new("return")), src);
-                        let _ = fo
-                            .attrs
-                            .lock()
-                            .unwrap_or_else(|p| p.into_inner())
-                            .set(Value::Str(PyString::new("__annotations__")), Value::Dict(d));
+                        _ => {
+                            let d = PyDict::new();
+                            let _ = d.set(Value::Str(PyString::new("return")), src);
+                            let _ = fo
+                                .attrs
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner())
+                                .set(Value::Str(PyString::new("__annotations__")), Value::Dict(d));
+                        }
                     }
                 }
                 // Docstring: first body statement is `ExprStmt(LitStr)`.
@@ -4792,6 +4822,73 @@ fn other_display_name(o: &ap_obj::PyObject) -> String {
     o.name.clone()
 }
 
+/// Public wrapper for make_union (methods.rs Union[int, str] dispatch shares
+/// the exact marker eval_binop builds — s026 repr/origin parity). make_union
+/// itself is a private assoc-fn of eval_binop's impl block; this free fn
+/// re-implements the minimal build (same surfaces) for the one external caller.
+pub fn make_union_pub(kind: ap_obj::ObjKind, name: &str, args: Vec<Value>) -> Value {
+    let u = ap_obj::PyObject::new(kind, name);
+    *u.slice_parts.lock().unwrap_or_else(|p| p.into_inner()) = args.clone();
+    let arg_values: Vec<Value> = args
+        .iter()
+        .map(|v| match v {
+            Value::None => {
+                let interp = CURRENT_INTERP.with(|c| c.borrow().clone()).map(|i| i.rc());
+                match &interp {
+                    Some(i) => crate::builtins::interned_type(i, "NoneType"),
+                    None => v.clone(),
+                }
+            }
+            other => other.clone(),
+        })
+        .collect();
+    {
+        let at = u.attrs.lock().unwrap_or_else(|p| p.into_inner());
+        let _ = at.set(
+            Value::Str(PyString::new("__args__")),
+            Value::Tuple(Gc::new(Tuple(arg_values))),
+        );
+        if let Some(Value::Obj(tm)) = crate::importer::sys_modules_get("typing") {
+            if let Some(uv) = tm
+                .module_ns
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_ref()
+                .and_then(|ns| ns.get(&Value::Str(PyString::new("Union"))))
+            {
+                let _ = at.set(Value::Str(PyString::new("__origin__")), uv.clone());
+            }
+        }
+    }
+    let arm_repr = |v: &Value| -> String {
+        match v {
+            Value::None => "None".to_string(),
+            Value::Obj(o) => match o.kind {
+                ap_obj::ObjKind::Type if o.name == "NoneType" => "None".to_string(),
+                ap_obj::ObjKind::Type => o.name.clone(),
+                ap_obj::ObjKind::UserClass => {
+                    let m = o
+                        .attrs
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .get(&Value::Str(PyString::new("__module__")))
+                        .and_then(|mv| match mv {
+                            Value::Str(s) => Some(s.as_str().to_string()),
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| "__main__".to_string());
+                    format!("{}.{}", m, o.name)
+                }
+                _ => o.default_repr(ap_obj::value::addr_of(o)),
+            },
+            other => other.type_name().to_string(),
+        }
+    };
+    let txt = args.iter().map(arm_repr).collect::<Vec<_>>().join(" | ");
+    *u.repr_text.lock().unwrap_or_else(|p| p.into_inner()) = Some(txt);
+    Value::Obj(u)
+}
+
 pub(crate) fn eval_binop(a: &Value, op: BinOp, b: &Value) -> EResult {
     use ap_obj::ops::BinOp as OB;
     // W112: Python-loc capture for int - NoneType failures.
@@ -4927,6 +5024,7 @@ pub(crate) fn eval_binop(a: &Value, op: BinOp, b: &Value) -> EResult {
         *u.repr_text.lock().unwrap_or_else(|p| p.into_inner()) = Some(txt);
         Value::Obj(u)
     }
+
 
     // 02.04a (interp bug #7b): PEP 604 union `int | str` — types.py reads
     // type(int | str) at import. T1: produce the SAME __union__ Opaque the
@@ -6082,6 +6180,11 @@ fn call_value_inner_impl(
                     // register(func) probe). v0 returns __annotations__
                     // (source-string values, get_type_hints resolves).
                     if o.name == "__ap_fn_annotate__" {
+                        // 02.08f (s026): get_type_hints passes Format.VALUE —
+                        // string annotations (a: "int") must be EVAL'D against
+                        // the function's globals, not returned as ForwardRef.
+                        let fmt = args.first().cloned().unwrap_or(Value::None);
+                        let fmt_is_value = matches!(&fmt, Value::Str(s) if s.as_str() == "VALUE");
                         let recv = o
                             .slice_parts
                             .lock()
@@ -6096,6 +6199,44 @@ fn call_value_inner_impl(
                                 .unwrap_or_else(|p| p.into_inner())
                                 .get(&Value::Str(PyString::new("__annotations__")))
                             {
+                                if !fmt_is_value {
+                                    return Ok(v.clone());
+                                }
+                                // VALUE format: eval each STRING annotation.
+                                if let Value::Dict(d) = &v {
+                                    let mut out: Vec<(Value, Value)> = Vec::new();
+                                    for (k, av) in d.items() {
+                                        if let Value::Str(sv) = &av {
+                                            // __globals__ is served through
+                                            // attr_get (fn table), not stored
+                                            // in attrs — call it.
+                                            let globals = crate::interp::attr_get_public(
+                                                interp, &recv, "__globals__",
+                                            )
+                                            .ok()
+                                            .flatten();
+                                            match globals {
+                                                Some(g) => {
+                                                    match crate::builtins::builtin_eval(
+                                                        interp,
+                                                        &[av.clone(), g],
+                                                    ) {
+                                                        Ok(ev) => out.push((k, ev)),
+                                                        Err(_) => out.push((k, av.clone())),
+                                                    }
+                                                }
+                                                None => out.push((k, av.clone())),
+                                            }
+                                        } else {
+                                            out.push((k, av.clone()));
+                                        }
+                                    }
+                                    let nd = PyDict::new();
+                                    for (k, av) in out {
+                                        let _ = nd.set(k, av);
+                                    }
+                                    return Ok(Value::Dict(nd));
+                                }
                                 return Ok(v.clone());
                             }
                         }
@@ -7296,6 +7437,26 @@ fn call_value_inner_impl(
                                 ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "NotImplemented");
                             return Ok(Value::Obj(ni));
                         }
+                        // 02.08f (s026): type.__ne__ must NEGATE identity —
+                        // typing.py is_protocol's (tp != Protocol) gate
+                        // depends on it (CPython object.__ne__ inverts
+                        // __eq__). The eq marker answered identity-eq; give
+                        // __ne__ its own negated semantics.
+                        // 02.08f (s026): object.__annotate__ answers None
+                        // (no annotations on object itself).
+                        if base.trim_start_matches('_') == "__annotate__" {
+                            return Ok(Value::None);
+                        }
+                        if base.trim_start_matches('_') == "__ne__" {
+                            if let [Value::Obj(ao), Value::Obj(bo)] = args {
+                                let same = std::sync::Arc::ptr_eq(ao, bo);
+                                return Ok(Value::Bool(!same));
+                            }
+                            if let [Value::Obj(ao), _] = args {
+                                let _ = ao;
+                                return Ok(Value::Bool(true));
+                            }
+                        }
                         // T1-d (attr/_make.py Attribute.__init__): the
                         // descriptor-__get__ marker (from reading __get__ on
                         // an object-virtual marker) CALLS as
@@ -7771,6 +7932,28 @@ fn call_value_inner_impl(
                             .flatten()
                             .ok_or_else(|| raise("TypeError", "module type payload missing"))?;
                         return crate::classes::instantiate(interp, f, &t, args, kwargs);
+                    }
+                    // 02.08f (s026): typing.TypeAliasType("N", value) — the
+                    // interned ParamSpecArgs/ParamSpecKwargs/TypeAliasType/
+                    // NoDefault types construct plain opaque instances.
+                    if matches!(
+                        o.name.as_str(),
+                        "TypeAliasType" | "ParamSpecArgs" | "ParamSpecKwargs" | "NoDefault"
+                    ) {
+                        let inst = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, &o.name);
+                        for (k, v) in kwargs {
+                            let _ = inst
+                                .attrs
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner())
+                                .set(Value::Str(PyString::new(k.clone())), v.clone());
+                        }
+                        if let [n, v, ..] = args {
+                            let mut at = inst.attrs.lock().unwrap_or_else(|p| p.into_inner());
+                            let _ = at.set(Value::Str(PyString::new("__name__")), n.clone());
+                            let _ = at.set(Value::Str(PyString::new("__value__")), v.clone());
+                        }
+                        return Ok(Value::Obj(inst));
                     }
                     call_type_ctor(interp, &o.name, args, kwargs)
                 }
@@ -8690,6 +8873,17 @@ fn call_type_ctor(
                 let mut lines: Vec<String> = Vec::new();
                 loop {
                     match crate::interp::call_value_pub3(&readline, &[]) {
+                        // 02.08f (s020): bytes lines (tokenize.tokenize's
+                        // readline contract) — decode latin-1 like CPython's
+                        // tokenizer (byte-preserving for ASCII sigs).
+                        Ok(Value::Bytes(b)) => {
+                            let v = b.iter().map(|c| *c as u8).collect::<Vec<u8>>();
+                            let st = String::from_utf8_lossy(&v).to_string();
+                            if st.is_empty() {
+                                break;
+                            }
+                            lines.push(st);
+                        }
                         Ok(Value::Str(s)) => {
                             if s.as_str().is_empty() {
                                 break;
@@ -10969,7 +11163,70 @@ pub(crate) fn prune_dropped_iters(interp: &Arc<Interpreter>) {
 }
 
 /// Pull one value from a registered iterator id (generator-aware).
+pub fn pull_iter_pub(interp: &Arc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> {
+    pull_iter(interp, id)
+}
+
 fn pull_iter(interp: &Arc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> {
+    // 02.08f (s020): iter(callable, sentinel) — CallFn state needs interp
+    // to invoke the callable; handle BEFORE the table .next() (which answers
+    // None for this state).
+    {
+        let is_callfn = {
+            let its = interp.iterators.lock().unwrap_or_else(|p| p.into_inner());
+            its.get(&id).map(|it| {
+                matches!(&*it.state.lock().unwrap_or_else(|p| p.into_inner()), IterState::CallFn { .. })
+            }).unwrap_or(false)
+        };
+        if is_callfn {
+            loop {
+                let (f, sent, done) = {
+                    let its = interp.iterators.lock().unwrap_or_else(|p| p.into_inner());
+                    let it = its.get(&id);
+                    match it.and_then(|it| {
+                        match &*it.state.lock().unwrap_or_else(|p| p.into_inner()) {
+                            IterState::CallFn { func, sentinel, done } => {
+                                Some((func.clone(), sentinel.clone(), *done))
+                            }
+                            _ => None,
+                        }
+                    }) {
+                        Some(t) => t,
+                        None => break,
+                    }
+                };
+                if done {
+                    return Ok(None);
+                }
+                let r = match crate::interp::call_value_pub(interp, &f, &[], &[]) {
+                    Ok(r) => r,
+                    Err(Flow::Raise(e)) if e.class == "StopIteration" => {
+                        // 02.08f (s020): callable exhausted
+                        // (iter(lines).__next__) — termination, not error.
+                        let its = interp.iterators.lock().unwrap_or_else(|p| p.into_inner());
+                        if let Some(it) = its.get(&id) {
+                            if let IterState::CallFn { done, .. } = &mut *it.state.lock().unwrap_or_else(|p| p.into_inner()) {
+                                *done = true;
+                            }
+                        }
+                        return Ok(None);
+                    }
+                    Err(other) => return Err(other),
+                };
+                if ap_obj::ops::eq(&r, &sent) {
+                    let its = interp.iterators.lock().unwrap_or_else(|p| p.into_inner());
+                    if let Some(it) = its.get(&id) {
+                        if let IterState::CallFn { done, .. } = &mut *it.state.lock().unwrap_or_else(|p| p.into_inner()) {
+                            *done = true;
+                        }
+                    }
+                    return Ok(None);
+                }
+                return Ok(Some(r));
+            }
+            return Ok(None);
+        }
+    }
     // F5: prune dropped iterators' registry entries first (the Drop list is
     // usually empty — one Vec take, one HashMap miss per dead id).
     prune_dropped_iters(interp);
@@ -10987,6 +11244,18 @@ fn pull_iter(interp: &Arc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> 
     let r = loop {
         {
             let mut its = interp.iterators.lock().unwrap_or_else(|p| p.into_inner());
+            // 02.08f (s020): a Native iterator (itertools.chain over an
+            // iter(callable, sent) part) was pruned at exhaustion — re-pulls
+            // (zip(f.args.args, defaults) re-iterating the SAME chain) must
+            // see an EMPTY iterator, not a missing entry. Re-insert a fresh
+            // exhausted iterator under the id so iter(it) re-entrancy works.
+            if !its.contains_key(&id) {
+                let fresh = crate::iter::PyIterator::new(crate::iter::IterState::Seq(
+                    Vec::new(),
+                    0,
+                ));
+                its.insert(id, fresh);
+            }
             let r = its.get(&id).and_then(|it| it.next());
             break r;
         }
@@ -11468,15 +11737,35 @@ fn user_len(interp: &Arc<Interpreter>, v: &Value) -> Result<Option<i64>, Flow> {
     }
 }
 
+
+/// 02.08f (s020/s026): annotation recording. dump_expr_inline renders BOTH
+/// `a: int` and `b: "str"` as quoted strings ('int' / "'str'"); downstream
+/// resolvers can't tell a quoted annotation from an unquoted one. A LitStr
+/// annotation is QUOTED source: record the INNER text (CPython VALUE format
+/// for `b: "str"` is 'str'). Anything else: record the bare source text so
+/// the resolver evals it against fn globals (CPython VALUE for `a: int` is
+/// the class object).
+fn annotation_source_text(expr: &ap_ir::Expr) -> String {
+    if let ap_ir::Expr::LitStr(inner) = expr {
+        // LitStr: record repr(inner) so eval(source) yields the STRING
+        // (CPython VALUE format for b: "str" is 'str'); bare source evals
+        // resolve through globals (a: int -> the class).
+        return format!("{:?}", inner);
+    }
+    ap_ir::dump_expr_inline(expr)
+}
+
 /// User-protocol repr/str. `which`: "__repr__" or "__str__".
-fn user_repr(interp: &Arc<Interpreter>, v: &Value, which: &str) -> Result<Option<String>, Flow> {    // __str__ falls back to __repr__ only through object.__str__ semantics
+fn user_repr(interp: &Arc<Interpreter>, v: &Value, which: &str) -> Result<Option<String>, Flow> {
+    // __str__ falls back to __repr__ only through object.__str__ semantics
     // (S-03-24): an explicit __str__ must return str; missing __str__ with
     // a class __repr__ uses it; neither -> default form.
     let lookup = |name: &str| crate::classes::special_lookup(interp, v, name);
     let target = match which {
         "__str__" => lookup("__str__").or_else(|| lookup("__repr__")),
         other => lookup(other),
-    };    match target {
+    };
+    match target {
         Some((f, owner)) => {
             // W113 (parsel XPathExpr.__str__ via str(x)): calling the raw
             // class-dict function bypasses the BoundMethod dispatch that
@@ -11869,6 +12158,41 @@ fn class_protocol_builtin(
             // sys.modules carries it.
             if let Some(Value::Obj(o)) = subject {
                 if o.kind == ap_obj::ObjKind::UserClass {
+                    // 02.08f (s026): GENERALIZE — consult the class's OWN
+                    // metaclass __repr__ first (typing.Any's _AnyMeta renders
+                    // 'typing.Any'); the enum-module path below stays as the
+                    // fallback for interned enum classes whose metaclass is
+                    // reachable only through sys.modules['enum'].EnumType.
+                    if let Some(mt) = o
+                        .type_ref
+                        .read()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .as_ref()
+                        .and_then(|w| w.upgrade())
+                        .and_then(|t| {
+                            t.metaclass
+                                .read()
+                                .unwrap_or_else(|p| p.into_inner())
+                                .clone()
+                        })
+                    {
+                        if let Some((mt_repr, _owner)) = mt.lookup_with_owner("__repr__") {
+                            // Only a USER-defined metaclass __repr__ (skip the
+                            // interned type markers).
+                            let is_user = matches!(&mt_repr, Value::Obj(rm) if rm.kind == ap_obj::ObjKind::Function);
+                            if is_user {
+                                let args = [subject.unwrap().clone()];
+                                if let Ok(r) = crate::interp::call_value_pub(
+                                    interp,
+                                    &mt_repr,
+                                    &args,
+                                    &[],
+                                ) {
+                                    return Some(Ok(r));
+                                }
+                            }
+                        }
+                    }
                     if let Some(mt_repr) = crate::importer::sys_modules_get("enum").and_then(
                         |em| {
                             crate::interp::attr_get_public(&interp, &em, "EnumType")
@@ -12487,6 +12811,20 @@ fn class_isinstance(interp: &Arc<Interpreter>, args: &[Value]) -> EResult {
     let t = args
         .get(1)
         .ok_or_else(|| raise("TypeError", "isinstance expected 2 arguments, got 1"))?;
+    // 02.08f (s026): Union-marker VALUE isinstance Union-marker — the
+    // vendored get_origin/get_args isinstance(tp, Union) probe requires
+    // True here (CPython _UnionGenericAlias.__instancecheck__).
+    if let (Value::Obj(vo), Value::Obj(to)) = (v, t) {
+        let v_is_union_value = (vo.kind == ap_obj::ObjKind::Namespace && vo.name == "_Union")
+            || (vo.kind == ap_obj::ObjKind::Opaque && vo.name == "__union__");
+        let t_is_union_marker = matches!(
+            to.kind,
+            ap_obj::ObjKind::BuiltinFn | ap_obj::ObjKind::Function
+        ) && (to.name == "Union" || to.name == "_typing.Union");
+        if v_is_union_value && t_is_union_marker {
+            return Ok(Value::Bool(true));
+        }
+    }
     // W112: ABC-name targets (Mapping/MutableMapping/...) for subjects
     // whose class MRO roots at a native protocol type (dict/list/tuple/
     // str) — CPython answers True via ABCMeta.__instancecheck__ +
@@ -12704,7 +13042,11 @@ fn class_isinstance(interp: &Arc<Interpreter>, args: &[Value]) -> EResult {
                     .unwrap_or_else(|p| p.into_inner())
                     .clone();
                 for m in &members {
-                    if matches!(m, Value::None) {
+                    // 02.08f: a NoneType TYPE-object arm (Union[int, None] via
+                    // the Union[int,None] marker path) matches None too.
+                    let m_is_none = matches!(m, Value::None)
+                        || matches!(m, Value::Obj(mo) if mo.kind == ap_obj::ObjKind::Type && mo.name == "NoneType");
+                    if m_is_none {
                         if matches!(v, Value::None) {
                             return Ok(Value::Bool(true));
                         }
@@ -12873,6 +13215,20 @@ fn class_isinstance(interp: &Arc<Interpreter>, args: &[Value]) -> EResult {
                 "TypeError",
                 "isinstance() arg 2 must be a type, a tuple of types, or a union",
             ));
+        }
+    }
+    // 02.08f (s026): Union-marker VALUE isinstance Union-marker — the
+    // vendored get_origin/get_args isinstance(tp, Union) probe requires
+    // True here (CPython _UnionGenericAlias.__instancecheck__).
+    if let (Value::Obj(vo), Value::Obj(to)) = (v, t) {
+        let v_is_union_value = (vo.kind == ap_obj::ObjKind::Namespace && vo.name == "_Union")
+            || (vo.kind == ap_obj::ObjKind::Opaque && vo.name == "__union__");
+        let t_is_union_marker = matches!(
+            to.kind,
+            ap_obj::ObjKind::BuiltinFn | ap_obj::ObjKind::Function
+        ) && (to.name == "Union" || to.name == "_typing.Union");
+        if v_is_union_value && t_is_union_marker {
+            return Ok(Value::Bool(true));
         }
     }
     Ok(Value::Bool(crate::classes::value_isinstance(interp, v, t)?))
@@ -13305,11 +13661,18 @@ fn user_compare_value(
     let b_is_type = is_class(b);
     if a_is_type || b_is_type {
         // Identity semantics (Value::is for Obj is Arc::ptr_eq).
+        // 02.08f (s026): NotEq must be the NEGATION (typing.py is_protocol's
+        // (tp != Protocol) gate reads this; the shared path below returned
+        // identity-eq for BOTH Eq and Ne).
         let same = match (a, b) {
             (Value::Obj(x), Value::Obj(y)) => std::sync::Arc::ptr_eq(x, y),
             _ => false,
         };
-        return Some(Ok(Value::Bool(same)));
+        let out = match op {
+            CmpOp::NotEq => !same,
+            _ => same,
+        };
+        return Some(Ok(Value::Bool(out)));
     }
     let mut a_slot = crate::classes::special_lookup(interp, a, slot);
     let mut b_slot = crate::classes::special_lookup(interp, b, slot);
@@ -13663,7 +14026,7 @@ fn attr_get(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 // "'function' object is not iterable" (scrapy gate blocker).
                 | "__closure__" | "__code__" | "__defaults__" | "__kwdefaults__"
                 | "__globals__" | "__module__" | "__qualname__" | "__annotations__"
-                | "__wrapped__" | "__self__" | "__func__"
+                | "__wrapped__" | "__self__" | "__func__" | "__text_signature__"
                 // 02.08 (s031/s016): getattr(x, "__isabstractmethod__",
                 // False) must fall to the DEFAULT for non-abstract values —
                 // Mapping.__reversed__ = None (concrete!) was probed with
@@ -13718,6 +14081,29 @@ fn attr_get(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Option
     // 02.04a fix pass: function attribute reads (functools.wraps sets
     // __wrapped__/cache etc on the wrapper; vendored stdlib reads them back).
     if let Value::Obj(o) = obj {
+        // 02.08f (s020): BuiltinFn (marker) fns — __text_signature__ for
+        // inspect.signature(abs) etc.
+        if o.kind == ap_obj::ObjKind::BuiltinFn && name == "__text_signature__" {
+            let sig = match o.name.as_str() {
+                "abs" => Some("(x, /)"),
+                "all" => Some("(iterable, /)"),
+                "any" => Some("(iterable, /)"),
+                "len" => Some("(obj, /)"),
+                "repr" => Some("(obj, /)"),
+                "hex" => Some("(number, /)"),
+                "oct" => Some("(number, /)"),
+                "bin" => Some("(number, /)"),
+                "ascii" => Some("(obj, /)"),
+                "hash" => Some("(obj, /)"),
+                "iter" => Some("(iterable, /)"),
+                "sum" => Some("(iterable, /, start=0)"),
+                _ => None,
+            };
+            if let Some(t) = sig {
+                return Ok(Some(Value::Str(PyString::new(t))));
+            }
+            return Ok(Some(Value::None));
+        }
         if o.kind == ap_obj::ObjKind::Function {
             if let Some(v) = o
                 .attrs
@@ -13737,6 +14123,29 @@ fn attr_get(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Option
             // marker fns — empty tuple / None (no bound defaults).
             if name == "__defaults__" {
                 return Ok(Some(Value::Tuple(Gc::new(Tuple(Vec::new())))));
+            }
+            // 02.08f (s020): inspect.signature(abs) -> "(x, /)" — CPython
+            // builtins carry __text_signature__; serve the well-known ones.
+            if name == "__text_signature__" {
+                let sig = match o.name.as_str() {
+                    "abs" => Some("(x, /)"),
+                    "all" => Some("(iterable, /)"),
+                    "any" => Some("(iterable, /)"),
+                    "len" => Some("(obj, /)"),
+                    "repr" => Some("(obj, /)"),
+                    "hex" => Some("(number, /)"),
+                    "oct" => Some("(number, /)"),
+                    "bin" => Some("(number, /)"),
+                    "ascii" => Some("(obj, /)"),
+                    "hash" => Some("(obj, /)"),
+                    "iter" => Some("(iterable, /)"),
+                    "sum" => Some("(iterable, /, start=0)"),
+                    _ => None,
+                };
+                if let Some(t) = sig {
+                    return Ok(Some(Value::Str(PyString::new(t))));
+                }
+                return Ok(Some(Value::None));
             }
             if name == "__kwdefaults__" {
                 return Ok(Some(Value::None));

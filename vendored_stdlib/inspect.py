@@ -540,7 +540,17 @@ def _getmembers(object, predicate, getter):
 def getmembers(object, predicate=None):
     """Return all members of an object as (name, value) pairs sorted by name.
     Optionally, only return members that satisfy a given predicate."""
-    return _getmembers(object, predicate, getattr)
+    # 02.08f (s020): our object-virtual dunder markers (__object_virtual_eq__
+    # etc.) surface on CLASS dir() walks; CPython's wrapper_descriptor fails
+    # isfunction. Skip object-root dunders the class itself didn't define.
+    m = _getmembers(object, predicate, getattr)
+    if isinstance(object, type):
+        m = [(n, v) for (n, v) in m
+             if not (n.startswith("__") and n.endswith("__")
+                     and n not in vars(object)
+                     and hasattr(v, "__repr__")
+                     and "object_virtual" in repr(v))]
+    return m
 
 def getmembers_static(object, predicate=None):
     """Return all members of an object as (name, value) pairs sorted by name
@@ -1565,8 +1575,19 @@ _Traceback = namedtuple('_Traceback', 'filename lineno function code_context ind
 class Traceback(_Traceback):
     def __new__(cls, filename, lineno, function, code_context, index, *, positions=None):
         instance = super().__new__(cls, filename, lineno, function, code_context, index)
-        instance.positions = positions
+        object.__setattr__(instance, "positions", positions)
         return instance
+
+    # 02.08f (s020): FrameInfo(*frameinfo, positions=tb.positions) probes
+    # .positions on the Traceback named-tuple base; the native base's attr
+    # walk misses our instance attr — answer from instance dict explicitly.
+    def __getattr__(self, name):
+        try:
+            return object.__getattribute__(self, name)
+        except AttributeError:
+            if name == "positions":
+                return None
+            raise
 
     def __repr__(self):
         return ('Traceback(filename={!r}, lineno={!r}, function={!r}, '
@@ -1637,8 +1658,19 @@ _FrameInfo = namedtuple('_FrameInfo', ('frame',) + Traceback._fields)
 class FrameInfo(_FrameInfo):
     def __new__(cls, frame, filename, lineno, function, code_context, index, *, positions=None):
         instance = super().__new__(cls, frame, filename, lineno, function, code_context, index)
-        instance.positions = positions
+        object.__setattr__(instance, "positions", positions)
         return instance
+
+    # 02.08f (s020): the namedtuple base's attr walk misses the instance
+    # attr set in __new__ (our runtime's namedtuple __getattribute__ reads
+    # the native tuple payload first) — answer 'positions' explicitly.
+    def __getattr__(self, name):
+        try:
+            return object.__getattribute__(self, name)
+        except AttributeError:
+            if name == "positions":
+                return self.__dict__.get("positions")
+            raise
 
     def __repr__(self):
         return ('FrameInfo(frame={!r}, filename={!r}, lineno={!r}, function={!r}, '
@@ -1655,7 +1687,18 @@ def getouterframes(frame, context=1):
     while frame:
         traceback_info = getframeinfo(frame, context)
         frameinfo = (frame,) + traceback_info
-        framelist.append(FrameInfo(*frameinfo, positions=traceback_info.positions))
+        try:
+            fi = FrameInfo(*frameinfo, positions=traceback_info.positions)
+        except (AttributeError, TypeError):
+            # 02.08f (s020): our namedtuple base rejects the extra
+            # positions attr during __new__ — fall back to positional
+            # construction and set the attr after.
+            fi = FrameInfo(*frameinfo)
+            try:
+                object.__setattr__(fi, "positions", traceback_info.positions)
+            except Exception:
+                pass
+        framelist.append(fi)
         frame = frame.f_back
     return framelist
 
@@ -2409,8 +2452,6 @@ def _signature_from_function(cls, func, skip_bound_arg=True,
         if _sff:
             import sys as _sys_sff
             _sys_sff.stderr.write("[SFF] %s enter\n" % getattr(func, "__qualname__", "?"))
-        if _os_sff0.environ.get("APX_SFCDBG"):
-            _sys_sff0.stderr.write("[SFF0] %s pre-annot\n" % getattr(func, "__qualname__", "?"))
         try:
             annotations = get_annotations(func, globals=globals, locals=locals, eval_str=eval_str,
                                           format=annotation_format)
@@ -2620,6 +2661,18 @@ def _signature_from_callable(obj, *,
     # found for builtin") for builtins; mirror that.
     if type(obj).__name__ in ("builtin_function_or_method",
                               "BuiltinFn"):
+        # 02.08f (s020): well-known builtins carry __text_signature__
+        # (served by the marker-fn attr arm) — route through
+        # _signature_from_builtin like CPython instead of failing.
+        ts = getattr(obj, "__text_signature__", None)
+        if ts:
+            try:
+                return _signature_from_builtin(sigcls, obj,
+                                               skip_bound_arg=skip_bound_arg)
+            except (TypeError, ValueError) as _e2:
+                raise ValueError(
+                    "no signature found for builtin function {!r}".format(obj)
+                ) from _e2
         raise ValueError(
             "no signature found for builtin function {!r}".format(obj))
 
@@ -3540,6 +3593,21 @@ class Signature:
 def signature(obj, *, follow_wrapped=True, globals=None, locals=None, eval_str=False,
               annotation_format=Format.VALUE):
     """Get a signature object for the passed callable."""
+    # 02.08f (s020): BuiltinFn markers (abs etc.) carry __text_signature__ —
+    # route through _signature_from_builtin BEFORE the generic walk (the
+    # walk's internal iterator probes hit native iter() re-entry limits).
+    if getattr(type(obj), '__name__', '') == 'BuiltinFn' or (
+        hasattr(obj, '__text_signature__')
+        and getattr(obj, '__text_signature__', None)
+        and getattr(obj, '__self__', 'x') is not None
+        and not hasattr(obj, '__code__')
+    ):
+        try:
+            ts = getattr(obj, '__text_signature__', None)
+            if ts:
+                return _signature_from_builtin(Signature, obj, skip_bound_arg=True)
+        except (TypeError, ValueError):
+            pass
     try:
         return Signature.from_callable(obj, follow_wrapped=follow_wrapped,
                                        globals=globals, locals=locals, eval_str=eval_str,

@@ -63,7 +63,13 @@ class ForwardRef:
             import builtins as _b
             g["__builtins__"] = _b
         l = dict(locals) if locals else {}
-        val = eval(self.__forward_arg__, g, l)
+        # 02.08f (s026): the recorded annotation is dump_expr_inline SOURCE
+        # ('int' WITH quotes for a quoted "int" annotation) — strip one
+        # layer of string-literal quoting before eval so h("int") resolves.
+        arg = self.__forward_arg__
+        if isinstance(arg, str) and len(arg) >= 2 and arg[0] == arg[-1] and arg[0] in "'\"":
+            arg = arg[1:-1]
+        val = eval(arg, g, l)
         if isinstance(val, str):
             # unresolved string stays a ForwardRef under FORWARDREF format
             return self
@@ -113,6 +119,41 @@ def get_annotations(obj, *, globals=None, locals=None, eval_str=False,
         except Exception:
             own = None
         if own is not None:
+            # 02.08f (s020): resolve single-name SOURCE strings through the
+            # function's __globals__ (inspect.signature parity).
+            if own:
+                glo = None
+                try:
+                    glo = getattr(obj, "__globals__", None)
+                except Exception:
+                    glo = None
+                if glo is not None:
+                    out = {}
+                    changed = False
+                    for k, v in own.items():
+                        nv = v
+                        if isinstance(v, str) and len(v) >= 2 and v[0] == v[-1] and v[0] in "'\"":
+                            # recorder: LitStr anns recorded as repr(inner)
+                            # ("'str'"), unquoted anns as bare source ('int').
+                            nv = v[1:-1]
+                            changed = True
+                            if eval_str:
+                                # eval_str=True: string-form annotations eval
+                                # (CPython: b: "str" + eval_str -> class str)
+                                try:
+                                    nv = eval(nv, dict(glo))
+                                except Exception:
+                                    pass
+                        elif isinstance(v, str):
+                            # bare source: eval through globals
+                            try:
+                                nv = eval(v, dict(glo))
+                                changed = True
+                            except Exception:
+                                pass
+                        out[k] = nv
+                    if changed:
+                        return out
             return own
         if isinstance(obj, type):
             # s025 (PEP 649/749): a class may carry its annotations in
@@ -148,6 +189,28 @@ def get_annotations(obj, *, globals=None, locals=None, eval_str=False,
     anns = getattr(obj, "__annotations__", None)
     if anns is None:
         return {}
+    # 02.08f (s020): the recorded annotations are dump_expr_inline SOURCE
+    # strings ('int' WITH quotes for ). VALUE format + plain names:
+    # resolve each single-name string through the object's globals so
+    # inspect.signature renders 'a: int' not (a: 'int'). Unquoted-string
+    # annotations (b: "str") keep their inner text after the literal strip.
+    if anns and isinstance(obj, dict) is False:
+        glo = None
+        try:
+            glo = getattr(obj, "__globals__", None)
+        except Exception:
+            glo = None
+        if glo is not None:
+            out = {}
+            changed = False
+            for k, v in anns.items():
+                nv = v
+                if isinstance(v, str) and len(v) >= 2 and v[0] == v[-1] and v[0] in "'\"":
+                    nv = v[1:-1]
+                    changed = True
+                out[k] = nv
+            if changed:
+                return out
     return anns
 
 
@@ -165,6 +228,19 @@ def get_annotate_from_class_namespace(ns, *, owner=None):
 
 def call_annotate_function(annotate, format, *, owner=None,
                            globals=None, locals=None):
+    # 02.08f (s026): the object-virtual __annotate__ MARKER answers None
+    # (no annotations on object) — short-circuit instead of calling it
+    # (the marker name is not a callable in module scope).
+    if annotate is not None and getattr(annotate, '__class__', None) is not None:
+        cls = getattr(annotate, '__class__', None)
+        if getattr(cls, '__name__', '') == 'function' and getattr(annotate, '__module__', '') == 'builtins':
+            pass
+    try:
+        nm = repr(annotate)
+    except Exception:
+        nm = ''
+    if '__object_virtual___annotate____' in nm or 'object_virtual' in nm:
+        return {}
     return annotate()
 
 

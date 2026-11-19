@@ -3032,6 +3032,23 @@ pub fn special_lookup(
                         | "__repr__"
                 )
             {
+                // 02.08f (s026): a class-dict EXPLICIT assignment wins over
+                // the metaclass-only rule (typing.Any sets Any.__repr__ in
+                // the class dict; CPython repr(Any) uses it).
+                if let Some(t) = o
+                    .class_ref
+                    .read()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone()
+                {
+                    let in_dict = t
+                        .dict
+                        .get(&Value::Str(PyString::new(name)))
+                        .is_some();
+                    if in_dict {
+                        return t.lookup_with_owner(name);
+                    }
+                }
                 return None;
             }
             let t = o
@@ -3700,6 +3717,30 @@ fn class_attr_get(
     match name {
         "__name__" => return Ok(Value::Str(PyString::new(t.name.clone()))),
         "__qualname__" => return Ok(Value::Str(PyString::new(t.qualname.clone()))),
+        // 02.08f (s026): CPython 3.14 classes carry __type_params__ (PEP 695,
+        // () for non-generic classes); typing.get_type_hints reads it
+        // UNCONDITIONALLY on every base class (`base.__type_params__` at
+        // typing.py:2409) — the missing attr broke get_type_hints over any
+        // class with a base (s026 line 29 `get_type_hints(NT)`).
+        "__type_params__" => {
+            let _ = interp;
+            return Ok(Value::Tuple(Gc::new(Tuple(Vec::new()))));
+        }
+        // 02.08f (s026): CPython 3.14 classes carry __annotations__ — an
+        // EMPTY dict when the class has no annotated attrs (typing.py's
+        // get_type_hints / _proto_hook probe base.__annotations__ /
+        // cls.__dict__.get('_is_protocol') paths; missing attr broke
+        // get_overloads/get_type_hints tails of s026).
+        "__annotations__" => {
+            let _ = interp;
+            // 02.08f (s026): a class-dict EXPLICIT __annotations__ (TypedDict
+            // sets tp_dict.__annotations__ = own_annotations) wins; empty
+            // dict only when the class carries none.
+            if let Some(d) = t.dict.get(&Value::Str(PyString::new("__annotations__"))) {
+                return Ok(d);
+            }
+            return Ok(Value::Dict(PyDict::new()));
+        }
         "__module__" => {
             // 02.08-full p2: stdlib-exception classes report their home
             // module (re.error.__module__ == 're', json.JSONDecodeError 'json').
@@ -3719,10 +3760,22 @@ fn class_attr_get(
                 "defaultdict", "Counter", "ChainMap", "UserDict", "UserList",
                 "UserString", "deque",
             ];
-            if t.dict.get(&Value::Str(PyString::new("__module__"))).is_none()
-                && BUILTIN_TYPE_NAMES.iter().any(|n| *n == t.name)
-            {
-                return Ok(Value::Str(PyString::new("builtins")));
+            if t.dict.get(&Value::Str(PyString::new("__module__"))).is_none() {
+                if BUILTIN_TYPE_NAMES.iter().any(|n| *n == t.name) {
+                    return Ok(Value::Str(PyString::new("builtins")));
+                }
+                // 02.08f (s026): collections.abc classes report their home
+                // module (CPython repr == "<class 'collections.abc.Callable'>"
+                // — typing._should_unflatten_callable_args gates on the
+                // origin's __module__).
+                if ap_obj::MODULE_NAME != "collections.abc"
+                    && matches!(t.name.as_str(), "Callable" | "Hashable" | "Sized" | "Iterable"
+                        | "Iterator" | "Container" | "Collection" | "Sequence"
+                        | "Mapping" | "MutableMapping" | "Set" | "MutableSet"
+                        | "MappingView" | "KeysView" | "ItemsView" | "ValuesView")
+                {
+                    return Ok(Value::Str(PyString::new("collections.abc")));
+                }
             }
             return Ok(t
                 .dict
@@ -3967,8 +4020,16 @@ fn class_attr_get(
             | "__eq__"
             // T1 (http.cookies Morsel: `__ne__ = object.__ne__`): __ne__ joins
             // the object-virtual allowlist.
+            // 02.08f (s026): type.__ne__ must NEGATE identity (typing.py's
+            // is_protocol gate ); the virtual marker answers
+            // identity-eq so Ne needs its own negated marker.
             | "__ne__"
             | "__hash__"
+            // 02.08f (s026 TypedDict): _TypedDictMeta.__annotate__ walks
+            // base.__annotate__ on every base; object must carry a marker
+            // that answers None-equivalent (no annotations) instead of
+            // AttributeError.
+            | "__annotate__"
             | "__doc__"
             | "__format__"
             | "__reduce_ex__"

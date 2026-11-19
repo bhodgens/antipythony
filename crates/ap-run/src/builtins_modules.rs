@@ -118,6 +118,22 @@ pub(crate) fn kw<'a>(kwargs: &'a [(String, Value)], name: &str) -> Option<&'a Va
 
 pub(crate) fn collect(v: &Value) -> Result<Vec<Value>, Flow> {
     let it = crate::interp::iterable_of_public(v)?;
+    // 02.08f (s020): CallFn iterators (iter(callable, sentinel)) need interp
+    // to invoke the callable — pull through pull_iter (registered id), else
+    // .next() answers None and itertools.chain sees a bogus-empty source.
+    if matches!(
+        &*it.state.lock().unwrap_or_else(|p| p.into_inner()),
+        crate::iter::IterState::CallFn { .. }
+    ) {
+        let interp = crate::interp::current_interp_for_bindings_pub();
+        if let Some(id) = it.table_id.get() {
+            let mut out = Vec::new();
+            while let Some(x) = crate::interp::pull_iter_pub(&interp, id)? {
+                out.push(x);
+            }
+            return Ok(out);
+        }
+    }
     let mut out = Vec::new();
     while let Some(x) = it.next() {
         out.push(x);
