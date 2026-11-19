@@ -242,10 +242,17 @@ fn run(
 
     // C-31 / 02.03 gate seam: forward the tier to the implementation only.
     // The reference side (CPython) has no tiers, so it must not receive the
-    // flag. Appending to impl_ yields `<impl> ... --tier <mode> <file>`,
-    // matching the documented seam `<prefix> --tier 0` (T-06/T-07/T-08).
+    // flag. 02.08f audit item 5: INSERT after the program but BEFORE the
+    // verb — run_corpus spawns Command::new(impl_command[0]) with
+    // impl_command[1..] + script, so [0] must stay the program. ap-cli's
+    // pre-scan accepts `--tier <mode>` on every position before the verb,
+    // so `<impl> --tier 0 run <file>` works; the OLD appended form
+    // (`<impl> run <file> --tier 0`) died with "unexpected argument" for
+    // every case (the audit's 0/48-wide harness failure), and a naive
+    // front-splice would make [0] the flag itself (spawn ENOENT).
     if let Some(mode) = tier {
-        impl_.extend(["--tier".to_string(), mode]);
+        let insert_at = impl_.len().saturating_sub(1).min(1);
+        impl_.splice(insert_at..insert_at, ["--tier".to_string(), mode]);
     }
 
     let results = match ap_conform::run_corpus(&files, &impl_, timeout) {
