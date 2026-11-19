@@ -801,7 +801,7 @@ fn exec_module(
                         if let Some(ann) = &p.ann {
                             ann_pairs.push((
                                 Value::Str(PyString::new(p.name.clone())),
-                                Value::Str(PyString::new(ap_ir::dump_expr_inline(&ann.expr))),
+                                Value::Str(PyString::new(annotation_source_text(&ann.expr))),
                             ));
                         }
                     }
@@ -814,7 +814,7 @@ fn exec_module(
                     if let Some(ann) = &f.return_ann {
                         let _ = d.set(
                             Value::Str(PyString::new("return")),
-                            Value::Str(PyString::new(ap_ir::dump_expr_inline(&ann.expr))),
+                            Value::Str(PyString::new(annotation_source_text(&ann.expr))),
                         );
                     }
                     let _ = fo
@@ -1956,7 +1956,7 @@ fn exec_stmt(
                     if let Some(ann) = &p.ann {
                         ann_pairs.push((
                             Value::Str(PyString::new(p.name.clone())),
-                            Value::Str(PyString::new(ap_ir::dump_expr_inline(&ann.expr))),
+                            Value::Str(PyString::new(annotation_source_text(&ann.expr))),
                         ));
                     }
                 }
@@ -1988,7 +1988,7 @@ fn exec_stmt(
             // wrapped.__doc__ after @wraps(base)).
             if let Value::Obj(fo) = &func {
                 if let Some(ann) = &f.return_ann {
-                    let src = Value::Str(PyString::new(ap_ir::dump_expr_inline(&ann.expr)));
+                    let src = Value::Str(PyString::new(annotation_source_text(&ann.expr)));
                     // 02.08f WEDGE FIX (s026 typing-import hang): the `if let`
                     // scrutinee below held an `attrs` MutexGuard temporary that
                     // (Rust 2021) lives to the END of the whole `if let`
@@ -8873,6 +8873,17 @@ fn call_type_ctor(
                 let mut lines: Vec<String> = Vec::new();
                 loop {
                     match crate::interp::call_value_pub3(&readline, &[]) {
+                        // 02.08f (s020): bytes lines (tokenize.tokenize's
+                        // readline contract) — decode latin-1 like CPython's
+                        // tokenizer (byte-preserving for ASCII sigs).
+                        Ok(Value::Bytes(b)) => {
+                            let v = b.iter().map(|c| *c as u8).collect::<Vec<u8>>();
+                            let st = String::from_utf8_lossy(&v).to_string();
+                            if st.is_empty() {
+                                break;
+                            }
+                            lines.push(st);
+                        }
                         Ok(Value::Str(s)) => {
                             if s.as_str().is_empty() {
                                 break;
@@ -11152,7 +11163,70 @@ pub(crate) fn prune_dropped_iters(interp: &Arc<Interpreter>) {
 }
 
 /// Pull one value from a registered iterator id (generator-aware).
+pub fn pull_iter_pub(interp: &Arc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> {
+    pull_iter(interp, id)
+}
+
 fn pull_iter(interp: &Arc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> {
+    // 02.08f (s020): iter(callable, sentinel) — CallFn state needs interp
+    // to invoke the callable; handle BEFORE the table .next() (which answers
+    // None for this state).
+    {
+        let is_callfn = {
+            let its = interp.iterators.lock().unwrap_or_else(|p| p.into_inner());
+            its.get(&id).map(|it| {
+                matches!(&*it.state.lock().unwrap_or_else(|p| p.into_inner()), IterState::CallFn { .. })
+            }).unwrap_or(false)
+        };
+        if is_callfn {
+            loop {
+                let (f, sent, done) = {
+                    let its = interp.iterators.lock().unwrap_or_else(|p| p.into_inner());
+                    let it = its.get(&id);
+                    match it.and_then(|it| {
+                        match &*it.state.lock().unwrap_or_else(|p| p.into_inner()) {
+                            IterState::CallFn { func, sentinel, done } => {
+                                Some((func.clone(), sentinel.clone(), *done))
+                            }
+                            _ => None,
+                        }
+                    }) {
+                        Some(t) => t,
+                        None => break,
+                    }
+                };
+                if done {
+                    return Ok(None);
+                }
+                let r = match crate::interp::call_value_pub(interp, &f, &[], &[]) {
+                    Ok(r) => r,
+                    Err(Flow::Raise(e)) if e.class == "StopIteration" => {
+                        // 02.08f (s020): callable exhausted
+                        // (iter(lines).__next__) — termination, not error.
+                        let its = interp.iterators.lock().unwrap_or_else(|p| p.into_inner());
+                        if let Some(it) = its.get(&id) {
+                            if let IterState::CallFn { done, .. } = &mut *it.state.lock().unwrap_or_else(|p| p.into_inner()) {
+                                *done = true;
+                            }
+                        }
+                        return Ok(None);
+                    }
+                    Err(other) => return Err(other),
+                };
+                if ap_obj::ops::eq(&r, &sent) {
+                    let its = interp.iterators.lock().unwrap_or_else(|p| p.into_inner());
+                    if let Some(it) = its.get(&id) {
+                        if let IterState::CallFn { done, .. } = &mut *it.state.lock().unwrap_or_else(|p| p.into_inner()) {
+                            *done = true;
+                        }
+                    }
+                    return Ok(None);
+                }
+                return Ok(Some(r));
+            }
+            return Ok(None);
+        }
+    }
     // F5: prune dropped iterators' registry entries first (the Drop list is
     // usually empty — one Vec take, one HashMap miss per dead id).
     prune_dropped_iters(interp);
@@ -11170,6 +11244,18 @@ fn pull_iter(interp: &Arc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> 
     let r = loop {
         {
             let mut its = interp.iterators.lock().unwrap_or_else(|p| p.into_inner());
+            // 02.08f (s020): a Native iterator (itertools.chain over an
+            // iter(callable, sent) part) was pruned at exhaustion — re-pulls
+            // (zip(f.args.args, defaults) re-iterating the SAME chain) must
+            // see an EMPTY iterator, not a missing entry. Re-insert a fresh
+            // exhausted iterator under the id so iter(it) re-entrancy works.
+            if !its.contains_key(&id) {
+                let fresh = crate::iter::PyIterator::new(crate::iter::IterState::Seq(
+                    Vec::new(),
+                    0,
+                ));
+                its.insert(id, fresh);
+            }
             let r = its.get(&id).and_then(|it| it.next());
             break r;
         }
@@ -11649,6 +11735,24 @@ fn user_len(interp: &Arc<Interpreter>, v: &Value) -> Result<Option<i64>, Flow> {
         }
         None => Ok(None),
     }
+}
+
+
+/// 02.08f (s020/s026): annotation recording. dump_expr_inline renders BOTH
+/// `a: int` and `b: "str"` as quoted strings ('int' / "'str'"); downstream
+/// resolvers can't tell a quoted annotation from an unquoted one. A LitStr
+/// annotation is QUOTED source: record the INNER text (CPython VALUE format
+/// for `b: "str"` is 'str'). Anything else: record the bare source text so
+/// the resolver evals it against fn globals (CPython VALUE for `a: int` is
+/// the class object).
+fn annotation_source_text(expr: &ap_ir::Expr) -> String {
+    if let ap_ir::Expr::LitStr(inner) = expr {
+        // LitStr: record repr(inner) so eval(source) yields the STRING
+        // (CPython VALUE format for b: "str" is 'str'); bare source evals
+        // resolve through globals (a: int -> the class).
+        return format!("{:?}", inner);
+    }
+    ap_ir::dump_expr_inline(expr)
 }
 
 /// User-protocol repr/str. `which`: "__repr__" or "__str__".
@@ -13922,7 +14026,7 @@ fn attr_get(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 // "'function' object is not iterable" (scrapy gate blocker).
                 | "__closure__" | "__code__" | "__defaults__" | "__kwdefaults__"
                 | "__globals__" | "__module__" | "__qualname__" | "__annotations__"
-                | "__wrapped__" | "__self__" | "__func__"
+                | "__wrapped__" | "__self__" | "__func__" | "__text_signature__"
                 // 02.08 (s031/s016): getattr(x, "__isabstractmethod__",
                 // False) must fall to the DEFAULT for non-abstract values —
                 // Mapping.__reversed__ = None (concrete!) was probed with
@@ -13977,6 +14081,29 @@ fn attr_get(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Option
     // 02.04a fix pass: function attribute reads (functools.wraps sets
     // __wrapped__/cache etc on the wrapper; vendored stdlib reads them back).
     if let Value::Obj(o) = obj {
+        // 02.08f (s020): BuiltinFn (marker) fns — __text_signature__ for
+        // inspect.signature(abs) etc.
+        if o.kind == ap_obj::ObjKind::BuiltinFn && name == "__text_signature__" {
+            let sig = match o.name.as_str() {
+                "abs" => Some("(x, /)"),
+                "all" => Some("(iterable, /)"),
+                "any" => Some("(iterable, /)"),
+                "len" => Some("(obj, /)"),
+                "repr" => Some("(obj, /)"),
+                "hex" => Some("(number, /)"),
+                "oct" => Some("(number, /)"),
+                "bin" => Some("(number, /)"),
+                "ascii" => Some("(obj, /)"),
+                "hash" => Some("(obj, /)"),
+                "iter" => Some("(iterable, /)"),
+                "sum" => Some("(iterable, /, start=0)"),
+                _ => None,
+            };
+            if let Some(t) = sig {
+                return Ok(Some(Value::Str(PyString::new(t))));
+            }
+            return Ok(Some(Value::None));
+        }
         if o.kind == ap_obj::ObjKind::Function {
             if let Some(v) = o
                 .attrs
@@ -13996,6 +14123,29 @@ fn attr_get(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Option
             // marker fns — empty tuple / None (no bound defaults).
             if name == "__defaults__" {
                 return Ok(Some(Value::Tuple(Gc::new(Tuple(Vec::new())))));
+            }
+            // 02.08f (s020): inspect.signature(abs) -> "(x, /)" — CPython
+            // builtins carry __text_signature__; serve the well-known ones.
+            if name == "__text_signature__" {
+                let sig = match o.name.as_str() {
+                    "abs" => Some("(x, /)"),
+                    "all" => Some("(iterable, /)"),
+                    "any" => Some("(iterable, /)"),
+                    "len" => Some("(obj, /)"),
+                    "repr" => Some("(obj, /)"),
+                    "hex" => Some("(number, /)"),
+                    "oct" => Some("(number, /)"),
+                    "bin" => Some("(number, /)"),
+                    "ascii" => Some("(obj, /)"),
+                    "hash" => Some("(obj, /)"),
+                    "iter" => Some("(iterable, /)"),
+                    "sum" => Some("(iterable, /, start=0)"),
+                    _ => None,
+                };
+                if let Some(t) = sig {
+                    return Ok(Some(Value::Str(PyString::new(t))));
+                }
+                return Ok(Some(Value::None));
             }
             if name == "__kwdefaults__" {
                 return Ok(Some(Value::None));

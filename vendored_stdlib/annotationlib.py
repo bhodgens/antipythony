@@ -119,6 +119,41 @@ def get_annotations(obj, *, globals=None, locals=None, eval_str=False,
         except Exception:
             own = None
         if own is not None:
+            # 02.08f (s020): resolve single-name SOURCE strings through the
+            # function's __globals__ (inspect.signature parity).
+            if own:
+                glo = None
+                try:
+                    glo = getattr(obj, "__globals__", None)
+                except Exception:
+                    glo = None
+                if glo is not None:
+                    out = {}
+                    changed = False
+                    for k, v in own.items():
+                        nv = v
+                        if isinstance(v, str) and len(v) >= 2 and v[0] == v[-1] and v[0] in "'\"":
+                            # recorder: LitStr anns recorded as repr(inner)
+                            # ("'str'"), unquoted anns as bare source ('int').
+                            nv = v[1:-1]
+                            changed = True
+                            if eval_str:
+                                # eval_str=True: string-form annotations eval
+                                # (CPython: b: "str" + eval_str -> class str)
+                                try:
+                                    nv = eval(nv, dict(glo))
+                                except Exception:
+                                    pass
+                        elif isinstance(v, str):
+                            # bare source: eval through globals
+                            try:
+                                nv = eval(v, dict(glo))
+                                changed = True
+                            except Exception:
+                                pass
+                        out[k] = nv
+                    if changed:
+                        return out
             return own
         if isinstance(obj, type):
             # s025 (PEP 649/749): a class may carry its annotations in
@@ -154,6 +189,28 @@ def get_annotations(obj, *, globals=None, locals=None, eval_str=False,
     anns = getattr(obj, "__annotations__", None)
     if anns is None:
         return {}
+    # 02.08f (s020): the recorded annotations are dump_expr_inline SOURCE
+    # strings ('int' WITH quotes for ). VALUE format + plain names:
+    # resolve each single-name string through the object's globals so
+    # inspect.signature renders 'a: int' not (a: 'int'). Unquoted-string
+    # annotations (b: "str") keep their inner text after the literal strip.
+    if anns and isinstance(obj, dict) is False:
+        glo = None
+        try:
+            glo = getattr(obj, "__globals__", None)
+        except Exception:
+            glo = None
+        if glo is not None:
+            out = {}
+            changed = False
+            for k, v in anns.items():
+                nv = v
+                if isinstance(v, str) and len(v) >= 2 and v[0] == v[-1] and v[0] in "'\"":
+                    nv = v[1:-1]
+                    changed = True
+                out[k] = nv
+            if changed:
+                return out
     return anns
 
 

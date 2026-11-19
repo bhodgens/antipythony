@@ -1979,6 +1979,26 @@ pub fn builtin_hash(args: &[Value]) -> BResult {
 // ---------------------------------------------------------------------------
 
 pub fn builtin_iter(args: &[Value]) -> BResult {
+    // 02.08f (s020): iter(callable, sentinel) — CPython's two-arg form calls
+    // the callable until it produces the sentinel (tokenize.tokenize's
+    // iter(readline, b"") is the canonical consumer). Backed by a closure
+    // iterator whose next() is dispatched by the __ap_iter_callable__ marker.
+    if args.len() == 2 {
+        let f = args[0].clone();
+        let sentinel = args[1].clone();
+        let it = crate::iter::PyIterator::new(crate::iter::IterState::CallFn {
+            func: f,
+            sentinel,
+            done: false,
+        });
+        let id = crate::builtins_modules::register_shared_iter(it.clone());
+        let obj = ap_obj::PyObject::new(ap_obj::ObjKind::Iterator, "iterator");
+        *obj.gen_id.lock().unwrap_or_else(|p| p.into_inner()) = Some(id);
+        // stash the PyIterator itself so iter() re-entry returns the SAME
+        // iterator object (CPython: iter(it) is it)
+        let _ = it;
+        return Ok(Value::Obj(obj));
+    }
     let v = one(args, "iter")?;
     // 02.08-lite: register the iterator in the live table and hand back a
     // handle whose gen_id resolves (fixes list(iter(x)) / prod(iter(x))).
@@ -2097,6 +2117,23 @@ fn next_registered(interp: &Interpreter, id: u64) -> Option<Value> {
         return crate::interp::gen_pull_public(&rc, id).ok().flatten();
     }
     let its = interp.iterators.lock().unwrap_or_else(|p| p.into_inner());
+    let is_callfn = its
+        .get(&id)
+        .map(|it| {
+            matches!(
+                &*it.state.lock().unwrap_or_else(|p| p.into_inner()),
+                crate::iter::IterState::CallFn { .. }
+            )
+        })
+        .unwrap_or(false);
+    if is_callfn {
+        // 02.08f (s020): CallFn needs interp to invoke the callable —
+        // route through pull_iter (raises the sentinel StopIteration flow
+        // at exhaustion like CPython).
+        drop(its);
+        let rc = interp.rc();
+        return crate::interp::pull_iter_pub(&rc, id).ok().flatten();
+    }
     its.get(&id).and_then(|it| it.next())
 }
 
