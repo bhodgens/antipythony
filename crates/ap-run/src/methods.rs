@@ -551,6 +551,27 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
                 // UserClass without an explicit __getitem__ metaclass hook:
                 // the subscription result only needs to EXIST and be inert.
                 let g = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "typing._GenericAlias");
+                // 02.08f (s026): get_origin/get_args read __origin__/__args__
+                // — park them as REAL attrs (origin class + params tuple).
+                {
+                    let params = match &key {
+                        Value::Tuple(tp) => tp.0.clone(),
+                        one => vec![key.clone()],
+                    };
+                    let mut at = g.attrs.lock().unwrap_or_else(|p| p.into_inner());
+                    let _ = at.set(Value::Str(ap_obj::PyString::new("__origin__")), obj.clone());
+                    // 02.08f (s026): typing.get_origin probes
+                    // isinstance(tp, _BaseGenericAlias) — our placeholder is
+                    // an Opaque, so park the marker name via __class__.
+                    let _ = at.set(
+                        Value::Str(ap_obj::PyString::new("__class__")),
+                        Value::Str(ap_obj::PyString::new("_GenericAlias")),
+                    );
+                    let _ = at.set(
+                        Value::Str(ap_obj::PyString::new("__args__")),
+                        Value::Tuple(Gc::new(ap_obj::value::Tuple(params))),
+                    );
+                }
                 *g.slice_parts.lock().unwrap_or_else(|p| p.into_inner()) =
                     vec![obj.clone(), key.clone()];
                 return Ok(Value::Obj(g));
@@ -583,6 +604,42 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
         (Value::Obj(o), _k) if o.kind == ap_obj::ObjKind::BuiltinFn => {
             // T1 (scrapy fix pass): subscripting a builtin marker fn (PEP 560
             // __class_getitem__-style usage) - opaque alias placeholder.
+            // 02.08f (s026 repr): the Union marker special-cases to the same
+            // _Union value eval_binop::make_union builds — CPython's
+            // Union[int, str] repr is `int | str` and __args__ carries the
+            // normalized arms; the old inert placeholder repr'd as
+            // <typing._GenericAlias object at 0x..> (s026 line 18 divergence).
+            if o.name == "Union" || o.name == "_typing.Union" {
+                let parts = match &k {
+                    Key::Other(Value::Tuple(t)) => t.0.clone(),
+                    _ => vec![key.clone()],
+                };
+                // Flatten nested unions ((X|Y)|Z -> [X, Y, Z]), CPython
+                // Union-constructor semantics.
+                let mut arms: Vec<Value> = Vec::new();
+                for v in parts {
+                    if let Value::Obj(vo) = &v {
+                        if (vo.kind == ap_obj::ObjKind::Opaque && vo.name == "__union__")
+                            || (vo.kind == ap_obj::ObjKind::Namespace && vo.name == "_Union")
+                        {
+                            arms.extend(
+                                vo.slice_parts
+                                    .lock()
+                                    .unwrap_or_else(|p| p.into_inner())
+                                    .iter()
+                                    .cloned(),
+                            );
+                            continue;
+                        }
+                    }
+                    arms.push(v);
+                }
+                return Ok(crate::interp::make_union_pub(
+                    ap_obj::ObjKind::Namespace,
+                    "_Union",
+                    arms,
+                ));
+            }
             let g = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "typing._GenericAlias");
             *g.slice_parts.lock().unwrap_or_else(|p| p.into_inner()) =
                 vec![obj.clone(), key.clone()];

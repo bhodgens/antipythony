@@ -705,6 +705,11 @@ pub fn import_module_inner(interp: &Arc<Interpreter>, name: &str) -> EResult {
         // don't sort dicts, break width, or detect recursion; the vendored
         // module implements the pinned semantics.
         | "pprint" | "reprlib"
+        // 02.08f (s026): typing — the vendored module defines the FULL
+        // surface (Any via _AnyMeta with __repr__, Union as a real
+        // _SpecialForm with __or__/__getitem__, get_origin/get_args probing
+        // isinstance(tp, Union)); the native stub's fn-markers diverge.
+        | "typing"
     ) {
         if let Some(m) = builtins_modules::get_or_make_module(interp, name) {
             augment_with_vendored(interp, name, &m);
@@ -1837,6 +1842,16 @@ fn typing_stub_module(interp: &crate::frame::Interpreter) -> Value {
                 Some(format!("<class 'typing.{n}'>"));
         }
         let _ = ns.set(s(n), mv);
+    }
+    // 02.08f (s026): typing.Any is a _SpecialForm — str()/repr() render
+    // as  (CPython _SpecialForm.__repr__ = 'typing.' + _name).
+    {
+        let any = marker_fn("_typing.Any");
+        if let Value::Obj(mo) = &any {
+            *mo.repr_text.lock().unwrap_or_else(|p| p.into_inner()) =
+                Some("typing.Any".to_string());
+        }
+        let _ = ns.set(s("Any"), any);
     }
     // T1-d: _idfunc is the identity function — typing.NewType.__call__
     // delegates to it, so NewType handles (twisted _SystemEventID tuples)

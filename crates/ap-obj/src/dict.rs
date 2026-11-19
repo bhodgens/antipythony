@@ -609,6 +609,24 @@ pub fn values_eq(a: &Value, b: &Value) -> bool {
         // Exception: weakref tokens compare BY TARGET (CPython: two refs to
         // the same object are ==; the WeakSet/WKD data model relies on it).
         (Value::Obj(x), Value::Obj(y)) => {
+            // 02.08f (s026): union markers compare structurally by ARMS —
+            // CPython: Union[int, str] == Union[int, str] is True (same
+            // arms, order-sensitive), regardless of marker identity.
+            let x_is_union = (x.kind == crate::object::ObjKind::Namespace && x.name == "_Union")
+                || (x.kind == crate::object::ObjKind::Opaque && x.name == "__union__");
+            let y_is_union = (y.kind == crate::object::ObjKind::Namespace && y.name == "_Union")
+                || (y.kind == crate::object::ObjKind::Opaque && y.name == "__union__");
+            if x_is_union && y_is_union {
+                let xs = x.slice_parts.lock().unwrap_or_else(|p| p.into_inner()).clone();
+                let ys = y.slice_parts.lock().unwrap_or_else(|p| p.into_inner()).clone();
+                return xs.len() == ys.len() && xs.iter().zip(ys.iter()).all(|(a, b)| {
+                    match (a, b) {
+                        (Value::None, Value::Obj(no)) if no.kind == crate::object::ObjKind::Type && no.name == "NoneType" => true,
+                        (Value::Obj(no), Value::None) if no.kind == crate::object::ObjKind::Type && no.name == "NoneType" => true,
+                        (a, b) => values_eq(a, b),
+                    }
+                });
+            }
             // A-4 item 1: two bytearrays compare by buffer content.
             // W111: int-payload instances (IntEnum members) compare by
             // PAYLOAD — HTTPStatus.OK == HTTPStatus.OK (same value).

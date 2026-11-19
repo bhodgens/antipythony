@@ -63,7 +63,13 @@ class ForwardRef:
             import builtins as _b
             g["__builtins__"] = _b
         l = dict(locals) if locals else {}
-        val = eval(self.__forward_arg__, g, l)
+        # 02.08f (s026): the recorded annotation is dump_expr_inline SOURCE
+        # ('int' WITH quotes for a quoted "int" annotation) — strip one
+        # layer of string-literal quoting before eval so h("int") resolves.
+        arg = self.__forward_arg__
+        if isinstance(arg, str) and len(arg) >= 2 and arg[0] == arg[-1] and arg[0] in "'\"":
+            arg = arg[1:-1]
+        val = eval(arg, g, l)
         if isinstance(val, str):
             # unresolved string stays a ForwardRef under FORWARDREF format
             return self
@@ -165,6 +171,19 @@ def get_annotate_from_class_namespace(ns, *, owner=None):
 
 def call_annotate_function(annotate, format, *, owner=None,
                            globals=None, locals=None):
+    # 02.08f (s026): the object-virtual __annotate__ MARKER answers None
+    # (no annotations on object) — short-circuit instead of calling it
+    # (the marker name is not a callable in module scope).
+    if annotate is not None and getattr(annotate, '__class__', None) is not None:
+        cls = getattr(annotate, '__class__', None)
+        if getattr(cls, '__name__', '') == 'function' and getattr(annotate, '__module__', '') == 'builtins':
+            pass
+    try:
+        nm = repr(annotate)
+    except Exception:
+        nm = ''
+    if '__object_virtual___annotate____' in nm or 'object_virtual' in nm:
+        return {}
     return annotate()
 
 

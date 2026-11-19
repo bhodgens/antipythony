@@ -49,6 +49,30 @@ pub fn py_str_of(v: &Value) -> Result<String, ap_obj::exc::PyException> {
                 }
             }
         }
+        // 02.08f (s026): a UserClass VALUE with a class-dict __str__/__repr__
+        // (typing.Any's Any.__repr__ = _any_repr) must dispatch (CPython:
+        // str(cls) -> type(cls).__str__ which falls back to cls.__repr__).
+        if matches!(
+            v,
+            Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass
+        ) {
+            if let Some((f, _)) = crate::classes::special_lookup(&interp, v, "__str__") {
+                let args = [v.clone()];
+                if let Ok(r) = crate::interp::call_value_pub(&interp, &f, &args, &[]) {
+                    if let Value::Str(sv) = r {
+                        return Ok(sv.as_str().to_string());
+                    }
+                }
+            }
+            if let Some((f, _)) = crate::classes::special_lookup(&interp, v, "__repr__") {
+                let args = [v.clone()];
+                if let Ok(r) = crate::interp::call_value_pub(&interp, &f, &args, &[]) {
+                    if let Value::Str(sv) = r {
+                        return Ok(sv.as_str().to_string());
+                    }
+                }
+            }
+        }
         if matches!(
             v,
             Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance
@@ -581,6 +605,17 @@ pub fn builtin_repr(args: &[Value]) -> BResult {
             // present (its body answers "<enum %r>" % cls.__name__), else
             // fall back to the default class repr.
             if let Some(interp) = crate::builtins_modules::current_interp() {
+                // 02.08f (s026): a class-dict EXPLICIT __repr__ (typing.Any's
+                // Any.__repr__ = _any_repr) wins before any metaclass path —
+                // special_lookup now honors dict-assigned dunders.
+                if let Some((f, _)) = crate::classes::special_lookup(&interp, v, "__repr__") {
+                    let args = [v.clone()];
+                    if let Ok(r) = crate::interp::call_value_pub(&interp, &f, &args, &[]) {
+                        if let Value::Str(s) = r {
+                            return Ok(Value::Str(s));
+                        }
+                    }
+                }
                 // 02.08 (s024): metaclass __repr__ (EnumType.__repr__ →
                 // "<enum 'SC'>") — CPython repr(cls) == type(cls).__repr__(cls).
                 // Read the enum module from sys.modules (works whether enum
