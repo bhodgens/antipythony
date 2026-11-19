@@ -23,7 +23,15 @@ fn dump_corpus_wasm() {
     let out_dir = root.join("logs/wasm-corpus");
     std::fs::create_dir_all(&out_dir).expect("mkdir logs/wasm-corpus");
 
-    let fams = ["controlflow_wasm", "classes_wasm", "exceptions_wasm"];
+    // Leaf 03.06: generators_wasm + match_wasm families appended (03.04
+    // closed their lowering — 41 pinned cases total dump through here).
+    let fams = [
+        "controlflow_wasm",
+        "classes_wasm",
+        "exceptions_wasm",
+        "generators_wasm",
+        "match_wasm",
+    ];
     let mut dumped = 0usize;
     for fam in fams {
         let dir = root.join("tests/corpus").join(fam);

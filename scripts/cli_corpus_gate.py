@@ -56,6 +56,10 @@ def main() -> int:
             fam = "classes_wasm"
         elif stem.startswith("EXW"):
             fam = "exceptions_wasm"
+        elif stem.startswith("GE"):
+            fam = "generators_wasm"
+        elif stem.startswith("MA"):
+            fam = "match_wasm"
         else:
             fam = None  # drain probes: no pins here (covered by cargo gates)
 
