@@ -1,0 +1,1005 @@
+{
+ "leaf": "03.07",
+ "amendment": "A-3 flip: byte-exactness is a HARD requirement for every case that lowers",
+ "wasm_corpus": {
+  "pinned": 41,
+  "probes": 10
+ },
+ "cpython_reference": {
+  "version": "3.14.7",
+  "path": "/opt/homebrew/bin/python3.14"
+ },
+ "summary": {
+  "byte-exact": 51
+ },
+ "cases": [
+  {
+   "case": "CF001-while-count-sum",
+   "family": "controlflow_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "CF002-while-continue-odds",
+   "family": "controlflow_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "CF003-while-break-skips-else",
+   "family": "controlflow_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "CF004-while-else-runs-on-normal-exit",
+   "family": "controlflow_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "CF005-while-mod-sign-table",
+   "family": "controlflow_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "CF006-if-elif-else-first-true",
+   "family": "controlflow_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "CF007-if-truthiness-table",
+   "family": "controlflow_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "CF008-and-or-values",
+   "family": "controlflow_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "CF009-ifexp-lazy",
+   "family": "controlflow_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "CF010-call-static-arity",
+   "family": "controlflow_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "CF011-call-defaults",
+   "family": "controlflow_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "CF012-call-dynamic-name",
+   "family": "controlflow_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "CF013-recursion",
+   "family": "controlflow_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "CF014-closure-counter",
+   "family": "controlflow_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "CF015-closure-late-binding-loop",
+   "family": "controlflow_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "CF016-closure-factory-independent",
+   "family": "controlflow_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "CF017-lambda-values",
+   "family": "controlflow_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "CF018-nonlocal-shared-cell",
+   "family": "controlflow_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "CLW001-init-attr-store",
+   "family": "classes_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "CLW002-init-multi-attr",
+   "family": "classes_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "CLW003-inherit-attr-lookup",
+   "family": "classes_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "CLW004-class-attr-and-method",
+   "family": "classes_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "CLW005-custom-exc-class",
+   "family": "classes_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "CLW006-init-zero-arg",
+   "family": "classes_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "CLW007-attr-update-in-method",
+   "family": "classes_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "CLW008-isinstance-subclass",
+   "family": "classes_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "EXW001-raise-catch-args",
+   "family": "exceptions_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "EXW002-else-runs-on-clean",
+   "family": "exceptions_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "EXW003-except-order-matches-first",
+   "family": "exceptions_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "EXW004-nested-try-inner-catches",
+   "family": "exceptions_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "EXW005-raise-rebind-exc",
+   "family": "exceptions_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "EXW006-hierarchy-match-subsumes",
+   "family": "exceptions_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "EXW007-user-exc-hierarchy",
+   "family": "exceptions_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "EXW008-else-skipped-on-raise",
+   "family": "exceptions_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "EXW009-super-validation",
+   "family": "exceptions_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "GE001-yield-next-exhaust",
+   "family": "generators_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "GE002-send-values",
+   "family": "generators_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "GE003-throw-close",
+   "family": "generators_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "GE004-yield-from",
+   "family": "generators_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "GE005-comprehensions-genexp",
+   "family": "generators_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "MA001-patterns-slice",
+   "family": "match_wasm",
+   "verdict": "byte-exact",
+   "native_byte_exact": true,
+   "wasm_byte_exact": true,
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "pin_rc": 0,
+   "cpython_live_matches_pin": true
+  },
+  {
+   "case": "hello",
+   "family": "probes",
+   "verdict": "byte-exact",
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "cpython_rc": 0
+  },
+  {
+   "case": "for-range",
+   "family": "probes",
+   "verdict": "byte-exact",
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "cpython_rc": 0
+  },
+  {
+   "case": "for-list",
+   "family": "probes",
+   "verdict": "byte-exact",
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "cpython_rc": 0
+  },
+  {
+   "case": "for-tuple-else",
+   "family": "probes",
+   "verdict": "byte-exact",
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "cpython_rc": 0
+  },
+  {
+   "case": "for-range-sum",
+   "family": "probes",
+   "verdict": "byte-exact",
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "cpython_rc": 0
+  },
+  {
+   "case": "for-break",
+   "family": "probes",
+   "verdict": "byte-exact",
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "cpython_rc": 0
+  },
+  {
+   "case": "drain-list-lit",
+   "family": "probes",
+   "verdict": "byte-exact",
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "cpython_rc": 0
+  },
+  {
+   "case": "drain-tuple-lit",
+   "family": "probes",
+   "verdict": "byte-exact",
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "cpython_rc": 0
+  },
+  {
+   "case": "sum-min",
+   "family": "probes",
+   "verdict": "byte-exact",
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "cpython_rc": 0
+  },
+  {
+   "case": "drain-gen-lit",
+   "family": "probes",
+   "verdict": "byte-exact",
+   "native_rc": 0,
+   "wasm_rc": 0,
+   "cpython_rc": 0
+  }
+ ],
+ "extended_lowering_corpus": {
+  "note": "every case the wasm scan accepts to LOWER (not_lowered.json LOWERS rows), run native vs CPython 3.14.7 live; wasm leg exists only for the 41 pinned cases (see cases[])",
+  "total": 53,
+  "native_ok": 50,
+  "not_exact": [
+   {
+    "case": "c018_slots_dict_member",
+    "family": "classes",
+    "native_byte_exact_vs_pin": false,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": false,
+    "native_rc": 0
+   },
+   {
+    "case": "c032_metaclass_resolution",
+    "family": "classes",
+    "native_byte_exact_vs_pin": false,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": false,
+    "native_rc": 0
+   },
+   {
+    "case": "t1_007_promotion_then_typeerror",
+    "family": "tier1-transparency",
+    "native_byte_exact_vs_pin": false,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": false,
+    "native_rc": 0
+   }
+  ],
+  "rows": [
+   {
+    "case": "V001-bigint-exactness",
+    "family": "values",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "V002-power-rules",
+    "family": "values",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "V003-floordiv-mod-signs",
+    "family": "values",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "V004-divmod-mixed",
+    "family": "values",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "V005-true-division",
+    "family": "values",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "V006-float-ieee-overflow",
+    "family": "values",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "V007-int-float-promotion",
+    "family": "values",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "V008-bool-is-int",
+    "family": "values",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "V010-round-bankers",
+    "family": "values",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "V011-int-string-parsing",
+    "family": "values",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "V041-dict-equality-order-free",
+    "family": "values",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "V042-dict-collision-keys",
+    "family": "values",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "V048-bool-protocol",
+    "family": "values",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "V049-and-or-operands",
+    "family": "values",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "V050-not-bool",
+    "family": "values",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "V051-eq-vs-identity",
+    "family": "values",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "V052-cross-type-numeric-eq",
+    "family": "values",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "V054-chained-comparisons",
+    "family": "values",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "V055-hash-eq-invariant",
+    "family": "values",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "V057-hash-float-contract",
+    "family": "values",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "V061-float-repr-shortest",
+    "family": "values",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "c003_new_init_order",
+    "family": "classes",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "c004_new_returns_subclass_instance",
+    "family": "classes",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "c005_newinit_arity",
+    "family": "classes",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "c006_init_return_nonnone",
+    "family": "classes",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "c007_call_non_type",
+    "family": "classes",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "c010_getattr_fallback",
+    "family": "classes",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "c014_class_lookup_metaclass",
+    "family": "classes",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "c015_type_slots_priority",
+    "family": "classes",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "c017_slots_creation_errors",
+    "family": "classes",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "c018_slots_dict_member",
+    "family": "classes",
+    "native_byte_exact_vs_pin": false,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": false,
+    "native_rc": 0
+   },
+   {
+    "case": "c021_super_validation",
+    "family": "classes",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "c025_dunder_bypass_instance_dict",
+    "family": "classes",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "c026_special_missing_fallbacks",
+    "family": "classes",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "c028_eq_negation_identity",
+    "family": "classes",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "c032_metaclass_resolution",
+    "family": "classes",
+    "native_byte_exact_vs_pin": false,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": false,
+    "native_rc": 0
+   },
+   {
+    "case": "c033_isinstance_issubclass",
+    "family": "classes",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "e001_raise_requires_baseexception",
+    "family": "exceptions",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "e003_except_target_validation",
+    "family": "exceptions",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "e004_nested_tuple_rejected",
+    "family": "exceptions",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "e006_except_is_isinstance",
+    "family": "exceptions",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "e007_raise_bare_class",
+    "family": "exceptions",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "e009_warning_subtree",
+    "family": "exceptions",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "e010_builtin_exc_class_shape",
+    "family": "exceptions",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "e011_except_target_nonclass",
+    "family": "exceptions",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "e015_exception_class_shape",
+    "family": "exceptions",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "t1_001_hot_int_loop_osr",
+    "family": "tier1-transparency",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "t1_005_generator_send_types",
+    "family": "tier1-transparency",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "t1_007_promotion_then_typeerror",
+    "family": "tier1-transparency",
+    "native_byte_exact_vs_pin": false,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": false,
+    "native_rc": 0
+   },
+   {
+    "case": "t1_011_hot_instantiation",
+    "family": "tier1-transparency",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "t1_014_exceptions_in_hot_loop",
+    "family": "tier1-transparency",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "t1_016_deep_call_chain_500",
+    "family": "tier1-transparency",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   },
+   {
+    "case": "t1_017_thrash_backoff_disable",
+    "family": "tier1-transparency",
+    "native_byte_exact_vs_pin": true,
+    "cpython_live_matches_pin": true,
+    "native_vs_cpython_live": true,
+    "native_rc": 0
+   }
+  ]
+ }
+}

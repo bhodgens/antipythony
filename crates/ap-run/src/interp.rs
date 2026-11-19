@@ -4115,7 +4115,22 @@ pub(crate) fn eval_expr(
         Expr::Named(target, value) => {
             let v = eval_expr(interp, frame, value, reg)?;
             if let Expr::Name(n) = &**target {
-                store_name(interp, frame, n, v.clone(), reg)?;
+                // 03.07 (GE005): a walrus binds in the nearest ENCLOSING
+                // non-comp scope (S-02-2 / CPython NamedExpr rule). Inside a
+                // comprehension the eval frame is the comp pseudo-frame —
+                // walk to its first non-comp ancestor for the store (module
+                // scope => global binding; CPython leaks the walrus name to
+                // the defining scope exactly this way).
+                let mut store_frame = frame.clone();
+                while store_frame.is_comp {
+                    match &store_frame.parent {
+                        Some(p) => store_frame = p.clone(),
+                        // Degenerate: a comp frame with no parent — store
+                        // here rather than misplace the value.
+                        None => break,
+                    }
+                }
+                store_name(interp, &store_frame, n, v.clone(), reg)?;
             }
             Ok(v)
         }

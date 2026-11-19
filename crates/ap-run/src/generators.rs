@@ -416,16 +416,14 @@ pub fn resume_live(
             .insert(id, crate::interp::GenFrame::Live(live));
         return match input {
             GenInput::Throw(e) => {
-                // throw() on an exhausted/closed generator: StopIteration
-                // (CPython), not the thrown object.
-                if e.class == "StopIteration" || e.class == "GeneratorExit" {
-                    Err(Flow::Raise(e))
-                } else {
-                    Err(Flow::Raise(crate::exc_hier::ExceptionValue::msg(
-                        "StopIteration",
-                        "",
-                    )))
-                }
+                // 03.07 (GE003) CPython 3.14 parity: throw() on a FINISHED
+                // generator (exhausted / closed-before-start / thrown-at)
+                // re-raises the thrown exception AT THE CALL SITE — the same
+                // answer the absent-entry arm gives for the exhausted G8
+                // path. The old empty-StopIteration rewrite diverged from
+                // CPython (probe: `g = pre(); g.close(); g.throw(ValueError
+                // ('x'))` raises the ValueError in 3.14, not StopIteration).
+                Err(Flow::Raise(e))
             }
             _ => Ok(None),
         };

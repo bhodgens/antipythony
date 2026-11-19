@@ -1,0 +1,1269 @@
+{
+ "leaf": "03.07",
+ "note": "Lowering-stage-only sweep; LOWER-PANIC rows are 03.07 blocker class (emitter unreachable on scan-vet gaps); NOT-LOWDERED rows are fail-closed Unsupported rejections (NOT failures)",
+ "totals": {
+  "LOWERS": 53,
+  "NOT-LOWDERED": 146,
+  "LOWER-PANIC": 11
+ },
+ "by_family": {
+  "values": {
+   "LOWERS": 21,
+   "NOT-LOWDERED": 24,
+   "LOWER-PANIC": 2
+  },
+  "classes": {
+   "LOWER-PANIC": 6,
+   "NOT-LOWDERED": 11,
+   "LOWERS": 16
+  },
+  "exceptions": {
+   "LOWERS": 9,
+   "NOT-LOWDERED": 5,
+   "LOWER-PANIC": 1
+  },
+  "controlflow": {
+   "LOWER-PANIC": 1
+  },
+  "gc": {
+   "NOT-LOWDERED": 20
+  },
+  "threading": {
+   "NOT-LOWDERED": 18
+  },
+  "codecs_cjk": {
+   "NOT-LOWDERED": 10
+  },
+  "tier1-transparency": {
+   "LOWERS": 7,
+   "NOT-LOWDERED": 9,
+   "LOWER-PANIC": 1
+  },
+  "tier1-risk4": {
+   "NOT-LOWDERED": 1
+  },
+  "stdlib": {
+   "NOT-LOWDERED": 48
+  }
+ },
+ "unsupported_reason_histogram": {
+  "import (Plan 03 stdlib surface)": 99,
+  "Expr (03.02c slice)": 18,
+  "unpacking/subscript/attr assign target (post-03.03)": 9,
+  "bytes literal (03.03 surface)": 6,
+  "decorated def (post-03.03)": 6,
+  "Stmt::Del (post-03.03)": 2,
+  "name beyond the 03.03 slice (super/NotImplemented)": 2,
+  "def parameter kinds beyond positional (post-03.03)": 2,
+  "call arg kinds beyond positional (03.03)": 2
+ },
+ "cases": [
+  {
+   "family": "values",
+   "case": "V001-bigint-exactness.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "values",
+   "case": "V002-power-rules.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "values",
+   "case": "V003-floordiv-mod-signs.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "values",
+   "case": "V004-divmod-mixed.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "values",
+   "case": "V005-true-division.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "values",
+   "case": "V006-float-ieee-overflow.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "values",
+   "case": "V007-int-float-promotion.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "values",
+   "case": "V008-bool-is-int.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "values",
+   "case": "V009-float-to-int-errors.py",
+   "status": "NOT-LOWDERED",
+   "reason": "Expr (03.02c slice)"
+  },
+  {
+   "family": "values",
+   "case": "V010-round-bankers.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "values",
+   "case": "V011-int-string-parsing.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "values",
+   "case": "V012-str-codepoints-errors.py",
+   "status": "NOT-LOWDERED",
+   "reason": "unpacking/subscript/attr assign target (post-03.03)"
+  },
+  {
+   "family": "values",
+   "case": "V013-slice-algorithm.py",
+   "status": "NOT-LOWDERED",
+   "reason": "Expr (03.02c slice)"
+  },
+  {
+   "family": "values",
+   "case": "V014-fstring-formats.py",
+   "status": "NOT-LOWDERED",
+   "reason": "Expr (03.02c slice)"
+  },
+  {
+   "family": "values",
+   "case": "V015-str-bytes-separation.py",
+   "status": "NOT-LOWDERED",
+   "reason": "bytes literal (03.03 surface)"
+  },
+  {
+   "family": "values",
+   "case": "V016-encode-decode-errors.py",
+   "status": "NOT-LOWDERED",
+   "reason": "bytes literal (03.03 surface)"
+  },
+  {
+   "family": "values",
+   "case": "V017-list-aliasing-mutation.py",
+   "status": "NOT-LOWDERED",
+   "reason": "Stmt::Del (post-03.03)"
+  },
+  {
+   "family": "values",
+   "case": "V019-tuple-shapes.py",
+   "status": "NOT-LOWDERED",
+   "reason": "unpacking/subscript/attr assign target (post-03.03)"
+  },
+  {
+   "family": "values",
+   "case": "V040-dict-insertion-order.py",
+   "status": "NOT-LOWDERED",
+   "reason": "unpacking/subscript/attr assign target (post-03.03)"
+  },
+  {
+   "family": "values",
+   "case": "V041-dict-equality-order-free.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "values",
+   "case": "V042-dict-collision-keys.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "values",
+   "case": "V043-dict-key-errors.py",
+   "status": "LOWER-PANIC",
+   "reason": "(emitter unreachable \u2014 03.07 blocker class)"
+  },
+  {
+   "family": "values",
+   "case": "V044-set-ops-unordered.py",
+   "status": "NOT-LOWDERED",
+   "reason": "Expr (03.02c slice)"
+  },
+  {
+   "family": "values",
+   "case": "V045-frozenset-hashable.py",
+   "status": "NOT-LOWDERED",
+   "reason": "Expr (03.02c slice)"
+  },
+  {
+   "family": "values",
+   "case": "V046-set-element-error.py",
+   "status": "NOT-LOWDERED",
+   "reason": "Expr (03.02c slice)"
+  },
+  {
+   "family": "values",
+   "case": "V047-truthiness-table.py",
+   "status": "NOT-LOWDERED",
+   "reason": "bytes literal (03.03 surface)"
+  },
+  {
+   "family": "values",
+   "case": "V048-bool-protocol.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "values",
+   "case": "V049-and-or-operands.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "values",
+   "case": "V050-not-bool.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "values",
+   "case": "V051-eq-vs-identity.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "values",
+   "case": "V052-cross-type-numeric-eq.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "values",
+   "case": "V053-nan-equality-containment.py",
+   "status": "NOT-LOWDERED",
+   "reason": "Expr (03.02c slice)"
+  },
+  {
+   "family": "values",
+   "case": "V054-chained-comparisons.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "values",
+   "case": "V055-hash-eq-invariant.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "values",
+   "case": "V056-hash-int-contract.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "values",
+   "case": "V057-hash-float-contract.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "values",
+   "case": "V058-salted-hash-masked.py",
+   "status": "NOT-LOWDERED",
+   "reason": "bytes literal (03.03 surface)"
+  },
+  {
+   "family": "values",
+   "case": "V059-hashable-types.py",
+   "status": "NOT-LOWDERED",
+   "reason": "bytes literal (03.03 surface)"
+  },
+  {
+   "family": "values",
+   "case": "V060-repr-int-decimal.py",
+   "status": "NOT-LOWDERED",
+   "reason": "Expr (03.02c slice)"
+  },
+  {
+   "family": "values",
+   "case": "V061-float-repr-shortest.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "values",
+   "case": "V062-str-equals-repr-and-float.py",
+   "status": "NOT-LOWDERED",
+   "reason": "Expr (03.02c slice)"
+  },
+  {
+   "family": "values",
+   "case": "V063-str-repr-quotes-escapes.py",
+   "status": "LOWER-PANIC",
+   "reason": "(emitter unreachable \u2014 03.07 blocker class)"
+  },
+  {
+   "family": "values",
+   "case": "V064-bytes-repr.py",
+   "status": "NOT-LOWDERED",
+   "reason": "bytes literal (03.03 surface)"
+  },
+  {
+   "family": "values",
+   "case": "V065-container-repr-cycle.py",
+   "status": "NOT-LOWDERED",
+   "reason": "unpacking/subscript/attr assign target (post-03.03)"
+  },
+  {
+   "family": "values",
+   "case": "V066-default-object-repr-masked.py",
+   "status": "NOT-LOWDERED",
+   "reason": "unpacking/subscript/attr assign target (post-03.03)"
+  },
+  {
+   "family": "values",
+   "case": "V067-int-str-digit-limit.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "values",
+   "case": "V068-float-format-specs.py",
+   "status": "NOT-LOWDERED",
+   "reason": "Expr (03.02c slice)"
+  },
+  {
+   "family": "classes",
+   "case": "c001_class_basics.py",
+   "status": "LOWER-PANIC",
+   "reason": "(emitter unreachable \u2014 03.07 blocker class)"
+  },
+  {
+   "family": "classes",
+   "case": "c002_class_dict_and_body.py",
+   "status": "NOT-LOWDERED",
+   "reason": "decorated def (post-03.03)"
+  },
+  {
+   "family": "classes",
+   "case": "c003_new_init_order.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "classes",
+   "case": "c004_new_returns_subclass_instance.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "classes",
+   "case": "c005_newinit_arity.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "classes",
+   "case": "c006_init_return_nonnone.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "classes",
+   "case": "c007_call_non_type.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "classes",
+   "case": "c008_data_descriptor_priority.py",
+   "status": "NOT-LOWDERED",
+   "reason": "decorated def (post-03.03)"
+  },
+  {
+   "family": "classes",
+   "case": "c009_nondata_shadowed.py",
+   "status": "LOWER-PANIC",
+   "reason": "(emitter unreachable \u2014 03.07 blocker class)"
+  },
+  {
+   "family": "classes",
+   "case": "c010_getattr_fallback.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "classes",
+   "case": "c011_property_setter.py",
+   "status": "NOT-LOWDERED",
+   "reason": "decorated def (post-03.03)"
+  },
+  {
+   "family": "classes",
+   "case": "c012_delete_rules.py",
+   "status": "NOT-LOWDERED",
+   "reason": "unpacking/subscript/attr assign target (post-03.03)"
+  },
+  {
+   "family": "classes",
+   "case": "c013_del_inherited.py",
+   "status": "NOT-LOWDERED",
+   "reason": "Stmt::Del (post-03.03)"
+  },
+  {
+   "family": "classes",
+   "case": "c014_class_lookup_metaclass.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "classes",
+   "case": "c015_type_slots_priority.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "classes",
+   "case": "c016_slots_messages.py",
+   "status": "LOWER-PANIC",
+   "reason": "(emitter unreachable \u2014 03.07 blocker class)"
+  },
+  {
+   "family": "classes",
+   "case": "c017_slots_creation_errors.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "classes",
+   "case": "c018_slots_dict_member.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "classes",
+   "case": "c019_mro_examples.py",
+   "status": "LOWER-PANIC",
+   "reason": "(emitter unreachable \u2014 03.07 blocker class)"
+  },
+  {
+   "family": "classes",
+   "case": "c020_mro_errors.py",
+   "status": "LOWER-PANIC",
+   "reason": "(emitter unreachable \u2014 03.07 blocker class)"
+  },
+  {
+   "family": "classes",
+   "case": "c021_super_validation.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "classes",
+   "case": "c022_super_diamond_chase.py",
+   "status": "LOWER-PANIC",
+   "reason": "(emitter unreachable \u2014 03.07 blocker class)"
+  },
+  {
+   "family": "classes",
+   "case": "c023_super_classmethod.py",
+   "status": "NOT-LOWDERED",
+   "reason": "decorated def (post-03.03)"
+  },
+  {
+   "family": "classes",
+   "case": "c024_descriptor_kinds.py",
+   "status": "NOT-LOWDERED",
+   "reason": "decorated def (post-03.03)"
+  },
+  {
+   "family": "classes",
+   "case": "c025_dunder_bypass_instance_dict.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "classes",
+   "case": "c026_special_missing_fallbacks.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "classes",
+   "case": "c027_binop_dispatch.py",
+   "status": "NOT-LOWDERED",
+   "reason": "name beyond the 03.03 slice (super/NotImplemented)"
+  },
+  {
+   "family": "classes",
+   "case": "c028_eq_negation_identity.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "classes",
+   "case": "c029_augmented_rebind.py",
+   "status": "NOT-LOWDERED",
+   "reason": "name beyond the 03.03 slice (super/NotImplemented)"
+  },
+  {
+   "family": "classes",
+   "case": "c030_unary_contains_metaclass_hooks.py",
+   "status": "NOT-LOWDERED",
+   "reason": "decorated def (post-03.03)"
+  },
+  {
+   "family": "classes",
+   "case": "c031_init_subclass_and_meta_call.py",
+   "status": "NOT-LOWDERED",
+   "reason": "def parameter kinds beyond positional (post-03.03)"
+  },
+  {
+   "family": "classes",
+   "case": "c032_metaclass_resolution.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "classes",
+   "case": "c033_isinstance_issubclass.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "exceptions",
+   "case": "e001_raise_requires_baseexception.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "exceptions",
+   "case": "e002_hierarchy_structure.py",
+   "status": "NOT-LOWDERED",
+   "reason": "call arg kinds beyond positional (03.03)"
+  },
+  {
+   "family": "exceptions",
+   "case": "e003_except_target_validation.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "exceptions",
+   "case": "e004_nested_tuple_rejected.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "exceptions",
+   "case": "e005_custom_hierarchy.py",
+   "status": "NOT-LOWDERED",
+   "reason": "Expr (03.02c slice)"
+  },
+  {
+   "family": "exceptions",
+   "case": "e006_except_is_isinstance.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "exceptions",
+   "case": "e007_raise_bare_class.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "exceptions",
+   "case": "e008_exceptiongroup_structure.py",
+   "status": "LOWER-PANIC",
+   "reason": "(emitter unreachable \u2014 03.07 blocker class)"
+  },
+  {
+   "family": "exceptions",
+   "case": "e009_warning_subtree.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "exceptions",
+   "case": "e010_builtin_exc_class_shape.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "exceptions",
+   "case": "e011_except_target_nonclass.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "exceptions",
+   "case": "e012_bare_class_init_arity.py",
+   "status": "NOT-LOWDERED",
+   "reason": "Expr (03.02c slice)"
+  },
+  {
+   "family": "exceptions",
+   "case": "e013_exception_new_init.py",
+   "status": "NOT-LOWDERED",
+   "reason": "def parameter kinds beyond positional (post-03.03)"
+  },
+  {
+   "family": "exceptions",
+   "case": "e014_full_tree_catchable.py",
+   "status": "NOT-LOWDERED",
+   "reason": "call arg kinds beyond positional (03.03)"
+  },
+  {
+   "family": "exceptions",
+   "case": "e015_exception_class_shape.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "controlflow",
+   "case": "G001-pep342-generators.py",
+   "status": "LOWER-PANIC",
+   "reason": "(emitter unreachable \u2014 03.07 blocker class)"
+  },
+  {
+   "family": "gc",
+   "case": "gc001_del_runs_at_collect.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "gc",
+   "case": "gc002_finalizer_order_one_generation.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "gc",
+   "case": "gc003_refcycle_with_del.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "gc",
+   "case": "gc004_weakref_callback_on_collect.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "gc",
+   "case": "gc005_weakref_uncollectable_targets.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "gc",
+   "case": "gc006_gc_callbacks.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "gc",
+   "case": "gc007_is_tracked_basics.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "gc",
+   "case": "gc008_resurrection_one_round.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "gc",
+   "case": "gc009_finalizer_raises_unraisable.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "gc",
+   "case": "gc010_del_alias_does_not_fire.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "gc",
+   "case": "gc011_collect_returns_and_garbage.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "gc",
+   "case": "gc012_gc_disable_explicit_collect.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "gc",
+   "case": "gc013_get_objects_filtered.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "gc",
+   "case": "gc014_finalizers_once_stress.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "gc",
+   "case": "gc015_weakref_finalize_api.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "gc",
+   "case": "gc016_threshold_and_counts.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "gc",
+   "case": "gc017_heartbeat_property_form.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "gc",
+   "case": "gc018_unraisable_source_echo_strip.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "gc",
+   "case": "gc019_finalize_alive_bookkeeping.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "gc",
+   "case": "gc020_get_objects_count_fence.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "threading",
+   "case": "T101-start-join-completion-order.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "threading",
+   "case": "T102-lock-shared-list.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "threading",
+   "case": "T103-queue-producer-consumer.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "threading",
+   "case": "T104-event-handshake.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "threading",
+   "case": "T105-lock-rlock-semantics.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "threading",
+   "case": "T106-thread-local.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "threading",
+   "case": "T107-daemon-exits-with-main.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "threading",
+   "case": "T108-thread-naming-repr.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "threading",
+   "case": "T109-exception-in-thread.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "threading",
+   "case": "T110-thread-error-semantics.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "threading",
+   "case": "T111-condition-rendezvous.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "threading",
+   "case": "T112-semaphore-bounded.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "threading",
+   "case": "T113-barrier.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "threading",
+   "case": "T114-system-exit-in-thread.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "threading",
+   "case": "T115-timer.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "threading",
+   "case": "T120-gil-free-cpu-probe.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "threading",
+   "case": "T121-scaling-parallel-cpu.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "threading",
+   "case": "T122-no-refcount-visibility.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "codecs_cjk",
+   "case": "differential_probe.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "codecs_cjk",
+   "case": "e2e_w3lib_probe.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "codecs_cjk",
+   "case": "gen_gb18030_4.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "codecs_cjk",
+   "case": "gen_gb18030_ranges.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "codecs_cjk",
+   "case": "gen_ground_truth.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "codecs_cjk",
+   "case": "gen_tables.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "codecs_cjk",
+   "case": "probe_iso2022.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "codecs_cjk",
+   "case": "probe_iso2022_cn.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "codecs_cjk",
+   "case": "probe_iso2022_cs.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "codecs_cjk",
+   "case": "probe_iso2022_enc.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "tier1-transparency",
+   "case": "t1_001_hot_int_loop_osr.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "tier1-transparency",
+   "case": "t1_002_mixed_type_callsite_deopt.py",
+   "status": "NOT-LOWDERED",
+   "reason": "Expr (03.02c slice)"
+  },
+  {
+   "family": "tier1-transparency",
+   "case": "t1_003_attr_ic_class_switch.py",
+   "status": "NOT-LOWDERED",
+   "reason": "unpacking/subscript/attr assign target (post-03.03)"
+  },
+  {
+   "family": "tier1-transparency",
+   "case": "t1_004_osr_side_effects_once.py",
+   "status": "LOWER-PANIC",
+   "reason": "(emitter unreachable \u2014 03.07 blocker class)"
+  },
+  {
+   "family": "tier1-transparency",
+   "case": "t1_005_generator_send_types.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "tier1-transparency",
+   "case": "t1_006_hot_string_build.py",
+   "status": "NOT-LOWDERED",
+   "reason": "Expr (03.02c slice)"
+  },
+  {
+   "family": "tier1-transparency",
+   "case": "t1_007_promotion_then_typeerror.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "tier1-transparency",
+   "case": "t1_008_dict_hot_ic.py",
+   "status": "NOT-LOWDERED",
+   "reason": "Expr (03.02c slice)"
+  },
+  {
+   "family": "tier1-transparency",
+   "case": "t1_009_list_push_pop_shape.py",
+   "status": "NOT-LOWDERED",
+   "reason": "unpacking/subscript/attr assign target (post-03.03)"
+  },
+  {
+   "family": "tier1-transparency",
+   "case": "t1_010_shortcircuit_identity.py",
+   "status": "NOT-LOWDERED",
+   "reason": "Expr (03.02c slice)"
+  },
+  {
+   "family": "tier1-transparency",
+   "case": "t1_011_hot_instantiation.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "tier1-transparency",
+   "case": "t1_012_deopt_midstate.py",
+   "status": "NOT-LOWDERED",
+   "reason": "unpacking/subscript/attr assign target (post-03.03)"
+  },
+  {
+   "family": "tier1-transparency",
+   "case": "t1_013_megamorphic_binop.py",
+   "status": "NOT-LOWDERED",
+   "reason": "Expr (03.02c slice)"
+  },
+  {
+   "family": "tier1-transparency",
+   "case": "t1_014_exceptions_in_hot_loop.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "tier1-transparency",
+   "case": "t1_015_nested_break_else.py",
+   "status": "NOT-LOWDERED",
+   "reason": "Expr (03.02c slice)"
+  },
+  {
+   "family": "tier1-transparency",
+   "case": "t1_016_deep_call_chain_500.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "tier1-transparency",
+   "case": "t1_017_thrash_backoff_disable.py",
+   "status": "LOWERS"
+  },
+  {
+   "family": "tier1-risk4",
+   "case": "risk4_matrix.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s001_builtins_namespace.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s002_sys_core_attrs.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s003_os_lite.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s004_ospath_string_ops.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s005_io_streams.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s006_math_basics.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s007_math_edges_errors.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s008_json_roundtrip.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s009_json_errors.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s010_re_match_subset.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s011_re_errors.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s012_itertools_subset.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s013_functools_reduce_partial.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s014_functools_lru_stats.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s015_collections_types.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s016_collections_abc_isinstance.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s017_types_identities.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s018_contextlib_suppress_closing.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s019_contextlib_exitstack.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s020_inspect_basics.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s021_linecache.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s022_token_tokenize.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s023_ast_parse_dump_unparse.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s024_enum_subset.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s025_dataclasses_fields.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s026_typing_runtime.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s027_string_textwrap.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s028_pprint_reprlib.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s029_operator_subset.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s030_copy_module.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s031_numbers_abc.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s032_atexit_lifo.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s033_warnings_format.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s034_weakref_basics.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s035_traceback_format_only.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s036_struct_heapq_bisect.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s037_keyword_codecs_encodings.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s038_threading_smoke.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s039_time_minimal.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s040_stat_errno.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s041_posixpath_sources.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s042_argparse_subset.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s043_platform_lite.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s044_pathlib_pure.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s045_fnmatch_glob.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s046_tempfile_names.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s047_importlib_basics.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  },
+  {
+   "family": "stdlib",
+   "case": "s048_gcd_bigints.py",
+   "status": "NOT-LOWDERED",
+   "reason": "import (Plan 03 stdlib surface)"
+  }
+ ]
+}

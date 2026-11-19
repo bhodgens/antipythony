@@ -115,6 +115,11 @@ pub struct Frame {
     /// (the instance carries the member-tracking side effects) while reads
     /// still hit the shared backing `class_ns` dict.
     pub class_ns_inst: Option<Value>,
+    /// 03.07 (GE005): comprehension pseudo-scope marker (Frame::new_child).
+    /// A walrus (`:=`) inside a comprehension binds in the nearest
+    /// ENCLOSING non-comp scope (S-02-2 / CPython NamedExpr rule) — the
+    /// Expr::Named store path walks past comp frames via this flag.
+    pub is_comp: bool,
 }
 
 /// Where a local name lives.
@@ -148,6 +153,7 @@ impl Frame {
             class_cell: std::cell::RefCell::new(None),
             class_ns: None,
             class_ns_inst: None,
+            is_comp: false,
         }
     }
 
@@ -183,6 +189,7 @@ impl Frame {
             class_cell: std::cell::RefCell::new(None),
             class_ns: None,
             class_ns_inst: None,
+            is_comp: false,
         }
     }
 
@@ -209,6 +216,7 @@ impl Frame {
             class_cell: std::cell::RefCell::new(None),
             class_ns: None,
             class_ns_inst: None,
+            is_comp: true,
         }
     }
 
@@ -247,6 +255,7 @@ impl Frame {
             class_cell: std::cell::RefCell::new(None),
             class_ns: Some(ns),
             class_ns_inst: None,
+            is_comp: false,
         }
     }
 
