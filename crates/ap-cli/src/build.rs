@@ -90,14 +90,15 @@ pub fn build_binary(
     //    (object emit / verify) stay fail-closed build errors.
     let pic = target.pic();
     let (prog_obj, _ic_counts) =
-        ap_codegen_native::aot::build_program_object(&module, source, script_path, pic)
-        .map_err(|e| match e {
-            CodegenError::Unsupported(what) => format!(
+        ap_codegen_native::aot::build_program_object(&module, source, script_path, pic).map_err(
+            |e| match e {
+                CodegenError::Unsupported(what) => format!(
                 "antipythony: build: unsupported construct in a module-level function body: {what} \
                  (the body would tree-walk under `antipythony run`; AoT requires lowering support)"
             ),
-            CodegenError::Verify(what) => format!("antipythony: build: codegen verify: {what}"),
-        })?;
+                CodegenError::Verify(what) => format!("antipythony: build: codegen verify: {what}"),
+            },
+        )?;
 
     // 3. Link against the CRT staticlib (system linker; dead-strip).
     let crt = crt_staticlib(target)?;
