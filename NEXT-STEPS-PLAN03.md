@@ -1,4 +1,63 @@
-# Next Steps — Plan 03 pause point (2026-11-18, trunk 76d30b7b pushed)
+# Next Steps — Plan 03 pause point (2026-11-18 late, trunk 7826a14 pushed)
+
+## 03.04f LANDED + MERGED + PUSHED (2026-11-18)
+
+- Leaf 03.04f verified first-hand (worktree 7826a14, clean; probe verdicts
+  reproduced by the orchestrator), merged to main, pushed.
+- LANDED: machine-wide try_table refactor of the step fn (g-probe class of
+  silent-swallow bugs fixed), staged-GE entry check (close path byte-exact),
+  gen_close GE-swallow wrap, YfNext SI-arm payload extraction from the
+  CAUGHT exc + inline YfDone bind, GE005 listcomp/genexp generator flip
+  (hidden <listcomp> is_generator=true + module slot + static gen-call
+  emit), walrus (Expr::Named) emit arm. 25 bisect probes green
+  (ge0304f_bisect.rs). GE001/GE002 still PASS byte-exact.
+- Baselines held + re-verified on trunk post-merge: controlflow 18/18,
+  classes/exceptions 17/17, for_probe 5/5, ap-host 8/8.
+- HONEST GAPS (2+ attempts each, root-caused, NOT closed):
+  - GE003: `closing` (closer's staged GE delivered by the machine catch)
+    + `B end` (post-HandlerPrefix park-resume seg skipped).
+  - GE004: `sub returned 42` + `empty gave 7` (post-YfDone seg skipped).
+  - GE005 partial: hidden-gen step traps on first comp; list(gen) after
+    next(gen) returns [] (resume-state preservation); FN_SUM_DRAIN not
+    started; DictComp pairs driver not started.
+  - MA001: match emit not started (blocked behind the same dispatch skip).
+- ROOT CAUSE for the next session (NEXT-0304f.md lines 82-95, read FIRST):
+  the goto_x br-depth formulas were tuned for the OLD per-segment $cx
+  shape. The machine-wide try_table shape's depth table needs ONE
+  principled recompute from the block nesting (at seg k: open blocks =
+  B(k+1)..B(n-1) + $sink + $done + Loop1 + tt + $cx + $outer + wrappers).
+  Empirical anchor verified: SI-arm trampoline br(11) for n=10/k=2/extra=2
+  reaches Loop1. The post-handler "skip 1+ arms" symptom is the remaining
+  discrepancy. Do NOT revert the machine-wide try_table (g-probes green).
+  GOTCHA: dbg prints inside step fns CLOBBER mirror locals — use unique
+  traps or module-level observables.
+
+## Next dispatch: leaf 03.04g
+
+Scope (in order): (1) recompute the goto depth tables ONCE from the new
+block nesting per the empirical anchor; re-derive all four formula cases
+(forward/fall/trampoline/done-escape) and update NEXT-0304f.md's table.
+(2) GE003 `closing` + `B end` + GE004 `sub returned 42`/`empty gave 7`
+should fall out of the depth fix — verify with ge0304f_bisect probes
+first, then the corpus cases. (3) GE005: fix the hidden-gen first-comp
+trap + resume-state preservation (list(gen) after next(gen)), then
+FN_SUM_DRAIN + DictComp pairs driver. (4) MA001 match emit per
+NEXT-0304d.md lines 118-124 (unblocked once dispatch skip is fixed).
+EXIT GATE: GE001-GE005 + MA001 ALL byte-exact + baselines held
+(controlflow 18/18, classes/exceptions 17/17, for_probe 5/5, ap-host 8/8).
+After 03.04g closes leaf 03.04: extend the CLI corpus gate to the
+generators/match families per NEXT-0305.md steps, update PROGRESS.md.
+Then: 03.06 (browser smoke + threading spike) -> 03.07 (differential
+exit gate) -> Plan 04 per master.md.
+
+## Standing conventions
+
+- Machine policy: ONE heavy cargo lane; CARGO_BUILD_JOBS=4; worktrees +
+  logs under ~/.git/worktrees/, NEVER /tmp.
+- Stall rule: transcript frozen >20 min -> steer once; second stall ->
+  stop + salvage + re-dispatch citing the session-record design docs.
+  Provider stalls of 5-15 min self-recover; do not steer under 20.
+- Never re-derive: the NEXT-*.md session records ARE the designs.
 
 ## 03.04e LANDED + MERGED + PUSHED (2026-11-18)
 
