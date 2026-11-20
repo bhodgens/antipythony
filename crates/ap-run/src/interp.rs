@@ -10023,7 +10023,7 @@ fn ensure_fiber(interp: &Arc<Interpreter>, id: u64) -> Result<(), Flow> {
         let reg2 = reg.clone();
         let eager2 = eager_iter;
         let interp2 = interp.clone();
-        let fiber = crate::generators::make_fiber_raw(move |_fiber_id| {
+        let fiber = crate::generators::make_fiber_raw(id, move |_fiber_id| {
             // The genexp comp scope: a child of the defining frame (clause-0's
             // iterable was already evaluated + registered eagerly at creation;
             // nested clause names bind here, never leaking to the enclosing
@@ -10077,6 +10077,7 @@ fn ensure_fiber(interp: &Arc<Interpreter>, id: u64) -> Result<(), Flow> {
         func_obj.clone(),
         args.clone(),
         kwargs.clone(),
+        id,
     );
     interp
         .generators

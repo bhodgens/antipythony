@@ -114,10 +114,12 @@ fn yielder_for(fiber_id: u64) -> *const FiberYielder {
     p as *const FiberYielder
 }
 
-// 02.09a P1-rest: fiber-id minter process-atomic (was thread-local Cell —
-// colliding fiber ids across threads aliased PENDING_GEN_ERROR keys,
-// interp.rs:7556 — the audit's named cross-thread id-aliasing bug).
-static NEXT_FIBER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+// 02.09a P1-rest: the old fiber-id minter (NEXT_FIBER) is GONE — 02.10 2a
+// unifies the id space: a fiber is stashed/identified by its GENERATOR
+// REGISTRY id (the same odd id resume_live/gen_yield/resume_tls_* use). The
+// separate minters produced colliding keys across the two spaces (registry
+// id 1 vs fiber id 1) and yielder_for() could return the WRONG fiber's
+// yielder, relay yields to the wrong coroutine.
 
 /// Run the fiber body with its identity established as the ACTIVE top.
 /// The fiber id of the generator body CURRENTLY executing on this
@@ -915,8 +917,8 @@ pub fn make_fiber(
     func_obj: ap_obj::int::Gc<ap_obj::PyObject>,
     args: Vec<Value>,
     kwargs: Vec<(String, Value)>,
+    fiber_id: u64,
 ) -> GenFiber {
-    let fiber_id = NEXT_FIBER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let stack = PooledStack::new(gen_stack_size()).expect("generator fiber stack");
     Coroutine::with_stack(stack, move |y, _first_input| {
         let yptr: *const FiberYielder = y;
@@ -1025,9 +1027,9 @@ pub fn genexp_fiber_body(
 /// clause walker). Does NOT start the fiber (corosensei runs the closure on
 /// first resume), same lazy contract as make_fiber.
 pub fn make_fiber_raw(
+    fiber_id: u64,
     body: impl FnOnce(u64) -> Result<(), crate::Flow> + 'static,
 ) -> GenFiber {
-    let fiber_id = NEXT_FIBER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let stack = PooledStack::new(gen_stack_size()).expect("generator fiber stack");
     Coroutine::with_stack(stack, move |y, _first_input| {
         let yptr: *const FiberYielder = y;
