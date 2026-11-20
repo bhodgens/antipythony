@@ -11,6 +11,7 @@ members = [
     "crates/ap-codegen-wasm",
     "crates/ap-host",
     "crates/ap-aot-crt",
+    "crates/ap-aot-crt-hybrid",
     "crates/ap-cli",
     "crates/ap-conform",
     "crates/xtask",

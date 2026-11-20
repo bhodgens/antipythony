@@ -1,0 +1,22 @@
+[package]
+name = "ap-aot-crt-hybrid"
+description = "staticlib CRT for hybrid AoT binaries: native entry + wasm payload seam (--emit-wasm extraction / embedded ap-host execution)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+# staticlib: the linker pulls only the objects it needs (dead-strip keeps
+# the rest — including the bulk of the embedded wasmtime host — out of the
+# final binary).
+crate-type = ["staticlib"]
+
+[dependencies]
+ap-run = { path = "../ap-run" }
+# 04.05: the embedded ap-host execution path (in-process wasmtime runner —
+# the same library entry the `antipythony host` verb and the standalone
+# ap-host binary use, so behavior is identical by construction).
+ap-host = { path = "../ap-host" }
+
+[lints]
+workspace = true  # robustness-ci 02.01 - see root Cargo.toml [workspace.lints]

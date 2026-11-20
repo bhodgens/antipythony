@@ -21,7 +21,7 @@
 //!
 //! SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::link::{emit_program_object, AotFnInput};
 use crate::CodegenError;
@@ -224,6 +224,20 @@ pub fn link_binary(
     target: AotTarget,
     build_dir: &Path,
 ) -> Result<(), CodegenError> {
+    link_binary_extra_objs(prog_obj, &[], crt_staticlib, out, target, build_dir)
+}
+
+/// [`link_binary`] with EXTRA object files linked between the program
+/// object and the CRT (04.05: the wasm payload object). Identical link
+/// model; one more input on the linker command line.
+pub fn link_binary_extra_objs(
+    prog_obj: &[u8],
+    extra_objs: &[PathBuf],
+    crt_staticlib: &Path,
+    out: &Path,
+    target: AotTarget,
+    build_dir: &Path,
+) -> Result<(), CodegenError> {
     std::fs::create_dir_all(build_dir)
         .map_err(|e| CodegenError::Verify(format!("build dir: {e}")))?;
     let obj_path = build_dir.join("ap_aot_prog.o");
@@ -232,7 +246,11 @@ pub fn link_binary(
     let out_s = out.to_string_lossy().into_owned();
     let obj_s = obj_path.to_string_lossy().into_owned();
     let crt_s = crt_staticlib.to_string_lossy().into_owned();
-    let (mut cmd, args): (std::process::Command, Vec<String>) = match target {
+    let extras: Vec<String> = extra_objs
+        .iter()
+        .map(|p: &PathBuf| p.to_string_lossy().into_owned())
+        .collect();
+    let (mut cmd, mut args): (std::process::Command, Vec<String>) = match target {
         AotTarget::MacosNative => {
             let c = std::process::Command::new("cc");
             let a = vec![
@@ -257,6 +275,14 @@ pub fn link_binary(
             (c, a)
         }
     };
+    // Extra objects go BETWEEN the program object and the CRT: the
+    // linker resolves the CRT's extern references (ap_aot_wasm_payload)
+    // against earlier inputs; the CRT archive is last so its members are
+    // pulled only when referenced.
+    let insert_at = 2; // after "-o out"
+    for (k, e) in extras.into_iter().enumerate() {
+        args.insert(insert_at + k, e);
+    }
     cmd.args(&args);
     let st = cmd
         .output()

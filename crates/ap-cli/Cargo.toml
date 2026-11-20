@@ -16,6 +16,12 @@ ap-codegen-native = { path = "../ap-codegen-native" }
 # 04.04: the wasm build shape + the `host` verb (embedded ap-host runner).
 ap-codegen-wasm = { path = "../ap-codegen-wasm" }
 ap-host = { path = "../ap-host" }
+# 04.05: the hybrid payload object emitter (cranelift-object data sections,
+# same 0.134 line the workspace pins).
+cranelift = "0.134"
+cranelift-module = "0.134"
+cranelift-object = "0.134"
+cranelift-native = "0.134"
 ap-parse = { path = "../ap-parse" }
 clap = { version = "4", features = ["derive"] }
 

@@ -44,6 +44,7 @@ fn usage() -> i32 {
          \x20 run [--no-cache] <file.py>  execute (fetched deps join sys.path)\n\
          \x20 build <file.py> [-o out]    write the cached build artifact\n\
          \x20 build --wasm <file.py>       emit <stem>.wasm (Plan 03 backend)\n\
+         \x20 build --hybrid <file.py>     native binary + embedded wasm payload (04.05)\n\
          \x20 host <module.wasm> [args]    run a .wasm via the built-in ap-host\n\
          \x20 cache gc                    clear the build cache"
     );
@@ -501,6 +502,7 @@ fn cmd_build(rest: &[&str]) -> Result<i32, String> {
     let mut out: Option<PathBuf> = None;
     let mut target: Option<ap_codegen_native::aot::AotTarget> = None;
     let mut wasm = false;
+    let mut hybrid = false;
     let mut i = 0;
     while i < rest.len() {
         match rest[i] {
@@ -508,6 +510,15 @@ fn cmd_build(rest: &[&str]) -> Result<i32, String> {
             // native AoT flags by inspection (-o/--target/--wasm parsing).
             "--wasm" => {
                 wasm = true;
+                i += 1;
+                continue;
+            }
+            // 04.05: the hybrid shape — native binary + embedded wasm
+            // payload + embedded-host execution behind flags. Mutually
+            // exclusive with --wasm (one artifact type per invocation);
+            // checked after parsing below.
+            "--hybrid" => {
+                hybrid = true;
                 i += 1;
                 continue;
             }
@@ -554,7 +565,7 @@ fn cmd_build(rest: &[&str]) -> Result<i32, String> {
         i += 1;
     }
     let Some(path) = path else {
-        return Err("usage: antipythony build <file.py> [-o out] [--target <triple>]\n       antipythony build --wasm <file.py> [-o out.wasm]".to_string());
+        return Err("usage: antipythony build <file.py> [-o out] [--target <triple>]\n       antipythony build --wasm <file.py> [-o out.wasm]\n       antipythony build --hybrid <file.py> [-o out]".to_string());
     };
 
     // ---- 04.04: the wasm distribution shape ----
@@ -569,6 +580,60 @@ fn cmd_build(rest: &[&str]) -> Result<i32, String> {
         });
         ap_cli::wasm::build_wasm(&source, &path, &out_path)?;
         println!("built {} (wasm)", out_path.display());
+        return Ok(0);
+    }
+    if hybrid {
+        let source = std::fs::read_to_string(&path)
+            .map_err(|e| format!("antipythony: cannot read {path}: {e}"))?;
+        if wasm {
+            return Err(
+                "antipythony: build: --hybrid and --wasm are mutually exclusive".to_string(),
+            );
+        }
+        let out_path = out.unwrap_or_else(|| {
+            Path::new(&path)
+                .file_stem()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("app"))
+        });
+        let script_dir = Path::new(&path)
+            .parent()
+            .map(|p| {
+                if p.as_os_str().is_empty() {
+                    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+                } else {
+                    p.to_path_buf()
+                }
+            })
+            .unwrap_or_else(|| PathBuf::from("."));
+        let lock_bytes = ap_pack::manifest::find_project_dir(&script_dir)
+            .and_then(|d| std::fs::read(d.join(ap_pack::manifest::LOCK_FILE)).ok())
+            .unwrap_or_default();
+        // backend key "hybrid": a hybrid rebuild never collides with a
+        // plain native entry for the same source (different CRT + extra
+        // object => different artifact).
+        let key = ap_pack::cache::build_key(
+            source.as_bytes(),
+            &lock_bytes,
+            env!("CARGO_PKG_VERSION"),
+            "hybrid-aot",
+            2,
+        );
+        let build_dir = ap_pack::cache::entry_dir(&key).unwrap_or_else(|| {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            std::env::temp_dir().join(format!("apbuild-{}-{nanos}", std::process::id()))
+        });
+        std::fs::create_dir_all(&build_dir)
+            .map_err(|e| format!("antipythony: build dir {}: {e}", build_dir.display()))?;
+        let t = target.unwrap_or(ap_codegen_native::aot::AotTarget::MacosNative);
+        ap_cli::build::build_hybrid_binary(&source, &path, &out_path, t, &build_dir)?;
+        println!(
+            "built {} (hybrid: native + embedded wasm)",
+            out_path.display()
+        );
         return Ok(0);
     }
 

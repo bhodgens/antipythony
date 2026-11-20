@@ -102,6 +102,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ap-aot-crt-hybrid"
+version = "0.1.0"
+dependencies = [
+ "ap-host",
+ "ap-run",
+]
+
+[[package]]
 name = "ap-cli"
 version = "0.1.0"
 dependencies = [
@@ -112,6 +120,10 @@ dependencies = [
  "ap-parse",
  "ap-run",
  "clap",
+ "cranelift",
+ "cranelift-module",
+ "cranelift-native",
+ "cranelift-object",
  "libc",
  "zip",
 ]
