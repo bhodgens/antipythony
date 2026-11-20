@@ -617,15 +617,30 @@ pub fn values_eq(a: &Value, b: &Value) -> bool {
             let y_is_union = (y.kind == crate::object::ObjKind::Namespace && y.name == "_Union")
                 || (y.kind == crate::object::ObjKind::Opaque && y.name == "__union__");
             if x_is_union && y_is_union {
-                let xs = x.slice_parts.lock().unwrap_or_else(|p| p.into_inner()).clone();
-                let ys = y.slice_parts.lock().unwrap_or_else(|p| p.into_inner()).clone();
-                return xs.len() == ys.len() && xs.iter().zip(ys.iter()).all(|(a, b)| {
-                    match (a, b) {
-                        (Value::None, Value::Obj(no)) if no.kind == crate::object::ObjKind::Type && no.name == "NoneType" => true,
-                        (Value::Obj(no), Value::None) if no.kind == crate::object::ObjKind::Type && no.name == "NoneType" => true,
+                let xs = x
+                    .slice_parts
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone();
+                let ys = y
+                    .slice_parts
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone();
+                return xs.len() == ys.len()
+                    && xs.iter().zip(ys.iter()).all(|(a, b)| match (a, b) {
+                        (Value::None, Value::Obj(no))
+                            if no.kind == crate::object::ObjKind::Type && no.name == "NoneType" =>
+                        {
+                            true
+                        }
+                        (Value::Obj(no), Value::None)
+                            if no.kind == crate::object::ObjKind::Type && no.name == "NoneType" =>
+                        {
+                            true
+                        }
                         (a, b) => values_eq(a, b),
-                    }
-                });
+                    });
             }
             // A-4 item 1: two bytearrays compare by buffer content.
             // W111: int-payload instances (IntEnum members) compare by
@@ -806,7 +821,15 @@ pub fn values_cmp(a: &Value, b: &Value) -> Result<std::cmp::Ordering, PyExceptio
             },
         )
         .reverse()),
-        (Value::Str(x), Value::Str(y)) => Ok(x.as_str().cmp(y.as_str())),
+        (Value::Str(x), Value::Str(y)) => {
+            // V016: code-point order, not byte order — WTF-8 surrogate
+            // bytes (ED..) would sort above astral UTF-8 (F0..) wrongly.
+            if x.has_surrogates() || y.has_surrogates() {
+                Ok(x.code_points().cmp(&y.code_points()))
+            } else {
+                Ok(x.as_str().cmp(y.as_str()))
+            }
+        }
         (Value::Bytes(x), Value::Bytes(y)) => Ok((**x).cmp(&**y)),
         (Value::List(x), Value::List(y)) => {
             let (xi, yi) = (x.items(), y.items());

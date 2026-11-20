@@ -251,6 +251,22 @@ impl PyString {
         }
     }
 
+    /// V016: build from code points, allowing lone surrogates (WTF-8).
+    /// `chr(0xd800)` and the parser shim's surrogate literals route here.
+    pub fn from_code_points(cps: impl IntoIterator<Item = u32>) -> Gc<PyString> {
+        PyString::new(crate::wtf8::from_code_points(cps))
+    }
+
+    /// V016: code points of the string (surrogates kept as D800..DFFF).
+    pub fn code_points(&self) -> Vec<u32> {
+        crate::wtf8::code_points(self.as_str())
+    }
+
+    /// V016: true if the string carries a lone surrogate.
+    pub fn has_surrogates(&self) -> bool {
+        crate::wtf8::has_surrogates(self.as_str())
+    }
+
     pub fn is_ascii(&self) -> bool {
         matches!(self.repr, StrRepr::Ascii(_))
     }
@@ -271,7 +287,9 @@ impl PyString {
         }
         let n = match &self.repr {
             StrRepr::Ascii(s) => s.len(),
-            StrRepr::Unicode(s) => s.chars().count(),
+            // V016: WTF-8 surrogate sequences are 3 bytes per code point;
+            // chars() would miscount them. cp_len fast-paths valid UTF-8.
+            StrRepr::Unicode(s) => crate::wtf8::cp_len(s),
         };
         self.cached_len
             .store(n, std::sync::atomic::Ordering::Relaxed);
@@ -310,6 +328,11 @@ impl PyString {
         }
         let text = self.as_str();
         let mut h = if self.is_ascii() {
+            crate::hash::hash_bytes(text.as_bytes())
+        } else if crate::wtf8::has_surrogates(text) {
+            // V016: hash the WTF-8 bytes. chr(0xd800) and "\ud800" produce
+            // identical bytes, so equal-content-equal-hash holds (S-01-38
+            // leaves the exact hash value UNSPECIFIED per implementation).
             crate::hash::hash_bytes(text.as_bytes())
         } else if text.chars().all(|c| (c as u32) <= 0xFF) {
             let latin1: Vec<u8> = text.chars().map(|c| c as u8).collect();
