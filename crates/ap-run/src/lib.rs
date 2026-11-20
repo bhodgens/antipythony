@@ -41,6 +41,7 @@ pub mod send_value;
 pub mod sre;
 pub mod sre_tables;
 pub mod structmod;
+pub mod surr_codec;
 pub mod threading;
 pub mod threading_call;
 

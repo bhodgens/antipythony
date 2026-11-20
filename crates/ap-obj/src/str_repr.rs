@@ -16,20 +16,32 @@ pub fn str_repr(s: &str) -> String {
     };
     let mut out = String::with_capacity(s.len() + 2);
     out.push(quote);
-    for c in s.chars() {
+    // V016: iterate CODE POINTS — a WTF-8 surrogate must render as
+    // \ud800 (CPython escapes the Cs category), not as raw bytes.
+    let cps: Vec<u32> = if crate::wtf8::has_surrogates(s) {
+        crate::wtf8::code_points(s)
+    } else {
+        s.chars().map(|c| c as u32).collect()
+    };
+    for cp in cps {
+        let c = char::from_u32(cp);
         match c {
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\'' if needs_escape_apostrophe => out.push_str("\\'"),
-            '"' if quote == '"' => out.push_str("\\\""),
-            c if (c as u32) < 0x20 || (0x7f..=0x9f).contains(&(c as u32)) => {
+            Some('\\') => out.push_str("\\\\"),
+            Some('\n') => out.push_str("\\n"),
+            Some('\r') => out.push_str("\\r"),
+            Some('\t') => out.push_str("\\t"),
+            Some('\'') if needs_escape_apostrophe => out.push_str("\\'"),
+            Some('"') if quote == '"' => out.push_str("\\\""),
+            Some(c) if (c as u32) < 0x20 || (0x7f..=0x9f).contains(&(c as u32)) => {
                 // CPython repr escapes Cc control chars: C0 (< 0x20), DEL,
                 // and the C1 range 0x80-0x9f (e.g. repr('\x8a') -> '\x8a').
                 out.push_str(&format!("\\x{:02x}", c as u32));
             }
-            c => out.push(c),
+            Some(c) => out.push(c),
+            None => {
+                // Lone surrogate (Cs): CPython repr escapes it \ud800.
+                out.push_str(&format!("\\u{:04x}", cp));
+            }
         }
     }
     out.push(quote);

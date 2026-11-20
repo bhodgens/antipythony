@@ -182,10 +182,13 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
                 let byte = text.as_bytes()[idx as usize] as char;
                 return Ok(Value::Str(PyString::new(byte.to_string())));
             }
-            let chars: Vec<char> = text.chars().collect();
-            let idx = normalize_index(*i, chars.len() as i64)
+            // V016: code-point indexing (WTF-8 safe) — chars() on a
+            // surrogate sequence is UB (invalid char). from_code_points
+            // stores the single surrogate back as WTF-8.
+            let cps = ap_obj::wtf8::code_points(text);
+            let idx = normalize_index(*i, cps.len() as i64)
                 .ok_or_else(|| raise("IndexError", "string index out of range"))?;
-            Ok(Value::Str(PyString::new(chars[idx as usize].to_string())))
+            Ok(Value::Str(PyString::from_code_points([cps[idx as usize]])))
         }
         (Value::Str(s), Key::Slice { lo, hi, step }) => {
             if *step == 0 {
@@ -1720,6 +1723,65 @@ pub fn call_method(
                     Err(f) => Err(f),
                 });
             }
+            // V016: route the builtin codecs through the surrogate-aware
+            // engine (strict + all builtin error handlers, exact texts).
+            match name.as_str() {
+                "utf_8" | "utf8" => {
+                    return Some(
+                        crate::surr_codec::encode_bytes(s.as_str(), "utf-8", &errors)
+                            .map(|bs| Value::Bytes(Gc::new(bs))),
+                    );
+                }
+                "ascii" | "us_ascii" => {
+                    return Some(
+                        crate::surr_codec::encode_bytes(s.as_str(), "ascii", &errors)
+                            .map(|bs| Value::Bytes(Gc::new(bs))),
+                    );
+                }
+                "latin_1" | "latin1" | "iso8859_1" | "iso_8859_1" => {
+                    return Some(
+                        crate::surr_codec::encode_bytes(s.as_str(), "latin-1", &errors)
+                            .map(|bs| Value::Bytes(Gc::new(bs))),
+                    );
+                }
+                "utf_16" | "utf16" => {
+                    return Some(
+                        crate::surr_codec::encode_utfn(s.as_str(), "utf-16", &errors, 16, true, true)
+                            .map(|bs| Value::Bytes(Gc::new(bs))),
+                    );
+                }
+                "utf_16_le" | "utf16le" => {
+                    return Some(
+                        crate::surr_codec::encode_utfn(s.as_str(), "utf-16-le", &errors, 16, true, false)
+                            .map(|bs| Value::Bytes(Gc::new(bs))),
+                    );
+                }
+                "utf_16_be" | "utf16be" => {
+                    return Some(
+                        crate::surr_codec::encode_utfn(s.as_str(), "utf-16-be", &errors, 16, false, false)
+                            .map(|bs| Value::Bytes(Gc::new(bs))),
+                    );
+                }
+                "utf_32" | "utf32" => {
+                    return Some(
+                        crate::surr_codec::encode_utfn(s.as_str(), "utf-32", &errors, 32, true, true)
+                            .map(|bs| Value::Bytes(Gc::new(bs))),
+                    );
+                }
+                "utf_32_le" | "utf32le" => {
+                    return Some(
+                        crate::surr_codec::encode_utfn(s.as_str(), "utf-32-le", &errors, 32, true, false)
+                            .map(|bs| Value::Bytes(Gc::new(bs))),
+                    );
+                }
+                "utf_32_be" | "utf32be" => {
+                    return Some(
+                        crate::surr_codec::encode_utfn(s.as_str(), "utf-32-be", &errors, 32, false, false)
+                            .map(|bs| Value::Bytes(Gc::new(bs))),
+                    );
+                }
+                _ => {}
+            }
             Some(encode_str(s.as_str(), &codec))
         }
         (Value::Str(s), "partition") => {
@@ -2183,6 +2245,58 @@ fn decode_bytes_err(b: &[u8], codec: &str, errors: &str) -> MResult {
             Ok(txt) => Ok(Value::Str(PyString::new(txt))),
             Err(f) => Err(f),
         };
+    }
+    // V016: utf-8 decode (ALL error modes) rides the surrogate-aware
+    // engine — strict rejects surrogate sequences, surrogatepass keeps
+    // them, surrogateescape maps bad bytes to U+DCnn, exact CPython texts.
+    if matches!(codec_l.as_str(), "utf-8" | "utf8" | "utf_8") {
+        return crate::surr_codec::decode_utf8(b, errors).map(|t| Value::Str(PyString::new(t)));
+    }
+    // V016: utf-16/32 (+le/be) decode with surrogate handling.
+    match codec_l.as_str() {
+        "utf-16" | "utf16" | "utf_16" => {
+            // V016 probed: the BOM selects the endianness AND the error
+            // message names the SELECTED codec ('utf-16-le' after an FF FE
+            // BOM); positions are ABSOLUTE (BOM bytes count — probed FF FE
+            // + truncated surrogate errors at 2-3).
+            let (body, le, sel, base) = if b.starts_with(&[0xFF, 0xFE]) {
+                (&b[2..], true, "utf-16-le", 2)
+            } else if b.starts_with(&[0xFE, 0xFF]) {
+                (&b[2..], false, "utf-16-be", 2)
+            } else {
+                (b, true, "utf-16-le", 0)
+            };
+            return crate::surr_codec::decode_utf16_off(body, sel, errors, le, base)
+                .map(|t| Value::Str(PyString::new(t)));
+        }
+        "utf-16-le" | "utf16-le" | "utf_16_le" => {
+            return crate::surr_codec::decode_utf16(b, "utf-16-le", errors, true)
+                .map(|t| Value::Str(PyString::new(t)));
+        }
+        "utf-16-be" | "utf16-be" | "utf_16_be" => {
+            return crate::surr_codec::decode_utf16(b, "utf-16-be", errors, false)
+                .map(|t| Value::Str(PyString::new(t)));
+        }
+        "utf-32" | "utf32" | "utf_32" => {
+            let (body, le) = if b.starts_with(&[0xFF, 0xFE, 0x00, 0x00]) {
+                (&b[4..], true)
+            } else if b.starts_with(&[0x00, 0x00, 0xFE, 0xFF]) {
+                (&b[4..], false)
+            } else {
+                (b, true)
+            };
+            return crate::surr_codec::decode_utf32(body, "utf-32", errors, le)
+                .map(|t| Value::Str(PyString::new(t)));
+        }
+        "utf-32-le" | "utf32-le" | "utf_32_le" => {
+            return crate::surr_codec::decode_utf32(b, "utf-32-le", errors, true)
+                .map(|t| Value::Str(PyString::new(t)));
+        }
+        "utf-32-be" | "utf32-be" | "utf_32_be" => {
+            return crate::surr_codec::decode_utf32(b, "utf-32-be", errors, false)
+                .map(|t| Value::Str(PyString::new(t)));
+        }
+        _ => {}
     }
     // W113: the native arms below are strict-only. utf-8/ascii non-strict
     // modes are implemented here directly (CPython semantics) — the codec
