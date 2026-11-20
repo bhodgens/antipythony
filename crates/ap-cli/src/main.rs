@@ -46,7 +46,10 @@ fn usage() -> i32 {
          \x20 build --wasm <file.py>       emit <stem>.wasm (Plan 03 backend)\n\
          \x20 build --hybrid <file.py>     native binary + embedded wasm payload (04.05)\n\
          \x20 host <module.wasm> [args]    run a .wasm via the built-in ap-host\n\
-         \x20 cache gc                    clear the build cache"
+         \x20 cache gc                    clear the build cache\n\
+         \n\
+         \x20 --version                   print name + version (+ commit when built with AP_COMMIT_SHA)\n\
+         \x20 --notices                   print the embedded THIRD_PARTY_NOTICES"
     );
     2
 }
@@ -91,6 +94,11 @@ fn run(args: &[String]) -> Result<i32, String> {
         // empty-args slice index (found when writing the README quick-start).
         None => Ok(usage()),
         Some("") | Some("--help") | Some("-h") => Ok(usage()),
+        // D1 flags (leaf D13): `--version` / `--notices` in verb position;
+        // accepted in verb position ONLY (separate functions in notices.rs
+        // to stay out of the 04.05 agent's main.rs verb-addition lanes).
+        Some("--version") | Some("version") | Some("-V") => Ok(ap_cli::notices::cmd_version()),
+        Some("--notices") | Some("notices") => Ok(ap_cli::notices::cmd_notices()),
         Some("new") => cmd_new(&rest),
         Some("add") => cmd_add(&rest),
         Some("run") => cmd_run(&rest, false),

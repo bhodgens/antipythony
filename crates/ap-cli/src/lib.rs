@@ -2,4 +2,5 @@
 
 pub mod build;
 pub mod hybrid;
+pub mod notices;
 pub mod wasm;
