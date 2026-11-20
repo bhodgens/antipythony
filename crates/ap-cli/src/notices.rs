@@ -13,6 +13,8 @@
 //!
 //! SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
+use std::io::Write;
+
 /// Repo-root notices file at compile time (crates/ap-cli/src -> workspace root).
 pub const EMBEDDED_NOTICES: &[u8] = include_bytes!("../../../THIRD_PARTY_NOTICES");
 
