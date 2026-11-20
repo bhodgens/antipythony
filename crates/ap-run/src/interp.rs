@@ -11171,7 +11171,12 @@ fn pull_iter(interp: &Arc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> 
     // 02.08f (s020): iter(callable, sentinel) — CallFn state needs interp
     // to invoke the callable; handle BEFORE the table .next() (which answers
     // None for this state).
-    {
+    // T121-bisect fix: the probe below locks the SHARED iterators Mutex +
+    // the iterator's state Mutex on EVERY pull. Skip it entirely unless a
+    // CallFn iterator exists process-wide (set once by the iter() builtin).
+    if !crate::iter::CALLFN_ITER_EXISTS.load(std::sync::atomic::Ordering::Acquire) {
+        // fall through to the plain table pull below
+    } else {
         let is_callfn = {
             let its = interp.iterators.lock().unwrap_or_else(|p| p.into_inner());
             its.get(&id).map(|it| {

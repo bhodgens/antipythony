@@ -8,12 +8,28 @@
 //! `Value::Obj(ObjKind::Iterator)` is the opaque handle.
 
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use crate::exc_hier::ExceptionValue;
 use crate::Flow;
 use ap_obj::int::{Gc, Int};
 use ap_obj::value::{PyList, PyString, Tuple, Value};
+
+/// T121-bisect fix: set once, process-wide, when the FIRST iter(callable,
+/// sentinel) iterator is created. pull_iter's CallFn probe acquires the
+/// SHARED process-global iterators Mutex + the iterator's state Mutex on
+/// EVERY loop step; workloads that never create a CallFn iterator (the
+/// overwhelmingly common case) paid that extra global-lock traffic on all
+/// workers for nothing — 4 workers x 60k loop steps measurably collapsed
+/// the T121 scaling ratio (bisect leaf 2026-11-19). Gated: probe only when
+/// a CallFn iterator can exist.
+pub static CALLFN_ITER_EXISTS: AtomicBool = AtomicBool::new(false);
+
+/// Called when a CallFn iterator is created (builtins iter(callable, sent)).
+pub fn note_callfn_iter_created() {
+    CALLFN_ITER_EXISTS.store(true, Ordering::Release);
+}
 
 /// Iterator state. Every variant's `next` yields Some(value) or ends.
 pub enum IterState {
