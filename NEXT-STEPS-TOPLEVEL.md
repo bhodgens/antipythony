@@ -350,3 +350,32 @@ exit gate) -> Plan 04 per master.md.
   machine designed, baselines held, merged 14307875.
 - First 03.04b attempt (deleg_f9fbcd48): died at 395s provider stall in
   study; salvage created the context-packing dispatch convention.
+
+## 2026-11-20: D13 MERGED (6e2cb00) - V1 LEAF SET COMPLETE
+
+- Leaf D13 verified (lib 4/4 after a test-pollution fix in build.rs's
+  negative arm: a dev-machine checkout CRT is legitimate, assert only that
+  the PREFIX candidate stops resolving; original assert failed on any
+  checkout with target/release/libap_aot_crt.a present).
+- Merge required building BOTH CRTs in the main checkout
+  (libap_aot_crt.a + libap_aot_crt_hybrid.a) for hybrid_gate 7/7;
+  wasm_build_gate 7/7, packaging 3/3, lib 4/4 on trunk post-merge.
+- T121-bisect merged earlier (d3d8367): gate RED decomposed = debug/release
+  profile artifact + real pull_iter probe regression (FIXED c51473f,
+  release ratio 0.72->1.06); residual gap to 3x is the per-statement
+  global-mutex line bookkeeping (02.09b P7 interim) - needs lock-free
+  per-frame line tracking; harness must pin build profile.
+
+## OPEN ITEMS BEYOND THE V1 LEAF SET
+
+1. T121 gate-to-green: lock-free per-frame line bookkeeping
+   (traceback-lineno-semantics gate needed) + harness profile pin.
+   USER DECISION: accept 2.03-2.47x debug interim as Plan-02-recorded
+   state, or hold the design-intent gate open until >=3x.
+2. s016 parser-lineno (warning frame attribution) - parser-precision.
+3. 02.10 Go-scheduler (stretch; design doc landed).
+4. Plan 05 T3-T5 ecosystem waves (hermes-agent/fastapi/comfyui - gated
+   on Plan 10, post-v1). Plan 10: parked v2.
+5. Post-03 emitter hardening: 11 LOWER-PANIC scan-vet contract violations.
+6. CI fresh-machine-smoke job: expected-green now that D3 landed
+   (verify on next release.yml run).
