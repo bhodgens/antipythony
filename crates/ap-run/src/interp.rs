@@ -9958,100 +9958,103 @@ fn pump_outcome(
 
 /// Pull one value from a generator: PEP-342 resume semantics.
 fn gen_pull(interp: &Arc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> {
-    let gen_kind = {
+    // 02.10 2a: GenExpr and Fn/Live both become fiber resumes — ensure_fiber
+    // converts a not-yet-started GenExpr to the same Live-fiber state a
+    // def-generator gets, so ONE pull path serves every generator shape.
+    // The old materialize-on-first-pull GenExpr arm is gone.
+    let _gen_kind = {
         let gens = interp.generators.lock().unwrap_or_else(|p| p.into_inner());
         gens.get(&id).map(|g| match g {
             GenFrame::GenExpr { .. } => 0,
-            // Fn (not yet started) and Live (started) both resume.
             GenFrame::Fn { .. } | GenFrame::Live(_) => 1,
         })
     };
-    match gen_kind {
-        Some(0) => {
-            // GenExpr: v0 materialize-on-first-pull (documented).
-            let take = interp
-                .generators
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .remove(&id);
-            let Some(GenFrame::GenExpr {
-                elt,
-                clauses,
-                defining,
-                reg,
-                eager_iter,
-            }) = take
-            else {
-                return Ok(None);
-            };
-            let sink: Arc<RefCell<Vec<Value>>> = Arc::new(RefCell::new(Vec::new()));
-            run_gen_body(interp, &defining, |cf| {
-                run_comp_clauses_into(
-                    interp,
-                    cf,
-                    &elt,
-                    None,
-                    &clauses,
-                    &reg,
-                    &mut sink.borrow_mut(),
-                    eager_iter,
-                )
-            })?;
-            let values: Vec<Value> = sink.borrow().clone();
-            let it = PyIterator::new(IterState::Seq(values, 0));
-            // Fence-perf fix 2026-11-06: tag for Drop-prune (F5 contract).
-            it.table_id.set(Some(id));
-            interp
-                .iterators
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .insert(id, it);
-            if let Some(it) = interp
-                .iterators
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .get(&id)
-            {
-                return Ok(it.next());
-            }
-            Ok(None)
-        }
-        Some(1) => {
-            // Def-generator: ensure the fiber exists, then resume (send None).
-            // NOTE: si_value is NOT cleared here — for an already-finished
-            // generator the parked StopIteration.value must survive this
-            // pull (nested yield-from reads it on the pull AFTER the sub
-            // returns). Callers that need a clean slot clear it themselves.
-            ensure_fiber(interp, id)?;
-            let r = crate::generators::resume_live(
-                interp,
-                id,
-                crate::generators::GenInput::Send(Value::None),
-            );
-            pump_outcome(interp, r, None)
-        }
-        _ => {
-            // Already-materialized GenExpr: pull from the iterator table.
-            if let Some(it) = interp
-                .iterators
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .get(&id)
-            {
-                return Ok(it.next());
-            }
-            Ok(None)
-        }
-    }
+    // Def-generator or (now) genexpr: ensure the fiber exists, then resume
+    // (send None). NOTE: si_value is NOT cleared here — for an already-finished
+    // generator the parked StopIteration.value must survive this pull (nested
+    // yield-from reads it on the pull AFTER the sub returns). Callers that
+    // need a clean slot clear it themselves.
+    ensure_fiber(interp, id)?;
+    let r = crate::generators::resume_live(
+        interp,
+        id,
+        crate::generators::GenInput::Send(Value::None),
+    );
+    pump_outcome(interp, r, None)
 }
 
 /// Create the fiber for a not-yet-started def-generator (first resume).
 fn ensure_fiber(interp: &Arc<Interpreter>, id: u64) -> Result<(), Flow> {
     let needs = {
         let gens = interp.generators.lock().unwrap_or_else(|p| p.into_inner());
-        matches!(gens.get(&id), Some(GenFrame::Fn { .. }))
+        matches!(gens.get(&id), Some(GenFrame::Fn { .. } | GenFrame::GenExpr { .. }))
     };
     if !needs {
+        return Ok(());
+    }
+    // 02.10 2a: a GenExpr converts to the SAME Live-fiber state a def-generator
+    // gets — the fiber body walks the clause tree and suspends at each element
+    // (run_comp_clauses' genexp_yield arm). send/throw/close/concurrent-pull
+    // semantics then come from resume_live verbatim. The old materialize-on-
+    // first-pull path is gone (documented divergence: lazy production, real
+    // suspension points, no shared-completion race).
+    let genexp = {
+        let mut gens = interp.generators.lock().unwrap_or_else(|p| p.into_inner());
+        match gens.remove(&id) {
+            Some(GenFrame::GenExpr {
+                elt,
+                clauses,
+                defining,
+                reg,
+                eager_iter,
+            }) => Some((elt, clauses, defining, reg, eager_iter)),
+            other => {
+                if let Some(g) = other {
+                    gens.insert(id, g);
+                }
+                None
+            }
+        }
+    };
+    if let Some((elt, clauses, defining, reg, eager_iter)) = genexp {
+        let elt2 = elt.clone();
+        let clauses2 = clauses.clone();
+        let defining2 = defining.clone();
+        let reg2 = reg.clone();
+        let eager2 = eager_iter;
+        let interp2 = interp.clone();
+        let fiber = crate::generators::make_fiber_raw(move |_fiber_id| {
+            // The genexp comp scope: a child of the defining frame (clause-0's
+            // iterable was already evaluated + registered eagerly at creation;
+            // nested clause names bind here, never leaking to the enclosing
+            // scope — same scoping run_comp uses for list/set/dict comps).
+            let cf = std::sync::Arc::new(Frame::new_child(&defining2));
+            run_comp_clauses_into(
+                &interp2,
+                &cf,
+                &elt2,
+                None,
+                &clauses2,
+                &reg2,
+                &mut Vec::new(),
+                eager2,
+                true,
+            )
+        });
+        interp
+            .generators
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(
+                id,
+                GenFrame::Live(crate::generators::GenState {
+                    fiber: Some(fiber),
+                    started: false,
+                    running: false,
+                    retired: false,
+                    super_ctx: None,
+                }),
+            );
         return Ok(());
     }
     let Some(GenFrame::Fn {
@@ -10184,57 +10187,12 @@ pub(crate) fn gen_close(interp: &Arc<Interpreter>, id: u64) -> Result<(), Flow> 
 }
 
 /// Materialize a generator's stream WITHOUT advancing (iterable_of path).
-/// GenExpr keeps the v0 eager drain; def-generators are now LAZY (PEP-342),
-/// so this simply makes sure the fiber exists and lets pulls drive it —
-/// `iterable_of` returns the registered id and gen_pull resumes per-step.
+/// 02.10 2a: BOTH shapes are LAZY now — def-generators and genexprs get a
+/// fiber via ensure_fiber; pulls drive it per-step (sends/throws stay
+/// observable at real suspension points, and the old genexp
+/// materialize-on-first-pull race is gone).
 fn gen_materialize(interp: &Arc<Interpreter>, id: u64) -> Result<(), Flow> {
-    let gen_kind = {
-        let gens = interp.generators.lock().unwrap_or_else(|p| p.into_inner());
-        gens.get(&id).map(|g| match g {
-            GenFrame::GenExpr { .. } => 0u8,
-            _ => 1,
-        })
-    };
-    let Some(kind) = gen_kind else {
-        return Ok(()); // already materialized / live
-    };
-    if kind == 1 {
-        // Def-generator: LAZY now. No eager drain — ensure the fiber is
-        // ready so pulls go through gen_pull (sends stay observable).
-        return ensure_fiber(interp, id);
-    }
-    let take = interp
-        .generators
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .remove(&id);
-    let Some(GenFrame::GenExpr {
-        elt,
-        clauses,
-        defining,
-        reg,
-        eager_iter,
-    }) = take
-    else {
-        return Ok(());
-    };
-    let mut sink = Vec::new();
-    // T2 fix: yields are captured through the interpreter's active_gen_sink
-    // (same as gen_pull's GenExpr arm). Without this wrapper the genexp's
-    // yields went nowhere and materialized an EMPTY Seq — map/list/tuple over
-    // a not-yet-started genexp all saw zero items.
-    run_gen_body(interp, &defining, |cf| {
-        run_comp_clauses_into(interp, cf, &elt, None, &clauses, &reg, &mut sink, eager_iter)
-    })?;
-    let it = PyIterator::new(IterState::Seq(sink, 0));
-    // Fence-perf fix 2026-11-06: tag for Drop-prune (F5 contract).
-    it.table_id.set(Some(id));
-    interp
-        .iterators
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .insert(id, it);
-    Ok(())
+    ensure_fiber(interp, id)
 }
 
 /// Run a body, catching yields into the active sink (v0 stream materialize).
@@ -10613,6 +10571,7 @@ fn run_comp(
         &set_out,
         &dict_out,
         None,
+        false,
     )?;
     Ok(match kind {
         CompKind::List => Value::List(PyList::from_vec(list_out)),
@@ -10622,6 +10581,8 @@ fn run_comp(
 }
 
 /// Genexpr variant: append to a shared sink (called per outer iteration).
+/// `genexp_yield=true` (02.10 2a): the element point SUSPENDS the genexp
+/// fiber instead of pushing to a sink — the resumable path.
 #[allow(clippy::too_many_arguments)]
 fn run_comp_clauses_into(
     interp: &Arc<Interpreter>,
@@ -10632,6 +10593,7 @@ fn run_comp_clauses_into(
     reg: &Arc<FnRegistry>,
     sink: &mut Vec<Value>,
     pre_iter: Option<u64>,
+    genexp_yield: bool,
 ) -> Result<(), Flow> {
     let mut out = Vec::new();
     let set_out = ap_obj::PySet::new();
@@ -10650,6 +10612,7 @@ fn run_comp_clauses_into(
         &set_out,
         &dict_out,
         pre_iter,
+        genexp_yield,
     )?;
     sink.append(&mut out);
     Ok(())
@@ -10670,9 +10633,23 @@ fn run_comp_clauses(
     set_out: &ap_obj::PySet,
     dict_out: &PyDict,
     pre_iter: Option<u64>,
+    genexp_yield: bool,
 ) -> Result<(), Flow> {
     if ci == clauses.len() {
         let e = eval_expr(interp, cf, elt, reg)?;
+        if genexp_yield {
+            // 02.10 2a: the genexp element point IS the suspension point —
+            // hand the value to the parent stack (resume input is discarded:
+            // a genexp has no yield-expression, CPython parity). Recursion
+            // resumes here on the next pull.
+            let line_cell = frame_stack_pop_pub(interp);
+            let r = crate::generators::gen_yield(e);
+            if let Some(cell) = line_cell {
+                frame_stack_push_pub(interp, cell);
+            }
+            r?;
+            return Ok(());
+        }
         match kind {
             CompKind::List => list_out.push(e),
             CompKind::Set => set_out.add(e).map_err(Flow::from_py)?,
@@ -10732,6 +10709,7 @@ fn run_comp_clauses(
                 set_out,
                 dict_out,
                 pre_iter,
+                genexp_yield,
             )?;
         }
     }
