@@ -703,7 +703,7 @@ impl<'a> Lowerer<'a> {
                 self.push_inst(Inst::Compare(ops[0], ta, tb, t));
                 Ok(t)
             }
-            Expr::Call(f, args) => {
+            Expr::Call(f, args, _) => {
                 let tf = self.lower_expr(f)?;
                 let mut targs = Vec::new();
                 for a in args {

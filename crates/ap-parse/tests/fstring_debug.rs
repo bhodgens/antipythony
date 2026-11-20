@@ -21,7 +21,7 @@ fn fstring_parts(src: &str) -> Vec<FStrPart> {
     let (module, _) = lower_source(src).expect("program must lower");
     let mut last = None;
     for item in &module.items {
-        if let ap_ir::Item::Stmt(ap_ir::Stmt::ExprStmt(Expr::Call(_, args))) = item {
+        if let ap_ir::Item::Stmt(ap_ir::Stmt::ExprStmt(Expr::Call(_, args, _))) = item {
             for a in args {
                 if let ap_ir::Arg::Pos(Expr::FString(parts)) = a {
                     last = Some(parts.clone());

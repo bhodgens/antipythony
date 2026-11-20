@@ -131,7 +131,9 @@ impl Builder {
 
     /// `f(args)`. Clauses: S-02-7..S-02-10, S-03-28.
     pub fn call(&self, f: Expr, args: Vec<Arg>) -> Expr {
-        Expr::Call(Box::new(f), args)
+        // Call source line: stamped separately by the Lowerer via
+        // `call_at_line` (the Builder has no source-position context).
+        Expr::Call(Box::new(f), args, 0)
     }
 
     /// Positional call argument.

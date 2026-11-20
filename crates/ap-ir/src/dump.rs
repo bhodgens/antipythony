@@ -361,7 +361,7 @@ fn tree_expr(out: &mut String, e: &Expr, depth: usize) {
                 tree_expr(out, x, depth + 1);
             }
         }
-        Expr::Call(f, args) => {
+        Expr::Call(f, args, _) => {
             let _ = writeln!(out, "Call");
             tree_expr(out, f, depth + 1);
             for a in args {
@@ -1002,7 +1002,7 @@ fn dump_expr(out: &mut String, e: &Expr, _depth: usize) {
             }
             let _ = write!(out, "({s})");
         }
-        Expr::Call(f, args) => {
+        Expr::Call(f, args, _) => {
             let _ = write!(
                 out,
                 "{}({})",

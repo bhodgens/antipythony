@@ -765,7 +765,7 @@ fn collect_expr(
             scan.intern_str(name.as_str());
             collect_expr(obj, refs, bound, nonlocal, scan)
         }
-        Expr::Call(f, args) => {
+        Expr::Call(f, args, _) => {
             // 03.03d: type(x) as a CALLEE (1 positional arg) is lowered — the
             // raw type-field read. 3-arg metaclass form stays rejected.
             if let Expr::Name(n) = f.as_ref() {
@@ -3587,7 +3587,7 @@ fn gen_emit_expr_stmt(f: &mut Function, e: &Expr, ctx: &mut EmitCtx, gen: &GenCt
     // print keeps its statement shape (no Drop)
     let is_print = matches!(
         e,
-        Expr::Call(func, _)
+        Expr::Call(func, _, _)
             if matches!(func.as_ref(), Expr::Name(n) if n.as_str() == "print")
                 && !ctx.scan.fns.iter().any(|uf| uf.name == "print")
     );
@@ -3735,7 +3735,7 @@ fn gen_emit_expr(f: &mut Function, e: &Expr, ctx: &mut EmitCtx, gen: &GenCtx) {
             f.instruction(&Instruction::RefNull(hc(T_BIGINT)));
             f.instruction(&Instruction::StructNew(T_INT));
         }
-        Expr::Call(func, args) => {
+        Expr::Call(func, args, _) => {
             // resume markers
             if let Expr::Name(n) = func.as_ref() {
                 if n.as_str() == "__ap_yv" || n.as_str() == "__ap_yf" {
@@ -4880,7 +4880,7 @@ fn emit_stmt(f: &mut Function, stmt: &Stmt, ctx: &mut EmitCtx) {
             // leaves a pyobj to discard.
             if !matches!(
                 e,
-                Expr::Call(func, _)
+                Expr::Call(func, _, _)
                     if matches!(func.as_ref(), Expr::Name(n) if n.as_str() == "print")
                         && !ctx.scan.fns.iter().any(|uf| uf.name == "print")
             ) {
@@ -5976,7 +5976,7 @@ fn emit_expr(f: &mut Function, e: &Expr, ctx: &mut EmitCtx) {
             push_interned_str(f, name.as_str(), ctx);
             f.instruction(&Instruction::Call(fx::FN_ATTR_GET));
         }
-        Expr::Call(func, args) => emit_call(f, func, args, ctx),
+        Expr::Call(func, args, _) => emit_call(f, func, args, ctx),
         Expr::Lambda(..) => {
             // lambda in expression position: build the $function object
             // (cells resolved against the current scope — S-02-12)

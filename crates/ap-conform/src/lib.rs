@@ -73,7 +73,18 @@ pub fn expand_corpus(pattern: &str) -> std::io::Result<Vec<String>> {
     let mut files: Vec<String> = glob::glob(pattern)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()))?
         .filter_map(|entry| entry.ok())
-        .map(|path| path.to_string_lossy().into_owned())
+        .map(|path| {
+            // s016: BOTH interpreter sides must see the same script path
+            // SHAPE — warnings/tracebacks embed `__file__` verbatim, and
+            // CPython resolves the path it was handed while ap-run kept the
+            // raw relative form, so byte-compare diverged on the first
+            // stderr byte (`/Users/...` vs `tests/...`) for every case whose
+            // output mentions the file. Canonicalizing here is a no-op when
+            // the glob is already absolute.
+            path.canonicalize()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| path.to_string_lossy().into_owned())
+        })
         .filter(|p| p.ends_with(".py"))
         .collect();
     files.sort();

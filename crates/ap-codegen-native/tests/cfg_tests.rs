@@ -44,6 +44,7 @@ fn hello_world_lowes_to_terminated_cfg() {
     let f = fn_def(vec![ap_ir::item::Stmt::ExprStmt(Expr::Call(
         Box::new(Expr::Name("print".to_string())),
         vec![ap_ir::expr::Arg::Pos(Expr::LitStr("hello".into()))],
+        0,
     ))]);
     let cfg = lower_fn(&f).expect("lowering must succeed");
     // LoadGlobal(print) + Const(str) + Call + implicit return-None const.

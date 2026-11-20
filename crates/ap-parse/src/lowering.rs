@@ -1102,7 +1102,17 @@ impl<'s> Lowerer<'s> {
                         None => Arg::KwStar(v),
                     });
                 }
-                Ok(self.b.call(f, args))
+                let mut call = self.b.call(f, args);
+                // s016: stamp the call's 1-based source line (the ruff CALL
+                // node's start; CPython's line table attributes each call to
+                // its own instrument line inside multi-line displays). The
+                // callee's start equals the call's start for every direct
+                // form; a parenthesized/lambda callee keeps the same line in
+                // valid single-expression calls.
+                if let ap_ir::Expr::Call(_, _, line) = &mut call {
+                    *line = self.line_at(c.start().to_u32() as usize);
+                }
+                Ok(call)
             }
             ast::Expr::Attribute(a) => {
                 let obj = self.lower_expr(&a.value)?;

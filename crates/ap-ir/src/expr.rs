@@ -55,7 +55,15 @@ pub enum Expr {
     /// `f(args)` — positional + keyword call with `*`/`**` unpacking markers.
     /// Clauses: S-02-7..S-02-10 (arg evaluation order, binding, error text),
     /// S-03-28 (call protocol: `type(C).__call__` on classes).
-    Call(Box<Expr>, Vec<Arg>),
+    /// The third field is the call's 1-based SOURCE LINE (0 = unknown), kept
+    /// because CPython's line table is per-instrument: a call inside a
+    /// multi-line display reports its own line via frame f_lineno / warnings
+    /// stacklevel walks (s016: `isinstance(b"s", ca.ByteString)` on line 21
+    /// inside a display starting at line 14 — CPython warns with line 21,
+    /// statement-granularity tracking said 14). Lowering stamps the ruff
+    /// callee-node start line; the tree-walker's Call arm publishes it to
+    /// `frame.last_line` before evaluating arguments.
+    Call(Box<Expr>, Vec<Arg>, usize),
     /// `obj.attr`. Clause: S-03-9 (getattribute/MRO/descriptor protocol).
     Attribute(Box<Expr>, Name),
     /// `obj[key]` / slicing sugar — subscripts may be full [`Expr::Slice`]

@@ -166,6 +166,7 @@ fn region_finder_takes_pure_arithmetic_body() {
     let call_body = vec![Stmt::Return(Some(Expr::Call(
         Box::new(Expr::Name("g".into())),
         vec![Arg::Pos(Expr::Name("a".into()))],
+        0,
     )))];
     let f2 = fn_def(call_body);
     let func2 = lower_fn(&f2).expect("lower");

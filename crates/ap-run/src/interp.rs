@@ -3576,7 +3576,20 @@ pub(crate) fn eval_expr(
             }
             Ok(last)
         }
-        Expr::Call(f, args) => {
+        Expr::Call(f, args, line) => {
+            // s016: CPython's line table is per-instrument — the CALL
+            // instruction carries its own line, so a call inside a
+            // multi-line display reports its own line to f_lineno /
+            // warnings stacklevel walks (not the statement-start line the
+            // Stmt::Line marker recorded). Publish the call's source line
+            // BEFORE evaluating args/callee: a warning raised mid-display
+            // (e.g. `isinstance(b"s", ca.ByteString)` on line 21 of a
+            // display starting at line 14) must attribute to 21.
+            // line==0 = unknown (hand-built IR in tests/builtin shims) —
+            // keep the statement-start line in that case.
+            if *line > 0 {
+                frame.last_line.set(*line);
+            }
             // T1 (typing_extensions): `abc.ABCMeta.__new__(mcls, ...)` — an
             // UNBOUND user function fetched off a class. Zero-arg super()
             // inside it needs the defining class staged; bound-method

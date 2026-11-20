@@ -395,7 +395,7 @@ fn iter_definitely_binds(it: &Expr) -> bool {
     match it {
         // range(n) / range(a, b) with literal args: non-empty iff any arg
         // form guarantees > 0 iterations (range(0)/range(n, n) are empty).
-        Expr::Call(f, args) => {
+        Expr::Call(f, args, _) => {
             if matches!(f.as_ref(), Expr::Name(n) if n == "range") {
                 let vals: Vec<Option<i128>> = args
                     .iter()
@@ -1598,7 +1598,7 @@ fn collect_expr_loads(e: &Expr, scope: &mut ScopeData) {
                 collect_expr_loads(x, scope);
             }
         }
-        Expr::Call(f, args) => {
+        Expr::Call(f, args, _) => {
             collect_expr_loads(f, scope);
             for a in args {
                 match a {
@@ -1816,7 +1816,7 @@ fn push_child_expr_refs<'a>(e: &'a Expr, stack: &mut Vec<&'a Expr>) {
             stack.extend(xs.iter().rev())
         }
         Expr::Compare(_, xs) => stack.extend(xs.iter().rev()),
-        Expr::Call(f, args) => {
+        Expr::Call(f, args, _) => {
             for a in args.iter().rev() {
                 match a {
                     Arg::Pos(x) | Arg::Star(x) | Arg::Kw(_, x) | Arg::KwStar(x) => stack.push(x),
@@ -2170,7 +2170,7 @@ fn fold_child_exprs(e: &mut Expr) {
                 fold_expr(x);
             }
         }
-        Expr::Call(f, args) => {
+        Expr::Call(f, args, _) => {
             fold_expr(f);
             for a in args {
                 match a {
@@ -3228,7 +3228,7 @@ mod perf_regressions {
         fn old_children(e: &Expr) -> Vec<Expr> {
             match e {
                 Expr::BinOp(_op, a, b) => vec![(**a).clone(), (**b).clone()],
-                Expr::Call(f, args) => {
+                Expr::Call(f, args, _) => {
                     let mut out = vec![(**f).clone()];
                     for a in args {
                         match a {
@@ -3273,6 +3273,7 @@ mod perf_regressions {
                     "d".into(),
                 )),
             ],
+            0,
         );
         let outer = Expr::BinOp(
             BinOp::Add,
