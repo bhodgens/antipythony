@@ -22,10 +22,42 @@ use std::path::{Path, PathBuf};
 use ap_codegen_native::aot::{self, AotTarget};
 use ap_codegen_native::CodegenError;
 
-/// Locate the prebuilt CRT staticlib (built once per checkout by the
-/// build verb itself on first use — `cargo build -p ap-aot-crt`).
-fn crt_staticlib(target: AotTarget) -> Result<PathBuf, String> {
+/// Install-prefix CRT candidate (leaf D13, closes 04.03's D3): an INSTALLED
+/// binary (04.03 release archive, placed by scripts/install.sh) lives at
+/// `$PREFIX/bin/antipythony` with the CRT staticlib at
+/// `$PREFIX/lib/antipythony/libap_aot_crt.a` — FLAT, no cargo profile dir.
+/// Returns None when the exe isn't under a `<prefix>/bin/` layout.
+fn install_prefix_crt(exe_path: &Path) -> Option<PathBuf> {
+    let bin = exe_path.parent()?;
+    let prefix = bin.parent()?;
+    Some(
+        prefix
+            .join("lib")
+            .join("antipythony")
+            .join("libap_aot_crt.a"),
+    )
+}
+
+/// Locate the prebuilt CRT staticlib, testable seam over
+/// [`crt_staticlib`] (which feeds the running exe's path).
+///
+/// Lookup order:
+/// 1. `$PREFIX/lib/antipythony/libap_aot_crt.a` (install.sh layout) — FIRST,
+///    because for an installed binary the baked-in checkout paths from the
+///    BUILD machine are wrong-or-stale (that WAS the D3 bug: the 04.03 smoke
+///    flow only passed on the build host because the baked manifest dir
+///    happened to resolve into a live checkout).
+/// 2. The historical checkout chain: CARGO_TARGET_DIR, the exe's own target
+///    dir, the checkout's target-0206/ + target/ dirs (release then debug).
+fn crt_staticlib_from(exe_path: Option<&Path>, target: AotTarget) -> Result<PathBuf, String> {
     let _ = target;
+    if let Some(exe) = exe_path {
+        if let Some(cand) = install_prefix_crt(exe) {
+            if cand.exists() {
+                return Ok(cand);
+            }
+        }
+    }
     // Same profile the CLI runs in; the CRT is profile-independent for
     // correctness (debug ships debug asserts — recorded in the gate doc).
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
@@ -45,7 +77,7 @@ fn crt_staticlib(target: AotTarget) -> Result<PathBuf, String> {
     // build verb self-contained when callers sanitize the environment
     // (T-09's _clean_env drops CARGO_TARGET_DIR; leaf worktrees build
     // into target-<name>/ the hardcoded paths never see).
-    if let Ok(exe) = std::env::current_exe() {
+    if let Some(exe) = exe_path {
         if let (Some(profile), Some(root)) = (exe.parent(), exe.parent().and_then(Path::parent)) {
             let _ = profile;
             roots.push(root.to_path_buf());
@@ -62,10 +94,71 @@ fn crt_staticlib(target: AotTarget) -> Result<PathBuf, String> {
         }
     }
     Err(
-        "antipythony: ap-aot-crt staticlib not found — build it first with \
-         `cargo build -p ap-aot-crt` (debug or release; CARGO_TARGET_DIR must match this checkout)"
+        "antipythony: ap-aot-crt staticlib not found — for an installed binary it lives at \
+         $PREFIX/lib/antipythony/libap_aot_crt.a (reinstall via scripts/install.sh); in a \
+         checkout build it first with `cargo build -p ap-aot-crt` (debug or release; \
+         CARGO_TARGET_DIR must match this checkout)"
             .to_string(),
     )
+}
+
+fn crt_staticlib(target: AotTarget) -> Result<PathBuf, String> {
+    crt_staticlib_from(std::env::current_exe().ok().as_deref(), target)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// D3 unit test: a binary staged in the install.sh layout
+    /// (<prefix>/bin/antipythony + <prefix>/lib/antipythony/libap_aot_crt.a)
+    /// resolves the CRT from the PREFIX even when no checkout target dir
+    /// exists at all (the fresh-machine condition). We point exe-path
+    /// resolution at the staged layout via the crt_staticlib_from seam and
+    /// clear CARGO_TARGET_DIR so the historical chain can't accidentally
+    /// satisfy the lookup.
+    #[test]
+    fn crt_lookup_finds_staged_install_prefix_crt() {
+        let tmp = std::env::temp_dir().join(format!(
+            "apcli-d13-crt-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let prefix = tmp.join("prefix");
+        let crt_dir = prefix.join("lib").join("antipythony");
+        std::fs::create_dir_all(crt_dir.join("bin")).expect("stage bin/");
+        std::fs::create_dir_all(&crt_dir).expect("stage lib/antipythony/");
+        let exe = prefix.join("bin").join("antipythony");
+        let crt = crt_dir.join("libap_aot_crt.a");
+        std::fs::write(&crt, b"!<arch>\n").expect("stage CRT staticlib");
+
+        let got = crt_staticlib_from(Some(&exe), AotTarget::MacosNative)
+            .expect("install-prefix CRT lookup must find the staged staticlib");
+        assert_eq!(got, crt);
+
+        // And the negative arm: remove the staticlib -> lookup fails (the
+        // error must name the install path so the fresh-machine failure is
+        // actionable).
+        std::fs::remove_file(&crt).expect("drop staged CRT");
+        let err = crt_staticlib_from(Some(&exe), AotTarget::MacosNative)
+            .expect_err("missing CRT must fail");
+        assert!(
+            err.contains("$PREFIX/lib/antipythony"),
+            "error should name the install path: {err}"
+        );
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// install_prefix_crt returns None for an exe with no parent layout
+    /// (bare filename) — the lookup must not panic on degenerate paths.
+    #[test]
+    fn install_prefix_crt_none_for_bare_path() {
+        assert!(install_prefix_crt(Path::new("antipythony")).is_none());
+    }
 }
 
 /// The build verb body (called from main.rs's cmd_build).
