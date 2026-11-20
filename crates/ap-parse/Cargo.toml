@@ -14,6 +14,10 @@ clap = { version = "4", features = ["derive"] }
 ruff_python_ast = "0.0.4"
 ruff_python_parser = "0.0.4"
 ruff_text_size = "0.0.4"
+# V016: \N{name} escape re-decoding uses the SAME name table ruff resolves
+# with (ruff_python_parser 0.0.4 depends on unicode_names2 1.2.2; the
+# workspace lock resolves 1.3.0 — names are stable across both).
+unicode_names2 = "1.3.0"
 
 # Temporary: get-size2 0.10.3 expects compact_str 0.10 but ruff 0.0.4 pins 0.9;
 # 0.10.1 (pre-bump) still uses compact_str 0.9.

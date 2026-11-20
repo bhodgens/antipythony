@@ -43,10 +43,15 @@ pub fn parse(source: &str) -> Result<ModuleAst, ParseError> {
         return Err(error_at(source, offset, err.to_string()));
     }
 
-    let module = parsed
+    let mut module = parsed
         .try_into_module()
         .expect("module mode always parses to ModModule")
         .into_syntax();
+
+    // V016: ruff maps \u/\U surrogate escapes to U+FFFD (Rust char cannot
+    // hold a lone surrogate). Re-decode accepted string literals from the
+    // source with CPython semantics, keeping surrogates as WTF-8.
+    surrogates::patch_module(&mut module, source);
 
     // Post-parse validation for diagnostic gaps (wave-7 frontend audit)
     validate_module(&module, source)?;
@@ -315,6 +320,7 @@ fn line_indent(source: &str, line: usize) -> usize {
 mod ir_matrix_check;
 
 pub mod lowering;
+pub mod surrogates;
 pub mod verify_bridge;
 
 pub use lowering::{lower, lower_source, LowerError, LoweringBug, ScopeInfo, ScopeInfoModule};
