@@ -184,3 +184,25 @@ tests/corpus/values/V048*, plans docs. Zero overlap.
 3. ap-run surr_codec engine + builtin codec routes + chr/ord/subscript +
    mbc cp loops + start/end attrs.
 4. corpus V048 + NEXT-V016.md.
+
+
+---
+
+## CLEAN STOP (2026-11-20)
+
+- Authoritative gate: the FINAL `cargo test -p ap-run --release` after the
+  harness-path fix: 18 suites / 206 passed / 0 failed / 1 ignored. Earlier
+  red runs in the transcript (Flow-Debug compile errors, MAP_* not found,
+  bugb_* spawn failures) are superseded transient states: the fmt-truncation
+  incident and the fresh-worktree probe-bin gap, both fixed in-session.
+- Worktree clean at 3b2ff80; branch tier1-v016 (6 commits) ready for
+  orchestrator merge. Dry-run merge vs main 213e2ac auto-merged cleanly
+  (overlaps in builtins.rs/interp.rs resolved textually without conflict).
+- NOTE for orchestrator: the MAIN checkout currently carries a sibling's
+  UNCOMMITTED edits to mbc_gb18030_4.rs + mbc_tables.rs (not mine — my mbc.rs
+  changes are committed on this branch and do not touch those two files).
+  Merge tier1-v016 only after that sibling commits; my dry-run checked
+  textual merge against 213e2ac's COMMITTED state.
+- Follow-up filed in-doc: wasm-surrogate lowering leaf (03.x); optional
+  harness fix (tests/common/mod.rs should read cargo target-dir config
+  instead of hardcoding target/debug for fresh worktrees).
