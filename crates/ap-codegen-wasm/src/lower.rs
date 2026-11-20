@@ -284,7 +284,9 @@ fn scan_module_stmt(stmt: &Stmt, scan: &mut Scan) -> Result<(), CodegenError> {
         }
     }
     if !nonlocal.is_empty() {
-        return Err(CodegenError::Unsupported("nonlocal at module scope (SyntaxError)"));
+        return Err(CodegenError::Unsupported(
+            "nonlocal at module scope (SyntaxError)",
+        ));
     }
     Ok(())
 }
@@ -334,6 +336,14 @@ fn collect_stmt(
             Ok(())
         }
         Stmt::AugAssign(t, _, v) => {
+            // HARDEN (post-03 emitter contract): both AugAssign emit arms
+            // (plain + gen segment) unreachable! on non-Name targets
+            // ("scan vetted augassign targets"). Reject at scan.
+            if !matches!(t, ap_ir::item::Target::Name(_)) {
+                return Err(CodegenError::Unsupported(
+                    "augassign target beyond a name (post-03 emitter surface)",
+                ));
+            }
             collect_target_read(t, refs, bound, nonlocal, scan)?;
             collect_expr(v, refs, bound, nonlocal, scan)
         }
@@ -406,6 +416,22 @@ fn collect_stmt(
         Stmt::LocalClass(cd) => scan_class_def(cd, bound, scan),
         // 03.03: try/except/else/finally + raise (S-02-27..34)
         Stmt::Try(ts) => {
+            // HARDEN (post-03 emitter contract): the generator segment
+            // planner fail-closes (panic) on try orelse/finally inside a
+            // generator body ("gen try orelse/finally" — the G001
+            // closer() shape). Gate here at scan, where the enclosing
+            // generator-ness is known via parent_stack.
+            {
+                let in_gen = match scan.parent_stack.last().copied() {
+                    Some(slot) if slot != usize::MAX => scan.fns[slot].is_generator,
+                    _ => false,
+                };
+                if in_gen && (!ts.orelse.is_empty() || !ts.finalbody.is_empty()) {
+                    return Err(CodegenError::Unsupported(
+                        "generator try orelse/finally (03.04e segment slice)",
+                    ));
+                }
+            }
             collect_scope(&ts.body, refs, bound, nonlocal, scan)?;
             for h in &ts.handlers {
                 if let Some(ty) = &h.ty {
@@ -439,7 +465,13 @@ fn collect_stmt(
 }
 
 /// leaf 03.04c scan gates for the generator/match slice.
-fn collect_for(f: &Stmt, refs: &mut Vec<String>, bound: &mut Vec<String>, nonlocal: &mut Vec<String>, scan: &mut Scan) -> Result<(), CodegenError> {
+fn collect_for(
+    f: &Stmt,
+    refs: &mut Vec<String>,
+    bound: &mut Vec<String>,
+    nonlocal: &mut Vec<String>,
+    scan: &mut Scan,
+) -> Result<(), CodegenError> {
     let Stmt::For(target, iter, body, els) = f else {
         unreachable!("collect_for on a non-For")
     };
@@ -458,7 +490,13 @@ fn collect_for(f: &Stmt, refs: &mut Vec<String>, bound: &mut Vec<String>, nonloc
 /// leaf 03.04c match scan: subject + per-case gates (MA001 slice — Literal /
 /// Capture / Wildcard / Or / Sequence+Starred / Mapping-str-key / Group; Guard
 /// exprs collect as reads; Class/Value/Mapping-**rest fail-closed).
-fn collect_match(f: &Stmt, refs: &mut Vec<String>, bound: &mut Vec<String>, nonlocal: &mut Vec<String>, scan: &mut Scan) -> Result<(), CodegenError> {
+fn collect_match(
+    f: &Stmt,
+    refs: &mut Vec<String>,
+    bound: &mut Vec<String>,
+    nonlocal: &mut Vec<String>,
+    scan: &mut Scan,
+) -> Result<(), CodegenError> {
     let Stmt::Match(subject, cases) = f else {
         unreachable!("collect_match on a non-Match")
     };
@@ -587,6 +625,16 @@ fn scan_class_def(
     bound: &mut Vec<String>,
     scan: &mut Scan,
 ) -> Result<(), CodegenError> {
+    // HARDEN (post-03 emitter contract): emit_class_def unreachable!s on
+    // bases.len() > 1 ("multi-base class rejected at scan (03.03 slice)") —
+    // the c019/c020/c022 MRO-diamond corpus cases. The message names scan,
+    // so scan must actually reject (fail-closed); C3 multi-base is the
+    // owning post-03 surface.
+    if cd.bases.len() > 1 {
+        return Err(CodegenError::Unsupported(
+            "multi-base class (post-03 C3/MRO surface)",
+        ));
+    }
     let n = cd.name.to_string();
     // intern the class name (emit builds the class via FN_CLS_NEW's name $str —
     // nested class defs never ran the Item::ClassDef intern)
@@ -738,13 +786,8 @@ fn collect_expr(
             // RuntimeError) or 2 (two-arg build), positional only.
             if let Expr::Name(n) = f.as_ref() {
                 if n.as_str() == "super" {
-                    let npos = args
-                        .iter()
-                        .filter(|a| matches!(a, Arg::Pos(_)))
-                        .count();
-                    if !args.iter().all(|a| matches!(a, Arg::Pos(_)))
-                        || (npos != 0 && npos != 2)
-                    {
+                    let npos = args.iter().filter(|a| matches!(a, Arg::Pos(_))).count();
+                    if !args.iter().all(|a| matches!(a, Arg::Pos(_))) || (npos != 0 && npos != 2) {
                         return Err(CodegenError::Unsupported(
                             "super() form beyond the 03.03d slice (kwargs/n-ary)",
                         ));
@@ -846,10 +889,15 @@ fn collect_expr(
             }
             Ok(())
         }
-        Expr::Subscript(obj, key) => {
-            collect_expr(obj, refs, bound, nonlocal, scan)?;
-            collect_expr(key, refs, bound, nonlocal, scan)
-        }
+        // HARDEN (post-03 emitter contract): the emitter has NO
+        // Expr::Subscript arm — emit_expr unreachable!s ("scan vetted
+        // expr") on every subscript read (c001 `A.__mro__[-1]`, c009/c016
+        // `c.__dict__["x"]`, e008 `e.exceptions[0]`, t1_004 `marks[0]`,
+        // V043 `d[[1, 2]]`). Reject at scan (fail-closed); a getitem emit
+        // surface is the owning post-03 slice (no runtime FN exists yet).
+        Expr::Subscript(..) => Err(CodegenError::Unsupported(
+            "subscript read (post-03 emitter surface)",
+        )),
         Expr::Starred(x) => collect_expr(x, refs, bound, nonlocal, scan),
         _ => Err(CodegenError::Unsupported("Expr (03.02c slice)")),
     }
@@ -1058,9 +1106,8 @@ fn resolution_map(scan: &Scan, slot: usize) -> std::collections::HashMap<String,
         if f.free.contains(&n) || f.free_cells.contains(&n) {
             continue; // free variable: enclosing cell, not a local (S-02-12)
         }
-        map.entry(n).or_insert(Res::Local(
-            py_param_base + f.params.len() as u32 + plain,
-        ));
+        map.entry(n)
+            .or_insert(Res::Local(py_param_base + f.params.len() as u32 + plain));
         plain += 1;
     }
     for (i, n) in f.free_cells.iter().enumerate() {
@@ -1175,8 +1222,31 @@ pub fn lower_module_ex(
     let mut scan = Scan::new();
     scan_module(module, &mut scan)?;
     resolve_cells(&mut scan);
-    let res_maps: Vec<std::collections::HashMap<String, Res>> =
-        (0..scan.fns.len()).map(|i| resolution_map(&scan, i)).collect();
+    // HARDEN (post-03 emitter contract): a fn-scope name read resolves at
+    // emit via a CELL (free_cells) or via exc_type_global OR mod_global —
+    // and mod_global PANICS ("scan registered every module name read") on
+    // a name the module never registered (V063's `eval` read inside a
+    // genexp hidden fn: free refs of a hidden comp fn never reach
+    // mod_slot). Fail-closed: every fn free name must resolve to a cell
+    // (free_cells), be module-bound, or name a builtin/exc type or a
+    // supported builtin. (Runs AFTER resolve_cells: free_cells is the
+    // emit-accurate cell-visible subset of `free`.)
+    for f in &scan.fns {
+        for r in &f.free {
+            let resolvable = f.free_cells.iter().any(|n| n == r)
+                || scan.module_binds.iter().any(|n| n == r)
+                || crate::types::exc_type_global(r).is_some()
+                || is_supported_builtin(r);
+            if !resolvable {
+                return Err(CodegenError::Unsupported(
+                    "unresolvable free name in fn scope (post-03 emitter surface)",
+                ));
+            }
+        }
+    }
+    let res_maps: Vec<std::collections::HashMap<String, Res>> = (0..scan.fns.len())
+        .map(|i| resolution_map(&scan, i))
+        .collect();
 
     // ---- data-segment image: [name blob][module literals][prelude] ----
     // name blob = TYPE_ORDER names + the EXC_TREE names (exception class
@@ -1332,8 +1402,8 @@ pub fn lower_module_ex(
         },
         &ConstExpr::extended([Instruction::I32Const(0)]),
     ); // rt_done
-    // builtin types + the exception tree (leaf 03.03: rt_init builds the
-    // EXC_TREE $type objects into these slots)
+       // builtin types + the exception tree (leaf 03.03: rt_init builds the
+       // EXC_TREE $type objects into these slots)
     for _ in 0..TYPE_ORDER.len() + EXC_TREE.len() {
         add_global(
             &mut globals,
@@ -1427,10 +1497,10 @@ pub fn lower_module_ex(
     // string table (03.03b fix: the early snapshot truncated the segment and
     // array.new_data trapped out-of-bounds at the module-frame push).
 
-        // ---- _start: rt_init, module-def function objects, module body ----
-        {
-            // (eh_wrap hoisted to lower_module_ex scope)
-            let mut locals: Vec<(u32, ValType)> = Vec::new();
+    // ---- _start: rt_init, module-def function objects, module body ----
+    {
+        // (eh_wrap hoisted to lower_module_ex scope)
+        let mut locals: Vec<(u32, ValType)> = Vec::new();
         // filler to index 40, then the shared temp block (mirrors 03.02b)
         locals.push((40, pyobj_ref()));
         locals.push((1, ValType::I32)); // 40: print-buffer running end
@@ -1475,8 +1545,8 @@ pub fn lower_module_ex(
             }),
         )); // 51: $cell_arr stash (free-cell load; unused in _start)
         locals.push((1, pyobj_ref())); // 52: iterator stash (03.04c For/gen)
-        // 03.04c range() scratch: 53/54/55 = i64 (start/stop/step),
-        // 56/59 = i32 (count, i), 57 = mut $obj_arr snapshot.
+                                       // 03.04c range() scratch: 53/54/55 = i64 (start/stop/step),
+                                       // 56/59 = i32 (count, i), 57 = mut $obj_arr snapshot.
         locals.push((3, ValType::I64)); // 53..55
         locals.push((1, ValType::I32)); // 56 = range count
         locals.push((
@@ -1555,12 +1625,12 @@ pub fn lower_module_ex(
         // resolves in the scope ENCLOSING the try_table, and after the
         // try_table's End the label-1 target is the enclosing Block.
         if eh_wrap {
-            f.instruction(&Instruction::Block(BlockType::Result(
-                ValType::Ref(wasm_encoder::RefType {
+            f.instruction(&Instruction::Block(BlockType::Result(ValType::Ref(
+                wasm_encoder::RefType {
                     nullable: true,
                     heap_type: hc(T_EXCEPTION),
-                }),
-            ))); // $catch
+                },
+            )))); // $catch
         }
         {
             let catches = [wasm_encoder::Catch::One {
@@ -1646,8 +1716,8 @@ pub fn lower_module_ex(
         }
         if eh_wrap {
             f.instruction(&Instruction::End); // try_table
-            // success: deliver a null payload to $catch (the handler below
-            // tests is_null — null = no exception)
+                                              // success: deliver a null payload to $catch (the handler below
+                                              // tests is_null — null = no exception)
             f.instruction(&Instruction::RefNull(hc(T_EXCEPTION)));
             f.instruction(&Instruction::Br(0)); // -> $catch end
             f.instruction(&Instruction::End); // $catch: exc (or null) on stack
@@ -2066,7 +2136,7 @@ struct EmitCtx<'a> {
     comp_emit_cursor: usize,
 }
 
- /// Shared temp locals (valid in `_start` AND user-function frames; user
+/// Shared temp locals (valid in `_start` AND user-function frames; user
 /// frames reserve the same indices at their local-block tail).
 const TEMP_LOCAL: u32 = 40; // print-buffer end (i32)
 #[allow(dead_code)]
@@ -2083,7 +2153,6 @@ const TEMP_LOCAL_OBJARR2: u32 = 50; // second mut $obj_arr stash (param_names)
 /// leaf 03.04c: iterator stash (the $generator iterator object across the
 /// For/generator resume paths). _start and every user frame reserve 52.
 const TEMP_LOCAL_IT: u32 = 52;
-
 
 // ===========================================================================
 // Generator lowering (leaf 03.04d): step-fn CFG flattener + call-site builds
@@ -2163,7 +2232,8 @@ impl GenScratch {
 
 fn gen_slot_idx(gen: &GenCtx, name: &str) -> u32 {
     gen.mirror_base
-        + gen.slot_table
+        + gen
+            .slot_table
             .iter()
             .position(|n| n == name)
             .unwrap_or_else(|| panic!("generator slot table missing '{name}'")) as u32
@@ -2225,11 +2295,7 @@ enum SegKind {
     /// Resume side of Park Bind: slot = $gen.$value, then continue.
     Rebind { slot: String },
     /// Resume side of Park Split: slot = lhs OP $value, then continue.
-    SplitResume {
-        op: BinOp,
-        lhs: Expr,
-        slot: String,
-    },
+    SplitResume { op: BinOp, lhs: Expr, slot: String },
     /// For-entry: it_slot = iter_of(iter); fall through.
     ForInit { iter: Expr, it_slot: String },
     /// For-step: try iter_next(it_slot) -> bind target, fall through;
@@ -2293,7 +2359,10 @@ fn walk_stmt_yields(s: &Stmt) -> bool {
         }
         Stmt::Try(ts) => {
             ts.body.iter().any(walk_stmt_yields)
-                || ts.handlers.iter().any(|h| h.body.iter().any(walk_stmt_yields))
+                || ts
+                    .handlers
+                    .iter()
+                    .any(|h| h.body.iter().any(walk_stmt_yields))
                 || ts.orelse.iter().any(walk_stmt_yields)
         }
         _ => false,
@@ -2924,8 +2993,7 @@ fn emit_gen_step_fn(f: &mut Function, uf: &UserFn, ctx: &mut EmitCtx) {
             eprintln!("[PLAN] seg{i:2} {:<12?} next={:?}", s.kind, s.next_override);
         }
     }
-    let loop_tails: std::collections::HashSet<usize> =
-        plan.loop_tails.iter().copied().collect();
+    let loop_tails: std::collections::HashSet<usize> = plan.loop_tails.iter().copied().collect();
     // try-wrapper map: wrapper id covering segment k (inner0 <= k < after).
     // More than one nested wrapper over one segment is not planned.
     let mut wrap_of: Vec<Option<usize>> = vec![None; n_segs];
@@ -2937,10 +3005,7 @@ fn emit_gen_step_fn(f: &mut Function, uf: &UserFn, ctx: &mut EmitCtx) {
     // per-segment staged HandlerPrefix seg (first park-yield handler)
     let mut prefix_seg_of: Vec<Option<usize>> = vec![None; n_segs];
     for (wid, w) in plan.wrappers.iter().enumerate() {
-        let pseg = w
-            .handlers
-            .iter()
-            .find_map(|h| h.prefix_seg);
+        let pseg = w.handlers.iter().find_map(|h| h.prefix_seg);
         for k in w.inner0..w.after {
             prefix_seg_of[k] = pseg;
         }
@@ -2978,12 +3043,12 @@ fn emit_gen_step_fn(f: &mut Function, uf: &UserFn, ctx: &mut EmitCtx) {
     // (03.04f: per-segment re-open left post-wrapper resumes unarmed —
     // gen_close's GeneratorExit was swallowed silently).
     f.instruction(&Instruction::Loop(BlockType::Empty)); // $outer (close-chain re-dispatch)
-    f.instruction(&Instruction::Block(BlockType::Result(
-        ValType::Ref(wasm_encoder::RefType {
+    f.instruction(&Instruction::Block(BlockType::Result(ValType::Ref(
+        wasm_encoder::RefType {
             nullable: true,
             heap_type: hc(T_EXCEPTION),
-        }),
-    ))); // $cx: the machine-wide catch lands here with the exc on the stack
+        },
+    )))); // $cx: the machine-wide catch lands here with the exc on the stack
     {
         let catches = [wasm_encoder::Catch::One {
             tag: TAG_PYEXC,
@@ -3106,8 +3171,8 @@ fn emit_gen_step_fn(f: &mut Function, uf: &UserFn, ctx: &mut EmitCtx) {
                 f.instruction(&Instruction::Else);
                 goto_x(f, *no, 1 + wrap_extra);
                 f.instruction(&Instruction::End); // If
-                // both arms br'd away; unreachable-tail the fall-through so
-                // no half-truthy state can ever leak into the next segment.
+                                                  // both arms br'd away; unreachable-tail the fall-through so
+                                                  // no half-truthy state can ever leak into the next segment.
                 f.instruction(&Instruction::Unreachable);
             }
             SegKind::Park {
@@ -3126,11 +3191,7 @@ fn emit_gen_step_fn(f: &mut Function, uf: &UserFn, ctx: &mut EmitCtx) {
                     ParkKind::Bind(_slot) => {} // Rebind segment does the bind
                     ParkKind::Split(_op, _lhs, _slot) => {}
                 }
-                gen_park_yield(
-                    f,
-                    &gen,
-                    seg.next_override.unwrap_or(*park_next) as i32,
-                );
+                gen_park_yield(f, &gen, seg.next_override.unwrap_or(*park_next) as i32);
                 // control left the fn (park returned); NOTHING after — not
                 // even a validator-necessary br: the fn-end is implicit.
             }
@@ -3168,12 +3229,12 @@ fn emit_gen_step_fn(f: &mut Function, uf: &UserFn, ctx: &mut EmitCtx) {
             } => {
                 // x = iter_next(it) guarded by try_table (SI -> exit; other
                 // raises rethrow)
-                f.instruction(&Instruction::Block(BlockType::Result(
-                    ValType::Ref(wasm_encoder::RefType {
+                f.instruction(&Instruction::Block(BlockType::Result(ValType::Ref(
+                    wasm_encoder::RefType {
                         nullable: true,
                         heap_type: hc(T_EXCEPTION),
-                    }),
-                ))); // $cx
+                    },
+                )))); // $cx
                 {
                     let catches = [wasm_encoder::Catch::One {
                         tag: TAG_PYEXC,
@@ -3223,12 +3284,12 @@ fn emit_gen_step_fn(f: &mut Function, uf: &UserFn, ctx: &mut EmitCtx) {
             SegKind::YfNext { it_slot, done } => {
                 // x = iter_next(it) guarded; SI -> stash payload -> done;
                 // other raise -> rethrow; got x -> yield x (park to SELF).
-                f.instruction(&Instruction::Block(BlockType::Result(
-                    ValType::Ref(wasm_encoder::RefType {
+                f.instruction(&Instruction::Block(BlockType::Result(ValType::Ref(
+                    wasm_encoder::RefType {
                         nullable: true,
                         heap_type: hc(T_EXCEPTION),
-                    }),
-                ))); // $cx
+                    },
+                )))); // $cx
                 {
                     let catches = [wasm_encoder::Catch::One {
                         tag: TAG_PYEXC,
@@ -3289,17 +3350,15 @@ fn emit_gen_step_fn(f: &mut Function, uf: &UserFn, ctx: &mut EmitCtx) {
                     // depth to Loop1 from this site: If(SI) + $chk + the
                     // still-open seg blocks B(k+1..n-1) + $done + $sink
                     // = 2 + (n-1-k) + 2 = n-k+3 (03.04f)
-                    f.instruction(&Instruction::Br(
-                        (n_segs - k + 3) as u32,
-                    ));
+                    f.instruction(&Instruction::Br((n_segs - k + 3) as u32));
                     f.instruction(&Instruction::End);
                     f.instruction(&Instruction::LocalGet(gen.scratch.b));
                     f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
                     f.instruction(&Instruction::Throw(TAG_PYEXC));
                 }
                 f.instruction(&Instruction::End); // $chk: success -> scratch.a = x
-                // got x: yield it — park TO SELF (resume re-enters this
-                // segment; the it-slot carries the delegate cursor).
+                                                  // got x: yield it — park TO SELF (resume re-enters this
+                                                  // segment; the it-slot carries the delegate cursor).
                 f.instruction(&Instruction::LocalGet(gen.scratch.a));
                 gen_park_yield(f, &gen, k as i32);
             }
@@ -3323,11 +3382,11 @@ fn emit_gen_step_fn(f: &mut Function, uf: &UserFn, ctx: &mut EmitCtx) {
                 f.instruction(&Instruction::LocalGet(gen.scratch.s_pad));
                 f.instruction(&Instruction::GlobalSet(ctx.fg.active_exc));
                 let _ = park_kind; // the `as n` bind rides gen_store in the
-                // resume segment via Park Bind? Simpler: bind HERE from the
-                // payload when park lands. The park's $value = yield expr;
-                // on resume gen_send parks the SENT value; the handler name
-                // binds the EXC — bound in the wrapper chain (s_pad), not
-                // from $value. So no Bind handling here: plain park.
+                                   // resume segment via Park Bind? Simpler: bind HERE from the
+                                   // payload when park lands. The park's $value = yield expr;
+                                   // on resume gen_send parks the SENT value; the handler name
+                                   // binds the EXC — bound in the wrapper chain (s_pad), not
+                                   // from $value. So no Bind handling here: plain park.
                 for s in stmts {
                     gen_emit_stmt(f, s, ctx, &gen);
                 }
@@ -3359,13 +3418,13 @@ fn emit_gen_step_fn(f: &mut Function, uf: &UserFn, ctx: &mut EmitCtx) {
         }
     }
     f.instruction(&Instruction::End); // $sink End (last segment block's
-    // End already closed B(n-1); falling here = done region entry, and the
-    // br_table default (depth n from dispatch) lands HERE directly).
-    // done region: $value = None, state = DONE, return null. Every entry
-    // (br_table default or the goto-done escape) arrives with an empty
-    // stack, so a direct Return is safe — and REQUIRED now: the machine
-    // sits inside $outer's Loop, and falling through End($done)/End(Loop)
-    // would re-enter the dispatch forever (03.04f).
+                                      // End already closed B(n-1); falling here = done region entry, and the
+                                      // br_table default (depth n from dispatch) lands HERE directly).
+                                      // done region: $value = None, state = DONE, return null. Every entry
+                                      // (br_table default or the goto-done escape) arrives with an empty
+                                      // stack, so a direct Return is safe — and REQUIRED now: the machine
+                                      // sits inside $outer's Loop, and falling through End($done)/End(Loop)
+                                      // would re-enter the dispatch forever (03.04f).
     gen_lget_gen(f);
     f.instruction(&Instruction::GlobalGet(G_NONE));
     sset(f, T_GENERATOR, F_GEN_VALUE);
@@ -3563,8 +3622,6 @@ fn gen_extract_si_payload(f: &mut Function, gen: &GenCtx) {
     f.instruction(&Instruction::End);
     f.instruction(&Instruction::LocalSet(gen.scratch.b));
 }
-
-
 
 /// PARK at a yield site: spill mirrors -> $gen.$locals, $value = yieldval
 /// (on stack), $state = park, return yieldval.
@@ -3795,13 +3852,7 @@ fn gen_emit_expr(f: &mut Function, e: &Expr, ctx: &mut EmitCtx, gen: &GenCtx) {
     }
 }
 
-fn gen_emit_bool_op(
-    f: &mut Function,
-    ops: &[Expr],
-    is_or: bool,
-    ctx: &mut EmitCtx,
-    gen: &GenCtx,
-) {
+fn gen_emit_bool_op(f: &mut Function, ops: &[Expr], is_or: bool, ctx: &mut EmitCtx, gen: &GenCtx) {
     let res = gen.scratch.a;
     let entry = ctx.depth;
     f.instruction(&Instruction::Block(BlockType::Empty));
@@ -3837,13 +3888,7 @@ fn gen_emit_bool_op(
 }
 
 /// Call emission inside a generator state (gen-scope arg evaluation).
-fn gen_emit_call(
-    f: &mut Function,
-    func: &Expr,
-    args: &[Arg],
-    ctx: &mut EmitCtx,
-    gen: &GenCtx,
-) {
+fn gen_emit_call(f: &mut Function, func: &Expr, args: &[Arg], ctx: &mut EmitCtx, gen: &GenCtx) {
     if let Expr::Name(name) = func {
         // STATIC GENERATOR call: build a parked $generator.
         // Shadowing = a NON-global res entry (Local/OwnCell/FreeCell). A
@@ -3921,7 +3966,11 @@ fn gen_emit_call(
             for a in args {
                 let Arg::Pos(x) = a else { unreachable!() };
                 gen_emit_expr(f, x, ctx, gen);
-                let st = if stashes.is_empty() { gen.scratch.a } else { gen.scratch.b };
+                let st = if stashes.is_empty() {
+                    gen.scratch.a
+                } else {
+                    gen.scratch.b
+                };
                 stashes.push(st);
                 f.instruction(&Instruction::LocalSet(st));
             }
@@ -3953,13 +4002,7 @@ fn gen_emit_call(
     f.instruction(&Instruction::Call(fx::FN_DISPATCH));
 }
 
-fn gen_emit_builtin(
-    f: &mut Function,
-    name: &str,
-    args: &[Arg],
-    ctx: &mut EmitCtx,
-    gen: &GenCtx,
-) {
+fn gen_emit_builtin(f: &mut Function, name: &str, args: &[Arg], ctx: &mut EmitCtx, gen: &GenCtx) {
     let mut pos: Vec<&Expr> = Vec::new();
     for a in args {
         let Arg::Pos(x) = a else { unreachable!() };
@@ -4013,12 +4056,12 @@ fn gen_emit_builtin(
                     f.instruction(&Instruction::LocalSet(TEMP_LOCAL_B));
                     emit_expr(f, it, ctx);
                     f.instruction(&Instruction::LocalSet(TEMP_LOCAL_A));
-                    f.instruction(&Instruction::Block(BlockType::Result(
-                        ValType::Ref(wasm_encoder::RefType {
+                    f.instruction(&Instruction::Block(BlockType::Result(ValType::Ref(
+                        wasm_encoder::RefType {
                             nullable: true,
                             heap_type: hc(T_EXCEPTION),
-                        }),
-                    ))); // $cx
+                        },
+                    )))); // $cx
                     let catches = [wasm_encoder::Catch::One {
                         tag: TAG_PYEXC,
                         label: 0,
@@ -4214,7 +4257,9 @@ fn gen_emit_generator_new(
     for (i, p) in uf.params.iter().enumerate() {
         f.instruction(&Instruction::LocalGet(gen.scratch.objarr));
         f.instruction(&Instruction::I32Const(i as i32));
-        let Arg::Pos(x) = &args[i] else { unreachable!() };
+        let Arg::Pos(x) = &args[i] else {
+            unreachable!()
+        };
         gen_emit_expr(f, x, ctx, gen);
         f.instruction(&Instruction::ArraySet(T_OBJ_ARR));
     }
@@ -4446,8 +4491,8 @@ fn emit_user_fn(
             }),
         )); // 51
         order.push((1, pyobj_ref())); // 52: iterator stash (03.04c For/gen)
-        // 03.04c range() scratch: 53/54/55 = i64 (start/stop/step),
-        // 56 = i32 count, 57 = mut $obj_arr snapshot, 58 = pad, 59 = i32 i.
+                                      // 03.04c range() scratch: 53/54/55 = i64 (start/stop/step),
+                                      // 56 = i32 count, 57 = mut $obj_arr snapshot, 58 = pad, 59 = i32 i.
         order.push((3, ValType::I64)); // 53..55
         order.push((1, ValType::I32)); // 56
         order.push((
@@ -4564,9 +4609,7 @@ fn emit_user_fn(
                 struct_type_index: T_FUNCTION,
                 field_index: F_FN_DEFAULTS,
             });
-            f.instruction(&Instruction::I32Const(
-                p.default_index.unwrap() as i32,
-            ));
+            f.instruction(&Instruction::I32Const(p.default_index.unwrap() as i32));
             f.instruction(&Instruction::ArrayGet(T_OBJ_ARR));
             f.instruction(&Instruction::LocalSet(3 + i as u32));
             f.instruction(&Instruction::End);
@@ -4658,7 +4701,9 @@ fn emit_generator_call(f: &mut Function, slot: usize, args: &[Arg], ctx: &mut Em
     for (i, p) in uf.params.iter().enumerate() {
         f.instruction(&Instruction::LocalGet(TEMP_LOCAL_OBJARR));
         f.instruction(&Instruction::I32Const(i as i32));
-        let Arg::Pos(x) = &args[i] else { unreachable!() };
+        let Arg::Pos(x) = &args[i] else {
+            unreachable!()
+        };
         emit_expr(f, x, ctx);
         f.instruction(&Instruction::ArraySet(T_OBJ_ARR));
     }
@@ -4687,7 +4732,7 @@ fn emit_generator_call(f: &mut Function, slot: usize, args: &[Arg], ctx: &mut Em
     f.instruction(&Instruction::RefNull(hc(T_DICT))); // globals
     f.instruction(&Instruction::StructNew(T_FUNCTION));
     f.instruction(&Instruction::LocalSet(TEMP_LOCAL_FN)); // stash the fn ($function-typed local)
-    // 3. $generator struct: [null-type, fn, state=0, locals, null, null]
+                                                          // 3. $generator struct: [null-type, fn, state=0, locals, null, null]
     f.instruction(&Instruction::RefNull(hc(T_TYPE)));
     f.instruction(&Instruction::LocalGet(TEMP_LOCAL_FN));
     f.instruction(&Instruction::I32Const(GS_START));
@@ -4744,7 +4789,7 @@ fn emit_function_object(f: &mut Function, slot: usize, ctx: &mut EmitCtx) {
     f.instruction(&Instruction::RefNull(wasm_encoder::HeapType::Concrete(
         T_DICT,
     ))); // kwdefaults
-    // cells: one cell ref per child free_cell, resolved in THIS scope
+         // cells: one cell ref per child free_cell, resolved in THIS scope
     let n_cells = uf.free_cells.len() as u32;
     if n_cells > 0 {
         for name in &uf.free_cells {
@@ -5028,12 +5073,12 @@ fn emit_stmt(f: &mut Function, stmt: &Stmt, ctx: &mut EmitCtx) {
             ctx.depth += 1;
             let head_depth = ctx.depth;
             // per-iteration next(), guarded:
-            f.instruction(&Instruction::Block(BlockType::Result(
-                ValType::Ref(wasm_encoder::RefType {
+            f.instruction(&Instruction::Block(BlockType::Result(ValType::Ref(
+                wasm_encoder::RefType {
                     nullable: true,
                     heap_type: hc(T_EXCEPTION),
-                }),
-            ))); // $cx
+                },
+            )))); // $cx
             ctx.depth += 1;
             {
                 let catches = [wasm_encoder::Catch::One {
@@ -5050,7 +5095,7 @@ fn emit_stmt(f: &mut Function, stmt: &Stmt, ctx: &mut EmitCtx) {
                 emit_name_store(f, tname.as_str(), ctx);
                 ctx.depth -= 1;
                 f.instruction(&Instruction::End); // try_table
-                // success payload
+                                                  // success payload
                 f.instruction(&Instruction::RefNull(hc(T_EXCEPTION)));
             }
             ctx.depth -= 1;
@@ -5088,7 +5133,7 @@ fn emit_stmt(f: &mut Function, stmt: &Stmt, ctx: &mut EmitCtx) {
             f.instruction(&Instruction::Throw(TAG_PYEXC));
             ctx.depth -= 1;
             f.instruction(&Instruction::End); // $chk: success falls here -> body
-            // loop body
+                                              // loop body
             let saved_c = ctx.br_continue;
             let saved_b = ctx.br_break;
             ctx.br_continue = Some(head_depth); // br $head re-iterates
@@ -5209,12 +5254,7 @@ fn emit_match(
 /// Push the i32 conjuncts for ONE pattern against subject local `subj`
 /// (already n-1 I32And folded). Captures bind inline via emit_name_store
 /// (only reached on the matched path inside the caller's If).
-fn emit_pattern_checks(
-    f: &mut Function,
-    subj: u32,
-    p: &ap_ir::item::Pattern,
-    ctx: &mut EmitCtx,
-) {
+fn emit_pattern_checks(f: &mut Function, subj: u32, p: &ap_ir::item::Pattern, ctx: &mut EmitCtx) {
     use ap_ir::item::Pattern;
     match p {
         // Capture / Wildcard: always match (capture binds at body time via
@@ -5316,7 +5356,7 @@ fn emit_pattern_checks(
         }
         _ => unreachable!("scan vetted pattern: {p:?}"),
     }
-    }
+}
 
 /// Fold the length + prefix-element conjuncts for a sequence arm whose items
 /// array sits in stash local `arr` (array type `at`). Pushes n i32s + the
@@ -5381,12 +5421,7 @@ fn emit_seq_shape_checks(
 /// passed, so exactly one arm fires) and walks the shape binding
 /// Captures from array elements; Starred rest rebuilds the remaining
 /// items into a fresh $list (T_OBJ_ARR + StructNew, list-literal shape).
-fn emit_seq_captures(
-    f: &mut Function,
-    subj: u32,
-    p: &ap_ir::item::Pattern,
-    ctx: &mut EmitCtx,
-) {
+fn emit_seq_captures(f: &mut Function, subj: u32, p: &ap_ir::item::Pattern, ctx: &mut EmitCtx) {
     use ap_ir::item::Pattern;
     match p {
         Pattern::Capture(n) => {
@@ -5530,8 +5565,8 @@ fn emit_seq_cap_arr(
             f.instruction(&Instruction::Br(0)); // -> $top
             f.instruction(&Instruction::End); // $top
             f.instruction(&Instruction::End); // $done
-            // $list build (list-literal shape: type, len, len, items).
-            // TEMP_LOCAL_CMP was drained to 0 by the loop — recompute len.
+                                              // $list build (list-literal shape: type, len, len, items).
+                                              // TEMP_LOCAL_CMP was drained to 0 by the loop — recompute len.
             f.instruction(&Instruction::GlobalGet(
                 builtin_type_global("list").unwrap_or(0),
             ));
@@ -5651,15 +5686,20 @@ fn emit_try(f: &mut Function, ts: &ap_ir::item::TryStmt, ctx: &mut EmitCtx) {
 ///     End
 ///     handler chain (payload in A); unmatched -> rethrow
 ///   end
-fn emit_try_handlers(f: &mut Function, ts: &ap_ir::item::TryStmt, ctx: &mut EmitCtx, extra_wrap: bool) {
+fn emit_try_handlers(
+    f: &mut Function,
+    ts: &ap_ir::item::TryStmt,
+    ctx: &mut EmitCtx,
+    extra_wrap: bool,
+) {
     f.instruction(&Instruction::Block(BlockType::Empty)); // $out
     ctx.depth += 1;
-    f.instruction(&Instruction::Block(BlockType::Result(
-        ValType::Ref(wasm_encoder::RefType {
+    f.instruction(&Instruction::Block(BlockType::Result(ValType::Ref(
+        wasm_encoder::RefType {
             nullable: true,
             heap_type: hc(T_EXCEPTION),
-        }),
-    ))); // $catch
+        },
+    )))); // $catch
     ctx.depth += 1;
     {
         let catches = [wasm_encoder::Catch::One {
@@ -5676,7 +5716,7 @@ fn emit_try_handlers(f: &mut Function, ts: &ap_ir::item::TryStmt, ctx: &mut Emit
         }
         ctx.depth -= 1;
         f.instruction(&Instruction::End); // try_table
-        // success: deliver a null payload to $catch
+                                          // success: deliver a null payload to $catch
         f.instruction(&Instruction::RefNull(hc(T_EXCEPTION)));
     }
     ctx.depth -= 1;
@@ -5750,9 +5790,9 @@ fn emit_name_store(f: &mut Function, name: &str, ctx: &mut EmitCtx) {
                 f.instruction(&Instruction::LocalGet(cl));
                 f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
                 f.instruction(&Instruction::StructSet {
-                struct_type_index: T_CELL,
-                field_index: F_CELL_V,
-            });
+                    struct_type_index: T_CELL,
+                    field_index: F_CELL_V,
+                });
             }
             Some(Res::FreeCell(i)) => {
                 // `nonlocal` write into the enclosing cell (S-02-13)
@@ -5761,9 +5801,9 @@ fn emit_name_store(f: &mut Function, name: &str, ctx: &mut EmitCtx) {
                 f.instruction(&Instruction::LocalGet(cl));
                 f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
                 f.instruction(&Instruction::StructSet {
-                struct_type_index: T_CELL,
-                field_index: F_CELL_V,
-            });
+                    struct_type_index: T_CELL,
+                    field_index: F_CELL_V,
+                });
             }
             Some(Res::Local(l)) => {
                 f.instruction(&Instruction::LocalSet(*l));
@@ -6094,10 +6134,14 @@ fn emit_expr(f: &mut Function, e: &Expr, ctx: &mut EmitCtx) {
             emit_expr(f, v, ctx);
             f.instruction(&Instruction::LocalSet(TEMP_LOCAL_A));
             f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
-            emit_name_store(f, match t.as_ref() {
-                Expr::Name(n) => n.as_str(),
-                _ => unreachable!("scan vetted walrus non-name target"),
-            }, ctx);
+            emit_name_store(
+                f,
+                match t.as_ref() {
+                    Expr::Name(n) => n.as_str(),
+                    _ => unreachable!("scan vetted walrus non-name target"),
+                },
+                ctx,
+            );
             f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
         }
         other => unreachable!("scan vetted expr: {other:?}"),
@@ -6144,7 +6188,7 @@ fn emit_bool_op(f: &mut Function, ops: &[Expr], is_or: bool, ctx: &mut EmitCtx) 
             f.instruction(&Instruction::Call(fx::FN_TRUTHY));
             if is_or {
                 f.instruction(&Instruction::I32Eqz); // OR: leave when FALSY? no —
-                // or: first TRUTHY wins -> leave when truthy; test as-is
+                                                     // or: first TRUTHY wins -> leave when truthy; test as-is
             }
             // invert the branch sense per operator
             // and: continue when TRUTHY (If taken = drop copy, continue);
@@ -6281,7 +6325,9 @@ fn emit_call(f: &mut Function, func: &Expr, args: &[Arg], ctx: &mut EmitCtx) {
         }
         f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
         for (i, a) in args.iter().enumerate() {
-            let Arg::Pos(x) = a else { unreachable!("scan vetted positional args") };
+            let Arg::Pos(x) = a else {
+                unreachable!("scan vetted positional args")
+            };
             emit_expr(f, x, ctx);
             let _ = i;
         }
@@ -6331,12 +6377,12 @@ fn emit_call(f: &mut Function, func: &Expr, args: &[Arg], ctx: &mut EmitCtx) {
         // A call argument containing a nested Call would clobber the A/B
         // stashes mid-evaluation — route those through the generic path
         // (stack-ordered, no stashes). Same observable behavior (S-01-31).
-        let arg_has_nested_call = args.iter().any(|a| matches!(
-            a,
-            Arg::Pos(Expr::Call(..))
-                | Arg::Pos(Expr::BinOp(..))
-                | Arg::Pos(Expr::UnaryOp(..))
-        ));
+        let arg_has_nested_call = args.iter().any(|a| {
+            matches!(
+                a,
+                Arg::Pos(Expr::Call(..)) | Arg::Pos(Expr::BinOp(..)) | Arg::Pos(Expr::UnaryOp(..))
+            )
+        });
         if slots.len() == 1
             && !shadowed
             && !arg_has_nested_call
@@ -6430,7 +6476,6 @@ fn emit_call(f: &mut Function, func: &Expr, args: &[Arg], ctx: &mut EmitCtx) {
 /// (def-time object); lambda -> fresh object built here.
 fn emit_function_ref(f: &mut Function, func: &Expr, ctx: &mut EmitCtx) {
     if let Expr::Name(name) = func {
-
         // nested defs re-bind the name when their def statement executes;
         // the namespace/local load is the uniform, order-correct path
         // (builtins never collide: scan keeps the slice's builtin names
@@ -6547,8 +6592,20 @@ fn binop_op(op: BinOp) -> i32 {
 fn is_supported_builtin(n: &str) -> bool {
     matches!(
         n,
-        "print" | "repr" | "str" | "bool" | "hash" | "len" | "isinstance" | "issubclass"
-            | "next" | "range" | "list" | "sum" | "iter" | "tuple"
+        "print"
+            | "repr"
+            | "str"
+            | "bool"
+            | "hash"
+            | "len"
+            | "isinstance"
+            | "issubclass"
+            | "next"
+            | "range"
+            | "list"
+            | "sum"
+            | "iter"
+            | "tuple"
     )
 }
 
@@ -6666,12 +6723,12 @@ fn emit_builtin_call(f: &mut Function, name: &str, args: &[Arg], ctx: &mut EmitC
                     f.instruction(&Instruction::LocalSet(TEMP_LOCAL_B));
                     emit_expr(f, it, ctx);
                     f.instruction(&Instruction::LocalSet(TEMP_LOCAL_A));
-                    f.instruction(&Instruction::Block(BlockType::Result(
-                        ValType::Ref(wasm_encoder::RefType {
+                    f.instruction(&Instruction::Block(BlockType::Result(ValType::Ref(
+                        wasm_encoder::RefType {
                             nullable: true,
                             heap_type: hc(T_EXCEPTION),
-                        }),
-                    ))); // $cx
+                        },
+                    )))); // $cx
                     let catches = [wasm_encoder::Catch::One {
                         tag: TAG_PYEXC,
                         label: 0,
@@ -6804,7 +6861,7 @@ fn emit_range(f: &mut Function, pos: &[&Expr], ctx: &mut EmitCtx) {
     f.instruction(&Instruction::I64DivS);
     f.instruction(&Instruction::I32WrapI64);
     f.instruction(&Instruction::LocalSet(56)); // count (i32)
-    // negative count -> 0 (clamp: LocalGet; 0 LtS; If {0})
+                                               // negative count -> 0 (clamp: LocalGet; 0 LtS; If {0})
     f.instruction(&Instruction::LocalGet(56));
     f.instruction(&Instruction::I32Const(0));
     f.instruction(&Instruction::I32LtS);
@@ -6850,8 +6907,8 @@ fn emit_range(f: &mut Function, pos: &[&Expr], ctx: &mut EmitCtx) {
     f.instruction(&Instruction::Br(0));
     f.instruction(&Instruction::End); // loop
     f.instruction(&Instruction::End); // block
-    // 4. the $generator struct { fn: null, state: count, locals: snapshot,
-    //    value: $int(0) cursor, exn: null } (iter_snapshot shape)
+                                      // 4. the $generator struct { fn: null, state: count, locals: snapshot,
+                                      //    value: $int(0) cursor, exn: null } (iter_snapshot shape)
     f.instruction(&Instruction::RefNull(hc(T_TYPE))); // $pyobj field 0
     f.instruction(&Instruction::RefNull(hc(T_FUNCTION)));
     f.instruction(&Instruction::LocalGet(56)); // state = count
@@ -6883,7 +6940,7 @@ fn emit_range_tail(f: &mut Function) {
     f.instruction(&Instruction::I64DivS);
     f.instruction(&Instruction::I32WrapI64);
     f.instruction(&Instruction::LocalSet(56)); // count (i32)
-    // negative count -> 0 (clamp: LocalGet; 0 LtS; If {0})
+                                               // negative count -> 0 (clamp: LocalGet; 0 LtS; If {0})
     f.instruction(&Instruction::LocalGet(56));
     f.instruction(&Instruction::I32Const(0));
     f.instruction(&Instruction::I32LtS);
@@ -6929,8 +6986,8 @@ fn emit_range_tail(f: &mut Function) {
     f.instruction(&Instruction::Br(0));
     f.instruction(&Instruction::End); // loop
     f.instruction(&Instruction::End); // block
-    // 4. the $generator struct { fn: null, state: count, locals: snapshot,
-    //    value: $int(0) cursor, exn: null } (iter_snapshot shape)
+                                      // 4. the $generator struct { fn: null, state: count, locals: snapshot,
+                                      //    value: $int(0) cursor, exn: null } (iter_snapshot shape)
     f.instruction(&Instruction::RefNull(hc(T_TYPE))); // $pyobj field 0
     f.instruction(&Instruction::RefNull(hc(T_FUNCTION)));
     f.instruction(&Instruction::LocalGet(56)); // state = count
