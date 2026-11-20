@@ -1338,21 +1338,18 @@ fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opti
                 Ok(x) => x,
                 Err(e) => return Some(Err(e)),
             };
-            if v.chars().any(|c| (0xD800..0xE000).contains(&(c as u32))) {
-                let pos = v.chars().position(|c| (0xD800..0xE000).contains(&(c as u32))).unwrap_or(0);
-                let ch = v.chars().nth(pos).unwrap();
-                return Some(Err(raise(
-                    "UnicodeEncodeError",
-                    format!(
-                        "'utf-8' codec can't encode character '\\u{:04x}' in position {pos}: surrogates not allowed",
-                        ch as u32
-                    ),
-                )));
+            // V016: surrogate-aware engine (strict + handlers, exact texts).
+            let errors = match args.get(1) {
+                Some(Value::Str(es)) => es.as_str().to_string(),
+                _ => "strict".to_string(),
+            };
+            match crate::surr_codec::encode_bytes(&v, "utf-8", &errors) {
+                Ok(bs) => Some(Ok(crate::surr_codec::enc_tuple(
+                    bs,
+                    ap_obj::wtf8::cp_len(&v),
+                ))),
+                Err(f) => Some(Err(f)),
             }
-            Some(Ok(tuple(vec![
-                Value::Bytes(Gc::new(v.as_bytes().to_vec())),
-                i(v.chars().count() as i64),
-            ])))
         }
         "utf_8_decode" => {
             let b = match required(args, "decode") {
@@ -1363,25 +1360,31 @@ fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opti
                 Value::Bytes(bb) => bb.iter().cloned().collect(),
                 _ => Vec::new(),
             };
-            match std::str::from_utf8(&raw) {
-                Ok(sv) => Some(Ok(tuple(vec![s(sv), i(raw.len() as i64)]))),
-                Err(e) => {
-                    // final=False: incomplete TRAILING sequence -> emit the
-                    // complete prefix, consume it ('',0 for none) — CPython
-                    // BufferedIncrementalDecoder contract. A genuinely bad
-                    // byte (error_len()=Some) still raises strict.
-                    if e.error_len().is_none() && e.valid_up_to() > 0 {
+            let errors = match args.get(1) {
+                Some(Value::Str(es)) => es.as_str().to_string(),
+                _ => "strict".to_string(),
+            };
+            // final=False (args[2]): incomplete TRAILING sequence -> emit
+            // the complete prefix, consume it ('',0 for none) — CPython
+            // BufferedIncrementalDecoder contract.
+            let final_flag = match args.get(2) {
+                Some(Value::Bool(b)) => *b,
+                Some(Value::Int(n)) => n.to_i64().unwrap_or(1) != 0,
+                _ => true,
+            };
+            if !final_flag {
+                match std::str::from_utf8(&raw) {
+                    Ok(sv) => return Some(Ok(crate::surr_codec::dec_tuple(sv.to_string(), raw.len()))),
+                    Err(e) if e.error_len().is_none() => {
                         let txt = String::from_utf8_lossy(&raw[..e.valid_up_to()]).to_string();
-                        Some(Ok(tuple(vec![s(txt), i(e.valid_up_to() as i64)])))
-                    } else if e.error_len().is_none() {
-                        Some(Ok(tuple(vec![s(String::new()), i(0)])))
-                    } else {
-                        Some(Err(raise(
-                            "UnicodeDecodeError",
-                            "'utf-8' codec can't decode bytes: invalid continuation byte",
-                        )))
+                        return Some(Ok(crate::surr_codec::dec_tuple(txt, e.valid_up_to())));
                     }
+                    Err(_) => {}
                 }
+            }
+            match crate::surr_codec::decode_utf8(&raw, &errors) {
+                Ok(txt) => Some(Ok(crate::surr_codec::dec_tuple(txt, raw.len()))),
+                Err(f) => Some(Err(f)),
             }
         }
         "ascii_encode" => {
@@ -1485,12 +1488,15 @@ fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opti
                 Ok(x) => x,
                 Err(e) => return Some(Err(e)),
             };
-            let mut bytes: Vec<u8> = Vec::new();
-            for u in v.encode_utf16() {
-                bytes.extend_from_slice(&u.to_le_bytes());
+            let errors = match args.get(1) {
+                Some(Value::Str(es)) => es.as_str().to_string(),
+                _ => "strict".to_string(),
+            };
+            // V016: surrogate-aware (strict raises; surrogatepass raw units).
+            match crate::surr_codec::encode_utfn(&v, "utf-16-le", &errors, 16, true, false) {
+                Ok(bs) => Some(Ok(crate::surr_codec::enc_tuple(bs, ap_obj::wtf8::cp_len(&v)))),
+                Err(f) => Some(Err(f)),
             }
-            let n = v.encode_utf16().count() as i64 * 2;
-            Some(Ok(tuple(vec![Value::Bytes(Gc::new(bytes)), i(n)])))
         }
         "utf_16_le_decode" => {
             let b = match required(args, "decode") {
@@ -1501,13 +1507,14 @@ fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opti
                 Value::Bytes(bb) => bb.iter().cloned().collect(),
                 _ => Vec::new(),
             };
-            let units: Vec<u16> = raw
-                .chunks(2)
-                .filter(|c| c.len() == 2)
-                .map(|c| u16::from_le_bytes([c[0], c[1]]))
-                .collect();
-            let txt = String::from_utf16_lossy(&units);
-            Some(Ok(tuple(vec![s(txt), i(raw.len() as i64)])))
+            let errors = match args.get(1) {
+                Some(Value::Str(es)) => es.as_str().to_string(),
+                _ => "strict".to_string(),
+            };
+            match crate::surr_codec::decode_utf16(&raw, "utf-16-le", &errors, true) {
+                Ok(txt) => Some(Ok(crate::surr_codec::dec_tuple(txt, raw.len()))),
+                Err(f) => Some(Err(f)),
+            }
         }
         "utf_16_be_encode" => {
             let v = match str_arg(match required(args, "encode") {
@@ -1517,12 +1524,14 @@ fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opti
                 Ok(x) => x,
                 Err(e) => return Some(Err(e)),
             };
-            let mut bytes: Vec<u8> = Vec::new();
-            for u in v.encode_utf16() {
-                bytes.extend_from_slice(&u.to_be_bytes());
+            let errors = match args.get(1) {
+                Some(Value::Str(es)) => es.as_str().to_string(),
+                _ => "strict".to_string(),
+            };
+            match crate::surr_codec::encode_utfn(&v, "utf-16-be", &errors, 16, false, false) {
+                Ok(bs) => Some(Ok(crate::surr_codec::enc_tuple(bs, ap_obj::wtf8::cp_len(&v)))),
+                Err(f) => Some(Err(f)),
             }
-            let n = v.encode_utf16().count() as i64 * 2;
-            Some(Ok(tuple(vec![Value::Bytes(Gc::new(bytes)), i(n)])))
         }
         "utf_16_be_decode" => {
             let b = match required(args, "decode") {
@@ -1533,13 +1542,14 @@ fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opti
                 Value::Bytes(bb) => bb.iter().cloned().collect(),
                 _ => Vec::new(),
             };
-            let units: Vec<u16> = raw
-                .chunks(2)
-                .filter(|c| c.len() == 2)
-                .map(|c| u16::from_be_bytes([c[0], c[1]]))
-                .collect();
-            let txt = String::from_utf16_lossy(&units);
-            Some(Ok(tuple(vec![s(txt), i(raw.len() as i64)])))
+            let errors = match args.get(1) {
+                Some(Value::Str(es)) => es.as_str().to_string(),
+                _ => "strict".to_string(),
+            };
+            match crate::surr_codec::decode_utf16(&raw, "utf-16-be", &errors, false) {
+                Ok(txt) => Some(Ok(crate::surr_codec::dec_tuple(txt, raw.len()))),
+                Err(f) => Some(Err(f)),
+            }
         }
         "utf_16_ex_decode" => {
             // (bytes, errors?, final?) -> (str, consumed, bom_found). v0:
@@ -1552,20 +1562,23 @@ fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opti
                 Value::Bytes(bb) => bb.iter().cloned().collect(),
                 _ => Vec::new(),
             };
-            let (body, bom) = match raw.strip_prefix(&[0xFE, 0xFF][..]) {
-                Some(rest) => (rest, 1i64),
-                None => match raw.strip_prefix(&[0xFF, 0xFE][..]) {
-                    Some(rest) => (rest, -1i64),
-                    None => (raw.as_slice(), 0i64),
-                },
+            // V016: bom sign = BOM's endianness vs native (FE FF BE-BOM -> +1,
+            // FF FE LE-BOM -> -1, none -> 0; probed vs CPython).
+            let errors = match args.get(1) {
+                Some(Value::Str(es)) => es.as_str().to_string(),
+                _ => "strict".to_string(),
             };
-            let units: Vec<u16> = body
-                .chunks(2)
-                .filter(|c| c.len() == 2)
-                .map(|c| u16::from_be_bytes([c[0], c[1]]))
-                .collect();
-            let txt = String::from_utf16_lossy(&units);
-            Some(Ok(tuple(vec![s(txt), i(raw.len() as i64), i(bom)])))
+            let (body, bom, le) = if raw.starts_with(&[0xFE, 0xFF]) {
+                (&raw[2..], 1i64, false)
+            } else if raw.starts_with(&[0xFF, 0xFE]) {
+                (&raw[2..], -1i64, true)
+            } else {
+                (raw.as_slice(), 0i64, true)
+            };
+            match crate::surr_codec::decode_utf16(body, "utf-16-ex", &errors, le) {
+                Ok(txt) => Some(Ok(tuple(vec![s(txt), i(raw.len() as i64), i(bom)]))),
+                Err(f) => Some(Err(f)),
+            }
         }
         "utf_32_encode" => {
             // codecs.utf_32_* (encodings/utf_32.py wrapper): BE-BOM form.
@@ -1582,12 +1595,14 @@ fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opti
                 Ok(x) => x,
                 Err(e) => return Some(Err(e)),
             };
-            let mut bytes: Vec<u8> = Vec::new();
-            for c in v.chars() {
-                bytes.extend_from_slice(&(c as u32).to_le_bytes());
+            let errors = match args.get(1) {
+                Some(Value::Str(es)) => es.as_str().to_string(),
+                _ => "strict".to_string(),
+            };
+            match crate::surr_codec::encode_utfn(&v, "utf-32-le", &errors, 32, true, false) {
+                Ok(bs) => Some(Ok(crate::surr_codec::enc_tuple(bs, ap_obj::wtf8::cp_len(&v)))),
+                Err(f) => Some(Err(f)),
             }
-            let n = v.chars().count() as i64 * 4;
-            Some(Ok(tuple(vec![Value::Bytes(Gc::new(bytes)), i(n)])))
         }
         "utf_32_le_decode" => {
             let b = match required(args, "decode") {
@@ -1598,12 +1613,14 @@ fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opti
                 Value::Bytes(bb) => bb.iter().cloned().collect(),
                 _ => Vec::new(),
             };
-            let txt: String = raw
-                .chunks(4)
-                .filter(|c| c.len() == 4)
-                .map(|c| char::from_u32(u32::from_le_bytes([c[0], c[1], c[2], c[3]])).unwrap_or('\u{FFFD}'))
-                .collect();
-            Some(Ok(tuple(vec![s(txt), i(raw.len() as i64)])))
+            let errors = match args.get(1) {
+                Some(Value::Str(es)) => es.as_str().to_string(),
+                _ => "strict".to_string(),
+            };
+            match crate::surr_codec::decode_utf32(&raw, "utf-32-le", &errors, true) {
+                Ok(txt) => Some(Ok(crate::surr_codec::dec_tuple(txt, raw.len()))),
+                Err(f) => Some(Err(f)),
+            }
         }
         "utf_32_be_encode" => {
             let v = match str_arg(match required(args, "encode") {
@@ -1613,12 +1630,14 @@ fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opti
                 Ok(x) => x,
                 Err(e) => return Some(Err(e)),
             };
-            let mut bytes: Vec<u8> = Vec::new();
-            for c in v.chars() {
-                bytes.extend_from_slice(&(c as u32).to_be_bytes());
+            let errors = match args.get(1) {
+                Some(Value::Str(es)) => es.as_str().to_string(),
+                _ => "strict".to_string(),
+            };
+            match crate::surr_codec::encode_utfn(&v, "utf-32-be", &errors, 32, false, false) {
+                Ok(bs) => Some(Ok(crate::surr_codec::enc_tuple(bs, ap_obj::wtf8::cp_len(&v)))),
+                Err(f) => Some(Err(f)),
             }
-            let n = v.chars().count() as i64 * 4;
-            Some(Ok(tuple(vec![Value::Bytes(Gc::new(bytes)), i(n)])))
         }
         "utf_32_be_decode" => {
             let b = match required(args, "decode") {
@@ -1629,12 +1648,14 @@ fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opti
                 Value::Bytes(bb) => bb.iter().cloned().collect(),
                 _ => Vec::new(),
             };
-            let txt: String = raw
-                .chunks(4)
-                .filter(|c| c.len() == 4)
-                .map(|c| char::from_u32(u32::from_be_bytes([c[0], c[1], c[2], c[3]])).unwrap_or('\u{FFFD}'))
-                .collect();
-            Some(Ok(tuple(vec![s(txt), i(raw.len() as i64)])))
+            let errors = match args.get(1) {
+                Some(Value::Str(es)) => es.as_str().to_string(),
+                _ => "strict".to_string(),
+            };
+            match crate::surr_codec::decode_utf32(&raw, "utf-32-be", &errors, false) {
+                Ok(txt) => Some(Ok(crate::surr_codec::dec_tuple(txt, raw.len()))),
+                Err(f) => Some(Err(f)),
+            }
         }
         "utf_32_ex_decode" => {
             let b = match required(args, "decode") {
@@ -1645,38 +1666,38 @@ fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opti
                 Value::Bytes(bb) => bb.iter().cloned().collect(),
                 _ => Vec::new(),
             };
-            let (body, bom) = match raw.strip_prefix(&[0x00, 0x00, 0xFE, 0xFF][..]) {
-                Some(rest) => (rest, 1i64),
-                None => match raw.strip_prefix(&[0xFF, 0xFE, 0x00, 0x00][..]) {
-                    Some(rest) => (rest, -1i64),
-                    None => (raw.as_slice(), 0i64),
-                },
+            // V016: bom sign = BOM's endianness vs native (probed).
+            let errors = match args.get(1) {
+                Some(Value::Str(es)) => es.as_str().to_string(),
+                _ => "strict".to_string(),
             };
-            let txt: String = body
-                .chunks(4)
-                .filter(|c| c.len() == 4)
-                .map(|c| char::from_u32(u32::from_be_bytes([c[0], c[1], c[2], c[3]])).unwrap_or('\u{FFFD}'))
-                .collect();
-            Some(Ok(tuple(vec![s(txt), i(raw.len() as i64), i(bom)])))
+            let (body, bom, le) = if raw.starts_with(&[0x00, 0x00, 0xFE, 0xFF]) {
+                (&raw[4..], 1i64, false)
+            } else if raw.starts_with(&[0xFF, 0xFE, 0x00, 0x00]) {
+                (&raw[4..], -1i64, true)
+            } else {
+                (raw.as_slice(), 0i64, true)
+            };
+            match crate::surr_codec::decode_utf32(body, "utf-32-ex", &errors, le) {
+                Ok(txt) => Some(Ok(tuple(vec![s(txt), i(raw.len() as i64), i(bom)]))),
+                Err(f) => Some(Err(f)),
+            }
         }
         "encode_utf16" | "encode_utf32" => {
             let v = match str_arg(match required(args, "encode") { Ok(v) => v, Err(e) => return Some(Err(e)) }, "encode") {
                 Ok(x) => x, Err(e) => return Some(Err(e)),
             };
-            let mut bytes: Vec<u8> = Vec::new();
-            if fname == "encode_utf16" {
-                bytes.extend_from_slice(&[0xFE, 0xFF]); // BOM (BE)
-                for u in v.encode_utf16() {
-                    bytes.extend_from_slice(&u.to_be_bytes());
-                }
-            } else {
-                bytes.extend_from_slice(&[0x00, 0x00, 0xFE, 0xFF]); // BOM (BE)
-                for u in v.chars().map(|c| c as u32) {
-                    bytes.extend_from_slice(&u.to_be_bytes());
-                }
+            let errors = match args.get(1) {
+                Some(Value::Str(es)) => es.as_str().to_string(),
+                _ => "strict".to_string(),
+            };
+            // V016: native-endian BOM (LE on this target — probed vs
+            // CPython: codecs.utf_16_encode("x") -> b'\xff\xfex\x00').
+            let (codec, bits) = if fname == "encode_utf16" { ("utf-16", 16) } else { ("utf-32", 32) };
+            match crate::surr_codec::encode_utfn(&v, codec, &errors, bits, true, true) {
+                Ok(bs) => Some(Ok(crate::surr_codec::enc_tuple(bs, ap_obj::wtf8::cp_len(&v)))),
+                Err(f) => Some(Err(f)),
             }
-            let n = if fname == "encode_utf16" { v.encode_utf16().count() as i64 * 2 } else { v.chars().count() as i64 * 4 };
-            Some(Ok(tuple(vec![Value::Bytes(Gc::new(bytes)), i(n)])))
         }
         "decode_utf16" => {
             let b = match required(args, "decode") { Ok(v) => v, Err(e) => return Some(Err(e)) };
@@ -1684,14 +1705,23 @@ fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opti
                 Value::Bytes(bb) => bb.iter().cloned().collect(),
                 _ => Vec::new(),
             };
-            let body = raw.strip_prefix(&[0xFE, 0xFF][..]).unwrap_or(&raw);
-            let units: Vec<u16> = body
-                .chunks(2)
-                .filter(|c| c.len() == 2)
-                .map(|c| u16::from_be_bytes([c[0], c[1]]))
-                .collect();
-            let txt = String::from_utf16_lossy(&units);
-            Some(Ok(tuple(vec![s(txt), i(raw.len() as i64)])))
+            let errors = match args.get(1) {
+                Some(Value::Str(es)) => es.as_str().to_string(),
+                _ => "strict".to_string(),
+            };
+            // V016: BOM sniff (FF FE -> LE, FE FF -> BE); no BOM -> LE.
+            // Error positions are ABSOLUTE (BOM bytes count).
+            let (body, le, sel, base) = if raw.starts_with(&[0xFF, 0xFE]) {
+                (&raw[2..], true, "utf-16-le", 2)
+            } else if raw.starts_with(&[0xFE, 0xFF]) {
+                (&raw[2..], false, "utf-16-be", 2)
+            } else {
+                (raw.as_slice(), true, "utf-16-le", 0)
+            };
+            match crate::surr_codec::decode_utf16_off(body, sel, &errors, le, base) {
+                Ok(txt) => Some(Ok(crate::surr_codec::dec_tuple(txt, raw.len()))),
+                Err(f) => Some(Err(f)),
+            }
         }
         "decode_utf32" => {
             let b = match required(args, "decode") { Ok(v) => v, Err(e) => return Some(Err(e)) };
@@ -1699,16 +1729,21 @@ fn call_codecs(fname: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opti
                 Value::Bytes(bb) => bb.iter().cloned().collect(),
                 _ => Vec::new(),
             };
-            let body = raw.strip_prefix(&[0x00, 0x00, 0xFE, 0xFF][..]).unwrap_or(&raw);
-            let txt: String = body
-                .chunks(4)
-                .filter(|c| c.len() == 4)
-                .map(|c| {
-                    char::from_u32(u32::from_be_bytes([c[0], c[1], c[2], c[3]]))
-                        .unwrap_or('\u{FFFD}')
-                })
-                .collect();
-            Some(Ok(tuple(vec![s(txt), i(raw.len() as i64)])))
+            let errors = match args.get(1) {
+                Some(Value::Str(es)) => es.as_str().to_string(),
+                _ => "strict".to_string(),
+            };
+            let (body, le) = if raw.starts_with(&[0xFF, 0xFE, 0x00, 0x00]) {
+                (&raw[4..], true)
+            } else if raw.starts_with(&[0x00, 0x00, 0xFE, 0xFF]) {
+                (&raw[4..], false)
+            } else {
+                (raw.as_slice(), true)
+            };
+            match crate::surr_codec::decode_utf32(body, "utf-32", &errors, le) {
+                Ok(txt) => Some(Ok(crate::surr_codec::dec_tuple(txt, raw.len()))),
+                Err(f) => Some(Err(f)),
+            }
         }
         "Incremental.decode" | "Incremental.encode" | "encode" | "decode"
             if args

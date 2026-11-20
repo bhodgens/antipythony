@@ -47,6 +47,17 @@ use mbc_gb18030_4::{Gb4Run, ASTRAL_ANCHOR_CP, ASTRAL_ANCHOR_SEQ, GB18030_4_BMP_R
 
 /// CPython's escape for the offending char in codec error messages:
 /// U+007F..U+00FF -> \xNN; other BMP non-ASCII -> \uNNNN; astral -> \UNNNNNNNN.
+/// V016: cp-based variant (surrogates have no char).
+fn msg_char_escape_cp(cp: u32) -> String {
+    if (0x80..0x100).contains(&cp) {
+        format!("\\x{:02x}", cp)
+    } else if cp <= 0xFFFF {
+        format!("\\u{:04x}", cp)
+    } else {
+        format!("\\U{:08x}", cp)
+    }
+}
+
 fn msg_char_escape(ch: char) -> String {
     let cp = ch as u32;
     if (0x80..0x100).contains(&cp) {
@@ -335,20 +346,36 @@ pub fn mbc_encode(t: &CodecTables, text: &str, errors: &str) -> Result<Vec<u8>, 
     let handler = enc_handler_of(errors);
     let mut out: Vec<u8> = Vec::with_capacity(text.len());
     let mut known_handler = true;
-    let mut bad: Option<(usize, usize, char)> = None;
-    for (i, ch) in text.char_indices() {
-        if let Some(bs) = t.enc.get(&(ch as u32)) {
+    let mut bad: Option<(usize, usize, u32)> = None;
+    // V016: iterate CODE POINTS (WTF-8). char_indices() on a surrogate
+    // sequence produces an invalid char -> UB-check abort (probed: gbk
+    // encode of "\ud800" died with `invalid value for char`). Surrogates
+    // are unmapped in every CJK table, so they flow to the error path
+    // with the exact same message shape CPython emits.
+    let cps = ap_obj::wtf8::code_points(text);
+    for (i, ch_cp) in cps.iter().copied().enumerate() {
+        let ch = char::from_u32(ch_cp).unwrap_or('\u{FFFD}');
+        let ch_len = if ch_cp < 0x80 {
+            1
+        } else if ch_cp < 0x800 {
+            2
+        } else if ch_cp < 0x10000 {
+            3
+        } else {
+            4
+        };
+        if let Some(bs) = t.enc.get(&ch_cp) {
             out.extend_from_slice(bs);
         } else if t.gb4 {
             // Issue #13: chars outside the 2-byte table fall to the 4-byte
             // runs engine (BMP runs + astral odometric anchor, both generated
             // from CPython 3.14). Unmapped cps still error/replace below.
-            if let Some(seq) = gb4_encode_cp(ch as u32) {
+            if let Some(seq) = gb4_encode_cp(ch_cp) {
                 out.extend_from_slice(&seq);
             } else {
                 match handler {
                     EncHandler::Strict => {
-                        bad = Some((i, i + ch.len_utf8(), ch));
+                        bad = Some((i, i + ch_len, ch_cp));
                         break;
                     }
                     EncHandler::Replace => {
@@ -358,22 +385,22 @@ pub fn mbc_encode(t: &CodecTables, text: &str, errors: &str) -> Result<Vec<u8>, 
                     }
                     EncHandler::Ignore => {}
                     EncHandler::BackslashReplace => {
-                        let s = if (ch as u32) < 0x100 {
-                            format!("\\x{:02x}", ch as u32)
-                        } else if (ch as u32) < 0x10000 {
-                            format!("\\u{:04x}", ch as u32)
+                        let s = if ch_cp < 0x100 {
+                            format!("\\x{:02x}", ch_cp)
+                        } else if ch_cp < 0x10000 {
+                            format!("\\u{:04x}", ch_cp)
                         } else {
-                            format!("\\U{:08x}", ch as u32)
+                            format!("\\U{:08x}", ch_cp)
                         };
                         out.extend_from_slice(s.as_bytes());
                     }
                     EncHandler::XmlCharrefReplace => {
-                        let s = format!("&#{};", ch as u32);
+                        let s = format!("&#{};", ch_cp);
                         out.extend_from_slice(s.as_bytes());
                     }
                     EncHandler::Other => {
                         known_handler = false;
-                        bad = Some((i, i + ch.len_utf8(), ch));
+                        bad = Some((i, i + ch_len, ch_cp));
                         break;
                     }
                 }
@@ -381,7 +408,7 @@ pub fn mbc_encode(t: &CodecTables, text: &str, errors: &str) -> Result<Vec<u8>, 
         } else {
             match handler {
                 EncHandler::Strict => {
-                    bad = Some((i, i + ch.len_utf8(), ch));
+                    bad = Some((i, i + ch_len, ch_cp));
                     break;
                 }
                 EncHandler::Replace => {
@@ -391,28 +418,28 @@ pub fn mbc_encode(t: &CodecTables, text: &str, errors: &str) -> Result<Vec<u8>, 
                 }
                 EncHandler::Ignore => {}
                 EncHandler::BackslashReplace => {
-                    let s = if (ch as u32) < 0x100 {
-                        format!("\\x{:02x}", ch as u32)
-                    } else if (ch as u32) < 0x10000 {
-                        format!("\\u{:04x}", ch as u32)
+                    let s = if ch_cp < 0x100 {
+                        format!("\\x{:02x}", ch_cp)
+                    } else if ch_cp < 0x10000 {
+                        format!("\\u{:04x}", ch_cp)
                     } else {
-                        format!("\\U{:08x}", ch as u32)
+                        format!("\\U{:08x}", ch_cp)
                     };
                     out.extend_from_slice(s.as_bytes());
                 }
                 EncHandler::XmlCharrefReplace => {
-                    let s = format!("&#{};", ch as u32);
+                    let s = format!("&#{};", ch_cp);
                     out.extend_from_slice(s.as_bytes());
                 }
                 EncHandler::Other => {
                     known_handler = false;
-                    bad = Some((i, i + ch.len_utf8(), ch));
+                    bad = Some((i, i + ch_len, ch_cp));
                     break;
                 }
             }
         }
     }
-    if let Some((start, _end, ch)) = bad {
+    if let Some((start, _end, bad_cp)) = bad {
         if !known_handler {
             return Err(raise(
                 "LookupError",
@@ -430,7 +457,7 @@ pub fn mbc_encode(t: &CodecTables, text: &str, errors: &str) -> Result<Vec<u8>, 
                 // (astral chars -> \\UNNNNNNNN).
                 "'{}' codec can't encode character '{}' in position {}: illegal multibyte sequence",
                 t.canon,
-                msg_char_escape(ch),
+                msg_char_escape_cp(bad_cp),
                 start
             ),
         ));
@@ -626,7 +653,9 @@ fn hz_decode(t: &CodecTables, b: &[u8], errors: &str) -> Result<String, crate::F
 fn hz_encode(t: &CodecTables, text: &str, _errors: &str) -> Result<Vec<u8>, crate::Flow> {
     let mut out = Vec::new();
     let mut gb = false;
-    for ch in text.chars() {
+    // V016: code points (WTF-8 safe); surrogates are unmapped -> error path.
+    for cp in ap_obj::wtf8::code_points(text) {
+        let ch = char::from_u32(cp).unwrap_or('\u{FFFD}');
         if (ch as u32) < 0x80 {
             if gb {
                 out.extend_from_slice(b"~}");
@@ -653,13 +682,17 @@ fn hz_encode(t: &CodecTables, text: &str, _errors: &str) -> Result<Vec<u8>, crat
                 out.extend_from_slice(bs);
             }
         } else {
-            // error path same as plain encode (strict message at char pos)
-            let pos = text.chars().take_while(|&c| c != ch).count();
+            // error path same as plain encode (strict message at cp pos)
+            let pos = ap_obj::wtf8::code_points(text)
+                .iter()
+                .position(|&c| c == cp)
+                .unwrap_or(0);
             return Err(raise(
                 "UnicodeEncodeError",
                 format!(
                     "'hz' codec can't encode character '{}' in position {}: illegal multibyte sequence",
-                    msg_char_escape(ch), pos
+                    msg_char_escape_cp(cp),
+                    pos
                 ),
             ));
         }
@@ -1123,8 +1156,13 @@ fn iso_encode(t: &CodecTables, text: &str, errors: &str) -> Result<Vec<u8>, crat
     // before the first multibyte char, then SO(0x0E) before / SI(0x0F) after
     // each multibyte run (ref: 'a한b' -> 611b2429430e47510f62).
     let mut kr_desig_done = false;
-    for (ci, ch) in text.char_indices() {
-        if (ch as u32) < 0x80 && ch != '\n' && ch != '\r' {
+    // V016: code points (WTF-8 safe); ci is the cp INDEX (used only in
+    // the strict error message position — CPython counts code points).
+    let cps_all = ap_obj::wtf8::code_points(text);
+    for (ci, cp) in cps_all.iter().copied().enumerate() {
+        let ch = char::from_u32(cp).unwrap_or('\u{FFFD}');
+        let ch_cp = cp;
+        if ch_cp < 0x80 && ch != '\n' && ch != '\r' {
             // iso2022_kr: SI closes the shifted run (never ESC-returns).
             if spec.shifts && active.is_some() {
                 out.push(0x0F);
@@ -1156,7 +1194,7 @@ fn iso_encode(t: &CodecTables, text: &str, errors: &str) -> Result<Vec<u8>, crat
         }
         // halfwidth katakana (iso2022_jp_ext only): ESC(I + 7-bit row
         // 0x21..0x5F (ref: ｡｢｣ -> 1b28492122231b2842).
-        if spec.name == "iso2022_jp_ext" && (0xFF61..=0xFF9F).contains(&(ch as u32)) {
+        if spec.name == "iso2022_jp_ext" && (0xFF61..=0xFF9F).contains(&ch_cp) {
             if active_cs != Cs::JisX0201Kana {
                 if active.is_some() {
                     out.extend_from_slice(spec.ascii_return);
@@ -1165,7 +1203,7 @@ fn iso_encode(t: &CodecTables, text: &str, errors: &str) -> Result<Vec<u8>, crat
                 active = Some(&b"\x1b(I"[..]);
                 active_cs = Cs::JisX0201Kana;
             }
-            out.push((0x21 + (ch as u32 - 0xFF61)) as u8);
+            out.push((0x21 + (ch_cp - 0xFF61)) as u8);
             continue;
         }
         // find the charset that can encode this char
@@ -1209,7 +1247,7 @@ fn iso_encode(t: &CodecTables, text: &str, errors: &str) -> Result<Vec<u8>, crat
                 _ => euc_jp(),
             };
             let bs = match cs {
-                Cs::JisX0208 => cs_tables.enc.get(&(ch as u32)).and_then(|b| {
+                Cs::JisX0208 => cs_tables.enc.get(&ch_cp).and_then(|b| {
                     // plain JIS X 0208 lives in euc_jp's 2-byte region only
                     if b.len() == 2 && b[0] >= 0xA1 {
                         Some([b[0] - 0x80, b[1] - 0x80])
@@ -1217,7 +1255,7 @@ fn iso_encode(t: &CodecTables, text: &str, errors: &str) -> Result<Vec<u8>, crat
                         None
                     }
                 }),
-                Cs::JisX0213P1 => cs_tables.enc.get(&(ch as u32)).and_then(|b| {
+                Cs::JisX0213P1 => cs_tables.enc.get(&ch_cp).and_then(|b| {
                     // plane 1 = 2-byte rows only. 0x8E rows are halfwidth
                     // kana in EUC form — CPython's _3/_2004 reject them.
                     if b.len() == 2 && b[0] >= 0xA1 && b[0] != 0x8E {
@@ -1226,7 +1264,7 @@ fn iso_encode(t: &CodecTables, text: &str, errors: &str) -> Result<Vec<u8>, crat
                         None
                     }
                 }),
-                Cs::JisX0213P2 => cs_tables.enc.get(&(ch as u32)).and_then(|b| {
+                Cs::JisX0213P2 => cs_tables.enc.get(&ch_cp).and_then(|b| {
                     // plane 2 = 0x8F-prefixed 3-byte rows ONLY (ref: 龥 is
                     // $(P6d63, never $(O — P1 must not steal plane-2 chars)
                     if b.len() == 3 && b[0] == 0x8F {
@@ -1235,7 +1273,7 @@ fn iso_encode(t: &CodecTables, text: &str, errors: &str) -> Result<Vec<u8>, crat
                         None
                     }
                 }),
-                Cs::JisX0212 => cs_tables.enc.get(&(ch as u32)).and_then(|b| {
+                Cs::JisX0212 => cs_tables.enc.get(&ch_cp).and_then(|b| {
                     // JIS X 0212 lives in euc_jp's 0x8F 3-byte region
                     if b.len() == 3 && b[0] == 0x8F {
                         Some([b[1] - 0x80, b[2] - 0x80])
@@ -1243,7 +1281,7 @@ fn iso_encode(t: &CodecTables, text: &str, errors: &str) -> Result<Vec<u8>, crat
                         None
                     }
                 }),
-                Cs::Ksc5601 | Cs::Gb2312 => cs_tables.enc.get(&(ch as u32)).and_then(|b| {
+                Cs::Ksc5601 | Cs::Gb2312 => cs_tables.enc.get(&ch_cp).and_then(|b| {
                     if b.len() == 2 && b[0] >= 0xA1 {
                         Some([b[0] - 0x80, b[1] - 0x80])
                     } else {
@@ -1287,18 +1325,18 @@ fn iso_encode(t: &CodecTables, text: &str, errors: &str) -> Result<Vec<u8>, crat
                         "UnicodeEncodeError",
                         format!(
                             "'{}' codec can't encode character '{}' in position {}: illegal multibyte sequence",
-                            t.canon, msg_char_escape(ch), ci
+                            t.canon, msg_char_escape_cp(ch_cp), ci
                         ),
                     ))
                 }
                 EncHandler::Replace => out.push(b'?'),
                 EncHandler::Ignore => {}
                 EncHandler::BackslashReplace => {
-                    let s = format!("\\u{{{:x}}}", ch as u32);
+                    let s = format!("\\u{{{:x}}}", ch_cp);
                     out.extend_from_slice(s.as_bytes());
                 }
                 EncHandler::XmlCharrefReplace => {
-                    let s = format!("&#{};", ch as u32);
+                    let s = format!("&#{};", ch_cp);
                     out.extend_from_slice(s.as_bytes());
                 }
                 EncHandler::Other => {
@@ -1306,7 +1344,7 @@ fn iso_encode(t: &CodecTables, text: &str, errors: &str) -> Result<Vec<u8>, crat
                         "UnicodeEncodeError",
                         format!(
                             "'{}' codec can't encode character '{}' in position {}: illegal multibyte sequence",
-                            t.canon, msg_char_escape(ch), ci
+                            t.canon, msg_char_escape_cp(ch_cp), ci
                         ),
                     ))
                 }

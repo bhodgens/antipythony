@@ -2459,20 +2459,25 @@ pub fn builtin_chr(args: &[Value]) -> BResult {
     let cp = i
         .to_i64()
         .ok_or_else(|| raise("ValueError", "chr() arg not in range(0x110000)"))?;
-    let ch = u32::try_from(cp)
+    // V016: CPython chr() accepts the FULL 0..0x10FFFF range including
+    // lone surrogates D800..DFFF (char::from_u32 rejects those). Route
+    // through the WTF-8 code-point constructor.
+    let cp = u32::try_from(cp)
         .ok()
-        .and_then(char::from_u32)
+        .filter(|&c| c <= 0x10FFFF)
         .ok_or_else(|| raise("ValueError", "chr() arg not in range(0x110000)".to_string()))?;
-    Ok(Value::Str(PyString::new(ch.to_string())))
+    Ok(Value::Str(PyString::from_code_points([cp])))
 }
 
 pub fn builtin_ord(args: &[Value]) -> BResult {
     let v = one(args, "ord")?;
     match v {
         Value::Str(s) => {
-            let mut chars = s.as_str().chars();
-            match (chars.next(), chars.next()) {
-                (Some(c), None) => Ok(Value::Int(Int::from_i64(c as i64))),
+            // V016: code-point decode (WTF-8) — a lone surrogate is ONE
+            // code point, not three invalid bytes.
+            let cps = s.code_points();
+            match cps.as_slice() {
+                [cp] => Ok(Value::Int(Int::from_i64(*cp as i64))),
                 _ => Err(raise(
                     "TypeError",
                     "ord() expected a character, but string of length 0 found",

@@ -32,6 +32,9 @@ ruff_text_size = "0.0.4"
 num-bigint = "0.4"
 num-integer = "0.1"
 num-traits = "0.2"
+# V016: namereplace error handler (\N{NAME}) uses the same Unicode name
+# table the parser shim resolves \N escapes with.
+unicode_names2 = "1.3.0"
 
 # hashlib (02.08-lite; task brief overrides the S-05-19 OUT marking — see
 # builtins_modules.rs head note for the spec-divergence flag)

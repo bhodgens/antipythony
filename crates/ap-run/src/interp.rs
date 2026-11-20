@@ -2709,6 +2709,25 @@ pub fn build_tb_chain(script: &str, entries: &[(String, usize, String)]) -> Valu
     next
 }
 
+/// V016: extract (start, end) from a Unicode{En,De}codeError message:
+/// "... in position N: ..." -> (N, N+1); "... in position N-M: ..." -> (N, M+1).
+/// Defaults (0, 1) when the shape does not match.
+fn parse_unicode_err_positions(msg: &str) -> (i64, i64) {
+    if let Some(p) = msg.find(" in position ") {
+        let rest = &msg[p + " in position ".len()..];
+        let end_idx = rest.find(':').unwrap_or(rest.len());
+        let spec = &rest[..end_idx];
+        if let Some(dash) = spec.find('-') {
+            if let (Ok(a), Ok(b)) = (spec[..dash].trim().parse::<i64>(), spec[dash + 1..].trim().parse::<i64>()) {
+                return (a, b + 1);
+            }
+        } else if let Ok(a) = spec.trim().parse::<i64>() {
+            return (a, a + 1);
+        }
+    }
+    (0, 1)
+}
+
 fn exception_instance(exc: &ExceptionValue) -> Value {
     // Real instance raised as-is: identity preserved at the handler (e007).
     if let Some(v) = &exc.instance {
@@ -2748,6 +2767,21 @@ fn exception_instance(exc: &ExceptionValue) -> Value {
     }
     let o = ap_obj::PyObject::new(ap_obj::ObjKind::Exception, exc.class.clone());
     *o.args.lock().unwrap_or_else(|p| p.into_inner()) = exc.args.clone();
+    // V016: UnicodeEncodeError/UnicodeDecodeError instances carry
+    // start/end code-point (encode) or byte (decode) attributes that
+    // CPython parses from the message shape. Both attribute reads
+    // (probed: e.start == 1 on a position-1 error) gate this derivation;
+    // other exception classes never see the attrs.
+    if matches!(exc.class.as_str(), "UnicodeEncodeError" | "UnicodeDecodeError") {
+        let text = match exc.args.first() {
+            Some(Value::Str(sv)) => sv.as_str().to_string(),
+            _ => String::new(),
+        };
+        let (s, e) = parse_unicode_err_positions(&text);
+        let mut a = o.attrs.lock().unwrap_or_else(|p| p.into_inner());
+        let _ = a.set(Value::Str(PyString::new("start")), Value::Int(ap_obj::Int::from_i64(s)));
+        let _ = a.set(Value::Str(PyString::new("end")), Value::Int(ap_obj::Int::from_i64(e)));
+    }
     // Carry the class payload back-ref when the class is a real class.
     let interp = current_interp_for_bindings();
     if let Some(Value::Obj(co)) = crate::classes::exc_class_value(&interp, &exc.class) {

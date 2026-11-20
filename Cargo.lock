@@ -215,6 +215,7 @@ dependencies = [
  "ruff_python_ast",
  "ruff_python_parser",
  "ruff_text_size",
+ "unicode_names2",
 ]
 
 [[package]]
@@ -244,6 +245,7 @@ dependencies = [
  "sha2",
  "sha3",
  "unicode-normalization",
+ "unicode_names2",
 ]
 
 [[package]]
