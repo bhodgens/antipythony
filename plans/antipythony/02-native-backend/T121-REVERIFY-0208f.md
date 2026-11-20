@@ -44,3 +44,20 @@ scaling against the NEW serial baseline (or re-tune the workload size so
 thread fixed costs don't dominate).
 
 Recorded by leaf 02.08f. Worktree: ~/.git/worktrees/leaf-0208f
+
+
+---
+
+## TRAIL APPEND (leaf T121-bisect, 2026-11-20): root-caused + partially fixed
+
+See T121-BISECT.md (same directory) for the full record. Short form:
+the 3.31x record was a DEBUG-profile measurement (pytest harness default
+runner); the 0.74x re-verify read the RELEASE profile (already fast at the
+record commit). A REAL regression landed at the 02.08f merge c7671d7 — the
+s020 pull_iter CallFn probe double-locked the shared iterators mutex per
+loop step — FIXED at c51473f on tier1-t121b (release ratio 0.72->1.06x,
+pytest gate 1.6->2.0-2.5x). Gate remains RED (<3.0x): the residual ceiling
+is the per-statement global line bookkeeping (touch_line x3 process
+mutexes), which serializes workers proportionally to work (workload x10
+scaling experiment: ratio stays ~1x release). >=3x release needs lock-free
+per-frame line tracking — filed as follow-up.

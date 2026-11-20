@@ -1986,6 +1986,8 @@ pub fn builtin_iter(args: &[Value]) -> BResult {
     if args.len() == 2 {
         let f = args[0].clone();
         let sentinel = args[1].clone();
+        // T121-bisect fix: enable pull_iter's CallFn probe from now on.
+        crate::iter::note_callfn_iter_created();
         let it = crate::iter::PyIterator::new(crate::iter::IterState::CallFn {
             func: f,
             sentinel,
