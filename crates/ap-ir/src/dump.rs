@@ -372,7 +372,7 @@ fn tree_expr(out: &mut String, e: &Expr, depth: usize) {
             let _ = writeln!(out, "Attribute {a}");
             tree_expr(out, obj, depth + 1);
         }
-        Expr::Subscript(obj, k) => {
+        Expr::Subscript(obj, k, _) => {
             let _ = writeln!(out, "Subscript");
             tree_expr(out, obj, depth + 1);
             tree_expr(out, k, depth + 1);
@@ -1013,7 +1013,7 @@ fn dump_expr(out: &mut String, e: &Expr, _depth: usize) {
         Expr::Attribute(obj, a) => {
             let _ = write!(out, "{}.{a}", dump_expr_inline(obj));
         }
-        Expr::Subscript(obj, k) => {
+        Expr::Subscript(obj, k, _) => {
             let _ = write!(out, "{}[{}]", dump_expr_inline(obj), dump_expr_inline(k));
         }
         Expr::Slice(lo, hi, step) => {

@@ -3832,11 +3832,19 @@ pub(crate) fn eval_expr(
                 )
             })
         }
-        Expr::Subscript(obj, key) => {
+        Expr::Subscript(obj, key, line) => {
             let (o, k) = (
                 eval_expr(interp, frame, obj, reg)?,
                 eval_expr(interp, frame, key, reg)?,
             );
+            // s016b: CPython's BINARY_SUBSCR instrument carries its own line
+            // (the OBJECT's start) — a raise from a user __getitem__
+            // dispatch must attribute to that line, not the statement-start
+            // line. Published after operand evaluation (operand CALLs
+            // publish their own lines, s016 contract).
+            if *line > 0 {
+                frame.last_line.set(*line);
+            }
             methods::subscript_get(&o, &k)
         }
         Expr::Slice(lo, hi, st) => {

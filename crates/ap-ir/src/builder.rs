@@ -166,7 +166,9 @@ impl Builder {
 
     /// `obj[key]`. Clause: S-01-15.
     pub fn subscript(&self, obj: Expr, key: Expr) -> Expr {
-        Expr::Subscript(Box::new(obj), Box::new(key))
+        // Instrument line stamped by the Lowerer; 0 = unknown (hand-built
+        // IR keeps statement-granularity attribution).
+        Expr::Subscript(Box::new(obj), Box::new(key), 0)
     }
 
     /// `x[i:j:k]` slice object. Clause: S-01-15.

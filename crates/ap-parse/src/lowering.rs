@@ -1136,7 +1136,14 @@ impl<'s> Lowerer<'s> {
             ast::Expr::Subscript(s) => {
                 let obj = self.lower_expr(&s.value)?;
                 let key = self.lower_expr(&s.slice)?;
-                Ok(self.b.subscript(obj, key))
+                let mut sub = self.b.subscript(obj, key);
+                // s016b: CPython's BINARY_SUBSCR instrument positions at the
+                // OBJECT's start line (probed: obj / `[` / key on separate
+                // lines attributes the executing frame to the obj line).
+                if let ap_ir::Expr::Subscript(_, _, line) = &mut sub {
+                    *line = self.line_at(s.value.start().to_u32() as usize);
+                }
+                Ok(sub)
             }
             ast::Expr::Slice(sl) => {
                 let lo = sl.lower.as_ref().map(|e| self.lower_expr(e)).transpose()?;
@@ -1811,7 +1818,9 @@ fn lattice_of_ann(e: &Expr) -> TypeLattice {
 fn target_to_expr(t: Target) -> Expr {
     match t {
         Target::Name(n) => Expr::Name(n),
-        Target::Subscript(o, k) => Expr::Subscript(o, k),
+        // Target reconstruction: hand-built from an already-lowered store
+        // expr — line 0 (store path, never an instrument site).
+        Target::Subscript(o, k) => Expr::Subscript(o, k, 0),
         Target::Attribute(o, a) => Expr::Attribute(o, a),
         Target::Tuple(items) => Expr::Tuple(items.into_iter().map(target_to_expr).collect()),
         Target::Starred(x) => Expr::Starred(x),

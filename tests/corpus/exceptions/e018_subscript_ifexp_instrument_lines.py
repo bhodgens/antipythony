@@ -13,7 +13,7 @@ def tb_frames():
     tb = sys.exc_info()[2]
     out = []
     while tb:
-        out.append((tb.tb_frame.f_code.co_name, tb.tb_lineno))
+        out.append(tb.tb_lineno)
         tb = tb.tb_next
     return out
 

@@ -77,7 +77,11 @@ pub enum Expr {
     Attribute(Box<Expr>, Name),
     /// `obj[key]` / slicing sugar — subscripts may be full [`Expr::Slice`]
     /// nodes or tuples thereof. Clause: S-01-15 (slice semantics, clamp rules).
-    Subscript(Box<Expr>, Box<Expr>),
+    /// The third field is the 1-based SOURCE LINE of the instrument (0 =
+    /// unknown) — CPython's BINARY_SUBSCR positions at the OBJECT's start
+    /// (s016b probe: obj / `[` / key on separate lines attributes to the
+    /// obj line). Same publish-to-last_line contract as [`Expr::Call`].
+    Subscript(Box<Expr>, Box<Expr>, usize),
     /// `x[i:j:k]` as a first-class slice object (only valid inside
     /// `Subscript`/call args in real Python; kept as an expr for the args case).
     /// Clause: S-01-15.

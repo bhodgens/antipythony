@@ -1,7 +1,7 @@
 a-msg boom-add
-a-frames [('<module>', 40), ('e016a_f', 34), ('__radd__', 26)]
+a-frames [40, 34, 26]
 b-msg division by zero
-b-frames [('<module>', 57), ('e016b_f', 51)]
+b-frames [57, 51]
 c-msg boom-eq
-c-frames [('<module>', 81), ('e016c_f', 76), ('__eq__', 68)]
+c-frames [81, 76, 68]
 done

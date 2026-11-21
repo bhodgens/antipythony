@@ -722,7 +722,7 @@ impl<'a> Lowerer<'a> {
                 self.push_inst(Inst::LoadAttr(to, name.clone(), t));
                 Ok(t)
             }
-            Expr::Subscript(obj, idx) => {
+            Expr::Subscript(obj, idx, _) => {
                 let to = self.lower_expr(obj)?;
                 let ti = self.lower_expr(idx)?;
                 let t = self.temp();

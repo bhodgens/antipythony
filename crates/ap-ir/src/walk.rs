@@ -78,7 +78,7 @@ pub fn expr_yields(e: &Expr) -> bool {
         Expr::Compare(_, xs, _) => xs.iter().any(expr_yields),
         Expr::Call(f, args, _) => expr_yields(f) || args.iter().any(|a| a.yields()),
         Expr::Attribute(obj, _) => expr_yields(obj),
-        Expr::Subscript(obj, key) => expr_yields(obj) || expr_yields(key),
+        Expr::Subscript(obj, key, _) => expr_yields(obj) || expr_yields(key),
         Expr::Slice(a, b, c) => [a, b, c].into_iter().flatten().any(|e| expr_yields(e)),
         Expr::Dict(items) => items.iter().any(DictItem::yields),
         Expr::Lambda(_, body) => expr_yields(body),

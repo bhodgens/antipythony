@@ -1609,7 +1609,7 @@ fn collect_expr_loads(e: &Expr, scope: &mut ScopeData) {
             }
         }
         Expr::Attribute(obj, _) => collect_expr_loads(obj, scope),
-        Expr::Subscript(obj, key) => {
+        Expr::Subscript(obj, key, _) => {
             collect_expr_loads(obj, scope);
             collect_expr_loads(key, scope);
         }
@@ -1825,7 +1825,7 @@ fn push_child_expr_refs<'a>(e: &'a Expr, stack: &mut Vec<&'a Expr>) {
             stack.push(f);
         }
         Expr::Attribute(obj, _) => stack.push(obj),
-        Expr::Subscript(o, k) => {
+        Expr::Subscript(o, k, _) => {
             stack.push(k);
             stack.push(o);
         }
@@ -2179,7 +2179,7 @@ fn fold_child_exprs(e: &mut Expr) {
             }
         }
         Expr::Attribute(obj, _) => fold_expr(obj),
-        Expr::Subscript(obj, key) => {
+        Expr::Subscript(obj, key, _) => {
             fold_expr(obj);
             fold_expr(key);
         }
@@ -3240,7 +3240,7 @@ mod perf_regressions {
                     out
                 }
                 Expr::Attribute(o, _) => vec![(**o).clone()],
-                Expr::Subscript(o, k) => vec![(**o).clone(), (**k).clone()],
+                Expr::Subscript(o, k, _) => vec![(**o).clone(), (**k).clone()],
                 Expr::List(xs) | Expr::Tuple(xs) | Expr::Set(xs) | Expr::Compare(_, xs, _) => {
                     xs.clone()
                 }
@@ -3265,6 +3265,7 @@ mod perf_regressions {
             Box::new(Expr::Subscript(
                 Box::new(Expr::Name("a".into())),
                 Box::new(Expr::LitInt(0)),
+                0,
             )),
             vec![
                 Arg::Pos(Expr::Name("b".into())),
