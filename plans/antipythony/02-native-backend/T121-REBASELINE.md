@@ -164,6 +164,11 @@ Per the leaf contract's option (ii)+(iii) combined, reading the evidence:
   pytest tests/t10_threading -q` -> **97 passed / 10 skipped**, 1 failed =
   the >=3x scaling gate itself at 1.05x (the subject of this leaf;
   T120/T122 all green).
+- Same slice with `APX_IMPL=target-0304c/debug/antipythony run`:
+  **98 passed / 10 skipped, 0 failed** — the debug profile DOES pass the
+  >=3x gate today (in-run speedup 3x), confirming the gate as written
+  measures the debug artifact only. Release: RED (1.05x), Debug: GREEN.
+  The gate's verdict is a pure function of which artifact you point it at.
 - Corpus pins: T121 default-mode output byte-identical to
   tests/corpus/threading/expected/ (verified pre-commit).
 
