@@ -680,7 +680,7 @@ impl<'a> Lowerer<'a> {
                 self.push_inst(Inst::Const(ConstValue::Str(s.clone()), t));
                 Ok(t)
             }
-            Expr::BinOp(op, a, b) => {
+            Expr::BinOp(op, a, b, _) => {
                 let ta = self.lower_expr(a)?;
                 let tb = self.lower_expr(b)?;
                 let t = self.temp();
@@ -693,7 +693,7 @@ impl<'a> Lowerer<'a> {
                 self.push_inst(Inst::UnaryOp(*op, ta, t));
                 Ok(t)
             }
-            Expr::Compare(ops, terms) => {
+            Expr::Compare(ops, terms, _) => {
                 if ops.len() != 1 || terms.len() != 2 {
                     return Err(CodegenError::Unsupported("chained Compare"));
                 }

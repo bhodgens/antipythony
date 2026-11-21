@@ -52,6 +52,7 @@ fn osr_plan_deterministic_for_same_cfg() {
             Expr::Compare(
                 vec![ap_ir::expr::CmpOp::Lt],
                 vec![Expr::Name("x".to_string()), Expr::LitInt(3)],
+                0,
             ),
             vec![ap_ir::item::Stmt::Assign(
                 vec![ap_ir::item::Target::Name("x".to_string())],
@@ -59,6 +60,7 @@ fn osr_plan_deterministic_for_same_cfg() {
                     ap_ir::expr::BinOp::Add,
                     Box::new(Expr::Name("x".to_string())),
                     Box::new(Expr::LitInt(1)),
+                    0,
                 ),
             )],
             vec![],

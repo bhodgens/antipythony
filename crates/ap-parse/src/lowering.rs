@@ -1052,7 +1052,15 @@ impl<'s> Lowerer<'s> {
             ast::Expr::BinOp(b_) => {
                 let lhs = self.lower_expr(&b_.left)?;
                 let rhs = self.lower_expr(&b_.right)?;
-                Ok(self.b.bin_op(lower_binop(b_.op), lhs, rhs))
+                let mut binop = self.b.bin_op(lower_binop(b_.op), lhs, rhs);
+                // s016b: CPython's BINARY_OP instrument positions at the LEFT
+                // OPERAND's start line (probed: `/` alone on its own line
+                // attributes the executing frame to the `1` line above; a
+                // call-valued left operand keeps the CALL line).
+                if let ap_ir::Expr::BinOp(_, _, _, line) = &mut binop {
+                    *line = self.line_at(b_.left.start().to_u32() as usize);
+                }
+                Ok(binop)
             }
             ast::Expr::UnaryOp(u) => {
                 let x = self.lower_expr(&u.operand)?;
@@ -1078,7 +1086,14 @@ impl<'s> Lowerer<'s> {
                     operands.push(self.lower_expr(cmp)?);
                 }
                 let ops: Vec<CmpOp> = c.ops.iter().map(|op| lower_cmpop(*op)).collect();
-                Ok(self.b.compare(ops, operands))
+                let mut cmp = self.b.compare(ops, operands);
+                // s016b: CPython's COMPARE_OP instrument positions at the
+                // FIRST OPERAND's start line (probed: `1 ==` / `c` on the
+                // next line attributes to the `1` line).
+                if let ap_ir::Expr::Compare(_, _, line) = &mut cmp {
+                    *line = self.line_at(c.start().to_u32() as usize);
+                }
+                Ok(cmp)
             }
             ast::Expr::Call(c) => {
                 let f = self.lower_expr(&c.func)?;

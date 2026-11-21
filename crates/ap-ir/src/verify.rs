@@ -1581,7 +1581,7 @@ fn collect_pattern_binds(p: &Pattern, scope: &mut ScopeData) {
 fn collect_expr_loads(e: &Expr, scope: &mut ScopeData) {
     match e {
         Expr::Name(n) => scope.load(n),
-        Expr::BinOp(_, a, b) => {
+        Expr::BinOp(_, a, b, _) => {
             collect_expr_loads(a, scope);
             collect_expr_loads(b, scope);
         }
@@ -1593,7 +1593,7 @@ fn collect_expr_loads(e: &Expr, scope: &mut ScopeData) {
                 collect_expr_loads(x, scope);
             }
         }
-        Expr::Compare(_, xs) => {
+        Expr::Compare(_, xs, _) => {
             for x in xs {
                 collect_expr_loads(x, scope);
             }
@@ -1805,7 +1805,7 @@ fn leak_comp_walrus_binds(inner: &ScopeData, outer: &mut ScopeData) {
 /// recursion, which is what fixes diagnostic emission order).
 fn push_child_expr_refs<'a>(e: &'a Expr, stack: &mut Vec<&'a Expr>) {
     match e {
-        Expr::BinOp(_, a, b) => {
+        Expr::BinOp(_, a, b, _) => {
             stack.push(b);
             stack.push(a);
         }
@@ -1815,7 +1815,7 @@ fn push_child_expr_refs<'a>(e: &'a Expr, stack: &mut Vec<&'a Expr>) {
         Expr::BoolOp(_, xs) | Expr::List(xs) | Expr::Tuple(xs) | Expr::Set(xs) => {
             stack.extend(xs.iter().rev())
         }
-        Expr::Compare(_, xs) => stack.extend(xs.iter().rev()),
+        Expr::Compare(_, xs, _) => stack.extend(xs.iter().rev()),
         Expr::Call(f, args, _) => {
             for a in args.iter().rev() {
                 match a {
@@ -2155,7 +2155,7 @@ pub fn fold_expr(e: &mut Expr) {
 
 fn fold_child_exprs(e: &mut Expr) {
     match e {
-        Expr::BinOp(_, a, b) => {
+        Expr::BinOp(_, a, b, _) => {
             fold_expr(a);
             fold_expr(b);
         }
@@ -2165,7 +2165,7 @@ fn fold_child_exprs(e: &mut Expr) {
                 fold_expr(x);
             }
         }
-        Expr::Compare(_, xs) => {
+        Expr::Compare(_, xs, _) => {
             for x in xs {
                 fold_expr(x);
             }
@@ -2278,7 +2278,7 @@ fn fold_fstr_part(p: &mut FStrPart) {
 fn fold_node(e: &Expr) -> Option<Expr> {
     match e {
         Expr::UnaryOp(op, x) => fold_unary(*op, x),
-        Expr::BinOp(op, a, b) => fold_binop(*op, a, b),
+        Expr::BinOp(op, a, b, _) => fold_binop(*op, a, b),
         Expr::BoolOp(op, xs) => fold_boolop(*op, xs),
         _ => None,
     }
@@ -3227,7 +3227,7 @@ mod perf_regressions {
     fn child_ref_stack_matches_old_clone_walk_order() {
         fn old_children(e: &Expr) -> Vec<Expr> {
             match e {
-                Expr::BinOp(_op, a, b) => vec![(**a).clone(), (**b).clone()],
+                Expr::BinOp(_op, a, b, _) => vec![(**a).clone(), (**b).clone()],
                 Expr::Call(f, args, _) => {
                     let mut out = vec![(**f).clone()];
                     for a in args {
@@ -3241,7 +3241,7 @@ mod perf_regressions {
                 }
                 Expr::Attribute(o, _) => vec![(**o).clone()],
                 Expr::Subscript(o, k) => vec![(**o).clone(), (**k).clone()],
-                Expr::List(xs) | Expr::Tuple(xs) | Expr::Set(xs) | Expr::Compare(_, xs) => {
+                Expr::List(xs) | Expr::Tuple(xs) | Expr::Set(xs) | Expr::Compare(_, xs, _) => {
                     xs.clone()
                 }
                 _ => Vec::new(),
@@ -3282,6 +3282,7 @@ mod perf_regressions {
                 Expr::Name("e".into()),
                 Expr::Name("f".into()),
             ])),
+            0,
         );
         let mut a = Vec::new();
         let mut b = Vec::new();

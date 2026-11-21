@@ -49,6 +49,7 @@ fn hot_loop_body() -> Vec<Stmt> {
             Expr::Compare(
                 vec![CmpOp::Lt],
                 vec![Expr::Name("i".to_string()), Expr::Name("n".to_string())],
+                0,
             ),
             vec![
                 Stmt::Assign(
@@ -60,7 +61,9 @@ fn hot_loop_body() -> Vec<Stmt> {
                             BinOp::Mul,
                             Box::new(Expr::Name("i".to_string())),
                             Box::new(Expr::LitInt(2)),
+                            0,
                         )),
+                        0,
                     ),
                 ),
                 Stmt::Assign(
@@ -69,6 +72,7 @@ fn hot_loop_body() -> Vec<Stmt> {
                         BinOp::Add,
                         Box::new(Expr::Name("i".to_string())),
                         Box::new(Expr::LitInt(1)),
+                        0,
                     ),
                 ),
             ],

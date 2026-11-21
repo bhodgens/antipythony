@@ -190,6 +190,7 @@ fn re_lowering_is_deterministic() {
         ap_ir::expr::BinOp::Add,
         Box::new(Expr::LitInt(1)),
         Box::new(Expr::LitInt(2)),
+        0,
     ))]);
     let c1 = lower_fn(&f).expect("lower 1");
     let c2 = lower_fn(&f).expect("lower 2");

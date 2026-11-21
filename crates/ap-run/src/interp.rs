@@ -3468,11 +3468,20 @@ pub(crate) fn eval_expr(
         Expr::LitNone => Ok(Value::None),
         Expr::LitEllipsis => Ok(Value::Ellipsis),
         Expr::Name(n) => lookup_name(interp, frame, n),
-        Expr::BinOp(op, a, b) => {
+        Expr::BinOp(op, a, b, line) => {
             let (av, bv) = (
                 eval_expr(interp, frame, a, reg)?,
                 eval_expr(interp, frame, b, reg)?,
             );
+            // s016b: CPython's BINARY_OP instrument carries its own line
+            // (the LEFT OPERAND's start) — a warning/raise fired by the
+            // operation itself (dunder slot dispatch) must attribute to
+            // that line, not the statement-start line. Published AFTER
+            // operand evaluation: operand CALLs already published their
+            // own lines (s016 contract).
+            if *line > 0 {
+                frame.last_line.set(*line);
+            }
             // W112: name-dump for int - NoneType Subs (frame carries the
             // real qualname; LAST_PY_LOC is stale across unwinds).
             if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::GenDebug)
@@ -3549,11 +3558,20 @@ pub(crate) fn eval_expr(
             }
             Ok(last)
         }
-        Expr::Compare(ops, operands) => {
+        Expr::Compare(ops, operands, line) => {
             let mut left = eval_expr(interp, frame, &operands[0], reg)?;
             let mut last = Value::Bool(true);
             for (i, op) in ops.iter().enumerate() {
                 let right = eval_expr(interp, frame, &operands[i + 1], reg)?;
+                // s016b: CPython's COMPARE_OP instrument carries its own line
+                // (the chain's FIRST operand start — probed: `1 ==` with `c`
+                // on the next line attributes to the `1` line). A warning or
+                // raise from a user __eq__/__lt__ dispatch must attribute to
+                // that line, not the statement-start line. Published AFTER
+                // operand evaluation (operand CALLs publish their own lines).
+                if *line > 0 {
+                    frame.last_line.set(*line);
+                }
                 // 02.03: __eq__/__ne__ return the SLOT's raw value (c028:
                 // `1 == REq()` -> "reflected-eq"); ordering ops stay bool.
                 if matches!(op, CmpOp::Eq | CmpOp::NotEq) {

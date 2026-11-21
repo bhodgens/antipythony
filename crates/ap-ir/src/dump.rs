@@ -329,7 +329,7 @@ fn tree_stmt(out: &mut String, s: &Stmt, depth: usize) {
 fn tree_expr(out: &mut String, e: &Expr, depth: usize) {
     tree_indent(out, depth);
     match e {
-        Expr::BinOp(op, a, b) => {
+        Expr::BinOp(op, a, b, _) => {
             let _ = writeln!(out, "BinOp {}", dump_binop(*op));
             tree_expr(out, a, depth + 1);
             tree_expr(out, b, depth + 1);
@@ -348,7 +348,7 @@ fn tree_expr(out: &mut String, e: &Expr, depth: usize) {
                 tree_expr(out, x, depth + 1);
             }
         }
-        Expr::Compare(ops, xs) => {
+        Expr::Compare(ops, xs, _) => {
             let _ = writeln!(
                 out,
                 "Compare {}",
@@ -976,7 +976,7 @@ fn dump_expr(out: &mut String, e: &Expr, _depth: usize) {
         Expr::Name(n) => {
             let _ = write!(out, "{n}");
         }
-        Expr::BinOp(op, a, b) => {
+        Expr::BinOp(op, a, b, _) => {
             let _ = write!(
                 out,
                 "({} {} {})",
@@ -995,7 +995,7 @@ fn dump_expr(out: &mut String, e: &Expr, _depth: usize) {
             };
             let _ = write!(out, "({})", join_exprs(xs, sep));
         }
-        Expr::Compare(ops, xs) => {
+        Expr::Compare(ops, xs, _) => {
             let mut s = dump_expr_inline(&xs[0]);
             for (op, x) in ops.iter().zip(xs.iter().skip(1)) {
                 let _ = write!(s, " {} {}", dump_cmpop(*op), dump_expr_inline(x));

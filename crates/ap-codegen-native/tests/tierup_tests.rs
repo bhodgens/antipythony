@@ -60,8 +60,11 @@ fn arith_body() -> Vec<Stmt> {
                 BinOp::Mul,
                 Box::new(Expr::LitInt(2)),
                 Box::new(Expr::LitInt(2)),
+                0,
             )),
+            0,
         )),
+        0,
     )))]
 }
 
