@@ -248,7 +248,10 @@ fn gen_fiber_body(
         free_cells,
         locals,
     ));
-    let line_track = std::sync::Arc::new(std::cell::Cell::new(0usize));
+    // T121-fix: the fiber's line cell is the frame's OWN line_track (the
+    // same cell touch_line writes lock-free through the frame; the frame_stack
+    // alias set is unchanged).
+    let line_track = frame.line_track.clone();
     for _ in 0..2000 {
         match interp.frame_stack.lock() {
             Ok(mut fs) => {

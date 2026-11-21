@@ -100,6 +100,13 @@ pub struct Frame {
     /// "which def in this body" component — stable across calls of the
     /// SAME enclosing function (fresh frames carry the same lines).
     pub def_line: Cell<usize>,
+    /// T121-fix (leaf T121-fix): this frame's cell in the interpreter's
+    /// `frame_stack` of line cells (the legacy global-ordinal line
+    /// mapping). Per-frame = thread-confined by ownership: only THIS
+    /// frame's executor ever writes it, so touch_line updates it with no
+    /// interpreter lock taken. Arc<Cell<usize>> keeps the frame_stack
+    /// Vec-of-Arc shape untouched for its readers.
+    pub line_track: std::sync::Arc<Cell<usize>>,
     pub is_module: bool,
     /// Class-body frames: the dotted qualname prefix nested classes extend
     /// (S-03-04 `Outer.Inner`); empty elsewhere.
@@ -149,6 +156,7 @@ impl Frame {
             is_module: true,
             last_line: std::cell::Cell::new(0),
             def_line: std::cell::Cell::new(0),
+            line_track: std::sync::Arc::new(std::cell::Cell::new(0)),
             class_qual_prefix: String::new(),
             class_cell: std::cell::RefCell::new(None),
             class_ns: None,
@@ -185,6 +193,7 @@ impl Frame {
             is_module: false,
             last_line: std::cell::Cell::new(0),
             def_line: std::cell::Cell::new(0),
+            line_track: std::sync::Arc::new(std::cell::Cell::new(0)),
             class_qual_prefix: String::new(),
             class_cell: std::cell::RefCell::new(None),
             class_ns: None,
@@ -212,6 +221,7 @@ impl Frame {
             is_module: false,
             last_line: std::cell::Cell::new(0),
             def_line: std::cell::Cell::new(0),
+            line_track: std::sync::Arc::new(std::cell::Cell::new(0)),
             class_qual_prefix: String::new(),
             class_cell: std::cell::RefCell::new(None),
             class_ns: None,
@@ -251,6 +261,7 @@ impl Frame {
             is_module: false,
             last_line: std::cell::Cell::new(0),
             def_line: std::cell::Cell::new(0),
+            line_track: std::sync::Arc::new(std::cell::Cell::new(0)),
             class_qual_prefix: String::new(),
             class_cell: std::cell::RefCell::new(None),
             class_ns: Some(ns),
@@ -602,7 +613,13 @@ pub struct Interpreter {
     /// 02.09b P7 (decision 2): Mutex — the statement ordinal is
     /// execution-order state shared across worker executors (traceback
     /// line mapping).
+    /// T121-fix: RETIRED as per-statement hot state (touch_line no longer
+    /// locks it; kept for the write-once zero at init).
     pub stmt_ordinal: Mutex<usize>,
+    /// T121-fix: lock-free ordinal mirror for the residual line==0 legacy
+    /// mapping + APX-debug diagnostics. Relaxed fetch_add on the hot path
+    /// (line==0 only), diagnostic loads elsewhere.
+    pub stmt_ordinal_at: std::sync::atomic::AtomicUsize,
     /// Real exception CLASSES by name (02.03: the BaseException tree as
     /// TypeObject-backed class values; populated at entry).
     /// 02.09b P7 (decision 2): Mutex (shared executor state).
@@ -744,6 +761,7 @@ impl Interpreter {
             type_objects: Mutex::new(HashMap::new()),
             stmt_lines: Mutex::new(Vec::new()),
             stmt_ordinal: Mutex::new(0),
+            stmt_ordinal_at: std::sync::atomic::AtomicUsize::new(0),
             exc_classes: Mutex::new(HashMap::new()),
             user_subclasses: Mutex::new(Vec::new()),
             user_class_values: Mutex::new(HashMap::new()),

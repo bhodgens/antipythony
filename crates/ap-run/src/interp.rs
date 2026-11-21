@@ -756,7 +756,9 @@ fn exec_module(
     // B5: the main module frame carries the main scope table (nested-def
     // classification resolves exactly against it).
     frame.scope_table.set(reg.last_table());
-    let line_track = Arc::new(RustCell::new(0usize));
+    // T121-fix: module frame's OWN line_track cell (same cell touch_line
+    // writes lock-free through the frame).
+    let line_track = frame.line_track.clone();
     interp
         .frame_stack
         .lock()
@@ -1048,37 +1050,48 @@ fn touch_line(interp: &Arc<Interpreter>, frame: Option<&Arc<Frame>>, line: usize
             fr.last_line.set(line);
         }
     }
-    // 02.09b P7 (decision 2): stmt_ordinal/stmt_lines/frame_stack are
-    // Mutexes now — the flip runs one executor per WORKER over the SHARED
-    // Interpreter, so the GIL-era retry-on-RefCell loops dissolve into
-    // plain lock() (a parked waiter is a safepoint, not a starvation risk:
-    // no lock holder ever runs user code while holding).
-    let ordinal = {
-        let mut ord = interp
-            .stmt_ordinal
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let v = *ord;
-        *ord = v + 1;
-        v
-    };
-    // Keep the legacy global table/cell in sync for other readers
-    // (f_lineno stubs, generator resumption).
-    let mapped = {
-        let table = interp.stmt_lines.lock().unwrap_or_else(|p| p.into_inner());
-        table
-            .get(ordinal)
-            .copied()
-            .unwrap_or_else(|| table.last().copied().unwrap_or(1))
-    };
-    let top = interp
-        .frame_stack
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .last()
-        .cloned();
-    if let Some(top) = top {
-        top.set(mapped);
+    // T121-fix (leaf T121-fix): the per-statement global-mutex bookkeeping
+    // (stmt_ordinal fetch-add + stmt_lines index + frame_stack top) was the
+    // measured release scaling floor (T121-REBASELINE.md: ~75% of the
+    // parallel leg serialized). Lock-free per-frame shape:
+    //
+    // - The statement line for THIS statement is already in hand (`line`,
+    //   the real source line the caller computed). The old code threw it
+    //   away and re-derived the cell value from a shared execution-order
+    //   ordinal indexed into the global stmt_lines table — three
+    //   process-global locks per executed statement, serializing every
+    //   worker on every step. The ordinal mapping only ever mattered when
+    //   the true line was unknown (line==0, hand-built IR), which keeps its
+    //   legacy path (below) but off the hot statements.
+    //
+    // - The frame_stack top IS this frame's own `line_track` cell
+    //   (frame.rs): per-frame = thread-confined by ownership, so the write
+    //   that used to go through the interpreter Mutex now goes straight to
+    //   the Arc<Cell> the frame_stack already holds — no lock on ANY
+    //   executed statement, and every frame_stack reader sees the same
+    //   bytes it saw before.
+    if let Some(fr) = frame {
+        if line > 0 {
+            fr.line_track.set(line);
+        } else {
+            // line==0 (unknown statement line, hand-built IR): the legacy
+            // ordinal-table mapping. The ordinal advance is a Relaxed
+            // fetch_add on an atomic (lock-free; cross-worker interleaving
+            // was never observable in pinned output — tracebacks are built
+            // from per-frame cells + raise_line, not this table). The
+            // table is WRITE-ONCE (run_module init), read-only after.
+            let ordinal = interp
+                .stmt_ordinal_at
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let mapped = {
+                let table = interp.stmt_lines.lock().unwrap_or_else(|p| p.into_inner());
+                table
+                    .get(ordinal)
+                    .copied()
+                    .unwrap_or_else(|| table.last().copied().unwrap_or(1))
+            };
+            fr.line_track.set(mapped);
+        }
     }
 }
 
@@ -1095,6 +1108,16 @@ fn exec_stmt(
         // tracebacks carry real linenos (replaces the desync-prone global
         // ordinal mapping for marked statements).
         Stmt::Line(n) => {
+            // T121-fix: the top of the frame_stack is THIS frame's own
+            // line_track cell when the statement belongs to this frame —
+            // and when a nested fiber's cell is parked off the stack, the
+            // active top differs, so keep the stack read for the foreign
+            // case. Write BOTH cells unconditionally: frame.line_track is
+            // written through the frame (lock-free); the stack-top write
+            // preserves the exact pre-T121fix behavior for cells NOT owned
+            // by this frame (generator fibers' parked line_track). Cell
+            // writes are idempotent, so the double write is byte-neutral.
+            frame.line_track.set(*n);
             if let Some(top) = interp
                 .frame_stack
                 .lock()
@@ -1102,7 +1125,9 @@ fn exec_stmt(
                 .last()
                 .cloned()
             {
-                top.set(*n);
+                if !std::sync::Arc::ptr_eq(&top, &frame.line_track) {
+                    top.set(*n);
+                }
             }
             frame.last_line.set(*n);
             // G4-repair: the current def/lambda source line rides the frame
@@ -2557,15 +2582,12 @@ pub fn note_py_loc(interp: &Arc<Interpreter>) {
 }
 
 fn last_executed_line(interp: &Arc<Interpreter>) -> usize {
-    let ordinal = interp
-        .stmt_ordinal
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .clone();
+    // T121-fix: the ordinal is the lock-free mirror now (APX-debug
+    // diagnostics only; exactness is diagnostic-grade).
+    let ordinal = interp.stmt_ordinal_at.load(std::sync::atomic::Ordering::Relaxed);
     if ordinal == 0 {
         return current_frame_line(interp);
     }
-    // 02.09b P7: Mutex (see touch_line) — plain lock, no retry loop.
     let line = interp
         .stmt_lines
         .lock()
@@ -9065,7 +9087,10 @@ fn call_function(
     // B5: nested-def scope classification resolves against THIS function's
     // defining-module table (exact lookup; no cross-module richest-wins).
     frame.scope_table.set(entry.scope_table);
-    let line_track = Arc::new(RustCell::new(0usize));
+    // T121-fix: the frame's OWN line_track cell rides the frame_stack (the
+    // stack of Arc aliases is unchanged; touch_line writes the cell through
+    // the frame with no lock).
+    let line_track = frame.line_track.clone();
     // 02.07: cross-thread push contention — retry (all holders run under the
     // GIL, so the borrow is transient).
     for _ in 0..2000 {
