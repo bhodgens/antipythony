@@ -90,6 +90,7 @@ def main():
     ap.add_argument("--threads", type=int, nargs="+", default=[750000, 60000],
                     help="workload iteration counts (T10_REBASELINE_N); first is the sized leg")
     ap.add_argument("--min-load", type=float, default=2.0)
+    ap.add_argument("--profile", choices=["release", "debug", "both"], default="both")
     ap.add_argument("--out", default="")
     args = ap.parse_args()
     global args_min_load
@@ -116,7 +117,11 @@ def main():
     except Exception:
         pass
 
-    for profile, runner in runners.items():
+    wanted = list(runners) if args.profile == "both" else [args.profile]
+    for profile in wanted:
+        if profile not in runners:
+            continue
+        runner = runners[profile]
         results["profiles"][profile] = {}
         for n in args.threads:
             print(f"[{profile}] workload N={n}", flush=True)
@@ -130,10 +135,13 @@ def main():
             if args.out:
                 Path(args.out).write_text(json.dumps(results, indent=2))
 
-    gate = results["profiles"]["release"][f"N={args.threads[0]}"]
-    print(f"\nGATE NUMBER (release, sized leg N={args.threads[0]}): "
-          f"{gate['ratio']}x  (serial {gate['serial_best']:.4f}s / "
-          f"parallel {gate['parallel_best']:.4f}s)")
+    gate = results["profiles"].get("release", {}).get(f"N={args.threads[0]}")
+    if gate:
+        print(f"\nGATE NUMBER (release, sized leg N={args.threads[0]}): "
+              f"{gate['ratio']}x  (serial {gate['serial_best']:.4f}s / "
+              f"parallel {gate['parallel_best']:.4f}s)")
+    else:
+        print(f"\n(profile {args.profile}: no release gate number in this run)")
     if args.out:
         Path(args.out).write_text(json.dumps(results, indent=2))
         print(f"raw JSON: {args.out}")
