@@ -379,3 +379,26 @@ exit gate) -> Plan 04 per master.md.
 5. Post-03 emitter hardening: 11 LOWER-PANIC scan-vet contract violations.
 6. CI fresh-machine-smoke job: expected-green now that D3 landed
    (verify on next release.yml run).
+
+## 2026-11-20: T121c MERGED (a9de934) - RE-BASELINE VERDICT RECORDED
+
+- Leaf T121c verified (clean worktree 296be82, 4 commits: harness + raw
+  JSONs + verdict + profile control). User decision C executed: workload
+  resized (N=750000 -> release serial 1.397s), profile-pinned, interleaved
+  A/B/A best-of-5 in genuine quiet windows.
+- VERDICT: gate stays RED vs aspirational >=3x release - sized leg 1.05x
+  (serial 1.397 / parallel 1.335); old small leg 1.10x. Workload-size
+  hypothesis CLOSED (bigger work does not approach 3x). Debug 3.05x is real
+  but measures unoptimized compute - gate is profile-relative (control:
+  pytest 98/0 debug vs 97/1 release on the same tree).
+- PAYOFF MEASURED (Amdahl, from the data): 75% of the release parallel leg
+  is non-work bookkeeping overhead -> lock-free per-frame line bookkeeping
+  yields ~3.9x expected (4.19x ceiling on 4 cores). >=3x release is
+  reachable ONLY via that leaf.
+- RECOMMENDATION (from the leaf, pending user decision): re-baseline gate
+  to >=1.0x release+sized (measured 1.05x), keep debug print-only, file
+  lock-free as the measured path to >=3x.
+- Follow-up leaf spec: lock-free per-frame line bookkeeping (replace the
+  three global Mutexes stmt_ordinal/stmt_lines/frame_stack with per-frame
+  storage + a traceback-lineno-semantics gate). Harness: scripts/
+t121_rebaseline.py (re-run commands in T121-REBASELINE.md).
