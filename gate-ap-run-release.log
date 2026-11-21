@@ -1,0 +1,287 @@
+
+running 4 tests
+test exc_hier::tests::hierarchy_matches ... ok
+test exc_hier::tests::str_rendering ... ok
+test rss_guard::tests::footprint_syscall_works ... ok
+test rss_guard::tests::cap_resolution_env_and_defaults ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 29 tests
+test identity_preserved_at_handler ... ok
+test augmented_rebinds ... ok
+test lookup_data_descriptor_shadows_instance_dict ... ok
+test new_skips_init_on_noninstance ... ok
+test repr_vs_str_semantics ... ok
+test classcell_zero_arg_super_validation ... ok
+test enter_exit_context_manager ... ok
+test newinit_arity_errors ... ok
+test slots_restriction_messages ... ok
+test delete_rules ... ok
+test property_setter_and_readonly ... ok
+test lookup_nondata_shadowed_by_instance_dict ... ok
+test mro_diamond ... ok
+test iter_in_for_and_in_operator ... ok
+test except_tuple_and_nonclass_rejected ... ok
+test init_return_nonnone_raises ... ok
+test isinstance_union_and_tuple ... ok
+test call_protocol ... ok
+test dunder_bypasses_instance_dict ... ok
+test binop_reflected_priority ... ok
+test getattr_fallback_and_miss_message ... ok
+test metaclass_attribute_chain ... ok
+test classmethod_staticmethod_binding ... ok
+test len_bool_len_fallback ... ok
+test super_classmethod_chain ... ok
+test super_diamond_chase ... ok
+test super_validation_errors ... ok
+test unary_slots ... ok
+test user_exception_hierarchy_str ... ok
+
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.77s
+
+
+running 3 tests
+test bugc_import_warnings_succeeds ... ignored, BUG-C partially fixed: warnings import reaches the enum chain (RegexFlag/EnumDict class-ns semantics) — follow-up leaf 02.04b
+test bugb_printf_style_percent_format ... ok
+test bugb_set_dict_list_method_battery ... ok
+
+test result: ok. 2 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.27s
+
+
+running 2 tests
+test ast_getattr_identity_fence ... ok
+test gc_weakref_unittest_battery ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.89s
+
+
+running 6 tests
+test vendored_types_and_abc_import ... ok
+test script_dir_on_sys_path ... ok
+test sys_modules_identity ... ok
+test package_import_and_relative ... ok
+test circular_imports_partial_visibility ... ok
+test import_error_texts_byte_exact ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.35s
+
+
+running 9 tests
+test empty_name_is_value_error ... ok
+test uncaught_traceback_tail_and_exit_code ... ok
+test dot_and_dotdot_prefix_family ... ok
+test name_repr_escaping_byte_exact ... ok
+test slash_backslash_segments_and_traversal ... ok
+test traversal_under_real_package_dirs ... ok
+test empty_and_separating_interior_segments ... ok
+test valid_imports_still_resolve ... ok
+test leading_dot_single_name ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.63s
+
+
+running 24 tests
+test diff_etree_error_types ... ok
+test diff_etree_find_findall ... ok
+test diff_etree_fromstring_tostring_roundtrip ... ok
+test diff_etree_subelement ... ok
+test diff_etree_iter ... ok
+test diff_etree_tag_attrib_text_tail ... ok
+test diff_etree_xml_parser ... ok
+test diff_etree_xpath_child_text ... ok
+test diff_etree_xpath_predicates ... ok
+test diff_etree_xpatheval_class ... ok
+test diff_html_attribute_lowercasing ... ok
+test diff_html_document_fromstring ... ok
+test diff_html_fragment_wrap ... ok
+test diff_html_fromstring_basic ... ok
+test diff_html_parser_class ... ok
+test diff_html_text_content ... ok
+test diff_html_tostring_method_html ... ok
+test diff_html_void_elements ... ok
+test diff_parsel_style_selector_path ... ok
+test diff_tostring_bytes_and_unicode ... ok
+test diff_tostring_with_tail_false ... ok
+test diff_xpath_attr_paths ... ok
+test diff_xpath_contains_predicate ... ok
+test diff_etree_element_ctor ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 1 test
+test metaclass_new_arity_battery ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.65s
+
+
+running 6 tests
+test metaclass_new_dict_class ... ok
+test enum_member_gate ... ok
+test warnings_surface ... ok
+test enum_call_and_contains ... ok
+test dict_subclass_namespace ... ok
+test warnings_warn_runs ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.86s
+
+
+running 34 tests
+test bytes_ctor_forms ... ok
+test str_case_casefold_swapcase ... ok
+test dict_view_repr_iter ... ok
+test str_expandtabs ... ok
+test dict_view_dynamic ... ok
+test bytes_strip_split ... ok
+test set_remove_keyerror ... ok
+test set_update_diff_update ... ok
+test set_ops_surface ... ok
+test bytes_startswith_tuple ... ok
+test float_as_integer_ratio ... ok
+test regress_version_info_slice ... ok
+test bytes_find_replace_join ... ok
+test int_from_bytes_classmethod ... ok
+test dict_fromkeys ... ok
+test complex_repr_and_real ... ok
+test dict_update_forms ... ok
+test str_format_full ... ok
+test regress_ioerror_alias ... ok
+test int_bit_count ... ok
+test float_hex_is_integer ... ok
+test regress_syntaxerror_msg ... ok
+test regress_enumerate_start_kwarg ... ok
+test regress_stringio_text_mode ... ok
+test str_maketrans_translate ... ok
+test str_partition_rpartition ... ok
+test str_predicates ... ok
+test str_rindex ... ok
+test str_split_rsplit_family ... ok
+test str_splitlines_universal ... ok
+test str_startswith_endargs ... ok
+test str_zfill_center_ljust_rjust ... ok
+test tuple_count_index ... ok
+test unbound_builtin_type_methods ... ok
+
+test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.81s
+
+
+running 24 tests
+test gate_unpack ... ok
+test gate_closure_curried ... ok
+test bug_a_def_after_use_in_call_order ... ok
+test gate_recursion ... ok
+test bug_a_global_value_read_still_works ... ok
+test bug_a_recursion_depth_3 ... ok
+test bug_a_mutual_recursion_three_fns ... ok
+test bug_a_module_fn_reassigned_read_from_fn ... ok
+test bug_c_yield_from_list_and_str ... ok
+test bug_c_yield_from_generator ... ok
+test gate_match ... ok
+test bug_c_yield_from_mixed_with_plain_yields ... ok
+test bug_b_closure_factory_two_closures_share_cell ... ok
+test bug_b_closure_direct_call_still_works ... ok
+test gate_try_finally ... ok
+test gate_gen_list ... ok
+test bug_b_param_cell_two_levels ... ok
+test bug_a_self_recursion_fact ... ok
+test bug_c_yield_from_range ... ok
+test gate_gen_next ... ok
+test gate_gen_comp_via_yield_from ... ok
+test gate_closure_direct ... ok
+test bug_b_curried_closure_escapes ... ok
+test bug_b_factory_loop_closure_captures_cell ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.74s
+
+
+running 42 tests
+test alternation_order ... ok
+test match_repr_edge ... ok
+test lookbehind_variable_width_error ... ok
+test lookahead ... ok
+test literals_dot_charset ... ok
+test anchors_bA ... ok
+test flag_ascii_inline ... ok
+test escapes_categories ... ok
+test backrefs ... ok
+test dot_newline_edge ... ok
+test findall_group_forms ... ok
+test groups_basic ... ok
+test escape_fn ... ok
+test atomic_possessive ... ok
+test error_texts ... ok
+test flag_multiline_dotall ... ok
+test groups_nested_optional ... ok
+test flag_verbose ... ok
+test casefold_edge ... ok
+test flag_ignorecase ... ok
+test match_object_surface ... ok
+test conditional_groups ... ok
+test groupref_in_repeat ... ok
+test lookbehind ... ok
+test misc_api ... ok
+test module_compile_api ... ok
+test module_search_match_fullmatch ... ok
+test multiline_dollar ... ok
+test named_groups ... ok
+test nested_quantifier_groups ... ok
+test pattern_object_methods ... ok
+test pos_endpos ... ok
+test purge_and_cache ... ok
+test quantifiers_backtrack_order ... ok
+test quantifiers_greedy_lazy ... ok
+test split_semantics ... ok
+test sub_repl_forms ... ok
+test template_errors ... ok
+test types_and_names ... ok
+test unicode_categories ... ok
+test warnings_style_patterns ... ok
+test zero_width_semantics ... ok
+
+test result: ok. 42 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.64s
+
+
+running 4 tests
+test re_fuzz_lane_banner ... ok
+test strict_lane_can_fail_scratch_proof ... ok
+test harness_smoke_case ... ok
+test re_engine_matches_cpython ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.82s
+
+
+running 3 tests
+test risk4_matrix_tier0 ... ok
+test risk4_matrix_tier_jit ... ok
+test risk4_matrix_tier_jit_audit ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.63s
+
+
+running 4 tests
+test del_then_collect_observability ... ok
+test alloc_under_recursion_forced_gc_keeps_livings_alive ... ok
+test deep_recursion_alloc_bound ... ok
+test loop_alloc_forced_gc_slice ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.58s
+
+
+running 2 tests
+test sync_tierup_mode_matches_async_across_corpus ... ok
+test async_tierup_race_stress_100_runs_identical ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 57.79s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
