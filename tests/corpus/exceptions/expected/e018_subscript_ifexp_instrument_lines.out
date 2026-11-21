@@ -1,0 +1,4 @@
+a-msg 'boom-sub'
+a-frames [('<module>', 39), ('m016a_f', 33), ('__getitem__', 25)]
+b-frames [('<module>', 56), ('m016b_f', 51)]
+done
