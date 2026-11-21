@@ -15,7 +15,11 @@ Design choices that define the project:
 - **Tracing GC, not refcounting.** Object destruction timing is a documented
   divergence from CPython (`__del__` runs; when is not guaranteed).
 - **No GIL.** Python threads map to real OS threads. LANDED 2026-11-11:
-  the GIL is deleted; the threading scaling gate measures 3.3x on 4+ cores.
+  the GIL is deleted. Scaling (2026-11-20 re-baseline, release profile,
+  sized workload): 1.05x today; the per-statement line-bookkeeping
+  serializer is measured (75% of the parallel leg), and lock-free
+  per-frame line tracking is the filed path to ~3.9x. The historical
+  3.3x figure was a debug-profile measurement.
 - **Byte-exact differential conformance is the exit gate for every phase.**
   Every observable behavior is tested by running the same script under
   CPython 3.14 and under antipythony, then diffing stdout bytes, stderr
@@ -53,7 +57,7 @@ Cranelift/wasmtime; MMTk; CPython stdlib vendored files (PSF-2.0,
 specs (design reference only). Nuitka (AGPL) is a subprocess tool only —
 never vendored or linked.
 
-## Status (as of 2026-11-13, trunk `0fb49fa3`)
+## Status (as of 2026-11-20, trunk `68fbb17`)
 
 The project is mid-build, executing a hierarchical plan tree
 (`plans/antipythony/`). Current state:
@@ -62,26 +66,30 @@ The project is mid-build, executing a hierarchical plan tree
 | --- | --- | --- |
 | 00 Foundation | workspace scaffold, license gates, compat contract, spec pack, conformance harness | COMPLETE |
 | 01 Frontend/IR | parser (ruff wrapper), IR, lowering, verifier | COMPLETE |
-| 02 Native backend | object model, executor, classes, GC, stdlib modules, threading, tier-1 JIT, no-GIL, AoT binary | ~95% LANDED: everything through 02.09 (see highlights below). REMAINING: 02.08 stdlib surface gaps (fix wave in flight), T121 quiet-window re-verify, spec amendment for the OUT-face, AOT source embedding, 02.10 scheduler (stretch) |
-| 03 WASM backend | ap-ir to WasmGC, wasmtime host | DESIGN + SKELETON IN TREE (docs/03-wasm-representation-design.md, 7 leaf briefs, ap-codegen-wasm lower.rs + ap-host wasmtime runner); implementation leaves not started |
-| 04 Packaging | uv integration, CLI, release/install | 04.01+04.02 LANDED (uv pure-wheel fetch + purity gate + cache, ap-pack crate); 04.03 release eng / 04.04 wasm dist / 04.05 hybrid remain |
-| 05 Ecosystem T2 | pytest gate, tier-2 fixtures | ACTIVE: T2 gate GREEN; surface polish in flight |
-| 10 C extensions (stretch) | CPython C-API subset | NOT STARTED (gates T3/T4 on pydantic-core; case study docs/plan10-pydantic-core-study.md landed) |
+| 02 Native backend | object model, executor, classes, GC, stdlib modules, threading, tier-1 JIT, no-GIL, AoT binary, scheduler | LANDED through 02.09 + 02.08f (stdlib slice 48/48) + T121c (scaling re-baseline: release 1.05x on a sized 1.4s serial leg; lock-free line bookkeeping = measured ~3.9x path, filed). REMAINING: per-instrument lineno extension to non-call opcodes (in flight), 02.10 scheduler stages 2b/2c (impl design landed: docs/02-10-scheduler-impl-2b2c.md), T121 >=3x release (blocked on that lock-free leaf) |
+| 03 WASM backend | ap-ir to WasmGC, wasmtime host | **COMPLETE** - 51/51 corpus cases byte-exact (stdout/stderr/rc) through the ap-host CLI in both build profiles; generators/comprehensions/match/try-raise-inside-generators all land via a br_table segment-machine emitter; resumable genexpr fibers; A-3/D6 byte-exactness tolerance WITHDRAWN for the wasm-lowered surface (docs/03-wasm-backend/03.07-report.md) |
+| 04 Packaging | uv integration, CLI, release/install | **COMPLETE** - 04.01/02 (uv fetch + purity + cache), 04.03 (release CI matrix + checksums + install script + fresh-machine smoke), 04.04 (`build --wasm` + `host` verb + docs/run-wasm-anywhere.md), 04.05 (hybrid artifact: native binary with embedded wasm payload, `--emit-wasm` extraction, embedded-host execution) |
+| 05 Ecosystem T2 | pytest gate, tier-2 fixtures | T1 GREEN, T2 GREEN; T3/T4/T5 pending Plan 10 (10.01 C-API surface survey: wheel-symbol measurement data collected, report pending) |
+| 10 C extensions (stretch) | CPython C-API subset | 10.01 survey IN FLIGHT (wheel symbol scans measured across the top PyPI native extensions incl. pydantic-core; report pending) |
 
 ### What works today
 
-Parse to IR to verify to execution on three backends: the tier-0 tree
+Parse to IR to verify to execution on FOUR backends: the tier-0 tree
 walker, the tier-1 JIT (typed i64-smi regions, guards, cold twin, background
-tier-up driver, boxed OSR), and the AoT object-file pipeline
+tier-up driver, boxed OSR), the AoT object-file pipeline
 (`antipythony build app.py -o app` — a native Mach-O binary that needs no
-interpreter at runtime). No GIL: threads are real OS threads with per-object
-locking (the scaling gate measures 3.3x on 4+ cores). Generators (PEP-342
-lazy, real coroutine frames; async def bodies execute; asyncio Task +
-run_until_complete runs end-to-end), closures, exceptions with
-CPython-format tracebacks, classes with MRO and metaclasses, f-strings,
-dict/list/str method surfaces, weakrefs, a tracing collector with safepoint
-semantics, and 31 native stdlib modules + 22 vendored pure-Python modules
-(all 53 spec-05 modules resolve) run differentially against CPython 3.14.
+interpreter at runtime), and the WasmGC compiler (`antipythony build
+--wasm app.py` — a portable sandboxed module runnable via the shipped
+ap-host runner, the `antipythony host` verb, system wasmtime, or a
+browser; `build --hybrid` embeds the wasm payload inside the native
+binary with --emit-wasm extraction). No GIL: threads are real OS
+threads with per-object locking. Generators and genexprs (PEP-342 lazy,
+resumable fiber frames, concurrency-safe), closures, exceptions with
+CPython-format per-instrument tracebacks, classes with MRO and
+metaclasses, match statements, comprehensions, f-strings, dict/list/str
+method surfaces, weakrefs, a tracing collector with safepoint semantics,
+and the full 53-module spec-05 stdlib surface (31 native + 22 vendored,
+stdlib conformance slice 48/48) run differentially against CPython 3.14.
 Unboxed integer lists halve per-element memory (16B -> 8B).
 
 ### Measured benefits vs CPython 3.14
@@ -91,10 +99,20 @@ Full synthesis with sources and measurement conditions:
 
 - Tier-1 JIT: 2.07x conservative geomean over tier-0 (floor 1.5x);
   int-sum loop 3.20x, int-mul 2.65x (release builds, best-of methodology).
-- No-GIL threading: T121 scaling 3.31x/3.30x (gate >=3x on 4+ cores).
+- No-GIL threading: profile-pinned re-baseline (2026-11-20): release
+  1.05x on a sized 1.4s serial leg, at parity with the 02.09 gate band;
+  the original 3.31x was a debug-profile measurement (debug still shows
+  3.05x); measured 75% bookkeeping overhead means lock-free per-frame
+  line tracking yields ~3.9x release (filed, T121-REBASELINE.md).
 - Unboxed int lists: ~32-36% less memory on 2M-element lists.
 - AoT binary: starts in 0.69x the time of the JIT run path; 17.7 MB,
-  links only libSystem.
+  links only libSystem. Hybrid artifact: the same native binary with the
+  wasm module embedded (33 MB release); extraction byte-identical to a
+  fresh build --wasm.
+- WasmGC: 51/51 corpus cases byte-exact (stdout/stderr/rc) vs CPython
+  3.14 pins through the ap-host CLI in both build profiles; startup
+  (time to first output byte) ~39 ms median release; browser smoke
+  verified in Chrome 157 headless (native WasmGC + exception handling).
 - Ecosystem: scrapy 2.19.0 crawls byte-identical to CPython (T1 GREEN);
   pytest 9.1.1 runs suites verdict-identical (T2 GREEN); 24 CJK codecs at
   1056/1056 differential parity.
@@ -113,7 +131,9 @@ Real-software targets, current state:
   verdict-identical with CPython under default config; tier-2 fixtures
   (tmp_path, monkeypatch, generator fixtures, parametrize) pass.
 - T3 hermes-agent / T4 fastapi: blocked on pydantic-core (Rust extension)
-  — Plan 10 (hail mary, isolated; nothing blocks on it).
+  — Plan 10.01 survey in flight (wheel symbol scans measured; pydantic-core
+  ships a single .so with zero undefined Py symbols — a pyo3 abi3-style
+  build; report pending).
 - T5 comfyui: blocked on full Plan 10 (torch and friends).
 
 The end goal is measured against real software, in tiers: run scrapy
@@ -135,8 +155,8 @@ crates/
   ap-gc/             GC: heap trait, collector, safepoints (MMTk swap design in docs/)
   ap-run/            tier-0 executor over ap-ir using ap-obj (the correctness baseline)
   ap-codegen-native/ ap-ir -> Cranelift CLIF -> tier-1 JIT / AoT object files (LANDED)
-  ap-codegen-wasm/   ap-ir -> WasmGC module (skeleton + lower.rs in tree; Plan 03 leaves not started)
-  ap-host/           wasmtime host runner, WASI imports (skeleton in tree; Plan 03)
+  ap-codegen-wasm/   ap-ir -> WasmGC module emitter (COMPLETE: segment-machine generator lowering, 51/51 byte-exact)
+  ap-host/           wasmtime host runner + `ap-host run` CLI + WASI imports + versioned aprt ABI (COMPLETE)
   ap-cli/            the `antipythony` binary: run/build/new/add/cache verbs
   ap-pack/           uv pure-wheel fetch + content-addressed site-packages (Plan 04.01/04.02 landed)
   ap-conform/        differential conformance runner (spawns CPython, diffs bytes; --impl-binary for AoT)
@@ -145,7 +165,7 @@ crates/
 
 Pipeline: `Python source -> ap-parse (AST) -> ap-ir (IR) -> verify ->
 ap-run (tier-0) or ap-codegen-native (tier-1 JIT / AoT) or
-ap-codegen-wasm`. Tier-1 must be invisible: any observable difference
+ap-codegen-wasm (WasmGC, executed by ap-host or any WasmGC engine)`. Tier-1 must be invisible: any observable difference
 between tier-0 and tier-1 output is a bug.
 
 Key documents:
