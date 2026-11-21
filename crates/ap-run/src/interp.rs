@@ -11259,8 +11259,13 @@ fn pull_iter(interp: &Arc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> 
     // 02.07: it.next() can re-enter interp.iterators (Thread rendezvous
     // inside a for loop) — never hold the borrow across it. Retry on a
     // contended borrow (a worker holds it while parked under the GIL).
+    // 02.10 2a: it.next() can also RESUME A GENERATOR FIBER whose body
+    // pulls another iterator (genexp over a generator over a genexp...) —
+    // that inner pull re-locks interp.iterators. The table lock is a
+    // std Mutex (not reentrant): holding it across it.next() self-deadlocks
+    // the thread. Clone the handle OUT, drop the lock, then pull.
     let r = loop {
-        {
+        let it = {
             let mut its = interp.iterators.lock().unwrap_or_else(|p| p.into_inner());
             // 02.08f (s020): a Native iterator (itertools.chain over an
             // iter(callable, sent) part) was pruned at exhaustion — re-pulls
@@ -11274,9 +11279,10 @@ fn pull_iter(interp: &Arc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> 
                 ));
                 its.insert(id, fresh);
             }
-            let r = its.get(&id).and_then(|it| it.next());
-            break r;
-        }
+            its.get(&id).map(|it| it.clone())
+        };
+        let Some(it) = it else { break None };
+        break it.next();
     };
     if r.is_none() {
         // 02.04: a finished iterator's Seq state pins every value it ever
