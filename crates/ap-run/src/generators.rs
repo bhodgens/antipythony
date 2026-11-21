@@ -80,21 +80,46 @@ thread_local! {
     /// keeps the frame inside the snapshot window: cleanup removes it, and
     /// the Vec no longer grows per caught generator exception.
     static GEN_TB_BASE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    /// Stack of (fiber_id, yielder) for fibers whose body is executing on
-    /// this thread. TOP = the fiber that executes the next statement.
-    static ACTIVE: RefCell<Vec<(u64, *const FiberYielder)>> = const { RefCell::new(Vec::new()) };
-    /// Parked (fiber_id, yielder) for fibers SUSPENDED at a yield while an
-    /// outer fiber continues running (nested generators). Re-activated on
-    /// resume.
-    static PARKED: RefCell<Vec<(u64, *const FiberYielder)>> = const { RefCell::new(Vec::new()) };
-    /// The fiber id whose body is executing on this stack segment.
-    static CURRENT: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+    /// Stack of fiber ids whose bodies are executing on this thread. TOP =
+    /// the fiber that executes the next statement.
+    ///
+    /// 02.10 2a (cross-thread resume): entries are pushed/popped by
+    /// `resume_live` around each `fiber.resume` SLICE — never at fiber
+    /// creation. The old create-time push lived on the FIRST resuming
+    /// thread's TLS forever; a later resume from ANOTHER thread (legal since
+    /// 02.09) found an empty CURRENT/ACTIVE, `in_fiber()` went false, and the
+    /// body's `yield` fell into the legacy `Flow::YieldBack` path — the fiber
+    /// ran to completion silently swallowing every yield (observed: a
+    /// cross-thread second next() returned StopIteration with zero side
+    /// effects). Per-slice push/pop is thread-correct by construction.
+    static ACTIVE: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
 }
 
-// 02.09a P1-rest: fiber-id minter process-atomic (was thread-local Cell —
-// colliding fiber ids across threads aliased PENDING_GEN_ERROR keys,
-// interp.rs:7556 — the audit's named cross-thread id-aliasing bug).
-static NEXT_FIBER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+/// Fiber id -> yielder raw pointer, for fibers whose closure has STARTED.
+/// Process-global (fiber resume may migrate threads; thread-locals cannot
+/// carry the mapping across). Written once at closure start, removed at
+/// closure end. `gen_yield` reads it to suspend — the yielder lives in the
+/// coroutine's initial frame, which stays alive inside GenState for the
+/// whole suspension window.
+static YIELDERS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<u64, usize>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+fn yielder_for(fiber_id: u64) -> *const FiberYielder {
+    let p = YIELDERS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(&fiber_id)
+        .copied()
+        .unwrap_or(0);
+    p as *const FiberYielder
+}
+
+// 02.09a P1-rest: the old fiber-id minter (NEXT_FIBER) is GONE — 02.10 2a
+// unifies the id space: a fiber is stashed/identified by its GENERATOR
+// REGISTRY id (the same odd id resume_live/gen_yield/resume_tls_* use). The
+// separate minters produced colliding keys across the two spaces (registry
+// id 1 vs fiber id 1) and yielder_for() could return the WRONG fiber's
+// yielder, relay yields to the wrong coroutine.
 
 /// Run the fiber body with its identity established as the ACTIVE top.
 /// The fiber id of the generator body CURRENTLY executing on this
@@ -102,60 +127,66 @@ static NEXT_FIBER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::
 /// so a nested resume (unraisable hook during alloc) cannot steal the
 /// outer body's staged error.
 pub fn current_running_fiber_id() -> u64 {
-    CURRENT.with(|c| c.borrow().last().copied().unwrap_or(0))
+    ACTIVE.with(|a| a.borrow().last().copied().unwrap_or(0))
 }
 
+/// Run one fiber-closure lifetime: stash the yielder pointer (gen_yield reads
+/// it), run the body, unstash. NO thread-local bookkeeping here — the closure
+/// may start on one thread and finish on another; identity is re-established
+/// per resume slice by resume_tls_push/pop in resume_live.
 fn run_fiber_body<R>(fiber_id: u64, y: *const FiberYielder, f: impl FnOnce() -> R) -> R {
-    CURRENT.with(|c| c.borrow_mut().push(fiber_id));
-    ACTIVE.with(|a| a.borrow_mut().push((fiber_id, y)));
+    stash_yielder(fiber_id, y);
     let r = f();
+    unstash_yielder(fiber_id);
+    r
+}
+
+/// Push/pop the fiber's identity around ONE resume slice (same thread,
+/// same scope — see ACTIVE docs for why this moved out of run_fiber_body).
+pub fn resume_tls_push(fiber_id: u64) {
+    ACTIVE.with(|a| a.borrow_mut().push(fiber_id));
+}
+
+pub fn resume_tls_pop(fiber_id: u64) {
     ACTIVE.with(|a| {
         let mut b = a.borrow_mut();
-        if b.last().map(|(id, _)| *id) == Some(fiber_id) {
+        if b.last().copied() == Some(fiber_id) {
             b.pop();
-        } else if let Some(pos) = b.iter().rposition(|(id, _)| *id == fiber_id) {
+        } else if let Some(pos) = b.iter().rposition(|id| *id == fiber_id) {
             b.remove(pos);
         }
     });
-    CURRENT.with(|c| {
-        c.borrow_mut().pop();
-    });
-    r
+}
+
+fn stash_yielder(fiber_id: u64, y: *const FiberYielder) {
+    YIELDERS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(fiber_id, y as usize);
+}
+
+fn unstash_yielder(fiber_id: u64) {
+    YIELDERS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .remove(&fiber_id);
 }
 
 /// True when the current Rust stack is inside a generator fiber body.
 pub fn in_fiber() -> bool {
-    CURRENT.with(|c| !c.borrow().is_empty())
+    ACTIVE.with(|a| !a.borrow().is_empty())
 }
 
-/// The `yield` expression: suspend the ACTIVE-top fiber. While suspended its
-/// identity is moved to PARKED so nested fibers see a consistent top.
+/// The `yield` expression: suspend the ACTIVE-top fiber.
 pub fn gen_yield(v: Value) -> Result<Value, Flow> {
-    let fiber_id = ACTIVE.with(|a| a.borrow().last().map(|(id, _)| *id));
+    let fiber_id = ACTIVE.with(|a| a.borrow().last().copied());
     let Some(fiber_id) = fiber_id else {
         return Err(Flow::Raise(crate::exc_hier::ExceptionValue::msg(
             "SyntaxError",
             "'yield' outside function",
         )));
     };
-    // Lift our entry from ACTIVE to PARKED for the suspension window.
-    let y: *const FiberYielder = {
-        let mut parked_ok = false;
-        let y = ACTIVE.with(|a| {
-            let mut b = a.borrow_mut();
-            if let Some(pos) = b.iter().rposition(|(id, _)| *id == fiber_id) {
-                let (_, yptr) = b.remove(pos);
-                parked_ok = true;
-                yptr
-            } else {
-                std::ptr::null()
-            }
-        });
-        if parked_ok {
-            PARKED.with(|p| p.borrow_mut().push((fiber_id, y)));
-        }
-        y
-    };
+    let y = yielder_for(fiber_id);
     if y.is_null() {
         return Err(Flow::Raise(crate::exc_hier::ExceptionValue::msg(
             "SyntaxError",
@@ -166,15 +197,6 @@ pub fn gen_yield(v: Value) -> Result<Value, Flow> {
     // the coroutine object stays alive in interp.generators for the whole
     // suspension window.
     let resume_in = unsafe { (*y).suspend(GenOutput::Yield(v)) };
-    // Resumed: move our identity back from PARKED to ACTIVE (on top).
-    PARKED.with(|p| {
-        let mut b = p.borrow_mut();
-        if let Some(pos) = b.iter().rposition(|(id, _)| *id == fiber_id) {
-            let (_, yptr) = b.remove(pos);
-            drop(b);
-            ACTIVE.with(|a| a.borrow_mut().push((fiber_id, yptr)));
-        }
-    });
     match resume_in {
         GenInput::Send(val) => Ok(val),
         GenInput::Throw(e) => Err(Flow::Raise(e)),
@@ -363,7 +385,39 @@ pub fn resume_live(
     let mut live = {
         let mut gens = interp.generators.lock().unwrap_or_else(|p| p.into_inner());
         match gens.remove(&id) {
-            Some(crate::interp::GenFrame::Live(st)) => st,
+            Some(crate::interp::GenFrame::Live(st)) => {
+                // 02.10 2a: register the resume slice UNDER THE SAME MAP LOCK
+                // as the remove — a concurrent puller either sees the entry
+                // (and takes the running arm below) or sees it gone WITH the
+                // running marker already set (the absent arm's ValueError).
+                // Without this, remove + begin are two critical sections and
+                // a racing next() slips through both checks as "absent and
+                // not running" -> silent StopIteration.
+                if !crate::generators::gen_begin_running(id) {
+                    gens.insert(id, crate::interp::GenFrame::Live(st));
+                    return Err(Flow::Raise(crate::exc_hier::ExceptionValue::msg(
+                        "ValueError",
+                        "generator already executing",
+                    )));
+                }
+                // Leave a RUNNING PLACEHOLDER in the map for the slice so a
+                // concurrent puller's contains_key gate routes it to
+                // resume_live (running arm -> ValueError) instead of the
+                // plain iterator table (silent StopIteration). The gap
+                // between "removed" and "begun" is now closed: both
+                // happen under this one lock.
+                gens.insert(
+                    id,
+                    crate::interp::GenFrame::Live(crate::generators::GenState {
+                        fiber: None,
+                        started: st.started,
+                        running: true,
+                        retired: st.retired,
+                        super_ctx: st.super_ctx.clone(),
+                    }),
+                );
+                st
+            }
             other => {
                 // G8: entry absent after exhaustion-retire (or a bare
                 // ensure_fiber miss). CPython semantics for a finished
@@ -377,6 +431,17 @@ pub fn resume_live(
                         .lock()
                         .unwrap_or_else(|p| p.into_inner())
                         .insert(id, g);
+                }
+                // 02.10 2a: an ABSENT entry while a resume slice is in flight
+                // (the first puller holds the removed state) is NOT exhaustion
+                // — it is a concurrent pull of a LIVE generator. CPython
+                // raises ValueError('generator already executing'); the old
+                // silent StopIteration was the concurrent-pull divergence.
+                if crate::generators::gen_is_running(id) {
+                    return Err(Flow::Raise(crate::exc_hier::ExceptionValue::msg(
+                        "ValueError",
+                        "generator already executing",
+                    )));
                 }
                 return match input {
                     GenInput::Throw(e) => Err(Flow::Raise(e)),
@@ -397,11 +462,23 @@ pub fn resume_live(
         )));
     }
     let Some(mut fiber) = live.fiber.take() else {
+        // 02.10 2a: fiber=None is EITHER a mid-slice RUNNING placeholder
+        // (concurrent pull — CPython: ValueError 'generator already
+        // executing') or a genuinely dead state. The old silent Ok(None)
+        // turned a racing next() into a false StopIteration.
+        let running = live.running || crate::generators::gen_is_running(id);
+        live.fiber = None;
         interp
             .generators
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .insert(id, crate::interp::GenFrame::Live(live));
+        if running {
+            return Err(Flow::Raise(crate::exc_hier::ExceptionValue::msg(
+                "ValueError",
+                "generator already executing",
+            )));
+        }
         return match input {
             GenInput::Throw(e) => Err(Flow::Raise(e)),
             _ => Ok(None),
@@ -429,7 +506,18 @@ pub fn resume_live(
         };
     }
     live.running = true;
-    interp.enter_call()?;
+    if let Err(f) = interp.enter_call() {
+        // Recursion-limit refusal: the resume never happened — release the
+        // running registration (a leaked id would poison every later pull).
+        crate::generators::gen_end_running(id);
+        live.running = false;
+        interp
+            .generators
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(id, crate::interp::GenFrame::Live(live));
+        return Err(f);
+    }
     // G10: record the tb_frames depth AT resume entry — the fiber-raise arm
     // inserts its frame here (not at 0), keeping it inside the driver's
     // cleanup window (see GEN_TB_BASE docs).
@@ -475,6 +563,7 @@ pub fn resume_live(
             // "abort before start", so force-reset the state; `retired`
             // makes every later resume a clean StopIteration.
             live.running = false;
+            crate::generators::gen_end_running(id);
             live.fiber = Some(fiber);
             live.started = true;
             live.retired = true;
@@ -505,7 +594,16 @@ pub fn resume_live(
                 .unwrap_or_else(|p| p.into_inner())
                 .push(c.clone());
         }
+        // 02.10 2a: re-establish the fiber's identity on THIS thread for the
+        // slice (cross-thread resumes are legal post-02.09). The stash may
+        // still be absent on the very first resume (the closure runs inside
+        // this call and stashes at its start) — gen_yield reads it at yield
+        // time, which is always after the stash. Push/pop are symmetric in
+        // this scope, so the TLS state is thread-correct no matter which
+        // thread resumes next.
+        crate::generators::resume_tls_push(id);
         let r = fiber.resume(input);
+        crate::generators::resume_tls_pop(id);
         if ctx.is_some() {
             interp
                 .super_stack
@@ -518,6 +616,7 @@ pub fn resume_live(
     interp.exit_call();
     live.running = false;
     if fiber.done() {
+        crate::generators::gen_end_running(id);
         live.fiber = None;
         // G8 (oom-bughunt-2026-11-06 static audit): an exhausted generator
         // used to stay in interp.generators as a Live entry with
@@ -551,6 +650,10 @@ pub fn resume_live(
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .insert(id, crate::interp::GenFrame::Live(live));
+    // 02.10 2a: release the running registration ONLY AFTER the suspended
+    // state is back in the registry — a gap here let a racing next() see
+    // "absent AND not running" and answer a false StopIteration.
+    crate::generators::gen_end_running(id);
     match out {
         CoroutineResult::Yield(GenOutput::Yield(v)) => Ok(Some(v)),
         CoroutineResult::Return(()) => {
@@ -814,13 +917,126 @@ pub fn make_fiber(
     func_obj: ap_obj::int::Gc<ap_obj::PyObject>,
     args: Vec<Value>,
     kwargs: Vec<(String, Value)>,
+    fiber_id: u64,
 ) -> GenFiber {
-    let fiber_id = NEXT_FIBER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let stack = PooledStack::new(gen_stack_size()).expect("generator fiber stack");
     Coroutine::with_stack(stack, move |y, _first_input| {
         let yptr: *const FiberYielder = y;
         run_fiber_body(fiber_id, yptr, || {
             gen_fiber_body(interp, entry, func_obj, args, kwargs)
+        })
+    })
+}
+
+// ===========================================================================
+// 02.10 stage 2a: generator expressions join the resumable-fiber protocol.
+//
+// GenExprs used to MATERIALIZE on first pull (run the whole clause tree into
+// a sink Vec, then stream from it). That was a documented v0 divergence with
+// four observable faces: produce-side side effects ran at first next() (not
+// lazily), send() could not receive, throw()/close() could not act at a
+// suspension point, and two concurrent pullers raced on one shared
+// completion. The fix gives a genexp the SAME fiber machinery a def-generator
+// gets: the fiber body walks the clause tree and SUSPENDS at each element
+// (run_comp_clauses' genexp_yield arm calls gen_yield). One mechanism now
+// backs every generator shape; send/throw/close/concurrent-pull semantics
+// come from resume_live verbatim.
+//
+// CONCURRENT-PULL GUARD: CPython raises ValueError('generator already
+// executing') when a generator is resumed while a resume is in flight (same
+// thread re-entry or another thread pulling concurrently — legal since
+// 02.09). resume_live removes the Live entry for the resume slice, so a
+// concurrent puller used to see an absent entry and answer a silent
+// StopIteration. RUNNING_GENS closes that window: the id is registered for
+// the whole resume slice and a concurrent resume raises ValueError.
+// ===========================================================================
+
+/// Process-global set of generator ids with a resume slice IN FLIGHT.
+static RUNNING_GENS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<u64>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+
+fn running_lock() -> std::sync::MutexGuard<'static, std::collections::HashSet<u64>> {
+    RUNNING_GENS.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// True when a resume of `id` is currently in flight on ANY thread.
+pub fn gen_is_running(id: u64) -> bool {
+    running_lock().contains(&id)
+}
+
+/// Register/unregister a resume slice. Returns false (and does NOT insert)
+/// when the id is ALREADY running — the caller must raise
+/// ValueError('generator already executing') like CPython.
+pub fn gen_begin_running(id: u64) -> bool {
+    running_lock().insert(id)
+}
+
+pub fn gen_end_running(id: u64) {
+    running_lock().remove(&id);
+}
+
+/// Body runner for genexp fibers: mirrors gen_fiber_body's terminal-state
+/// handling (tb bookkeeping + pending-error staging) for a closure body that
+/// walks the clause tree and suspends at each element.
+pub fn genexp_fiber_body(
+    interp: std::sync::Arc<crate::frame::Interpreter>,
+    fiber_id: u64,
+    body: impl FnOnce() -> Result<(), crate::Flow>,
+) {
+    let result = body();
+    match result {
+        Ok(()) | Err(Flow::Return(_)) => {
+            if let Err(Flow::Return(v)) = result {
+                // A genexp body has no `return X` surface; park defensively
+                // so exhaustion parity with def-generators holds if the
+                // clause tree ever routes through Flow::Return.
+                interp
+                    .si_value
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .replace(v);
+            }
+        }
+        Err(Flow::Raise(mut e)) => {
+            // Same tb contract as gen_fiber_body: the exception must carry
+            // the raising frame; insert at the resume-depth base so the
+            // driver's cleanup window removes it (G10).
+            let file = "<genexpr>".to_string();
+            let line = 0usize;
+            e.tb.insert(0, ("<genexpr>".to_string(), line, file.clone()));
+            let base = GEN_TB_BASE.get();
+            let idx = base.min(
+                interp
+                    .tb_frames
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .len(),
+            );
+            interp
+                .tb_frames
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .insert(idx, ("<genexpr>".to_string(), line, file));
+            crate::interp::set_pending_generator_error_for(fiber_id, Flow::Raise(e));
+        }
+        Err(_) => {}
+    }
+}
+
+/// Build a fiber running an arbitrary generator-protocol body (the genexp
+/// clause walker). Does NOT start the fiber (corosensei runs the closure on
+/// first resume), same lazy contract as make_fiber.
+pub fn make_fiber_raw(
+    fiber_id: u64,
+    body: impl FnOnce(u64) -> Result<(), crate::Flow> + 'static,
+) -> GenFiber {
+    let stack = PooledStack::new(gen_stack_size()).expect("generator fiber stack");
+    Coroutine::with_stack(stack, move |y, _first_input| {
+        let yptr: *const FiberYielder = y;
+        let interp = crate::builtins_modules::current_interp()
+            .expect("genexp fiber needs an active interpreter");
+        run_fiber_body(fiber_id, yptr, || {
+            genexp_fiber_body(interp, fiber_id, || body(fiber_id))
         })
     })
 }

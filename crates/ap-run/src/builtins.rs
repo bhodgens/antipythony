@@ -2045,6 +2045,14 @@ pub fn builtin_next(interp: &Interpreter, args: &[Value]) -> BResult {
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .ok_or_else(|| raise("TypeError", "'iterator' object is not an iterator"))?;
+            // 02.10 2a: a resume slice IN FLIGHT (concurrent pull) means the
+            // generator is LIVE, not exhausted. Check BEFORE the contains_key
+            // gate — the first puller holds the removed registry entry, so a
+            // concurrent next() would otherwise fall through to the plain
+            // table and answer a silent StopIteration.
+            if crate::generators::gen_is_running(id) {
+                return Err(raise("ValueError", "generator already executing"));
+            }
             // Generators (PEP-342): a body exception propagates; clean
             // exhaustion maps to StopIteration carrying si_value as .value.
             if interp
