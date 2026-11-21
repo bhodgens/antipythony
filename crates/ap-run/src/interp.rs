@@ -10024,14 +10024,17 @@ fn ensure_fiber(interp: &Arc<Interpreter>, id: u64) -> Result<(), Flow> {
         let eager2 = eager_iter;
         let interp2 = interp.clone();
         let fiber = crate::generators::make_fiber_raw(id, move |_fiber_id| {
-            // The genexp comp scope: a child of the defining frame (clause-0's
-            // iterable was already evaluated + registered eagerly at creation;
-            // nested clause names bind here, never leaking to the enclosing
-            // scope — same scoping run_comp uses for list/set/dict comps).
-            let cf = std::sync::Arc::new(Frame::new_child(&defining2));
+            // The genexp body runs against the DEFINING frame itself — the
+            // v0 semantics (run_gen_body passed the defining frame) that the
+            // whole corpus was pinned against. A new_child frame clones
+            // parent.my_cells as its FREE cells (wrong slot set: the genexp's
+            // closure free vars live in defining.free_cells), so nested-def
+            // free vars ('inner' in a fmt() nested def) miss → NameError
+            // inside the fiber → the pending-error path → silently empty
+            // stream (observed: ast.dump printed Module(body=[])).
             run_comp_clauses_into(
                 &interp2,
-                &cf,
+                &defining2,
                 &elt2,
                 None,
                 &clauses2,
