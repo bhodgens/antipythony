@@ -20,6 +20,122 @@ use ap_ce::state::{ce_newref, err_is_set, err_take, from_value, CeHandle, CeKind
 use ap_obj::int::{Gc, Int};
 use ap_obj::value::{PyList, PyString, Tuple, Value};
 
+// ---------------------------------------------------------------------------
+// Leaf 10.04: the call-back registration. Installed once (first ce import);
+// PyObject_Call family in ap-ce dispatches back through this pointer. The
+// interpreter handle rides the runtime's existing thread-local
+// (interp::current_interp_handle — the 02.09 per-worker model).
+// ---------------------------------------------------------------------------
+
+static PYCALL_INSTALL: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+/// C ABI: (callable, args tuple, kwargs dict-or-NULL) -> result handle.
+unsafe extern "C" fn runtime_pycall(
+    callable: PyObjPtr,
+    args: PyObjPtr,
+    kwds: PyObjPtr,
+) -> PyObjPtr {
+    // 1. Handles -> runtime values (faithful: Opaque arms carry clones).
+    let cv = ap_ce::value_conv::to_value(callable as CeHandle);
+    let Some(cv) = cv else {
+        ap_ce::state::err_set("SystemError", "PyObject_Call: bad callable handle");
+        return std::ptr::null_mut();
+    };
+    let arg_vals: Vec<Value> = match (&*(args as CeHandle)).payload.borrow().as_ref() {
+        Some(CePayload::Tuple(items)) => items
+            .iter()
+            .filter_map(|h| ap_ce::value_conv::to_value(*h))
+            .collect(),
+        _ => Vec::new(),
+    };
+    // kwargs dict-or-NULL (CPython PyObject_Call shape).
+    let kw_pairs: Vec<(String, Value)> = if kwds.is_null() {
+        Vec::new()
+    } else {
+        match ap_ce::value_conv::to_value(kwds as CeHandle) {
+            Some(Value::Dict(d)) => d
+                .items()
+                .iter()
+                .filter_map(|(k, v)| match k {
+                    Value::Str(s) => Some((s.as_str().to_string(), v.clone())),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    };
+    // 2. Call into the runtime (the interpreter is the thread-local; this
+    //    is re-entrant: C fn -> here -> call_value -> Python -> C fn ...).
+    let interp = crate::interp::current_interp_handle();
+    match crate::interp::call_value_pub(&interp, &cv, &arg_vals, &kw_pairs) {
+        Ok(out) => {
+            let h = from_value(&out);
+            ce_newref(h);
+            h as PyObjPtr
+        }
+        Err(flow) => {
+            flow_to_err(&flow);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Install the pycall pointer into ap-ce (idempotent).
+fn ensure_pycall_installed() {
+    PYCALL_INSTALL.get_or_init(|| {
+        let _ = ap_ce::runtime_ctx::install_pycall(runtime_pycall);
+    });
+}
+
+/// Leaf 10.04: tp_new payload allocation — allocate the C-visible instance
+/// struct (spec tp_basicsize) + register the runtime Value so C handles
+/// minted for this instance resolve back faithfully.
+fn alloc_ce_instance(spec_index: usize) -> Result<Value, Flow> {
+    let snap = ap_ce::slots::record_clone(spec_index)
+        .ok_or_else(|| raise("SystemError", "spec lost its record"))?;
+    let t = ap_ce::slots::type_ref_for_spec(spec_index)
+        .ok_or_else(|| raise("SystemError", "spec lost its type payload"))?;
+    // Runtime-side instance FIRST (its Arc address is the payload key —
+    // stable for the object's lifetime; Gc<T> = Arc).
+    let inst = crate::classes::alloc_instance(&t);
+    let key = if snap.basicsize > 0 {
+        let v = Value::Obj(match &inst {
+            Value::Obj(o) => o.clone(),
+            _ => unreachable!("alloc_instance returns Value::Obj"),
+        });
+        let key = ap_obj::Gc::as_ptr(match &v {
+            Value::Obj(o) => o,
+            _ => unreachable!(),
+        }) as *const std::ffi::c_void as usize;
+        let block = ap_ce::payloads::payload_alloc(key, spec_index, snap.basicsize);
+        if block.is_null() {
+            return Err(raise("SystemError", "tp_basicsize payload alloc failed"));
+        }
+        ap_ce::value_map::set_runtime_value(key, v);
+        key
+    } else {
+        let v = inst.clone();
+        let key = match &v {
+            Value::Obj(o) => ap_obj::Gc::as_ptr(o) as *const std::ffi::c_void as usize,
+            _ => unreachable!(),
+        };
+        ap_ce::value_map::set_runtime_value(key, v);
+        key
+    };
+    let _ = key; // key ride documented; handle carries it below
+    Ok(inst)
+}
+
+fn ce_instance_handle(spec_index: usize, inst: &Value) -> CeHandle {
+    let key = match inst {
+        Value::Obj(o) => ap_obj::Gc::as_ptr(o) as *const std::ffi::c_void as usize,
+        _ => 0,
+    };
+    let h = ap_ce::state::new_ce_instance(spec_index, key);
+    ce_newref(h);
+    h
+}
+
 fn raise(class: &str, msg: impl Into<String>) -> Flow {
     Flow::Raise(ExceptionValue::msg(class, msg.into()))
 }
@@ -72,6 +188,9 @@ fn handle_to_result(h: *mut ap_ce::state::CeObject) -> Result<Value, Flow> {
 /// BoundMethod markers arrive with the receiver riding args[0]; plain
 /// module fn markers don't).
 pub fn call_ce_marker(full: &str, args: &[Value]) -> Option<Result<Value, Flow>> {
+    // Leaf 10.04: make sure the call-back pointer is registered before ANY
+    // C code runs (tp_new/methods may call PyObject_Call immediately).
+    ensure_pycall_installed();
     if std::env::var_os("APX_CE_TRACE").is_some() {
         eprintln!("[ap-ce] marker ENTER {full}");
     }
@@ -161,13 +280,11 @@ pub fn call_ce_marker(full: &str, args: &[Value]) -> Option<Result<Value, Flow>>
         }
         let _ = ce_newref(r as CeHandle);
         if is_new {
-            // S0 tp_new contract: the C fn VALIDATES the ctor args; the
-            // runtime allocates (alloc_instance) and tp_init receives it.
-            // (CPython's tp_new allocates the C payload; there is no C-side
-            // instance payload on S0 — documented divergence.)
-            let t = ap_ce::slots::type_ref_for_spec(spec_index)
-                .ok_or_else(|| raise("SystemError", "spec lost its type payload"))?;
-            return Ok(crate::classes::alloc_instance(&t));
+            // S1 (leaf 10.04): the C fn VALIDATES the ctor args; the runtime
+            // allocates the instance AND its tp_basicsize C payload block,
+            // keyed so every later C handle for this object round-trips
+            // faithfully (payload + identity, not a repr pin).
+            return alloc_ce_instance(spec_index);
         }
         handle_to_result(r as CeHandle)
     })())
@@ -203,6 +320,8 @@ fn args_beyond_first(_cls: &Value) -> bool {
 
 /// Route 2: dotted `mod.name` for registered module functions.
 pub fn call_ce_module_fn(module: &str, fname: &str, args: &[Value]) -> Option<Result<Value, Flow>> {
+    // Leaf 10.04: call-back registration (module fns may call back too).
+    ensure_pycall_installed();
     if std::env::var_os("APX_CE_TRACE").is_some() {
         eprintln!("[ap-ce] module_fn {module}.{fname} nargs={}", args.len());
     }
@@ -241,6 +360,9 @@ pub fn native_ce_module(
             return None;
         }
     }
+    if ap_ce::api::module_registered(name) {
+        ensure_pycall_installed();
+    }
     if let Some(ns) = ap_ce::api::module_ns(name) {
         return Some(Ok(finish_module(name, &ns)));
     }
@@ -272,7 +394,16 @@ pub fn native_ce_module(
 /// Materialize a Module PyObject Value from the ce ns (the importer seam).
 fn finish_module(name: &str, ns: &ap_obj::dict::PyDict) -> Value {
     if std::env::var_os("APX_CE_TRACE").is_some() {
-        eprintln!("[ap-ce] finish_module({name}) ns_items={:?}", ns.items().iter().map(|(k,_)| match k { Value::Str(s) => s.as_str().to_string(), _ => "?".to_string() }).collect::<Vec<_>>());
+        eprintln!(
+            "[ap-ce] finish_module({name}) ns_items={:?}",
+            ns.items()
+                .iter()
+                .map(|(k, _)| match k {
+                    Value::Str(s) => s.as_str().to_string(),
+                    _ => "?".to_string(),
+                })
+                .collect::<Vec<_>>()
+        );
     }
     let m = ap_obj::PyObject::new(ap_obj::ObjKind::Module, name);
     let d = ap_obj::dict::PyDict::new();
@@ -323,9 +454,7 @@ unsafe fn dlopen_fullname(libc_name: *const std::ffi::c_char) -> *mut std::ffi::
 /// Is a loadable extension library visible for `name`?
 fn ext_lib_candidates(name: &str) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
-    let mut dirs: Vec<std::path::PathBuf> = vec![
-        std::path::PathBuf::from("."),
-    ];
+    let mut dirs: Vec<std::path::PathBuf> = vec![std::path::PathBuf::from(".")];
     if let Ok(d) = std::env::var("APX_EXT_DIR") {
         dirs.push(std::path::PathBuf::from(d));
     }

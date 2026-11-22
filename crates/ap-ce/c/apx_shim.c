@@ -136,8 +136,9 @@ long apx_PyType_FromSpec(PyType_Spec *spec, PyType_Slot *slots) {
     }
     extern long apx_type_register(const char *name, void *tp_new, void *tp_init,
                                   void *tp_dealloc, PyMethodDef *methods,
-                                  PyGetSetDef *getsets);
-    return apx_type_register(spec->name, tp_new, tp_init, tp_dealloc, methods, getsets);
+                                  PyGetSetDef *getsets, long basicsize);
+    return apx_type_register(spec->name, tp_new, tp_init, tp_dealloc, methods,
+                             getsets, (long)spec->basicsize);
 }
 
 /* ------------------------------------------------------------------ */

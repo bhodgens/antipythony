@@ -197,6 +197,7 @@ pub fn type_from_spec_normalized(
     methods: Vec<(String, i32, PyCFunctionRaw)>,
     getsets: Vec<(String, Option<GetterRaw>, Option<SetterRaw>)>,
     bases: Vec<ap_obj::value::Value>,
+    basicsize: usize,
 ) -> Result<usize, String> {
     // tp_new is PyCFunction-shaped on S0 (PyType_Slot stores void*; the
     // generic new signature reduces to (cls, args) with kwds NULL — the
@@ -225,6 +226,7 @@ pub fn type_from_spec_normalized(
             })
             .collect(),
         bases,
+        basicsize,
     )
 }
 

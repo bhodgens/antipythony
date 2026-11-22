@@ -8,7 +8,7 @@ use std::sync::{Mutex, OnceLock};
 use ap_obj::dict::PyDict;
 use ap_obj::int::{Gc, Int};
 use ap_obj::object::PyObject;
-use ap_obj::value::{PyString, Tuple, Value};
+use ap_obj::value::Value;
 
 /// What the handle fronts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +31,11 @@ pub enum CeKind {
     /// An instance of a CeKind::Type (tp_new/tp_init dispatched by ap-run's
     /// ce_bridge; state lives in the instance dict).
     Instance,
+    /// Leaf 10.04: a FAITHFUL opaque handle for a runtime object we cannot
+    /// decompose into an S0 kind (callables, UserInstances, module attrs)
+    /// — call-backs (PyObject_Call) and payload attachment need the exact
+    /// object back, not a repr pin.
+    Opaque,
 }
 
 /// The heap payload for reference-valued kinds.
@@ -58,6 +63,17 @@ pub enum CePayload {
         class_spec: usize,
         state: Gc<PyDict>,
     },
+    /// Leaf 10.04: a ce-owned instance created by OUR tp_new route (the
+    /// runtime Value arrives through the ce->runtime value map at
+    /// to_value time; the payload key pins the C struct side).
+    CeInstance {
+        class_spec: usize,
+        payload_key: usize,
+    },
+    /// Leaf 10.04: the faithful-opaque payload for CeKind::Opaque — a
+    /// strong clone of the runtime object (Gc<PyObject>), handed back
+    /// byte-identical at to_value / call time.
+    Opaque(Gc<ap_obj::object::PyObject>),
 }
 
 impl std::fmt::Debug for CePayload {
@@ -74,6 +90,11 @@ impl std::fmt::Debug for CePayload {
             CePayload::CFunction { name, .. } => write!(f, "CFunction({name})"),
             CePayload::Type { spec_index } => write!(f, "Type(#{spec_index})"),
             CePayload::Instance { class_spec, .. } => write!(f, "Instance(#{class_spec})"),
+            CePayload::CeInstance {
+                class_spec,
+                payload_key,
+            } => write!(f, "CeInstance(#{class_spec}, key={payload_key:#x})"),
+            CePayload::Opaque(_) => write!(f, "Opaque"),
         }
     }
 }
@@ -179,10 +200,44 @@ pub fn from_value(v: &Value) -> CeHandle {
             }
         }
         other => {
-            // Fallback: pin the repr (S0 spike never needs richer fallbacks;
-            // PyO3-shaped modules only produce the kinds above).
-            let repr = ap_obj::ops::repr(other).unwrap_or_else(|_| "<??>".to_string());
-            new_handle(CeKind::Str, CePayload::Str(repr))
+            // Leaf 10.04: FAITHFUL opaque handle — a strong clone of the
+            // runtime object. The S0 repr-pin fallback broke call-backs
+            // (the C side got the object's repr string, not the object)
+            // and payload identity; PyO3-shaped modules pass arbitrary
+            // runtime values through, so fidelity is the contract. Only
+            // the Obj arm is faithful-able; non-Obj stragglers (Bytes,
+            // Set, ...) pin their repr on S1 (the spike surface never
+            // round-trips them).
+            if let Value::Obj(o) = other {
+                new_handle(CeKind::Opaque, CePayload::Opaque(o.clone()))
+            } else {
+                let repr = ap_obj::ops::repr(other).unwrap_or_else(|_| "<??>".to_string());
+                new_handle(CeKind::Str, CePayload::Str(repr))
+            }
+        }
+    }
+}
+
+/// Leaf 10.04: a handle for OUR tp_new-route instances (CeKind::Instance
+/// with a CePayload::CeInstance pinning the payload key). The runtime-side
+/// UserInstance Value is attached by the bridge via value_of_ce.
+pub fn new_ce_instance(class_spec: usize, payload_key: usize) -> CeHandle {
+    new_handle(
+        CeKind::Instance,
+        CePayload::CeInstance {
+            class_spec,
+            payload_key,
+        },
+    )
+}
+
+/// Leaf 10.04: the runtime object behind a faithful-opaque handle.
+pub fn opaque_object(h: CeHandle) -> Option<Gc<ap_obj::object::PyObject>> {
+    unsafe {
+        let o = &*h;
+        match o.payload.borrow().as_ref() {
+            Some(CePayload::Opaque(v)) => Some(v.clone()),
+            _ => None,
         }
     }
 }
@@ -214,7 +269,6 @@ pub fn refcnt(h: CeHandle) -> isize {
 // ---------------------------------------------------------------------------
 // Registries (shared with slots.rs / api.rs via OnceLock statics here).
 // ---------------------------------------------------------------------------
-
 
 pub fn slot_registry() -> &'static Mutex<Vec<crate::slots::SpecRecord>> {
     static R: OnceLock<Mutex<Vec<crate::slots::SpecRecord>>> = OnceLock::new();
@@ -292,6 +346,7 @@ impl CeObject {
             CeKind::CFunction => "builtin_function_or_method",
             CeKind::Type => "type",
             CeKind::Instance => "object", // refined via spec name at bridge
+            CeKind::Opaque => "object",   // refined at to_value
         }
     }
 }

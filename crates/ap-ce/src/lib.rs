@@ -22,9 +22,12 @@
 pub mod api;
 pub mod exports;
 pub mod ffi_types;
+pub mod payloads;
+pub mod runtime_ctx;
 pub mod slots;
 pub mod state;
 pub mod value_conv;
+pub mod value_map;
 
 pub use api::{method_registry, module_registry};
 pub use state::slot_registry;

@@ -501,21 +501,63 @@ apx_exc!(apx_PyExc_ZeroDivisionError, "ZeroDivisionError");
 apx_exc!(apx_PyExc_MemoryError, "MemoryError");
 apx_exc!(apx_PyExc_SystemError, "SystemError");
 
-/// PyObject_Call (S0: no-arg + tuple-arg forms; kwargs arrive S1).
+/// PyObject_Call — leaf 10.04: the REAL call-back, dispatched through the
+/// registered runtime pycall (runtime_ctx). NULL callable => TypeError;
+/// NULL return from the runtime => error state (already set by the bridge).
 #[no_mangle]
 pub unsafe extern "C" fn apx_PyObject_Call(
-    _callable: PyObjPtr,
-    _args: PyObjPtr,
-    _kwds: PyObjPtr,
+    callable: PyObjPtr,
+    args: PyObjPtr,
+    kwds: PyObjPtr,
 ) -> PyObjPtr {
-    // S0 spike: extensions in scope never call back into Python values
-    // (the PyO3-shaped module uses slots + methods only). Full call-back
-    // surface is S1 (bridge may need the interpreter handle threaded).
-    err_set(
-        "NotImplementedError",
-        "PyObject_Call back into the runtime is S1 surface (S0 spike boundary)",
-    );
-    std::ptr::null_mut()
+    let Some(f) = crate::runtime_ctx::pycall_fn() else {
+        err_set(
+            "SystemError",
+            "PyObject_Call: no runtime attached (extension used outside ap-run)",
+        );
+        return std::ptr::null_mut();
+    };
+    if callable.is_null() {
+        err_set("TypeError", "'NoneType' object is not callable");
+        return std::ptr::null_mut();
+    }
+    unsafe { f(callable, args, kwds) }
+}
+
+/// PyObject_CallNoArgs (PyO3 emission set).
+#[no_mangle]
+pub unsafe extern "C" fn apx_PyObject_CallNoArgs(callable: PyObjPtr) -> PyObjPtr {
+    unsafe { apx_PyObject_Call(callable, py_none() as PyObjPtr, std::ptr::null_mut()) }
+}
+
+/// PyObject_CallOneArg (PyO3 emission set; arity-checked like CPython).
+#[no_mangle]
+pub unsafe extern "C" fn apx_PyObject_CallOneArg(callable: PyObjPtr, arg: PyObjPtr) -> PyObjPtr {
+    let args = crate::state::new_handle(CeKind::Tuple, CePayload::Tuple(vec![arg as CeHandle]));
+    ce_newref(args);
+    unsafe { apx_PyObject_Call(callable, args as PyObjPtr, std::ptr::null_mut()) }
+}
+
+/// PyObject_Vectorcall (minimal S1: kwnames NULL => positional vector).
+#[no_mangle]
+pub unsafe extern "C" fn apx_PyObject_Vectorcall(
+    callable: PyObjPtr,
+    args: *const PyObjPtr,
+    nargsf: usize,
+    _kwnames: PyObjPtr,
+) -> PyObjPtr {
+    let n = nargsf; // kwnames NULL: nargsf is the plain positional count
+    let items: Vec<CeHandle> = if args.is_null() || n == 0 {
+        Vec::new()
+    } else {
+        std::slice::from_raw_parts(args, n)
+            .iter()
+            .map(|p| *p as CeHandle)
+            .collect()
+    };
+    let args_t = crate::state::new_handle(CeKind::Tuple, CePayload::Tuple(items));
+    ce_newref(args_t);
+    unsafe { apx_PyObject_Call(callable, args_t as PyObjPtr, std::ptr::null_mut()) }
 }
 
 // Keep c_void referenced (the header shim uses it through this module).
@@ -542,12 +584,12 @@ pub unsafe extern "C" fn apx_method_register(
     if name.is_null() || m.is_null() {
         return -1;
     }
-    let n = std::ffi::CStr::from_ptr(name).to_string_lossy().into_owned();
+    let n = std::ffi::CStr::from_ptr(name)
+        .to_string_lossy()
+        .into_owned();
     let h = m as CeHandle;
     unsafe {
-        if let Some(CePayload::Module { name: mod_name, ns }) =
-            &mut *(&*h).payload.borrow_mut()
-        {
+        if let Some(CePayload::Module { name: mod_name, ns }) = &mut *(&*h).payload.borrow_mut() {
             let mn = mod_name.clone();
             let _ = ns.set(
                 ap_obj::value::Value::Str(ap_obj::value::PyString::new(n.clone())),
@@ -585,13 +627,16 @@ pub unsafe extern "C" fn apx_type_register(
     tp_dealloc: *mut c_void,
     methods: *mut c_void,
     getsets: *mut c_void,
+    basicsize: c_long,
 ) -> c_long {
     use crate::ffi_types::{GetterRaw, InitRaw, PyCFunctionRaw, SetterRaw};
     if name.is_null() {
         err_set("SystemError", "PyType_FromSpec: NULL name");
         return -1;
     }
-    let n = std::ffi::CStr::from_ptr(name).to_string_lossy().into_owned();
+    let n = std::ffi::CStr::from_ptr(name)
+        .to_string_lossy()
+        .into_owned();
     // Walk the raw C tables (the shim passed the ORIGINAL pointers).
     let mut meths: Vec<(String, i32, PyCFunctionRaw)> = Vec::new();
     if !methods.is_null() {
@@ -608,8 +653,11 @@ pub unsafe extern "C" fn apx_type_register(
             md = md.add(1);
         }
     }
-    let mut gs: Vec<(String, Option<crate::ffi_types::GetterRaw>, Option<crate::ffi_types::SetterRaw>)> =
-        Vec::new();
+    let mut gs: Vec<(
+        String,
+        Option<crate::ffi_types::GetterRaw>,
+        Option<crate::ffi_types::SetterRaw>,
+    )> = Vec::new();
     if !getsets.is_null() {
         let mut gd = getsets as *const ApxCGetSetDef;
         while !(*gd).name.is_null() {
@@ -620,12 +668,21 @@ pub unsafe extern "C" fn apx_type_register(
             gd = gd.add(1);
         }
     }
-    let newf: Option<PyCFunctionRaw> =
-        if tp_new.is_null() { None } else { Some(unsafe { std::mem::transmute(tp_new) }) };
-    let initf: Option<InitRaw> =
-        if tp_init.is_null() { None } else { Some(unsafe { std::mem::transmute(tp_init) }) };
-    let delf: Option<PyCFunctionRaw> =
-        if tp_dealloc.is_null() { None } else { Some(unsafe { std::mem::transmute(tp_dealloc) }) };
+    let newf: Option<PyCFunctionRaw> = if tp_new.is_null() {
+        None
+    } else {
+        Some(unsafe { std::mem::transmute(tp_new) })
+    };
+    let initf: Option<InitRaw> = if tp_init.is_null() {
+        None
+    } else {
+        Some(unsafe { std::mem::transmute(tp_init) })
+    };
+    let delf: Option<PyCFunctionRaw> = if tp_dealloc.is_null() {
+        None
+    } else {
+        Some(unsafe { std::mem::transmute(tp_dealloc) })
+    };
     match crate::api::type_from_spec_normalized(
         &n,
         newf,
@@ -634,6 +691,7 @@ pub unsafe extern "C" fn apx_type_register(
         meths,
         gs,
         Vec::new(),
+        basicsize.max(0) as usize,
     ) {
         Ok(idx) => idx as c_long,
         Err(msg) => {
@@ -681,4 +739,78 @@ pub extern "C" fn apx_init_count() -> c_int {
         fn apx_c_init_count() -> c_int;
     }
     unsafe { apx_c_init_count() }
+}
+
+// ---------------------------------------------------------------------------
+// Leaf 10.04: instance payload + call-back seams (consumed by ap-run's
+// ce_bridge and by the header shim's macros).
+// ---------------------------------------------------------------------------
+
+/// The C payload block for a ce instance handle (NULL when the spec has no
+/// payload / the handle is not a ce instance). Header shim:
+/// apx_InstancePayload(self) macro route — the pydantic-core `&self` shape.
+#[no_mangle]
+pub unsafe extern "C" fn apx_instance_payload(o: PyObjPtr) -> *mut c_void {
+    let h = o as CeHandle;
+    if h.is_null() {
+        return std::ptr::null_mut();
+    }
+    unsafe {
+        match (&*h).payload.borrow().as_ref() {
+            Some(CePayload::CeInstance { payload_key, .. }) => {
+                crate::payloads::payload_of(*payload_key)
+            }
+            _ => std::ptr::null_mut(),
+        }
+    }
+}
+
+/// Register the runtime call-back (called ONCE by ap-run's ce_bridge at
+/// first ce dispatch). Returns 0 on success, -1 when already installed
+/// with a different pointer.
+#[no_mangle]
+pub extern "C" fn apx_install_pycall(f: crate::runtime_ctx::PycallFn) -> c_int {
+    if crate::runtime_ctx::install_pycall(f) {
+        0
+    } else {
+        -1
+    }
+}
+
+/// Attach the runtime-side instance Value for a payload key (called by
+/// ap-run's ce_bridge at tp_new alloc).
+#[no_mangle]
+pub extern "C" fn apx_set_instance_value(key: usize, v: *const ap_obj::value::Value) -> c_int {
+    if v.is_null() {
+        return -1;
+    }
+    let v = unsafe { &*v }.clone();
+    crate::value_map::set_runtime_value(key, v);
+    0
+}
+
+/// Resolve the runtime Value behind a ce instance handle (called by the
+/// bridge when converting CeInstance handles back into runtime values —
+/// the pointer form of value_conv's CeInstance arm).
+/// Returns 0 on success (*out filled), -1 when the handle has no attached
+/// runtime value.
+#[no_mangle]
+pub unsafe extern "C" fn apx_instance_value(o: PyObjPtr, out: *mut ap_obj::value::Value) -> c_int {
+    let h = o as CeHandle;
+    if h.is_null() || out.is_null() {
+        return -1;
+    }
+    let key = unsafe {
+        match (&*h).payload.borrow().as_ref() {
+            Some(CePayload::CeInstance { payload_key, .. }) => *payload_key,
+            _ => return -1,
+        }
+    };
+    match crate::value_map::take_runtime_value(key) {
+        Some(v) => {
+            unsafe { *out = v };
+            0
+        }
+        None => -1,
+    }
 }

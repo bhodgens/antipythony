@@ -32,6 +32,9 @@ pub struct SlotFn(pub crate::ffi_types::PyCFunctionRaw);
 /// One registered type spec.
 pub struct SpecRecord {
     pub name: String,
+    /// tp_basicsize from the C spec (the C payload struct size; 0 = none).
+    /// Leaf 10.04: >0 makes tp_new allocate a C-visible payload block.
+    pub basicsize: usize,
     /// The C slot table snapshot, normalized.
     pub tp_new: Option<SlotFn>,
     pub tp_init: Option<SlotFn>,
@@ -50,6 +53,7 @@ impl SpecRecord {
     fn empty(name: &str) -> Self {
         SpecRecord {
             name: name.to_string(),
+            basicsize: 0,
             tp_new: None,
             tp_init: None,
             tp_dealloc: None,
@@ -78,6 +82,7 @@ pub fn from_spec(
     methods: Vec<(String, i32, SlotFn)>,
     getsets: Vec<(String, Option<SlotFn>, Option<SlotFn>)>,
     bases: Vec<Value>,
+    basicsize: usize,
 ) -> Result<usize, String> {
     // 1. Resolve bases to TypeRef payloads (empty => object-rooted).
     let base_refs: Vec<Arc<TypeRef>> = bases
@@ -125,6 +130,7 @@ pub fn from_spec(
     {
         let mut tab = spec_table().lock().unwrap_or_else(|p| p.into_inner());
         let rec = tab.last_mut().expect("just pushed");
+        rec.basicsize = basicsize;
         rec.tp_new = tp_new;
         rec.tp_init = tp_init;
         rec.tp_dealloc = tp_dealloc;
@@ -251,6 +257,7 @@ pub fn record_clone(spec_index: usize) -> Option<SpecSnapshot> {
     let r = tab.get(spec_index)?;
     Some(SpecSnapshot {
         name: r.name.clone(),
+        basicsize: r.basicsize,
         tp_new: r.tp_new,
         tp_init: r.tp_init,
         tp_dealloc: r.tp_dealloc,
@@ -262,6 +269,7 @@ pub fn record_clone(spec_index: usize) -> Option<SpecSnapshot> {
 /// A cheap clone of the C-side dispatch surface (fn pointers are Copy).
 pub struct SpecSnapshot {
     pub name: String,
+    pub basicsize: usize,
     pub tp_new: Option<SlotFn>,
     pub tp_init: Option<SlotFn>,
     pub tp_dealloc: Option<SlotFn>,

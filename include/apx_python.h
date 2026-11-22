@@ -170,6 +170,22 @@ long apx_PyType_FromSpec(PyType_Spec *spec, PyType_Slot *slots);
 #define PyType_FromSpec(spec, slots) apx_PyType_FromSpec((spec), (slots))
 
 /* ------------------------------------------------------------------ */
+/* Call surface (leaf 10.04: REAL call-backs into the runtime)         */
+/* ------------------------------------------------------------------ */
+
+PyObject *PyObject_Call(PyObject *callable, PyObject *args, PyObject *kwds);
+PyObject *PyObject_CallNoArgs(PyObject *callable);
+PyObject *PyObject_CallOneArg(PyObject *callable, PyObject *arg);
+PyObject *PyObject_Vectorcall(PyObject *callable, PyObject *const *args,
+                              size_t nargsf, PyObject *kwnames);
+
+/* The C payload block of a ce instance (tp_basicsize-sized; allocated by
+   the runtime at tp_new, resolved through the side registry — the
+   pydantic-core `&self` shape). NULL for non-payload objects. */
+void *apx_InstancePayload(PyObject *o);
+#define ApxInstancePayload(o) apx_InstancePayload((PyObject *)(o))
+
+/* ------------------------------------------------------------------ */
 /* Error protocol                                                      */
 /* ------------------------------------------------------------------ */
 
