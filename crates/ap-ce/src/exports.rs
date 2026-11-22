@@ -505,7 +505,7 @@ apx_exc!(apx_PyExc_SystemError, "SystemError");
 /// registered runtime pycall (runtime_ctx). NULL callable => TypeError;
 /// NULL return from the runtime => error state (already set by the bridge).
 #[no_mangle]
-pub unsafe extern "C" fn apx_PyObject_Call(
+pub unsafe extern "C" fn PyObject_Call(
     callable: PyObjPtr,
     args: PyObjPtr,
     kwds: PyObjPtr,
@@ -526,21 +526,21 @@ pub unsafe extern "C" fn apx_PyObject_Call(
 
 /// PyObject_CallNoArgs (PyO3 emission set).
 #[no_mangle]
-pub unsafe extern "C" fn apx_PyObject_CallNoArgs(callable: PyObjPtr) -> PyObjPtr {
-    unsafe { apx_PyObject_Call(callable, py_none() as PyObjPtr, std::ptr::null_mut()) }
+pub unsafe extern "C" fn PyObject_CallNoArgs(callable: PyObjPtr) -> PyObjPtr {
+    unsafe { PyObject_Call(callable, py_none() as PyObjPtr, std::ptr::null_mut()) }
 }
 
 /// PyObject_CallOneArg (PyO3 emission set; arity-checked like CPython).
 #[no_mangle]
-pub unsafe extern "C" fn apx_PyObject_CallOneArg(callable: PyObjPtr, arg: PyObjPtr) -> PyObjPtr {
+pub unsafe extern "C" fn PyObject_CallOneArg(callable: PyObjPtr, arg: PyObjPtr) -> PyObjPtr {
     let args = crate::state::new_handle(CeKind::Tuple, CePayload::Tuple(vec![arg as CeHandle]));
     ce_newref(args);
-    unsafe { apx_PyObject_Call(callable, args as PyObjPtr, std::ptr::null_mut()) }
+    unsafe { PyObject_Call(callable, args as PyObjPtr, std::ptr::null_mut()) }
 }
 
 /// PyObject_Vectorcall (minimal S1: kwnames NULL => positional vector).
 #[no_mangle]
-pub unsafe extern "C" fn apx_PyObject_Vectorcall(
+pub unsafe extern "C" fn PyObject_Vectorcall(
     callable: PyObjPtr,
     args: *const PyObjPtr,
     nargsf: usize,
@@ -557,7 +557,7 @@ pub unsafe extern "C" fn apx_PyObject_Vectorcall(
     };
     let args_t = crate::state::new_handle(CeKind::Tuple, CePayload::Tuple(items));
     ce_newref(args_t);
-    unsafe { apx_PyObject_Call(callable, args_t as PyObjPtr, std::ptr::null_mut()) }
+    unsafe { PyObject_Call(callable, args_t as PyObjPtr, std::ptr::null_mut()) }
 }
 
 // Keep c_void referenced (the header shim uses it through this module).
@@ -750,7 +750,7 @@ pub extern "C" fn apx_init_count() -> c_int {
 /// payload / the handle is not a ce instance). Header shim:
 /// apx_InstancePayload(self) macro route — the pydantic-core `&self` shape.
 #[no_mangle]
-pub unsafe extern "C" fn apx_instance_payload(o: PyObjPtr) -> *mut c_void {
+pub unsafe extern "C" fn apx_InstancePayload(o: PyObjPtr) -> *mut c_void {
     let h = o as CeHandle;
     if h.is_null() {
         return std::ptr::null_mut();

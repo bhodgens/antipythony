@@ -47,7 +47,8 @@ int PyArg_ParseTuple(PyObject *args, const char *fmt, ...) {
             return 0;
         }
         switch (c) {
-        case 'i': {
+        case 'i':
+        case 'l': {
             long *out = va_arg(ap, long *);
             long v = PyLong_AsLong(item);
             if (v == -1 && PyErr_Occurred()) {

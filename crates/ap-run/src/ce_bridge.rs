@@ -213,7 +213,13 @@ pub fn call_ce_marker(full: &str, args: &[Value]) -> Option<Result<Value, Flow>>
             ),
         };
         // Build the C-side (self, args_tuple) pair.
-        let slf_h = from_value(&slf);
+        // Leaf 10.04 (payload model): the S0 from_value mint for a
+        // UserInstance would produce an Opaque handle with NO payload
+        // linkage — the C side needs a CeInstance handle carrying the
+        // payload key so apx_InstancePayload(self) resolves. mint_slf
+        // attaches a fresh CeInstance handle for the receiver when it is
+        // an instance of THIS spec (methods/getsets/tp_init paths).
+        let slf_h = mint_slf(spec_index, &slf);
         let args_h = args_to_handle(rest);
         let f: ap_ce::slots::SlotFn = match entry.as_str() {
             "__new__" => snap
@@ -419,6 +425,26 @@ fn finish_module(name: &str, ns: &ap_obj::dict::PyDict) -> Value {
     *m.module_ns.lock().unwrap_or_else(|p| p.into_inner()) =
         Some(std::sync::Arc::new((*d).clone()));
     Value::Obj(m)
+}
+
+/// Leaf 10.04: the receiver handle for slot dispatch. A UserInstance of
+/// this spec gets a CeInstance handle (payload key = its Arc address —
+/// matching alloc_ce_instance's keying) so C payload access resolves;
+/// anything else (cls for tp_new, module self) mints normally.
+fn mint_slf(spec_index: usize, slf: &Value) -> CeHandle {
+    if let Value::Obj(o) = slf {
+        if o.kind == ap_obj::ObjKind::UserInstance {
+            if let Some(t) = ap_ce::slots::type_ref_for_spec(spec_index) {
+                if o.name == t.name {
+                    let key = ap_obj::Gc::as_ptr(o) as *const std::ffi::c_void as usize;
+                    let h = ap_ce::state::new_ce_instance(spec_index, key);
+                    ce_newref(h);
+                    return h;
+                }
+            }
+        }
+    }
+    from_value(slf)
 }
 
 /// Int helper used by tests.
