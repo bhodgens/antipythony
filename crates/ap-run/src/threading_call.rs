@@ -771,6 +771,12 @@ fn lock_method(
                 }
                 let deadline =
                     timeout.map(|t| Instant::now() + Duration::from_secs_f64(t.max(0.0)));
+                // 2c.2 transplant: register under the prim's OWN Mutex (the
+                // cv.wait releases it atomically while parked — the waker's
+                // flip + drain happen under the same Mutex, so no parker
+                // slips between flip and drain; impl doc §4.4 step 1-2).
+                let _pg = crate::scheduler::ParkGuard::new();
+                let seq = crate::scheduler::park_register(crate::scheduler::ParkKey::Lock(addr));
                 loop {
                     if !*locked {
                         break;
@@ -781,18 +787,33 @@ fn lock_method(
                     };
                     if left.is_zero() {
                         drop(locked);
+                        crate::scheduler::park_unregister(
+                            &crate::scheduler::ParkKey::Lock(addr),
+                            crate::scheduler::current_task_id(),
+                            seq,
+                        );
                         return Ok(Value::Bool(false));
                     }
                     let (g, t) = prim.cv.wait_timeout(locked, left).unwrap();
                     locked = g;
                     if t.timed_out() && *locked {
                         drop(locked);
+                        crate::scheduler::park_unregister(
+                            &crate::scheduler::ParkKey::Lock(addr),
+                            crate::scheduler::current_task_id(),
+                            seq,
+                        );
                         return Ok(Value::Bool(false));
                     }
                     if !*locked {
                         break;
                     }
                 }
+                crate::scheduler::park_unregister(
+                    &crate::scheduler::ParkKey::Lock(addr),
+                    crate::scheduler::current_task_id(),
+                    seq,
+                );
             }
             *locked = true;
             drop(locked);
@@ -804,6 +825,10 @@ fn lock_method(
                 return Err(raise("RuntimeError", "release unlocked lock"));
             }
             *locked = false;
+            // 2c.2: waker side — drain the registered waiters under the SAME
+            // Mutex as the state flip (§4.4 step 3; deferred resume: the
+            // parked fibers live on their home workers).
+            let _woken = crate::scheduler::park_drain(&crate::scheduler::ParkKey::Lock(addr));
             drop(locked);
             prim.cv.notify_all();
             Ok(Value::None)
@@ -846,6 +871,9 @@ fn rlock_method(o: &Gc<PyObject>, method: &str, args: &[Value]) -> BResult {
                 }
                 let deadline =
                     timeout.map(|t| Instant::now() + Duration::from_secs_f64(t.max(0.0)));
+                let _pg = crate::scheduler::ParkGuard::new();
+                let seq =
+                    crate::scheduler::park_register(crate::scheduler::ParkKey::RLock(addr));
                 loop {
                     if st.0 == crate::threading::RLockOwner::None {
                         break;
@@ -855,17 +883,32 @@ fn rlock_method(o: &Gc<PyObject>, method: &str, args: &[Value]) -> BResult {
                         None => Duration::from_secs(3600),
                     };
                     if left.is_zero() {
+                        crate::scheduler::park_unregister(
+                            &crate::scheduler::ParkKey::RLock(addr),
+                            crate::scheduler::current_task_id(),
+                            seq,
+                        );
                         return Ok(Value::Bool(false));
                     }
                     let (g, t) = prim.cv.wait_timeout(st, left).unwrap();
                     st = g;
                     if t.timed_out() && st.0 != crate::threading::RLockOwner::None {
+                        crate::scheduler::park_unregister(
+                            &crate::scheduler::ParkKey::RLock(addr),
+                            crate::scheduler::current_task_id(),
+                            seq,
+                        );
                         return Ok(Value::Bool(false));
                     }
                     if st.0 == crate::threading::RLockOwner::None {
                         break;
                     }
                 }
+                crate::scheduler::park_unregister(
+                    &crate::scheduler::ParkKey::RLock(addr),
+                    crate::scheduler::current_task_id(),
+                    seq,
+                );
             }
             st.0 = crate::threading::RLockOwner::Owned(me);
             st.1 = 1;
@@ -879,6 +922,7 @@ fn rlock_method(o: &Gc<PyObject>, method: &str, args: &[Value]) -> BResult {
             st.1 -= 1;
             if st.1 == 0 {
                 st.0 = crate::threading::RLockOwner::None;
+                let _woken = crate::scheduler::park_drain(&crate::scheduler::ParkKey::RLock(addr));
                 drop(st);
                 prim.cv.notify_all();
             }
@@ -925,10 +969,20 @@ fn cond_acquire_lock(cond: &CondPrim) -> BResult {
 }
 
 fn lock_acquire_blocking(lk: Arc<LockPrim>) -> BResult {
+    let addr = Arc::as_ptr(&lk).addr();
     let mut locked = lk.locked.lock().unwrap();
-    while *locked {
-        let g = lk.cv.wait(locked).unwrap();
-        locked = g;
+    if *locked {
+        let _pg = crate::scheduler::ParkGuard::new();
+        let seq = crate::scheduler::park_register(crate::scheduler::ParkKey::Lock(addr));
+        while *locked {
+            let g = lk.cv.wait(locked).unwrap();
+            locked = g;
+        }
+        crate::scheduler::park_unregister(
+            &crate::scheduler::ParkKey::Lock(addr),
+            crate::scheduler::current_task_id(),
+            seq,
+        );
     }
     *locked = true;
     Ok(Value::Bool(true))
@@ -937,6 +991,7 @@ fn lock_acquire_blocking(lk: Arc<LockPrim>) -> BResult {
 fn rlock_acquire(rl: Arc<RLockPrim>) -> BResult {
     // 2c re-key: owner identity = logical thread ident (was os tid).
     let me = crate::threading::tls_key();
+    let addr = Arc::as_ptr(&rl).addr();
     // 02.09b: the primitive's own mutex is the only serialization (the GIL
     // is gone) — no interpreter-lock bracketing exists anymore.
     let mut st = rl.st.lock().unwrap();
@@ -945,9 +1000,18 @@ fn rlock_acquire(rl: Arc<RLockPrim>) -> BResult {
         drop(st);
         return Ok(Value::Bool(true));
     }
-    while st.0 != crate::threading::RLockOwner::None {
-        let g = rl.cv.wait(st).unwrap();
-        st = g;
+    if st.0 != crate::threading::RLockOwner::None {
+        let _pg = crate::scheduler::ParkGuard::new();
+        let seq = crate::scheduler::park_register(crate::scheduler::ParkKey::RLock(addr));
+        while st.0 != crate::threading::RLockOwner::None {
+            let g = rl.cv.wait(st).unwrap();
+            st = g;
+        }
+        crate::scheduler::park_unregister(
+            &crate::scheduler::ParkKey::RLock(addr),
+            crate::scheduler::current_task_id(),
+            seq,
+        );
     }
     st.0 = crate::threading::RLockOwner::Owned(me);
     st.1 = 1;
@@ -1045,6 +1109,15 @@ fn cond_method(
             let mut w = prim.waiters.lock().unwrap();
             let k = n.min(*w as i64) as usize;
             *w -= k;
+            // 2c.2: notify(k) drains exactly k registered waiters (impl doc
+            // §4.4 notify(k) exact-count; surplus stay parked).
+            let drained = crate::scheduler::park_drain(&crate::scheduler::ParkKey::Cond(addr));
+            // Keep the surplus registered: re-insert beyond k.
+            if drained.len() > k {
+                for rec in drained[k..].iter() {
+                    crate::scheduler::park_refix(&crate::scheduler::ParkKey::Cond(addr), *rec);
+                }
+            }
             drop(w);
             for _ in 0..k {
                 prim.cv.notify_one();
@@ -1057,6 +1130,7 @@ fn cond_method(
             }
             let mut w = prim.waiters.lock().unwrap();
             *w = 0;
+            let _drained = crate::scheduler::park_drain(&crate::scheduler::ParkKey::Cond(addr));
             drop(w);
             prim.cv.notify_all();
             Ok(Value::None)
@@ -1098,7 +1172,7 @@ fn cond_wait(
     prim: &CondPrim,
     timeout: Option<f64>,
 ) -> Result<bool, Flow> {
-    // Release-save.
+    let addr = prim.own_rlock_addr.saturating_sub(1);
     let release_result = if let Some(rl) = prim_of::<RLockPrim>(prim.lock_addr) {
         rlock_release_full(&rl)
     } else if let Some(lk) = prim_of::<LockPrim>(prim.lock_addr) {
@@ -1114,7 +1188,13 @@ fn cond_wait(
     let deadline = timeout.map(|t| Instant::now() + Duration::from_secs_f64(t.max(0.0)));
     let got;
     {
+        // 2c.2 transplant: the `waiters` increment IS the registration step
+        // (impl doc §4.4 corner list: the release-save ordering is preserved
+        // — register BEFORE the backing lock is fully released); the
+        // explicit PARK_TABLE row rides the same lock scope.
         let w = prim.waiters.lock().unwrap();
+        let seq = crate::scheduler::park_register(crate::scheduler::ParkKey::Cond(addr));
+        let _pg = crate::scheduler::ParkGuard::new();
         let left = match deadline {
             Some(d) => d.saturating_duration_since(Instant::now()),
             None => Duration::from_secs(3600),
@@ -1124,6 +1204,11 @@ fn cond_wait(
         let (g, t) = prim.cv.wait_timeout(w, left).unwrap();
         let timed_out = t.timed_out();
         drop(g);
+        crate::scheduler::park_unregister(
+            &crate::scheduler::ParkKey::Cond(addr),
+            crate::scheduler::current_task_id(),
+            seq,
+        );
         got = !timed_out;
     }
     {
@@ -1166,6 +1251,7 @@ fn event_method(o: &Gc<PyObject>, method: &str, args: &[Value]) -> BResult {
         "set" => {
             let mut st = prim.st.lock().unwrap();
             *st = true;
+            let _woken = crate::scheduler::park_drain(&crate::scheduler::ParkKey::Event(addr));
             drop(st);
             prim.cv.notify_all();
             Ok(Value::None)
@@ -1192,6 +1278,8 @@ fn event_wait(o: &Gc<PyObject>, timeout: Option<f64>) -> BResult {
         return Ok(Value::Bool(true));
     }
     let deadline = timeout.map(|t| Instant::now() + Duration::from_secs_f64(t.max(0.0)));
+    let _pg = crate::scheduler::ParkGuard::new();
+    let seq = crate::scheduler::park_register(crate::scheduler::ParkKey::Event(addr));
     loop {
         let left = match deadline {
             Some(d) => d.saturating_duration_since(Instant::now()),
@@ -1199,14 +1287,29 @@ fn event_wait(o: &Gc<PyObject>, timeout: Option<f64>) -> BResult {
         };
         if left.is_zero() {
             let v = *st;
+            crate::scheduler::park_unregister(
+                &crate::scheduler::ParkKey::Event(addr),
+                crate::scheduler::current_task_id(),
+                seq,
+            );
             return Ok(Value::Bool(v));
         }
         let (g, t) = prim.cv.wait_timeout(st, left).unwrap();
         st = g;
         if *st {
+            crate::scheduler::park_unregister(
+                &crate::scheduler::ParkKey::Event(addr),
+                crate::scheduler::current_task_id(),
+                seq,
+            );
             return Ok(Value::Bool(true));
         }
         if t.timed_out() {
+            crate::scheduler::park_unregister(
+                &crate::scheduler::ParkKey::Event(addr),
+                crate::scheduler::current_task_id(),
+                seq,
+            );
             return Ok(Value::Bool(false));
         }
     }
@@ -1259,6 +1362,8 @@ fn sem_method(
                 return Ok(Value::Bool(false));
             }
             let deadline = timeout.map(|t| Instant::now() + Duration::from_secs_f64(t.max(0.0)));
+            let _pg = crate::scheduler::ParkGuard::new();
+            let seq = crate::scheduler::park_register(crate::scheduler::ParkKey::Sem(addr));
             loop {
                 let left = match deadline {
                     Some(d) => d.saturating_duration_since(Instant::now()),
@@ -1266,6 +1371,11 @@ fn sem_method(
                 };
                 if left.is_zero() {
                     drop(val);
+                    crate::scheduler::park_unregister(
+                        &crate::scheduler::ParkKey::Sem(addr),
+                        crate::scheduler::current_task_id(),
+                        seq,
+                    );
                     return Ok(Value::Bool(false));
                 }
                 let (g, t) = prim.cv.wait_timeout(val, left).unwrap();
@@ -1273,10 +1383,20 @@ fn sem_method(
                 if *val > 0 {
                     *val -= 1;
                     drop(val);
+                    crate::scheduler::park_unregister(
+                        &crate::scheduler::ParkKey::Sem(addr),
+                        crate::scheduler::current_task_id(),
+                        seq,
+                    );
                     return Ok(Value::Bool(true));
                 }
                 if t.timed_out() {
                     drop(val);
+                    crate::scheduler::park_unregister(
+                        &crate::scheduler::ParkKey::Sem(addr),
+                        crate::scheduler::current_task_id(),
+                        seq,
+                    );
                     return Ok(Value::Bool(false));
                 }
             }
@@ -1288,6 +1408,14 @@ fn sem_method(
                 return Err(raise("ValueError", "Semaphore released too many times"));
             }
             *val += n;
+            // 2c.3: release(n) unparks exactly n registered waiters; surplus
+            // stay parked (their resume-loop re-parks).
+            let drained = crate::scheduler::park_drain(&crate::scheduler::ParkKey::Sem(addr));
+            if drained.len() > n as usize {
+                for rec in drained[n as usize..].iter() {
+                    crate::scheduler::park_refix(&crate::scheduler::ParkKey::Sem(addr), *rec);
+                }
+            }
             drop(val);
             for _ in 0..n {
                 prim.cv.notify_one();
@@ -1319,6 +1447,8 @@ fn barrier_method(
             // their rendezvous freely).
             let mut st = prim.st.lock().unwrap();
             // _enter: block while draining/resetting.
+            let _pg0 = crate::scheduler::ParkGuard::new();
+            let seq0 = crate::scheduler::park_register(crate::scheduler::ParkKey::Barrier(addr));
             loop {
                 let (_, state, _) = *st;
                 if state == -1 || state == 1 {
@@ -1328,6 +1458,11 @@ fn barrier_method(
                 }
                 break;
             }
+            crate::scheduler::park_unregister(
+                &crate::scheduler::ParkKey::Barrier(addr),
+                crate::scheduler::current_task_id(),
+                seq0,
+            );
             if st.1 < 0 {
                 return Err(raise("BrokenBarrierError", ""));
             }
@@ -1379,6 +1514,8 @@ fn barrier_method(
             // condvar wait reclaims it atomically.
             let deadline = timeout.map(|t| Instant::now() + Duration::from_secs_f64(t.max(0.0)));
             let mut broke = false;
+            let _pg = crate::scheduler::ParkGuard::new();
+            let seq = crate::scheduler::park_register(crate::scheduler::ParkKey::Barrier(addr));
             loop {
                 let (_, state, gen) = *st;
                 if gen != my_gen {
@@ -1435,10 +1572,17 @@ fn barrier_method(
                 st.0 = st.0.saturating_sub(1);
                 if st.0 == 0 && (st.1 == 1 || st.1 == -1) {
                     st.1 = 0;
+                    let _woken =
+                        crate::scheduler::park_drain(&crate::scheduler::ParkKey::Barrier(addr));
                     drop(st);
                     prim.cv.notify_all();
                 }
             }
+            crate::scheduler::park_unregister(
+                &crate::scheduler::ParkKey::Barrier(addr),
+                crate::scheduler::current_task_id(),
+                seq,
+            );
             if broke {
                 return Err(raise("BrokenBarrierError", ""));
             }
@@ -1451,6 +1595,7 @@ fn barrier_method(
             } else {
                 st.1 = 0;
             }
+            let _woken = crate::scheduler::park_drain(&crate::scheduler::ParkKey::Barrier(addr));
             drop(st);
             prim.cv.notify_all();
             Ok(Value::None)
@@ -1459,6 +1604,7 @@ fn barrier_method(
             let mut st = prim.st.lock().unwrap();
             st.1 = -2;
             st.2 += 1;
+            let _woken = crate::scheduler::park_drain(&crate::scheduler::ParkKey::Barrier(addr));
             drop(st);
             prim.cv.notify_all();
             Ok(Value::None)
@@ -1684,6 +1830,9 @@ pub fn call_queue_method(
                     }
                     let deadline =
                         timeout.map(|t| Instant::now() + Duration::from_secs_f64(t.max(0.0)));
+                    let _pg = crate::scheduler::ParkGuard::new();
+                    let seq =
+                        crate::scheduler::park_register(crate::scheduler::ParkKey::QueuePut(addr));
                     loop {
                         let left = match deadline {
                             Some(d) => d.saturating_duration_since(Instant::now()),
@@ -1691,6 +1840,11 @@ pub fn call_queue_method(
                         };
                         if left.is_zero() {
                             drop(items);
+                            crate::scheduler::park_unregister(
+                                &crate::scheduler::ParkKey::QueuePut(addr),
+                                crate::scheduler::current_task_id(),
+                                seq,
+                            );
                             return Err(raise("Full", ""));
                         }
                         let (g, t) = prim.not_full.wait_timeout(items, left).unwrap();
@@ -1700,9 +1854,19 @@ pub fn call_queue_method(
                         }
                         if t.timed_out() {
                             drop(items);
+                            crate::scheduler::park_unregister(
+                                &crate::scheduler::ParkKey::QueuePut(addr),
+                                crate::scheduler::current_task_id(),
+                                seq,
+                            );
                             return Err(raise("Full", ""));
                         }
                     }
+                    crate::scheduler::park_unregister(
+                        &crate::scheduler::ParkKey::QueuePut(addr),
+                        crate::scheduler::current_task_id(),
+                        seq,
+                    );
                 }
                 if prim.prio {
                     // heap-insert by priority.
@@ -1721,6 +1885,8 @@ pub fn call_queue_method(
                     *u += 1;
                 }
                 drop(items);
+                // Waker sides: put wakes ONE getter, get wakes ONE putter.
+                let _woken = crate::scheduler::park_drain(&crate::scheduler::ParkKey::QueueGet(addr));
                 prim.not_empty.notify_one();
                 Ok(Value::None)
             }
@@ -1737,6 +1903,9 @@ pub fn call_queue_method(
                     }
                     let deadline =
                         timeout.map(|t| Instant::now() + Duration::from_secs_f64(t.max(0.0)));
+                    let _pg = crate::scheduler::ParkGuard::new();
+                    let seq =
+                        crate::scheduler::park_register(crate::scheduler::ParkKey::QueueGet(addr));
                     loop {
                         let left = match deadline {
                             Some(d) => d.saturating_duration_since(Instant::now()),
@@ -1744,6 +1913,11 @@ pub fn call_queue_method(
                         };
                         if left.is_zero() {
                             drop(items);
+                            crate::scheduler::park_unregister(
+                                &crate::scheduler::ParkKey::QueueGet(addr),
+                                crate::scheduler::current_task_id(),
+                                seq,
+                            );
                             return Err(raise("Empty", ""));
                         }
                         let (g, t) = prim.not_empty.wait_timeout(items, left).unwrap();
@@ -1753,9 +1927,19 @@ pub fn call_queue_method(
                         }
                         if t.timed_out() {
                             drop(items);
+                            crate::scheduler::park_unregister(
+                                &crate::scheduler::ParkKey::QueueGet(addr),
+                                crate::scheduler::current_task_id(),
+                                seq,
+                            );
                             return Err(raise("Empty", ""));
                         }
                     }
+                    crate::scheduler::park_unregister(
+                        &crate::scheduler::ParkKey::QueueGet(addr),
+                        crate::scheduler::current_task_id(),
+                        seq,
+                    );
                 }
                 let item = if prim.lifo {
                     items.pop_back().expect("nonempty checked")
@@ -1763,6 +1947,7 @@ pub fn call_queue_method(
                     items.pop_front().expect("nonempty checked")
                 };
                 drop(items);
+                let _woken = crate::scheduler::park_drain(&crate::scheduler::ParkKey::QueuePut(addr));
                 prim.not_full.notify_one();
                 Ok(item)
             }
@@ -1774,6 +1959,8 @@ pub fn call_queue_method(
                 }
                 *u = next;
                 if next == 0 {
+                    let _woken =
+                        crate::scheduler::park_drain(&crate::scheduler::ParkKey::QueueJoin(addr));
                     drop(u);
                     prim.all_tasks_done.notify_all();
                 }
@@ -1781,9 +1968,19 @@ pub fn call_queue_method(
             }
             "join" => {
                 let mut u = prim.unfinished.lock().unwrap();
-                while *u > 0 {
-                    let g = prim.all_tasks_done.wait(u).unwrap();
-                    u = g;
+                if *u > 0 {
+                    let _pg = crate::scheduler::ParkGuard::new();
+                    let seq =
+                        crate::scheduler::park_register(crate::scheduler::ParkKey::QueueJoin(addr));
+                    while *u > 0 {
+                        let g = prim.all_tasks_done.wait(u).unwrap();
+                        u = g;
+                    }
+                    crate::scheduler::park_unregister(
+                        &crate::scheduler::ParkKey::QueueJoin(addr),
+                        crate::scheduler::current_task_id(),
+                        seq,
+                    );
                 }
                 Ok(Value::None)
             }

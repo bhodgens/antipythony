@@ -5344,3 +5344,20 @@ search	"(?<=\\w)"	"x@c"	0
 COMPILE_MISSED	"ä*{2,1}"	"b\n1١c0\n0ckb.x.@ac\n.ä.c@"	0
 search	"(?<![^ab])"	"\n-.ä\ncx"	64
 findall	"b*?"	"ä.ßx @b\n0ß0c\näbc\n"	0
+subn1	"([-a][abc]+)*"	"cb.@.-1.@x"	16
+findall	"(?i:[^abc])*?"	"@bbk\nk@1c١b.bk.a.\nck0a@ab"	0
+subn1	"(?s)\\D"	".b-ckß  äc@0@١c0xcß١-0 "	0
+subn1	"a|\\D?|(x)"	"中kkbc"	0
+subn1	"(a\\s|x)+?"	"x0k中.x.x中1kck.\n ßx中中\n"	16
+subn1	"(?=\\S|a*)"	"\n١aßxßkb中中k中 ß.-bäx@"	16
+subn1	"(?<=[abc])"	"1.axk.äääßß١ 0.中cxa0ä"	2
+subn1	"\\D*"	"c١١b"	16
+search	"(?<=a)+?"	"acc١.中 ä中-"	2
+subn1	"(a[abc])?"	"ßßbk\näak0中1-中."	0
+search	"(?<![^ab])"	"@١\n١中c bbb1"	0
+search	"(?<=[^ab])"	"ckk@.@.0-0-@"	16
+findall	"\\s??"	"-a@ \n.ää\n1- c 中0c1aäßkx"	0
+search	"(?<!\\w)"	"١axx.ßa"	80
+findall	"(.)*?"	"bkä@\n1ka١ßk-ß\nxxc."	0
+search	"(?<!.)"	"@"	8
+search	"(?<![^ab])"	"cb"	0

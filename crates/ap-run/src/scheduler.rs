@@ -835,6 +835,17 @@ pub fn park_unregister(key: &ParkKey, task_id: u64, seq: u64) {
     }
 }
 
+/// Re-insert drained records beyond an exact-count notify budget (notify(k)
+/// keeps the surplus registered — impl doc §4.4 notify(k) exact-count).
+pub fn park_refix(key: &ParkKey, rec: ParkKeyTuple) {
+    park_table()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .entry(*key)
+        .or_default()
+        .push(rec);
+}
+
 /// Registered-parker count for a key (n_waiting-shape diagnostics).
 pub fn park_len(key: &ParkKey) -> usize {
     park_table()

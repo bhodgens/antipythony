@@ -1070,8 +1070,19 @@ pub fn join_wait_flag(flag: Arc<std::sync::atomic::AtomicBool>, timeout: Option<
     }
     let deadline = timeout.map(|t| Instant::now() + Duration::from_secs_f64(t.max(0.0)));
     let mut guard = JOIN_MU.lock().unwrap();
+    // 2c.3 transplant: register the joiner in PARK_TABLE under JOIN_MU (the
+    // same Mutex the completer's notify takes — no parker slips between the
+    // done flip and the drain); ParkGuard feeds the compensation lane.
+    let key = crate::scheduler::ParkKey::Join(0, flag_addr(&flag));
+    let _pg = crate::scheduler::ParkGuard::new();
+    let seq = crate::scheduler::park_register(key);
     loop {
         if flag.load(std::sync::atomic::Ordering::SeqCst) {
+            crate::scheduler::park_unregister(
+                &key,
+                crate::scheduler::current_task_id(),
+                seq,
+            );
             return true;
         }
         match deadline {
@@ -1081,16 +1092,33 @@ pub fn join_wait_flag(flag: Arc<std::sync::atomic::AtomicBool>, timeout: Option<
             Some(d) => {
                 let left = d.saturating_duration_since(Instant::now());
                 if left.is_zero() {
+                    crate::scheduler::park_unregister(
+                        &key,
+                        crate::scheduler::current_task_id(),
+                        seq,
+                    );
                     return flag.load(std::sync::atomic::Ordering::SeqCst);
                 }
                 let (g, res) = JOIN_CV.wait_timeout(guard, left).unwrap();
                 guard = g;
                 if res.timed_out() {
+                    crate::scheduler::park_unregister(
+                        &key,
+                        crate::scheduler::current_task_id(),
+                        seq,
+                    );
                     return flag.load(std::sync::atomic::Ordering::SeqCst);
                 }
             }
         }
     }
+}
+
+/// Stable per-flag key component: the AtomicBool's address (the done flag
+/// Arc is unique per Thread slot; the recycle window is covered by the
+/// done-flag predicate itself).
+fn flag_addr(flag: &Arc<std::sync::atomic::AtomicBool>) -> i64 {
+    Arc::as_ptr(flag).addr() as i64
 }
 
 /// Wait for ALL non-daemon threads to finish (main-thread exit protocol,
