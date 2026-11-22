@@ -443,3 +443,25 @@ t121_rebaseline.py (re-run commands in T121-REBASELINE.md).
   (design ready), 02.10 2d (optional preemption), s016 extension to
   non-call instruments partial (UnaryOp/IfExp/Attribute probed not
   built), Plan 05 T3-T5 waves (need Plan 10 S1), Plan 10 S1-S4 impl.
+
+## 2026-11-21: 10.02 SPIKE MERGED (e0ea587) - PROCEED VERDICT
+
+- Leaf 10.02 verified first-hand by the orchestrator: built a fresh probe
+  (spike.add_two(20,22) + spike.greet) -> BYTE-IDENTICAL under
+  antipythony and CPython 3.14, rc=0 both (42 / hello, antipythony!).
+- DENSITY MEASURED: S0 slice = 40 fns, marginal 10-15 min/fn; S1
+  extrapolation ~0.19-0.4 person-years vs the ~2-PY kill line - all 3
+  kill criteria NOT fired. VERDICT: PROCEED.
+- Landed: ap-ce crate (CeObject handle layer, refcount emulation,
+  registries, FromSpec->TypeObject::create, S0 export symbols),
+  CPython-source-compatible header shim (include/apx_python.h),
+  apx_shim.c (varargs ParseTuple, spec walker, PyInit registry),
+  ce_bridge (marker/module-fn dispatch + dlopen import seam probing
+  script-dir), `build-ext` verb + -export_dynamic link, FromSpec
+  auto-install, tp_new/tp_init semantics, CPython-exact ParseTuple error
+  texts; differential vs CPython 3.14.7 BYTE-IDENTICAL (module fns,
+  error round-trip, refcount emulation, FromSpec type, arg-type+arity
+  error texts).
+- NEXT: 10.03 build tool (build-ext graduation to the workspace per
+  density numbers), then S1 implementation (~560 members, the
+  pydantic-core/T3/T4 enabler). T3/T4 UNBLOCKED pending S1.
