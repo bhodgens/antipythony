@@ -738,7 +738,7 @@ fn collect_expr(
             }
             Ok(())
         }
-        Expr::BinOp(_, a, b) => {
+        Expr::BinOp(_, a, b, _) => {
             collect_expr(a, refs, bound, nonlocal, scan)?;
             collect_expr(b, refs, bound, nonlocal, scan)
         }
@@ -749,7 +749,7 @@ fn collect_expr(
             }
             Ok(())
         }
-        Expr::Compare(_, operands) => {
+        Expr::Compare(_, operands, _) => {
             for o in operands {
                 collect_expr(o, refs, bound, nonlocal, scan)?;
             }
@@ -2612,7 +2612,7 @@ impl SegPlanner {
                         let id = self.plan_yield_from(x.as_ref().clone(), Some(slot));
                         (id, id)
                     }
-                    Expr::BinOp(op, lhs, rhs) if matches!(rhs.as_ref(), Expr::Yield(_)) => {
+                    Expr::BinOp(op, lhs, rhs, _) if matches!(rhs.as_ref(), Expr::Yield(_)) => {
                         // GE002 shape: slot = lhs OP (yield v). The Park
                         // carries the split; the resume segment finishes the
                         // op. lhs must be a Name — re-read from the spilled
@@ -3666,7 +3666,7 @@ fn gen_emit_name_load(f: &mut Function, name: &str, ctx: &mut EmitCtx, gen: &Gen
 
 /// Condition (i32 truthiness) inside a generator state.
 fn gen_emit_cond(f: &mut Function, cond: &Expr, ctx: &mut EmitCtx, gen: &GenCtx) {
-    if let Expr::Compare(ops, operands) = cond {
+    if let Expr::Compare(ops, operands, _) = cond {
         for (i, op) in ops.iter().enumerate() {
             f.instruction(&Instruction::I32Const(cmp_op(*op)));
             gen_emit_expr(f, &operands[i], ctx, gen);
@@ -3694,7 +3694,7 @@ fn gen_emit_cond(f: &mut Function, cond: &Expr, ctx: &mut EmitCtx, gen: &GenCtx)
 fn gen_emit_expr(f: &mut Function, e: &Expr, ctx: &mut EmitCtx, gen: &GenCtx) {
     match e {
         Expr::Name(n) => gen_emit_name_load(f, n.as_str(), ctx, gen),
-        Expr::BinOp(op, a, b) => {
+        Expr::BinOp(op, a, b, _) => {
             f.instruction(&Instruction::I32Const(binop_op(*op)));
             gen_emit_expr(f, a, ctx, gen);
             gen_emit_expr(f, b, ctx, gen);
@@ -3715,7 +3715,7 @@ fn gen_emit_expr(f: &mut Function, e: &Expr, ctx: &mut EmitCtx, gen: &GenCtx) {
                 f.instruction(&Instruction::Call(fx::FN_UNARY));
             }
         }
-        Expr::Compare(ops, operands) => {
+        Expr::Compare(ops, operands, _) => {
             for (i, op) in ops.iter().enumerate() {
                 f.instruction(&Instruction::I32Const(cmp_op(*op)));
                 gen_emit_expr(f, &operands[i], ctx, gen);
@@ -5906,7 +5906,7 @@ fn emit_expr(f: &mut Function, e: &Expr, ctx: &mut EmitCtx) {
         }
         Expr::LitStr(s) => push_interned_str(f, s, ctx),
         Expr::Name(n) => emit_name_load(f, n.as_str(), ctx),
-        Expr::BinOp(op, a, b) => {
+        Expr::BinOp(op, a, b, _) => {
             f.instruction(&Instruction::I32Const(binop_op(*op)));
             emit_expr(f, a, ctx);
             emit_expr(f, b, ctx);
@@ -5946,7 +5946,7 @@ fn emit_expr(f: &mut Function, e: &Expr, ctx: &mut EmitCtx) {
             f.instruction(&Instruction::End);
             f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
         }
-        Expr::Compare(ops, operands) => {
+        Expr::Compare(ops, operands, _) => {
             // chain: AND-reduce each link (middle terms evaluated once on
             // the slice: side-effect-free operands)
             for (i, op) in ops.iter().enumerate() {
@@ -6155,7 +6155,7 @@ fn emit_expr(f: &mut Function, e: &Expr, ctx: &mut EmitCtx) {
 /// bool(cond)-then-test (S-01-27) — the bool object wrapper carries no
 /// extra information the test reads.
 fn emit_cond_i32(f: &mut Function, cond: &Expr, ctx: &mut EmitCtx) {
-    if let Expr::Compare(ops, operands) = cond {
+    if let Expr::Compare(ops, operands, _) = cond {
         for (i, op) in ops.iter().enumerate() {
             f.instruction(&Instruction::I32Const(cmp_op(*op)));
             emit_expr(f, &operands[i], ctx);

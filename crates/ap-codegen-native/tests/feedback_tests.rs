@@ -140,6 +140,7 @@ fn slot_assignment_is_deterministic_and_stable() {
             "y".to_string(),
         )),
         Box::new(Expr::LitInt(1)),
+        0,
     ))]);
     let cfg1 = lower_fn(&f).expect("lower");
     let cfg2 = lower_fn(&f).expect("lower");

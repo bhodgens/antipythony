@@ -55,8 +55,11 @@ fn arith_body() -> Vec<Stmt> {
                 BinOp::Mul,
                 Box::new(Expr::LitInt(2)),
                 Box::new(Expr::LitInt(2)),
+                0,
             )),
+            0,
         )),
+        0,
     )))]
 }
 
@@ -297,6 +300,7 @@ fn compare_admission_requires_relational_ops() {
     let f = fn_def(vec![Stmt::Return(Some(Expr::Compare(
         vec![CmpOp::Is],
         vec![Expr::Name("a".into()), Expr::Name("b".into())],
+        0,
     )))]);
     let func = lower_fn(&f).expect("lower");
     let info = infer(&func, &mono_int_snapshots(&func));

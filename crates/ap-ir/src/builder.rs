@@ -95,7 +95,10 @@ impl Builder {
 
     /// `a op b`. Clauses: C-12..C-14, C-16, S-01-3, S-01-4, S-01-6, S-01-7, S-03-25.
     pub fn bin_op(&self, op: BinOp, a: Expr, b: Expr) -> Expr {
-        Expr::BinOp(op, Box::new(a), Box::new(b))
+        // Instrument line: stamped separately by the Lowerer (the Builder
+        // has no source-position context); 0 = unknown keeps hand-built IR
+        // (tests, JIT builder paths) on statement-granularity attribution.
+        Expr::BinOp(op, Box::new(a), Box::new(b), 0)
     }
 
     /// `op x`. Clauses: S-01-1 (`~x == -x-1`), S-01-8.
@@ -124,7 +127,7 @@ impl Builder {
             operands.len(),
             "compare needs n ops and n+1 operands"
         );
-        Expr::Compare(ops, operands)
+        Expr::Compare(ops, operands, 0)
     }
 
     // ---- calls, attributes, containers ----------------------------------
@@ -163,7 +166,9 @@ impl Builder {
 
     /// `obj[key]`. Clause: S-01-15.
     pub fn subscript(&self, obj: Expr, key: Expr) -> Expr {
-        Expr::Subscript(Box::new(obj), Box::new(key))
+        // Instrument line stamped by the Lowerer; 0 = unknown (hand-built
+        // IR keeps statement-granularity attribution).
+        Expr::Subscript(Box::new(obj), Box::new(key), 0)
     }
 
     /// `x[i:j:k]` slice object. Clause: S-01-15.

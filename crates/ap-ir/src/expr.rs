@@ -41,7 +41,12 @@ pub enum Expr {
     /// `a op b`, non-short-circuiting.
     /// Clauses: C-12..C-14 (int arith), C-16 (float), S-01-3/S-01-4 (// % sign
     /// rules), S-01-6/S-01-7 (true division, promotion), S-03-25 (slot/reflected).
-    BinOp(BinOp, Box<Expr>, Box<Expr>),
+    /// The fourth field is the 1-based SOURCE LINE of the instrument (0 =
+    /// unknown) — CPython's line table is per-instrument and BINARY_OP
+    /// positions at the LEFT OPERAND's start (s016b: probed `/` on its own
+    /// line attributes to the `1` line above). Same publish-to-last_line
+    /// contract as [`Expr::Call`].
+    BinOp(BinOp, Box<Expr>, Box<Expr>, usize),
     /// `op x`. Clauses: S-01-1 (`~x == -x-1`, arith shift), S-01-8 (float neg).
     UnaryOp(UnaryOp, Box<Expr>),
     /// `a and b` / `a or b` — short-circuits on truthiness, preserves the
@@ -51,7 +56,11 @@ pub enum Expr {
     /// `a <op> b <op> c ...` — chained comparison, evaluated as
     /// `a<b and b<c` with each middle term evaluated once.
     /// Clause: S-01-31 (chain evaluates middle once; short-circuit on first false).
-    Compare(Vec<CmpOp>, Vec<Expr>),
+    /// The third field is the 1-based SOURCE LINE of the instrument (0 =
+    /// unknown) — CPython's COMPARE_OP positions at the FIRST OPERAND's
+    /// start (s016b probe: `1 ==\n c` attributes to the `1` line).
+    /// Same publish-to-last_line contract as [`Expr::Call`].
+    Compare(Vec<CmpOp>, Vec<Expr>, usize),
     /// `f(args)` — positional + keyword call with `*`/`**` unpacking markers.
     /// Clauses: S-02-7..S-02-10 (arg evaluation order, binding, error text),
     /// S-03-28 (call protocol: `type(C).__call__` on classes).
@@ -68,7 +77,11 @@ pub enum Expr {
     Attribute(Box<Expr>, Name),
     /// `obj[key]` / slicing sugar — subscripts may be full [`Expr::Slice`]
     /// nodes or tuples thereof. Clause: S-01-15 (slice semantics, clamp rules).
-    Subscript(Box<Expr>, Box<Expr>),
+    /// The third field is the 1-based SOURCE LINE of the instrument (0 =
+    /// unknown) — CPython's BINARY_SUBSCR positions at the OBJECT's start
+    /// (s016b probe: obj / `[` / key on separate lines attributes to the
+    /// obj line). Same publish-to-last_line contract as [`Expr::Call`].
+    Subscript(Box<Expr>, Box<Expr>, usize),
     /// `x[i:j:k]` as a first-class slice object (only valid inside
     /// `Subscript`/call args in real Python; kept as an expr for the args case).
     /// Clause: S-01-15.

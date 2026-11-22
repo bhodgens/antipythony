@@ -1,0 +1,168 @@
+{
+ "gapfill_download_results": {
+  "bcrypt": {
+   "wheel": "bcrypt-5.0.0-cp39-abi3-macosx_10_12_universal2.whl",
+   "so_count": 1,
+   "py_syms": 64,
+   "PyInit": 1
+  },
+  "pydantic": {
+   "wheel": "pydantic-2.14.4-py3-none-any.whl",
+   "so_count": 0,
+   "py_syms": 0,
+   "PyInit": 0
+  },
+  "grpcio": {
+   "wheel": "grpcio-1.85.3-cp315-cp315-macosx_10_15_universal2.whl",
+   "so_count": 1,
+   "py_syms": 226,
+   "PyInit": 1
+  },
+  "argon2_cffi": {
+   "wheel": "argon2_cffi-25.1.0-py3-none-any.whl",
+   "so_count": 0,
+   "py_syms": 0,
+   "PyInit": 0
+  },
+  "gevent": {
+   "wheel": "gevent-26.9.0-cp315-cp315-macosx_11_0_universal2.whl",
+   "so_count": 17,
+   "py_syms": 300,
+   "PyInit": 17
+  },
+  "pymerkle": {
+   "wheel": "pymerkle-7.0.0-py3-none-any.whl",
+   "so_count": 0,
+   "py_syms": 0,
+   "PyInit": 0
+  },
+  "greenlet": {
+   "wheel": "greenlet-3.5.6-cp315-cp315-macosx_11_0_universal2.whl",
+   "so_count": 3,
+   "py_syms": 83,
+   "PyInit": 3
+  }
+ },
+ "gapfill_stable_abi_classification": {
+  "bcrypt": {
+   "total": 64,
+   "stable_pct": 100.0,
+   "non_stable": []
+  },
+  "grpcio": {
+   "total": 226,
+   "stable_pct": 91.2,
+   "non_stable": [
+    "PyBytes_Join",
+    "PyCode_NewEmpty",
+    "PyCoro_Type",
+    "PyDict_Pop",
+    "PyDict_SetDefault",
+    "PyFrame_New",
+    "PyGen_GetCode",
+    "PyGen_Type",
+    "PyList_Extend",
+    "PyMethod_New",
+    "PyMethod_Type",
+    "PyObject_ClearManagedDict",
+    "PyObject_VectorcallDict",
+    "PyObject_VisitManagedDict",
+    "PyThreadState_GetUnchecked",
+    "PyUnicode_CopyCharacters",
+    "PyUnicode_New",
+    "PyUnstable_Code_NewWithPosOnlyArgs",
+    "PyUnstable_Object_EnableDeferredRefcount",
+    "PyUnstable_Object_IsUniquelyReferenced"
+   ]
+  },
+  "gevent": {
+   "total": 300,
+   "stable_pct": 79.0,
+   "non_stable": [
+    "PyCFunction_GET_FUNCTION",
+    "PyCFunction_GET_FUNCTION.cold.1",
+    "PyCFunction_GET_SELF",
+    "PyCFunction_GET_SELF.cold.1",
+    "PyClassMethod_New",
+    "PyCode_NewEmpty",
+    "PyDict_GET_SIZE",
+    "PyDict_GET_SIZE.cold.1",
+    "PyDict_Pop",
+    "PyDict_SetDefault",
+    "PyFloat_AS_DOUBLE",
+    "PyFloat_AS_DOUBLE.cold.1",
+    "PyFrame_GetBack",
+    "PyFrame_New",
+    "PyFrozenDict_New",
+    "PyFrozenDict_Type",
+    "PyGeventAsync_Type",
+    "PyGeventCallback_Type",
+    "PyGeventCheck_Type",
+    "PyGeventChild_Type",
+    "PyGeventFork_Type",
+    "PyGeventIO_Type",
+    "PyGeventIdle_Type",
+    "PyGeventLoop_Type",
+    "PyGeventPrepare_Type",
+    "PyGeventSignal_Type",
+    "PyGeventStat_Type",
+    "PyGeventTimer_Type",
+    "PyGeventWatcher_Type",
+    "PyList_Extend",
+    "PyList_GET_SIZE",
+    "PyList_GET_SIZE.cold.1",
+    "PyList_GET_SIZE.cold.2",
+    "PyList_GET_SIZE.cold.3",
+    "PyMethod_New",
+    "PyMethod_Type",
+    "PyObject_ClearManagedDict",
+    "PyObject_VectorcallDict",
+    "PyObject_VisitManagedDict",
+    "PyStaticMethod_New",
+    "PyTuple_FromArray",
+    "PyTuple_GET_SIZE",
+    "PyTuple_GET_SIZE.cold.1",
+    "PyTuple_GET_SIZE.cold.2",
+    "PyTuple_GET_SIZE.cold.3",
+    "PyTuple_SET_ITEM",
+    "PyTuple_SET_ITEM.cold.1",
+    "PyTuple_SET_ITEM.cold.2",
+    "PyTuple_SET_ITEM.cold.3",
+    "PyTuple_SET_ITEM.cold.4",
+    "PyTuple_SET_ITEM.cold.5",
+    "PyUnicode_CopyCharacters",
+    "PyUnicode_FromKindAndData",
+    "PyUnicode_GET_LENGTH",
+    "PyUnicode_GET_LENGTH.cold.1",
+    "PyUnicode_New",
+    "PyUnicode_READ",
+    "PyUnicode_READ.cold.1",
+    "PyUnicode_READ.cold.2",
+    "PyUnstable_Code_NewWithPosOnlyArgs",
+    "PyUnstable_Object_EnableDeferredRefcount",
+    "PyUnstable_Object_IsUniquelyReferenced",
+    "Py_XDECREF"
+   ]
+  },
+  "greenlet": {
+   "total": 83,
+   "stable_pct": 90.4,
+   "non_stable": [
+    "PyContext_Type",
+    "PyFrame_GetBack",
+    "PyGreenletUnswitchable_Type",
+    "PyGreenlet_Type",
+    "PyInterpreterState_Head",
+    "PyObject_GetArenaAllocator",
+    "PyThreadState_EnterTracing",
+    "PyThreadState_LeaveTracing"
+   ]
+  }
+ },
+ "note": {
+  "pydantic": "pure-python wheel py3-none-any, 0 so",
+  "argon2-cffi": "pure-python wheel, native code is in argon2-cffi-bindings (separate pkg)",
+  "pymerkle": "pure-python wheel",
+  "simdjson": "no mac-arm wheel on PyPI (sdist only) \u2014 unmeasured"
+ }
+}
