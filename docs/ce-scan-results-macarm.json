@@ -1,764 +1,763 @@
 {
- "pydantic-core": {
-  "version": "2.50.5",
-  "wheel": "pydantic_core-2.50.5-cp314-cp314-macosx_11_0_arm64.whl",
-  "so_count": 1,
-  "undefined_Py": [],
-  "undefined_all_count": 0,
-  "defined_Py_count": 1,
-  "PyInit": [
-   "_PyInit__pydantic_core"
-  ],
-  "uses_abi3": false
- },
- "cryptography": {
-  "version": "50.0.2",
-  "wheel": "cryptography-50.0.2-cp314-cp314t-macosx_11_0_arm64.whl",
-  "so_count": 1,
-  "undefined_Py": [],
-  "undefined_all_count": 0,
-  "defined_Py_count": 27,
-  "PyInit": [
-   "_PyInit__rust",
-   "_PyInit_aead",
-   "_PyInit_asn1",
-   "_PyInit_ciphers",
-   "_PyInit_cmac",
-   "_PyInit_cobblestone",
-   "_PyInit_dh",
-   "_PyInit_dsa",
-   "_PyInit_ec",
-   "_PyInit_ed25519",
-   "_PyInit_ed448",
-   "_PyInit_exceptions",
-   "_PyInit_hashes",
-   "_PyInit_hmac",
-   "_PyInit_hpke",
-   "_PyInit_kdf",
-   "_PyInit_keys",
-   "_PyInit_keywrap",
-   "_PyInit_mldsa",
-   "_PyInit_mlkem",
-   "_PyInit_pkcs12",
-   "_PyInit_pkcs7",
-   "_PyInit_poly1305",
-   "_PyInit_rsa",
-   "_PyInit_test_support",
-   "_PyInit_x25519",
-   "_PyInit_x448"
-  ],
-  "uses_abi3": false
- },
- "numpy": {
-  "version": "2.5.5",
-  "wheel": "numpy-2.5.5-cp314-cp314-macosx_11_0_arm64.whl",
-  "so_count": 19,
-  "undefined_Py": [],
-  "undefined_all_count": 0,
-  "defined_Py_count": 19,
-  "PyInit": [
-   "_PyInit__umath_linalg",
-   "_PyInit_lapack_lite",
-   "_PyInit__struct_ufunc_tests",
-   "_PyInit__rational_tests",
-   "_PyInit__operand_flag_tests",
-   "_PyInit__multiarray_tests",
-   "_PyInit__umath_tests",
-   "_PyInit__multiarray_umath",
-   "_PyInit__simd",
-   "_PyInit__pocketfft_umath",
-   "_PyInit_bit_generator",
-   "_PyInit__mt19937",
-   "_PyInit__philox",
-   "_PyInit__bounded_integers",
-   "_PyInit__pcg64",
-   "_PyInit__sfc64",
-   "_PyInit__common",
-   "_PyInit_mtrand",
-   "_PyInit__generator"
-  ],
-  "uses_abi3": false
- },
- "pandas": {
-  "version": "3.1.1",
-  "wheel": "pandas-3.1.1-cp314-cp314-macosx_11_0_arm64.whl",
-  "so_count": 45,
-  "undefined_Py": [],
-  "undefined_all_count": 0,
-  "defined_Py_count": 45,
-  "PyInit": [
-   "_PyInit_interval",
-   "_PyInit_properties",
-   "_PyInit_ops_dispatch",
-   "_PyInit_writers",
-   "_PyInit_pandas_datetime",
-   "_PyInit_pandas_parser",
-   "_PyInit_internals",
-   "_PyInit__ujson",
-   "_PyInit_byteswap",
-   "_PyInit_reshape",
-   "_PyInit_lib",
-   "_PyInit_testing",
-   "_PyInit_join",
-   "_PyInit_arrays",
-   "_PyInit_sparse",
-   "_PyInit_sas",
-   "_PyInit_groupby",
-   "_PyInit_indexing",
-   "_PyInit_ops",
-   "_PyInit_parsers",
-   "_PyInit_hashing",
-   "_PyInit_missing",
-   "_PyInit_hashtable",
-   "_PyInit_index",
-   "_PyInit_algos",
-   "_PyInit__cyutility",
-   "_PyInit_tslib",
-   "_PyInit_indexers",
-   "_PyInit_aggregations",
-   "_PyInit_ccalendar",
-   "_PyInit_offsets",
-   "_PyInit_timedeltas",
-   "_PyInit_conversion",
-   "_PyInit_fields",
-   "_PyInit_nattype",
-   "_PyInit_tzconversion",
-   "_PyInit_timezones",
-   "_PyInit_period",
-   "_PyInit_np_datetime",
-   "_PyInit_timestamps",
-   "_PyInit_dtypes",
-   "_PyInit_strptime",
-   "_PyInit_parsing",
-   "_PyInit_base",
-   "_PyInit_vectorized"
-  ],
-  "uses_abi3": false
- },
- "pyarrow": {
-  "version": "26.0.1",
-  "wheel": "pyarrow-26.0.1-cp314-cp314-macosx_12_0_arm64.whl",
-  "so_count": 21,
-  "undefined_Py": [],
-  "undefined_all_count": 0,
-  "defined_Py_count": 21,
-  "PyInit": [
-   "_PyInit__csv",
-   "_PyInit__fs",
-   "_PyInit__dataset_orc",
-   "_PyInit__s3fs",
-   "_PyInit__pyarrow_cpp_tests",
-   "_PyInit__parquet",
-   "_PyInit__orc",
-   "_PyInit__acero",
-   "_PyInit__azurefs",
-   "_PyInit_lib",
-   "_PyInit__dataset_parquet",
-   "_PyInit__hdfs",
-   "_PyInit__dataset",
-   "_PyInit__gcsfs",
-   "_PyInit__compute",
-   "_PyInit__flight",
-   "_PyInit__json",
-   "_PyInit__feather",
-   "_PyInit__parquet_encryption",
-   "_PyInit__dataset_parquet_encryption",
-   "_PyInit__substrait"
-  ],
-  "uses_abi3": false
- },
- "orjson": {
-  "version": "3.13.0",
-  "wheel": "orjson-3.13.0-cp314-cp314-macosx_10_15_x86_64.macosx_11_0_arm64.macosx_10_15_universal2.whl",
-  "so_count": 1,
-  "undefined_Py": [],
-  "undefined_all_count": 0,
-  "defined_Py_count": 1,
-  "PyInit": [
-   "_PyInit_orjson"
-  ],
-  "uses_abi3": false
- },
- "pillow": {
-  "version": "13.0.0",
-  "wheel": "pillow-13.0.0-cp314-cp314-macosx_11_0_arm64.whl",
-  "so_count": 8,
-  "undefined_Py": [],
-  "undefined_all_count": 0,
-  "defined_Py_count": 46,
-  "PyInit": [
-   "_PyInit__imagingft",
-   "_PyInit__imagingcms",
-   "_PyInit__webp",
-   "_PyInit__imagingmath",
-   "_PyInit__imaging",
-   "_PyInit__avif",
-   "_PyInit__imagingmorph",
-   "_PyInit__imagingtk"
-  ],
-  "uses_abi3": false
- },
- "lxml": {
-  "version": "6.1.3",
-  "wheel": "lxml-6.1.3-cp311-cp311-macosx_10_9_x86_64.whl",
-  "so_count": 7,
-  "undefined_Py": [],
-  "undefined_all_count": 0,
-  "defined_Py_count": 7,
-  "PyInit": [
-   "_PyInit_objectify",
-   "_PyInit_etree",
-   "_PyInit_builder",
-   "_PyInit_sax",
-   "_PyInit__elementpath",
-   "_PyInit__difflib",
-   "_PyInit_diff"
-  ],
-  "uses_abi3": false
- },
- "regex": {
-  "version": "2026.11.19",
-  "wheel": "regex-2026.11.19-cp314-cp314-macosx_11_0_arm64.whl",
-  "so_count": 1,
-  "undefined_Py": [],
-  "undefined_all_count": 0,
-  "defined_Py_count": 1,
-  "PyInit": [
-   "_PyInit__regex"
-  ],
-  "uses_abi3": false
- },
- "psycopg2": {
-  "version": "2.9.13",
-  "wheel": null,
-  "note": "no platform wheel at latest release"
- },
- "psycopg2-binary": {
-  "version": "2.9.13",
-  "wheel": "psycopg2_binary-2.9.13-cp314-cp314-macosx_11_0_arm64.whl",
-  "so_count": 1,
-  "undefined_Py": [],
-  "undefined_all_count": 0,
-  "defined_Py_count": 1,
-  "PyInit": [
-   "_PyInit__psycopg"
-  ],
-  "uses_abi3": false
- },
- "grpcio": {
-  "version": "1.85.3",
-  "wheel": null,
-  "note": "no platform wheel at latest release"
- },
- "pyyaml": {
-  "version": "6.0.3",
-  "wheel": "pyyaml-6.0.3-cp314-cp314-macosx_11_0_arm64.whl",
-  "so_count": 1,
-  "undefined_Py": [],
-  "undefined_all_count": 0,
-  "defined_Py_count": 1,
-  "PyInit": [
-   "_PyInit__yaml"
-  ],
-  "uses_abi3": false
- },
- "markupsafe": {
-  "version": "3.0.4",
-  "wheel": "markupsafe-3.0.4-cp314-cp314-macosx_11_0_arm64.whl",
-  "so_count": 1,
-  "undefined_Py": [],
-  "undefined_all_count": 0,
-  "defined_Py_count": 1,
-  "PyInit": [
-   "_PyInit__speedups"
-  ],
-  "uses_abi3": false
- },
- "greenlet": {
-  "version": "3.5.6",
-  "wheel": null,
-  "note": "no platform wheel at latest release"
- },
- "cffi": {
-  "version": "2.1.1",
-  "wheel": "cffi-2.1.1-cp314-cp314-macosx_11_0_arm64.whl",
-  "so_count": 1,
-  "undefined_Py": [],
-  "undefined_all_count": 0,
-  "defined_Py_count": 1,
-  "PyInit": [
-   "_PyInit__cffi_backend"
-  ],
-  "uses_abi3": false
- },
- "pycparser": {
-  "version": "3.12",
-  "wheel": null,
-  "note": "no platform wheel at latest release"
- },
- "bcrypt": {
-  "version": "5.0.0",
-  "wheel": null,
-  "note": "no platform wheel at latest release"
- },
- "uvloop": {
-  "version": "0.23.0",
-  "wheel": "uvloop-0.23.0-cp311-cp311-macosx_10_9_x86_64.whl",
-  "so_count": 1,
-  "undefined_Py": [],
-  "undefined_all_count": 0,
-  "defined_Py_count": 1,
-  "PyInit": [
-   "_PyInit_loop"
-  ],
-  "uses_abi3": false
- },
- "httptools": {
-  "version": "0.9.0",
-  "wheel": "httptools-0.9.0-cp314-cp314-macosx_11_0_arm64.whl",
-  "so_count": 2,
-  "undefined_Py": [],
-  "undefined_all_count": 0,
-  "defined_Py_count": 2,
-  "PyInit": [
-   "_PyInit_url_parser",
-   "_PyInit_parser"
-  ],
-  "uses_abi3": false
- },
- "msgspec": {
-  "version": "0.22.0",
-  "wheel": "msgspec-0.22.0-cp314-cp314-macosx_11_0_arm64.whl",
-  "so_count": 1,
-  "undefined_Py": [],
-  "undefined_all_count": 0,
-  "defined_Py_count": 1,
-  "PyInit": [
-   "_PyInit__core"
-  ],
-  "uses_abi3": false
- },
- "msgpack": {
-  "version": "1.2.4",
-  "wheel": "msgpack-1.2.4-cp314-cp314-macosx_11_0_arm64.whl",
-  "so_count": 1,
-  "undefined_Py": [],
-  "undefined_all_count": 0,
-  "defined_Py_count": 1,
-  "PyInit": [
-   "_PyInit__cmsgpack"
-  ],
-  "uses_abi3": false
- },
- "rpds-py": {
-  "version": "2026.9.1",
-  "wheel": "rpds_py-2026.9.1-cp314-cp314-macosx_11_0_arm64.whl",
-  "so_count": 1,
-  "undefined_Py": [],
-  "undefined_all_count": 0,
-  "defined_Py_count": 1,
-  "PyInit": [
-   "_PyInit_rpds"
-  ],
-  "uses_abi3": false
- },
- "tokenizers": {
-  "version": "0.23.3",
-  "wheel": "tokenizers-0.23.3-cp314-cp314t-macosx_11_0_arm64.whl",
-  "so_count": 1,
-  "undefined_Py": [],
-  "undefined_all_count": 0,
-  "defined_Py_count": 8,
-  "PyInit": [
-   "_PyInit_decoders",
-   "_PyInit_models",
-   "_PyInit_normalizers",
-   "_PyInit_pre_tokenizers",
-   "_PyInit_processors",
-   "_PyInit_pyo3_async_runtimes",
-   "_PyInit_tokenizers",
-   "_PyInit_trainers"
-  ],
-  "uses_abi3": false
- },
- "safetensors": {
-  "version": "0.8.0",
-  "wheel": "safetensors-0.8.0-cp310-abi3-macosx_11_0_arm64.whl",
-  "so_count": 1,
-  "undefined_Py": [],
-  "undefined_all_count": 0,
-  "defined_Py_count": 1,
-  "PyInit": [
-   "_PyInit__safetensors_rust"
-  ],
-  "uses_abi3": true
- },
- "tiktoken": {
-  "version": "0.14.0",
-  "wheel": "tiktoken-0.14.0-cp314-cp314-macosx_11_0_arm64.whl",
-  "so_count": 1,
-  "undefined_Py": [],
-  "undefined_all_count": 0,
-  "defined_Py_count": 1,
-  "PyInit": [
-   "_PyInit__tiktoken"
-  ],
-  "uses_abi3": false
- },
- "watchfiles": {
-  "version": "1.3.0",
-  "wheel": "watchfiles-1.3.0-cp314-cp314t-macosx_11_0_arm64.whl",
-  "so_count": 1,
-  "undefined_Py": [],
-  "undefined_all_count": 0,
-  "defined_Py_count": 1,
-  "PyInit": [
-   "_PyInit__rust_notify"
-  ],
-  "uses_abi3": false
- },
- "contourpy": {
-  "version": "1.4.0",
-  "wheel": "contourpy-1.4.0-cp314-cp314-macosx_11_0_arm64.whl",
-  "so_count": 1,
-  "undefined_Py": [],
-  "undefined_all_count": 0,
-  "defined_Py_count": 1,
-  "PyInit": [
-   "_PyInit__contourpy"
-  ],
-  "uses_abi3": false
- },
- "kiwisolver": {
-  "version": "1.5.1",
-  "wheel": "kiwisolver-1.5.1-cp314-cp314-macosx_11_0_arm64.whl",
-  "so_count": 1,
-  "undefined_Py": [],
-  "undefined_all_count": 0,
-  "defined_Py_count": 1,
-  "PyInit": [
-   "_PyInit__cext"
-  ],
-  "uses_abi3": false
- },
- "matplotlib": {
-  "version": "3.11.2",
-  "wheel": "matplotlib-3.11.2-cp314-cp314-macosx_11_0_arm64.whl",
-  "so_count": 9,
-  "undefined_Py": [],
-  "undefined_all_count": 0,
-  "defined_Py_count": 9,
-  "PyInit": [
-   "_PyInit__image",
-   "_PyInit__path",
-   "_PyInit__c_internal_utils",
-   "_PyInit_ft2font",
-   "_PyInit__qhull",
-   "_PyInit__tri",
-   "_PyInit__tkagg",
-   "_PyInit__macosx",
-   "_PyInit__backend_agg"
-  ],
-  "uses_abi3": false
- },
- "zstandard": {
-  "version": "0.25.0",
-  "wheel": "zstandard-0.25.0-cp314-cp314-macosx_11_0_arm64.whl",
-  "so_count": 2,
-  "undefined_Py": [],
-  "undefined_all_count": 0,
-  "defined_Py_count": 2,
-  "PyInit": [
-   "_PyInit__cffi",
-   "_PyInit_backend_c"
-  ],
-  "uses_abi3": false
- },
- "brotli": {
-  "version": "1.2.1",
-  "wheel": "brotli-1.2.1-cp311-cp311-macosx_10_9_x86_64.whl",
-  "so_count": 1,
-  "undefined_Py": [],
-  "undefined_all_count": 0,
-  "defined_Py_count": 1,
-  "PyInit": [
-   "_PyInit__brotli"
-  ],
-  "uses_abi3": false
- },
- "brotlicffi": {
-  "version": "1.2.1.0",
-  "wheel": "brotlicffi-1.2.1.0-cp314-cp314t-macosx_11_0_arm64.whl",
-  "so_count": 1,
-  "undefined_Py": [],
-  "undefined_all_count": 0,
-  "defined_Py_count": 1,
-  "PyInit": [
-   "_PyInit__brotlicffi"
-  ],
-  "uses_abi3": false
- },
- "pyjwt": {
-  "version": "2.15.1",
-  "wheel": null,
-  "note": "no platform wheel at latest release"
- },
- "mysqlclient": {
-  "version": "2.3.2",
-  "wheel": null,
-  "note": "no platform wheel at latest release"
- },
- "pymupdf": {
-  "version": "2.1",
-  "wheel": "pymupdf-2.1-cp311-abi3-macosx_11_0_arm64.whl",
-  "so_count": 5,
-  "undefined_Py": [],
-  "undefined_all_count": 0,
-  "defined_Py_count": 4,
-  "PyInit": [
-   "_PyInit__mupdf",
-   "_PyInit__tgif",
-   "_PyInit__features",
-   "_PyInit__extra"
-  ],
-  "uses_abi3": true
- },
- "rapidfuzz": {
-  "version": "3.14.6",
-  "wheel": "rapidfuzz-3.14.6-cp314-cp314-macosx_11_0_arm64.whl",
-  "so_count": 5,
-  "undefined_Py": [],
-  "undefined_all_count": 0,
-  "defined_Py_count": 5,
-  "PyInit": [
-   "_PyInit_process_cpp_impl",
-   "_PyInit_fuzz_cpp",
-   "_PyInit_utils_cpp",
-   "_PyInit__initialize_cpp",
-   "_PyInit_metrics_cpp"
-  ],
-  "uses_abi3": false
- },
- "python-dateutil": {
-  "version": "4.0.0",
-  "wheel": null,
-  "note": "no platform wheel at latest release"
- },
- "shapely": {
-  "version": "2.2.0",
-  "wheel": "shapely-2.2.0-cp314-cp314-macosx_11_0_arm64.whl",
-  "so_count": 3,
-  "undefined_Py": [],
-  "undefined_all_count": 0,
-  "defined_Py_count": 3,
-  "PyInit": [
-   "_PyInit__geometry_helpers",
-   "_PyInit_lib",
-   "_PyInit__geos"
-  ],
-  "uses_abi3": false
- },
- "fiona": {
-  "version": "1.10.1",
-  "wheel": "fiona-1.10.1-cp313-cp313-macosx_11_0_arm64.whl",
-  "so_count": 8,
-  "undefined_Py": [],
-  "undefined_all_count": 0,
-  "defined_Py_count": 8,
-  "PyInit": [
-   "_PyInit__env",
-   "_PyInit__vsiopener",
-   "_PyInit_ogrext",
-   "_PyInit__geometry",
-   "_PyInit_schema",
-   "_PyInit__err",
-   "_PyInit__transform",
-   "_PyInit_crs"
-  ],
-  "uses_abi3": false
- },
- "scipy": {
-  "version": "1.18.1",
-  "wheel": "scipy-1.18.1-cp314-cp314-macosx_12_0_arm64.whl",
-  "so_count": 106,
-  "undefined_Py": [],
-  "undefined_all_count": 0,
-  "defined_Py_count": 105,
-  "PyInit": [
-   "_PyInit__cyutility",
-   "_PyInit___odrpack",
-   "_PyInit__ni_label",
-   "_PyInit__nd_image",
-   "_PyInit__rank_filter_1d",
-   "_PyInit__cytest",
-   "_PyInit__ctest",
-   "_PyInit__batched_linalg",
-   "_PyInit__linalg_pythran",
-   "_PyInit__matfuncs_sqrtm_triu",
-   "_PyInit__internal_matfuncs",
-   "_PyInit__solve_toeplitz",
-   "_PyInit__decomp_interpolative",
-   "_PyInit__decomp_update",
-   "_PyInit__flapack",
-   "_PyInit__fblas",
-   "_PyInit__cythonized_array_utils",
-   "_PyInit_cython_blas",
-   "_PyInit_cython_lapack",
-   "_PyInit__minpack",
-   "_PyInit__zeros",
-   "_PyInit__slsqplib",
-   "_PyInit__group_columns",
-   "_PyInit__direct",
-   "_PyInit__bglu_dense",
-   "_PyInit__pava_pybind",
-   "_PyInit__lsap",
-   "_PyInit__moduleTNC",
-   "_PyInit__lbfgsb",
-   "_PyInit__odepack",
-   "_PyInit__test_multivariate",
-   "_PyInit__dop",
-   "_PyInit__quadpack",
-   "_PyInit__vode",
-   "_PyInit__fpumode",
-   "_PyInit__ccallback_c",
-   "_PyInit__test_deprecation_call",
-   "_PyInit_messagestream",
-   "_PyInit__test_ccallback",
-   "_PyInit__test_deprecation_def",
-   "_PyInit__ufuncs",
-   "_PyInit_cython_special",
-   "_PyInit__comb",
-   "_PyInit__test_internal",
-   "_PyInit__specfun",
-   "_PyInit__gufuncs",
-   "_PyInit__special_ufuncs",
-   "_PyInit__ellip_harm_2",
-   "_PyInit__ufuncs_cxx",
-   "_PyInit_convolve",
-   "_PyInit__dierckx",
-   "_PyInit__ppoly",
-   "_PyInit__interpnd",
-   "_PyInit__rgi_cython",
-   "_PyInit__fitpack",
-   "_PyInit__rbfinterp_pythran",
-   "_PyInit__sparsetools",
-   "_PyInit__csparsetools",
-   "_PyInit__ckdtree",
-   "_PyInit__distance_pybind",
-   "_PyInit__voronoi",
-   "_PyInit__hausdorff",
-   "_PyInit__distance_wrap",
-   "_PyInit__qhull",
-   "_PyInit__upfirdn_apply",
-   "_PyInit__sigtools",
-   "_PyInit__spline",
-   "_PyInit__peak_finding_utils",
-   "_PyInit__max_len_seq_inner",
-   "_PyInit__sosfilt",
-   "_PyInit__qmc_cy",
-   "_PyInit__ansari_swilk_statistics",
-   "_PyInit__stats",
-   "_PyInit__sobol",
-   "_PyInit__qmvnt_cy",
-   "_PyInit__biasedurn",
-   "_PyInit__stats_pythran",
-   "_PyInit_levyst",
-   "_PyInit_rcont",
-   "_PyInit_unuran_wrapper",
-   "_PyInit__rotation_cy",
-   "_PyInit__rigid_transform_cy",
-   "_PyInit__propack",
-   "_PyInit__min_spanning_tree",
-   "_PyInit__reordering",
-   "_PyInit__tools",
-   "_PyInit__flow",
-   "_PyInit__shortest_path",
-   "_PyInit__traversal",
-   "_PyInit__matching",
-   "_PyInit__superlu",
-   "_PyInit__arpacklib",
-   "_PyInit_pyduccfft",
-   "_PyInit__uarray",
-   "_PyInit__fmm_core",
-   "_PyInit__streams",
-   "_PyInit__mio5_utils",
-   "_PyInit__mio_utils",
-   "_PyInit__trlib",
-   "_PyInit__core",
-   "_PyInit__highs_options",
-   "_PyInit_givens_elimination",
-   "_PyInit__zeros",
-   "_PyInit__optimal_leaf_ordering",
-   "_PyInit__hierarchy",
-   "_PyInit__vq"
-  ],
-  "uses_abi3": false
- },
- "pydantic": {
-  "version": "2.14.4",
-  "wheel": null,
-  "note": "no platform wheel at latest release"
- },
- "sqlalchemy": {
-  "version": "2.1.9",
-  "wheel": "sqlalchemy-2.1.9-cp314-cp314-macosx_11_0_arm64.whl",
-  "so_count": 8,
-  "undefined_Py": [],
-  "undefined_all_count": 0,
-  "defined_Py_count": 7,
-  "PyInit": [
-   "_PyInit__immutabledict_cy",
-   "_PyInit__collections_cy",
-   "_PyInit__util_cy",
-   "_PyInit__result_cy",
-   "_PyInit__row_cy",
-   "_PyInit__processors_cy",
-   "_PyInit__util_cy",
-   "_PyInit__cache_key_cy"
-  ],
-  "uses_abi3": false
- },
- "argon2-cffi": {
-  "version": "25.1.0",
-  "wheel": null,
-  "note": "no platform wheel at latest release"
- },
- "gevent": {
-  "version": "26.9.0",
-  "wheel": null,
-  "note": "no platform wheel at latest release"
- },
- "psutil": {
-  "version": "7.2.2",
-  "wheel": "psutil-7.2.2-cp314-cp314t-macosx_11_0_arm64.whl",
-  "so_count": 1,
-  "undefined_Py": [],
-  "undefined_all_count": 0,
-  "defined_Py_count": 1,
-  "PyInit": [
-   "_PyInit__psutil_osx"
-  ],
-  "uses_abi3": false
- },
- "ujson": {
-  "version": "6.1.0",
-  "wheel": "ujson-6.1.0-cp314-cp314-macosx_11_0_arm64.whl",
-  "so_count": 1,
-  "undefined_Py": [],
-  "undefined_all_count": 0,
-  "defined_Py_count": 1,
-  "PyInit": [
-   "_PyInit_ujson"
-  ],
-  "uses_abi3": false
- },
- "simdjson": {
-  "error": "pypi fetch: HTTP Error 404: Not Found"
- },
- "pymerkle": {
-  "version": "7.0.0",
-  "wheel": null,
-  "note": "no platform wheel at latest release"
- },
- "__note__": "undefined_Py lists empty because nm -D fails on Mach-O; recovered lists in ce-scan-symbols-full.json"
+  "pydantic-core": {
+    "version": "2.50.5",
+    "wheel": "pydantic_core-2.50.5-cp314-cp314-macosx_11_0_arm64.whl",
+    "so_count": 1,
+    "undefined_Py": [],
+    "undefined_all_count": 0,
+    "defined_Py_count": 1,
+    "PyInit": [
+      "_PyInit__pydantic_core"
+    ],
+    "uses_abi3": false
+  },
+  "cryptography": {
+    "version": "50.0.2",
+    "wheel": "cryptography-50.0.2-cp314-cp314t-macosx_11_0_arm64.whl",
+    "so_count": 1,
+    "undefined_Py": [],
+    "undefined_all_count": 0,
+    "defined_Py_count": 27,
+    "PyInit": [
+      "_PyInit__rust",
+      "_PyInit_aead",
+      "_PyInit_asn1",
+      "_PyInit_ciphers",
+      "_PyInit_cmac",
+      "_PyInit_cobblestone",
+      "_PyInit_dh",
+      "_PyInit_dsa",
+      "_PyInit_ec",
+      "_PyInit_ed25519",
+      "_PyInit_ed448",
+      "_PyInit_exceptions",
+      "_PyInit_hashes",
+      "_PyInit_hmac",
+      "_PyInit_hpke",
+      "_PyInit_kdf",
+      "_PyInit_keys",
+      "_PyInit_keywrap",
+      "_PyInit_mldsa",
+      "_PyInit_mlkem",
+      "_PyInit_pkcs12",
+      "_PyInit_pkcs7",
+      "_PyInit_poly1305",
+      "_PyInit_rsa",
+      "_PyInit_test_support",
+      "_PyInit_x25519",
+      "_PyInit_x448"
+    ],
+    "uses_abi3": false
+  },
+  "numpy": {
+    "version": "2.5.5",
+    "wheel": "numpy-2.5.5-cp314-cp314-macosx_11_0_arm64.whl",
+    "so_count": 19,
+    "undefined_Py": [],
+    "undefined_all_count": 0,
+    "defined_Py_count": 19,
+    "PyInit": [
+      "_PyInit__umath_linalg",
+      "_PyInit_lapack_lite",
+      "_PyInit__struct_ufunc_tests",
+      "_PyInit__rational_tests",
+      "_PyInit__operand_flag_tests",
+      "_PyInit__multiarray_tests",
+      "_PyInit__umath_tests",
+      "_PyInit__multiarray_umath",
+      "_PyInit__simd",
+      "_PyInit__pocketfft_umath",
+      "_PyInit_bit_generator",
+      "_PyInit__mt19937",
+      "_PyInit__philox",
+      "_PyInit__bounded_integers",
+      "_PyInit__pcg64",
+      "_PyInit__sfc64",
+      "_PyInit__common",
+      "_PyInit_mtrand",
+      "_PyInit__generator"
+    ],
+    "uses_abi3": false
+  },
+  "pandas": {
+    "version": "3.1.1",
+    "wheel": "pandas-3.1.1-cp314-cp314-macosx_11_0_arm64.whl",
+    "so_count": 45,
+    "undefined_Py": [],
+    "undefined_all_count": 0,
+    "defined_Py_count": 45,
+    "PyInit": [
+      "_PyInit_interval",
+      "_PyInit_properties",
+      "_PyInit_ops_dispatch",
+      "_PyInit_writers",
+      "_PyInit_pandas_datetime",
+      "_PyInit_pandas_parser",
+      "_PyInit_internals",
+      "_PyInit__ujson",
+      "_PyInit_byteswap",
+      "_PyInit_reshape",
+      "_PyInit_lib",
+      "_PyInit_testing",
+      "_PyInit_join",
+      "_PyInit_arrays",
+      "_PyInit_sparse",
+      "_PyInit_sas",
+      "_PyInit_groupby",
+      "_PyInit_indexing",
+      "_PyInit_ops",
+      "_PyInit_parsers",
+      "_PyInit_hashing",
+      "_PyInit_missing",
+      "_PyInit_hashtable",
+      "_PyInit_index",
+      "_PyInit_algos",
+      "_PyInit__cyutility",
+      "_PyInit_tslib",
+      "_PyInit_indexers",
+      "_PyInit_aggregations",
+      "_PyInit_ccalendar",
+      "_PyInit_offsets",
+      "_PyInit_timedeltas",
+      "_PyInit_conversion",
+      "_PyInit_fields",
+      "_PyInit_nattype",
+      "_PyInit_tzconversion",
+      "_PyInit_timezones",
+      "_PyInit_period",
+      "_PyInit_np_datetime",
+      "_PyInit_timestamps",
+      "_PyInit_dtypes",
+      "_PyInit_strptime",
+      "_PyInit_parsing",
+      "_PyInit_base",
+      "_PyInit_vectorized"
+    ],
+    "uses_abi3": false
+  },
+  "pyarrow": {
+    "version": "26.0.1",
+    "wheel": "pyarrow-26.0.1-cp314-cp314-macosx_12_0_arm64.whl",
+    "so_count": 21,
+    "undefined_Py": [],
+    "undefined_all_count": 0,
+    "defined_Py_count": 21,
+    "PyInit": [
+      "_PyInit__csv",
+      "_PyInit__fs",
+      "_PyInit__dataset_orc",
+      "_PyInit__s3fs",
+      "_PyInit__pyarrow_cpp_tests",
+      "_PyInit__parquet",
+      "_PyInit__orc",
+      "_PyInit__acero",
+      "_PyInit__azurefs",
+      "_PyInit_lib",
+      "_PyInit__dataset_parquet",
+      "_PyInit__hdfs",
+      "_PyInit__dataset",
+      "_PyInit__gcsfs",
+      "_PyInit__compute",
+      "_PyInit__flight",
+      "_PyInit__json",
+      "_PyInit__feather",
+      "_PyInit__parquet_encryption",
+      "_PyInit__dataset_parquet_encryption",
+      "_PyInit__substrait"
+    ],
+    "uses_abi3": false
+  },
+  "orjson": {
+    "version": "3.13.0",
+    "wheel": "orjson-3.13.0-cp314-cp314-macosx_10_15_x86_64.macosx_11_0_arm64.macosx_10_15_universal2.whl",
+    "so_count": 1,
+    "undefined_Py": [],
+    "undefined_all_count": 0,
+    "defined_Py_count": 1,
+    "PyInit": [
+      "_PyInit_orjson"
+    ],
+    "uses_abi3": false
+  },
+  "pillow": {
+    "version": "13.0.0",
+    "wheel": "pillow-13.0.0-cp314-cp314-macosx_11_0_arm64.whl",
+    "so_count": 8,
+    "undefined_Py": [],
+    "undefined_all_count": 0,
+    "defined_Py_count": 46,
+    "PyInit": [
+      "_PyInit__imagingft",
+      "_PyInit__imagingcms",
+      "_PyInit__webp",
+      "_PyInit__imagingmath",
+      "_PyInit__imaging",
+      "_PyInit__avif",
+      "_PyInit__imagingmorph",
+      "_PyInit__imagingtk"
+    ],
+    "uses_abi3": false
+  },
+  "lxml": {
+    "version": "6.1.3",
+    "wheel": "lxml-6.1.3-cp311-cp311-macosx_10_9_x86_64.whl",
+    "so_count": 7,
+    "undefined_Py": [],
+    "undefined_all_count": 0,
+    "defined_Py_count": 7,
+    "PyInit": [
+      "_PyInit_objectify",
+      "_PyInit_etree",
+      "_PyInit_builder",
+      "_PyInit_sax",
+      "_PyInit__elementpath",
+      "_PyInit__difflib",
+      "_PyInit_diff"
+    ],
+    "uses_abi3": false
+  },
+  "regex": {
+    "version": "2026.11.19",
+    "wheel": "regex-2026.11.19-cp314-cp314-macosx_11_0_arm64.whl",
+    "so_count": 1,
+    "undefined_Py": [],
+    "undefined_all_count": 0,
+    "defined_Py_count": 1,
+    "PyInit": [
+      "_PyInit__regex"
+    ],
+    "uses_abi3": false
+  },
+  "psycopg2": {
+    "version": "2.9.13",
+    "wheel": null,
+    "note": "no platform wheel at latest release"
+  },
+  "psycopg2-binary": {
+    "version": "2.9.13",
+    "wheel": "psycopg2_binary-2.9.13-cp314-cp314-macosx_11_0_arm64.whl",
+    "so_count": 1,
+    "undefined_Py": [],
+    "undefined_all_count": 0,
+    "defined_Py_count": 1,
+    "PyInit": [
+      "_PyInit__psycopg"
+    ],
+    "uses_abi3": false
+  },
+  "grpcio": {
+    "version": "1.85.3",
+    "wheel": null,
+    "note": "no platform wheel at latest release"
+  },
+  "pyyaml": {
+    "version": "6.0.3",
+    "wheel": "pyyaml-6.0.3-cp314-cp314-macosx_11_0_arm64.whl",
+    "so_count": 1,
+    "undefined_Py": [],
+    "undefined_all_count": 0,
+    "defined_Py_count": 1,
+    "PyInit": [
+      "_PyInit__yaml"
+    ],
+    "uses_abi3": false
+  },
+  "markupsafe": {
+    "version": "3.0.4",
+    "wheel": "markupsafe-3.0.4-cp314-cp314-macosx_11_0_arm64.whl",
+    "so_count": 1,
+    "undefined_Py": [],
+    "undefined_all_count": 0,
+    "defined_Py_count": 1,
+    "PyInit": [
+      "_PyInit__speedups"
+    ],
+    "uses_abi3": false
+  },
+  "greenlet": {
+    "version": "3.5.6",
+    "wheel": null,
+    "note": "no platform wheel at latest release"
+  },
+  "cffi": {
+    "version": "2.1.1",
+    "wheel": "cffi-2.1.1-cp314-cp314-macosx_11_0_arm64.whl",
+    "so_count": 1,
+    "undefined_Py": [],
+    "undefined_all_count": 0,
+    "defined_Py_count": 1,
+    "PyInit": [
+      "_PyInit__cffi_backend"
+    ],
+    "uses_abi3": false
+  },
+  "pycparser": {
+    "version": "3.12",
+    "wheel": null,
+    "note": "no platform wheel at latest release"
+  },
+  "bcrypt": {
+    "version": "5.0.0",
+    "wheel": null,
+    "note": "no platform wheel at latest release"
+  },
+  "uvloop": {
+    "version": "0.23.0",
+    "wheel": "uvloop-0.23.0-cp311-cp311-macosx_10_9_x86_64.whl",
+    "so_count": 1,
+    "undefined_Py": [],
+    "undefined_all_count": 0,
+    "defined_Py_count": 1,
+    "PyInit": [
+      "_PyInit_loop"
+    ],
+    "uses_abi3": false
+  },
+  "httptools": {
+    "version": "0.9.0",
+    "wheel": "httptools-0.9.0-cp314-cp314-macosx_11_0_arm64.whl",
+    "so_count": 2,
+    "undefined_Py": [],
+    "undefined_all_count": 0,
+    "defined_Py_count": 2,
+    "PyInit": [
+      "_PyInit_url_parser",
+      "_PyInit_parser"
+    ],
+    "uses_abi3": false
+  },
+  "msgspec": {
+    "version": "0.22.0",
+    "wheel": "msgspec-0.22.0-cp314-cp314-macosx_11_0_arm64.whl",
+    "so_count": 1,
+    "undefined_Py": [],
+    "undefined_all_count": 0,
+    "defined_Py_count": 1,
+    "PyInit": [
+      "_PyInit__core"
+    ],
+    "uses_abi3": false
+  },
+  "msgpack": {
+    "version": "1.2.4",
+    "wheel": "msgpack-1.2.4-cp314-cp314-macosx_11_0_arm64.whl",
+    "so_count": 1,
+    "undefined_Py": [],
+    "undefined_all_count": 0,
+    "defined_Py_count": 1,
+    "PyInit": [
+      "_PyInit__cmsgpack"
+    ],
+    "uses_abi3": false
+  },
+  "rpds-py": {
+    "version": "2026.9.1",
+    "wheel": "rpds_py-2026.9.1-cp314-cp314-macosx_11_0_arm64.whl",
+    "so_count": 1,
+    "undefined_Py": [],
+    "undefined_all_count": 0,
+    "defined_Py_count": 1,
+    "PyInit": [
+      "_PyInit_rpds"
+    ],
+    "uses_abi3": false
+  },
+  "tokenizers": {
+    "version": "0.23.3",
+    "wheel": "tokenizers-0.23.3-cp314-cp314t-macosx_11_0_arm64.whl",
+    "so_count": 1,
+    "undefined_Py": [],
+    "undefined_all_count": 0,
+    "defined_Py_count": 8,
+    "PyInit": [
+      "_PyInit_decoders",
+      "_PyInit_models",
+      "_PyInit_normalizers",
+      "_PyInit_pre_tokenizers",
+      "_PyInit_processors",
+      "_PyInit_pyo3_async_runtimes",
+      "_PyInit_tokenizers",
+      "_PyInit_trainers"
+    ],
+    "uses_abi3": false
+  },
+  "safetensors": {
+    "version": "0.8.0",
+    "wheel": "safetensors-0.8.0-cp310-abi3-macosx_11_0_arm64.whl",
+    "so_count": 1,
+    "undefined_Py": [],
+    "undefined_all_count": 0,
+    "defined_Py_count": 1,
+    "PyInit": [
+      "_PyInit__safetensors_rust"
+    ],
+    "uses_abi3": true
+  },
+  "tiktoken": {
+    "version": "0.14.0",
+    "wheel": "tiktoken-0.14.0-cp314-cp314-macosx_11_0_arm64.whl",
+    "so_count": 1,
+    "undefined_Py": [],
+    "undefined_all_count": 0,
+    "defined_Py_count": 1,
+    "PyInit": [
+      "_PyInit__tiktoken"
+    ],
+    "uses_abi3": false
+  },
+  "watchfiles": {
+    "version": "1.3.0",
+    "wheel": "watchfiles-1.3.0-cp314-cp314t-macosx_11_0_arm64.whl",
+    "so_count": 1,
+    "undefined_Py": [],
+    "undefined_all_count": 0,
+    "defined_Py_count": 1,
+    "PyInit": [
+      "_PyInit__rust_notify"
+    ],
+    "uses_abi3": false
+  },
+  "contourpy": {
+    "version": "1.4.0",
+    "wheel": "contourpy-1.4.0-cp314-cp314-macosx_11_0_arm64.whl",
+    "so_count": 1,
+    "undefined_Py": [],
+    "undefined_all_count": 0,
+    "defined_Py_count": 1,
+    "PyInit": [
+      "_PyInit__contourpy"
+    ],
+    "uses_abi3": false
+  },
+  "kiwisolver": {
+    "version": "1.5.1",
+    "wheel": "kiwisolver-1.5.1-cp314-cp314-macosx_11_0_arm64.whl",
+    "so_count": 1,
+    "undefined_Py": [],
+    "undefined_all_count": 0,
+    "defined_Py_count": 1,
+    "PyInit": [
+      "_PyInit__cext"
+    ],
+    "uses_abi3": false
+  },
+  "matplotlib": {
+    "version": "3.11.2",
+    "wheel": "matplotlib-3.11.2-cp314-cp314-macosx_11_0_arm64.whl",
+    "so_count": 9,
+    "undefined_Py": [],
+    "undefined_all_count": 0,
+    "defined_Py_count": 9,
+    "PyInit": [
+      "_PyInit__image",
+      "_PyInit__path",
+      "_PyInit__c_internal_utils",
+      "_PyInit_ft2font",
+      "_PyInit__qhull",
+      "_PyInit__tri",
+      "_PyInit__tkagg",
+      "_PyInit__macosx",
+      "_PyInit__backend_agg"
+    ],
+    "uses_abi3": false
+  },
+  "zstandard": {
+    "version": "0.25.0",
+    "wheel": "zstandard-0.25.0-cp314-cp314-macosx_11_0_arm64.whl",
+    "so_count": 2,
+    "undefined_Py": [],
+    "undefined_all_count": 0,
+    "defined_Py_count": 2,
+    "PyInit": [
+      "_PyInit__cffi",
+      "_PyInit_backend_c"
+    ],
+    "uses_abi3": false
+  },
+  "brotli": {
+    "version": "1.2.1",
+    "wheel": "brotli-1.2.1-cp311-cp311-macosx_10_9_x86_64.whl",
+    "so_count": 1,
+    "undefined_Py": [],
+    "undefined_all_count": 0,
+    "defined_Py_count": 1,
+    "PyInit": [
+      "_PyInit__brotli"
+    ],
+    "uses_abi3": false
+  },
+  "brotlicffi": {
+    "version": "1.2.1.0",
+    "wheel": "brotlicffi-1.2.1.0-cp314-cp314t-macosx_11_0_arm64.whl",
+    "so_count": 1,
+    "undefined_Py": [],
+    "undefined_all_count": 0,
+    "defined_Py_count": 1,
+    "PyInit": [
+      "_PyInit__brotlicffi"
+    ],
+    "uses_abi3": false
+  },
+  "pyjwt": {
+    "version": "2.15.1",
+    "wheel": null,
+    "note": "no platform wheel at latest release"
+  },
+  "mysqlclient": {
+    "version": "2.3.2",
+    "wheel": null,
+    "note": "no platform wheel at latest release"
+  },
+  "pymupdf": {
+    "version": "2.1",
+    "wheel": "pymupdf-2.1-cp311-abi3-macosx_11_0_arm64.whl",
+    "so_count": 5,
+    "undefined_Py": [],
+    "undefined_all_count": 0,
+    "defined_Py_count": 4,
+    "PyInit": [
+      "_PyInit__mupdf",
+      "_PyInit__tgif",
+      "_PyInit__features",
+      "_PyInit__extra"
+    ],
+    "uses_abi3": true
+  },
+  "rapidfuzz": {
+    "version": "3.14.6",
+    "wheel": "rapidfuzz-3.14.6-cp314-cp314-macosx_11_0_arm64.whl",
+    "so_count": 5,
+    "undefined_Py": [],
+    "undefined_all_count": 0,
+    "defined_Py_count": 5,
+    "PyInit": [
+      "_PyInit_process_cpp_impl",
+      "_PyInit_fuzz_cpp",
+      "_PyInit_utils_cpp",
+      "_PyInit__initialize_cpp",
+      "_PyInit_metrics_cpp"
+    ],
+    "uses_abi3": false
+  },
+  "python-dateutil": {
+    "version": "4.0.0",
+    "wheel": null,
+    "note": "no platform wheel at latest release"
+  },
+  "shapely": {
+    "version": "2.2.0",
+    "wheel": "shapely-2.2.0-cp314-cp314-macosx_11_0_arm64.whl",
+    "so_count": 3,
+    "undefined_Py": [],
+    "undefined_all_count": 0,
+    "defined_Py_count": 3,
+    "PyInit": [
+      "_PyInit__geometry_helpers",
+      "_PyInit_lib",
+      "_PyInit__geos"
+    ],
+    "uses_abi3": false
+  },
+  "fiona": {
+    "version": "1.10.1",
+    "wheel": "fiona-1.10.1-cp313-cp313-macosx_11_0_arm64.whl",
+    "so_count": 8,
+    "undefined_Py": [],
+    "undefined_all_count": 0,
+    "defined_Py_count": 8,
+    "PyInit": [
+      "_PyInit__env",
+      "_PyInit__vsiopener",
+      "_PyInit_ogrext",
+      "_PyInit__geometry",
+      "_PyInit_schema",
+      "_PyInit__err",
+      "_PyInit__transform",
+      "_PyInit_crs"
+    ],
+    "uses_abi3": false
+  },
+  "scipy": {
+    "version": "1.18.1",
+    "wheel": "scipy-1.18.1-cp314-cp314-macosx_12_0_arm64.whl",
+    "so_count": 106,
+    "undefined_Py": [],
+    "undefined_all_count": 0,
+    "defined_Py_count": 105,
+    "PyInit": [
+      "_PyInit__cyutility",
+      "_PyInit___odrpack",
+      "_PyInit__ni_label",
+      "_PyInit__nd_image",
+      "_PyInit__rank_filter_1d",
+      "_PyInit__cytest",
+      "_PyInit__ctest",
+      "_PyInit__batched_linalg",
+      "_PyInit__linalg_pythran",
+      "_PyInit__matfuncs_sqrtm_triu",
+      "_PyInit__internal_matfuncs",
+      "_PyInit__solve_toeplitz",
+      "_PyInit__decomp_interpolative",
+      "_PyInit__decomp_update",
+      "_PyInit__flapack",
+      "_PyInit__fblas",
+      "_PyInit__cythonized_array_utils",
+      "_PyInit_cython_blas",
+      "_PyInit_cython_lapack",
+      "_PyInit__minpack",
+      "_PyInit__zeros",
+      "_PyInit__slsqplib",
+      "_PyInit__group_columns",
+      "_PyInit__direct",
+      "_PyInit__bglu_dense",
+      "_PyInit__pava_pybind",
+      "_PyInit__lsap",
+      "_PyInit__moduleTNC",
+      "_PyInit__lbfgsb",
+      "_PyInit__odepack",
+      "_PyInit__test_multivariate",
+      "_PyInit__dop",
+      "_PyInit__quadpack",
+      "_PyInit__vode",
+      "_PyInit__fpumode",
+      "_PyInit__ccallback_c",
+      "_PyInit__test_deprecation_call",
+      "_PyInit_messagestream",
+      "_PyInit__test_ccallback",
+      "_PyInit__test_deprecation_def",
+      "_PyInit__ufuncs",
+      "_PyInit_cython_special",
+      "_PyInit__comb",
+      "_PyInit__test_internal",
+      "_PyInit__specfun",
+      "_PyInit__gufuncs",
+      "_PyInit__special_ufuncs",
+      "_PyInit__ellip_harm_2",
+      "_PyInit__ufuncs_cxx",
+      "_PyInit_convolve",
+      "_PyInit__dierckx",
+      "_PyInit__ppoly",
+      "_PyInit__interpnd",
+      "_PyInit__rgi_cython",
+      "_PyInit__fitpack",
+      "_PyInit__rbfinterp_pythran",
+      "_PyInit__sparsetools",
+      "_PyInit__csparsetools",
+      "_PyInit__ckdtree",
+      "_PyInit__distance_pybind",
+      "_PyInit__voronoi",
+      "_PyInit__hausdorff",
+      "_PyInit__distance_wrap",
+      "_PyInit__qhull",
+      "_PyInit__upfirdn_apply",
+      "_PyInit__sigtools",
+      "_PyInit__spline",
+      "_PyInit__peak_finding_utils",
+      "_PyInit__max_len_seq_inner",
+      "_PyInit__sosfilt",
+      "_PyInit__qmc_cy",
+      "_PyInit__ansari_swilk_statistics",
+      "_PyInit__stats",
+      "_PyInit__sobol",
+      "_PyInit__qmvnt_cy",
+      "_PyInit__biasedurn",
+      "_PyInit__stats_pythran",
+      "_PyInit_levyst",
+      "_PyInit_rcont",
+      "_PyInit_unuran_wrapper",
+      "_PyInit__rotation_cy",
+      "_PyInit__rigid_transform_cy",
+      "_PyInit__propack",
+      "_PyInit__min_spanning_tree",
+      "_PyInit__reordering",
+      "_PyInit__tools",
+      "_PyInit__flow",
+      "_PyInit__shortest_path",
+      "_PyInit__traversal",
+      "_PyInit__matching",
+      "_PyInit__superlu",
+      "_PyInit__arpacklib",
+      "_PyInit_pyduccfft",
+      "_PyInit__uarray",
+      "_PyInit__fmm_core",
+      "_PyInit__streams",
+      "_PyInit__mio5_utils",
+      "_PyInit__mio_utils",
+      "_PyInit__trlib",
+      "_PyInit__core",
+      "_PyInit__highs_options",
+      "_PyInit_givens_elimination",
+      "_PyInit__zeros",
+      "_PyInit__optimal_leaf_ordering",
+      "_PyInit__hierarchy",
+      "_PyInit__vq"
+    ],
+    "uses_abi3": false
+  },
+  "pydantic": {
+    "version": "2.14.4",
+    "wheel": null,
+    "note": "no platform wheel at latest release"
+  },
+  "sqlalchemy": {
+    "version": "2.1.9",
+    "wheel": "sqlalchemy-2.1.9-cp314-cp314-macosx_11_0_arm64.whl",
+    "so_count": 8,
+    "undefined_Py": [],
+    "undefined_all_count": 0,
+    "defined_Py_count": 7,
+    "PyInit": [
+      "_PyInit__immutabledict_cy",
+      "_PyInit__collections_cy",
+      "_PyInit__util_cy",
+      "_PyInit__result_cy",
+      "_PyInit__row_cy",
+      "_PyInit__processors_cy",
+      "_PyInit__util_cy",
+      "_PyInit__cache_key_cy"
+    ],
+    "uses_abi3": false
+  },
+  "argon2-cffi": {
+    "version": "25.1.0",
+    "wheel": null,
+    "note": "no platform wheel at latest release"
+  },
+  "gevent": {
+    "version": "26.9.0",
+    "wheel": null,
+    "note": "no platform wheel at latest release"
+  },
+  "psutil": {
+    "version": "7.2.2",
+    "wheel": "psutil-7.2.2-cp314-cp314t-macosx_11_0_arm64.whl",
+    "so_count": 1,
+    "undefined_Py": [],
+    "undefined_all_count": 0,
+    "defined_Py_count": 1,
+    "PyInit": [
+      "_PyInit__psutil_osx"
+    ],
+    "uses_abi3": false
+  },
+  "ujson": {
+    "version": "6.1.0",
+    "wheel": "ujson-6.1.0-cp314-cp314-macosx_11_0_arm64.whl",
+    "so_count": 1,
+    "undefined_Py": [],
+    "undefined_all_count": 0,
+    "defined_Py_count": 1,
+    "PyInit": [
+      "_PyInit_ujson"
+    ],
+    "uses_abi3": false
+  },
+  "simdjson": {
+    "error": "pypi fetch: HTTP Error 404: Not Found"
+  },
+  "pymerkle": {
+    "version": "7.0.0",
+    "wheel": null,
+    "note": "no platform wheel at latest release"
+  }
 }
