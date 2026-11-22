@@ -1746,38 +1746,80 @@ pub fn call_method(
                 }
                 "utf_16" | "utf16" => {
                     return Some(
-                        crate::surr_codec::encode_utfn(s.as_str(), "utf-16", &errors, 16, true, true)
-                            .map(|bs| Value::Bytes(Gc::new(bs))),
+                        crate::surr_codec::encode_utfn(
+                            s.as_str(),
+                            "utf-16",
+                            &errors,
+                            16,
+                            true,
+                            true,
+                        )
+                        .map(|bs| Value::Bytes(Gc::new(bs))),
                     );
                 }
                 "utf_16_le" | "utf16le" => {
                     return Some(
-                        crate::surr_codec::encode_utfn(s.as_str(), "utf-16-le", &errors, 16, true, false)
-                            .map(|bs| Value::Bytes(Gc::new(bs))),
+                        crate::surr_codec::encode_utfn(
+                            s.as_str(),
+                            "utf-16-le",
+                            &errors,
+                            16,
+                            true,
+                            false,
+                        )
+                        .map(|bs| Value::Bytes(Gc::new(bs))),
                     );
                 }
                 "utf_16_be" | "utf16be" => {
                     return Some(
-                        crate::surr_codec::encode_utfn(s.as_str(), "utf-16-be", &errors, 16, false, false)
-                            .map(|bs| Value::Bytes(Gc::new(bs))),
+                        crate::surr_codec::encode_utfn(
+                            s.as_str(),
+                            "utf-16-be",
+                            &errors,
+                            16,
+                            false,
+                            false,
+                        )
+                        .map(|bs| Value::Bytes(Gc::new(bs))),
                     );
                 }
                 "utf_32" | "utf32" => {
                     return Some(
-                        crate::surr_codec::encode_utfn(s.as_str(), "utf-32", &errors, 32, true, true)
-                            .map(|bs| Value::Bytes(Gc::new(bs))),
+                        crate::surr_codec::encode_utfn(
+                            s.as_str(),
+                            "utf-32",
+                            &errors,
+                            32,
+                            true,
+                            true,
+                        )
+                        .map(|bs| Value::Bytes(Gc::new(bs))),
                     );
                 }
                 "utf_32_le" | "utf32le" => {
                     return Some(
-                        crate::surr_codec::encode_utfn(s.as_str(), "utf-32-le", &errors, 32, true, false)
-                            .map(|bs| Value::Bytes(Gc::new(bs))),
+                        crate::surr_codec::encode_utfn(
+                            s.as_str(),
+                            "utf-32-le",
+                            &errors,
+                            32,
+                            true,
+                            false,
+                        )
+                        .map(|bs| Value::Bytes(Gc::new(bs))),
                     );
                 }
                 "utf_32_be" | "utf32be" => {
                     return Some(
-                        crate::surr_codec::encode_utfn(s.as_str(), "utf-32-be", &errors, 32, false, false)
-                            .map(|bs| Value::Bytes(Gc::new(bs))),
+                        crate::surr_codec::encode_utfn(
+                            s.as_str(),
+                            "utf-32-be",
+                            &errors,
+                            32,
+                            false,
+                            false,
+                        )
+                        .map(|bs| Value::Bytes(Gc::new(bs))),
                     );
                 }
                 _ => {}
@@ -2207,16 +2249,13 @@ fn super_user_method(
         let mut call_args: Vec<Value> = vec![Value::Obj(o.clone())];
         call_args.extend_from_slice(args);
         return crate::interp::call_value_pub(&interp.rc(), &v, &call_args, &[]);
-
     }
     // 02.08 gap (s029): instance __dict__ miss — consult the CLASS MRO
     // (methodcaller("shout", 3)(thing) dispatches a user method that
     // lives on the class, not the instance dict). Bind over the
     // receiver and forward the parked args.
     let recv = Value::Obj(o.clone());
-    if let Some((f, _owner)) =
-        crate::classes::special_lookup(&interp.rc(), &recv, name)
-    {
+    if let Some((f, _owner)) = crate::classes::special_lookup(&interp.rc(), &recv, name) {
         let mut call_args: Vec<Value> = vec![recv.clone()];
         call_args.extend_from_slice(args);
         return crate::interp::call_value_pub(&interp.rc(), &f, &call_args, &[]);

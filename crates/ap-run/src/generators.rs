@@ -781,7 +781,7 @@ impl PooledStack {
     }
 
     /// Take a same-class region from this thread's pool, or map a new one.
-    fn new(usable: usize) -> Result<Self, std::io::Error> {
+    pub(crate) fn new(usable: usize) -> Result<Self, std::io::Error> {
         let page = page_size();
         let usable = usable.max(corosensei::stack::MIN_STACK_SIZE);
         // Page-round the usable span FIRST (mirrors DefaultStack): with

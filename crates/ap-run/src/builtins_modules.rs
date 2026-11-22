@@ -4444,18 +4444,63 @@ fn build_operator(_i: &crate::frame::Interpreter) -> Value {
     let _ = ns.set(
         s("__all__"),
         crate::builtins_modules::list(vec![
-            s("abs"), s("add"), s("and_"), s("attrgetter"), s("call"),
-            s("concat"), s("contains"), s("countOf"), s("delitem"), s("eq"),
-            s("floordiv"), s("ge"), s("getitem"), s("gt"), s("iadd"),
-            s("iand"), s("iconcat"), s("ifloordiv"), s("ilshift"),
-            s("imatmul"), s("imod"), s("imul"), s("index"), s("indexOf"),
-            s("inv"), s("invert"), s("ior"), s("ipow"), s("irshift"),
-            s("is_"), s("is_none"), s("is_not"), s("is_not_none"), s("isub"),
-            s("itemgetter"), s("itruediv"), s("ixor"), s("le"),
-            s("length_hint"), s("lshift"), s("lt"), s("matmul"),
-            s("methodcaller"), s("mod"), s("mul"), s("ne"), s("neg"),
-            s("not_"), s("or_"), s("pos"), s("pow"), s("rshift"),
-            s("setitem"), s("sub"), s("truediv"), s("truth"), s("xor"),
+            s("abs"),
+            s("add"),
+            s("and_"),
+            s("attrgetter"),
+            s("call"),
+            s("concat"),
+            s("contains"),
+            s("countOf"),
+            s("delitem"),
+            s("eq"),
+            s("floordiv"),
+            s("ge"),
+            s("getitem"),
+            s("gt"),
+            s("iadd"),
+            s("iand"),
+            s("iconcat"),
+            s("ifloordiv"),
+            s("ilshift"),
+            s("imatmul"),
+            s("imod"),
+            s("imul"),
+            s("index"),
+            s("indexOf"),
+            s("inv"),
+            s("invert"),
+            s("ior"),
+            s("ipow"),
+            s("irshift"),
+            s("is_"),
+            s("is_none"),
+            s("is_not"),
+            s("is_not_none"),
+            s("isub"),
+            s("itemgetter"),
+            s("itruediv"),
+            s("ixor"),
+            s("le"),
+            s("length_hint"),
+            s("lshift"),
+            s("lt"),
+            s("matmul"),
+            s("methodcaller"),
+            s("mod"),
+            s("mul"),
+            s("ne"),
+            s("neg"),
+            s("not_"),
+            s("or_"),
+            s("pos"),
+            s("pow"),
+            s("rshift"),
+            s("setitem"),
+            s("sub"),
+            s("truediv"),
+            s("truth"),
+            s("xor"),
         ]),
     );
     finish(m, ns)
@@ -5369,18 +5414,18 @@ pub fn python_tokens_of(source: &str) -> Result<Vec<Value>, Flow> {
             (1, true)
         } else {
             match kind {
-            TokenKind::Int | TokenKind::Float | TokenKind::Complex => (2, true),
-            TokenKind::String => (3, true),
-            TokenKind::FStringStart => (63, true),
-            TokenKind::FStringMiddle => (64, true),
-            TokenKind::FStringEnd => (65, true),
-            TokenKind::Newline => (4, true),
-            TokenKind::Indent => (5, true),
-            TokenKind::Dedent => (6, true),
-            TokenKind::Comment => (60, true),
-            TokenKind::NonLogicalNewline => (61, true),
-            TokenKind::EndOfFile => (0, false),
-            _ => (55, true),
+                TokenKind::Int | TokenKind::Float | TokenKind::Complex => (2, true),
+                TokenKind::String => (3, true),
+                TokenKind::FStringStart => (63, true),
+                TokenKind::FStringMiddle => (64, true),
+                TokenKind::FStringEnd => (65, true),
+                TokenKind::Newline => (4, true),
+                TokenKind::Indent => (5, true),
+                TokenKind::Dedent => (6, true),
+                TokenKind::Comment => (60, true),
+                TokenKind::NonLogicalNewline => (61, true),
+                TokenKind::EndOfFile => (0, false),
+                _ => (55, true),
             }
         };
         if !keep {
@@ -6613,9 +6658,7 @@ fn collections_namedtuple(
         &typename,
         &[
             crate::builtins_modules::interned_type_pub("tuple"),
-            crate::classes::class_value_for_public(
-                &crate::classes::object_class(interp),
-            ),
+            crate::classes::class_value_for_public(&crate::classes::object_class(interp)),
         ],
         ns,
         &[],
@@ -6640,10 +6683,8 @@ fn collections_namedtuple(
             // added __replace__; s030 copy.replace(NT(1,2), a=9) needs it).
             // Native marker: the class value rides slice_parts like
             // __ap_namedtuple_make__.
-            let marker =
-                PyObject::new(ap_obj::ObjKind::BuiltinFn, "__ap_namedtuple_replace__");
-            *marker.slice_parts.lock().unwrap_or_else(|p| p.into_inner()) =
-                vec![class_v.clone()];
+            let marker = PyObject::new(ap_obj::ObjKind::BuiltinFn, "__ap_namedtuple_replace__");
+            *marker.slice_parts.lock().unwrap_or_else(|p| p.into_inner()) = vec![class_v.clone()];
             let _ = t.dict.set(s("_replace"), Value::Obj(marker.clone()));
             let _ = t.dict.set(s("__replace__"), Value::Obj(marker));
             // s015/s014: CPython namedtuple classes also carry _asdict() and
@@ -6657,8 +6698,7 @@ fn collections_namedtuple(
                 ))),
             );
             let am = PyObject::new(ap_obj::ObjKind::BuiltinFn, "__ap_namedtuple_asdict__");
-            *am.slice_parts.lock().unwrap_or_else(|p| p.into_inner()) =
-                vec![class_v.clone()];
+            *am.slice_parts.lock().unwrap_or_else(|p| p.into_inner()) = vec![class_v.clone()];
             let _ = t.dict.set(s("_asdict"), Value::Obj(am));
             // CPython namedtuple classes carry _make(iterable) — classmethod
             // making a new instance from an iterable of field values (s015).
@@ -11068,9 +11108,8 @@ static EMBEDDED_SOURCE: std::sync::Mutex<Option<(String, std::sync::Arc<Vec<Stri
 /// from run_module, before the module body executes). `nbytes` is the full
 /// source byte length (updatecache's CPython return is the file size).
 pub fn set_embedded_source(path: &str, source: &str) {
-    let lines: std::sync::Arc<Vec<String>> = std::sync::Arc::new(
-        source.lines().map(|l| format!("{l}\n")).collect::<Vec<_>>(),
-    );
+    let lines: std::sync::Arc<Vec<String>> =
+        std::sync::Arc::new(source.lines().map(|l| format!("{l}\n")).collect::<Vec<_>>());
     let nbytes = source.as_bytes().len();
     if let Ok(mut g) = EMBEDDED_SOURCE.lock() {
         *g = Some((path.to_string(), lines, nbytes));
@@ -19751,7 +19790,10 @@ fn build_importlib_machinery(_i: &crate::frame::Interpreter) -> Value {
     // SOURCE+BYTECODE+EXTENSION suffixes). The v0 list constant broke
     // inspect.getmodulename ('list' object is not callable) — and with it
     // inspect.getfile on every module object.
-    let _ = ns.set(s("all_suffixes"), marker("importlib.machinery.all_suffixes"));
+    let _ = ns.set(
+        s("all_suffixes"),
+        marker("importlib.machinery.all_suffixes"),
+    );
     finish(m, ns)
 }
 

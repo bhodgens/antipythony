@@ -67,7 +67,11 @@ pub enum IterState {
     /// 02.08f (s020): iter(callable, sentinel) — call the parked callable
     /// until it produces the sentinel (tokenize.tokenize's
     /// iter(readline, b"")). Exhaustion = sentinel seen.
-    CallFn { func: Value, sentinel: Value, done: bool },
+    CallFn {
+        func: Value,
+        sentinel: Value,
+        done: bool,
+    },
 }
 
 /// A materialized iterator.
@@ -179,17 +183,11 @@ impl PyIterator {
                     // 02.08f (s020): the iterators TABLE holds the strong
                     // Arc<PyIterator> under this id — clone it out so
                     // iter(it) is `it` (CPython identity).
-                    let id_opt = *o
-                        .gen_id
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner());
+                    let id_opt = *o.gen_id.lock().unwrap_or_else(|p| p.into_inner());
                     match id_opt {
                         Some(id) => {
                             let interp = crate::interp::current_interp_for_bindings_pub();
-                            let its = interp
-                                .iterators
-                                .lock()
-                                .unwrap_or_else(|p| p.into_inner());
+                            let its = interp.iterators.lock().unwrap_or_else(|p| p.into_inner());
                             match its.get(&id) {
                                 Some(existing) => Ok(existing.clone()),
                                 None => {
@@ -201,13 +199,9 @@ impl PyIterator {
                                     // empty instead of raising.
                                     drop(its);
                                     let fresh =
-                                        crate::iter::PyIterator::new(IterState::Seq(
-                                            Vec::new(),
-                                            0,
-                                        ));
+                                        crate::iter::PyIterator::new(IterState::Seq(Vec::new(), 0));
                                     fresh.table_id.set(Some(id));
-                                    let interp2 =
-                                        crate::interp::current_interp_for_bindings_pub();
+                                    let interp2 = crate::interp::current_interp_for_bindings_pub();
                                     interp2
                                         .iterators
                                         .lock()
@@ -397,7 +391,10 @@ pub fn collect(it: &Gc<PyIterator>) -> Vec<Value> {
     let mut out = Vec::new();
     // 02.08f (s020): CallFn needs interp access (pull_iter special-case);
     // pull eagerly here so zip()/list() over an iter(callable, sent) works.
-    if matches!(&*it.state.lock().unwrap_or_else(|p| p.into_inner()), IterState::CallFn { .. }) {
+    if matches!(
+        &*it.state.lock().unwrap_or_else(|p| p.into_inner()),
+        IterState::CallFn { .. }
+    ) {
         let interp = crate::interp::current_interp_for_bindings_pub();
         let id = it.table_id.get();
         if let Some(id) = id {

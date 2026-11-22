@@ -907,28 +907,43 @@ impl Interpreter {
 
     /// Advance depth for a call; Err when over the recursion limit.
     pub fn enter_call(&self) -> Result<(), crate::Flow> {
-        // 02.09b P7: Mutex (see the field note) — read + write under one
-        // critical section so concurrent workers cannot lose an increment.
+        // 02.10 2b: the LIMIT check keys on the mounted task's OWN depth
+        // (scheduler::task_depth_add) — CPython's recursion limit is
+        // per-thread, and the pre-scheduler process-global counter raised
+        // spurious RecursionErrors under high task concurrency (10k-task
+        // T133 gate: another task's in-flight frames tripped every fresh
+        // call). The process-global counter REMAINS as the total-in-flight
+        // backstop (the F4 native-stack accounting is per OS thread; the
+        // pool's workers are 64 MiB each, so the true native budget is
+        // per-worker — the per-task depth IS the right unit for a task's
+        // frames on its home worker).
+        if crate::scheduler::has_task() {
+            // A mounted task: its own frames, its own limit (CPython's
+            // recursion limit is per-thread).
+            let task_d = crate::scheduler::task_depth_add(1);
+            let hard_cap = self.native_frame_cap();
+            let limit = *self
+                .recursion_limit
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            if task_d as usize > limit.max(hard_cap) {
+                crate::scheduler::task_depth_add(-1);
+                return Err(crate::Flow::Raise(ExceptionValue::msg(
+                    "RecursionError",
+                    "maximum recursion depth exceeded",
+                )));
+            }
+            return Ok(());
+        }
+        // Main thread / non-scheduler context: legacy global accounting.
         let mut dg = self.depth.lock().unwrap_or_else(|p| p.into_inner());
         let d = *dg + 1;
-        // F4 (oom-bughunt-2026-11-06 RSS doc): the Python limit is
-        // user-settable (setrecursionlimit(5000)) but the interpreter thread
-        // has a FIXED stack (256MB reservation; ~50KB native per Python
-        // frame in RELEASE, ~4x in debug). Depth beyond the native budget
-        // SIGABRTs (rc=-6) instead of raising RecursionError. Backstop:
-        // derive the hard cap from the same budget the thread spawn uses;
-        // setrecursionlimit still lowers it freely, but a raised limit can
-        // no longer push past the stack.
-        const FRAME_STACK_BYTES: usize = 256 << 20;
-        #[cfg(debug_assertions)]
-        const BYTES_PER_FRAME: usize = 256 * 1024; // debug frames ~5x release
-        #[cfg(not(debug_assertions))]
-        const BYTES_PER_FRAME: usize = 50 * 1024;
-        let hard_cap = (FRAME_STACK_BYTES / BYTES_PER_FRAME).max(1000);
-        if d > *self
-            .recursion_limit
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
+        let hard_cap = self.native_frame_cap();
+        if d
+            > *self
+                .recursion_limit
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
             || d > hard_cap
         {
             return Err(crate::Flow::Raise(ExceptionValue::msg(
@@ -940,7 +955,24 @@ impl Interpreter {
         Ok(())
     }
 
+    /// F4 native-frame hard cap (the enter_call budget arithmetic, shared
+    /// by both accounting paths).
+    fn native_frame_cap(&self) -> usize {
+        const FRAME_STACK_BYTES: usize = 256 << 20;
+        #[cfg(debug_assertions)]
+        const BYTES_PER_FRAME: usize = 256 * 1024; // debug frames ~5x release
+        #[cfg(not(debug_assertions))]
+        const BYTES_PER_FRAME: usize = 50 * 1024;
+        (FRAME_STACK_BYTES / BYTES_PER_FRAME).max(1000)
+    }
+
     pub fn exit_call(&self) {
+        // 02.10 2b: per-task accounting first; the global counter only
+        // moves for main-thread (non-scheduler) frames.
+        if crate::scheduler::has_task() {
+            crate::scheduler::task_depth_add(-1);
+            return;
+        }
         let mut dg = self.depth.lock().unwrap_or_else(|p| p.into_inner());
         *dg = dg.saturating_sub(1);
     }

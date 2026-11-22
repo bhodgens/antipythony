@@ -390,6 +390,9 @@ pub fn bootstrap_main(_interp: &Arc<Interpreter>) {
     *mt = Some(current_os_tid());
     drop(mt);
     let ident = new_ident_pub();
+    // 2c TLS re-key: the main thread's logical ident is mounted for the
+    // whole module body (module code can take RLocks — contextlib does).
+    crate::scheduler::mount_main_ident(ident);
     // Bind the MainThread PyObject mirror NOW: enumerate() must list
     // MainThread before any explicit current_thread() call (T108 pin).
     let mv = thread_obj(
@@ -517,6 +520,11 @@ pub struct LockPrim {
 #[derive(Clone, Copy, PartialEq)]
 pub enum RLockOwner {
     None,
+    /// 2c RE-KEY: holds the owner's LOGICAL thread ident (was the worker's
+    /// os tid — under the scheduler two tasks share one worker, so an
+    /// os-tid key would let task B "re-enter" task A's lock). Compared
+    /// against `tls_key()` at all four sites (threading_call.rs
+    /// rlock_acquire / rlock_release_full / rlock_release_one / cond_owned).
     Owned(u64),
 }
 
@@ -867,35 +875,26 @@ pub fn thread_start(interp: &Arc<Interpreter>, o: &Gc<PyObject>) -> EvalResult {
     // int.rs). The `std::mem::transmute` box crossing that used to live
     // here is DELETED: the audited unsafety seam is gone, the compiler now
     // checks what the lock protocol used to be trusted for.
-    let closure = move || {
-        worker_bootstrap(interp2, target, args, kwargs, addr, interval);
+    //
+    // 02.10 2b.1 (this leaf): the per-Thread OS spawn (64 MiB stack each)
+    // is REPLACED by a scheduler Task submission — the pool's P workers
+    // (APX_GOMAXPROCS | available_parallelism) run task fibers (8 MiB
+    // pooled stacks, ~330 KB touched), steal-at-birth, and quantum-yield at
+    // statement polls. The registry protocol (entry slot above, ident,
+    // native stamping inside worker_bootstrap, mark_done at completion) is
+    // unchanged — join/is_alive/excepthook byte-shapes are identical.
+    let spec = crate::scheduler::TaskSpec {
+        interp: interp2,
+        target,
+        args,
+        kwargs,
+        addr,
+        serial: my_serial.unwrap_or(-2),
+        daemon,
+        timer_interval: interval,
     };
-    let spawn_result = std::thread::Builder::new()
-        .name(format!("ap-{name}"))
-        .stack_size(64 << 20)
-        .spawn(closure);
-    match spawn_result {
-        Ok(handle) => {
-            // Detach: completion is tracked via the entry `done` flag, not
-            // the JoinHandle (C-28/C-07: a crashed worker reports through
-            // excepthook, never the process exit).
-            drop(handle);
-            Ok(Value::None)
-        }
-        Err(e) => {
-            // Roll the registry entry back.
-            let mut t = THREADS.lock().unwrap();
-            t.entries.retain(|s| s.addr != addr);
-            t.rebuild_indexes();
-            Err(raise(
-                "RuntimeError",
-                format!("can't start new thread: {e}"),
-            ))
-        }
-    }
-    // CPython's start() waits for the worker's _started Event; our worker
-    // signals after installing its thread-locals (join-on-entry correctness
-    // for immediately-joined threads is handled by join_wait's done flag).
+    crate::scheduler::submit_task(ident, name, spec);
+    Ok(Value::None)
 }
 
 /// Worker entry: install thread-locals (interp handle), run the body, honor
@@ -903,7 +902,11 @@ pub fn thread_start(interp: &Arc<Interpreter>, o: &Gc<PyObject>) -> EvalResult {
 /// brackets are GONE — the worker is a full mutator from birth (census-
 /// registered at install_worker_thread), and the interp TLS handles install
 /// directly (Arc counts are atomic; 02.09a decision 1).
-fn worker_bootstrap(
+///
+/// 02.10 2b.1: this now runs INSIDE a task fiber on a pool worker (the
+/// scheduler mounts the task's ident + quantum budget around this call);
+/// `task_id` is 0 only for the (retained, unused) legacy direct-call path.
+pub fn worker_bootstrap(
     interp: Arc<Interpreter>,
     target: Value,
     args: Vec<Value>,
@@ -911,10 +914,6 @@ fn worker_bootstrap(
     self_addr: usize,
     interval: Option<f64>,
 ) {
-    // The worker's GC view (per-worker registration channel + census
-    // entry) wires here; the interp handle is the spawner-passed Arc.
-    crate::gcsupport::install_worker_thread();
-
     // Timer semantics: wait BEFORE the target (finished.wait(interval)).
     if let Some(dur) = interval {
         // E-safety: read the serial from the SLOT MIRROR under the table
@@ -928,7 +927,11 @@ fn worker_bootstrap(
                 .map(|s| s.serial)
         }
         .unwrap_or(-2);
+        // 2c.4: the pre-target Timer wait is a park — ParkGuard so the
+        // compensation lane covers the blocked worker.
+        let _pg = crate::scheduler::ParkGuard::new();
         wait_cancellable(Duration::from_secs_f64(dur.max(0.0)), self_addr, my_serial);
+        drop(_pg);
         let cancelled = timer_cancelled(self_addr, my_serial);
         if cancelled {
             stamp_worker_identity(self_addr);
@@ -967,7 +970,13 @@ fn worker_bootstrap(
     reclaim_worker_payload((interp, target, args, kwargs));
     // 02.09b: leave the census (this thread's capture slot + registry view
     // retire; its Arc payload drops land via the reclaim queue on main).
-    crate::gcsupport::uninstall_worker_thread();
+    //
+    // 2b.1 NOTE: uninstall is now RESERVED for temp-worker exit only —
+    // pool workers are born once and serve many tasks, and uninstalling
+    // the census view per task would leak per-worker registration rows.
+    if !crate::scheduler::is_pool_worker() {
+        crate::gcsupport::uninstall_worker_thread();
+    }
 }
 
 /// E7: read the cancel state for a Timer addr (post-wait confirmation).
@@ -1061,8 +1070,19 @@ pub fn join_wait_flag(flag: Arc<std::sync::atomic::AtomicBool>, timeout: Option<
     }
     let deadline = timeout.map(|t| Instant::now() + Duration::from_secs_f64(t.max(0.0)));
     let mut guard = JOIN_MU.lock().unwrap();
+    // 2c.3 transplant: register the joiner in PARK_TABLE under JOIN_MU (the
+    // same Mutex the completer's notify takes — no parker slips between the
+    // done flip and the drain); ParkGuard feeds the compensation lane.
+    let key = crate::scheduler::ParkKey::Join(0, flag_addr(&flag));
+    let _pg = crate::scheduler::ParkGuard::new();
+    let seq = crate::scheduler::park_register(key);
     loop {
         if flag.load(std::sync::atomic::Ordering::SeqCst) {
+            crate::scheduler::park_unregister(
+                &key,
+                crate::scheduler::current_task_id(),
+                seq,
+            );
             return true;
         }
         match deadline {
@@ -1072,16 +1092,33 @@ pub fn join_wait_flag(flag: Arc<std::sync::atomic::AtomicBool>, timeout: Option<
             Some(d) => {
                 let left = d.saturating_duration_since(Instant::now());
                 if left.is_zero() {
+                    crate::scheduler::park_unregister(
+                        &key,
+                        crate::scheduler::current_task_id(),
+                        seq,
+                    );
                     return flag.load(std::sync::atomic::Ordering::SeqCst);
                 }
                 let (g, res) = JOIN_CV.wait_timeout(guard, left).unwrap();
                 guard = g;
                 if res.timed_out() {
+                    crate::scheduler::park_unregister(
+                        &key,
+                        crate::scheduler::current_task_id(),
+                        seq,
+                    );
                     return flag.load(std::sync::atomic::Ordering::SeqCst);
                 }
             }
         }
     }
+}
+
+/// Stable per-flag key component: the AtomicBool's address (the done flag
+/// Arc is unique per Thread slot; the recycle window is covered by the
+/// done-flag predicate itself).
+fn flag_addr(flag: &Arc<std::sync::atomic::AtomicBool>) -> i64 {
+    Arc::as_ptr(flag).addr() as i64
 }
 
 /// Wait for ALL non-daemon threads to finish (main-thread exit protocol,
@@ -1427,23 +1464,43 @@ pub fn get_native_id_value() -> i64 {
 
 // ===========================================================================
 // thread-local storage (T106)
+//
+// 2c TLS RE-KEY (impl doc §5): the inner key was `current_os_tid()` — the
+// WORKER's identity. Under the scheduler two Python threads share one OS
+// thread sequentially, so an os-tid key silently MERGES their namespaces
+// (and a task's namespace would follow its worker). The key is now the
+// task's LOGICAL ident (`scheduler::current_logical_ident()`), falling back
+// to the os tid on the main thread / non-scheduler contexts (ident 0 means
+// no task mounted; bootstrap_main mounts the main ident so module-body
+// locals key correctly).
 // ===========================================================================
 
+/// The per-Python-thread TLS/ownership key: the mounted task's logical
+/// ident, or the OS tid when no scheduler task is mounted (main thread).
+pub fn tls_key() -> u64 {
+    let ident = crate::scheduler::current_logical_ident();
+    if ident != 0 {
+        ident as u64
+    } else {
+        current_os_tid()
+    }
+}
+
 pub fn local_get(addr: usize, name: &str) -> Option<Value> {
-    let tid = current_os_tid();
+    let key = tls_key();
     let l = LOCALS.lock().unwrap();
     l.get(&addr)
-        .and_then(|m| m.get(&tid))
+        .and_then(|m| m.get(&key))
         .and_then(|d| d.get(&s(name)))
 }
 
 pub fn local_set(addr: usize, name: &str, v: Value) {
-    let tid = current_os_tid();
+    let key = tls_key();
     let mut l = LOCALS.lock().unwrap();
     let d = l
         .entry(addr)
         .or_default()
-        .entry(tid)
+        .entry(key)
         .or_insert_with(|| PyDict::new());
     d.set(s(name), v).ok();
 }
@@ -1795,6 +1852,51 @@ pub fn cancel_timer(addr: usize) {
 
 pub fn set_switch_interval(v: f64) {
     SWITCH_INTERVAL.store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+// ===========================================================================
+// 02.10 scheduler shims (crate-internal surface for crates/ap-run/src/
+// scheduler.rs — the pool worker loop, finalizers, and park plumbing call
+// back into the registry protocol here).
+// ===========================================================================
+
+/// f64 bits of sys.getswitchinterval() (the scheduler quantum).
+pub fn switch_interval_bits() -> u64 {
+    SWITCH_INTERVAL.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// mark_done for a registry addr (scheduler finalizer path).
+pub fn mark_done_pub(addr: usize) {
+    mark_done(addr);
+}
+
+/// Wake all parked joiners (JOIN_CV notify under JOIN_MU) — the scheduler
+/// finalizer's completion signal.
+pub fn notify_join_waiters() {
+    let _g = JOIN_MU.lock().unwrap();
+    JOIN_CV.notify_all();
+}
+
+/// Reclaim-queue push (SendBox) — the scheduler finalizer moves task tail
+/// payloads here so their Arc drops happen on the main thread at a safe
+/// point (the audited E-safety protocol).
+pub fn reclaim_worker_payload_pub<T: std::any::Any>(vals: T) {
+    reclaim_worker_payload(vals);
+}
+
+/// Timer pre-target wait (scheduler task-fiber path).
+pub fn wait_cancellable_pub(dur: Duration, addr: usize, serial: i64) {
+    wait_cancellable(dur, addr, serial);
+}
+
+/// Timer cancelled check (scheduler task-fiber path).
+pub fn timer_cancelled_pub(addr: usize, serial: i64) -> bool {
+    timer_cancelled(addr, serial)
+}
+
+/// Excepthook dispatch (scheduler task-fiber path).
+pub fn invoke_excepthook_pub(interp: &Arc<Interpreter>, exc: &crate::exc_hier::ExceptionValue) {
+    invoke_excepthook(interp, exc);
 }
 
 /// Thread object factory for the Timer/Thread constructors (public).
