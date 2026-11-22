@@ -113,8 +113,47 @@ pub fn mount_main_ident(ident: i64) {
 /// temporary). Used by worker_bootstrap to decide whether its end-of-body
 /// census uninstall may run (per-task uninstall would leak rows on a
 /// long-lived worker).
+
 pub fn is_pool_worker() -> bool {
     POOL.get().is_some()
+}
+
+thread_local! {
+    /// Per-task Python call depth (the recursion-limit accounting key).
+    /// CPython's recursion limit is per-thread; the pre-scheduler tree used
+    /// one process-global counter (frame.rs `depth: Mutex<usize>`) — sound
+    /// under 02.09's 1:1 threads only when thread counts stayed small, and
+    /// visibly wrong under the scheduler at 10k concurrent tasks (spurious
+    /// RecursionError from OTHER tasks' in-flight frames). Workers sum
+    /// their mounted task's frames here; the process-global counter in
+    /// frame.rs remains as the total-in-flight backstop.
+    static TASK_DEPTH: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Per-task recursion accounting: called from Interpreter::enter_call /
+/// exit_call on the hot path. Returns the task-local depth AFTER the
+/// increment (enter) / decrement (exit). Main thread (no task mounted)
+/// returns 0 — the caller falls back to the global counter.
+#[inline]
+pub fn task_depth_add(delta: i64) -> u64 {
+    TASK_DEPTH.with(|d| {
+        let v = (d.get() as i64 + delta).max(0) as u64;
+        d.set(v);
+        v
+    })
+}
+
+#[inline]
+pub fn task_depth_get() -> u64 {
+    TASK_DEPTH.with(|d| d.get())
+}
+
+/// True when a scheduler task fiber is mounted on this thread (per-task
+/// recursion accounting is authoritative); false = main thread / pool
+/// worker between tasks (global accounting).
+#[inline]
+pub fn has_task() -> bool {
+    CURRENT_TASK.with(|c| c.get()) != 0
 }
 
 // ---------------------------------------------------------------------------
