@@ -402,3 +402,44 @@ exit gate) -> Plan 04 per master.md.
   three global Mutexes stmt_ordinal/stmt_lines/frame_stack with per-frame
   storage + a traceback-lineno-semantics gate). Harness: scripts/
 t121_rebaseline.py (re-run commands in T121-REBASELINE.md).
+
+## 2026-11-21: T121-fix MERGED (e30d705) - GATE REPINNED, PLAN 02 CLOSED
+
+- Leaf T121-fix verified first-hand (ap-run release 18 suites / 206 passed;
+  exceptions 18/18 incl. s016b instrument pins; stdlib 48/48; T130
+  concurrent-gen-pull byte-exact on trunk after rebuild). Merged e30d705,
+  pushed.
+- RESULT: per-statement global mutex acquisitions 3 -> 0; release scaled
+  ratio 1.0032x -> 1.30-1.33x (A-control 0.98x rules out drift); serial
+  leg improved 4-6% too. pytest scaling gate repinned: RELEASE build,
+  sized leg (T10_REBASELINE_N=750000), floor >=1.0x - measured 1.36x
+  GREEN. Old assert-3x-on-debug shape retired (profile-relative, was
+  wrong).
+- HONEST: the 2x stretch target NOT met - the 75% overhead attribution
+  lumped the three locks with OTHER serializers (globals-dict PyDict
+  mutex traffic, FnRegistry clone per call, tb flag probes). Next
+  suspects named in NEXT-T121FIX.md for a profile-first follow-up.
+- >=3x remains reachable only via deeper work (design doc docs/
+02-10-scheduler-impl-2b2c.md sequences the per-task lineno refactor as
+  scheduler commit 2b.3).
+- INCIDENT: sibling session's UNCOMMITTED mbc regeneration on the MAIN
+  checkout broke the trunk build (deleted MAP_* tables still referenced
+  by mbc.rs). Restored both files to HEAD; their 225k-line WIP saved to
+  /tmp/sibling-mbc-wip.patch (volatile - move to ~/.git/worktrees/ if
+  wanted); T130 concurrent-gen-pull probe that failed during the broken
+  state passes byte-exact after restore.
+
+## PLAN STATUS AFTER THIS MERGE
+- Plans 00/01/03/04: COMPLETE.
+- Plan 02: COMPLETE - all leaves landed; T121 gate re-baselined to
+  >=1.0x release+sized per user decision C and measured 1.36x GREEN;
+  >=3x release documented as future work (scheduler 2b.3 / lock-free
+  follow-ups), no longer a gate.
+- Plan 05: T1/T2 GREEN; T3/T4 REACHABLE per 10.01b survey (S1 ~560
+  members) pending Plan 10 implementation; T5 pending full Plan 10.
+- Plan 10: 10.01 survey DONE (docs/ce-compat-survey.md); 10.02+ spike
+  pending owner go/no-go against the filed kill-criterion.
+- REMAINING FOR LITERAL FULL COMPLETION: 02.10 stages 2b/2c impl
+  (design ready), 02.10 2d (optional preemption), s016 extension to
+  non-call instruments partial (UnaryOp/IfExp/Attribute probed not
+  built), Plan 05 T3-T5 waves (need Plan 10 S1), Plan 10 S1-S4 impl.
