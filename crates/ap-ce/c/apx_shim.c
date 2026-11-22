@@ -55,6 +55,10 @@ int PyArg_ParseTuple(PyObject *args, const char *fmt, ...) {
                that corrupts caller stack when the C side declares `int`
                (the CPython-faithful spelling). */
             int *out = va_arg(ap, int *);
+            break;
+        }
+        case 'l': {
+            long *out = va_arg(ap, long *);
             long v = PyLong_AsLong(item);
             if (v == -1 && PyErr_Occurred()) {
                 va_end(ap);
@@ -148,8 +152,9 @@ long apx_PyType_FromSpec(PyType_Spec *spec, PyType_Slot *slots) {
     }
     extern long apx_type_register(const char *name, void *tp_new, void *tp_init,
                                   void *tp_dealloc, PyMethodDef *methods,
-                                  PyGetSetDef *getsets);
-    return apx_type_register(spec->name, tp_new, tp_init, tp_dealloc, methods, getsets);
+                                  PyGetSetDef *getsets, long basicsize);
+    return apx_type_register(spec->name, tp_new, tp_init, tp_dealloc, methods,
+                             getsets, (long)spec->basicsize);
 }
 
 /* ------------------------------------------------------------------ */

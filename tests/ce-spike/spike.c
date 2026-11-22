@@ -60,7 +60,11 @@ static PyObject *spike_refcount_probe(PyObject *self, PyObject *args) {
     long r3 = Py_Refcnt(s);
     Py_DECREF(s);
     Py_DECREF(s);
-    return PyLong_FromLong(r2 - r0 == 2 && r0 - r3 == 1 ? 1 : 0);
+    /* Leaf 10.04: the S0 comparison `r0 - r3 == 1` was arithmetically
+       impossible (r3 is taken AFTER one DECREF, so r3 == r0 + 1; the probe
+       could only ever return 0 — both runtimes "agreed" on 0, masking the
+       bug). Correct pattern: INCREF x2 => +2, DECREF x1 => +1 vs r0. */
+    return PyLong_FromLong(r2 - r0 == 2 && r3 - r0 == 1 ? 1 : 0);
 }
 
 /* ---------------- Point type: FromSpec + slots ---------------- */

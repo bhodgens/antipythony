@@ -68,6 +68,13 @@ pub fn to_value(h: crate::state::CeHandle) -> Option<Value> {
                 }
                 Some(Value::Obj(io))
             }
+            CePayload::CeInstance { payload_key, .. } => {
+                // Leaf 10.04: OUR tp_new-route instance — the runtime-side
+                // UserInstance lives in the ce->runtime value map under the
+                // payload key (attached by ap-run's ce_bridge at alloc time).
+                Some(crate::value_map::take_runtime_value(*payload_key)?)
+            }
+            CePayload::Opaque(v) => Some(Value::Obj(v.clone())),
         }
     }
 }
