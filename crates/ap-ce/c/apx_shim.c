@@ -50,15 +50,14 @@ int PyArg_ParseTuple(PyObject *args, const char *fmt, ...) {
         switch (c) {
         case 'i': {
             /* CPython ABI: "i" writes an INT (4 bytes) with long-range
-               overflow checking (argstylong -> int narrowing). Pre-10.03
-               the shim wrote a full long here — a silent ABI divergence
-               that corrupts caller stack when the C side declares `int`
-               (the CPython-faithful spelling). */
+               overflow checking (argstyulong -> int narrowing; cpython/
+               Python/getargs.c f_i). Pre-10.03 the shim wrote a full long
+               here — a silent ABI divergence that corrupts the caller's
+               stack when the C side declares `int` (the CPython-faithful
+               spelling). The 1004 merge dropped the store entirely
+               (va_arg was consumed but *out never written) — that was
+               the spike add_two -> 0 regression. */
             int *out = va_arg(ap, int *);
-            break;
-        }
-        case 'l': {
-            long *out = va_arg(ap, long *);
             long v = PyLong_AsLong(item);
             if (v == -1 && PyErr_Occurred()) {
                 va_end(ap);
@@ -71,6 +70,19 @@ int PyArg_ParseTuple(PyObject *args, const char *fmt, ...) {
                 return 0;
             }
             *out = (int)v;
+            break;
+        }
+        case 'l': {
+            /* CPython ABI: "l" writes a C long, no range check on LP64
+               (CPython raises OverflowError only beyond the long range,
+               which PyLong_AsLong itself signals). */
+            long *out = va_arg(ap, long *);
+            long v = PyLong_AsLong(item);
+            if (v == -1 && PyErr_Occurred()) {
+                va_end(ap);
+                return 0;
+            }
+            *out = v;
             break;
         }
         case 'd': {
