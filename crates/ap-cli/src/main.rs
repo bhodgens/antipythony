@@ -46,7 +46,8 @@ fn usage() -> i32 {
          \x20 run [--no-cache] <file.py>  execute (fetched deps join sys.path)\n\
          \x20 build <file.py> [-o out]    write the cached build artifact\n\
          \x20 build --wasm <file.py>       emit <stem>.wasm (Plan 03 backend)\n\
-         \x20 build --hybrid <file.py>     native binary + embedded wasm payload (04.05)\n\x20 build-ext <src.c> -o out.so compile a C extension against the antipythony headers (10.02)\n\
+         \x20 build --hybrid <file.py>     native binary + embedded wasm payload (04.05)\n\
+         \x20 build-ext <src.c> [-o out.so] [--emit-header]   compile a C extension against the antipythony headers (10.03)\n\
          \x20 host <module.wasm> [args]    run a .wasm via the built-in ap-host\n\
          \x20 cache gc                    clear the build cache\n\
          \n\
