@@ -48,7 +48,12 @@ pub enum Expr {
     /// contract as [`Expr::Call`].
     BinOp(BinOp, Box<Expr>, Box<Expr>, usize),
     /// `op x`. Clauses: S-01-1 (`~x == -x-1`, arith shift), S-01-8 (float neg).
-    UnaryOp(UnaryOp, Box<Expr>),
+    /// The third field is the 1-based SOURCE LINE of the instrument (0 =
+    /// unknown) — CPython's UNARY_* opcodes are instrumented and position at
+    /// the OPERATOR line (== node start; s016c probe u1: `-` alone on line
+    /// 14, operand `n` on 15, warn from `__neg__` attributes to 14). Same
+    /// publish-to-last_line contract as [`Expr::Call`].
+    UnaryOp(UnaryOp, Box<Expr>, usize),
     /// `a and b` / `a or b` — short-circuits on truthiness, preserves the
     /// operand *value* (not a bool).
     /// Clauses: S-01-27/S-01-28/S-01-29 (truthiness), S-01-30 (and/or value rule).
@@ -74,7 +79,14 @@ pub enum Expr {
     /// `frame.last_line` before evaluating arguments.
     Call(Box<Expr>, Vec<Arg>, usize),
     /// `obj.attr`. Clause: S-03-9 (getattribute/MRO/descriptor protocol).
-    Attribute(Box<Expr>, Name),
+    /// The third field is the 1-based SOURCE LINE of the instrument (0 =
+    /// unknown) — CPython's LOAD_ATTR/STORE_ATTR opcodes are instrumented
+    /// and position at the ATTRIBUTE NAME line, not the object's start
+    /// (s016c probes q1/q2/q3: `a8` / `.` / `nope` on separate lines all
+    /// attribute to the `nope` line; ruff's Attribute node start == obj
+    /// start, so lowering must stamp from the attr range). Same
+    /// publish-to-last_line contract as [`Expr::Call`].
+    Attribute(Box<Expr>, Name, usize),
     /// `obj[key]` / slicing sugar — subscripts may be full [`Expr::Slice`]
     /// nodes or tuples thereof. Clause: S-01-15 (slice semantics, clamp rules).
     /// The third field is the 1-based SOURCE LINE of the instrument (0 =
@@ -126,7 +138,13 @@ pub enum Expr {
     FString(Vec<FStrPart>),
     /// `x if c else y`. Clause: S-01-27 (condition by truthiness); only the
     /// taken branch evaluates.
-    IfExp(Box<Expr>, Box<Expr>, Box<Expr>),
+    /// The fourth field is the 1-based SOURCE LINE of the instrument (0 =
+    /// unknown) — CPython's TO_BOOL/branch opcodes for the conditional
+    /// position at the CONDITION's start line (s016c probe o4: `1` on line
+    /// 41, `if Boom()` on 42 -> warn from `__bool__` at 42 = cond line;
+    /// o5: node starts 53, cond `Boom2()` on 54 -> 54). Same
+    /// publish-to-last_line contract as [`Expr::Call`].
+    IfExp(Box<Expr>, Box<Expr>, Box<Expr>, usize),
     /// `*x` in a call arg list / display. Clause: S-02-9 (star unpacking order).
     Starred(Box<Expr>),
     /// Named expression spelled in expression position.

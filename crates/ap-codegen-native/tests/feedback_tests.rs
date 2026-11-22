@@ -138,6 +138,7 @@ fn slot_assignment_is_deterministic_and_stable() {
         Box::new(Expr::Attribute(
             Box::new(Expr::Name("x".to_string())),
             "y".to_string(),
+            0,
         )),
         Box::new(Expr::LitInt(1)),
         0,

@@ -1585,7 +1585,7 @@ fn collect_expr_loads(e: &Expr, scope: &mut ScopeData) {
             collect_expr_loads(a, scope);
             collect_expr_loads(b, scope);
         }
-        Expr::UnaryOp(_, x) | Expr::Starred(x) | Expr::Await(x) | Expr::DictExpand(x) => {
+        Expr::UnaryOp(_, x, _) | Expr::Starred(x) | Expr::Await(x) | Expr::DictExpand(x) => {
             collect_expr_loads(x, scope)
         }
         Expr::BoolOp(_, xs) | Expr::List(xs) | Expr::Tuple(xs) | Expr::Set(xs) => {
@@ -1608,7 +1608,7 @@ fn collect_expr_loads(e: &Expr, scope: &mut ScopeData) {
                 }
             }
         }
-        Expr::Attribute(obj, _) => collect_expr_loads(obj, scope),
+        Expr::Attribute(obj, _, _) => collect_expr_loads(obj, scope),
         Expr::Subscript(obj, key, _) => {
             collect_expr_loads(obj, scope);
             collect_expr_loads(key, scope);
@@ -1660,7 +1660,7 @@ fn collect_expr_loads(e: &Expr, scope: &mut ScopeData) {
                 collect_fstr_part_loads(p, scope);
             }
         }
-        Expr::IfExp(c, t, e) => {
+        Expr::IfExp(c, t, e, _) => {
             collect_expr_loads(c, scope);
             collect_expr_loads(t, scope);
             collect_expr_loads(e, scope);
@@ -1809,7 +1809,7 @@ fn push_child_expr_refs<'a>(e: &'a Expr, stack: &mut Vec<&'a Expr>) {
             stack.push(b);
             stack.push(a);
         }
-        Expr::UnaryOp(_, x) | Expr::Starred(x) | Expr::Await(x) | Expr::DictExpand(x) => {
+        Expr::UnaryOp(_, x, _) | Expr::Starred(x) | Expr::Await(x) | Expr::DictExpand(x) => {
             stack.push(x)
         }
         Expr::BoolOp(_, xs) | Expr::List(xs) | Expr::Tuple(xs) | Expr::Set(xs) => {
@@ -1824,7 +1824,7 @@ fn push_child_expr_refs<'a>(e: &'a Expr, stack: &mut Vec<&'a Expr>) {
             }
             stack.push(f);
         }
-        Expr::Attribute(obj, _) => stack.push(obj),
+        Expr::Attribute(obj, _, _) => stack.push(obj),
         Expr::Subscript(o, k, _) => {
             stack.push(k);
             stack.push(o);
@@ -1843,7 +1843,7 @@ fn push_child_expr_refs<'a>(e: &'a Expr, stack: &mut Vec<&'a Expr>) {
                 }
             }
         }
-        Expr::IfExp(c, t, e) => {
+        Expr::IfExp(c, t, e, _) => {
             stack.push(e);
             stack.push(t);
             stack.push(c);
@@ -2159,7 +2159,7 @@ fn fold_child_exprs(e: &mut Expr) {
             fold_expr(a);
             fold_expr(b);
         }
-        Expr::UnaryOp(_, x) => fold_expr(x),
+        Expr::UnaryOp(_, x, _) => fold_expr(x),
         Expr::BoolOp(_, xs) => {
             for x in xs {
                 fold_expr(x);
@@ -2178,7 +2178,7 @@ fn fold_child_exprs(e: &mut Expr) {
                 }
             }
         }
-        Expr::Attribute(obj, _) => fold_expr(obj),
+        Expr::Attribute(obj, _, _) => fold_expr(obj),
         Expr::Subscript(obj, key, _) => {
             fold_expr(obj);
             fold_expr(key);
@@ -2223,7 +2223,7 @@ fn fold_child_exprs(e: &mut Expr) {
                 fold_fstr_part(p);
             }
         }
-        Expr::IfExp(c, t, e) => {
+        Expr::IfExp(c, t, e, _) => {
             fold_expr(c);
             fold_expr(t);
             fold_expr(e);
@@ -2277,7 +2277,7 @@ fn fold_fstr_part(p: &mut FStrPart) {
 /// with the replacement when the node is provably pure and computable.
 fn fold_node(e: &Expr) -> Option<Expr> {
     match e {
-        Expr::UnaryOp(op, x) => fold_unary(*op, x),
+        Expr::UnaryOp(op, x, _) => fold_unary(*op, x),
         Expr::BinOp(op, a, b, _) => fold_binop(*op, a, b),
         Expr::BoolOp(op, xs) => fold_boolop(*op, xs),
         _ => None,
@@ -3239,7 +3239,7 @@ mod perf_regressions {
                     }
                     out
                 }
-                Expr::Attribute(o, _) => vec![(**o).clone()],
+                Expr::Attribute(o, _, _) => vec![(**o).clone()],
                 Expr::Subscript(o, k, _) => vec![(**o).clone(), (**k).clone()],
                 Expr::List(xs) | Expr::Tuple(xs) | Expr::Set(xs) | Expr::Compare(_, xs, _) => {
                     xs.clone()
@@ -3272,6 +3272,7 @@ mod perf_regressions {
                 Arg::Pos(Expr::Attribute(
                     Box::new(Expr::Name("c".into())),
                     "d".into(),
+                    0,
                 )),
             ],
             0,

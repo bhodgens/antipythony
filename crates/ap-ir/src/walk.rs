@@ -69,7 +69,7 @@ pub fn expr_yields(e: &Expr) -> bool {
     match e {
         Expr::Yield(_) | Expr::YieldFrom(_) => true,
         Expr::BinOp(_, a, b, _) => expr_yields(a) || expr_yields(b),
-        Expr::UnaryOp(_, x) | Expr::Starred(x) | Expr::Await(x) | Expr::DictExpand(x) => {
+        Expr::UnaryOp(_, x, _) | Expr::Starred(x) | Expr::Await(x) | Expr::DictExpand(x) => {
             expr_yields(x)
         }
         Expr::BoolOp(_, xs) | Expr::List(xs) | Expr::Tuple(xs) | Expr::Set(xs) => {
@@ -77,7 +77,7 @@ pub fn expr_yields(e: &Expr) -> bool {
         }
         Expr::Compare(_, xs, _) => xs.iter().any(expr_yields),
         Expr::Call(f, args, _) => expr_yields(f) || args.iter().any(|a| a.yields()),
-        Expr::Attribute(obj, _) => expr_yields(obj),
+        Expr::Attribute(obj, _, _) => expr_yields(obj),
         Expr::Subscript(obj, key, _) => expr_yields(obj) || expr_yields(key),
         Expr::Slice(a, b, c) => [a, b, c].into_iter().flatten().any(|e| expr_yields(e)),
         Expr::Dict(items) => items.iter().any(DictItem::yields),
@@ -88,7 +88,7 @@ pub fn expr_yields(e: &Expr) -> bool {
         // clause — but a yield there is also a syntax error. Skip.
         Expr::ListComp(..) | Expr::SetComp(..) | Expr::DictComp(..) | Expr::Generator(..) => false,
         Expr::FString(parts) => parts.iter().any(FStrPart::yields),
-        Expr::IfExp(c, t, e) => expr_yields(c) || expr_yields(t) || expr_yields(e),
+        Expr::IfExp(c, t, e, _) => expr_yields(c) || expr_yields(t) || expr_yields(e),
         Expr::Named(t, v) => expr_yields(t) || expr_yields(v),
         Expr::LitInt(_)
         | Expr::LitBigInt(_)

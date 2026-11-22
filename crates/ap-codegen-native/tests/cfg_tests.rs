@@ -209,6 +209,7 @@ fn feedback_slots_never_exist_on_cfg() {
     let f = fn_def(vec![ap_ir::item::Stmt::ExprStmt(Expr::Attribute(
         Box::new(Expr::Name("x".to_string())),
         "y".to_string(),
+        0,
     ))]);
     let cfg = lower_fn(&f).expect("lowering must succeed");
     let has_slot = cfg.blocks.iter().any(|b| {

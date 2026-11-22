@@ -334,7 +334,7 @@ fn tree_expr(out: &mut String, e: &Expr, depth: usize) {
             tree_expr(out, a, depth + 1);
             tree_expr(out, b, depth + 1);
         }
-        Expr::UnaryOp(op, x) => {
+        Expr::UnaryOp(op, x, _) => {
             let _ = writeln!(out, "UnaryOp {}", dump_unaryop(*op));
             tree_expr(out, x, depth + 1);
         }
@@ -368,7 +368,7 @@ fn tree_expr(out: &mut String, e: &Expr, depth: usize) {
                 tree_arg(out, a, depth + 1);
             }
         }
-        Expr::Attribute(obj, a) => {
+        Expr::Attribute(obj, a, _) => {
             let _ = writeln!(out, "Attribute {a}");
             tree_expr(out, obj, depth + 1);
         }
@@ -985,7 +985,7 @@ fn dump_expr(out: &mut String, e: &Expr, _depth: usize) {
                 dump_expr_inline(b)
             );
         }
-        Expr::UnaryOp(op, x) => {
+        Expr::UnaryOp(op, x, _) => {
             let _ = write!(out, "({}{})", dump_unaryop(*op), dump_expr_inline(x));
         }
         Expr::BoolOp(op, xs) => {
@@ -1010,7 +1010,7 @@ fn dump_expr(out: &mut String, e: &Expr, _depth: usize) {
                 args.iter().map(dump_arg).collect::<Vec<_>>().join(", ")
             );
         }
-        Expr::Attribute(obj, a) => {
+        Expr::Attribute(obj, a, _) => {
             let _ = write!(out, "{}.{a}", dump_expr_inline(obj));
         }
         Expr::Subscript(obj, k, _) => {
@@ -1106,7 +1106,7 @@ fn dump_expr(out: &mut String, e: &Expr, _depth: usize) {
                 parts.iter().map(dump_fstr_part).collect::<String>()
             );
         }
-        Expr::IfExp(c, t, e) => {
+        Expr::IfExp(c, t, e, _) => {
             let _ = write!(
                 out,
                 "({} if {} else {})",

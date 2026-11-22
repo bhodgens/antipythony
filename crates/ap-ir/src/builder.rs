@@ -103,7 +103,7 @@ impl Builder {
 
     /// `op x`. Clauses: S-01-1 (`~x == -x-1`), S-01-8.
     pub fn unary_op(&self, op: UnaryOp, x: Expr) -> Expr {
-        Expr::UnaryOp(op, Box::new(x))
+        Expr::UnaryOp(op, Box::new(x), 0)
     }
 
     /// `a and b` / `a or b` (2+ operands). Clauses: S-01-27..S-01-30.
@@ -161,7 +161,7 @@ impl Builder {
 
     /// `obj.attr`. Clause: S-03-9.
     pub fn attribute(&self, obj: Expr, attr: impl Into<String>) -> Expr {
-        Expr::Attribute(Box::new(obj), attr.into())
+        Expr::Attribute(Box::new(obj), attr.into(), 0)
     }
 
     /// `obj[key]`. Clause: S-01-15.
@@ -299,7 +299,7 @@ impl Builder {
 
     /// `c if t else e`. Clause: S-01-27 (truthiness; lazy branches).
     pub fn if_exp(&self, cond: Expr, then: Expr, els: Expr) -> Expr {
-        Expr::IfExp(Box::new(cond), Box::new(then), Box::new(els))
+        Expr::IfExp(Box::new(cond), Box::new(then), Box::new(els), 0)
     }
 
     /// `*x`. Clause: S-02-9.

@@ -74,6 +74,7 @@ fn untyped_body() -> Vec<Stmt> {
     vec![Stmt::Return(Some(Expr::Attribute(
         Box::new(Expr::Name("a".into())),
         "foo".into(),
+        0,
     )))]
 }
 

@@ -742,7 +742,7 @@ fn collect_expr(
             collect_expr(a, refs, bound, nonlocal, scan)?;
             collect_expr(b, refs, bound, nonlocal, scan)
         }
-        Expr::UnaryOp(_, a) => collect_expr(a, refs, bound, nonlocal, scan),
+        Expr::UnaryOp(_, a, _) => collect_expr(a, refs, bound, nonlocal, scan),
         Expr::BoolOp(_, ops) => {
             for o in ops {
                 collect_expr(o, refs, bound, nonlocal, scan)?;
@@ -755,12 +755,12 @@ fn collect_expr(
             }
             Ok(())
         }
-        Expr::IfExp(c, t, e) => {
+        Expr::IfExp(c, t, e, _) => {
             collect_expr(c, refs, bound, nonlocal, scan)?;
             collect_expr(t, refs, bound, nonlocal, scan)?;
             collect_expr(e, refs, bound, nonlocal, scan)
         }
-        Expr::Attribute(obj, name) => {
+        Expr::Attribute(obj, name, _) => {
             // the attribute name rides FN_ATTR_GET as an interned $str
             scan.intern_str(name.as_str());
             collect_expr(obj, refs, bound, nonlocal, scan)
@@ -3700,7 +3700,7 @@ fn gen_emit_expr(f: &mut Function, e: &Expr, ctx: &mut EmitCtx, gen: &GenCtx) {
             gen_emit_expr(f, b, ctx, gen);
             f.instruction(&Instruction::Call(fx::FN_BINOP));
         }
-        Expr::UnaryOp(op, a) => {
+        Expr::UnaryOp(op, a, _) => {
             let code_op = match op {
                 UnaryOp::Plus => -1,
                 UnaryOp::Minus => OPS::NEG,
@@ -3746,7 +3746,7 @@ fn gen_emit_expr(f: &mut Function, e: &Expr, ctx: &mut EmitCtx, gen: &GenCtx) {
             }
             gen_emit_call(f, func, args, ctx, gen);
         }
-        Expr::Attribute(obj, name) => {
+        Expr::Attribute(obj, name, _) => {
             gen_emit_expr(f, obj, ctx, gen);
             push_interned_str(f, name.as_str(), ctx);
             f.instruction(&Instruction::Call(fx::FN_ATTR_GET));
@@ -3810,7 +3810,7 @@ fn gen_emit_expr(f: &mut Function, e: &Expr, ctx: &mut EmitCtx, gen: &GenCtx) {
         }
         Expr::BoolOp(BoolOp::And, ops) => gen_emit_bool_op(f, ops, false, ctx, gen),
         Expr::BoolOp(BoolOp::Or, ops) => gen_emit_bool_op(f, ops, true, ctx, gen),
-        Expr::IfExp(c, t, e2) => {
+        Expr::IfExp(c, t, e2, _) => {
             gen_emit_expr(f, c, ctx, gen);
             f.instruction(&Instruction::Call(fx::FN_TRUTHY));
             f.instruction(&Instruction::If(BlockType::Empty));
@@ -5912,7 +5912,7 @@ fn emit_expr(f: &mut Function, e: &Expr, ctx: &mut EmitCtx) {
             emit_expr(f, b, ctx);
             f.instruction(&Instruction::Call(fx::FN_BINOP));
         }
-        Expr::UnaryOp(op, a) => {
+        Expr::UnaryOp(op, a, _) => {
             let code_op = match op {
                 UnaryOp::Plus => -1, // identity
                 UnaryOp::Minus => OPS::NEG,
@@ -5929,7 +5929,7 @@ fn emit_expr(f: &mut Function, e: &Expr, ctx: &mut EmitCtx) {
         }
         Expr::BoolOp(BoolOp::And, ops) => emit_bool_op(f, ops, false, ctx),
         Expr::BoolOp(BoolOp::Or, ops) => emit_bool_op(f, ops, true, ctx),
-        Expr::IfExp(c, t, e) => {
+        Expr::IfExp(c, t, e, _) => {
             // S-01-27: lazy branches, operand VALUE result
             emit_expr(f, c, ctx);
             f.instruction(&Instruction::Call(fx::FN_TRUTHY));
@@ -5971,7 +5971,7 @@ fn emit_expr(f: &mut Function, e: &Expr, ctx: &mut EmitCtx) {
             f.instruction(&Instruction::StructNew(T_INT));
         }
         // 03.03: attribute read (S-03-9): instances -> class mro walk
-        Expr::Attribute(obj, name) => {
+        Expr::Attribute(obj, name, _) => {
             emit_expr(f, obj, ctx);
             push_interned_str(f, name.as_str(), ctx);
             f.instruction(&Instruction::Call(fx::FN_ATTR_GET));
@@ -6278,7 +6278,7 @@ fn emit_call(f: &mut Function, func: &Expr, args: &[Arg], ctx: &mut EmitCtx) {
     // answers null and the $function cast below traps, so these are
     // intercepted BEFORE the attribute path. Arity-checking is loose on
     // this slice (close() swallows extra args; CPython raises TypeError).
-    if let Expr::Attribute(obj, mname) = func {
+    if let Expr::Attribute(obj, mname, _) = func {
         let m = mname.as_str();
         if matches!(m, "send" | "close" | "throw") {
             emit_expr(f, obj, ctx);
@@ -6311,7 +6311,7 @@ fn emit_call(f: &mut Function, func: &Expr, args: &[Arg], ctx: &mut EmitCtx) {
     // 03.03: method call obj.m(*args) — attribute lookup; when the found
     // value is a plain $function it is a descriptor and binds self
     // (S-03-9 binding rule) — args become [self, *args].
-    if let Expr::Attribute(obj, mname) = func {
+    if let Expr::Attribute(obj, mname, _) = func {
         emit_expr(f, obj, ctx);
         f.instruction(&Instruction::LocalSet(TEMP_LOCAL_A)); // self
         f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
@@ -6380,7 +6380,7 @@ fn emit_call(f: &mut Function, func: &Expr, args: &[Arg], ctx: &mut EmitCtx) {
         let arg_has_nested_call = args.iter().any(|a| {
             matches!(
                 a,
-                Arg::Pos(Expr::Call(..)) | Arg::Pos(Expr::BinOp(..)) | Arg::Pos(Expr::UnaryOp(..))
+                Arg::Pos(Expr::Call(..)) | Arg::Pos(Expr::BinOp(..)) | Arg::Pos(Expr::UnaryOp(.., _))
             )
         });
         if slots.len() == 1

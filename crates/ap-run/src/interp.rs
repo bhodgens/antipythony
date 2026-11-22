@@ -3543,8 +3543,16 @@ pub(crate) fn eval_expr(
             }
             eval_binop(&av, *op, &bv)
         }
-        Expr::UnaryOp(op, x) => {
+        Expr::UnaryOp(op, x, line) => {
             let xv = eval_expr(interp, frame, x, reg)?;
+            // s016c: CPython's UNARY_* instrument carries its own line (the
+            // OPERATOR line == node start) — a warning/raise fired by the
+            // unary dunder slot dispatch must attribute to that line, not the
+            // statement-start line. Published AFTER operand evaluation
+            // (operand CALLs publish their own lines, s016 contract).
+            if *line > 0 {
+                frame.last_line.set(*line);
+            }
             // 02.03 unary dunders (__neg__/__pos__/__invert__/__abs__)
             // before the builtin numeric paths (c030).
             let unary_slot = match op {
@@ -3659,7 +3667,7 @@ pub(crate) fn eval_expr(
             // inside it needs the defining class staged; bound-method
             // dispatch never runs for this shape, so stage it here from the
             // attribute's owner (resolved through the receiver's class).
-            if let Expr::Attribute(obj_e, attr_name) = f.as_ref() {
+            if let Expr::Attribute(obj_e, attr_name, _) = f.as_ref() {
                 // Only stage for the explicit metaclass __new__ shape
                 // (`abc.ABCMeta.__new__(mcls, ...)`) — zero-arg super()
                 // inside metaclass __new__ needs the defining class. Narrow
@@ -3751,15 +3759,23 @@ pub(crate) fn eval_expr(
             {
                 let callee_desc = match f.as_ref() {
                     Expr::Name(n) => format!("Name({})", n.as_str()),
-                    Expr::Attribute(_, a) => format!("Attr({})", a.as_str()),
+                    Expr::Attribute(_, a, _) => format!("Attr({})", a.as_str()),
                     _ => "Other".to_string(),
                 };
                 eprintln!("[NONECALL-CALLEE-EXPR] {}", callee_desc);
             }
             call_value(interp, frame, &fv, &pos, &kwargs)
         }
-        Expr::Attribute(obj, name) => {
+        Expr::Attribute(obj, name, line) => {
             let o = eval_expr(interp, frame, obj, reg)?;
+            // s016c: CPython's LOAD_ATTR instrument positions at the
+            // ATTRIBUTE NAME line (probes q1/q2/q3: attr on its own line
+            // attributes there, not obj start) — an AttributeError / warning
+            // from getattribute dispatch must read that line. Published
+            // AFTER obj evaluation (obj CALLs publish their own lines).
+            if *line > 0 {
+                frame.last_line.set(*line);
+            }
             // 02.03b-fix: `super().__new__` FIRST-CLASS call path. CPython's
             // implicit-staticmethod __new__ rule (type.__new__ wraps user
             // __new__ as staticmethod) makes super().__new__ resolve UNBOUND;
@@ -4252,8 +4268,17 @@ pub(crate) fn eval_expr(
             eval_await(interp, v)
         }
         Expr::FString(parts) => render_fstring(interp, frame, parts, reg),
-        Expr::IfExp(c, t, e) => {
+        Expr::IfExp(c, t, e, line) => {
             let cv = eval_expr(interp, frame, c, reg)?;
+            // s016c: the conditional-expression instrument positions at the
+            // CONDITION's start line (probes o4/o5) — a warning/raise from
+            // `__bool__` dispatch must attribute to that line, which differs
+            // from the node start exactly in the `(1 if <newline> cond)`
+            // opener shape. Published after cond evaluation (cond CALLs
+            // publish their own lines, s016 contract).
+            if *line > 0 {
+                frame.last_line.set(*line);
+            }
             if truthy(interp, &cv)? {
                 eval_expr(interp, frame, t, reg)
             } else {

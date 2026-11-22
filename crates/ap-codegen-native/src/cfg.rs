@@ -687,7 +687,7 @@ impl<'a> Lowerer<'a> {
                 self.push_inst(Inst::BinOp(*op, ta, tb, t));
                 Ok(t)
             }
-            Expr::UnaryOp(op, a) => {
+            Expr::UnaryOp(op, a, _) => {
                 let ta = self.lower_expr(a)?;
                 let t = self.temp();
                 self.push_inst(Inst::UnaryOp(*op, ta, t));
@@ -716,7 +716,7 @@ impl<'a> Lowerer<'a> {
                 self.push_inst(Inst::Call(tf, targs, t));
                 Ok(t)
             }
-            Expr::Attribute(obj, name) => {
+            Expr::Attribute(obj, name, _) => {
                 let to = self.lower_expr(obj)?;
                 let t = self.temp();
                 self.push_inst(Inst::LoadAttr(to, name.clone(), t));
@@ -738,7 +738,7 @@ impl<'a> Lowerer<'a> {
                 let _is_and = matches!(e, Expr::BoolOp(BoolOp::And, _));
                 Err(CodegenError::Unsupported("BoolOp (and/or)"))
             }
-            Expr::IfExp(c, a, b) => {
+            Expr::IfExp(c, a, b, _) => {
                 let tc = self.lower_expr(c)?;
                 let ta_arm = self.func.new_block();
                 let tb_arm = self.func.new_block();

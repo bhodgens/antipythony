@@ -1064,7 +1064,14 @@ impl<'s> Lowerer<'s> {
             }
             ast::Expr::UnaryOp(u) => {
                 let x = self.lower_expr(&u.operand)?;
-                Ok(self.b.unary_op(lower_unaryop(u.op), x))
+                let mut e = self.b.unary_op(lower_unaryop(u.op), x);
+                // s016c: CPython's UNARY_* instrument positions at the
+                // OPERATOR line (== node start; probe u1: `-` alone on its
+                // own line attributes there, not the operand/statement line).
+                if let ap_ir::Expr::UnaryOp(_, _, line) = &mut e {
+                    *line = self.line_at(u.start().to_u32() as usize);
+                }
+                Ok(e)
             }
             ast::Expr::BoolOp(b_) => {
                 let mut vals = Vec::with_capacity(b_.values.len());
@@ -1131,7 +1138,15 @@ impl<'s> Lowerer<'s> {
             }
             ast::Expr::Attribute(a) => {
                 let obj = self.lower_expr(&a.value)?;
-                Ok(self.b.attribute(obj, a.attr.id.as_str()))
+                let mut e = self.b.attribute(obj, a.attr.id.as_str());
+                // s016c: CPython's LOAD_ATTR instrument positions at the
+                // ATTRIBUTE NAME line, not obj start (probes q1/q2/q3). ruff's
+                // Attribute node start == obj start, so stamp from the attr
+                // range start.
+                if let ap_ir::Expr::Attribute(_, _, line) = &mut e {
+                    *line = self.line_at(a.attr.range().start().to_u32() as usize);
+                }
+                Ok(e)
             }
             ast::Expr::Subscript(s) => {
                 let obj = self.lower_expr(&s.value)?;
@@ -1212,7 +1227,16 @@ impl<'s> Lowerer<'s> {
                 let cond = self.lower_expr(&i.test)?;
                 let then = self.lower_expr(&i.body)?;
                 let els = self.lower_expr(&i.orelse)?;
-                Ok(self.b.if_exp(cond, then, els))
+                let mut e = self.b.if_exp(cond, then, els);
+                // s016c: the conditional-expression instrument positions at
+                // the CONDITION's start line (probes o4/o5: warn/raise from
+                // `__bool__` attributes to the cond line, which differs from
+                // the node start exactly in the `(1 if <newline> cond)`
+                // opener shape).
+                if let ap_ir::Expr::IfExp(_, _, _, line) = &mut e {
+                    *line = self.line_at(i.test.start().to_u32() as usize);
+                }
+                Ok(e)
             }
             ast::Expr::Named(n) => {
                 // Walrus binds in the enclosing scope, never a comprehension's
@@ -1821,7 +1845,7 @@ fn target_to_expr(t: Target) -> Expr {
         // Target reconstruction: hand-built from an already-lowered store
         // expr — line 0 (store path, never an instrument site).
         Target::Subscript(o, k) => Expr::Subscript(o, k, 0),
-        Target::Attribute(o, a) => Expr::Attribute(o, a),
+        Target::Attribute(o, a) => Expr::Attribute(o, a, 0),
         Target::Tuple(items) => Expr::Tuple(items.into_iter().map(target_to_expr).collect()),
         Target::Starred(x) => Expr::Starred(x),
     }
