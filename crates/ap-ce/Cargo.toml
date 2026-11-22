@@ -1,0 +1,12 @@
+[package]
+name = "ap-ce"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ap-obj = { path = "../ap-obj" }
+libc = "0.2"
+
+[lib]
+name = "ap_ce"

@@ -4,6 +4,7 @@ members = [
     "crates/ap-parse",
     "crates/ap-ir",
     "crates/ap-obj",
+    "crates/ap-ce",
     "crates/ap-gc",
     "crates/ap-run",
     "crates/ap-pack",

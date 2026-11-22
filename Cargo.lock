@@ -110,6 +110,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ap-ce"
+version = "0.1.0"
+dependencies = [
+ "ap-obj",
+ "libc",
+]
+
+[[package]]
 name = "ap-cli"
 version = "0.1.0"
 dependencies = [
