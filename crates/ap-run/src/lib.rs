@@ -19,6 +19,7 @@ pub mod aot_runtime;
 pub mod ast_bridge;
 pub mod builtins;
 pub mod builtins_modules;
+pub mod ce_bridge;
 pub mod cell_slot;
 pub mod classes;
 pub mod exc_hier;

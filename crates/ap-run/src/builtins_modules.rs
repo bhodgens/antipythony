@@ -14850,7 +14850,9 @@ pub fn call_native(
         "gc" => crate::gcsupport::call_gc(fname, args, kwargs),
         "weakref" => crate::gcsupport::call_weakref(fname, args, kwargs),
         "weakref.finalize" => crate::gcsupport::call_weakref_finalize(args, kwargs),
-        _ => None,
+        // 10.02: registered C-extension modules (PyModule_AddFunctions
+        // route) dispatch through the ap-ce bridge.
+        _ => crate::ce_bridge::call_ce_module_fn(mod_name, fname, args),
     }
 }
 
@@ -15837,6 +15839,12 @@ pub fn call_native_marker_impl(
     marker_obj: Option<ap_obj::Gc<ap_obj::PyObject>>,
     args: &[Value],
 ) -> Option<BResult> {
+    // 10.02: PyType_FromSpec slot/method markers (__ap_ce__.<spec>#<entry>)
+    // dispatch through the ap-ce bridge; getset markers arrive bound (self
+    // rides args[0] via the property fget call shape).
+    if full.starts_with("__ap_ce__.") {
+        return crate::ce_bridge::call_ce_marker(full, args);
+    }
     // Issue #13: multibyte codec bound surfaces (`_mbc.<codec>.encode|decode`
     // over the getcodec namespace receiver riding args[0]).
     if let Some(rest) = full.strip_prefix("_mbc.") {

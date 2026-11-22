@@ -4,7 +4,7 @@
 //! Symbol list = the spike's S0 subset (survey §2 S0 rows the spike
 //! exercises; every symbol added here counts toward the density number).
 
-use std::ffi::{c_char, c_int, c_void};
+use std::ffi::{c_char, c_int, c_long, c_void};
 
 use crate::ffi_types::PyObjPtr;
 use crate::state::{
@@ -519,4 +519,160 @@ fn _unused(_: *mut c_void) {}
 /// from_value re-export used by the bridge (public for ap-run).
 pub fn handle_from_value(v: &ap_obj::value::Value) -> CeHandle {
     from_value(v)
+}
+
+// ---------------------------------------------------------------------------
+// Shim-backend registrations (called from apx_shim.c)
+// ---------------------------------------------------------------------------
+
+/// apx_PyModule_AddFunctions backend: register + install the ns marker.
+#[no_mangle]
+pub unsafe extern "C" fn apx_method_register(
+    m: PyObjPtr,
+    name: *const c_char,
+    flags: c_int,
+    meth: crate::ffi_types::PyCFunctionRaw,
+) -> c_int {
+    if name.is_null() || m.is_null() {
+        return -1;
+    }
+    let n = std::ffi::CStr::from_ptr(name).to_string_lossy().into_owned();
+    let h = m as CeHandle;
+    unsafe {
+        if let Some(CePayload::Module { name: mod_name, ns }) =
+            &mut *(&*h).payload.borrow_mut()
+        {
+            let mn = mod_name.clone();
+            let _ = ns.set(
+                ap_obj::value::Value::Str(ap_obj::value::PyString::new(n.clone())),
+                crate::state::marker_for(&mn, &n),
+            );
+        } else {
+            return -1;
+        }
+    }
+    crate::api::method_registry()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .push(crate::api::MethodRecord {
+            module: {
+                // module name from the handle payload
+                let o = &*(m as CeHandle);
+                match o.payload.borrow().as_ref() {
+                    Some(CePayload::Module { name, .. }) => name.clone(),
+                    _ => String::new(),
+                }
+            },
+            name: n,
+            flags: flags as i32,
+            f: meth,
+        });
+    0
+}
+
+/// apx_PyType_FromSpec backend: normalized registration.
+#[no_mangle]
+pub unsafe extern "C" fn apx_type_register(
+    name: *const c_char,
+    tp_new: *mut c_void,
+    tp_init: *mut c_void,
+    tp_dealloc: *mut c_void,
+    methods: *mut c_void,
+    getsets: *mut c_void,
+) -> c_long {
+    use crate::ffi_types::{GetterRaw, InitRaw, PyCFunctionRaw, SetterRaw};
+    if name.is_null() {
+        err_set("SystemError", "PyType_FromSpec: NULL name");
+        return -1;
+    }
+    let n = std::ffi::CStr::from_ptr(name).to_string_lossy().into_owned();
+    // Walk the raw C tables (the shim passed the ORIGINAL pointers).
+    let mut meths: Vec<(String, i32, PyCFunctionRaw)> = Vec::new();
+    if !methods.is_null() {
+        let mut md = methods as *const ApxCMethodDef;
+        while !(*md).ml_name.is_null() {
+            let mn = std::ffi::CStr::from_ptr((*md).ml_name)
+                .to_string_lossy()
+                .into_owned();
+            meths.push((
+                mn,
+                (*md).ml_flags,
+                (*md).ml_meth.expect("ml_meth required on S0"),
+            ));
+            md = md.add(1);
+        }
+    }
+    let mut gs: Vec<(String, Option<crate::ffi_types::GetterRaw>, Option<crate::ffi_types::SetterRaw>)> =
+        Vec::new();
+    if !getsets.is_null() {
+        let mut gd = getsets as *const ApxCGetSetDef;
+        while !(*gd).name.is_null() {
+            let gn = std::ffi::CStr::from_ptr((*gd).name)
+                .to_string_lossy()
+                .into_owned();
+            gs.push((gn, (*gd).get, (*gd).set));
+            gd = gd.add(1);
+        }
+    }
+    let newf: Option<PyCFunctionRaw> =
+        if tp_new.is_null() { None } else { Some(unsafe { std::mem::transmute(tp_new) }) };
+    let initf: Option<InitRaw> =
+        if tp_init.is_null() { None } else { Some(unsafe { std::mem::transmute(tp_init) }) };
+    let delf: Option<PyCFunctionRaw> =
+        if tp_dealloc.is_null() { None } else { Some(unsafe { std::mem::transmute(tp_dealloc) }) };
+    match crate::api::type_from_spec_normalized(
+        &n,
+        newf,
+        initf,
+        delf,
+        meths,
+        gs,
+        Vec::new(),
+    ) {
+        Ok(idx) => idx as c_long,
+        Err(msg) => {
+            err_set("SystemError", msg);
+            -1
+        }
+    }
+}
+
+/// The raw C table layouts (mirror apx_python.h; kept local so this module
+/// does not include C headers).
+#[repr(C)]
+struct ApxCMethodDef {
+    ml_name: *const c_char,
+    ml_meth: Option<crate::ffi_types::PyCFunctionRaw>,
+    ml_flags: c_int,
+    ml_doc: *const c_char,
+}
+
+#[repr(C)]
+struct ApxCGetSetDef {
+    name: *const c_char,
+    get: Option<crate::ffi_types::GetterRaw>,
+    set: Option<crate::ffi_types::SetterRaw>,
+    doc: *mut c_void,
+    closure: *mut c_void,
+}
+
+/// Spec-index escape for tests/bridge: the CLASS Value of a FromSpec type.
+#[no_mangle]
+pub unsafe extern "C" fn apx_spec_class_value(spec_index: c_long) -> PyObjPtr {
+    match crate::slots::class_value_for_spec(spec_index as usize) {
+        Some(v) => from_value(&v) as PyObjPtr,
+        None => std::ptr::null_mut(),
+    }
+}
+
+/// The shim's module-init runner re-export (C lives in apx_shim.c).
+#[no_mangle]
+pub extern "C" fn apx_init_count() -> c_int {
+    // apx_run_module_init is defined in C; this count fn exists so the
+    // runtime can enumerate before probing. Backed by the C static table
+    // through a tiny C helper below.
+    extern "C" {
+        fn apx_c_init_count() -> c_int;
+    }
+    unsafe { apx_c_init_count() }
 }

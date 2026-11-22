@@ -18,6 +18,7 @@ name = "ap-run-probe"
 path = "src/bin/ap_run_probe.rs"
 
 [dependencies]
+ap-ce = { path = "../ap-ce" }
 ap-gc = { path = "../ap-gc" }
 ap-ir = { path = "../ap-ir" }
 ap-obj = { path = "../ap-obj" }

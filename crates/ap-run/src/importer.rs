@@ -840,6 +840,13 @@ pub fn import_module_inner(interp: &Arc<Interpreter>, name: &str) -> EResult {
             }
         }
     }
+    // 10.02: registered C-extension modules (dlopen'd via build-ext) run
+    // their PyInit through the ap-ce bridge and materialize as Modules.
+    if let Some(r) = crate::ce_bridge::native_ce_module(interp, name) {
+        let m = r?;
+        sys_modules_insert(name, &m);
+        return Ok(m);
+    }
     if let Some(m) = builtins_modules::get_or_make_module(interp, name) {
         // T1 fix: native modules with a vendored package dir (importlib)
         // carry __path__ so later dotted children resolve through the file
