@@ -14,6 +14,7 @@ remains the bar everywhere that lowers. Orchestrator: this session.
 | leaf-harden2 | deleg_adfef016 | HARDEN gap 3: scan-gate gen-condition yield + handler bind-yield | ap-codegen-wasm |
 | leaf-02resid-a | deleg_ebe43d03 | V016 parser + t1_007 round + c018 vars() + c032 metaclass | ap-run/{interp,builtins,classes,methods}.rs, ap-parse, corpus pins |
 | leaf-02resid-b | deleg_ebe43d03 | s023 ast.unparse (gate) + Counter repr + CacheInfo + enum mangle + warnings | ap-run/builtins_modules.rs, vendored_stdlib |
+| leaf-04gaps | deleg_d30ff2d7 | Plan 04 honest gaps: emit-wasm diagnostic, `--` seam, --impl-wasm, hybrid CRT packaging | ap-aot-crt*, ap-conform, ap-cli flag arm, docs |
 
 Merge order when they land: harden2 first, then 02resid-a/b (ap-run),
 then the three ce leaves. Verify-before-merge: re-run each leaf's
