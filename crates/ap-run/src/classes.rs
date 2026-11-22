@@ -2098,6 +2098,11 @@ pub fn descr_get(interp: &Arc<Interpreter>, v: &Value, obj: &Value, owner: &Valu
                             .unwrap_or_else(|p| p.into_inner())
                             .clone()
                             .unwrap_or(Value::None);
+                        if std::env::var_os("APX_CE_TRACE").is_some() {
+                            if let Value::Obj(fo) = &fget {
+                                eprintln!("[ap-ce] descr_get property fget name={}", fo.name);
+                            }
+                        }
                         call_value(
                             interp,
                             &module_frame(interp),
@@ -3571,7 +3576,11 @@ fn instance_attr(
                             // native methods (_replace/__replace__/__repr__)
                             // bind to the instance — unbound, the handler has
                             // no receiver and reads None fields.
-                            || mo.name.starts_with("__ap_namedtuple_"))
+                            || mo.name.starts_with("__ap_namedtuple_")
+                            // 10.02: FromSpec method markers bind to the
+                            // instance (the C fn receives (self, args) —
+                            // unbound, tp-method dispatch loses the receiver).
+                            || mo.name.starts_with("__ap_ce__."))
                     {
                         let bm = ap_obj::PyObject::with_self(
                             ap_obj::ObjKind::BoundMethod,

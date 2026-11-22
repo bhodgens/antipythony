@@ -165,6 +165,19 @@ pub fn from_value(v: &Value) -> CeHandle {
             let name = o.name.clone();
             new_handle(CeKind::Module, CePayload::Module { name, ns })
         }
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass => {
+            // Class Values round-trip as Type handles (spec reverse lookup
+            // by class name; single-spec-per-name is the S0 contract).
+            let name = o.name.clone();
+            match crate::slots::spec_index_for_class_name(&name) {
+                Some(idx) => new_handle(CeKind::Type, CePayload::Type { spec_index: idx }),
+                None => {
+                    let repr = ap_obj::ops::repr(&Value::Obj(o.clone()))
+                        .unwrap_or_else(|_| "<??>".to_string());
+                    new_handle(CeKind::Str, CePayload::Str(repr))
+                }
+            }
+        }
         other => {
             // Fallback: pin the repr (S0 spike never needs richer fallbacks;
             // PyO3-shaped modules only produce the kinds above).

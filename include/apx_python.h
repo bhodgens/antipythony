@@ -44,6 +44,7 @@ typedef struct {
 /* Type-spec structures (PyType_FromSpec path — the measured PyO3 surface). */
 typedef struct {
     const char *name;
+    int basicsize;
     int itemsize;
     unsigned long flags;
 } PyType_Spec;
@@ -53,14 +54,14 @@ typedef struct {
     void *pfunc;
 } PyType_Slot;
 
-/* Slot ids (CPython values kept for source familiarity). */
-#define Py_tp_new     0x1001
-#define Py_tp_init    0x1002
-#define Py_tp_dealloc 0x1003
-#define Py_tp_methods 0x1004
-#define Py_tp_getset  0x1005
-#define Py_tp_repr    0x1006
-#define Py_tp_str     0x1007
+/* Slot ids: CPython's typeslots.h values (the walker keys on them). */
+#define Py_tp_dealloc 52
+#define Py_tp_init    60
+#define Py_tp_methods 64
+#define Py_tp_new     65
+#define Py_tp_getset  73
+#define Py_tp_repr    75
+#define Py_tp_str     76
 
 typedef struct {
     const char *name;
@@ -166,7 +167,7 @@ int PyType_Ready(PyObject *);
 /* Walk the spec slots + build the heap type; returns a new spec handle
    (usize index under the hood) or -1 with error set. */
 long apx_PyType_FromSpec(PyType_Spec *spec, PyType_Slot *slots);
-#define PyType_FromSpec(spec) apx_PyType_FromSpec((spec), 0)
+#define PyType_FromSpec(spec, slots) apx_PyType_FromSpec((spec), (slots))
 
 /* ------------------------------------------------------------------ */
 /* Error protocol                                                      */

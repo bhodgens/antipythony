@@ -78,6 +78,13 @@ pub fn run_module(
     // embedders that call run_module without going through a bin main
     // (all bins call rss_guard::start() which snapshots earlier).
     ap_obj::debug_flags::snapshot();
+    // 10.02: record the script dir so the C-extension dlopen seam can find
+    // lib<mod>.so next to the running script.
+    if let Some(d) = std::path::Path::new(script_path).parent() {
+        if !d.as_os_str().is_empty() {
+            crate::ce_bridge::set_script_dir(d.to_path_buf());
+        }
+    }
     let parsed = match ap_parse::parse(source) {
         Ok(p) => p,
         Err(e) => {

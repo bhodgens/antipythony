@@ -96,16 +96,25 @@ pub fn from_spec(
         })
         .collect();
 
-    // 2. Build the TypeObject payload.
+    // 2. Build the TypeObject payload. The bare name (post-dot) is what
+    // type(x).__name__ reports (CPython: spec name "spike.Point" ->
+    // __name__ "Point", __module__ "spike").
+    let bare = name.rsplit_once('.').map(|(_, b)| b).unwrap_or(name);
     let t = TypeObject::create(
-        name.to_string(),
-        name.to_string(),
+        bare.to_string(),
+        bare.to_string(),
         base_refs,
         PyDict::new(),
         TypeFlags::default(),
         None,
     )
     .map_err(|e| ap_obj::classes::mro_error_message(&e))?;
+    let _ = t.dict.set(
+        ap_obj::value::Value::Str(ap_obj::value::PyString::new("__module__")),
+        ap_obj::value::Value::Str(ap_obj::value::PyString::new(
+            name.rsplit_once('.').map(|(m, _)| m).unwrap_or("builtins").to_string(),
+        )),
+    );
 
     // 3. Fill the class dict with dispatch markers.
     let spec_index = {
@@ -179,6 +188,11 @@ pub fn from_spec(
 
     // 4. Wire the class Value both ways and record it.
     let cv = make_class_value(t.clone());
+    // 4b. Dotted spec names ("spike.Point") auto-install the class into
+    // the module ns (the PyModule_AddObject(m, "Point", Type) contract).
+    if let Some((mod_name, bare)) = name.rsplit_once('.') {
+        crate::api::module_install_class(mod_name, bare, &cv);
+    }
     {
         let mut tab = spec_table().lock().unwrap_or_else(|p| p.into_inner());
         let rec = tab.last_mut().expect("just pushed");
@@ -265,4 +279,12 @@ impl SpecSnapshot {
     pub fn setter_at(&self, i: usize) -> Option<SlotFn> {
         self.getsets.get(i).and_then(|(_, _, s)| *s)
     }
+}
+
+/// Reverse lookup: registered spec index by bare class name (S0 contract:
+/// one spec per name; collisions resolve to the LAST registration).
+pub fn spec_index_for_class_name(name: &str) -> Option<usize> {
+    let tab = spec_table().lock().unwrap_or_else(|p| p.into_inner());
+    tab.iter()
+        .rposition(|r| r.name == name || r.name.rsplit_once('.').map(|(_, b)| b) == Some(name))
 }

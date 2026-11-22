@@ -47,6 +47,15 @@ pub fn module_registry() -> &'static Mutex<Vec<ModuleRecord>> {
     R.get_or_init(|| Mutex::new(Vec::new()))
 }
 
+/// The raw C PyMethodDef layout (mirror of apx_python.h).
+#[repr(C)]
+pub struct ApxCMethodDef {
+    pub ml_name: *const std::ffi::c_char,
+    pub ml_meth: Option<PyCFunctionRaw>,
+    pub ml_flags: std::ffi::c_int,
+    pub ml_doc: *const std::ffi::c_char,
+}
+
 /// CStr -> &str (lossy on non-UTF8; extension names are ASCII).
 unsafe fn cstr<'a>(p: *const std::ffi::c_char) -> &'a str {
     if p.is_null() {
@@ -63,8 +72,11 @@ unsafe fn cstr<'a>(p: *const std::ffi::c_char) -> &'a str {
 /// first field is `m_name` (char*); the layout contract lives in the
 /// header shim. Returns the module handle (new ref).
 pub unsafe fn module_create(def_base: PyObjPtr) -> CeHandle {
-    // PyModuleDef layout (our header): m_name at offset 0 (char*).
-    let name_ptr = *(def_base as *const *const std::ffi::c_char);
+    // PyModuleDef layout (our header, CPython source shape):
+    // m_name at offset 0, then m_doc, m_size, m_methods.
+    let fields = def_base as *const [*const std::ffi::c_char; 4];
+    let name_ptr = (*fields)[0];
+    let methods_ptr = (*fields)[3] as *const ApxCMethodDef;
     let name = cstr(name_ptr).to_string();
     let ns = PyDict::new();
     let _ = ns.set(
@@ -85,7 +97,31 @@ pub unsafe fn module_create(def_base: PyObjPtr) -> CeHandle {
     module_registry()
         .lock()
         .unwrap_or_else(|p| p.into_inner())
-        .push(ModuleRecord { name, handle: h as usize });
+        .push(ModuleRecord {
+            name: name.clone(),
+            handle: h as usize,
+        });
+    // CPython's PyModule_Create walks m_methods and installs the functions
+    // (PyModule_AddFunctions semantics); the registry push is what the
+    // bridge's dotted dispatch reads.
+    if std::env::var_os("APX_CE_TRACE").is_some() {
+        eprintln!("[ap-ce] module_create({name}) methods_ptr={:p}", methods_ptr);
+    }
+    if !methods_ptr.is_null() {
+        let mut md = methods_ptr;
+        while !(*md).ml_name.is_null() {
+            let mn = std::ffi::CStr::from_ptr((*md).ml_name)
+                .to_string_lossy()
+                .into_owned();
+            if let Some(meth) = (*md).ml_meth {
+                if std::env::var_os("APX_CE_TRACE").is_some() {
+                    eprintln!("[ap-ce]   + fn {mn}");
+                }
+                module_add_function(h, &mn, (*md).ml_flags, meth);
+            }
+            md = md.add(1);
+        }
+    }
     h
 }
 
@@ -96,9 +132,12 @@ pub unsafe fn module_add_function(module: CeHandle, name: &str, flags: i32, f: P
     let mod_name = {
         let o = &*module;
         match o.payload.borrow().as_ref() {
-            Some(CePayload::Module { name, ns }) => {
-                let n = name.clone();
-                // Install the dotted marker callable in the ns.
+            Some(CePayload::Module { name: mod_name_payload, ns }) => {
+                let n = mod_name_payload.clone();
+                // Install the dotted marker callable in the ns under the
+                // METHOD name (the fn's `name` param — the payload's
+                // `name` field is the module name; the earlier shadowing
+                // bug installed every fn under the module name).
                 let _ = ns.set(
                     ap_obj::value::Value::Str(ap_obj::value::PyString::new(name.to_string())),
                     crate::state::marker_for(&n, name),
@@ -238,4 +277,24 @@ pub fn module_registered(name: &str) -> bool {
         .unwrap_or_else(|p| p.into_inner())
         .iter()
         .any(|m| m.name == name)
+}
+
+/// Install a FromSpec-built class into a registered module's ns under the
+/// bare type name (the PyModule_AddObject(m, "Type", Type) contract,
+/// automated for dotted spec names).
+pub fn module_install_class(mod_name: &str, bare: &str, class_value: &ap_obj::value::Value) {
+    let tab = module_registry().lock().unwrap_or_else(|p| p.into_inner());
+    let rec = match tab.iter().find(|m| m.name == mod_name) {
+        Some(r) => r,
+        None => return,
+    };
+    let h = rec.handle as CeHandle;
+    unsafe {
+        if let Some(CePayload::Module { ns, .. }) = (*h).payload.borrow_mut().as_mut() {
+            let _ = ns.set(
+                ap_obj::value::Value::Str(ap_obj::value::PyString::new(bare.to_string())),
+                class_value.clone(),
+            );
+        }
+    }
 }

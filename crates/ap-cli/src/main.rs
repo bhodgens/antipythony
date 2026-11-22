@@ -17,6 +17,8 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+mod build_ext;
+
 fn main() {
     // 2026-11-06 OOM mitigation: in-process RSS self-guard on EVERY
     // interpreter process, so an unbounded-growth runtime bug aborts the
@@ -44,7 +46,7 @@ fn usage() -> i32 {
          \x20 run [--no-cache] <file.py>  execute (fetched deps join sys.path)\n\
          \x20 build <file.py> [-o out]    write the cached build artifact\n\
          \x20 build --wasm <file.py>       emit <stem>.wasm (Plan 03 backend)\n\
-         \x20 build --hybrid <file.py>     native binary + embedded wasm payload (04.05)\n\
+         \x20 build --hybrid <file.py>     native binary + embedded wasm payload (04.05)\n\x20 build-ext <src.c> -o out.so compile a C extension against the antipythony headers (10.02)\n\
          \x20 host <module.wasm> [args]    run a .wasm via the built-in ap-host\n\
          \x20 cache gc                    clear the build cache\n\
          \n\
@@ -103,6 +105,7 @@ fn run(args: &[String]) -> Result<i32, String> {
         Some("add") => cmd_add(&rest),
         Some("run") => cmd_run(&rest, false),
         Some("build") => cmd_build(&rest),
+        Some("build-ext") => build_ext::build_ext(&rest).map(|_| 0),
         Some("cache") => cmd_cache(&rest),
         Some("host") => cmd_host(&rest),
         // Single-file legacy form: `antipythony file.py` (02.02 seam).

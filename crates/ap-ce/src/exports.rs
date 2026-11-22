@@ -95,7 +95,10 @@ pub unsafe extern "C" fn PyLong_AsLong(o: PyObjPtr) -> std::ffi::c_long {
         Some(v) => v as std::ffi::c_long,
         None => {
             let tn = unsafe { type_name_of(h) };
-            err_set("TypeError", format!("an integer is required, not '{tn}'"));
+            err_set(
+                "TypeError",
+                format!("'{}' object cannot be interpreted as an integer", tn),
+            );
             -1
         }
     }
@@ -108,7 +111,10 @@ pub unsafe extern "C" fn PyLong_AsLongLong(o: PyObjPtr) -> i64 {
         Some(v) => v,
         None => {
             let tn = unsafe { type_name_of(h) };
-            err_set("TypeError", format!("an integer is required, not '{tn}'"));
+            err_set(
+                "TypeError",
+                format!("'{}' object cannot be interpreted as an integer", tn),
+            );
             -1
         }
     }

@@ -7,6 +7,7 @@
  */
 #include "apx_python.h"
 #include <stdarg.h>
+#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -26,8 +27,14 @@ int PyArg_ParseTuple(PyObject *args, const char *fmt, ...) {
 
     Py_ssize_t want = (Py_ssize_t)strlen(fmt);
     if (n != want) {
-        /* CPython-matching arity error text */
-        PyErr_SetString(PyExc_TypeError, "function takes exactly the expected number of arguments");
+        /* CPython-matching arity error text (PyArg_ParseTuple). The fn
+           name isn't plumbed to the shim on S0; CPython uses "function"
+           for PyCFunctions without module context too. */
+        char msg[128];
+        snprintf(msg, sizeof(msg),
+                 "function takes exactly %lld argument%s (%lld given)",
+                 (long long)want, want == 1 ? "" : "s", (long long)n);
+        PyErr_SetString(PyExc_TypeError, msg);
         va_end(ap);
         return 0;
     }

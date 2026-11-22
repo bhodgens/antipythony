@@ -72,6 +72,9 @@ fn handle_to_result(h: *mut ap_ce::state::CeObject) -> Result<Value, Flow> {
 /// BoundMethod markers arrive with the receiver riding args[0]; plain
 /// module fn markers don't).
 pub fn call_ce_marker(full: &str, args: &[Value]) -> Option<Result<Value, Flow>> {
+    if std::env::var_os("APX_CE_TRACE").is_some() {
+        eprintln!("[ap-ce] marker ENTER {full}");
+    }
     let (spec_index, entry) = ap_ce::slots::parse_marker(full)?;
     let snap = ap_ce::slots::record_clone(spec_index)?;
     Some((|| {
@@ -120,7 +123,33 @@ pub fn call_ce_marker(full: &str, args: &[Value]) -> Option<Result<Value, Flow>>
             }
             _ => return Err(raise("SystemError", format!("unknown ce slot '{entry}'"))),
         };
+        if std::env::var_os("APX_CE_TRACE").is_some() {
+            eprintln!("[ap-ce] marker {full} entry={entry} nargs={}", args.len());
+        }
+        let is_new = entry == "__new__";
+        let is_init = entry == "__init__";
         let r = unsafe { (f.0)(slf_h as PyObjPtr, args_h as PyObjPtr) };
+        if is_init {
+            // tp_init has CPython `int` return semantics (0 ok, -1 error,
+            // transmuted through the pointer ABI; the code rides the
+            // integer register — NULL == 0 == SUCCESS here).
+            let rc = r as isize;
+            if rc != 0 {
+                if let Some((class, msg)) = err_take() {
+                    return Err(raise(&class, msg));
+                }
+                return Err(raise(
+                    "SystemError",
+                    format!("tp_init failed ({rc}) without setting an error"),
+                ));
+            }
+            // __init__ returns None to the Python layer (check_init_return
+            // contract); the instance is already materialized.
+            return Ok(Value::None);
+        }
+        if r.is_null() && std::env::var_os("APX_CE_TRACE").is_some() {
+            eprintln!("[ap-ce] marker {full} returned NULL");
+        }
         if r.is_null() {
             if let Some((class, msg)) = err_take() {
                 return Err(raise(&class, msg));
@@ -129,6 +158,16 @@ pub fn call_ce_marker(full: &str, args: &[Value]) -> Option<Result<Value, Flow>>
                 "SystemError",
                 "C function returned NULL without setting an error",
             ));
+        }
+        let _ = ce_newref(r as CeHandle);
+        if is_new {
+            // S0 tp_new contract: the C fn VALIDATES the ctor args; the
+            // runtime allocates (alloc_instance) and tp_init receives it.
+            // (CPython's tp_new allocates the C payload; there is no C-side
+            // instance payload on S0 — documented divergence.)
+            let t = ap_ce::slots::type_ref_for_spec(spec_index)
+                .ok_or_else(|| raise("SystemError", "spec lost its type payload"))?;
+            return Ok(crate::classes::alloc_instance(&t));
         }
         handle_to_result(r as CeHandle)
     })())
@@ -164,6 +203,9 @@ fn args_beyond_first(_cls: &Value) -> bool {
 
 /// Route 2: dotted `mod.name` for registered module functions.
 pub fn call_ce_module_fn(module: &str, fname: &str, args: &[Value]) -> Option<Result<Value, Flow>> {
+    if std::env::var_os("APX_CE_TRACE").is_some() {
+        eprintln!("[ap-ce] module_fn {module}.{fname} nargs={}", args.len());
+    }
     let (flags, f) = ap_ce::api::find_method(module, fname)?;
     let _ = flags; // METH_* collapse to the tuple form on S0
     Some((|| {
@@ -192,7 +234,12 @@ pub fn native_ce_module(
     // Registered already? (module registry filled by a prior import or by
     // an embedded init at startup)
     if !ap_ce::api::module_registered(name) {
-        return None;
+        // Try dlopen: lib<name>.so / <name>.so on sys.path-rooted dirs and
+        // cwd. Undefined Py* symbols resolve against THIS process (the
+        // binary exports them via -export_dynamic — the source-shim model).
+        if !ensure_loaded(name) {
+            return None;
+        }
     }
     if let Some(ns) = ap_ce::api::module_ns(name) {
         return Some(Ok(finish_module(name, &ns)));
@@ -224,6 +271,9 @@ pub fn native_ce_module(
 
 /// Materialize a Module PyObject Value from the ce ns (the importer seam).
 fn finish_module(name: &str, ns: &ap_obj::dict::PyDict) -> Value {
+    if std::env::var_os("APX_CE_TRACE").is_some() {
+        eprintln!("[ap-ce] finish_module({name}) ns_items={:?}", ns.items().iter().map(|(k,_)| match k { Value::Str(s) => s.as_str().to_string(), _ => "?".to_string() }).collect::<Vec<_>>());
+    }
     let m = ap_obj::PyObject::new(ap_obj::ObjKind::Module, name);
     let d = ap_obj::dict::PyDict::new();
     let _ = d.set(
@@ -260,4 +310,87 @@ fn t(v: Vec<Value>) -> Value {
 /// round-trip into C and back).
 pub fn flow_into_err_pub(f: &Flow) {
     flow_to_err(f);
+}
+
+// ---------------------------------------------------------------------------
+// dlopen seam
+// ---------------------------------------------------------------------------
+
+unsafe fn dlopen_fullname(libc_name: *const std::ffi::c_char) -> *mut std::ffi::c_void {
+    unsafe { libc::dlopen(libc_name, libc::RTLD_NOW | libc::RTLD_LOCAL) }
+}
+
+/// Is a loadable extension library visible for `name`?
+fn ext_lib_candidates(name: &str) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let mut dirs: Vec<std::path::PathBuf> = vec![
+        std::path::PathBuf::from("."),
+    ];
+    if let Ok(d) = std::env::var("APX_EXT_DIR") {
+        dirs.push(std::path::PathBuf::from(d));
+    }
+    // The RUNNING SCRIPT's directory (the interpreter's argv[0] analog):
+    // ap-run records it at startup via set_script_dir.
+    if let Some(d) = script_dir() {
+        dirs.push(d);
+    }
+    for d in dirs {
+        out.push(d.join(format!("lib{name}.so")));
+        out.push(d.join(format!("{name}.so")));
+    }
+    out
+}
+
+static SCRIPT_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// Record the script dir (ap-run's run_module calls this at startup).
+pub fn set_script_dir(d: std::path::PathBuf) {
+    let _ = SCRIPT_DIR.set(d);
+}
+
+fn script_dir() -> Option<std::path::PathBuf> {
+    SCRIPT_DIR.get().cloned()
+}
+
+/// dlopen the extension lib + run PyInit_<name>. Returns true when the
+/// module is now registered.
+fn ensure_loaded(name: &str) -> bool {
+    let lib = ext_lib_candidates(name).into_iter().find(|p| p.is_file());
+    let Some(lib) = lib else {
+        return false;
+    };
+    let Some(cpath) = std::ffi::CString::new(lib.to_string_lossy().as_bytes()).ok() else {
+        return false;
+    };
+    unsafe {
+        let handle = dlopen_fullname(cpath.as_ptr());
+        if handle.is_null() {
+            ap_ce::state::err_set(
+                "ImportError",
+                format!(
+                    "dlopen {}: {}",
+                    lib.display(),
+                    std::ffi::CStr::from_ptr(libc::dlerror()).to_string_lossy()
+                ),
+            );
+            return false;
+        }
+        let sym = format!("PyInit_{name}");
+        let csym = std::ffi::CString::new(sym).unwrap();
+        let init = libc::dlsym(handle, csym.as_ptr());
+        if init.is_null() {
+            ap_ce::state::err_set(
+                "ImportError",
+                format!("extension '{}' has no PyInit symbol", lib.display()),
+            );
+            return false;
+        }
+        let f: unsafe extern "C" fn() -> PyObjPtr = std::mem::transmute(init);
+        let r = f();
+        if r.is_null() {
+            // error state set by the init
+            return false;
+        }
+        true
+    }
 }

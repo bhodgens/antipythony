@@ -35,6 +35,8 @@ libc = "0.2"
 [[bin]]
 name = "antipythony"
 path = "src/main.rs"
+# 10.02: export the Py* C-API symbols so dlopen'd extensions resolve them
+# against the running process (the source-shim loading model).
 
 [[bin]]
 name = "ap-run-eval"
