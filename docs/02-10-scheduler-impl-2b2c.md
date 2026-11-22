@@ -50,6 +50,21 @@ beyond the poll-word hook it will consume (§3.3).
 
 ## 1. Stage 2a compat contract (what 2b assumes exists)
 
+> **02E RECONCILIATION (2026-11-21, verified on main @ 8e96a8a):** this section
+> as written is FALSE on the landed tree. What 0210a actually landed (per
+> NEXT-0210A.md) is the resumable-GENERAATOR fiber substrate only —
+> `thread_start` still does `std::thread::Builder::new().stack_size(64 << 20)`
+> per Python Thread (threading.rs:873-876 @ 8e96a8a), no worker pool, no
+> RunQueue, no Permit exists, and `touch_line` is ALREADY the T121-fix
+> lock-free shape (per-frame `line_track` cells; the three-Mutex §7 premise
+> is stale — §7 items 3-4 are RETIRED as work items, 2b.3 reduces to
+> verification + measurement). The 2b/2c implementer therefore folds the
+> minimal 2a (worker pool + Task record + steal-at-birth, gate: threading
+> corpus + 3-run determinism) INTO this leaf's 2b.1 commit as the substrate
+> for the explicit Task/RunContext records; the §2 structures below apply
+> verbatim on top of it. This note REPLACES the contract text above for
+> implementation purposes.
+
 2a (permit/pool substrate, per v2 §4 row 02.10a) delivers, and 2b codes
 against:
 

@@ -5,9 +5,9 @@
 //! stdout byte gate). Numeric routes delegate to ap-obj ops (the C-12..C-16
 //! surface proven in 02.01).
 
-use crate::Flow;
 use crate::exc_hier::ExceptionValue;
 use crate::frame::Interpreter;
+use crate::Flow;
 use ap_obj::dict::{PyDict, PySet};
 use ap_obj::int::{Gc, Int};
 use ap_obj::value::{PyList, PyString, Tuple, Value};
@@ -228,7 +228,10 @@ pub fn py_str_of(v: &Value) -> Result<String, ap_obj::exc::PyException> {
                 let has_user_str = o.kind == ap_obj::ObjKind::UserInstance
                     && crate::classes::special_lookup(&interp, v, "__str__")
                         .map(|(_, owner)| {
-                            !matches!(owner.name.as_str(), "object" | "Exception" | "BaseException")
+                            !matches!(
+                                owner.name.as_str(),
+                                "object" | "Exception" | "BaseException"
+                            )
                         })
                         .unwrap_or(false);
                 if !has_user_str {
@@ -1508,9 +1511,13 @@ fn check_isinstance(v: &Value, t: &Value) -> Result<Value, Flow> {
                         .flatten()?;
                     if let Value::Obj(mo) = &tcls {
                         if mo.name != "type" {
-                            return crate::interp::attr_get_public(&interp_rc, &tcls, "__instancecheck__")
-                                .ok()
-                                .flatten();
+                            return crate::interp::attr_get_public(
+                                &interp_rc,
+                                &tcls,
+                                "__instancecheck__",
+                            )
+                            .ok()
+                            .flatten();
                         }
                     }
                     // Degenerated: fall back to the real metaclass value.
@@ -1693,9 +1700,7 @@ pub fn type_matches(v: &Value, want: &str) -> bool {
         {
             true
         }
-        (Value::Obj(o), "Set")
-            if o.kind == ap_obj::ObjKind::Opaque && o.name == "dict_keys" =>
-        {
+        (Value::Obj(o), "Set") if o.kind == ap_obj::ObjKind::Opaque && o.name == "dict_keys" => {
             true
         }
         (Value::Obj(o), "Collection")
@@ -2813,29 +2818,27 @@ pub fn builtin_sorted(interp: &Interpreter, args: &[Value], kwargs: &[(String, V
             // otherwise sorted in insertion order). py_lt falls back to
             // values_cmp semantics via ap_obj::ops::lt when no slot exists;
             // Ordering::Equal on error keeps the stable-sort behavior.
-            decorated.sort_by(|a, b| {
-                match crate::builtins_modules::py_lt_public(&a.0, &b.0) {
+            decorated.sort_by(
+                |a, b| match crate::builtins_modules::py_lt_public(&a.0, &b.0) {
                     Ok(true) => std::cmp::Ordering::Less,
                     Ok(false) => match crate::builtins_modules::py_lt_public(&b.0, &a.0) {
                         Ok(true) => std::cmp::Ordering::Greater,
                         _ => std::cmp::Ordering::Equal,
                     },
                     Err(_) => std::cmp::Ordering::Equal,
-                }
-            });
+                },
+            );
             items = decorated.into_iter().map(|(_, v)| v).collect();
         }
     } else {
         // s013: no-key path — same user-__lt__-first discipline.
-        items.sort_by(|a, b| {
-            match crate::builtins_modules::py_lt_public(a, b) {
-                Ok(true) => std::cmp::Ordering::Less,
-                Ok(false) => match crate::builtins_modules::py_lt_public(b, a) {
-                    Ok(true) => std::cmp::Ordering::Greater,
-                    _ => std::cmp::Ordering::Equal,
-                },
-                Err(_) => std::cmp::Ordering::Equal,
-            }
+        items.sort_by(|a, b| match crate::builtins_modules::py_lt_public(a, b) {
+            Ok(true) => std::cmp::Ordering::Less,
+            Ok(false) => match crate::builtins_modules::py_lt_public(b, a) {
+                Ok(true) => std::cmp::Ordering::Greater,
+                _ => std::cmp::Ordering::Equal,
+            },
+            Err(_) => std::cmp::Ordering::Equal,
         });
     }
     if reverse {
@@ -3082,14 +3085,8 @@ pub fn make_sys_module(interp: &Interpreter) -> Value {
             Value::Str(PyString::new("min_exp")),
             Value::Int(Int::Smi(-1021)),
         );
-        let _ = attrs.set(
-            Value::Str(PyString::new("radix")),
-            Value::Int(Int::Smi(2)),
-        );
-        let _ = attrs.set(
-            Value::Str(PyString::new("rounds")),
-            Value::Int(Int::Smi(1)),
-        );
+        let _ = attrs.set(Value::Str(PyString::new("radix")), Value::Int(Int::Smi(2)));
+        let _ = attrs.set(Value::Str(PyString::new("rounds")), Value::Int(Int::Smi(1)));
     }
     let _ = ns.set(Value::Str(PyString::new("float_info")), Value::Obj(fi));
     // int_info
@@ -3466,10 +3463,7 @@ pub(crate) fn py_frame_stub(interp: &Interpreter, idx: usize) -> Value {
         // mirrors co_code (dis._get_code_array probes it under adaptive).
         let empty_bytes = Value::Bytes(Gc::new(Vec::new()));
         let _ = cattrs.set(Value::Str(PyString::new("co_code")), empty_bytes.clone());
-        let _ = cattrs.set(
-            Value::Str(PyString::new("_co_code_adaptive")),
-            empty_bytes,
-        );
+        let _ = cattrs.set(Value::Str(PyString::new("_co_code_adaptive")), empty_bytes);
         let _ = cattrs.set(
             Value::Str(PyString::new("co_firstlineno")),
             Value::Int(Int::from_i64(1)),
@@ -3559,9 +3553,7 @@ pub(crate) fn py_frame_stub(interp: &Interpreter, idx: usize) -> Value {
                 let oattrs = ofb.attrs.lock().unwrap_or_else(|p| p.into_inner());
                 let fbattrs = fb.attrs.lock().unwrap_or_else(|p| p.into_inner());
                 for name in ["f_lineno", "f_globals", "f_code"] {
-                    if let Some(v) =
-                        oattrs.get(&Value::Str(PyString::new(name)))
-                    {
+                    if let Some(v) = oattrs.get(&Value::Str(PyString::new(name))) {
                         let _ = fbattrs.set(Value::Str(PyString::new(name)), v.clone());
                     }
                 }
@@ -4168,12 +4160,7 @@ pub fn interned_type(interp: &Interpreter, name: &str) -> Value {
             None,
         )
         .expect("dict view mro");
-        for m in [
-            "__len__",
-            "__iter__",
-            "__contains__",
-            "__getitem__",
-        ] {
+        for m in ["__len__", "__iter__", "__contains__", "__getitem__"] {
             let _ = t.dict.set(
                 Value::Str(PyString::new(m)),
                 Value::Obj(ap_obj::PyObject::new(
@@ -5625,7 +5612,11 @@ pub fn builtin_range(args: &[Value]) -> crate::EvalResult {
             Ok(v.as_int().and_then(|i| i.to_i64()).unwrap_or_else(|| {
                 // clamp by sign of the bigint
                 let neg = v.as_int().map(|i| i.is_negative()).unwrap_or(false);
-                if neg { i64::MIN } else { i64::MAX }
+                if neg {
+                    i64::MIN
+                } else {
+                    i64::MAX
+                }
             }))
         })
         .collect::<Result<Vec<_>, _>>()?;

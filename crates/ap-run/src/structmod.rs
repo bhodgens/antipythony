@@ -352,7 +352,9 @@ fn pack(fmt: &str, vals: &[Value]) -> crate::builtins_modules::BResult {
                         _ => (i128::MIN, i128::MAX, None),
                     };
                     if !(lo..=hi).contains(&n) {
-                        let hi_s = hi_override.map(|s| s.to_string()).unwrap_or_else(|| hi.to_string());
+                        let hi_s = hi_override
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| hi.to_string());
                         let what = if lo == 0 {
                             format!("'{}' format requires 0 <= number <= {hi_s}", c)
                         } else {

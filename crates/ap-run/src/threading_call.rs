@@ -820,7 +820,9 @@ fn rlock_method(o: &Gc<PyObject>, method: &str, args: &[Value]) -> BResult {
     let Some(prim) = prim_of::<RLockPrim>(addr) else {
         return Err(raise("SystemError", "rlock primitive missing"));
     };
-    let me = crate::threading::current_os_tid();
+    // 2c re-key: the owner identity is the LOGICAL thread ident (was the
+    // worker's os tid — under the scheduler two tasks share one worker).
+    let me = crate::threading::tls_key();
     let owner_of = |st: (crate::threading::RLockOwner, usize)| matches!(st.0, crate::threading::RLockOwner::Owned(t) if t == me);
     match method {
         "acquire" | "__enter__" => {
@@ -903,7 +905,8 @@ fn cond_owned(cond: &CondPrim) -> bool {
         return *lk.locked.lock().unwrap();
     };
     let st = rl.st.lock().unwrap();
-    matches!(st.0, crate::threading::RLockOwner::Owned(t) if t == crate::threading::current_os_tid())
+    // 2c re-key: owner identity = logical thread ident (was os tid).
+    matches!(st.0, crate::threading::RLockOwner::Owned(t) if t == crate::threading::tls_key())
 }
 
 fn cond_acquire_lock(cond: &CondPrim) -> BResult {
@@ -932,7 +935,8 @@ fn lock_acquire_blocking(lk: Arc<LockPrim>) -> BResult {
 }
 
 fn rlock_acquire(rl: Arc<RLockPrim>) -> BResult {
-    let me = crate::threading::current_os_tid();
+    // 2c re-key: owner identity = logical thread ident (was os tid).
+    let me = crate::threading::tls_key();
     // 02.09b: the primitive's own mutex is the only serialization (the GIL
     // is gone) — no interpreter-lock bracketing exists anymore.
     let mut st = rl.st.lock().unwrap();
@@ -952,7 +956,8 @@ fn rlock_acquire(rl: Arc<RLockPrim>) -> BResult {
 }
 
 fn rlock_release_full(rl: &RLockPrim) -> BResult {
-    let me = crate::threading::current_os_tid();
+    // 2c re-key: owner identity = logical thread ident (was os tid).
+    let me = crate::threading::tls_key();
     let mut st = rl.st.lock().unwrap();
     if !matches!(st.0, crate::threading::RLockOwner::Owned(t) if t == me) {
         return Err(raise("RuntimeError", "cannot release un-acquired lock"));
@@ -1061,7 +1066,8 @@ fn cond_method(
 }
 
 fn rlock_release_one(rl: &Arc<RLockPrim>) -> BResult {
-    let me = crate::threading::current_os_tid();
+    // 2c re-key: owner identity = logical thread ident (was os tid).
+    let me = crate::threading::tls_key();
     let mut st = rl.st.lock().unwrap();
     if !matches!(st.0, crate::threading::RLockOwner::Owned(t) if t == me) {
         return Err(raise("RuntimeError", "cannot release un-acquired lock"));

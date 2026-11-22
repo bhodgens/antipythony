@@ -831,10 +831,8 @@ fn exec_module(
                     // __ap_fn_annotate__'s dispatch can find the owner — the
                     // unbound marker read an EMPTY slice_parts and answered {}
                     // for every function (get_type_hints lost all hints).
-                    let annot_marker = ap_obj::PyObject::new(
-                        ap_obj::ObjKind::BuiltinFn,
-                        "__ap_fn_annotate__",
-                    );
+                    let annot_marker =
+                        ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "__ap_fn_annotate__");
                     {
                         let mut parts = annot_marker
                             .slice_parts
@@ -1101,6 +1099,14 @@ fn exec_stmt(
     s: &Stmt,
     reg: &Arc<FnRegistry>,
 ) -> Result<StmtOut, Flow> {
+    // 02.10 2b.2 (P1): statement-granularity safepoint poll, FUSED AHEAD of
+    // touch_line so a quantum-suspended task never consumes a line ordinal
+    // for a statement it did not execute (impl doc N2 invariant: one
+    // ordinal per EXECUTED statement). One Relaxed SAFEPOINT load + one
+    // Cell decrement on the hot path; the quantum-yield suspension happens
+    // at this statement boundary — no RefCell borrow guard and no prim
+    // Mutex is held across it.
+    crate::scheduler::maybe_poll();
     touch_line(interp, Some(frame), stmt_source_line(interp, s));
 
     match s {
@@ -2301,10 +2307,7 @@ fn exec_try(
                     // latch (argparse exit_on_error paths catch it and the
                     // program must keep running / exit 0).
                     if exc.class == "SystemExit" {
-                        *interp
-                            .exit_code
-                            .lock()
-                            .unwrap_or_else(|p| p.into_inner()) = None;
+                        *interp.exit_code.lock().unwrap_or_else(|p| p.into_inner()) = None;
                     }
                     exec_block(interp, frame, &t.finalbody, reg).map(|_| StmtOut::Next)
                 }
@@ -2584,7 +2587,9 @@ pub fn note_py_loc(interp: &Arc<Interpreter>) {
 fn last_executed_line(interp: &Arc<Interpreter>) -> usize {
     // T121-fix: the ordinal is the lock-free mirror now (APX-debug
     // diagnostics only; exactness is diagnostic-grade).
-    let ordinal = interp.stmt_ordinal_at.load(std::sync::atomic::Ordering::Relaxed);
+    let ordinal = interp
+        .stmt_ordinal_at
+        .load(std::sync::atomic::Ordering::Relaxed);
     if ordinal == 0 {
         return current_frame_line(interp);
     }
@@ -2740,7 +2745,10 @@ fn parse_unicode_err_positions(msg: &str) -> (i64, i64) {
         let end_idx = rest.find(':').unwrap_or(rest.len());
         let spec = &rest[..end_idx];
         if let Some(dash) = spec.find('-') {
-            if let (Ok(a), Ok(b)) = (spec[..dash].trim().parse::<i64>(), spec[dash + 1..].trim().parse::<i64>()) {
+            if let (Ok(a), Ok(b)) = (
+                spec[..dash].trim().parse::<i64>(),
+                spec[dash + 1..].trim().parse::<i64>(),
+            ) {
                 return (a, b + 1);
             }
         } else if let Ok(a) = spec.trim().parse::<i64>() {
@@ -2794,15 +2802,24 @@ fn exception_instance(exc: &ExceptionValue) -> Value {
     // CPython parses from the message shape. Both attribute reads
     // (probed: e.start == 1 on a position-1 error) gate this derivation;
     // other exception classes never see the attrs.
-    if matches!(exc.class.as_str(), "UnicodeEncodeError" | "UnicodeDecodeError") {
+    if matches!(
+        exc.class.as_str(),
+        "UnicodeEncodeError" | "UnicodeDecodeError"
+    ) {
         let text = match exc.args.first() {
             Some(Value::Str(sv)) => sv.as_str().to_string(),
             _ => String::new(),
         };
         let (s, e) = parse_unicode_err_positions(&text);
         let mut a = o.attrs.lock().unwrap_or_else(|p| p.into_inner());
-        let _ = a.set(Value::Str(PyString::new("start")), Value::Int(ap_obj::Int::from_i64(s)));
-        let _ = a.set(Value::Str(PyString::new("end")), Value::Int(ap_obj::Int::from_i64(e)));
+        let _ = a.set(
+            Value::Str(PyString::new("start")),
+            Value::Int(ap_obj::Int::from_i64(s)),
+        );
+        let _ = a.set(
+            Value::Str(PyString::new("end")),
+            Value::Int(ap_obj::Int::from_i64(e)),
+        );
     }
     // Carry the class payload back-ref when the class is a real class.
     let interp = current_interp_for_bindings();
@@ -4485,7 +4502,11 @@ fn eval_compare(left: &Value, op: CmpOp, right: &Value) -> Result<bool, Flow> {
         };
         if let (Value::List(_), Value::List(_)) | (Value::Tuple(_), Value::Tuple(_)) = (left, right)
         {
-            return Ok(if matches!(op, CmpOp::Eq) { pairwise } else { !pairwise });
+            return Ok(if matches!(op, CmpOp::Eq) {
+                pairwise
+            } else {
+                !pairwise
+            });
         }
     }
     match op {
@@ -5120,7 +5141,6 @@ pub(crate) fn eval_binop(a: &Value, op: BinOp, b: &Value) -> EResult {
         Value::Obj(u)
     }
 
-
     // 02.04a (interp bug #7b): PEP 604 union `int | str` — types.py reads
     // type(int | str) at import. T1: produce the SAME __union__ Opaque the
     // main interception builds (parts parked) so chains like
@@ -5361,69 +5381,67 @@ pub(crate) fn eval_binop(a: &Value, op: BinOp, b: &Value) -> EResult {
     // on a UserInstance converts via __int__/__index__. ap-obj's percent
     // formatter can't dispatch user dunders (leaf crate); normalize here.
     if op == BinOp::Mod {
-     if let Value::Str(_) = a {
-         let interp = current_interp_for_bindings();
-         // s023: %r over user instances must dispatch user __repr__ —
-         // ap-obj's percent_format renders through the value layer
-         // (fmt_repr/default_repr), which misses class-level __repr__.
-         // Pre-compute the runtime repr (repr_with_classes walks the
-         // MRO) and stash it in repr_text — default_repr consults that
-         // first, so the format layer renders the user repr. Only when
-         // a user __repr__ exists (otherwise the dynamic default is
-         // already correct).
-         {
-             fn stash_recursive(interp: &std::sync::Arc<crate::frame::Interpreter>, v: &Value) {
-                 match v {
-                     Value::List(l) => {
-                         for x in l.items().iter() {
-                             stash_recursive(interp, x);
-                         }
-                     }
-                     Value::Tuple(t) => {
-                         for x in t.0.iter() {
-                             stash_recursive(interp, x);
-                         }
-                     }
-                     Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
-                         // Leave already-stashed reprs alone (idempotent;
-                         // the container path re-stashes every arg).
-                         if o.repr_text
-                             .lock()
-                             .unwrap_or_else(|p| p.into_inner())
-                             .is_some()
-                         {
-                             return;
-                         }
-                         if let Some((f, _)) =
-                             crate::classes::special_lookup(interp, v, "__repr__")
-                         {
-                             if let Ok(rv) =
-                                 crate::interp::call_value_pub(interp, &f, &[v.clone()], &[])
-                             {
-                                 if let Value::Str(sv) = rv {
-                                     *o.repr_text
-                                         .lock()
-                                         .unwrap_or_else(|p| p.into_inner()) =
-                                         Some(sv.as_str().to_string());
-                                 }
-                             }
-                         }
-                     }
-                     _ => {}
-                 }
-             }
-             if let Value::Tuple(t) = b {
-                 for x in t.0.iter() {
-                     stash_recursive(&interp, x);
-                 }
-             } else {
-                 stash_recursive(&interp, b);
-             }
-         }
-         let norm = |v: &Value| -> Value {
-             if !matches!(v, Value::Obj(_)) {
-                 return v.clone();
-             }
+        if let Value::Str(_) = a {
+            let interp = current_interp_for_bindings();
+            // s023: %r over user instances must dispatch user __repr__ —
+            // ap-obj's percent_format renders through the value layer
+            // (fmt_repr/default_repr), which misses class-level __repr__.
+            // Pre-compute the runtime repr (repr_with_classes walks the
+            // MRO) and stash it in repr_text — default_repr consults that
+            // first, so the format layer renders the user repr. Only when
+            // a user __repr__ exists (otherwise the dynamic default is
+            // already correct).
+            {
+                fn stash_recursive(interp: &std::sync::Arc<crate::frame::Interpreter>, v: &Value) {
+                    match v {
+                        Value::List(l) => {
+                            for x in l.items().iter() {
+                                stash_recursive(interp, x);
+                            }
+                        }
+                        Value::Tuple(t) => {
+                            for x in t.0.iter() {
+                                stash_recursive(interp, x);
+                            }
+                        }
+                        Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
+                            // Leave already-stashed reprs alone (idempotent;
+                            // the container path re-stashes every arg).
+                            if o.repr_text
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner())
+                                .is_some()
+                            {
+                                return;
+                            }
+                            if let Some((f, _)) =
+                                crate::classes::special_lookup(interp, v, "__repr__")
+                            {
+                                if let Ok(rv) =
+                                    crate::interp::call_value_pub(interp, &f, &[v.clone()], &[])
+                                {
+                                    if let Value::Str(sv) = rv {
+                                        *o.repr_text.lock().unwrap_or_else(|p| p.into_inner()) =
+                                            Some(sv.as_str().to_string());
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if let Value::Tuple(t) = b {
+                    for x in t.0.iter() {
+                        stash_recursive(&interp, x);
+                    }
+                } else {
+                    stash_recursive(&interp, b);
+                }
+            }
+            let norm = |v: &Value| -> Value {
+                if !matches!(v, Value::Obj(_)) {
+                    return v.clone();
+                }
                 for slot in ["__int__", "__index__"] {
                     if let Some((f, _)) = crate::classes::special_lookup(&interp, v, slot) {
                         if let Ok(r) = call_value_pub3(&f, std::slice::from_ref(v)) {
@@ -6306,7 +6324,9 @@ fn call_value_inner_impl(
                                             // attr_get (fn table), not stored
                                             // in attrs — call it.
                                             let globals = crate::interp::attr_get_public(
-                                                interp, &recv, "__globals__",
+                                                interp,
+                                                &recv,
+                                                "__globals__",
                                             )
                                             .ok()
                                             .flatten();
@@ -6438,9 +6458,8 @@ fn call_value_inner_impl(
                             match crate::classes::type_of(interp, &class_v) {
                                 Some(t) => match t
                                     .dict
-                                    .get(&Value::Str(PyString::new(
-                                        "__ap_namedtuple_fields__",
-                                    ))) {
+                                    .get(&Value::Str(PyString::new("__ap_namedtuple_fields__")))
+                                {
                                     Some(Value::List(l)) => l
                                         .items()
                                         .iter()
@@ -6477,9 +6496,7 @@ fn call_value_inner_impl(
                                 None => {
                                     return Err(raise(
                                         "ValueError",
-                                        format!(
-                                            "Got unexpected field names: {k:?}"
-                                        ),
+                                        format!("Got unexpected field names: {k:?}"),
                                     ));
                                 }
                             }
@@ -6492,13 +6509,7 @@ fn call_value_inner_impl(
                             .cloned()
                             .unwrap_or(Value::None);
                         if let Some(t) = crate::classes::type_of(interp, &class_v) {
-                            return crate::classes::instantiate(
-                                interp,
-                                &class_v,
-                                &t,
-                                &values,
-                                &[],
-                            );
+                            return crate::classes::instantiate(interp, &class_v, &t, &values, &[]);
                         }
                         return Ok(Value::None);
                     }
@@ -6580,9 +6591,7 @@ fn call_value_inner_impl(
                                             l.items()
                                                 .iter()
                                                 .filter_map(|x| match x {
-                                                    Value::Str(sv) => {
-                                                        Some(sv.as_str().to_string())
-                                                    }
+                                                    Value::Str(sv) => Some(sv.as_str().to_string()),
                                                     _ => None,
                                                 })
                                                 .collect::<Vec<String>>(),
@@ -6616,30 +6625,31 @@ fn call_value_inner_impl(
                             .first()
                             .cloned()
                             .unwrap_or(Value::None);
-                        let (typename, fields): (String, Vec<String>) = match crate::classes::type_of(interp, &class_v) {
-                            Some(t) => {
-                                let fs = t
-                                    .dict
-                                    .get(&Value::Str(PyString::new("__ap_namedtuple_fields__")))
-                                    .and_then(|v| match v {
-                                        Value::List(l) => Some(
-                                            l.items()
-                                                .iter()
-                                                .filter_map(|x| match x {
-                                                    Value::Str(sv) => {
-                                                        Some(sv.as_str().to_string())
-                                                    }
-                                                    _ => None,
-                                                })
-                                                .collect::<Vec<String>>(),
-                                        ),
-                                        _ => None,
-                                    })
-                                    .unwrap_or_default();
-                                (t.name.clone(), fs)
-                            }
-                            None => (String::new(), Vec::new()),
-                        };
+                        let (typename, fields): (String, Vec<String>) =
+                            match crate::classes::type_of(interp, &class_v) {
+                                Some(t) => {
+                                    let fs = t
+                                        .dict
+                                        .get(&Value::Str(PyString::new("__ap_namedtuple_fields__")))
+                                        .and_then(|v| match v {
+                                            Value::List(l) => Some(
+                                                l.items()
+                                                    .iter()
+                                                    .filter_map(|x| match x {
+                                                        Value::Str(sv) => {
+                                                            Some(sv.as_str().to_string())
+                                                        }
+                                                        _ => None,
+                                                    })
+                                                    .collect::<Vec<String>>(),
+                                            ),
+                                            _ => None,
+                                        })
+                                        .unwrap_or_default();
+                                    (t.name.clone(), fs)
+                                }
+                                None => (String::new(), Vec::new()),
+                            };
                         let mut out = format!("{typename}(");
                         for (i, f) in fields.iter().enumerate() {
                             if i > 0 {
@@ -6658,8 +6668,7 @@ fn call_value_inner_impl(
                             let rendered = crate::interp::repr_with_classes_public(interp, &val)?;
                             let rendered = match &rendered {
                                 Value::Str(sv) => sv.as_str().to_string(),
-                                other => crate::builtins::py_str_of(other)
-                                    .unwrap_or_default(),
+                                other => crate::builtins::py_str_of(other).unwrap_or_default(),
                             };
                             out.push_str(&format!("{f}={rendered}"));
                         }
@@ -7607,8 +7616,7 @@ fn call_value_inner_impl(
                                     Value::Set(_) => "set",
                                     _ => "frozenset",
                                 };
-                                let cls_v =
-                                    crate::builtins_modules::interned_type_pub(cls);
+                                let cls_v = crate::builtins_modules::interned_type_pub(cls);
                                 return Ok(Value::Tuple(Gc::new(Tuple(vec![
                                     cls_v,
                                     Value::List(ap_obj::value::PyList::from_vec(vec![
@@ -7678,10 +7686,8 @@ fn call_value_inner_impl(
                                         Value::Obj(io)
                                             if io.kind == ap_obj::ObjKind::UserInstance =>
                                         {
-                                            let attrs = io
-                                                .attrs
-                                                .lock()
-                                                .unwrap_or_else(|p| p.into_inner());
+                                            let attrs =
+                                                io.attrs.lock().unwrap_or_else(|p| p.into_inner());
                                             let has_int_payload = attrs
                                                 .get(&Value::Str(PyString::new("__ap_int__")))
                                                 .is_some();
@@ -7915,26 +7921,24 @@ fn call_value_inner_impl(
                                         // str base) — Enum.__repr__ ("SC.A")
                                         // must NOT answer str(). _value_ is an
                                         // INSTANCE attr — read it directly.
-                                        let strenum_value: Option<String> =
-                                            match &subject {
-                                                Value::Obj(io)
-                                                    if io.kind == ap_obj::ObjKind::UserInstance =>
+                                        let strenum_value: Option<String> = match &subject {
+                                            Value::Obj(io)
+                                                if io.kind == ap_obj::ObjKind::UserInstance =>
+                                            {
+                                                match io
+                                                    .attrs
+                                                    .lock()
+                                                    .unwrap_or_else(|p| p.into_inner())
+                                                    .get(&Value::Str(PyString::new("_value_")))
                                                 {
-                                                    match io
-                                                        .attrs
-                                                        .lock()
-                                                        .unwrap_or_else(|p| p.into_inner())
-                                                        .get(&Value::Str(PyString::new(
-                                                            "_value_",
-                                                        ))) {
-                                                        Some(Value::Str(s)) => {
-                                                            Some(s.as_str().to_string())
-                                                        }
-                                                        _ => None,
+                                                    Some(Value::Str(s)) => {
+                                                        Some(s.as_str().to_string())
                                                     }
+                                                    _ => None,
                                                 }
-                                                _ => None,
-                                            };
+                                            }
+                                            _ => None,
+                                        };
                                         if let Some(val) = strenum_value {
                                             Ok(val)
                                         } else {
@@ -8961,10 +8965,7 @@ fn call_type_ctor(
                 // parser, and serve CPython-shaped 5-tuples as a
                 // list-backed iterator the vendored tokenize.py feeds
                 // to TokenInfo._make.
-                let readline = args
-                    .first()
-                    .cloned()
-                    .unwrap_or(Value::None);
+                let readline = args.first().cloned().unwrap_or(Value::None);
                 let mut lines: Vec<String> = Vec::new();
                 loop {
                     match crate::interp::call_value_pub3(&readline, &[]) {
@@ -10039,11 +10040,8 @@ fn gen_pull(interp: &Arc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> {
     // yield-from reads it on the pull AFTER the sub returns). Callers that
     // need a clean slot clear it themselves.
     ensure_fiber(interp, id)?;
-    let r = crate::generators::resume_live(
-        interp,
-        id,
-        crate::generators::GenInput::Send(Value::None),
-    );
+    let r =
+        crate::generators::resume_live(interp, id, crate::generators::GenInput::Send(Value::None));
     pump_outcome(interp, r, None)
 }
 
@@ -10051,7 +10049,10 @@ fn gen_pull(interp: &Arc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> {
 fn ensure_fiber(interp: &Arc<Interpreter>, id: u64) -> Result<(), Flow> {
     let needs = {
         let gens = interp.generators.lock().unwrap_or_else(|p| p.into_inner());
-        matches!(gens.get(&id), Some(GenFrame::Fn { .. } | GenFrame::GenExpr { .. }))
+        matches!(
+            gens.get(&id),
+            Some(GenFrame::Fn { .. } | GenFrame::GenExpr { .. })
+        )
     };
     if !needs {
         return Ok(());
@@ -11259,9 +11260,14 @@ fn pull_iter(interp: &Arc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> 
     } else {
         let is_callfn = {
             let its = interp.iterators.lock().unwrap_or_else(|p| p.into_inner());
-            its.get(&id).map(|it| {
-                matches!(&*it.state.lock().unwrap_or_else(|p| p.into_inner()), IterState::CallFn { .. })
-            }).unwrap_or(false)
+            its.get(&id)
+                .map(|it| {
+                    matches!(
+                        &*it.state.lock().unwrap_or_else(|p| p.into_inner()),
+                        IterState::CallFn { .. }
+                    )
+                })
+                .unwrap_or(false)
         };
         if is_callfn {
             loop {
@@ -11270,9 +11276,11 @@ fn pull_iter(interp: &Arc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> 
                     let it = its.get(&id);
                     match it.and_then(|it| {
                         match &*it.state.lock().unwrap_or_else(|p| p.into_inner()) {
-                            IterState::CallFn { func, sentinel, done } => {
-                                Some((func.clone(), sentinel.clone(), *done))
-                            }
+                            IterState::CallFn {
+                                func,
+                                sentinel,
+                                done,
+                            } => Some((func.clone(), sentinel.clone(), *done)),
                             _ => None,
                         }
                     }) {
@@ -11290,7 +11298,9 @@ fn pull_iter(interp: &Arc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> 
                         // (iter(lines).__next__) — termination, not error.
                         let its = interp.iterators.lock().unwrap_or_else(|p| p.into_inner());
                         if let Some(it) = its.get(&id) {
-                            if let IterState::CallFn { done, .. } = &mut *it.state.lock().unwrap_or_else(|p| p.into_inner()) {
+                            if let IterState::CallFn { done, .. } =
+                                &mut *it.state.lock().unwrap_or_else(|p| p.into_inner())
+                            {
                                 *done = true;
                             }
                         }
@@ -11301,7 +11311,9 @@ fn pull_iter(interp: &Arc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> 
                 if ap_obj::ops::eq(&r, &sent) {
                     let its = interp.iterators.lock().unwrap_or_else(|p| p.into_inner());
                     if let Some(it) = its.get(&id) {
-                        if let IterState::CallFn { done, .. } = &mut *it.state.lock().unwrap_or_else(|p| p.into_inner()) {
+                        if let IterState::CallFn { done, .. } =
+                            &mut *it.state.lock().unwrap_or_else(|p| p.into_inner())
+                        {
                             *done = true;
                         }
                     }
@@ -11340,10 +11352,8 @@ fn pull_iter(interp: &Arc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> 
             // see an EMPTY iterator, not a missing entry. Re-insert a fresh
             // exhausted iterator under the id so iter(it) re-entrancy works.
             if !its.contains_key(&id) {
-                let fresh = crate::iter::PyIterator::new(crate::iter::IterState::Seq(
-                    Vec::new(),
-                    0,
-                ));
+                let fresh =
+                    crate::iter::PyIterator::new(crate::iter::IterState::Seq(Vec::new(), 0));
                 its.insert(id, fresh);
             }
             its.get(&id).map(|it| it.clone())
@@ -11425,8 +11435,14 @@ fn render_interp_value(
             // element __repr__s through repr_with_classes (repr([R()]) ->
             // [R!]); user_repr only answers the top-level object, so a
             // list of user instances printed defaults inside f-strings.
-            if matches!(v, Value::List(_) | Value::Tuple(_) | Value::Dict(_) | Value::Set(_) | Value::Frozen(_))
-            {
+            if matches!(
+                v,
+                Value::List(_)
+                    | Value::Tuple(_)
+                    | Value::Dict(_)
+                    | Value::Set(_)
+                    | Value::Frozen(_)
+            ) {
                 return repr_with_classes(interp, v).map(|rv| match rv {
                     Value::Str(sv) => sv.as_str().to_string(),
                     other => crate::builtins::py_str_of(&other).unwrap_or_default(),
@@ -11506,11 +11522,12 @@ fn str_of_value(interp: &Arc<Interpreter>, _frame: &Arc<Frame>, v: &Value) -> Re
         // 02.08 gap (s013): str() over a CONTAINER == repr() in CPython —
         // f-string {self.kids} on a list of user instances rendered the
         // default instance form because to_str bypassed repr_with_classes.
-        Value::List(_) | Value::Tuple(_) | Value::Dict(_) | Value::Set(_)
-        | Value::Frozen(_) => repr_with_classes(interp, v).map(|rv| match rv {
-            Value::Str(sv) => sv.as_str().to_string(),
-            other => crate::builtins::py_str_of(&other).unwrap_or_default(),
-        }),
+        Value::List(_) | Value::Tuple(_) | Value::Dict(_) | Value::Set(_) | Value::Frozen(_) => {
+            repr_with_classes(interp, v).map(|rv| match rv {
+                Value::Str(sv) => sv.as_str().to_string(),
+                other => crate::builtins::py_str_of(&other).unwrap_or_default(),
+            })
+        }
         _ => ap_obj::ops::to_str(v).map_err(Flow::from_py),
     }
 }
@@ -11827,7 +11844,6 @@ fn user_len(interp: &Arc<Interpreter>, v: &Value) -> Result<Option<i64>, Flow> {
         None => Ok(None),
     }
 }
-
 
 /// 02.08f (s020/s026): annotation recording. dump_expr_inline renders BOTH
 /// `a: int` and `b: "str"` as quoted strings ('int' / "'str'"); downstream
@@ -12273,32 +12289,25 @@ fn class_protocol_builtin(
                             let is_user = matches!(&mt_repr, Value::Obj(rm) if rm.kind == ap_obj::ObjKind::Function);
                             if is_user {
                                 let args = [subject.unwrap().clone()];
-                                if let Ok(r) = crate::interp::call_value_pub(
-                                    interp,
-                                    &mt_repr,
-                                    &args,
-                                    &[],
-                                ) {
+                                if let Ok(r) =
+                                    crate::interp::call_value_pub(interp, &mt_repr, &args, &[])
+                                {
                                     return Some(Ok(r));
                                 }
                             }
                         }
                     }
-                    if let Some(mt_repr) = crate::importer::sys_modules_get("enum").and_then(
-                        |em| {
-                            crate::interp::attr_get_public(&interp, &em, "EnumType")
-                                .ok()
-                                .flatten()
-                                .and_then(|mt| {
-                                    crate::interp::attr_get_public(&interp, &mt, "__repr__")
-                                        .ok()
-                                })
-                                .flatten()
-                        },
-                    ) {
+                    if let Some(mt_repr) = crate::importer::sys_modules_get("enum").and_then(|em| {
+                        crate::interp::attr_get_public(&interp, &em, "EnumType")
+                            .ok()
+                            .flatten()
+                            .and_then(|mt| {
+                                crate::interp::attr_get_public(&interp, &mt, "__repr__").ok()
+                            })
+                            .flatten()
+                    }) {
                         let args = [subject.unwrap().clone()];
-                        if let Ok(r) =
-                            crate::interp::call_value_pub(&interp, &mt_repr, &args, &[])
+                        if let Ok(r) = crate::interp::call_value_pub(&interp, &mt_repr, &args, &[])
                         {
                             return Some(Ok(r));
                         }
@@ -12419,10 +12428,7 @@ fn class_protocol_builtin(
                     // collections.abc KeysView/ItemsView/ValuesView
                     // _check_methods subclasshook probes.
                     if o.kind == ap_obj::ObjKind::Opaque
-                        && matches!(
-                            o.name.as_str(),
-                            "dict_keys" | "dict_values" | "dict_items"
-                        )
+                        && matches!(o.name.as_str(), "dict_keys" | "dict_values" | "dict_items")
                     {
                         let t = crate::builtins::interned_type(interp, &o.name);
                         return Some(Ok(t));
@@ -12497,17 +12503,11 @@ fn class_protocol_builtin(
                 }
                 // 02.08 (s029): operator.itemgetter/methodcaller markers
                 // report their CPython type names.
-                if o.kind == ap_obj::ObjKind::BuiltinFn
-                    && o.name.starts_with("<itemgetter:")
-                {
+                if o.kind == ap_obj::ObjKind::BuiltinFn && o.name.starts_with("<itemgetter:") {
                     return Some(Ok(Value::Str(PyString::new("itemgetter"))));
                 }
-                if o.kind == ap_obj::ObjKind::BuiltinFn
-                    && o.name.starts_with("<methodcaller:")
-                {
-                    return Some(Ok(Value::Str(PyString::new(
-                        "operator.methodcaller",
-                    ))));
+                if o.kind == ap_obj::ObjKind::BuiltinFn && o.name.starts_with("<methodcaller:") {
+                    return Some(Ok(Value::Str(PyString::new("operator.methodcaller"))));
                 }
                 // 02.08-full p2: re.Pattern / re.Match report their Python
                 // type names (type(p).__name__ == "Pattern", isinstance gates).
@@ -13030,7 +13030,8 @@ fn class_isinstance(interp: &Arc<Interpreter>, args: &[Value]) -> EResult {
                 "dict_values" => "ValuesView",
                 _ => "",
             };
-            if !view_of.is_empty() && matches!(t, Value::Obj(_) if crate::classes::type_name_of_check(t) == view_of)
+            if !view_of.is_empty()
+                && matches!(t, Value::Obj(_) if crate::classes::type_name_of_check(t) == view_of)
             {
                 return Ok(Value::Bool(true));
             }
@@ -13042,9 +13043,7 @@ fn class_isinstance(interp: &Arc<Interpreter>, args: &[Value]) -> EResult {
             {
                 return Ok(Value::Bool(true));
             }
-            if vo.name == "dict_keys"
-                && crate::classes::type_name_of_check(t) == "Set"
-            {
+            if vo.name == "dict_keys" && crate::classes::type_name_of_check(t) == "Set" {
                 return Ok(Value::Bool(true));
             }
         }
@@ -14054,12 +14053,15 @@ fn attr_get(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Option
             // 02.08 (s029): operator.itemgetter/methodcaller markers
             // report their CPython class names via __class__.
             Value::Obj(o)
-                if o.kind == ap_obj::ObjKind::BuiltinFn
-                    && o.name.starts_with("<itemgetter:") => "itemgetter",
+                if o.kind == ap_obj::ObjKind::BuiltinFn && o.name.starts_with("<itemgetter:") =>
+            {
+                "itemgetter"
+            }
             Value::Obj(o)
-                if o.kind == ap_obj::ObjKind::BuiltinFn
-                    && o.name.starts_with("<methodcaller:") =>
-                "operator.methodcaller",
+                if o.kind == ap_obj::ObjKind::BuiltinFn && o.name.starts_with("<methodcaller:") =>
+            {
+                "operator.methodcaller"
+            }
             other => other.type_name(),
         };
         let interp = interp;
@@ -15115,30 +15117,28 @@ fn attr_get(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                     // the corpus lambda references a GLOBAL, so CPython's
                     // nonlocals set is ALSO empty).
                     let empty_bytes: Value = Value::Bytes(Gc::new(Vec::new()));
-                    let _ = code.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
-                        Value::Str(PyString::new("co_code")),
-                        empty_bytes.clone(),
-                    );
-                    let _ = code.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
-                        Value::Str(PyString::new("_co_code_adaptive")),
-                        empty_bytes,
-                    );
+                    let _ = code
+                        .attrs
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .set(Value::Str(PyString::new("co_code")), empty_bytes.clone());
+                    let _ = code
+                        .attrs
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .set(Value::Str(PyString::new("_co_code_adaptive")), empty_bytes);
                     let _ = code.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
                         Value::Str(PyString::new("co_consts")),
                         Value::Tuple(Gc::new(Tuple(Vec::new()))),
                     );
-                    let cl = ap_obj::PyObject::new(
-                        ap_obj::ObjKind::BuiltinFn,
-                        "__ap_code_lines__",
-                    );
-                    let _ = code.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
-                        Value::Str(PyString::new("co_lines")),
-                        Value::Obj(cl),
-                    );
-                    let vf = ap_obj::PyObject::new(
-                        ap_obj::ObjKind::BuiltinFn,
-                        "__ap_code_varname__",
-                    );
+                    let cl = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "__ap_code_lines__");
+                    let _ = code
+                        .attrs
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .set(Value::Str(PyString::new("co_lines")), Value::Obj(cl));
+                    let vf =
+                        ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "__ap_code_varname__");
                     let _ = code.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
                         Value::Str(PyString::new("_varname_from_oparg")),
                         Value::Obj(vf),
@@ -15147,14 +15147,13 @@ fn attr_get(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                     // passes the result as an iterator; the function-stub
                     // code object needs the same marker the frame stub
                     // carries (the parked-tuple payload).
-                    let cp = ap_obj::PyObject::new(
-                        ap_obj::ObjKind::BuiltinFn,
-                        "__ap_code_positions__",
-                    );
-                    let _ = code.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
-                        Value::Str(PyString::new("co_positions")),
-                        Value::Obj(cp),
-                    );
+                    let cp =
+                        ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "__ap_code_positions__");
+                    let _ = code
+                        .attrs
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .set(Value::Str(PyString::new("co_positions")), Value::Obj(cp));
                     return Ok(Some(Value::Obj(code)));
                 }
                 _ => {}
@@ -15534,7 +15533,10 @@ fn attr_get(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                     return Ok(Some(Value::None));
                 }
                 let interp2 = crate::builtins_modules::current_interp().unwrap_or_else(interp_rc);
-                Ok(Some(crate::builtins::py_frame_stub(&interp2, (idx - 1) as usize)))
+                Ok(Some(crate::builtins::py_frame_stub(
+                    &interp2,
+                    (idx - 1) as usize,
+                )))
             }
             ap_obj::ObjKind::Module => {
                 let ns = o.module_ns.lock().unwrap_or_else(|p| p.into_inner());

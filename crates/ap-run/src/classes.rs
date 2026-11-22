@@ -3041,10 +3041,7 @@ pub fn special_lookup(
                     .unwrap_or_else(|p| p.into_inner())
                     .clone()
                 {
-                    let in_dict = t
-                        .dict
-                        .get(&Value::Str(PyString::new(name)))
-                        .is_some();
+                    let in_dict = t.dict.get(&Value::Str(PyString::new(name))).is_some();
                     if in_dict {
                         return t.lookup_with_owner(name);
                     }
@@ -3200,18 +3197,48 @@ fn type_name_of(v: &Value) -> String {
 /// "wrapper_descriptor" (PyObject::type_name Descriptor arm reports
 /// self.name).
 fn slot_wrapper_marker(type_name: &str, attr: &str) -> Option<Value> {
-    use ap_obj::{ObjKind, PyObject};
     use ap_obj::value::PyString;
+    use ap_obj::{ObjKind, PyObject};
     const NUMERIC_TYPES: &[&str] = &["int", "float", "bool"];
     const SEQ_TYPES: &[&str] = &["str", "bytes", "list", "tuple"];
     const NUMERIC_DUNDERS: &[&str] = &[
-        "__add__", "__radd__", "__sub__", "__rsub__", "__mul__", "__rmul__",
-        "__truediv__", "__rtruediv__", "__floordiv__", "__rfloordiv__",
-        "__mod__", "__rmod__", "__divmod__", "__rdivmod__", "__pow__",
-        "__rpow__", "__lshift__", "__rlshift__", "__rshift__", "__rrshift__",
-        "__and__", "__rand__", "__or__", "__ror__", "__xor__", "__rxor__",
-        "__neg__", "__pos__", "__abs__", "__invert__", "__int__", "__float__",
-        "__index__", "__round__", "__trunc__", "__floor__", "__ceil__",
+        "__add__",
+        "__radd__",
+        "__sub__",
+        "__rsub__",
+        "__mul__",
+        "__rmul__",
+        "__truediv__",
+        "__rtruediv__",
+        "__floordiv__",
+        "__rfloordiv__",
+        "__mod__",
+        "__rmod__",
+        "__divmod__",
+        "__rdivmod__",
+        "__pow__",
+        "__rpow__",
+        "__lshift__",
+        "__rlshift__",
+        "__rshift__",
+        "__rrshift__",
+        "__and__",
+        "__rand__",
+        "__or__",
+        "__ror__",
+        "__xor__",
+        "__rxor__",
+        "__neg__",
+        "__pos__",
+        "__abs__",
+        "__invert__",
+        "__int__",
+        "__float__",
+        "__index__",
+        "__round__",
+        "__trunc__",
+        "__floor__",
+        "__ceil__",
     ];
     const SEQ_DUNDERS: &[&str] = &["__add__", "__mul__", "__rmul__"];
     let is_num = NUMERIC_TYPES.contains(&type_name);
@@ -3692,11 +3719,9 @@ fn class_value_for(t: &Arc<TypeRef>) -> Value {
 /// by them miss (no dict sorting, no width breaking, no recursion
 /// detection in pprint, and identity checks `f1 is f2` failing).
 pub fn object_virtual_marker_cached(name: &str) -> Value {
-    static CACHE: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashMap<String, Value>>,
-    > = std::sync::OnceLock::new();
-    let cache = CACHE
-        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Value>>> =
+        std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
     let mut guard = cache.lock().unwrap_or_else(|p| p.into_inner());
     if let Some(v) = guard.get(name) {
         return v.clone();
@@ -3750,17 +3775,52 @@ fn class_attr_get(
             // typename -> expected home module) or the gate falls through
             // to the native truncated instance repr.
             const BUILTIN_TYPE_NAMES: &[&str] = &[
-                "object", "type", "str", "bytes", "bytearray", "int",
-                "float", "bool", "complex", "list", "tuple", "dict", "set",
-                "frozenset", "range", "slice", "BaseException", "Exception",
-                "NoneType", "module", "function", "builtin_function_or_method",
-                "dict_keys", "dict_values", "dict_items", "mappingproxy",
-                "SimpleNamespace", "super", "property", "classmethod",
-                "staticmethod", "Generator", "coroutine", "OrderedDict",
-                "defaultdict", "Counter", "ChainMap", "UserDict", "UserList",
-                "UserString", "deque",
+                "object",
+                "type",
+                "str",
+                "bytes",
+                "bytearray",
+                "int",
+                "float",
+                "bool",
+                "complex",
+                "list",
+                "tuple",
+                "dict",
+                "set",
+                "frozenset",
+                "range",
+                "slice",
+                "BaseException",
+                "Exception",
+                "NoneType",
+                "module",
+                "function",
+                "builtin_function_or_method",
+                "dict_keys",
+                "dict_values",
+                "dict_items",
+                "mappingproxy",
+                "SimpleNamespace",
+                "super",
+                "property",
+                "classmethod",
+                "staticmethod",
+                "Generator",
+                "coroutine",
+                "OrderedDict",
+                "defaultdict",
+                "Counter",
+                "ChainMap",
+                "UserDict",
+                "UserList",
+                "UserString",
+                "deque",
             ];
-            if t.dict.get(&Value::Str(PyString::new("__module__"))).is_none() {
+            if t.dict
+                .get(&Value::Str(PyString::new("__module__")))
+                .is_none()
+            {
                 if BUILTIN_TYPE_NAMES.iter().any(|n| *n == t.name) {
                     return Ok(Value::Str(PyString::new("builtins")));
                 }
@@ -3769,10 +3829,25 @@ fn class_attr_get(
                 // — typing._should_unflatten_callable_args gates on the
                 // origin's __module__).
                 if ap_obj::MODULE_NAME != "collections.abc"
-                    && matches!(t.name.as_str(), "Callable" | "Hashable" | "Sized" | "Iterable"
-                        | "Iterator" | "Container" | "Collection" | "Sequence"
-                        | "Mapping" | "MutableMapping" | "Set" | "MutableSet"
-                        | "MappingView" | "KeysView" | "ItemsView" | "ValuesView")
+                    && matches!(
+                        t.name.as_str(),
+                        "Callable"
+                            | "Hashable"
+                            | "Sized"
+                            | "Iterable"
+                            | "Iterator"
+                            | "Container"
+                            | "Collection"
+                            | "Sequence"
+                            | "Mapping"
+                            | "MutableMapping"
+                            | "Set"
+                            | "MutableSet"
+                            | "MappingView"
+                            | "KeysView"
+                            | "ItemsView"
+                            | "ValuesView"
+                    )
                 {
                     return Ok(Value::Str(PyString::new("collections.abc")));
                 }
@@ -4163,13 +4238,12 @@ pub fn attr_set_protocol(
                     .read()
                     .unwrap_or_else(|p| p.into_inner())
                     .as_ref()
-                    .and_then(|t| match t
-                        .dict
-                        .get(&Value::Str(PyString::new("_member_map_")))
-                    {
-                        Some(v) => Some(v.clone()),
-                        None => None,
-                    });
+                    .and_then(
+                        |t| match t.dict.get(&Value::Str(PyString::new("_member_map_"))) {
+                            Some(v) => Some(v.clone()),
+                            None => None,
+                        },
+                    );
                 if let Some(Value::Dict(mm)) = member_map {
                     if mm.get_str(name).is_some() {
                         return Err(raise(
@@ -4571,10 +4645,7 @@ pub fn instantiate(
         if !abs_set.is_empty() {
             let mut sorted_names = abs_set.clone();
             sorted_names.sort();
-            let quoted: Vec<String> = sorted_names
-                .iter()
-                .map(|n| format!("'{}'", n))
-                .collect();
+            let quoted: Vec<String> = sorted_names.iter().map(|n| format!("'{}'", n)).collect();
             let msg = if sorted_names.len() == 1 {
                 format!(
                     "Can't instantiate abstract class {} without an implementation for abstract method {}",
@@ -4671,11 +4742,10 @@ pub fn instantiate(
             // s014: CPython namedtuples are tuples — methods.rs subscript,
             // len(), iter() and tuple-eq all read the parked <values> list.
             // Without it n[0]/len(n)/n == (1, 2) failed while n.a/n.b worked.
-            let _ = io
-                .attrs
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .set(Value::Str(PyString::new("<values>")), crate::builtins_modules::list(values));
+            let _ = io.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
+                Value::Str(PyString::new("<values>")),
+                crate::builtins_modules::list(values),
+            );
         }
         return Ok(obj);
     }
