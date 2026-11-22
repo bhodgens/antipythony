@@ -59,6 +59,17 @@ else
     echo "package-release: WARNING libap_aot_crt.a not found — archive will not support 'build' off-checkout" >&2
 fi
 
+# --- C-extension headers (Plan 10 leaf 10.03) --------------------------------
+# `antipythony build-ext` compiles user C sources against apx_python.h via
+# APX_INCLUDE; a release binary on a fresh machine has no checkout, so the
+# archive ships the header (docs/build-ext.md is the user contract).
+if [ -f "$ROOT/include/apx_python.h" ]; then
+    mkdir -p "$STAGE/$NAME/include"
+    cp "$ROOT/include/apx_python.h" "$STAGE/$NAME/include/apx_python.h"
+else
+    echo "package-release: WARNING include/apx_python.h not found — archive will not support 'build-ext' off-checkout" >&2
+fi
+
 # --- a README so the archive is self-describing ------------------------------
 cat > "$STAGE/$NAME/README.txt" <<EOF
 antipythony ${TARGET}
@@ -70,6 +81,8 @@ Layout:
   vendored_stdlib/         the Python 3.14 stdlib tree served by the importer.
                            install.sh places this and sets ANTIPTYHONY_STDLIB;
                            without it, imports of os and friends cannot resolve.
+  include/apx_python.h     C-extension header (build-ext compiles user C
+                           sources against it; see docs/build-ext.md)
   THIRD_PARTY_NOTICES      full third-party dependency notices (Apache-2.0
                            WITH LLVM-exception workspace; see also LICENSE)
 
