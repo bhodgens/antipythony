@@ -187,9 +187,11 @@ impl Drop for HeavyGateLock {
 fn memory_pressure_ok() -> bool {
     let mut level: libc::c_int = 0;
     let mut size = std::mem::size_of::<libc::c_int>();
+    let sysctl_name =
+        std::ffi::CString::new("kern.memorystatus_vm_pressure_level").expect("static sysctl name");
     let rc = unsafe {
         libc::sysctlbyname(
-            c"kern.memorystatus_vm_pressure_level".as_ptr() as *const libc::c_char,
+            sysctl_name.as_ptr(),
             (&mut level as *mut libc::c_int).cast(),
             &mut size,
             std::ptr::null_mut(),
