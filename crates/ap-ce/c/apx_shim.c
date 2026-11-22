@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <limits.h>
 
 /* ------------------------------------------------------------------ */
 /* PyArg_ParseTuple (minimal S0 formats)                               */
@@ -48,13 +49,24 @@ int PyArg_ParseTuple(PyObject *args, const char *fmt, ...) {
         }
         switch (c) {
         case 'i': {
-            long *out = va_arg(ap, long *);
+            /* CPython ABI: "i" writes an INT (4 bytes) with long-range
+               overflow checking (argstylong -> int narrowing). Pre-10.03
+               the shim wrote a full long here — a silent ABI divergence
+               that corrupts caller stack when the C side declares `int`
+               (the CPython-faithful spelling). */
+            int *out = va_arg(ap, int *);
             long v = PyLong_AsLong(item);
             if (v == -1 && PyErr_Occurred()) {
                 va_end(ap);
                 return 0;
             }
-            *out = v;
+            if (v < INT_MIN || v > INT_MAX) {
+                PyErr_SetString(PyExc_OverflowError,
+                                "Python int too large to convert to C int");
+                va_end(ap);
+                return 0;
+            }
+            *out = (int)v;
             break;
         }
         case 'd': {

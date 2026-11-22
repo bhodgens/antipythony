@@ -51,15 +51,17 @@ fn module_name_of(src: &Path, text: &str) -> Result<String, String> {
             end += 1;
         }
         if end > at {
-            // Only a definition/declaration context counts: preceded by
-            // whitespace or '*' (function-shaped, not `fooPyInit_x`).
-            let prev_ok = at
+            // Only a definition/declaration context counts: the char
+            // BEFORE the "PyInit_" match must be whitespace, '*' or '('
+            // (rejects `apx_fooPyInit_x`-style embedded names).
+            let match_start = i + pos;
+            let prev_ok = match_start
                 .checked_sub(1)
                 .map(|p| {
                     let c = bytes[p];
                     c.is_ascii_whitespace() || c == b'*' || c == b'('
                 })
-                .unwrap_or(false);
+                .unwrap_or(true); // at buffer start counts as a boundary
             if prev_ok {
                 inferred = Some(text[at..end].to_string());
             }

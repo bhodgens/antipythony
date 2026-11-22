@@ -1,0 +1,22 @@
+142
+25.0
+beam width=42 scale=1.50
+10
+[0, 2, 4, 6]
+{'a': 7, 'b': 8}
+True False
+None
+2
+14
+Segment
+10
+50
+420
+caught: geom: segment too long
+check-ok
+zde: geom: division by zero
+oe: geom: negative input
+TypeError: function takes exactly 3 arguments (2 given)
+TypeError: 'str' object cannot be interpreted as an integer
+TypeError: function takes exactly 3 arguments (0 given)
+TypeError: argument 1 must be str, not int
