@@ -691,3 +691,39 @@ implementation code.
 | C-31 | Tier-1/JIT/AoT/wasm differences behaviorally invisible | 8 |
 | C-32 | Contract changes by PR only; clause ids never reused or renumbered | 10 |
 | C-33 | Corpus monotonicity: never delete/weaken a case to pass a gate | 10 |
+
+
+## 02.10 scheduler semantics (leaf 02E, 2026-11-21)
+
+These are CPython-free divergences introduced by the 02.10 scheduler stages
+(2b/2c); the corpus pins none of them beyond value-shape (ident/native_id
+compare > 0 and self-equality only).
+
+- **`threading.Thread.native_id`** = the home pool worker's OS tid,
+  assigned at the task's FIRST run and stable thereafter (started tasks
+  never migrate between workers). CPython: the OS thread's tid — same
+  stability, different lifetime (a task's thread is one of P pool workers,
+  not a dedicated thread).
+- **`threading.get_ident()` / `Thread.ident`** = the minted logical ident
+  (NEXT_IDENT counter at start), unchanged from the pre-scheduler tree.
+  Under the scheduler this ident is ALSO the TLS/RLock-owner key
+  (threading.local namespaces and RLock ownership are keyed per logical
+  thread, never per OS worker).
+- **`sys.setswitchinterval()`** is now a REAL quantum: a running task is
+  suspended at a statement boundary after ~interval/1µs statements
+  (default 5 ms ≈ 5000 statements, CPython's default) and resumes
+  round-robin on its home worker. CPython: GIL-recheck preemption quantum
+  — same knob, different mechanism, same user-visible intent.
+- **Task scheduling** = fixed worker pool (APX_GOMAXPROCS |
+  available_parallelism), steal-at-birth (only unstarted tasks migrate),
+  quantum-yield at statement polls, compensation workers (APX_COMP_CAP,
+  default P×4) when all workers are blocked in primitive waits. Threads
+  blocked in native syscalls we do not control hold their worker (the
+  pre-scheduler 1:1 behavior, absorbed by the compensation lane).
+- **Per-task recursion limit**: sys.setrecursionlimit applies PER TASK
+  (CPython per-thread semantics). The pre-scheduler tree counted all
+  workers' frames against ONE process-global counter.
+- **APX_MAX_STARTED** (env knob, default unlimited) bounds the number of
+  simultaneously-STARTED task fibers (each an 8 MiB reservation);
+  admission blocks unstarted tasks until started ones finish. Memory-gate
+  backstop, not a semantic surface.
