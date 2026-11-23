@@ -170,6 +170,28 @@ long apx_PyType_FromSpec(PyType_Spec *spec, PyType_Slot *slots) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Leaf 1005a: PyTuple_Pack varargs route (n PyObject* -> new tuple).  */
+/* ------------------------------------------------------------------ */
+
+PyObject *apx_PyTuple_PackV(Py_ssize_t n, ...) {
+    va_list ap;
+    va_start(ap, n);
+    PyObject *items[64];
+    if (n < 0 || n > 64) {
+        PyErr_SetString(PyExc_SystemError,
+                        "Objects/tupleobject.c:207: bad argument to internal function");
+        va_end(ap);
+        return 0;
+    }
+    for (Py_ssize_t i = 0; i < n; i++) {
+        items[i] = va_arg(ap, PyObject *);
+    }
+    va_end(ap);
+    extern PyObject *apx_PyTuple_Pack(Py_ssize_t n, PyObject *const *args);
+    return apx_PyTuple_Pack(n, items);
+}
+
+/* ------------------------------------------------------------------ */
 /* Module-init registration (the PyInit_<mod> seam)                    */
 /* ------------------------------------------------------------------ */
 

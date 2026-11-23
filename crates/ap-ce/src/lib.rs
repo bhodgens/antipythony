@@ -21,6 +21,7 @@
 
 pub mod api;
 pub mod exports;
+pub mod exports_containers;
 pub mod ffi_types;
 pub mod payloads;
 pub mod runtime_ctx;
