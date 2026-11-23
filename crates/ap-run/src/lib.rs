@@ -23,6 +23,9 @@ pub mod ce_bridge;
 pub mod ce_objproto;
 pub mod cell_slot;
 pub mod classes;
+/// Leaf tier1-linecache: the embedded vendored_stdlib source store (the
+/// importer's standalone-binary fallback face; read side only).
+pub mod embedded_stdlib;
 pub mod exc_hier;
 pub mod format;
 pub mod frame;
