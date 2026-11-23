@@ -17282,7 +17282,36 @@ pub fn exec_stmts_in_ns(
     globals: Gc<PyDict>,
     locals: Option<Gc<PyDict>>,
 ) -> EResult {
+    exec_stmts_in_ns_named(interp, stmts, globals, locals, None)
+}
+
+/// 02RESID-B (warnings attribution): exec variant carrying the compiled
+/// source filename — the exec'd frame lands on py_frames with a
+/// co_filename carrier so warn()'s stacklevel walk attributes exec-frame
+/// warnings to the EXEC'D file:line (CPython f_code.co_filename), not the
+/// caller's.
+pub fn exec_stmts_in_ns_named(
+    interp: &Arc<Interpreter>,
+    stmts: &[ap_ir::Stmt],
+    globals: Gc<PyDict>,
+    locals: Option<Gc<PyDict>>,
+    co_filename: Option<String>,
+) -> EResult {
     let frame = Arc::new(Frame::new_module(globals.clone()));
+    if let Some(fname) = &co_filename {
+        *frame.exec_co_filename.borrow_mut() = Some(fname.clone());
+        // CPython exec frames sit on the live stack: sys._getframe /
+        // warn stacklevel walk must see them.
+        for _ in 0..2000 {
+            match interp.py_frames.lock() {
+                Ok(mut pf) => {
+                    pf.push(frame.clone());
+                    break;
+                }
+                Err(_) => std::thread::sleep(std::time::Duration::from_micros(50)),
+            }
+        }
+    }
     // Module frames read globals directly; explicit locals ride the frame's
     // locals slot via a globals-echo (frame locals is `Option<PyDict>`? we
     // mirror by writing defs into BOTH when they differ — v0 approximation
@@ -17294,7 +17323,19 @@ pub fn exec_stmts_in_ns(
     // written there. Simplest correct-shape v0: run with globals=locals dict
     // merged view is unavailable, so when locals is Some we ALSO write each
     // stmt-level def name into it after execution.
-    exec_block(interp, &frame, stmts, &reg)?;
+    let result = exec_block(interp, &frame, stmts, &reg);
+    if co_filename.is_some() {
+        for _ in 0..2000 {
+            match interp.py_frames.lock() {
+                Ok(mut pf) => {
+                    pf.pop();
+                    break;
+                }
+                Err(_) => std::thread::sleep(std::time::Duration::from_micros(50)),
+            }
+        }
+    }
+    result?;
     if let Some(loc) = locals {
         // Copy the exec's global writes into locals (twisted reads them from
         // f_locals). Only keys not already present.

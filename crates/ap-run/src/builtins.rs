@@ -3449,11 +3449,16 @@ pub(crate) fn py_frame_stub(interp: &Interpreter, idx: usize) -> Value {
         }
     };
     let file = fr
-        .globals
-        .get(&Value::Str(PyString::new("__file__")))
-        .and_then(|v| match v {
-            Value::Str(sv) => Some(sv.as_str().to_string()),
-            _ => None,
+        .exec_co_filename
+        .borrow()
+        .clone()
+        .or_else(|| {
+            fr.globals
+                .get(&Value::Str(PyString::new("__file__")))
+                .and_then(|v| match v {
+                    Value::Str(sv) => Some(sv.as_str().to_string()),
+                    _ => None,
+                })
         })
         .unwrap_or_else(|| interp.script_path.clone());
     let code = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<code>");
@@ -5794,10 +5799,25 @@ pub fn builtin_eval(interp: &Interpreter, args: &[Value]) -> crate::EvalResult {
 /// documented note — same shape as builtin_eval's globals handling).
 pub fn builtin_exec(interp: &Interpreter, args: &[Value]) -> crate::EvalResult {
     // 02.08-c: compile() returns a `<code>` marker carrying co_source —
-    // exec must accept it (parsel/csstranslator-style dynamic loads).
+    // exec must accept it (parsel/csstranformer-style dynamic loads).
+    // 02RESID-B (warnings attribution): the marker's co_filename rides
+    // into the exec'd frame (f_code.co_filename — warn attribution).
+    let mut exec_co_filename: Option<String> = None;
     let src = match args.first() {
-        Some(Value::Str(s)) => s.as_str().to_string(),
+        Some(Value::Str(s)) => {
+            // CPython: exec(str) compiles with filename "<string>".
+            exec_co_filename = Some("<string>".to_string());
+            s.as_str().to_string()
+        }
         Some(Value::Obj(o)) if o.kind == ap_obj::ObjKind::Namespace && o.name == "<code>" => {
+            if let Some(Value::Str(f)) = o
+                .attrs
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(&Value::Str(PyString::new("co_filename")))
+            {
+                exec_co_filename = Some(f.as_str().to_string());
+            }
             match o
                 .attrs
                 .lock()
@@ -5930,7 +5950,13 @@ pub fn builtin_exec(interp: &Interpreter, args: &[Value]) -> crate::EvalResult {
                 }
             }
         }
-        return crate::interp::exec_stmts_in_ns(&rc_interp, &stmts, globals, locals);
+        return crate::interp::exec_stmts_in_ns_named(
+            &rc_interp,
+            &stmts,
+            globals,
+            locals,
+            exec_co_filename,
+        );
     }
     let stmts: Vec<ap_ir::Stmt> = module
         .items
@@ -5959,9 +5985,21 @@ pub fn builtin_exec(interp: &Interpreter, args: &[Value]) -> crate::EvalResult {
     // invisible to the exec'd code. exec_class_def publishes the live
     // class ns; route through it when present.
     if let Some(ns) = crate::classes::current_class_ns() {
-        return crate::interp::exec_stmts_in_ns(&rc_interp, &stmts, ns, None);
+        return crate::interp::exec_stmts_in_ns_named(
+            &rc_interp,
+            &stmts,
+            ns,
+            None,
+            exec_co_filename,
+        );
     }
-    crate::interp::exec_stmts_public(&rc_interp, &stmts)
+    crate::interp::exec_stmts_in_ns_named(
+        &rc_interp,
+        &stmts,
+        interp.globals.clone(),
+        None,
+        exec_co_filename,
+    )
 }
 
 // ---------------------------------------------------------------------------

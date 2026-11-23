@@ -127,6 +127,14 @@ pub struct Frame {
     /// ENCLOSING non-comp scope (S-02-2 / CPython NamedExpr rule) — the
     /// Expr::Named store path walks past comp frames via this flag.
     pub is_comp: bool,
+    /// 02RESID-B (warnings attribution): the compiled source filename for
+    /// EXEC'd code (`exec(compile(src, "m2mod.py", "exec"), g)`). CPython
+    /// exec frames carry f_code.co_filename = the compiled filename; our
+    /// py_frame_stub models co_filename from globals.__file__, which exec'd
+    /// globals lack (exec must NOT inject __file__) — so the warn()
+    /// stacklevel walk attributed exec-frame warnings to the CALLER's file.
+    /// None everywhere except exec frames.
+    pub exec_co_filename: std::cell::RefCell<Option<String>>,
 }
 
 /// Where a local name lives.
@@ -162,6 +170,7 @@ impl Frame {
             class_ns: None,
             class_ns_inst: None,
             is_comp: false,
+            exec_co_filename: std::cell::RefCell::new(None),
         }
     }
 
@@ -198,6 +207,7 @@ impl Frame {
             class_cell: std::cell::RefCell::new(None),
             class_ns: None,
             class_ns_inst: None,
+            exec_co_filename: std::cell::RefCell::new(None),
             is_comp: false,
         }
     }
@@ -225,6 +235,7 @@ impl Frame {
             class_qual_prefix: String::new(),
             class_cell: std::cell::RefCell::new(None),
             class_ns: None,
+            exec_co_filename: std::cell::RefCell::new(None),
             class_ns_inst: None,
             is_comp: true,
         }
@@ -264,6 +275,7 @@ impl Frame {
             line_track: std::sync::Arc::new(std::cell::Cell::new(0)),
             class_qual_prefix: String::new(),
             class_cell: std::cell::RefCell::new(None),
+            exec_co_filename: std::cell::RefCell::new(None),
             class_ns: Some(ns),
             class_ns_inst: None,
             is_comp: false,
