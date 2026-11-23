@@ -343,6 +343,8 @@ PyObject *PyErr_Format(PyObject *exc, const char *fmt, /* ... */ ...);
    PyLong_FromSsize_t). */
 PyObject *PyObject_GetAttrString(PyObject *o, const char *name);
 Py_ssize_t PyBytes_Size(PyObject *o);
+/* leaf 1006: raw bytes view (PyBytes_AsString on CPython). */
+const char *apx_BytesData(PyObject *o);
 Py_ssize_t PyUnicode_GetLength(PyObject *o);
 PyObject *PyLong_FromSsize_t(Py_ssize_t v);
 
@@ -381,6 +383,144 @@ PyObject *PyCode_NewEmpty(const char *filename, const char *funcname,
                           int lineno);
 
 PyObject *PyGen_GetCode(PyObject *gen);
+
+/* --- leaf 1006 --- */
+/* S1 hard-members band: PyLong import/export (CPython 3.14
+   cpython/longintrepr.h shapes), GC bridging (tp_traverse -> collector
+   edges; CONSERVATION-CRITICAL), method/class ctors + PyMutex/
+   PyUnstable/Py_Version, PyMem allocator front, PyGILState bookkeeping.
+   Error dialect = CPython 3.14 ("expect int, got %T", the
+   longobject.c:1215 BadInternalCall line, "ndigits must be positive").
+   Refcounts: the ctors return NEW references holding strong refs to
+   their args; PyLong_Export's compact arm fills the struct in place;
+   FreeExport is a no-op on our process-lifetime digit snapshots. */
+
+/* PyLong import/export (the 3.14 layout: 30-bit digits, LSB first). */
+typedef struct {
+    uint8_t bits_per_digit;
+    uint8_t digit_size;
+    int8_t digits_order;
+    int8_t digit_endianness;
+} PyLongLayout;
+
+typedef struct {
+    int64_t value;
+    uint8_t negative;
+    Py_ssize_t ndigits;
+    const void *digits;
+    uintptr_t _reserved;
+} PyLongExport;
+
+const PyLongLayout *PyLong_GetNativeLayout(void);
+int PyLong_Export(PyObject *obj, PyLongExport *export_long);
+void PyLong_FreeExport(PyLongExport *export_long);
+
+/* AsNativeBytes flag constants (CPython longobject.h values). */
+#define Py_ASNATIVEBYTES_DEFAULTS -1
+#define Py_ASNATIVEBYTES_BIG_ENDIAN 0
+#define Py_ASNATIVEBYTES_LITTLE_ENDIAN 1
+#define Py_ASNATIVEBYTES_NATIVE_ENDIAN 3
+#define Py_ASNATIVEBYTES_UNSIGNED_BUFFER 4
+#define Py_ASNATIVEBYTES_REJECT_NEGATIVE 8
+#define Py_ASNATIVEBYTES_ALLOW_INDEX 16
+
+Py_ssize_t PyLong_AsNativeBytes(PyObject *v, void *buffer, Py_ssize_t n_bytes,
+                                int flags);
+PyObject *PyLong_FromNativeBytes(const void *buffer, size_t n_bytes, int flags);
+PyObject *PyLong_FromUnsignedNativeBytes(const void *buffer, size_t n_bytes,
+                                         int flags);
+
+/* PyLongWriter (the Import/Export block's third piece). The writer handle
+   is an opaque usize index; digits is a u32 array (30-bit values, LSB
+   first) the caller fills through *digits before Finish. */
+typedef size_t apx_writer_handle;
+apx_writer_handle PyLongWriter_Create(int negative, Py_ssize_t ndigits,
+                                      void **digits);
+PyObject *PyLongWriter_Finish(apx_writer_handle writer);
+void PyLongWriter_Discard(apx_writer_handle writer);
+
+/* GC bridging: the traverse fn ABI (CPython traverseproc) + the registry
+   seam the collector drains. Py_VISIT-style visits carry PyObject*
+   handles; the visitor converts to GC-registry addresses. */
+typedef int (*apx_visitproc)(PyObject *, void *);
+typedef int (*apx_traverseproc)(PyObject *, apx_visitproc, void *);
+int apx_GC_TraverseRegister(size_t payload_key, apx_traverseproc traverse);
+int apx_GC_TraverseUnregister(size_t payload_key);
+
+/* PyObject_GC_ family (the handle layer: Track/UnTrack/Del are no-ops;
+   edges flow through the traverse registry instead). */
+PyObject *PyObject_GC_New(Py_ssize_t basicsize);
+void PyObject_GC_Track(PyObject *);
+void PyObject_GC_UnTrack(PyObject *);
+void PyObject_GC_Del(PyObject *);
+
+/* Method/class ctors (all return NEW references). */
+PyObject *PyMethod_New(PyObject *callable, PyObject *self);
+PyObject *PyClassMethod_New(PyObject *callable);
+PyObject *PyStaticMethod_New(PyObject *callable);
+PyObject *PyInstanceMethod_New(PyObject *callable);
+PyObject *apx_PyMethod_Function(PyObject *m); /* m.__func__ (new ref) */
+PyObject *apx_PyMethod_Self(PyObject *m);     /* m.__self__ (new ref) */
+
+/* Type tokens (function-like on the source-shim model). The _name
+   accessors answer the token's type NAME (the "method"/"function"/...
+   strings the differential pins). */
+const char *apx_TypeNameOf(PyObject *o);
+const char *apx_PyFunction_Type_name(void);
+const char *apx_PyMethod_Type_name(void);
+const char *apx_PyClassMethod_Type_name(void);
+const char *apx_PyStaticMethod_Type_name(void);
+const char *apx_PyInstanceMethod_Type_name(void);
+PyObject *apx_PyMethod_Type(void);
+PyObject *apx_PyFunction_Type(void);
+PyObject *apx_PyClassMethod_Type(void);
+PyObject *apx_PyStaticMethod_Type(void);
+PyObject *apx_PyInstanceMethod_Type(void);
+#define PyMethod_Type        (*apx_PyMethod_Type())
+#define PyFunction_Type      (*apx_PyFunction_Type())
+#define PyClassMethod_Type   (*apx_PyClassMethod_Type())
+#define PyStaticMethod_Type  (*apx_PyStaticMethod_Type())
+#define PyInstanceMethod_Type (*apx_PyInstanceMethod_Type())
+
+/* PyMutex: opaque 1-byte-of-state struct (layout OURS; the impl keeps
+   per-address state in the runtime). */
+typedef struct { char _apx_opaque; } PyMutex;
+void PyMutex_Lock(PyMutex *m);
+void PyMutex_Unlock(PyMutex *m);
+int PyMutex_IsLocked(PyMutex *m);
+
+/* Py_Version / Py_GetVersion. Py_Version rides the accessor fn (data
+   symbols don't cross the source-shim model). */
+unsigned long apx_Py_Version(void);
+#define Py_Version (apx_Py_Version())
+const char *Py_GetVersion(void);
+
+/* PyUnstable markers (no-op-able on S1). */
+long PyUnstable_InterpreterState_GetID(void);
+int PyUnstable_Type_AssignVersionTag(PyObject *type);
+int PyUnstable_Long_IsCompact(PyObject *op);
+Py_ssize_t PyUnstable_Long_CompactValue(PyObject *op);
+void PyUnstable_Object_ClearWeakRefsNoCallbacks(PyObject *);
+
+/* PyMem allocator front (+ Raw). size 0 -> NON-NULL (CPython posture). */
+void *PyMem_Malloc(size_t size);
+void *PyMem_Calloc(size_t nelem, size_t elsize);
+void *PyMem_Realloc(void *ptr, size_t new_size);
+void PyMem_Free(void *ptr);
+void *PyMem_RawMalloc(size_t size);
+void *PyMem_RawCalloc(size_t nelem, size_t elsize);
+void *PyMem_RawRealloc(void *ptr, size_t new_size);
+void PyMem_RawFree(void *ptr);
+
+/* PyGILState bookkeeping (the 02.09 no-GIL model: depth counter, no
+   locks). Ensure/Release nest; Check answers the Ensure depth. */
+typedef int PyGILState_STATE;
+void PyGILState_Release(PyGILState_STATE);
+int PyGILState_Check(void);
+PyGILState_STATE PyGILState_Ensure(void);
+void *PyEval_SaveThread(void);
+void PyEval_RestoreThread(void *tstate);
+int PyEval_ThreadsInitialized(void);
 
 #ifdef __cplusplus
 }
