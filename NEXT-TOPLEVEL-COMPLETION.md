@@ -51,10 +51,10 @@ trunk. Gate counts cited by leaves are claims; re-runs are evidence.
    T-09 30/30, ws 663/0; rebased onto 971399b, additive diff).
    WAVE 2 COMPLETE — all 3 merged.
    After wave 2: pydantic-core probe -> Plan 05 T3-T5 verdicts.
-2. **pydantic-core probe** (after wave 2 lands): its 11 non-stable
-   symbols all fall in landed bands except the Call family (landed in
-   10.04) — probe a trivial model per ce-compat-survey §3. Gate =
-   kill-criterion #3 check. Plan 05 T3-T5 unblock ONLY on a green probe.
+2. **pydantic-core probe** — DISPATCHED 2026-11-23 (deleg_2388fcac):
+   inventory -> implement missing wrappers -> import + trivial model
+   through the binary; verdict recorded honestly either way.
+   Plan 05 T3-T5 unblock ONLY on a green probe.
 3. **Plan 04 honest-gap leaf** — MERGED ced547a (2026-11-22).
 4. **Plan 05 T3-T5** (gated on pydantic probe): hermes-agent T3 chat
    turn, fastapi T4 hello-world + TestClient, comfyui T5 load+run.
