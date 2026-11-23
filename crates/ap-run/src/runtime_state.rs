@@ -194,6 +194,21 @@ registry_table!(
     "obj-addr -> registered marker name dedupe (builtins_modules.rs fn-local thread_local)"
 );
 registry_table!(
+    SLOT_STORAGE_T,
+    SLOT_STORAGE_T_acc,
+    HashMap<usize, HashMap<String, Value>>,
+    "c018 slot storage: instance-addr -> {slot name -> value} for classes that ALSO \
+     have an instance dict (slot members live outside __dict__, CPython semantics)"
+);
+// c018: keeps slot-carrying instances' registry entries pinned to the object
+// lifetime (same pattern as CELL_BACKING_PINS_T).
+registry_table!(
+    SLOT_STORAGE_PINS_T,
+    SLOT_STORAGE_PINS_T_acc,
+    HashMap<usize, std::sync::Weak<ap_obj::PyObject>>,
+    "c018 address pins for SLOT_STORAGE (same key set)"
+);
+registry_table!(
     MODULE_FRAME_CELLS_T,
     MODULE_FRAME_CELLS_T_acc,
     HashMap<(u64, String), CellSlot>,
@@ -323,6 +338,12 @@ pub fn retire_runtime_state(interp: &Arc<Interpreter>) {
     let _ = BRIDGE_SOURCE_T_acc().lock().unwrap().remove(&key);
     let _ = RECURSIVE_REPR_T_acc().lock().unwrap().remove(&key);
     let _ = NAMED_BY_ADDR_T_acc().lock().unwrap().remove(&key);
+    // c018: slot-storage rows are keyed by OBJECT addresses inside the
+    // per-interp row — dropping the interp row retires every instance's
+    // entry with it (pins prevent reuse collisions within a run; the run
+    // teardown is the bulk drain).
+    let _ = SLOT_STORAGE_T_acc().lock().unwrap().remove(&key);
+    let _ = SLOT_STORAGE_PINS_T_acc().lock().unwrap().remove(&key);
     // CELL_BACKING / MODULE_FRAME_CELLS / CELL_BACKING_PINS hold CellSlots
     // and Weak pins keyed by OBJECT addresses (not interp keys): dropping a
     // CellSlot can cascade into interpreter code that re-enters these

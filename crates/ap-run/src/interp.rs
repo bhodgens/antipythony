@@ -7783,6 +7783,28 @@ fn call_value_inner_impl(
                                     // module_ns (attrs is a near-empty
                                     // surface); instances use attrs.
                                     if let Value::Obj(so) = &subject {
+                                        // c018 (CPython slots semantics): an
+                                        // instance whose class has NO instance
+                                        // dict has NO __dict__ — even through
+                                        // object.__getattribute__.
+                                        if so.kind == ap_obj::ObjKind::UserInstance {
+                                            let interp3 =
+                                                crate::builtins_modules::current_interp()
+                                                    .unwrap_or_else(interp_rc);
+                                            if let Some(t) = crate::classes::class_of_value(
+                                                &interp3, &subject,
+                                            ) {
+                                                if !t.has_instance_dict() {
+                                                    return Err(raise(
+                                                        "AttributeError",
+                                                        format!(
+                                                            "'{}' object has no attribute '__dict__'",
+                                                            t.name
+                                                        ),
+                                                    ));
+                                                }
+                                            }
+                                        }
                                         let d: Gc<ap_obj::dict::PyDict> = if so.kind
                                             == ap_obj::ObjKind::Module
                                         {

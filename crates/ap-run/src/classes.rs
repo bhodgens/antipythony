@@ -1041,43 +1041,80 @@ pub fn exec_class_def(
         base_types.push(object_class(interp));
     }
 
-    // 4. Metaclass resolution (S-03-2).
-    let _resolved_meta: Option<Arc<TypeRef>> = match &metaclass_v {
-        Some(m) => {
-            let t = base_type_ref(interp, m)?
-                .ok_or_else(|| raise("TypeError", "metaclass must be a type"))?;
-            Some(t)
+    // 4. Metaclass resolution (S-03-2). CPython algorithm (type.__new__):
+    // the winner is the MOST DERIVED among {explicit metaclass} ∪
+    // {type(base) for each base}; the candidates must form a
+    // (non-strict) subclass chain or the conflict TypeError fires. The
+    // explicit kwarg does NOT win automatically — c032: class C1(PB,
+    // metaclass=MA) with PB carried by MB (a subclass of MA) resolves to
+    // MB.
+    let _resolved_meta: Option<Arc<TypeRef>> = {
+        let explicit: Option<Arc<TypeRef>> = match &metaclass_v {
+            Some(m) => Some(
+                base_type_ref(interp, m)?
+                    .ok_or_else(|| raise("TypeError", "metaclass must be a type"))?,
+            ),
+            None => None,
+        };
+        // c032: a metaclass must be a CLASS WHOSE TYPE IS TYPE (CPython
+        // isinstance(metaclass, type)) — i.e. its MRO contains `type`. A
+        // plain class (NotAMeta) is NOT a metaclass: CPython CALLS it with
+        // (name, bases, dict) as a plain callable and binds the result
+        // ("NotAMeta() takes no arguments" when the signature rejects).
+        let explicit_usable = match (&metaclass_v, &explicit) {
+            (Some(mv), Some(mt)) => {
+                let _ = mv;
+                mt.is_subclass(&type_class(interp))
+            }
+            _ => true,
+        };
+        if !explicit_usable {
+            // Non-type metaclass: call it as a plain callable with the
+            // standard (name, bases, ns) shape and bind the result as the
+            // class value (the meta-new path below consumes it via the
+            // UserClass arm; non-class results bind verbatim downstream).
+            let meta_v = metaclass_v.clone().unwrap();
+            let ns_v = prepared_inst.clone().unwrap_or(Value::Dict(ns.clone()));
+            let name_v = Value::Str(PyString::new(c.name.clone()));
+            let bases_vv = Value::Tuple(Gc::new(Tuple(original_bases_v.clone())));
+            let created = call_value(
+                interp,
+                &module_frame(interp),
+                &meta_v,
+                &[name_v, bases_vv, ns_v],
+                &class_kwargs
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect::<Vec<_>>(),
+            )?;
+            return Ok(created);
         }
-        None => {
-            // Most derived among type(base) for every base (v0: bases'
-            // metaclass pointers; plain classes carry None == type).
-            let mut best: Option<Arc<TypeRef>> = None;
-            for b in &base_types {
-                let bm = b
-                    .metaclass
-                    .read()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .clone()
-                    .or_else(|| Some(type_class(interp)));
-                match (&best, bm) {
-                    (None, Some(m)) => best = Some(m),
-                    (Some(cur), Some(m)) => {
-                        if !Arc::ptr_eq(cur, &m) {
-                            if m.is_subclass(cur) {
-                                best = Some(m);
-                            } else if !cur.is_subclass(&m) {
-                                return Err(raise(
-                                    "TypeError",
-                                    "metaclass conflict: the metaclass of a derived class must be a (non-strict) subclass of the metaclasses of all its bases",
-                                ));
-                            }
+        let mut best: Option<Arc<TypeRef>> = explicit;
+        for b in &base_types {
+            let bm = b
+                .metaclass
+                .read()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
+                .or_else(|| Some(type_class(interp)));
+            match (&best, bm) {
+                (None, Some(m)) => best = Some(m),
+                (Some(cur), Some(m)) => {
+                    if !Arc::ptr_eq(cur, &m) {
+                        if m.is_subclass(cur) {
+                            best = Some(m);
+                        } else if !cur.is_subclass(&m) {
+                            return Err(raise(
+                                "TypeError",
+                                "metaclass conflict: the metaclass of a derived class must be a (non-strict) subclass of the metaclasses of all its bases",
+                            ));
                         }
                     }
-                    _ => {}
                 }
+                _ => {}
             }
-            best
         }
+        best
     };
 
     // 5. __slots__ validation (S-03-13/14). A bare string is ONE slot.
@@ -3444,13 +3481,27 @@ fn instance_attr(
         ));
     }
     // Slot members: storage IS the instance dict slot (member descriptors
-    // materialize only for introspection; reads/writes are plain).
-    if let Some(v) = o
-        .attrs
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .get(&Value::Str(PyString::new(name)))
-    {
+    // materialize only for introspection; reads/writes are plain) — EXCEPT
+    // when the class also has an instance dict (c018 class B: __dict__ slot
+    // or dict-carrying base), where attr_set_protocol parked the value in
+    // the SLOT_STORAGE registry so vars()/a.__dict__ stay slot-free.
+    let slot_read = |name: &str| -> Option<Value> {
+        if t.has_instance_dict() {
+            use crate::runtime_state as rs;
+            let key = std::sync::Arc::as_ptr(o) as *const u8 as usize;
+            let slot_name = name.to_string();
+            let v = rs::with_active(rs::SLOT_STORAGE_T_acc(), |m| {
+                m.get(&key).and_then(|s| s.get(&slot_name)).cloned()
+            });
+            v
+        } else {
+            o.attrs
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(&Value::Str(PyString::new(name)))
+        }
+    };
+    if let Some(v) = slot_read(name) {
         if t.is_slot(name) {
             return Ok(v);
         }
@@ -4347,9 +4398,29 @@ pub fn attr_set_protocol(
                     ),
                 ));
             }
-            // Slot member: direct instance-dict write (member descriptors
-            // are introspection-only).
+            // Slot member: the slot storage is a member descriptor's backing
+            // value — NOT the instance dict. When the class ALSO has an
+            // instance dict (a __dict__ slot or a dict-carrying base,
+            // c018 class B shape), the value parks in the SLOT_STORAGE
+            // registry keyed by instance address: CPython vars(b) shows only
+            // dict entries ('y'), never slot members ('x'). The no-dict case
+            // keeps the legacy attrs layout (storage IS o.attrs; reads route
+            // through instance_attr's slot arm, and __dict__/vars() are
+            // unreachable — c018 class A).
             if t.is_slot(name) {
+                if t.has_instance_dict() {
+                    use crate::runtime_state as rs;
+                    let key = std::sync::Arc::as_ptr(o) as *const u8 as usize;
+                    let v2 = v.clone();
+                    rs::with_active_mut(rs::SLOT_STORAGE_T_acc(), |m| {
+                        m.entry(key).or_default().insert(name.to_string(), v2);
+                    });
+                    let pin = std::sync::Arc::downgrade(o);
+                    rs::with_active_mut(rs::SLOT_STORAGE_PINS_T_acc(), |p| {
+                        p.entry(key).or_insert(pin);
+                    });
+                    return Ok(());
+                }
                 return o
                     .attrs
                     .lock()
@@ -4504,6 +4575,40 @@ pub fn attr_del_protocol(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> 
             }
             // Data descriptor with __delete__ (S-03-11).
             if let Some((entry, _)) = t.lookup_with_owner(name) {
+                // c018: slot members ARE deletable (CPython member descriptors
+                // define __delete__ — `del c.y` clears the slot; a later read
+                // raises AttributeError). Dispatch BEFORE the is_data_descriptor
+                // property arm, which would report "no deleter".
+                if t.is_slot(name)
+                    && matches!(&entry, Value::Obj(d) if d.kind == ap_obj::ObjKind::Descriptor)
+                {
+                    // No-dict class: slot value lives in attrs; has-dict
+                    // class: in the SLOT_STORAGE registry.
+                    let removed = if t.has_instance_dict() {
+                        use crate::runtime_state as rs;
+                        let key = std::sync::Arc::as_ptr(o) as *const u8 as usize;
+                        let mut removed = false;
+                        rs::with_active_mut(rs::SLOT_STORAGE_T_acc(), |m| {
+                            if let Some(s) = m.get_mut(&key) {
+                                removed = s.remove(name).is_some();
+                            }
+                        });
+                        removed
+                    } else {
+                        o.attrs
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .pop(&Value::Str(PyString::new(name)))
+                            .is_some()
+                    };
+                    if !removed {
+                        return Err(raise(
+                            "AttributeError",
+                            format!("'{}' object has no attribute '{}'", t.name, name),
+                        ));
+                    }
+                    return Ok(());
+                }
                 if is_data_descriptor(interp, &entry) {
                     let has_del = match &entry {
                         Value::Obj(d) if d.kind == ap_obj::ObjKind::Descriptor => d
@@ -5452,6 +5557,12 @@ pub fn display_type_name(v: &Value) -> String {
 fn instance_dict_handle(o: &Gc<ap_obj::PyObject>) -> Gc<PyDict> {
     // attrs is the live Gc<PyDict> handle: clones share the state.
     o.attrs.lock().unwrap_or_else(|p| p.into_inner()).clone()
+}
+
+/// c018: public handle for builtin_vars — the LIVE instance dict (vars(o)
+/// IS o.__dict__ in CPython).
+pub fn instance_dict_handle_pub(o: &Gc<ap_obj::PyObject>) -> Gc<PyDict> {
+    instance_dict_handle(o)
 }
 
 /// The binding TypeErrors from __new__/__init__ carry the QUALIFIED name

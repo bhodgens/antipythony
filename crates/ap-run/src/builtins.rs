@@ -2372,13 +2372,39 @@ fn round_half_even(f: f64, ndigits: i32) -> f64 {
     } else {
         digits
     };
-    // value = 0.digits * 10^(exp+1) — decimal point after exp+1 digits.
-    let int_digits = (exp + 1).max(0) as usize; // digits left of the point
-    let keep = int_digits as i32 + ndigits;
+    // value = 0.digits * 10^(exp+1); digit j sits at place 10^(exp-j), so
+    // keeping `keep` digits = cutting at place 10^-ndigits:
+    //   keep = exp + 1 + ndigits   (NO clamp — negative exp must count).
+    // (t1_007 root cause: the old code clamped int_digits at 0 AND rebuilt
+    // through format_decimal's left-pad, so round(3712500.0, 6) -> 37125.0
+    // and round(0.000123, 7) -> 0.123.)
+    let keep = exp + 1 + ndigits;
     let neg = f.is_sign_negative();
     let (dd, _bump) = decimal_round_half_even(&digits, keep);
-    let s = format_decimal((dd, _bump), int_digits as i32, neg);
-    return s.parse::<f64>().unwrap_or(f);
+    // Rounded value = dd * 10^(exp+1-keep). When keep passed the trimmed
+    // digit count (nothing cut), dd is short by keep-len implicit zeros.
+    let scale = exp + 1 - keep;
+    let mut dd_full = dd;
+    let trimmed_len = digits.len() as i32;
+    if keep > trimmed_len {
+        dd_full.push_str(&"0".repeat((keep - trimmed_len) as usize));
+    }
+    // Shortest-repr sci string ("d.dddE±xx") parses to the same binary64 in
+    // Rust and CPython, so float(sci) is byte-exact. Trimming k trailing
+    // zeros from dd_full multiplies the coefficient by 10^k — compensate
+    // scale so value stays dd * 10^scale.
+    let raw = dd_full.trim_end_matches('0');
+    let k = dd_full.len() - raw.len();
+    let scale = scale + k as i32;
+    let dd_trim = if raw.is_empty() { "0" } else { raw };
+    let sign_str = if neg { "-" } else { "" };
+    let sci = if dd_trim.len() == 1 {
+        format!("{sign_str}{dd_trim}e{scale}")
+    } else {
+        let (a, b) = dd_trim.split_at(1);
+        format!("{sign_str}{a}.{b}e{}", scale + (dd_trim.len() as i32 - 1))
+    };
+    return sci.parse::<f64>().unwrap_or(f);
     #[allow(unreachable_code)]
     {
         let repr = ap_obj::py_float_repr(f);
@@ -2402,11 +2428,14 @@ fn decimal_round_half_even(digits: &str, point: i32) -> (String, bool) {
         return (digits.to_string(), false);
     }
     if point < 0 {
-        // Everything cut: check the first digit for the round direction.
-        let first = digits.bytes().next().unwrap_or(b'0');
-        if first >= b'5' {
-            return ("1".to_string(), true);
-        }
+        // keep <= -1: NO significant digit survives the cut, and the
+        // threshold for rounding up to 10^(-point) is 5 * 10^(exp+1) or
+        // more — strictly above any value representable as
+        // 0.[digits] * 10^(exp+1) with a nonzero leading digit. Against
+        // the EXACT expansion (always passed here) the rounded result is
+        // therefore always zero. The old empty-keep fallthrough treated
+        // the whole string as a fraction and rounded 6.3e-05/ndigits=3 up
+        // to 0.001 where CPython gives 0.0 (t1_007 sweep finding).
         return ("0".to_string(), false);
     }
     let cut = point as usize;
@@ -2457,7 +2486,15 @@ fn format_decimal((digits, _bump): (String, bool), point: i32, neg: bool) -> Str
         d = "0".to_string();
     }
     let point = point.max(0) as usize;
-    let padded = format!("{:0>width$}", d, width = point.max(d.len()));
+    // CPython _Py_dg_strxd: the point sits `point` digits into the digit
+    // string — RIGHT-pad with zeros when the digit string is shorter than
+    // the point position (left-padding would shift the magnitude;
+    // t1_007 round(12570.0, 6) lost three orders of magnitude this way).
+    let padded = if d.len() < point {
+        format!("{d}{}", "0".repeat(point - d.len()))
+    } else {
+        d
+    };
     let (ip, fp) = padded.split_at(point.min(padded.len()));
     let fp = fp.trim_end_matches('0');
     if fp.is_empty() {
@@ -4310,6 +4347,28 @@ pub fn builtin_dir(interp: &Interpreter, args: &[Value]) -> BResult {
         }
         Some(v) => {
             names.extend(dir_surface(v));
+            // c018 (CPython vars()/dir() slots semantics): a UserInstance of
+            // a __slots__ class hides its slot members from __dict__/vars()
+            // but STILL lists them in dir() (get_type_dict_virtuals +
+            // members). Skip non-dict slot names when collecting attrs.
+            if let Value::Obj(o) = v {
+                if o.kind == ap_obj::ObjKind::UserInstance {
+                    if let Some(ic) = crate::builtins_modules::current_interp() {
+                        if let Some(t) = crate::classes::class_of_value(&ic, v) {
+                            let slots = t
+                                .flags
+                                .slots
+                                .clone()
+                                .unwrap_or_default()
+                                .into_iter()
+                                .filter(|s| s != "__dict__")
+                                .collect::<Vec<_>>();
+                            names.retain(|n| !slots.contains(n));
+                            names.extend(slots);
+                        }
+                    }
+                }
+            }
         }
     }
     names.sort();
@@ -4545,6 +4604,24 @@ pub fn builtin_vars(interp: &Interpreter, args: &[Value]) -> BResult {
                         let _ = d.set(k, v);
                     }
                     return Ok(Value::Dict(d));
+                }
+            }
+            // c018 (CPython vars() slots semantics): a UserInstance whose
+            // class declares __slots__ WITHOUT a __dict__ slot (and with no
+            // dict-carrying base) has NO __dict__ — vars() must raise
+            // TypeError, and its slot members (stored in o.attrs) must NOT
+            // leak into the mapping. Dict-backed instances return the LIVE
+            // attrs dict (CPython: vars(o) is o.__dict__; mutations through
+            // it are visible).
+            if o.kind == ap_obj::ObjKind::UserInstance {
+                if let Some(t) = crate::classes::class_of_value(interp, &Value::Obj(o.clone())) {
+                    if !t.has_instance_dict() {
+                        return Err(raise(
+                            "TypeError",
+                            format!("vars() argument must have __dict__ attribute"),
+                        ));
+                    }
+                    return Ok(Value::Dict(crate::classes::instance_dict_handle_pub(o)));
                 }
             }
             let d = PyDict::new();
