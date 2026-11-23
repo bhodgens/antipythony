@@ -51,9 +51,16 @@ trunk. Gate counts cited by leaves are claims; re-runs are evidence.
    T-09 30/30, ws 663/0; rebased onto 971399b, additive diff).
    WAVE 2 COMPLETE — all 3 merged.
    After wave 2: pydantic-core probe -> Plan 05 T3-T5 verdicts.
-2. **pydantic-core probe** — DISPATCHED 2026-11-23 (deleg_2388fcac):
-   inventory -> implement missing wrappers -> import + trivial model
-   through the binary; verdict recorded honestly either way.
+2. **pydantic-core probe** — MERGED e6d249a (2026-11-23). VERDICT:
+   **GREEN — kill-criterion #3 does NOT fire.** 110-symbol residual
+   demand landed as wrapper members (exports_pydantic.rs, ~1400 lines);
+   import pydantic_core + FromSpec Model + one-field validation through
+   the built binary RC=0 deterministic (orchestrator re-ran 3/3).
+   Honest scope: rebuild-SIMULATED pydantic_core (cp314 binary wheel
+   dlopen stays locked-out policy); CPython-arm byte diff of the new
+   members = named follow-up. Gate-found fixes: Bytes/Set/Frozen
+   from_value arms, module-fn self contract, FromSpec tp_new args
+   position. T3/T4 pydantic reachability on S1 STANDS.
    Plan 05 T3-T5 unblock ONLY on a green probe.
 3. **Plan 04 honest-gap leaf** — MERGED ced547a (2026-11-22).
 4. **Plan 05 T3-T5** (gated on pydantic probe): hermes-agent T3 chat
