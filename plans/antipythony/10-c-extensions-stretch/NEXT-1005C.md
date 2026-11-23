@@ -89,15 +89,16 @@ each band deterministically (see Findings #7).
    `__doc__` arm (classes.rs ~4131) answers None first — dict-probe
    only. PyFrame_GetLineNumber/GetVar work; GetGenerator stays NULL
    (no generator back-pointer on our frame chain — honest).
-7. **INTERMITTENT ABORT (open, P2)**: the combined single driver
-   aborted (SIGABRT/SIGTRAP, empty stdout) ~70% of runs at
-   2026-11-22 ~22:00 MST, while every individual member probe and the
-   split drivers ran deterministically green 8+/8 runs. Suspect: the
-   PyErr-band Fetch/Restore interacting with the projection-band
-   frame queries in ONE process (ErrTbOp dispatch re-entrancy or the
-   ERRTB thread-local vs tb snapshot lifetime). bisect + APX backtrace
-   is the next leaf's first action. The split drivers are the shipped
-   proof shape.
+7. **INTERMITTENT ABORT — ROOT-CAUSED & FIXED**: the full PyErr band
+   (and any double raise_catch, p_e/p_d repro) aborted
+   (SIGABRT/SIGTRAP, empty stdout) ~50-100% of runs. Root cause:
+   PyErr_Fetch allocated a FRESH `<tb>` Namespace value per call for
+   the tb slot; across successive Fetch/Restore round trips those
+   short-lived values raced the GC (the trap hit mid-collection).
+   Fix: the tb slot is None (CPython permits tb=NULL in Restore; the
+   frame/code projections read the LIVE interp.py_frames chain, not a
+   parked snapshot). Post-fix: 20/20 deterministic green on the
+   combined full band + both split drivers.
 8. **E11 co_name** reads `outer.inner` (the runtime's frame qualname
    shape); CPython's `f_code.co_name` is `inner`. Recorded; the
    lineno/local match byte-exactly.
@@ -106,13 +107,14 @@ each band deterministically (see Findings #7).
 
 - `cargo test -p ap-ce` (target-1005c): **5 passed / 0 failed**
   (baseline held; unit gates unchanged).
-- `cargo test -p ap-cli --test stdlib_modules_differential`: **48/48**.
+- `cargo test -p ap-cli --test stdlib_modules_differential`: **48/48**
+  (re-run green after the stale errtb.so cleanup).
 - Differential proof: errtb_driver.py (PyErr band E1–E10b) and
-  errtb_driver2.py (projections E11–E13) vs CPython 3.14.7 — executed
-  both arms from /tmp (build-ext shape); stable green on the recorded
-  paths (the CPython arm rebuilt fresh after the stale-so cleanup).
-  Byte-exact modulo Findings #5/#6/#8, which are pin-shaped lines the
-  drivers assert in the common form.
+  errtb_driver2.py (projections E11–E13) vs CPython 3.14.7 — both arms
+  executed fresh (APX arm via `antipythony build-ext` into a clean dir,
+  CPython arm via cc -DAPX_CPYTHON_BUILD + PYTHONPATH): **20/20 stable
+  green** post tb-slot fix; byte-exact modulo the 4 recorded-divergence
+  lines (Findings #5/#6/#8).
 - COMMIT DISCIPLINE: explicit pathspecs per family; session record
   this file.
 

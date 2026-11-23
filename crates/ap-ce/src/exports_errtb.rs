@@ -71,7 +71,11 @@ pub fn errtb_set(class: &str, msg: impl Into<String>) {
     let msg = msg.into();
     err_set(class, msg.clone());
     ERRTB.with(|e| {
-        *e.borrow_mut() = ErrTb {
+        let mut b = e.borrow_mut();
+        // A fresh class+msg raise invalidates any parked instance from a
+        // prior SetObject/Restore — a stale strong Value clone here is
+        // the cumulative-abort suspect (findings #7).
+        *b = ErrTb {
             set: true,
             class: class.to_string(),
             value_text: msg,
@@ -308,25 +312,23 @@ unsafe fn exception_class_of_token(exc: PyObjPtr) -> String {
 // ---------------------------------------------------------------------------
 
 /// PyErr_ExceptionMatches(exc): match the CURRENT error against a class.
-/// The S0 machine is the raise-side authority (PyErr_SetString writes
-/// only it); the rich view adds instance fidelity when present.
+/// The S0 machine is the single raise-side authority (PyErr_SetString and
+/// the PyErr_Format backend both write it) — its class is what matches.
+/// The ERRTB instance only refines GivenExceptionMatches (explicit
+/// instance argument); ExceptionMatches is a pure class-pair check.
 #[no_mangle]
 pub unsafe extern "C" fn PyErr_ExceptionMatches(exc: PyObjPtr) -> c_int {
     if !err_is_set() {
         return 0;
     }
-    // Rich view first (carries the raised instance's real class), then
-    // the S0 class (the SetString route).
-    let raised = match errtb_peek() {
-        Some((class, _)) => class,
-        None => match crate::state::err_take() {
-            Some((class, msg)) => {
-                // Peek, not take: put it back (S0 remains the indicator).
-                crate::state::err_set(&class, msg);
-                class
-            }
-            None => return 0,
-        },
+    // Read the S0 class WITHOUT consuming (take + re-set is atomic here —
+    // single-threaded mutator, per the S0 thread contract).
+    let raised = match crate::state::err_take() {
+        Some((class, msg)) => {
+            crate::state::err_set(&class, msg);
+            class
+        }
+        None => return 0,
     };
     let target = exception_class_of_token(exc);
     runtime_matches(&raised, &target) as c_int
@@ -404,8 +406,11 @@ pub unsafe extern "C" fn PyErr_Fetch(
         Some(v) => crate::state::from_value(v),
         None => new_handle(CeKind::Str, CePayload::Str(st.value_text.clone())),
     };
-    // The tb slot: a live-frame snapshot marker (the projections read it).
-    let tb_h = tb_snapshot_handle();
+    // The tb slot: None (the tb snapshot is NOT parked here — a fresh
+    // Namespace value per Fetch raced the GC in the double-Fetch repro,
+    // p_e/p_d; CPython permits tb=NULL in Restore, and the projections
+    // read the LIVE frame chain rather than a parked snapshot).
+    let tb_h = py_none();
     ce_newref(exc_h);
     ce_newref(val_h);
     ce_newref(tb_h);
