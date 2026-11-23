@@ -32,9 +32,11 @@ trunk. Gate counts cited by leaves are claims; re-runs are evidence.
    build_ext_gate.rs as a row, or a scripts/ lint.
 
 1. **Plan 10 wave 2** — DISPATCHED 2026-11-22 late (deleg_6f619bb0):
-   (a) leaf-1006 hard members (PyLong_Export digit layout, tp_traverse/GC
-   bridging conservation probe, method/class ctors, PyMem, PyGILState —
-   shared-symbol ownership rule in the brief);
+   (a) leaf-1006 hard members — MERGED 9e36c70 (ap-ce 36/0, stdlib
+   48/48 on trunk; longgc+methodmem byte-exact vs committed CPython
+   pins; GC conservation 10k/10k; honest gaps: traverse registry needs
+   gcmod drain wiring = S2 follow-up; PyMutex global-lock scalability
+   note; ~55 members);
    (b) leaf-ge006 genexp-laziness wasm fix — MERGED cf74464 (the
    "eager genexp" framing was a MISDIAGNOSIS; real bugs: plain-fn frames
    never inited the print-buffer local (first print of every user fn
