@@ -66,8 +66,19 @@ trunk. Gate counts cited by leaves are claims; re-runs are evidence.
 4. **Plan 05 T3-T5** — DISPATCHED 2026-11-23 (deleg_28a919e0), probe
    GREEN unblocked them: (a) leaf-t3 hermes-agent chat-turn path
    (pydantic + httpx-construction + rich render; wrapper-class fixes
-   in ap-ce allowed) — RUNNING; (b) leaf-t4 fastapi hello-world + offline
-   route (vendored_stdlib-class fixes allowed) — RUNNING;
+   in ap-ce allowed) — MERGED b232974. VERDICT: REACH — pydantic_core
+   import S0 GREEN, `import pydantic` S1 GREEN after 4 general
+   wrapper-class fixes (module __getattr__ self-deadlock [THE
+   typing-hang root cause — deadlock not spin; fixed],
+   __spec__-pre-exec, import_module 2-arg + relative names,
+   virtual-marker isinstance/__code__ shape); S2 pydantic BaseModel
+   chain blocked on re-entrant lazy import (structural, F-STRUCT-1);
+   S3 httpx blocked on vendored urllib parse_http_list gap; S5 rich
+   blocked on colorsys + stdout fileno; 6 findings recorded (F-STAGE
+   purity-refusal blocks pydantic add, F-VENDORED-1/2, F-INTERP-1/2,
+   F-STRUCT-1); ap-ce 36/0 stdlib 48/48 verified, typing.ContextManager
+   resolves live on merged trunk;
+   (b) leaf-t4 fastapi hello-world + offline route (vendored_stdlib-class fixes allowed) — RUNNING;
    (c) leaf-t5 comfyui/torch reach-verdict — MERGED b670520. VERDICT:
    **BLOCKED at three walls, none of them the C-API wall**: (1)
    `from typing import ContextManager` HANGS — vendored typing
