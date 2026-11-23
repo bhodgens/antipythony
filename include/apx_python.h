@@ -126,6 +126,8 @@ apx_PyObject *apx_PyExc_SystemError(void);
 PyObject *PyLong_FromLong(long);
 PyObject *PyLong_FromLongLong(long long);
 PyObject *PyLong_FromUnsignedLong(unsigned long);
+/* leaf 1005a: the container band returns sizes as Python ints. */
+PyObject *PyLong_FromSsize_t(Py_ssize_t v);
 long PyLong_AsLong(PyObject *);
 long long PyLong_AsLongLong(PyObject *);
 PyObject *PyFloat_FromDouble(double);
@@ -206,6 +208,68 @@ int PyArg_ParseTuple(PyObject *args, const char *fmt, ...);
 /* Extension-init registration: called from PyInit_<mod> before returning
    the module so the runtime can find it (the dlopen seam). */
 void apx_register_module_init(const char *name, PyObject *(*init)(void));
+
+/* --- leaf 1005a --- S1 container band: the residual PyDict_/PyList_/
+   PyTuple_ surface. Unprefixed CPython-spelled symbols resolve against
+   the running binary. Error dialect = CPython 3.14 (SystemError
+   "Objects/<file>.c:<line>: bad argument to internal function" on
+   wrong-typed receivers; IndexError/KeyError wording per the docs).
+   Refcounts: SetItem STEALS; GetItem/Next BORROW (new ref handed out);
+   Pop/GetItemRef/SetDefaultRef/GetItemStringRef/GetSlice/Copy return
+   NEW references. */
+
+/* PyDict lookups */
+PyObject *PyDict_GetItem(PyObject *mp, PyObject *key);
+PyObject *PyDict_GetItemWithError(PyObject *mp, PyObject *key);
+int PyDict_GetItemRef(PyObject *mp, PyObject *key, PyObject **result);
+PyObject *PyDict_GetItemString(PyObject *dp, const char *key);
+int PyDict_GetItemStringRef(PyObject *mp, const char *key, PyObject **result);
+
+/* PyDict mutation */
+int PyDict_SetItem(PyObject *mp, PyObject *key, PyObject *item);
+int PyDict_DelItem(PyObject *mp, PyObject *key);
+int PyDict_DelItemString(PyObject *dp, const char *key);
+void PyDict_Clear(PyObject *mp);
+int PyDict_Contains(PyObject *mp, PyObject *key);
+int PyDict_ContainsString(PyObject *mp, const char *key);
+int PyDict_Pop(PyObject *dict, PyObject *key, PyObject **result);
+int PyDict_PopString(PyObject *dict, const char *key, PyObject **result);
+PyObject *PyDict_SetDefault(PyObject *mp, PyObject *key, PyObject *defaultobj);
+int PyDict_SetDefaultRef(PyObject *mp, PyObject *key, PyObject *default_value,
+                         PyObject **result);
+
+/* PyDict views / bulk */
+PyObject *PyDict_Keys(PyObject *mp);
+PyObject *PyDict_Values(PyObject *mp);
+PyObject *PyDict_Items(PyObject *mp);
+Py_ssize_t PyDict_Size(PyObject *mp);
+PyObject *PyDict_Copy(PyObject *mp);
+int PyDict_Merge(PyObject *mp, PyObject *other, int override_);
+int PyDict_Update(PyObject *mp, PyObject *other);
+int PyDict_MergeFromSeq2(PyObject *d, PyObject *seq2, int override_);
+int PyDict_Next(PyObject *mp, Py_ssize_t *ppos, PyObject **pkey,
+                PyObject **pvalue);
+
+/* PyList residual */
+Py_ssize_t PyList_Size(PyObject *);
+PyObject *PyList_GetItem(PyObject *, Py_ssize_t);
+PyObject *PyList_GetItemRef(PyObject *, Py_ssize_t);
+int PyList_SetItem(PyObject *, Py_ssize_t, PyObject *);
+PyObject *PyList_GetSlice(PyObject *, Py_ssize_t, Py_ssize_t);
+int PyList_SetSlice(PyObject *, Py_ssize_t, Py_ssize_t, PyObject *);
+int PyList_Insert(PyObject *, Py_ssize_t, PyObject *);
+int PyList_Extend(PyObject *self, PyObject *iterable);
+int PyList_Clear(PyObject *self);
+int PyList_Sort(PyObject *);
+int PyList_Reverse(PyObject *);
+PyObject *PyList_AsTuple(PyObject *);
+
+/* PyTuple residual (New/Size/SetItem/GetItem exist since S0) */
+PyObject *PyTuple_GetSlice(PyObject *, Py_ssize_t, Py_ssize_t);
+/* PyTuple_Pack: varargs cannot cross the Rust boundary; the macro routes
+   through a C helper building the arg array (apx_shim.c). */
+PyObject *apx_PyTuple_PackV(Py_ssize_t n, ...);
+#define PyTuple_Pack(n, ...) apx_PyTuple_PackV((n), __VA_ARGS__)
 
 #ifdef __cplusplus
 }
