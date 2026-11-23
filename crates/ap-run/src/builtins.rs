@@ -1449,6 +1449,12 @@ pub fn builtin_isinstance(args: &[Value]) -> BResult {
     check_isinstance(v, t)
 }
 
+/// T4 (PEP 634 class patterns in interp): public re-expose of the
+/// isinstance check for interp-side protocol work.
+pub fn check_isinstance_public(v: &Value, t: &Value) -> Result<Value, Flow> {
+    check_isinstance(v, t)
+}
+
 fn check_isinstance(v: &Value, t: &Value) -> Result<Value, Flow> {
     // T2 (inspect.isclass): an instance is never an instance of `type`.
     // Only UserClass/Type subjects can be. Guard here too — the
