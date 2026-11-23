@@ -85,6 +85,9 @@ fn ensure_pycall_installed() {
     PYCALL_INSTALL.get_or_init(|| {
         let _ = ap_ce::runtime_ctx::install_pycall(runtime_pycall);
     });
+    // Leaf 1005b: the object-protocol band installs alongside (an
+    // extension may hit PyObject_GetAttr before any PyObject_Call).
+    crate::ce_objproto::ensure_objproto_installed();
 }
 
 /// Leaf 10.04: tp_new payload allocation — allocate the C-visible instance
