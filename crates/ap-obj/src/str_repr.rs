@@ -37,6 +37,12 @@ pub fn str_repr(s: &str) -> String {
                 // and the C1 range 0x80-0x9f (e.g. repr('\x8a') -> '\x8a').
                 out.push_str(&format!("\\x{:02x}", c as u32));
             }
+            Some('\u{2028}') | Some('\u{2029}') => {
+                // LINE SEPARATOR / PARAGRAPH SEPARATOR are Zl/Zp — NOT
+                // printable per unicodedata.is_printable, so CPython repr
+                // escapes them ('\u2028' / '\u2029').
+                out.push_str(&format!("\\u{:04x}", c.unwrap() as u32));
+            }
             Some(c) => out.push(c),
             None => {
                 // Lone surrogate (Cs): CPython repr escapes it \ud800.

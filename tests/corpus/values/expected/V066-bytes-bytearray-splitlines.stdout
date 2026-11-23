@@ -1,0 +1,17 @@
+[b'a\n', b'b\n']
+[b'a', b'b']
+[b'a\r\n', b'b\r\n']
+[b'a', b'b']
+[b'a\r', b'b\r']
+[b'a', b'b']
+[b'a\x0bb\x0cc\x1cd']
+[] []
+[b'\n']
+[b'xyz']
+[b'a', b'', b'b']
+[bytearray(b'a\n'), bytearray(b'b\r\n')]
+[bytearray(b'a'), bytearray(b'b')]
+[]
+bytearray
+bytes
+True
