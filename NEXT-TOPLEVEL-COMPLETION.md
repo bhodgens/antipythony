@@ -43,8 +43,13 @@ trunk. Gate counts cited by leaves are claims; re-runs are evidence.
    dropped) + throw-escape left gen state live; 53/53 debug+release,
    42 suites 46/0 on trunk, ap-codegen-wasm-only diff; NEXT-GE006.md
    corrects the 03.04d/e records);
-   (c) leaf-linecache AOT source embedding (02.08 audit binary-mode gap,
-   >=35/48 target with pins).
+   (c) leaf-linecache AOT source embedding — MERGED 4d8a1d3 (465-file
+   include_bytes store, dead-strips when unreachable [hello 0-byte
+   delta], disk wins when present; binary-mode slice 46/48 with the 2
+   fails = documented interpreter-mode gaps; standalone enum+warnings
+   import face verified first-hand via ANTIPTYHONY_STDLIB redirect;
+   T-09 30/30, ws 663/0; rebased onto 971399b, additive diff).
+   WAVE 2 COMPLETE — all 3 merged.
    After wave 2: pydantic-core probe -> Plan 05 T3-T5 verdicts.
 2. **pydantic-core probe** (after wave 2 lands): its 11 non-stable
    symbols all fall in landed bands except the Call family (landed in
