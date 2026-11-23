@@ -414,11 +414,12 @@ fn plain_native_binary_carries_no_payload_seam() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// On the PLAIN binary, `--emit-wasm` behaves as program argv (the 02.06
-/// passthrough contract): for an argv-ignoring probe it runs the program
-/// and does NOT produce a .wasm. The refusal-with-diagnostic shape is a
-/// plain-CRT behavior change (another agent's surface) — recorded in
-/// NEXT-0405.md as the honest residual of T-16's G-4 leg.
+/// On the PLAIN binary, `--emit-wasm` is now REFUSED LOUDLY (04.05
+/// honest-gap-1 closeout, NEXT-04GAPS): the plain CRT answers with the
+/// actionable diagnostic (rc 2, stderr names `build --hybrid`), NO .wasm
+/// is produced, and the program never runs (the flag is claimed by the
+/// launcher, not passed to the module). This was previously pinned as
+/// argv-passthrough when the plain CRT was another agent's surface.
 #[test]
 fn plain_binary_treats_emit_wasm_as_program_argv() {
     let cli = cli_bin("antipythony");
@@ -436,13 +437,25 @@ fn plain_binary_treats_emit_wasm_as_program_argv() {
     assert!(build.status.success());
     let workdir = scratch_dir("argv-cwd");
     let triple = run_cwd(&out, &["--emit-wasm"], &workdir);
-    assert_eq!(
-        triple.0, b"plain argv\n",
-        "plain binary must run the program (argv passthrough), not claim the flag"
+    // The program must NOT run (the flag is claimed before module code).
+    assert!(
+        triple.0.is_empty(),
+        "plain binary ran the program despite --emit-wasm: {:?}",
+        String::from_utf8_lossy(&triple.0)
     );
+    // LOUD + actionable: rc 2, stderr names the hybrid rebuild fix.
     assert_eq!(
-        triple.2, 0,
-        "argv-ignoring program exits 0 with the flag in argv"
+        triple.2, 2,
+        "plain binary must refuse --emit-wasm with rc 2"
+    );
+    let stderr = String::from_utf8_lossy(&triple.1);
+    assert!(
+        stderr.contains("--emit-wasm"),
+        "diagnostic must name the flag: {stderr}"
+    );
+    assert!(
+        stderr.contains("build --hybrid"),
+        "diagnostic must name the fix (build --hybrid): {stderr}"
     );
     let no_wasm: Vec<PathBuf> = std::fs::read_dir(&workdir)
         .expect("read cwd")
