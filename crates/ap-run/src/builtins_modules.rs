@@ -15945,6 +15945,11 @@ pub fn call_native_marker_impl(
     if full.starts_with("__ap_ce__.") {
         return crate::ce_bridge::call_ce_marker(full, args);
     }
+    // T5 wall-2 F2/F3: the machinery SourceFileLoader bound method surface
+    // (`__ap_sfl__.<m>` over the loader instance riding args[0]).
+    if let Some(rest) = full.strip_prefix("__ap_sfl__.") {
+        return Some(call_source_file_loader_method(rest, args));
+    }
     // Issue #13: multibyte codec bound surfaces (`_mbc.<codec>.encode|decode`
     // over the getcodec namespace receiver riding args[0]).
     if let Some(rest) = full.strip_prefix("_mbc.") {
@@ -19742,9 +19747,7 @@ fn call_importlib(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Opt
                 };
                 let name_v = kw("name")
                     .or_else(|| args.first().cloned())
-                    .ok_or_else(|| {
-                        raise("TypeError", "import_module expected a module name")
-                    })?;
+                    .ok_or_else(|| raise("TypeError", "import_module expected a module name"))?;
                 let mod_name = str_arg(&name_v, "import_module")?;
                 // T3 (pydantic __init__._dynamic_imports -> __getattr__ ->
                 // import_module(module_name, package=package)): relative
@@ -19832,6 +19835,120 @@ fn call_importlib(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Opt
     Some(r)
 }
 
+/// T5 wall-2 F2/F3: the bound SourceFileLoader method surface. args[0] is
+/// the loader instance (the "SourceFileLoader" Opaque carrying name/path);
+/// the remaining args ride the CPython signatures we serve:
+/// - create_module(spec) -> None (default module creation)
+/// - exec_module(module) -> runs the .py through the importer
+/// - get_filename(name=None) / get_data(path) / get_source(name)
+/// - is_package(fullname) / path_stats(path)
+/// - get_code / source_to_code -> None (v0: not compiled-code producers)
+fn call_source_file_loader_method(meth: &str, args: &[Value]) -> BResult {
+    let sl = args.first().cloned().unwrap_or(Value::None);
+    let (name, path) = match &sl {
+        Value::Obj(o) => {
+            let a = o.attrs.lock().unwrap_or_else(|p| p.into_inner());
+            let g = |k: &str| -> Option<String> {
+                a.get(&Value::Str(PyString::new(k))).and_then(|v| match v {
+                    Value::Str(s) => Some(s.as_str().to_string()),
+                    _ => None,
+                })
+            };
+            (g("name").unwrap_or_default(), g("path").unwrap_or_default())
+        }
+        _ => (String::new(), String::new()),
+    };
+    match meth {
+        // CPython Loader.create_module(spec) -> None: the import machinery
+        // uses its default module type.
+        "create_module" => Ok(Value::None),
+        // THE gate: exec_module(module) runs the source end-to-end.
+        "exec_module" => {
+            let module = args
+                .get(1)
+                .cloned()
+                .ok_or_else(|| raise("TypeError", "exec_module expected a module"))?;
+            let interp = current_interp().ok_or_else(|| raise("RuntimeError", "no interpreter"))?;
+            let interp = std::sync::Arc::new(interp);
+            let mod_name = match &module {
+                Value::Obj(m) if m.kind == ap_obj::ObjKind::Module => m
+                    .module_ns
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .as_ref()
+                    .and_then(|ns| ns.get(&s("__name__")))
+                    .and_then(|v| match v {
+                        Value::Str(sv) => Some(sv.as_str().to_string()),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| name.clone()),
+                _ => name.clone(),
+            };
+            match crate::importer::exec_module_file(&interp, &module, &mod_name, &path) {
+                Ok(()) => Ok(Value::None),
+                Err(Flow::Raise(e)) => Err(Flow::Raise(e)),
+                Err(other) => Err(other),
+            }
+        }
+        "get_filename" => {
+            if path.is_empty() {
+                // CPython SourceLoader.get_filename raises on a pathless
+                // loader; a named file answers it.
+                Err(raise(
+                    "ImportError",
+                    format!("cannot get filename for {name}"),
+                ))
+            } else {
+                Ok(s(path))
+            }
+        }
+        "get_data" => {
+            let target = args
+                .get(1)
+                .and_then(|v| match v {
+                    Value::Str(sv) => Some(sv.as_str().to_string()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| path.clone());
+            match std::fs::read(&target) {
+                Ok(bytes) => Ok(Value::Bytes(Gc::new(bytes))),
+                Err(e) => Err(raise("OSError", format!("cannot read {target}: {e}"))),
+            }
+        }
+        "get_source" => {
+            let target = if path.is_empty() {
+                match args.get(1) {
+                    Some(Value::Str(sv)) => sv.as_str().to_string(),
+                    _ => String::new(),
+                }
+            } else {
+                path.clone()
+            };
+            match std::fs::read_to_string(&target) {
+                Ok(text) => Ok(s(text)),
+                Err(e) => Err(raise("ImportError", format!("cannot read {target}: {e}"))),
+            }
+        }
+        // CPython SourceFileLoader.is_package: True when the module's file
+        // is __init__.py inside the package dir.
+        "is_package" => {
+            let is_init = std::path::Path::new(&path)
+                .file_name()
+                .map(|f| f == std::ffi::OsStr::new("__init__.py"))
+                .unwrap_or(false);
+            Ok(Value::Bool(is_init))
+        }
+        "path_stats" => Ok(Value::None),
+        // v0: no compiled-code production (get_code/source_to_code return
+        // None; callers needing exec go through exec_module).
+        "get_code" | "source_to_code" => Ok(Value::None),
+        other => Err(raise(
+            "AttributeError",
+            format!("'SourceFileLoader' object has no attribute '{other}'"),
+        )),
+    }
+}
+
 fn call_importlib_util(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Option<BResult> {
     let r: BResult = (|| -> BResult {
         match name {
@@ -19842,20 +19959,93 @@ fn call_importlib_util(name: &str, args: &[Value], _kwargs: &[(String, Value)]) 
                         .ok_or_else(|| raise("TypeError", "find_spec expected a module name"))?,
                     "find_spec",
                 )?;
-                // Imported modules get a name-only spec marker; unknown ones
-                // are None (s047 pin: find_spec("quixotic_mod_t11") is None).
-                let imported = crate::importer::sys_modules_get(&mod_name).is_some();
-                if !imported {
-                    let native = is_native_module(&mod_name);
-                    let vendored =
-                        std::path::Path::new("vendored_stdlib").join(format!("{mod_name}.py"));
-                    let pkg = std::path::Path::new("vendored_stdlib")
-                        .join(&mod_name)
-                        .join("__init__.py");
-                    if !native && !vendored.exists() && !pkg.exists() {
-                        return Ok(Value::None);
+                // Imported modules return sys.modules[name].__spec__ (CPython
+                // contract); s047 pin: unknown names are None.
+                if let Some(m) = crate::importer::sys_modules_get(&mod_name) {
+                    let spec = match &m {
+                        Value::Obj(mo) => {
+                            let ns = mo.module_ns.lock().unwrap_or_else(|p| p.into_inner());
+                            ns.as_ref()
+                                .and_then(|d| d.get(&s("__spec__")))
+                                .map(|v| v.clone())
+                        }
+                        _ => None,
+                    };
+                    if let Some(sp) = spec {
+                        return Ok(sp);
                     }
                 }
+                // T5 wall-2 F1: resolve DIRECTORY PACKAGES on the live
+                // sys.path (site-packages first — torch/comfyui staging
+                // inserts it at [0]). The old arm answered None for any
+                // module outside the vendored tree, so find_spec("torch")
+                // missed what a plain `import torch` finds through the
+                // importer's file finder.
+                let native = is_native_module(&mod_name);
+                let vendored =
+                    std::path::Path::new("vendored_stdlib").join(format!("{mod_name}.py"));
+                let pkg = std::path::Path::new("vendored_stdlib")
+                    .join(&mod_name)
+                    .join("__init__.py");
+                if !native && !vendored.exists() && !pkg.exists() {
+                    // Live sys.path scan: directory package (dir/__init__.py)
+                    // wins over the sibling module file, per entry order
+                    // (CPython FileFinder). CPython parent contract: a
+                    // dotted name auto-imports the parent first; the parent
+                    // import failing here raises ModuleNotFoundError with
+                    // the __path__ message shape.
+                    let parent = mod_name.rsplit_once('.').map(|(p, _)| p);
+                    if let Some(p) = parent {
+                        let pv = crate::importer::sys_modules_get(p);
+                        if pv.is_none() {
+                            let interp = current_interp()
+                                .ok_or_else(|| raise("RuntimeError", "no interpreter"))?;
+                            let interp = std::sync::Arc::new(interp);
+                            crate::importer::import_module(&interp, p).map_err(|f| match f {
+                                Flow::Raise(e) => Flow::Raise(e),
+                                other => other,
+                            })?;
+                        }
+                    }
+                    for base in crate::importer::sys_path_entries() {
+                        let bp = std::path::Path::new(&base);
+                        // Directory package with __init__.py.
+                        let init = bp.join(&mod_name).join("__init__.py");
+                        if init.is_file() {
+                            let dir = bp.join(&mod_name);
+                            let loader = make_source_file_loader_instance(
+                                &mod_name,
+                                &init.to_string_lossy(),
+                            );
+                            let spec =
+                                make_module_spec(&mod_name, &init.to_string_lossy(), loader, true);
+                            if let Value::Obj(so) = &spec {
+                                let _ = so.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
+                                    s("submodule_search_locations"),
+                                    list(vec![s(dir.to_string_lossy().into_owned())]),
+                                );
+                            }
+                            return Ok(spec);
+                        }
+                        // Flat module file.
+                        let file = bp.join(format!("{mod_name}.py"));
+                        if file.is_file() {
+                            let loader = make_source_file_loader_instance(
+                                &mod_name,
+                                &file.to_string_lossy(),
+                            );
+                            return Ok(make_module_spec(
+                                &mod_name,
+                                &file.to_string_lossy(),
+                                loader,
+                                false,
+                            ));
+                        }
+                    }
+                    return Ok(Value::None);
+                }
+                // Native/vendored face: name-only spec (pre-existing v0
+                // contract — attach surfaces fill richer shapes post-import).
                 let spec = PyObject::new(ap_obj::ObjKind::Namespace, "ModuleSpec");
                 {
                     let attrs = spec.attrs.lock().unwrap_or_else(|p| p.into_inner());
@@ -19865,9 +20055,10 @@ fn call_importlib_util(name: &str, args: &[Value], _kwargs: &[(String, Value)]) 
                 Ok(Value::Obj(spec))
             }
             // 02.08-c: spec_from_file_location/module_from_spec power
-            // dynamic third-party loads (parsel shim _load_real). Build a
-            // spec marker whose loader is a SourceFileLoader-like opaque
-            // carrying (name, path); module_from_spec materializes a Module.
+            // dynamic third-party loads (parsel shim _load_real). T5 wall-2:
+            // the loader is a REAL SourceFileLoader instance (constructs,
+            // exec_module runs the file); the spec carries the CPython attr
+            // surface (has_location/cached/parent/submodule_search_locations).
             "spec_from_file_location" => {
                 let mod_name = str_arg(
                     args.first().ok_or_else(|| {
@@ -19879,41 +20070,101 @@ fn call_importlib_util(name: &str, args: &[Value], _kwargs: &[(String, Value)]) 
                     Some(Value::Str(p)) => p.as_str().to_string(),
                     _ => String::new(),
                 };
-                let spec = PyObject::new(ap_obj::ObjKind::Namespace, "ModuleSpec");
-                {
-                    let attrs = spec.attrs.lock().unwrap_or_else(|p| p.into_inner());
-                    let _ = attrs.set(s("name"), s(mod_name.clone()));
-                    let _ = attrs.set(s("origin"), s(path.clone()));
-                    let loader = PyObject::new(ap_obj::ObjKind::Opaque, "SourceFileLoader");
-                    {
-                        let la = loader.attrs.lock().unwrap_or_else(|p| p.into_inner());
-                        let _ = la.set(s("<mod_name>"), s(mod_name.clone()));
-                        let _ = la.set(s("<path>"), s(path));
-                    }
-                    let _ = attrs.set(s("loader"), Value::Obj(loader));
+                // Optional loader + submodule_search_locations args
+                // (CPython signature: (name, location, loader=None,
+                // submodule_search_locations=None)).
+                let override_loader = args.get(2).cloned().unwrap_or(Value::None);
+                let submod_locs = args.get(3).cloned().unwrap_or(Value::None);
+                let loader = if matches!(override_loader, Value::None) {
+                    make_source_file_loader_instance(&mod_name, &path)
+                } else {
+                    override_loader
+                };
+                let spec = make_module_spec(
+                    &mod_name,
+                    &path,
+                    loader,
+                    matches!(submod_locs, Value::List(_)),
+                );
+                if let Value::Obj(so) = &spec {
+                    let _ = so
+                        .attrs
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .set(s("submodule_search_locations"), submod_locs.clone());
                 }
-                Ok(Value::Obj(spec))
+                Ok(spec)
             }
             "module_from_spec" => {
                 let spec = args
                     .first()
                     .ok_or_else(|| raise("TypeError", "module_from_spec expected a spec"))?;
                 if let Value::Obj(so) = spec {
-                    let name = so
-                        .attrs
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
+                    let attrs = so.attrs.lock().unwrap_or_else(|p| p.into_inner());
+                    let name = attrs
                         .get(&Value::Str(PyString::new("name")))
                         .and_then(|v| match v {
                             Value::Str(s) => Some(s.as_str().to_string()),
                             _ => None,
                         })
                         .unwrap_or_else(|| "dynamic".to_string());
+                    let loader = attrs
+                        .get(&Value::Str(PyString::new("loader")))
+                        .map(|v| v.clone());
+                    let origin = attrs
+                        .get(&Value::Str(PyString::new("origin")))
+                        .map(|v| v.clone());
+                    let sublocs = attrs
+                        .get(&Value::Str(PyString::new("submodule_search_locations")))
+                        .map(|v| v.clone());
+                    drop(attrs);
                     let modv = PyObject::new(ap_obj::ObjKind::Module, &name);
-                    let _ = modv.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
-                        Value::Str(PyString::new("__name__")),
-                        Value::Str(PyString::new(name.clone())),
-                    );
+                    {
+                        // CPython module_init: __name__/__doc__/__package__/
+                        // __spec__/__loader__, plus __file__ (has_location)
+                        // and __path__ (a package face). __package__ is the
+                        // package's own name when it HAS search locations,
+                        // else the dotted parent (empty for top-level).
+                        let ns = PyDict::new();
+                        let _ = ns.set(s("__name__"), s(name.clone()));
+                        let _ = ns.set(s("__doc__"), Value::None);
+                        let package = if matches!(sublocs, Some(Value::List(_))) {
+                            name.clone()
+                        } else {
+                            name.rsplit_once('.')
+                                .map(|(p, _)| p.to_string())
+                                .unwrap_or_default()
+                        };
+                        let _ = ns.set(s("__package__"), s(package));
+                        if let Some(Value::List(_)) = sublocs.clone() {
+                            let _ = ns.set(s("__path__"), sublocs.clone().unwrap());
+                        }
+                        if let Some(Value::Str(f)) = &origin {
+                            let _ = ns.set(s("__file__"), s(f.as_str().to_string()));
+                        }
+                        // __spec__/__loader__ live in the module NAMESPACE
+                        // (module attr reads resolve module_ns; CPython's
+                        // module_init seeds both before the body runs).
+                        let _ = ns.set(s("__spec__"), spec.clone());
+                        if let Some(l) = loader.clone() {
+                            let _ = ns.set(s("__loader__"), l);
+                        }
+                        *modv.module_ns.lock().unwrap_or_else(|p| p.into_inner()) =
+                            Some(std::sync::Arc::new((*ns).clone()));
+                    }
+                    // Mirror on the ATTR layer for the attr-protocol readers.
+                    let _ = modv
+                        .attrs
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .set(s("__spec__"), spec.clone());
+                    if let Some(l) = loader {
+                        let _ = modv
+                            .attrs
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .set(s("__loader__"), l);
+                    }
                     return Ok(Value::Obj(modv));
                 }
                 Err(raise("TypeError", "module_from_spec expected a spec"))
@@ -19931,11 +20182,166 @@ fn call_importlib_util(name: &str, args: &[Value], _kwargs: &[(String, Value)]) 
     Some(r)
 }
 
+/// T5 wall-2 F2: the machinery loader classes (SourceFileLoader etc.) as REAL
+/// class values — `im.SourceFileLoader` is a constructible class whose
+/// `__init__(self, fullname, path)` stores both; the ctor itself routes
+/// through builtins::call_builtin's loader-name arm (call_type_ctor
+/// fallthrough), which builds the instance via
+/// make_source_file_loader_instance. The method surface routes through the
+/// "__ap_sfl__.<method>" markers (call_native_marker_impl) whose exec_module
+/// runs the .py end-to-end through the importer's compile/exec path.
+/// `__module__` matches CPython's `_frozen_importlib_external`.
+pub fn make_source_file_loader_class(name: &str) -> Value {
+    let interp = match current_interp() {
+        Some(i) => i,
+        None => return interned_type_pub(name),
+    };
+    let t = ap_obj::classes::TypeObject::create(
+        name.to_string(),
+        format!("_frozen_importlib_external.{name}"),
+        vec![crate::classes::object_class(&interp)],
+        PyDict::new(),
+        ap_obj::classes::TypeFlags::default(),
+        None,
+    )
+    .unwrap_or_else(|_| panic!("{name} mro"));
+    // T5 wall-2 F3: the ctor rides the __new__ marker (instantiate's custom-
+    // __new__ path calls it with (cls, fullname, path) and dispatches the
+    // BuiltinFn through builtins::call_builtin's "__ap_" arm — the ONLY
+    // ctor seam reachable without touching classes.rs).
+    let _ = t.dict.set(s("__new__"), marker("__ap_sfl_new__"));
+    for m in [
+        "create_module",
+        "exec_module",
+        "get_code",
+        "get_data",
+        "get_filename",
+        "get_source",
+        "is_package",
+        "path_stats",
+        "source_to_code",
+    ] {
+        let _ = t.dict.set(s(m), marker(&format!("__ap_sfl__.{m}")));
+    }
+    let _ = t.dict.set(s("__module__"), s("_frozen_importlib_external"));
+    let v = ap_obj::classes::make_class_value(t);
+    interp
+        .type_objects
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(name.to_string(), v.clone());
+    v
+}
+
+/// A SourceFileLoader INSTANCE carrying (fullname, path) — the ctor product.
+/// The method surface rides the instance as PRE-BOUND BoundMethods over the
+/// "__ap_sfl__.<m>" markers (attr reads answer exec_module/get_filename/...
+/// and a call dispatches with self riding args[0], CPython's bound shape).
+pub fn make_source_file_loader_instance(fullname: &str, path: &str) -> Value {
+    let cls = make_source_file_loader_class("SourceFileLoader");
+    let o = PyObject::new(ap_obj::ObjKind::Opaque, "SourceFileLoader");
+    {
+        let a = o.attrs.lock().unwrap_or_else(|p| p.into_inner());
+        let _ = a.set(s("name"), s(fullname));
+        let _ = a.set(s("path"), s(path));
+        let _ = a.set(s("<class>"), cls);
+        for m in [
+            "create_module",
+            "exec_module",
+            "get_code",
+            "get_data",
+            "get_filename",
+            "get_source",
+            "is_package",
+            "path_stats",
+            "source_to_code",
+        ] {
+            let fname = marker(&format!("__ap_sfl__.{m}"));
+            let bm = PyObject::with_self(ap_obj::ObjKind::BoundMethod, m, Value::Obj(o.clone()));
+            *bm.func.lock().unwrap_or_else(|p| p.into_inner()) = Some(fname);
+            let _ = a.set(s(m), Value::Obj(bm));
+        }
+    }
+    // CPython instance repr: <_frozen_importlib_external.SourceFileLoader
+    // object at 0x...> (the address is the payload pointer; byte-shape is
+    // what differential probes pin — identity is per-instance as in CPython).
+    *o.repr_text.lock().unwrap_or_else(|p| p.into_inner()) = Some(format!(
+        "<_frozen_importlib_external.SourceFileLoader object at 0x{:x}>",
+        ap_obj::value::addr_of(&o)
+    ));
+    Value::Obj(o)
+}
+
+/// The ModuleSpec namespace with the CPython attr surface: name / origin /
+/// loader, plus the derived properties has_location / cached / parent that
+/// importlib._bootstrap defines as spec properties (wheel-staging code and
+/// plugin loaders probe all of them).
+fn make_module_spec(mod_name: &str, origin: &str, loader: Value, is_package: bool) -> Value {
+    let spec = PyObject::new(ap_obj::ObjKind::Namespace, "ModuleSpec");
+    {
+        let a = spec.attrs.lock().unwrap_or_else(|p| p.into_inner());
+        let _ = a.set(s("name"), s(mod_name));
+        let _ = a.set(s("origin"), s(origin));
+        let _ = a.set(s("loader"), loader);
+        // CPython _set_fileattr: a file origin sets has_location True and
+        // derives cached (the __pycache__ .pyc path).
+        let _ = a.set(s("has_location"), Value::Bool(true));
+        let cached = cache_from_source_path(origin);
+        let _ = a.set(s("cached"), s(cached));
+        let parent = if is_package {
+            mod_name.to_string()
+        } else {
+            mod_name
+                .rsplit_once('.')
+                .map(|(p, _)| p.to_string())
+                .unwrap_or_default()
+        };
+        let _ = a.set(s("parent"), s(parent));
+        if !is_package {
+            let _ = a.set(s("submodule_search_locations"), Value::None);
+        }
+    }
+    *spec.repr_text.lock().unwrap_or_else(|p| p.into_inner()) =
+        Some(module_spec_repr(mod_name, origin, is_package));
+    Value::Obj(spec)
+}
+
+/// CPython cache_from_source: `<dir>/__pycache__/<stem>.cpython-314.pyc`.
+fn cache_from_source_path(origin: &str) -> String {
+    let p = std::path::Path::new(origin);
+    let dir = p.parent().map(|d| d.to_path_buf()).unwrap_or_default();
+    let stem = p
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    dir.join("__pycache__")
+        .join(format!("{stem}.cpython-314.pyc"))
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// CPython ModuleSpec.__repr__: ModuleSpec(name=.., loader=.., origin=..)
+/// plus `, submodule_search_locations=[...]` for packages.
+fn module_spec_repr(mod_name: &str, origin: &str, is_package: bool) -> String {
+    let tail = if is_package {
+        format!(
+            ", submodule_search_locations=[{}]",
+            std::path::Path::new(origin)
+                .parent()
+                .map(|d| format!("'{}'", d.to_string_lossy()))
+                .unwrap_or_default()
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        "ModuleSpec(name='{mod_name}', loader=<SourceFileLoader object>, origin='{origin}'{tail})"
+    )
+}
+
 fn build_importlib_machinery(_i: &crate::frame::Interpreter) -> Value {
     let (m, ns) = new_module("importlib.machinery");
     for n in [
-        "SourceFileLoader",
-        "SourcelessFileLoader",
         "FileFinder",
         "BuiltinImporter",
         "FrozenImporter",
@@ -19945,15 +20351,26 @@ fn build_importlib_machinery(_i: &crate::frame::Interpreter) -> Value {
         // T2 (pluggy -> pytest): pluggy._manager and _pytest.core read
         // importlib.machinery.PathFinder for their plugin-file discovery
         // fallback. Same interned-type token as the other loader surfaces.
-        // NamespaceLoader: pluggy's ZipHookImporter / namespace-path probes
-        // reference it; ModuleSpec re-export matches CPython's machinery.
         "PathFinder",
-        "NamespaceLoader",
-        "ModuleSpec",
         "AppleFrameworkLoader",
     ] {
         let _ = ns.set(s(n), interned_type_pub(n));
     }
+    // T5 wall-2 F2: SourceFileLoader/SourcelessFileLoader/ExtensionFileLoader/
+    // NamespaceLoader are CONSTRUCTIBLE classes (CPython: the __init__ stores
+    // (fullname, path); spec_from_file_location builds one; pytest's
+    // import_path / anywheel-style staging exec real files through them).
+    // The instance methods (create_module/exec_module/get_data/...) route
+    // through the "__ap_sfl__.<method>" markers handled in call_native_marker.
+    for n in ["SourceFileLoader", "SourcelessFileLoader"] {
+        let _ = ns.set(s(n), make_source_file_loader_class(n));
+    }
+    let _ = ns.set(
+        s("NamespaceLoader"),
+        make_source_file_loader_class("NamespaceLoader"),
+    );
+    // ModuleSpec re-export matches CPython's machinery (a real class VALUE).
+    let _ = ns.set(s("ModuleSpec"), interned_type_pub("ModuleSpec"));
     // T2 (pytest pathlib.import_path): `PathFinder.find_spec(name, path)` is
     // called on the interned PathFinder type; return None (not found) so the
     // caller's fallback (our own file finder) drives the import, matching
