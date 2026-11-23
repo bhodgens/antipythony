@@ -23,6 +23,8 @@ pub mod api;
 pub mod exports;
 pub mod exports_containers;
 pub mod exports_errtb;
+pub mod exports_long_gc;
+pub mod exports_method_mem;
 pub mod exports_objproto;
 pub mod ffi_types;
 pub mod payloads;

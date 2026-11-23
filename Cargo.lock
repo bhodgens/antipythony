@@ -116,6 +116,8 @@ dependencies = [
  "ap-obj",
  "cc",
  "libc",
+ "num-bigint",
+ "num-traits",
 ]
 
 [[package]]
