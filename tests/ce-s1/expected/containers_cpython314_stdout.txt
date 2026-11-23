@@ -1,0 +1,125 @@
+D1 {'a': 1, 'b': 2}
+D2 2
+D3 ['a', 'b']
+D4 [1, 2]
+D5 [('a', 1), ('b', 2)]
+D6 (1, 1)
+D7 (0, None)
+D8 (1, 2)
+D9 (0, None)
+D10 1
+D11 None
+D12 2
+D13 None
+D14 True
+D15 False
+D16 True
+D17 False
+D18 (1, 1)
+D19 (0, None)
+D20 (1, 2)
+D21 (0, None)
+D22 0
+D23 10
+D24 10
+D25 (0, 20)
+D26 (1, 20)
+D27 2
+D28 1
+D29 0
+D30 0
+D31 {'a': 1, 'b': 2} 2
+D32 {'a': 1, 'b': 2, 'zz': 9} {'a': 1, 'b': 2}
+D33 2
+D34 2 {'a': 1, 'b': 2}
+D35 2
+D36 {'a': 1, 'b': 2, 'x': 1, 'y': 2}
+D37 {'a': 1, 'b': 2, 'x': 1, 'y': 2} {'a': 1, 'b': 2, 'x': 1, 'y': 2}
+D38 [('a', 1), ('b', 2)]
+D39 0
+ERR TypeError cannot use 'list' as a dict key (unhashable type: 'list')
+ERR TypeError cannot use 'list' as a dict key (unhashable type: 'list')
+ERR TypeError cannot use 'list' as a dict key (unhashable type: 'list')
+ERR TypeError cannot use 'list' as a dict key (unhashable type: 'list')
+ERR TypeError cannot use 'list' as a dict key (unhashable type: 'list')
+ERR TypeError cannot use 'list' as a dict key (unhashable type: 'list')
+ERR TypeError cannot use 'list' as a dict key (unhashable type: 'list')
+ERR KeyError
+ERR KeyError
+ERR SystemError Objects/dictobject.c:4248: bad argument to internal function
+ERR SystemError Objects/dictobject.c:3561: bad argument to internal function
+ERR SystemError Objects/dictobject.c:3610: bad argument to internal function
+ERR SystemError Objects/dictobject.c:3658: bad argument to internal function
+ERR SystemError Objects/dictobject.c:4231: bad argument to internal function
+ERR SystemError Objects/dictobject.c:2854: bad argument to internal function
+ERR SystemError Objects/dictobject.c:2524: bad argument to internal function
+ERR SystemError Objects/dictobject.c:2722: bad argument to internal function
+ERR SystemError Objects/dictobject.c:4421: bad argument to internal function
+ERR SystemError Objects/dictobject.c:3166: bad argument to internal function
+ERR SystemError Objects/dictobject.c:2468: bad argument to internal function
+ERR AttributeError 'list' object has no attribute 'keys'
+ERR AttributeError 'int' object has no attribute 'keys'
+ERR AttributeError 'str' object has no attribute 'keys'
+ERR TypeError 'int' object is not iterable
+ERR ValueError dictionary update sequence element #0 has length 3; 2 is required
+ERR ValueError dictionary update sequence element #0 has length 1; 2 is required
+ERR TypeError object is not iterable
+ERR ValueError dictionary update sequence element #0 has length 1; 2 is required
+L1 [3, 1, 2]
+L2 3
+L3 3
+L4 2
+L5 [1, 2]
+L6 [3, 1, 2]
+L7 []
+L8 []
+L9 [3, 99, 2]
+L10 [3, 1, 2, 4]
+L11 [0, 3, 1, 2, 4]
+L12 [0, 3, 1, 2, 4, 8]
+L13 [-1, 0, 3, 1, 2, 4, 8]
+L14 [3, 1, 2, 7, 8]
+L15 [3, 1, 2, 7, 8, 'a', 'b']
+L16 7
+L17 [3, 9, 9, 2]
+L18 [1, 2]
+L19 [3, 5, 1, 2]
+L20 [2, 1, 3]
+L21 [1, 2, 3]
+L22 [1, 2, 3]
+L23 ['a', 'b', 'c']
+L24 (3, 1, 2)
+L25 0
+ERR IndexError list index out of range
+ERR IndexError list index out of range
+ERR IndexError list index out of range
+ERR IndexError list assignment index out of range
+ERR IndexError list assignment index out of range
+ERR TypeError can only assign an iterable
+ERR TypeError 'int' object is not iterable
+ERR SystemError Objects/listobject.c:306: bad argument to internal function
+ERR SystemError Objects/listobject.c:3170: bad argument to internal function
+ERR SystemError Objects/listobject.c:3204: bad argument to internal function
+ERR SystemError Objects/listobject.c:3219: bad argument to internal function
+ERR SystemError Objects/listobject.c:388: bad argument to internal function
+ERR SystemError Objects/listobject.c:453: bad argument to internal function
+ERR SystemError Objects/listobject.c:507: bad argument to internal function
+ERR TypeError function takes exactly 2 arguments (1 given)
+ERR SystemError Objects/listobject.c:1498: bad argument to internal function
+ERR TypeError '<' not supported between instances of 'str' and 'int'
+T1 (1, 2, 'x')
+T2 3
+T3 1
+T4 x
+T5 (2, 'x')
+T6 (1, 2, 'x')
+T7 ()
+T8 (1, 2)
+T9 ()
+T10 ((1, 2, 'x'), 42, (1, 2, 'x'))
+ERR SystemError Objects/tupleobject.c:123: bad argument to internal function
+T11 ['', '', '']
+ERR IndexError tuple index out of range
+ERR TypeError function takes exactly 2 arguments (1 given)
+R1 [1, 0, 0, 1]
+DONE
