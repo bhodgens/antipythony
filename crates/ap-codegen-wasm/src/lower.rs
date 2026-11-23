@@ -120,6 +120,10 @@ struct Scan {
     strings: Vec<Vec<u8>>,
     /// Registration-stack parent slots (nested-def parent links).
     parent_stack: Vec<usize>,
+    /// HARDEN2: enclosing gen-loop depth WITHIN the fn currently being
+    /// scanned (per-fn: reset to 0 when a nested def/class/lambda body
+    /// starts). Feeds the break/continue-outside-a-gen-loop gate.
+    gen_loop_depth: Vec<usize>,
 }
 
 impl Scan {
@@ -131,6 +135,7 @@ impl Scan {
             classes: Vec::new(),
             strings: Vec::new(),
             parent_stack: Vec::new(),
+            gen_loop_depth: vec![0],
         }
     }
 
@@ -304,6 +309,57 @@ fn collect_scope(
     Ok(())
 }
 
+/// HARDEN2: is the fn currently being scanned a GENERATOR (planner
+/// fail-closed scope)? usize::MAX = module scope (never a generator). Same
+/// parent_stack pattern as the gen try orelse/finally gate (leaf HARDEN).
+fn scan_in_generator(scan: &Scan) -> bool {
+    match scan.parent_stack.last().copied() {
+        Some(slot) if slot != usize::MAX => scan.fns[slot].is_generator,
+        _ => false,
+    }
+}
+
+/// HARDEN2: bump/reset the gen-loop nesting depth of the fn under scan
+/// (`+= delta`; the vec models "the fn under scan" — pushed fresh per
+/// nested fn scope so a nested def never inherits the enclosing count).
+fn gen_loop_bump(scan: &mut Scan, delta: isize) {
+    if let Some(d) = scan.gen_loop_depth.last_mut() {
+        *d = (*d as isize + delta).max(0) as usize;
+    }
+}
+
+/// HARDEN2 (post-03 emitter contract): fail-closed scan gate for the
+/// REMAINING generator segment-planner `fail_closed_gen` arms that had no
+/// corpus case and no scan-time gate (NEXT-HARDEN.md honest gap #3). Every
+/// gate here mirrors a planner/emit panic proven by the pre-fix probe
+/// (probe_harden2_baselines.rs). Rejection reasons name the owning post-03
+/// slice (the 03.04e generator segment slice), matching the existing
+/// reason-string style.
+fn gen_gate(fires: bool, what: &str) -> Result<(), CodegenError> {
+    if fires {
+        let why = match what {
+            "if-cond" => "yield in a generator if-condition (03.04e segment slice)",
+            "while-cond" => "yield in a generator while-condition/else (03.04e segment slice)",
+            "for-iter" => "yield in a generator for-iter/else (03.04e segment slice)",
+            "return" => "yield in a generator return (03.04e segment slice)",
+            "exprstmt" => "yield nested beyond a top-level ExprStmt (03.04e segment slice)",
+            "assign-value" => "yield nested in an assign value (03.04e segment slice)",
+            "augassign" => "yield in a generator augassign (03.04e segment slice)",
+            "bind-target" => "generator assign target beyond a name (03.04e segment slice)",
+            "for-target" => "generator for target beyond a name (03.04e segment slice)",
+            "split-lhs" => "generator split-yield lhs beyond a name (03.04e segment slice)",
+            "handler-bind" => "yield binding in an exception handler (03.04e segment slice)",
+            "handler-nested" => "yield nested in an exception handler (03.04e segment slice)",
+            "loop-ctl" => "break/continue outside a generator loop (03.04e segment slice)",
+            "seg-stmt" => "statement beyond the generator segment slice (03.04e segment slice)",
+            "lambda-yield" => "yield in a lambda body (03.04e segment slice)",
+            _ => unreachable!("gen_gate: unknown gate kind"),
+        };
+        return Err(CodegenError::Unsupported(why));
+    }
+    Ok(())
+}
+
 fn collect_stmt(
     stmt: &Stmt,
     refs: &mut Vec<String>,
@@ -313,8 +369,44 @@ fn collect_stmt(
 ) -> Result<(), CodegenError> {
     match stmt {
         Stmt::Line(_) | Stmt::Pass => Ok(()),
-        Stmt::ExprStmt(e) => collect_expr(e, refs, bound, nonlocal, scan),
+        Stmt::ExprStmt(e) => {
+            // HARDEN2: the gen planner splits ONLY a top-level
+            // ExprStmt(Yield)/YieldFrom — a yield nested deeper in the expr
+            // panics ("yield nested beyond a top-level ExprStmt").
+            if scan_in_generator(scan)
+                && !matches!(e, Expr::Yield(_) | Expr::YieldFrom(_))
+                && ap_ir::walk::expr_yields(e)
+            {
+                gen_gate(true, "exprstmt")?;
+            }
+            collect_expr(e, refs, bound, nonlocal, scan)
+        }
         Stmt::Assign(targets, value) => {
+            // HARDEN2: the gen planner splits ONLY top-level ExprStmt(Yield)
+            // / Assign(Name, Yield) / Assign(Name, BinOp(_, Name, Yield)) —
+            // anything yield-carrying beyond those three shapes panics
+            // ("yield nested beyond a top-level ExprStmt" / "yield nested in
+            // assign value beyond the slice" / "generator assign target
+            // beyond a name" / "split-yield lhs beyond a name" / the
+            // emit-side `scan vetted expr: Yield(..)` unreachable for
+            // non-Name targets, whose VALUE the plain emitter would eval).
+            if scan_in_generator(scan) && ap_ir::walk::expr_yields(value) {
+                match value {
+                    Expr::Yield(_) | Expr::YieldFrom(_) => {}
+                    Expr::BinOp(_, lhs, rhs, _) if matches!(rhs.as_ref(), Expr::Yield(_)) => {
+                        if !matches!(lhs.as_ref(), Expr::Name(_)) {
+                            gen_gate(true, "split-lhs")?;
+                        }
+                    }
+                    _ => gen_gate(true, "assign-value")?,
+                }
+                if !targets
+                    .iter()
+                    .all(|t| matches!(t, ap_ir::item::Target::Name(_)))
+                {
+                    gen_gate(true, "bind-target")?;
+                }
+            }
             collect_expr(value, refs, bound, nonlocal, scan)?;
             // 03.03c: attr targets read their object (obj.attr = v) — the
             // attr name rides FN_ATTR_SET as an interned $str at emit time.
@@ -344,22 +436,65 @@ fn collect_stmt(
                     "augassign target beyond a name (post-03 emitter surface)",
                 ));
             }
+            // HARDEN2: the gen segment AugAssign arm is Seq-only — a
+            // yield-carrying value parks NOWHERE (planner Seq arm, no
+            // split). G002's split shape is `x = x + (yield total)` (an
+            // Assign), not an AugAssign; `x += (yield ..)` panics today.
+            if scan_in_generator(scan) && ap_ir::walk::expr_yields(v) {
+                gen_gate(true, "augassign")?;
+            }
             collect_target_read(t, refs, bound, nonlocal, scan)?;
             collect_expr(v, refs, bound, nonlocal, scan)
         }
-        Stmt::Return(Some(e)) => collect_expr(e, refs, bound, nonlocal, scan),
+        Stmt::Return(Some(e)) => {
+            // HARDEN2: the gen planner Return arm fail-closes a yield-
+            // carrying value ("yield in gen return").
+            if scan_in_generator(scan) && ap_ir::walk::expr_yields(e) {
+                gen_gate(true, "return")?;
+            }
+            collect_expr(e, refs, bound, nonlocal, scan)
+        }
         Stmt::Return(None) => Ok(()),
         Stmt::If(c, then, els) => {
+            // HARDEN2: the gen planner Test segments evaluate the condition
+            // with gen_emit_cond — no park is possible mid-condition
+            // ("yield in a gen if-condition").
+            if scan_in_generator(scan) && ap_ir::walk::expr_yields(c) {
+                gen_gate(true, "if-cond")?;
+            }
             collect_expr(c, refs, bound, nonlocal, scan)?;
             collect_scope(then, refs, bound, nonlocal, scan)?;
             collect_scope(els, refs, bound, nonlocal, scan)
         }
         Stmt::While(c, body, els) => {
+            // HARDEN2: "yield in gen while-condition / while-else".
+            if scan_in_generator(scan) && (ap_ir::walk::expr_yields(c) || !els.is_empty()) {
+                gen_gate(true, "while-cond")?;
+            }
+            let in_gen = scan_in_generator(scan);
+            if in_gen {
+                gen_loop_bump(scan, 1);
+            }
             collect_expr(c, refs, bound, nonlocal, scan)?;
             collect_scope(body, refs, bound, nonlocal, scan)?;
+            if in_gen {
+                gen_loop_bump(scan, -1);
+            }
             collect_scope(els, refs, bound, nonlocal, scan)
         }
-        Stmt::Break | Stmt::Continue => Ok(()),
+        Stmt::Break | Stmt::Continue => {
+            // HARDEN2: a break/continue whose loop the planner never entered
+            // (yield parked inside a handler/try between the loop head and
+            // this stmt) leaves a BRK_PEND/CONT_PEND sentinel unresolved ->
+            // "break/continue outside a gen loop" at plan end. Track loop
+            // nesting depth during the scan walk.
+            if scan_in_generator(scan) && scan.gen_loop_depth.last().copied().unwrap_or(0) == 0 {
+                return Err(CodegenError::Unsupported(
+                    "break/continue outside a generator loop (03.04e segment slice)",
+                ));
+            }
+            Ok(())
+        }
         Stmt::Global(names) => {
             for name in names {
                 let s = name.clone().to_string();
@@ -401,14 +536,28 @@ fn collect_stmt(
                 return Err(CodegenError::Unsupported("async def (post-03.04)"));
             }
             let parent = scan.parent_stack.last().copied().unwrap_or(usize::MAX);
-            scan_fn_common(
+            // HARDEN2: the gen planner has NO LocalDef arm — a def inside a
+            // generator body panics ("gen stmt beyond the segment slice").
+            if scan_in_generator(scan) {
+                gen_gate(true, "seg-stmt")?;
+            }
+            // The child fn's gen-loop depth starts at 0 (a nested def never
+            // inherits the enclosing count); restore after the child scan.
+            let saved_depth = scan.gen_loop_depth.last().copied().unwrap_or(0);
+            gen_loop_bump(
+                scan,
+                -(scan.gen_loop_depth.last().copied().unwrap_or(0) as isize),
+            );
+            let r = scan_fn_common(
                 fd.name.as_str(),
                 &fd.params,
                 &fd.body.blocks,
                 parent,
                 fd.is_generator,
                 scan,
-            )
+            );
+            gen_loop_bump(scan, saved_depth as isize);
+            r
         }
         // 03.03: class defs (module-level Item::ClassDef and nested
         // Stmt::LocalClass) register the class NAME and scan the body —
@@ -421,16 +570,11 @@ fn collect_stmt(
             // generator body ("gen try orelse/finally" — the G001
             // closer() shape). Gate here at scan, where the enclosing
             // generator-ness is known via parent_stack.
-            {
-                let in_gen = match scan.parent_stack.last().copied() {
-                    Some(slot) if slot != usize::MAX => scan.fns[slot].is_generator,
-                    _ => false,
-                };
-                if in_gen && (!ts.orelse.is_empty() || !ts.finalbody.is_empty()) {
-                    return Err(CodegenError::Unsupported(
-                        "generator try orelse/finally (03.04e segment slice)",
-                    ));
-                }
+            let in_gen = scan_in_generator(scan);
+            if in_gen && (!ts.orelse.is_empty() || !ts.finalbody.is_empty()) {
+                return Err(CodegenError::Unsupported(
+                    "generator try orelse/finally (03.04e segment slice)",
+                ));
             }
             collect_scope(&ts.body, refs, bound, nonlocal, scan)?;
             for h in &ts.handlers {
@@ -441,6 +585,30 @@ fn collect_stmt(
                     let n = n.to_string();
                     if !bound.contains(&n) {
                         bound.push(n);
+                    }
+                }
+                // HARDEN2: the handler split (split_handler_body) accepts
+                // ONLY top-level ExprStmt(Yield) statements — a yield in an
+                // Assign ("handler bind-yield beyond the slice") or nested
+                // deeper ("yield nested in a handler beyond the slice")
+                // panics at plan time.
+                if in_gen {
+                    for s in &h.body {
+                        match s {
+                            Stmt::ExprStmt(Expr::Yield(_)) => {}
+                            other if walk_stmt_yields(other) => {
+                                let is_bind = matches!(other, Stmt::Assign(_, Expr::Yield(_)));
+                                gen_gate(
+                                    true,
+                                    if is_bind {
+                                        "handler-bind"
+                                    } else {
+                                        "handler-nested"
+                                    },
+                                )?;
+                            }
+                            _ => {}
+                        }
                     }
                 }
                 collect_scope(&h.body, refs, bound, nonlocal, scan)?;
@@ -459,7 +627,14 @@ fn collect_stmt(
         }
         // leaf 03.04c: For (plain-Name targets) + Match (MA001 slice) scan
         Stmt::For(..) => collect_for(stmt, refs, bound, nonlocal, scan),
-        Stmt::Match(..) => collect_match(stmt, refs, bound, nonlocal, scan),
+        Stmt::Match(..) => {
+            // HARDEN2: the gen planner has NO Match arm ("gen stmt beyond
+            // the segment slice: Match(..)").
+            if scan_in_generator(scan) {
+                gen_gate(true, "seg-stmt")?;
+            }
+            collect_match(stmt, refs, bound, nonlocal, scan)
+        }
         other => Err(CodegenError::Unsupported(stmt_unsupported(other))),
     }
 }
@@ -475,15 +650,30 @@ fn collect_for(
     let Stmt::For(target, iter, body, els) = f else {
         unreachable!("collect_for on a non-For")
     };
+    // HARDEN2: "yield in gen for-iter / for-else" + "gen for target beyond
+    // a name" — both planner For-arm fail-closes.
+    let in_gen = scan_in_generator(scan);
+    if in_gen && (ap_ir::walk::expr_yields(iter) || !els.is_empty()) {
+        gen_gate(true, "for-iter")?;
+    }
     // target: plain Name only (tuple unpacking targets stay fail-closed)
     if !matches!(target, ap_ir::item::Target::Name(_)) {
+        if in_gen {
+            gen_gate(true, "for-target")?;
+        }
         return Err(CodegenError::Unsupported(
             "for target beyond a plain name (03.04c slice)",
         ));
     }
+    if in_gen {
+        gen_loop_bump(scan, 1);
+    }
     collect_expr(iter, refs, bound, nonlocal, scan)?;
     collect_target(target, bound, scan)?;
     collect_scope(body, refs, bound, nonlocal, scan)?;
+    if in_gen {
+        gen_loop_bump(scan, -1);
+    }
     collect_scope(els, refs, bound, nonlocal, scan)
 }
 
@@ -839,6 +1029,16 @@ fn collect_expr(
                 }
             }
             let body_stmts = vec![Stmt::Return(Some(body.as_ref().clone()))];
+            // HARDEN2: a lambda whose BODY yields registers <lambda> with
+            // is_generator=true — the emit-side lambda lookup filters
+            // `is_generator == false`, so rposition .expect("scan registered
+            // this lambda") panics. A generator lambda is a SyntaxError in
+            // CPython anyway.
+            if ap_ir::walk::expr_yields(body) {
+                return Err(CodegenError::Unsupported(
+                    "yield in a lambda body (03.04e segment slice)",
+                ));
+            }
             let parent = scan.parent_stack.last().copied().unwrap_or(usize::MAX);
             scan_fn_common("<lambda>", &sig.params, &body_stmts, parent, false, scan)
         }
@@ -6380,7 +6580,9 @@ fn emit_call(f: &mut Function, func: &Expr, args: &[Arg], ctx: &mut EmitCtx) {
         let arg_has_nested_call = args.iter().any(|a| {
             matches!(
                 a,
-                Arg::Pos(Expr::Call(..)) | Arg::Pos(Expr::BinOp(..)) | Arg::Pos(Expr::UnaryOp(.., _))
+                Arg::Pos(Expr::Call(..))
+                    | Arg::Pos(Expr::BinOp(..))
+                    | Arg::Pos(Expr::UnaryOp(.., _))
             )
         });
         if slots.len() == 1
