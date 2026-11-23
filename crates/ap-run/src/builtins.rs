@@ -1895,6 +1895,15 @@ pub fn builtin_type(interp: &Interpreter, args: &[Value], kwargs: &[(String, Val
                     }
                     return Ok(t);
                 }
+                // 02RESID-B (s014): lru_cache wrapper markers report
+                // type(f) == _lru_cache_wrapper (CPython wraps the user
+                // function in a C closure; functools introspection and
+                // typing probes ride it).
+                if o.kind == ap_obj::ObjKind::BuiltinFn
+                    && o.name.starts_with("functools._lruwrapper_")
+                {
+                    return Ok(interned_type(interp, "_lru_cache_wrapper"));
+                }
             }
             let name = match v {
                 Value::Obj(o) if o.kind == ap_obj::ObjKind::Exception => o.name.clone(),
@@ -1903,6 +1912,19 @@ pub fn builtin_type(interp: &Interpreter, args: &[Value], kwargs: &[(String, Val
                 // registration in _collections_abc depends on it).
                 Value::Obj(o) if o.kind == ap_obj::ObjKind::Namespace && o.name == "coroutine" => {
                     "coroutine".to_string()
+                }
+                // 02RESID-B (s014): the vendored lru_cache wrapper (a plain
+                // Function carrying the ___ap_lru_wrapper__ marker attr)
+                // reports type(f) == _lru_cache_wrapper (CPython C closure).
+                Value::Obj(o)
+                    if o.kind == ap_obj::ObjKind::Function
+                        && o.attrs
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .get_str("___ap_lru_wrapper__")
+                            .is_some() =>
+                {
+                    "_lru_cache_wrapper".to_string()
                 }
                 // 02.07: threading objects report their <class> attr
                 // (type(me).__name__ == "_MainThread" — T108).

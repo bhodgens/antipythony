@@ -720,6 +720,10 @@ def _lru_cache_wrapper(user_function, maxsize, typed, _CacheInfo):
 
     wrapper.cache_info = cache_info
     wrapper.cache_clear = cache_clear
+    # 02RESID-B (s014): CPython's wrapper is a C closure whose type is
+    # _lru_cache_wrapper; this attr lets the runtime's type() arm report
+    # the CPython type name for the vendored Python wrapper.
+    wrapper.___ap_lru_wrapper__ = True
     return wrapper
 
 try:

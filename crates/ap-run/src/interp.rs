@@ -5808,6 +5808,37 @@ fn call_value_inner_impl(
                         }
                     }
                     if o.name == "type" {
+                        if let Some(Value::Obj(mo)) = args.first() {
+                            // 02RESID-B (s014): lru_cache wrapper markers report
+                            // type(f) == _lru_cache_wrapper (CPython C closure;
+                            // functools introspection + typing probes ride it).
+                            // Two wrapper shapes: the NATIVE marker
+                            // (functools._lruwrapper_<id> BuiltinFn) and the
+                            // VENDORED python wrapper (Function carrying the
+                            // ___ap_lru_wrapper__ attr — no native _functools
+                            // module exists, so functools.py's wrapper wins).
+                            if mo.kind == ap_obj::ObjKind::BuiltinFn
+                                && mo.name.starts_with("functools._lruwrapper_")
+                            {
+                                return Ok(builtins::interned_type(
+                                    interp,
+                                    "_lru_cache_wrapper",
+                                ));
+                            }
+                            if mo.kind == ap_obj::ObjKind::Function
+                                && mo
+                                    .attrs
+                                    .lock()
+                                    .unwrap_or_else(|p| p.into_inner())
+                                    .get_str("___ap_lru_wrapper__")
+                                    .is_some()
+                            {
+                                return Ok(builtins::interned_type(
+                                    interp,
+                                    "_lru_cache_wrapper",
+                                ));
+                            }
+                        }
                         if let Some(Value::Obj(so)) = args.first() {
                             if so.kind == ap_obj::ObjKind::Opaque && so.name == "thread" {
                                 let cls = so
@@ -8261,6 +8292,20 @@ fn call_value_inner_impl(
                                                     // opaque result structs report
                                                     // their own name (s012/A-3 item 5).
                                                     o.name.as_str().to_string()
+                                                } else if o.kind == ap_obj::ObjKind::Function
+                                                    && o
+                                                        .attrs
+                                                        .lock()
+                                                        .unwrap_or_else(|p| p.into_inner())
+                                                        .get_str("___ap_lru_wrapper__")
+                                                        .is_some()
+                                                {
+                                                    // 02RESID-B (s014): the vendored
+                                                    // lru_cache wrapper (Function
+                                                    // with the marker attr) reports
+                                                    // type(f) == _lru_cache_wrapper
+                                                    // (CPython C closure type).
+                                                    "_lru_cache_wrapper".to_string()
                                                 } else {
                                                     o.type_name().to_string()
                                                 }
@@ -12484,6 +12529,16 @@ fn class_protocol_builtin(
                             *to.repr_text.lock().unwrap_or_else(|p| p.into_inner()) =
                                 Some("<class 'typing.Union'>".to_string());
                         }
+                        return Some(Ok(t));
+                    }
+                    // 02RESID-B (s014): lru_cache wrapper markers report
+                    // type(f) == _lru_cache_wrapper (CPython wraps the user
+                    // function in a C closure; introspection surfaces —
+                    // functools docs, typing get_type_hints — probe it).
+                    if o.kind == ap_obj::ObjKind::BuiltinFn
+                        && o.name.starts_with("functools._lruwrapper_")
+                    {
+                        let t = crate::builtins::interned_type(interp, "_lru_cache_wrapper");
                         return Some(Ok(t));
                     }
                     // 02.07: threading objects report their <class> attr
