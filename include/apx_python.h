@@ -126,6 +126,8 @@ apx_PyObject *apx_PyExc_SystemError(void);
 PyObject *PyLong_FromLong(long);
 PyObject *PyLong_FromLongLong(long long);
 PyObject *PyLong_FromUnsignedLong(unsigned long);
+/* leaf 1005a: the container band returns sizes as Python ints. */
+PyObject *PyLong_FromSsize_t(Py_ssize_t v);
 long PyLong_AsLong(PyObject *);
 long long PyLong_AsLongLong(PyObject *);
 PyObject *PyFloat_FromDouble(double);

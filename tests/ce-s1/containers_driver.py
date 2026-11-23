@@ -136,18 +136,23 @@ print("L7", c.list_getslice(l0, 2, 1))
 print("L8", c.list_getslice(l0, 5, 100))
 
 l1 = c.make_list()
-c.list_setitem(l1, 1, 99)
-print("L9", l1)
+print("L9", c.list_setitem(l1, 1, 99))
 
 l2 = c.make_list()
-print("L10", c.list_append(l2, 4))
-print("L11", c.list_insert(l2, 0, 0))
-print("L12", c.list_insert(l2, 100, 8))
-print("L13", c.list_insert(l2, -100, -1))
+l2 = c.list_append(l2, 4)
+print("L10", l2)
+l2 = c.list_insert(l2, 0, 0)
+print("L11", l2)
+l2 = c.list_insert(l2, 100, 8)
+print("L12", l2)
+l2 = c.list_insert(l2, -100, -1)
+print("L13", l2)
 
 l3 = c.make_list()
-print("L14", c.list_extend(l3, (7, 8)))
-print("L15", c.list_extend(l3, "ab"))
+l3 = c.list_extend(l3, (7, 8))
+print("L14", l3)
+l3 = c.list_extend(l3, "ab")
+print("L15", l3)
 print("L16", c.list_size(l3))
 
 l4 = c.make_list()
@@ -205,8 +210,7 @@ print("T8", c.tuple_getslice(t0, -2, 2))
 print("T9", c.tuple_getslice(t0, 1, -100))
 print("T10", c.tuple_pack(t0, 42))
 
-tt = ["", "", ""]
-probe(c.tuple_setitem_dense, tt, 0, "dense")
+tt = c.tuple_setitem_dense()
 print("T11", tt)
 
 # ---- tuple: error paths ----

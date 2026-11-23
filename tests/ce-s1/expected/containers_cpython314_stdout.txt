@@ -117,8 +117,7 @@ T7 ()
 T8 (1, 2)
 T9 ()
 T10 ((1, 2, 'x'), 42, (1, 2, 'x'))
-ERR SystemError Objects/tupleobject.c:123: bad argument to internal function
-T11 ['', '', '']
+T11 ('dense', 42, 'x', -7)
 ERR IndexError tuple index out of range
 ERR TypeError function takes exactly 2 arguments (1 given)
 R1 [1, 0, 0, 1]

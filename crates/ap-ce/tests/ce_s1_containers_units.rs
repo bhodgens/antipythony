@@ -297,7 +297,40 @@ fn merge_seq2_arity_texts() {
     assert_eq!(rc, -1);
     let (class, msg) = last_err().unwrap();
     assert_eq!(class, "TypeError");
+    // OUTER non-iterable: type-mentioning (measured MergeFromSeq2(42)).
+    assert_eq!(msg, "'int' object is not iterable");
+
+    // INNER non-iterable item ([42] outer list): the BARE text (measured).
+    err_clear();
+    let d3 = new_handle(CeKind::Dict, CePayload::Dict(ap_obj::dict::PyDict::new()));
+    let inner_int = new_handle(CeKind::List, CePayload::List(vec![long_handle(42)]));
+    let rc = unsafe {
+        ap_ce::exports_containers::PyDict_MergeFromSeq2(
+            d3 as ap_ce::ffi_types::PyObjPtr,
+            inner_int as ap_ce::ffi_types::PyObjPtr,
+            1,
+        )
+    };
+    assert_eq!(rc, -1);
+    let (class, msg) = last_err().unwrap();
+    assert_eq!(class, "TypeError");
     assert_eq!(msg, "object is not iterable");
+
+    // STR item of len 2 is a valid pair (measured: {'ab': 1} merges).
+    err_clear();
+    let d4 = new_handle(CeKind::Dict, CePayload::Dict(ap_obj::dict::PyDict::new()));
+    let str_item = new_handle(CeKind::List, CePayload::List(vec![str_handle("ab")]));
+    let rc = unsafe {
+        ap_ce::exports_containers::PyDict_MergeFromSeq2(
+            d4 as ap_ce::ffi_types::PyObjPtr,
+            str_item as ap_ce::ffi_types::PyObjPtr,
+            1,
+        )
+    };
+    assert_eq!(rc, 0);
+    assert!(!err_is_set());
+    let merged = ap_ce::value_conv::to_value(d4 as ap_ce::state::CeHandle).unwrap();
+    assert_eq!(ap_obj::ops::repr(&merged).unwrap(), "{'a': 'b'}");
 }
 
 // ---------------------------------------------------------------------------

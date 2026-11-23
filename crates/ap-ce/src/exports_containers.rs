@@ -143,6 +143,20 @@ fn dict_key_hash(key: &Value) -> Result<i64, ()> {
 }
 
 // ---------------------------------------------------------------------------
+// PyLong_FromSsize_t (leaf 1005a): the container band's size return route.
+// ---------------------------------------------------------------------------
+
+/// PyLong_FromSsize_t: Py_ssize_t -> Python int (no error path; raises
+/// OverflowError only beyond 64-bit, which Py_ssize_t cannot be).
+#[no_mangle]
+pub unsafe extern "C" fn PyLong_FromSsize_t(v: isize) -> PyObjPtr {
+    new_handle(
+        CeKind::Int,
+        CePayload::Int(ap_obj::int::Int::from_i64(v as i64)),
+    ) as PyObjPtr
+}
+
+// ---------------------------------------------------------------------------
 // PyDict — lookups
 // ---------------------------------------------------------------------------
 
@@ -182,7 +196,7 @@ pub unsafe extern "C" fn PyDict_GetItem(mp: PyObjPtr, key: PyObjPtr) -> PyObjPtr
 #[no_mangle]
 pub unsafe extern "C" fn PyDict_GetItemWithError(mp: PyObjPtr, key: PyObjPtr) -> PyObjPtr {
     let Some(d) = dict_of(mp as CeHandle) else {
-        bad_internal("Objects/dictobject.c:577");
+        bad_internal("Objects/dictobject.c:2524");
         return std::ptr::null_mut();
     };
     let Some(kv) = v_of(key as CeHandle) else {
@@ -677,6 +691,11 @@ pub unsafe extern "C" fn PyDict_MergeFromSeq2(
                 match pair_of(item) {
                     Ok(p) => out.push(p),
                     Err(msg) => {
+                        if msg.is_empty() {
+                            // pair_of already set the exact error
+                            // (non-iterable item -> bare TypeError).
+                            return -1;
+                        }
                         err_set(
                             "ValueError",
                             format!("dictionary update sequence element #{i} {msg}"),
@@ -693,6 +712,9 @@ pub unsafe extern "C" fn PyDict_MergeFromSeq2(
                 match pair_of(item) {
                     Ok(p) => out.push(p),
                     Err(msg) => {
+                        if msg.is_empty() {
+                            return -1;
+                        }
                         err_set(
                             "ValueError",
                             format!("dictionary update sequence element #{i} {msg}"),
@@ -703,11 +725,34 @@ pub unsafe extern "C" fn PyDict_MergeFromSeq2(
             }
             out
         }
-        Value::Dict(od) => od.items(),
-        // Non-iterable: the measured TypeError (no type mention on 3.14).
+        // CPython's MergeFromSeq2 on a dict source iterates its KEYS (a
+        // plain iterable, not items()): each key then fails pair_of with
+        // its own length (measured: {'a':1} -> element #0 has length 1).
+        Value::Dict(od) => {
+            let keys = od.keys();
+            let mut out = Vec::new();
+            for (i, item) in keys.iter().enumerate() {
+                match pair_of(item) {
+                    Ok(p) => out.push(p),
+                    Err(msg) => {
+                        if msg.is_empty() {
+                            return -1;
+                        }
+                        err_set(
+                            "ValueError",
+                            format!("dictionary update sequence element #{i} {msg}"),
+                        );
+                        return -1;
+                    }
+                }
+            }
+            out
+        }
+        // Non-iterable OUTER seq: the type-mentioning TypeError (measured
+        // for MergeFromSeq2(42)).
         other => {
-            let _ = other.type_name();
-            err_set("TypeError", "object is not iterable");
+            let tn = other.type_name();
+            err_set("TypeError", format!("'{tn}' object is not iterable"));
             return -1;
         }
     };
@@ -724,7 +769,10 @@ pub unsafe extern "C" fn PyDict_MergeFromSeq2(
 }
 
 /// (key, value) pair extraction for MergeFromSeq2 with the measured
-/// length-error suffix ("has length L; 2 is required").
+/// length-error suffix ("has length L; 2 is required"). CPython uses
+/// PySequence_Size on the item: a STR item of len 2 is a valid pair
+/// ("ab" -> ('a','b')) — measured; a non-sequence item gives the bare
+/// "object is not iterable" TypeError.
 fn pair_of(item: &Value) -> Result<(Value, Value), String> {
     match item {
         Value::Tuple(t) => {
@@ -742,9 +790,26 @@ fn pair_of(item: &Value) -> Result<(Value, Value), String> {
                 Err(format!("has length {}; 2 is required", items.len()))
             }
         }
+        Value::Str(sv) => {
+            // CPython: PySequence consideration for str items — chars as
+            // the pair elements (measured: {'ab': 1} merges 'a'->'b').
+            let n = sv.as_str().chars().count();
+            if n == 2 {
+                let mut it = sv.as_str().chars();
+                let c0 = it.next().unwrap();
+                let c1 = it.next().unwrap();
+                Ok((
+                    Value::Str(PyString::new(c0.to_string())),
+                    Value::Str(PyString::new(c1.to_string())),
+                ))
+            } else {
+                Err(format!("has length {n}; 2 is required"))
+            }
+        }
         other => {
-            let tn = other.type_name();
-            Err(format!("is a {tn} of length 0; 2 is required"))
+            let _ = other.type_name();
+            err_set("TypeError", "object is not iterable");
+            Err(String::new()) // error already set; caller just returns -1
         }
     }
 }
@@ -990,6 +1055,7 @@ pub unsafe extern "C" fn PyList_Extend(o: PyObjPtr, iterable: PyObjPtr) -> c_int
             .collect(),
         other => {
             let tn = other.type_name();
+            // Measured 3.14 for PyList_Extend(5): type-mentioning text.
             err_set("TypeError", format!("'{tn}' object is not iterable"));
             return -1;
         }
@@ -1006,7 +1072,7 @@ pub unsafe extern "C" fn PyList_Extend(o: PyObjPtr, iterable: PyObjPtr) -> c_int
 #[no_mangle]
 pub unsafe extern "C" fn PyList_Clear(o: PyObjPtr) -> c_int {
     let Some(mut items) = list_items_of(o as CeHandle) else {
-        bad_internal("Objects/listobject.c:801");
+        bad_internal("Objects/listobject.c:1498");
         return -1;
     };
     items.clear();

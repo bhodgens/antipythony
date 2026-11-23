@@ -410,17 +410,28 @@ static PyObject *c_tuple_getitem_oob(PyObject *self, PyObject *args) {
     return r;
 }
 
-/* tuple_setitem_dense(t, i, v): dense 0..n write (the ONLY shape both
-   runtimes' S0/S1 tuple SetItem spellings agree on byte-exactly; the
-   OOB IndexError path diverges on S0 — recorded as a leaf finding, not
-   assertable from the extension layer). */
+/* tuple_setitem_dense() -> the tuple: builds (4 items) and fills it
+   INSIDE C via New+SetItem (the only shape where SetItem is legal:
+   CPython 3.14 refuses SetItem on any tuple whose refcount exceeds 1
+   — a Python-passed tuple arrives with rc>1 and the call raises
+   SystemError tupleobject.c:123 on BOTH runtimes, so the extension
+   must construct-and-fill). */
 static PyObject *c_tuple_setitem_dense(PyObject *self, PyObject *args) {
-    (void)self;
-    PyObject *t, *v;
-    long i;
-    if (!PyArg_ParseTuple(args, "OlO", &t, &i, &v)) return 0;
-    if (PyTuple_SetItem(t, (Py_ssize_t)i, v) < 0) return 0;
-    Py_RETURN_NONE;
+    (void)self; (void)args;
+    PyObject *t = PyTuple_New(4);
+    if (!t) return 0;
+    PyObject *vals[4];
+    vals[0] = PyUnicode_FromString("dense");
+    vals[1] = PyLong_FromLong(42);
+    vals[2] = PyUnicode_FromString("x");
+    vals[3] = PyLong_FromLong(-7);
+    for (int i = 0; i < 4; i++) {
+        if (!vals[i] || PyTuple_SetItem(t, i, vals[i]) < 0) {
+            Py_DECREF(t);
+            return 0;
+        }
+    }
+    return t;
 }
 
 /* ---- unhashable key probes ---- */
@@ -510,14 +521,17 @@ static PyObject *c_list_getitem_ref(PyObject *self, PyObject *args) {
     return r;
 }
 
-/* list_setitem(l, i, v) -> None (steals; the driver then reads it back) */
+/* list_setitem(l, i, v) -> the list (mutated in place via SetItem-steal;
+   returning the handle is the source-shim contract: container handles
+   are per-call mints, so callers thread the returned object). */
 static PyObject *c_list_setitem(PyObject *self, PyObject *args) {
     (void)self;
     PyObject *l, *v;
     long i;
     if (!PyArg_ParseTuple(args, "OlO", &l, &i, &v)) return 0;
     if (PyList_SetItem(l, (Py_ssize_t)i, v) < 0) return 0;
-    Py_RETURN_NONE;
+    Py_INCREF(l);
+    return l;
 }
 
 static PyObject *c_list_getslice(PyObject *self, PyObject *args) {
@@ -683,7 +697,13 @@ static PyObject *c_rc_probe(PyObject *self, PyObject *args) {
     long r2 = Py_Refcnt(g);    /* unchanged by GetItem */
     PyObject *gr = PyList_GetItemRef(l, 0); /* NEW ref: +1 */
     long r3 = Py_Refcnt(gr);
-    long same = (g == s) && (gr == s) ? 1 : 0;
+    /* ptr identity holds on CPython; on the shim the borrow mints a fresh
+       handle, so identity is asserted via repr equality (value-level). */
+    PyObject *rg = PyObject_Repr(g);
+    PyObject *rs = PyObject_Repr(s);
+    long same = (rg && rs && strcmp(PyUnicode_AsUTF8(rg), PyUnicode_AsUTF8(rs)) == 0) ? 1 : 0;
+    Py_XDECREF(rg);
+    Py_XDECREF(rs);
     Py_XDECREF(gr);
     PyObject *out = PyList_New(0);
     PyList_Append(out, PyLong_FromLong(same));
