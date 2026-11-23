@@ -3975,6 +3975,16 @@ fn class_attr_get(
             *f.slice_parts.lock().unwrap_or_else(|p| p.into_inner()) = vec![cls_v.clone()];
             return Ok(Value::Obj(f));
         }
+        // T4 (fastapi/pydantic chain: email/_policybase.py
+        // _extend_docstrings walks `base.mro()`). CPython exposes
+        // type.mro() as a bound method returning a LIST (not the
+        // tuple that __mro__ is). The call site (interp, parked owner)
+        // reconstructs the list from the payload's live MRO.
+        "mro" => {
+            let f = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "type.mro");
+            *f.slice_parts.lock().unwrap_or_else(|p| p.into_inner()) = vec![cls_v.clone()];
+            return Ok(Value::Obj(f));
+        }
         _ => {}
     }
     // 1. MRO data descriptor __get__(None, C).

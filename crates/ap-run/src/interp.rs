@@ -6868,6 +6868,32 @@ fn call_value_inner_impl(
                         let subs = crate::classes::subclasses_of(interp, &name);
                         return Ok(Value::List(PyList::from_vec(subs)));
                     }
+                    // T4 (fastapi chain: email/_policybase _extend_docstrings
+                    // calls base.mro()). The owner class value is parked in
+                    // slice_parts; rebuild the LIVE MRO as a list (CPython:
+                    // type.mro() returns list, __mro__ is the tuple).
+                    if o.name == "type.mro" {
+                        let cls = o
+                            .slice_parts
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .first()
+                            .cloned()
+                            .unwrap_or(Value::None);
+                        let t = match crate::classes::type_of(interp, &cls) {
+                            Some(t) => t,
+                            None => {
+                                return Err(raise(
+                                    "TypeError",
+                                    "unbound method type.mro() needs a class as first argument",
+                                ))
+                            }
+                        };
+                        let mro = t.mro.lock().unwrap_or_else(|p| p.into_inner()).clone();
+                        let items: Vec<Value> =
+                            mro.iter().map(crate::classes::class_value_for_public).collect();
+                        return Ok(Value::List(PyList::from_vec(items)));
+                    }
                     if o.name == "__object_init__" {
                         // object.__init__(self, *args): BaseException stores args.
                         let subject = o
@@ -17240,6 +17266,14 @@ fn attr_get(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 && !matches!(
                     name,
                     "__class__" | "__dict__" | "__doc__" | "__deepcopy__" | "__copy__"
+                        // T4 (inspect.unwrap chain): set/frozenset do NOT define
+                        // __wrapped__ in CPython — the virtual marker made
+                        // unwrap() descend past frozenset values (the
+                        // dataclasses._add_slots loop then treated the
+                        // unwrapped marker as a FunctionType without
+                        // __code__ and died). Same EXCLUDED family as the
+                        // copy protocol above.
+                        | "__wrapped__"
                 )
             {
                 let m = ap_obj::PyObject::new(
@@ -17440,6 +17474,27 @@ fn builtin_method_exists(name: &str) -> bool {
             | "symmetric_difference_update"
             | "pop"
             | "popitem"
+            // T4 (annotated_types: Predicate(str.islower) at import):
+            // str classification surface — the pystr route (builtins_modules
+            // call_builtin_values) already implements the semantics; this
+            // name-gate lets the unbound `str.islower` read resolve.
+            | "islower"
+            | "isupper"
+            | "isalpha"
+            | "isdigit"
+            | "isalnum"
+            | "isspace"
+            | "istitle"
+            | "isascii"
+            | "isidentifier"
+            | "isprintable"
+            | "isnumeric"
+            | "isdecimal"
+            | "lstrip"
+            | "rstrip"
+            | "rfind"
+            | "rindex"
+            | "rjust"
             | "get"
             | "fromkeys"
             | "setdefault"
