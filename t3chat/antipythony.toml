@@ -1,0 +1,21 @@
+[project]
+name = "t3chat"
+version = "0.1.0"
+requires_python = ">=3.14"
+
+[build]
+backend = "native"
+opt_level = 2
+
+[[dependency]]
+name = "httpx"
+source = "file-cache"
+
+[[dependency]]
+name = "rich"
+source = "file-cache"
+
+# T3 reachability note: pydantic's pure-py face is staged manually into the
+# cache site-packages (uv refuses the wheel set because pydantic_core ships
+# a native component — APX-CEXT refusal). pydantic_core itself rides the ce
+# path (deps/libpydantic_core.so, APX_EXT_DIR).
