@@ -3444,13 +3444,27 @@ fn instance_attr(
         ));
     }
     // Slot members: storage IS the instance dict slot (member descriptors
-    // materialize only for introspection; reads/writes are plain).
-    if let Some(v) = o
-        .attrs
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .get(&Value::Str(PyString::new(name)))
-    {
+    // materialize only for introspection; reads/writes are plain) — EXCEPT
+    // when the class also has an instance dict (c018 class B: __dict__ slot
+    // or dict-carrying base), where attr_set_protocol parked the value in
+    // the SLOT_STORAGE registry so vars()/a.__dict__ stay slot-free.
+    let slot_read = |name: &str| -> Option<Value> {
+        if t.has_instance_dict() {
+            use crate::runtime_state as rs;
+            let key = std::sync::Arc::as_ptr(o) as *const u8 as usize;
+            let slot_name = name.to_string();
+            let v = rs::with_active(rs::SLOT_STORAGE_T_acc(), |m| {
+                m.get(&key).and_then(|s| s.get(&slot_name)).cloned()
+            });
+            v
+        } else {
+            o.attrs
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(&Value::Str(PyString::new(name)))
+        }
+    };
+    if let Some(v) = slot_read(name) {
         if t.is_slot(name) {
             return Ok(v);
         }
@@ -4347,9 +4361,29 @@ pub fn attr_set_protocol(
                     ),
                 ));
             }
-            // Slot member: direct instance-dict write (member descriptors
-            // are introspection-only).
+            // Slot member: the slot storage is a member descriptor's backing
+            // value — NOT the instance dict. When the class ALSO has an
+            // instance dict (a __dict__ slot or a dict-carrying base,
+            // c018 class B shape), the value parks in the SLOT_STORAGE
+            // registry keyed by instance address: CPython vars(b) shows only
+            // dict entries ('y'), never slot members ('x'). The no-dict case
+            // keeps the legacy attrs layout (storage IS o.attrs; reads route
+            // through instance_attr's slot arm, and __dict__/vars() are
+            // unreachable — c018 class A).
             if t.is_slot(name) {
+                if t.has_instance_dict() {
+                    use crate::runtime_state as rs;
+                    let key = std::sync::Arc::as_ptr(o) as *const u8 as usize;
+                    let v2 = v.clone();
+                    rs::with_active_mut(rs::SLOT_STORAGE_T_acc(), |m| {
+                        m.entry(key).or_default().insert(name.to_string(), v2);
+                    });
+                    let pin = std::sync::Arc::downgrade(o);
+                    rs::with_active_mut(rs::SLOT_STORAGE_PINS_T_acc(), |p| {
+                        p.entry(key).or_insert(pin);
+                    });
+                    return Ok(());
+                }
                 return o
                     .attrs
                     .lock()
@@ -4504,6 +4538,40 @@ pub fn attr_del_protocol(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> 
             }
             // Data descriptor with __delete__ (S-03-11).
             if let Some((entry, _)) = t.lookup_with_owner(name) {
+                // c018: slot members ARE deletable (CPython member descriptors
+                // define __delete__ — `del c.y` clears the slot; a later read
+                // raises AttributeError). Dispatch BEFORE the is_data_descriptor
+                // property arm, which would report "no deleter".
+                if t.is_slot(name)
+                    && matches!(&entry, Value::Obj(d) if d.kind == ap_obj::ObjKind::Descriptor)
+                {
+                    // No-dict class: slot value lives in attrs; has-dict
+                    // class: in the SLOT_STORAGE registry.
+                    let removed = if t.has_instance_dict() {
+                        use crate::runtime_state as rs;
+                        let key = std::sync::Arc::as_ptr(o) as *const u8 as usize;
+                        let mut removed = false;
+                        rs::with_active_mut(rs::SLOT_STORAGE_T_acc(), |m| {
+                            if let Some(s) = m.get_mut(&key) {
+                                removed = s.remove(name).is_some();
+                            }
+                        });
+                        removed
+                    } else {
+                        o.attrs
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .pop(&Value::Str(PyString::new(name)))
+                            .is_some()
+                    };
+                    if !removed {
+                        return Err(raise(
+                            "AttributeError",
+                            format!("'{}' object has no attribute '{}'", t.name, name),
+                        ));
+                    }
+                    return Ok(());
+                }
                 if is_data_descriptor(interp, &entry) {
                     let has_del = match &entry {
                         Value::Obj(d) if d.kind == ap_obj::ObjKind::Descriptor => d
@@ -5452,6 +5520,12 @@ pub fn display_type_name(v: &Value) -> String {
 fn instance_dict_handle(o: &Gc<ap_obj::PyObject>) -> Gc<PyDict> {
     // attrs is the live Gc<PyDict> handle: clones share the state.
     o.attrs.lock().unwrap_or_else(|p| p.into_inner()).clone()
+}
+
+/// c018: public handle for builtin_vars — the LIVE instance dict (vars(o)
+/// IS o.__dict__ in CPython).
+pub fn instance_dict_handle_pub(o: &Gc<ap_obj::PyObject>) -> Gc<PyDict> {
+    instance_dict_handle(o)
 }
 
 /// The binding TypeErrors from __new__/__init__ carry the QUALIFIED name

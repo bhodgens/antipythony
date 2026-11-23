@@ -4347,6 +4347,28 @@ pub fn builtin_dir(interp: &Interpreter, args: &[Value]) -> BResult {
         }
         Some(v) => {
             names.extend(dir_surface(v));
+            // c018 (CPython vars()/dir() slots semantics): a UserInstance of
+            // a __slots__ class hides its slot members from __dict__/vars()
+            // but STILL lists them in dir() (get_type_dict_virtuals +
+            // members). Skip non-dict slot names when collecting attrs.
+            if let Value::Obj(o) = v {
+                if o.kind == ap_obj::ObjKind::UserInstance {
+                    if let Some(ic) = crate::builtins_modules::current_interp() {
+                        if let Some(t) = crate::classes::class_of_value(&ic, v) {
+                            let slots = t
+                                .flags
+                                .slots
+                                .clone()
+                                .unwrap_or_default()
+                                .into_iter()
+                                .filter(|s| s != "__dict__")
+                                .collect::<Vec<_>>();
+                            names.retain(|n| !slots.contains(n));
+                            names.extend(slots);
+                        }
+                    }
+                }
+            }
         }
     }
     names.sort();
@@ -4582,6 +4604,24 @@ pub fn builtin_vars(interp: &Interpreter, args: &[Value]) -> BResult {
                         let _ = d.set(k, v);
                     }
                     return Ok(Value::Dict(d));
+                }
+            }
+            // c018 (CPython vars() slots semantics): a UserInstance whose
+            // class declares __slots__ WITHOUT a __dict__ slot (and with no
+            // dict-carrying base) has NO __dict__ — vars() must raise
+            // TypeError, and its slot members (stored in o.attrs) must NOT
+            // leak into the mapping. Dict-backed instances return the LIVE
+            // attrs dict (CPython: vars(o) is o.__dict__; mutations through
+            // it are visible).
+            if o.kind == ap_obj::ObjKind::UserInstance {
+                if let Some(t) = crate::classes::class_of_value(interp, &Value::Obj(o.clone())) {
+                    if !t.has_instance_dict() {
+                        return Err(raise(
+                            "TypeError",
+                            format!("vars() argument must have __dict__ attribute"),
+                        ));
+                    }
+                    return Ok(Value::Dict(crate::classes::instance_dict_handle_pub(o)));
                 }
             }
             let d = PyDict::new();
