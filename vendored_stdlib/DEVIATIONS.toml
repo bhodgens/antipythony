@@ -3639,6 +3639,14 @@ deviated_sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b
 note = ""
 
 [[file]]
+path = "colorsys.py"
+upstream_path = "colorsys.py"
+status = "pristine"
+upstream_sha256 = "65e3dfbf7bad61d4d7d7731a69dd7e75a347fd350d91327a51010a94e6fd2f1d"
+deviated_sha256 = "65e3dfbf7bad61d4d7d7731a69dd7e75a347fd350d91327a51010a94e6fd2f1d"
+note = ""
+
+[[file]]
 path = "urllib/error.py"
 upstream_path = "urllib/error.py"
 status = "pristine"
@@ -3659,8 +3667,8 @@ path = "urllib/request.py"
 upstream_path = "urllib/request.py"
 status = "deviated"
 upstream_sha256 = "f3464032de00c1fbc839f4657577065ea6efb30d99e5a86e204b1aefdcb77430"
-deviated_sha256 = "8b21c296e46fbdd20237d389c8d51acac2c3de87a8c9a7de5eb96395f4a53c95"
-note = "T1 chain: import surface adjustments"
+deviated_sha256 = "07ffa8bedf9056c09dfe7e5804320540ac5e1fe8faa5c9f11e528ecdfd140ebe"
+note = "T1 chain: import surface adjustments (trimmed copy keeps only the posixpath path-conversion helpers + proxy helpers, no socket/email/http.client pulls). T3 wave: parse_http_list + parse_keqv_list appended verbatim from CPython 3.14.7 (httpx/_auth.py:9 imports parse_http_list)."
 
 [[file]]
 path = "urllib/response.py"
