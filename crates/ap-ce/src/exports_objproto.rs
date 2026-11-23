@@ -787,17 +787,8 @@ pub unsafe extern "C" fn apx_DisplayTypeName(o: PyObjPtr) -> *const c_char {
     g.last().unwrap().as_ptr()
 }
 
-/// PyLong_FromSsize_t — leaf 1005b: the object-protocol band returns
-/// lengths/hashes through it (kept in THIS module: exports.rs is off-limits
-/// per the leaf contract; a second #[no_mangle] of the same C symbol is a
-/// duplicate-symbol error, so the definition lives here once).
-#[no_mangle]
-pub unsafe extern "C" fn PyLong_FromSsize_t(v: isize) -> PyObjPtr {
-    new_handle(
-        CeKind::Int,
-        CePayload::Int(ap_obj::int::Int::from_i64(v as i64)),
-    ) as PyObjPtr
-}
+// PyLong_FromSsize_t: defined once in exports_containers.rs (leaf 1005a);
+// the object-protocol band (leaf 1005b) consumes the same C symbol.
 
 /// Unit-test seam: a no-op vtable (never installed in production; the
 /// tests install their own probes and CANNOT uninstall — install order
