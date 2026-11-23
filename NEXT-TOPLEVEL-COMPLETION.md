@@ -35,8 +35,12 @@ trunk. Gate counts cited by leaves are claims; re-runs are evidence.
    (a) leaf-1006 hard members (PyLong_Export digit layout, tp_traverse/GC
    bridging conservation probe, method/class ctors, PyMem, PyGILState —
    shared-symbol ownership rule in the brief);
-   (b) leaf-ge006 genexp-laziness wasm fix (harden2's disclosed
-   residual, 53/53 target);
+   (b) leaf-ge006 genexp-laziness wasm fix — MERGED cf74464 (the
+   "eager genexp" framing was a MISDIAGNOSIS; real bugs: plain-fn frames
+   never inited the print-buffer local (first print of every user fn
+   dropped) + throw-escape left gen state live; 53/53 debug+release,
+   42 suites 46/0 on trunk, ap-codegen-wasm-only diff; NEXT-GE006.md
+   corrects the 03.04d/e records);
    (c) leaf-linecache AOT source embedding (02.08 audit binary-mode gap,
    >=35/48 target with pins).
    After wave 2: pydantic-core probe -> Plan 05 T3-T5 verdicts.
