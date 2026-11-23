@@ -71,9 +71,8 @@ mod tests {
         let mut sorted = keys.clone();
         sorted.sort();
         assert_eq!(keys, sorted, "store must stay sorted for binary_search");
-        for k in &keys {
-            assert!(!source_for(k).unwrap_or(&[]).is_empty(), "empty: {k}");
-        }
+        // Emptiness is legal: several CPython __init__.py faces (urllib,
+        // email.mime) are genuinely empty files — the store mirrors the disk.
     }
 
     #[test]
