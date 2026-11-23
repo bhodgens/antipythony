@@ -12,7 +12,7 @@ remains the bar everywhere that lowers. Orchestrator: this session.
 | leaf-1005b | deleg_adfef016 | PyObject attr/compare/iter protocol (~60) | ap-ce/src/exports_objproto.rs (NEW) |
 | leaf-1005c | deleg_adfef016 | PyErr plumbing + PyFrame/PyCode projection (~30) | ap-ce/src/exports_errtb.rs (NEW) |
 | leaf-harden2 | deleg_adfef016 | HARDEN gap 3: scan-gate gen-condition yield + handler bind-yield | ap-codegen-wasm |
-| leaf-02resid-a | deleg_ebe43d03 | V016 parser + t1_007 round + c018 vars() + c032 metaclass | ap-run/{interp,builtins,classes,methods}.rs, ap-parse, corpus pins |
+| leaf-02resid-a | deleg_ebe43d03 | V016 parser + t1_007 round + c018 vars() + c032 metaclass | ap-run/{interp,builtins,classes,methods}.rs, ap-parse, corpus pins | MERGED 2db9410 (gates verified first-hand; V016 was already closed on trunk — verification-only; sibling mbc WIP parked at /tmp/sibling-mbc-wip-20261122.patch) |
 | leaf-02resid-b | deleg_ebe43d03 | s023 ast.unparse (gate) + Counter repr + CacheInfo + enum mangle + warnings | ap-run/builtins_modules.rs, vendored_stdlib |
 | leaf-04gaps | deleg_d30ff2d7 | Plan 04 honest gaps: emit-wasm diagnostic, `--` seam, --impl-wasm, hybrid CRT packaging | ap-aot-crt*, ap-conform, ap-cli flag arm, docs | MERGED ced547a (gates verified first-hand) |
 | leaf-harden2 | deleg_adfef016 | HARDEN gap 3: scan-gate gen-condition yield + handler bind-yield | ap-codegen-wasm | MERGED 1190808 (gates verified first-hand; GE006 wasm-leg laziness gap filed → 03.04d/e genexp emitter slice) |
