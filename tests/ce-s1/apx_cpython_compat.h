@@ -104,4 +104,23 @@ static long Py_Refcnt(PyObject *o) { return Py_REFCNT(o); }
 /* The runtime-side display type name: on CPython the real tp_name. */
 #define apx_DisplayTypeName(o) Py_TYPE(o)->tp_name
 
+/* ---- leaf 1005c: the error/traceback band ----
+   Real CPython HAS all the PyExc_* tokens, PyErr_Format, the Fetch/
+   Restore family, NewException, and the frame/code/gen projections —
+   the band is CPython-spelled and maps 1:1. errtb.c includes
+   apx_python.h UNCONDITIONALLY after this header (line 45), so the
+   antipythony PyExc_* MACROS (apx_PyExc_*() accessor calls) leak into
+   the CPython arm; neutralize them back to the real tokens. */
+#undef PyExc_ValueError
+#undef PyExc_TypeError
+#undef PyExc_RuntimeError
+#undef PyExc_IndexError
+#undef PyExc_KeyError
+#undef PyExc_AttributeError
+#undef PyExc_NotImplementedError
+#undef PyExc_OverflowError
+#undef PyExc_ZeroDivisionError
+#undef PyExc_MemoryError
+#undef PyExc_SystemError
+
 #endif /* APX_CPYTHON_COMPAT_H */
