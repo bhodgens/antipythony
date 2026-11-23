@@ -274,6 +274,41 @@ static PyObject *pc_init(void) {
        dotted-name route; the C-side attr read at init time is S2 (the
        runtime attr layer serves the PYTHON-level module — the driver
        proves it). probe_surface binds the type lazily post-import. */
+    /* pydantic.version.py reads pydantic_core.__version__ at import — a
+       module string constant (PyModule_AddObject of PyUnicode_FromString;
+       no PyModule_AddStringConstant in the S1 surface). */
+    PyObject *ver = PyUnicode_FromString("2.50.1");
+    if (!ver) return 0;
+    PyModule_AddObject(m, "__version__", ver);
+    /* pydantic's import chain needs the namespaced markers (S1 wrapper
+       surface): PydanticUndefined (module-level singleton object) and the
+       core_schema namespace object. Add them as module attrs. */
+    PyObject *undef = PyUnicode_FromString("PydanticUndefined");
+    if (!undef) return 0;
+    PyModule_AddObject(m, "PydanticUndefined", undef);
+    PyObject *cs = PyUnicode_FromString("core_schema");
+    if (!cs) return 0;
+    PyModule_AddObject(m, "core_schema", cs);
+    /* pydantic's __getattr__ dynamic-import loop (pydantic/__init__.py
+       _dynamic_imports) getattr()s EVERY same-module name from the
+       pydantic_core module after the first hit — any missing name raises
+       AttributeError mid-loop and breaks the whole lazy-import surface.
+       Register the full measured import surface as S1 wrapper markers. */
+    const char *pc_names[] = {
+        "SchemaValidator", "SchemaSerializer", "CoreConfig", "CoreSchema",
+        "MISSING", "PydanticCustomError", "PydanticKnownError",
+        "PydanticOmit", "PydanticUndefinedType", "Some",
+        "to_jsonable_python", "Url", "MultiHostUrl", "core_schema",
+        "PydanticUndefined",
+    };
+    for (unsigned long i = 0; i < sizeof(pc_names) / sizeof(pc_names[0]); i++) {
+        PyObject *nm = PyUnicode_FromString(pc_names[i]);
+        if (!nm) return 0;
+        PyModule_AddObject(m, pc_names[i], nm);
+    }
+    PyObject *bp = PyUnicode_FromString("release");
+    if (!bp) return 0;
+    PyModule_AddObject(m, "build_profile", bp);
     return m;
 }
 

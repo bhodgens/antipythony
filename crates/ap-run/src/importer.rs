@@ -688,6 +688,34 @@ fn load_into(
     let _ = ns.set(s("__file__"), s(file));
     let _ = ns.set(s("__package__"), s(package));
     let _ = ns.set(s("__doc__"), Value::None);
+    // T3 (pydantic __init__ module-level `_dynamic_imports` dict literal
+    // reads __spec__.parent at BODY-execution time): CPython's module
+    // loader sets module.__spec__ BEFORE the body runs, so the name is a
+    // plain global read inside the body. Seed a minimal spec namespace
+    // (name/parent/origin) into the module globals — attach_module_spec
+    // (post-exec) fills richer surfaces for importlib.resources.
+    {
+        let spec = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "ModuleSpec");
+        {
+            let a = spec.attrs.lock().unwrap_or_else(|p| p.into_inner());
+            let _ = a.set(s("name"), s(name));
+            // CPython ModuleSpec.parent: the PACKAGE's own name when
+            // submodule_search_locations is set (pydantic.__getattr__ reads
+            // __spec__.parent for its relative import_module anchor); the
+            // dotted prefix otherwise.
+            let parent = if compiled.is_package {
+                name.to_string()
+            } else {
+                name.rsplit_once('.').map(|(p, _)| p).unwrap_or("").to_string()
+            };
+            let _ = a.set(s("parent"), s(parent));
+            let _ = a.set(s("origin"), s(file));
+            if compiled.is_package {
+                let _ = a.set(s("submodule_search_locations"), Value::None);
+            }
+        }
+        let _ = ns.set(s("__spec__"), Value::Obj(spec));
+    }
     if compiled.is_package {
         // __path__ = [pkg_dir] (CPython: a list of str).
         let _ = ns.set(

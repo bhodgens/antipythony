@@ -1838,6 +1838,17 @@ pub fn type_matches(v: &Value, want: &str) -> bool {
         | (Value::Set(_), "Sized")
         | (Value::Set(_), "Set")
         | (Value::Set(_), "MutableSet") => true,
+        // T3 (pydantic FieldInfo dataclass -> dataclasses._add_slots):
+        // object-virtual MARKER fns (BuiltinFn "__object_virtual_*") must
+        // NOT answer isinstance(x, types.FunctionType). CPython's markers
+        // are method-wrapper/builtin-function-like objects; answering
+        // `function` here made dataclasses treat a marker member as a raw
+        // function and read .__code__ off it (AttributeError). Real
+        // builtin fns keep the "function" name-match (isinstance(len,
+        // types.BuiltinFunctionType) chains ride type_name).
+        (Value::Obj(o), "function") if o.kind == ap_obj::ObjKind::BuiltinFn => {
+            !o.name.starts_with("__object_virtual_")
+        }
         (a, b) => a.type_name() == b,
     }
 }
