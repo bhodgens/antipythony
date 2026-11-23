@@ -78,7 +78,21 @@ trunk. Gate counts cited by leaves are claims; re-runs are evidence.
    purity-refusal blocks pydantic add, F-VENDORED-1/2, F-INTERP-1/2,
    F-STRUCT-1); ap-ce 36/0 stdlib 48/48 verified, typing.ContextManager
    resolves live on merged trunk;
-   (b) leaf-t4 fastapi hello-world + offline route (vendored_stdlib-class fixes allowed) — RUNNING;
+   (b) leaf-t4 fastapi hello-world + offline route — MERGED de9ffe7.
+   STAGE MAP: typing_extensions FULL import GREEN, pydantic_core
+   dlopen-import GREEN; chain blocks at pydantic/version.py __version__
+   attr (W6 = the probe .so namespace is probe-only — 10.04 next work
+   queue, not an engine wall). Engine walls fixed: W1 type.mro()
+   returns list, W2 PEP 634 class patterns (anyio `case ast.If():`),
+   W3 str isX unbound reads (annotated_types Predicate), W4
+   module-__getattr__ re-entry (independent confirmation of T3's
+   deadlock, restructured guard-drop). W5 OPEN finding: GC
+   auto-collect re-entrancy during import (anyio.abc._streams;
+   edges_of blocks on PyList items mutex; APX_GC_THRESHOLD workaround;
+   needs ap-gc owner leaf). 7 regression pins tests/t04_fastapi_reach.
+   Rebase conflict resolution: T3's richer Pattern::Class + deadlock
+   fix kept, T4's three lost hunks restored (verified 7/7 pins +
+   live trunk probes after rebuild).
    (c) leaf-t5 comfyui/torch reach-verdict — MERGED b670520. VERDICT:
    **BLOCKED at three walls, none of them the C-API wall**: (1)
    `from typing import ContextManager` HANGS — vendored typing
