@@ -11825,6 +11825,14 @@ fn user_truthiness(interp: &Arc<Interpreter>, v: &Value) -> Result<Option<bool>,
         })?;
         return Ok(Some(n != 0));
     }
+    // 02RESID-B (s015): builtin-derived instances (class C(dict)/list/tuple)
+    // have NO __bool__/__len__ in their synthesized MRO, but CPython sizes
+    // truthiness from the CONTAINER state (empty dict subclass is falsy).
+    // Mirror user_len's backing arms here (empty Counter()/OrderedDict()
+    // printed truthy before this arm).
+    if let Some(n) = user_len(interp, v)? {
+        return Ok(Some(n != 0));
+    }
     Ok(None)
 }
 

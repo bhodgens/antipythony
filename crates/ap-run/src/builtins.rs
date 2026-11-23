@@ -2818,31 +2818,58 @@ pub fn builtin_sorted(interp: &Interpreter, args: &[Value], kwargs: &[(String, V
             // otherwise sorted in insertion order). py_lt falls back to
             // values_cmp semantics via ap_obj::ops::lt when no slot exists;
             // Ordering::Equal on error keeps the stable-sort behavior.
-            decorated.sort_by(
-                |a, b| match crate::builtins_modules::py_lt_public(&a.0, &b.0) {
-                    Ok(true) => std::cmp::Ordering::Less,
-                    Ok(false) => match crate::builtins_modules::py_lt_public(&b.0, &a.0) {
-                        Ok(true) => std::cmp::Ordering::Greater,
-                        _ => std::cmp::Ordering::Equal,
+            // 02RESID-B (s015): reverse=True REVERSES THE COMPARATOR
+            // (CPython list.sort does not flip tie groups — equal keys keep
+            // input order). The old post-sort items.reverse() put equal-key
+            // groups in reversed input order (Counter.most_common tie
+            // ordering diverged from CPython).
+            if reverse {
+                decorated.sort_by(
+                    |a, b| match crate::builtins_modules::py_lt_public(&b.0, &a.0) {
+                        Ok(true) => std::cmp::Ordering::Less,
+                        Ok(false) => match crate::builtins_modules::py_lt_public(&a.0, &b.0) {
+                            Ok(true) => std::cmp::Ordering::Greater,
+                            _ => std::cmp::Ordering::Equal,
+                        },
+                        Err(_) => std::cmp::Ordering::Equal,
                     },
-                    Err(_) => std::cmp::Ordering::Equal,
-                },
-            );
+                );
+            } else {
+                decorated.sort_by(
+                    |a, b| match crate::builtins_modules::py_lt_public(&a.0, &b.0) {
+                        Ok(true) => std::cmp::Ordering::Less,
+                        Ok(false) => match crate::builtins_modules::py_lt_public(&b.0, &a.0) {
+                            Ok(true) => std::cmp::Ordering::Greater,
+                            _ => std::cmp::Ordering::Equal,
+                        },
+                        Err(_) => std::cmp::Ordering::Equal,
+                    },
+                );
+            }
             items = decorated.into_iter().map(|(_, v)| v).collect();
         }
     } else {
-        // s013: no-key path — same user-__lt__-first discipline.
-        items.sort_by(|a, b| match crate::builtins_modules::py_lt_public(a, b) {
-            Ok(true) => std::cmp::Ordering::Less,
-            Ok(false) => match crate::builtins_modules::py_lt_public(b, a) {
-                Ok(true) => std::cmp::Ordering::Greater,
-                _ => std::cmp::Ordering::Equal,
-            },
-            Err(_) => std::cmp::Ordering::Equal,
-        });
-    }
-    if reverse {
-        items.reverse();
+        // s013: no-key path — same user-__lt__-first discipline; reverse
+        // flips the comparator for the same tie-stability reason.
+        if reverse {
+            items.sort_by(|a, b| match crate::builtins_modules::py_lt_public(b, a) {
+                Ok(true) => std::cmp::Ordering::Less,
+                Ok(false) => match crate::builtins_modules::py_lt_public(a, b) {
+                    Ok(true) => std::cmp::Ordering::Greater,
+                    _ => std::cmp::Ordering::Equal,
+                },
+                Err(_) => std::cmp::Ordering::Equal,
+            });
+        } else {
+            items.sort_by(|a, b| match crate::builtins_modules::py_lt_public(a, b) {
+                Ok(true) => std::cmp::Ordering::Less,
+                Ok(false) => match crate::builtins_modules::py_lt_public(b, a) {
+                    Ok(true) => std::cmp::Ordering::Greater,
+                    _ => std::cmp::Ordering::Equal,
+                },
+                Err(_) => std::cmp::Ordering::Equal,
+            });
+        }
     }
     Ok(Value::List(PyList::from_vec(items)))
 }
