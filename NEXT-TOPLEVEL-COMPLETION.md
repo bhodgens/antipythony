@@ -9,7 +9,7 @@ remains the bar everywhere that lowers. Orchestrator: this session.
 | leaf | delegation | scope | owned files |
 |---|---|---|---|
 | leaf-1005a | deleg_adfef016 | PyDict/PyList/PyTuple residual (~80-100 members) | ap-ce/src/exports_containers.rs (NEW) | MERGED d8938e5 (ap-ce 19/0, stdlib 48/48 on trunk; 30/30 driver runs byte-exact; framework-linkage SEGV gotcha → wave-2 build-ext lint row) |
-| leaf-1005b | deleg_adfef016 | PyObject attr/compare/iter protocol (~60) | ap-ce/src/exports_objproto.rs (NEW) |
+| leaf-1005b | deleg_adfef016 | PyObject attr/compare/iter protocol (~60) | ap-ce/src/exports_objproto.rs (NEW) | MERGED afc5abd+cb9506c (ap-ce 27/0, stdlib 48/48, build_ext 4/4 on trunk; 73-pin driver diff empty; PyLong_FromSsize_t duplicate deduped at merge) |
 | leaf-1005c | deleg_adfef016 | PyErr plumbing + PyFrame/PyCode projection (~30) | ap-ce/src/exports_errtb.rs (NEW) |
 | leaf-harden2 | deleg_adfef016 | HARDEN gap 3: scan-gate gen-condition yield + handler bind-yield | ap-codegen-wasm |
 | leaf-02resid-a | deleg_ebe43d03 | V016 parser + t1_007 round + c018 vars() + c032 metaclass | ap-run/{interp,builtins,classes,methods}.rs, ap-parse, corpus pins | MERGED 2db9410 (gates verified first-hand; V016 was already closed on trunk — verification-only; sibling mbc WIP parked at /tmp/sibling-mbc-wip-20261122.patch) |
