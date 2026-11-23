@@ -24,6 +24,13 @@ trunk. Gate counts cited by leaves are claims; re-runs are evidence.
 
 ## Queued after wave 1+2 merge
 
+0. **build-ext linkage lint row** (small, gates the SEGV gotcha): the
+   antipythony-built .so must have ZERO Python.framework load commands
+   (otool -L check). The 10.04-era callback.so/payload.so in
+   leaf-1004's worktree still carry framework linkage (regenerate via
+   build-ext when that lane next runs). Fold this check into
+   build_ext_gate.rs as a row, or a scripts/ lint.
+
 1. **Plan 10 wave 2** (after ce leaves merge): PyLong_Export digit
    layout (~6 members, 4-8h), tp_traverse/GC bridging (~10 members,
    6-12h, conservation-critical), method/class ctors + PyMutex/
