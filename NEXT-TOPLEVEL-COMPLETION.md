@@ -107,8 +107,12 @@ trunk. Gate counts cited by leaves are claims; re-runs are evidence.
    NEW FINDINGS ROUTED: strfix + importlib + vendored (colorsys +
    parse_http_list) + fileno/GC-W5 — FINAL WAVE DISPATCHED 2026-11-23
    (deleg_9d8a4bd2, 4 leaves, disjoint ownership; disk pre-cleaned to
-   67G). Note: the typing-hang wall was FIXED by T3's deadlock fix —
-   T5's Wall-1 leaf is no longer needed. After this wave: F-STRUCT-1
+   67G). MERGED SO FAR: strfix (69ddb8c — byte-exact incl. Unicode
+   terminators, verified live) + vendored (52911b0 — colorsys
+   diff-empty vs framework copy, parse_http_list byte-exact, verified
+   live on trunk). Note: the typing-hang wall was FIXED by T3's
+   deadlock fix — T5's Wall-1 leaf is no longer needed. After this
+   wave: importlib + fileno/GC-W5 leaves (still running), F-STRUCT-1
    (re-entrant lazy import, structural, own leaf), build-ext linkage
    lint row, CPython-arm byte diff of the 110 pydantic members, final
    trunk sweep + AGENTS.md update, completion declaration.
