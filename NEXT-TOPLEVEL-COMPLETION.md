@@ -31,20 +31,20 @@ trunk. Gate counts cited by leaves are claims; re-runs are evidence.
    build-ext when that lane next runs). Fold this check into
    build_ext_gate.rs as a row, or a scripts/ lint.
 
-1. **Plan 10 wave 2** (after ce leaves merge): PyLong_Export digit
-   layout (~6 members, 4-8h), tp_traverse/GC bridging (~10 members,
-   6-12h, conservation-critical), method/class ctors + PyMutex/
-   PyUnstable/Py_Version (~25), PyMem/PyGILState/module surface (~40).
-   Split into two more leaves: (a) hard members (PyLong_Export +
-   tp_traverse + GC), (b) the method/mem/GIL band.
+1. **Plan 10 wave 2** — DISPATCHED 2026-11-22 late (deleg_6f619bb0):
+   (a) leaf-1006 hard members (PyLong_Export digit layout, tp_traverse/GC
+   bridging conservation probe, method/class ctors, PyMem, PyGILState —
+   shared-symbol ownership rule in the brief);
+   (b) leaf-ge006 genexp-laziness wasm fix (harden2's disclosed
+   residual, 53/53 target);
+   (c) leaf-linecache AOT source embedding (02.08 audit binary-mode gap,
+   >=35/48 target with pins).
+   After wave 2: pydantic-core probe -> Plan 05 T3-T5 verdicts.
 2. **pydantic-core probe** (after wave 2 lands): its 11 non-stable
    symbols all fall in landed bands except the Call family (landed in
    10.04) — probe a trivial model per ce-compat-survey §3. Gate =
    kill-criterion #3 check. Plan 05 T3-T5 unblock ONLY on a green probe.
-3. **Plan 04 honest-gap leaf** (disjoint, can dispatch any time):
-   plain-CRT --emit-wasm diagnostic (ap-aot-crt), -- separator for the
-   hybrid flag seam, ap-conform --impl-wasm seam, hybrid CRT packaging
-   note for 04.03 release matrix. Files: ap-aot-crt, ap-conform, docs.
+3. **Plan 04 honest-gap leaf** — MERGED ced547a (2026-11-22).
 4. **Plan 05 T3-T5** (gated on pydantic probe): hermes-agent T3 chat
    turn, fastapi T4 hello-world + TestClient, comfyui T5 load+run.
    T5 additionally needs Plan 10 depth beyond S1 (torch stack) — expect
