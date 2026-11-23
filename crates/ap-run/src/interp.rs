@@ -4328,6 +4328,58 @@ fn int_from_i128(v: i128) -> Int {
 
 fn eval_compare(left: &Value, op: CmpOp, right: &Value) -> Result<bool, Flow> {
     let interp = current_interp_for_bindings();
+    compare_values_pub(&interp.rc(), left, op, right)
+}
+
+/// Leaf 1005b (additive shim, NEXT-1004 pattern): the FULL compare protocol
+/// (user slots + reflected + proper-subclass priority + the builtin
+/// fallbacks with their exact op-spelled TypeErrors) behind a public name,
+/// for the C-extension object-protocol band (ce_objproto). No behavior
+/// change to eval_compare's callers.
+pub fn compare_values_pub(
+    interp: &Arc<Interpreter>,
+    left: &Value,
+    op: CmpOp,
+    right: &Value,
+) -> Result<bool, Flow> {
+    match eval_compare_body(interp, left, op, right) {
+        // Leaf 1005b: values_cmp's fallthrough TypeError hardcodes '<' (the
+        // executor only ever chains through eval_compare's Lt/Gt arms);
+        // the C-API rich-compare surface needs the op-spelled dialect
+        // (probed 3.14.7: '<='/'>'/'>=' messages). Re-spell here — the
+        // Python-level callers are unaffected (their arms are Lt/Gt where
+        // the text is already correct).
+        Err(Flow::Raise(mut e)) if e.class == "TypeError" => {
+            if let Some(Value::Str(s)) = e.args.first() {
+                let text = s.as_str();
+                let wants = match op {
+                    CmpOp::LtE => Some("<="),
+                    CmpOp::Gt => Some(">"),
+                    CmpOp::GtE => Some(">="),
+                    _ => None,
+                };
+                if let Some(sym) = wants {
+                    if let Some(rest) =
+                        text.strip_prefix("'<' not supported between instances of '")
+                    {
+                        let fixed =
+                            format!("'{}' not supported between instances of '{}", sym, rest);
+                        e.args = vec![Value::Str(PyString::new(fixed))];
+                    }
+                }
+            }
+            Err(Flow::Raise(e))
+        }
+        other => other,
+    }
+}
+
+fn eval_compare_body(
+    interp: &Arc<Interpreter>,
+    left: &Value,
+    op: CmpOp,
+    right: &Value,
+) -> Result<bool, Flow> {
     // Bound methods == by (__func__, __self__) (S-03-21; c024).
     if matches!(op, CmpOp::Eq | CmpOp::NotEq) {
         if let (Value::Obj(a), Value::Obj(b)) = (left, right) {
@@ -9101,6 +9153,21 @@ fn call_type_ctor(
         }
     }
     builtins::call_builtin(interp, name, args, kwargs)
+}
+
+/// Leaf 1005b (additive shim, NEXT-1004 pattern): the class-protocol
+/// builtin dispatch (len/bool/iter/hash/next with user dunder protocol +
+/// exact error texts) behind a public name, for the C-extension
+/// object-protocol band (ce_objproto). Falls through to the plain
+/// builtin surface when the subject carries no user protocol. No
+/// behavior change to call_value's callers.
+pub fn class_protocol_builtin_pub(
+    interp: &Arc<Interpreter>,
+    name: &str,
+    args: &[Value],
+    kwargs: &[(String, Value)],
+) -> Option<EResult> {
+    class_protocol_builtin(interp, name, args, kwargs)
 }
 
 /// Call a user function: bind params (S-02-8/10), run the body.

@@ -188,6 +188,66 @@ void *apx_InstancePayload(PyObject *o);
 #define ApxInstancePayload(o) apx_InstancePayload((PyObject *)(o))
 
 /* ------------------------------------------------------------------ */
+/* Object protocol (leaf 1005b — the S1 wrapper band)                  */
+/* ------------------------------------------------------------------ */
+
+/* Rich-compare op codes (CPython object.h values). */
+#define Py_LT 0
+#define Py_LE 1
+#define Py_EQ 2
+#define Py_NE 3
+#define Py_GT 4
+#define Py_GE 5
+
+/* Attr: NEW reference on Get (NULL + AttributeError on miss); Set/Del
+   return 0 ok / -1 error. SetAttr with a NULL value deletes (the C-API
+   contract). GetOptionalAttr (3.13+ ABI): *result=NULL on miss, returns
+   1 found / 0 miss (no error) / -1 error. */
+PyObject *PyObject_GetAttr(PyObject *o, PyObject *name);
+int PyObject_GetOptionalAttr(PyObject *o, PyObject *name, PyObject **result);
+PyObject *PyObject_GetAttrString(PyObject *o, const char *name);
+int PyObject_GetOptionalAttrString(PyObject *o, const char *name, PyObject **result);
+int PyObject_SetAttr(PyObject *o, PyObject *name, PyObject *v);
+int PyObject_SetAttrString(PyObject *o, const char *name, PyObject *v);
+int PyObject_DelAttr(PyObject *o, PyObject *name);
+int PyObject_DelAttrString(PyObject *o, const char *name);
+
+/* Length: PyObject_Length is len() (-1 + TypeError when absent);
+   PyObject_LengthHint is operator.length_hint (hint protocol, then len,
+   then defaultvalue). */
+Py_ssize_t PyObject_Length(PyObject *o);
+Py_ssize_t PyObject_LengthHint(PyObject *o, Py_ssize_t defaultvalue);
+
+/* Compare/truth: RichCompare returns a NEW Bool; RichCompareBool carries
+   CPython's identity shortcut; IsTrue/Not honor __bool__/__len__. */
+PyObject *PyObject_RichCompare(PyObject *o1, PyObject *o2, int op);
+int PyObject_RichCompareBool(PyObject *o1, PyObject *o2, int op);
+int PyObject_IsTrue(PyObject *o);
+int PyObject_Not(PyObject *o);
+
+/* Iter: GetIter returns a NEW iterator; IterNext returns a NEW item or
+   NULL — NULL with NO error at exhaustion (CPython clears StopIteration
+   before returning; check PyErr_Occurred() to distinguish error vs end).
+   NOTE (CPython parity): PyIter_Next takes PyIter_Check as a CALLER
+   precondition — a non-iterator is undefined behavior there (bpo-19005:
+   the crash is BY DESIGN; CPython's own builtin next() guards first).
+   apx_PyIter_Check gives extensions the same guard seam. */
+PyObject *PyObject_GetIter(PyObject *o);
+PyObject *PyObject_IterNext(PyObject *o);
+int apx_PyIter_Check(PyObject *o);
+#define PyIter_Check(o) apx_PyIter_Check((PyObject *)(o))
+
+/* The CPython arm maps apx_DisplayTypeName onto the real type name. */
+const char *apx_DisplayTypeName(PyObject *o);
+#define apx_TypeName(o) apx_DisplayTypeName((PyObject *)(o))
+
+/* Hash/Dir: Hash returns the CPython hash (-1 + TypeError unhashable);
+   Dir returns a NEW sorted list. */
+Py_ssize_t PyObject_Hash(PyObject *o);
+PyObject *PyObject_Dir(PyObject *o);
+
+
+/* ------------------------------------------------------------------ */
 /* Error protocol                                                      */
 /* ------------------------------------------------------------------ */
 
@@ -275,3 +335,4 @@ PyObject *apx_PyTuple_PackV(Py_ssize_t n, ...);
 }
 #endif
 #endif /* APX_PYTHON_H */
+// --- leaf 1005b ---
