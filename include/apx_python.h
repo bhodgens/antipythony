@@ -199,6 +199,11 @@ void *apx_InstancePayload(PyObject *o);
 #define Py_GT 4
 #define Py_GE 5
 
+/* PyMemberdef slot id for the FromSpec walker (pydantic probes it). */
+#define Py_tp_members 68
+/* Py_tp_descr_get / Py_tp_repr slots the probe's spec carries. */
+#define Py_tp_doc 63
+
 /* Attr: NEW reference on Get (NULL + AttributeError on miss); Set/Del
    return 0 ok / -1 error. SetAttr with a NULL value deletes (the C-API
    contract). GetOptionalAttr (3.13+ ABI): *result=NULL on miss, returns
@@ -527,3 +532,154 @@ int PyEval_ThreadsInitialized(void);
 #endif
 #endif /* APX_PYTHON_H */
 // --- leaf 1005b ---
+
+/* ------------------------------------------------------------------ */
+/* leaf pydantic-probe: pydantic-core's 110-member residual demand.    */
+/* Wrapper members per the landed band patterns (one owner per C       */
+/* symbol; CPython-spelled unprefixed exports). Structural members     */
+/* (type tokens, PyExc_ data, FromSpec family) route through the       */
+/* established accessors; behavior-bearing members route through the   */
+/* runtime vtable (the 1005b model).                                   */
+/* ------------------------------------------------------------------ */
+
+/* PyExc_ data symbols -> accessor fn macros (the apx_PyExc_ pattern). */
+apx_PyObject *apx_PyExc_BaseException(void);
+apx_PyObject *apx_PyExc_Exception(void);
+apx_PyObject *apx_PyExc_AssertionError(void);
+apx_PyObject *apx_PyExc_ImportError(void);
+apx_PyObject *apx_PyExc_LookupError(void);
+apx_PyObject *apx_PyExc_DeprecationWarning(void);
+apx_PyObject *apx_PyExc_BaseExceptionGroup(void);
+apx_PyObject *apx_PyExc_UnicodeDecodeError(void);
+apx_PyObject *apx_PyExc_UserWarning(void);
+apx_PyObject *apx_PyExc_RecursionError(void);
+#define PyExc_BaseException      apx_PyExc_BaseException()
+#define PyExc_Exception          apx_PyExc_Exception()
+#define PyExc_AssertionError     apx_PyExc_AssertionError()
+#define PyExc_ImportError        apx_PyExc_ImportError()
+#define PyExc_LookupError        apx_PyExc_LookupError()
+#define PyExc_DeprecationWarning apx_PyExc_DeprecationWarning()
+#define PyExc_BaseExceptionGroup apx_PyExc_BaseExceptionGroup()
+#define PyExc_UnicodeDecodeError apx_PyExc_UnicodeDecodeError()
+#define PyExc_UserWarning        apx_PyExc_UserWarning()
+#define PyExc_RecursionError     apx_PyExc_RecursionError()
+
+/* Type tokens (function-like; the 1006 PyMethod_Type pattern). */
+apx_PyObject *apx_PyType_Type(void);
+apx_PyObject *apx_PyBaseObject_Type(void);
+apx_PyObject *apx_PyBool_Type(void);
+apx_PyObject *apx_PyByteArray_Type(void);
+apx_PyObject *apx_PyBytes_Type(void);
+apx_PyObject *apx_PyComplex_Type(void);
+apx_PyObject *apx_PyDict_Type(void);
+apx_PyObject *apx_PyFloat_Type(void);
+apx_PyObject *apx_PyFrozenSet_Type(void);
+apx_PyObject *apx_PyList_Type(void);
+apx_PyObject *apx_PyLong_Type(void);
+apx_PyObject *apx_PyModule_Type(void);
+apx_PyObject *apx_PySet_Type(void);
+apx_PyObject *apx_PyTuple_Type(void);
+apx_PyObject *apx_PyUnicode_Type(void);
+#define PyType_Type        (*apx_PyType_Type())
+#define PyBaseObject_Type  (*apx_PyBaseObject_Type())
+#define PyBool_Type        (*apx_PyBool_Type())
+#define PyByteArray_Type   (*apx_PyByteArray_Type())
+#define PyBytes_Type       (*apx_PyBytes_Type())
+#define PyComplex_Type     (*apx_PyComplex_Type())
+#define PyDict_Type        (*apx_PyDict_Type())
+#define PyFloat_Type       (*apx_PyFloat_Type())
+#define PyFrozenSet_Type   (*apx_PyFrozenSet_Type())
+#define PyList_Type        (*apx_PyList_Type())
+#define PyLong_Type        (*apx_PyLong_Type())
+#define PyModule_Type      (*apx_PyModule_Type())
+#define PySet_Type         (*apx_PySet_Type())
+#define PyTuple_Type       (*apx_PyTuple_Type())
+#define PyUnicode_Type     (*apx_PyUnicode_Type())
+
+/* Behavior members (Rust side; CPython-spelled symbols). */
+PyObject *PyByteArray_AsString(PyObject *);
+Py_ssize_t PyByteArray_Size(PyObject *);
+PyObject *PyBytes_FromStringAndSize(const char *, Py_ssize_t);
+PyObject *PyCMethod_New(PyMethodDef *def, PyObject *self, PyObject *module,
+                        PyObject *type_);
+int PyCallable_Check(PyObject *);
+void *PyCapsule_Import(const char *name, int no_block);
+PyObject *PyComplex_FromDoubles(double real, double imag);
+double PyComplex_RealAsDouble(PyObject *);
+double PyComplex_ImagAsDouble(PyObject *);
+void PyErr_PrintEx(int exit_on_error);
+int PyErr_WarnEx(PyObject *category, const char *message, Py_ssize_t stack_level);
+void PyErr_WriteUnraisable(PyObject *exc);
+PyObject *PyException_GetCause(PyObject *);
+PyObject *PyException_GetTraceback(PyObject *);
+void PyException_SetCause(PyObject *, PyObject *);
+int PyException_SetTraceback(PyObject *, PyObject *);
+PyObject *PyImport_Import(const char *name);
+Py_ssize_t PyInterpreterState_GetID(void);
+PyObject *PyIter_NextItem(PyObject *iter, int *has_next);
+PyObject *PyLong_AsUnsignedLongLong(PyObject *);
+PyObject *PyLong_FromInt32(int32_t v);
+PyObject *PyLong_FromUInt32(uint32_t v);
+PyObject *PyLong_FromUnsignedLongLong(unsigned long long v);
+PyObject *PyMapping_Items(PyObject *o);
+void PyModuleDef_Init(void *def);
+int PyModule_ExecDef(PyObject *module, void *def);
+PyObject *PyModule_FromDefAndSpec2(void *def, PyObject *spec,
+                                   int module_api_version);
+PyObject *PyModule_GetNameObject(PyObject *module);
+PyObject *PyNumber_Index(PyObject *o);
+PyObject *PyNumber_Remainder(PyObject *a, PyObject *b);
+PyObject *PyNumber_TrueDivide(PyObject *a, PyObject *b);
+int PyObject_DelItem(PyObject *o, PyObject *key);
+void PyObject_Free(void *p);
+PyObject *PyObject_GenericGetDict(PyObject *o, void *context);
+int PyObject_GenericSetAttr(PyObject *o, PyObject *name, PyObject *v);
+int PyObject_GenericSetDict(PyObject *o, PyObject *v, void *context);
+PyObject *PyObject_GetItem(PyObject *o, PyObject *key);
+int PyObject_HasAttrWithError(PyObject *o, PyObject *name);
+PyObject *PyObject_Init(PyObject *self, PyObject *type_);
+int PyObject_IsInstance(PyObject *inst, PyObject *cls);
+int PyObject_IsSubclass(PyObject *derived, PyObject *cls);
+int PyObject_SetItem(PyObject *o, PyObject *key, PyObject *v);
+Py_ssize_t PyObject_Size(PyObject *o);
+PyObject *PyObject_VectorcallDict(PyObject *callable, PyObject *const *args,
+                                  size_t nargsf, PyObject *kwnames);
+PyObject *PyObject_VectorcallMethod(PyObject *name, PyObject *const *args,
+                                    size_t nargsf, PyObject *kwnames);
+int PySequence_Check(PyObject *o);
+int PySequence_Contains(PyObject *seq, PyObject *ob);
+int PySet_Add(PyObject *set, PyObject *key);
+int PySet_Contains(PyObject *set, PyObject *key);
+PyObject *PySet_New(PyObject *iterable);
+PyObject *PyFrozenSet_New(PyObject *iterable);
+int PyTraceBack_Print(PyObject *tb, PyObject *f);
+int PyType_Freeze(PyObject *type_);
+PyObject *PyType_FromSpec_ExactStub(PyObject *spec); /* real FromSpec: macro below */
+#define PyType_FromSpec_Real PyType_FromSpec
+PyObject *PyType_GenericAlloc(PyObject *type_, Py_ssize_t nitems);
+PyObject *PyType_GetModuleName(PyObject *type_);
+PyObject *PyType_GetName(PyObject *type_);
+PyObject *PyType_GetQualName(PyObject *type_);
+int PyType_IsSubtype(PyObject *a, PyObject *b);
+PyObject *PyUnicodeDecodeError_Create(const char *encoding,
+                                      const char *object,
+                                      Py_ssize_t length,
+                                      Py_ssize_t start,
+                                      Py_ssize_t end,
+                                      const char *reason);
+apx_writer_handle PyUnicodeWriter_Create(Py_ssize_t length);
+int PyUnicodeWriter_Discard(apx_writer_handle writer);
+PyObject *PyUnicodeWriter_Finish(apx_writer_handle writer);
+int PyUnicodeWriter_WriteChar(apx_writer_handle writer, unsigned int ch);
+int PyUnicodeWriter_WriteUTF8(apx_writer_handle writer, const char *value,
+                              Py_ssize_t len);
+PyObject *PyUnicode_AsEncodedString(PyObject *unicode, const char *encoding,
+                                    const char *errors);
+const char *PyUnicode_DATA(PyObject *o);
+int PyUnicode_EqualToUTF8AndSize(PyObject *unicode, const char *utf8,
+                                 Py_ssize_t size);
+void PyUnicode_InternInPlace(PyObject **unicode);
+PyObject *PyUnicode_New(Py_ssize_t size, PyObject *maxchar);
+int Py_IsFinalizing(void);
+int Py_IsInitialized(void);
+PyObject *Py_GetConstant(unsigned int constant_id);

@@ -26,6 +26,7 @@ pub mod exports_errtb;
 pub mod exports_long_gc;
 pub mod exports_method_mem;
 pub mod exports_objproto;
+pub mod exports_pydantic;
 pub mod ffi_types;
 pub mod payloads;
 pub mod runtime_ctx;
