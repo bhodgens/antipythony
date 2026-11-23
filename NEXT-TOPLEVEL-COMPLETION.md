@@ -63,10 +63,13 @@ trunk. Gate counts cited by leaves are claims; re-runs are evidence.
    position. T3/T4 pydantic reachability on S1 STANDS.
    Plan 05 T3-T5 unblock ONLY on a green probe.
 3. **Plan 04 honest-gap leaf** — MERGED ced547a (2026-11-22).
-4. **Plan 05 T3-T5** (gated on pydantic probe): hermes-agent T3 chat
-   turn, fastapi T4 hello-world + TestClient, comfyui T5 load+run.
-   T5 additionally needs Plan 10 depth beyond S1 (torch stack) — expect
-   a documented reach verdict, not a green.
+4. **Plan 05 T3-T5** — DISPATCHED 2026-11-23 (deleg_28a919e0), probe
+   GREEN unblocked them: (a) leaf-t3 hermes-agent chat-turn path
+   (pydantic + httpx-construction + rich render; wrapper-class fixes
+   in ap-ce allowed); (b) leaf-t4 fastapi hello-world + offline route
+   (vendored_stdlib-class fixes allowed); (c) leaf-t5 comfyui/torch
+   reach-verdict (measurement-only; BLOCKED expected, S2/S3 surface
+   list = the deliverable). Disjoint file ownership enforced.
 
 ## Explicitly NOT in scope (locked)
 
