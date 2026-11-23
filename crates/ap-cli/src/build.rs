@@ -38,6 +38,22 @@ fn install_prefix_crt(exe_path: &Path) -> Option<PathBuf> {
     )
 }
 
+/// 04.05 gap-4 closeout (04.03 release matrix): the HYBRID CRT staticlib
+/// under the SAME install.sh layout — `$PREFIX/lib/antipythony/
+/// libap_aot_crt_hybrid.a` — so an installed binary can `build --hybrid`
+/// exactly like plain `build` (NEXT-0405 "What Plan 04 should pick up").
+/// Returns the hybrid candidate path when the exe is under a prefix layout.
+fn install_prefix_crt_hybrid(exe_path: &Path) -> Option<PathBuf> {
+    let bin = exe_path.parent()?;
+    let prefix = bin.parent()?;
+    Some(
+        prefix
+            .join("lib")
+            .join("antipythony")
+            .join("libap_aot_crt_hybrid.a"),
+    )
+}
+
 /// Locate the prebuilt CRT staticlib, testable seam over
 /// [`crt_staticlib`] (which feeds the running exe's path).
 ///
@@ -162,6 +178,45 @@ mod tests {
     fn install_prefix_crt_none_for_bare_path() {
         assert!(install_prefix_crt(Path::new("antipythony")).is_none());
     }
+
+    /// 04.05 gap-4 (04.03 release matrix): the HYBRID CRT resolves from the
+    /// SAME install.sh prefix layout — `$PREFIX/lib/antipythony/
+    /// libap_aot_crt_hybrid.a` — so an installed binary can `build
+    /// --hybrid` (the hybrid lookup mirrors the D3 plain-CRT one).
+    #[test]
+    fn hybrid_crt_lookup_finds_staged_install_prefix_crt() {
+        let tmp = std::env::temp_dir().join(format!(
+            "apcli-04gaps-crt-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let prefix = tmp.join("prefix");
+        let crt_dir = prefix.join("lib").join("antipythony");
+        std::fs::create_dir_all(prefix.join("bin")).expect("stage bin/");
+        std::fs::create_dir_all(&crt_dir).expect("stage lib/antipythony/");
+        let exe = prefix.join("bin").join("antipythony");
+        let crt = crt_dir.join("libap_aot_crt_hybrid.a");
+        std::fs::write(&crt, b"!<arch>\n").expect("stage hybrid CRT staticlib");
+
+        let got = crt_staticlib_hybrid_from(Some(&exe), AotTarget::MacosNative)
+            .expect("install-prefix hybrid CRT lookup must find the staged staticlib");
+        assert_eq!(got, crt);
+
+        // Negative arm: without the staged file the PREFIX candidate must
+        // stop resolving (same semantics as the D3 plain-CRT test).
+        std::fs::remove_file(&crt).expect("drop staged hybrid CRT");
+        if let Ok(got2) = crt_staticlib_hybrid_from(Some(&exe), AotTarget::MacosNative) {
+            assert_ne!(
+                got2, crt,
+                "removed staged hybrid CRT must not resolve via the PREFIX path"
+            );
+        }
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
 }
 
 /// The build verb body (called from main.rs's cmd_build).
@@ -205,9 +260,21 @@ pub fn build_binary(
 
 /// Locate the hybrid CRT staticlib (04.05 — `cargo build -p
 /// ap-aot-crt-hybrid` builds it next to the plain CRT in the same target
-/// dir; the same root/profile search as `crt_staticlib`).
-fn crt_staticlib_hybrid(target: AotTarget) -> Result<PathBuf, String> {
+/// dir; the same root/profile search as `crt_staticlib`). Lookup order
+/// mirrors the plain CRT (D3): the install prefix FIRST, then the
+/// historical checkout chain.
+fn crt_staticlib_hybrid_from(
+    exe_path: Option<&Path>,
+    target: AotTarget,
+) -> Result<PathBuf, String> {
     let _ = target;
+    if let Some(exe) = exe_path {
+        if let Some(cand) = install_prefix_crt_hybrid(exe) {
+            if cand.exists() {
+                return Ok(cand);
+            }
+        }
+    }
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
     let profiles = ["release", "debug"];
     let mut roots = Vec::new();
@@ -216,9 +283,8 @@ fn crt_staticlib_hybrid(target: AotTarget) -> Result<PathBuf, String> {
             roots.push(PathBuf::from(ctd));
         }
     }
-    if let Ok(exe) = std::env::current_exe() {
-        if let (Some(profile), Some(root)) = (exe.parent(), exe.parent().and_then(Path::parent)) {
-            let _ = profile;
+    if let Some(exe) = exe_path {
+        if let (Some(_profile), Some(root)) = (exe.parent(), exe.parent().and_then(Path::parent)) {
             roots.push(root.to_path_buf());
         }
     }
@@ -233,9 +299,16 @@ fn crt_staticlib_hybrid(target: AotTarget) -> Result<PathBuf, String> {
         }
     }
     Err(
-        "antipythony: --hybrid: ap-aot-crt-hybrid staticlib not found — build it first with \\\n             `cargo build -p ap-aot-crt-hybrid` (debug or release; CARGO_TARGET_DIR must match this checkout)"
+        "antipythony: --hybrid: ap-aot-crt-hybrid staticlib not found — for an installed binary \
+         it lives at $PREFIX/lib/antipythony/libap_aot_crt_hybrid.a (reinstall via \
+         scripts/install.sh); in a checkout build it first with `cargo build -p ap-aot-crt-hybrid` \
+         (debug or release; CARGO_TARGET_DIR must match this checkout)"
             .to_string(),
     )
+}
+
+fn crt_staticlib_hybrid(target: AotTarget) -> Result<PathBuf, String> {
+    crt_staticlib_hybrid_from(std::env::current_exe().ok().as_deref(), target)
 }
 
 /// The `build --hybrid` verb body: the SAME native pipeline (parse →

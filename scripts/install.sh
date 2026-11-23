@@ -163,6 +163,14 @@ if [ -f "$TMP/$NAME/libap_aot_crt.a" ]; then
     echo "install.sh: crt       -> $PREFIX/lib/antipythony/libap_aot_crt.a"
 fi
 
+# --- hybrid crt staticlib (installed `build --hybrid` verb, 04.05 gap-4) -------
+# Same $PREFIX/lib/antipythony/ layout as the plain CRT; the ap-cli hybrid
+# lookup probes this path FIRST for an installed binary (mirrors D3).
+if [ -f "$TMP/$NAME/libap_aot_crt_hybrid.a" ]; then
+    install -m 0644 "$TMP/$NAME/libap_aot_crt_hybrid.a" "$PREFIX/lib/antipythony/libap_aot_crt_hybrid.a"
+    echo "install.sh: crt-hybrid -> $PREFIX/lib/antipythony/libap_aot_crt_hybrid.a"
+fi
+
 # --- PATH + ANTIPTYHONY_STDLIB persistence ------------------------------------
 STDLIB_DIR="$PREFIX/lib/antipythony/vendored_stdlib"
 case ":${SHELL}:" in

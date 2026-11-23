@@ -59,6 +59,22 @@ else
     echo "package-release: WARNING libap_aot_crt.a not found — archive will not support 'build' off-checkout" >&2
 fi
 
+# --- hybrid aot crt staticlib (04.05 gap-4: installed `build --hybrid`) --------
+# Same archive slot as the plain CRT; install.sh places it at
+# $PREFIX/lib/antipythony/libap_aot_crt_hybrid.a where the ap-cli hybrid
+# lookup probes FIRST. Absent archive file = --hybrid stays checkout-only
+# (a loud, not silent, limitation — the build verb names the path).
+HYBRID_CRT=""
+for c in "$BIN_DIR/libap_aot_crt_hybrid.a" \
+         "$(cd "$ROOT" && ls target*/release/libap_aot_crt_hybrid.a 2>/dev/null | head -1)"; do
+    [ -n "$c" ] && [ -f "$c" ] && { HYBRID_CRT="$c"; break; }
+done
+if [ -n "$HYBRID_CRT" ]; then
+    cp "$HYBRID_CRT" "$STAGE/$NAME/libap_aot_crt_hybrid.a"
+else
+    echo "package-release: WARNING libap_aot_crt_hybrid.a not found — archive will not support 'build --hybrid' off-checkout" >&2
+fi
+
 # --- C-extension headers (Plan 10 leaf 10.03) --------------------------------
 # `antipythony build-ext` compiles user C sources against apx_python.h via
 # APX_INCLUDE; a release binary on a fresh machine has no checkout, so the
