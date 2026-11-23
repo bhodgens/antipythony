@@ -151,13 +151,14 @@ Lives at `plans/antipythony/tests/`. Protocol:
 
 | Plan | Directory | Depends on | Status |
 | --- | --- | --- | --- |
-| 00 Foundation | `00-foundation-contract/` | none | NOT STARTED |
-| 01 Frontend/IR | `01-frontend-ir/` | 00 | NOT STARTED |
-| 02 Native backend | `02-native-backend/` | 01 | NOT STARTED |
-| 03 WASM backend | `03-wasm-backend/` | 01, 02 (tier-0 semantics proven) | NOT STARTED |
-| 04 Packaging | `04-packaging-ecosystem/` | 02 (native verb first), 03 for wasm verbs | NOT STARTED |
-| 10 C extensions (HAIL MARY, isolated) | `10-c-extensions-stretch/` | nothing blocks on it | NOT STARTED |
-| T Test tree | `tests/` | spec pack from 00.05 | NOT STARTED |
+| 00 Foundation | `00-foundation-contract/` | none | COMPLETE (see Completion tracking) |
+| 01 Frontend/IR | `01-frontend-ir/` | 00 | COMPLETE |
+| 02 Native backend | `02-native-backend/` | 01 | NEARLY COMPLETE — 02.08 residual gaps + post-gate divergences in flight (leaf-02resid-a/b, 2026-11-22); 02.10 stage 2d explicitly optional, skipped |
+| 03 WASM backend | `03-wasm-backend/` | 01, 02 (tier-0 semantics proven) | EXIT GATE PASSED (03.07, 51/51 byte-exact triple-diff); HARDEN scan-gating follow-up + extended-corpus residuals in flight (leaf-harden2, leaf-02resid-a) |
+| 04 Packaging | `04-packaging-ecosystem/` | 02 (native verb first), 03 for wasm verbs | LEAVES LANDED (04.01-04.05, D13); honest-gap closeout in flight (leaf-04gaps) |
+| 05 Ecosystem T2+ | `05-ecosystem-t2/` | T1/T2 complete; T3-T5 gated on Plan 10 pydantic-core probe | T3-T5 PENDING (gated) |
+| 10 C extensions (HAIL MARY, isolated) | `10-c-extensions-stretch/` | nothing blocks on it | S1 wrapper band in flight (leaf-1005a/b/c); pydantic-core probe queued behind S1 merge |
+| T Test tree | `tests/` | spec pack from 00.05 | ACTIVE (T-01..T-16 authored; gates run per leaf) |
 
 Dispatch: 00 -> (01 with T spec leaves in parallel) -> 02 -> 03 -> 04. Plan 10 may
 start its research leaf any time after 02 exists; its failure must not block 0-4.
