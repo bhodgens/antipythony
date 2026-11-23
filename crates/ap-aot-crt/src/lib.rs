@@ -32,6 +32,16 @@ use std::io::Write;
 // this table mirrors it with a static assert.
 const MANIFEST_ROW_SIZE: usize = 64;
 
+/// 04.05 follow-up (NEXT-0405 honest gap 1): the flags the HYBRID CRT
+/// claims. A PLAIN `build` binary has no payload seam — the wasm symbols
+/// are absent by construction (dead-strip) — so if one of these flags
+/// arrives, the honest answer is a LOUD, actionable diagnostic naming the
+/// hybrid CRT requirement (the same shape as the D3 CRT-lookup error),
+/// NOT silent argv passthrough. The T-16 strictest reading
+/// (`test_emit_wasm_rejected_on_plain_native_binary`: nonzero rc +
+/// stderr + no .wasm) is satisfiable only here, in the plain CRT.
+const HYBRID_FLAGS: [&str; 2] = ["--emit-wasm", "--wasm"];
+
 #[repr(C)]
 struct ManifestRow {
     qualname_ptr: u64,
@@ -73,10 +83,32 @@ const PANIC_ABORT_MSG: &str =
 // `main` collides with it.
 #[cfg_attr(not(test), no_mangle)]
 pub extern "C" fn main() -> i32 {
-    // (a) RSS self-guard FIRST (same 2026-11-06 OOM mitigation every
+    // RSS self-guard FIRST (same 2026-11-06 OOM mitigation every
     // interpreter process installs — the binary is an interpreter
     // process).
     ap_run::rss_guard::start();
+
+    // ---- 04.05 gap-1 diagnostic: a plain binary has NO payload seam, so
+    // a hybrid-only flag here means the caller built with `build` but is
+    // invoking hybrid semantics. Fail LOUDLY + actionable (the D3 error
+    // shape: what, why, the exact fix). This must run BEFORE manifest
+    // registration so a mis-invocation never executes module code.
+    {
+        let args: Vec<String> = std::env::args().collect();
+        if let Some(flag) = args.get(1).map(|s| s.as_str()) {
+            if HYBRID_FLAGS.contains(&flag) {
+                let mut err = std::io::stderr();
+                let _ = writeln!(
+                    err,
+                    "antipythony: {flag}: this binary was built with plain `build` (no wasm payload \
+                     seam) — rebuild with `antipythony build --hybrid <file.py>` to embed the wasm \
+                     module and claim {flag}"
+                );
+                let _ = err.flush();
+                return 2;
+            }
+        }
+    }
 
     // (b) manifest registration — BEFORE any module code runs, so the
     // dispatch arm sees the AOT entries from the first call.
@@ -260,5 +292,27 @@ mod tests {
     fn manifest_row_size_is_64() {
         assert_eq!(MANIFEST_ROW_SIZE, std::mem::size_of::<ManifestRow>());
         assert_eq!(MANIFEST_ROW_SIZE, 64);
+    }
+
+    /// 04.05 gap-1: the plain-CRT refusal must claim EXACTLY the two
+    /// hybrid flags (nothing else may change the 02.06 argv passthrough)
+    /// and the diagnostic must name the `build --hybrid` fix (D3
+    /// actionable-error shape).
+    #[test]
+    fn plain_crt_refuses_exactly_the_hybrid_flags() {
+        assert_eq!(HYBRID_FLAGS, ["--emit-wasm", "--wasm"]);
+        let probe = "--emit-wasm";
+        assert!(
+            HYBRID_FLAGS.contains(&probe),
+            "the gap-1 flag must be claimed"
+        );
+        // The diagnostic contract: names the rebuild fix.
+        let msg = format!(
+            "antipythony: {probe}: this binary was built with plain `build` (no wasm payload \
+             seam) — rebuild with `antipythony build --hybrid <file.py>` to embed the wasm \
+             module and claim {probe}"
+        );
+        assert!(msg.contains("build --hybrid"));
+        assert!(msg.contains("no wasm payload seam"));
     }
 }

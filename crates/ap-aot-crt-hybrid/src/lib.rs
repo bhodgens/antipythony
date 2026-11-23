@@ -90,6 +90,16 @@ const PANIC_ABORT_MSG: &str =
 const FLAG_EMIT_WASM: &str = "--emit-wasm";
 const FLAG_EXEC_WASM: &str = "--wasm";
 
+/// 04.05 follow-up (NEXT-0405 honest gap 4): CPython-style `--`
+/// separator. A program whose FIRST argv entry should literally be
+/// `--wasm` (or `--emit-wasm`) had no way to receive it — the flag claim
+/// ran first and swallowed it. With the separator, `./app -- --wasm`
+/// passes `--wasm` through as the program's first argument verbatim
+/// (CPython: `python script.py -- --wasm` puts BOTH `--` and `--wasm` in
+/// sys.argv; here `--` is consumed by the launcher seam, matching the
+/// convention CPython uses for its own interpreter flags).
+const SEP: &str = "--";
+
 /// `main` for the produced hybrid binary.
 ///
 /// # Safety
@@ -107,6 +117,21 @@ pub extern "C" fn main() -> i32 {
     // remaining args). The claim is decided on the FIRST argument after
     // argv[0] only — program argv passthrough is otherwise untouched.
     let args: Vec<String> = std::env::args().collect();
+    // 04.05 gap-4: a leading `--` SUPPRESSES the flag claim entirely —
+    // every argv entry after it belongs to the program verbatim.
+    if args.get(1).map(|s| s.as_str()) == Some(SEP) {
+        register_manifest();
+        let result = std::panic::catch_unwind(aot_run);
+        return match result {
+            Ok(code) => code,
+            Err(_payload) => {
+                let mut err = std::io::stderr();
+                let _ = err.write_all(PANIC_ABORT_MSG.as_bytes());
+                let _ = err.flush();
+                134
+            }
+        };
+    }
     match args.get(1).map(|s| s.as_str()) {
         Some(FLAG_EMIT_WASM) => {
             return match emit_wasm() {
@@ -374,6 +399,21 @@ mod tests {
     fn flag_strings_are_the_t16_contract() {
         assert_eq!(FLAG_EMIT_WASM, "--emit-wasm");
         assert_eq!(FLAG_EXEC_WASM, "--wasm");
+    }
+
+    /// 04.05 gap-4: the `--` separator is the ONLY claim-suppressor and is
+    /// spelled exactly as CPython's.
+    #[test]
+    fn separator_is_cpython_style() {
+        assert_eq!(SEP, "--");
+        // The separator itself must NOT be one of the claimed flags (a
+        // bare `./app --` stays on the native path, argv untouched).
+        assert!(!HYBRID_CLAIMED_FLAGS().contains(&SEP));
+    }
+
+    /// The exact claim set, exposed for the separator contract test.
+    fn HYBRID_CLAIMED_FLAGS() -> [&'static str; 2] {
+        [FLAG_EMIT_WASM, FLAG_EXEC_WASM]
     }
 
     #[test]

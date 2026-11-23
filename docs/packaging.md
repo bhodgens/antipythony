@@ -135,6 +135,30 @@ our documented choice; tests assert entry-set behaviour only. `run --no-cache`
 bypasses read and write. `cache gc` removes all build entries (G-8: eviction
 policy unspecced; v0 clears everything).
 
+## Hybrid CRT packaging (04.05 gap-4 closeout — the 04.03 release matrix)
+
+`build --hybrid` works from an INSTALLED binary the same way plain `build`
+does since leaf D13: the hybrid CRT staticlib ships in the release archive
+(`scripts/package-release.sh`) and `scripts/install.sh` places it at
+
+```
+$PREFIX/lib/antipythony/libap_aot_crt_hybrid.a
+```
+
+— the same `$PREFIX/lib/antipythony/` layout D3 established for
+`libap_aot_crt.a`. The ap-cli hybrid lookup (`crt_staticlib_hybrid_from`)
+probes that path FIRST for an installed binary, then falls back through the
+historical checkout chain; the not-found error names the install path +
+`scripts/install.sh`. Release.yml does not build `-p ap-aot-crt-hybrid` yet
+(another agent's file): until it adds that one `cargo build --release
+--target <t> -p ap-aot-crt-hybrid` line, the packaging scripts WARN loudly
+("archive will not support 'build --hybrid' off-checkout") and `build
+--hybrid` from an installed binary fails with the actionable not-found
+diagnostic — never a silent half-support. Plain-CRT gap-1 closeout (same
+leaf): a plain `build` binary REFUSES `--emit-wasm` / `--wasm` loudly (rc 2,
+stderr names `build --hybrid`) instead of silently treating them as program
+argv.
+
 ## Known gaps (honest, queued)
 
 - **SpecifierSet string/contains** — `str(SpecifierSet('>=1.0'))` /

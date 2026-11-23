@@ -51,6 +51,25 @@ enum Commands {
         /// ignored when this is set.
         #[arg(long, num_args = 1.., value_delimiter = ' ')]
         impl_binary: Vec<String>,
+        /// 04.05 follow-up (NEXT-0405 honest gap 5): impl-string mode whose
+        /// command prefix CONSUMES A .WASM MODULE, not a .py source. Per
+        /// corpus case the case is first built to wasm (shell-split build
+        /// prefix `<cmd> build --wasm <case> -o <tmp>/conform-<n>.wasm`),
+        /// then the wasm impl runs the MODULE: `<impl> <module>` — the
+        /// ap-host / `antipythony host` shape (ap-host cannot execute .py
+        /// source, which is why `--impl 'ap-host run'` fails today).
+        /// Mirrors `--impl-binary` (NEXT-1004 / 02.06 T5 shape): `--impl`
+        /// and `--impl-binary` are ignored when this is set; the reference
+        /// side (CPython) always runs the source. The wasm backend's
+        /// supported slice applies — a case the emitter refuses is an
+        /// ERROR for that case (fail-closed, no silent skip).
+        #[arg(long, num_args = 1.., value_delimiter = ' ')]
+        impl_wasm: Vec<String>,
+        /// `--impl-wasm` build prefix (the CLI that compiles .py → .wasm),
+        /// shell-split. Defaults to `antipythony` resolved from the same
+        /// directory as the ap-conform binary (the sibling ap-cli build).
+        #[arg(long, num_args = 1.., value_delimiter = ' ')]
+        impl_wasm_builder: Vec<String>,
     },
 }
 
@@ -92,12 +111,19 @@ fn main() -> std::process::ExitCode {
             timeout,
             tier,
             impl_binary,
+            impl_wasm,
+            impl_wasm_builder,
         } => {
             if let Some(mode) = &tier {
                 if mode != "0" && mode != "adaptive" {
                     eprintln!("ap-conform: error: --tier must be '0' or 'adaptive', got '{mode}'");
                     return std::process::ExitCode::from(2);
                 }
+            }
+            if !impl_wasm.is_empty() && !impl_wasm_builder.is_empty() {
+                // Both seams set: the builder prefix compiles, the impl
+                // prefix consumes the module — the documented shape is
+                // `--impl-wasm-builder '<cli>' --impl-wasm '<cli> host'`.
             }
             run(
                 corpus,
@@ -107,6 +133,8 @@ fn main() -> std::process::ExitCode {
                 Duration::from_secs(timeout),
                 tier,
                 impl_binary,
+                impl_wasm,
+                impl_wasm_builder,
             )
         }
     }
@@ -120,6 +148,8 @@ fn run(
     timeout: Duration,
     tier: Option<String>,
     impl_binary: Vec<String>,
+    impl_wasm: Vec<String>,
+    impl_wasm_builder: Vec<String>,
 ) -> std::process::ExitCode {
     let files = match ap_conform::expand_corpus(&corpus) {
         Ok(files) => files,
@@ -140,6 +170,113 @@ fn run(
     if files.is_empty() {
         eprintln!("ap-conform: error: corpus glob matched no files: '{corpus}'");
         return std::process::ExitCode::from(2);
+    }
+
+    // 04.05 gap-5: `--impl-wasm '<impl-prefix>'` — per case BUILD to wasm
+    // (via `--impl-wasm-builder`, default: the antipythony binary next to
+    // this one), then the wasm impl executes the MODULE. The impl prefix
+    // MUST consume the module path as its final argument (`ap-host run
+    // <mod>` / `<antipythony> host <mod>` shapes). Mirrors --impl-binary.
+    if !impl_wasm.is_empty() {
+        if impl_wasm.iter().any(|s| s.ends_with(".py")) {
+            eprintln!(
+                "ap-conform: error: --impl-wasm takes the wasm-implementing command prefix \
+                 (e.g. 'ap-host run'); the corpus case is appended per-case, not part of the flag"
+            );
+            return std::process::ExitCode::from(2);
+        }
+        // Default builder: the sibling ap-cli binary next to THIS binary
+        // (target/debug/{ap-conform,antipythony} — same build lane).
+        let builder: Vec<String> = if !impl_wasm_builder.is_empty() {
+            impl_wasm_builder
+        } else {
+            let default = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.join("antipythony")))
+                .filter(|p| p.exists())
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "antipythony".to_string());
+            vec![default]
+        };
+        let tmp = std::env::temp_dir().join(format!(
+            "apconform-wasm-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::create_dir_all(&tmp);
+        let reference = match ap_conform::find_reference_interpreter() {
+            Some(r) => r,
+            None => {
+                eprintln!("ap-conform: error: no reference interpreter found");
+                return std::process::ExitCode::from(2);
+            }
+        };
+        let mut results = Vec::with_capacity(files.len());
+        for (i, file) in files.iter().enumerate() {
+            let expected = ap_conform::run_with_timeout(&reference, &[], file, timeout);
+            // 1. Build the case to wasm (fail-closed per case: an emitter
+            //    refusal is an ERROR outcome, never a silent skip).
+            let module_path = tmp.join(format!("conform-{i}.wasm"));
+            let mut b = std::process::Command::new(&builder[0]);
+            b.args(&builder[1..]);
+            b.arg("build").arg("--wasm").arg(file).arg("-o").arg(&module_path);
+            let actual = match b.output() {
+                Ok(o) if o.status.success() && module_path.exists() => {
+                    // 2. The wasm impl consumes the MODULE path (the final
+                    //    run_with_timeout argument — `ap-host run <mod>`).
+                    let module_str = module_path.to_string_lossy().into_owned();
+                    ap_conform::run_with_timeout(
+                        &impl_wasm[0],
+                        &impl_wasm[1..],
+                        &module_str,
+                        timeout,
+                    )
+                }
+                Ok(o) => Err(std::io::Error::other(format!(
+                    "wasm build refused (rc {:?}): {}",
+                    o.status.code(),
+                    String::from_utf8_lossy(&o.stderr).trim()
+                ))),
+                Err(e) => Err(std::io::Error::other(format!(
+                    "wasm build spawn failed: {e}"
+                ))),
+            };
+            let (expected_res, expected_missing) = match expected {
+                Ok(r) => (Some(r), false),
+                Err(_) => (None, true),
+            };
+            let (actual_res, actual_missing) = match actual {
+                Ok(r) => (Some(r), false),
+                Err(_) => (None, true),
+            };
+            let outcome_is_timeout =
+                |r: &Option<ap_conform::RunResult>| matches!(r, Some(r) if r.exit_code.is_none());
+            let result = if outcome_is_timeout(&expected_res) || outcome_is_timeout(&actual_res) {
+                ap_conform::CaseResult {
+                    case: file.clone(),
+                    outcome: ap_conform::CaseOutcome::Timeout,
+                    reference_interpreter: reference.clone(),
+                    expected: expected_res,
+                    actual: actual_res,
+                    diff_summary: Some("process exceeded timeout and was killed".to_string()),
+                }
+            } else {
+                ap_conform::compare_case(
+                    file,
+                    expected_res,
+                    actual_res,
+                    expected_missing,
+                    actual_missing,
+                    &reference,
+                )
+            };
+            results.push(result);
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+        return emit(&results, json);
     }
 
     // 02.06 --impl-binary: per-case BUILD then run the BUILT binary. The
