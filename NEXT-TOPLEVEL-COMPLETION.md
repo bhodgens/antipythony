@@ -104,8 +104,14 @@ trunk. Gate counts cited by leaves are claims; re-runs are evidence.
    bytes in NEXT-T5.md); (3) torch C-API demand 320 vs S1 233 → delta
    186 = 139 S1-class wrappers/tokens (mechanical) + 47 S2/S4
    structural (buffer protocol first). T5 = priced, honest BLOCKED.
-   NEW FINDINGS ROUTED: typing-hang leaf + splitlines leaf + machinery
-   leaf (all pure-py, all byte-exact repro'd).
+   NEW FINDINGS ROUTED: strfix + importlib + vendored (colorsys +
+   parse_http_list) + fileno/GC-W5 — FINAL WAVE DISPATCHED 2026-11-23
+   (deleg_9d8a4bd2, 4 leaves, disjoint ownership; disk pre-cleaned to
+   67G). Note: the typing-hang wall was FIXED by T3's deadlock fix —
+   T5's Wall-1 leaf is no longer needed. After this wave: F-STRUCT-1
+   (re-entrant lazy import, structural, own leaf), build-ext linkage
+   lint row, CPython-arm byte diff of the 110 pydantic members, final
+   trunk sweep + AGENTS.md update, completion declaration.
 
 ## Explicitly NOT in scope (locked)
 
