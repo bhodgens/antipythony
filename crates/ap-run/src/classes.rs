@@ -1041,43 +1041,80 @@ pub fn exec_class_def(
         base_types.push(object_class(interp));
     }
 
-    // 4. Metaclass resolution (S-03-2).
-    let _resolved_meta: Option<Arc<TypeRef>> = match &metaclass_v {
-        Some(m) => {
-            let t = base_type_ref(interp, m)?
-                .ok_or_else(|| raise("TypeError", "metaclass must be a type"))?;
-            Some(t)
+    // 4. Metaclass resolution (S-03-2). CPython algorithm (type.__new__):
+    // the winner is the MOST DERIVED among {explicit metaclass} ∪
+    // {type(base) for each base}; the candidates must form a
+    // (non-strict) subclass chain or the conflict TypeError fires. The
+    // explicit kwarg does NOT win automatically — c032: class C1(PB,
+    // metaclass=MA) with PB carried by MB (a subclass of MA) resolves to
+    // MB.
+    let _resolved_meta: Option<Arc<TypeRef>> = {
+        let explicit: Option<Arc<TypeRef>> = match &metaclass_v {
+            Some(m) => Some(
+                base_type_ref(interp, m)?
+                    .ok_or_else(|| raise("TypeError", "metaclass must be a type"))?,
+            ),
+            None => None,
+        };
+        // c032: a metaclass must be a CLASS WHOSE TYPE IS TYPE (CPython
+        // isinstance(metaclass, type)) — i.e. its MRO contains `type`. A
+        // plain class (NotAMeta) is NOT a metaclass: CPython CALLS it with
+        // (name, bases, dict) as a plain callable and binds the result
+        // ("NotAMeta() takes no arguments" when the signature rejects).
+        let explicit_usable = match (&metaclass_v, &explicit) {
+            (Some(mv), Some(mt)) => {
+                let _ = mv;
+                mt.is_subclass(&type_class(interp))
+            }
+            _ => true,
+        };
+        if !explicit_usable {
+            // Non-type metaclass: call it as a plain callable with the
+            // standard (name, bases, ns) shape and bind the result as the
+            // class value (the meta-new path below consumes it via the
+            // UserClass arm; non-class results bind verbatim downstream).
+            let meta_v = metaclass_v.clone().unwrap();
+            let ns_v = prepared_inst.clone().unwrap_or(Value::Dict(ns.clone()));
+            let name_v = Value::Str(PyString::new(c.name.clone()));
+            let bases_vv = Value::Tuple(Gc::new(Tuple(original_bases_v.clone())));
+            let created = call_value(
+                interp,
+                &module_frame(interp),
+                &meta_v,
+                &[name_v, bases_vv, ns_v],
+                &class_kwargs
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect::<Vec<_>>(),
+            )?;
+            return Ok(created);
         }
-        None => {
-            // Most derived among type(base) for every base (v0: bases'
-            // metaclass pointers; plain classes carry None == type).
-            let mut best: Option<Arc<TypeRef>> = None;
-            for b in &base_types {
-                let bm = b
-                    .metaclass
-                    .read()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .clone()
-                    .or_else(|| Some(type_class(interp)));
-                match (&best, bm) {
-                    (None, Some(m)) => best = Some(m),
-                    (Some(cur), Some(m)) => {
-                        if !Arc::ptr_eq(cur, &m) {
-                            if m.is_subclass(cur) {
-                                best = Some(m);
-                            } else if !cur.is_subclass(&m) {
-                                return Err(raise(
-                                    "TypeError",
-                                    "metaclass conflict: the metaclass of a derived class must be a (non-strict) subclass of the metaclasses of all its bases",
-                                ));
-                            }
+        let mut best: Option<Arc<TypeRef>> = explicit;
+        for b in &base_types {
+            let bm = b
+                .metaclass
+                .read()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
+                .or_else(|| Some(type_class(interp)));
+            match (&best, bm) {
+                (None, Some(m)) => best = Some(m),
+                (Some(cur), Some(m)) => {
+                    if !Arc::ptr_eq(cur, &m) {
+                        if m.is_subclass(cur) {
+                            best = Some(m);
+                        } else if !cur.is_subclass(&m) {
+                            return Err(raise(
+                                "TypeError",
+                                "metaclass conflict: the metaclass of a derived class must be a (non-strict) subclass of the metaclasses of all its bases",
+                            ));
                         }
                     }
-                    _ => {}
                 }
+                _ => {}
             }
-            best
         }
+        best
     };
 
     // 5. __slots__ validation (S-03-13/14). A bare string is ONE slot.
