@@ -1,0 +1,9 @@
+M1 ('method', True, True)
+M2 ('classmethod', 'staticmethod', 'instancemethod')
+M3 ('function', 'method', 'classmethod', 'staticmethod')
+K1 (0, 1, 0)
+V1 ('3.14.7 (', 51251184)
+N1 (1, 1)
+P1 (1, 1, 1, 1, 1)
+G1 (0, 0, 0, 1)
+DONE

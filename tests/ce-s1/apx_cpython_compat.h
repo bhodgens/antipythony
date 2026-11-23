@@ -123,4 +123,48 @@ static long Py_Refcnt(PyObject *o) { return Py_REFCNT(o); }
 #undef PyExc_MemoryError
 #undef PyExc_SystemError
 
+/* ---- leaf 1006: the hard-members band ----
+   CPython HAS the whole surface natively; map our apx spellings back.
+   - PyLongWriter: real CPython returns PyLongWriter*; ours returns a
+     size_t handle. Map the handle type to void* and the Create/Finish/
+     Discard signatures onto CPython's (the extension stores the handle
+     in a size_t — compatible both ways on LP64).
+   - Py_Version / Py_GetVersion / PyMutex / PyGILState / PyMem /
+     PyObject_GC_* / PyUnstable_*: all real; only the apx_ prefixed
+     accessors need neutralizing.
+   - PyMethod/Function/Self: CPython spells PyMethod_Function /
+     PyMethod_Self (real since forever). */
+typedef void *apx_writer_handle_real;
+#define apx_writer_handle PyLongWriter *
+static int apx_GC_TraverseRegister_real(size_t k, traverseproc t) {
+    (void)k; (void)t; return 0;
+}
+#define apx_GC_TraverseRegister(k, t) ((void)(t), 0)
+#define apx_GC_TraverseUnregister(k) ((void)(k), 0)
+#undef PyObject_GC_New
+static inline PyObject *apx_gc_new_compat(Py_ssize_t bs) {
+    (void)bs; return NULL; /* gc_track degrades to the int probe arm */
+}
+#define PyObject_GC_New(bs) apx_gc_new_compat(bs)
+#define apx_PyModule_AddFunctions(m, tbl) PyModule_AddFunctions((m), (tbl))
+#define apx_BytesData(b) PyBytes_AsString(b)
+/* leaf 1006 methodmem band: name accessors ride the token's tp_name
+   (PyFunction_Type.tp_name = "function" — the TYPE's own name, not the
+   metatype's). */
+#define apx_TypeNameOf(o) Py_TYPE(o)->tp_name
+#define apx_PyFunction_Type_name() (PyFunction_Type.tp_name)
+#define apx_PyMethod_Type_name() (PyMethod_Type.tp_name)
+#define apx_PyClassMethod_Type_name() (PyClassMethod_Type.tp_name)
+#define apx_PyStaticMethod_Type_name() (PyStaticMethod_Type.tp_name)
+#define apx_PyInstanceMethod_Type_name() (PyInstanceMethod_Type.tp_name)
+#define apx_PyMethod_Function(m) PyMethod_Function(m)
+#define apx_PyMethod_Self(m) PyMethod_Self(m)
+#define apx_Py_Version() Py_Version
+static PyObject *apx_PyMethod_Type_real = NULL;
+#define apx_PyMethod_Type() ((PyObject *)&PyMethod_Type)
+#define apx_PyFunction_Type() ((PyObject *)&PyFunction_Type)
+#define apx_PyClassMethod_Type() ((PyObject *)&PyClassMethod_Type)
+#define apx_PyStaticMethod_Type() ((PyObject *)&PyStaticMethod_Type)
+#define apx_PyInstanceMethod_Type() ((PyObject *)&PyInstanceMethod_Type)
+
 #endif /* APX_CPYTHON_COMPAT_H */

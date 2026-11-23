@@ -1002,6 +1002,28 @@ pub unsafe extern "C" fn PyBytes_Size(o: PyObjPtr) -> isize {
     }
 }
 
+/// apx_BytesData (leaf 1006): a stable pointer to the bytes payload
+/// (PyBytes_AsString on CPython). Process-lifetime stability: the snapshot
+/// Vec leaks (the S0 str-pointer posture — probes read it immediately).
+#[no_mangle]
+pub unsafe extern "C" fn apx_BytesData(o: PyObjPtr) -> *const std::ffi::c_char {
+    let h = o as CeHandle;
+    if h.is_null() {
+        errtb_set("SystemError", "apx_BytesData: NULL object");
+        return std::ptr::null();
+    }
+    match crate::value_conv::to_value(h) {
+        Some(Value::Bytes(b)) => {
+            let snapshot: Vec<u8> = (*b).clone();
+            Box::leak(snapshot.into_boxed_slice()).as_ptr() as *const std::ffi::c_char
+        }
+        _ => {
+            errtb_set("TypeError", "expected bytes");
+            std::ptr::null()
+        }
+    }
+}
+
 /// PyUnicode_GetLength: len(str) (code points).
 #[no_mangle]
 pub unsafe extern "C" fn PyUnicode_GetLength(o: PyObjPtr) -> isize {
