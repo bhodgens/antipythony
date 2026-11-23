@@ -331,6 +331,57 @@ PyObject *PyTuple_GetSlice(PyObject *, Py_ssize_t, Py_ssize_t);
 PyObject *apx_PyTuple_PackV(Py_ssize_t n, ...);
 #define PyTuple_Pack(n, ...) apx_PyTuple_PackV((n), __VA_ARGS__)
 
+/* --- leaf 1005c --- */
+/* S1 error/traceback band: PyErr_Format (varargs — lives in apx_shim.c),
+   the Fetch/Restore family, NewException, and the frame/code/gen
+   projections. All differential-proven in tests/ce-s1/errtb.c. */
+
+PyObject *PyErr_Format(PyObject *exc, const char *fmt, /* ... */ ...);
+
+/* Attribute + bytes/unicode accessors the errtb band probes use
+   (PyObject_GetAttrString / PyBytes_Size / PyUnicode_GetLength /
+   PyLong_FromSsize_t). */
+PyObject *PyObject_GetAttrString(PyObject *o, const char *name);
+Py_ssize_t PyBytes_Size(PyObject *o);
+Py_ssize_t PyUnicode_GetLength(PyObject *o);
+PyObject *PyLong_FromSsize_t(Py_ssize_t v);
+
+void PyErr_NormalizeException(PyObject **exc, PyObject **val, PyObject **tb);
+int PyErr_ExceptionMatches(PyObject *exc);
+int PyErr_GivenExceptionMatches(PyObject *given, PyObject *exc);
+void PyErr_Fetch(PyObject **exc, PyObject **val, PyObject **tb);
+void PyErr_Restore(PyObject *exc, PyObject *val, PyObject *tb);
+void PyErr_SetObject(PyObject *exc, PyObject *val);
+PyObject *PyErr_GetRaisedException(void);
+void PyErr_SetRaisedException(PyObject *exc);
+PyObject *PyErr_NewException(const char *name, PyObject *base, PyObject *dict);
+PyObject *PyErr_NewExceptionWithDoc(const char *name, const char *doc,
+                                    PyObject *base, PyObject *dict);
+
+/* Frame/code/gen projections (CPython 3.14 pyframe.h/cpython code.h
+   spellings; each resolves through the LIVE runtime frame chain). Our
+   code handles are ordinary PyObject handles (CPython's PyCodeObject is
+   itself a PyObject subclass — source-compatible at this ABI). */
+PyObject *PyFrame_GetCode(PyObject *frame);
+PyObject *PyFrame_GetBack(PyObject *frame);
+PyObject *PyFrame_GetLocals(PyObject *frame);
+PyObject *PyFrame_GetGlobals(PyObject *frame);
+PyObject *PyFrame_GetBuiltins(PyObject *frame);
+PyObject *PyFrame_GetGenerator(PyObject *frame);
+int PyFrame_GetLasti(PyObject *frame);
+int PyFrame_GetLineNumber(PyObject *frame);
+PyObject *PyFrame_GetVar(PyObject *frame, PyObject *name);
+PyObject *PyFrame_GetVarString(PyObject *frame, const char *name);
+
+PyObject *PyCode_GetCode(PyObject *code);
+PyObject *PyCode_GetVarnames(PyObject *code);
+PyObject *PyCode_GetCellvars(PyObject *code);
+PyObject *PyCode_GetFreevars(PyObject *code);
+PyObject *PyCode_NewEmpty(const char *filename, const char *funcname,
+                          int lineno);
+
+PyObject *PyGen_GetCode(PyObject *gen);
+
 #ifdef __cplusplus
 }
 #endif

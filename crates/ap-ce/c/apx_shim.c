@@ -13,6 +13,119 @@
 #include <limits.h>
 
 /* ------------------------------------------------------------------ */
+/* PyErr_Format: the ONE C varargs symbol (Rust cannot declare varargs */
+/* fns) — reads the format string, fetches va_args, renders the        */
+/* message, and routes to the fixed-arity Rust backend in              */
+/* exports_errtb.rs. Supported conversions (the S1 proof band):        */
+/*   %S (repr of an object arg), %s/%A (str of an object arg),         */
+/*   %d/%i/%l (integer args), %zd/%zu (ssize_t/size_t), %u (unsigned), */
+/*   %f/%g (double), %c (int as char), %% (literal), %N (repr, the     */
+/*   CPython-with-limit spelling). NULL object args render "NULL"      */
+/*   exactly like CPython's PyErr_Format.                              */
+/* ------------------------------------------------------------------ */
+
+extern void apx_PyErr_Format_s(PyObject *exc, const char *msg);
+
+static void apx_render_obj(char *out, size_t cap, size_t *n, PyObject *o,
+                           int use_repr) {
+    if (!o) {
+        *n += (size_t)snprintf(out + *n, cap - *n, "NULL");
+        return;
+    }
+    /* The UTF8 view is process-lifetime stable (tracing-GC ownership —
+       the S0 contract); the Rust side resolves str()/repr() protocol. */
+    extern const char *apx_errtb_obj_text(PyObject *, int);
+    const char *s = apx_errtb_obj_text(o, use_repr);
+    *n += (size_t)snprintf(out + *n, cap - *n, "%s", s ? s : "<str failed>");
+}
+
+PyObject *PyErr_Format(PyObject *exc, const char *fmt, ...) {
+    char buf[1024];
+    size_t n = 0;
+    va_list ap;
+    va_start(ap, fmt);
+    for (const char *p = fmt; *p && n < sizeof(buf) - 1; p++) {
+        if (*p != '%') {
+            buf[n++] = *p;
+            continue;
+        }
+        p++;
+        switch (*p) {
+        case 'S':
+            /* CPython: %S calls str() (do_signtable 'S' -> PyObject_Str). */
+            apx_render_obj(buf, sizeof(buf), &n, va_arg(ap, PyObject *), 0);
+            break;
+        case 'R':
+            /* %R calls repr(). */
+            apx_render_obj(buf, sizeof(buf), &n, va_arg(ap, PyObject *), 1);
+            break;
+        case 'A':
+        case 's':
+        case 'N':
+            apx_render_obj(buf, sizeof(buf), &n, va_arg(ap, PyObject *), 0);
+            break;
+        case 'd':
+        case 'i':
+            n += (size_t)snprintf(buf + n, sizeof(buf) - n, "%d",
+                                  va_arg(ap, int));
+            break;
+        case 'u': {
+            /* CPython parses %u as a LONG per its own do_signtable. */
+            n += (size_t)snprintf(buf + n, sizeof(buf) - n, "%ld",
+                                  va_arg(ap, long));
+            break;
+        }
+        case 'l':
+            n += (size_t)snprintf(buf + n, sizeof(buf) - n, "%ld",
+                                  va_arg(ap, long));
+            break;
+        case 'z':
+            p++;
+            if (*p == 'd') {
+                n += (size_t)snprintf(buf + n, sizeof(buf) - n, "%lld",
+                                      (long long)va_arg(ap, Py_ssize_t));
+            } else if (*p == 'u') {
+                n += (size_t)snprintf(buf + n, sizeof(buf) - n, "%llu",
+                                      (unsigned long long)va_arg(ap, size_t));
+            } else if (*p) {
+                /* Unknown z-conversion: literal (CPython raises SystemError;
+                   the S1 band's proof extensions use only zd/zu). */
+                buf[n++] = '%';
+                buf[n++] = 'z';
+                buf[n++] = *p;
+            }
+            break;
+        case 'f':
+            n += (size_t)snprintf(buf + n, sizeof(buf) - n, "%f",
+                                  va_arg(ap, double));
+            break;
+        case 'g':
+            n += (size_t)snprintf(buf + n, sizeof(buf) - n, "%g",
+                                  va_arg(ap, double));
+            break;
+        case 'c':
+            buf[n++] = (char)va_arg(ap, int);
+            break;
+        case '%':
+            buf[n++] = '%';
+            break;
+        default:
+            /* Unknown conversion: literal % + char (documented divergence
+             from CPython's SystemError; the band exercises the above). */
+            buf[n++] = '%';
+            if (*p) {
+                buf[n++] = *p;
+            }
+            break;
+        }
+    }
+    va_end(ap);
+    buf[n] = 0;
+    apx_PyErr_Format_s(exc, buf);
+    return NULL;
+}
+
+/* ------------------------------------------------------------------ */
 /* PyArg_ParseTuple (minimal S0 formats)                               */
 /* ------------------------------------------------------------------ */
 
@@ -104,6 +217,17 @@ int PyArg_ParseTuple(PyObject *args, const char *fmt, ...) {
                 return 0;
             }
             *out = s;
+            break;
+        }
+        case 'n': {
+            /* CPython ABI: "n" writes a Py_ssize_t. */
+            Py_ssize_t *out = va_arg(ap, Py_ssize_t *);
+            long long v = PyLong_AsLongLong(item);
+            if (v == -1 && PyErr_Occurred()) {
+                va_end(ap);
+                return 0;
+            }
+            *out = (Py_ssize_t)v;
             break;
         }
         case 'O': {

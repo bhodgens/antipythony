@@ -189,14 +189,14 @@ pub fn from_value(v: &Value) -> CeHandle {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass => {
             // Class Values round-trip as Type handles (spec reverse lookup
             // by class name; single-spec-per-name is the S0 contract).
+            // 1005c: PyErr_NewException classes have NO registered spec —
+            // they must ride the FAITHFUL opaque arm (a Str repr-pin broke
+            // the custom-exception raise/catch round-trip: the driver saw
+            // 'str' where CPython has the class).
             let name = o.name.clone();
             match crate::slots::spec_index_for_class_name(&name) {
                 Some(idx) => new_handle(CeKind::Type, CePayload::Type { spec_index: idx }),
-                None => {
-                    let repr = ap_obj::ops::repr(&Value::Obj(o.clone()))
-                        .unwrap_or_else(|_| "<??>".to_string());
-                    new_handle(CeKind::Str, CePayload::Str(repr))
-                }
+                None => new_handle(CeKind::Opaque, CePayload::Opaque(o.clone())),
             }
         }
         other => {

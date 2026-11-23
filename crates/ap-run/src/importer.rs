@@ -935,7 +935,14 @@ pub fn import_module_inner(interp: &Arc<Interpreter>, name: &str) -> EResult {
         sys_modules_insert("_typing", &m);
         return Ok(m);
     }
-    // 3. File finder, descending packages ("a.b.c" resolves through a, a.b).
+    // 3. Registered C-extension .so (build-ext product) — the dlopen seam
+    // answers before the file finder (whose probe knows only .py).
+    if let Some(r) = crate::ce_bridge::native_ce_module(interp, name) {
+        let m = r?;
+        sys_modules_insert(name, &m);
+        return Ok(m);
+    }
+    // 4. File finder, descending packages ("a.b.c" resolves through a, a.b).
     import_file_module(interp, name)
 }
 
@@ -1122,6 +1129,17 @@ pub(crate) fn import_file_module(interp: &Arc<Interpreter>, name: &str) -> EResu
         let found = match found {
             Some(f) => f,
             None => {
+                // 1005c: a registered C-extension .so (build-ext product —
+                // lib<name>.so / <name>.so beside the script or cwd) — the
+                // dlopen seam answers before the ModuleNotFoundError.
+                if crate::ce_bridge::ext_lib_exists(&full) {
+                    if let Some(r) = crate::ce_bridge::native_ce_module(interp, &full) {
+                        let m = r?;
+                        link_parent_attr(&full, &m);
+                        sys_modules_insert(&full, &m);
+                        continue;
+                    }
+                }
                 // 02.02: CPython embeds repr(name) ("No module named
                 // 'a\\b'"), so segments the finder refused for containing
                 // backslashes print doubled, byte-exact.
