@@ -343,7 +343,19 @@ pub fn call_ce_module_fn(module: &str, fname: &str, args: &[Value]) -> Option<Re
     let (flags, f) = ap_ce::api::find_method(module, fname)?;
     let _ = flags; // METH_* collapse to the tuple form on S0
     Some((|| {
-        let self_h = from_value(&Value::None); // module-level fns: self = NULL-ish
+        // pydantic-probe band: pass the REAL module handle as self (the
+        // CPython PyCFunction contract — ml_self is the module for
+        // module-level defs; pydantic-core's module fns attr-read the
+        // module ns through it).
+        let self_v = ap_ce::api::module_ns(module)
+            .map(|ns| {
+                let m = ap_obj::PyObject::new(ap_obj::ObjKind::Module, module);
+                *m.module_ns.lock().unwrap_or_else(|p| p.into_inner()) =
+                    Some(std::sync::Arc::new(ns.clone()));
+                Value::Obj(m)
+            })
+            .unwrap_or(Value::None);
+        let self_h = from_value(&self_v);
         let args_h = args_to_handle(args);
         let r = unsafe { (f)(self_h as PyObjPtr, args_h as PyObjPtr) };
         if r.is_null() {

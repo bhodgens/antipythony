@@ -29,6 +29,14 @@ pub fn to_value(h: crate::state::CeHandle) -> Option<Value> {
                 }
             }
             CePayload::Str(s) => Some(Value::Str(PyString::new(s.clone()))),
+            CePayload::BytesMarker(b) => Some(Value::Bytes(b.clone())),
+            CePayload::SetMarker(st, frozen) => {
+                if *frozen {
+                    Some(Value::Frozen(st.clone()))
+                } else {
+                    Some(Value::Set(st.clone()))
+                }
+            }
             CePayload::Tuple(items) => {
                 let vals: Vec<Value> = items.iter().filter_map(|h| to_value(*h)).collect();
                 Some(Value::Tuple(Gc::new(Tuple(vals))))

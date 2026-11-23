@@ -157,6 +157,13 @@ fn vt() -> Option<&'static ObjProtoVTable> {
     VTABLE.get()
 }
 
+/// Clone-out accessor for sibling bands (fn pointers are Copy — cheap).
+/// Sibling modules route their protocol-dependent members through the
+/// SAME table (one runtime, one vtable).
+pub fn installed_vtable() -> Option<&'static ObjProtoVTable> {
+    vt()
+}
+
 fn err_no_runtime(api: &str) {
     err_set(
         "SystemError",

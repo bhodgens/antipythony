@@ -481,6 +481,7 @@ fn objproto_display_name(v: &Value) -> String {
 /// alongside ensure_pycall_installed at first ce dispatch — an extension
 /// may hit GetAttr before any Call).
 pub fn ensure_objproto_installed() {
+    ensure_mapping_installed();
     OBJPROTO_INSTALL.get_or_init(|| {
         let _ = ap_ce::exports_objproto::install_objproto_vtable(
             ap_ce::exports_objproto::ObjProtoVTable {
@@ -498,5 +499,128 @@ pub fn ensure_objproto_installed() {
                 display_name: objproto_display_name,
             },
         );
+    });
+}
+
+// ---------------------------------------------------------------------------
+// The mapping/sequence vtable (leaf pydantic-probe): Get/Set/DelItem,
+// contains, IsInstance/IsSubclass, Number binops, Index, import, sets.
+// Installed next to the objproto table (same OnceLock point).
+// ---------------------------------------------------------------------------
+
+fn mapping_get_item(obj: &Value, key: &Value) -> ap_ce::exports_objproto::OpRes {
+    // crate::methods::subscript_get — the obj[key] surface (user
+    // __getitem__ rides the special-lookup path inside it).
+    match crate::methods::subscript_get(obj, key) {
+        Ok(v) => ap_ce::exports_objproto::OpRes::val(v),
+        Err(flow) => flow_to_opres(Err(flow)),
+    }
+}
+
+fn mapping_set_item(obj: &Value, key: &Value, v: Value) -> ap_ce::exports_objproto::OpRes {
+    let Some(interp) = crate::builtins_modules::current_interp() else {
+        return op_err("RuntimeError", "no interpreter on this thread");
+    };
+    match crate::methods::subscript_set(obj, key, v) {
+        Ok(()) => ap_ce::exports_objproto::OpRes::unit(),
+        Err(flow) => flow_to_opres(Err(flow)),
+    }
+}
+
+fn mapping_del_item(obj: &Value, key: &Value) -> ap_ce::exports_objproto::OpRes {
+    let Some(interp) = crate::builtins_modules::current_interp() else {
+        return op_err("RuntimeError", "no interpreter on this thread");
+    };
+    match crate::methods::subscript_del(obj, key) {
+        Ok(()) => ap_ce::exports_objproto::OpRes::unit(),
+        Err(flow) => flow_to_opres(Err(flow)),
+    }
+}
+
+fn mapping_contains(obj: &Value, key: &Value) -> ap_ce::exports_objproto::OpRes {
+    // `key in obj` — interp::contains (the __contains__/iteration protocol).
+    match crate::interp::contains(key, obj) {
+        Ok(b) => ap_ce::exports_objproto::OpRes::val(Value::Bool(b)),
+        Err(flow) => flow_to_opres(Err(flow)),
+    }
+}
+
+fn mapping_is_instance(inst: &Value, cls: &Value) -> ap_ce::exports_objproto::OpRes {
+    let Some(interp) = crate::builtins_modules::current_interp() else {
+        return op_err("RuntimeError", "no interpreter on this thread");
+    };
+    let args = vec![inst.clone(), cls.clone()];
+    match crate::builtins::call_builtin(&interp, "isinstance", &args, &[]) {
+        Ok(v) => ap_ce::exports_objproto::OpRes::val(v),
+        Err(flow) => flow_to_opres(Err(flow)),
+    }
+}
+
+fn mapping_is_subclass(derived: &Value, cls: &Value) -> ap_ce::exports_objproto::OpRes {
+    let Some(interp) = crate::builtins_modules::current_interp() else {
+        return op_err("RuntimeError", "no interpreter on this thread");
+    };
+    let args = vec![derived.clone(), cls.clone()];
+    match crate::builtins::call_builtin(&interp, "issubclass", &args, &[]) {
+        Ok(v) => ap_ce::exports_objproto::OpRes::val(v),
+        Err(flow) => flow_to_opres(Err(flow)),
+    }
+}
+
+fn mapping_number_bin(a: &Value, b: &Value, op: char) -> ap_ce::exports_objproto::OpRes {
+    use ap_ir::expr::BinOp;
+    let binop = match op {
+        '%' => BinOp::Mod,
+        '/' => BinOp::Div,
+        _ => return op_err("SystemError", "mapping_number_bin: bad op"),
+    };
+    match crate::interp::eval_binop(a, binop, b) {
+        Ok(v) => ap_ce::exports_objproto::OpRes::val(v),
+        Err(flow) => flow_to_opres(Err(flow)),
+    }
+}
+
+fn mapping_index_of(obj: &Value) -> ap_ce::exports_objproto::OpRes {
+    // int passthrough (CPython answers the same object); other types go
+    // through the __index__ protocol via int(x) semantics.
+    match obj {
+        Value::Int(_) => ap_ce::exports_objproto::OpRes::val(obj.clone()),
+        other => {
+            let Some(interp) = crate::builtins_modules::current_interp() else {
+                return op_err("RuntimeError", "no interpreter on this thread");
+            };
+            let args = vec![other.clone()];
+            match crate::builtins::call_builtin(&interp, "int", &args, &[]) {
+                Ok(v) => ap_ce::exports_objproto::OpRes::val(v),
+                Err(flow) => flow_to_opres(Err(flow)),
+            }
+        }
+    }
+}
+
+fn mapping_import_module(name: &str) -> ap_ce::exports_objproto::OpRes {
+    let Some(interp) = crate::builtins_modules::current_interp() else {
+        return op_err("RuntimeError", "no interpreter on this thread");
+    };
+    match crate::importer::import_module(&interp, name) {
+        Ok(v) => ap_ce::exports_objproto::OpRes::val(v),
+        Err(flow) => flow_to_opres(Err(flow)),
+    }
+}
+
+/// Install the mapping/number vtable (idempotent; same call point as the
+/// objproto table).
+pub fn ensure_mapping_installed() {
+    use ap_ce::exports_pydantic::MappingVTable;
+    let _ = ap_ce::exports_pydantic::install_mapping_vtable(MappingVTable {
+        get_item: mapping_get_item,
+        set_item: mapping_set_item,
+        del_item: mapping_del_item,
+        contains: mapping_contains,
+        is_instance: mapping_is_instance,
+        is_subclass: mapping_is_subclass,
+        number_bin: mapping_number_bin,
+        index_of: mapping_index_of,
+        import_module: mapping_import_module,
     });
 }
