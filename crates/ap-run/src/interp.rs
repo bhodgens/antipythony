@@ -11785,7 +11785,90 @@ fn pattern_match(
             }
             Ok(true)
         }
-        Pattern::Class(_, _, _) => Err(raise("SystemError", "class patterns need 02.03 classes")),
+        Pattern::Class(cls_expr, pos, kw) => {
+            // PEP 634 class pattern `C(p1, p2, k=v)`:
+            // 1. isinstance(subject, C) (isinstance may raise -> propagate);
+            // 2. positional args match against __match_args__[i] attrs;
+            // 3. keyword args match attribute k of the subject.
+            // Missing/renamed attrs = no-match (AttributeError -> False),
+            // per CPython (AttributeError inside __match_args__ access
+            // propagates; attribute fetch failure = pattern failure).
+            let cls = eval_expr(interp, frame, cls_expr, reg)?;
+            let is_inst = crate::builtins::builtin_isinstance(&[v.clone(), cls.clone()])?;
+            if !is_inst.is_truthy() {
+                return Ok(false);
+            }
+            let match_args: Vec<String> = {
+                let empty = Value::Tuple(Gc::new(Tuple(vec![])));
+                let ma = match crate::builtins::builtin_getattr(
+                    interp,
+                    &[cls.clone(), Value::Str(PyString::new("__match_args__"))],
+                ) {
+                    Ok(m) => m,
+                    Err(_) => empty,
+                };
+                match ma {
+                    Value::Tuple(t) => t
+                        .0
+                        .iter()
+                        .filter_map(|x| match x {
+                            Value::Str(s) => Some(s.as_str().to_string()),
+                            _ => None,
+                        })
+                        .collect(),
+                    Value::Str(_) => {
+                        return Err(raise(
+                            "TypeError",
+                            "__match_args__ elements must be strings (not str, for str)",
+                        ))
+                    }
+                    _ => vec![],
+                }
+            };
+            if pos.len() > match_args.len() {
+                return Err(raise(
+                    "TypeError",
+                    format!(
+                        "{}() accepts {} positional sub-patterns ({} given)",
+                        match_args.len() + pos.len() - match_args.len(),
+                        match_args.len(),
+                        pos.len()
+                    ),
+                ));
+            }
+            let mark = bindings.len();
+            for (p, attr_name) in pos.iter().zip(match_args.iter()) {
+                let got = match attr_get_public(interp, &v, attr_name) {
+                    Ok(Some(g)) => g,
+                    Ok(None) => {
+                        bindings.truncate(mark);
+                        return Ok(false);
+                    }
+                    Err(_) => {
+                        bindings.truncate(mark);
+                        return Ok(false);
+                    }
+                };
+                if !pattern_match(interp, frame, reg, p, &got, bindings)? {
+                    bindings.truncate(mark);
+                    return Ok(false);
+                }
+            }
+            for (kw_name, kp) in kw.iter() {
+                let got = match attr_get_public(interp, &v, kw_name) {
+                    Ok(Some(g)) => g,
+                    _ => {
+                        bindings.truncate(mark);
+                        return Ok(false);
+                    }
+                };
+                if !pattern_match(interp, frame, reg, kp, &got, bindings)? {
+                    bindings.truncate(mark);
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
         Pattern::Or(alts) => {
             let mark = bindings.len();
             for alt in alts {
@@ -14358,6 +14441,25 @@ fn attr_get(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Option
     // 02.04a fix pass: function attribute reads (functools.wraps sets
     // __wrapped__/cache etc on the wrapper; vendored stdlib reads them back).
     if let Value::Obj(o) = obj {
+        // T3 (pydantic BaseModel dataclass -> dataclasses._add_slots):
+        // object-virtual markers answer __code__ with an EMPTY-freevars
+        // stub. CPython method-wrappers have no __code__, but dataclasses'
+        // _update_func_cell_for__class__ does f.__code__.co_freevars.index
+        // on property fgets — a stub whose co_freevars is empty raises
+        // ValueError (caught -> return False, the correct no-op) instead of
+        // AttributeError (uncatchable there -> ImportError). Served ONLY
+        // for our synthetic __object_virtual_* markers, never real builtins.
+        if o.kind == ap_obj::ObjKind::BuiltinFn
+            && (o.name.starts_with("__object_virtual_") || o.name.starts_with("__ap_"))
+            && name == "__code__"
+        {
+            let code = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<code>");
+            let _ = code.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
+                Value::Str(PyString::new("co_freevars")),
+                Value::Tuple(Gc::new(Tuple(Vec::new()))),
+            );
+            return Ok(Some(Value::Obj(code)));
+        }
         // 02.08f (s020): BuiltinFn (marker) fns — __text_signature__ for
         // inspect.signature(abs) etc.
         if o.kind == ap_obj::ObjKind::BuiltinFn && name == "__text_signature__" {
@@ -14530,6 +14632,14 @@ fn attr_get(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                             let _ = a.set(
                                 Value::Str(PyString::new("name")),
                                 Value::Str(PyString::new(mn.as_str().to_string())),
+                            );
+                            // T3 (pydantic _dynamic_imports): __spec__.parent
+                            // is read at import — precompute (CPython keeps
+                            // it a property; the namespace mint precomputes).
+                            let parent = mn.as_str().rsplit_once('.').map(|(p, _)| p).unwrap_or("");
+                            let _ = a.set(
+                                Value::Str(PyString::new("parent")),
+                                Value::Str(PyString::new(parent.to_string())),
                             );
                         }
                         return Ok(Some(Value::Obj(spec)));
@@ -15723,55 +15833,83 @@ fn attr_get(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 )))
             }
             ap_obj::ObjKind::Module => {
-                let ns = o.module_ns.lock().unwrap_or_else(|p| p.into_inner());
-                if let Some(ns) = &*ns {
-                    // 02.03b-fix: module.__dict__ IS the namespace
-                    // (_py_warnings: globals = sys.__dict__).
-                    if name == "__dict__" {
-                        return Ok(Some(Value::Dict(ns.clone())));
-                    }
-                    if let Some(v) = ns.get(&Value::Str(PyString::new(name))) {
-                        return Ok(Some(v));
-                    }
-                    // T1 (typing.ForwardRef et al): PEP 562 module-level
-                    // __getattr__ — call it when the ns defines one.
-                    if let Some(f) = ns.get(&Value::Str(PyString::new("__getattr__"))) {
-                        let interp = crate::builtins_modules::current_interp();
-                        if let Some(i) = interp {
-                            return call_value_pub(
-                                &i,
-                                &f,
-                                &[Value::Str(PyString::new(name.to_string()))],
-                                &[],
-                            )
-                            .map(Some);
+                // T3 FIX (self-deadlock): the ns guard must NOT be held across
+                // the PEP 562 __getattr__ call. typing.__getattr__ runs
+                // `bool | None` → eval_binop make_union → sys_modules_get
+                // ("typing") → module_ns.lock() — re-locking the SAME
+                // non-reentrant Mutex this frame already holds = same-thread
+                // deadlock (sampled: PC parked in make_union, RSS flat).
+                // Snapshot the needed values, drop the guard, then call.
+                let (ns_get, has_getattr, mn): (
+                    Option<Value>,
+                    Option<Value>,
+                    Option<Value>,
+                ) = {
+                    let ns = o.module_ns.lock().unwrap_or_else(|p| p.into_inner());
+                    if let Some(ns) = &*ns {
+                        if name == "__dict__" {
+                            return Ok(Some(Value::Dict(ns.clone())));
                         }
+                        (
+                            ns.get(&Value::Str(PyString::new(name))),
+                            ns.get(&Value::Str(PyString::new("__getattr__"))),
+                            ns.get(&Value::Str(PyString::new("__name__"))),
+                        )
+                    } else {
+                        (None, None, None)
                     }
-                    // T1 (importlib.resources.files → wrap_spec): every
-                    // module object exposes a minimal name-only __spec__.
-                    if name == "__spec__" {
-                        if let Some(Value::Str(mn)) = ns.get(&Value::Str(PyString::new("__name__")))
-                        {
-                            let spec =
-                                ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "ModuleSpec");
-                            let _ = spec.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
-                                Value::Str(PyString::new("name")),
-                                Value::Str(PyString::new(mn.as_str().to_string())),
-                            );
-                            // wrap_spec reads spec.loader (getattr chain);
-                            // a bare namespace object suffices — missing
-                            // get_resource_reader falls back to None.
-                            let loader =
-                                ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "Loader");
-                            let _ = spec
-                                .attrs
-                                .lock()
-                                .unwrap_or_else(|p| p.into_inner())
-                                .set(Value::Str(PyString::new("loader")), Value::Obj(loader));
-                            return Ok(Some(Value::Obj(spec)));
-                        }
-                        return Ok(Some(Value::None));
+                };
+                if let Some(v) = ns_get {
+                    return Ok(Some(v));
+                }
+                // T1 (typing.ForwardRef et al): PEP 562 module-level
+                // __getattr__ — call it when the ns defines one (guard NOT
+                // held, see the deadlock note above).
+                if let Some(f) = has_getattr {
+                    let interp = crate::builtins_modules::current_interp();
+                    if let Some(i) = interp {
+                        return call_value_pub(
+                            &i,
+                            &f,
+                            &[Value::Str(PyString::new(name.to_string()))],
+                            &[],
+                        )
+                        .map(Some);
                     }
+                }
+                // T1 (importlib.resources.files → wrap_spec): every
+                // module object exposes a minimal name-only __spec__.
+                if name == "__spec__" {
+                    if let Some(Value::Str(mn)) = mn {
+                        let spec =
+                            ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "ModuleSpec");
+                        let a = spec.attrs.lock().unwrap_or_else(|p| p.into_inner());
+                        let _ = a.set(
+                            Value::Str(PyString::new("name")),
+                            Value::Str(PyString::new(mn.as_str().to_string())),
+                        );
+                        // T3 (pydantic _dynamic_imports): __spec__.parent is
+                        // read at import — precompute (CPython keeps it a
+                        // property; the namespace mint precomputes).
+                        let parent = mn.as_str().rsplit_once('.').map(|(p, _)| p).unwrap_or("");
+                        let _ = a.set(
+                            Value::Str(PyString::new("parent")),
+                            Value::Str(PyString::new(parent.to_string())),
+                        );
+                        drop(a);
+                        // wrap_spec reads spec.loader (getattr chain);
+                        // a bare namespace object suffices — missing
+                        // get_resource_reader falls back to None.
+                        let loader =
+                            ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "Loader");
+                        let _ = spec
+                            .attrs
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .set(Value::Str(PyString::new("loader")), Value::Obj(loader));
+                        return Ok(Some(Value::Obj(spec)));
+                    }
+                    return Ok(Some(Value::None));
                 }
                 Ok(None)
             }

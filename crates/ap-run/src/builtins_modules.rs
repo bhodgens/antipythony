@@ -15078,6 +15078,13 @@ pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
                     {
                         let a = spec.attrs.lock().unwrap_or_else(|p| p.into_inner());
                         let _ = a.set(s("name"), s(mn.as_str().to_string()));
+                        // T3 (pydantic __init__ _dynamic_imports): reads
+                        // __spec__.parent at import time. CPython computes
+                        // parent as a property (name.rpartition('.')[0]
+                        // unless submodule_search_locations); we precompute
+                        // the value (parent package name, "" for top level).
+                        let parent = mn.as_str().rsplit_once('.').map(|(p, _)| p).unwrap_or("");
+                        let _ = a.set(s("parent"), s(parent.to_string()));
                     }
                     return Some(Value::Obj(spec));
                 }
@@ -19632,14 +19639,69 @@ fn call_importlib(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Opt
     let r: BResult = (|| -> BResult {
         match name {
             "import_module" => {
-                // Module-attr read binds a bare marker: args[0] IS the name.
-                let idx = if args.len() > 1 { 1 } else { 0 };
-                let mod_name = str_arg(
-                    args.get(idx).ok_or_else(|| {
+                // CPython shape: import_module(name, package=None). The bare
+                // marker was bound with "args[0] IS the name" (idx=1 when
+                // 2+ args) — but import_module takes NO self: a 2-arg call
+                // is (name, package). pydantic's __getattr__ dynamic imports
+                // call import_module('.warnings', 'pydantic'); with idx=1
+                // the seam imported 'pydantic' (the PACKAGE) as the name.
+                let kw = |k: &str| -> Option<Value> {
+                    kwargs
+                        .iter()
+                        .find(|(kn, _)| kn == k)
+                        .map(|(_, v)| v.clone())
+                };
+                let name_v = kw("name")
+                    .or_else(|| args.first().cloned())
+                    .ok_or_else(|| {
                         raise("TypeError", "import_module expected a module name")
-                    })?,
-                    "import_module",
-                )?;
+                    })?;
+                let mod_name = str_arg(&name_v, "import_module")?;
+                // T3 (pydantic __init__._dynamic_imports -> __getattr__ ->
+                // import_module(module_name, package=package)): relative
+                // names ('.warnings') must resolve against `package` like
+                // CPython's importlib.import_module (vendored
+                // _bootstrap._resolve_name). The native seam imported the
+                // DOTTED name raw, which returned the parent package for
+                // '.warnings' and broke `from ..warnings import X`.
+                let mut mod_name = mod_name;
+                if mod_name.starts_with('.') {
+                    let pkg_val = kw("package").or_else(|| args.get(1).cloned());
+                    let pkg_str = match pkg_val {
+                        Some(Value::Str(sv)) => sv.as_str().to_string(),
+                        _ => String::new(),
+                    };
+                    if pkg_str.is_empty() {
+                        return Err(raise(
+                            "TypeError",
+                            "the 'package' argument is required to perform a relative \
+                             import for module"
+                                .to_string(),
+                        ));
+                    }
+                    let mut level = 0usize;
+                    for ch in mod_name.chars() {
+                        if ch == '.' {
+                            level += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    let tail = mod_name[level..].to_string();
+                    let mut bits: Vec<&str> = pkg_str.rsplit('.').take(level).collect();
+                    bits.reverse();
+                    if bits.len() < level {
+                        return Err(raise(
+                            "ImportError",
+                            "attempted relative import beyond top-level package".to_string(),
+                        ));
+                    }
+                    mod_name = if tail.is_empty() {
+                        bits.join(".")
+                    } else {
+                        format!("{}.{}", bits.join("."), tail)
+                    };
+                }
                 let interp =
                     current_interp().ok_or_else(|| raise("RuntimeError", "no interpreter"))?;
                 let interp = std::sync::Arc::new(interp);
