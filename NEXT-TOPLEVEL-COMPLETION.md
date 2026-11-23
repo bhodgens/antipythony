@@ -66,10 +66,21 @@ trunk. Gate counts cited by leaves are claims; re-runs are evidence.
 4. **Plan 05 T3-T5** — DISPATCHED 2026-11-23 (deleg_28a919e0), probe
    GREEN unblocked them: (a) leaf-t3 hermes-agent chat-turn path
    (pydantic + httpx-construction + rich render; wrapper-class fixes
-   in ap-ce allowed); (b) leaf-t4 fastapi hello-world + offline route
-   (vendored_stdlib-class fixes allowed); (c) leaf-t5 comfyui/torch
-   reach-verdict (measurement-only; BLOCKED expected, S2/S3 surface
-   list = the deliverable). Disjoint file ownership enforced.
+   in ap-ce allowed) — RUNNING; (b) leaf-t4 fastapi hello-world + offline
+   route (vendored_stdlib-class fixes allowed) — RUNNING;
+   (c) leaf-t5 comfyui/torch reach-verdict — MERGED b670520. VERDICT:
+   **BLOCKED at three walls, none of them the C-API wall**: (1)
+   `from typing import ContextManager` HANGS — vendored typing
+   __getattr__ alias resolution spins (pure-py, OWN LEAF, T4-relevant —
+   repro tests/t5-probe/t4_typing_contextmanager_hang.py); (2)
+   importlib machinery degradation — str.splitlines(keepends=True)
+   DROPS terminators + bytes.splitlines missing + machinery stubs can't
+   exec_module + find_spec fails for dir-packages (3 findings, repro
+   bytes in NEXT-T5.md); (3) torch C-API demand 320 vs S1 233 → delta
+   186 = 139 S1-class wrappers/tokens (mechanical) + 47 S2/S4
+   structural (buffer protocol first). T5 = priced, honest BLOCKED.
+   NEW FINDINGS ROUTED: typing-hang leaf + splitlines leaf + machinery
+   leaf (all pure-py, all byte-exact repro'd).
 
 ## Explicitly NOT in scope (locked)
 
