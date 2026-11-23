@@ -5034,6 +5034,55 @@ pub fn call_builtin(
         }
         return Ok(Value::Obj(token));
     }
+    // T5 wall-2 F3: the machinery loader-class ctor marker (instantiate's
+    // custom-__new__ path calls __new__ with (cls, fullname, path); build the
+    // real loader instance — CPython __init__(self, fullname, path) stores
+    // both on the product).
+    if name == "__ap_sfl_new__" {
+        let fullname = args
+            .get(1)
+            .and_then(|v| match v {
+                Value::Str(s) => Some(s.as_str().to_string()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let path = args
+            .get(2)
+            .and_then(|v| match v {
+                Value::Str(s) => Some(s.as_str().to_string()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        return Ok(crate::builtins_modules::make_source_file_loader_instance(
+            &fullname, &path,
+        ));
+    }
+    // T5 wall-2 F3: the machinery loader-class ctors (SourceFileLoader etc.).
+    // call_type_ctor's unknown-Type fallthrough lands here with the CLASS
+    // NAME — construct the real loader instance carrying (fullname, path)
+    // (CPython __init__(self, fullname, path)).
+    if matches!(
+        name,
+        "SourceFileLoader" | "SourcelessFileLoader" | "NamespaceLoader"
+    ) {
+        let fullname = args
+            .first()
+            .and_then(|v| match v {
+                Value::Str(s) => Some(s.as_str().to_string()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let path = args
+            .get(1)
+            .and_then(|v| match v {
+                Value::Str(s) => Some(s.as_str().to_string()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        return Ok(crate::builtins_modules::make_source_file_loader_instance(
+            &fullname, &path,
+        ));
+    }
     // T1 (scrapy fix pass): ABCMeta.register inert - returns None.
     if name == "__ap_abc_register__" {
         return Ok(Value::None);

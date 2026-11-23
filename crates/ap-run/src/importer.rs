@@ -1661,6 +1661,52 @@ fn exec_compiled(
     }
 }
 
+/// T5 wall-2 F2 (SourceFileLoader.exec_module end-to-end): compile a real
+/// .py from disk and run its body INTO the caller's module object (CPython:
+/// exec_module(module) — the module already exists, the loader executes the
+/// source into its namespace). The namespace is REBUILT through load_into and
+/// re-shared onto the module (same sharing contract as exec_compiled: body
+/// writes must be visible through the module object). sys.modules keeps the
+/// module's OWN entry when one exists (exec_module of an already-imported
+/// name re-runs the body in place); fresh names are NOT auto-registered —
+/// CPython leaves sys.modules untouched for direct exec_module calls.
+pub fn exec_module_file(
+    interp: &Arc<Interpreter>,
+    module: &Value,
+    name: &str,
+    path: &str,
+) -> Result<(), Flow> {
+    let is_package = std::path::Path::new(path)
+        .file_name()
+        .map(|f| f == std::ffi::OsStr::new("__init__.py"))
+        .unwrap_or(false);
+    let dir = std::path::Path::new(path)
+        .parent()
+        .map(|d| d.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let compiled = compile_file(path, is_package, dir)?;
+    let package = if is_package {
+        name.to_string()
+    } else {
+        name.rsplit_once('.').map(|(p, _)| p).unwrap_or("").to_string()
+    };
+    let loaded = load_into(interp, &compiled, name, path, &package)?;
+    if let Value::Obj(m) = module {
+        if m.kind == ap_obj::ObjKind::Module {
+            *m.module_ns.lock().unwrap_or_else(|p| p.into_inner()) = Some(loaded.ns.clone());
+        }
+    }
+    let stmts = module_stmts(interp, &compiled, &loaded.reg, &loaded.frame);
+    let r = run_loaded(interp, &loaded, &stmts);
+    // Re-share post-exec (identical to exec_compiled's post-body arm).
+    if let Value::Obj(m) = module {
+        if m.kind == ap_obj::ObjKind::Module {
+            *m.module_ns.lock().unwrap_or_else(|p| p.into_inner()) = Some(loaded.ns.clone());
+        }
+    }
+    r
+}
+
 fn module_stmts(
     interp: &Arc<Interpreter>,
     compiled: &Compiled,
