@@ -1895,6 +1895,15 @@ pub fn builtin_type(interp: &Interpreter, args: &[Value], kwargs: &[(String, Val
                     }
                     return Ok(t);
                 }
+                // 02RESID-B (s014): lru_cache wrapper markers report
+                // type(f) == _lru_cache_wrapper (CPython wraps the user
+                // function in a C closure; functools introspection and
+                // typing probes ride it).
+                if o.kind == ap_obj::ObjKind::BuiltinFn
+                    && o.name.starts_with("functools._lruwrapper_")
+                {
+                    return Ok(interned_type(interp, "_lru_cache_wrapper"));
+                }
             }
             let name = match v {
                 Value::Obj(o) if o.kind == ap_obj::ObjKind::Exception => o.name.clone(),
@@ -1903,6 +1912,19 @@ pub fn builtin_type(interp: &Interpreter, args: &[Value], kwargs: &[(String, Val
                 // registration in _collections_abc depends on it).
                 Value::Obj(o) if o.kind == ap_obj::ObjKind::Namespace && o.name == "coroutine" => {
                     "coroutine".to_string()
+                }
+                // 02RESID-B (s014): the vendored lru_cache wrapper (a plain
+                // Function carrying the ___ap_lru_wrapper__ marker attr)
+                // reports type(f) == _lru_cache_wrapper (CPython C closure).
+                Value::Obj(o)
+                    if o.kind == ap_obj::ObjKind::Function
+                        && o.attrs
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .get_str("___ap_lru_wrapper__")
+                            .is_some() =>
+                {
+                    "_lru_cache_wrapper".to_string()
                 }
                 // 02.07: threading objects report their <class> attr
                 // (type(me).__name__ == "_MainThread" — T108).
@@ -2855,31 +2877,58 @@ pub fn builtin_sorted(interp: &Interpreter, args: &[Value], kwargs: &[(String, V
             // otherwise sorted in insertion order). py_lt falls back to
             // values_cmp semantics via ap_obj::ops::lt when no slot exists;
             // Ordering::Equal on error keeps the stable-sort behavior.
-            decorated.sort_by(
-                |a, b| match crate::builtins_modules::py_lt_public(&a.0, &b.0) {
-                    Ok(true) => std::cmp::Ordering::Less,
-                    Ok(false) => match crate::builtins_modules::py_lt_public(&b.0, &a.0) {
-                        Ok(true) => std::cmp::Ordering::Greater,
-                        _ => std::cmp::Ordering::Equal,
+            // 02RESID-B (s015): reverse=True REVERSES THE COMPARATOR
+            // (CPython list.sort does not flip tie groups — equal keys keep
+            // input order). The old post-sort items.reverse() put equal-key
+            // groups in reversed input order (Counter.most_common tie
+            // ordering diverged from CPython).
+            if reverse {
+                decorated.sort_by(
+                    |a, b| match crate::builtins_modules::py_lt_public(&b.0, &a.0) {
+                        Ok(true) => std::cmp::Ordering::Less,
+                        Ok(false) => match crate::builtins_modules::py_lt_public(&a.0, &b.0) {
+                            Ok(true) => std::cmp::Ordering::Greater,
+                            _ => std::cmp::Ordering::Equal,
+                        },
+                        Err(_) => std::cmp::Ordering::Equal,
                     },
-                    Err(_) => std::cmp::Ordering::Equal,
-                },
-            );
+                );
+            } else {
+                decorated.sort_by(
+                    |a, b| match crate::builtins_modules::py_lt_public(&a.0, &b.0) {
+                        Ok(true) => std::cmp::Ordering::Less,
+                        Ok(false) => match crate::builtins_modules::py_lt_public(&b.0, &a.0) {
+                            Ok(true) => std::cmp::Ordering::Greater,
+                            _ => std::cmp::Ordering::Equal,
+                        },
+                        Err(_) => std::cmp::Ordering::Equal,
+                    },
+                );
+            }
             items = decorated.into_iter().map(|(_, v)| v).collect();
         }
     } else {
-        // s013: no-key path — same user-__lt__-first discipline.
-        items.sort_by(|a, b| match crate::builtins_modules::py_lt_public(a, b) {
-            Ok(true) => std::cmp::Ordering::Less,
-            Ok(false) => match crate::builtins_modules::py_lt_public(b, a) {
-                Ok(true) => std::cmp::Ordering::Greater,
-                _ => std::cmp::Ordering::Equal,
-            },
-            Err(_) => std::cmp::Ordering::Equal,
-        });
-    }
-    if reverse {
-        items.reverse();
+        // s013: no-key path — same user-__lt__-first discipline; reverse
+        // flips the comparator for the same tie-stability reason.
+        if reverse {
+            items.sort_by(|a, b| match crate::builtins_modules::py_lt_public(b, a) {
+                Ok(true) => std::cmp::Ordering::Less,
+                Ok(false) => match crate::builtins_modules::py_lt_public(a, b) {
+                    Ok(true) => std::cmp::Ordering::Greater,
+                    _ => std::cmp::Ordering::Equal,
+                },
+                Err(_) => std::cmp::Ordering::Equal,
+            });
+        } else {
+            items.sort_by(|a, b| match crate::builtins_modules::py_lt_public(a, b) {
+                Ok(true) => std::cmp::Ordering::Less,
+                Ok(false) => match crate::builtins_modules::py_lt_public(b, a) {
+                    Ok(true) => std::cmp::Ordering::Greater,
+                    _ => std::cmp::Ordering::Equal,
+                },
+                Err(_) => std::cmp::Ordering::Equal,
+            });
+        }
     }
     Ok(Value::List(PyList::from_vec(items)))
 }
@@ -3437,11 +3486,16 @@ pub(crate) fn py_frame_stub(interp: &Interpreter, idx: usize) -> Value {
         }
     };
     let file = fr
-        .globals
-        .get(&Value::Str(PyString::new("__file__")))
-        .and_then(|v| match v {
-            Value::Str(sv) => Some(sv.as_str().to_string()),
-            _ => None,
+        .exec_co_filename
+        .borrow()
+        .clone()
+        .or_else(|| {
+            fr.globals
+                .get(&Value::Str(PyString::new("__file__")))
+                .and_then(|v| match v {
+                    Value::Str(sv) => Some(sv.as_str().to_string()),
+                    _ => None,
+                })
         })
         .unwrap_or_else(|| interp.script_path.clone());
     let code = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<code>");
@@ -5822,10 +5876,25 @@ pub fn builtin_eval(interp: &Interpreter, args: &[Value]) -> crate::EvalResult {
 /// documented note — same shape as builtin_eval's globals handling).
 pub fn builtin_exec(interp: &Interpreter, args: &[Value]) -> crate::EvalResult {
     // 02.08-c: compile() returns a `<code>` marker carrying co_source —
-    // exec must accept it (parsel/csstranslator-style dynamic loads).
+    // exec must accept it (parsel/csstranformer-style dynamic loads).
+    // 02RESID-B (warnings attribution): the marker's co_filename rides
+    // into the exec'd frame (f_code.co_filename — warn attribution).
+    let mut exec_co_filename: Option<String> = None;
     let src = match args.first() {
-        Some(Value::Str(s)) => s.as_str().to_string(),
+        Some(Value::Str(s)) => {
+            // CPython: exec(str) compiles with filename "<string>".
+            exec_co_filename = Some("<string>".to_string());
+            s.as_str().to_string()
+        }
         Some(Value::Obj(o)) if o.kind == ap_obj::ObjKind::Namespace && o.name == "<code>" => {
+            if let Some(Value::Str(f)) = o
+                .attrs
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(&Value::Str(PyString::new("co_filename")))
+            {
+                exec_co_filename = Some(f.as_str().to_string());
+            }
             match o
                 .attrs
                 .lock()
@@ -5958,7 +6027,13 @@ pub fn builtin_exec(interp: &Interpreter, args: &[Value]) -> crate::EvalResult {
                 }
             }
         }
-        return crate::interp::exec_stmts_in_ns(&rc_interp, &stmts, globals, locals);
+        return crate::interp::exec_stmts_in_ns_named(
+            &rc_interp,
+            &stmts,
+            globals,
+            locals,
+            exec_co_filename,
+        );
     }
     let stmts: Vec<ap_ir::Stmt> = module
         .items
@@ -5987,9 +6062,21 @@ pub fn builtin_exec(interp: &Interpreter, args: &[Value]) -> crate::EvalResult {
     // invisible to the exec'd code. exec_class_def publishes the live
     // class ns; route through it when present.
     if let Some(ns) = crate::classes::current_class_ns() {
-        return crate::interp::exec_stmts_in_ns(&rc_interp, &stmts, ns, None);
+        return crate::interp::exec_stmts_in_ns_named(
+            &rc_interp,
+            &stmts,
+            ns,
+            None,
+            exec_co_filename,
+        );
     }
-    crate::interp::exec_stmts_public(&rc_interp, &stmts)
+    crate::interp::exec_stmts_in_ns_named(
+        &rc_interp,
+        &stmts,
+        interp.globals.clone(),
+        None,
+        exec_co_filename,
+    )
 }
 
 // ---------------------------------------------------------------------------

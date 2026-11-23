@@ -3658,7 +3658,15 @@ fn instance_attr(
                             // 10.02: FromSpec method markers bind to the
                             // instance (the C fn receives (self, args) —
                             // unbound, tp-method dispatch loses the receiver).
-                            || mo.name.starts_with("__ap_ce__."))
+                            || mo.name.starts_with("__ap_ce__.")
+                            // 02RESID-B (s024 enum): object-virtual dunder
+                            // markers bind to the instance too. The marker is
+                            // a process-global CACHED object with NO receiver;
+                            // `E.A.__str__()` (zero-arg bound call) found an
+                            // empty slice_parts + empty args -> subject None ->
+                            // rendered the string "None" (IntEnum member
+                            // .__str__() diverged from CPython's "1").
+                            || mo.name.starts_with("__object_virtual_"))
                     {
                         let bm = ap_obj::PyObject::with_self(
                             ap_obj::ObjKind::BoundMethod,

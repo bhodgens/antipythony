@@ -5808,6 +5808,37 @@ fn call_value_inner_impl(
                         }
                     }
                     if o.name == "type" {
+                        if let Some(Value::Obj(mo)) = args.first() {
+                            // 02RESID-B (s014): lru_cache wrapper markers report
+                            // type(f) == _lru_cache_wrapper (CPython C closure;
+                            // functools introspection + typing probes ride it).
+                            // Two wrapper shapes: the NATIVE marker
+                            // (functools._lruwrapper_<id> BuiltinFn) and the
+                            // VENDORED python wrapper (Function carrying the
+                            // ___ap_lru_wrapper__ attr — no native _functools
+                            // module exists, so functools.py's wrapper wins).
+                            if mo.kind == ap_obj::ObjKind::BuiltinFn
+                                && mo.name.starts_with("functools._lruwrapper_")
+                            {
+                                return Ok(builtins::interned_type(
+                                    interp,
+                                    "_lru_cache_wrapper",
+                                ));
+                            }
+                            if mo.kind == ap_obj::ObjKind::Function
+                                && mo
+                                    .attrs
+                                    .lock()
+                                    .unwrap_or_else(|p| p.into_inner())
+                                    .get_str("___ap_lru_wrapper__")
+                                    .is_some()
+                            {
+                                return Ok(builtins::interned_type(
+                                    interp,
+                                    "_lru_cache_wrapper",
+                                ));
+                            }
+                        }
                         if let Some(Value::Obj(so)) = args.first() {
                             if so.kind == ap_obj::ObjKind::Opaque && so.name == "thread" {
                                 let cls = so
@@ -8283,6 +8314,20 @@ fn call_value_inner_impl(
                                                     // opaque result structs report
                                                     // their own name (s012/A-3 item 5).
                                                     o.name.as_str().to_string()
+                                                } else if o.kind == ap_obj::ObjKind::Function
+                                                    && o
+                                                        .attrs
+                                                        .lock()
+                                                        .unwrap_or_else(|p| p.into_inner())
+                                                        .get_str("___ap_lru_wrapper__")
+                                                        .is_some()
+                                                {
+                                                    // 02RESID-B (s014): the vendored
+                                                    // lru_cache wrapper (Function
+                                                    // with the marker attr) reports
+                                                    // type(f) == _lru_cache_wrapper
+                                                    // (CPython C closure type).
+                                                    "_lru_cache_wrapper".to_string()
                                                 } else {
                                                     o.type_name().to_string()
                                                 }
@@ -11847,6 +11892,14 @@ fn user_truthiness(interp: &Arc<Interpreter>, v: &Value) -> Result<Option<bool>,
         })?;
         return Ok(Some(n != 0));
     }
+    // 02RESID-B (s015): builtin-derived instances (class C(dict)/list/tuple)
+    // have NO __bool__/__len__ in their synthesized MRO, but CPython sizes
+    // truthiness from the CONTAINER state (empty dict subclass is falsy).
+    // Mirror user_len's backing arms here (empty Counter()/OrderedDict()
+    // printed truthy before this arm).
+    if let Some(n) = user_len(interp, v)? {
+        return Ok(Some(n != 0));
+    }
     Ok(None)
 }
 
@@ -12498,6 +12551,16 @@ fn class_protocol_builtin(
                             *to.repr_text.lock().unwrap_or_else(|p| p.into_inner()) =
                                 Some("<class 'typing.Union'>".to_string());
                         }
+                        return Some(Ok(t));
+                    }
+                    // 02RESID-B (s014): lru_cache wrapper markers report
+                    // type(f) == _lru_cache_wrapper (CPython wraps the user
+                    // function in a C closure; introspection surfaces —
+                    // functools docs, typing get_type_hints — probe it).
+                    if o.kind == ap_obj::ObjKind::BuiltinFn
+                        && o.name.starts_with("functools._lruwrapper_")
+                    {
+                        let t = crate::builtins::interned_type(interp, "_lru_cache_wrapper");
                         return Some(Ok(t));
                     }
                     // 02.07: threading objects report their <class> attr
@@ -17241,7 +17304,36 @@ pub fn exec_stmts_in_ns(
     globals: Gc<PyDict>,
     locals: Option<Gc<PyDict>>,
 ) -> EResult {
+    exec_stmts_in_ns_named(interp, stmts, globals, locals, None)
+}
+
+/// 02RESID-B (warnings attribution): exec variant carrying the compiled
+/// source filename — the exec'd frame lands on py_frames with a
+/// co_filename carrier so warn()'s stacklevel walk attributes exec-frame
+/// warnings to the EXEC'D file:line (CPython f_code.co_filename), not the
+/// caller's.
+pub fn exec_stmts_in_ns_named(
+    interp: &Arc<Interpreter>,
+    stmts: &[ap_ir::Stmt],
+    globals: Gc<PyDict>,
+    locals: Option<Gc<PyDict>>,
+    co_filename: Option<String>,
+) -> EResult {
     let frame = Arc::new(Frame::new_module(globals.clone()));
+    if let Some(fname) = &co_filename {
+        *frame.exec_co_filename.borrow_mut() = Some(fname.clone());
+        // CPython exec frames sit on the live stack: sys._getframe /
+        // warn stacklevel walk must see them.
+        for _ in 0..2000 {
+            match interp.py_frames.lock() {
+                Ok(mut pf) => {
+                    pf.push(frame.clone());
+                    break;
+                }
+                Err(_) => std::thread::sleep(std::time::Duration::from_micros(50)),
+            }
+        }
+    }
     // Module frames read globals directly; explicit locals ride the frame's
     // locals slot via a globals-echo (frame locals is `Option<PyDict>`? we
     // mirror by writing defs into BOTH when they differ — v0 approximation
@@ -17253,7 +17345,19 @@ pub fn exec_stmts_in_ns(
     // written there. Simplest correct-shape v0: run with globals=locals dict
     // merged view is unavailable, so when locals is Some we ALSO write each
     // stmt-level def name into it after execution.
-    exec_block(interp, &frame, stmts, &reg)?;
+    let result = exec_block(interp, &frame, stmts, &reg);
+    if co_filename.is_some() {
+        for _ in 0..2000 {
+            match interp.py_frames.lock() {
+                Ok(mut pf) => {
+                    pf.pop();
+                    break;
+                }
+                Err(_) => std::thread::sleep(std::time::Duration::from_micros(50)),
+            }
+        }
+    }
+    result?;
     if let Some(loc) = locals {
         // Copy the exec's global writes into locals (twisted reads them from
         // f_locals). Only keys not already present.
