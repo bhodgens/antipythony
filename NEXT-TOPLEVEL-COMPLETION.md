@@ -111,11 +111,15 @@ trunk. Gate counts cited by leaves are claims; re-runs are evidence.
    terminators, verified live) + vendored (52911b0 — colorsys
    diff-empty vs framework copy, parse_http_list byte-exact, verified
    live on trunk). Note: the typing-hang wall was FIXED by T3's
-   deadlock fix — T5's Wall-1 leaf is no longer needed. After this
-   wave: importlib + fileno/GC-W5 leaves (still running), F-STRUCT-1
-   (re-entrant lazy import, structural, own leaf), build-ext linkage
-   lint row, CPython-arm byte diff of the 110 pydantic members, final
-   trunk sweep + AGENTS.md update, completion declaration.
+ deadlock fix — T5's Wall-1 leaf is no longer needed. After this
+ wave: importlib MERGED e7e5021 (find_spec directory packages
+ byte-matches CPython incl. torch; SourceFileLoader exec_module
+ end-to-end — typing_extensions.py executes; machinery ctors fixed;
+ ap-run 18/208/0 + slice 48/48 verified first-hand; structural
+ leftovers recorded not hacked), fileno/GC-W5 RUNNING, F-STRUCT-1
+ (re-entrant lazy import, structural, own leaf), build-ext linkage
+ lint row, CPython-arm byte diff of the 110 pydantic members, final
+ trunk sweep + AGENTS.md update, completion declaration.
 
 ## Explicitly NOT in scope (locked)
 
