@@ -7127,6 +7127,28 @@ fn call_bytearray_method(
                     }
                 }
             }
+            "splitlines" => {
+                // bytes splitlines semantics (only \n \r \r\n); results are
+                // bytearray-typed on a bytearray receiver (CPython parity).
+                let mut a2: Vec<Value> = vec![Value::Bytes(Gc::new(data))];
+                a2.extend_from_slice(rest);
+                match call_builtin_values("pybytes", "splitlines", &a2, kwargs) {
+                    Some(Ok(Value::List(l))) => {
+                        let items: Vec<Value> = l
+                            .items()
+                            .iter()
+                            .map(|it| match it {
+                                Value::Bytes(b) => make_bytearray(b.as_ref().clone()),
+                                other => other.clone(),
+                            })
+                            .collect();
+                        Ok(list(items))
+                    }
+                    other => {
+                        other.unwrap_or_else(|| Err(raise("SystemError", "pybytes arm unbound")))
+                    }
+                }
+            }
             "join" => {
                 let mut a2: Vec<Value> = vec![Value::Bytes(Gc::new(data))];
                 a2.extend_from_slice(rest);
@@ -15349,7 +15371,8 @@ pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
                     let mname = match name {
                         "append" | "extend" | "insert" | "pop" | "remove" | "reverse" | "clear"
                         | "copy" | "hex" | "decode" | "upper" | "lower" | "strip" | "lstrip"
-                        | "rstrip" | "replace" | "split" | "join" | "startswith" | "endswith"
+                        | "rstrip" | "replace" | "split" | "rsplit" | "splitlines" | "join"
+                        | "startswith" | "endswith"
                         | "find" | "rfind" | "index" | "count" => {
                             format!("bytearray.{name}")
                         }
@@ -15824,6 +15847,7 @@ fn builtin_value_method_exists(tag: &str, name: &str) -> bool {
             | ("pybytes", "rstrip")
             | ("pybytes", "split")
             | ("pybytes", "rsplit")
+            | ("pybytes", "splitlines")
             | ("pybytes", "join")
             | ("pybytes", "replace")
             | ("pybytes", "find")
@@ -17163,30 +17187,95 @@ pub fn call_builtin_values(
                         '\n', '\r', '\u{0b}', '\u{0c}', '\u{1c}', '\u{1d}', '\u{1e}', '\u{85}',
                         '\u{2028}', '\u{2029}',
                     ];
+                    let keepends = a(1)
+                        .or_else(|| kw(kwargs, "keepends").cloned())
+                        .map(|v| truthy(&v))
+                        .unwrap_or(false);
                     let src = x.as_str();
-                    let mut out: Vec<String> = Vec::new();
-                    let mut cur = String::new();
-                    let mut chars = src.chars().peekable();
-                    while let Some(c) = chars.next() {
-                        if c == '\r' && chars.peek() == Some(&'\n') {
-                            chars.next();
-                            out.push(std::mem::take(&mut cur));
-                        } else if NL.contains(&c) {
-                            out.push(std::mem::take(&mut cur));
-                        } else {
-                            cur.push(c);
+                    let mut out: Vec<Value> = Vec::new();
+                    let mut line_start = 0usize; // byte offset of the current line
+                    let mut chars = src.char_indices().peekable();
+                    while let Some((i, c)) = chars.next() {
+                        // (byte_offset_of_terminator, terminator_len_in_bytes)
+                        let term: Option<(usize, usize)> =
+                            if c == '\r' && chars.peek().map(|(_, n)| *n) == Some('\n') {
+                                Some((i, 2))
+                            } else if NL.contains(&c) {
+                                Some((i, c.len_utf8()))
+                            } else {
+                                None
+                            };
+                        if let Some((ti, tlen)) = term {
+                            let line_end = ti + tlen;
+                            let piece = if keepends {
+                                &src[line_start..line_end]
+                            } else {
+                                &src[line_start..ti]
+                            };
+                            out.push(s(piece.to_string()));
+                            line_start = line_end;
+                            // consume the '\n' of a \r\n pair so it is not
+                            // re-treated as a second terminator.
+                            if tlen == 2 {
+                                chars.next();
+                            }
                         }
                     }
-                    // Trailing chunk without a terminator is still a line,
-                    // EXCEPT when the string ends on a newline ("a\n" ->
-                    // ['a']) or the string is empty ("" -> []).
-                    out.push(cur);
-                    let ends_on_nl = src.is_empty()
-                        || src.chars().last().map(|c| NL.contains(&c)).unwrap_or(false);
-                    if ends_on_nl {
-                        out.pop();
+                    // Trailing chunk without a terminator is still a line;
+                    // a string ending ON a terminator leaves nothing here
+                    // ("" -> [], "a\n" -> ['a'] / ['a\n']).
+                    if line_start < src.len() {
+                        out.push(s(src[line_start..].to_string()));
                     }
-                    return Ok(list(out.into_iter().map(s).collect()));
+                    return Ok(list(out));
+                }
+                Err(raise(
+                    "SystemError",
+                    format!(
+                        "bad receiver for pydict fn {} (recv={}",
+                        fname,
+                        recv.type_name()
+                    ),
+                ))
+            }
+            ("pybytes", "splitlines") => {
+                // CPython bytes.splitlines: ONLY \n, \r, \r\n are line
+                // boundaries for the bytes variants (no \v/\f/\x1c universal
+                // -newline set).
+                if let Value::Bytes(x) = &recv {
+                    let keepends = a(1)
+                        .or_else(|| kw(kwargs, "keepends").cloned())
+                        .map(|v| truthy(&v))
+                        .unwrap_or(false);
+                    let data: &[u8] = x;
+                    let mut out: Vec<Value> = Vec::new();
+                    let mut line_start = 0usize;
+                    let mut i = 0usize;
+                    while i < data.len() {
+                        let (term_len, emit_end) =
+                            if data[i] == b'\r' && i + 1 < data.len() && data[i + 1] == b'\n' {
+                                (2usize, i + 2usize)
+                            } else if data[i] == b'\r' {
+                                (1usize, i + 1usize)
+                            } else if data[i] == b'\n' {
+                                (1usize, i + 1usize)
+                            } else {
+                                i += 1;
+                                continue;
+                            };
+                        let piece = if keepends {
+                            &data[line_start..emit_end]
+                        } else {
+                            &data[line_start..i]
+                        };
+                        out.push(Value::Bytes(Gc::new(piece.to_vec())));
+                        line_start = emit_end;
+                        i = emit_end;
+                    }
+                    if line_start < data.len() {
+                        out.push(Value::Bytes(Gc::new(data[line_start..].to_vec())));
+                    }
+                    return Ok(list(out));
                 }
                 Err(raise(
                     "SystemError",
