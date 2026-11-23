@@ -8,7 +8,7 @@ remains the bar everywhere that lowers. Orchestrator: this session.
 
 | leaf | delegation | scope | owned files |
 |---|---|---|---|
-| leaf-1005a | deleg_adfef016 | PyDict/PyList/PyTuple residual (~80-100 members) | ap-ce/src/exports_containers.rs (NEW) | VERIFIED-READY (ap-ce 19/0, stdlib 48/48; 30-run driver soak pending; GOTCHA FOUND: .so built with Python.framework linkage SEGVs — must use `antipythony build-ext`, which emits no-framework .so) |
+| leaf-1005a | deleg_adfef016 | PyDict/PyList/PyTuple residual (~80-100 members) | ap-ce/src/exports_containers.rs (NEW) | MERGED d8938e5 (ap-ce 19/0, stdlib 48/48 on trunk; 30/30 driver runs byte-exact; framework-linkage SEGV gotcha → wave-2 build-ext lint row) |
 | leaf-1005b | deleg_adfef016 | PyObject attr/compare/iter protocol (~60) | ap-ce/src/exports_objproto.rs (NEW) |
 | leaf-1005c | deleg_adfef016 | PyErr plumbing + PyFrame/PyCode projection (~30) | ap-ce/src/exports_errtb.rs (NEW) |
 | leaf-harden2 | deleg_adfef016 | HARDEN gap 3: scan-gate gen-condition yield + handler bind-yield | ap-codegen-wasm |
