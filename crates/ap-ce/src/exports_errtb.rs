@@ -975,43 +975,11 @@ pub unsafe extern "C" fn PyCode_NewEmpty(
 // ---------------------------------------------------------------------------
 // Attribute / bytes / unicode accessors the band's proof extension probes
 // through (each routes the runtime's own protocol).
+//
+// PyObject_GetAttrString lives in exports_objproto.rs (leaf 1005b, with the
+// Optional family); PyLong_FromSsize_t in exports_containers.rs (leaf 1005a).
+// This band consumes both; no local definitions (duplicate-C-symbol rule).
 // ---------------------------------------------------------------------------
-
-/// PyObject_GetAttrString: the runtime attr protocol (user properties and
-/// namespaces resolve; a miss raises AttributeError with the CPython text).
-#[no_mangle]
-pub unsafe extern "C" fn PyObject_GetAttrString(o: PyObjPtr, name: *const c_char) -> PyObjPtr {
-    if o.is_null() || name.is_null() {
-        errtb_set("SystemError", "PyObject_GetAttrString: NULL argument");
-        return std::ptr::null_mut();
-    }
-    let n = std::ffi::CStr::from_ptr(name)
-        .to_string_lossy()
-        .into_owned();
-    let h = o as CeHandle;
-    let Some(v) = crate::value_conv::to_value(h) else {
-        errtb_set("SystemError", "PyObject_GetAttrString: bad handle");
-        return std::ptr::null_mut();
-    };
-    match crate::runtime_ctx::get_attr(&v, &n) {
-        Some(av) => crate::state::from_value(&av) as PyObjPtr,
-        None => {
-            errtb_set(
-                "AttributeError",
-                format!("'{}' object has no attribute '{n}'", {
-                    let tn = match &v {
-                        Value::Obj(vo) => {
-                            crate::runtime_ctx::class_name_of(&v).unwrap_or_else(|| vo.name.clone())
-                        }
-                        other => other.type_name().to_string(),
-                    };
-                    tn
-                }),
-            );
-            std::ptr::null_mut()
-        }
-    }
-}
 
 /// PyBytes_Size: len(bytes) (b"" for our projected code objects).
 #[no_mangle]
@@ -1053,15 +1021,6 @@ pub unsafe extern "C" fn PyUnicode_GetLength(o: PyObjPtr) -> isize {
         }
         None => -1,
     }
-}
-
-/// PyLong_FromSsize_t.
-#[no_mangle]
-pub unsafe extern "C" fn PyLong_FromSsize_t(v: isize) -> PyObjPtr {
-    new_handle(
-        CeKind::Int,
-        CePayload::Int(ap_obj::int::Int::from_i64(v as i64)),
-    ) as PyObjPtr
 }
 
 /// The py_frames INDEX a `<frame>` handle represents (CPython frame
