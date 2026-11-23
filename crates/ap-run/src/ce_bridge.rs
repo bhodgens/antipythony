@@ -84,6 +84,12 @@ unsafe extern "C" fn runtime_pycall(
 fn ensure_pycall_installed() {
     PYCALL_INSTALL.get_or_init(|| {
         let _ = ap_ce::runtime_ctx::install_pycall(runtime_pycall);
+        // Leaf 1005c: the error/traceband seams ride the SAME install point
+        // (every C entry already funnels through ensure_pycall_installed).
+        let _ = ap_ce::exports_errtb::install_frame_query(runtime_frame_query);
+        let _ = ap_ce::exports_errtb::install_matches(runtime_exc_matches);
+        let _ = ap_ce::exports_errtb::install_newexc(runtime_new_exception);
+        let _ = ap_ce::runtime_ctx::install_errtb(runtime_errtb_dispatch);
     });
 }
 
@@ -356,6 +362,9 @@ pub fn native_ce_module(
     _interp: &std::sync::Arc<crate::frame::Interpreter>,
     name: &str,
 ) -> Option<Result<Value, Flow>> {
+    // 1005c: install the runtime seams BEFORE the dlopen/PyInit (the C init
+    // may call PyErr_NewException / the frame probes immediately).
+    ensure_pycall_installed();
     // Registered already? (module registry filled by a prior import or by
     // an embedded init at startup)
     if !ap_ce::api::module_registered(name) {
@@ -507,26 +516,39 @@ fn script_dir() -> Option<std::path::PathBuf> {
     SCRIPT_DIR.get().cloned()
 }
 
+/// The dlopen probe: does an extension .so for `name` exist in any of the
+/// candidate dirs? (1005c: the dotted-walk import path answers before the
+/// ModuleNotFoundError — import_file_module's finder only knows .py.)
+pub fn ext_lib_exists(name: &str) -> bool {
+    ext_lib_candidates(name).into_iter().any(|p| p.is_file())
+}
+
 /// dlopen the extension lib + run PyInit_<name>. Returns true when the
 /// module is now registered.
 fn ensure_loaded(name: &str) -> bool {
     let lib = ext_lib_candidates(name).into_iter().find(|p| p.is_file());
     let Some(lib) = lib else {
+        if std::env::var_os("APX_CE_TRACE").is_some() {
+            eprintln!("[ap-ce] ensure_loaded({name}): no candidate .so found");
+        }
         return false;
     };
+    if std::env::var_os("APX_CE_TRACE").is_some() {
+        eprintln!("[ap-ce] ensure_loaded({name}): dlopen {}", lib.display());
+    }
     let Some(cpath) = std::ffi::CString::new(lib.to_string_lossy().as_bytes()).ok() else {
         return false;
     };
     unsafe {
         let handle = dlopen_fullname(cpath.as_ptr());
         if handle.is_null() {
+            let dlerr = std::ffi::CStr::from_ptr(libc::dlerror()).to_string_lossy();
+            if std::env::var_os("APX_CE_TRACE").is_some() {
+                eprintln!("[ap-ce] ensure_loaded({name}): dlopen FAILED: {dlerr}");
+            }
             ap_ce::state::err_set(
                 "ImportError",
-                format!(
-                    "dlopen {}: {}",
-                    lib.display(),
-                    std::ffi::CStr::from_ptr(libc::dlerror()).to_string_lossy()
-                ),
+                format!("dlopen {}: {}", lib.display(), dlerr),
             );
             return false;
         }
@@ -547,5 +569,446 @@ fn ensure_loaded(name: &str) -> bool {
             return false;
         }
         true
+    }
+}
+
+// ===========================================================================
+// Leaf 1005c: the error/traceback runtime seams (installed alongside the
+// pycall pointer). See ap-ce/src/exports_errtb.rs for the C-side contract.
+// ===========================================================================
+
+/// The live Python frame chain as (qualname, filename, lineno, f_lasti)
+/// rows, OUTERMOST FIRST (interp.py_frames order). C ABI: fills the
+/// caller's FrameBuf; each row is written by value into the buffer.
+unsafe extern "C" fn runtime_frame_query(
+    buf: *mut ap_ce::exports_errtb::FrameBuf,
+) -> std::ffi::c_int {
+    let interp = crate::interp::current_interp_handle();
+    let rows: Vec<ap_ce::exports_errtb::FrameRow> = {
+        let st = interp.py_frames.lock().unwrap_or_else(|p| p.into_inner());
+        st.iter()
+            .map(|f| {
+                let file = f
+                    .globals
+                    .get(&Value::Str(PyString::new("__file__")))
+                    .and_then(|v| match v {
+                        Value::Str(sv) => Some(sv.as_str().to_string()),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| interp.script_path.clone());
+                (
+                    f.qualname.clone(),
+                    file,
+                    f.last_line.get().max(1) as i64,
+                    -1i64, // f_lasti: statement granularity (documented)
+                )
+            })
+            .collect()
+    };
+    let out = &mut *buf;
+    let n = rows.len().min(out.cap);
+    for (i, r) in rows.into_iter().take(n).enumerate() {
+        *out.rows.add(i) = r;
+    }
+    out.len = n;
+    0
+}
+
+/// The runtime's exception-subclass predicate: builtin tree walk
+/// (exc_hier::is_subclass) PLUS the real class payloads (user classes
+/// derive through their MRO — the except-clause semantics).
+unsafe extern "C" fn runtime_exc_matches(
+    raised: *const std::ffi::c_char,
+    target: *const std::ffi::c_char,
+) -> std::ffi::c_int {
+    if raised.is_null() || target.is_null() {
+        return 0;
+    }
+    let r = std::ffi::CStr::from_ptr(raised)
+        .to_string_lossy()
+        .into_owned();
+    let t = std::ffi::CStr::from_ptr(target)
+        .to_string_lossy()
+        .into_owned();
+    if r == t {
+        return 1;
+    }
+    // 1. The builtin tree (names).
+    if crate::exc_hier::is_subclass(&r, &t) {
+        return 1;
+    }
+    // 2. Real class payloads: a USER class named `raised` deriving from a
+    //    builtin (or another user class) matches through its MRO.
+    let interp = crate::interp::current_interp_handle();
+    if let Some(rc) = crate::classes::exc_class(&interp, &r) {
+        if let Some(tc) = crate::classes::exc_class(&interp, &t) {
+            if rc.is_subclass(&tc) {
+                return 1;
+            }
+        } else if crate::exc_hier::is_subclass(&t, "BaseException")
+            && rc
+                .mro
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .iter()
+                .any(|m| m.name == t)
+        {
+            return 1;
+        }
+    }
+    // 3. user_subclasses edges (class statements deriving from exceptions).
+    {
+        let edges = interp
+            .user_subclasses
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        // Transitive walk over user edges (child -> parent), rooted at r.
+        let mut cur = r.clone();
+        for _ in 0..16 {
+            if cur == t {
+                return 1;
+            }
+            let parent = edges
+                .iter()
+                .find(|(c, _)| *c == cur)
+                .map(|(_, p)| p.clone());
+            match parent {
+                Some(p) => cur = p,
+                None => break,
+            }
+        }
+    }
+    0
+}
+
+/// PyErr_NewException backend: build a REAL exception class via
+/// dynamic_type (base Exception defaults; is_exception flows from the
+/// base). The class Value parks in the ce->runtime value map under the
+/// returned key (usize::MAX on failure; error state set).
+unsafe extern "C" fn runtime_new_exception(
+    name: *const std::ffi::c_char,
+    base: *const std::ffi::c_char,
+    doc: *const std::ffi::c_char,
+) -> usize {
+    if name.is_null() {
+        ap_ce::state::err_set("SystemError", "PyErr_NewException: NULL name");
+        return usize::MAX;
+    }
+    let full = std::ffi::CStr::from_ptr(name)
+        .to_string_lossy()
+        .into_owned();
+    // CPython: __name__ is the BARE tail ("custom"); the dotted name only
+    // rides the repr. Our class payload carries ONE identity string, and
+    // type(e).__name__ reads it — so the BARE tail wins here (the
+    // __bases__ repr divergence is recorded as a leaf finding).
+    let bare = full.rsplit('.').next().unwrap_or(&full).to_string();
+    let base_name = if base.is_null() {
+        "Exception".to_string()
+    } else {
+        std::ffi::CStr::from_ptr(base)
+            .to_string_lossy()
+            .into_owned()
+    };
+    let interp = crate::interp::current_interp_handle();
+    // The base VALUE: the interned exception class (exc_classes carries
+    // the real BaseException tree); PyErr_NewException-created classes
+    // register under their DOTTED name in user_class_values (below), so
+    // a chained NewException base resolves through that table too.
+    let base_v = crate::classes::exc_class_value(&interp, &base_name)
+        .or_else(|| {
+            interp
+                .user_class_values
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(&base_name)
+                .cloned()
+        })
+        .unwrap_or_else(|| {
+            Value::Obj(ap_obj::PyObject::new(
+                ap_obj::ObjKind::Type,
+                base_name.clone(),
+            ))
+        });
+    let ns = ap_obj::dict::PyDict::new();
+    let _ = ns.set(
+        Value::Str(PyString::new("__module__")),
+        Value::Str(PyString::new("errtb")),
+    );
+    // PyErr_NewExceptionWithDoc: the doc lands in the class dict (CPython
+    // help()/__doc__ read it there).
+    if !doc.is_null() {
+        let d = std::ffi::CStr::from_ptr(doc).to_string_lossy().into_owned();
+        if !d.is_empty() {
+            let _ = ns.set(
+                Value::Str(PyString::new("__doc__")),
+                Value::Str(PyString::new(d)),
+            );
+        }
+    }
+    // CPython class identity: the dotted NAME is the class's repr shape
+    // (<class 'errtb.custom'>) — dynamic_type's t.name carries it.
+    match crate::classes::dynamic_type(&interp, &bare, &[base_v], ns, &[]) {
+        Ok(class_v) => {
+            // PyErr_NewExceptionWithDoc: also park the doc on the class
+            // VALUE's attrs (the class-attr reader's dict arm answers None
+            // for __doc__ on object-rooted classes — the attrs path is
+            // what the isinstance/attr walkers consult first).
+            if !doc.is_null() {
+                let d = std::ffi::CStr::from_ptr(doc).to_string_lossy().into_owned();
+                if !d.is_empty() {
+                    if let Value::Obj(co) = &class_v {
+                        let _ = co.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
+                            Value::Str(PyString::new("__doc__")),
+                            Value::Str(PyString::new(d)),
+                        );
+                    }
+                }
+            }
+            let key = ap_obj::Gc::as_ptr(match &class_v {
+                Value::Obj(o) => o,
+                _ => unreachable!("dynamic_type returns a class Value::Obj"),
+            }) as *const std::ffi::c_void as usize;
+            ap_ce::value_map::set_runtime_value(key, class_v.clone());
+            // Register under the dotted name so chained NewException bases
+            // resolve to the REAL class (is_exception propagates through
+            // the MRO — the bare name-Type fallback broke custom_sub).
+            interp
+                .user_class_values
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .insert(bare.clone(), class_v.clone());
+            if std::env::var_os("APX_CE_TRACE").is_some() {
+                eprintln!("[ap-ce] NewException({bare}) key={key:#x}");
+            }
+            key
+        }
+        Err(f) => {
+            if let Flow::Raise(e) = &f {
+                if std::env::var_os("APX_CE_TRACE").is_some() {
+                    eprintln!(
+                        "[ap-ce] NewException({bare}) FAILED: {} {}",
+                        e.class,
+                        e.py_str().unwrap_or_default()
+                    );
+                }
+                ap_ce::state::err_set(&e.class, e.py_str().unwrap_or_default());
+            } else {
+                ap_ce::state::err_set("SystemError", "PyErr_NewException failed");
+            }
+            usize::MAX
+        }
+    }
+}
+
+/// The value-level ErrTbOp interpreter (ap-ce runtime_ctx::ErrTbOp).
+/// Every op is total: Some -> ErrTbOut::Value, None -> None_/NoIdx.
+unsafe extern "C" fn runtime_errtb_dispatch(
+    op: *const ap_ce::runtime_ctx::ErrTbOp,
+    out: *mut ap_ce::runtime_ctx::ErrTbOut,
+) -> std::ffi::c_int {
+    let Some(op) = op.as_ref() else {
+        return -1;
+    };
+    let out = &mut *out;
+    match op {
+        ap_ce::runtime_ctx::ErrTbOp::MakeFrame(idx) => {
+            let interp = crate::interp::current_interp_handle();
+            match crate::builtins::py_frame_stub(&interp, *idx) {
+                v @ Value::Obj(_) => *out = ap_ce::runtime_ctx::ErrTbOut::Value(v),
+                _ => *out = ap_ce::runtime_ctx::ErrTbOut::None_,
+            }
+        }
+        ap_ce::runtime_ctx::ErrTbOp::MakeCode(name, file, lineno) => {
+            // The s016 `<code>` Namespace stub shape (co_name/co_filename/
+            // co_firstlineno), byte-compatible with py_frame_stub's code.
+            let code = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<code>");
+            let a = code.attrs.lock().unwrap_or_else(|p| p.into_inner());
+            let _ = a.set(
+                Value::Str(PyString::new("co_name")),
+                Value::Str(PyString::new(name.clone())),
+            );
+            let _ = a.set(
+                Value::Str(PyString::new("co_filename")),
+                Value::Str(PyString::new(file.clone())),
+            );
+            let _ = a.set(
+                Value::Str(PyString::new("co_firstlineno")),
+                Value::Int(Int::from_i64(*lineno)),
+            );
+            drop(a);
+            *out = ap_ce::runtime_ctx::ErrTbOut::Value(Value::Obj(code));
+        }
+        ap_ce::runtime_ctx::ErrTbOp::MakeTb(rows) => {
+            // The `<tb>` Namespace snapshot shape the traceback walkers
+            // (traceback.py's StackSummary over __ap_tb__ tuples) consume.
+            let tb = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "<traceback>");
+            let entries: Vec<Value> = rows
+                .iter()
+                .map(|(q, f, l)| {
+                    Value::Tuple(Gc::new(Tuple(vec![
+                        Value::Str(PyString::new(q.clone())),
+                        Value::Int(Int::from_i64(*l as i64)),
+                        Value::Str(PyString::new(f.clone())),
+                    ])))
+                })
+                .collect();
+            let a = tb.attrs.lock().unwrap_or_else(|p| p.into_inner());
+            let _ = a.set(
+                Value::Str(PyString::new("__ap_tb__")),
+                Value::List(PyList::from_vec(entries)),
+            );
+            drop(a);
+            *out = ap_ce::runtime_ctx::ErrTbOut::Value(Value::Obj(tb));
+        }
+        ap_ce::runtime_ctx::ErrTbOp::FrameAttr(v, attr) => {
+            // Route through the interpreter's own attr surface: `<frame>`
+            // values answer f_locals/f_globals/f_lineno (f_lineno LIVE via
+            // the s016-fix2 arm; f_locals mirrors the snapshot shape).
+            let interp = crate::interp::current_interp_handle();
+            match crate::interp::attr_get_public(&interp, v, attr) {
+                Ok(Some(av)) => *out = ap_ce::runtime_ctx::ErrTbOut::Value(av),
+                _ => *out = ap_ce::runtime_ctx::ErrTbOut::None_,
+            }
+        }
+        ap_ce::runtime_ctx::ErrTbOp::FrameGetVar(v, name) => {
+            let interp = crate::interp::current_interp_handle();
+            match crate::interp::attr_get_public(&interp, v, "f_locals") {
+                Ok(Some(Value::Dict(d))) => match d.get(&Value::Str(PyString::new(name.clone()))) {
+                    Some(av) => *out = ap_ce::runtime_ctx::ErrTbOut::Value(av.clone()),
+                    None => *out = ap_ce::runtime_ctx::ErrTbOut::None_,
+                },
+                _ => *out = ap_ce::runtime_ctx::ErrTbOut::None_,
+            }
+        }
+        ap_ce::runtime_ctx::ErrTbOp::GeneratorCode(v) => {
+            // gi_code on a generator value (interp.rs Generator arm
+            // synthesizes a `<code>` Namespace stub).
+            let interp = crate::interp::current_interp_handle();
+            match crate::interp::attr_get_public(&interp, v, "gi_code") {
+                Ok(Some(cv)) => *out = ap_ce::runtime_ctx::ErrTbOut::Value(cv),
+                _ => *out = ap_ce::runtime_ctx::ErrTbOut::None_,
+            }
+        }
+        ap_ce::runtime_ctx::ErrTbOp::CodeAttr(v, attr) => {
+            // The PyCode_Get* projection: the runtime's code stubs carry
+            // the real attrs when present (py_frame_stub's <code>); a miss
+            // answers the CPython-documented empty shape (co_code b"",
+            // co_varnames/cellvars/freevars the empty tuple) instead of
+            // NULL — CPython's own getters always return the attr.
+            let interp = crate::interp::current_interp_handle();
+            let hit = crate::interp::attr_get_public(&interp, v, attr)
+                .ok()
+                .flatten();
+            let value = hit.or_else(|| match attr.as_str() {
+                "co_code" => Some(Value::Bytes(Gc::new(Vec::new()))),
+                "co_varnames" | "co_cellvars" | "co_freevars" | "co_names" | "co_consts" => {
+                    Some(Value::Tuple(Gc::new(Tuple(Vec::new()))))
+                }
+                _ => None,
+            });
+            match value {
+                Some(cv) => *out = ap_ce::runtime_ctx::ErrTbOut::Value(cv),
+                None => *out = ap_ce::runtime_ctx::ErrTbOut::None_,
+            }
+        }
+        ap_ce::runtime_ctx::ErrTbOp::FrameIndex(v) => {
+            // The `<frame>` stub carries its py_frames index in
+            // slice_parts[0] (builtins::py_frame_stub contract) and also
+            // as the __ap_pf_index__ attr.
+            let slice_idx = match v {
+                Value::Obj(o) => o
+                    .slice_parts
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .first()
+                    .and_then(|x| x.as_int())
+                    .and_then(|i| i.to_i64()),
+                _ => None,
+            };
+            let idx = match slice_idx {
+                Some(i) if i >= 0 => Some(i as usize),
+                _ => {
+                    // Attr fallback (the s016 __ap_pf_index__ carrier).
+                    let interp = crate::interp::current_interp_handle();
+                    match crate::interp::attr_get_public(&interp, v, "__ap_pf_index__") {
+                        Ok(Some(av)) => av
+                            .as_int()
+                            .and_then(|i| i.to_i64())
+                            .filter(|i| *i >= 0)
+                            .map(|i| i as usize),
+                        _ => None,
+                    }
+                }
+            };
+            match idx {
+                Some(i) => *out = ap_ce::runtime_ctx::ErrTbOut::Idx(i),
+                None => *out = ap_ce::runtime_ctx::ErrTbOut::NoIdx,
+            }
+        }
+        ap_ce::runtime_ctx::ErrTbOp::ExcDescribe(v) => {
+            // (class, str(exc)) as a 2-tuple; the runtime's own py_str
+            // dialect (KeyError repr etc.) via ExceptionValue.
+            let ev = exception_value_of(v);
+            let class = match v {
+                Value::Obj(o) => o.name.clone(),
+                other => other.type_name().to_string(),
+            };
+            let text = ev
+                .map(|e| e.py_str().unwrap_or_default())
+                .unwrap_or_else(|| ap_obj::ops::to_str(v).unwrap_or_default());
+            *out = ap_ce::runtime_ctx::ErrTbOut::Value(Value::Tuple(Gc::new(Tuple(vec![
+                Value::Str(PyString::new(class)),
+                Value::Str(PyString::new(text)),
+            ]))));
+        }
+        ap_ce::runtime_ctx::ErrTbOp::MakeExceptionInstance(class, text) => {
+            let interp = crate::interp::current_interp_handle();
+            // Materialize the SAME shape Python's `except` binding sees:
+            // exception_instance over a class+msg ExceptionValue.
+            let ev = crate::exc_hier::ExceptionValue::msg(class, text.clone());
+            let inst = crate::interp::exception_instance_value(&ev);
+            let _ = interp;
+            *out = ap_ce::runtime_ctx::ErrTbOut::Value(inst);
+        }
+        ap_ce::runtime_ctx::ErrTbOp::ClassNameOf(v) => {
+            // The CLASS name behind a class-or-instance value: exception
+            // instances report their class via class_of_value's payload;
+            // classes report their own name.
+            let interp = crate::interp::current_interp_handle();
+            let name = match crate::classes::class_of_value(&interp, v) {
+                Some(t) => Some(t.name.clone()),
+                None => match v {
+                    Value::Obj(o)
+                        if o.kind == ap_obj::ObjKind::UserClass
+                            || o.kind == ap_obj::ObjKind::Type =>
+                    {
+                        Some(o.name.clone())
+                    }
+                    _ => None,
+                },
+            };
+            match name {
+                Some(n) => *out = ap_ce::runtime_ctx::ErrTbOut::Value(Value::Str(PyString::new(n))),
+                None => *out = ap_ce::runtime_ctx::ErrTbOut::None_,
+            }
+        }
+        ap_ce::runtime_ctx::ErrTbOp::GetAttr(v, attr) => {
+            let interp = crate::interp::current_interp_handle();
+            match crate::interp::attr_get_public(&interp, v, attr) {
+                Ok(Some(av)) => *out = ap_ce::runtime_ctx::ErrTbOut::Value(av),
+                _ => *out = ap_ce::runtime_ctx::ErrTbOut::None_,
+            }
+        }
+    }
+    0
+}
+
+/// The ExceptionValue behind an exception-instance value (None when the
+/// value is not an exception instance). Uses the runtime's own
+/// instance->EV conversion so user-class instances keep their args.
+fn exception_value_of(v: &Value) -> Option<crate::exc_hier::ExceptionValue> {
+    match crate::interp::exception_value_of_instance_pub(v) {
+        Ok(ev) => Some(ev),
+        Err(_) => None,
     }
 }

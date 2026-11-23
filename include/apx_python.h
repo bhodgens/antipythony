@@ -214,6 +214,14 @@ void apx_register_module_init(const char *name, PyObject *(*init)(void));
 
 PyObject *PyErr_Format(PyObject *exc, const char *fmt, /* ... */ ...);
 
+/* Attribute + bytes/unicode accessors the errtb band probes use
+   (PyObject_GetAttrString / PyBytes_Size / PyUnicode_GetLength /
+   PyLong_FromSsize_t). */
+PyObject *PyObject_GetAttrString(PyObject *o, const char *name);
+Py_ssize_t PyBytes_Size(PyObject *o);
+Py_ssize_t PyUnicode_GetLength(PyObject *o);
+PyObject *PyLong_FromSsize_t(Py_ssize_t v);
+
 void PyErr_NormalizeException(PyObject **exc, PyObject **val, PyObject **tb);
 int PyErr_ExceptionMatches(PyObject *exc);
 int PyErr_GivenExceptionMatches(PyObject *given, PyObject *exc);

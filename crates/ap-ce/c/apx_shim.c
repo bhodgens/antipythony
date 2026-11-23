@@ -52,6 +52,11 @@ PyObject *PyErr_Format(PyObject *exc, const char *fmt, ...) {
         p++;
         switch (*p) {
         case 'S':
+            /* CPython: %S calls str() (do_signtable 'S' -> PyObject_Str). */
+            apx_render_obj(buf, sizeof(buf), &n, va_arg(ap, PyObject *), 0);
+            break;
+        case 'R':
+            /* %R calls repr(). */
             apx_render_obj(buf, sizeof(buf), &n, va_arg(ap, PyObject *), 1);
             break;
         case 'A':
@@ -212,6 +217,17 @@ int PyArg_ParseTuple(PyObject *args, const char *fmt, ...) {
                 return 0;
             }
             *out = s;
+            break;
+        }
+        case 'n': {
+            /* CPython ABI: "n" writes a Py_ssize_t. */
+            Py_ssize_t *out = va_arg(ap, Py_ssize_t *);
+            long long v = PyLong_AsLongLong(item);
+            if (v == -1 && PyErr_Occurred()) {
+                va_end(ap);
+                return 0;
+            }
+            *out = (Py_ssize_t)v;
             break;
         }
         case 'O': {

@@ -85,6 +85,9 @@ pub enum ErrTbOp {
     /// (value) -> Option<String>: the CLASS name behind a class-or-
     /// instance value (exception_instance's class or the class itself).
     ClassNameOf(Value),
+    /// (value, attr) -> Option<Value>: the runtime attr protocol (the
+    /// PyObject_GetAttrString route; user properties resolve).
+    GetAttr(Value, String),
 }
 
 /// The entry ABI: (op-by-move) -> Result. Success writes the Value result
@@ -211,4 +214,8 @@ pub fn class_name_of(v: &Value) -> Option<String> {
         Some(Value::Str(s)) => Some(s.as_str().to_string()),
         _ => None,
     }
+}
+
+pub fn get_attr(v: &Value, name: &str) -> Option<Value> {
+    op_value(ErrTbOp::GetAttr(v.clone(), name.to_string()))
 }

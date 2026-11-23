@@ -96,18 +96,35 @@ pub fn errtb_set_instance(v: &Value) {
     });
 }
 
-/// Take the rich state (Fetch semantics: clears).
+/// Take the rich state (Fetch semantics: clears). The S0 machine
+/// (state::ErrState — what PyErr_SetString/Occurred and the bridge read)
+/// is the AUTHORITY: a Fetch consumes its indicator and adopts its class/
+/// msg into the rich view (the instance, when Restore parked one, rides
+/// the ERRTB side table keyed by the same raise).
 pub fn errtb_take() -> Option<ErrTb> {
     ERRTB.with(|e| {
         let mut b = e.borrow_mut();
-        if b.set {
-            b.set = false;
-            // S0 machine cleared too (Fetch clears the indicator).
-            let _ = crate::state::err_take();
-            Some(std::mem::take(&mut *b))
-        } else {
-            None
+        // S0 is authoritative: always consume it first.
+        let s0 = crate::state::err_take();
+        if let Some((class, msg)) = s0 {
+            // Rich state matches the S0 indicator only when both are set
+            // with the same class (a Restore that parked an instance).
+            let instance = if b.set && b.class == class {
+                b.instance.take()
+            } else {
+                None
+            };
+            *b = ErrTb::default();
+            return Some(ErrTb {
+                set: true,
+                class,
+                value_text: msg,
+                instance,
+            });
         }
+        // S0 clear: stale rich state is meaningless — drop it.
+        *b = ErrTb::default();
+        None
     })
 }
 
@@ -167,7 +184,7 @@ pub type MatchesFn = unsafe extern "C" fn(*const c_char, *const c_char) -> c_int
 /// PyErr_NewException backend: (dotted name, base class name-or-NULL,
 /// members json-or-NULL) -> the new class as a runtime Value parked in
 /// value_map under the returned key (usize::MAX on failure).
-pub type NewExcFn = unsafe extern "C" fn(*const c_char, *const c_char) -> usize;
+pub type NewExcFn = unsafe extern "C" fn(*const c_char, *const c_char, *const c_char) -> usize;
 
 /// Describe an exception instance Value: (class, str(exc)) — used by
 /// errtb_set_instance. Implemented as a small ABI over the runtime.
@@ -267,20 +284,23 @@ unsafe fn exception_class_of_token(exc: PyObjPtr) -> String {
     }
     let h = exc as CeHandle;
     let o = &*h;
-    match o.payload.borrow().as_ref() {
-        Some(CePayload::Str(s)) => s.clone(),
+    let decoded = match o.payload.borrow().as_ref() {
+        Some(CePayload::Str(s)) => Some(s.clone()),
         Some(CePayload::Opaque(v)) => {
             let val = Value::Obj(v.clone());
-            match crate::runtime_ctx::class_name_of(&val) {
-                Some(cn) => cn,
-                None => match v.kind {
-                    ap_obj::ObjKind::UserClass | ap_obj::ObjKind::Type => v.name.clone(),
-                    _ => "Exception".to_string(),
-                },
-            }
+            crate::runtime_ctx::class_name_of(&val)
         }
-        _ => "Exception".to_string(),
-    }
+        _ => None,
+    };
+    let _ = o;
+    decoded.unwrap_or_else(|| {
+        // Fall back to the payload kind name (a Type handle named the
+        // class; an unrecognized shape degrades to Exception — recorded).
+        match o.ob_type {
+            CeKind::Str => "Exception".to_string(),
+            _ => "Exception".to_string(),
+        }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -288,14 +308,25 @@ unsafe fn exception_class_of_token(exc: PyObjPtr) -> String {
 // ---------------------------------------------------------------------------
 
 /// PyErr_ExceptionMatches(exc): match the CURRENT error against a class.
+/// The S0 machine is the raise-side authority (PyErr_SetString writes
+/// only it); the rich view adds instance fidelity when present.
 #[no_mangle]
 pub unsafe extern "C" fn PyErr_ExceptionMatches(exc: PyObjPtr) -> c_int {
     if !err_is_set() {
         return 0;
     }
+    // Rich view first (carries the raised instance's real class), then
+    // the S0 class (the SetString route).
     let raised = match errtb_peek() {
         Some((class, _)) => class,
-        None => return 0,
+        None => match crate::state::err_take() {
+            Some((class, msg)) => {
+                // Peek, not take: put it back (S0 remains the indicator).
+                crate::state::err_set(&class, msg);
+                class
+            }
+            None => return 0,
+        },
     };
     let target = exception_class_of_token(exc);
     runtime_matches(&raised, &target) as c_int
@@ -441,6 +472,57 @@ fn errtb_patch_class(class: &str) {
     }
 }
 
+/// PyErr_NormalizeException(exc, val, tb): normalize a (class, value, tb)
+/// triple so val IS a real exception instance. Our raise path already
+/// normalizes (the rich error state carries the instance when one was
+/// raised), so this materializes the instance when the val slot is a bare
+/// message and passes the class through — CPython semantics for the
+/// normalized shape. NULL slots pass through untouched.
+#[no_mangle]
+pub unsafe extern "C" fn PyErr_NormalizeException(
+    exc: *mut PyObjPtr,
+    val: *mut PyObjPtr,
+    _tb: *mut PyObjPtr,
+) {
+    if exc.is_null() || val.is_null() {
+        return;
+    }
+    let e = *exc;
+    let v = *val;
+    if e.is_null() {
+        return;
+    }
+    // Already an instance (Opaque carrying a runtime object): done.
+    let v_h = v as CeHandle;
+    if !v_h.is_null() {
+        let is_instance = unsafe {
+            matches!(
+                (&*v_h).payload.borrow().as_ref(),
+                Some(CePayload::Opaque(_))
+            )
+        };
+        if is_instance {
+            return;
+        }
+    }
+    // Bare value: materialize the instance (class + str(val)).
+    let class = exception_class_of_token(e);
+    let text = if v_h.is_null() {
+        String::new()
+    } else {
+        crate::value_conv::to_value(v_h)
+            .map(|vv| ap_obj::ops::to_str(&vv).unwrap_or_default())
+            .unwrap_or_default()
+    };
+    let Some(inst) = crate::runtime_ctx::make_exception_instance(&class, &text) else {
+        // No runtime: leave the triple as-is (honest degradation).
+        return;
+    };
+    let new_v = crate::state::from_value(&inst);
+    ce_newref(new_v);
+    *val = new_v as PyObjPtr;
+}
+
 /// PyErr_SetObject(exc, value): raise with an EXPLICIT value object.
 #[no_mangle]
 pub unsafe extern "C" fn PyErr_SetObject(exc: PyObjPtr, value: PyObjPtr) {
@@ -526,7 +608,7 @@ pub unsafe extern "C" fn PyErr_NewException(
     base: PyObjPtr,
     _dict: PyObjPtr,
 ) -> PyObjPtr {
-    new_exception_impl(name, base)
+    new_exception_impl(name, base, std::ptr::null())
 }
 
 /// PyErr_NewExceptionWithDoc(name, doc, base, dict): doc lands in the
@@ -538,22 +620,10 @@ pub unsafe extern "C" fn PyErr_NewExceptionWithDoc(
     base: PyObjPtr,
     _dict: PyObjPtr,
 ) -> PyObjPtr {
-    let h = new_exception_impl(name, base);
-    if !h.is_null() && !doc.is_null() {
-        let d = std::ffi::CStr::from_ptr(doc).to_string_lossy().into_owned();
-        if let Some(v) = crate::state::opaque_object(h as CeHandle) {
-            if let Value::Obj(o) = &Value::Obj(v) {
-                let _ = o.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
-                    Value::Str(PyString::new("__doc__")),
-                    Value::Str(PyString::new(d)),
-                );
-            }
-        }
-    }
-    h
+    new_exception_impl(name, base, doc)
 }
 
-unsafe fn new_exception_impl(name: *const c_char, base: PyObjPtr) -> PyObjPtr {
+unsafe fn new_exception_impl(name: *const c_char, base: PyObjPtr, doc: *const c_char) -> PyObjPtr {
     if name.is_null() {
         errtb_set("SystemError", "PyErr_NewException: NULL name");
         return std::ptr::null_mut();
@@ -561,7 +631,10 @@ unsafe fn new_exception_impl(name: *const c_char, base: PyObjPtr) -> PyObjPtr {
     let full = std::ffi::CStr::from_ptr(name)
         .to_string_lossy()
         .into_owned();
-    let bare = full.rsplit('.').next().unwrap_or(&full).to_string();
+    // The DOTTED name rides the class identity (CPython repr <class
+    // 'errtb.custom'>) — pass it through whole; the runtime carries it as
+    // the class payload's name.
+    let bare = full.clone();
     let base_class = if base.is_null() {
         "Exception".to_string()
     } else {
@@ -571,7 +644,13 @@ unsafe fn new_exception_impl(name: *const c_char, base: PyObjPtr) -> PyObjPtr {
         Some(f) => {
             let n = std::ffi::CString::new(bare.clone()).unwrap_or_default();
             let b = std::ffi::CString::new(base_class).unwrap_or_default();
-            let key = unsafe { (f)(n.as_ptr(), b.as_ptr()) };
+            let d = if doc.is_null() {
+                std::ffi::CString::new("").unwrap_or_default()
+            } else {
+                std::ffi::CString::new(std::ffi::CStr::from_ptr(doc).to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            };
+            let key = unsafe { (f)(n.as_ptr(), b.as_ptr(), d.as_ptr()) };
             if key == usize::MAX {
                 // Error state set by the runtime side.
                 return std::ptr::null_mut();
@@ -635,14 +714,16 @@ fn tb_snapshot_handle() -> CeHandle {
 }
 
 /// PyFrame_GetCode(frame) -> strong ref. Our `<frame>` handles carry the
-/// py_frames index (slice_parts[0], the s016 shape); re-resolve LIVE.
+/// py_frames index (slice_parts[0], the s016 shape; the index is the
+/// OUTERMOST-FIRST array position — the same convention frame_rows()
+/// snapshots in), so the code row is the DIRECT read.
 #[no_mangle]
 pub unsafe extern "C" fn PyFrame_GetCode(frame: PyObjPtr) -> PyObjPtr {
     let Some(idx) = frame_index_of(frame) else {
         return std::ptr::null_mut();
     };
     match frame_rows() {
-        Some(rows) if idx < rows.len() => code_handle_for(&rows[rows.len() - 1 - idx]),
+        Some(rows) if idx < rows.len() => code_handle_for(&rows[idx]),
         _ => std::ptr::null_mut(),
     }
 }
@@ -884,6 +965,98 @@ pub unsafe extern "C" fn PyCode_NewEmpty(
         Some(v) => crate::state::from_value(&v) as PyObjPtr,
         None => std::ptr::null_mut(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Attribute / bytes / unicode accessors the band's proof extension probes
+// through (each routes the runtime's own protocol).
+// ---------------------------------------------------------------------------
+
+/// PyObject_GetAttrString: the runtime attr protocol (user properties and
+/// namespaces resolve; a miss raises AttributeError with the CPython text).
+#[no_mangle]
+pub unsafe extern "C" fn PyObject_GetAttrString(o: PyObjPtr, name: *const c_char) -> PyObjPtr {
+    if o.is_null() || name.is_null() {
+        errtb_set("SystemError", "PyObject_GetAttrString: NULL argument");
+        return std::ptr::null_mut();
+    }
+    let n = std::ffi::CStr::from_ptr(name)
+        .to_string_lossy()
+        .into_owned();
+    let h = o as CeHandle;
+    let Some(v) = crate::value_conv::to_value(h) else {
+        errtb_set("SystemError", "PyObject_GetAttrString: bad handle");
+        return std::ptr::null_mut();
+    };
+    match crate::runtime_ctx::get_attr(&v, &n) {
+        Some(av) => crate::state::from_value(&av) as PyObjPtr,
+        None => {
+            errtb_set(
+                "AttributeError",
+                format!("'{}' object has no attribute '{n}'", {
+                    let tn = match &v {
+                        Value::Obj(vo) => {
+                            crate::runtime_ctx::class_name_of(&v).unwrap_or_else(|| vo.name.clone())
+                        }
+                        other => other.type_name().to_string(),
+                    };
+                    tn
+                }),
+            );
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// PyBytes_Size: len(bytes) (b"" for our projected code objects).
+#[no_mangle]
+pub unsafe extern "C" fn PyBytes_Size(o: PyObjPtr) -> isize {
+    let h = o as CeHandle;
+    if h.is_null() {
+        errtb_set("SystemError", "PyBytes_Size: NULL object");
+        return -1;
+    }
+    match crate::value_conv::to_value(h) {
+        Some(Value::Bytes(b)) => b.len() as isize,
+        Some(_) => {
+            let tn = crate::value_conv::to_value(h)
+                .map(|v| v.type_name().to_string())
+                .unwrap_or_default();
+            errtb_set("TypeError", format!("expected bytes, not '{tn}'"));
+            -1
+        }
+        None => -1,
+    }
+}
+
+/// PyUnicode_GetLength: len(str) (code points).
+#[no_mangle]
+pub unsafe extern "C" fn PyUnicode_GetLength(o: PyObjPtr) -> isize {
+    let h = o as CeHandle;
+    if h.is_null() {
+        errtb_set("SystemError", "PyUnicode_GetLength: NULL object");
+        return -1;
+    }
+    match crate::value_conv::to_value(h) {
+        Some(Value::Str(s)) => s.as_str().chars().count() as isize,
+        Some(_) => {
+            let tn = crate::value_conv::to_value(h)
+                .map(|v| v.type_name().to_string())
+                .unwrap_or_default();
+            errtb_set("TypeError", format!("expected str, not '{tn}'"));
+            -1
+        }
+        None => -1,
+    }
+}
+
+/// PyLong_FromSsize_t.
+#[no_mangle]
+pub unsafe extern "C" fn PyLong_FromSsize_t(v: isize) -> PyObjPtr {
+    new_handle(
+        CeKind::Int,
+        CePayload::Int(ap_obj::int::Int::from_i64(v as i64)),
+    ) as PyObjPtr
 }
 
 /// The py_frames INDEX a `<frame>` handle represents (CPython frame
