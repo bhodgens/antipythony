@@ -317,6 +317,12 @@ enum Found {
     Namespace { dir: String },
     /// Single-file module.
     Module { file: String },
+    /// Leaf tier1-linecache: a module served from the EMBEDDED
+    /// vendored_stdlib store (embedded_stdlib.rs). The name is the import
+    /// path the store keys (e.g. "enum", "encodings.aliases"); the file
+    /// label is the CPython-shaped `vendored_stdlib/<rel>.py` build path
+    /// (module __file__ + traceback/linecache faces).
+    Embedded { name: String, file: String },
 }
 
 /// Robustness-ci leaf 02.02 (review finding #16): a module-name segment is
@@ -375,6 +381,69 @@ fn py_name_repr(s: &str) -> String {
     out
 }
 
+/// Leaf tier1-linecache: TRUE when the vendored_stdlib tree this binary was
+/// built against is NOT the tree the importer resolves at runtime — i.e. a
+/// standalone AoT binary (the build machine's checkout is absent) or an
+/// ANTIPTYHONY_STDLIB override pointing elsewhere. In that state the file
+/// finder cannot serve vendored faces, and the embedded store becomes the
+/// ground truth (import + linecache + traceback source). With the tree
+/// present (repo runs) this is FALSE and every lookup is byte-for-byte the
+/// pre-leaf disk path.
+fn embedded_store_active() -> bool {
+    match vendored_stdlib_dir() {
+        // The discovered dir must be the build-time tree AND actually hold
+        // a known face (a stale checkout missing the file would silently
+        // shadow the store — the store is the more complete source).
+        Some(d) => {
+            if d == crate::embedded_stdlib::build_time_vendored_dir()
+                && std::path::Path::new(&d).join("enum.py").is_file()
+            {
+                return false;
+            }
+            true
+        }
+        None => true,
+    }
+}
+
+/// The embedded arm of find_on_path: resolve `name` through the generated
+/// store. `__init__` package faces are stored under the bare package name.
+fn find_embedded(name: &str) -> Option<Found> {
+    if !segment_is_safe(name) {
+        return None;
+    }
+    // No embedded face shadows an ON-DISK hit (the caller checks disk
+    // first); this only runs in the standalone state.
+    crate::embedded_stdlib::source_for(name).map(|_| Found::Embedded {
+        name: name.to_string(),
+        file: embedded_file_label(name),
+    })
+}
+
+/// A child segment of a package: "encodings" + "aliases" →
+/// "encodings.aliases"; a missing face is None (the disk finder's None).
+fn find_submodule_embedded(parent: &str, name: &str) -> Option<Found> {
+    if !segment_is_safe(name) {
+        return None;
+    }
+    let full = format!("{parent}.{name}");
+    let file = embedded_file_label(&full);
+    crate::embedded_stdlib::source_for(&full).map(|_| Found::Embedded {
+        name: full,
+        file,
+    })
+}
+
+/// The CPython-shaped __file__ label for an embedded import path (the
+/// build-time vendored dir + the dotted path as a relative .py file).
+fn embedded_file_label(name: &str) -> String {
+    format!(
+        "{}/{}.py",
+        crate::embedded_stdlib::build_time_vendored_dir(),
+        name.replace('.', "/")
+    )
+}
+
 fn find_on_path(name: &str) -> Option<Found> {
     if !segment_is_safe(name) {
         return None;
@@ -419,6 +488,13 @@ fn find_on_path(name: &str) -> Option<Found> {
             });
         }
     }
+    // Leaf tier1-linecache: standalone-binary arm — no sys.path entry served
+    // the face and the vendored tree is absent, so the embedded store answers
+    // (identical bytes the disk read would have returned on the build
+    // machine; __file__ keeps the CPython-shaped vendored path label).
+    if embedded_store_active() {
+        return find_embedded(name);
+    }
     None
 }
 
@@ -447,7 +523,56 @@ fn find_submodule(parent_dir: &str, name: &str) -> Option<Found> {
             file: file.to_string_lossy().into_owned(),
         });
     }
+    // Leaf tier1-linecache: the parent resolved through the embedded store
+    // (its __path__ label sits under the build-time vendored dir) or the
+    // parent dir simply lacks the child — the embedded store answers.
+    if embedded_store_active() {
+        if let Some(parent_name) = parent_dir_label_to_name(parent_dir) {
+            return find_submodule_embedded(&parent_name, name);
+        }
+    }
     None
+}
+
+/// Leaf tier1-linecache: recover the IMPORT PATH from a parent __path__ dir
+/// label (embedded labels sit under the build-time vendored dir; on-disk
+/// package dirs under the vendored tree map back the same way — anything
+/// else is not an embedded-servable parent and returns None).
+fn parent_dir_label_to_name(parent_dir: &str) -> Option<String> {
+    let base = crate::embedded_stdlib::build_time_vendored_dir();
+    let rel = std::path::Path::new(parent_dir)
+        .strip_prefix(base)
+        .ok()?
+        .to_string_lossy()
+        .into_owned();
+    if rel.is_empty() {
+        return None;
+    }
+    Some(rel.replace('/', "."))
+}
+
+/// TRUE when `path` is an embedded-store file label (under the build-time
+/// vendored dir). Only such paths consult the store on a failed disk read.
+fn is_embedded_label(path: &str) -> bool {
+    std::path::Path::new(path)
+        .strip_prefix(crate::embedded_stdlib::build_time_vendored_dir())
+        .is_ok()
+}
+
+/// The embedded bytes for a file label (vendored_stdlib/<rel>.py → store
+/// key <rel> with '/' → '.'). Returns the decoded source.
+fn embedded_store_source_for_label(path: &str) -> Option<String> {
+    let base = crate::embedded_stdlib::build_time_vendored_dir();
+    let rel = std::path::Path::new(path)
+        .strip_prefix(base)
+        .ok()?
+        .to_string_lossy()
+        .into_owned();
+    let stem = rel.strip_suffix(".py")?;
+    if stem.is_empty() {
+        return None;
+    }
+    crate::embedded_stdlib::source_string_for(&stem.replace('/', "."))
 }
 
 // ---------------------------------------------------------------------------
@@ -463,8 +588,20 @@ struct Compiled {
 }
 
 fn compile_file(path: &str, is_package: bool, dir: String) -> Result<Compiled, Flow> {
-    let source = std::fs::read_to_string(path)
-        .map_err(|e| raise("ImportError", format!("cannot read {path}: {e}")))?;
+    // Leaf tier1-linecache: an embedded-labeled path (a __path__/__file__
+    // label under the build-time vendored dir) reads its bytes from the
+    // embedded store when the file is absent on disk — the standalone-
+    // binary face. On-disk bytes win when present (the __init__-with-dir
+    // case where a partial checkout overlaps the store).
+    let source = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(_) if embedded_store_active() && is_embedded_label(path) => {
+            embedded_store_source_for_label(path).ok_or_else(|| {
+                raise("ImportError", format!("cannot read {path}: embedded store miss"))
+            })?
+        }
+        Err(e) => return Err(raise("ImportError", format!("cannot read {path}: {e}"))),
+    };
     let parsed = ap_parse::parse(&source).map_err(|e| {
         // SyntaxError inside an imported module: CPython surfaces the
         // SyntaxError directly (no wrapping ImportError).
@@ -481,6 +618,54 @@ fn compile_file(path: &str, is_package: bool, dir: String) -> Result<Compiled, F
         is_package,
         dir,
     })
+}
+
+/// Leaf tier1-linecache: parse + lower an EMBEDDED source (the compile_file
+/// shape without the disk read; identical SyntaxError text conventions).
+fn compile_embedded(
+    key: &str,
+    is_package: bool,
+    dir: String,
+    file_label: &str,
+) -> Result<Compiled, Flow> {
+    let source = crate::embedded_stdlib::source_string_for(key)
+        .ok_or_else(|| raise("ImportError", format!("embedded store miss: {key}")))?;
+    let parsed = ap_parse::parse(&source).map_err(|e| {
+        raise(
+            "SyntaxError",
+            format!("{} (line {}): {}", file_label, e.line, e.message),
+        )
+    })?;
+    let (module, scopes) =
+        ap_parse::lower(&parsed).map_err(|e| raise("SyntaxError", format!("{e}")))?;
+    Ok(Compiled {
+        module,
+        scopes,
+        is_package,
+        dir,
+    })
+}
+
+/// Heuristic: does this vendored __init__ body expose a package face that
+/// needs a __path__? The vendored tree's packages all have real __init__
+/// bodies; the check just distinguishes them from flat modules (any def/
+/// class/import module is package-shaped — the label only steers __path__).
+fn looks_like_package_init(_bytes: &[u8]) -> bool {
+    // Every store key that maps to a <pkg>/__init__.py was generated from
+    // one; the generator only emits bare-package keys for __init__ files,
+    // so the flag is decided by the LABEL, not the bytes. Keep the bytes
+    // parameter for future per-file policy.
+    true
+}
+
+/// The __path__ dir label for an embedded package face (children descend
+/// through find_submodule, whose label→name inverse recovers the key).
+fn embedded_dir_label(name: &str) -> String {
+    format!(
+        "{}/{}",
+        crate::embedded_stdlib::build_time_vendored_dir(),
+        name.replace('.', "/")
+    )
 }
 
 /// A namespace created for an in-flight module execution: dict + frame +
@@ -1316,6 +1501,26 @@ fn module_path_dir(m: &Value) -> Option<String> {
 
 fn exec_found(interp: &Arc<Interpreter>, name: &str, found: &Found) -> Result<(), Flow> {
     match found {
+        Found::Embedded { name: emb_name, file } => {
+            // Leaf tier1-linecache: the package face ("encodings") stores
+            // its __init__ under the bare name and gets a __path__ label so
+            // dotted children descend through find_submodule's embedded arm;
+            // a plain module face execs exactly like Found::Module.
+            let is_package = crate::embedded_stdlib::source_for(emb_name)
+                .map(|b| looks_like_package_init(b))
+                .unwrap_or(false);
+            if is_package && *emb_name == name {
+                let dir = embedded_dir_label(emb_name);
+                let compiled = compile_embedded(emb_name, true, dir, file)?;
+                exec_compiled(interp, name, file, name, &compiled)?;
+                attach_module_spec(name);
+                Ok(())
+            } else {
+                let package = name.rsplit_once('.').map(|(p, _)| p).unwrap_or("");
+                let compiled = compile_embedded(emb_name, false, String::new(), file)?;
+                exec_compiled(interp, name, file, package, &compiled)
+            }
+        }
         Found::Module { file } => {
             let compiled = compile_file(file, false, String::new())?;
             // A module inside a package gets the parent name as __package__.

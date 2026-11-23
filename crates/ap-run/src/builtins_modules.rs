@@ -11117,10 +11117,40 @@ pub fn set_embedded_source(path: &str, source: &str) {
 }
 
 /// The registered entry source for `path`, if any (leaf 0206-embed).
+/// Leaf tier1-linecache: a path that MISSES the entry seam falls through to
+/// the embedded vendored_stdlib store when the binary runs standalone (the
+/// build tree is absent) — a vendored module's `__file__` label resolves to
+/// the exact bytes the build-machine disk read would have returned, so
+/// linecache/traceback/inspect consumers are byte-identical standalone.
 fn embedded_source_for(path: &str) -> Option<(std::sync::Arc<Vec<String>>, usize)> {
-    let g = EMBEDDED_SOURCE.lock().ok()?;
-    let (p, lines, nbytes) = g.as_ref()?;
-    (p == path).then(|| (lines.clone(), *nbytes))
+    {
+        let g = EMBEDDED_SOURCE.lock().ok()?;
+        if let Some((p, lines, nbytes)) = g.as_ref() {
+            if p == path {
+                return Some((lines.clone(), *nbytes));
+            }
+        }
+    }
+    // The store face: only labels under the build-time vendored dir, and
+    // only when the disk cannot serve them (standalone state — with the
+    // tree present, the fs read below wins and behavior is unchanged).
+    let base = crate::embedded_stdlib::build_time_vendored_dir();
+    let Ok(rel) = std::path::Path::new(path).strip_prefix(base) else {
+        return None;
+    };
+    if std::path::Path::new(path).is_file() {
+        return None;
+    }
+    let stem = rel.to_string_lossy();
+    let stem = stem.strip_suffix(".py")?;
+    if stem.is_empty() {
+        return None;
+    }
+    let source = crate::embedded_stdlib::source_string_for(&stem.replace('/', "."))?;
+    let nbytes = source.as_bytes().len();
+    let lines: std::sync::Arc<Vec<String>> =
+        std::sync::Arc::new(source.lines().map(|l| format!("{l}\n")).collect::<Vec<_>>());
+    Some((lines, nbytes))
 }
 
 /// 64MB cache ceiling (M6: traceback-heavy runs over many files stay
