@@ -74,6 +74,12 @@ pub enum CePayload {
     /// strong clone of the runtime object (Gc<PyObject>), handed back
     /// byte-identical at to_value / call time.
     Opaque(Gc<ap_obj::object::PyObject>),
+    /// pydantic-probe band: an exact bytes round-trip (PyBytes_Size /
+    /// apx_BytesData read it; to_value restores the Value).
+    BytesMarker(std::sync::Arc<Vec<u8>>),
+    /// pydantic-probe band: exact set/frozenset round-trips
+    /// (PySet_Contains reads them; to_value restores the Value).
+    SetMarker(Gc<ap_obj::dict::PySet>, bool),
 }
 
 impl std::fmt::Debug for CePayload {
@@ -95,6 +101,8 @@ impl std::fmt::Debug for CePayload {
                 payload_key,
             } => write!(f, "CeInstance(#{class_spec}, key={payload_key:#x})"),
             CePayload::Opaque(_) => write!(f, "Opaque"),
+            CePayload::BytesMarker(_) => write!(f, "BytesMarker"),
+            CePayload::SetMarker(_, frozen) => write!(f, "SetMarker(frozen={frozen})"),
         }
     }
 }
@@ -204,12 +212,18 @@ pub fn from_value(v: &Value) -> CeHandle {
             // runtime object. The S0 repr-pin fallback broke call-backs
             // (the C side got the object's repr string, not the object)
             // and payload identity; PyO3-shaped modules pass arbitrary
-            // runtime values through, so fidelity is the contract. Only
-            // the Obj arm is faithful-able; non-Obj stragglers (Bytes,
-            // Set, ...) pin their repr on S1 (the spike surface never
-            // round-trips them).
+            // runtime values through, so fidelity is the contract.
+            // pydantic-probe band: Bytes/Set/Frozen are core Values with
+            // exact round-trips (PyBytes_Size/PySet_Contents read them
+            // back) — lift them out of the repr-pin straggler list.
             if let Value::Obj(o) = other {
                 new_handle(CeKind::Opaque, CePayload::Opaque(o.clone()))
+            } else if let Value::Bytes(b) = other {
+                new_handle(CeKind::Str, CePayload::BytesMarker(b.clone()))
+            } else if let Value::Set(st) = other {
+                new_handle(CeKind::Str, CePayload::SetMarker(st.clone(), false))
+            } else if let Value::Frozen(st) = other {
+                new_handle(CeKind::Str, CePayload::SetMarker(st.clone(), true))
             } else {
                 let repr = ap_obj::ops::repr(other).unwrap_or_else(|_| "<??>".to_string());
                 new_handle(CeKind::Str, CePayload::Str(repr))
