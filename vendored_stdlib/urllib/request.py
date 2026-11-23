@@ -3,12 +3,16 @@
 # not serve yet). The T1 scrapy chain (w3lib.url) only needs the path conversion
 # helpers; they are copied verbatim from CPython 3.14 urllib/request.py
 # (posixpath branch, PSF-2.0).
+#
+# T3 chain (httpx/_auth.py:9 `from urllib.request import parse_http_list`):
+# parse_http_list + parse_keqv_list appended verbatim from CPython 3.14.7
+# urllib/request.py (PSF-2.0).
 
 from urllib.parse import (
     uses_netloc, uses_relative, uses_params,
 )  # re-exported below for getproxies-adjacent consumers
 
-__all__ = ["pathname2url", "url2pathname"]
+__all__ = ["pathname2url", "url2pathname", "parse_http_list", "parse_keqv_list"]
 
 # The same protective quotes used by CPython's posix variant.
 from urllib.parse import quote as _quote, unquote as _unquote
@@ -103,3 +107,57 @@ def proxy_bypass(host):
 
 def proxy_bypass_environment(host, proxies=None):
     return 0
+
+
+def parse_keqv_list(l):
+    """Parse list of key=value strings where keys are not duplicated."""
+    parsed = {}
+    for elt in l:
+        k, v = elt.split('=', 1)
+        if v[0] == '"' and v[-1] == '"':
+            v = v[1:-1]
+        parsed[k] = v
+    return parsed
+
+def parse_http_list(s):
+    """Parse lists as described by RFC 2068 Section 2.
+
+    In particular, parse comma-separated lists where the elements of
+    the list may include quoted-strings.  A quoted-string could
+    contain a comma.  A non-quoted string could have quotes in the
+    middle.  Neither commas nor quotes count if they are escaped.
+    Only double-quotes count, not single-quotes.
+    """
+    res = []
+    part = ''
+
+    escape = quote = False
+    for cur in s:
+        if escape:
+            part += cur
+            escape = False
+            continue
+        if quote:
+            if cur == '\\':
+                escape = True
+                continue
+            elif cur == '"':
+                quote = False
+            part += cur
+            continue
+
+        if cur == ',':
+            res.append(part)
+            part = ''
+            continue
+
+        if cur == '"':
+            quote = True
+
+        part += cur
+
+    # append last part
+    if part:
+        res.append(part)
+
+    return [part.strip() for part in res]
