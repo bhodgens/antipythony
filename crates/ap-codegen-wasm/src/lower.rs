@@ -3651,6 +3651,20 @@ fn emit_gen_step_fn(f: &mut Function, uf: &UserFn, ctx: &mut EmitCtx) {
     // trampoline; matched park-yield handler -> dispatch the staged
     // HandlerPrefix segment.
     let has_wrapper = wrap_of.iter().any(|w| w.is_some());
+    // 3.14: an exception ESCAPING the generator frame (no handler matched —
+    // including "this gen has no try at all") CLOSES the generator: the
+    // throw-in (gen_throw/gen_close) resumes at the park; the exc leaves the
+    // frame here; the gen must be dead so a later next() answers exhaustion,
+    // not the park's successor segment (GE006: post-throw next() returned the
+    // next yield instead of the default — the park's state survived).
+    f.instruction(&Instruction::LocalGet(gen.scratch.s_pad));
+    f.instruction(&Instruction::RefIsNull);
+    f.instruction(&Instruction::If(BlockType::Empty));
+    f.instruction(&Instruction::Else);
+    gen_lget_gen(f);
+    f.instruction(&Instruction::I32Const(GS_DONE));
+    sset(f, T_GENERATOR, F_GEN_STATE);
+    f.instruction(&Instruction::End);
     if !has_wrapper {
         // no try in this gen: any caught exc must propagate unchanged
         f.instruction(&Instruction::LocalGet(gen.scratch.s_pad));
@@ -3705,7 +3719,7 @@ fn emit_gen_step_fn(f: &mut Function, uf: &UserFn, ctx: &mut EmitCtx) {
             f.instruction(&Instruction::End); // If(hi)
             let _ = hi;
         }
-        // unmatched: rethrow
+        // unmatched: rethrow (state already marked dead above)
         f.instruction(&Instruction::LocalGet(gen.scratch.s_pad));
         f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
         f.instruction(&Instruction::Throw(TAG_PYEXC));
@@ -4773,6 +4787,13 @@ fn emit_user_fn(
             f.instruction(&Instruction::LocalSet(cell_base + n_own + i));
         }
     }
+    // print-buffer pointer init (03.04g corollary): _start AND the generator
+    // step fns init TEMP_LOCAL(40)=PRINT_BUF; plain user fns never did — the
+    // FIRST print of every user-fn frame wrote at mem[0] (wasm locals zero-
+    // start) and flushed with an underflowed length, silently losing the
+    // line (GE006's 'produce N' prints; d4/d2 bisect 2026-11-22).
+    f.instruction(&Instruction::I32Const(fx::PRINT_BUF));
+    f.instruction(&Instruction::LocalSet(TEMP_LOCAL));
     // bind Python params: args[i] when provided, else the def-time default
     // (S-02-7/8: defaults extend the accepted arity downward). argc is
     // args.len; defaults live on the $function (param 0) -> defaults[i].
