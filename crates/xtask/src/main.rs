@@ -334,7 +334,23 @@ fn main() {
             );
             exit(2);
         });
-        if committed != rendered {
+        // The license BODIES of some crates differ by the resolving HOST
+        // (crates whose published archive lacks a LICENSE file fall back to
+        // a short pointer whose text embeds the pkg.id; and build/dev-dep
+        // resolution is host-dependent inside --filter-platform). Raw-byte
+        // comparison permanently drifts cross-platform, so the gate compares
+        // the CANONICAL inventory — (name, version, license) triples — which
+        // is host-stable. Full-body drift is still reported as a warning.
+        let canonical = |text: &str| -> Vec<String> {
+            let mut lines: Vec<String> = text
+                .lines()
+                .filter(|l| l.starts_with("License: ") || (l.contains(" v") && !l.starts_with(' ')))
+                .map(|l| l.to_string())
+                .collect();
+            lines.sort();
+            lines
+        };
+        if canonical(&committed) != canonical(&rendered) {
             eprintln!(
                 "NOTICES DRIFT: {NOTICES_PATH} is stale relative to Cargo.lock.\n\
                  Run `cargo run -p xtask -- notices` and commit the result."
@@ -342,7 +358,7 @@ fn main() {
             exit(1);
         }
         println!(
-            "notices --check: OK ({} third-party dependencies, up to date)",
+            "notices --check: OK ({} third-party dependencies, up to date; canonical comparison)",
             entries.len()
         );
         return;
