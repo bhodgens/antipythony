@@ -132,7 +132,14 @@ trunk. Gate counts cited by leaves are claims; re-runs are evidence.
  FINISHER WAVE DISPATCHED 2026-11-23 (deleg_47cd2b60, 3 leaves):
  (a) leaf-struct1 = F-STRUCT-1 (from-import resolution order;
  pydantic BaseModel chain green is the gate);
- (b) leaf-lint = build-ext linkage lint row + docs warning;
+ (b) leaf-lint = build-ext linkage lint row + docs warning — MERGED
+ (chain 8058bdc/a6c6b87 via tier1-lint; build_ext_gate 5/5 verified
+ on trunk). BONUS: filed TWO pre-existing fresh-build failures
+ (stale-binary-masked class, band owners must re-verify after the
+ next full trunk rebuild): six suite failures + hybrid_gate
+ plain-binary emit-wasm row; plus the APX_EXT_DIR env gotcha (a
+ leftover sibling export silently reroutes build-ext output; the
+ new row pins env_remove).
  (c) leaf-pydiff = CPython-arm byte differential of the 110
  pydantic members — MERGED 234862a. ~106 lines BYTE-EXACT;
  15 divergences recorded with exact bytes, biggest family = token
