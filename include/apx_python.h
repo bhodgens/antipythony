@@ -439,6 +439,7 @@ PyObject *PyLong_FromUnsignedNativeBytes(const void *buffer, size_t n_bytes,
    is an opaque usize index; digits is a u32 array (30-bit values, LSB
    first) the caller fills through *digits before Finish. */
 typedef size_t apx_writer_handle;
+typedef size_t apx_unicode_writer; /* the PyUnicodeWriter band (pydiff) */
 apx_writer_handle PyLongWriter_Create(int negative, Py_ssize_t ndigits,
                                       void **digits);
 PyObject *PyLongWriter_Finish(apx_writer_handle writer);
@@ -683,3 +684,36 @@ PyObject *PyUnicode_New(Py_ssize_t size, PyObject *maxchar);
 int Py_IsFinalizing(void);
 int Py_IsInitialized(void);
 PyObject *Py_GetConstant(unsigned int constant_id);
+
+/* --- leaf tier1-pydiff: arm-neutral aliases for the differential -----
+   sources (tests/ce-s1/pydantic_diff.c). The CPython arm defines the
+   SAME names in apx_cpython_compat.h so one source compiles both ways. */
+static inline int apx_iter_next_impl(PyObject *it, PyObject **out) {
+    /* This header's PyIter_NextItem stores has_next in the out-slot;
+       fetch the item via the return and mirror CPython's (item, rc)
+       contract for the diff driver: rc==0 (has_next==1), *out = item. */
+    int has = 0;
+    PyObject *v = PyIter_NextItem(it, &has);
+    *out = v;
+    return has == 1 ? 0 : 1;
+}
+#define apx_iter_next(it, out)   apx_iter_next_impl((it), (out))
+#define apx_unicode_maxchar()    PyUnicode_FromString("") /* maxchar token */
+#define apx_interp_id()          PyInterpreterState_GetID()
+#define apx_empty_tuple_const()  4 /* this header's pycore-order guess */
+#define apx_type_type()          (&PyType_Type)
+#define apx_baseobject_type()    (&PyBaseObject_Type)
+#define apx_bool_type()          (&PyBool_Type)
+#define apx_bytearray_type()     (&PyByteArray_Type)
+#define apx_bytes_type()         (&PyBytes_Type)
+#define apx_complex_type()       (&PyComplex_Type)
+#define apx_dict_type()          (&PyDict_Type)
+#define apx_float_type()         (&PyFloat_Type)
+#define apx_frozenset_type()     (&PyFrozenSet_Type)
+#define apx_list_type()          (&PyList_Type)
+#define apx_long_type()          (&PyLong_Type)
+#define apx_module_type()        (&PyModule_Type)
+#define apx_set_type()           (&PySet_Type)
+#define apx_tuple_type()         (&PyTuple_Type)
+#define apx_unicode_type()       (&PyUnicode_Type)
+#define apx_modinit PyObject *
