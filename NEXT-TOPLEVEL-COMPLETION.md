@@ -129,6 +129,14 @@ trunk. Gate counts cited by leaves are claims; re-runs are evidence.
  structural, own leaf), build-ext linkage lint row, CPython-arm byte
  diff of the 110 pydantic members, final trunk sweep + AGENTS.md
  update, completion declaration.
+ FINISHER WAVE DISPATCHED 2026-11-23 (deleg_47cd2b60, 3 leaves):
+ (a) leaf-struct1 = F-STRUCT-1 (from-import resolution order;
+ pydantic BaseModel chain green is the gate);
+ (b) leaf-lint = build-ext linkage lint row + docs warning;
+ (c) leaf-pydiff = CPython-arm byte differential of the 110
+ pydantic members (divergences recorded with bytes, engine fixes
+ deferred to follow-ups). After this wave: final trunk sweep +
+ AGENTS.md update + completion declaration.
 
 ## Explicitly NOT in scope (locked)
 
