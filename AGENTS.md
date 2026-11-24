@@ -47,10 +47,13 @@ GIL, uv-backed deps at build time. Byte-exact differential conformance vs CPytho
   docs/test-interpreter-lock-policy.md.
 
 ## Current status (update this block when it changes)
-- TOP-LEVEL CAMPAIGN COMPLETE 2026-11-23 (orchestrator session, tracker
+- TOP-LEVEL PLAN COMPLETE 2026-11-24 (orchestrator session, tracker
   NEXT-TOPLEVEL-COMPLETION.md): Plans 00-04 + Plan 10 S1 complete, pydantic
   GREEN, Plan 05 T3 REACH / T4 walls mapped / T5 BLOCKED priced. 21 campaign
-  leaves merged, each verify-before-merge re-gated first-hand. KEY RESULTS:
+  leaves merged, each verify-before-merge re-gated first-hand. FINAL NUMBERS:
+  workspace cargo --release 673 passed / 0 failed (123 suites); pytest 2245
+  passed / 0 failed; notices --check OK; traceability + t05/t06/t08 1185
+  passed. KEY RESULTS:
   Plan 10 S1 wrapper band LANDED (containers/object-protocol/error-tb/
   hard-members/pydantic-band ~250 members, exports_{containers,objproto,
   errtb,long_gc,method_mem,pydantic}.rs); pydantic-core probe GREEN
