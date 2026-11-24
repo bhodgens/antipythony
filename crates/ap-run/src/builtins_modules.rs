@@ -8528,6 +8528,45 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                 Ok(Value::Obj(it))
             }
             "getpid" => Ok(i(std::process::id() as i64)),
+            // F-INTERP-1 follow-up (leaf tier1-fileno): os.get_terminal_size(fd)
+            // — REAL ioctl(TIOCGWINSZ) so rich's Console.size() (console.py:1024,
+            // os.get_terminal_size(file_descriptor)) behaves per CPython: a tty
+            // fd reports the winsize, a non-tty fd raises OSError ENOTTY
+            // ("Inappropriate ioctl for device") — the exact escape rich's
+            // `except OSError` fallback path catches. No-arg form defaults to
+            // STDOUT_FILENO (CPython semantics).
+            "get_terminal_size" => {
+                let fd = match args.first() {
+                    Some(v) => as_int_i64(v)?,
+                    None => 1,
+                };
+                let mut ws = libc::winsize {
+                    ws_row: 0,
+                    ws_col: 0,
+                    ws_xpixel: 0,
+                    ws_ypixel: 0,
+                };
+                let rc = unsafe { libc::ioctl(fd as i32, libc::TIOCGWINSZ, &mut ws) };
+                if rc != 0 || ws.ws_col == 0 && ws.ws_row == 0 {
+                    // CPython raises the raw errno error; under `antipythony run`
+                    // stdout is a pipe (non-tty), so this is the ENOTTY shape
+                    // rich catches with its fallback (80x24).
+                    return Err(io_flow(std::io::Error::from_raw_os_error(libc::ENOTTY)));
+                }
+                let (cols, lines) = (ws.ws_col as i64, ws.ws_row as i64);
+                let o = PyObject::new(ap_obj::ObjKind::NamedTuple, "terminal_size");
+                {
+                    let attrs = o.attrs.lock().unwrap_or_else(|p| p.into_inner());
+                    let _ = attrs.set(s("columns"), i(cols));
+                    let _ = attrs.set(s("lines"), i(lines));
+                    let _ = attrs.set(s("<values>"), list(vec![i(cols), i(lines)]));
+                    let _ = attrs.set(s("<fields>"), list(vec![s("columns"), s("lines")]));
+                }
+                let _ = o.repr_text.lock().unwrap_or_else(|p| p.into_inner()).take();
+                *o.repr_text.lock().unwrap_or_else(|p| p.into_inner()) =
+                    Some(format!("os.terminal_size(columns={cols}, lines={lines})"));
+                Ok(Value::Obj(o))
+            }
             "getuid" | "geteuid" => {
                 #[cfg(target_os = "macos")]
                 {
@@ -13536,6 +13575,60 @@ pub(crate) fn bytes_fromhex(txt: &[u8]) -> BResult {
 
 fn build_io(_i: &crate::frame::Interpreter) -> Value {
     let (m, ns) = new_module("io");
+    // F-INTERP-1 (leaf tier1-fileno): io.UnsupportedOperation must be a REAL
+    // exception class (OSError + ValueError bases per CPython) interned under
+    // BOTH spellings — the bare name (except io.UnsupportedOperation binds the
+    // ns attr) and the dotted raised name (call_io raises class
+    // "io.UnsupportedOperation"; exc_matches' class-payload walk and
+    // exc_hier::is_subclass both resolve through interp.exc_classes). Before
+    // this, the dotted name had NO class payload and NO hierarchy edge, so
+    // `except OSError` / `except Exception` FAILED to match and the raise
+    // escaped shutil.get_terminal_size's catch chain (killing rich's console
+    // init at import: shutil.get_terminal_size(sys.__stdout__.fileno())).
+    if let Some(interp) = current_interp() {
+        let osbase = crate::classes::exc_class_value(&interp, "OSError")
+            .and_then(|v| crate::classes::type_of(&interp, &v));
+        let vbase = crate::classes::exc_class_value(&interp, "ValueError")
+            .and_then(|v| crate::classes::type_of(&interp, &v));
+        let mut bases: Vec<std::sync::Arc<ap_obj::classes::TypeRef>> = Vec::new();
+        if let Some(b) = osbase {
+            bases.push(b);
+        }
+        if let Some(b) = vbase {
+            bases.push(b);
+        }
+        if bases.is_empty() {
+            bases.push(crate::classes::object_class(&interp));
+        }
+        let t = ap_obj::classes::TypeObject::create(
+            "UnsupportedOperation".to_string(),
+            "UnsupportedOperation".to_string(),
+            bases,
+            PyDict::new(),
+            ap_obj::classes::TypeFlags {
+                slots: None,
+                is_exception: true,
+                builtin_exc: true,
+            },
+            None,
+        )
+        .expect("io.UnsupportedOperation MRO");
+        let _ = t
+            .dict
+            .set(Value::Str(PyString::new("__module__")), s("io"));
+        let cv = ap_obj::classes::make_class_value(t);
+        {
+            let mut table = interp
+                .exc_classes
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            table.insert("UnsupportedOperation".to_string(), cv.clone());
+            table.insert("io.UnsupportedOperation".to_string(), cv.clone());
+        }
+        let _ = ns.set(s("UnsupportedOperation"), cv);
+    } else {
+        let _ = ns.set(s("UnsupportedOperation"), interned_type_pub("UnsupportedOperation"));
+    }
     ns_const(&ns, "DEFAULT_BUFFER_SIZE", i(131072));
     ns_const(&ns, "SEEK_SET", i(0));
     ns_const(&ns, "SEEK_CUR", i(1));

@@ -3423,6 +3423,17 @@ pub fn make_sys_module(interp: &Interpreter) -> Value {
         ap_obj::ObjKind::Opaque,
         "TextIOWrapper",
     ));
+    // F-INTERP-1 (leaf tier1-fileno): sys.stdin carries the REAL fd (0) so
+    // stdin.fileno() answers per CPython non-tty semantics (the fd-backed
+    // call_io fileno arm reads <fd>; without it the raise escapes
+    // shutil.get_terminal_size's catch chain during rich's console init).
+    if let Value::Obj(so) = &stdin_obj {
+        let _ = so
+            .attrs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .set(Value::Str(PyString::new("<fd>")), Value::Int(Int::from_i64(0)));
+    }
     let _ = ns.set(Value::Str(PyString::new("stdin")), stdin_obj.clone());
     // CPython: sys.__stdin__ holds the ORIGINAL stdin (pytest's
     // DontReadFromInput restore + capture.py:225 assert rely on it
