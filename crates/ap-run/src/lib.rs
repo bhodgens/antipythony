@@ -48,6 +48,7 @@ pub mod sre;
 pub mod sre_tables;
 pub mod structmod;
 pub mod surr_codec;
+pub mod simd_encode;
 pub mod threading;
 pub mod threading_call;
 

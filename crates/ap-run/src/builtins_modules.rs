@@ -12720,69 +12720,102 @@ fn b64_table() -> &'static [u8; 64] {
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 }
 
-pub fn call_base64(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Option<BResult> {
+pub fn call_base64(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option<BResult> {
+    // Leaf 01-base64-simd: these arms are now EXACT ports of CPython 3.14
+    // Lib/base64.py — thin wrappers over the binascii a2b/b2a state machine
+    // (which lives below in call_binascii, byte-exact per its own gate):
+    //   b64encode = b2a_base64(newline=False) [+ altchars translate]
+    //   b64decode = _bytes_from_decode_data [+ altchars translate]
+    //               -> a2b_base64(strict_mode=validate)
+    // All error text/padding/whitespace semantics come from the a2b arm,
+    // so the differential gate passes by construction.
     let r: BResult = (|| -> BResult {
         match name {
             "b64encode" => {
-                let data = bytes_arg(required(args, "b64encode")?)?;
-                Ok(Value::Bytes(Gc::new(b64_encode(&data))))
+                let data = bytes_like_ref(required(args, "b64encode")?)?;
+                let altchars = kw(kwargs, "altchars");
+                let encoded = b2a_base64_std(&data);
+                match altchars {
+                    None | Some(Value::None) => Ok(Value::Bytes(Gc::new(encoded))),
+                    Some(v) => {
+                        let alt = bytes_from_decode_data(v)?;
+                        if alt.len() != 2 {
+                            return Err(raise(
+                                "AssertionError",
+                                ap_obj::str_repr::bytes_repr(&alt),
+                            ));
+                        }
+                        let alt2: [u8; 2] = [alt[0], alt[1]];
+                            Ok(Value::Bytes(Gc::new(translate_two(&encoded, b"+/", &alt2))))
+                    }
+                }
             }
-            // T1-d fix (jwt-style chains): urlsafe variants — same alphabet
-            // with -_ instead of +/ and no padding on decode.
+            // urlsafe variants: Lib/base64.py translates +/-_ and re-enters
+            // b64encode/b64decode (which re-validates altchars=None).
             "urlsafe_b64encode" => {
-                let data = bytes_arg(required(args, name)?)?;
-                let std_b64 = b64_encode(&data);
-                let out: Vec<u8> = std_b64
-                    .iter()
-                    .map(|b| match b {
-                        b'+' => b'-',
-                        b'/' => b'_',
-                        other => *other,
-                    })
-                    .collect();
-                Ok(Value::Bytes(Gc::new(out)))
+                let data = bytes_like_ref(required(args, name)?)?;
+                let encoded = b2a_base64_std(data);
+                Ok(Value::Bytes(Gc::new(translate_two(&encoded, b"+/", b"-_"))))
             }
             "urlsafe_b64decode" => {
-                let data = bytes_arg(required(args, name)?)?;
-                let restored: Vec<u8> = data
-                    .iter()
-                    .map(|b| match b {
-                        b'-' => b'+',
-                        b'_' => b'/',
-                        other => *other,
-                    })
-                    .collect();
-                b64_decode(&restored)
-                    .map(|b| Value::Bytes(Gc::new(b)))
-                    .map_err(|()| raise("binascii.Error", "Invalid base64-encoded string"))
+                let data = bytes_from_decode_data(required(args, name)?)?;
+                let restored = translate_two(&data, &[b'-', b'_'], b"+/");
+                b64decode_std(&restored, false, name)
             }
             // T1: encodebytes = base64.encodebytes — 76-char chunked lines.
             "encodebytes" => {
-                let data = bytes_arg(required(args, name)?)?;
-                let full = b64_encode(&data);
-                let mut out = Vec::with_capacity(full.len() + full.len() / 76 + 2);
-                for chunk in full.chunks(76) {
-                    out.extend_from_slice(chunk);
-                    out.push(b'\n');
+                let data = bytes_like_ref(required(args, name)?)?;
+                let mut out = Vec::with_capacity(data.len() * 2 + 16);
+                // MAXBINSIZE = (76 // 4) * 3 = 57: the chunks re-enter
+                // binascii.b2a_base64 with newline=True each time.
+                for chunk in data.chunks(57) {
+                    out.extend_from_slice(&b2a_base64_nl(chunk, true));
                 }
                 Ok(Value::Bytes(Gc::new(out)))
             }
             "decodebytes" => {
-                let data = bytes_arg(required(args, name)?)?;
-                let cleaned: Vec<u8> = data
-                    .iter()
-                    .copied()
-                    .filter(|b| !b.is_ascii_whitespace())
-                    .collect();
-                b64_decode(&cleaned)
-                    .map(|b| Value::Bytes(Gc::new(b)))
-                    .map_err(|()| raise("binascii.Error", "Invalid base64-encoded string"))
+                let data = bytes_like_ref(required(args, name)?)?;
+                // decodebytes = a2b_base64(s) — CPython does NOT pre-filter
+                // whitespace; non-alphabet bytes are discarded by a2b itself.
+                a2b_base64_impl(data, false)
             }
             "b64decode" => {
-                let data = bytes_arg(required(args, "b64decode")?)?;
-                b64_decode(&data)
-                    .map(|b| Value::Bytes(Gc::new(b)))
-                    .map_err(|()| raise("binascii.Error", "Invalid base64-encoded string"))
+                // Lib/base64.py: s = _bytes_from_decode_data(s); optional
+                // altchars translate; binascii.a2b_base64(s, strict_mode=validate).
+                let s_arg = required(args, "b64decode")?;
+                let validate = match kw(kwargs, "validate") {
+                    None => false,
+                    Some(Value::Bool(b)) => *b,
+                    Some(v) => {
+                        return Err(raise(
+                            "TypeError",
+                            format!("bool is required, not {}", v.type_name()),
+                        ))
+                    }
+                };
+                match kw(kwargs, "altchars") {
+                    // Hot path: plain bytes input, no translate — decode the
+                    // borrowed slice directly (no copy).
+                    None | Some(Value::None) => match s_arg {
+                        Value::Bytes(b) => a2b_base64_impl(b, validate),
+                        _ => {
+                            let data = bytes_from_decode_data(s_arg)?;
+                            a2b_base64_impl(&data, validate)
+                        }
+                    },
+                    Some(v) => {
+                        let alt = bytes_from_decode_data(v)?;
+                        if alt.len() != 2 {
+                            return Err(raise(
+                                "AssertionError",
+                                ap_obj::str_repr::bytes_repr(&alt),
+                            ));
+                        }
+                        let data = bytes_from_decode_data(s_arg)?;
+                        let translated = translate_two(&data, &[alt[0], alt[1]], b"+/");
+                        b64decode_std(&translated, validate, "b64decode")
+                    }
+                }
             }
             "b16encode" => {
                 let data = bytes_arg(required(args, "b16encode")?)?;
@@ -12823,10 +12856,82 @@ pub fn call_base64(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> O
     }
 }
 
+/// Borrowed bytes-like view (no clone) for the hot b64 encode/decode arms.
+fn bytes_like_ref(v: &Value) -> Result<&[u8], Flow> {
+    match v {
+        Value::Bytes(b) => Ok(&**b),
+        Value::Str(st) => Ok(st.as_str().as_bytes()),
+        other => Err(raise(
+            "TypeError",
+            format!("a bytes-like object is required, not '{}'", other.type_name()),
+        )),
+    }
+}
+
+/// bytes.maketrans-style 1:1 byte translation of exactly two source bytes.
+fn translate_two(data: &[u8], from: &[u8; 2], to: &[u8; 2]) -> Vec<u8> {
+    data.iter()
+        .map(|&b| {
+            if b == from[0] {
+                to[0]
+            } else if b == from[1] {
+                to[1]
+            } else {
+                b
+            }
+        })
+        .collect()
+}
+
+/// Lib/base64.py `_bytes_from_decode_data`: str -> ASCII-encode (ValueError
+/// 'string argument should contain only ASCII characters' on failure);
+/// bytes -> as-is; anything else -> TypeError 'argument should be a
+/// bytes-like object or ASCII string, not %r'.
+fn bytes_from_decode_data(v: &Value) -> Result<Vec<u8>, Flow> {
+    match v {
+        Value::Str(st) => {
+            let s = st.as_str();
+            if !s.is_ascii() {
+                return Err(raise(
+                    "ValueError",
+                    "string argument should contain only ASCII characters",
+                ));
+            }
+            Ok(s.as_bytes().to_vec())
+        }
+        Value::Bytes(_) | Value::List(_) | Value::Tuple(_) => bytes_arg(v),
+        // memoryview-shaped values ride Obj with a __len__/__getitem__ or a
+        // bytes() surface; keep the old bytes_arg fallback for them.
+        other => bytes_arg(other),
+    }
+}
+
+/// The `bytes-like object` argument of b64encode (Py_buffer semantics:
+/// str is REJECTED with CPython's exact text).
+fn bytes_like_arg(v: &Value, fname: &str) -> Result<Vec<u8>, Flow> {
+    match v {
+        Value::Bytes(b) => Ok((**b).clone()),
+        other => Err(raise(
+            "TypeError",
+            format!(
+                "a bytes-like object is required, not '{}'",
+                other.type_name()
+            ),
+        ))
+        .map_err(|e| {
+            let _ = fname;
+            e
+        }),
+    }
+}
+
+/// scalar b64 encode with the standard table; SIMD-prefixed via
+/// crate::simd_encode (leaf 01-base64-simd, PR #162443 port).
 fn b64_encode(data: &[u8]) -> Vec<u8> {
-    let table = b64_table();
     let mut out = Vec::with_capacity(data.len().div_ceil(3) * 4);
-    for chunk in data.chunks(3) {
+    let _ = crate::simd_encode::encode_prefix(data, &mut out);
+    let table = b64_table();
+    for chunk in data[out.len() / 4 * 3..].chunks(3) {
         let b0 = chunk[0] as u32;
         let b1 = *chunk.get(1).unwrap_or(&0) as u32;
         let b2 = *chunk.get(2).unwrap_or(&0) as u32;
@@ -12847,29 +12952,143 @@ fn b64_encode(data: &[u8]) -> Vec<u8> {
     out
 }
 
-fn b64_decode(data: &[u8]) -> Result<Vec<u8>, ()> {
-    let mut acc: u32 = 0;
-    let mut bits = 0;
-    let mut out = Vec::new();
-    for &c in data {
-        let v = match c {
-            b'A'..=b'Z' => c - b'A',
-            b'a'..=b'z' => c - b'a' + 26,
-            b'0'..=b'9' => c - b'0' + 52,
+/// binascii.b2a_base64 shape: standard-alphabet encode with CPython's exact
+/// bit-accumulator tail (2/4 leftover bits -> 1/2 pad chars) + newline kwarg.
+fn b2a_base64_impl(data: &[u8], newline: bool) -> Vec<u8> {
+    // Leaf 01-base64-simd: NEON bulk (complete 3-byte groups) + the exact
+    // scalar tail (2/4 leftover bits -> 1/2 '=' pads). Byte-identical to
+    // the old bit-accumulator body (diff_b64 A/B/D matrices gate it).
+    let mut out = b64_encode(data);
+    if newline {
+        out.push(b'\n');
+    }
+    out
+}
+
+/// SIMD-prefixed b2a (newline=False): the b64encode hot path.
+fn b2a_base64_std(data: &[u8]) -> Vec<u8> {
+    b2a_base64_impl(data, false)
+}
+
+/// newline=True shape (encodebytes chunks).
+fn b2a_base64_nl(data: &[u8], newline: bool) -> Vec<u8> {
+    b2a_base64_impl(data, newline)
+}
+
+/// The shared decode entry for the base64-module arms: strict_mode=validate
+/// through the SAME state machine as binascii.a2b_base64 (byte-exact error
+/// surface owned there).
+fn b64decode_std(data: &[u8], strict_mode: bool, _fname: &str) -> BResult {
+    a2b_base64_impl(data, strict_mode)
+}
+
+/// binascii.a2b_base64's state machine, extracted verbatim from call_binascii
+/// so the base64-module wrappers share one exact implementation.
+fn a2b_base64_impl(data: &[u8], strict_mode: bool) -> BResult {
+    fn table_a2b(c: u8) -> i8 {
+        match c {
+            b'A'..=b'Z' => (c - b'A') as i8,
+            b'a'..=b'z' => (c - b'a') as i8 + 26,
+            b'0'..=b'9' => (c - b'0') as i8 + 52,
             b'+' => 62,
             b'/' => 63,
-            b'=' => break,
-            b'\n' | b'\r' => continue,
-            _ => return Err(()),
-        };
-        acc = (acc << 6) | v as u32;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((acc >> bits) as u8);
+            _ => -1,
         }
     }
-    Ok(out)
+    let mut out: Vec<u8> = Vec::with_capacity((data.len() / 4) * 3 + 3);
+    // NEON fast prefix (leaf 01-base64-simd): only complete 4-char groups of
+    // standard-alphabet characters; padding/invalid chars/errors stay scalar.
+    let consumed = crate::simd_encode::decode_std_prefix(data, &mut out);
+    let mut quad_pos = 0i32;
+    let mut leftchar: u8 = 0;
+    let mut pads = 0i32;
+    let mut err: Option<String> = None;
+    'scan: for (i, &raw) in data.iter().enumerate().skip(consumed) {
+        let mut this_ch = raw;
+        if this_ch == b'=' {
+            pads += 1;
+            if quad_pos >= 2 && quad_pos + pads <= 4 {
+                continue;
+            }
+            if !strict_mode {
+                continue;
+            }
+            if quad_pos == 1 {
+                err = Some(format!(
+                    "Invalid base64-encoded string: number of data characters ({}) cannot be 1 more than a multiple of 4",
+                    out.len() / 3 * 4 + 1
+                ));
+                break 'scan;
+            }
+            err = Some(
+                if quad_pos == 0 && i == 0 {
+                    "Leading padding not allowed"
+                } else {
+                    "Excess padding not allowed"
+                }
+                .to_string(),
+            );
+            break 'scan;
+        }
+        let v = table_a2b(this_ch);
+        if v < 0 {
+            if strict_mode {
+                err = Some("Only base64 data is allowed".to_string());
+                break 'scan;
+            }
+            continue;
+        }
+        if pads != 0 && strict_mode {
+            err = Some(
+                if quad_pos + pads == 4 {
+                    "Excess data after padding"
+                } else {
+                    "Discontinuous padding not allowed"
+                }
+                .to_string(),
+            );
+            break 'scan;
+        }
+        pads = 0;
+        this_ch = v as u8;
+        match quad_pos {
+            0 => {
+                quad_pos = 1;
+                leftchar = this_ch;
+            }
+            1 => {
+                quad_pos = 2;
+                out.push((leftchar << 2) | (this_ch >> 4));
+                leftchar = this_ch & 0x0f;
+            }
+            2 => {
+                quad_pos = 3;
+                out.push((leftchar << 4) | (this_ch >> 2));
+                leftchar = this_ch & 0x03;
+            }
+            _ => {
+                quad_pos = 0;
+                out.push((leftchar << 6) | this_ch);
+                leftchar = 0;
+            }
+        }
+    }
+    if let Some(e) = err {
+        return Err(raise("binascii.Error", e));
+    }
+    if quad_pos == 1 {
+        return Err(raise(
+            "binascii.Error",
+            format!(
+                "Invalid base64-encoded string: number of data characters ({}) cannot be 1 more than a multiple of 4",
+                out.len() / 3 * 4 + 1
+            ),
+        ));
+    }
+    if quad_pos != 0 && quad_pos + pads < 4 {
+        return Err(raise("binascii.Error", "Incorrect padding"));
+    }
+    Ok(Value::Bytes(Gc::new(out)))
 }
 
 pub fn call_binascii(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option<BResult> {
@@ -12906,6 +13125,8 @@ pub fn call_binascii(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> 
             // base64 + trailing newline. A-4 item 2: exact binascii.c port —
             // bit-accumulator encoder + newline kwarg. CPython 3.14: altchars
             // is NOT accepted (TypeError); b64decode/b16* names are REMOVED.
+            // Leaf 01-base64-simd: the encoder body moved to
+            // b2a_base64_impl (shared with the base64-module wrappers).
             "b2a_base64" => {
                 let data = bytes_arg(required(args, name)?)?;
                 let newline = match kw(kwargs, "newline") {
@@ -12921,37 +13142,16 @@ pub fn call_binascii(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> 
                     },
                     None => true,
                 };
-                const TABLE_B2A: &[u8; 64] =
-                    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-                let mut out = Vec::with_capacity(data.len() * 2 + 3);
-                let mut leftchar: u32 = 0;
-                let mut leftbits: u32 = 0;
-                for &byte in &data {
-                    leftchar = (leftchar << 8) | byte as u32;
-                    leftbits += 8;
-                    while leftbits >= 6 {
-                        leftbits -= 6;
-                        let ch = ((leftchar >> leftbits) & 0x3f) as usize;
-                        out.push(TABLE_B2A[ch]);
-                    }
-                }
-                if leftbits == 2 {
-                    out.push(TABLE_B2A[((leftchar & 3) << 4) as usize]);
-                    out.push(b'=');
-                    out.push(b'=');
-                } else if leftbits == 4 {
-                    out.push(TABLE_B2A[((leftchar & 0xf) << 2) as usize]);
-                    out.push(b'=');
-                }
-                if newline {
-                    out.push(b'\n');
-                }
-                Ok(Value::Bytes(Gc::new(out)))
+                Ok(Value::Bytes(Gc::new(b2a_base64_impl(&data, newline))))
             }
             // A-4 item 2: a2b_base64(data, /, *, strict_mode=False) — exact
             // port of binascii.c binascii_a2b_base64_impl (quad_pos/pads
             // state machine; all error texts byte-identical). CPython 3.14:
             // validate=/altchars= do NOT exist; strict_mode is the kwarg.
+            // Leaf 01-base64-simd: the state machine moved to
+            // a2b_base64_impl (shared with the base64-module wrappers,
+            // which call it as a2b(s, strict_mode=validate) exactly like
+            // Lib/base64.py does).
             "a2b_base64" => {
                 let data = bytes_arg(required(args, name)?)?;
                 let strict_mode = match kw(kwargs, "strict_mode") {
@@ -12967,107 +13167,7 @@ pub fn call_binascii(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> 
                     },
                     None => false,
                 };
-                fn table_a2b(c: u8) -> i8 {
-                    match c {
-                        b'A'..=b'Z' => (c - b'A') as i8,
-                        b'a'..=b'z' => (c - b'a') as i8 + 26,
-                        b'0'..=b'9' => (c - b'0') as i8 + 52,
-                        b'+' => 62,
-                        b'/' => 63,
-                        _ => -1,
-                    }
-                }
-                let mut out: Vec<u8> = Vec::with_capacity((data.len() / 4) * 3 + 3);
-                let mut quad_pos = 0i32;
-                let mut leftchar: u8 = 0;
-                let mut pads = 0i32;
-                let mut err: Option<String> = None;
-                'scan: for (i, &raw) in data.iter().enumerate() {
-                    let mut this_ch = raw;
-                    if this_ch == b'=' {
-                        pads += 1;
-                        if quad_pos >= 2 && quad_pos + pads <= 4 {
-                            continue;
-                        }
-                        if !strict_mode {
-                            continue;
-                        }
-                        if quad_pos == 1 {
-                            err = Some(format!(
-                                "Invalid base64-encoded string: number of data characters ({}) cannot be 1 more than a multiple of 4",
-                                out.len() / 3 * 4 + 1
-                            ));
-                            break 'scan;
-                        }
-                        err = Some(
-                            if quad_pos == 0 && i == 0 {
-                                "Leading padding not allowed"
-                            } else {
-                                "Excess padding not allowed"
-                            }
-                            .to_string(),
-                        );
-                        break 'scan;
-                    }
-                    let v = table_a2b(this_ch);
-                    if v < 0 {
-                        if strict_mode {
-                            err = Some("Only base64 data is allowed".to_string());
-                            break 'scan;
-                        }
-                        continue;
-                    }
-                    if pads != 0 && strict_mode {
-                        err = Some(
-                            if quad_pos + pads == 4 {
-                                "Excess data after padding"
-                            } else {
-                                "Discontinuous padding not allowed"
-                            }
-                            .to_string(),
-                        );
-                        break 'scan;
-                    }
-                    pads = 0;
-                    this_ch = v as u8;
-                    match quad_pos {
-                        0 => {
-                            quad_pos = 1;
-                            leftchar = this_ch;
-                        }
-                        1 => {
-                            quad_pos = 2;
-                            out.push((leftchar << 2) | (this_ch >> 4));
-                            leftchar = this_ch & 0x0f;
-                        }
-                        2 => {
-                            quad_pos = 3;
-                            out.push((leftchar << 4) | (this_ch >> 2));
-                            leftchar = this_ch & 0x03;
-                        }
-                        _ => {
-                            quad_pos = 0;
-                            out.push((leftchar << 6) | this_ch);
-                            leftchar = 0;
-                        }
-                    }
-                }
-                if let Some(e) = err {
-                    return Err(raise("binascii.Error", e));
-                }
-                if quad_pos == 1 {
-                    return Err(raise(
-                        "binascii.Error",
-                        format!(
-                            "Invalid base64-encoded string: number of data characters ({}) cannot be 1 more than a multiple of 4",
-                            out.len() / 3 * 4 + 1
-                        ),
-                    ));
-                }
-                if quad_pos != 0 && quad_pos + pads < 4 {
-                    return Err(raise("binascii.Error", "Incorrect padding"));
-                }
-                Ok(Value::Bytes(Gc::new(out)))
+                a2b_base64_impl(&data, strict_mode)
             }
             "unhexlify" | "a2b_hex" => {
                 let txt = match required(args, name)? {
