@@ -443,6 +443,10 @@ PyObject *PyInit_hdrmod(void) { return 0; }
         .arg("--emit-header")
         .current_dir(&dir)
         .env("APX_INCLUDE", repo_include())
+        // The row pins the DOCUMENTED default output convention (lib<name>.so
+        // + header beside the source); an inherited APX_EXT_DIR would legally
+        // reroute output and is out of contract here.
+        .env_remove("APX_EXT_DIR")
         .output()
         .expect("spawn antipythony");
     assert!(
