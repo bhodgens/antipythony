@@ -167,4 +167,105 @@ static PyObject *apx_PyMethod_Type_real = NULL;
 #define apx_PyStaticMethod_Type() ((PyObject *)&PyStaticMethod_Type)
 #define apx_PyInstanceMethod_Type() ((PyObject *)&PyInstanceMethod_Type)
 
+/* ---- leaf tier1-pydiff: the pydantic 110-member band ----
+   Real CPython HAS every member the band lands (they are CPython-spelled
+   symbols); the CPython arm needs only: (a) neutralize the apx_ accessor
+   macros/aliases the antipythony header defines, (b) map the size_t
+   PyUnicodeWriter handle back to CPython's PyUnicodeWriter* the same
+   way 1006 mapped PyLongWriter, (c) keep PyType_FromSpec's 2-arg shape
+   (already mapped above). The DIFF SOURCES use the arm-neutral alias
+   `apx_unicode_writer` for writer handles so one source compiles both
+   ways; the antipythony arm aliases it to apx_writer_handle in
+   apx_python.h (typedef size_t). */
+
+/* 10 PyExc_ data + PyExc_ValueError/KeyError etc: the antipythony header
+   spells them as accessor-fn MACROS; CPython has the real data symbols. */
+#undef PyExc_BaseException
+#undef PyExc_Exception
+#undef PyExc_AssertionError
+#undef PyExc_ImportError
+#undef PyExc_LookupError
+#undef PyExc_DeprecationWarning
+#undef PyExc_BaseExceptionGroup
+#undef PyExc_UnicodeDecodeError
+#undef PyExc_UserWarning
+#undef PyExc_RecursionError
+
+/* 15 type tokens: the header defines them as (*accessor()) macros. */
+#undef PyType_Type
+#undef PyBaseObject_Type
+#undef PyBool_Type
+#undef PyByteArray_Type
+#undef PyBytes_Type
+#undef PyComplex_Type
+#undef PyDict_Type
+#undef PyFloat_Type
+#undef PyFrozenSet_Type
+#undef PyList_Type
+#undef PyLong_Type
+#undef PyModule_Type
+#undef PySet_Type
+#undef PyTuple_Type
+#undef PyUnicode_Type
+
+/* PyUnicodeWriter: antipythony's handle is a size_t into a handle table;
+   CPython's is PyUnicodeWriterFor*. Same LP64 storage trick as the
+   PyLongWriter mapping above. */
+#define apx_unicode_writer PyUnicodeWriter *
+#undef PyUnicodeWriter_Create
+#undef PyUnicodeWriter_Discard
+#undef PyUnicodeWriter_Finish
+#undef PyUnicodeWriter_WriteChar
+#undef PyUnicodeWriter_WriteUTF8
+
+/* Py_GetConstant: real CPython 3.13+ has it (pycore constant ids). */
+/* PyInterpreterState_GetID: real since 3.12 but takes the state pointer;
+   the antipythony header spells it zero-arg (one interp per process).
+   The diff sources call it through PyInterpreterState_Get()'s answer —
+   which the antipythony arm lacks, so map the zero-arg spelling. */
+#define PyInterpreterState_Get() NULL
+/* PyUnicode_New's maxchar arg: antipythony spells it PyObject* (a str
+   token), CPython spells it Py_UCS4 — the arm-neutral alias. */
+#define apx_unicode_maxchar() 0x7f
+/* PyInterpreterState_GetID: real since 3.12, takes the state ptr; the
+   antipythony header spells it zero-arg pinned-1. The arm-neutral alias
+   answers 0 on CPython (main interp id) and 1 on antipythony — a
+   RECORDED divergence, not a mapping. */
+#define apx_interp_id() PyInterpreterState_GetID(PyInterpreterState_Get())
+/* Py_GetConstant id of EMPTY_TUPLE: 9 on CPython (object.h), 4 on the
+   antipythony header's pycore-order guess — arm-neutral alias (a
+   RECORDED divergence in the id table; the VALUE answers () both arms). */
+#define apx_empty_tuple_const() Py_CONSTANT_EMPTY_TUPLE
+/* The 15 type tokens as ACCESSOR calls (antipythony spells them as
+   (*accessor()) macros of the same names; CPython has real _Type data
+   symbols with no accessors — the arm-neutral apx_* aliases). */
+#define apx_type_type()       ((PyObject *)&PyType_Type)
+#define apx_baseobject_type() ((PyObject *)&PyBaseObject_Type)
+#define apx_bool_type()       ((PyObject *)&PyBool_Type)
+#define apx_bytearray_type()  ((PyObject *)&PyByteArray_Type)
+#define apx_bytes_type()      ((PyObject *)&PyBytes_Type)
+#define apx_complex_type()    ((PyObject *)&PyComplex_Type)
+#define apx_dict_type()       ((PyObject *)&PyDict_Type)
+#define apx_float_type()      ((PyObject *)&PyFloat_Type)
+#define apx_frozenset_type()  ((PyObject *)&PyFrozenSet_Type)
+#define apx_list_type()       ((PyObject *)&PyList_Type)
+#define apx_long_type()       ((PyObject *)&PyLong_Type)
+#define apx_module_type()     ((PyObject *)&PyModule_Type)
+#define apx_set_type()        ((PyObject *)&PySet_Type)
+#define apx_tuple_type()      ((PyObject *)&PyTuple_Type)
+#define apx_unicode_type()    ((PyObject *)&PyUnicode_Type)
+/* PyIter_NextItem: SAME C signature both arms (CPython abstract.h:415:
+   (PyObject*, PyObject**) -> int; 0=item/1?... CPython returns 1 on item,
+   0 on exhaustion; the antipythony band returns 0 on item — RECORDED
+   divergence territory; the alias keeps one source compiling). */
+static inline int apx_iter_next(PyObject *it, PyObject **out) {
+    return PyIter_NextItem(it, out);
+}
+/* PyMODINIT_FUNC: the antipythony header has no such token; the diff
+   sources use the arm-neutral apx_modinit macro. */
+#define apx_modinit PyObject *
+/* PyCMethod_New / PyCapsule_Import / PyModule_FromDefAndSpec2 /
+   PyModule_ExecDef / PyModuleDef_Init / PyModule_GetNameObject: all real
+   CPython symbols — no mapping needed. */
+
 #endif /* APX_CPYTHON_COMPAT_H */
