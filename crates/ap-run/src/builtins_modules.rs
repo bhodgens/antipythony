@@ -8947,7 +8947,11 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                 if rc != 0 {
                     return Err(io_flow(std::io::Error::last_os_error()));
                 }
-                let field_str = |f: &[libc::c_char; 256]| -> String {
+                // Linux libc: c_char is i8 and utsname fields are [i8; 65];
+                // macOS: c_char is u8 with [u8; 256]. The closure takes a
+                // byte SLICE so both shapes unify (field sizes differ per
+                // platform; take_while on the NUL terminator is identical).
+                let field_str = |f: &[libc::c_char]| -> String {
                     // utsname fields are NUL-padded fixed char arrays.
                     let bytes: Vec<u8> = f
                         .iter()
