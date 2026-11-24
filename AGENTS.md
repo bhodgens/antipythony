@@ -47,6 +47,39 @@ GIL, uv-backed deps at build time. Byte-exact differential conformance vs CPytho
   docs/test-interpreter-lock-policy.md.
 
 ## Current status (update this block when it changes)
+- TOP-LEVEL CAMPAIGN COMPLETE 2026-11-23 (orchestrator session, tracker
+  NEXT-TOPLEVEL-COMPLETION.md): Plans 00-04 + Plan 10 S1 complete, pydantic
+  GREEN, Plan 05 T3 REACH / T4 walls mapped / T5 BLOCKED priced. 21 campaign
+  leaves merged, each verify-before-merge re-gated first-hand. KEY RESULTS:
+  Plan 10 S1 wrapper band LANDED (containers/object-protocol/error-tb/
+  hard-members/pydantic-band ~250 members, exports_{containers,objproto,
+  errtb,long_gc,method_mem,pydantic}.rs); pydantic-core probe GREEN
+  (kill-criterion #3 does not fire; 110-symbol residual landed;
+  CPython-arm differential 106 lines byte-exact, 15 divergences recorded
+  with bytes in NEXT-PYDIFF.md — token-repr identity posture is the
+  biggest family); T3 hermes-agent: pydantic_core + pydantic imports GREEN
+  (module __getattr__ deadlock root-caused + fixed — the typing-hang was
+  this, not a spin); T4 fastapi: type.mro(), PEP 634 class patterns, isX
+  unbound reads, __wrapped__ exclusion landed, typing_extensions imports;
+  T5 comfyui/torch BLOCKED priced: pure-Py walls fixed (splitlines
+  keepends + bytes.splitlines; importlib find_spec dir-packages +
+  SourceFileLoader exec_module; typing hang; stdout fileno; colorsys +
+  parse_http_list vendored), C-API delta 186 = 139 S1-class + 47 S2/S4
+  structural (buffer protocol first). OTHER LANDS: Plan 03 HARDEN
+  scan-gating complete (LOWER-PANIC 0), GE006 wasm lazy-protocol fixed
+  (2 real emitter bugs; CLI corpus 53/53), Plan 04 honest gaps closed,
+  F-STRUCT-1 re-entrant lazy import fixed, AOT vendored_stdlib embedding
+  (standalone imports + linecache; binary slice 46/48), linecache/2.08
+  audit gaps closed, T121 lock-free + scheduler 2b/2c landed. FILED FOR
+  LATER: pydantic.main ModelMetaclass __signature__ walk (next pydantic
+  wall, debug aids in NEXT-STRUCT1.md), 2 stale-binary-masked fresh-build
+  failures (six-suite + hybrid emit-wasm; band owners re-verify), 15
+  pydiff divergences, S2 buffer-protocol tier, W5-documented GC re-entrancy
+  pin. Bands' own session records (NEXT-1005A/B/C, NEXT-1006,
+  NEXT-PYDANTIC-PROBE, NEXT-T3/T4/T5, NEXT-STRUCT1, NEXT-PYDIFF,
+  NEXT-STRFIX, NEXT-IMPORTLIB, NEXT-VENDORED, NEXT-FILENO-GC, NEXT-LINT,
+  NEXT-04GAPS, NEXT-HARDEN2, NEXT-GE006, NEXT-02RESID-A/B, NEXT-LINECACHE)
+  carry the details.
 - Plans 00+01 COMPLETE. Plan 02 nearly complete: 02.01 values, 02.02 executor,
   02.03/02.03b classes+metaclass, 02.04 GC (weakref surfaces, unittest gate,
   MMTk design doc docs/gc-mmtk-swap.md), 02.08-lite + 02.08-full p1 (25+
