@@ -31,6 +31,8 @@ main via the orchestrator after first-hand gate re-runs.
 | # | leaf | owner surface | status | delegation |
 |---|---|---|---|---|
 | W1 | 00-harness/01-harness-runner.md | tests/bench/primitive/* (new files, no cargo) | IN FLIGHT | deleg_7a6d3a8f |
+| W1 | diff gates diff_b64.py + diff_hex.py (upfront gate authoring) | tests/bench/primitive/diff_*.py only | IN FLIGHT | deleg_1f905825 |
+| W1 | audits: hash-compress / str-bytes / sort-dict-json (analysis-only, ratio placeholders) | 02-parity-audit/audits/*.md ONLY | IN FLIGHT (3 parallel) | deleg_43751b52 |
 | W1 | release build of ap-cli in leaf worktree | target-primperf | IN FLIGHT (orchestrator background proc) | proc_196de983a269 |
 | W2 | 00-harness/02-baseline-survey.md | bench_report.json + baseline-notes.md | QUEUED (needs W1 + release binary) | - |
 | W3 | 01-encode-simd/01-base64-simd.md | builtins_modules.rs b64 arms + simd_encode.rs | QUEUED (needs W2) | - |
@@ -48,6 +50,11 @@ main via the orchestrator after first-hand gate re-runs.
   base64 owns builtins_modules.rs b64 arms; audits write only .md docs).
 - W4: hexlify-simd after base64 is REVIEWED (shares simd_encode.rs).
 - W5: final report after W3+W4 merged to trunk and gates re-run.
+- Audit leaves may run ahead of W2: they write analysis with
+  'PENDING baseline (W2)' ratio placeholders; orchestrator fills measured
+  numbers at review. Audit leaves write ONLY their audits/*.md file.
+- Gate-authoring leaf (diff_b64/diff_hex) runs ahead of the SIMD leaves
+  so they inherit a validated RED→GREEN differential gate.
 - Audit FIX leaves (if any FIXABLE verdicts): dispatched by master after
   01-encode-simd file ownership frees up (i.e. after W4 merges).
 
