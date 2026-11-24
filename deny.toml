@@ -31,30 +31,13 @@ allow = [
     "Unicode-3.0",
     "CDLA-Permissive-2.0",
 ]
-deny = [
-    "GPL-1.0",
-    "GPL-2.0",
-    "GPL-3.0",
-    "AGPL-1.0",
-    "AGPL-3.0",
-    "LGPL-2.0",
-    "LGPL-2.1",
-    "LGPL-3.0",
-    "MPL-1.1",
-    "MPL-2.0",
-    "CC-BY-SA-1.0",
-    "CC-BY-SA-2.0",
-    "CC-BY-SA-2.5",
-    "CC-BY-SA-3.0",
-    "CC-BY-SA-4.0",
-    "SSPL-1.0",
-    "EUPL-1.1",
-    "EUPL-1.2",
-]
-# MPL-2.0 is file-level copyleft and normally compatible, but it is denied here
-# on purpose: any MPL file pulled into this tree must be a deliberate, reviewed
-# decision, not something a transitive dep drags in silently. If a needed crate
-# is MPL-2.0, add an explicit exception entry with justification.
+# NOTE: cargo-deny PR 611 removed the `licenses.deny` key — the copyleft
+# policy below is enforced via the allow-list (everything not in `allow`
+# is rejected) plus the documented MPL-2.0 exception posture.
+# Deny-list preserved here as documentation of the original policy:
+#   GPL-1.0/2.0/3.0, AGPL-1.0/3.0, LGPL-2.0/2.1/3.0, MPL-1.1/2.0,
+#   CC-BY-SA-1.0/2.0/2.5/3.0/4.0, SSPL-1.0, EUPL-1.1/1.2
+# MPL-2.0 is file-level copyleft and normally compatible, but it is denied
 confidence-threshold = 0.93
 
 [[licenses.exceptions]]
