@@ -349,6 +349,83 @@ PyObject *PyInit_othername(void) { return 0; }
 }
 
 #[test]
+fn build_ext_output_has_zero_framework_load_commands() {
+    // Linkage lint row (NEXT-TOPLEVEL-COMPLETION item 0 / the leaf-1005a
+    // SEGV gotcha): a .so built by `antipythony build-ext` must carry ZERO
+    // Python.framework load commands. Extensions compiled by MANUAL cc with
+    // a Python.framework LC_LOAD_DYLIB (e.g. by copying the CPython-arm
+    // `python3.14-config --ldflags` line) SEGV intermittently: dyld
+    // sometimes binds PyModule_Create2 to the framework instead of the
+    // antipythony binary, and the module init dereferences the wrong
+    // runtime. The verb never emits framework linkage; this row pins that
+    // invariant. See docs/build-ext.md "Never link the framework".
+    if !cfg!(target_os = "macos") {
+        eprintln!("skipped: otool is a macOS tool; linkage lint runs on macOS only");
+        return;
+    }
+    if Command::new("otool").arg("-V").output().is_err() {
+        eprintln!("skipped: otool unavailable");
+        return;
+    }
+
+    let antipythony = antipythony();
+    let dir = scratch_dir("linklint");
+    let src = dir.join("linklint.c");
+    std::fs::write(
+        &src,
+        r#"#include "apx_python.h"
+static PyMethodDef fns[] = {{0, 0, 0, 0}};
+static PyModuleDef mod = {{"linklint", "linkage lint module", -1, fns}};
+static PyObject *init(void) { return PyModule_Create(&mod); }
+PyObject *PyInit_linklint(void) {
+    apx_register_module_init("linklint", init);
+    return init();
+}
+"#,
+    )
+    .unwrap();
+    let so = dir.join("liblinklint.so");
+    let out = Command::new(&antipythony)
+        .arg("build-ext")
+        .arg(&src)
+        .arg("-o")
+        .arg(&so)
+        .current_dir(&dir)
+        .env("APX_INCLUDE", repo_include())
+        .output()
+        .expect("spawn antipythony build-ext");
+    assert!(
+        out.status.success(),
+        "build-ext failed: {}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(so.is_file(), "verb wrote no {}", so.display());
+
+    let otool = Command::new("otool")
+        .arg("-L")
+        .arg(&so)
+        .output()
+        .expect("spawn otool -L");
+    assert!(
+        otool.status.success(),
+        "otool -L failed: {}",
+        String::from_utf8_lossy(&otool.stderr)
+    );
+    let linked = String::from_utf8_lossy(&otool.stdout);
+    let framework_lines: Vec<&str> = linked
+        .lines()
+        .filter(|l| l.contains("Python.framework"))
+        .collect();
+    assert!(
+        framework_lines.is_empty(),
+        "build-ext emitted Python.framework load commands (the manual-cc SEGV \
+         failure mode; see docs/build-ext.md):\n{linked}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn build_ext_emit_header_installs_apx_python_h() {
     let antipythony = antipythony();
     let dir = scratch_dir("header");

@@ -120,8 +120,15 @@ fn run_fenced(
     let path = dir.join("probe_ast_getattr.py");
     std::fs::write(&path, src).expect("ast_getattr_fence.rs:123");
 
-    let bin =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/release/ap-run-probe");
+    let target_root = match std::env::var("CARGO_TARGET_DIR") {
+        Ok(d) => std::path::PathBuf::from(d),
+        // No CARGO_TARGET_DIR: the cargo-default <workspace>/target (the
+        // worktree convention matches — this file lives two levels below
+        // the workspace root).
+        Err(_) => std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target"),
+    };
+    let bin = target_root.join("release/ap-run-probe");
     let bin = if bin.exists() {
         bin
     } else {
@@ -129,8 +136,7 @@ fn run_fenced(
         // to the debug binary but scale the deadline — debug frames make the
         // probe ~10x slower (measured 2026-11-06: 0.24s/iter release vs
         // 2.3s/iter debug on the W114 real-AST tree).
-        let dbg = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../target/debug/ap-run-probe");
+        let dbg = target_root.join("debug/ap-run-probe");
         eprintln!(
             "ast_getattr_fence: release probe binary missing; using debug \
              (deadline x10 internally not applied — set AP_AST_FENCE_DEADLINE_SECS)"
