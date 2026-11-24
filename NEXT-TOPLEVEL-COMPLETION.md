@@ -140,13 +140,15 @@ trunk. Gate counts cited by leaves are claims; re-runs are evidence.
  packaging_differential 7/7, hybrid_gate 7/7 (after building
  ap-host + CRTs — the other filed failure), ap-run 208/0, stdlib
  48/48. Full-workspace suite running as the final number.
- SWEEP CORPUS HYGIENE (3004fb7): the sweep's pytest pass surfaced
- missing/malformed corpus metadata — V048's expected triple was never
- committed with its pins (now generated live from CPython 3.14.7 +
- verified byte-exact against antipythony), V065/V066 + e016-e020
- headers lacked clause citations, classes_wasm used unpadded clause
- ids, t1_017 lacked Cites/Stresses headers + probe-table row +
- provenance sha. All fixed; t05/t06/t08 + traceability 1185 passed.
+ SWEEP CORPUS HYGIENE (3004fb7 + a241d60): the sweep's pytest pass
+ surfaced missing/malformed corpus metadata — V048's expected triple
+ was never committed with its pins (now generated live from CPython
+ 3.14.7 + verified byte-exact against antipythony), V065/V066 +
+ e016-e020 headers lacked clause citations, classes_wasm used
+ unpadded clause ids, t1_017 lacked Cites/Stresses headers +
+ probe-table row + provenance sha, and the four wasm families lacked
+ provenance metas (33 committed). All fixed; t05/t06/t08 +
+ traceability 1185 passed.
  FINISHER WAVE DISPATCHED 2026-11-23 (deleg_47cd2b60, 3 leaves):
  (a) leaf-struct1 = F-STRUCT-1 (from-import resolution order;
  pydantic BaseModel chain green is the gate) — MERGED 465cf34.
