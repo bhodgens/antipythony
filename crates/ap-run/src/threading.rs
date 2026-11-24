@@ -1078,11 +1078,7 @@ pub fn join_wait_flag(flag: Arc<std::sync::atomic::AtomicBool>, timeout: Option<
     let seq = crate::scheduler::park_register(key);
     loop {
         if flag.load(std::sync::atomic::Ordering::SeqCst) {
-            crate::scheduler::park_unregister(
-                &key,
-                crate::scheduler::current_task_id(),
-                seq,
-            );
+            crate::scheduler::park_unregister(&key, crate::scheduler::current_task_id(), seq);
             return true;
         }
         match deadline {

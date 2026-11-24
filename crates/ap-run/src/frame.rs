@@ -951,11 +951,10 @@ impl Interpreter {
         let mut dg = self.depth.lock().unwrap_or_else(|p| p.into_inner());
         let d = *dg + 1;
         let hard_cap = self.native_frame_cap();
-        if d
-            > *self
-                .recursion_limit
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
+        if d > *self
+            .recursion_limit
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
             || d > hard_cap
         {
             return Err(crate::Flow::Raise(ExceptionValue::msg(

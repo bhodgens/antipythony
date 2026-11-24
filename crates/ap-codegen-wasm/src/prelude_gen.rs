@@ -63,8 +63,8 @@ pub(crate) fn gen_send(
             f.instruction(&Instruction::RefCastNullable(hc(T_GENERATOR)));
             sget(f, T_GENERATOR, F_GEN_STATE);
             f.instruction(&Instruction::LocalSet(4)); // state scratch
-            // step idx lives in local 5 (i32); fix the later LocalSet(3)
-            // by using 5 here:
+                                                      // step idx lives in local 5 (i32); fix the later LocalSet(3)
+                                                      // by using 5 here:
             f.instruction(&Instruction::LocalGet(4));
             f.instruction(&Instruction::I32Const(0));
             f.instruction(&Instruction::I32GeS);
@@ -91,16 +91,16 @@ pub(crate) fn gen_send(
                 field_index: F_CODE_FUNC_IDX,
             });
             f.instruction(&Instruction::LocalSet(5)); // step idx (i32)
-            // result = call_indirect step(gen, input)
-            // NOTE: call_indirect needs the FUNCTION INDEX as an i32 on the
-            // stack AFTER the params (stack order: params..., idx). The step
-            // fn is reached via the TABLE (position = abs idx - FN_FIRST_USER
-            // ... no: the step fn is registered as a PLAIN function, not in
-            // the dispatch table — call it DIRECTLY (the idx is static at
-            // runtime but the CallIndirect requires a table entry). Simplest
-            // correct route on this slice: reserve table position = step idx
-            // - FN_FIRST_USER via the element segment (user fns ARE the
-            // table), so table_idx = step_abs - FN_FIRST_USER.
+                                                      // result = call_indirect step(gen, input)
+                                                      // NOTE: call_indirect needs the FUNCTION INDEX as an i32 on the
+                                                      // stack AFTER the params (stack order: params..., idx). The step
+                                                      // fn is reached via the TABLE (position = abs idx - FN_FIRST_USER
+                                                      // ... no: the step fn is registered as a PLAIN function, not in
+                                                      // the dispatch table — call it DIRECTLY (the idx is static at
+                                                      // runtime but the CallIndirect requires a table entry). Simplest
+                                                      // correct route on this slice: reserve table position = step idx
+                                                      // - FN_FIRST_USER via the element segment (user fns ARE the
+                                                      // table), so table_idx = step_abs - FN_FIRST_USER.
             f.instruction(&Instruction::LocalGet(0));
             f.instruction(&Instruction::RefCastNullable(hc(T_GENERATOR)));
             f.instruction(&Instruction::LocalGet(1));
@@ -112,7 +112,7 @@ pub(crate) fn gen_send(
                 table_index: 0,
             });
             f.instruction(&Instruction::LocalSet(2)); // result
-            // completed?
+                                                      // completed?
             f.instruction(&Instruction::LocalGet(0));
             f.instruction(&Instruction::RefCastNullable(hc(T_GENERATOR)));
             sget(f, T_GENERATOR, F_GEN_STATE);
@@ -368,7 +368,7 @@ fn emit_str_snapshot(f: &mut Function) {
     f.instruction(&Instruction::LocalGet(7));
     f.instruction(&Instruction::ArrayGetU(T_BYTE_ARR));
     f.instruction(&Instruction::LocalSet(8)); // b
-    // fresh 1-byte $byte_arr
+                                              // fresh 1-byte $byte_arr
     f.instruction(&Instruction::I32Const(1));
     f.instruction(&Instruction::ArrayNewDefault(T_BYTE_ARR));
     f.instruction(&Instruction::LocalSet(5));
@@ -442,7 +442,7 @@ pub(crate) fn iter_next(
             f.instruction(&Instruction::LocalGet(0));
             f.instruction(&Instruction::RefCastNullable(hc(T_GENERATOR)));
             f.instruction(&Instruction::LocalSet(1)); // gen
-            // fn == null? -> container path (cast-on-use per 35f2ace0)
+                                                      // fn == null? -> container path (cast-on-use per 35f2ace0)
             lget_gen(f, 1);
             f.instruction(&Instruction::StructGet {
                 struct_type_index: T_GENERATOR,
@@ -486,7 +486,7 @@ pub(crate) fn iter_next(
             f.instruction(&Instruction::LocalGet(4));
             f.instruction(&Instruction::ArrayGet(T_OBJ_ARR));
             f.instruction(&Instruction::LocalSet(2)); // item
-            // update the cursor box: $value = $int(cursor+1)
+                                                      // update the cursor box: $value = $int(cursor+1)
             lget_gen(f, 1);
             f.instruction(&Instruction::GlobalGet(
                 builtin_type_global("int").unwrap_or(0),
@@ -536,7 +536,7 @@ pub(crate) fn iter_contains(
                     heap_type: hc(T_OBJ_ARR_RO),
                 }),
             ), // local 2 = items RO-arr (tuples) — arrays are NOT $pyobj
-            (1, oref()), // local 3 = cur
+            (1, oref()),       // local 3 = cur
             (1, ValType::I32), // local 4 = n
             (1, ValType::I32), // local 5 = i
             (1, ValType::I32), // local 6 = found
@@ -547,7 +547,7 @@ pub(crate) fn iter_contains(
                     heap_type: hc(T_OBJ_ARR),
                 }),
             ), // local 7 = items MUT-arr ($list.items type — lesson 9:
-               // a mut array ref cannot ride the RO local)
+                               // a mut array ref cannot ride the RO local)
         ],
         |f| {
             // items + n from $list or $tuple (If/Else probe — the Block+Br
@@ -577,9 +577,7 @@ pub(crate) fn iter_contains(
             f.instruction(&Instruction::End);
             f.instruction(&Instruction::LocalGet(0));
             f.instruction(&Instruction::RefTestNullable(hc(T_TUPLE)));
-            f.instruction(&Instruction::If(BlockType::Result(
-                ValType::I32,
-            )));
+            f.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
             f.instruction(&Instruction::LocalGet(2));
             f.instruction(&Instruction::ArrayLen);
             f.instruction(&Instruction::Else);
@@ -610,7 +608,7 @@ pub(crate) fn iter_contains(
             f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
             f.instruction(&Instruction::End);
             f.instruction(&Instruction::LocalSet(3)); // cur
-            // found = eq(cur, item); if found -> break with 1
+                                                      // found = eq(cur, item); if found -> break with 1
             f.instruction(&Instruction::LocalGet(3));
             f.instruction(&Instruction::LocalGet(1));
             f.instruction(&Instruction::Call(fx::FN_EQ));
@@ -666,12 +664,12 @@ pub(crate) fn stop_iter(
             // For-exhaustion probe: tb_render -> exc_msg -> py_str(null)).
             f.instruction(&Instruction::LocalGet(0));
             f.instruction(&Instruction::RefIsNull);
-            f.instruction(&Instruction::If(BlockType::Result(
-                ValType::Ref(wasm_encoder::RefType {
+            f.instruction(&Instruction::If(BlockType::Result(ValType::Ref(
+                wasm_encoder::RefType {
                     nullable: true,
                     heap_type: hc(T_OBJ_ARR_RO),
-                }),
-            )));
+                },
+            ))));
             // bare: empty args
             f.instruction(&Instruction::ArrayNewFixed {
                 array_type_index: T_OBJ_ARR_RO,
@@ -686,8 +684,8 @@ pub(crate) fn stop_iter(
             });
             f.instruction(&Instruction::End);
             f.instruction(&Instruction::LocalSet(4)); // args
-            // exc = exc_new(StopIteration $type, args); raise (never returns;
-            // trailing null filler satisfies the FT fall-through).
+                                                      // exc = exc_new(StopIteration $type, args); raise (never returns;
+                                                      // trailing null filler satisfies the FT fall-through).
             f.instruction(&Instruction::GlobalGet(
                 exc_type_global("StopIteration").unwrap_or(0),
             ));
@@ -724,9 +722,9 @@ pub(crate) fn stop_iter_dead(
                 array_size: 1,
             });
             f.instruction(&Instruction::LocalSet(2)); // args
-            // exc = exc_new(StopIteration-type, args); raise via FN_EXC_RAISE.
-            // DEBUG BISECT: RefNull instead of GlobalGet (param0 is nullable;
-            // if the module now validates, the GlobalGet slot/type is wrong).
+                                                      // exc = exc_new(StopIteration-type, args); raise via FN_EXC_RAISE.
+                                                      // DEBUG BISECT: RefNull instead of GlobalGet (param0 is nullable;
+                                                      // if the module now validates, the GlobalGet slot/type is wrong).
             f.instruction(&Instruction::RefNull(hc(T_TYPE)));
             f.instruction(&Instruction::LocalGet(4));
             f.instruction(&Instruction::Call(fx::FN_EXC_NEW));
@@ -759,8 +757,8 @@ pub(crate) fn gen_throw(
             lget_gen(f, 0);
             sget(f, T_GENERATOR, F_GEN_STATE);
             f.instruction(&Instruction::LocalSet(4)); // state
-            // state < 0 (dead) OR state == 0 (not started): 3.14 raises the
-            // thrown exc AT THE CALL SITE without running any body.
+                                                      // state < 0 (dead) OR state == 0 (not started): 3.14 raises the
+                                                      // thrown exc AT THE CALL SITE without running any body.
             f.instruction(&Instruction::LocalGet(4));
             f.instruction(&Instruction::I32Const(0));
             f.instruction(&Instruction::I32LeS);
@@ -803,7 +801,7 @@ pub(crate) fn gen_throw(
                 table_index: 0,
             });
             f.instruction(&Instruction::LocalSet(2)); // result
-            // completed? => StopIteration($value) (throw-in ran to completion)
+                                                      // completed? => StopIteration($value) (throw-in ran to completion)
             lget_gen(f, 0);
             sget(f, T_GENERATOR, F_GEN_STATE);
             f.instruction(&Instruction::I32Const(0));
@@ -842,7 +840,7 @@ pub(crate) fn gen_close(
             lget_gen(f, 0);
             sget(f, T_GENERATOR, F_GEN_STATE);
             f.instruction(&Instruction::LocalSet(3)); // state
-            // already dead (exhausted/closed): silent no-op
+                                                      // already dead (exhausted/closed): silent no-op
             f.instruction(&Instruction::LocalGet(3));
             f.instruction(&Instruction::I32Const(0));
             f.instruction(&Instruction::I32LtS);
@@ -890,19 +888,19 @@ pub(crate) fn gen_close(
                 field_index: F_CODE_FUNC_IDX,
             });
             f.instruction(&Instruction::LocalSet(4)); // step idx
-            // 3.14 close(): a GeneratorExit escaping the body = silent OK;
-            // any OTHER exception propagates. Catch the resume's throw,
-            // match GE, swallow-or-rethrow (03.04f: the re-raised GE flew
-            // through this frame to the host before the wrap landed).
-            // NOTE: the resume call's operands MUST be pushed INSIDE the
-            // result-block — a result-block starts its inner stack EMPTY,
-            // and a call_indirect outside would starve (03.04f).
-            f.instruction(&Instruction::Block(BlockType::Result(
-                ValType::Ref(wasm_encoder::RefType {
+                                                      // 3.14 close(): a GeneratorExit escaping the body = silent OK;
+                                                      // any OTHER exception propagates. Catch the resume's throw,
+                                                      // match GE, swallow-or-rethrow (03.04f: the re-raised GE flew
+                                                      // through this frame to the host before the wrap landed).
+                                                      // NOTE: the resume call's operands MUST be pushed INSIDE the
+                                                      // result-block — a result-block starts its inner stack EMPTY,
+                                                      // and a call_indirect outside would starve (03.04f).
+            f.instruction(&Instruction::Block(BlockType::Result(ValType::Ref(
+                wasm_encoder::RefType {
                     nullable: true,
                     heap_type: hc(T_EXCEPTION),
-                }),
-            ))); // $cx
+                },
+            )))); // $cx
             {
                 let catches = [wasm_encoder::Catch::One {
                     tag: TAG_PYEXC,
@@ -923,20 +921,20 @@ pub(crate) fn gen_close(
                 table_index: 0,
             });
             f.instruction(&Instruction::Drop); // yielded-if-any (discard)
-            // body swallowed GeneratorExit and suspended (state >= 0) —
-            // corpus never swallows: park exhausted so later resumes raise
-            // StopIteration (the old unconditional close).
+                                               // body swallowed GeneratorExit and suspended (state >= 0) —
+                                               // corpus never swallows: park exhausted so later resumes raise
+                                               // StopIteration (the old unconditional close).
             lget_gen(f, 0);
             f.instruction(&Instruction::I32Const(GS_CLOSED));
             sset(f, T_GENERATOR, F_GEN_STATE);
             f.instruction(&Instruction::End); // try_table End
             f.instruction(&Instruction::RefNull(hc(T_EXCEPTION)));
             f.instruction(&Instruction::End); // $cx: no-throw path null
-            // thrown-through: GE escape = silent close OK (park closed);
-            // any other exception rethrown to the caller. NULL payload =
-            // the step completed normally (handler swallowed the GE) —
-            // same silent close (03.04f: matching a null payload trapped
-            // inside the matcher).
+                                              // thrown-through: GE escape = silent close OK (park closed);
+                                              // any other exception rethrown to the caller. NULL payload =
+                                              // the step completed normally (handler swallowed the GE) —
+                                              // same silent close (03.04f: matching a null payload trapped
+                                              // inside the matcher).
             f.instruction(&Instruction::LocalSet(1));
             f.instruction(&Instruction::LocalGet(1));
             f.instruction(&Instruction::RefIsNull);
@@ -998,4 +996,3 @@ pub fn emit_gen_drains(
     // 03.04g: dict-from-pairs (FN_DICT_DRAIN=73) — FN_FIRST_USER moves 73->74.
     crate::prelude_gen_drain::dict_drain(funcs, code);
 }
-

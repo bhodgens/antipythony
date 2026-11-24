@@ -503,7 +503,9 @@ pub unsafe extern "C" fn PyType_GenericAlloc(t: PyObjPtr, _n: isize) -> PyObjPtr
     // monotonic counter keys the C block until the bridge attaches one).
     static GENERIC_KEY: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
     let key = GENERIC_KEY.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let basicsize = crate::slots::record_clone(idx).map(|s| s.basicsize).unwrap_or(0);
+    let basicsize = crate::slots::record_clone(idx)
+        .map(|s| s.basicsize)
+        .unwrap_or(0);
     let block = crate::payloads::payload_alloc(key, idx, basicsize);
     if block.is_null() && basicsize > 0 {
         err_set("SystemError", "PyType_GenericAlloc: allocation failed");
@@ -1049,11 +1051,11 @@ pub unsafe extern "C" fn Py_GetConstant(constant_id: c_int) -> PyObjPtr {
         0 => Value::None,                               // Py_CONSTANT_NONE
         1 => Value::Bool(true),                         // Py_CONSTANT_TRUE
         2 => Value::Bool(false),                        // Py_CONSTANT_FALSE
-        3 => Value::Str(PyString::new("")),                // Py_CONSTANT_EMPTY_STR
-        4 => Value::Tuple(Gc::new(Tuple(Vec::new()))),     // Py_CONSTANT_EMPTY_TUPLE
-        5 => Value::List(ap_obj::value::PyList::new()),    // Py_CONSTANT_EMPTY_LIST
-        6 => Value::Dict(ap_obj::dict::PyDict::new()),     // Py_CONSTANT_EMPTY_DICT
-        7 => Value::Bytes(Gc::new(Vec::new())), // Py_CONSTANT_EMPTY_BYTES
+        3 => Value::Str(PyString::new("")),             // Py_CONSTANT_EMPTY_STR
+        4 => Value::Tuple(Gc::new(Tuple(Vec::new()))),  // Py_CONSTANT_EMPTY_TUPLE
+        5 => Value::List(ap_obj::value::PyList::new()), // Py_CONSTANT_EMPTY_LIST
+        6 => Value::Dict(ap_obj::dict::PyDict::new()),  // Py_CONSTANT_EMPTY_DICT
+        7 => Value::Bytes(Gc::new(Vec::new())),         // Py_CONSTANT_EMPTY_BYTES
         _ => {
             err_set("SystemError", "Py_GetConstant: bad constant id");
             return std::ptr::null_mut();
@@ -1281,7 +1283,12 @@ pub unsafe extern "C" fn PyObject_VectorcallMethod(
     let args_t = new_handle(CeKind::Tuple, CePayload::Tuple(items));
     ce_newref(args_t);
     unsafe {
-        crate::exports::PyObject_Vectorcall(meth_h as PyObjPtr, args_t as *const PyObjPtr, n, kwnames)
+        crate::exports::PyObject_Vectorcall(
+            meth_h as PyObjPtr,
+            args_t as *const PyObjPtr,
+            n,
+            kwnames,
+        )
     }
 }
 
@@ -1382,7 +1389,13 @@ pub unsafe extern "C" fn PyMapping_Items(o: PyObjPtr) -> PyObjPtr {
             let fh = from_value(&f);
             let empty = new_handle(CeKind::Tuple, CePayload::Tuple(Vec::new()));
             ce_newref(empty);
-            unsafe { crate::exports::PyObject_Call(fh as PyObjPtr, empty as PyObjPtr, std::ptr::null_mut()) }
+            unsafe {
+                crate::exports::PyObject_Call(
+                    fh as PyObjPtr,
+                    empty as PyObjPtr,
+                    std::ptr::null_mut(),
+                )
+            }
         }
         _ => {
             err_set("TypeError", "'object' object is not a mapping");

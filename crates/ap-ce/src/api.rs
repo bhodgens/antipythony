@@ -105,7 +105,10 @@ pub unsafe fn module_create(def_base: PyObjPtr) -> CeHandle {
     // (PyModule_AddFunctions semantics); the registry push is what the
     // bridge's dotted dispatch reads.
     if std::env::var_os("APX_CE_TRACE").is_some() {
-        eprintln!("[ap-ce] module_create({name}) methods_ptr={:p}", methods_ptr);
+        eprintln!(
+            "[ap-ce] module_create({name}) methods_ptr={:p}",
+            methods_ptr
+        );
     }
     if !methods_ptr.is_null() {
         let mut md = methods_ptr;
@@ -132,7 +135,10 @@ pub unsafe fn module_add_function(module: CeHandle, name: &str, flags: i32, f: P
     let mod_name = {
         let o = &*module;
         match o.payload.borrow().as_ref() {
-            Some(CePayload::Module { name: mod_name_payload, ns }) => {
+            Some(CePayload::Module {
+                name: mod_name_payload,
+                ns,
+            }) => {
                 let n = mod_name_payload.clone();
                 // Install the dotted marker callable in the ns under the
                 // METHOD name (the fn's `name` param — the payload's

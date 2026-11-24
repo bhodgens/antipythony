@@ -222,7 +222,11 @@ fn run(
             let module_path = tmp.join(format!("conform-{i}.wasm"));
             let mut b = std::process::Command::new(&builder[0]);
             b.args(&builder[1..]);
-            b.arg("build").arg("--wasm").arg(file).arg("-o").arg(&module_path);
+            b.arg("build")
+                .arg("--wasm")
+                .arg(file)
+                .arg("-o")
+                .arg(&module_path);
             let actual = match b.output() {
                 Ok(o) if o.status.success() && module_path.exists() => {
                     // 2. The wasm impl consumes the MODULE path (the final

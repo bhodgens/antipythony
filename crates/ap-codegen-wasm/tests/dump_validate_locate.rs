@@ -19,10 +19,7 @@ fn dump_validate_locate() {
             println!("DUMP VALIDATE-ERR: {}", e);
             // wasmparser error offset: parse the trailing "(at offset 0x...)"
             let s = format!("{}", e);
-            s.rsplit("(at offset 0x")
-                .next()
-                .map(|_| ())
-                .unwrap_or(());
+            s.rsplit("(at offset 0x").next().map(|_| ()).unwrap_or(());
             let hex = s
                 .split("(at offset 0x")
                 .nth(1)

@@ -1,13 +1,12 @@
-
 use ap_codegen_wasm::lower_module;
 use ap_ir::{Builder, Item, Module};
 #[test]
 fn v() {
     let b = Builder::new();
     let mut module = Module::new();
-    module.items.push(Item::Stmt(b.expr_stmt(
-        b.call(b.name("print"), vec![b.arg_pos(b.str_lit("hi"))]),
-    )));
+    module.items.push(Item::Stmt(
+        b.expr_stmt(b.call(b.name("print"), vec![b.arg_pos(b.str_lit("hi"))])),
+    ));
     let bytes = lower_module(&module).unwrap();
     let mut validator = wasmparser::Validator::new_with_features(
         wasmparser::WasmFeatures::default()

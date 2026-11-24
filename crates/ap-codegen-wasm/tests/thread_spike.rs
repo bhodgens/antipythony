@@ -72,7 +72,6 @@ fn shared_mem_module() -> Vec<u8> {
     out
 }
 
-
 fn shared_mem_only_module() -> Vec<u8> {
     let mut m = Module::new();
     let mut types = TypeSection::new();
@@ -144,7 +143,10 @@ fn wasi_threads_spike() {
     for (lbl, b) in [
         ("shared_mem_module", shared_mem_module()),
         ("shared_mem_only_module", shared_mem_only_module()),
-        ("plain_mem_thread_import_module", plain_mem_thread_import_module()),
+        (
+            "plain_mem_thread_import_module",
+            plain_mem_thread_import_module(),
+        ),
     ] {
         match wasmprinter::print_bytes(&b) {
             Ok(wat) => println!("--- {lbl} WAT ---\n{wat}\n--- end ---"),
@@ -184,12 +186,17 @@ fn wasi_threads_spike() {
         }
     }
 
-
     // SPIKE-0: bisect the parse failure — variants:
     for (label, variant) in [
-        ("full (shared mem + thread_spawn import)", shared_mem_module()),
+        (
+            "full (shared mem + thread_spawn import)",
+            shared_mem_module(),
+        ),
         ("shared mem only", shared_mem_only_module()),
-        ("plain mem + thread_spawn import", plain_mem_thread_import_module()),
+        (
+            "plain mem + thread_spawn import",
+            plain_mem_thread_import_module(),
+        ),
     ] {
         match wasmtime::Module::new(&engine, &variant) {
             Ok(_) => println!("SPIKE-0: [{label}] COMPILES on wasm_threads(true) engine"),

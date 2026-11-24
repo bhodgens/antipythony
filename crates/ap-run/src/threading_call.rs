@@ -872,8 +872,7 @@ fn rlock_method(o: &Gc<PyObject>, method: &str, args: &[Value]) -> BResult {
                 let deadline =
                     timeout.map(|t| Instant::now() + Duration::from_secs_f64(t.max(0.0)));
                 let _pg = crate::scheduler::ParkGuard::new();
-                let seq =
-                    crate::scheduler::park_register(crate::scheduler::ParkKey::RLock(addr));
+                let seq = crate::scheduler::park_register(crate::scheduler::ParkKey::RLock(addr));
                 loop {
                     if st.0 == crate::threading::RLockOwner::None {
                         break;
@@ -1886,7 +1885,8 @@ pub fn call_queue_method(
                 }
                 drop(items);
                 // Waker sides: put wakes ONE getter, get wakes ONE putter.
-                let _woken = crate::scheduler::park_drain(&crate::scheduler::ParkKey::QueueGet(addr));
+                let _woken =
+                    crate::scheduler::park_drain(&crate::scheduler::ParkKey::QueueGet(addr));
                 prim.not_empty.notify_one();
                 Ok(Value::None)
             }
@@ -1947,7 +1947,8 @@ pub fn call_queue_method(
                     items.pop_front().expect("nonempty checked")
                 };
                 drop(items);
-                let _woken = crate::scheduler::park_drain(&crate::scheduler::ParkKey::QueuePut(addr));
+                let _woken =
+                    crate::scheduler::park_drain(&crate::scheduler::ParkKey::QueuePut(addr));
                 prim.not_full.notify_one();
                 Ok(item)
             }

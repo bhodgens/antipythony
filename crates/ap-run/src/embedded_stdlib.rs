@@ -77,8 +77,16 @@ mod tests {
 
     #[test]
     fn known_faces_resolve() {
-        for k in ["enum", "warnings", "inspect", "traceback", "contextlib",
-                  "encodings", "encodings.aliases", "unittest"] {
+        for k in [
+            "enum",
+            "warnings",
+            "inspect",
+            "traceback",
+            "contextlib",
+            "encodings",
+            "encodings.aliases",
+            "unittest",
+        ] {
             assert!(source_for(k).is_some(), "missing embedded face: {k}");
         }
         // The importer synthesizes collections.abc from _collections_abc —

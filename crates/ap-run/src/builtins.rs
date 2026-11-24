@@ -3428,11 +3428,10 @@ pub fn make_sys_module(interp: &Interpreter) -> Value {
     // call_io fileno arm reads <fd>; without it the raise escapes
     // shutil.get_terminal_size's catch chain during rich's console init).
     if let Value::Obj(so) = &stdin_obj {
-        let _ = so
-            .attrs
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .set(Value::Str(PyString::new("<fd>")), Value::Int(Int::from_i64(0)));
+        let _ = so.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
+            Value::Str(PyString::new("<fd>")),
+            Value::Int(Int::from_i64(0)),
+        );
     }
     let _ = ns.set(Value::Str(PyString::new("stdin")), stdin_obj.clone());
     // CPython: sys.__stdin__ holds the ORIGINAL stdin (pytest's

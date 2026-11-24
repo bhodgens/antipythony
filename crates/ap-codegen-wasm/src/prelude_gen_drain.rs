@@ -46,12 +46,12 @@ fn emit_drain_loop(f: &mut Function, accumulate: Accumulate) {
     //   null? -> br past rethrow ; else rethrow
     // end
     f.instruction(&Instruction::Block(BlockType::Empty)); // $out
-    f.instruction(&Instruction::Block(BlockType::Result(
-        ValType::Ref(wasm_encoder::RefType {
+    f.instruction(&Instruction::Block(BlockType::Result(ValType::Ref(
+        wasm_encoder::RefType {
             nullable: true,
             heap_type: hc(T_EXCEPTION),
-        }),
-    ))); // $catch
+        },
+    )))); // $catch
     {
         let catches = [wasm_encoder::Catch::One {
             tag: TAG_PYEXC,
@@ -66,14 +66,14 @@ fn emit_drain_loop(f: &mut Function, accumulate: Accumulate) {
         f.instruction(&Instruction::LocalGet(0));
         f.instruction(&Instruction::Call(fx::FN_ITER_NEXT));
         f.instruction(&Instruction::LocalSet(2)); // item
-        // acc = rebuild-append(acc, item)  (growable-list pattern)
-        // n+1 new array, copy 0..n, [n] = item
+                                                  // acc = rebuild-append(acc, item)  (growable-list pattern)
+                                                  // n+1 new array, copy 0..n, [n] = item
         f.instruction(&Instruction::LocalGet(3));
         f.instruction(&Instruction::I32Const(1));
         f.instruction(&Instruction::I32Add);
         f.instruction(&Instruction::ArrayNewDefault(T_OBJ_ARR));
         f.instruction(&Instruction::LocalSet(6)); // next buffer (local 6)
-        // copy 0..n
+                                                  // copy 0..n
         f.instruction(&Instruction::I32Const(0));
         f.instruction(&Instruction::LocalSet(4)); // i
         f.instruction(&Instruction::Block(BlockType::Empty));
@@ -95,7 +95,7 @@ fn emit_drain_loop(f: &mut Function, accumulate: Accumulate) {
         f.instruction(&Instruction::Br(0));
         f.instruction(&Instruction::End); // loop
         f.instruction(&Instruction::End); // block
-        // next[n] = item; acc = next; n += 1
+                                          // next[n] = item; acc = next; n += 1
         f.instruction(&Instruction::LocalGet(6));
         f.instruction(&Instruction::LocalGet(3));
         f.instruction(&Instruction::LocalGet(2));
@@ -169,7 +169,7 @@ pub(crate) fn list_drain(
                     heap_type: hc(T_OBJ_ARR),
                 }),
             ),
-            (1, oref()), // 2 = item/payload
+            (1, oref()),       // 2 = item/payload
             (2, ValType::I32), // 3,4 = n, i
             (1, ValType::I64), // 5 = sum acc
             (
@@ -275,7 +275,7 @@ pub(crate) fn dict_drain(
                     heap_type: hc(T_ENTRY_ARR),
                 }),
             ), // 1 = entries acc (DEDICATED type — lesson 3)
-            (1, oref()), // 2 = item / payload / cur entry
+            (1, oref()),       // 2 = item / payload / cur entry
             (2, ValType::I32), // 3,4 = n, i
             (1, ValType::I64), // 5 (unused, layout parity)
             (
@@ -285,9 +285,9 @@ pub(crate) fn dict_drain(
                     heap_type: hc(T_ENTRY_ARR),
                 }),
             ), // 6 = next buffer
-            (1, oref()), // 7 = k
-            (1, oref()), // 8 = v
-            (1, oref()), // 9 = items (mut or RO array, cast at use)
+            (1, oref()),       // 7 = k
+            (1, oref()),       // 8 = v
+            (1, oref()),       // 9 = items (mut or RO array, cast at use)
         ],
         |f| {
             // dict skeleton fields are built by the CALLER (push_empty_dict
@@ -297,14 +297,14 @@ pub(crate) fn dict_drain(
             f.instruction(&Instruction::LocalSet(1));
             f.instruction(&Instruction::I32Const(0));
             f.instruction(&Instruction::LocalSet(3)); // n
-            // drain loop (same control shape as emit_drain_loop, entries-typed)
+                                                      // drain loop (same control shape as emit_drain_loop, entries-typed)
             f.instruction(&Instruction::Block(BlockType::Empty)); // $out
-            f.instruction(&Instruction::Block(BlockType::Result(
-                ValType::Ref(wasm_encoder::RefType {
+            f.instruction(&Instruction::Block(BlockType::Result(ValType::Ref(
+                wasm_encoder::RefType {
                     nullable: true,
                     heap_type: hc(T_EXCEPTION),
-                }),
-            ))); // $catch
+                },
+            )))); // $catch
             {
                 let catches = [wasm_encoder::Catch::One {
                     tag: TAG_PYEXC,
@@ -319,13 +319,13 @@ pub(crate) fn dict_drain(
                 f.instruction(&Instruction::LocalGet(0));
                 f.instruction(&Instruction::Call(fx::FN_ITER_NEXT));
                 f.instruction(&Instruction::LocalSet(2)); // pair
-                // items = pair.items — $list.items (mut $obj_arr) or
-                // $tuple.items (RO): branch by shape (arrays are NOT
-                // $pyobj; no oref local, read direct off the cast)
-                // items -> local 9 as MUT (list) or... two locals would
-                // double the shape; simplest: read k/v TWICE like the dict
-                // repr does (fetch direct, no stash).
-                // k = items[0]
+                                                          // items = pair.items — $list.items (mut $obj_arr) or
+                                                          // $tuple.items (RO): branch by shape (arrays are NOT
+                                                          // $pyobj; no oref local, read direct off the cast)
+                                                          // items -> local 9 as MUT (list) or... two locals would
+                                                          // double the shape; simplest: read k/v TWICE like the dict
+                                                          // repr does (fetch direct, no stash).
+                                                          // k = items[0]
                 f.instruction(&Instruction::LocalGet(2));
                 f.instruction(&Instruction::RefTestNullable(hc(T_LIST)));
                 f.instruction(&Instruction::If(BlockType::Result(pyobj_ref())));
@@ -342,7 +342,7 @@ pub(crate) fn dict_drain(
                 f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
                 f.instruction(&Instruction::End);
                 f.instruction(&Instruction::LocalSet(7)); // k
-                // v = items[1]
+                                                          // v = items[1]
                 f.instruction(&Instruction::LocalGet(2));
                 f.instruction(&Instruction::RefTestNullable(hc(T_LIST)));
                 f.instruction(&Instruction::If(BlockType::Result(pyobj_ref())));
@@ -359,7 +359,7 @@ pub(crate) fn dict_drain(
                 f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
                 f.instruction(&Instruction::End);
                 f.instruction(&Instruction::LocalSet(8)); // v
-                // acc rebuild-append {k, v} (entry_arr-typed)
+                                                          // acc rebuild-append {k, v} (entry_arr-typed)
                 f.instruction(&Instruction::LocalGet(3));
                 f.instruction(&Instruction::I32Const(1));
                 f.instruction(&Instruction::I32Add);
@@ -386,7 +386,7 @@ pub(crate) fn dict_drain(
                 f.instruction(&Instruction::Br(0));
                 f.instruction(&Instruction::End); // loop
                 f.instruction(&Instruction::End); // block
-                // next[n] = {hash:0, k, v}; acc = next; n += 1
+                                                  // next[n] = {hash:0, k, v}; acc = next; n += 1
                 f.instruction(&Instruction::LocalGet(6));
                 f.instruction(&Instruction::LocalGet(3));
                 f.instruction(&Instruction::I64Const(0)); // hash (v1)
@@ -425,8 +425,8 @@ pub(crate) fn dict_drain(
             f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
             f.instruction(&Instruction::Throw(TAG_PYEXC));
             f.instruction(&Instruction::End); // $out
-            // $dict { type, used=n, fill=n, mask=7, perturb=0, idx=[-1;8],
-            //         entries=acc } — StructNew pops in REVERSE field order.
+                                              // $dict { type, used=n, fill=n, mask=7, perturb=0, idx=[-1;8],
+                                              //         entries=acc } — StructNew pops in REVERSE field order.
             f.instruction(&Instruction::GlobalGet(
                 builtin_type_global("dict").unwrap_or(0),
             ));

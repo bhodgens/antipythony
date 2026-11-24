@@ -11,471 +11,3261 @@
 
 /// (import path, bytes) pairs — byte-order sorted by path, generated.
 pub static EMBEDDED_STDLIB_SOURCES: &[(&str, &[u8])] = &[
-    ("OpenSSL", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/OpenSSL/__init__.py"))),
-    ("OpenSSL.SSL", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/OpenSSL/SSL.py"))),
-    ("OpenSSL._util", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/OpenSSL/_util.py"))),
-    ("OpenSSL.crypto", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/OpenSSL/crypto.py"))),
-    ("OpenSSL.version", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/OpenSSL/version.py"))),
-    ("__future__", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/__future__.py"))),
-    ("_ast", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/_ast.py"))),
-    ("_ast_unparse", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/_ast_unparse.py"))),
-    ("_collections_abc", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/_collections_abc.py"))),
-    ("_collections_abc_append", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/_collections_abc_append.py"))),
-    ("_collections_userdict_shim", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/_collections_userdict_shim.py"))),
-    ("_compat_pickle", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/_compat_pickle.py"))),
-    ("_contextvars", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/_contextvars.py"))),
-    ("_markupbase", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/_markupbase.py"))),
-    ("_multibytecodec", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/_multibytecodec.py"))),
-    ("_opcode_metadata", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/_opcode_metadata.py"))),
-    ("_osx_support", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/_osx_support.py"))),
-    ("_posixsubprocess", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/_posixsubprocess.py"))),
-    ("_py_abc", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/_py_abc.py"))),
-    ("_py_warnings", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/_py_warnings.py"))),
-    ("_pydatetime", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/_pydatetime.py"))),
-    ("_pydecimal", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/_pydecimal.py"))),
-    ("_string_errors", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/_string_errors.py"))),
-    ("_sysconfigdata__darwin_darwin", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/_sysconfigdata__darwin_darwin.py"))),
-    ("_weakrefset", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/_weakrefset.py"))),
-    ("abc", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/abc.py"))),
-    ("aiohttp", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/aiohttp/__init__.py"))),
-    ("aiohttp.web", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/aiohttp/web/__init__.py"))),
-    ("annotationlib", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/annotationlib.py"))),
-    ("argparse", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/argparse.py"))),
-    ("ast", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/ast.py"))),
-    ("asyncio", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/asyncio/__init__.py"))),
-    ("asyncio.__main__", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/asyncio/__main__.py"))),
-    ("asyncio.base_events", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/asyncio/base_events.py"))),
-    ("asyncio.base_futures", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/asyncio/base_futures.py"))),
-    ("asyncio.base_subprocess", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/asyncio/base_subprocess.py"))),
-    ("asyncio.base_tasks", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/asyncio/base_tasks.py"))),
-    ("asyncio.constants", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/asyncio/constants.py"))),
-    ("asyncio.coroutines", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/asyncio/coroutines.py"))),
-    ("asyncio.events", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/asyncio/events.py"))),
-    ("asyncio.exceptions", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/asyncio/exceptions.py"))),
-    ("asyncio.format_helpers", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/asyncio/format_helpers.py"))),
-    ("asyncio.futures", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/asyncio/futures.py"))),
-    ("asyncio.graph", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/asyncio/graph.py"))),
-    ("asyncio.locks", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/asyncio/locks.py"))),
-    ("asyncio.log", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/asyncio/log.py"))),
-    ("asyncio.mixins", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/asyncio/mixins.py"))),
-    ("asyncio.proactor_events", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/asyncio/proactor_events.py"))),
-    ("asyncio.protocols", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/asyncio/protocols.py"))),
-    ("asyncio.queues", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/asyncio/queues.py"))),
-    ("asyncio.runners", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/asyncio/runners.py"))),
-    ("asyncio.selector_events", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/asyncio/selector_events.py"))),
-    ("asyncio.sslproto", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/asyncio/sslproto.py"))),
-    ("asyncio.staggered", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/asyncio/staggered.py"))),
-    ("asyncio.streams", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/asyncio/streams.py"))),
-    ("asyncio.subprocess", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/asyncio/subprocess.py"))),
-    ("asyncio.taskgroups", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/asyncio/taskgroups.py"))),
-    ("asyncio.tasks", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/asyncio/tasks.py"))),
-    ("asyncio.threads", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/asyncio/threads.py"))),
-    ("asyncio.timeouts", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/asyncio/timeouts.py"))),
-    ("asyncio.tools", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/asyncio/tools.py"))),
-    ("asyncio.transports", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/asyncio/transports.py"))),
-    ("asyncio.trsock", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/asyncio/trsock.py"))),
-    ("asyncio.unix_events", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/asyncio/unix_events.py"))),
-    ("asyncio.windows_events", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/asyncio/windows_events.py"))),
-    ("asyncio.windows_utils", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/asyncio/windows_utils.py"))),
-    ("bdb", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/bdb.py"))),
-    ("brotli", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/brotli.py"))),
-    ("brotlicffi", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/brotlicffi.py"))),
-    ("bz2", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/bz2.py"))),
-    ("calendar", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/calendar.py"))),
-    ("charset_normalizer", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/charset_normalizer/__init__.py"))),
-    ("charset_normalizer.__main__", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/charset_normalizer/__main__.py"))),
-    ("charset_normalizer.api", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/charset_normalizer/api.py"))),
-    ("charset_normalizer.cd", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/charset_normalizer/cd.py"))),
-    ("charset_normalizer.cli", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/charset_normalizer/cli/__init__.py"))),
-    ("charset_normalizer.cli.__main__", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/charset_normalizer/cli/__main__.py"))),
-    ("charset_normalizer.constant", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/charset_normalizer/constant.py"))),
-    ("charset_normalizer.legacy", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/charset_normalizer/legacy.py"))),
-    ("charset_normalizer.md", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/charset_normalizer/md.py"))),
-    ("charset_normalizer.models", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/charset_normalizer/models.py"))),
-    ("charset_normalizer.utils", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/charset_normalizer/utils.py"))),
-    ("charset_normalizer.version", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/charset_normalizer/version.py"))),
-    ("codecs", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/codecs.py"))),
-    ("collections", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/collections.py"))),
-    ("compression", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/compression/__init__.py"))),
-    ("compression.zstd", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/compression/zstd/__init__.py"))),
-    ("concurrent", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/concurrent/__init__.py"))),
-    ("concurrent.futures", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/concurrent/futures/__init__.py"))),
-    ("concurrent.futures._base", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/concurrent/futures/_base.py"))),
-    ("concurrent.futures.interpreter", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/concurrent/futures/interpreter.py"))),
-    ("concurrent.futures.process", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/concurrent/futures/process.py"))),
-    ("concurrent.futures.thread", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/concurrent/futures/thread.py"))),
-    ("concurrent.interpreters", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/concurrent/interpreters/__init__.py"))),
-    ("concurrent.interpreters._crossinterp", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/concurrent/interpreters/_crossinterp.py"))),
-    ("concurrent.interpreters._queues", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/concurrent/interpreters/_queues.py"))),
-    ("configparser", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/configparser.py"))),
-    ("contextlib", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/contextlib.py"))),
-    ("contextvars", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/contextvars.py"))),
-    ("copy", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/copy.py"))),
-    ("copyreg", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/copyreg.py"))),
-    ("cryptography", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/cryptography/__init__.py"))),
-    ("cryptography.exceptions", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/cryptography/exceptions.py"))),
-    ("cryptography.hazmat", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/cryptography/hazmat/__init__.py"))),
-    ("cryptography.hazmat.backends", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/cryptography/hazmat/backends/__init__.py"))),
-    ("cryptography.hazmat.decrepit", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/cryptography/hazmat/decrepit/__init__.py"))),
-    ("cryptography.hazmat.decrepit.ciphers", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/cryptography/hazmat/decrepit/ciphers/__init__.py"))),
-    ("cryptography.hazmat.decrepit.ciphers.algorithms", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/cryptography/hazmat/decrepit/ciphers/algorithms.py"))),
-    ("cryptography.hazmat.primitives", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/cryptography/hazmat/primitives/__init__.py"))),
-    ("cryptography.hazmat.primitives.asymmetric", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/cryptography/hazmat/primitives/asymmetric/__init__.py"))),
-    ("cryptography.hazmat.primitives.asymmetric.dh", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/cryptography/hazmat/primitives/asymmetric/dh.py"))),
-    ("cryptography.hazmat.primitives.asymmetric.dsa", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/cryptography/hazmat/primitives/asymmetric/dsa.py"))),
-    ("cryptography.hazmat.primitives.asymmetric.ec", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/cryptography/hazmat/primitives/asymmetric/ec.py"))),
-    ("cryptography.hazmat.primitives.asymmetric.ed25519", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/cryptography/hazmat/primitives/asymmetric/ed25519.py"))),
-    ("cryptography.hazmat.primitives.asymmetric.padding", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/cryptography/hazmat/primitives/asymmetric/padding.py"))),
-    ("cryptography.hazmat.primitives.asymmetric.rsa", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/cryptography/hazmat/primitives/asymmetric/rsa.py"))),
-    ("cryptography.hazmat.primitives.asymmetric.utils", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/cryptography/hazmat/primitives/asymmetric/utils.py"))),
-    ("cryptography.hazmat.primitives.asymmetric.x25519", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/cryptography/hazmat/primitives/asymmetric/x25519.py"))),
-    ("cryptography.hazmat.primitives.ciphers", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/cryptography/hazmat/primitives/ciphers/__init__.py"))),
-    ("cryptography.hazmat.primitives.ciphers.algorithms", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/cryptography/hazmat/primitives/ciphers/algorithms/__init__.py"))),
-    ("cryptography.hazmat.primitives.ciphers.algorithms._mod", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/cryptography/hazmat/primitives/ciphers/algorithms/_mod.py"))),
-    ("cryptography.hazmat.primitives.ciphers.modes", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/cryptography/hazmat/primitives/ciphers/modes/__init__.py"))),
-    ("cryptography.hazmat.primitives.ciphers.modes._mod", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/cryptography/hazmat/primitives/ciphers/modes/_mod.py"))),
-    ("cryptography.hazmat.primitives.hashes", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/cryptography/hazmat/primitives/hashes/__init__.py"))),
-    ("cryptography.hazmat.primitives.hashes._mod", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/cryptography/hazmat/primitives/hashes/_mod.py"))),
-    ("cryptography.hazmat.primitives.serialization", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/cryptography/hazmat/primitives/serialization/__init__.py"))),
-    ("cryptography.hazmat.primitives.serialization._mod", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/cryptography/hazmat/primitives/serialization/_mod.py"))),
-    ("cryptography.utils", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/cryptography/utils.py"))),
-    ("csv", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/csv.py"))),
-    ("ctypes", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/ctypes/__init__.py"))),
-    ("ctypes.util", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/ctypes/util.py"))),
-    ("dataclasses", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/dataclasses.py"))),
-    ("datetime", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/datetime.py"))),
-    ("decimal", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/decimal.py"))),
-    ("defusedxml", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/defusedxml/__init__.py"))),
-    ("defusedxml.ElementTree", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/defusedxml/ElementTree.py"))),
-    ("defusedxml.cElementTree", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/defusedxml/cElementTree.py"))),
-    ("defusedxml.common", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/defusedxml/common.py"))),
-    ("defusedxml.expatbuilder", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/defusedxml/expatbuilder.py"))),
-    ("defusedxml.expatreader", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/defusedxml/expatreader.py"))),
-    ("defusedxml.lxml", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/defusedxml/lxml.py"))),
-    ("defusedxml.minidom", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/defusedxml/minidom.py"))),
-    ("defusedxml.pulldom", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/defusedxml/pulldom.py"))),
-    ("defusedxml.sax", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/defusedxml/sax.py"))),
-    ("defusedxml.xmlrpc", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/defusedxml/xmlrpc.py"))),
-    ("difflib", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/difflib.py"))),
-    ("dis", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/dis.py"))),
-    ("email", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/email/__init__.py"))),
-    ("email._encoded_words", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/email/_encoded_words.py"))),
-    ("email._header_value_parser", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/email/_header_value_parser.py"))),
-    ("email._parseaddr", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/email/_parseaddr.py"))),
-    ("email._policybase", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/email/_policybase.py"))),
-    ("email.base64mime", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/email/base64mime.py"))),
-    ("email.charset", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/email/charset.py"))),
-    ("email.contentmanager", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/email/contentmanager.py"))),
-    ("email.encoders", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/email/encoders.py"))),
-    ("email.errors", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/email/errors.py"))),
-    ("email.feedparser", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/email/feedparser.py"))),
-    ("email.generator", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/email/generator.py"))),
-    ("email.header", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/email/header.py"))),
-    ("email.headerregistry", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/email/headerregistry.py"))),
-    ("email.iterators", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/email/iterators.py"))),
-    ("email.message", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/email/message.py"))),
-    ("email.mime", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/email/mime/__init__.py"))),
-    ("email.mime.application", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/email/mime/application.py"))),
-    ("email.mime.audio", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/email/mime/audio.py"))),
-    ("email.mime.base", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/email/mime/base.py"))),
-    ("email.mime.image", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/email/mime/image.py"))),
-    ("email.mime.message", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/email/mime/message.py"))),
-    ("email.mime.multipart", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/email/mime/multipart.py"))),
-    ("email.mime.nonmultipart", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/email/mime/nonmultipart.py"))),
-    ("email.mime.text", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/email/mime/text.py"))),
-    ("email.parser", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/email/parser.py"))),
-    ("email.policy", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/email/policy.py"))),
-    ("email.quoprimime", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/email/quoprimime.py"))),
-    ("email.utils", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/email/utils.py"))),
-    ("encodings", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/__init__.py"))),
-    ("encodings._win_cp_codecs", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/_win_cp_codecs.py"))),
-    ("encodings.aliases", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/aliases.py"))),
-    ("encodings.ascii", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/ascii.py"))),
-    ("encodings.base64_codec", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/base64_codec.py"))),
-    ("encodings.big5", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/big5.py"))),
-    ("encodings.big5hkscs", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/big5hkscs.py"))),
-    ("encodings.bz2_codec", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/bz2_codec.py"))),
-    ("encodings.charmap", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/charmap.py"))),
-    ("encodings.cp037", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/cp037.py"))),
-    ("encodings.cp1006", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/cp1006.py"))),
-    ("encodings.cp1026", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/cp1026.py"))),
-    ("encodings.cp1125", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/cp1125.py"))),
-    ("encodings.cp1140", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/cp1140.py"))),
-    ("encodings.cp1250", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/cp1250.py"))),
-    ("encodings.cp1251", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/cp1251.py"))),
-    ("encodings.cp1252", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/cp1252.py"))),
-    ("encodings.cp1253", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/cp1253.py"))),
-    ("encodings.cp1254", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/cp1254.py"))),
-    ("encodings.cp1255", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/cp1255.py"))),
-    ("encodings.cp1256", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/cp1256.py"))),
-    ("encodings.cp1257", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/cp1257.py"))),
-    ("encodings.cp1258", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/cp1258.py"))),
-    ("encodings.cp273", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/cp273.py"))),
-    ("encodings.cp424", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/cp424.py"))),
-    ("encodings.cp437", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/cp437.py"))),
-    ("encodings.cp500", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/cp500.py"))),
-    ("encodings.cp720", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/cp720.py"))),
-    ("encodings.cp737", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/cp737.py"))),
-    ("encodings.cp775", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/cp775.py"))),
-    ("encodings.cp850", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/cp850.py"))),
-    ("encodings.cp852", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/cp852.py"))),
-    ("encodings.cp855", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/cp855.py"))),
-    ("encodings.cp856", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/cp856.py"))),
-    ("encodings.cp857", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/cp857.py"))),
-    ("encodings.cp858", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/cp858.py"))),
-    ("encodings.cp860", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/cp860.py"))),
-    ("encodings.cp861", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/cp861.py"))),
-    ("encodings.cp862", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/cp862.py"))),
-    ("encodings.cp863", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/cp863.py"))),
-    ("encodings.cp864", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/cp864.py"))),
-    ("encodings.cp865", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/cp865.py"))),
-    ("encodings.cp866", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/cp866.py"))),
-    ("encodings.cp869", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/cp869.py"))),
-    ("encodings.cp874", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/cp874.py"))),
-    ("encodings.cp875", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/cp875.py"))),
-    ("encodings.cp932", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/cp932.py"))),
-    ("encodings.cp949", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/cp949.py"))),
-    ("encodings.cp950", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/cp950.py"))),
-    ("encodings.euc_jis_2004", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/euc_jis_2004.py"))),
-    ("encodings.euc_jisx0213", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/euc_jisx0213.py"))),
-    ("encodings.euc_jp", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/euc_jp.py"))),
-    ("encodings.euc_kr", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/euc_kr.py"))),
-    ("encodings.gb18030", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/gb18030.py"))),
-    ("encodings.gb2312", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/gb2312.py"))),
-    ("encodings.gbk", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/gbk.py"))),
-    ("encodings.hex_codec", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/hex_codec.py"))),
-    ("encodings.hp_roman8", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/hp_roman8.py"))),
-    ("encodings.hz", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/hz.py"))),
-    ("encodings.idna", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/idna.py"))),
-    ("encodings.iso2022_jp", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/iso2022_jp.py"))),
-    ("encodings.iso2022_jp_1", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/iso2022_jp_1.py"))),
-    ("encodings.iso2022_jp_2", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/iso2022_jp_2.py"))),
-    ("encodings.iso2022_jp_2004", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/iso2022_jp_2004.py"))),
-    ("encodings.iso2022_jp_3", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/iso2022_jp_3.py"))),
-    ("encodings.iso2022_jp_ext", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/iso2022_jp_ext.py"))),
-    ("encodings.iso2022_kr", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/iso2022_kr.py"))),
-    ("encodings.iso8859_1", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/iso8859_1.py"))),
-    ("encodings.iso8859_10", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/iso8859_10.py"))),
-    ("encodings.iso8859_11", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/iso8859_11.py"))),
-    ("encodings.iso8859_13", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/iso8859_13.py"))),
-    ("encodings.iso8859_14", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/iso8859_14.py"))),
-    ("encodings.iso8859_15", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/iso8859_15.py"))),
-    ("encodings.iso8859_16", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/iso8859_16.py"))),
-    ("encodings.iso8859_2", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/iso8859_2.py"))),
-    ("encodings.iso8859_3", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/iso8859_3.py"))),
-    ("encodings.iso8859_4", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/iso8859_4.py"))),
-    ("encodings.iso8859_5", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/iso8859_5.py"))),
-    ("encodings.iso8859_6", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/iso8859_6.py"))),
-    ("encodings.iso8859_7", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/iso8859_7.py"))),
-    ("encodings.iso8859_8", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/iso8859_8.py"))),
-    ("encodings.iso8859_9", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/iso8859_9.py"))),
-    ("encodings.johab", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/johab.py"))),
-    ("encodings.koi8_r", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/koi8_r.py"))),
-    ("encodings.koi8_t", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/koi8_t.py"))),
-    ("encodings.koi8_u", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/koi8_u.py"))),
-    ("encodings.kz1048", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/kz1048.py"))),
-    ("encodings.latin_1", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/latin_1.py"))),
-    ("encodings.mac_arabic", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/mac_arabic.py"))),
-    ("encodings.mac_croatian", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/mac_croatian.py"))),
-    ("encodings.mac_cyrillic", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/mac_cyrillic.py"))),
-    ("encodings.mac_farsi", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/mac_farsi.py"))),
-    ("encodings.mac_greek", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/mac_greek.py"))),
-    ("encodings.mac_iceland", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/mac_iceland.py"))),
-    ("encodings.mac_latin2", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/mac_latin2.py"))),
-    ("encodings.mac_roman", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/mac_roman.py"))),
-    ("encodings.mac_romanian", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/mac_romanian.py"))),
-    ("encodings.mac_turkish", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/mac_turkish.py"))),
-    ("encodings.mbcs", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/mbcs.py"))),
-    ("encodings.oem", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/oem.py"))),
-    ("encodings.palmos", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/palmos.py"))),
-    ("encodings.ptcp154", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/ptcp154.py"))),
-    ("encodings.punycode", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/punycode.py"))),
-    ("encodings.quopri_codec", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/quopri_codec.py"))),
-    ("encodings.raw_unicode_escape", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/raw_unicode_escape.py"))),
-    ("encodings.rot_13", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/rot_13.py"))),
-    ("encodings.shift_jis", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/shift_jis.py"))),
-    ("encodings.shift_jis_2004", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/shift_jis_2004.py"))),
-    ("encodings.shift_jisx0213", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/shift_jisx0213.py"))),
-    ("encodings.tis_620", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/tis_620.py"))),
-    ("encodings.undefined", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/undefined.py"))),
-    ("encodings.unicode_escape", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/unicode_escape.py"))),
-    ("encodings.utf_16", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/utf_16.py"))),
-    ("encodings.utf_16_be", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/utf_16_be.py"))),
-    ("encodings.utf_16_le", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/utf_16_le.py"))),
-    ("encodings.utf_32", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/utf_32.py"))),
-    ("encodings.utf_32_be", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/utf_32_be.py"))),
-    ("encodings.utf_32_le", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/utf_32_le.py"))),
-    ("encodings.utf_7", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/utf_7.py"))),
-    ("encodings.utf_8", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/utf_8.py"))),
-    ("encodings.utf_8_sig", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/utf_8_sig.py"))),
-    ("encodings.uu_codec", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/uu_codec.py"))),
-    ("encodings.zlib_codec", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/encodings/zlib_codec.py"))),
-    ("enum", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/enum.py"))),
-    ("faulthandler", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/faulthandler.py"))),
-    ("fcntl", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/fcntl.py"))),
-    ("fnmatch", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/fnmatch.py"))),
-    ("ftplib", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/ftplib.py"))),
-    ("functools", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/functools.py"))),
-    ("genericpath", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/genericpath.py"))),
-    ("gettext", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/gettext.py"))),
-    ("glob", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/glob.py"))),
-    ("gzip", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/gzip.py"))),
-    ("hmac", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/hmac.py"))),
-    ("html", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/html/__init__.py"))),
-    ("html.entities", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/html/entities.py"))),
-    ("html.parser", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/html/parser.py"))),
-    ("http", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/http/__init__.py"))),
-    ("http.client", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/http/client.py"))),
-    ("http.cookiejar", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/http/cookiejar.py"))),
-    ("http.cookies", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/http/cookies.py"))),
-    ("http.server", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/http/server.py"))),
-    ("importlib", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/importlib/__init__.py"))),
-    ("importlib._abc", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/importlib/_abc.py"))),
-    ("importlib._bootstrap", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/importlib/_bootstrap.py"))),
-    ("importlib._bootstrap_external", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/importlib/_bootstrap_external.py"))),
-    ("importlib.abc", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/importlib/abc.py"))),
-    ("importlib.machinery", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/importlib/machinery.py"))),
-    ("importlib.metadata", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/importlib/metadata/__init__.py"))),
-    ("importlib.metadata._adapters", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/importlib/metadata/_adapters.py"))),
-    ("importlib.metadata._collections", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/importlib/metadata/_collections.py"))),
-    ("importlib.metadata._functools", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/importlib/metadata/_functools.py"))),
-    ("importlib.metadata._itertools", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/importlib/metadata/_itertools.py"))),
-    ("importlib.metadata._meta", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/importlib/metadata/_meta.py"))),
-    ("importlib.metadata._text", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/importlib/metadata/_text.py"))),
-    ("importlib.metadata.diagnose", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/importlib/metadata/diagnose.py"))),
-    ("importlib.readers", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/importlib/readers.py"))),
-    ("importlib.resources", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/importlib/resources/__init__.py"))),
-    ("importlib.resources._adapters", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/importlib/resources/_adapters.py"))),
-    ("importlib.resources._common", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/importlib/resources/_common.py"))),
-    ("importlib.resources._functional", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/importlib/resources/_functional.py"))),
-    ("importlib.resources._itertools", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/importlib/resources/_itertools.py"))),
-    ("importlib.resources.abc", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/importlib/resources/abc.py"))),
-    ("importlib.resources.readers", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/importlib/resources/readers.py"))),
-    ("importlib.resources.simple", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/importlib/resources/simple.py"))),
-    ("importlib.simple", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/importlib/simple.py"))),
-    ("importlib.util", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/importlib/util.py"))),
-    ("inspect", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/inspect.py"))),
-    ("ipaddress", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/ipaddress.py"))),
-    ("jmespath", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/jmespath/__init__.py"))),
-    ("keyword", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/keyword.py"))),
-    ("linecache", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/linecache.py"))),
-    ("logging", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/logging/__init__.py"))),
-    ("logging.config", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/logging/config.py"))),
-    ("logging.handlers", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/logging/handlers.py"))),
-    ("lzma", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/lzma.py"))),
-    ("mimetypes", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/mimetypes.py"))),
-    ("ntpath", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/ntpath.py"))),
-    ("numbers", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/numbers.py"))),
-    ("opcode", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/opcode.py"))),
-    ("parsel", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/parsel/__init__.py"))),
-    ("parsel.csstranslator", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/parsel/csstranslator/__init__.py"))),
-    ("parsel.selector", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/parsel/selector.py"))),
-    ("pathlib", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/pathlib/__init__.py"))),
-    ("pathlib._local", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/pathlib/_local.py"))),
-    ("pathlib._os", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/pathlib/_os.py"))),
-    ("pathlib.types", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/pathlib/types.py"))),
-    ("pdb", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/pdb.py"))),
-    ("pickle", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/pickle.py"))),
-    ("pickletools", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/pickletools.py"))),
-    ("pkgutil", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/pkgutil.py"))),
-    ("platform", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/platform.py"))),
-    ("posixpath", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/posixpath.py"))),
-    ("pprint", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/pprint.py"))),
-    ("pydoc", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/pydoc.py"))),
-    ("pyexpat", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/pyexpat.py"))),
-    ("quopri", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/quopri.py"))),
-    ("re", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/re/__init__.py"))),
-    ("re._casefix", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/re/_casefix.py"))),
-    ("re._compiler", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/re/_compiler.py"))),
-    ("re._constants", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/re/_constants.py"))),
-    ("re._parser", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/re/_parser.py"))),
-    ("reprlib", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/reprlib.py"))),
-    ("sched", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/sched.py"))),
-    ("secrets", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/secrets.py"))),
-    ("select", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/select.py"))),
-    ("selectors", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/selectors.py"))),
-    ("service_identity", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/service_identity/__init__.py"))),
-    ("service_identity.exceptions", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/service_identity/exceptions.py"))),
-    ("service_identity.hazmat", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/service_identity/hazmat/__init__.py"))),
-    ("service_identity.pyopenssl", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/service_identity/pyopenssl/__init__.py"))),
-    ("shlex", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/shlex.py"))),
-    ("signal", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/signal.py"))),
-    ("socket", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/socket.py"))),
-    ("socketserver", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/socketserver.py"))),
-    ("sqlite3", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/sqlite3/__init__.py"))),
-    ("ssl", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/ssl.py"))),
-    ("stat", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/stat.py"))),
-    ("string", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/string.py"))),
-    ("subprocess", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/subprocess.py"))),
-    ("sysconfig", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/sysconfig/__init__.py"))),
-    ("sysconfig.__main__", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/sysconfig/__main__.py"))),
-    ("threading", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/threading.py"))),
-    ("tldextract", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/tldextract.py"))),
-    ("token", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/token.py"))),
-    ("tokenize", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/tokenize.py"))),
-    ("traceback", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/traceback.py"))),
-    ("types", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/types.py"))),
-    ("typing", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/typing.py"))),
-    ("unittest", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/unittest/__init__.py"))),
-    ("unittest.__main__", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/unittest/__main__.py"))),
-    ("unittest._log", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/unittest/_log.py"))),
-    ("unittest.async_case", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/unittest/async_case.py"))),
-    ("unittest.case", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/unittest/case.py"))),
-    ("unittest.loader", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/unittest/loader.py"))),
-    ("unittest.main", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/unittest/main.py"))),
-    ("unittest.mock", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/unittest/mock.py"))),
-    ("unittest.result", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/unittest/result.py"))),
-    ("unittest.runner", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/unittest/runner.py"))),
-    ("unittest.signals", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/unittest/signals.py"))),
-    ("unittest.suite", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/unittest/suite.py"))),
-    ("unittest.util", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/unittest/util.py"))),
-    ("urllib", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/urllib/__init__.py"))),
-    ("urllib.error", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/urllib/error.py"))),
-    ("urllib.parse", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/urllib/parse.py"))),
-    ("urllib.request", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/urllib/request.py"))),
-    ("urllib.response", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/urllib/response.py"))),
-    ("urllib.robotparser", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/urllib/robotparser.py"))),
-    ("uuid", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/uuid.py"))),
-    ("warnings", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/warnings.py"))),
-    ("weakref", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/weakref.py"))),
-    ("webbrowser", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/webbrowser.py"))),
-    ("xml", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/xml/__init__.py"))),
-    ("xml.dom", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/xml/dom/__init__.py"))),
-    ("xml.dom.NodeFilter", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/xml/dom/NodeFilter.py"))),
-    ("xml.dom.domreg", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/xml/dom/domreg.py"))),
-    ("xml.dom.expatbuilder", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/xml/dom/expatbuilder.py"))),
-    ("xml.dom.minicompat", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/xml/dom/minicompat.py"))),
-    ("xml.dom.minidom", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/xml/dom/minidom.py"))),
-    ("xml.dom.pulldom", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/xml/dom/pulldom.py"))),
-    ("xml.dom.xmlbuilder", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/xml/dom/xmlbuilder.py"))),
-    ("xml.etree", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/xml/etree/__init__.py"))),
-    ("xml.etree.ElementInclude", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/xml/etree/ElementInclude.py"))),
-    ("xml.etree.ElementPath", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/xml/etree/ElementPath.py"))),
-    ("xml.etree.ElementTree", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/xml/etree/ElementTree.py"))),
-    ("xml.etree.cElementTree", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/xml/etree/cElementTree.py"))),
-    ("xml.parsers", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/xml/parsers/__init__.py"))),
-    ("xml.parsers.expat", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/xml/parsers/expat.py"))),
-    ("xml.sax", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/xml/sax/__init__.py"))),
-    ("xml.sax._exceptions", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/xml/sax/_exceptions.py"))),
-    ("xml.sax.expatreader", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/xml/sax/expatreader.py"))),
-    ("xml.sax.handler", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/xml/sax/handler.py"))),
-    ("xml.sax.saxutils", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/xml/sax/saxutils.py"))),
-    ("xml.sax.xmlreader", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/xml/sax/xmlreader.py"))),
-    ("xmlrpc", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/xmlrpc/__init__.py"))),
-    ("xmlrpc.client", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/xmlrpc/client.py"))),
-    ("xmlrpc.server", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/xmlrpc/server.py"))),
-    ("zipfile", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/zipfile/__init__.py"))),
-    ("zipfile.__main__", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/zipfile/__main__.py"))),
-    ("zipfile._path", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/zipfile/_path/__init__.py"))),
-    ("zipfile._path.glob", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/zipfile/_path/glob.py"))),
-    ("zipimport", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/zipimport.py"))),
-    ("zlib", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/zlib.py"))),
-    ("zope", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/zope/__init__.py"))),
-    ("zope.interface", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/zope/interface/__init__.py"))),
-    ("zope.interface._shim", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/zope/interface/_shim.py"))),
-    ("zope.interface.adapter", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/zope/interface/adapter.py"))),
-    ("zope.interface.declarations", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/zope/interface/declarations.py"))),
-    ("zope.interface.interface", include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendored_stdlib/zope/interface/interface.py"))),
+    (
+        "OpenSSL",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/OpenSSL/__init__.py"
+        )),
+    ),
+    (
+        "OpenSSL.SSL",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/OpenSSL/SSL.py"
+        )),
+    ),
+    (
+        "OpenSSL._util",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/OpenSSL/_util.py"
+        )),
+    ),
+    (
+        "OpenSSL.crypto",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/OpenSSL/crypto.py"
+        )),
+    ),
+    (
+        "OpenSSL.version",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/OpenSSL/version.py"
+        )),
+    ),
+    (
+        "__future__",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/__future__.py"
+        )),
+    ),
+    (
+        "_ast",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/_ast.py"
+        )),
+    ),
+    (
+        "_ast_unparse",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/_ast_unparse.py"
+        )),
+    ),
+    (
+        "_collections_abc",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/_collections_abc.py"
+        )),
+    ),
+    (
+        "_collections_abc_append",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/_collections_abc_append.py"
+        )),
+    ),
+    (
+        "_collections_userdict_shim",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/_collections_userdict_shim.py"
+        )),
+    ),
+    (
+        "_compat_pickle",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/_compat_pickle.py"
+        )),
+    ),
+    (
+        "_contextvars",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/_contextvars.py"
+        )),
+    ),
+    (
+        "_markupbase",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/_markupbase.py"
+        )),
+    ),
+    (
+        "_multibytecodec",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/_multibytecodec.py"
+        )),
+    ),
+    (
+        "_opcode_metadata",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/_opcode_metadata.py"
+        )),
+    ),
+    (
+        "_osx_support",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/_osx_support.py"
+        )),
+    ),
+    (
+        "_posixsubprocess",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/_posixsubprocess.py"
+        )),
+    ),
+    (
+        "_py_abc",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/_py_abc.py"
+        )),
+    ),
+    (
+        "_py_warnings",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/_py_warnings.py"
+        )),
+    ),
+    (
+        "_pydatetime",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/_pydatetime.py"
+        )),
+    ),
+    (
+        "_pydecimal",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/_pydecimal.py"
+        )),
+    ),
+    (
+        "_string_errors",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/_string_errors.py"
+        )),
+    ),
+    (
+        "_sysconfigdata__darwin_darwin",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/_sysconfigdata__darwin_darwin.py"
+        )),
+    ),
+    (
+        "_weakrefset",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/_weakrefset.py"
+        )),
+    ),
+    (
+        "abc",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/abc.py"
+        )),
+    ),
+    (
+        "aiohttp",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/aiohttp/__init__.py"
+        )),
+    ),
+    (
+        "aiohttp.web",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/aiohttp/web/__init__.py"
+        )),
+    ),
+    (
+        "annotationlib",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/annotationlib.py"
+        )),
+    ),
+    (
+        "argparse",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/argparse.py"
+        )),
+    ),
+    (
+        "ast",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/ast.py"
+        )),
+    ),
+    (
+        "asyncio",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/asyncio/__init__.py"
+        )),
+    ),
+    (
+        "asyncio.__main__",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/asyncio/__main__.py"
+        )),
+    ),
+    (
+        "asyncio.base_events",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/asyncio/base_events.py"
+        )),
+    ),
+    (
+        "asyncio.base_futures",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/asyncio/base_futures.py"
+        )),
+    ),
+    (
+        "asyncio.base_subprocess",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/asyncio/base_subprocess.py"
+        )),
+    ),
+    (
+        "asyncio.base_tasks",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/asyncio/base_tasks.py"
+        )),
+    ),
+    (
+        "asyncio.constants",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/asyncio/constants.py"
+        )),
+    ),
+    (
+        "asyncio.coroutines",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/asyncio/coroutines.py"
+        )),
+    ),
+    (
+        "asyncio.events",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/asyncio/events.py"
+        )),
+    ),
+    (
+        "asyncio.exceptions",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/asyncio/exceptions.py"
+        )),
+    ),
+    (
+        "asyncio.format_helpers",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/asyncio/format_helpers.py"
+        )),
+    ),
+    (
+        "asyncio.futures",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/asyncio/futures.py"
+        )),
+    ),
+    (
+        "asyncio.graph",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/asyncio/graph.py"
+        )),
+    ),
+    (
+        "asyncio.locks",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/asyncio/locks.py"
+        )),
+    ),
+    (
+        "asyncio.log",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/asyncio/log.py"
+        )),
+    ),
+    (
+        "asyncio.mixins",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/asyncio/mixins.py"
+        )),
+    ),
+    (
+        "asyncio.proactor_events",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/asyncio/proactor_events.py"
+        )),
+    ),
+    (
+        "asyncio.protocols",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/asyncio/protocols.py"
+        )),
+    ),
+    (
+        "asyncio.queues",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/asyncio/queues.py"
+        )),
+    ),
+    (
+        "asyncio.runners",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/asyncio/runners.py"
+        )),
+    ),
+    (
+        "asyncio.selector_events",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/asyncio/selector_events.py"
+        )),
+    ),
+    (
+        "asyncio.sslproto",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/asyncio/sslproto.py"
+        )),
+    ),
+    (
+        "asyncio.staggered",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/asyncio/staggered.py"
+        )),
+    ),
+    (
+        "asyncio.streams",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/asyncio/streams.py"
+        )),
+    ),
+    (
+        "asyncio.subprocess",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/asyncio/subprocess.py"
+        )),
+    ),
+    (
+        "asyncio.taskgroups",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/asyncio/taskgroups.py"
+        )),
+    ),
+    (
+        "asyncio.tasks",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/asyncio/tasks.py"
+        )),
+    ),
+    (
+        "asyncio.threads",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/asyncio/threads.py"
+        )),
+    ),
+    (
+        "asyncio.timeouts",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/asyncio/timeouts.py"
+        )),
+    ),
+    (
+        "asyncio.tools",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/asyncio/tools.py"
+        )),
+    ),
+    (
+        "asyncio.transports",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/asyncio/transports.py"
+        )),
+    ),
+    (
+        "asyncio.trsock",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/asyncio/trsock.py"
+        )),
+    ),
+    (
+        "asyncio.unix_events",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/asyncio/unix_events.py"
+        )),
+    ),
+    (
+        "asyncio.windows_events",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/asyncio/windows_events.py"
+        )),
+    ),
+    (
+        "asyncio.windows_utils",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/asyncio/windows_utils.py"
+        )),
+    ),
+    (
+        "bdb",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/bdb.py"
+        )),
+    ),
+    (
+        "brotli",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/brotli.py"
+        )),
+    ),
+    (
+        "brotlicffi",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/brotlicffi.py"
+        )),
+    ),
+    (
+        "bz2",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/bz2.py"
+        )),
+    ),
+    (
+        "calendar",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/calendar.py"
+        )),
+    ),
+    (
+        "charset_normalizer",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/charset_normalizer/__init__.py"
+        )),
+    ),
+    (
+        "charset_normalizer.__main__",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/charset_normalizer/__main__.py"
+        )),
+    ),
+    (
+        "charset_normalizer.api",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/charset_normalizer/api.py"
+        )),
+    ),
+    (
+        "charset_normalizer.cd",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/charset_normalizer/cd.py"
+        )),
+    ),
+    (
+        "charset_normalizer.cli",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/charset_normalizer/cli/__init__.py"
+        )),
+    ),
+    (
+        "charset_normalizer.cli.__main__",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/charset_normalizer/cli/__main__.py"
+        )),
+    ),
+    (
+        "charset_normalizer.constant",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/charset_normalizer/constant.py"
+        )),
+    ),
+    (
+        "charset_normalizer.legacy",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/charset_normalizer/legacy.py"
+        )),
+    ),
+    (
+        "charset_normalizer.md",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/charset_normalizer/md.py"
+        )),
+    ),
+    (
+        "charset_normalizer.models",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/charset_normalizer/models.py"
+        )),
+    ),
+    (
+        "charset_normalizer.utils",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/charset_normalizer/utils.py"
+        )),
+    ),
+    (
+        "charset_normalizer.version",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/charset_normalizer/version.py"
+        )),
+    ),
+    (
+        "codecs",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/codecs.py"
+        )),
+    ),
+    (
+        "collections",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/collections.py"
+        )),
+    ),
+    (
+        "compression",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/compression/__init__.py"
+        )),
+    ),
+    (
+        "compression.zstd",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/compression/zstd/__init__.py"
+        )),
+    ),
+    (
+        "concurrent",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/concurrent/__init__.py"
+        )),
+    ),
+    (
+        "concurrent.futures",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/concurrent/futures/__init__.py"
+        )),
+    ),
+    (
+        "concurrent.futures._base",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/concurrent/futures/_base.py"
+        )),
+    ),
+    (
+        "concurrent.futures.interpreter",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/concurrent/futures/interpreter.py"
+        )),
+    ),
+    (
+        "concurrent.futures.process",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/concurrent/futures/process.py"
+        )),
+    ),
+    (
+        "concurrent.futures.thread",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/concurrent/futures/thread.py"
+        )),
+    ),
+    (
+        "concurrent.interpreters",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/concurrent/interpreters/__init__.py"
+        )),
+    ),
+    (
+        "concurrent.interpreters._crossinterp",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/concurrent/interpreters/_crossinterp.py"
+        )),
+    ),
+    (
+        "concurrent.interpreters._queues",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/concurrent/interpreters/_queues.py"
+        )),
+    ),
+    (
+        "configparser",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/configparser.py"
+        )),
+    ),
+    (
+        "contextlib",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/contextlib.py"
+        )),
+    ),
+    (
+        "contextvars",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/contextvars.py"
+        )),
+    ),
+    (
+        "copy",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/copy.py"
+        )),
+    ),
+    (
+        "copyreg",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/copyreg.py"
+        )),
+    ),
+    (
+        "cryptography",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/cryptography/__init__.py"
+        )),
+    ),
+    (
+        "cryptography.exceptions",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/cryptography/exceptions.py"
+        )),
+    ),
+    (
+        "cryptography.hazmat",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/cryptography/hazmat/__init__.py"
+        )),
+    ),
+    (
+        "cryptography.hazmat.backends",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/cryptography/hazmat/backends/__init__.py"
+        )),
+    ),
+    (
+        "cryptography.hazmat.decrepit",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/cryptography/hazmat/decrepit/__init__.py"
+        )),
+    ),
+    (
+        "cryptography.hazmat.decrepit.ciphers",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/cryptography/hazmat/decrepit/ciphers/__init__.py"
+        )),
+    ),
+    (
+        "cryptography.hazmat.decrepit.ciphers.algorithms",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/cryptography/hazmat/decrepit/ciphers/algorithms.py"
+        )),
+    ),
+    (
+        "cryptography.hazmat.primitives",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/cryptography/hazmat/primitives/__init__.py"
+        )),
+    ),
+    (
+        "cryptography.hazmat.primitives.asymmetric",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/cryptography/hazmat/primitives/asymmetric/__init__.py"
+        )),
+    ),
+    (
+        "cryptography.hazmat.primitives.asymmetric.dh",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/cryptography/hazmat/primitives/asymmetric/dh.py"
+        )),
+    ),
+    (
+        "cryptography.hazmat.primitives.asymmetric.dsa",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/cryptography/hazmat/primitives/asymmetric/dsa.py"
+        )),
+    ),
+    (
+        "cryptography.hazmat.primitives.asymmetric.ec",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/cryptography/hazmat/primitives/asymmetric/ec.py"
+        )),
+    ),
+    (
+        "cryptography.hazmat.primitives.asymmetric.ed25519",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/cryptography/hazmat/primitives/asymmetric/ed25519.py"
+        )),
+    ),
+    (
+        "cryptography.hazmat.primitives.asymmetric.padding",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/cryptography/hazmat/primitives/asymmetric/padding.py"
+        )),
+    ),
+    (
+        "cryptography.hazmat.primitives.asymmetric.rsa",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/cryptography/hazmat/primitives/asymmetric/rsa.py"
+        )),
+    ),
+    (
+        "cryptography.hazmat.primitives.asymmetric.utils",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/cryptography/hazmat/primitives/asymmetric/utils.py"
+        )),
+    ),
+    (
+        "cryptography.hazmat.primitives.asymmetric.x25519",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/cryptography/hazmat/primitives/asymmetric/x25519.py"
+        )),
+    ),
+    (
+        "cryptography.hazmat.primitives.ciphers",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/cryptography/hazmat/primitives/ciphers/__init__.py"
+        )),
+    ),
+    (
+        "cryptography.hazmat.primitives.ciphers.algorithms",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/cryptography/hazmat/primitives/ciphers/algorithms/__init__.py"
+        )),
+    ),
+    (
+        "cryptography.hazmat.primitives.ciphers.algorithms._mod",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/cryptography/hazmat/primitives/ciphers/algorithms/_mod.py"
+        )),
+    ),
+    (
+        "cryptography.hazmat.primitives.ciphers.modes",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/cryptography/hazmat/primitives/ciphers/modes/__init__.py"
+        )),
+    ),
+    (
+        "cryptography.hazmat.primitives.ciphers.modes._mod",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/cryptography/hazmat/primitives/ciphers/modes/_mod.py"
+        )),
+    ),
+    (
+        "cryptography.hazmat.primitives.hashes",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/cryptography/hazmat/primitives/hashes/__init__.py"
+        )),
+    ),
+    (
+        "cryptography.hazmat.primitives.hashes._mod",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/cryptography/hazmat/primitives/hashes/_mod.py"
+        )),
+    ),
+    (
+        "cryptography.hazmat.primitives.serialization",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/cryptography/hazmat/primitives/serialization/__init__.py"
+        )),
+    ),
+    (
+        "cryptography.hazmat.primitives.serialization._mod",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/cryptography/hazmat/primitives/serialization/_mod.py"
+        )),
+    ),
+    (
+        "cryptography.utils",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/cryptography/utils.py"
+        )),
+    ),
+    (
+        "csv",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/csv.py"
+        )),
+    ),
+    (
+        "ctypes",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/ctypes/__init__.py"
+        )),
+    ),
+    (
+        "ctypes.util",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/ctypes/util.py"
+        )),
+    ),
+    (
+        "dataclasses",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/dataclasses.py"
+        )),
+    ),
+    (
+        "datetime",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/datetime.py"
+        )),
+    ),
+    (
+        "decimal",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/decimal.py"
+        )),
+    ),
+    (
+        "defusedxml",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/defusedxml/__init__.py"
+        )),
+    ),
+    (
+        "defusedxml.ElementTree",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/defusedxml/ElementTree.py"
+        )),
+    ),
+    (
+        "defusedxml.cElementTree",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/defusedxml/cElementTree.py"
+        )),
+    ),
+    (
+        "defusedxml.common",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/defusedxml/common.py"
+        )),
+    ),
+    (
+        "defusedxml.expatbuilder",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/defusedxml/expatbuilder.py"
+        )),
+    ),
+    (
+        "defusedxml.expatreader",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/defusedxml/expatreader.py"
+        )),
+    ),
+    (
+        "defusedxml.lxml",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/defusedxml/lxml.py"
+        )),
+    ),
+    (
+        "defusedxml.minidom",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/defusedxml/minidom.py"
+        )),
+    ),
+    (
+        "defusedxml.pulldom",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/defusedxml/pulldom.py"
+        )),
+    ),
+    (
+        "defusedxml.sax",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/defusedxml/sax.py"
+        )),
+    ),
+    (
+        "defusedxml.xmlrpc",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/defusedxml/xmlrpc.py"
+        )),
+    ),
+    (
+        "difflib",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/difflib.py"
+        )),
+    ),
+    (
+        "dis",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/dis.py"
+        )),
+    ),
+    (
+        "email",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/email/__init__.py"
+        )),
+    ),
+    (
+        "email._encoded_words",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/email/_encoded_words.py"
+        )),
+    ),
+    (
+        "email._header_value_parser",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/email/_header_value_parser.py"
+        )),
+    ),
+    (
+        "email._parseaddr",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/email/_parseaddr.py"
+        )),
+    ),
+    (
+        "email._policybase",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/email/_policybase.py"
+        )),
+    ),
+    (
+        "email.base64mime",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/email/base64mime.py"
+        )),
+    ),
+    (
+        "email.charset",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/email/charset.py"
+        )),
+    ),
+    (
+        "email.contentmanager",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/email/contentmanager.py"
+        )),
+    ),
+    (
+        "email.encoders",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/email/encoders.py"
+        )),
+    ),
+    (
+        "email.errors",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/email/errors.py"
+        )),
+    ),
+    (
+        "email.feedparser",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/email/feedparser.py"
+        )),
+    ),
+    (
+        "email.generator",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/email/generator.py"
+        )),
+    ),
+    (
+        "email.header",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/email/header.py"
+        )),
+    ),
+    (
+        "email.headerregistry",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/email/headerregistry.py"
+        )),
+    ),
+    (
+        "email.iterators",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/email/iterators.py"
+        )),
+    ),
+    (
+        "email.message",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/email/message.py"
+        )),
+    ),
+    (
+        "email.mime",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/email/mime/__init__.py"
+        )),
+    ),
+    (
+        "email.mime.application",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/email/mime/application.py"
+        )),
+    ),
+    (
+        "email.mime.audio",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/email/mime/audio.py"
+        )),
+    ),
+    (
+        "email.mime.base",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/email/mime/base.py"
+        )),
+    ),
+    (
+        "email.mime.image",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/email/mime/image.py"
+        )),
+    ),
+    (
+        "email.mime.message",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/email/mime/message.py"
+        )),
+    ),
+    (
+        "email.mime.multipart",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/email/mime/multipart.py"
+        )),
+    ),
+    (
+        "email.mime.nonmultipart",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/email/mime/nonmultipart.py"
+        )),
+    ),
+    (
+        "email.mime.text",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/email/mime/text.py"
+        )),
+    ),
+    (
+        "email.parser",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/email/parser.py"
+        )),
+    ),
+    (
+        "email.policy",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/email/policy.py"
+        )),
+    ),
+    (
+        "email.quoprimime",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/email/quoprimime.py"
+        )),
+    ),
+    (
+        "email.utils",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/email/utils.py"
+        )),
+    ),
+    (
+        "encodings",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/__init__.py"
+        )),
+    ),
+    (
+        "encodings._win_cp_codecs",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/_win_cp_codecs.py"
+        )),
+    ),
+    (
+        "encodings.aliases",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/aliases.py"
+        )),
+    ),
+    (
+        "encodings.ascii",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/ascii.py"
+        )),
+    ),
+    (
+        "encodings.base64_codec",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/base64_codec.py"
+        )),
+    ),
+    (
+        "encodings.big5",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/big5.py"
+        )),
+    ),
+    (
+        "encodings.big5hkscs",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/big5hkscs.py"
+        )),
+    ),
+    (
+        "encodings.bz2_codec",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/bz2_codec.py"
+        )),
+    ),
+    (
+        "encodings.charmap",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/charmap.py"
+        )),
+    ),
+    (
+        "encodings.cp037",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/cp037.py"
+        )),
+    ),
+    (
+        "encodings.cp1006",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/cp1006.py"
+        )),
+    ),
+    (
+        "encodings.cp1026",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/cp1026.py"
+        )),
+    ),
+    (
+        "encodings.cp1125",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/cp1125.py"
+        )),
+    ),
+    (
+        "encodings.cp1140",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/cp1140.py"
+        )),
+    ),
+    (
+        "encodings.cp1250",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/cp1250.py"
+        )),
+    ),
+    (
+        "encodings.cp1251",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/cp1251.py"
+        )),
+    ),
+    (
+        "encodings.cp1252",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/cp1252.py"
+        )),
+    ),
+    (
+        "encodings.cp1253",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/cp1253.py"
+        )),
+    ),
+    (
+        "encodings.cp1254",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/cp1254.py"
+        )),
+    ),
+    (
+        "encodings.cp1255",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/cp1255.py"
+        )),
+    ),
+    (
+        "encodings.cp1256",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/cp1256.py"
+        )),
+    ),
+    (
+        "encodings.cp1257",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/cp1257.py"
+        )),
+    ),
+    (
+        "encodings.cp1258",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/cp1258.py"
+        )),
+    ),
+    (
+        "encodings.cp273",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/cp273.py"
+        )),
+    ),
+    (
+        "encodings.cp424",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/cp424.py"
+        )),
+    ),
+    (
+        "encodings.cp437",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/cp437.py"
+        )),
+    ),
+    (
+        "encodings.cp500",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/cp500.py"
+        )),
+    ),
+    (
+        "encodings.cp720",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/cp720.py"
+        )),
+    ),
+    (
+        "encodings.cp737",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/cp737.py"
+        )),
+    ),
+    (
+        "encodings.cp775",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/cp775.py"
+        )),
+    ),
+    (
+        "encodings.cp850",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/cp850.py"
+        )),
+    ),
+    (
+        "encodings.cp852",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/cp852.py"
+        )),
+    ),
+    (
+        "encodings.cp855",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/cp855.py"
+        )),
+    ),
+    (
+        "encodings.cp856",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/cp856.py"
+        )),
+    ),
+    (
+        "encodings.cp857",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/cp857.py"
+        )),
+    ),
+    (
+        "encodings.cp858",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/cp858.py"
+        )),
+    ),
+    (
+        "encodings.cp860",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/cp860.py"
+        )),
+    ),
+    (
+        "encodings.cp861",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/cp861.py"
+        )),
+    ),
+    (
+        "encodings.cp862",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/cp862.py"
+        )),
+    ),
+    (
+        "encodings.cp863",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/cp863.py"
+        )),
+    ),
+    (
+        "encodings.cp864",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/cp864.py"
+        )),
+    ),
+    (
+        "encodings.cp865",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/cp865.py"
+        )),
+    ),
+    (
+        "encodings.cp866",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/cp866.py"
+        )),
+    ),
+    (
+        "encodings.cp869",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/cp869.py"
+        )),
+    ),
+    (
+        "encodings.cp874",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/cp874.py"
+        )),
+    ),
+    (
+        "encodings.cp875",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/cp875.py"
+        )),
+    ),
+    (
+        "encodings.cp932",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/cp932.py"
+        )),
+    ),
+    (
+        "encodings.cp949",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/cp949.py"
+        )),
+    ),
+    (
+        "encodings.cp950",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/cp950.py"
+        )),
+    ),
+    (
+        "encodings.euc_jis_2004",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/euc_jis_2004.py"
+        )),
+    ),
+    (
+        "encodings.euc_jisx0213",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/euc_jisx0213.py"
+        )),
+    ),
+    (
+        "encodings.euc_jp",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/euc_jp.py"
+        )),
+    ),
+    (
+        "encodings.euc_kr",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/euc_kr.py"
+        )),
+    ),
+    (
+        "encodings.gb18030",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/gb18030.py"
+        )),
+    ),
+    (
+        "encodings.gb2312",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/gb2312.py"
+        )),
+    ),
+    (
+        "encodings.gbk",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/gbk.py"
+        )),
+    ),
+    (
+        "encodings.hex_codec",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/hex_codec.py"
+        )),
+    ),
+    (
+        "encodings.hp_roman8",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/hp_roman8.py"
+        )),
+    ),
+    (
+        "encodings.hz",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/hz.py"
+        )),
+    ),
+    (
+        "encodings.idna",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/idna.py"
+        )),
+    ),
+    (
+        "encodings.iso2022_jp",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/iso2022_jp.py"
+        )),
+    ),
+    (
+        "encodings.iso2022_jp_1",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/iso2022_jp_1.py"
+        )),
+    ),
+    (
+        "encodings.iso2022_jp_2",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/iso2022_jp_2.py"
+        )),
+    ),
+    (
+        "encodings.iso2022_jp_2004",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/iso2022_jp_2004.py"
+        )),
+    ),
+    (
+        "encodings.iso2022_jp_3",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/iso2022_jp_3.py"
+        )),
+    ),
+    (
+        "encodings.iso2022_jp_ext",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/iso2022_jp_ext.py"
+        )),
+    ),
+    (
+        "encodings.iso2022_kr",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/iso2022_kr.py"
+        )),
+    ),
+    (
+        "encodings.iso8859_1",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/iso8859_1.py"
+        )),
+    ),
+    (
+        "encodings.iso8859_10",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/iso8859_10.py"
+        )),
+    ),
+    (
+        "encodings.iso8859_11",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/iso8859_11.py"
+        )),
+    ),
+    (
+        "encodings.iso8859_13",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/iso8859_13.py"
+        )),
+    ),
+    (
+        "encodings.iso8859_14",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/iso8859_14.py"
+        )),
+    ),
+    (
+        "encodings.iso8859_15",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/iso8859_15.py"
+        )),
+    ),
+    (
+        "encodings.iso8859_16",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/iso8859_16.py"
+        )),
+    ),
+    (
+        "encodings.iso8859_2",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/iso8859_2.py"
+        )),
+    ),
+    (
+        "encodings.iso8859_3",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/iso8859_3.py"
+        )),
+    ),
+    (
+        "encodings.iso8859_4",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/iso8859_4.py"
+        )),
+    ),
+    (
+        "encodings.iso8859_5",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/iso8859_5.py"
+        )),
+    ),
+    (
+        "encodings.iso8859_6",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/iso8859_6.py"
+        )),
+    ),
+    (
+        "encodings.iso8859_7",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/iso8859_7.py"
+        )),
+    ),
+    (
+        "encodings.iso8859_8",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/iso8859_8.py"
+        )),
+    ),
+    (
+        "encodings.iso8859_9",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/iso8859_9.py"
+        )),
+    ),
+    (
+        "encodings.johab",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/johab.py"
+        )),
+    ),
+    (
+        "encodings.koi8_r",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/koi8_r.py"
+        )),
+    ),
+    (
+        "encodings.koi8_t",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/koi8_t.py"
+        )),
+    ),
+    (
+        "encodings.koi8_u",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/koi8_u.py"
+        )),
+    ),
+    (
+        "encodings.kz1048",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/kz1048.py"
+        )),
+    ),
+    (
+        "encodings.latin_1",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/latin_1.py"
+        )),
+    ),
+    (
+        "encodings.mac_arabic",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/mac_arabic.py"
+        )),
+    ),
+    (
+        "encodings.mac_croatian",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/mac_croatian.py"
+        )),
+    ),
+    (
+        "encodings.mac_cyrillic",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/mac_cyrillic.py"
+        )),
+    ),
+    (
+        "encodings.mac_farsi",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/mac_farsi.py"
+        )),
+    ),
+    (
+        "encodings.mac_greek",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/mac_greek.py"
+        )),
+    ),
+    (
+        "encodings.mac_iceland",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/mac_iceland.py"
+        )),
+    ),
+    (
+        "encodings.mac_latin2",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/mac_latin2.py"
+        )),
+    ),
+    (
+        "encodings.mac_roman",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/mac_roman.py"
+        )),
+    ),
+    (
+        "encodings.mac_romanian",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/mac_romanian.py"
+        )),
+    ),
+    (
+        "encodings.mac_turkish",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/mac_turkish.py"
+        )),
+    ),
+    (
+        "encodings.mbcs",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/mbcs.py"
+        )),
+    ),
+    (
+        "encodings.oem",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/oem.py"
+        )),
+    ),
+    (
+        "encodings.palmos",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/palmos.py"
+        )),
+    ),
+    (
+        "encodings.ptcp154",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/ptcp154.py"
+        )),
+    ),
+    (
+        "encodings.punycode",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/punycode.py"
+        )),
+    ),
+    (
+        "encodings.quopri_codec",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/quopri_codec.py"
+        )),
+    ),
+    (
+        "encodings.raw_unicode_escape",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/raw_unicode_escape.py"
+        )),
+    ),
+    (
+        "encodings.rot_13",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/rot_13.py"
+        )),
+    ),
+    (
+        "encodings.shift_jis",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/shift_jis.py"
+        )),
+    ),
+    (
+        "encodings.shift_jis_2004",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/shift_jis_2004.py"
+        )),
+    ),
+    (
+        "encodings.shift_jisx0213",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/shift_jisx0213.py"
+        )),
+    ),
+    (
+        "encodings.tis_620",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/tis_620.py"
+        )),
+    ),
+    (
+        "encodings.undefined",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/undefined.py"
+        )),
+    ),
+    (
+        "encodings.unicode_escape",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/unicode_escape.py"
+        )),
+    ),
+    (
+        "encodings.utf_16",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/utf_16.py"
+        )),
+    ),
+    (
+        "encodings.utf_16_be",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/utf_16_be.py"
+        )),
+    ),
+    (
+        "encodings.utf_16_le",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/utf_16_le.py"
+        )),
+    ),
+    (
+        "encodings.utf_32",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/utf_32.py"
+        )),
+    ),
+    (
+        "encodings.utf_32_be",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/utf_32_be.py"
+        )),
+    ),
+    (
+        "encodings.utf_32_le",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/utf_32_le.py"
+        )),
+    ),
+    (
+        "encodings.utf_7",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/utf_7.py"
+        )),
+    ),
+    (
+        "encodings.utf_8",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/utf_8.py"
+        )),
+    ),
+    (
+        "encodings.utf_8_sig",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/utf_8_sig.py"
+        )),
+    ),
+    (
+        "encodings.uu_codec",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/uu_codec.py"
+        )),
+    ),
+    (
+        "encodings.zlib_codec",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/encodings/zlib_codec.py"
+        )),
+    ),
+    (
+        "enum",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/enum.py"
+        )),
+    ),
+    (
+        "faulthandler",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/faulthandler.py"
+        )),
+    ),
+    (
+        "fcntl",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/fcntl.py"
+        )),
+    ),
+    (
+        "fnmatch",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/fnmatch.py"
+        )),
+    ),
+    (
+        "ftplib",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/ftplib.py"
+        )),
+    ),
+    (
+        "functools",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/functools.py"
+        )),
+    ),
+    (
+        "genericpath",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/genericpath.py"
+        )),
+    ),
+    (
+        "gettext",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/gettext.py"
+        )),
+    ),
+    (
+        "glob",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/glob.py"
+        )),
+    ),
+    (
+        "gzip",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/gzip.py"
+        )),
+    ),
+    (
+        "hmac",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/hmac.py"
+        )),
+    ),
+    (
+        "html",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/html/__init__.py"
+        )),
+    ),
+    (
+        "html.entities",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/html/entities.py"
+        )),
+    ),
+    (
+        "html.parser",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/html/parser.py"
+        )),
+    ),
+    (
+        "http",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/http/__init__.py"
+        )),
+    ),
+    (
+        "http.client",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/http/client.py"
+        )),
+    ),
+    (
+        "http.cookiejar",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/http/cookiejar.py"
+        )),
+    ),
+    (
+        "http.cookies",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/http/cookies.py"
+        )),
+    ),
+    (
+        "http.server",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/http/server.py"
+        )),
+    ),
+    (
+        "importlib",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/importlib/__init__.py"
+        )),
+    ),
+    (
+        "importlib._abc",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/importlib/_abc.py"
+        )),
+    ),
+    (
+        "importlib._bootstrap",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/importlib/_bootstrap.py"
+        )),
+    ),
+    (
+        "importlib._bootstrap_external",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/importlib/_bootstrap_external.py"
+        )),
+    ),
+    (
+        "importlib.abc",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/importlib/abc.py"
+        )),
+    ),
+    (
+        "importlib.machinery",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/importlib/machinery.py"
+        )),
+    ),
+    (
+        "importlib.metadata",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/importlib/metadata/__init__.py"
+        )),
+    ),
+    (
+        "importlib.metadata._adapters",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/importlib/metadata/_adapters.py"
+        )),
+    ),
+    (
+        "importlib.metadata._collections",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/importlib/metadata/_collections.py"
+        )),
+    ),
+    (
+        "importlib.metadata._functools",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/importlib/metadata/_functools.py"
+        )),
+    ),
+    (
+        "importlib.metadata._itertools",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/importlib/metadata/_itertools.py"
+        )),
+    ),
+    (
+        "importlib.metadata._meta",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/importlib/metadata/_meta.py"
+        )),
+    ),
+    (
+        "importlib.metadata._text",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/importlib/metadata/_text.py"
+        )),
+    ),
+    (
+        "importlib.metadata.diagnose",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/importlib/metadata/diagnose.py"
+        )),
+    ),
+    (
+        "importlib.readers",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/importlib/readers.py"
+        )),
+    ),
+    (
+        "importlib.resources",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/importlib/resources/__init__.py"
+        )),
+    ),
+    (
+        "importlib.resources._adapters",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/importlib/resources/_adapters.py"
+        )),
+    ),
+    (
+        "importlib.resources._common",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/importlib/resources/_common.py"
+        )),
+    ),
+    (
+        "importlib.resources._functional",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/importlib/resources/_functional.py"
+        )),
+    ),
+    (
+        "importlib.resources._itertools",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/importlib/resources/_itertools.py"
+        )),
+    ),
+    (
+        "importlib.resources.abc",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/importlib/resources/abc.py"
+        )),
+    ),
+    (
+        "importlib.resources.readers",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/importlib/resources/readers.py"
+        )),
+    ),
+    (
+        "importlib.resources.simple",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/importlib/resources/simple.py"
+        )),
+    ),
+    (
+        "importlib.simple",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/importlib/simple.py"
+        )),
+    ),
+    (
+        "importlib.util",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/importlib/util.py"
+        )),
+    ),
+    (
+        "inspect",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/inspect.py"
+        )),
+    ),
+    (
+        "ipaddress",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/ipaddress.py"
+        )),
+    ),
+    (
+        "jmespath",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/jmespath/__init__.py"
+        )),
+    ),
+    (
+        "keyword",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/keyword.py"
+        )),
+    ),
+    (
+        "linecache",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/linecache.py"
+        )),
+    ),
+    (
+        "logging",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/logging/__init__.py"
+        )),
+    ),
+    (
+        "logging.config",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/logging/config.py"
+        )),
+    ),
+    (
+        "logging.handlers",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/logging/handlers.py"
+        )),
+    ),
+    (
+        "lzma",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/lzma.py"
+        )),
+    ),
+    (
+        "mimetypes",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/mimetypes.py"
+        )),
+    ),
+    (
+        "ntpath",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/ntpath.py"
+        )),
+    ),
+    (
+        "numbers",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/numbers.py"
+        )),
+    ),
+    (
+        "opcode",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/opcode.py"
+        )),
+    ),
+    (
+        "parsel",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/parsel/__init__.py"
+        )),
+    ),
+    (
+        "parsel.csstranslator",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/parsel/csstranslator/__init__.py"
+        )),
+    ),
+    (
+        "parsel.selector",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/parsel/selector.py"
+        )),
+    ),
+    (
+        "pathlib",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/pathlib/__init__.py"
+        )),
+    ),
+    (
+        "pathlib._local",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/pathlib/_local.py"
+        )),
+    ),
+    (
+        "pathlib._os",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/pathlib/_os.py"
+        )),
+    ),
+    (
+        "pathlib.types",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/pathlib/types.py"
+        )),
+    ),
+    (
+        "pdb",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/pdb.py"
+        )),
+    ),
+    (
+        "pickle",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/pickle.py"
+        )),
+    ),
+    (
+        "pickletools",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/pickletools.py"
+        )),
+    ),
+    (
+        "pkgutil",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/pkgutil.py"
+        )),
+    ),
+    (
+        "platform",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/platform.py"
+        )),
+    ),
+    (
+        "posixpath",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/posixpath.py"
+        )),
+    ),
+    (
+        "pprint",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/pprint.py"
+        )),
+    ),
+    (
+        "pydoc",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/pydoc.py"
+        )),
+    ),
+    (
+        "pyexpat",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/pyexpat.py"
+        )),
+    ),
+    (
+        "quopri",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/quopri.py"
+        )),
+    ),
+    (
+        "re",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/re/__init__.py"
+        )),
+    ),
+    (
+        "re._casefix",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/re/_casefix.py"
+        )),
+    ),
+    (
+        "re._compiler",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/re/_compiler.py"
+        )),
+    ),
+    (
+        "re._constants",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/re/_constants.py"
+        )),
+    ),
+    (
+        "re._parser",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/re/_parser.py"
+        )),
+    ),
+    (
+        "reprlib",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/reprlib.py"
+        )),
+    ),
+    (
+        "sched",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/sched.py"
+        )),
+    ),
+    (
+        "secrets",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/secrets.py"
+        )),
+    ),
+    (
+        "select",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/select.py"
+        )),
+    ),
+    (
+        "selectors",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/selectors.py"
+        )),
+    ),
+    (
+        "service_identity",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/service_identity/__init__.py"
+        )),
+    ),
+    (
+        "service_identity.exceptions",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/service_identity/exceptions.py"
+        )),
+    ),
+    (
+        "service_identity.hazmat",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/service_identity/hazmat/__init__.py"
+        )),
+    ),
+    (
+        "service_identity.pyopenssl",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/service_identity/pyopenssl/__init__.py"
+        )),
+    ),
+    (
+        "shlex",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/shlex.py"
+        )),
+    ),
+    (
+        "signal",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/signal.py"
+        )),
+    ),
+    (
+        "socket",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/socket.py"
+        )),
+    ),
+    (
+        "socketserver",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/socketserver.py"
+        )),
+    ),
+    (
+        "sqlite3",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/sqlite3/__init__.py"
+        )),
+    ),
+    (
+        "ssl",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/ssl.py"
+        )),
+    ),
+    (
+        "stat",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/stat.py"
+        )),
+    ),
+    (
+        "string",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/string.py"
+        )),
+    ),
+    (
+        "subprocess",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/subprocess.py"
+        )),
+    ),
+    (
+        "sysconfig",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/sysconfig/__init__.py"
+        )),
+    ),
+    (
+        "sysconfig.__main__",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/sysconfig/__main__.py"
+        )),
+    ),
+    (
+        "threading",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/threading.py"
+        )),
+    ),
+    (
+        "tldextract",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/tldextract.py"
+        )),
+    ),
+    (
+        "token",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/token.py"
+        )),
+    ),
+    (
+        "tokenize",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/tokenize.py"
+        )),
+    ),
+    (
+        "traceback",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/traceback.py"
+        )),
+    ),
+    (
+        "types",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/types.py"
+        )),
+    ),
+    (
+        "typing",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/typing.py"
+        )),
+    ),
+    (
+        "unittest",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/unittest/__init__.py"
+        )),
+    ),
+    (
+        "unittest.__main__",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/unittest/__main__.py"
+        )),
+    ),
+    (
+        "unittest._log",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/unittest/_log.py"
+        )),
+    ),
+    (
+        "unittest.async_case",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/unittest/async_case.py"
+        )),
+    ),
+    (
+        "unittest.case",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/unittest/case.py"
+        )),
+    ),
+    (
+        "unittest.loader",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/unittest/loader.py"
+        )),
+    ),
+    (
+        "unittest.main",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/unittest/main.py"
+        )),
+    ),
+    (
+        "unittest.mock",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/unittest/mock.py"
+        )),
+    ),
+    (
+        "unittest.result",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/unittest/result.py"
+        )),
+    ),
+    (
+        "unittest.runner",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/unittest/runner.py"
+        )),
+    ),
+    (
+        "unittest.signals",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/unittest/signals.py"
+        )),
+    ),
+    (
+        "unittest.suite",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/unittest/suite.py"
+        )),
+    ),
+    (
+        "unittest.util",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/unittest/util.py"
+        )),
+    ),
+    (
+        "urllib",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/urllib/__init__.py"
+        )),
+    ),
+    (
+        "urllib.error",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/urllib/error.py"
+        )),
+    ),
+    (
+        "urllib.parse",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/urllib/parse.py"
+        )),
+    ),
+    (
+        "urllib.request",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/urllib/request.py"
+        )),
+    ),
+    (
+        "urllib.response",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/urllib/response.py"
+        )),
+    ),
+    (
+        "urllib.robotparser",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/urllib/robotparser.py"
+        )),
+    ),
+    (
+        "uuid",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/uuid.py"
+        )),
+    ),
+    (
+        "warnings",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/warnings.py"
+        )),
+    ),
+    (
+        "weakref",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/weakref.py"
+        )),
+    ),
+    (
+        "webbrowser",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/webbrowser.py"
+        )),
+    ),
+    (
+        "xml",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/xml/__init__.py"
+        )),
+    ),
+    (
+        "xml.dom",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/xml/dom/__init__.py"
+        )),
+    ),
+    (
+        "xml.dom.NodeFilter",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/xml/dom/NodeFilter.py"
+        )),
+    ),
+    (
+        "xml.dom.domreg",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/xml/dom/domreg.py"
+        )),
+    ),
+    (
+        "xml.dom.expatbuilder",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/xml/dom/expatbuilder.py"
+        )),
+    ),
+    (
+        "xml.dom.minicompat",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/xml/dom/minicompat.py"
+        )),
+    ),
+    (
+        "xml.dom.minidom",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/xml/dom/minidom.py"
+        )),
+    ),
+    (
+        "xml.dom.pulldom",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/xml/dom/pulldom.py"
+        )),
+    ),
+    (
+        "xml.dom.xmlbuilder",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/xml/dom/xmlbuilder.py"
+        )),
+    ),
+    (
+        "xml.etree",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/xml/etree/__init__.py"
+        )),
+    ),
+    (
+        "xml.etree.ElementInclude",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/xml/etree/ElementInclude.py"
+        )),
+    ),
+    (
+        "xml.etree.ElementPath",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/xml/etree/ElementPath.py"
+        )),
+    ),
+    (
+        "xml.etree.ElementTree",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/xml/etree/ElementTree.py"
+        )),
+    ),
+    (
+        "xml.etree.cElementTree",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/xml/etree/cElementTree.py"
+        )),
+    ),
+    (
+        "xml.parsers",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/xml/parsers/__init__.py"
+        )),
+    ),
+    (
+        "xml.parsers.expat",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/xml/parsers/expat.py"
+        )),
+    ),
+    (
+        "xml.sax",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/xml/sax/__init__.py"
+        )),
+    ),
+    (
+        "xml.sax._exceptions",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/xml/sax/_exceptions.py"
+        )),
+    ),
+    (
+        "xml.sax.expatreader",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/xml/sax/expatreader.py"
+        )),
+    ),
+    (
+        "xml.sax.handler",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/xml/sax/handler.py"
+        )),
+    ),
+    (
+        "xml.sax.saxutils",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/xml/sax/saxutils.py"
+        )),
+    ),
+    (
+        "xml.sax.xmlreader",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/xml/sax/xmlreader.py"
+        )),
+    ),
+    (
+        "xmlrpc",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/xmlrpc/__init__.py"
+        )),
+    ),
+    (
+        "xmlrpc.client",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/xmlrpc/client.py"
+        )),
+    ),
+    (
+        "xmlrpc.server",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/xmlrpc/server.py"
+        )),
+    ),
+    (
+        "zipfile",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/zipfile/__init__.py"
+        )),
+    ),
+    (
+        "zipfile.__main__",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/zipfile/__main__.py"
+        )),
+    ),
+    (
+        "zipfile._path",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/zipfile/_path/__init__.py"
+        )),
+    ),
+    (
+        "zipfile._path.glob",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/zipfile/_path/glob.py"
+        )),
+    ),
+    (
+        "zipimport",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/zipimport.py"
+        )),
+    ),
+    (
+        "zlib",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/zlib.py"
+        )),
+    ),
+    (
+        "zope",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/zope/__init__.py"
+        )),
+    ),
+    (
+        "zope.interface",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/zope/interface/__init__.py"
+        )),
+    ),
+    (
+        "zope.interface._shim",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/zope/interface/_shim.py"
+        )),
+    ),
+    (
+        "zope.interface.adapter",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/zope/interface/adapter.py"
+        )),
+    ),
+    (
+        "zope.interface.declarations",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/zope/interface/declarations.py"
+        )),
+    ),
+    (
+        "zope.interface.interface",
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../vendored_stdlib/zope/interface/interface.py"
+        )),
+    ),
 ];
 
 /// Store stats (mirrored in docs/aot-stdlib-embed.md).

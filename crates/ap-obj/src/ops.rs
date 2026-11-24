@@ -104,9 +104,7 @@ pub fn binop(a: &Value, op: BinOp, b: &Value) -> Result<Value, PyException> {
             // `(frame,) + getframeinfo(frame)` — a Traceback IS a
             // _Traceback-namedtuple instance in CPython and tuple-concat
             // walks its payload). Result is a TUPLE per the left operand.
-            (Value::Tuple(x), Value::Obj(no))
-                if no.kind == crate::object::ObjKind::NamedTuple =>
-            {
+            (Value::Tuple(x), Value::Obj(no)) if no.kind == crate::object::ObjKind::NamedTuple => {
                 let mut items = x.0.clone();
                 if let Some(Value::List(l)) = no
                     .attrs

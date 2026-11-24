@@ -18,9 +18,12 @@ fn ge_ma_probe() {
     ];
     let dump = std::env::var("PROBE_DUMP").is_ok();
     for (fam, stem) in cases {
-        let src =
-            std::fs::read_to_string(root.join("tests/corpus").join(fam).join(format!("{stem}.py")))
-                .unwrap();
+        let src = std::fs::read_to_string(
+            root.join("tests/corpus")
+                .join(fam)
+                .join(format!("{stem}.py")),
+        )
+        .unwrap();
         let (module, _) = match ap_parse::lower_source(&src) {
             Ok(m) => m,
             Err(e) => {
@@ -58,8 +61,7 @@ fn ge_ma_probe() {
         match ap_host::run(&bytes, 256 * 1024) {
             Ok(out) => {
                 let exp = root.join("tests/corpus").join(fam).join("expected");
-                let want_out =
-                    std::fs::read(exp.join(format!("{stem}.stdout"))).unwrap();
+                let want_out = std::fs::read(exp.join(format!("{stem}.stdout"))).unwrap();
                 let want_err = std::fs::read(exp.join(format!("{stem}.stderr"))).unwrap();
                 let want_exit: i32 = std::fs::read_to_string(exp.join(format!("{stem}.exit")))
                     .unwrap()

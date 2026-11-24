@@ -5872,10 +5872,7 @@ fn call_value_inner_impl(
                             if mo.kind == ap_obj::ObjKind::BuiltinFn
                                 && mo.name.starts_with("functools._lruwrapper_")
                             {
-                                return Ok(builtins::interned_type(
-                                    interp,
-                                    "_lru_cache_wrapper",
-                                ));
+                                return Ok(builtins::interned_type(interp, "_lru_cache_wrapper"));
                             }
                             if mo.kind == ap_obj::ObjKind::Function
                                 && mo
@@ -5885,10 +5882,7 @@ fn call_value_inner_impl(
                                     .get_str("___ap_lru_wrapper__")
                                     .is_some()
                             {
-                                return Ok(builtins::interned_type(
-                                    interp,
-                                    "_lru_cache_wrapper",
-                                ));
+                                return Ok(builtins::interned_type(interp, "_lru_cache_wrapper"));
                             }
                         }
                         if let Some(Value::Obj(so)) = args.first() {
@@ -6890,8 +6884,10 @@ fn call_value_inner_impl(
                             }
                         };
                         let mro = t.mro.lock().unwrap_or_else(|p| p.into_inner()).clone();
-                        let items: Vec<Value> =
-                            mro.iter().map(crate::classes::class_value_for_public).collect();
+                        let items: Vec<Value> = mro
+                            .iter()
+                            .map(crate::classes::class_value_for_public)
+                            .collect();
                         return Ok(Value::List(PyList::from_vec(items)));
                     }
                     if o.name == "__object_init__" {
@@ -8010,12 +8006,11 @@ fn call_value_inner_impl(
                                         // dict has NO __dict__ — even through
                                         // object.__getattribute__.
                                         if so.kind == ap_obj::ObjKind::UserInstance {
-                                            let interp3 =
-                                                crate::builtins_modules::current_interp()
-                                                    .unwrap_or_else(interp_rc);
-                                            if let Some(t) = crate::classes::class_of_value(
-                                                &interp3, &subject,
-                                            ) {
+                                            let interp3 = crate::builtins_modules::current_interp()
+                                                .unwrap_or_else(interp_rc);
+                                            if let Some(t) =
+                                                crate::classes::class_of_value(&interp3, &subject)
+                                            {
                                                 if !t.has_instance_dict() {
                                                     return Err(raise(
                                                         "AttributeError",
@@ -8506,8 +8501,7 @@ fn call_value_inner_impl(
                                                     // their own name (s012/A-3 item 5).
                                                     o.name.as_str().to_string()
                                                 } else if o.kind == ap_obj::ObjKind::Function
-                                                    && o
-                                                        .attrs
+                                                    && o.attrs
                                                         .lock()
                                                         .unwrap_or_else(|p| p.into_inner())
                                                         .get_str("___ap_lru_wrapper__")
@@ -12004,14 +11998,14 @@ fn pattern_match(
                     Err(_) => empty,
                 };
                 match ma {
-                    Value::Tuple(t) => t
-                        .0
-                        .iter()
-                        .filter_map(|x| match x {
-                            Value::Str(s) => Some(s.as_str().to_string()),
-                            _ => None,
-                        })
-                        .collect(),
+                    Value::Tuple(t) => {
+                        t.0.iter()
+                            .filter_map(|x| match x {
+                                Value::Str(s) => Some(s.as_str().to_string()),
+                                _ => None,
+                            })
+                            .collect()
+                    }
                     Value::Str(_) => {
                         return Err(raise(
                             "TypeError",
@@ -16044,11 +16038,7 @@ fn attr_get(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 // non-reentrant Mutex this frame already holds = same-thread
                 // deadlock (sampled: PC parked in make_union, RSS flat).
                 // Snapshot the needed values, drop the guard, then call.
-                let (ns_get, has_getattr, mn): (
-                    Option<Value>,
-                    Option<Value>,
-                    Option<Value>,
-                ) = {
+                let (ns_get, has_getattr, mn): (Option<Value>, Option<Value>, Option<Value>) = {
                     let ns = o.module_ns.lock().unwrap_or_else(|p| p.into_inner());
                     if let Some(ns) = &*ns {
                         if name == "__dict__" {
@@ -16085,8 +16075,7 @@ fn attr_get(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 // module object exposes a minimal name-only __spec__.
                 if name == "__spec__" {
                     if let Some(Value::Str(mn)) = mn {
-                        let spec =
-                            ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "ModuleSpec");
+                        let spec = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "ModuleSpec");
                         let a = spec.attrs.lock().unwrap_or_else(|p| p.into_inner());
                         let _ = a.set(
                             Value::Str(PyString::new("name")),
@@ -16104,8 +16093,7 @@ fn attr_get(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                         // wrap_spec reads spec.loader (getattr chain);
                         // a bare namespace object suffices — missing
                         // get_resource_reader falls back to None.
-                        let loader =
-                            ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "Loader");
+                        let loader = ap_obj::PyObject::new(ap_obj::ObjKind::Namespace, "Loader");
                         let _ = spec
                             .attrs
                             .lock()

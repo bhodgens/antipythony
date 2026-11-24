@@ -428,10 +428,7 @@ fn find_submodule_embedded(parent: &str, name: &str) -> Option<Found> {
     }
     let full = format!("{parent}.{name}");
     let file = embedded_file_label(&full);
-    crate::embedded_stdlib::source_for(&full).map(|_| Found::Embedded {
-        name: full,
-        file,
-    })
+    crate::embedded_stdlib::source_for(&full).map(|_| Found::Embedded { name: full, file })
 }
 
 /// The CPython-shaped __file__ label for an embedded import path (the
@@ -597,7 +594,10 @@ fn compile_file(path: &str, is_package: bool, dir: String) -> Result<Compiled, F
         Ok(text) => text,
         Err(_) if embedded_store_active() && is_embedded_label(path) => {
             embedded_store_source_for_label(path).ok_or_else(|| {
-                raise("ImportError", format!("cannot read {path}: embedded store miss"))
+                raise(
+                    "ImportError",
+                    format!("cannot read {path}: embedded store miss"),
+                )
             })?
         }
         Err(e) => return Err(raise("ImportError", format!("cannot read {path}: {e}"))),
@@ -706,7 +706,10 @@ fn load_into(
             let parent = if compiled.is_package {
                 name.to_string()
             } else {
-                name.rsplit_once('.').map(|(p, _)| p).unwrap_or("").to_string()
+                name.rsplit_once('.')
+                    .map(|(p, _)| p)
+                    .unwrap_or("")
+                    .to_string()
             };
             let _ = a.set(s("parent"), s(parent));
             let _ = a.set(s("origin"), s(file));
@@ -1540,7 +1543,10 @@ fn module_path_dir(m: &Value) -> Option<String> {
 
 fn exec_found(interp: &Arc<Interpreter>, name: &str, found: &Found) -> Result<(), Flow> {
     match found {
-        Found::Embedded { name: emb_name, file } => {
+        Found::Embedded {
+            name: emb_name,
+            file,
+        } => {
             // Leaf tier1-linecache: the package face ("encodings") stores
             // its __init__ under the bare name and gets a __path__ label so
             // dotted children descend through find_submodule's embedded arm;
@@ -1699,7 +1705,10 @@ pub fn exec_module_file(
     let package = if is_package {
         name.to_string()
     } else {
-        name.rsplit_once('.').map(|(p, _)| p).unwrap_or("").to_string()
+        name.rsplit_once('.')
+            .map(|(p, _)| p)
+            .unwrap_or("")
+            .to_string()
     };
     let loaded = load_into(interp, &compiled, name, path, &package)?;
     if let Value::Obj(m) = module {

@@ -308,7 +308,12 @@ pub fn emit_program_object(
         .map_err(|e| CodegenError::Verify(format!("script path len decl: {e}")))?;
     {
         let mut desc = cranelift_module::DataDescription::new();
-        desc.define((script_path.len() as u64).to_le_bytes().to_vec().into_boxed_slice());
+        desc.define(
+            (script_path.len() as u64)
+                .to_le_bytes()
+                .to_vec()
+                .into_boxed_slice(),
+        );
         module
             .define_data(sp_len_id, &desc)
             .map_err(|e| CodegenError::Verify(format!("script path len def: {e}")))?;

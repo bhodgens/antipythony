@@ -18,7 +18,12 @@ fn diag_fvalidate() {
     for payload in Parser::new(0).parse_all(&bytes) {
         match payload.unwrap() {
             Payload::CodeSectionEntry(body) => {
-                eprintln!("code {} (fn {}) bytes {:?}", func_idx, func_idx + 2, body.range());
+                eprintln!(
+                    "code {} (fn {}) bytes {:?}",
+                    func_idx,
+                    func_idx + 2,
+                    body.range()
+                );
                 func_idx += 1;
             }
             Payload::End(_) => break,

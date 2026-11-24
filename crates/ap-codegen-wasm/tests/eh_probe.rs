@@ -138,7 +138,7 @@ fn probe_module(try_catch: bool) -> Vec<u8> {
         ],
         [o()],
     ); // 4+3=7 FT_PY_RO? no: indices 4,5,6 recs -> FT_PY_RO=7... recount below
-    // ---- functions: 0=thrower 1=catcher-or-propagator 2=_start ----
+       // ---- functions: 0=thrower 1=catcher-or-propagator 2=_start ----
     let mut funcs = FunctionSection::new();
     funcs.function(FT_VOID); // 0 thrower
     funcs.function(FT_VOID); // 1 catcher / propagator
@@ -208,11 +208,10 @@ fn run(wasm: &[u8]) -> Result<(), wasmtime::Error> {
     config.wasm_function_references(true);
     config.wasm_exceptions(true);
     let engine = wasmtime::Engine::new(&config)?;
-    let module = wasmtime::Module::new(&engine, wasm)
-        .map_err(|e| {
-            println!("PROBE-COMPILE: {e}");
-            e
-        })?;
+    let module = wasmtime::Module::new(&engine, wasm).map_err(|e| {
+        println!("PROBE-COMPILE: {e}");
+        e
+    })?;
     let mut store = wasmtime::Store::new(&engine, ());
     let linker: wasmtime::Linker<()> = wasmtime::Linker::new(&engine);
     let instance = linker.instantiate(&mut store, &module)?;
@@ -225,9 +224,7 @@ fn run(wasm: &[u8]) -> Result<(), wasmtime::Error> {
         Err(e) => {
             // is it a ThrownException? peek at the store
             let has_pending = store.take_pending_exception().is_some();
-            println!(
-                "PROBE: call error, pending_exception={has_pending}, err={e:?}"
-            );
+            println!("PROBE: call error, pending_exception={has_pending}, err={e:?}");
             Err(e)
         }
     }
@@ -431,8 +428,8 @@ fn probe_payload_tag() {
         f.instruction(&Instruction::End); // try_table
         f.instruction(&Instruction::RefNull(HeapType::Concrete(0))); // block result (unreachable)
         f.instruction(&Instruction::End); // outer Block
-        // caught path: the branch delivered the tag param here (outer block
-        // end / fall-through)
+                                          // caught path: the branch delivered the tag param here (outer block
+                                          // end / fall-through)
         f.instruction(&Instruction::RefCastNullable(HeapType::Concrete(1)));
         f.instruction(&Instruction::StructGet {
             struct_type_index: 1,
@@ -487,5 +484,8 @@ fn probe_payload_tag() {
         .unwrap();
     let r = start.call(&mut store, ()).unwrap();
     println!("PROBE-3: payload round-trip result = {r} (want 1)");
-    assert_eq!(r, 42, "Catch::One must deliver the tag payload (42) at the label");
+    assert_eq!(
+        r, 42,
+        "Catch::One must deliver the tag payload (42) at the label"
+    );
 }

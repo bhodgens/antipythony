@@ -198,8 +198,8 @@ pub unsafe extern "C" fn PyUnicode_AsUTF8AndSize(
             _ => {
                 let tn = type_name_of(h);
                 /* CPython 3.14 ParseTuple-'s' dialect: "argument N must be
-                   str, not int" (older PyUnicode_FromString surfaces said
-                   "expected str, not 'int'" — measured-divergent 10.03). */
+                str, not int" (older PyUnicode_FromString surfaces said
+                "expected str, not 'int'" — measured-divergent 10.03). */
                 err_set("TypeError", format!("argument 1 must be str, not {tn}"));
                 std::ptr::null()
             }

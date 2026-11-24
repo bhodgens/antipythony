@@ -6,7 +6,12 @@ fn diag_ranges() {
     let mut func_idx: u32 = 0;
     for payload in wasmparser::Parser::new(0).parse_all(&bytes) {
         if let wasmparser::Payload::CodeSectionEntry(body) = payload.unwrap() {
-            eprintln!("code {} (fn {}) bytes {:?}", func_idx, func_idx + 2, body.range());
+            eprintln!(
+                "code {} (fn {}) bytes {:?}",
+                func_idx,
+                func_idx + 2,
+                body.range()
+            );
             func_idx += 1;
         }
     }

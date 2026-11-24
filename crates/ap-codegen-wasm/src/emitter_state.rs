@@ -63,13 +63,13 @@ pub const FN_FRAME_POP: u32 = 44; // () -> ()
 pub const FN_FRAME_LINE: u32 = 45; // (i32 line) -> ()
 pub const FN_ISSUB: u32 = 46; // (ty, ty) -> i32
 pub const FN_ISINST: u32 = 47; // (o, ty) -> i32
-// exceptions slice (03.03 continuation of the append):
+                               // exceptions slice (03.03 continuation of the append):
 pub const FN_EXC_RAISE: u32 = 48; // (o) -> o  (validate + tb + throw)
 pub const FN_EXC_MATCH: u32 = 49; // (o exc, o target) -> i32
 pub const FN_EXC_MSG: u32 = 50; // (o) -> str  (S-02-29 str(e))
 pub const FN_EXC_REPR: u32 = 51; // (o) -> str  (repr(e))
 pub const FN_EXC_CTX_SET: u32 = 52; // (o new, o ctx, o cause) -> o
-// classes slice (03.03 continuation of the append):
+                                    // classes slice (03.03 continuation of the append):
 pub const FN_EXC_NEW: u32 = 53; // (ty, roarr) -> o   exc instance w/ args
 pub const FN_CLS_NEW: u32 = 54; // (str, ty|null) -> ty  C3 single-base build
 pub const FN_INSTANCE_NEW: u32 = 55; // (ty) -> o     $instance w/ empty attrs
@@ -79,10 +79,10 @@ pub const FN_ATTR_SET: u32 = 58; // (o, str, o) -> () S-03-10
 pub const FN_CALL_OF: u32 = 59; // (o, roarr) -> o    $function | __call__ | exc
 pub const FN_MRO_DICT_GET: u32 = 60; // (ty, str) -> o first dict hit along mro
 pub const FN_TB_RENDER: u32 = 61; // () -> i32        stderr traceback, rc 1
-// ---------------------------------------------------------------------------
-// Leaf 03.04 prelude drivers (generators/iterators), appended after 61 —
-// dense, never renumbered. FN_FIRST_USER moves +7 for this block.
-// ---------------------------------------------------------------------------
+                                  // ---------------------------------------------------------------------------
+                                  // Leaf 03.04 prelude drivers (generators/iterators), appended after 61 —
+                                  // dense, never renumbered. FN_FIRST_USER moves +7 for this block.
+                                  // ---------------------------------------------------------------------------
 pub const FN_GEN_SEND: u32 = 62; // (gen o, input o) -> o   PEP-342 resume
 pub const FN_ITER_OF: u32 = 63; // (o iterable) -> o       iter()
 pub const FN_ITER_NEXT: u32 = 64; // (o iterator) -> o     next()
@@ -90,20 +90,20 @@ pub const FN_ITER_CONTAINS: u32 = 65; // (o, o) -> i32     `in`
 pub const FN_STOP_ITER: u32 = 66; // (o value, i32 empty) -> o  StopIteration throw
 pub const FN_GEN_THROW: u32 = 67; // (gen o, exc o) -> o   throw-at-point
 pub const FN_GEN_CLOSE: u32 = 68; // (gen o) -> ()         close/GeneratorExit
-// leaf 03.04b: exc_value_of — `e.value` for StopIteration instances (GE002:
-// `except StopIteration as e: print('SI value', e.value)`). (o, str) -> o,
-// same shape as attr_get — call sites use FN_ATTR_GET (no new index; the
-// attribute surfaces here are wired through attr_get's special-name arms).
-// leaf 03.03d: super() build (S-03-17 slice), appended after the 03.04
-// drivers — dense, never renumbered. FN_FIRST_USER moved 69 -> 70 for it.
+                                  // leaf 03.04b: exc_value_of — `e.value` for StopIteration instances (GE002:
+                                  // `except StopIteration as e: print('SI value', e.value)`). (o, str) -> o,
+                                  // same shape as attr_get — call sites use FN_ATTR_GET (no new index; the
+                                  // attribute surfaces here are wired through attr_get's special-name arms).
+                                  // leaf 03.03d: super() build (S-03-17 slice), appended after the 03.04
+                                  // drivers — dense, never renumbered. FN_FIRST_USER moved 69 -> 70 for it.
 pub const FN_SUPER_NEW: u32 = 69; // (S o, obj o, unused o) -> o  marker build
 pub const FN_TYPE_OF: u32 = 70; // (o) -> o                    type(x)
-// leaf 03.04c: drain drivers, appended after 70 — dense, never renumbered.
-// FN_FIRST_USER moved 70 -> 73 for this block.
+                                // leaf 03.04c: drain drivers, appended after 70 — dense, never renumbered.
+                                // FN_FIRST_USER moved 70 -> 73 for this block.
 pub const FN_LIST_DRAIN: u32 = 71; // (iterator o) -> o ($list)
 pub const FN_SUM_DRAIN: u32 = 72; // (iterator o) -> o ($int)
-// leaf 03.04g: dict-from-pairs driver, appended after 72 — dense, never
-// renumbered. FN_FIRST_USER moves 73 -> 74 for this block.
+                                  // leaf 03.04g: dict-from-pairs driver, appended after 72 — dense, never
+                                  // renumbered. FN_FIRST_USER moves 73 -> 74 for this block.
 pub const FN_DICT_DRAIN: u32 = 73; // (iterator o) -> o ($dict)
 /// First wasm function index of the EMITTED user functions (Item::FnDef /
 /// Stmt::LocalDef), which follow the prelude densely. `_start` is

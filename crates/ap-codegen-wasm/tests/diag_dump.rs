@@ -1,7 +1,8 @@
 // Throwaway diagnostic: dump a function of a pre-lowered module file.
 #[test]
 fn diag_dump_file() {
-    let bytes = std::fs::read(std::env::var("DIAG_FILE").unwrap_or("/tmp/dbg3.wasm".into())).expect("read wasm");
+    let bytes = std::fs::read(std::env::var("DIAG_FILE").unwrap_or("/tmp/dbg3.wasm".into()))
+        .expect("read wasm");
     let target: u32 = std::env::var("DIAG_FN")
         .ok()
         .and_then(|v| v.parse().ok())

@@ -15,11 +15,14 @@ fn hello_still_runs() {
 
 #[test]
 fn min_run() {
-    let src = std::env::var("PROBE").unwrap_or_else(|_| r#"
+    let src = std::env::var("PROBE").unwrap_or_else(|_| {
+        r#"
 i = 0
 while i < 3:
     i = i + 1
-"#.to_string());
+"#
+        .to_string()
+    });
     let (m, _) = ap_parse::lower_source(&src).unwrap();
     let bytes = ap_codegen_wasm::lower_module(&m).unwrap();
     std::fs::write("/tmp/min.wasm", &bytes).unwrap();
@@ -30,7 +33,10 @@ while i < 3:
     }
     eprintln!("PROBE: running wasm");
     match ap_host::run(&bytes, 64 * 1024) {
-        Ok(o) => println!("MINOUT={:?} ERR={:?} rc={}", o.stdout, o.stderr, o.exit_code),
+        Ok(o) => println!(
+            "MINOUT={:?} ERR={:?} rc={}",
+            o.stdout, o.stderr, o.exit_code
+        ),
         Err(e) => println!("MINERR={}", e),
     }
     eprintln!("PROBE: done");

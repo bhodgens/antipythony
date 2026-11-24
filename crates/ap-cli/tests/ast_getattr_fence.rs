@@ -125,8 +125,7 @@ fn run_fenced(
         // No CARGO_TARGET_DIR: the cargo-default <workspace>/target (the
         // worktree convention matches — this file lives two levels below
         // the workspace root).
-        Err(_) => std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../target"),
+        Err(_) => std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target"),
     };
     let bin = target_root.join("release/ap-run-probe");
     let bin = if bin.exists() {

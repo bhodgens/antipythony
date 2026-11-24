@@ -553,12 +553,12 @@ pub fn build_type_section_with_prefix(prefix: usize) -> wasm_encoder::TypeSectio
 
     let dict_fields = || -> Vec<FieldType> {
         vec![
-            field_i32(true),        // used (dict_set grows, leaf 03.03)
-            field_i32(true),        // fill
-            field_i32(false),       // mask
-            field_i32(false),       // perturb_shift
-            fr(T_IDX_ARR, false),   // index
-            fr(T_ENTRY_ARR, true),  // entries (rebuild on grow)
+            field_i32(true),       // used (dict_set grows, leaf 03.03)
+            field_i32(true),       // fill
+            field_i32(false),      // mask
+            field_i32(false),      // perturb_shift
+            fr(T_IDX_ARR, false),  // index
+            fr(T_ENTRY_ARR, true), // entries (rebuild on grow)
         ]
     };
 
@@ -645,9 +645,9 @@ pub fn build_type_section_with_prefix(prefix: usize) -> wasm_encoder::TypeSectio
         // 18 $dict_entry — bare struct (key/value MUTABLE: dict_set
         // overwrites the value in place, S-01-21 insertion order; leaf 03.03)
         bare(vec![
-            field_i64(false),           // hash
-            field_pyobj_ref(),          // key (immutable: identity)
-            field(pyobj_ref(), true),   // value (mutable)
+            field_i64(false),         // hash
+            field_pyobj_ref(),        // key (immutable: identity)
+            field(pyobj_ref(), true), // value (mutable)
         ]),
         // 19 $entry_arr — mut array of $dict_entry
         array_ty(field(
@@ -748,11 +748,11 @@ pub fn build_type_section_with_prefix(prefix: usize) -> wasm_encoder::TypeSectio
         // $locals, parks send input in $value, stages throw-ins in $exn);
         // $fn stays immutable (the code+cells identity of the generator).
         sub(vec![
-            fr(T_FUNCTION, false),  // fn
-            field_i32(true),        // state (0=start, N=yield site N, -1 done)
-            fr(T_OBJ_ARR, true),    // locals (spilled frame + sub-iter slot)
-            field_pyobj_ref_mut(),  // value (send input / return value)
-            fr(T_EXCEPTION, true),  // exn (pending throw-in)
+            fr(T_FUNCTION, false), // fn
+            field_i32(true),       // state (0=start, N=yield site N, -1 done)
+            fr(T_OBJ_ARR, true),   // locals (spilled frame + sub-iter slot)
+            field_pyobj_ref_mut(), // value (send input / return value)
+            fr(T_EXCEPTION, true), // exn (pending throw-in)
         ]),
         // 32 $instance sub $pyobj (S-07-17)
         sub(vec![fr(T_DICT, true)]), // attrs (lazy, null until first set)
@@ -1008,15 +1008,15 @@ pub const FT_GLOBAL_GET: u32 = 89; // (i32 slot) -> o    module-namespace read w
 pub const FT_GLOBAL_SET_EXC: u32 = 90; // (i32 slot, o) -> () reserved
 pub const FT_EXC_CTX_SET: u32 = 91; // (o, o, o) -> o    context/cause chaining
 pub const FT_GETATTR_SLOT: u32 = 92; // (o, str) -> o    __getattr__ hook path
-// Leaf 03.03 classes-slice FTs (appended; ids never move; FT_CLS_NEW=67 kept
-// for its original 4-arg shape — the classes-slice build rides 94):
+                                     // Leaf 03.03 classes-slice FTs (appended; ids never move; FT_CLS_NEW=67 kept
+                                     // for its original 4-arg shape — the classes-slice build rides 94):
 pub const FT_EXC_NEW: u32 = 93; // (ty, roarr) -> o     exc instance w/ args
 pub const FT_CLS_NEW1: u32 = 94; // (str, ty) -> ty     (name, base|null)
 pub const FT_INSTANCE_NEW: u32 = 95; // (ty) -> o        $instance factory
 pub const FT_MRO_DICT_GET: u32 = 96; // (ty, str) -> o   mro dict walk
 pub const FT_TB_RENDER: u32 = 97; // () -> i32           stderr render, rc 1
 pub const FT_PROC_EXIT: u32 = 98; // (i32) -> ()         wasi proc_exit
-// Leaf 03.04 (generators/iterators/comprehensions): appended after 98; ids never move.
+                                  // Leaf 03.04 (generators/iterators/comprehensions): appended after 98; ids never move.
 /// (gen $generator, input o) -> o — the generator BODY step function. The
 /// body dispatches on $state (0 = start, N = yield site N), runs to the
 /// next yield (returns it) or to completion (sets state=-1, returns null

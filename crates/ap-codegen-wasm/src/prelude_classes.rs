@@ -100,16 +100,16 @@ pub fn emit_all(
     strings: &mut StrTab,
     g: &FrameGlobals,
 ) {
-        dget(funcs, code);
+    dget(funcs, code);
     dset(funcs, code);
     dhas(funcs, code);
     str_cat(funcs, code);
     type_name(funcs, code);
     frame_push(funcs, code, g);
-        frame_pop(funcs, code, g);
-            frame_line(funcs, code, g);
-        issub(funcs, code);
-        isinst(funcs, code, strings);
+    frame_pop(funcs, code, g);
+    frame_line(funcs, code, g);
+    issub(funcs, code);
+    isinst(funcs, code, strings);
     exc_raise(funcs, code, g, strings);
     exc_match(funcs, code);
     exc_msg(funcs, code);
@@ -739,9 +739,12 @@ fn frame_push(
 // ---------------------------------------------------------------------------
 // frame_pop (FN_FRAME_POP): () -> () — head = head.next; depth--.
 // ---------------------------------------------------------------------------
-fn frame_pop(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection, g: &FrameGlobals) {
-    add(funcs, code, FT_FRAME_POP, &[
-            (3, oref()),], |f| {
+fn frame_pop(
+    funcs: &mut wasm_encoder::FunctionSection,
+    code: &mut wasm_encoder::CodeSection,
+    g: &FrameGlobals,
+) {
+    add(funcs, code, FT_FRAME_POP, &[(3, oref())], |f| {
         // NULL-HEAD SAFE: the dead-epilogue pop CAN execute when a body ends
         // in `return` whose emitted wasm return the emitter folded (03.03b
         // observed on 2-level calls) — and a traceback frame chain is a
@@ -766,27 +769,36 @@ fn frame_pop(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder:
 // frame_line (FN_FRAME_LINE): (line) -> () — head.lineno = line (the head
 // frame is the CURRENT function's frame).
 // ---------------------------------------------------------------------------
-fn frame_line(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection, g: &FrameGlobals) {
-    add(funcs, code, FT_FRAME_LINE, &[
-            (2, oref()),(1, ValType::I32)], |f| {
-        // G_CUR_LINE = line (frames read it at push; poke the head too
-        // for throws from the current frame). Head NULL = no frame pushed
-        // (module body with the EH wrap gated off) — the poke is a no-op.
-        f.instruction(&Instruction::LocalGet(0));
-        f.instruction(&Instruction::GlobalSet(g.cur_line));
-        f.instruction(&Instruction::GlobalGet(g.frame_head));
-        f.instruction(&Instruction::RefIsNull);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::Else);
-        f.instruction(&Instruction::GlobalGet(g.frame_head));
-        f.instruction(&Instruction::RefCastNullable(hc(T_TB_FRAME)));
-        f.instruction(&Instruction::LocalGet(0));
-        f.instruction(&Instruction::StructSet {
-            struct_type_index: T_TB_FRAME,
-            field_index: F_TB_LINENO,
-        });
-        f.instruction(&Instruction::End);
-    });
+fn frame_line(
+    funcs: &mut wasm_encoder::FunctionSection,
+    code: &mut wasm_encoder::CodeSection,
+    g: &FrameGlobals,
+) {
+    add(
+        funcs,
+        code,
+        FT_FRAME_LINE,
+        &[(2, oref()), (1, ValType::I32)],
+        |f| {
+            // G_CUR_LINE = line (frames read it at push; poke the head too
+            // for throws from the current frame). Head NULL = no frame pushed
+            // (module body with the EH wrap gated off) — the poke is a no-op.
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::GlobalSet(g.cur_line));
+            f.instruction(&Instruction::GlobalGet(g.frame_head));
+            f.instruction(&Instruction::RefIsNull);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::Else);
+            f.instruction(&Instruction::GlobalGet(g.frame_head));
+            f.instruction(&Instruction::RefCastNullable(hc(T_TB_FRAME)));
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::StructSet {
+                struct_type_index: T_TB_FRAME,
+                field_index: F_TB_LINENO,
+            });
+            f.instruction(&Instruction::End);
+        },
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1030,12 +1042,18 @@ fn exc_match(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder:
     // runtime only ever sees class targets. The lowering validates that
     // every target derives from BaseException (S-03-34); the cast here
     // traps fail-loud otherwise.
-    add(funcs, code, FT_EXC_MATCH, &[(2, oref()), (1, oref())], |f| {
-        f.instruction(&Instruction::LocalGet(0));
-        f.instruction(&Instruction::LocalGet(1));
-        f.instruction(&Instruction::RefCastNullable(hc(T_TYPE)));
-        f.instruction(&Instruction::Call(fx::FN_ISINST));
-    });
+    add(
+        funcs,
+        code,
+        FT_EXC_MATCH,
+        &[(2, oref()), (1, oref())],
+        |f| {
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::RefCastNullable(hc(T_TYPE)));
+            f.instruction(&Instruction::Call(fx::FN_ISINST));
+        },
+    );
 }
 
 fn push_exc_args(f: &mut Function, exc_local: u32) {
@@ -1497,11 +1515,11 @@ fn mro_dict_get(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encod
         code,
         FT_MRO_DICT_GET,
         &[
-            (2, ty_ref()),  // 2,3 = ty slots
-            (2, str_ref()), // 4,5 = key slots
+            (2, ty_ref()),     // 2,3 = ty slots
+            (2, str_ref()),    // 4,5 = key slots
             (1, ValType::I32), // 6 = loop i
-            (1, dict_ref()), // 7 = dict
-            (1, oref()),     // 8 = hit
+            (1, dict_ref()),   // 7 = dict
+            (1, oref()),       // 8 = hit
         ],
         |f| {
             f.instruction(&Instruction::LocalGet(0));
@@ -1549,7 +1567,6 @@ fn mro_dict_get(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encod
         },
     );
 }
-
 
 fn ty_ref() -> ValType {
     ValType::Ref(wasm_encoder::RefType {
@@ -1605,32 +1622,35 @@ fn exc_new(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::C
             (1, oref()), // 5 = exc stash
         ],
         |f| {
-        // args RO -> the $exception args field needs a $tuple whose items
-        // are the RO array (T_TUPLE wraps (ref $obj_arr_ro) immutably — the
-        // RO array from the caller is reused directly).
-        f.instruction(&Instruction::LocalGet(1));
-        f.instruction(&Instruction::LocalSet(4));
-        // build $excinst: pyobj fields first (type = param 0), then
-        // $exception fields (args, tb, context, cause, suppress), then the
-        // $excinst tail (attrs dict).
-        f.instruction(&Instruction::LocalGet(0));
-        // args tuple: type ref = param 0? NO — tuple type ref = the 'tuple'
-        // builtin type global (print path reads only items). Use the tuple
-        // type object for type(e.args) fidelity.
-        f.instruction(&Instruction::GlobalGet(builtin_type_global("tuple").unwrap_or(0)));
-        f.instruction(&Instruction::LocalGet(4));
-        f.instruction(&Instruction::StructNew(T_TUPLE));
-        f.instruction(&Instruction::RefNull(hc(T_TB_FRAME)));
-        f.instruction(&Instruction::RefNull(hc(T_EXCEPTION)));
-        f.instruction(&Instruction::RefNull(hc(T_EXCEPTION)));
-        f.instruction(&Instruction::I32Const(0));
-        // $excinst tail: lazy attrs dict (null until first setattr)
-        f.instruction(&Instruction::RefNull(hc(T_DICT)));
-        f.instruction(&Instruction::StructNew(T_EXCINST));
-        // result is (ref null $pyobj)-ready: $excinst sub $exception sub $pyobj
-        f.instruction(&Instruction::LocalSet(5));
-        f.instruction(&Instruction::LocalGet(5));
-    });
+            // args RO -> the $exception args field needs a $tuple whose items
+            // are the RO array (T_TUPLE wraps (ref $obj_arr_ro) immutably — the
+            // RO array from the caller is reused directly).
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::LocalSet(4));
+            // build $excinst: pyobj fields first (type = param 0), then
+            // $exception fields (args, tb, context, cause, suppress), then the
+            // $excinst tail (attrs dict).
+            f.instruction(&Instruction::LocalGet(0));
+            // args tuple: type ref = param 0? NO — tuple type ref = the 'tuple'
+            // builtin type global (print path reads only items). Use the tuple
+            // type object for type(e.args) fidelity.
+            f.instruction(&Instruction::GlobalGet(
+                builtin_type_global("tuple").unwrap_or(0),
+            ));
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::StructNew(T_TUPLE));
+            f.instruction(&Instruction::RefNull(hc(T_TB_FRAME)));
+            f.instruction(&Instruction::RefNull(hc(T_EXCEPTION)));
+            f.instruction(&Instruction::RefNull(hc(T_EXCEPTION)));
+            f.instruction(&Instruction::I32Const(0));
+            // $excinst tail: lazy attrs dict (null until first setattr)
+            f.instruction(&Instruction::RefNull(hc(T_DICT)));
+            f.instruction(&Instruction::StructNew(T_EXCINST));
+            // result is (ref null $pyobj)-ready: $excinst sub $exception sub $pyobj
+            f.instruction(&Instruction::LocalSet(5));
+            f.instruction(&Instruction::LocalGet(5));
+        },
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1653,12 +1673,12 @@ fn cls_new(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::C
         code,
         FT_CLS_NEW1,
         &[
-            (1, oref()),     // 2 = pad (locals start after the 2 params)
-            (1, str_ref()),  // 3 = name
-            (1, ty_ref()),   // 4 = base
-            (1, tarr_ref()), // 5 = mro
-            (1, ty_ref()),   // 6 = the class $type
-            (1, oarr_ref()), // 7 = bases
+            (1, oref()),       // 2 = pad (locals start after the 2 params)
+            (1, str_ref()),    // 3 = name
+            (1, ty_ref()),     // 4 = base
+            (1, tarr_ref()),   // 5 = mro
+            (1, ty_ref()),     // 6 = the class $type
+            (1, oarr_ref()),   // 7 = bases
             (2, ValType::I32), // 8,9 = loop i / bound
         ],
         |f| {
@@ -1799,140 +1819,141 @@ fn attr_get(
         FT_ATTR_GET,
         &[(2, oref()), (1, str_ref()), (1, oref())],
         |f| {
-        f.instruction(&Instruction::LocalGet(0));
-        f.instruction(&Instruction::LocalSet(3));
-        f.instruction(&Instruction::LocalGet(1));
-        f.instruction(&Instruction::LocalSet(4));
-        // null-obj guard: a (ref null $pyobj) null must answer null (the
-        // metaclass 'type' of a $type is null on this slice — type(SA) is the
-        // SA $type itself, its .type field is null) — never trap.
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::RefIsNull);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::RefNull(hc(T_PYOBJ)));
-        f.instruction(&Instruction::Return);
-        f.instruction(&Instruction::End);
-        // 03.03d: $type object reads (type(x).__name__, class-attr lookups):
-        // __name__ answers the name field; everything else walks the class's
-        // own namespace dicts (mro_dict_get on the $type itself).
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::RefTestNullable(hc(T_TYPE)));
-        f.instruction(&Instruction::If(BlockType::Empty));
-        // __name__? (attr name == "__name__")
-        f.instruction(&Instruction::LocalGet(4));
-        lit_str(f, nm_off, nm_len);
-        f.instruction(&Instruction::Call(fx::FN_STR_EQ));
-        f.instruction(&Instruction::If(BlockType::Empty));
-        // __name__: the $type's name field
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::RefCastNullable(hc(T_TYPE)));
-        sget(f, T_TYPE, F_TYPE_NAME);
-        f.instruction(&Instruction::Return);
-        f.instruction(&Instruction::End);
-        // other attr: the class namespace mro walk
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::RefCastNullable(hc(T_TYPE)));
-        f.instruction(&Instruction::LocalGet(4));
-        f.instruction(&Instruction::Call(fx::FN_MRO_DICT_GET));
-        f.instruction(&Instruction::Return);
-        f.instruction(&Instruction::End);
-        // instance-ish? ($excinst sub $instance? NO — separate: test $excinst
-        // first, then $instance)
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::RefTestNullable(hc(T_EXCINST)));
-        f.instruction(&Instruction::If(BlockType::Empty));
-        // leaf 03.04b: StopIteration.value (GE002 SI plumbing) — the return
-        // value of an exhausted generator rides the exc's args[0].
-        f.instruction(&Instruction::LocalGet(4));
-        lit_str(f, sv_off, sv_len);
-        f.instruction(&Instruction::Call(fx::FN_STR_EQ));
-        f.instruction(&Instruction::If(BlockType::Empty));
-        // args-items is (ref null $obj_arr_ro) — ARRAY, not $pyobj: NO local
-        // stash (lesson 3); array.len + array.get stack-resident.
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::RefCastNullable(hc(T_EXCINST)));
-        sget(f, T_EXCINST, 1); // args tuple
-        f.instruction(&Instruction::RefCastNullable(hc(T_TUPLE)));
-        sget(f, T_TUPLE, F_TUPLE_ITEMS);
-        f.instruction(&Instruction::ArrayLen);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        // args non-empty: args[0]
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::RefCastNullable(hc(T_EXCINST)));
-        sget(f, T_EXCINST, 1);
-        f.instruction(&Instruction::RefCastNullable(hc(T_TUPLE)));
-        sget(f, T_TUPLE, F_TUPLE_ITEMS);
-        f.instruction(&Instruction::I32Const(0));
-        f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
-        f.instruction(&Instruction::Return);
-        f.instruction(&Instruction::End);
-        // empty args: None
-        f.instruction(&Instruction::GlobalGet(G_NONE));
-        f.instruction(&Instruction::Return);
-        f.instruction(&Instruction::End);
-        // excinst: attrs dict (field 6, LAZY — null until first setattr;
-        // the RefIsNull + If(Empty) below skips the lookup when null —
-        // If(Empty) runs its body when the CONDITION IS NONZERO, so the
-        // test is `!is_null`) then fall through to `args` (field 1)
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::RefCastNullable(hc(T_EXCINST)));
-        sget(f, T_EXCINST, 6);
-        f.instruction(&Instruction::RefIsNull);
-        f.instruction(&Instruction::I32Eqz);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::RefCastNullable(hc(T_EXCINST)));
-        sget(f, T_EXCINST, 6);
-        f.instruction(&Instruction::RefCastNullable(hc(T_DICT)));
-        f.instruction(&Instruction::LocalGet(4));
-        f.instruction(&Instruction::Call(fx::FN_DGET));
-        f.instruction(&Instruction::LocalSet(5));
-        f.instruction(&Instruction::LocalGet(5));
-        f.instruction(&Instruction::RefIsNull);
-        f.instruction(&Instruction::I32Eqz);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::LocalGet(5));
-        f.instruction(&Instruction::Return);
-        f.instruction(&Instruction::End);
-        f.instruction(&Instruction::End);
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::RefCastNullable(hc(T_EXCINST)));
-        sget(f, T_EXCINST, 1);
-        f.instruction(&Instruction::LocalSet(5));
-        f.instruction(&Instruction::LocalGet(5));
-        f.instruction(&Instruction::RefIsNull);
-        f.instruction(&Instruction::I32Eqz);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::LocalGet(5));
-        f.instruction(&Instruction::Return);
-        f.instruction(&Instruction::End);
-        // fall through to class mro walk (class-level attrs)
-        f.instruction(&Instruction::End);
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::RefTestNullable(hc(T_INSTANCE)));
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::RefCastNullable(hc(T_INSTANCE)));
-        sget(f, T_INSTANCE, F_INSTANCE_ATTRS);
-        f.instruction(&Instruction::RefCastNullable(hc(T_DICT)));
-        f.instruction(&Instruction::LocalGet(4));
-        f.instruction(&Instruction::Call(fx::FN_DGET));
-        f.instruction(&Instruction::LocalSet(5));
-        f.instruction(&Instruction::LocalGet(5));
-        f.instruction(&Instruction::RefIsNull);
-        f.instruction(&Instruction::I32Eqz);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::LocalGet(5));
-        f.instruction(&Instruction::Return);
-        f.instruction(&Instruction::End);
-        f.instruction(&Instruction::End);
-        // class mro walk on obj's type
-        f.instruction(&Instruction::LocalGet(3));
-        sget(f, T_PYOBJ, F_TYPE);
-        f.instruction(&Instruction::RefCastNullable(hc(T_TYPE)));
-        f.instruction(&Instruction::LocalGet(4));
-        f.instruction(&Instruction::Call(fx::FN_MRO_DICT_GET));
-    });
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::LocalSet(3));
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::LocalSet(4));
+            // null-obj guard: a (ref null $pyobj) null must answer null (the
+            // metaclass 'type' of a $type is null on this slice — type(SA) is the
+            // SA $type itself, its .type field is null) — never trap.
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefIsNull);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::RefNull(hc(T_PYOBJ)));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // 03.03d: $type object reads (type(x).__name__, class-attr lookups):
+            // __name__ answers the name field; everything else walks the class's
+            // own namespace dicts (mro_dict_get on the $type itself).
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefTestNullable(hc(T_TYPE)));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            // __name__? (attr name == "__name__")
+            f.instruction(&Instruction::LocalGet(4));
+            lit_str(f, nm_off, nm_len);
+            f.instruction(&Instruction::Call(fx::FN_STR_EQ));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            // __name__: the $type's name field
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefCastNullable(hc(T_TYPE)));
+            sget(f, T_TYPE, F_TYPE_NAME);
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // other attr: the class namespace mro walk
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefCastNullable(hc(T_TYPE)));
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::Call(fx::FN_MRO_DICT_GET));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // instance-ish? ($excinst sub $instance? NO — separate: test $excinst
+            // first, then $instance)
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefTestNullable(hc(T_EXCINST)));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            // leaf 03.04b: StopIteration.value (GE002 SI plumbing) — the return
+            // value of an exhausted generator rides the exc's args[0].
+            f.instruction(&Instruction::LocalGet(4));
+            lit_str(f, sv_off, sv_len);
+            f.instruction(&Instruction::Call(fx::FN_STR_EQ));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            // args-items is (ref null $obj_arr_ro) — ARRAY, not $pyobj: NO local
+            // stash (lesson 3); array.len + array.get stack-resident.
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefCastNullable(hc(T_EXCINST)));
+            sget(f, T_EXCINST, 1); // args tuple
+            f.instruction(&Instruction::RefCastNullable(hc(T_TUPLE)));
+            sget(f, T_TUPLE, F_TUPLE_ITEMS);
+            f.instruction(&Instruction::ArrayLen);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            // args non-empty: args[0]
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefCastNullable(hc(T_EXCINST)));
+            sget(f, T_EXCINST, 1);
+            f.instruction(&Instruction::RefCastNullable(hc(T_TUPLE)));
+            sget(f, T_TUPLE, F_TUPLE_ITEMS);
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // empty args: None
+            f.instruction(&Instruction::GlobalGet(G_NONE));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // excinst: attrs dict (field 6, LAZY — null until first setattr;
+            // the RefIsNull + If(Empty) below skips the lookup when null —
+            // If(Empty) runs its body when the CONDITION IS NONZERO, so the
+            // test is `!is_null`) then fall through to `args` (field 1)
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefCastNullable(hc(T_EXCINST)));
+            sget(f, T_EXCINST, 6);
+            f.instruction(&Instruction::RefIsNull);
+            f.instruction(&Instruction::I32Eqz);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefCastNullable(hc(T_EXCINST)));
+            sget(f, T_EXCINST, 6);
+            f.instruction(&Instruction::RefCastNullable(hc(T_DICT)));
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::Call(fx::FN_DGET));
+            f.instruction(&Instruction::LocalSet(5));
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::RefIsNull);
+            f.instruction(&Instruction::I32Eqz);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefCastNullable(hc(T_EXCINST)));
+            sget(f, T_EXCINST, 1);
+            f.instruction(&Instruction::LocalSet(5));
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::RefIsNull);
+            f.instruction(&Instruction::I32Eqz);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // fall through to class mro walk (class-level attrs)
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefTestNullable(hc(T_INSTANCE)));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefCastNullable(hc(T_INSTANCE)));
+            sget(f, T_INSTANCE, F_INSTANCE_ATTRS);
+            f.instruction(&Instruction::RefCastNullable(hc(T_DICT)));
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::Call(fx::FN_DGET));
+            f.instruction(&Instruction::LocalSet(5));
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::RefIsNull);
+            f.instruction(&Instruction::I32Eqz);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::End);
+            // class mro walk on obj's type
+            f.instruction(&Instruction::LocalGet(3));
+            sget(f, T_PYOBJ, F_TYPE);
+            f.instruction(&Instruction::RefCastNullable(hc(T_TYPE)));
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::Call(fx::FN_MRO_DICT_GET));
+        },
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1941,61 +1962,67 @@ fn attr_get(
 // Locals: 3=obj 4=name 5=v 6=d 7=t
 // ---------------------------------------------------------------------------
 fn attr_set(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
-    add(funcs, code, FT_ATTR_SET, &[(1, oref()), (1, str_ref()), (1, oref())], |f| {
-        f.instruction(&Instruction::LocalGet(0));
-        f.instruction(&Instruction::LocalSet(3));
-        f.instruction(&Instruction::LocalGet(1));
-        f.instruction(&Instruction::LocalSet(4));
-        // 03.03c fix: the VALUE is param 2 (the previous LocalGet(3) stored
-        // the OBJECT as the value — every class-body attr_set wrote the class
-        // itself, and the later __init__ RefCast($function) trap-failed).
-        f.instruction(&Instruction::LocalGet(2));
-        f.instruction(&Instruction::LocalSet(5));
-        // class object? ($type test first)
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::RefTestNullable(hc(T_TYPE)));
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::RefCastNullable(hc(T_TYPE)));
-        sget(f, T_TYPE, F_TYPE_DICT);
-        f.instruction(&Instruction::RefCastNullable(hc(T_DICT)));
-        f.instruction(&Instruction::LocalGet(4));
-        f.instruction(&Instruction::LocalGet(5));
-        f.instruction(&Instruction::Call(fx::FN_DSET));
-        f.instruction(&Instruction::Return);
-        f.instruction(&Instruction::End);
-        // excinst — attrs dict is field 6 (layout [type, args, tb, ctx,
-        // cause, suppress, attrs]; the lazy dict is null until first set,
-        // so materialize an empty dict on first write)
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::RefTestNullable(hc(T_EXCINST)));
-        f.instruction(&Instruction::If(BlockType::Empty));
-        // materialize the lazy attrs dict on FIRST write (null until now)
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::RefCastNullable(hc(T_EXCINST)));
-        push_empty_dict(f);
-        f.instruction(&Instruction::StructSet {
-            struct_type_index: T_EXCINST,
-            field_index: 6,
-        });
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::RefCastNullable(hc(T_EXCINST)));
-        sget(f, T_EXCINST, 6);
-        f.instruction(&Instruction::RefCastNullable(hc(T_DICT)));
-        f.instruction(&Instruction::LocalGet(4));
-        f.instruction(&Instruction::LocalGet(5));
-        f.instruction(&Instruction::Call(fx::FN_DSET));
-        f.instruction(&Instruction::Return);
-        f.instruction(&Instruction::End);
-        // instance
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::RefCastNullable(hc(T_INSTANCE)));
-        sget(f, T_INSTANCE, F_INSTANCE_ATTRS);
-        f.instruction(&Instruction::RefCastNullable(hc(T_DICT)));
-        f.instruction(&Instruction::LocalGet(4));
-        f.instruction(&Instruction::LocalGet(5));
-        f.instruction(&Instruction::Call(fx::FN_DSET));
-    });
+    add(
+        funcs,
+        code,
+        FT_ATTR_SET,
+        &[(1, oref()), (1, str_ref()), (1, oref())],
+        |f| {
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::LocalSet(3));
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::LocalSet(4));
+            // 03.03c fix: the VALUE is param 2 (the previous LocalGet(3) stored
+            // the OBJECT as the value — every class-body attr_set wrote the class
+            // itself, and the later __init__ RefCast($function) trap-failed).
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::LocalSet(5));
+            // class object? ($type test first)
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefTestNullable(hc(T_TYPE)));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefCastNullable(hc(T_TYPE)));
+            sget(f, T_TYPE, F_TYPE_DICT);
+            f.instruction(&Instruction::RefCastNullable(hc(T_DICT)));
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::Call(fx::FN_DSET));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // excinst — attrs dict is field 6 (layout [type, args, tb, ctx,
+            // cause, suppress, attrs]; the lazy dict is null until first set,
+            // so materialize an empty dict on first write)
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefTestNullable(hc(T_EXCINST)));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            // materialize the lazy attrs dict on FIRST write (null until now)
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefCastNullable(hc(T_EXCINST)));
+            push_empty_dict(f);
+            f.instruction(&Instruction::StructSet {
+                struct_type_index: T_EXCINST,
+                field_index: 6,
+            });
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefCastNullable(hc(T_EXCINST)));
+            sget(f, T_EXCINST, 6);
+            f.instruction(&Instruction::RefCastNullable(hc(T_DICT)));
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::Call(fx::FN_DSET));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // instance
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefCastNullable(hc(T_INSTANCE)));
+            sget(f, T_INSTANCE, F_INSTANCE_ATTRS);
+            f.instruction(&Instruction::RefCastNullable(hc(T_DICT)));
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::Call(fx::FN_DSET));
+        },
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2017,9 +2044,9 @@ fn cls_call(
         code,
         FT_CLS_CALL,
         &[
-            (1, ty_ref()),   // 2
+            (1, ty_ref()),    // 2
             (1, roarr_ref()), // 3
-            (2, oref()),     // 4,5
+            (2, oref()),      // 4,5
         ],
         |f| {
             f.instruction(&Instruction::LocalGet(0));
@@ -2179,11 +2206,11 @@ fn call_of(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::C
         code,
         FT_CALL_OF,
         &[
-            (1, oref()),  // 2 = pad (locals start after the 2 params)
-            (1, oref()),  // 3 = c
+            (1, oref()),      // 2 = pad (locals start after the 2 params)
+            (1, oref()),      // 3 = c
             (1, roarr_ref()), // 4 = args
-            (1, oref()),  // 5 = call
-            (3, oref()), // 6,7,8 pad (reach the fixed scratch at 9)
+            (1, oref()),      // 5 = call
+            (3, oref()),      // 6,7,8 pad (reach the fixed scratch at 9)
             (
                 1,
                 ValType::Ref(wasm_encoder::RefType {
@@ -2193,93 +2220,94 @@ fn call_of(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::C
             ), // 9 = "__call__" arr scratch
         ],
         |f| {
-        f.instruction(&Instruction::LocalGet(0));
-        f.instruction(&Instruction::LocalSet(3));
-        f.instruction(&Instruction::LocalGet(1));
-        f.instruction(&Instruction::LocalSet(4));
-        // $function?
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::RefTestNullable(hc(T_FUNCTION)));
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::RefCastNullable(hc(T_FUNCTION)));
-        f.instruction(&Instruction::LocalGet(4));
-        f.instruction(&Instruction::RefNull(hc(T_DICT)));
-        f.instruction(&Instruction::Call(fx::FN_DISPATCH));
-        f.instruction(&Instruction::Return);
-        f.instruction(&Instruction::End);
-        // class object (raise C(args))?
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::RefTestNullable(hc(T_TYPE)));
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::RefCastNullable(hc(T_TYPE)));
-        f.instruction(&Instruction::LocalGet(4));
-        f.instruction(&Instruction::Call(fx::FN_CLS_CALL));
-        f.instruction(&Instruction::Return);
-        f.instruction(&Instruction::End);
-        // instance __call__?
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::RefTestNullable(hc(T_INSTANCE)));
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::LocalGet(3));
-        sget(f, T_PYOBJ, F_TYPE);
-        f.instruction(&Instruction::RefCastNullable(hc(T_TYPE)));
-        // "__call__" literal — build via scratch (see __init__ blob pattern:
-        // this one is rarer; assemble via FN-level: reuse attr name path with
-        // a $str built from a 8-byte arr through a stash local).
-        // NOTE: implemented via mro_dict_get with a blob-literal $str.
-        push_str_call(f);
-        f.instruction(&Instruction::Call(fx::FN_MRO_DICT_GET));
-        f.instruction(&Instruction::LocalSet(5));
-        f.instruction(&Instruction::LocalGet(5));
-        f.instruction(&Instruction::RefIsNull);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::Else);
-        // call call(self, *args): static-arity cascade 0..=1 (slice bound)
-        // argc 0
-        f.instruction(&Instruction::LocalGet(4));
-        f.instruction(&Instruction::ArrayLen);
-        f.instruction(&Instruction::I32Eqz);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::LocalGet(5));
-        f.instruction(&Instruction::RefCastNullable(hc(T_FUNCTION)));
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::ArrayNewFixed {
-            array_type_index: T_OBJ_ARR_RO,
-            array_size: 1,
-        });
-        f.instruction(&Instruction::RefNull(hc(T_DICT)));
-        f.instruction(&Instruction::Call(fx::FN_DISPATCH));
-        f.instruction(&Instruction::Return);
-        f.instruction(&Instruction::End);
-        // argc 1
-        f.instruction(&Instruction::LocalGet(4));
-        f.instruction(&Instruction::ArrayLen);
-        f.instruction(&Instruction::I32Const(1));
-        f.instruction(&Instruction::I32Eq);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::LocalGet(5));
-        f.instruction(&Instruction::RefCastNullable(hc(T_FUNCTION)));
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::LocalGet(4));
-        f.instruction(&Instruction::I32Const(0));
-        f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
-        f.instruction(&Instruction::ArrayNewFixed {
-            array_type_index: T_OBJ_ARR_RO,
-            array_size: 2,
-        });
-        f.instruction(&Instruction::RefNull(hc(T_DICT)));
-        f.instruction(&Instruction::Call(fx::FN_DISPATCH));
-        f.instruction(&Instruction::Return);
-        f.instruction(&Instruction::End);
-        // > 1: fail loud
-        f.instruction(&Instruction::Unreachable);
-        f.instruction(&Instruction::End);
-        f.instruction(&Instruction::End);
-        // other: fail loud (slice bound)
-        f.instruction(&Instruction::Unreachable);
-    });
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::LocalSet(3));
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::LocalSet(4));
+            // $function?
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefTestNullable(hc(T_FUNCTION)));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefCastNullable(hc(T_FUNCTION)));
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::RefNull(hc(T_DICT)));
+            f.instruction(&Instruction::Call(fx::FN_DISPATCH));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // class object (raise C(args))?
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefTestNullable(hc(T_TYPE)));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefCastNullable(hc(T_TYPE)));
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::Call(fx::FN_CLS_CALL));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // instance __call__?
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefTestNullable(hc(T_INSTANCE)));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(3));
+            sget(f, T_PYOBJ, F_TYPE);
+            f.instruction(&Instruction::RefCastNullable(hc(T_TYPE)));
+            // "__call__" literal — build via scratch (see __init__ blob pattern:
+            // this one is rarer; assemble via FN-level: reuse attr name path with
+            // a $str built from a 8-byte arr through a stash local).
+            // NOTE: implemented via mro_dict_get with a blob-literal $str.
+            push_str_call(f);
+            f.instruction(&Instruction::Call(fx::FN_MRO_DICT_GET));
+            f.instruction(&Instruction::LocalSet(5));
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::RefIsNull);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::Else);
+            // call call(self, *args): static-arity cascade 0..=1 (slice bound)
+            // argc 0
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::ArrayLen);
+            f.instruction(&Instruction::I32Eqz);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::RefCastNullable(hc(T_FUNCTION)));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::ArrayNewFixed {
+                array_type_index: T_OBJ_ARR_RO,
+                array_size: 1,
+            });
+            f.instruction(&Instruction::RefNull(hc(T_DICT)));
+            f.instruction(&Instruction::Call(fx::FN_DISPATCH));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // argc 1
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::ArrayLen);
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::RefCastNullable(hc(T_FUNCTION)));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
+            f.instruction(&Instruction::ArrayNewFixed {
+                array_type_index: T_OBJ_ARR_RO,
+                array_size: 2,
+            });
+            f.instruction(&Instruction::RefNull(hc(T_DICT)));
+            f.instruction(&Instruction::Call(fx::FN_DISPATCH));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // > 1: fail loud
+            f.instruction(&Instruction::Unreachable);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::End);
+            // other: fail loud (slice bound)
+            f.instruction(&Instruction::Unreachable);
+        },
+    );
 }
 
 /// push the "__call__" $str from the linear blob — needs the (off,len) known

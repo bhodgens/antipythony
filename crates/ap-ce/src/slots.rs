@@ -117,7 +117,10 @@ pub fn from_spec(
     let _ = t.dict.set(
         ap_obj::value::Value::Str(ap_obj::value::PyString::new("__module__")),
         ap_obj::value::Value::Str(ap_obj::value::PyString::new(
-            name.rsplit_once('.').map(|(m, _)| m).unwrap_or("builtins").to_string(),
+            name.rsplit_once('.')
+                .map(|(m, _)| m)
+                .unwrap_or("builtins")
+                .to_string(),
         )),
     );
 

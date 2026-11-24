@@ -1,4 +1,3 @@
-
 #[test]
 fn print_fns() {
     let bytes = std::fs::read("/tmp/min033.wasm").unwrap();

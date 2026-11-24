@@ -13613,21 +13613,19 @@ fn build_io(_i: &crate::frame::Interpreter) -> Value {
             None,
         )
         .expect("io.UnsupportedOperation MRO");
-        let _ = t
-            .dict
-            .set(Value::Str(PyString::new("__module__")), s("io"));
+        let _ = t.dict.set(Value::Str(PyString::new("__module__")), s("io"));
         let cv = ap_obj::classes::make_class_value(t);
         {
-            let mut table = interp
-                .exc_classes
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
+            let mut table = interp.exc_classes.lock().unwrap_or_else(|p| p.into_inner());
             table.insert("UnsupportedOperation".to_string(), cv.clone());
             table.insert("io.UnsupportedOperation".to_string(), cv.clone());
         }
         let _ = ns.set(s("UnsupportedOperation"), cv);
     } else {
-        let _ = ns.set(s("UnsupportedOperation"), interned_type_pub("UnsupportedOperation"));
+        let _ = ns.set(
+            s("UnsupportedOperation"),
+            interned_type_pub("UnsupportedOperation"),
+        );
     }
     ns_const(&ns, "DEFAULT_BUFFER_SIZE", i(131072));
     ns_const(&ns, "SEEK_SET", i(0));
@@ -15465,8 +15463,7 @@ pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
                         "append" | "extend" | "insert" | "pop" | "remove" | "reverse" | "clear"
                         | "copy" | "hex" | "decode" | "upper" | "lower" | "strip" | "lstrip"
                         | "rstrip" | "replace" | "split" | "rsplit" | "splitlines" | "join"
-                        | "startswith" | "endswith"
-                        | "find" | "rfind" | "index" | "count" => {
+                        | "startswith" | "endswith" | "find" | "rfind" | "index" | "count" => {
                             format!("bytearray.{name}")
                         }
                         _ => return None,

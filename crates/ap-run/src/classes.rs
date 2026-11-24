@@ -4562,13 +4562,12 @@ pub fn attr_set_protocol(
         // __spec__.submodule_search_locations on every module — namespace
         // objects must accept attribute writes into their attrs (CPython:
         // ModuleSpec is a plain class with instance __dict__).
-        Value::Obj(o) if o.kind == ap_obj::ObjKind::Namespace => {
-            o.attrs
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .set(Value::Str(PyString::new(name)), v)
-                .map_err(Flow::from_py)
-        }
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::Namespace => o
+            .attrs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .set(Value::Str(PyString::new(name)), v)
+            .map_err(Flow::from_py),
         other => Err(raise(
             "AttributeError",
             format!("'{}' object has no attribute '{}'", other.type_name(), name),

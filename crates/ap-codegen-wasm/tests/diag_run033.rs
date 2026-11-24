@@ -10,8 +10,13 @@ fn diag_run033() {
     std::fs::write("/tmp/min.wasm", &bytes).unwrap();
     use wasmparser::{Validator, WasmFeatures};
     if let Err(e) = Validator::new_with_features(
-        WasmFeatures::default() | WasmFeatures::GC | WasmFeatures::FUNCTION_REFERENCES | WasmFeatures::EXCEPTIONS,
-    ).validate_all(&bytes) {
+        WasmFeatures::default()
+            | WasmFeatures::GC
+            | WasmFeatures::FUNCTION_REFERENCES
+            | WasmFeatures::EXCEPTIONS,
+    )
+    .validate_all(&bytes)
+    {
         println!("VALERR={} at {:?}", e, e.offset());
         return;
     }

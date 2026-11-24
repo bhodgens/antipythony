@@ -209,7 +209,6 @@ pub(crate) fn add(
 // Helpers used by multiple prelude functions (instruction idioms)
 // ===========================================================================
 
-
 /// `local.get N; ref.cast (ref null $t)` — downcast before struct.get.
 fn lget_cast(f: &mut Function, local: u32, ty: u32) {
     f.instruction(&Instruction::LocalGet(local));
@@ -265,56 +264,71 @@ fn type_sel(f: &mut Function, obj: u32, tmp: u32) {
 
 /// big_norm (FT_BIG_NORM): strip high zero limbs; zero -> EMPTY limbs.
 fn big_norm(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
-    add(funcs, code, FT_BIG_NORM, &[(2, ValType::I32), (1, ValType::Ref(wasm_encoder::RefType { nullable: true, heap_type: hc(T_LIMB_ARRAY) }))], |f| {
-        // 2 = trimmed len
-        f.instruction(&Instruction::LocalGet(0));
-        
-        f.instruction(&Instruction::RefCastNullable(hc(T_BIGINT)));
-        sget(f, T_BIGINT, F_BIG_LIMBS);
-        f.instruction(&Instruction::ArrayLen);
-        f.instruction(&Instruction::LocalSet(2));
-        // while len>0 && limbs[len-1]==0: len--
-        f.instruction(&Instruction::Block(BlockType::Empty));
-        f.instruction(&Instruction::Loop(BlockType::Empty));
-        f.instruction(&Instruction::LocalGet(2));
-        f.instruction(&Instruction::I32Eqz);
-        f.instruction(&Instruction::BrIf(1));
-        f.instruction(&Instruction::LocalGet(0));
-        
-        f.instruction(&Instruction::RefCastNullable(hc(T_BIGINT)));
-        sget(f, T_BIGINT, F_BIG_LIMBS);
-        f.instruction(&Instruction::LocalGet(2));
-        f.instruction(&Instruction::I32Const(1));
-        f.instruction(&Instruction::I32Sub);
-        f.instruction(&Instruction::ArrayGet(T_LIMB_ARRAY));
-        f.instruction(&Instruction::I32Eqz);
-        f.instruction(&Instruction::BrIf(0));
-        f.instruction(&Instruction::Br(1));
-        f.instruction(&Instruction::End);
-        f.instruction(&Instruction::End);
-        // out (local 3, array-typed) = new[len]; copy src[0..len)
-        f.instruction(&Instruction::LocalGet(2));
-        f.instruction(&Instruction::ArrayNewDefault(T_LIMB_ARRAY));
-        f.instruction(&Instruction::LocalSet(3));
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::I32Const(0));
-        f.instruction(&Instruction::LocalGet(0));
-        
-        f.instruction(&Instruction::RefCastNullable(hc(T_BIGINT)));
-        sget(f, T_BIGINT, F_BIG_LIMBS);
-        f.instruction(&Instruction::I32Const(0));
-        f.instruction(&Instruction::LocalGet(2));
-        f.instruction(&Instruction::ArrayCopy {
-            array_type_index_dst: T_LIMB_ARRAY,
-            array_type_index_src: T_LIMB_ARRAY,
-        });
-        f.instruction(&Instruction::LocalGet(0));
-        
-        f.instruction(&Instruction::RefCastNullable(hc(T_BIGINT)));
-        sget(f, T_BIGINT, F_BIG_SIGN);
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::StructNew(T_BIGINT));
-    });
+    add(
+        funcs,
+        code,
+        FT_BIG_NORM,
+        &[
+            (2, ValType::I32),
+            (
+                1,
+                ValType::Ref(wasm_encoder::RefType {
+                    nullable: true,
+                    heap_type: hc(T_LIMB_ARRAY),
+                }),
+            ),
+        ],
+        |f| {
+            // 2 = trimmed len
+            f.instruction(&Instruction::LocalGet(0));
+
+            f.instruction(&Instruction::RefCastNullable(hc(T_BIGINT)));
+            sget(f, T_BIGINT, F_BIG_LIMBS);
+            f.instruction(&Instruction::ArrayLen);
+            f.instruction(&Instruction::LocalSet(2));
+            // while len>0 && limbs[len-1]==0: len--
+            f.instruction(&Instruction::Block(BlockType::Empty));
+            f.instruction(&Instruction::Loop(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::I32Eqz);
+            f.instruction(&Instruction::BrIf(1));
+            f.instruction(&Instruction::LocalGet(0));
+
+            f.instruction(&Instruction::RefCastNullable(hc(T_BIGINT)));
+            sget(f, T_BIGINT, F_BIG_LIMBS);
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::I32Sub);
+            f.instruction(&Instruction::ArrayGet(T_LIMB_ARRAY));
+            f.instruction(&Instruction::I32Eqz);
+            f.instruction(&Instruction::BrIf(0));
+            f.instruction(&Instruction::Br(1));
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::End);
+            // out (local 3, array-typed) = new[len]; copy src[0..len)
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::ArrayNewDefault(T_LIMB_ARRAY));
+            f.instruction(&Instruction::LocalSet(3));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::LocalGet(0));
+
+            f.instruction(&Instruction::RefCastNullable(hc(T_BIGINT)));
+            sget(f, T_BIGINT, F_BIG_LIMBS);
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::ArrayCopy {
+                array_type_index_dst: T_LIMB_ARRAY,
+                array_type_index_src: T_LIMB_ARRAY,
+            });
+            f.instruction(&Instruction::LocalGet(0));
+
+            f.instruction(&Instruction::RefCastNullable(hc(T_BIGINT)));
+            sget(f, T_BIGINT, F_BIG_SIGN);
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::StructNew(T_BIGINT));
+        },
+    );
 }
 
 /// big_from_i64 (FT_BIG_FI64): (v) -> $bigint. Locals 2=u64, 3=sign,
@@ -330,14 +344,17 @@ fn big_from_i64(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encod
             (1, ValType::I32), // 3 = sign
             (1, ValType::I32), // 4 = n limbs
             (1, ValType::I32), // 5 = i (wasm locals are spec-zeroed; the
-                               // V001 `2**100 -> 3` symptom was NOT this
-                               // loop — it is i64-wrapping POW mul in
-                               // binop, a limb-arith capability gap for
-                               // 03.02c; zero-init asserted defensively)
-            (1, ValType::Ref(wasm_encoder::RefType {
-                nullable: true,
-                heap_type: hc(T_LIMB_ARRAY),
-            })), // 6 = limbs
+            // V001 `2**100 -> 3` symptom was NOT this
+            // loop — it is i64-wrapping POW mul in
+            // binop, a limb-arith capability gap for
+            // 03.02c; zero-init asserted defensively)
+            (
+                1,
+                ValType::Ref(wasm_encoder::RefType {
+                    nullable: true,
+                    heap_type: hc(T_LIMB_ARRAY),
+                }),
+            ), // 6 = limbs
         ],
         |f| {
             // sign = v < 0
@@ -466,7 +483,7 @@ fn bool_obj(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::
             f.instruction(&Instruction::I32Eq);
             f.instruction(&Instruction::If(BlockType::Empty));
             f.instruction(&Instruction::LocalGet(2));
-            
+
             f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
             sget(f, T_INT, F_INT_KIND);
             f.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
@@ -492,7 +509,7 @@ fn bool_obj(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::
             f.instruction(&Instruction::I32Eq);
             f.instruction(&Instruction::If(BlockType::Empty));
             f.instruction(&Instruction::LocalGet(2));
-            
+
             f.instruction(&Instruction::RefCastNullable(hc(T_FLOAT)));
             sget(f, T_FLOAT, F_FLOAT_VAL);
             f.instruction(&Instruction::F64Const(0.0.into()));
@@ -505,7 +522,7 @@ fn bool_obj(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::
             f.instruction(&Instruction::I32Eq);
             f.instruction(&Instruction::If(BlockType::Empty));
             f.instruction(&Instruction::LocalGet(2));
-            
+
             f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
             sget(f, T_STR, F_STR_LEN);
             f.instruction(&Instruction::I32Const(0));
@@ -518,7 +535,7 @@ fn bool_obj(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::
             f.instruction(&Instruction::I32Eq);
             f.instruction(&Instruction::If(BlockType::Empty));
             f.instruction(&Instruction::LocalGet(2));
-            
+
             f.instruction(&Instruction::RefCastNullable(hc(T_BYTES)));
             sget(f, T_BYTES, F_BYTES_LEN);
             f.instruction(&Instruction::I32Const(0));
@@ -531,7 +548,7 @@ fn bool_obj(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::
             f.instruction(&Instruction::I32Eq);
             f.instruction(&Instruction::If(BlockType::Empty));
             f.instruction(&Instruction::LocalGet(2));
-            
+
             f.instruction(&Instruction::RefCastNullable(hc(T_DICT)));
             sget(f, T_DICT, F_DICT_USED);
             f.instruction(&Instruction::I32Const(0));
@@ -544,7 +561,7 @@ fn bool_obj(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::
             f.instruction(&Instruction::I32Eq);
             f.instruction(&Instruction::If(BlockType::Empty));
             f.instruction(&Instruction::LocalGet(2));
-            
+
             f.instruction(&Instruction::RefCastNullable(hc(T_LIST)));
             sget(f, T_LIST, F_LIST_LEN);
             f.instruction(&Instruction::I32Const(0));
@@ -557,7 +574,7 @@ fn bool_obj(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::
             f.instruction(&Instruction::I32Eq);
             f.instruction(&Instruction::If(BlockType::Empty));
             f.instruction(&Instruction::LocalGet(2));
-            
+
             f.instruction(&Instruction::RefCastNullable(hc(T_TUPLE)));
             sget(f, T_TUPLE, F_TUPLE_ITEMS);
             f.instruction(&Instruction::ArrayLen);
@@ -605,141 +622,158 @@ fn float_from_i64(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_enc
 /// N = (1 << 61) - 1. hash(v) = v mod N (mod in CPython sense: result in
 /// [-N+1, N-1]).
 fn hash_i64(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
-    add(funcs, code, FT_L_L, &[(2, ValType::I64), (2, ValType::I64)], |f| {
-        // 2 = v, 3 = N-1? use constants inline; 4 = m, 5 = r
-        let n: i64 = (1i64 << 61) - 1;
-        // r = v % N (signed)
-        f.instruction(&Instruction::LocalGet(0));
-        f.instruction(&Instruction::I64Const(n));
-        f.instruction(&Instruction::I64RemS);
-        f.instruction(&Instruction::LocalSet(4));
-        // if r < 0: r += N
-        f.instruction(&Instruction::LocalGet(4));
-        f.instruction(&Instruction::I64Const(0));
-        f.instruction(&Instruction::I64LtS);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::LocalGet(4));
-        f.instruction(&Instruction::I64Const(n));
-        f.instruction(&Instruction::I64Add);
-        f.instruction(&Instruction::LocalSet(4));
-        f.instruction(&Instruction::End);
-        // if v < 0: r = N - 1 - r  (CPython: r = N - 1 - r when v < 0 and r)
-        f.instruction(&Instruction::LocalGet(0));
-        f.instruction(&Instruction::I64Const(0));
-        f.instruction(&Instruction::I64LtS);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::LocalGet(4));
-        f.instruction(&Instruction::I64Eqz);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        // r == 0 stays 0
-        f.instruction(&Instruction::Else);
-        f.instruction(&Instruction::I64Const(n));
-        f.instruction(&Instruction::LocalGet(4));
-        f.instruction(&Instruction::I64Sub);
-        f.instruction(&Instruction::LocalSet(4));
-        f.instruction(&Instruction::End);
-        f.instruction(&Instruction::End);
-        f.instruction(&Instruction::LocalGet(4));
-    });
+    add(
+        funcs,
+        code,
+        FT_L_L,
+        &[(2, ValType::I64), (2, ValType::I64)],
+        |f| {
+            // 2 = v, 3 = N-1? use constants inline; 4 = m, 5 = r
+            let n: i64 = (1i64 << 61) - 1;
+            // r = v % N (signed)
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::I64Const(n));
+            f.instruction(&Instruction::I64RemS);
+            f.instruction(&Instruction::LocalSet(4));
+            // if r < 0: r += N
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::I64Const(0));
+            f.instruction(&Instruction::I64LtS);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::I64Const(n));
+            f.instruction(&Instruction::I64Add);
+            f.instruction(&Instruction::LocalSet(4));
+            f.instruction(&Instruction::End);
+            // if v < 0: r = N - 1 - r  (CPython: r = N - 1 - r when v < 0 and r)
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::I64Const(0));
+            f.instruction(&Instruction::I64LtS);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::I64Eqz);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            // r == 0 stays 0
+            f.instruction(&Instruction::Else);
+            f.instruction(&Instruction::I64Const(n));
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::I64Sub);
+            f.instruction(&Instruction::LocalSet(4));
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(4));
+        },
+    );
 }
 
 /// float_hash (FT_F_L): hash(float) = hash(int(flo)) when integral else
 /// reduced-mantissa int hash (CPython _PyHash_Float: recompute from the
 /// mantissa/exp decomposition).
 fn float_hash(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
-    add(funcs, code, FT_F_L, &[(1, ValType::I64), (1, ValType::F64), (1, ValType::I64), (1, ValType::F64), (4, ValType::I64)],
-    |f| {
-        // 2 = x, 3 = flo (trunc), 4 = x - flo
-        f.instruction(&Instruction::LocalGet(0));
-        f.instruction(&Instruction::LocalSet(2));
-        // NaN/inf -> raise-equivalent: v1 uses 0 (corpus never hashes NaN).
-        f.instruction(&Instruction::LocalGet(2));
-        f.instruction(&Instruction::LocalGet(2));
-        f.instruction(&Instruction::F64Ne);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::I64Const(0));
-        f.instruction(&Instruction::Return);
-        f.instruction(&Instruction::End);
-        f.instruction(&Instruction::LocalGet(2));
-        f.instruction(&Instruction::I64TruncSatF64S);
-        f.instruction(&Instruction::LocalSet(3));
-        f.instruction(&Instruction::LocalGet(2));
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::F64ConvertI64S);
-        f.instruction(&Instruction::F64Sub);
-        f.instruction(&Instruction::LocalSet(4));
-        // frac == 0 -> hash(trunc)
-        f.instruction(&Instruction::LocalGet(4));
-        f.instruction(&Instruction::F64Const(0.0.into()));
-        f.instruction(&Instruction::F64Eq);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::Call(fx::FN_HASH_I64));
-        f.instruction(&Instruction::Return);
-        f.instruction(&Instruction::End);
-        // non-integral: v1 = hash_i64 of the mantissa decomposition's
-        // integer form (exact 2^61-1 modulus preserves the CPython value
-        // for the corpus's representable range; documented deviation for
-        // subnormal extremes).
-        // exp = floor(log2(|x|)); m = |x| / 2^exp * 2^53 (exact in i64 when
-        // |x| in normal range); sign applied.
-        f.instruction(&Instruction::LocalGet(2));
-        f.instruction(&Instruction::F64Abs);
-        f.instruction(&Instruction::I64TruncSatF64S);
-        f.instruction(&Instruction::LocalSet(3));
-        // log2 via bit tricks is overkill for v1: use frexp-style: while m*2 <= 2^53: m *= 2 ... but truncated already lost frac.
-        // Correct approach: reconstruct exact integer scaling: y = |x|; find
-        // e in [-1074, 971] s.t. y * 2^53 / 2^e is the integer mantissa.
-        // v1: y != floor(y) only reachable for |x| < 2^53 * ulp effects...
-        // Keep it simple: hash = hash_i64(trunc(x)) + 1 if frac>0 else -1
-        // NO — that breaks hash-eq invariants. Use the documented CPython
-        // algorithm: x_int = as u64 bits; e = ((bits >> 52) & 0x7FF); m =
-        // bits & ((1<<52)-1) | hidden... This needs i64 bit ops on
-        // reinterpret — emit here.
-        f.instruction(&Instruction::LocalGet(2));
-        f.instruction(&Instruction::I64ReinterpretF64);
-        f.instruction(&Instruction::LocalSet(5)); // bits
-        // e = ((bits >> 52) & 0x7FF) - 1075 (biased-52 subtraction built in)
-        f.instruction(&Instruction::LocalGet(5));
-        f.instruction(&Instruction::I64Const(52));
-        f.instruction(&Instruction::I64ShrU);
-        f.instruction(&Instruction::I64Const(0x7FF));
-        f.instruction(&Instruction::I64And);
-        f.instruction(&Instruction::I64Const(1075));
-        f.instruction(&Instruction::I64Sub);
-        f.instruction(&Instruction::LocalSet(6)); // e
-        // m = (bits & ((1<<52)-1)) | (1<<52)  [normal case]
-        f.instruction(&Instruction::LocalGet(5));
-        f.instruction(&Instruction::I64Const((1i64 << 52) - 1));
-        f.instruction(&Instruction::I64And);
-        f.instruction(&Instruction::I64Const(1i64 << 52));
-        f.instruction(&Instruction::I64Or);
-        f.instruction(&Instruction::LocalSet(7)); // m (u53)
-        // exp of the value = e; frac x = m * 2^e (e negative for |x|<2^53).
-        // CPython: hash = hash_int(m) then process: since |x| < 2^53 here
-        // (non-integral floats have |x| < 2^53 when frac != 0 for the
-        // corpus), CPython's algorithm: r = m; sign flip on e parity per
-        // _Py_HashDouble: r = hash of m * 2^e reduced mod N with the
-        // e-parity trick for e < 0:
-        //   while e < -1 and m even-ish: skip — full loop is:
-        //   if e >= 128 or m > N: reduce via modulus
-        // Simplified faithful path (corpus range):
-        //   hash = m reduced mod N; if x < 0: r = N - r.
-        f.instruction(&Instruction::LocalGet(7));
-        f.instruction(&Instruction::I64Const((1i64 << 61) - 1));
-        f.instruction(&Instruction::I64RemU);
-        f.instruction(&Instruction::LocalSet(8));
-        f.instruction(&Instruction::LocalGet(2));
-        f.instruction(&Instruction::F64Const(0.0.into()));
-        f.instruction(&Instruction::F64Lt);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::I64Const((1i64 << 61) - 1));
-        f.instruction(&Instruction::LocalGet(8));
-        f.instruction(&Instruction::I64Sub);
-        f.instruction(&Instruction::LocalSet(8));
-        f.instruction(&Instruction::End);
-        f.instruction(&Instruction::LocalGet(8));
-    });
+    add(
+        funcs,
+        code,
+        FT_F_L,
+        &[
+            (1, ValType::I64),
+            (1, ValType::F64),
+            (1, ValType::I64),
+            (1, ValType::F64),
+            (4, ValType::I64),
+        ],
+        |f| {
+            // 2 = x, 3 = flo (trunc), 4 = x - flo
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::LocalSet(2));
+            // NaN/inf -> raise-equivalent: v1 uses 0 (corpus never hashes NaN).
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::F64Ne);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::I64Const(0));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::I64TruncSatF64S);
+            f.instruction(&Instruction::LocalSet(3));
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::F64ConvertI64S);
+            f.instruction(&Instruction::F64Sub);
+            f.instruction(&Instruction::LocalSet(4));
+            // frac == 0 -> hash(trunc)
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::F64Const(0.0.into()));
+            f.instruction(&Instruction::F64Eq);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::Call(fx::FN_HASH_I64));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // non-integral: v1 = hash_i64 of the mantissa decomposition's
+            // integer form (exact 2^61-1 modulus preserves the CPython value
+            // for the corpus's representable range; documented deviation for
+            // subnormal extremes).
+            // exp = floor(log2(|x|)); m = |x| / 2^exp * 2^53 (exact in i64 when
+            // |x| in normal range); sign applied.
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::F64Abs);
+            f.instruction(&Instruction::I64TruncSatF64S);
+            f.instruction(&Instruction::LocalSet(3));
+            // log2 via bit tricks is overkill for v1: use frexp-style: while m*2 <= 2^53: m *= 2 ... but truncated already lost frac.
+            // Correct approach: reconstruct exact integer scaling: y = |x|; find
+            // e in [-1074, 971] s.t. y * 2^53 / 2^e is the integer mantissa.
+            // v1: y != floor(y) only reachable for |x| < 2^53 * ulp effects...
+            // Keep it simple: hash = hash_i64(trunc(x)) + 1 if frac>0 else -1
+            // NO — that breaks hash-eq invariants. Use the documented CPython
+            // algorithm: x_int = as u64 bits; e = ((bits >> 52) & 0x7FF); m =
+            // bits & ((1<<52)-1) | hidden... This needs i64 bit ops on
+            // reinterpret — emit here.
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::I64ReinterpretF64);
+            f.instruction(&Instruction::LocalSet(5)); // bits
+                                                      // e = ((bits >> 52) & 0x7FF) - 1075 (biased-52 subtraction built in)
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::I64Const(52));
+            f.instruction(&Instruction::I64ShrU);
+            f.instruction(&Instruction::I64Const(0x7FF));
+            f.instruction(&Instruction::I64And);
+            f.instruction(&Instruction::I64Const(1075));
+            f.instruction(&Instruction::I64Sub);
+            f.instruction(&Instruction::LocalSet(6)); // e
+                                                      // m = (bits & ((1<<52)-1)) | (1<<52)  [normal case]
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::I64Const((1i64 << 52) - 1));
+            f.instruction(&Instruction::I64And);
+            f.instruction(&Instruction::I64Const(1i64 << 52));
+            f.instruction(&Instruction::I64Or);
+            f.instruction(&Instruction::LocalSet(7)); // m (u53)
+                                                      // exp of the value = e; frac x = m * 2^e (e negative for |x|<2^53).
+                                                      // CPython: hash = hash_int(m) then process: since |x| < 2^53 here
+                                                      // (non-integral floats have |x| < 2^53 when frac != 0 for the
+                                                      // corpus), CPython's algorithm: r = m; sign flip on e parity per
+                                                      // _Py_HashDouble: r = hash of m * 2^e reduced mod N with the
+                                                      // e-parity trick for e < 0:
+                                                      //   while e < -1 and m even-ish: skip — full loop is:
+                                                      //   if e >= 128 or m > N: reduce via modulus
+                                                      // Simplified faithful path (corpus range):
+                                                      //   hash = m reduced mod N; if x < 0: r = N - r.
+            f.instruction(&Instruction::LocalGet(7));
+            f.instruction(&Instruction::I64Const((1i64 << 61) - 1));
+            f.instruction(&Instruction::I64RemU);
+            f.instruction(&Instruction::LocalSet(8));
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::F64Const(0.0.into()));
+            f.instruction(&Instruction::F64Lt);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::I64Const((1i64 << 61) - 1));
+            f.instruction(&Instruction::LocalGet(8));
+            f.instruction(&Instruction::I64Sub);
+            f.instruction(&Instruction::LocalSet(8));
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(8));
+        },
+    );
 }
 
 // ===========================================================================
@@ -749,189 +783,201 @@ fn float_hash(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder
 /// truthy (FT_O_I): (x) -> i32 — delegates the same truth table as bool_obj
 /// (without allocating).
 fn truthy(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
-    add(funcs, code, FT_O_I, &[(2, oref()), (3, ValType::I32)], |f| {
-        f.instruction(&Instruction::LocalGet(0));
-        f.instruction(&Instruction::LocalSet(2));
-        type_sel(f, 2, 5);
-        f.instruction(&Instruction::LocalSet(3));
-        // reuse bool_obj's table: call it and read the smi payload — bool_obj
-        // allocates; for the corpus-slice cost this is acceptable (print of
-        // truthiness is bool anyway). Simpler: replicate table inline.
-        f.instruction(&Instruction::I32Const(1));
-        f.instruction(&Instruction::LocalSet(4));
-        // int
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::I32Const(0));
-        f.instruction(&Instruction::I32Eq);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::LocalGet(2));
-        
-        f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
-        sget(f, T_INT, F_INT_KIND);
-        f.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
-        f.instruction(&Instruction::LocalGet(2));
-        f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
-        int_big(f);
-        sget(f, T_BIGINT, F_BIG_LIMBS);
-        f.instruction(&Instruction::ArrayLen);
-        f.instruction(&Instruction::I32Const(0));
-        f.instruction(&Instruction::I32Ne);
-        f.instruction(&Instruction::Else);
-        f.instruction(&Instruction::LocalGet(2));
-        f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
-        int_smi(f);
-        f.instruction(&Instruction::I64Const(0));
-        f.instruction(&Instruction::I64Ne);
-        f.instruction(&Instruction::End);
-        f.instruction(&Instruction::LocalSet(4));
-        f.instruction(&Instruction::End);
-        // float
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::I32Const(1));
-        f.instruction(&Instruction::I32Eq);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::LocalGet(2));
-        
-        f.instruction(&Instruction::RefCastNullable(hc(T_FLOAT)));
-        sget(f, T_FLOAT, F_FLOAT_VAL);
-        f.instruction(&Instruction::F64Const(0.0.into()));
-        f.instruction(&Instruction::F64Ne);
-        f.instruction(&Instruction::LocalSet(4));
-        f.instruction(&Instruction::End);
-        // str
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::I32Const(3));
-        f.instruction(&Instruction::I32Eq);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::LocalGet(2));
-        
-        f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
-        sget(f, T_STR, F_STR_LEN);
-        f.instruction(&Instruction::I32Const(0));
-        f.instruction(&Instruction::I32Ne);
-        f.instruction(&Instruction::LocalSet(4));
-        f.instruction(&Instruction::End);
-        // bytes
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::I32Const(4));
-        f.instruction(&Instruction::I32Eq);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::LocalGet(2));
-        
-        f.instruction(&Instruction::RefCastNullable(hc(T_BYTES)));
-        sget(f, T_BYTES, F_BYTES_LEN);
-        f.instruction(&Instruction::I32Const(0));
-        f.instruction(&Instruction::I32Ne);
-        f.instruction(&Instruction::LocalSet(4));
-        f.instruction(&Instruction::End);
-        // dict
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::I32Const(5));
-        f.instruction(&Instruction::I32Eq);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::LocalGet(2));
-        
-        f.instruction(&Instruction::RefCastNullable(hc(T_DICT)));
-        sget(f, T_DICT, F_DICT_USED);
-        f.instruction(&Instruction::I32Const(0));
-        f.instruction(&Instruction::I32Ne);
-        f.instruction(&Instruction::LocalSet(4));
-        f.instruction(&Instruction::End);
-        // list
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::I32Const(6));
-        f.instruction(&Instruction::I32Eq);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::LocalGet(2));
-        
-        f.instruction(&Instruction::RefCastNullable(hc(T_LIST)));
-        sget(f, T_LIST, F_LIST_LEN);
-        f.instruction(&Instruction::I32Const(0));
-        f.instruction(&Instruction::I32Ne);
-        f.instruction(&Instruction::LocalSet(4));
-        f.instruction(&Instruction::End);
-        // tuple
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::I32Const(7));
-        f.instruction(&Instruction::I32Eq);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::LocalGet(2));
-        
-        f.instruction(&Instruction::RefCastNullable(hc(T_TUPLE)));
-        sget(f, T_TUPLE, F_TUPLE_ITEMS);
-        f.instruction(&Instruction::ArrayLen);
-        f.instruction(&Instruction::I32Const(0));
-        f.instruction(&Instruction::I32Ne);
-        f.instruction(&Instruction::LocalSet(4));
-        f.instruction(&Instruction::End);
-        // None
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::I32Const(8));
-        f.instruction(&Instruction::I32Eq);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::I32Const(0));
-        f.instruction(&Instruction::LocalSet(4));
-        f.instruction(&Instruction::End);
-        f.instruction(&Instruction::LocalGet(4));
-    });
+    add(
+        funcs,
+        code,
+        FT_O_I,
+        &[(2, oref()), (3, ValType::I32)],
+        |f| {
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::LocalSet(2));
+            type_sel(f, 2, 5);
+            f.instruction(&Instruction::LocalSet(3));
+            // reuse bool_obj's table: call it and read the smi payload — bool_obj
+            // allocates; for the corpus-slice cost this is acceptable (print of
+            // truthiness is bool anyway). Simpler: replicate table inline.
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::LocalSet(4));
+            // int
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(2));
+
+            f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
+            sget(f, T_INT, F_INT_KIND);
+            f.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
+            int_big(f);
+            sget(f, T_BIGINT, F_BIG_LIMBS);
+            f.instruction(&Instruction::ArrayLen);
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::I32Ne);
+            f.instruction(&Instruction::Else);
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
+            int_smi(f);
+            f.instruction(&Instruction::I64Const(0));
+            f.instruction(&Instruction::I64Ne);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalSet(4));
+            f.instruction(&Instruction::End);
+            // float
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(2));
+
+            f.instruction(&Instruction::RefCastNullable(hc(T_FLOAT)));
+            sget(f, T_FLOAT, F_FLOAT_VAL);
+            f.instruction(&Instruction::F64Const(0.0.into()));
+            f.instruction(&Instruction::F64Ne);
+            f.instruction(&Instruction::LocalSet(4));
+            f.instruction(&Instruction::End);
+            // str
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(3));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(2));
+
+            f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
+            sget(f, T_STR, F_STR_LEN);
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::I32Ne);
+            f.instruction(&Instruction::LocalSet(4));
+            f.instruction(&Instruction::End);
+            // bytes
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(4));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(2));
+
+            f.instruction(&Instruction::RefCastNullable(hc(T_BYTES)));
+            sget(f, T_BYTES, F_BYTES_LEN);
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::I32Ne);
+            f.instruction(&Instruction::LocalSet(4));
+            f.instruction(&Instruction::End);
+            // dict
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(5));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(2));
+
+            f.instruction(&Instruction::RefCastNullable(hc(T_DICT)));
+            sget(f, T_DICT, F_DICT_USED);
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::I32Ne);
+            f.instruction(&Instruction::LocalSet(4));
+            f.instruction(&Instruction::End);
+            // list
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(6));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(2));
+
+            f.instruction(&Instruction::RefCastNullable(hc(T_LIST)));
+            sget(f, T_LIST, F_LIST_LEN);
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::I32Ne);
+            f.instruction(&Instruction::LocalSet(4));
+            f.instruction(&Instruction::End);
+            // tuple
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(7));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(2));
+
+            f.instruction(&Instruction::RefCastNullable(hc(T_TUPLE)));
+            sget(f, T_TUPLE, F_TUPLE_ITEMS);
+            f.instruction(&Instruction::ArrayLen);
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::I32Ne);
+            f.instruction(&Instruction::LocalSet(4));
+            f.instruction(&Instruction::End);
+            // None
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(8));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::LocalSet(4));
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(4));
+        },
+    );
 }
 
 /// hash (FT_O_L): (x) -> i64 — int/bool via hash_i64 (bool payload), float
 /// via float_hash, str: zero-argument short-circuit (string hash lands in
 /// 03.03; the corpus slice never hashes a str), None/bytes: v1 identity.
 fn hash(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
-    add(funcs, code, FT_O_L, &[(2, oref()), (3, ValType::I32)], |f| {
-        f.instruction(&Instruction::LocalGet(0));
-        f.instruction(&Instruction::LocalSet(2));
-        type_sel(f, 2, 4);
-        f.instruction(&Instruction::LocalSet(3));
-        f.instruction(&Instruction::Block(BlockType::Result(ValType::I64)));
-        // int/bool (bool rides $int payloads: sel 0 or 2)
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::I32Const(0));
-        f.instruction(&Instruction::I32Eq);
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::I32Const(2));
-        f.instruction(&Instruction::I32Eq);
-        f.instruction(&Instruction::I32Or);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::LocalGet(2));
-        
-        f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
-        sget(f, T_INT, F_INT_KIND);
-        f.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
-        // big: hash via low <= 2 limbs -> hash_i64 (corpus bigint hashes
-        // stay within the smoke range; full bigint hash in 03.03)
-        f.instruction(&Instruction::LocalGet(2));
-        f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
-        int_big(f);
-        f.instruction(&Instruction::Call(fx::FN_BIG_BITS));
-        f.instruction(&Instruction::Else);
-        f.instruction(&Instruction::LocalGet(2));
-        f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
-        int_smi(f);
-        f.instruction(&Instruction::End);
-        f.instruction(&Instruction::Call(fx::FN_HASH_I64));
-        f.instruction(&Instruction::Return);
-        f.instruction(&Instruction::End);
-        // float
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::I32Const(1));
-        f.instruction(&Instruction::I32Eq);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::LocalGet(2));
-        
-        f.instruction(&Instruction::RefCastNullable(hc(T_FLOAT)));
-        sget(f, T_FLOAT, F_FLOAT_VAL);
-        f.instruction(&Instruction::Call(fx::FN_FLOAT_HASH));
-        f.instruction(&Instruction::Return);
-        f.instruction(&Instruction::End);
-        // everything else on this slice: 0 (hash(str/bytes/dict keys) with
-        // dict displays is 03.03's surface; V-corpus hash cases cover
-        // int/float/bool only).
-        f.instruction(&Instruction::I64Const(0));
-        f.instruction(&Instruction::End);
-    });
+    add(
+        funcs,
+        code,
+        FT_O_L,
+        &[(2, oref()), (3, ValType::I32)],
+        |f| {
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::LocalSet(2));
+            type_sel(f, 2, 4);
+            f.instruction(&Instruction::LocalSet(3));
+            f.instruction(&Instruction::Block(BlockType::Result(ValType::I64)));
+            // int/bool (bool rides $int payloads: sel 0 or 2)
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(2));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::I32Or);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(2));
+
+            f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
+            sget(f, T_INT, F_INT_KIND);
+            f.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
+            // big: hash via low <= 2 limbs -> hash_i64 (corpus bigint hashes
+            // stay within the smoke range; full bigint hash in 03.03)
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
+            int_big(f);
+            f.instruction(&Instruction::Call(fx::FN_BIG_BITS));
+            f.instruction(&Instruction::Else);
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
+            int_smi(f);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::Call(fx::FN_HASH_I64));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // float
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(2));
+
+            f.instruction(&Instruction::RefCastNullable(hc(T_FLOAT)));
+            sget(f, T_FLOAT, F_FLOAT_VAL);
+            f.instruction(&Instruction::Call(fx::FN_FLOAT_HASH));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // everything else on this slice: 0 (hash(str/bytes/dict keys) with
+            // dict displays is 03.03's surface; V-corpus hash cases cover
+            // int/float/bool only).
+            f.instruction(&Instruction::I64Const(0));
+            f.instruction(&Instruction::End);
+        },
+    );
 }
 
 // ===========================================================================
@@ -942,139 +988,151 @@ fn hash(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::Code
 /// (sign+limb compare), bool rides $int, cross-type false unless both
 /// numeric (float cross handled by float_py_eq's caller).
 fn int_eq(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
-    add(funcs, code, FT_OO_I, &[(2, oref()), (2, ValType::I32)], |f| {
-        f.instruction(&Instruction::LocalGet(0));
-        f.instruction(&Instruction::LocalSet(2));
-        f.instruction(&Instruction::LocalGet(1));
-        f.instruction(&Instruction::LocalSet(3));
-        // both smi?
-        f.instruction(&Instruction::LocalGet(2));
-        
-        f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
-        sget(f, T_INT, F_INT_KIND);
-        f.instruction(&Instruction::I32Eqz);
-        f.instruction(&Instruction::LocalGet(3));
-        
-        f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
-        sget(f, T_INT, F_INT_KIND);
-        f.instruction(&Instruction::I32Eqz);
-        f.instruction(&Instruction::I32And);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::LocalGet(2));
-        f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
-        int_smi(f);
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
-        int_smi(f);
-        f.instruction(&Instruction::I64Eq);
-        f.instruction(&Instruction::Return);
-        f.instruction(&Instruction::End);
-        // both big? compare sign+limbs
-        f.instruction(&Instruction::LocalGet(2));
-        
-        f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
-        sget(f, T_INT, F_INT_KIND);
-        f.instruction(&Instruction::LocalGet(3));
-        
-        f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
-        sget(f, T_INT, F_INT_KIND);
-        f.instruction(&Instruction::I32And);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        // a.big vs b.big via BIG_CMP
-        f.instruction(&Instruction::LocalGet(2));
-        f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
-        int_big(f);
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
-        int_big(f);
-        f.instruction(&Instruction::Call(fx::FN_BIG_CMP));
-        f.instruction(&Instruction::I32Eqz);
-        f.instruction(&Instruction::Return);
-        f.instruction(&Instruction::End);
-        // mixed smi/big: v1 — smi-vs-big happens only via arithmetic
-        // results which normalize; corpus slice never compares mixed.
-        f.instruction(&Instruction::I32Const(0));
-    });
+    add(
+        funcs,
+        code,
+        FT_OO_I,
+        &[(2, oref()), (2, ValType::I32)],
+        |f| {
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::LocalSet(2));
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::LocalSet(3));
+            // both smi?
+            f.instruction(&Instruction::LocalGet(2));
+
+            f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
+            sget(f, T_INT, F_INT_KIND);
+            f.instruction(&Instruction::I32Eqz);
+            f.instruction(&Instruction::LocalGet(3));
+
+            f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
+            sget(f, T_INT, F_INT_KIND);
+            f.instruction(&Instruction::I32Eqz);
+            f.instruction(&Instruction::I32And);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
+            int_smi(f);
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
+            int_smi(f);
+            f.instruction(&Instruction::I64Eq);
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // both big? compare sign+limbs
+            f.instruction(&Instruction::LocalGet(2));
+
+            f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
+            sget(f, T_INT, F_INT_KIND);
+            f.instruction(&Instruction::LocalGet(3));
+
+            f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
+            sget(f, T_INT, F_INT_KIND);
+            f.instruction(&Instruction::I32And);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            // a.big vs b.big via BIG_CMP
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
+            int_big(f);
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
+            int_big(f);
+            f.instruction(&Instruction::Call(fx::FN_BIG_CMP));
+            f.instruction(&Instruction::I32Eqz);
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // mixed smi/big: v1 — smi-vs-big happens only via arithmetic
+            // results which normalize; corpus slice never compares mixed.
+            f.instruction(&Instruction::I32Const(0));
+        },
+    );
 }
 
 /// float_py_eq (FT_OO_I): (a, b) -> i32 — float vs any numeric (and int vs
 /// float promotion path). v1: compare as f64 when either side is float.
 fn float_py_eq(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
-    add(funcs, code, FT_OO_I, &[(2, oref()), (2, ValType::F64), (1, ValType::I32)], |f| {
-        // (o, o) via FT_OO_I: locals 2=a, 3=b, 4=fa, 5=fb, 6=sel
-        f.instruction(&Instruction::LocalGet(0));
-        f.instruction(&Instruction::LocalSet(2));
-        f.instruction(&Instruction::LocalGet(1));
-        f.instruction(&Instruction::LocalSet(3));
-        // a -> f64 (float direct; int/bool via the smi payload — exact for
-        // [0, 2^53] and the i64->f64 rounding CPython itself uses; big ->
-        // truncate is 03.03's surface). Non-numeric -> NaN (NaN != x is
-        // false on F64Eq, so any eq against it is false — CPython semantics
-        // for unrelated types).
-        type_sel(f, 2, 6);
-        f.instruction(&Instruction::LocalSet(6));
-        f.instruction(&Instruction::LocalGet(6));
-        f.instruction(&Instruction::I32Const(1));
-        f.instruction(&Instruction::I32Eq);
-        f.instruction(&Instruction::If(BlockType::Result(ValType::F64)));
-        f.instruction(&Instruction::LocalGet(2));
-        f.instruction(&Instruction::RefCastNullable(hc(T_FLOAT)));
-        sget(f, T_FLOAT, F_FLOAT_VAL);
-        f.instruction(&Instruction::Else);
-        f.instruction(&Instruction::LocalGet(6));
-        f.instruction(&Instruction::I32Const(0));
-        f.instruction(&Instruction::I32Eq);
-        f.instruction(&Instruction::LocalGet(6));
-        f.instruction(&Instruction::I32Const(2));
-        f.instruction(&Instruction::I32Eq);
-        f.instruction(&Instruction::I32Or);
-        f.instruction(&Instruction::If(BlockType::Result(ValType::F64)));
-        f.instruction(&Instruction::LocalGet(2));
-        f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
-        int_smi(f);
-        f.instruction(&Instruction::F64ConvertI64S);
-        f.instruction(&Instruction::Else);
-        // unrelated type: NaN compares false against everything
-        f.instruction(&Instruction::F64Const(0f64.into()));
-        f.instruction(&Instruction::F64Const(0f64.into()));
-        f.instruction(&Instruction::F64Div);
-        f.instruction(&Instruction::End);
-        f.instruction(&Instruction::End);
-        f.instruction(&Instruction::LocalSet(4));
-        // b -> f64 (same promotion)
-        type_sel(f, 3, 6);
-        f.instruction(&Instruction::LocalSet(6));
-        f.instruction(&Instruction::LocalGet(6));
-        f.instruction(&Instruction::I32Const(1));
-        f.instruction(&Instruction::I32Eq);
-        f.instruction(&Instruction::If(BlockType::Result(ValType::F64)));
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::RefCastNullable(hc(T_FLOAT)));
-        sget(f, T_FLOAT, F_FLOAT_VAL);
-        f.instruction(&Instruction::Else);
-        f.instruction(&Instruction::LocalGet(6));
-        f.instruction(&Instruction::I32Const(0));
-        f.instruction(&Instruction::I32Eq);
-        f.instruction(&Instruction::LocalGet(6));
-        f.instruction(&Instruction::I32Const(2));
-        f.instruction(&Instruction::I32Eq);
-        f.instruction(&Instruction::I32Or);
-        f.instruction(&Instruction::If(BlockType::Result(ValType::F64)));
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
-        int_smi(f);
-        f.instruction(&Instruction::F64ConvertI64S);
-        f.instruction(&Instruction::Else);
-        f.instruction(&Instruction::F64Const(0f64.into()));
-        f.instruction(&Instruction::F64Const(0f64.into()));
-        f.instruction(&Instruction::F64Div);
-        f.instruction(&Instruction::End);
-        f.instruction(&Instruction::End);
-        f.instruction(&Instruction::LocalSet(5));
-        f.instruction(&Instruction::LocalGet(4));
-        f.instruction(&Instruction::LocalGet(5));
-        f.instruction(&Instruction::F64Eq);
-    });
+    add(
+        funcs,
+        code,
+        FT_OO_I,
+        &[(2, oref()), (2, ValType::F64), (1, ValType::I32)],
+        |f| {
+            // (o, o) via FT_OO_I: locals 2=a, 3=b, 4=fa, 5=fb, 6=sel
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::LocalSet(2));
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::LocalSet(3));
+            // a -> f64 (float direct; int/bool via the smi payload — exact for
+            // [0, 2^53] and the i64->f64 rounding CPython itself uses; big ->
+            // truncate is 03.03's surface). Non-numeric -> NaN (NaN != x is
+            // false on F64Eq, so any eq against it is false — CPython semantics
+            // for unrelated types).
+            type_sel(f, 2, 6);
+            f.instruction(&Instruction::LocalSet(6));
+            f.instruction(&Instruction::LocalGet(6));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Result(ValType::F64)));
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::RefCastNullable(hc(T_FLOAT)));
+            sget(f, T_FLOAT, F_FLOAT_VAL);
+            f.instruction(&Instruction::Else);
+            f.instruction(&Instruction::LocalGet(6));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::LocalGet(6));
+            f.instruction(&Instruction::I32Const(2));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::I32Or);
+            f.instruction(&Instruction::If(BlockType::Result(ValType::F64)));
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
+            int_smi(f);
+            f.instruction(&Instruction::F64ConvertI64S);
+            f.instruction(&Instruction::Else);
+            // unrelated type: NaN compares false against everything
+            f.instruction(&Instruction::F64Const(0f64.into()));
+            f.instruction(&Instruction::F64Const(0f64.into()));
+            f.instruction(&Instruction::F64Div);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalSet(4));
+            // b -> f64 (same promotion)
+            type_sel(f, 3, 6);
+            f.instruction(&Instruction::LocalSet(6));
+            f.instruction(&Instruction::LocalGet(6));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Result(ValType::F64)));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefCastNullable(hc(T_FLOAT)));
+            sget(f, T_FLOAT, F_FLOAT_VAL);
+            f.instruction(&Instruction::Else);
+            f.instruction(&Instruction::LocalGet(6));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::LocalGet(6));
+            f.instruction(&Instruction::I32Const(2));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::I32Or);
+            f.instruction(&Instruction::If(BlockType::Result(ValType::F64)));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
+            int_smi(f);
+            f.instruction(&Instruction::F64ConvertI64S);
+            f.instruction(&Instruction::Else);
+            f.instruction(&Instruction::F64Const(0f64.into()));
+            f.instruction(&Instruction::F64Const(0f64.into()));
+            f.instruction(&Instruction::F64Div);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalSet(5));
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::F64Eq);
+        },
+    );
 }
 
 /// str_eq (FT_OO_I): (a, b) -> i32 — kind-0 byte compare (kind 1/2 strs
@@ -1093,11 +1151,11 @@ fn str_eq(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::Co
             f.instruction(&Instruction::LocalSet(3));
             // len equal?
             f.instruction(&Instruction::LocalGet(2));
-            
+
             f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
             sget(f, T_STR, F_STR_LEN);
             f.instruction(&Instruction::LocalGet(3));
-            
+
             f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
             sget(f, T_STR, F_STR_LEN);
             f.instruction(&Instruction::I32Ne);
@@ -1106,7 +1164,7 @@ fn str_eq(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::Co
             f.instruction(&Instruction::Return);
             f.instruction(&Instruction::End);
             f.instruction(&Instruction::LocalGet(2));
-            
+
             f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
             sget(f, T_STR, F_STR_LEN);
             f.instruction(&Instruction::LocalSet(4));
@@ -1119,13 +1177,13 @@ fn str_eq(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::Co
             f.instruction(&Instruction::I32GeU);
             f.instruction(&Instruction::BrIf(1));
             f.instruction(&Instruction::LocalGet(2));
-            
+
             f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
             sget(f, T_STR, F_STR_DATA);
             f.instruction(&Instruction::LocalGet(5));
             f.instruction(&Instruction::ArrayGetU(T_BYTE_ARR));
             f.instruction(&Instruction::LocalGet(3));
-            
+
             f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
             sget(f, T_STR, F_STR_DATA);
             f.instruction(&Instruction::LocalGet(5));
@@ -1160,11 +1218,11 @@ fn bytes_eq(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::
             f.instruction(&Instruction::LocalGet(1));
             f.instruction(&Instruction::LocalSet(3));
             f.instruction(&Instruction::LocalGet(2));
-            
+
             f.instruction(&Instruction::RefCastNullable(hc(T_BYTES)));
             sget(f, T_BYTES, F_BYTES_LEN);
             f.instruction(&Instruction::LocalGet(3));
-            
+
             f.instruction(&Instruction::RefCastNullable(hc(T_BYTES)));
             sget(f, T_BYTES, F_BYTES_LEN);
             f.instruction(&Instruction::I32Ne);
@@ -1173,7 +1231,7 @@ fn bytes_eq(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::
             f.instruction(&Instruction::Return);
             f.instruction(&Instruction::End);
             f.instruction(&Instruction::LocalGet(2));
-            
+
             f.instruction(&Instruction::RefCastNullable(hc(T_BYTES)));
             sget(f, T_BYTES, F_BYTES_LEN);
             f.instruction(&Instruction::LocalSet(4));
@@ -1186,13 +1244,13 @@ fn bytes_eq(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::
             f.instruction(&Instruction::I32GeU);
             f.instruction(&Instruction::BrIf(1));
             f.instruction(&Instruction::LocalGet(2));
-            
+
             f.instruction(&Instruction::RefCastNullable(hc(T_BYTES)));
             sget(f, T_BYTES, F_BYTES_DATA);
             f.instruction(&Instruction::LocalGet(5));
             f.instruction(&Instruction::ArrayGetU(T_BYTE_ARR));
             f.instruction(&Instruction::LocalGet(3));
-            
+
             f.instruction(&Instruction::RefCastNullable(hc(T_BYTES)));
             sget(f, T_BYTES, F_BYTES_DATA);
             f.instruction(&Instruction::LocalGet(5));
@@ -1235,142 +1293,153 @@ fn none_eq(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::C
 
 /// list_eq (FT_OO_I): (a, b) -> i32 — same length, all items $eq.
 fn list_eq(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
-    add(funcs, code, FT_OO_I, &[(2, oref()), (2, ValType::I32), (2, oref())], |f| {
-        // 2=a 3=b 4=len 5=i 6=item-a 7=item-b
-        f.instruction(&Instruction::LocalGet(0));
-        f.instruction(&Instruction::LocalSet(2));
-        f.instruction(&Instruction::LocalGet(1));
-        f.instruction(&Instruction::LocalSet(3));
-        f.instruction(&Instruction::Block(BlockType::Result(ValType::I32)));
-        // len check
-        f.instruction(&Instruction::LocalGet(2));
-        f.instruction(&Instruction::RefCastNullable(hc(T_LIST)));
-        sget(f, T_LIST, F_LIST_LEN);
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::RefCastNullable(hc(T_LIST)));
-        sget(f, T_LIST, F_LIST_LEN);
-        f.instruction(&Instruction::I32Ne);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::I32Const(0));
-        f.instruction(&Instruction::Return);
-        f.instruction(&Instruction::End);
-        // itemwise loop
-        f.instruction(&Instruction::LocalGet(2));
-        f.instruction(&Instruction::RefCastNullable(hc(T_LIST)));
-        sget(f, T_LIST, F_LIST_LEN);
-        f.instruction(&Instruction::LocalSet(4));
-        f.instruction(&Instruction::I32Const(0));
-        f.instruction(&Instruction::LocalSet(5));
-        f.instruction(&Instruction::Block(BlockType::Empty));
-        f.instruction(&Instruction::Loop(BlockType::Empty));
-        f.instruction(&Instruction::LocalGet(5));
-        f.instruction(&Instruction::LocalGet(4));
-        f.instruction(&Instruction::I32GeU);
-        f.instruction(&Instruction::BrIf(1));
-        // item-a = a.items[i]
-        f.instruction(&Instruction::LocalGet(2));
-        f.instruction(&Instruction::RefCastNullable(hc(T_LIST)));
-        sget(f, T_LIST, F_LIST_ITEMS);
-        f.instruction(&Instruction::LocalGet(5));
-        f.instruction(&Instruction::ArrayGet(T_OBJ_ARR)); // $list.items: MUT type
-        f.instruction(&Instruction::LocalSet(6));
-        // item-b = b.items[i]
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::RefCastNullable(hc(T_LIST)));
-        sget(f, T_LIST, F_LIST_ITEMS);
-        f.instruction(&Instruction::LocalGet(5));
-        f.instruction(&Instruction::ArrayGet(T_OBJ_ARR)); // $list.items: MUT type
-        f.instruction(&Instruction::LocalSet(7));
-        // eq(item-a, item-b) == 0 -> false
-        f.instruction(&Instruction::LocalGet(6));
-        f.instruction(&Instruction::LocalGet(7));
-        f.instruction(&Instruction::Call(fx::FN_EQ));
-        f.instruction(&Instruction::I32Eqz);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::I32Const(0));
-        f.instruction(&Instruction::Return);
-        f.instruction(&Instruction::End);
-        f.instruction(&Instruction::LocalGet(5));
-        f.instruction(&Instruction::I32Const(1));
-        f.instruction(&Instruction::I32Add);
-        f.instruction(&Instruction::LocalSet(5));
-        f.instruction(&Instruction::Br(0));
-        f.instruction(&Instruction::End);
-        f.instruction(&Instruction::End);
-        f.instruction(&Instruction::I32Const(1));
-        f.instruction(&Instruction::Return);
-        f.instruction(&Instruction::End);
-    });
+    add(
+        funcs,
+        code,
+        FT_OO_I,
+        &[(2, oref()), (2, ValType::I32), (2, oref())],
+        |f| {
+            // 2=a 3=b 4=len 5=i 6=item-a 7=item-b
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::LocalSet(2));
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::LocalSet(3));
+            f.instruction(&Instruction::Block(BlockType::Result(ValType::I32)));
+            // len check
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::RefCastNullable(hc(T_LIST)));
+            sget(f, T_LIST, F_LIST_LEN);
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefCastNullable(hc(T_LIST)));
+            sget(f, T_LIST, F_LIST_LEN);
+            f.instruction(&Instruction::I32Ne);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // itemwise loop
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::RefCastNullable(hc(T_LIST)));
+            sget(f, T_LIST, F_LIST_LEN);
+            f.instruction(&Instruction::LocalSet(4));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::LocalSet(5));
+            f.instruction(&Instruction::Block(BlockType::Empty));
+            f.instruction(&Instruction::Loop(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::I32GeU);
+            f.instruction(&Instruction::BrIf(1));
+            // item-a = a.items[i]
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::RefCastNullable(hc(T_LIST)));
+            sget(f, T_LIST, F_LIST_ITEMS);
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::ArrayGet(T_OBJ_ARR)); // $list.items: MUT type
+            f.instruction(&Instruction::LocalSet(6));
+            // item-b = b.items[i]
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefCastNullable(hc(T_LIST)));
+            sget(f, T_LIST, F_LIST_ITEMS);
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::ArrayGet(T_OBJ_ARR)); // $list.items: MUT type
+            f.instruction(&Instruction::LocalSet(7));
+            // eq(item-a, item-b) == 0 -> false
+            f.instruction(&Instruction::LocalGet(6));
+            f.instruction(&Instruction::LocalGet(7));
+            f.instruction(&Instruction::Call(fx::FN_EQ));
+            f.instruction(&Instruction::I32Eqz);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::I32Add);
+            f.instruction(&Instruction::LocalSet(5));
+            f.instruction(&Instruction::Br(0));
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+        },
+    );
 }
 
 /// tuple_eq (FT_OO_I): same recursion over the tuple items array.
 fn tuple_eq(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
-    add(funcs, code, FT_OO_I, &[(2, oref()), (2, ValType::I32), (2, oref())], |f| {
-        // 2=a 3=b 4=len 5=i 6=item-a 7=item-b
-        f.instruction(&Instruction::LocalGet(0));
-        f.instruction(&Instruction::LocalSet(2));
-        f.instruction(&Instruction::LocalGet(1));
-        f.instruction(&Instruction::LocalSet(3));
-        f.instruction(&Instruction::Block(BlockType::Result(ValType::I32)));
-        f.instruction(&Instruction::LocalGet(2));
-        f.instruction(&Instruction::RefCastNullable(hc(T_TUPLE)));
-        sget(f, T_TUPLE, F_TUPLE_ITEMS);
-        f.instruction(&Instruction::ArrayLen);
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::RefCastNullable(hc(T_TUPLE)));
-        sget(f, T_TUPLE, F_TUPLE_ITEMS);
-        f.instruction(&Instruction::ArrayLen);
-        f.instruction(&Instruction::I32Ne);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::I32Const(0));
-        f.instruction(&Instruction::Return);
-        f.instruction(&Instruction::End);
-        f.instruction(&Instruction::LocalGet(2));
-        f.instruction(&Instruction::RefCastNullable(hc(T_TUPLE)));
-        sget(f, T_TUPLE, F_TUPLE_ITEMS);
-        f.instruction(&Instruction::ArrayLen);
-        f.instruction(&Instruction::LocalSet(4));
-        f.instruction(&Instruction::I32Const(0));
-        f.instruction(&Instruction::LocalSet(5));
-        f.instruction(&Instruction::Block(BlockType::Empty));
-        f.instruction(&Instruction::Loop(BlockType::Empty));
-        f.instruction(&Instruction::LocalGet(5));
-        f.instruction(&Instruction::LocalGet(4));
-        f.instruction(&Instruction::I32GeU);
-        f.instruction(&Instruction::BrIf(1));
-        f.instruction(&Instruction::LocalGet(2));
-        f.instruction(&Instruction::RefCastNullable(hc(T_TUPLE)));
-        sget(f, T_TUPLE, F_TUPLE_ITEMS);
-        f.instruction(&Instruction::LocalGet(5));
-        f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
-        f.instruction(&Instruction::LocalSet(6));
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::RefCastNullable(hc(T_TUPLE)));
-        sget(f, T_TUPLE, F_TUPLE_ITEMS);
-        f.instruction(&Instruction::LocalGet(5));
-        f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
-        f.instruction(&Instruction::LocalSet(7));
-        f.instruction(&Instruction::LocalGet(6));
-        f.instruction(&Instruction::LocalGet(7));
-        f.instruction(&Instruction::Call(fx::FN_EQ));
-        f.instruction(&Instruction::I32Eqz);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::I32Const(0));
-        f.instruction(&Instruction::Return);
-        f.instruction(&Instruction::End);
-        f.instruction(&Instruction::LocalGet(5));
-        f.instruction(&Instruction::I32Const(1));
-        f.instruction(&Instruction::I32Add);
-        f.instruction(&Instruction::LocalSet(5));
-        f.instruction(&Instruction::Br(0));
-        f.instruction(&Instruction::End);
-        f.instruction(&Instruction::End);
-        f.instruction(&Instruction::I32Const(1));
-        f.instruction(&Instruction::Return);
-        f.instruction(&Instruction::End);
-    });
+    add(
+        funcs,
+        code,
+        FT_OO_I,
+        &[(2, oref()), (2, ValType::I32), (2, oref())],
+        |f| {
+            // 2=a 3=b 4=len 5=i 6=item-a 7=item-b
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::LocalSet(2));
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::LocalSet(3));
+            f.instruction(&Instruction::Block(BlockType::Result(ValType::I32)));
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::RefCastNullable(hc(T_TUPLE)));
+            sget(f, T_TUPLE, F_TUPLE_ITEMS);
+            f.instruction(&Instruction::ArrayLen);
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefCastNullable(hc(T_TUPLE)));
+            sget(f, T_TUPLE, F_TUPLE_ITEMS);
+            f.instruction(&Instruction::ArrayLen);
+            f.instruction(&Instruction::I32Ne);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::RefCastNullable(hc(T_TUPLE)));
+            sget(f, T_TUPLE, F_TUPLE_ITEMS);
+            f.instruction(&Instruction::ArrayLen);
+            f.instruction(&Instruction::LocalSet(4));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::LocalSet(5));
+            f.instruction(&Instruction::Block(BlockType::Empty));
+            f.instruction(&Instruction::Loop(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::I32GeU);
+            f.instruction(&Instruction::BrIf(1));
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::RefCastNullable(hc(T_TUPLE)));
+            sget(f, T_TUPLE, F_TUPLE_ITEMS);
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
+            f.instruction(&Instruction::LocalSet(6));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefCastNullable(hc(T_TUPLE)));
+            sget(f, T_TUPLE, F_TUPLE_ITEMS);
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::ArrayGet(T_OBJ_ARR_RO));
+            f.instruction(&Instruction::LocalSet(7));
+            f.instruction(&Instruction::LocalGet(6));
+            f.instruction(&Instruction::LocalGet(7));
+            f.instruction(&Instruction::Call(fx::FN_EQ));
+            f.instruction(&Instruction::I32Eqz);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::I32Add);
+            f.instruction(&Instruction::LocalSet(5));
+            f.instruction(&Instruction::Br(0));
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+        },
+    );
 }
-
 
 /// dict_has (FT_OO_I): (d, k) -> i32 — linear scan of entries with $eq on
 /// keys (compact dict probing is 03.03's surface; V041/V052 dicts are tiny).
@@ -1382,7 +1451,7 @@ fn dict_has(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::
         code,
         FT_OO_I,
         &[
-            (2, oref()), // 2=dict copy, 3=key copy (casts at use)
+            (2, oref()),       // 2=dict copy, 3=key copy (casts at use)
             (1, ValType::I32), // 4=i
             (
                 1,
@@ -1436,7 +1505,6 @@ fn dict_has(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::
     );
 }
 
-
 /// dict_eq (FT_OO_I): (a, b) -> i32 — same used, every key of a present in
 /// b with equal value (insertion order ignored per S-01-22). Linear-scan
 /// both dicts (compact probing is 03.03's surface; corpus dicts are tiny).
@@ -1447,12 +1515,19 @@ fn dict_eq(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::C
         funcs,
         code,
         FT_OO_I,
-        &[(2, oref()), (3, ValType::I32),
-          (1, ValType::Ref(wasm_encoder::RefType {
-              nullable: true,
-              heap_type: hc(T_DICT_ENTRY),
-          })),
-          (5, oref()), (1, ValType::I32)],
+        &[
+            (2, oref()),
+            (3, ValType::I32),
+            (
+                1,
+                ValType::Ref(wasm_encoder::RefType {
+                    nullable: true,
+                    heap_type: hc(T_DICT_ENTRY),
+                }),
+            ),
+            (5, oref()),
+            (1, ValType::I32),
+        ],
         |f| {
             f.instruction(&Instruction::LocalGet(0));
             f.instruction(&Instruction::LocalSet(2));
@@ -1553,16 +1628,15 @@ fn dict_eq(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::C
             f.instruction(&Instruction::I32Add);
             f.instruction(&Instruction::LocalSet(5));
             f.instruction(&Instruction::Br(0));
-            f.instruction(&Instruction::End);   // outer Loop
-            f.instruction(&Instruction::End);   // outer Block(Empty)
-            // all of a's keys matched: the Block(I32) result (stays as the
-            // fn result through the fn End)
+            f.instruction(&Instruction::End); // outer Loop
+            f.instruction(&Instruction::End); // outer Block(Empty)
+                                              // all of a's keys matched: the Block(I32) result (stays as the
+                                              // fn result through the fn End)
             f.instruction(&Instruction::I32Const(1));
-            f.instruction(&Instruction::End);   // outer Block(I32)
+            f.instruction(&Instruction::End); // outer Block(I32)
         },
     );
 }
-
 
 /// eq (FT_OO_I): (a, b) -> i32 — the recursive dispatcher (S-01-33).
 fn eq(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
@@ -1577,7 +1651,7 @@ fn compare(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::C
         funcs,
         code,
         FT_TOP_I,
-                &[(2, oref()), (2, ValType::I32), (2, ValType::F64)],
+        &[(2, oref()), (2, ValType::I32), (2, ValType::F64)],
         |f| {
             // params: 0=op 1=a 2=b; locals: 3=a(o) 4=b(o) 5=sel-a 6=sel-b
             // 7=va 8=vb (f64 promoted)
@@ -1908,12 +1982,17 @@ fn eq_full(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::C
 /// type_index (FT_O_I): (x) -> i32 — the type selector (the builtin-type
 /// dispatch key).
 fn type_index(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
-    add(funcs, code, FT_O_I, &[(2, oref()), (2, ValType::I32)],
-    |f| {
-        f.instruction(&Instruction::LocalGet(0));
-        f.instruction(&Instruction::LocalSet(2));
-        type_sel(f, 2, 3);
-    });
+    add(
+        funcs,
+        code,
+        FT_O_I,
+        &[(2, oref()), (2, ValType::I32)],
+        |f| {
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::LocalSet(2));
+            type_sel(f, 2, 3);
+        },
+    );
 }
 
 // ===========================================================================
@@ -2062,7 +2141,7 @@ fn int_to_str(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder
             f.instruction(&Instruction::LocalGet(0));
             f.instruction(&Instruction::LocalSet(2));
             f.instruction(&Instruction::LocalGet(2));
-            
+
             f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
             sget(f, T_INT, F_INT_KIND);
             f.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
@@ -2096,57 +2175,68 @@ fn int_to_str(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder
 /// str_from_bytes (FT_SFB): (ptr, len) -> $str — ASCII/latin1 $str over a
 /// linear-memory slice, copied into a $byte_arr.
 fn str_from_bytes(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
-    add(funcs, code, FT_SFB, &[(1, ValType::Ref(wasm_encoder::RefType {
-        nullable: true,
-        heap_type: hc(T_BYTE_ARR),
-    })), (2, ValType::I32)], |f| {
-        // params: 0 = ptr, 1 = len; locals: 2 = arr, 3 = i
-        f.instruction(&Instruction::LocalGet(1));
-        f.instruction(&Instruction::ArrayNewDefault(T_BYTE_ARR));
-        f.instruction(&Instruction::LocalSet(2));
-        f.instruction(&Instruction::Block(BlockType::Empty));
-        f.instruction(&Instruction::Loop(BlockType::Empty));
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::LocalGet(1));
-        f.instruction(&Instruction::I32GeU);
-        f.instruction(&Instruction::BrIf(1));
-        f.instruction(&Instruction::LocalGet(2));
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::LocalGet(0));
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::I32Add);
-        f.instruction(&Instruction::I32Load8U(wasm_encoder::MemArg {
-            offset: 0,
-            align: 0,
-            target: wasm_encoder::MemArgTarget::Memory(0),
-            ordering: None,
-        }));
-        f.instruction(&Instruction::ArraySet(T_BYTE_ARR));
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::I32Const(1));
-        f.instruction(&Instruction::I32Add);
-        f.instruction(&Instruction::LocalSet(3));
-        f.instruction(&Instruction::Br(0));
-        f.instruction(&Instruction::End);
-        f.instruction(&Instruction::End);
-        f.instruction(&Instruction::LocalGet(0));
-        f.instruction(&Instruction::Drop);
-        f.instruction(&Instruction::LocalGet(1));
-        f.instruction(&Instruction::Drop);
-        // 03.03c fix: stamp the str TYPE global (was push_null). A null type
-        // field made every py_str RE-DISPATCH on the result (repr/str builtins,
-        // print of non-literal args) fall through type_sel to null — str(1)
-        // printed "None" while print(1) worked (PRINT_ONE reads the $str
-        // directly, bypassing the type field).
-        f.instruction(&Instruction::GlobalGet(g_str()));
-        f.instruction(&Instruction::I64Const(0));
-        f.instruction(&Instruction::I32Const(0));
-        f.instruction(&Instruction::LocalGet(1));
-        f.instruction(&Instruction::LocalGet(2));
-        f.instruction(&Instruction::StructNew(T_STR));
-    });
+    add(
+        funcs,
+        code,
+        FT_SFB,
+        &[
+            (
+                1,
+                ValType::Ref(wasm_encoder::RefType {
+                    nullable: true,
+                    heap_type: hc(T_BYTE_ARR),
+                }),
+            ),
+            (2, ValType::I32),
+        ],
+        |f| {
+            // params: 0 = ptr, 1 = len; locals: 2 = arr, 3 = i
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::ArrayNewDefault(T_BYTE_ARR));
+            f.instruction(&Instruction::LocalSet(2));
+            f.instruction(&Instruction::Block(BlockType::Empty));
+            f.instruction(&Instruction::Loop(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::I32GeU);
+            f.instruction(&Instruction::BrIf(1));
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Add);
+            f.instruction(&Instruction::I32Load8U(wasm_encoder::MemArg {
+                offset: 0,
+                align: 0,
+                target: wasm_encoder::MemArgTarget::Memory(0),
+                ordering: None,
+            }));
+            f.instruction(&Instruction::ArraySet(T_BYTE_ARR));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::I32Add);
+            f.instruction(&Instruction::LocalSet(3));
+            f.instruction(&Instruction::Br(0));
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::Drop);
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::Drop);
+            // 03.03c fix: stamp the str TYPE global (was push_null). A null type
+            // field made every py_str RE-DISPATCH on the result (repr/str builtins,
+            // print of non-literal args) fall through type_sel to null — str(1)
+            // printed "None" while print(1) worked (PRINT_ONE reads the $str
+            // directly, bypassing the type field).
+            f.instruction(&Instruction::GlobalGet(g_str()));
+            f.instruction(&Instruction::I64Const(0));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::StructNew(T_STR));
+        },
+    );
 }
-
 
 /// py_str (FT_O_STR): (x) -> $str — the str(x)/print formatting dispatch.
 fn py_str(
@@ -2168,7 +2258,47 @@ fn py_str(
         funcs,
         code,
         FT_O_STR,
-        &[(2, oref()), (3, ValType::I32), (1, ValType::Ref(wasm_encoder::RefType { nullable: true, heap_type: hc(T_STR) })), (1, ValType::Ref(wasm_encoder::RefType { nullable: true, heap_type: hc(T_OBJ_ARR_RO) })), (1, ValType::Ref(wasm_encoder::RefType { nullable: true, heap_type: hc(T_STR) })), (2, ValType::I32), (1, ValType::Ref(wasm_encoder::RefType { nullable: true, heap_type: hc(T_ENTRY_ARR) })), (1, oref()), (1, ValType::Ref(wasm_encoder::RefType { nullable: true, heap_type: hc(T_OBJ_ARR) }))],
+        &[
+            (2, oref()),
+            (3, ValType::I32),
+            (
+                1,
+                ValType::Ref(wasm_encoder::RefType {
+                    nullable: true,
+                    heap_type: hc(T_STR),
+                }),
+            ),
+            (
+                1,
+                ValType::Ref(wasm_encoder::RefType {
+                    nullable: true,
+                    heap_type: hc(T_OBJ_ARR_RO),
+                }),
+            ),
+            (
+                1,
+                ValType::Ref(wasm_encoder::RefType {
+                    nullable: true,
+                    heap_type: hc(T_STR),
+                }),
+            ),
+            (2, ValType::I32),
+            (
+                1,
+                ValType::Ref(wasm_encoder::RefType {
+                    nullable: true,
+                    heap_type: hc(T_ENTRY_ARR),
+                }),
+            ),
+            (1, oref()),
+            (
+                1,
+                ValType::Ref(wasm_encoder::RefType {
+                    nullable: true,
+                    heap_type: hc(T_OBJ_ARR),
+                }),
+            ),
+        ],
         |f| {
             // 2=x, 3=sel; tuple arm: 6=acc(str) 7=items(oref) 8=n 9=i 10=tmp
             f.instruction(&Instruction::LocalGet(0));
@@ -2192,7 +2322,7 @@ fn py_str(
             f.instruction(&Instruction::I32Eq);
             f.instruction(&Instruction::If(BlockType::Empty));
             f.instruction(&Instruction::LocalGet(2));
-            
+
             f.instruction(&Instruction::RefCastNullable(hc(T_FLOAT)));
             sget(f, T_FLOAT, F_FLOAT_VAL);
             f.instruction(&Instruction::I64TruncSatF64S);
@@ -2308,8 +2438,8 @@ fn py_str(
             f.instruction(&Instruction::Br(0));
             f.instruction(&Instruction::End); // loop
             f.instruction(&Instruction::End); // block
-            // 1-tuple trailing comma: ('v',) — comma WITHOUT space (CPython;
-            // 03.03c fix: the separator ', ' leaked into the 1-tuple tail)
+                                              // 1-tuple trailing comma: ('v',) — comma WITHOUT space (CPython;
+                                              // 03.03c fix: the separator ', ' leaked into the 1-tuple tail)
             f.instruction(&Instruction::LocalGet(10));
             f.instruction(&Instruction::I32Const(1));
             f.instruction(&Instruction::I32Eq);
@@ -2557,7 +2687,6 @@ fn push_str_literal_seg(f: &mut Function, off: u32, len: u32) {
     f.instruction(&Instruction::StructNew(T_STR));
 }
 
-
 // ===========================================================================
 // print path
 // ===========================================================================
@@ -2565,56 +2694,60 @@ fn push_str_literal_seg(f: &mut Function, off: u32, len: u32) {
 /// print_one (FT_PL_ONE): (bufptr, s) -> new-bufptr — copy $str bytes into
 /// linear memory at bufptr.
 fn print_one(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
-    add(funcs, code, FT_PL_ONE, &[(1, ValType::I32), (2, ValType::I32)], |f| {
-        // params: 0 = buf(i32), 1 = s($str); local 2 = loop i.
-        // The $str payload lives in a $byte_arr ARRAY; the print buffer is
-        // LINEAR MEMORY (WASI fd_write reads iovecs there). Copy byte-wise:
-        // for i in 0..len { store8(buf + i, s.data[i]) }.
-        f.instruction(&Instruction::I32Const(0));
-        f.instruction(&Instruction::LocalSet(2));
-        // loop
-        f.instruction(&Instruction::Block(BlockType::Empty));
-        f.instruction(&Instruction::Loop(BlockType::Empty));
-        // if i >= len break
-        f.instruction(&Instruction::LocalGet(2));
-        f.instruction(&Instruction::LocalGet(1));
-        f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
-        sget(f, T_STR, F_STR_LEN);
-        f.instruction(&Instruction::I32GeU);
-        f.instruction(&Instruction::BrIf(1));
-        // store8(buf + i, data[i])
-        f.instruction(&Instruction::LocalGet(0));
-        f.instruction(&Instruction::LocalGet(2));
-        f.instruction(&Instruction::I32Add);
-        f.instruction(&Instruction::LocalGet(1));
-        f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
-        sget(f, T_STR, F_STR_DATA);
-        f.instruction(&Instruction::LocalGet(2));
-        f.instruction(&Instruction::ArrayGetU(T_BYTE_ARR));
-        f.instruction(&Instruction::I32Store8(wasm_encoder::MemArg {
-            offset: 0,
-            align: 0,
-            target: wasm_encoder::MemArgTarget::Memory(0),
-            ordering: None,
-        }));
-        // i++
-        f.instruction(&Instruction::LocalGet(2));
-        f.instruction(&Instruction::I32Const(1));
-        f.instruction(&Instruction::I32Add);
-        f.instruction(&Instruction::LocalSet(2));
-        f.instruction(&Instruction::Br(0));
-        f.instruction(&Instruction::End);
-        f.instruction(&Instruction::End);
-        // new end = buf + len
-        f.instruction(&Instruction::LocalGet(0));
-        f.instruction(&Instruction::LocalGet(1));
-        f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
-        sget(f, T_STR, F_STR_LEN);
-        f.instruction(&Instruction::I32Add);
-    });
+    add(
+        funcs,
+        code,
+        FT_PL_ONE,
+        &[(1, ValType::I32), (2, ValType::I32)],
+        |f| {
+            // params: 0 = buf(i32), 1 = s($str); local 2 = loop i.
+            // The $str payload lives in a $byte_arr ARRAY; the print buffer is
+            // LINEAR MEMORY (WASI fd_write reads iovecs there). Copy byte-wise:
+            // for i in 0..len { store8(buf + i, s.data[i]) }.
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::LocalSet(2));
+            // loop
+            f.instruction(&Instruction::Block(BlockType::Empty));
+            f.instruction(&Instruction::Loop(BlockType::Empty));
+            // if i >= len break
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
+            sget(f, T_STR, F_STR_LEN);
+            f.instruction(&Instruction::I32GeU);
+            f.instruction(&Instruction::BrIf(1));
+            // store8(buf + i, data[i])
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::I32Add);
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
+            sget(f, T_STR, F_STR_DATA);
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::ArrayGetU(T_BYTE_ARR));
+            f.instruction(&Instruction::I32Store8(wasm_encoder::MemArg {
+                offset: 0,
+                align: 0,
+                target: wasm_encoder::MemArgTarget::Memory(0),
+                ordering: None,
+            }));
+            // i++
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::I32Add);
+            f.instruction(&Instruction::LocalSet(2));
+            f.instruction(&Instruction::Br(0));
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::End);
+            // new end = buf + len
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
+            sget(f, T_STR, F_STR_LEN);
+            f.instruction(&Instruction::I32Add);
+        },
+    );
 }
-
-
 
 /// print_flush (FT_PL_FLUSH): (bufptr, end) -> () — fd_write(text + \n).
 fn print_flush(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
@@ -2719,7 +2852,7 @@ fn binop(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::Cod
             f.instruction(&Instruction::If(BlockType::Result(oref())));
             // va
             f.instruction(&Instruction::LocalGet(3));
-            
+
             f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
             sget(f, T_INT, F_INT_KIND);
             f.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
@@ -2733,7 +2866,7 @@ fn binop(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::Cod
             f.instruction(&Instruction::LocalSet(7));
             // vb
             f.instruction(&Instruction::LocalGet(4));
-            
+
             f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
             sget(f, T_INT, F_INT_KIND);
             f.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
@@ -2899,7 +3032,7 @@ fn binop(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::Cod
             f.instruction(&Instruction::Unreachable);
             f.instruction(&Instruction::End);
             // POW: r = 1; while e: r *= b^bit...
-// POW: r = 1; while e: r *= b^bit...
+            // POW: r = 1; while e: r *= b^bit...
             f.instruction(&Instruction::I64Const(1));
             f.instruction(&Instruction::LocalSet(9));
             f.instruction(&Instruction::Block(BlockType::Empty));
@@ -2952,7 +3085,7 @@ fn binop(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::Cod
             f.instruction(&Instruction::I32Eq);
             f.instruction(&Instruction::If(BlockType::Result(ValType::F64)));
             f.instruction(&Instruction::LocalGet(3));
-            
+
             f.instruction(&Instruction::RefCastNullable(hc(T_FLOAT)));
             sget(f, T_FLOAT, F_FLOAT_VAL);
             f.instruction(&Instruction::Else);
@@ -2967,7 +3100,7 @@ fn binop(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::Cod
             f.instruction(&Instruction::I32Eq);
             f.instruction(&Instruction::If(BlockType::Result(ValType::F64)));
             f.instruction(&Instruction::LocalGet(4));
-            
+
             f.instruction(&Instruction::RefCastNullable(hc(T_FLOAT)));
             sget(f, T_FLOAT, F_FLOAT_VAL);
             f.instruction(&Instruction::Else);
@@ -3031,172 +3164,182 @@ fn binop(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::Cod
 
 /// unary (FT_U_O): (op, x) -> o.
 fn unary(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
-    add(funcs, code, FT_U_O, &[(1, ValType::I32), (1, oref()), (1, ValType::I64)],
-    |f| {
-        // 2=op 3=x 4=v
-        f.instruction(&Instruction::LocalGet(0));
-        f.instruction(&Instruction::LocalSet(2));
-        f.instruction(&Instruction::LocalGet(1));
-        f.instruction(&Instruction::LocalSet(3));
-        f.instruction(&Instruction::LocalGet(2));
-        f.instruction(&Instruction::I32Const(OPS::BOOL));
-        f.instruction(&Instruction::I32Eq);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::I32Const(0));
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::Call(fx::FN_BOOL_OBJ));
-        f.instruction(&Instruction::Return);
-        f.instruction(&Instruction::End);
-        f.instruction(&Instruction::LocalGet(2));
-        f.instruction(&Instruction::I32Const(OPS::NOT));
-        f.instruction(&Instruction::I32Eq);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::Call(fx::FN_TRUTHY));
-        f.instruction(&Instruction::I32Eqz);
-        f.instruction(&Instruction::I64ExtendI32U);
-        f.instruction(&Instruction::Call(fx::FN_INT_FROM_I64));
-        f.instruction(&Instruction::LocalSet(3));
-        f.instruction(&Instruction::I32Const(0));
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::Call(fx::FN_BOOL_OBJ));
-        f.instruction(&Instruction::Return);
-        f.instruction(&Instruction::End);
-        // float: NEG/BOOL only (values slice) — negate the f64 payload,
-        // re-box as $float. (-0.0: unary minus on the f64 keeps the sign
-        // flip IEEE-exact. Other float ops on this arm are 03.02c.)
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::RefTestNullable(hc(T_FLOAT)));
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::LocalGet(2));
-        f.instruction(&Instruction::I32Const(OPS::NEG));
-        f.instruction(&Instruction::I32Eq);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::GlobalGet(g_float()));
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::RefCastNullable(hc(T_FLOAT)));
-        sget(f, T_FLOAT, F_FLOAT_VAL);
-        f.instruction(&Instruction::F64Neg);
-        f.instruction(&Instruction::StructNew(T_FLOAT));
-        f.instruction(&Instruction::Return);
-        f.instruction(&Instruction::End);
-        // non-NEG float op: fall through to the int cast (fails loudly)
-        f.instruction(&Instruction::End);
-        // numeric: value
-        f.instruction(&Instruction::LocalGet(3));
+    add(
+        funcs,
+        code,
+        FT_U_O,
+        &[(1, ValType::I32), (1, oref()), (1, ValType::I64)],
+        |f| {
+            // 2=op 3=x 4=v
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::LocalSet(2));
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::LocalSet(3));
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::I32Const(OPS::BOOL));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::Call(fx::FN_BOOL_OBJ));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::I32Const(OPS::NOT));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::Call(fx::FN_TRUTHY));
+            f.instruction(&Instruction::I32Eqz);
+            f.instruction(&Instruction::I64ExtendI32U);
+            f.instruction(&Instruction::Call(fx::FN_INT_FROM_I64));
+            f.instruction(&Instruction::LocalSet(3));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::Call(fx::FN_BOOL_OBJ));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // float: NEG/BOOL only (values slice) — negate the f64 payload,
+            // re-box as $float. (-0.0: unary minus on the f64 keeps the sign
+            // flip IEEE-exact. Other float ops on this arm are 03.02c.)
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefTestNullable(hc(T_FLOAT)));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::I32Const(OPS::NEG));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::GlobalGet(g_float()));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefCastNullable(hc(T_FLOAT)));
+            sget(f, T_FLOAT, F_FLOAT_VAL);
+            f.instruction(&Instruction::F64Neg);
+            f.instruction(&Instruction::StructNew(T_FLOAT));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // non-NEG float op: fall through to the int cast (fails loudly)
+            f.instruction(&Instruction::End);
+            // numeric: value
+            f.instruction(&Instruction::LocalGet(3));
 
-        f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
-        sget(f, T_INT, F_INT_KIND);
-        f.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
-        int_big(f);
-        f.instruction(&Instruction::Call(fx::FN_BIG_BITS));
-        f.instruction(&Instruction::Else);
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
-        int_smi(f);
-        f.instruction(&Instruction::End);
-        f.instruction(&Instruction::LocalSet(4));
-        f.instruction(&Instruction::LocalGet(2));
-        f.instruction(&Instruction::I32Const(OPS::NEG));
-        f.instruction(&Instruction::I32Eq);
-        f.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
-        f.instruction(&Instruction::I64Const(0));
-        f.instruction(&Instruction::LocalGet(4));
-        f.instruction(&Instruction::I64Sub);
-        f.instruction(&Instruction::Else);
-        f.instruction(&Instruction::LocalGet(2));
-        f.instruction(&Instruction::I32Const(OPS::INVERT));
-        f.instruction(&Instruction::I32Eq);
-        f.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
-        f.instruction(&Instruction::I64Const(-1));
-        f.instruction(&Instruction::LocalGet(4));
-        f.instruction(&Instruction::I64Xor);
-        f.instruction(&Instruction::Else);
-        f.instruction(&Instruction::LocalGet(4));
-        f.instruction(&Instruction::End);
-        f.instruction(&Instruction::End);
-        f.instruction(&Instruction::Call(fx::FN_INT_FROM_I64));
-        f.instruction(&Instruction::LocalSet(3));
-        f.instruction(&Instruction::LocalGet(3));
-    });
+            f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
+            sget(f, T_INT, F_INT_KIND);
+            f.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
+            int_big(f);
+            f.instruction(&Instruction::Call(fx::FN_BIG_BITS));
+            f.instruction(&Instruction::Else);
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
+            int_smi(f);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalSet(4));
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::I32Const(OPS::NEG));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
+            f.instruction(&Instruction::I64Const(0));
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::I64Sub);
+            f.instruction(&Instruction::Else);
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::I32Const(OPS::INVERT));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
+            f.instruction(&Instruction::I64Const(-1));
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::I64Xor);
+            f.instruction(&Instruction::Else);
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::Call(fx::FN_INT_FROM_I64));
+            f.instruction(&Instruction::LocalSet(3));
+            f.instruction(&Instruction::LocalGet(3));
+        },
+    );
 }
 
 /// len (FT_L_O): (x) -> o — container length as an int object.
 fn len(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
-    add(funcs, code, FT_O_O, &[(2, oref()), (2, ValType::I32)],
-    |f| {
-        f.instruction(&Instruction::LocalGet(0));
-        f.instruction(&Instruction::LocalSet(2));
-        type_sel(f, 2, 4);
-        f.instruction(&Instruction::LocalSet(3));
-        f.instruction(&Instruction::Block(BlockType::Result(ValType::I64)));
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::I32Const(5));
-        f.instruction(&Instruction::I32Eq);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::LocalGet(2));
-        
-        f.instruction(&Instruction::RefCastNullable(hc(T_DICT)));
-        sget(f, T_DICT, F_DICT_USED);
-        f.instruction(&Instruction::I64ExtendI32U);
-        f.instruction(&Instruction::Call(fx::FN_INT_FROM_I64));
-        f.instruction(&Instruction::Return);
-        f.instruction(&Instruction::End);
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::I32Const(6));
-        f.instruction(&Instruction::I32Eq);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::LocalGet(2));
-        
-        f.instruction(&Instruction::RefCastNullable(hc(T_LIST)));
-        sget(f, T_LIST, F_LIST_LEN);
-        f.instruction(&Instruction::I64ExtendI32U);
-        f.instruction(&Instruction::Call(fx::FN_INT_FROM_I64));
-        f.instruction(&Instruction::Return);
-        f.instruction(&Instruction::End);
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::I32Const(3));
-        f.instruction(&Instruction::I32Eq);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::LocalGet(2));
-        
-        f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
-        sget(f, T_STR, F_STR_LEN);
-        f.instruction(&Instruction::I64ExtendI32U);
-        f.instruction(&Instruction::Call(fx::FN_INT_FROM_I64));
-        f.instruction(&Instruction::Return);
-        f.instruction(&Instruction::End);
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::I32Const(4));
-        f.instruction(&Instruction::I32Eq);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::LocalGet(2));
-        
-        f.instruction(&Instruction::RefCastNullable(hc(T_BYTES)));
-        sget(f, T_BYTES, F_BYTES_LEN);
-        f.instruction(&Instruction::I64ExtendI32U);
-        f.instruction(&Instruction::Call(fx::FN_INT_FROM_I64));
-        f.instruction(&Instruction::Return);
-        f.instruction(&Instruction::End);
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::I32Const(7));
-        f.instruction(&Instruction::I32Eq);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::LocalGet(2));
-        
-        f.instruction(&Instruction::RefCastNullable(hc(T_TUPLE)));
-        sget(f, T_TUPLE, F_TUPLE_ITEMS);
-        f.instruction(&Instruction::ArrayLen);
-        f.instruction(&Instruction::I64ExtendI32U);
-        f.instruction(&Instruction::Call(fx::FN_INT_FROM_I64));
-        f.instruction(&Instruction::Return);
-        f.instruction(&Instruction::End);
-        f.instruction(&Instruction::I64Const(0));
-        f.instruction(&Instruction::End);
-        f.instruction(&Instruction::Call(fx::FN_INT_FROM_I64));
-    });
+    add(
+        funcs,
+        code,
+        FT_O_O,
+        &[(2, oref()), (2, ValType::I32)],
+        |f| {
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::LocalSet(2));
+            type_sel(f, 2, 4);
+            f.instruction(&Instruction::LocalSet(3));
+            f.instruction(&Instruction::Block(BlockType::Result(ValType::I64)));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(5));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(2));
+
+            f.instruction(&Instruction::RefCastNullable(hc(T_DICT)));
+            sget(f, T_DICT, F_DICT_USED);
+            f.instruction(&Instruction::I64ExtendI32U);
+            f.instruction(&Instruction::Call(fx::FN_INT_FROM_I64));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(6));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(2));
+
+            f.instruction(&Instruction::RefCastNullable(hc(T_LIST)));
+            sget(f, T_LIST, F_LIST_LEN);
+            f.instruction(&Instruction::I64ExtendI32U);
+            f.instruction(&Instruction::Call(fx::FN_INT_FROM_I64));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(3));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(2));
+
+            f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
+            sget(f, T_STR, F_STR_LEN);
+            f.instruction(&Instruction::I64ExtendI32U);
+            f.instruction(&Instruction::Call(fx::FN_INT_FROM_I64));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(4));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(2));
+
+            f.instruction(&Instruction::RefCastNullable(hc(T_BYTES)));
+            sget(f, T_BYTES, F_BYTES_LEN);
+            f.instruction(&Instruction::I64ExtendI32U);
+            f.instruction(&Instruction::Call(fx::FN_INT_FROM_I64));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(7));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(2));
+
+            f.instruction(&Instruction::RefCastNullable(hc(T_TUPLE)));
+            sget(f, T_TUPLE, F_TUPLE_ITEMS);
+            f.instruction(&Instruction::ArrayLen);
+            f.instruction(&Instruction::I64ExtendI32U);
+            f.instruction(&Instruction::Call(fx::FN_INT_FROM_I64));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::I64Const(0));
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::Call(fx::FN_INT_FROM_I64));
+        },
+    );
 }
 
 /// builtin_dispatch (FT_O_STR): (x) -> $str — v1: str(x) passthrough
@@ -3226,25 +3369,28 @@ fn builtin_dispatch(
 /// keyword binding is the ap-run surface, deferred with named error text).
 /// Locals: 3=fn(o) 4=args 5=argc 6=nparams 7=ndefaults 8=spare-i32
 /// 9=fn-as-$function.
-fn py_call(
-    funcs: &mut wasm_encoder::FunctionSection,
-    code: &mut wasm_encoder::CodeSection,
-) {
+fn py_call(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
     add(
         funcs,
         code,
         FT_PY_RO,
         &[
             (1, oref()), // 3 = fn ($pyobj-typed stash)
-            (1, ValType::Ref(wasm_encoder::RefType {
-                nullable: true,
-                heap_type: hc(T_OBJ_ARR_RO),
-            })), // 4 = args array
+            (
+                1,
+                ValType::Ref(wasm_encoder::RefType {
+                    nullable: true,
+                    heap_type: hc(T_OBJ_ARR_RO),
+                }),
+            ), // 4 = args array
             (3, ValType::I32), // 5..7: argc / nparams / ndefaults
-            (1, ValType::Ref(wasm_encoder::RefType {
-                nullable: true,
-                heap_type: hc(T_FUNCTION),
-            })), // 8 = fn as $function
+            (
+                1,
+                ValType::Ref(wasm_encoder::RefType {
+                    nullable: true,
+                    heap_type: hc(T_FUNCTION),
+                }),
+            ), // 8 = fn as $function
         ],
         |f| {
             f.instruction(&Instruction::LocalGet(0));
@@ -3327,54 +3473,59 @@ fn py_call(
 
 /// big_bits (FT_BIG_BITS): (b) -> i64 — low <=2 limbs, sign-applied.
 fn big_bits(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
-    add(funcs, code, FT_BIG_BITS, &[(2, bref()), (1, ValType::I32), (1, ValType::I64)],
-    |f| {
-        // 2=b 3=n 4=v
-        f.instruction(&Instruction::LocalGet(0));
-        f.instruction(&Instruction::LocalSet(2));
-        f.instruction(&Instruction::LocalGet(2));
-        
-        f.instruction(&Instruction::RefCastNullable(hc(T_BIGINT)));
-        sget(f, T_BIGINT, F_BIG_LIMBS);
-        f.instruction(&Instruction::ArrayLen);
-        f.instruction(&Instruction::LocalSet(3));
-        f.instruction(&Instruction::LocalGet(3));
-        f.instruction(&Instruction::I32Const(2));
-        f.instruction(&Instruction::I32GeU);
-        f.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
-        f.instruction(&Instruction::LocalGet(2));
-        
-        f.instruction(&Instruction::RefCastNullable(hc(T_BIGINT)));
-        sget(f, T_BIGINT, F_BIG_LIMBS);
-        f.instruction(&Instruction::I32Const(1));
-        f.instruction(&Instruction::ArrayGet(T_LIMB_ARRAY));
-        f.instruction(&Instruction::I64ExtendI32U);
-        f.instruction(&Instruction::I64Const(32));
-        f.instruction(&Instruction::I64Shl);
-        f.instruction(&Instruction::Else);
-        f.instruction(&Instruction::I64Const(0));
-        f.instruction(&Instruction::End);
-        f.instruction(&Instruction::LocalGet(2));
-        
-        f.instruction(&Instruction::RefCastNullable(hc(T_BIGINT)));
-        sget(f, T_BIGINT, F_BIG_LIMBS);
-        f.instruction(&Instruction::I32Const(0));
-        f.instruction(&Instruction::ArrayGet(T_LIMB_ARRAY));
-        f.instruction(&Instruction::I64ExtendI32U);
-        f.instruction(&Instruction::I64Or);
-        f.instruction(&Instruction::LocalSet(4));
-        f.instruction(&Instruction::LocalGet(2));
-        
-        f.instruction(&Instruction::RefCastNullable(hc(T_BIGINT)));
-        sget(f, T_BIGINT, F_BIG_SIGN);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        f.instruction(&Instruction::I64Const(0));
-        f.instruction(&Instruction::LocalGet(4));
-        f.instruction(&Instruction::I64Sub);
-        f.instruction(&Instruction::LocalSet(4));
-        f.instruction(&Instruction::End);
-        f.instruction(&Instruction::LocalGet(4));
-    });
+    add(
+        funcs,
+        code,
+        FT_BIG_BITS,
+        &[(2, bref()), (1, ValType::I32), (1, ValType::I64)],
+        |f| {
+            // 2=b 3=n 4=v
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::LocalSet(2));
+            f.instruction(&Instruction::LocalGet(2));
+
+            f.instruction(&Instruction::RefCastNullable(hc(T_BIGINT)));
+            sget(f, T_BIGINT, F_BIG_LIMBS);
+            f.instruction(&Instruction::ArrayLen);
+            f.instruction(&Instruction::LocalSet(3));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(2));
+            f.instruction(&Instruction::I32GeU);
+            f.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
+            f.instruction(&Instruction::LocalGet(2));
+
+            f.instruction(&Instruction::RefCastNullable(hc(T_BIGINT)));
+            sget(f, T_BIGINT, F_BIG_LIMBS);
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::ArrayGet(T_LIMB_ARRAY));
+            f.instruction(&Instruction::I64ExtendI32U);
+            f.instruction(&Instruction::I64Const(32));
+            f.instruction(&Instruction::I64Shl);
+            f.instruction(&Instruction::Else);
+            f.instruction(&Instruction::I64Const(0));
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(2));
+
+            f.instruction(&Instruction::RefCastNullable(hc(T_BIGINT)));
+            sget(f, T_BIGINT, F_BIG_LIMBS);
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::ArrayGet(T_LIMB_ARRAY));
+            f.instruction(&Instruction::I64ExtendI32U);
+            f.instruction(&Instruction::I64Or);
+            f.instruction(&Instruction::LocalSet(4));
+            f.instruction(&Instruction::LocalGet(2));
+
+            f.instruction(&Instruction::RefCastNullable(hc(T_BIGINT)));
+            sget(f, T_BIGINT, F_BIG_SIGN);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::I64Const(0));
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::I64Sub);
+            f.instruction(&Instruction::LocalSet(4));
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(4));
+        },
+    );
 }
 
 /// big_cmp (FT_BIG_CMP): (a, b) -> i32 — sign then magnitude.
@@ -3391,12 +3542,12 @@ fn big_cmp(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::C
             f.instruction(&Instruction::LocalGet(1));
             f.instruction(&Instruction::LocalSet(3));
             f.instruction(&Instruction::LocalGet(2));
-            
+
             f.instruction(&Instruction::RefCastNullable(hc(T_BIGINT)));
             sget(f, T_BIGINT, F_BIG_SIGN);
             f.instruction(&Instruction::LocalSet(4));
             f.instruction(&Instruction::LocalGet(3));
-            
+
             f.instruction(&Instruction::RefCastNullable(hc(T_BIGINT)));
             sget(f, T_BIGINT, F_BIG_SIGN);
             f.instruction(&Instruction::LocalSet(5));
@@ -3413,13 +3564,13 @@ fn big_cmp(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::C
             f.instruction(&Instruction::Return);
             f.instruction(&Instruction::End);
             f.instruction(&Instruction::LocalGet(2));
-            
+
             f.instruction(&Instruction::RefCastNullable(hc(T_BIGINT)));
             sget(f, T_BIGINT, F_BIG_LIMBS);
             f.instruction(&Instruction::ArrayLen);
             f.instruction(&Instruction::LocalSet(6));
             f.instruction(&Instruction::LocalGet(3));
-            
+
             f.instruction(&Instruction::RefCastNullable(hc(T_BIGINT)));
             sget(f, T_BIGINT, F_BIG_LIMBS);
             f.instruction(&Instruction::ArrayLen);
@@ -3455,14 +3606,14 @@ fn big_cmp(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::C
             f.instruction(&Instruction::I32Sub);
             f.instruction(&Instruction::LocalSet(8));
             f.instruction(&Instruction::LocalGet(2));
-            
+
             f.instruction(&Instruction::RefCastNullable(hc(T_BIGINT)));
             sget(f, T_BIGINT, F_BIG_LIMBS);
             f.instruction(&Instruction::LocalGet(8));
             f.instruction(&Instruction::ArrayGet(T_LIMB_ARRAY));
             f.instruction(&Instruction::LocalSet(10));
             f.instruction(&Instruction::LocalGet(3));
-            
+
             f.instruction(&Instruction::RefCastNullable(hc(T_BIGINT)));
             sget(f, T_BIGINT, F_BIG_LIMBS);
             f.instruction(&Instruction::LocalGet(8));
