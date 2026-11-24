@@ -78,3 +78,26 @@ misattribute to new leaves.
   leaf working under the target-lint convention to run ap-cli gates.
 - Stray probe processes killed after each diagnostic run; no background
   daemons left.
+
+## FOLLOW-UP (trunk re-verify, same session)
+
+1. **SECOND pre-existing failure filed**: hybrid_gate::
+   `plain_binary_treats_emit_wasm_as_program_argv` fails on a FRESH debug
+   build of the plain binary (pre-merge tree 2d23bd6 verified: fails there
+   too). The plain `build` binary runs the program despite `--emit-wasm`
+   (prints "plain argv" instead of refusing/forwarding per the recorded
+   contract). Masked on this machine by the stale main-checkout binary.
+   Same stale-binary-masked-regression class as the six failure above.
+   Both must be re-verified by their band owners after the next full
+   trunk rebuild — a fresh `cargo test --workspace` WILL trip them.
+2. **GOTCHA (env, this machine)**: the shared terminal session had
+   `APX_EXT_DIR=/Users/caimlas/git/antipythony/t3chat/deps` exported
+   (leftover from an earlier sibling's experiment; stray
+   t3chat/deps/{apx_python.h,libhdrmod.so} untracked files were its
+   output). Any build-ext invocation WITHOUT explicit -o legally reroutes
+   output there — this silently broke the emit-header gate row until the
+   row pinned `env_remove("APX_EXT_DIR")`. The header row now tests the
+   documented default convention regardless of the inherited env. Consider
+   unsetting that export in the machine shell profile.
+3. Trunk re-verify after merge (a707d7e): build_ext_gate 5/5, stdlib
+   48/48, full ap-cli green except the two pre-existing failures above.
