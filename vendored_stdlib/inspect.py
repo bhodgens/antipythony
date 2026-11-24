@@ -456,7 +456,13 @@ def isbuiltin(object):
         __doc__         documentation string
         __name__        original name of this function or method
         __self__        instance to which a method is bound, or None"""
-    return isinstance(object, types.BuiltinFunctionType)
+    # antipythony (F-STRUCT-1): the runtime interns ONE 'function' Type for
+    # both user functions and native builtins, so the isinstance probe below
+    # cannot discriminate. Native builtins carry __module__ == 'builtins'
+    # (seeded at install); user functions carry their defining module's name.
+    if isinstance(object, types.BuiltinFunctionType):
+        return getattr(object, '__module__', None) == 'builtins'
+    return False
 
 def ismethodwrapper(object):
     """Return true if the object is a method wrapper."""
@@ -2016,7 +2022,15 @@ def _signature_get_user_defined_method(cls, method_name, *, follow_wrapper_chain
           or isinstance(unwrapped_meth, _NonUserDefinedCallables)):
         # Once '__signature__' will be added to 'C'-level
         # callables, this check won't be necessary
-        return None
+        # antipythony (F-STRUCT-1): the _NonUserDefinedCallables aliases
+        # share the interned 'function' Type with user functions — apply
+        # the __module__ discriminator: NATIVE builtins carry 'builtins',
+        # so a NUDC-shaped callable with a NON-builtins module is a real
+        # user function and must NOT be rejected here.
+        if getattr(meth, '__module__', None) == 'builtins' or (
+                unwrapped_meth is not None
+                and getattr(unwrapped_meth, '__module__', None) == 'builtins'):
+            return None
     if method_name != '__new__':
         meth = _descriptor_get(meth, cls)
     return meth
@@ -2143,9 +2157,16 @@ def _signature_is_builtin(obj):
     """Private helper to test if `obj` is a callable that might
     support Argument Clinic's __text_signature__ protocol.
     """
+    # antipythony (F-STRUCT-1): _NonUserDefinedCallables aliases share the
+    # interned 'function' Type with user functions — the isinstance arms
+    # here wrongly classified user __init__/__new__ as builtin and
+    # inspect.signature(Cls) raised ValueError ("no signature found for
+    # builtin type") killing @dataclass. The isbuiltin() probe now carries
+    # the __module__ discriminator; the isinstance arms apply it too.
+    if isinstance(obj, _NonUserDefinedCallables):
+        return getattr(obj, '__module__', None) == 'builtins'
     return (isbuiltin(obj) or
             ismethoddescriptor(obj) or
-            isinstance(obj, _NonUserDefinedCallables) or
             # Can't test 'isinstance(type)' here, as it would
             # also be True for regular python classes.
             # Can't use the `in` operator here, as it would
@@ -2712,6 +2733,7 @@ def _signature_from_callable(obj, *,
         if _os_sfc.environ.get("APX_SFCDBG"):
             import sys as _sys_s2
             _sys_s2.stderr.write("[SFC] __signature__ read raised %r on %s\n" % (_e_sig, type(obj).__name__))
+            _sys_s2.stderr.write("[SFC] obj-mod=%r\n" % (getattr(obj, '__module__', None),))
         raise AttributeError("__signature__")
     else:
         if sig is not None:
@@ -2725,6 +2747,14 @@ def _signature_from_callable(obj, *,
         partialmethod = obj.__partialmethod__
     except AttributeError:
         pass
+    except BaseException as _e_pmd:
+        # antipythony (F-STRUCT-1): attr-get on some runtime-internal
+        # markers raises non-AttributeError where CPython raises
+        # AttributeError (mirror of the wave-80 __signature__ guard).
+        if _os_sfc.environ.get("APX_SFCDBG"):
+            import sys as _sys_s4
+            _sys_s4.stderr.write("[SFC] __partialmethod__ read raised %r on %s\n" % (_e_pmd, type(obj).__name__))
+        raise AttributeError("__partialmethod__")
     else:
         if isinstance(partialmethod, functools.partialmethod):
             # Unbound partialmethod (see functools.partialmethod)

@@ -7156,7 +7156,63 @@ fn call_value_inner_impl(
                             // W110 (T2): vendored collections.OrderedDict
                             // ctor calls dict.__init__(self); a no-op init
                             // is correct (v0 dict stores keys directly).
+                            // F-STRUCT-1 chain (gate-1b): kwargs/pairs must
+                            // MERGE like CPython dict.__init__(d, *args,
+                            // **kw) — TypedDict(...) and pydantic
+                            // ConfigDict(**kw) route through this marker
+                            // (super().__init__ inside _TypedDictMeta
+                            // metatype calls) and lost their payloads.
                             "dict" => {
+                                // The subject rides slice_parts as the F
+                                // USER INSTANCE (dict-derived subclass
+                                // instance, not a bare Dict) — merge through
+                                // its backing (__ap_dict__ / dict_backing).
+                                let mut backing = crate::classes::dict_backing(&subject);
+                                if backing.is_none() {
+                                    if let Value::Obj(so) = &subject {
+                                        if let Some(Value::Dict(d)) = so
+                                            .attrs
+                                            .lock()
+                                            .unwrap_or_else(|p| p.into_inner())
+                                            .get(&Value::Str(PyString::new("__ap_dict__")))
+                                        {
+                                            backing = Some(d.clone());
+                                        }
+                                    }
+                                }
+                                if backing.is_none() {
+                                    if let Value::Dict(d) = &subject {
+                                        backing = Some(d.clone());
+                                    }
+                                }
+                                if let Some(d) = backing {
+                                    for a in args {
+                                        match a {
+                                            Value::Dict(src) => {
+                                                for (k, v) in src.items() {
+                                                    let _ = d.set(k.clone(), v.clone());
+                                                }
+                                            }
+                                            Value::Tuple(t) => {
+                                                for item in &t.0 {
+                                                    if let Value::Tuple(p2) = item {
+                                                        if p2.0.len() == 2 {
+                                                            let _ = d.set(
+                                                                p2.0[0].clone(),
+                                                                p2.0[1].clone(),
+                                                            );
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                    for (k, v) in kwargs {
+                                        let _ =
+                                            d.set(Value::Str(PyString::new(k.clone())), v.clone());
+                                    }
+                                }
                                 return Ok(Value::None);
                             }
                             _ => {}
@@ -7766,7 +7822,64 @@ fn call_value_inner_impl(
                                     Value::None,
                                 ]))));
                             }
-                            "init" | "delattr" => {
+                            // F-STRUCT-1 chain (gate-1b): object.__init__ as
+                            // reached through a CONTAINER base (dict.__init__
+                            // via super() in TypedDict/pydantic ConfigDict
+                            // call paths) must merge the ctor kwargs into
+                            // the receiver's dict payload — CPython
+                            // dict.__init__(d, *args, **kw) semantics. The
+                            // unconditional None no-op silently dropped
+                            // `TD(a=1)` / `ConfigDict(**kw)` payloads.
+                            "init" => {
+                                let recv = {
+                                    let parked = o
+                                        .slice_parts
+                                        .lock()
+                                        .unwrap_or_else(|p| p.into_inner())
+                                        .first()
+                                        .cloned();
+                                    match parked {
+                                        Some(r) if !matches!(r, Value::None) => Some(r),
+                                        _ => args.first().cloned(),
+                                    }
+                                };
+                                // Payload = args after the receiver (unbound
+                                // call: dict.__init__(d, ...)); kwargs always.
+                                let rest: Vec<Value> = match (&recv, args.first()) {
+                                    (Some(_), Some(_)) => args[1..].to_vec(),
+                                    _ => args.to_vec(),
+                                };
+                                if let Some(Value::Dict(d)) = &recv {
+                                    for pair in &rest {
+                                        match pair {
+                                            Value::Dict(src) => {
+                                                for (k, v) in src.items() {
+                                                    let _ = d.set(k.clone(), v.clone());
+                                                }
+                                            }
+                                            Value::Tuple(t) => {
+                                                for item in &t.0 {
+                                                    if let Value::Tuple(p2) = item {
+                                                        if p2.0.len() == 2 {
+                                                            let _ = d.set(
+                                                                p2.0[0].clone(),
+                                                                p2.0[1].clone(),
+                                                            );
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                    for (k, v) in kwargs {
+                                        let _ =
+                                            d.set(Value::Str(PyString::new(k.clone())), v.clone());
+                                    }
+                                }
+                                return Ok(Value::None);
+                            }
+                            "delattr" => {
                                 return Ok(Value::None);
                             }
                             // 02.08 gap: object.__eq__/__ne__/__hash__ virtual
@@ -8790,6 +8903,63 @@ fn call_value_inner_impl(
                         );
                     }
                     Err(raise("TypeError", "'_GenericAlias' object is not callable"))
+                }
+                // F-STRUCT-1 chain (gate-2b): the Type.__getitem__ alias
+                // placeholder (methods.rs Type arm) is a NAMESPACE
+                // "_GenericAlias" carrying __origin__/__args__ —
+                // WeakValueDictionary[K, V]() and every other subscripted
+                // native-type alias CALL lands here (kind name 'object' ->
+                // "'object' object is not callable"). CPython:
+                // _GenericAlias.__call__ constructs the origin class.
+                ap_obj::ObjKind::Namespace if o.name == "_GenericAlias" => {
+                    let origin = {
+                        let a = o.attrs.lock().unwrap_or_else(|p| p.into_inner());
+                        a.get_str("__origin__").unwrap_or(Value::None)
+                    };
+                    match origin {
+                        v @ (Value::Obj(_) | Value::Str(_)) => {
+                            let interp_rc = current_interp_for_bindings();
+                            match crate::classes::type_of(&interp_rc, &v) {
+                                Some(t) => {
+                                    crate::classes::instantiate(&interp_rc, &v, &t, args, kwargs)
+                                }
+                                None => {
+                                    // Native origin (Opaque instance class,
+                                    // Type kind WeakValueDictionary etc):
+                                    // prefer the VALUE's own name (class
+                                    // values carry it), routing weak
+                                    // containers through gcsupport; other
+                                    // opaque instances through the ctor
+                                    // table; a Type kind through the
+                                    // instantiate path via base_type_ref.
+                                    let name = match &v {
+                                        Value::Obj(vo) => vo.name.clone(),
+                                        _ => v.type_name().to_string(),
+                                    };
+                                    if crate::gcsupport::is_weak_container(&name) {
+                                        crate::gcsupport::call_weakref(&name, args, kwargs)
+                                            .unwrap_or_else(|| Ok(Value::None))
+                                    } else if let Value::Obj(vo) = &v {
+                                        if vo.kind == ap_obj::ObjKind::Type {
+                                            match crate::classes::base_type_ref(&interp_rc, &v) {
+                                                Ok(Some(t)) => crate::classes::instantiate(
+                                                    &interp_rc, &v, &t, args, kwargs,
+                                                ),
+                                                _ => {
+                                                    call_type_ctor(&interp_rc, &name, args, kwargs)
+                                                }
+                                            }
+                                        } else {
+                                            call_type_ctor(&interp_rc, &name, args, kwargs)
+                                        }
+                                    } else {
+                                        call_type_ctor(&interp_rc, &name, args, kwargs)
+                                    }
+                                }
+                            }
+                        }
+                        _ => Err(raise("TypeError", "'_GenericAlias' object is not callable")),
+                    }
                 }
                 // W112: asend_handle called as a plain function (h(None)) —
                 // the `anext(agen)` builtin drives __anext__ handles this way.

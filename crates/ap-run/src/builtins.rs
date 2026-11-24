@@ -4083,6 +4083,17 @@ pub fn install_builtins(interp: &Interpreter) {
     ];
     for n in names {
         let o = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, *n);
+        // F-STRUCT-1 chain (gate-2): NATIVE builtins carry
+        // __module__ == 'builtins' (CPython builtin_function_or_method
+        // surface) — user-defined functions carry their defining module.
+        // inspect.isbuiltin/_signature_is_builtin and the types.py alias
+        // discrimination need the split; without it every USER function
+        // classified as builtin -> inspect.signature(Cls) ValueError ->
+        // @dataclass dies (pydantic BaseModel wall).
+        let _ = o.attrs.lock().unwrap_or_else(|p| p.into_inner()).set(
+            Value::Str(PyString::new("__module__")),
+            Value::Str(PyString::new("builtins")),
+        );
         let _ = b.set(Value::Str(PyString::new(*n)), Value::Obj(o));
     }
     // Class-statement keyword marker (lowering: `__ap_classkw__.<name>(v)`).

@@ -4751,6 +4751,23 @@ pub fn instantiate(
                     full.extend_from_slice(args);
                     return call_value(interp, &module_frame(interp), &call, &full, kwargs);
                 }
+                // F-STRUCT-1 chain (gate-1c): a metaclass __call__ that is
+                // NOT a user function is called like CPython type.__call__
+                // calls the override — typing_extensions' _TypedDictMeta
+                // sets `__call__ = dict` (a static builtin), so TD(a=1)
+                // must route to dict(a=1) (CPython: the metaclass __call__
+                // descriptor binds cls as the first arg; for a plain
+                // builtin like dict the binding is the no-op static form
+                // and the CLASS-CALL args ride through unchanged).
+                if !matches!(call, Value::None) {
+                    let is_static_builtin = matches!(&call, Value::Obj(bo)
+                        if bo.kind == ap_obj::ObjKind::Type
+                            || bo.kind == ap_obj::ObjKind::BuiltinFn
+                            || bo.kind == ap_obj::ObjKind::Function);
+                    if is_static_builtin {
+                        return call_value(interp, &module_frame(interp), &call, args, kwargs);
+                    }
+                }
             }
         }
     }
@@ -5116,6 +5133,11 @@ pub fn instantiate(
                 }
                 other => other.to_vec(),
             };
+            // F-STRUCT-1 chain (gate-1a): kwargs-only ctor calls (or any
+            // arg shape) fall back to the BASE builtin call itself —
+            // CPython dict(**kw) / dict(mapping, **kw) semantics. The
+            // old [one]/[a,b,c,d,e] payload shapes left D(kwargs) with
+            // payload None -> TypeError "takes no arguments".
             let payload = match args_eff.as_slice() {
                 [one] => Some(one.clone()),
                 [a, b, c, d, e] if !kwargs.iter().any(|_| true) => {
@@ -5127,6 +5149,7 @@ pub fn instantiate(
                         e.clone(),
                     ]))))
                 }
+                [] if !kwargs.is_empty() && builtin == "dict" => Some(Value::Dict(PyDict::new())),
                 _ => None,
             };
             if let Some(p) = payload {
@@ -5149,10 +5172,13 @@ pub fn instantiate(
                             .ok()
                     }
                     // dict subclass: dict(mapping-or-iterable, **kw).
-                    "dict" => {
-                        crate::builtins::call_builtin(interp, "dict", std::slice::from_ref(&p), &[])
-                            .ok()
-                    }
+                    // F-STRUCT-1 gate-1 fix: the kwargs must ride the
+                    // builtin call too (CPython dict(**kw) merges into the
+                    // payload; `class TD(TypedDict)` + ConfigDict(**kw)
+                    // construct with kwargs-only). The old call dropped
+                    // kwargs -> payload None for kwargs-only ctor calls ->
+                    // TypeError "takes no arguments".
+                    "dict" => crate::builtins::call_builtin(interp, "dict", &args_eff, kwargs).ok(),
                     // W110 (T2): int subclasses (enum members) construct
                     // from the value arg like CPython int(x).
                     "int" => {

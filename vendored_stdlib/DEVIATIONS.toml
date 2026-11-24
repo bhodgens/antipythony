@@ -3003,8 +3003,8 @@ path = "inspect.py"
 upstream_path = "inspect.py"
 status = "deviated"
 upstream_sha256 = "7a2878507255eb568a6ecfa04e051009f197513aa052eebc9e7e60d667d78cb4"
-deviated_sha256 = "144b9bc100fd19cc001e4de287b2877025c6c6103c0af189e025c852bc2d557d"
-note = "Declared deviation (LICENSES/README-vendored-stdlib.md): ~16 lines - annotation/FrameInfo shims. Re-declared 2026-10-22 (wave-5 audit): 2619a0f extended the shim (+15 lines, T1 get_annotations path); diff reviewed, shim-only. Re-declared 2026-10-25 (A-4 closeout): 4b228b8 (T1-d) added CO_* flag constants (replacing the _inspect C accelerator reads), a depth-aware currentframe, and direct mro/__dict__ readers for twisted's frame walking."
+deviated_sha256 = "34a8c3cfebd91f195f50833dfb3c1f5a37f6c89bdf50c812cdcb6758bedcb690"
+note = "Declared deviation (LICENSES/README-vendored-stdlib.md): ~16 lines - annotation/FrameInfo shims. Re-declared 2026-10-22 (wave-5 audit): 2619a0f extended the shim (+15 lines, T1 get_annotations path); diff reviewed, shim-only. Re-declared 2026-10-25 (A-4 closeout): 4b228b8 (T1-d) added CO_* flag constants (replacing the _inspect C accelerator reads), a depth-aware currentframe, and direct mro/__dict__ readers for twisted's frame walking. Re-declared 2026-11-23 (F-STRUCT-1, tier1-struct1): isbuiltin()/_signature_is_builtin()/_signature_get_user_defined_method() gained the __module__=='builtins' discriminator (runtime interns ONE 'function' Type for user fns + native builtins — the isinstance probes classified every user __init__ as builtin, killing inspect.signature(cls) → @dataclass → pydantic BaseModel), and the __partialmethod__ read gained the wave-80-style BaseException→AttributeError guard (~30 lines, discriminator-only)."
 
 [[file]]
 path = "ipaddress.py"
@@ -4013,3 +4013,43 @@ status = "deviated"
 upstream_sha256 = ""
 deviated_sha256 = "235ac04794e6237d9b32aba5571776867adeda06dffe419d794374b91faa2e91"
 note = "antipythony shim with no CPython counterpart (zope.interface is third-party): minimal InterfaceClass/SpecificationBase token surface backing the advisory-only zope shim (4b228b8)."
+
+[[file]]
+path = "fractions.py"
+upstream_path = "fractions.py"
+status = "pristine"
+upstream_sha256 = "7a95f1c506c9ac4b2277df5f2bdd9d61cc67b520c45021a5a961939770221ef6"
+deviated_sha256 = "7a95f1c506c9ac4b2277df5f2bdd9d61cc67b520c45021a5a961939770221ef6"
+note = "CPython 3.14.7 verbatim backfill (F-STRUCT-1, tier1-struct1): pydantic _generate_schema imports fractions; the vendored tree lacked it."
+
+[[file]]
+path = "zoneinfo/__init__.py"
+upstream_path = "zoneinfo/__init__.py"
+status = "pristine"
+upstream_sha256 = "9091c902b8d0385f835e9d393017f03b68f92fae7cbe1e31833b2911d65947e6"
+deviated_sha256 = "9091c902b8d0385f835e9d393017f03b68f92fae7cbe1e31833b2911d65947e6"
+note = "CPython 3.14.7 verbatim backfill (F-STRUCT-1, tier1-struct1): pydantic _generate_schema imports zoneinfo."
+
+[[file]]
+path = "zoneinfo/_common.py"
+upstream_path = "zoneinfo/_common.py"
+status = "pristine"
+upstream_sha256 = "0da0f341817363ada0437a53d41611aeb85ac3a9f58229f3b34d4acc49576465"
+deviated_sha256 = "0da0f341817363ada0437a53d41611aeb85ac3a9f58229f3b34d4acc49576465"
+note = "CPython 3.14.7 verbatim backfill (F-STRUCT-1, tier1-struct1)."
+
+[[file]]
+path = "zoneinfo/_tzpath.py"
+upstream_path = "zoneinfo/_tzpath.py"
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "5ad9c18b612f8171130c3f33205520cb900272773b92ee28598ea5111731f39b"
+note = "antipythony shim with a CPython counterpart (F-STRUCT-1, tier1-struct1): CPython's zoneinfo._tzpath is a C-accelerated module; the shim serves the pure-py reset_tzpath/TZPATH/available_timezones/InvalidTZPathWarning surface zoneinfo/__init__ consumes."
+
+[[file]]
+path = "zoneinfo/_zoneinfo.py"
+upstream_path = "zoneinfo/_zoneinfo.py"
+status = "pristine"
+upstream_sha256 = "0279b3226e70f7ec2a8b0127f4bcab524587486ae1f80b26eb46ee87ba95bfe4"
+deviated_sha256 = "0279b3226e70f7ec2a8b0127f4bcab524587486ae1f80b26eb46ee87ba95bfe4"
+note = "CPython 3.14.7 verbatim backfill (F-STRUCT-1, tier1-struct1)."
