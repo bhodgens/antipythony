@@ -131,7 +131,17 @@ trunk. Gate counts cited by leaves are claims; re-runs are evidence.
  update, completion declaration.
  FINISHER WAVE DISPATCHED 2026-11-23 (deleg_47cd2b60, 3 leaves):
  (a) leaf-struct1 = F-STRUCT-1 (from-import resolution order;
- pydantic BaseModel chain green is the gate);
+ pydantic BaseModel chain green is the gate) — MERGED 465cf34.
+ Core fix GREEN: minimal repro byte-identical vs CPython,
+ aliases-first resolution live. The FULL staged-pydantic chain
+ advanced past 4 walls (TypedDict/ConfigDict Protocol-arg,
+ inspect.signature builtin, WeakValueDictionary[K,V] callable,
+ missing fractions/zoneinfo — zoneinfo vendored by this leaf) but
+ stops at a NEW downstream wall: pydantic.main ModelMetaclass
+ __signature__ walk TypeError (recorded with debug aids in
+ NEXT-STRUCT1.md — the next leaf, not F-STRUCT-1's brief). Gates
+ verified first-hand: ap-run 18/208/0, stdlib 48/48, t04 pins 7/7
+ on the struct1 tree; aliases-first probe live on trunk.
  (b) leaf-lint = build-ext linkage lint row + docs warning — MERGED
  (chain 8058bdc/a6c6b87 via tier1-lint; build_ext_gate 5/5 verified
  on trunk). BONUS: filed TWO pre-existing fresh-build failures
