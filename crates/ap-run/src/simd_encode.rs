@@ -112,14 +112,18 @@ pub fn decode_std_prefix(input: &[u8], out: &mut Vec<u8>) -> usize {
 }
 
 /// Non-aarch64 scalar fallback: consume nothing, the scalar loop does it all.
+/// (Must live at the MODULE ROOT, not a submodule: callers use
+/// `crate::simd_encode::encode_prefix` unconditionally — a submodule shape
+/// compiled on aarch64 dev machines but broke x86_64 CI with E0425 x2.)
 #[cfg(not(target_arch = "aarch64"))]
-pub mod fallthrough {
-    pub fn encode_prefix(_input: &[u8], _out: &mut Vec<u8>) -> usize {
-        0
-    }
-    pub fn decode_std_prefix(_input: &[u8], _out: &mut Vec<u8>) -> usize {
-        0
-    }
+pub fn encode_prefix(_input: &[u8], _out: &mut Vec<u8>) -> usize {
+    0
+}
+
+/// Non-aarch64 scalar fallback: consume nothing, the scalar loop does it all.
+#[cfg(not(target_arch = "aarch64"))]
+pub fn decode_std_prefix(_input: &[u8], _out: &mut Vec<u8>) -> usize {
+    0
 }
 
 // ===========================================================================
