@@ -134,9 +134,16 @@ trunk. Gate counts cited by leaves are claims; re-runs are evidence.
  pydantic BaseModel chain green is the gate);
  (b) leaf-lint = build-ext linkage lint row + docs warning;
  (c) leaf-pydiff = CPython-arm byte differential of the 110
- pydantic members (divergences recorded with bytes, engine fixes
- deferred to follow-ups). After this wave: final trunk sweep +
- AGENTS.md update + completion declaration.
+ pydantic members — MERGED 234862a. ~106 lines BYTE-EXACT;
+ 15 divergences recorded with exact bytes, biggest family = token
+ representation (identity-only Str handles answer 'object' for
+ PyType_GetName/Callable_Check/GenericAlloc — measures the S1
+ identity-posture for the first time) + AsEncodedString
+ str-vs-bytes + GenericGetDict shape + complex error contract +
+ import-via-C seam + X-series rc convention + Mapping_Items miss +
+ WriteUnraisable stderr posture; set repr hash-order instability
+ pinned as separate ap-obj finding; crates untouched (ap-ce 36/0
+ verified on rebased tree).
 
 ## Explicitly NOT in scope (locked)
 
