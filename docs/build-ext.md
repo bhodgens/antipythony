@@ -143,6 +143,33 @@ declare the receiver `int` (4 bytes, CPython semantics — the shim checks
 long-range overflow and raises the CPython text). `long` receivers are what
 format `'l'` is for (S1).
 
+## NEVER link the Python framework (the manual-cc SEGV failure mode)
+
+**Never compile an antipythony extension manually with `-lpython`,
+`-framework Python`, or a `python3.X-config --ldflags` link line.** Those
+flags put a `Python.framework` load command into the `.so`, and that is a
+crash, not a warning: at `import` time dyld sometimes binds `PyModule_Create2`
+(and the rest of the `Py*` surface) to the framework's copy instead of the
+running `antipythony` binary. The extension then initializes against the
+WRONG runtime — two object layouts, two registries — and SEGVs
+intermittently: it can appear to work in one process and crash in the next,
+which makes it miserable to bisect. This is root-caused (the leaf-1005a
+wave; see `NEXT-TOPLEVEL-COMPLETION.md`), not speculative.
+
+The antipythony model (see "The model in one paragraph" above) needs the
+`Py*` symbols to stay UNDEFINED in the `.so` so they resolve against the
+running binary at dlopen time. `antipythony build-ext` does exactly this and
+its output always carries **zero** Python.framework entries. Verify with:
+
+```bash
+otool -L libhello.so | grep -c Python.framework   # must print 0
+```
+
+If a leftover `.so` shows framework entries, rebuild it through the verb —
+do not patch the link line. This invariant is gated as
+`build_ext_output_has_zero_framework_load_commands` in
+`crates/ap-cli/tests/build_ext_gate.rs`.
+
 ## Distributing
 
 - The release archive ships `include/apx_python.h` (the
@@ -165,7 +192,10 @@ format `'l'` is for (S1).
 `cargo test -p ap-cli --test build_ext_gate` runs, in CI shape: the geom
 example and the 10.02 spike built through the verb, imported under
 antipythony, and proven byte-identical (stdout/stderr/rc) against CPython
-3.14 running the same sources; the mismatch fail-loud path; and the
-`--emit-header` install. Differential suites skip cleanly when no
+3.14 running the same sources; the mismatch fail-loud path; the
+`--emit-header` install; and the linkage lint row (the built `.so` carries
+ZERO Python.framework load commands — the manual-cc SEGV failure mode,
+skipped cleanly on non-macOS hosts where `otool` is absent). Differential
+suites skip cleanly when no
 python3.14 reference interpreter is on the host (hard-fail in CI via
 `AP_REQUIRE_REFERENCE=1`).
