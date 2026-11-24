@@ -300,6 +300,9 @@ static PyObject *pc_init(void) {
         "PydanticOmit", "PydanticUndefinedType", "Some",
         "to_jsonable_python", "Url", "MultiHostUrl", "core_schema",
         "PydanticUndefined",
+        /* F-STRUCT-1 stage: pydantic 2.14.1 _generate_schema imports
+           PydanticSerializationUnexpectedValue from pydantic_core. */
+        "PydanticSerializationUnexpectedValue",
     };
     for (unsigned long i = 0; i < sizeof(pc_names) / sizeof(pc_names[0]); i++) {
         PyObject *nm = PyUnicode_FromString(pc_names[i]);
