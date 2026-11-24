@@ -2193,23 +2193,6 @@ pub fn descr_set(
                 .as_deref()
             {
                 Some("property") | Some("member") => {
-                    // F-INTERP-1 (leaf tier1-fileno): a member descriptor
-                    // (slot member) is ALWAYS settable — CPython's
-                    // member_descriptor.__set__ writes the slot storage. The
-                    // old code read the property fset cell (always None for
-                    // members) and raised "has no setter" for every plain
-                    // slot assignment. Route members to the slot storage
-                    // (attrs layout — the no-dict case) like the legacy path.
-                    if o.descr_kind.lock().unwrap_or_else(|p| p.into_inner()).as_deref() == Some("member") {
-                        if let Value::Obj(io) = obj {
-                            return io
-                                .attrs
-                                .lock()
-                                .unwrap_or_else(|p| p.into_inner())
-                                .set(Value::Str(PyString::new(attr.to_string())), val)
-                                .map_err(Flow::from_py);
-                        }
-                    }
                     let fset = o
                         .func
                         .lock()
@@ -4423,19 +4406,6 @@ pub fn attr_set_protocol(
                     return r;
                 }
             }
-            // Data descriptor __set__ (instance dict NOT consulted).
-            // F-INTERP-1 (leaf tier1-fileno): this MUST precede the
-            // slots-with-no-dict guard — CPython's object.__setattr__ consults
-            // the type's data descriptors FIRST (property setters run even on
-            // __slots__-only classes whose storage is slots, e.g. rich's
-            // Text.plain setter on the __slots__ Text class). The old order
-            // raised "no attribute 'plain' and no __dict__" instead of
-            // dispatching the setter.
-            if let Some((entry, _)) = t.lookup_with_owner(name) {
-                if is_data_descriptor(interp, &entry) {
-                    return descr_set(interp, &entry, obj, v, &t.name, name);
-                }
-            }
             // Slots with no dict: only declared names settable (S-03-13).
             if !t.has_instance_dict() && !t.is_slot(name) {
                 return Err(raise(
@@ -4476,8 +4446,12 @@ pub fn attr_set_protocol(
                     .set(Value::Str(PyString::new(name)), v)
                     .map_err(Flow::from_py);
             }
-            // (The data-descriptor dispatch already ran ABOVE the slots guard —
-            // the old duplicate here never fired for __slots__-only classes.)
+            // Data descriptor __set__ (instance dict NOT consulted).
+            if let Some((entry, _)) = t.lookup_with_owner(name) {
+                if is_data_descriptor(interp, &entry) {
+                    return descr_set(interp, &entry, obj, v, &t.name, name);
+                }
+            }
             o.attrs
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
