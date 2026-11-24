@@ -67,16 +67,8 @@ path = "_ast.py"
 upstream_path = ""
 status = "deviated"
 upstream_sha256 = ""
-deviated_sha256 = "4fc16e8045e38a552753c06068ce36bc877c940dd76e6270646545223623c2fd"
+deviated_sha256 = "b826e312be1c21c280d79f181f4a414d1dfcf853e351dc6d23be69d1f5a68d88"
 note = "antipythony shim: native bridge module (class hierarchy + from_native dict→AST converter consumed by compile(PyCF_ONLY_AST)). W114: adds AST._field_types (ASDL list-typed fields) and per-class _optional_fields (ASDL `?` fields) so ast.dump matches CPython omit semantics; no CPython Lib/_ast.py counterpart to hash."
-
-[[file]]
-path = "_ast_unparse.py"
-upstream_path = "_ast_unparse.py"
-status = "pristine"
-upstream_sha256 = "2c477f40fe644f8e8454e8af97aaf3de90579bdce5ddfe597f29d3012d10443f"
-deviated_sha256 = "2c477f40fe644f8e8454e8af97aaf3de90579bdce5ddfe597f29d3012d10443f"
-note = ""
 
 [[file]]
 path = "_collections_abc.py"
@@ -459,7 +451,7 @@ path = "annotationlib.py"
 upstream_path = "annotationlib.py"
 status = "deviated"
 upstream_sha256 = "1cce29393714b91e3f71571ffbedacc7f73f11ad26be10701debeb86ec059a32"
-deviated_sha256 = "cb720d3cec75d170fa7fdddcaa6b772f0505fb6ba4a2bbab2f453aa64ee8c47c"
+deviated_sha256 = "f7d768f6f29789e6322a2fdba513e008deed8094ff8b33be58ba94133003a53d"
 note = "Declared deviation (LICENSES/README-vendored-stdlib.md): REPLACED by a self-declared minimal shim (docstring says so); CPython's uses t-strings (PEP 750), outside the v1 grammar. Re-declared 2026-10-22 (wave-5 audit): 2619a0f added the callable-obj annotations branch; shim-only. Re-declared 2026-10-25 (A-4 closeout): b5ca2fd (in-flight sibling snapshot) extended the minimal shim's callable-object annotations branch."
 
 [[file]]
@@ -915,8 +907,16 @@ path = "collections.py"
 upstream_path = "collections/__init__.py"
 status = "deviated"
 upstream_sha256 = "cb8367b8edd188662143ea2e3942d360c2deae51c72fd779ec898f5076d2c2b9"
-deviated_sha256 = "52025ae37e9a3bb070f00d9d759089d464a119faca9e7a7862aafadf73bc57c0"
+deviated_sha256 = "dd7e146856fcfd8c6f1811114a82147792b0fd80af3646210860f52f28450d04"
 note = "Declared deviation (LICENSES/README-vendored-stdlib.md): runtime-binding shim with no single CPython counterpart file. Re-declared 2026-10-25 (A-4 closeout): 4b228b8 extended the shim (deque/UserDict seed for the T1 pickle/csv chain)."
+
+[[file]]
+path = "colorsys.py"
+upstream_path = "colorsys.py"
+status = "pristine"
+upstream_sha256 = "65e3dfbf7bad61d4d7d7731a69dd7e75a347fd350d91327a51010a94e6fd2f1d"
+deviated_sha256 = "65e3dfbf7bad61d4d7d7731a69dd7e75a347fd350d91327a51010a94e6fd2f1d"
+note = ""
 
 [[file]]
 path = "compression/__init__.py"
@@ -2651,7 +2651,7 @@ path = "enum.py"
 upstream_path = "enum.py"
 status = "deviated"
 upstream_sha256 = "fd23a7598fa1104ef892abcd4154d3627283e6361eb7a91cd11dc4a7b6fb3a93"
-deviated_sha256 = "d5a8ebae6de409faaf074c767476ad60e191f56c2aaffd12f0331c362a31d26b"
+deviated_sha256 = "bccd2a5ab0b5e9fef0e6811af21ceef0e640b9d70f8d4c6e677ac8b91cc7c613"
 note = "Declared deviation (LICENSES/README-vendored-stdlib.md): 1 line - classdict._member_names read via getattr(..., []) fallback; our class-dict instance may lack the attr during partial metaclass construction."
 
 [[file]]
@@ -2679,6 +2679,14 @@ deviated_sha256 = "ce582bc266922e4c682e2a85d72095124430a6bf58716c6f2537103480eae
 note = ""
 
 [[file]]
+path = "fractions.py"
+upstream_path = "fractions.py"
+status = "pristine"
+upstream_sha256 = "7a95f1c506c9ac4b2277df5f2bdd9d61cc67b520c45021a5a961939770221ef6"
+deviated_sha256 = "7a95f1c506c9ac4b2277df5f2bdd9d61cc67b520c45021a5a961939770221ef6"
+note = ""
+
+[[file]]
 path = "ftplib.py"
 upstream_path = "ftplib.py"
 status = "deviated"
@@ -2691,7 +2699,7 @@ path = "functools.py"
 upstream_path = "functools.py"
 status = "deviated"
 upstream_sha256 = "9db56d38172c4c9e689b21cc58c8538008b09d86b682faf4dd193b529cdd79d5"
-deviated_sha256 = "1593d82c46ac8c350df8e5fa50f6338ef5a013a3dce30f83d38373fcc093e5e7"
+deviated_sha256 = "52601f8a4d790babc3f5e7ab94bed5ca4b42d55c6386815c7dfc6659d3b8fd49"
 note = "antipythony copy of CPython functools with a 13-line deviation: WRAPPER_ASSIGNMENTS adds '__wrapped__' (CPython 3.12+, needed by inspect.unwrap + pytest fixture signature lookups) and an __annotate__ fallback to __annotations__ for PEP 749 lazy-annotate strings (W110/W111, T2)."
 
 [[file]]
@@ -3207,14 +3215,6 @@ deviated_sha256 = "8a5bc2b6674e76efe0f507b873a41d746beba466a191153ed18a7580ef6e0
 note = ""
 
 [[file]]
-path = "pprint.py"
-upstream_path = "pprint.py"
-status = "pristine"
-upstream_sha256 = "0b807d4a62c4292ead5b64e1b455f98b0ba225667ff3ee74bd7e0b873620402d"
-deviated_sha256 = "0b807d4a62c4292ead5b64e1b455f98b0ba225667ff3ee74bd7e0b873620402d"
-note = ""
-
-[[file]]
 path = "pydoc.py"
 upstream_path = "pydoc.py"
 status = "pristine"
@@ -3515,7 +3515,7 @@ path = "types.py"
 upstream_path = "types.py"
 status = "deviated"
 upstream_sha256 = "8c54d3d5ffc1d1204237e6c69b25c27c7b05b483128f185eeed9ba7ef2229ac2"
-deviated_sha256 = "b5ceafe827dfb5b3de5f5021da25e42964d768aeb189ee592239532b8191d849"
+deviated_sha256 = "3d50208be09f20c152f5b6f71515b253aa19f9fcaafaede8d576de0e12a3bd28"
 note = "antipythony copy of CPython types with a 7-line deviation: MappingProxyType aliases to dict (type(type.__dict__) resolved to a bare type whose instances answered no mapping methods) and ClassMethodDescriptorType falls back to MethodDescriptorType (our dict Type.__dict__ lacks 'fromkeys') (wave-70, W110)."
 
 [[file]]
@@ -3523,7 +3523,7 @@ path = "typing.py"
 upstream_path = "typing.py"
 status = "deviated"
 upstream_sha256 = "de569368c2c4958b7aaddbe755056860a89b1d313f69d437177864f37cb2503b"
-deviated_sha256 = "cc383d1e0a3ea689011cce75dd8a81bc065305257b82b1a8181db6142bc6dce1"
+deviated_sha256 = "28e4a27b2fc382efec1fda7eef39a34abb32f09bbe1fa9f6ad3f1d885fefe1ed"
 note = "antipythony copy of CPython typing with a 16-line deviation: when a later base resolves to a Generic subclass, drop the resolved origin entirely (the subclass already pulls Generic into the MRO; bases-order C3 contradiction, twisted ZipPath) (wave-109)."
 
 [[file]]
@@ -3636,14 +3636,6 @@ upstream_path = "urllib/__init__.py"
 status = "pristine"
 upstream_sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 deviated_sha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-note = ""
-
-[[file]]
-path = "colorsys.py"
-upstream_path = "colorsys.py"
-status = "pristine"
-upstream_sha256 = "65e3dfbf7bad61d4d7d7731a69dd7e75a347fd350d91327a51010a94e6fd2f1d"
-deviated_sha256 = "65e3dfbf7bad61d4d7d7731a69dd7e75a347fd350d91327a51010a94e6fd2f1d"
 note = ""
 
 [[file]]
@@ -3967,6 +3959,38 @@ deviated_sha256 = "17a170a91615e7b2564d18d24952a26563d7d4cfcde6da7b20c356a3de60d
 note = "antipythony shim with no CPython counterpart (zlib is a C module): zlib constants, error, and a GZS1-framed storage compress/decompress; real DEFLATE raises NotImplementedError lazily (4b228b8)."
 
 [[file]]
+path = "zoneinfo/__init__.py"
+upstream_path = "zoneinfo/__init__.py"
+status = "pristine"
+upstream_sha256 = "9091c902b8d0385f835e9d393017f03b68f92fae7cbe1e31833b2911d65947e6"
+deviated_sha256 = "9091c902b8d0385f835e9d393017f03b68f92fae7cbe1e31833b2911d65947e6"
+note = ""
+
+[[file]]
+path = "zoneinfo/_common.py"
+upstream_path = "zoneinfo/_common.py"
+status = "pristine"
+upstream_sha256 = "0da0f341817363ada0437a53d41611aeb85ac3a9f58229f3b34d4acc49576465"
+deviated_sha256 = "0da0f341817363ada0437a53d41611aeb85ac3a9f58229f3b34d4acc49576465"
+note = ""
+
+[[file]]
+path = "zoneinfo/_tzpath.py"
+upstream_path = "zoneinfo/_tzpath.py"
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "5ad9c18b612f8171130c3f33205520cb900272773b92ee28598ea5111731f39b"
+note = "antipythony shim with a CPython counterpart (F-STRUCT-1, tier1-struct1): CPython's zoneinfo._tzpath is a C-accelerated module; the shim serves the pure-py reset_tzpath/TZPATH/available_timezones/InvalidTZPathWarning surface zoneinfo/__init__ consumes."
+
+[[file]]
+path = "zoneinfo/_zoneinfo.py"
+upstream_path = "zoneinfo/_zoneinfo.py"
+status = "pristine"
+upstream_sha256 = "0279b3226e70f7ec2a8b0127f4bcab524587486ae1f80b26eb46ee87ba95bfe4"
+deviated_sha256 = "0279b3226e70f7ec2a8b0127f4bcab524587486ae1f80b26eb46ee87ba95bfe4"
+note = ""
+
+[[file]]
 path = "zope/__init__.py"
 upstream_path = ""
 status = "deviated"
@@ -4014,42 +4038,30 @@ upstream_sha256 = ""
 deviated_sha256 = "235ac04794e6237d9b32aba5571776867adeda06dffe419d794374b91faa2e91"
 note = "antipythony shim with no CPython counterpart (zope.interface is third-party): minimal InterfaceClass/SpecificationBase token surface backing the advisory-only zope shim (4b228b8)."
 
-[[file]]
-path = "fractions.py"
-upstream_path = "fractions.py"
-status = "pristine"
-upstream_sha256 = "7a95f1c506c9ac4b2277df5f2bdd9d61cc67b520c45021a5a961939770221ef6"
-deviated_sha256 = "7a95f1c506c9ac4b2277df5f2bdd9d61cc67b520c45021a5a961939770221ef6"
-note = "CPython 3.14.7 verbatim backfill (F-STRUCT-1, tier1-struct1): pydantic _generate_schema imports fractions; the vendored tree lacked it."
+# FINISHER-SWAVE additions (2026-11-24): s016c/s016 family + s023 ast.unparse
+# work deviated these files from pristine 3.14.7 bytes; each fix has a named
+# session record under plans/.
 
 [[file]]
-path = "zoneinfo/__init__.py"
-upstream_path = "zoneinfo/__init__.py"
-status = "pristine"
-upstream_sha256 = "9091c902b8d0385f835e9d393017f03b68f92fae7cbe1e31833b2911d65947e6"
-deviated_sha256 = "9091c902b8d0385f835e9d393017f03b68f92fae7cbe1e31833b2911d65947e6"
-note = "CPython 3.14.7 verbatim backfill (F-STRUCT-1, tier1-struct1): pydantic _generate_schema imports zoneinfo."
-
-[[file]]
-path = "zoneinfo/_common.py"
-upstream_path = "zoneinfo/_common.py"
-status = "pristine"
-upstream_sha256 = "0da0f341817363ada0437a53d41611aeb85ac3a9f58229f3b34d4acc49576465"
-deviated_sha256 = "0da0f341817363ada0437a53d41611aeb85ac3a9f58229f3b34d4acc49576465"
-note = "CPython 3.14.7 verbatim backfill (F-STRUCT-1, tier1-struct1)."
-
-[[file]]
-path = "zoneinfo/_tzpath.py"
-upstream_path = "zoneinfo/_tzpath.py"
+path = "_ast_unparse.py"
+upstream_path = "_ast_unparse.py"
 status = "deviated"
 upstream_sha256 = ""
-deviated_sha256 = "5ad9c18b612f8171130c3f33205520cb900272773b92ee28598ea5111731f39b"
-note = "antipythony shim with a CPython counterpart (F-STRUCT-1, tier1-struct1): CPython's zoneinfo._tzpath is a C-accelerated module; the shim serves the pure-py reset_tzpath/TZPATH/available_timezones/InvalidTZPathWarning surface zoneinfo/__init__ consumes."
+deviated_sha256 = "d13f71f55587db8acdd97f1c08f71bb21eb18ee5f0b4da24676a756d5135b5fa"
+note = "s023 ast.unparse surface (NEXT-0208f/02resid-b): unparse output byte-exact vs CPython 3.14.7 with our AST shapes; drift documented, byte-exactness gate lives in the stdlib slice"
 
 [[file]]
-path = "zoneinfo/_zoneinfo.py"
-upstream_path = "zoneinfo/_zoneinfo.py"
-status = "pristine"
-upstream_sha256 = "0279b3226e70f7ec2a8b0127f4bcab524587486ae1f80b26eb46ee87ba95bfe4"
-deviated_sha256 = "0279b3226e70f7ec2a8b0127f4bcab524587486ae1f80b26eb46ee87ba95bfe4"
-note = "CPython 3.14.7 verbatim backfill (F-STRUCT-1, tier1-struct1)."
+path = "pprint.py"
+upstream_path = "pprint.py"
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "a93bb1fca86ecba27b159ecea749754ae42ff4ec4f474199928d6c8279438d4c"
+note = "02.08 audit surface gap: pprint repr paths needed local fixes to pass the stdlib slice (NEXT-0208f); formatting contract unchanged"
+
+[[file]]
+path = "tokenize.py"
+upstream_path = "tokenize.py"
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "c462e157d99357c47b04fcfc539bb1e0af663803b04e74e0f435d67a254d38a1"
+note = "inspect.getsource chain (T2 pytest, NEXT-T2 waves): tokenize needed local fixes for our reader shapes; upstream bytes do not serve the vendored runtime"
