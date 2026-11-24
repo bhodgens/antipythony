@@ -87,10 +87,26 @@ member descriptors route to slot storage.
   suite surface is unchanged; final re-run counts ride the same background
   lane result.
 
-## Files touched (commit 32d986e)
+## Files touched (commits 32d986e + 90ac7f7)
 
 - crates/ap-run/src/builtins_modules.rs (build_io UnsupportedOperation class;
   call_os get_terminal_size ioctl)
 - crates/ap-run/src/builtins.rs (sys.stdin <fd> seed)
-- crates/ap-run/src/classes.rs (attr_set_protocol descriptor order; descr_set
-  member-descriptor settable)
+- crates/ap-run/src/classes.rs (descriptor reorder — REVERTED in 90ac7f7:
+  A/B against base @3bafad9 showed the reorder hangs
+  property_setter_and_readonly + slots_restriction_messages at the 240s
+  probe fence (base: 29/29 in 3.8s). Fileno fixes do NOT depend on it —
+  plain `__slots__` set and the slots-message probes are byte-exact on
+  trunk classes.rs. The rich Text.plain property-setter shape is filed as
+  the follow-up; do NOT re-land the reorder without diagnosing the hang.)
+
+## Final gate state (both commits landed)
+
+- fileno probe byte-exact vs python3.14 (diff clean)
+- slots restriction messages byte-exact vs python3.14
+- classes_differential: **29 passed / 0 failed** (4.06s)
+- ap-gc release: **36 passed / 0 failed** (27 + 9 + 0)
+- stdlib_modules_differential: **48 passed / 0 failed** (5.76s)
+- rich Panel import-face: progresses (console init + terminal-size fallback);
+  next wall = dataclass __repr__/inspect signature chain
+- W5 repro: green WITHOUT APX_GC_THRESHOLD across ~100+ runs (pin evidence)
