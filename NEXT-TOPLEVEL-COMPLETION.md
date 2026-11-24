@@ -129,6 +129,17 @@ trunk. Gate counts cited by leaves are claims; re-runs are evidence.
  structural, own leaf), build-ext linkage lint row, CPython-arm byte
  diff of the 110 pydantic members, final trunk sweep + AGENTS.md
  update, completion declaration.
+ FINISHER SWEEP RESULT (2026-11-24): the sweep's fresh rebuild
+ surfaced a REAL regression of the stale-binary-masked class —
+ six.py:987 WRITES __spec__.submodule_search_locations and the
+ pre-exec seed didn't carry the name (add_six_import_use_byte_exact
+ failed on a fresh debug ap-run-eval). FIXED on trunk 8ae9d62: the
+ importer pre-exec seed, machinery make_module_spec, and the interp
+ wrap_spec mint all seed submodule_search_locations; Namespace-kind
+ objects accept attribute writes in attr_set_protocol. Verified:
+ packaging_differential 7/7, hybrid_gate 7/7 (after building
+ ap-host + CRTs — the other filed failure), ap-run 208/0, stdlib
+ 48/48. Full-workspace suite running as the final number.
  FINISHER WAVE DISPATCHED 2026-11-23 (deleg_47cd2b60, 3 leaves):
  (a) leaf-struct1 = F-STRUCT-1 (from-import resolution order;
  pydantic BaseModel chain green is the gate) — MERGED 465cf34.
