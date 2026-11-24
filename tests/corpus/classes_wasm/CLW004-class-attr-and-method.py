@@ -1,4 +1,4 @@
-# Cites: S-03-3, S-03-9
+# Cites: S-03-03, S-03-09
 # Class-level attribute via mro dict; method with no args beyond self.
 class C:
     k = 42

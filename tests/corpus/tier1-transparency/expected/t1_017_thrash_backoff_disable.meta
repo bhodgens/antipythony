@@ -1,7 +1,7 @@
 {
   "date": "2026-11-10",
   "family": "tier1-transparency",
-  "generator": "leaf 02.05d thrash-gate pin (python3.14 -c recording)",
-  "generator_sha256": "n/a (hand-pinned in-leaf)",
+  "generator": "tests/corpus/tier1-transparency/t1_017_thrash_backoff_disable.py",
+  "generator_sha256": "10be39e5568ad4bd2033a57d27ca5c880779766bac74c55dd8e578e7f0f2e04e",
   "sys_version": "3.14.7 (main, Aug  5 2026, 10:29:49) [Clang 21.0.0 (clang-2100.1.1.101)]"
 }

@@ -1,4 +1,4 @@
-# Cites: S-03-4, S-03-10
+# Cites: S-03-04, S-03-10
 # __init__ with 2 params storing two attrs; method call reads them.
 class Pt:
     def __init__(self, a, b):

@@ -1,4 +1,6 @@
-# Cites: S-02-8 (exception propagation), NEXT-S016B — per-instrument source
+# Cites: S-02-8 (exception propagation), S-03-09 (attribute lookup via
+# __getattribute__ — the dunder-slot dispatch whose instrument lines are
+# pinned), NEXT-S016B — per-instrument source
 # lines, mixed operators: Subscript/IfExp instruments carry their own lines
 # in CPython (BINARY_SUBSCR at the OBJECT start; conditional-expression
 # instrument at the condition start). Probes measured divergence for

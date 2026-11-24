@@ -106,6 +106,7 @@ masked slices, type names), never addresses.
 | t1_014_exceptions_in_hot_loop.py | unwind-to-handler inside tier-1: ZeroDivisionError + LookupError raised/caught 4.7k times in a 20k loop; caught/kind exact sums pin that no iteration's handler state was skipped or doubled | S-02-29, S-02-30, S-02-31, C-31 |
 | t1_015_nested_break_else.py | control-flow traces across OSR: nested while/for with break, continue, and both `else` clauses — a mis-restored control stack at the tier boundary rewrites the deterministic (o, tag) trace | S-02-15, S-02-16, S-02-17, S-02-18, C-31 |
 | t1_016_deep_call_chain_500.py | 500-deep chained Python calls (`f(n) = 1 + f(n-1)`) — debug-build stack-overflow gate: each level adds one interpreter frame; passes only if the runtime survives depth 500 with def-time binding intact | S-02-7, S-02-10, C-31 |
+| t1_017_thrash_backoff_disable.py | deliberate tier thrash: `mix` flips its hot binop site between int and str every 100 calls (60.1k total) so the per-function epoch counter crosses the 8-epoch DISABLED pin (threshold-64 retry backoff, max shift 6); every phase's results stay exact and the pin observable is the machine-parseable [TIER1-STATS] line | S-01-1, S-01-7, S-01-14, S-01-19, S-01-20, S-02-17, C-31 |
 
 | bench/ program | Slice role | Cites |
 | --- | --- | --- |

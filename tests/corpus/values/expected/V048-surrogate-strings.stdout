@@ -1,0 +1,33 @@
+'\ud800' 1 55296
+True True
+True '\udfff'
+E: 'utf-8' codec can't encode character '\ud800' in position 0: surrogates not allowed 0 1
+E: 'utf-8' codec can't encode characters in position 1-2: surrogates not allowed 1 3
+b'xy'
+b'x?y'
+b'x\\ud800y'
+b'x&#55296;y'
+b'x\xed\xa0\x80y'
+b'\xff'
+E: 'utf-8' codec can't encode character '\ud800' in position 0: surrogates not allowed
+LookupError: unknown error handler name 'bogus'
+b'abc'
+E: 'utf-8' codec can't decode byte 0xed in position 0: invalid continuation byte 0 1
+'\ud800'
+'\udc80'
+'���'
+'\\xed\\xa0\\x80'
+''
+skip-truncated
+True True
+'\ud800' 1
+b'\x00\xd8' b'\xff\xfe\x00\xd8'
+b'\xff\xfe=\xd8\x00\xde'
+E: 'utf-16' codec can't encode character '\ud800' in position 0: surrogates not allowed
+'\ud800'
+E: 'utf-32' codec can't encode character '\ud800' in position 0: surrogates not allowed
+b'\x00\xd8\x00\x00'
+E: 'utf-32-le' codec can't decode bytes in position 0-3: code point in surrogate code point range(0xd800, 0xe000)
+'\ud800'
+b'hi' b'h?i'
+"'\\ud800'" '\ud800'

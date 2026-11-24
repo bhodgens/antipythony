@@ -1,4 +1,4 @@
-# Cites: S-03-9, S-03-5
+# Cites: S-03-09, S-03-05
 # Attribute lookup walks the class mro; subclass inherits __init__.
 class Base:
     def __init__(self, v):

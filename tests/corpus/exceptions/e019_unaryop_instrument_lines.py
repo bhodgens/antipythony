@@ -1,4 +1,4 @@
-# Cites: S-01-1 (unary operators), NEXT-S016C — per-instrument source lines,
+# Cites: S-01-1 (unary operators), S-03-09 (attribute protocol, LOAD_ATTR instrument), NEXT-S016C — per-instrument source lines,
 # UnaryOp: CPython's UNARY_* opcodes are instrumented and position at the
 # OPERATOR line (== node start). Probe u1 (PROBES-S016B recipe s4b): `-`
 # alone on its own line, operand on the next -> the warning/raise from

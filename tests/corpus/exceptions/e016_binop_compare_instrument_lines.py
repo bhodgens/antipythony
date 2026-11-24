@@ -1,4 +1,6 @@
-# Cites: S-02-8 (exception propagation), plans/antipythony/01-frontend-ir
+# Cites: S-02-8 (exception propagation), S-03-09 (attribute lookup via
+# __getattribute__ — the dunder-slot dispatch whose instrument lines are
+# pinned), plans/antipythony/01-frontend-ir
 # NEXT-S016B — per-instrument source lines (extends s016's per-call lines to
 # BinOp/Compare). CPython's line table is per-instrument: BINARY_OP positions
 # at the LEFT OPERAND's start line, COMPARE_OP at the FIRST operand's start.

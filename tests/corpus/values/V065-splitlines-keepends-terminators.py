@@ -1,5 +1,6 @@
 # T5 str.splitlines(keepends=True) terminator classes (F1 fix pin).
-# Cites: tests/t5-probe/splitlines_keepends_repro.py (keepends dropped ALL
+# Cites: S-01-14 (str sequence semantics), S-01-15 (str/bytes slicing),
+# tests/t5-probe/splitlines_keepends_repro.py (keepends dropped ALL
 # terminators). Pins every CPython universal-newline terminator class —
 # \n \r\n \r \v \f \x1c \x1d \x1e \x85 \u2028 \u2029 — with keepends=True,
 # keepends=False, the \r\n two-char pairing (never splits between \r and \n),

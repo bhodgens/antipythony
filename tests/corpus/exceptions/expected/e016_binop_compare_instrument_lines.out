@@ -1,7 +1,7 @@
 a-msg boom-add
-a-frames [40, 34, 26]
+a-frames [42, 36, 28]
 b-msg division by zero
-b-frames [57, 51]
+b-frames [59, 53]
 c-msg boom-eq
-c-frames [81, 76, 68]
+c-frames [83, 78, 70]
 done

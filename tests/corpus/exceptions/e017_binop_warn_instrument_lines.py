@@ -1,4 +1,6 @@
-# Cites: S-02-8 (exception propagation), NEXT-S016B — per-instrument source
+# Cites: S-02-8 (exception propagation), S-03-09 (attribute lookup via
+# __getattribute__ — the dunder-slot dispatch whose instrument lines are
+# pinned), NEXT-S016B — per-instrument source
 # lines, warnings face. A warning raised with stacklevel=2 from a dunder
 # dispatched inside a multi-line operator expression attributes to the
 # instrument line (BINARY_OP: left operand start; COMPARE_OP: first operand

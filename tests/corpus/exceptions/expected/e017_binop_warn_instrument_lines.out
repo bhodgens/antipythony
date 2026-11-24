@@ -1,6 +1,6 @@
-a-lineno 24
+a-lineno 26
 a-msg w-add
-b-lineno 46
+b-lineno 48
 b-msg w-lt
-c-lineno 69
+c-lineno 71
 done

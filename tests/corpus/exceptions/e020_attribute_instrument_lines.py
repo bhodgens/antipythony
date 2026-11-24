@@ -1,4 +1,4 @@
-# Cites: S-03-9 (attribute protocol), NEXT-S016C — per-instrument source
+# Cites: S-03-09 (attribute protocol), NEXT-S016C — per-instrument source
 # lines, Attribute: CPython's LOAD_ATTR instrument positions at the
 # ATTRIBUTE NAME line, NOT the object's start (probes q1/q2/q3, PROBES-
 # S016B recipe q8): obj / dot / attr-name on separate lines all attribute

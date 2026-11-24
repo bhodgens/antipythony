@@ -1,4 +1,7 @@
-# Cites: SPLIT-02.05 §02.05d gate (deliberate-thrash probe), Risk 3.
+# Cites: S-01-1, S-01-7, S-01-14, S-01-19, S-01-20, S-02-17, C-31
+# (tier modes invisible; deliberate thrash per SPLIT-02.05 §02.05d, Risk 3).
+# Stresses: tier-1 thrash → backoff → DISABLED-pin lifecycle (02.05d gate);
+# every phase must stay byte-exact while the site deopts and re-opts.
 # Deliberate thrash: `mix` flips its hot binop site between int and str
 # every 100 calls — 60.1k calls total so the per-function epoch counter
 # crosses the 8-epoch DISABLED pin (threshold 64, `threshold << epoch`

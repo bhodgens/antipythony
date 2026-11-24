@@ -1,4 +1,6 @@
 # T5 bytes.splitlines / bytearray.splitlines pins (F1 fix wave).
+# Cites: S-01-17 (str/bytes strict separation — the bytes boundary set),
+# S-01-15 (bytes slicing/sequence semantics).
 # Pins: bytes terminator set is ONLY \n \r \r\n (\v \f \x1c are NOT bytes
 # boundaries — str-only universal-newline chars), keepends both ways,
 # empty/only-terminator/trailing-chunk cases, and the join round-trip.
