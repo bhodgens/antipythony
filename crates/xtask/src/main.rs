@@ -68,33 +68,25 @@ fn collect_deps() -> Vec<Entry> {
         .iter()
         .map(|id| id.repr.as_str())
         .collect();
+    let wm: std::collections::HashSet<cargo_metadata::PackageId> =
+        md.workspace_members.iter().cloned().collect();
 
-    let mut md = MetadataCommand::new()
-        .current_dir(root.clone())
-        .exec()
-        .expect("cargo metadata (with deps) failed");
-
-    // Host-independent notices: union the resolved graphs of every CI
-    // target platform, so a mac-generated THIRD_PARTY_NOTICES cannot go
-    // stale on the linux runner (finisher sweep, 2026-11-24). Without
-    // this, cargo metadata resolves only the HOST's target-gated deps.
+    // Host-independent notices: the union graph is built from ONLY the
+    // explicit NOTICE_TARGETS below — the host default is EXCLUDED, so a
+    // mac-generated file and a linux-generated file are byte-identical
+    // (the host default would otherwise pull host-only cfg deps into the
+    // union on each runner, making the output host-dependent).
     const NOTICE_TARGETS: &[&str] = &[
         "x86_64-unknown-linux-gnu",
         "x86_64-unknown-linux-musl",
         "aarch64-apple-darwin",
         "x86_64-apple-darwin",
     ];
-    let mut packages: Vec<Package> = md.packages.clone();
-    let mut node_ids: std::collections::HashSet<cargo_metadata::PackageId> = md
-        .resolve
-        .as_ref()
-        .map(|r| r.nodes.iter().map(|n| n.id.clone()).collect())
-        .unwrap_or_default();
-    let mut resolve_nodes: Vec<cargo_metadata::Node> = md
-        .resolve
-        .as_ref()
-        .map(|r| r.nodes.clone())
-        .unwrap_or_default();
+    let mut packages: Vec<Package> = Vec::new();
+    let mut node_ids: std::collections::HashSet<cargo_metadata::PackageId> =
+        std::collections::HashSet::new();
+    let mut resolve_nodes: Vec<cargo_metadata::Node> = Vec::new();
+    let mut root_pkg: Option<cargo_metadata::PackageId> = None;
     for target in NOTICE_TARGETS {
         let tmd = MetadataCommand::new()
             .current_dir(root.clone())
@@ -114,17 +106,49 @@ fn collect_deps() -> Vec<Entry> {
         let known: std::collections::HashSet<cargo_metadata::PackageId> =
             packages.iter().map(|p| p.id.clone()).collect();
         for pkg in tmd.packages {
+            if root_pkg.is_none() && wm.contains(&pkg.id) {
+                root_pkg = Some(pkg.id.clone());
+            }
             if !known.contains(&pkg.id) {
                 packages.push(pkg);
             }
         }
     }
-    md.packages = packages;
-    let nodes = resolve_nodes;
-    let root_pkg = md.resolve.as_ref().and_then(|r| r.root.clone());
-    if let Some(resolve) = md.resolve.as_mut() {
-        resolve.nodes = nodes;
-        resolve.root = root_pkg;
+    // Build the union graph WITHOUT the non-exhaustive struct literals:
+    // start from the FIRST filtered target's metadata, then merge the rest.
+    let mut md = MetadataCommand::new()
+        .current_dir(root.clone())
+        .other_options(vec![
+            "--filter-platform".to_string(),
+            NOTICE_TARGETS[0].to_string(),
+        ])
+        .exec()
+        .expect("cargo metadata (filtered) failed");
+    for target in &NOTICE_TARGETS[1..] {
+        let tmd = MetadataCommand::new()
+            .current_dir(root.clone())
+            .other_options(vec!["--filter-platform".to_string(), (*target).to_string()])
+            .exec()
+            .expect("cargo metadata (filtered) failed");
+        for node in tmd
+            .resolve
+            .as_ref()
+            .map(|r| r.nodes.clone())
+            .unwrap_or_default()
+        {
+            if node_ids.insert(node.id.clone()) {
+                if let Some(resolve) = md.resolve.as_mut() {
+                    resolve.nodes.push(node);
+                }
+            }
+        }
+        let known: std::collections::HashSet<cargo_metadata::PackageId> =
+            packages.iter().map(|p| p.id.clone()).collect();
+        for pkg in tmd.packages {
+            if !known.contains(&pkg.id) {
+                packages.push(pkg);
+            }
+        }
     }
 
     // Accumulate all (name, version) pairs actually resolved for workspace
