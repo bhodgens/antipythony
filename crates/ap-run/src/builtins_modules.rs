@@ -9259,13 +9259,16 @@ fn stat_result_value(st: &libc::stat) -> Value {
         st.st_ctime_nsec,
     );
     #[cfg(not(target_os = "macos"))]
+    // Linux glibc stat: fields are st_atime/st_mtime/st_ctime (sec) and
+    // st_atime_nsec/st_mtime_nsec/st_ctime_nsec (ns) — the timespec-style
+    // st_atim names are macOS-only in libc 0.2.
     let (a_sec, a_nsec, m_sec, m_nsec, c_sec, c_nsec) = (
-        st.st_atim.tv_sec as i64,
-        st.st_atim.tv_nsec as i64,
-        st.st_mtim.tv_sec as i64,
-        st.st_mtim.tv_nsec as i64,
-        st.st_ctim.tv_sec as i64,
-        st.st_ctim.tv_nsec as i64,
+        st.st_atime as i64,
+        st.st_atime_nsec as i64,
+        st.st_mtime as i64,
+        st.st_mtime_nsec as i64,
+        st.st_ctime as i64,
+        st.st_ctime_nsec as i64,
     );
     let (atime, mtime, ctime) = (
         a_sec as f64 + a_nsec as f64 / 1e9,
