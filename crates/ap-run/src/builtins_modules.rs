@@ -12746,7 +12746,7 @@ pub fn call_base64(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Op
                             ));
                         }
                         let alt2: [u8; 2] = [alt[0], alt[1]];
-                            Ok(Value::Bytes(Gc::new(translate_two(&encoded, b"+/", &alt2))))
+                        Ok(Value::Bytes(Gc::new(translate_two(&encoded, b"+/", &alt2))))
                     }
                 }
             }
@@ -12863,7 +12863,10 @@ fn bytes_like_ref(v: &Value) -> Result<&[u8], Flow> {
         Value::Str(st) => Ok(st.as_str().as_bytes()),
         other => Err(raise(
             "TypeError",
-            format!("a bytes-like object is required, not '{}'", other.type_name()),
+            format!(
+                "a bytes-like object is required, not '{}'",
+                other.type_name()
+            ),
         )),
     }
 }

@@ -400,19 +400,19 @@ note = "runtime-side codecs error-handler helpers (no upstream counterpart); T1 
 
 [[file]]
 path = "_sysconfig_vars__darwin_darwin.json"
-upstream_path = "_sysconfig_vars__darwin_darwin.json"
-status = "pristine"
-upstream_sha256 = "5cf8137dce9dab7b001698a8b670cdb3af48e0a156c11095a0235593d7234e99"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
 deviated_sha256 = "5cf8137dce9dab7b001698a8b670cdb3af48e0a156c11095a0235593d7234e99"
-note = ""
+note = "darwin-only sysconfig vars (3.14.7); upstream files exist only on darwin hosts (setup-python linux has none), so no host-stable upstream exists — declared no-upstream-counterpart per the codecs-helpers precedent"
 
 [[file]]
 path = "_sysconfigdata__darwin_darwin.py"
-upstream_path = "_sysconfigdata__darwin_darwin.py"
-status = "pristine"
-upstream_sha256 = "b7790060b306ad6782019d782efd4ab397e0e55d3aa71f342f92d7c89d813de0"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
 deviated_sha256 = "b7790060b306ad6782019d782efd4ab397e0e55d3aa71f342f92d7c89d813de0"
-note = ""
+note = "darwin-only sysconfig data (3.14.7); upstream files exist only on darwin hosts (setup-python linux has none), so no host-stable upstream exists — declared no-upstream-counterpart per the codecs-helpers precedent"
 
 [[file]]
 path = "_weakrefset.py"
@@ -3464,11 +3464,11 @@ note = ""
 
 [[file]]
 path = "sysconfig/__init__.py"
-upstream_path = "sysconfig/__init__.py"
-status = "pristine"
-upstream_sha256 = "d5ec49f0273b662e73a54d6c9b768e998266198b34f3625ee7211859d0fbea06"
+upstream_path = ""
+status = "deviated"
+upstream_sha256 = ""
 deviated_sha256 = "d5ec49f0273b662e73a54d6c9b768e998266198b34f3625ee7211859d0fbea06"
-note = ""
+note = "pinned to Homebrew 3.14.7 bytes; upstream bytes are host-dependent (Homebrew injects the osx_framework_library scheme, python.org/setup-python ships plain posix_prefix), so no stable upstream exists to compare against; declared no-upstream-counterpart per the codecs-helpers precedent"
 
 [[file]]
 path = "sysconfig/__main__.py"

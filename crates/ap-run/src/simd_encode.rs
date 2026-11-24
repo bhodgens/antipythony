@@ -146,7 +146,8 @@ mod neon {
     /// `in_` must be readable for 48 bytes, `out` writable for 64.
     pub unsafe fn encode48(in_: *const u8, out: *mut u8, tbl: Tbl4) {
         let s = vld3q_u8(in_);
-        let mut d: uint8x16x4_t = uint8x16x4_t(vdupq_n_u8(0), vdupq_n_u8(0), vdupq_n_u8(0), vdupq_n_u8(0));
+        let mut d: uint8x16x4_t =
+            uint8x16x4_t(vdupq_n_u8(0), vdupq_n_u8(0), vdupq_n_u8(0), vdupq_n_u8(0));
         let m = vdupq_n_u8(0x3f);
 
         d.0 = vshrq_n_u8(s.0, 2);
@@ -167,7 +168,8 @@ mod neon {
     /// `in_` must be readable for 24 bytes, `out` writable for 32.
     pub unsafe fn encode24(in_: *const u8, out: *mut u8, tbl: Tbl4) {
         let s = vld3_u8(in_);
-        let mut d: uint8x8x4_t = uint8x8x4_t(vdup_n_u8(0), vdup_n_u8(0), vdup_n_u8(0), vdup_n_u8(0));
+        let mut d: uint8x8x4_t =
+            uint8x8x4_t(vdup_n_u8(0), vdup_n_u8(0), vdup_n_u8(0), vdup_n_u8(0));
         let m = vdup_n_u8(0x3f);
 
         d.0 = vshr_n_u8(s.0, 2);

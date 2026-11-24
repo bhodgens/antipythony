@@ -44,11 +44,11 @@ pub mod rss_guard;
 pub mod runtime_state;
 pub mod scheduler;
 pub mod send_value;
+pub mod simd_encode;
 pub mod sre;
 pub mod sre_tables;
 pub mod structmod;
 pub mod surr_codec;
-pub mod simd_encode;
 pub mod threading;
 pub mod threading_call;
 
