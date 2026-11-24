@@ -31,11 +31,11 @@ main via the orchestrator after first-hand gate re-runs.
 | # | leaf | owner surface | status | delegation |
 |---|---|---|---|---|
 | W1 | 00-harness/01-harness-runner.md | tests/bench/primitive/* (new files, no cargo) | DONE — orchestrator-verified (schema OK, 6 smoke rows, reproducible) | deleg_7a6d3a8f |
-| W1 | diff gates diff_b64.py + diff_hex.py (upfront gate authoring) | tests/bench/primitive/diff_*.py only | IN FLIGHT | deleg_1f905825 |
+| W1 | diff gates diff_b64.py + diff_hex.py (upfront gate authoring) | tests/bench/primitive/diff_*.py only | DONE — verified (hex 1832/1832 GREEN; b64 RED w/ 8 scoped API divergences, routed into base64 leaf brief) | deleg_1f905825 |
 | W1 | audits: hash-compress / str-bytes / sort-dict-json (analysis-only, ratio placeholders) | 02-parity-audit/audits/*.md ONLY | IN FLIGHT (3 parallel) | deleg_43751b52 |
 | W1 | release build of ap-cli in leaf worktree | target-primperf | DONE (ap-cli + ap-conform release, smoke-verified) | proc_196de983a269 |
 | W2 | 00-harness/02-baseline-survey.md | bench_report.json + baseline-notes.md | DONE — orchestrator-verified (50 rows, 17P/25F/8E, ranking consistent, cites read) | deleg_6a6a9f3c |
-| W3 | 01-encode-simd/01-base64-simd.md | builtins_modules.rs b64 arms + simd_encode.rs | QUEUED (needs W2) | - |
+| W3 | 01-encode-simd/01-base64-simd.md | builtins_modules.rs b64 arms + simd_encode.rs | IN FLIGHT — brief includes fixing the 8 gate divergences first (gate RED→GREEN then SIMD) | deleg_58d14553 |
 | W4 | 01-encode-simd/02-hexlify-simd.md | binascii hex arms + simd_encode.rs | QUEUED (needs W3 reviewed) | - |
 | W3 | 02-parity-audit/01-hash-and-compress.md | audits/hash-compress.md ONLY | QUEUED (needs W2; dispatch parallel with W3) | - |
 | W3 | 02-parity-audit/02-str-and-bytes.md | audits/str-bytes.md ONLY | QUEUED (needs W2) | - |
