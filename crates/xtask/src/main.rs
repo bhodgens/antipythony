@@ -151,24 +151,22 @@ fn collect_deps() -> Vec<Entry> {
         }
     }
 
-    // Accumulate all (name, version) pairs actually resolved for workspace
-    // dependency graphs (any platform/feature), so the gate is conservative.
+    // The union graph above is STILL host-dependent in one respect: cargo
+    // resolves workspace members' [dev-dependencies] for the HOST platform
+    // inside each --filter-platform metadata call, so a linux runner pulls
+    // linux-only dev deps into the union that a mac runner does not (and
+    // vice versa). That host variance made THIRD_PARTY_NOTICES permanently
+    // cross-platform-drift. Fix: derive entries from the union PACKAGE list
+    // (target-complete from the union), NOT from the resolve graph. License
+    // text reads the manifest in ~/.cargo/registry (same bytes both hosts).
     let mut used: BTreeMap<(String, String), Vec<&Package>> = BTreeMap::new();
-    for resolve in md.resolve.iter() {
-        for node in &resolve.nodes {
-            let id = node.id.repr.as_str();
-            if members.contains(&id) {
-                continue;
-            }
-            let pkg = md
-                .packages
-                .iter()
-                .find(|p| p.id.repr.as_str() == id)
-                .expect("resolve node missing from packages");
-            used.entry((pkg.name.to_string(), pkg.version.to_string()))
-                .or_default()
-                .push(pkg);
+    for pkg in &packages {
+        if members.contains(&pkg.id.repr.as_str()) {
+            continue;
         }
+        used.entry((pkg.name.to_string(), pkg.version.to_string()))
+            .or_default()
+            .push(pkg);
     }
 
     let mut entries = Vec::new();
