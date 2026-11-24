@@ -29,6 +29,7 @@ allow = [
     "ISC",
     "Zlib",
     "Unicode-3.0",
+    "Unicode-DFS-2016",
     "CDLA-Permissive-2.0",
 ]
 # NOTE: cargo-deny PR 611 removed the `licenses.deny` key — the copyleft
