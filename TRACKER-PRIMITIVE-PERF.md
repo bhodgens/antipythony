@@ -30,11 +30,11 @@ main via the orchestrator after first-hand gate re-runs.
 
 | # | leaf | owner surface | status | delegation |
 |---|---|---|---|---|
-| W1 | 00-harness/01-harness-runner.md | tests/bench/primitive/* (new files, no cargo) | IN FLIGHT | deleg_7a6d3a8f |
+| W1 | 00-harness/01-harness-runner.md | tests/bench/primitive/* (new files, no cargo) | DONE — orchestrator-verified (schema OK, 6 smoke rows, reproducible) | deleg_7a6d3a8f |
 | W1 | diff gates diff_b64.py + diff_hex.py (upfront gate authoring) | tests/bench/primitive/diff_*.py only | IN FLIGHT | deleg_1f905825 |
 | W1 | audits: hash-compress / str-bytes / sort-dict-json (analysis-only, ratio placeholders) | 02-parity-audit/audits/*.md ONLY | IN FLIGHT (3 parallel) | deleg_43751b52 |
-| W1 | release build of ap-cli in leaf worktree | target-primperf | IN FLIGHT (orchestrator background proc) | proc_196de983a269 |
-| W2 | 00-harness/02-baseline-survey.md | bench_report.json + baseline-notes.md | QUEUED (needs W1 + release binary) | - |
+| W1 | release build of ap-cli in leaf worktree | target-primperf | DONE (ap-cli + ap-conform release, smoke-verified) | proc_196de983a269 |
+| W2 | 00-harness/02-baseline-survey.md | bench_report.json + baseline-notes.md | IN FLIGHT | deleg_6a6a9f3c |
 | W3 | 01-encode-simd/01-base64-simd.md | builtins_modules.rs b64 arms + simd_encode.rs | QUEUED (needs W2) | - |
 | W4 | 01-encode-simd/02-hexlify-simd.md | binascii hex arms + simd_encode.rs | QUEUED (needs W3 reviewed) | - |
 | W3 | 02-parity-audit/01-hash-and-compress.md | audits/hash-compress.md ONLY | QUEUED (needs W2; dispatch parallel with W3) | - |
