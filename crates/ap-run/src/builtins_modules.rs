@@ -10498,7 +10498,10 @@ fn uname_tuple() -> Vec<String> {
     // reports "Darwin"/"arm64".
     let mut uts: libc::utsname = unsafe { std::mem::zeroed() };
     if unsafe { libc::uname(&mut uts) } == 0 {
-        let f = |arr: &[libc::c_char; 256]| -> String {
+        // Untyped byte slice: linux utsname fields are [i8; 65] with c_char
+        // = i8, macOS [c_char; 256] — a fixed-size closure type broke the
+        // linux build (CI E0308 x5, finisher sweep 2026-11-24).
+        let f = |arr: &[libc::c_char]| -> String {
             let bytes: Vec<u8> = arr
                 .iter()
                 .take_while(|&&c| c != 0)
