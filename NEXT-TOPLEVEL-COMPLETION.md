@@ -116,10 +116,19 @@ trunk. Gate counts cited by leaves are claims; re-runs are evidence.
  byte-matches CPython incl. torch; SourceFileLoader exec_module
  end-to-end — typing_extensions.py executes; machinery ctors fixed;
  ap-run 18/208/0 + slice 48/48 verified first-hand; structural
- leftovers recorded not hacked), fileno/GC-W5 RUNNING, F-STRUCT-1
- (re-entrant lazy import, structural, own leaf), build-ext linkage
- lint row, CPython-arm byte diff of the 110 pydantic members, final
- trunk sweep + AGENTS.md update, completion declaration.
+ leftovers recorded not hacked), fileno/GC-W5 leaf — MERGED a57291a. F-INTERP-1 FIXED (stdout
+ fileno OSError-catchable + os.get_terminal_size ioctl — rich
+ terminal-measure unblocks, next wall recorded); W5 VERIFIED
+ green WITHOUT APX_GC_THRESHOLD across 100+ runs — the shipped W117
+ pre-insert already covers the anyio shape (leaf provides the pin +
+ session record, no code change needed); classes.rs descriptor
+ reorder A/B'd against base and REVERTED (regressed
+ classes_differential 2 probes — honest revert); fail-set identical
+ to main independently verified. FINAL WAVE COMPLETE — all 4 merged.
+ REMAINING TO CLOSURE: F-STRUCT-1 (re-entrant lazy import,
+ structural, own leaf), build-ext linkage lint row, CPython-arm byte
+ diff of the 110 pydantic members, final trunk sweep + AGENTS.md
+ update, completion declaration.
 
 ## Explicitly NOT in scope (locked)
 
