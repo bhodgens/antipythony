@@ -4557,6 +4557,18 @@ pub fn attr_set_protocol(
                 format!("'{}' object has no attribute '{}'", o.name, name),
             ))
         }
+        // ModuleSpec namespaces (importer pre-exec seeds + machinery
+        // make_module_spec): six.py:987 (PEP 451) WRITES
+        // __spec__.submodule_search_locations on every module — namespace
+        // objects must accept attribute writes into their attrs (CPython:
+        // ModuleSpec is a plain class with instance __dict__).
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::Namespace => {
+            o.attrs
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .set(Value::Str(PyString::new(name)), v)
+                .map_err(Flow::from_py)
+        }
         other => Err(raise(
             "AttributeError",
             format!("'{}' object has no attribute '{}'", other.type_name(), name),

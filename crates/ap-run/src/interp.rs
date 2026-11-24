@@ -14837,6 +14837,14 @@ fn attr_get(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                                 Value::Str(PyString::new("parent")),
                                 Value::Str(PyString::new(parent.to_string())),
                             );
+                            // T4 (six.py:987 PEP 451): the module body may
+                            // WRITE __spec__.submodule_search_locations —
+                            // the name must pre-exist or the setattr
+                            // AttributeErrors ('object' object has no ...).
+                            let _ = a.set(
+                                Value::Str(PyString::new("submodule_search_locations")),
+                                Value::List(ap_obj::value::PyList::from_vec(vec![])),
+                            );
                         }
                         return Ok(Some(Value::Obj(spec)));
                     }

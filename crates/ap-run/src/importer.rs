@@ -710,9 +710,20 @@ fn load_into(
             };
             let _ = a.set(s("parent"), s(parent));
             let _ = a.set(s("origin"), s(file));
-            if compiled.is_package {
-                let _ = a.set(s("submodule_search_locations"), Value::None);
-            }
+            // six.py:987 (PEP 451): `__spec__.submodule_search_locations =
+            // []` unconditionally on EVERY module — the spec namespace must
+            // carry the name or the setattr AttributeErrors (six 1.17
+            // add_six_import_use_byte_exact regression, 2026-11-24). Packages
+            // get None here (real locations ride __path__); plain modules get
+            // an empty list so the write lands.
+            let _ = a.set(
+                s("submodule_search_locations"),
+                if compiled.is_package {
+                    Value::None
+                } else {
+                    Value::List(ap_obj::value::PyList::from_vec(vec![]))
+                },
+            );
         }
         let _ = ns.set(s("__spec__"), Value::Obj(spec));
     }
