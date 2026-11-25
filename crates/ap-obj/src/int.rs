@@ -677,20 +677,23 @@ impl Int {
         if eff.is_empty() {
             return Int::from_i64(0);
         }
-        // Pad to u32-limb boundary and accumulate in big-endian limb order.
+        // Pad to u32-limb boundary and build the magnitude in ONE bulk
+        // num-bigint construction (O(n)); the previous per-chunk
+        // `mag = (mag << 32) | limb` accumulation was O(n^2) — every
+        // shift allocated+copied the whole growing Big (1MiB from_bytes
+        // took 2.6s; bulk parse: ~1ms).
         let pad = (4 - eff.len() % 4) % 4;
         let mut be: Vec<u8> = if little {
             eff.iter().rev().copied().collect()
         } else {
             eff.to_vec()
         };
-        let mut full = vec![0u8; pad];
-        full.append(&mut be);
-        let mut mag = Big::zero();
-        for chunk in full.chunks_exact(4) {
-            let limb = u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-            mag = (mag << 32) | Big::from(limb);
+        if pad > 0 {
+            let mut padded = vec![0u8; pad];
+            padded.append(&mut be);
+            be = padded;
         }
+        let mag = Big::from_bytes_be(num_bigint::Sign::Plus, &be);
         let val = if signed && (bytes[if little { bytes.len() - 1 } else { 0 }] & 0x80) != 0 {
             // two's complement: value = mag - 2^(8*len)
             mag - (Big::one() << (bytes.len() as u64 * 8))
