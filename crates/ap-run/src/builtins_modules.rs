@@ -7545,14 +7545,46 @@ struct JsonParser<'a> {
     object_pairs_hook: Option<String>,
 }
 
+// ---------------------------------------------------------------------------
+// ppfix-json (W6b): static byte-classifier table, no-dep.
+// HEX_VAL: hex nibble value for ASCII hex digits, 0xFF otherwise (the
+// \uXXXX decode is 4 table lookups + shifts instead of from_str_radix
+// on a 4-byte slice).
+// ---------------------------------------------------------------------------
+static HEX_VAL: [u8; 256] = {
+    let mut t = [0xFFu8; 256];
+    let mut i = 0;
+    while i < 10 {
+        t[b'0' as usize + i] = i as u8;
+        i += 1;
+    }
+    let mut i = 0;
+    while i < 6 {
+        t[b'a' as usize + i] = (10 + i) as u8;
+        t[b'A' as usize + i] = (10 + i) as u8;
+        i += 1;
+    }
+    t
+};
+
+#[inline]
+fn is_json_ws(b: u8) -> bool {
+    b == b' ' || b == b'\t' || b == b'\n' || b == b'\r'
+}
+
 impl<'a> JsonParser<'a> {
     fn peek(&self) -> Option<u8> {
         self.bytes.get(self.pos).copied()
     }
+    /// ppfix-json: bulk whitespace skip — slice-memchr-free plain u8 scan
+    /// with a ptr-advance (same shape as CPython's py_skip_whitespace).
     fn skip_ws(&mut self) {
-        while matches!(self.peek(), Some(b' ' | b'\t' | b'\n' | b'\r')) {
-            self.pos += 1;
+        let bytes = self.bytes;
+        let mut p = self.pos;
+        while p < bytes.len() && is_json_ws(unsafe { *bytes.get_unchecked(p) }) {
+            p += 1;
         }
+        self.pos = p;
     }
     fn expect(&mut self, b: u8, msg: &str) -> Result<(), Flow> {
         self.skip_ws();
@@ -7584,123 +7616,307 @@ impl<'a> JsonParser<'a> {
             Err(json_error2("Expecting value", self.doc, self.pos))
         }
     }
+    /// ppfix-json: scan the numeric token span once, then decode.
+    /// CPython-exact strictness (C scanner `match_number` shape):
+    /// inttext = -?(0|[1-9][0-9]*); a '.' MUST be followed by >=1 digit;
+    /// an exponent MUST be followed by >=1 digit. Divergences fixed
+    /// (G.err.20-24): leading-zero ints, '1.', '1e', '1e+' now raise
+    /// like CPython (the parse continues so '01' -> "Extra data" at
+    /// char 1, '1.'/'1e' -> "Extra data" at char 2, '[01]' -> "Expecting
+    /// ',' delimiter" at char 2).
     fn parse_number(&mut self) -> Result<Value, Flow> {
+        let doc = self.doc;
+        let bytes = self.bytes;
         let start = self.pos;
-        if self.peek() == Some(b'-') {
-            self.pos += 1;
+        let mut p = start;
+        let neg = p < bytes.len() && bytes[p] == b'-';
+        if neg {
+            p += 1;
         }
-        while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
-            self.pos += 1;
+        // integer part: leading zero only allowed as the bare digit 0
+        if p < bytes.len() && bytes[p] == b'0' {
+            p += 1;
+        } else {
+            while p < bytes.len() && bytes[p].is_ascii_digit() {
+                p += 1;
+            }
         }
+        // '-' alone / '-' followed by non-digit: CPython "Expecting value"
+        // at the minus (G.err.9 shape); no digits scanned at all.
+        if p == start + (neg as usize) {
+            return Err(json_error2("Expecting value", doc, start));
+        }
+        let int_end = p;
         let mut is_float = false;
-        if self.peek() == Some(b'.') {
-            is_float = true;
-            self.pos += 1;
-            while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
-                self.pos += 1;
-            }
-        }
-        if matches!(self.peek(), Some(b'e' | b'E')) {
-            is_float = true;
-            self.pos += 1;
-            if matches!(self.peek(), Some(b'+' | b'-')) {
-                self.pos += 1;
-            }
-            while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
-                self.pos += 1;
-            }
-        }
-        let text = &self.doc[start..self.pos];
-        if !is_float {
-            if let Some(int_text) = text.strip_prefix('-') {
-                if let Ok(n) = Int::parse_base10(int_text) {
-                    return Ok(Value::Int(n.neg()));
+        if p < bytes.len() && bytes[p] == b'.' {
+            // fraction REQUIRED (CPython: '1.' -> scan stops at the '.',
+            // value=1, then Extra data at the dot)
+            if p + 1 < bytes.len() && bytes[p + 1].is_ascii_digit() {
+                is_float = true;
+                p += 2;
+                while p < bytes.len() && bytes[p].is_ascii_digit() {
+                    p += 1;
                 }
-            } else if let Ok(n) = Int::parse_base10(text) {
-                return Ok(Value::Int(n));
+            } else {
+                let text = &doc[start..int_end];
+                return self.finish_int(text, neg, start, int_end);
             }
-            return Err(json_error2("Expecting value", self.doc, start));
         }
-        let v = text
-            .parse::<f64>()
-            .map(f)
-            .map_err(|_| json_error2("Expecting value", self.doc, start))?;
-        match &self.parse_float {
-            None => Ok(v),
-            Some(pfn) => call_named(pfn, &[s(text)]),
+        if p < bytes.len() && (bytes[p] | 0x20) == b'e' {
+            let mut q = p + 1;
+            if q < bytes.len() && (bytes[q] == b'+' || bytes[q] == b'-') {
+                q += 1;
+            }
+            if q < bytes.len() && bytes[q].is_ascii_digit() {
+                is_float = true;
+                q += 1;
+                while q < bytes.len() && bytes[q].is_ascii_digit() {
+                    q += 1;
+                }
+                p = q;
+            } else {
+                // '1e'/'1e+' with no exponent digits: CPython scans only
+                // the '1', then Extra data at the 'e'
+                let text = &doc[start..int_end];
+                return self.finish_int(text, neg, start, int_end);
+            }
+        }
+        self.pos = p;
+        if !is_float {
+            let text = &doc[start..p];
+            return self.finish_int(text, neg, start, p);
+        }
+        // float span: one std f64 parse on the sliced span (grisu)
+        let text = &doc[start..p];
+        if let Some(pfn) = &self.parse_float {
+            self.pos = p;
+            return call_named(pfn, &[s(text)]);
+        }
+        match text.parse::<f64>() {
+            Ok(v) => Ok(f(v)),
+            Err(_) => Err(json_error2("Expecting value", doc, start)),
         }
     }
+
+    /// ppfix-json: i64 fast path (<=18 digits always fits, 19-digit
+    /// checked against the exact bounds), Big fallback past that —
+    /// replaces the unconditional Big parse + normalize.
+    #[inline]
+    fn finish_int(
+        &mut self,
+        text: &str,
+        neg: bool,
+        start: usize,
+        after: usize,
+    ) -> Result<Value, Flow> {
+        let digits = if neg { &text[1..] } else { text };
+        let n = digits.len();
+        let val = if n <= 18 {
+            // pure-i64 accumulate
+            let mut acc: u64 = 0;
+            let b = digits.as_bytes();
+            let mut i = 0;
+            while i < n {
+                acc = acc * 10 + (b[i] - b'0') as u64;
+                i += 1;
+            }
+            let signed = if neg {
+                // i64::MIN handled exactly: 9223372036854775808 negated
+                if acc <= 9223372036854775808u64 {
+                    -(acc as i64)
+                } else {
+                    return Ok(Value::Int(
+                        Int::parse_base10(text)
+                            .map_err(|_| json_error2("Expecting value", self.doc, start))?,
+                    ));
+                }
+            } else {
+                if acc <= i64::MAX as u64 {
+                    acc as i64
+                } else {
+                    return Ok(Value::Int(
+                        Int::parse_base10(text)
+                            .map_err(|_| json_error2("Expecting value", self.doc, start))?,
+                    ));
+                }
+            };
+            Value::Int(Int::Smi(signed))
+        } else {
+            // 19-20 digit spans that fit i64 still take the fast path;
+            // anything else goes through Big once.
+            match digits.parse::<i64>() {
+                Ok(v) => Value::Int(Int::Smi(if neg { -v } else { v })),
+                Err(_) => {
+                    return Ok(Value::Int(
+                        Int::parse_base10(text)
+                            .map_err(|_| json_error2("Expecting value", self.doc, start))?,
+                    ));
+                }
+            }
+        };
+        self.pos = after;
+        Ok(val)
+    }
+    /// ppfix-json: bulk string scan (the audit's #1 loads win).
+    /// Find the closing quote with a plain u8 scan (backslash-lookahead
+    /// via a small state machine); when the span is escape-free, slice-
+    /// copy it whole; only escape spans take the char-wise decode loop
+    /// (table-driven). CPython-exact behaviors kept:
+    /// - Unterminated string position = the OPENING quote (G.err.25 fix)
+    /// - Invalid \\uXXXX position = the backslash, BEFORE the 4-hex scan
+    ///   (G.err.15/16 fix)
+    /// - unescaped control bytes < 0x20 = "Invalid control character at"
+    /// - trailing-lone-surrogate CPython replan + astral-pair decoding
+    /// - span-copy soundness: escape-free spans contain only continuation
+    ///   bytes (>= 0x80) or plain ASCII by construction (quote/backslash/
+    ///   control excluded by the classifier), so the char-boundary check
+    ///   can only fail on a truncated multi-byte char at EOF -> falls to
+    ///   the Unterminated error, matching the old per-char loop (which
+    ///   would hit chars().next() == None -> panic-free error return).
     fn parse_string(&mut self) -> Result<String, Flow> {
+        let open = self.pos;
         self.expect(b'"', "Expecting property name enclosed in double quotes")?;
+        let bytes = self.bytes;
         let mut out = String::new();
         loop {
-            match self.peek() {
+            // --- bulk scan for the next significant byte
+            let span_start = self.pos;
+            let mut p = self.pos;
+            let mut sig = 0u8; // 0=end, 1=quote, 2=backslash, 3=control
+            while p < bytes.len() {
+                let b = unsafe { *bytes.get_unchecked(p) };
+                if b >= 0x20 {
+                    if b == b'"' {
+                        sig = 1;
+                        break;
+                    }
+                    if b == b'\\' {
+                        sig = 2;
+                        break;
+                    }
+                    p += 1;
+                } else {
+                    sig = 3;
+                    break;
+                }
+            }
+            if sig == 0 {
+                // unterminated: CPython reports the opening quote
+                return Err(json_error2(
+                    "Unterminated string starting at",
+                    self.doc,
+                    open,
+                ));
+            }
+            if p > span_start {
+                // bulk-copy the escape-free span (UTF-8 safe: see above)
+                if let Some(chunk) = self.doc.get(span_start..p) {
+                    out.push_str(chunk);
+                } else {
+                    // truncated multi-byte char at the span end (EOF cut):
+                    // walk char-wise up to the boundary then raise
+                    // Unterminated at the opening quote (old loop shape)
+                    let mut q = span_start;
+                    while q < p {
+                        let rest = &self.doc[q..];
+                        match rest.chars().next() {
+                            Some(ch) if q + ch.len_utf8() <= p => {
+                                out.push(ch);
+                                q += ch.len_utf8();
+                            }
+                            _ => break,
+                        }
+                    }
+                    return Err(json_error2(
+                        "Unterminated string starting at",
+                        self.doc,
+                        open,
+                    ));
+                }
+            }
+            if sig == 1 {
+                self.pos = p + 1;
+                return Ok(out);
+            }
+            if sig == 3 {
+                return Err(json_error2("Invalid control character at", self.doc, p));
+            }
+            // --- backslash escape: p is the backslash
+            self.pos = p + 1;
+            let esc = match self.peek() {
                 None => {
                     return Err(json_error2(
                         "Unterminated string starting at",
                         self.doc,
-                        self.pos,
+                        open,
                     ));
                 }
-                Some(b'"') => {
-                    self.pos += 1;
-                    return Ok(out);
-                }
-                Some(b'\\') => {
-                    self.pos += 1;
-                    let esc = self.peek().ok_or_else(|| {
-                        json_error2("Unterminated string starting at", self.doc, self.pos)
-                    })?;
-                    self.pos += 1;
-                    match esc {
-                        b'"' => out.push('"'),
-                        b'\\' => out.push('\\'),
-                        b'/' => out.push('/'),
-                        b'b' => out.push('\u{8}'),
-                        b'f' => out.push('\u{c}'),
-                        b'n' => out.push('\n'),
-                        b'r' => out.push('\r'),
-                        b't' => out.push('\t'),
-                        b'u' => {
-                            let hex = &self.doc[self.pos..(self.pos + 4).min(self.doc.len())];
-                            self.pos += 4;
-                            let cp = u32::from_str_radix(hex, 16).map_err(|_| {
-                                json_error2("Invalid \\uXXXX escape", self.doc, self.pos)
-                            })?;
-                            // surrogate pair handling
-                            if (0xD800..0xDC00).contains(&cp) {
-                                if self.doc[self.pos..].starts_with("\\u") {
-                                    let hex2 =
-                                        &self.doc[self.pos + 2..(self.pos + 6).min(self.doc.len())];
-                                    let lo = u32::from_str_radix(hex2, 16).unwrap_or(0);
-                                    if (0xDC00..0xE000).contains(&lo) {
-                                        self.pos += 6;
-                                        let c = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
-                                        out.push(char::from_u32(c).unwrap_or('\u{FFFD}'));
-                                        continue;
-                                    }
-                                }
-                                out.push('\u{FFFD}');
-                            } else {
-                                out.push(char::from_u32(cp).unwrap_or('\u{FFFD}'));
+                Some(e) => e,
+            };
+            self.pos += 1;
+            match esc {
+                b'"' => out.push('"'),
+                b'\\' => out.push('\\'),
+                b'/' => out.push('/'),
+                b'b' => out.push('\u{8}'),
+                b'f' => out.push('\u{c}'),
+                b'n' => out.push('\n'),
+                b'r' => out.push('\r'),
+                b't' => out.push('\t'),
+                b'u' => {
+                    // CPython errors AT the backslash before scanning hex
+                    if self.pos + 4 > bytes.len()
+                        || HEX_VAL[bytes[self.pos] as usize] == 0xFF
+                        || HEX_VAL[bytes[self.pos + 1] as usize] == 0xFF
+                        || HEX_VAL[bytes[self.pos + 2] as usize] == 0xFF
+                        || HEX_VAL[bytes[self.pos + 3] as usize] == 0xFF
+                    {
+                        return Err(json_error2("Invalid \\uXXXX escape", self.doc, p + 1));
+                    }
+                    let cp = (HEX_VAL[bytes[self.pos] as usize] as u32) << 12
+                        | (HEX_VAL[bytes[self.pos + 1] as usize] as u32) << 8
+                        | (HEX_VAL[bytes[self.pos + 2] as usize] as u32) << 4
+                        | (HEX_VAL[bytes[self.pos + 3] as usize] as u32);
+                    self.pos += 4;
+                    // surrogate pair handling (shape kept from the prior
+                    // impl: trailing lone high surrogate replans to the
+                    // literal BMP char)
+                    if (0xD800..0xDC00).contains(&cp) {
+                        if self.pos + 1 < bytes.len()
+                            && bytes[self.pos] == b'\\'
+                            && bytes[self.pos + 1] == b'u'
+                            && self.pos + 6 <= bytes.len()
+                            && HEX_VAL[bytes[self.pos + 2] as usize] != 0xFF
+                            && HEX_VAL[bytes[self.pos + 3] as usize] != 0xFF
+                            && HEX_VAL[bytes[self.pos + 4] as usize] != 0xFF
+                            && HEX_VAL[bytes[self.pos + 5] as usize] != 0xFF
+                        {
+                            let lo = (HEX_VAL[bytes[self.pos + 2] as usize] as u32) << 12
+                                | (HEX_VAL[bytes[self.pos + 3] as usize] as u32) << 8
+                                | (HEX_VAL[bytes[self.pos + 4] as usize] as u32) << 4
+                                | (HEX_VAL[bytes[self.pos + 5] as usize] as u32);
+                            if (0xDC00..0xE000).contains(&lo) {
+                                self.pos += 6;
+                                let c = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                                out.push(char::from_u32(c).unwrap_or('\u{FFFD}'));
+                                continue;
                             }
                         }
-                        other => out.push(other as char),
+                        out.push(char::from_u32(cp).unwrap_or('\u{FFFD}'));
+                    } else {
+                        out.push(char::from_u32(cp).unwrap_or('\u{FFFD}'));
                     }
                 }
-                Some(_) => {
-                    // consume one UTF-8 char
-                    let rest = &self.doc[self.pos..];
-                    let ch = rest.chars().next().unwrap();
-                    out.push(ch);
-                    self.pos += ch.len_utf8();
-                }
+                other => out.push(other as char),
             }
         }
     }
     fn parse_array(&mut self) -> Result<Value, Flow> {
         self.expect(b'[', "Expecting value")?;
-        let mut items = Vec::new();
+        // ppfix-json: pre-size from the pre-scan element hint (commas+1
+        // capped at 4096) — kills the growth-realloc chain on big arrays.
+        let hint = self.precount(b',', b']');
+        let mut items: Vec<Value> = Vec::with_capacity(hint);
         self.skip_ws();
         if self.peek() == Some(b']') {
             self.pos += 1;
@@ -7733,7 +7949,9 @@ impl<'a> JsonParser<'a> {
     fn parse_object(&mut self) -> Result<Value, Flow> {
         self.expect(b'{', "Expecting value")?;
         let d = PyDict::new();
-        let mut pairs: Vec<Value> = Vec::new();
+        // ppfix-json: pre-size the pairs vec (precount on ',' vs '}').
+        let hint = self.precount(b',', b'}');
+        let mut pairs: Vec<Value> = Vec::with_capacity(hint);
         self.skip_ws();
         if self.peek() == Some(b'}') {
             self.pos += 1;
@@ -7773,6 +7991,48 @@ impl<'a> JsonParser<'a> {
                 _ => return Err(json_error2("Expecting ',' delimiter", self.doc, self.pos)),
             }
         }
+    }
+
+    /// ppfix-json: cheap forward pre-scan from the current position —
+    /// count `sep` bytes until `term` (depth-aware enough for the flat
+    /// common case: it stops at the FIRST `term` at nesting level 0 and
+    /// bails out (returning the count so far) past a scan window or on
+    /// quote/escape complexity; wrong hints are harmless — capacity only).
+    fn precount(&self, sep: u8, term: u8) -> usize {
+        let bytes = self.bytes;
+        let mut p = self.pos;
+        let mut depth: i32 = 0;
+        let mut count: usize = 1;
+        let mut in_str = false;
+        let mut esc = false;
+        let window = bytes.len().min(p + (1 << 20));
+        while p < window {
+            let b = bytes[p];
+            if in_str {
+                if esc {
+                    esc = false;
+                } else if b == b'\\' {
+                    esc = true;
+                } else if b == b'"' {
+                    in_str = false;
+                }
+            } else {
+                match b {
+                    b'"' => in_str = true,
+                    b'[' | b'{' => depth += 1,
+                    b']' | b'}' => {
+                        if b == term && depth == 0 {
+                            break;
+                        }
+                        depth -= 1;
+                    }
+                    _ if b == sep && depth == 0 => count += 1,
+                    _ => {}
+                }
+            }
+            p += 1;
+        }
+        count.min(4096)
     }
 
     fn finish_object(&self, d: Gc<PyDict>, pairs: Vec<Value>) -> Result<Value, Flow> {
@@ -7913,7 +8173,11 @@ fn json_dumps(v: &Value, kwargs: &[(String, Value)]) -> BResult {
             Some(" ".repeat(n.max(0) as usize))
         }
     };
-    let mut out = String::new();
+    // ppfix-json: pre-size the output buffer from the input-tree size
+    // heuristic (doc bytes pushed back through dumps are the common
+    // shape — serialized size ≈ input size; floor 64 bytes). Kills the
+    // ~20 growth reallocs on a 1MiB tree.
+    let mut out = String::with_capacity(json_out_hint(v).max(64));
     dump_value(v, ensure_ascii, sort_keys, indent.as_deref(), 0, &mut out)?;
     Ok(s(out))
 }
@@ -8098,34 +8362,172 @@ fn dump_seq(
     Ok(())
 }
 
+/// ppfix-json (W6b): encoder escape-classifier table — indexed by ASCII
+/// byte. 0 = verbatim, 1..=9 = the matching simple escape char, 10 =
+/// \\u00XX (other C0 controls), 0xFF = non-ASCII (ensure_ascii \\uXXXX or
+/// surrogate pair path).
+static DUMP_CLASS: [u8; 256] = {
+    let mut t = [0u8; 256];
+    let mut i = 0;
+    while i < 0x20 {
+        t[i] = 10;
+        i += 1;
+    }
+    t[b'"' as usize] = 1;
+    t[b'\\' as usize] = 2;
+    t[0x08] = 3; // \b
+    t[0x0c] = 4; // \f
+    t[b'\n' as usize] = 5;
+    t[b'\r' as usize] = 6;
+    t[b'\t' as usize] = 7;
+    let mut i = 0x80;
+    while i < 256 {
+        t[i] = 0xFF;
+        i += 1;
+    }
+    t
+};
+
+/// Escape-free bulk-span length for a str (bytes all class 0 = verbatim
+/// AND, when ensure_ascii, ASCII).
+#[inline]
+fn esc_span_len(text: &str, ensure_ascii: bool) -> usize {
+    let b = text.as_bytes();
+    let mut p = 0;
+    while p < b.len() {
+        let cls = DUMP_CLASS[b[p] as usize];
+        if cls != 0 || (ensure_ascii && cls == 0xFF) {
+            break;
+        }
+        p += 1;
+    }
+    p
+}
+
+/// ppfix-json: output-capacity heuristic — serialized size estimate from
+/// the value tree (str bytes + 12 per number/atom/child overhead), one
+/// recursive walk. Cheap relative to the encode itself.
+fn json_out_hint(v: &Value) -> usize {
+    match v {
+        Value::Str(st) => st.as_str().len() + 2,
+        Value::List(l) => {
+            let items = l.items();
+            let mut n = 2;
+            for x in items.iter() {
+                n += json_out_hint(x) + 1;
+            }
+            n
+        }
+        Value::Tuple(t) => {
+            let mut n = 2;
+            for x in &t.0 {
+                n += json_out_hint(x) + 1;
+            }
+            n
+        }
+        Value::Dict(d) => {
+            let items = d.items();
+            let mut n = 2;
+            for (k, val) in items.iter() {
+                n += json_out_hint(k) + json_out_hint(val) + 3;
+            }
+            n
+        }
+        Value::Int(_) | Value::Float(_) => 20,
+        _ => 8,
+    }
+}
+
 fn dump_string(text: &str, ensure_ascii: bool, out: &mut String) {
     out.push('"');
-    for c in text.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{8}' => out.push_str("\\b"),
-            '\u{c}' => out.push_str("\\f"),
-            c if (c as u32) < 0x20 => {
-                out.push_str(&format!("\\u{:04x}", c as u32));
+    let b = text.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        // ppfix-json: bulk-copy the verbatim span (whole ASCII run or
+        // non-ASCII UTF-8 run when !ensure_ascii), then decode one
+        // significant byte via the table.
+        let span = esc_span_len(&text[i..], ensure_ascii);
+        if span > 0 {
+            out.push_str(&text[i..i + span]);
+            i += span;
+            continue;
+        }
+        let cls = DUMP_CLASS[b[i] as usize];
+        match cls {
+            0 => {
+                // non-ASCII byte with ensure_ascii off: copy the whole
+                // UTF-8 char verbatim (bytes were class 0xFF only when
+                // ensure_ascii... so here cls==0 means it cannot happen;
+                // kept for safety)
+                let ch = text[i..].chars().next().unwrap();
+                out.push(ch);
+                i += ch.len_utf8();
             }
-            c if ensure_ascii && (c as u32) > 0x7F => {
-                if (c as u32) > 0xFFFF {
-                    let cp = c as u32 - 0x10000;
-                    let hi = 0xD800 + (cp >> 10);
-                    let lo = 0xDC00 + (cp & 0x3FF);
-                    out.push_str(&format!("\\u{:04x}\\u{:04x}", hi, lo));
+            1 => {
+                out.push_str("\\\"");
+                i += 1;
+            }
+            2 => {
+                out.push_str("\\\\");
+                i += 1;
+            }
+            3 => {
+                out.push_str("\\b");
+                i += 1;
+            }
+            4 => {
+                out.push_str("\\f");
+                i += 1;
+            }
+            5 => {
+                out.push_str("\\n");
+                i += 1;
+            }
+            6 => {
+                out.push_str("\\r");
+                i += 1;
+            }
+            7 => {
+                out.push_str("\\t");
+                i += 1;
+            }
+            10 => {
+                // other C0 control: \\u00xx
+                static HEXDIG: [u8; 16] = *b"0123456789abcdef";
+                out.push_str("\\u00");
+                out.push(HEXDIG[(b[i] >> 4) as usize] as char);
+                out.push(HEXDIG[(b[i] & 0xF) as usize] as char);
+                i += 1;
+            }
+            _ => {
+                // non-ASCII: \\uXXXX (or surrogate pair for astral)
+                let ch = text[i..].chars().next().unwrap();
+                let cp = ch as u32;
+                if cp > 0xFFFF {
+                    let s = cp - 0x10000;
+                    let hi = 0xD800 + (s >> 10);
+                    let lo = 0xDC00 + (s & 0x3FF);
+                    write_u16_escape(out, hi);
+                    write_u16_escape(out, lo);
                 } else {
-                    out.push_str(&format!("\\u{:04x}", c as u32));
+                    write_u16_escape(out, cp);
                 }
+                i += ch.len_utf8();
             }
-            c => out.push(c),
         }
     }
     out.push('"');
+}
+
+/// ppfix-json: direct \\uXXXX writer (no format! machinery).
+#[inline]
+fn write_u16_escape(out: &mut String, cp: u32) {
+    static HEXDIG: [u8; 16] = *b"0123456789abcdef";
+    out.push_str("\\u");
+    out.push(HEXDIG[((cp >> 12) & 0xF) as usize] as char);
+    out.push(HEXDIG[((cp >> 8) & 0xF) as usize] as char);
+    out.push(HEXDIG[((cp >> 4) & 0xF) as usize] as char);
+    out.push(HEXDIG[(cp & 0xF) as usize] as char);
 }
 
 // ===========================================================================
