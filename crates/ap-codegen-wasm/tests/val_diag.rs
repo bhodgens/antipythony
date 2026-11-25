@@ -1,4 +1,5 @@
 // Validate /tmp/GE004.wasm and print the function-local error context.
+#[ignore = "developer scratch tool: hard-reads a /tmp/*.wasm no CI step writes"]
 #[test]
 fn val_diag() {
     let bytes = std::fs::read("/tmp/GE004.wasm").unwrap();

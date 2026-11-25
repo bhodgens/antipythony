@@ -1,4 +1,5 @@
 // Validate the module; attribute the error to the containing function.
+#[ignore = "developer scratch tool: hard-reads a /tmp/*.wasm no CI step writes"]
 #[test]
 fn diag_fvalidate() {
     let bytes = std::fs::read("/tmp/min.wasm").unwrap();

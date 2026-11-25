@@ -1,3 +1,4 @@
+#[ignore = "developer scratch tool: hard-reads a /tmp/*.wasm no CI step writes"]
 #[test]
 fn print_fns() {
     let bytes = std::fs::read("/tmp/min033.wasm").unwrap();

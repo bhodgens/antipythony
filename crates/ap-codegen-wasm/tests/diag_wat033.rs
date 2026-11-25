@@ -1,4 +1,5 @@
 // dump full WAT of /tmp/min033.wasm to /tmp/min033.wat (leaf 03.03 diag)
+#[ignore = "developer scratch tool: hard-reads a /tmp/*.wasm no CI step writes"]
 #[test]
 fn dump_wat() {
     let bytes = std::fs::read("/tmp/min033.wasm").unwrap();

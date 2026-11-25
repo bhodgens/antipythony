@@ -1,4 +1,5 @@
 //! Dump ALL operators of the body containing DIAG_OFFSET (default 8794).
+#[ignore = "developer scratch tool: hard-reads a /tmp/*.wasm no CI step writes"]
 #[test]
 fn diag_offset() {
     let bytes = std::fs::read("/tmp/min.wasm").unwrap();

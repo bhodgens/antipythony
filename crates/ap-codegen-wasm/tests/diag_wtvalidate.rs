@@ -1,5 +1,6 @@
 // Wasmtime-validation triage: name the function + print wasmtime's full error
 // for /tmp/min.wasm (wasmparser accepts; wasmtime rejects — find the fn).
+#[ignore = "developer scratch tool: hard-reads a /tmp/*.wasm no CI step writes"]
 #[test]
 fn diag_wtvalidate() {
     let bytes = std::fs::read("/tmp/min.wasm").unwrap();
