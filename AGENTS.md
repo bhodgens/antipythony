@@ -47,18 +47,26 @@ GIL, uv-backed deps at build time. Byte-exact differential conformance vs CPytho
   docs/test-interpreter-lock-policy.md.
 
 ## Current status (update this block when it changes)
-- PRIMITIVE-PERF CAMPAIGN COMPLETE 2026-11-24 (plans/primitive-perf/, tracker
-  TRACKER-PRIMITIVE-PERF.md, report docs/primitive-perf-report.md + chart.svg):
-  NEON SIMD base64 (encode 1.2->8-19 GB/s, decode 0.4->4.7-10.9 GB/s, 8 API
-  divergences fixed) + hexlify/unhexlify (0.03->2.1 / 0.24->6.5 GB/s,
-  sep/bytes_per_sep now CPython-exact) merged (dd3eda0, a0dc0f8); every
-  optimized surface byte-exact (diff_b64 2132/0, diff_hex 1976/0, ap-conform
-  values 50/50 + stdlib 48/48). Final bench: 58 rows = 25 PASS / 21 FAIL /
-  12 ERROR, every non-PASS row documented in the report's honest-gaps table.
-  Follow-up queue: 8 audit-found bugs FILED-not-fixed (to_bytes zero-fill,
-  from_bytes truncation, 3 sort bugs, loop default-arg capture, random.Random
-  missing = P08 blocker, except-leak); new-dep user decisions pending
-  (crc32fast, memchr, sha2 asm-aarch64 flag on EXISTING dep, bzip2/lzma-rs).
+- PRIMITIVE-PERF CAMPAIGN + FIX WAVES COMPLETE 2026-11-24 (plans/primitive-perf/,
+  tracker TRACKER-PRIMITIVE-PERF.md, report docs/primitive-perf-report.md +
+  chart.svg): SIMD waves (base64 14-25x CPython, hexlify/unhexlify PASS, 8 b64
+  API divergences fixed) + W6 fix waves (zlib decompress PASS x4 via one-shot +
+  zlib-rs; sha256 0.88x via sha2 asm-aarch64; json.dumps >=1x both sizes; 2 int
+  data-corruption bugs fixed; 3 sort bugs fixed; random.Random MT19937
+  CPython-exact) + W7 Fix C structural (O(n^2) iter pull killed; gen-1 GC
+  retain fence violation fixed; int loop 57100->190ns/elem 300x; 100k int
+  listcomp 17.6s->8.2ms 2100x; dict rows 3106x->11-125x) + from_bytes O(n^2)
+  hotfix. Closing bench: 64 rows = 26 PASS / 38 FAIL / 0 ERROR, every FAIL
+  documented in the report's honest-gaps table. Byte-exact gates all green:
+  diff_b64 2132/0, diff_hex 1976/0, fix_int/fix_json/fix_sort/fix_random/
+  fix_sha_zlib green, ap-conform values 50/50 + stdlib 48/48.
+  Remaining FAIL levers (all filed): registry-insert ~985ns (batching/nursery),
+  BoundMethod mint ~1.5us, tier-0 walk floor 190ns/step (tier-1 territory),
+  str.join/split, sha256/md5 backend class, PR-line b64 = M5-Max hardware bar.
+  Open interpreter bugs: loop default-arg capture miscompile, binascii
+  except-leak, from_bytes(list) >255 masking, format-spec zero-fill >u128.
+  Dependency decisions still pending from user: memchr, crc32fast,
+  bzip2/lzma-rs (bz2/lzma are NotImplementedError shims).
   GOTCHA hit twice: trunk target dirs go stale-fingerprint after merges —
   verify binary mtime, build into a FRESH CARGO_TARGET_DIR when in doubt.
 - TOP-LEVEL PLAN COMPLETE 2026-11-24 (orchestrator session, tracker
