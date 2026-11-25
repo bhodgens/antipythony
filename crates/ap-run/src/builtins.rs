@@ -2600,11 +2600,7 @@ pub fn builtin_ord(args: &[Value]) -> BResult {
 pub fn builtin_hex(args: &[Value]) -> BResult {
     let i = int_arg(args, "hex")?;
     let neg = i.is_negative();
-    let mag = i.abs().to_string_raw().trim_start_matches('-').to_string();
-    let digits = match mag.parse::<u128>() {
-        Ok(v) => format!("{v:x}"),
-        Err(_) => bigint_to_base(&mag, 16),
-    };
+    let digits = int_to_base_digits(&i, 16);
     Ok(Value::Str(PyString::new(format!(
         "{}0x{}",
         if neg { "-" } else { "" },
@@ -2615,11 +2611,7 @@ pub fn builtin_hex(args: &[Value]) -> BResult {
 pub fn builtin_oct(args: &[Value]) -> BResult {
     let i = int_arg(args, "oct")?;
     let neg = i.is_negative();
-    let mag = i.abs().to_string_raw().trim_start_matches('-').to_string();
-    let digits = match mag.parse::<u128>() {
-        Ok(v) => format!("{v:o}"),
-        Err(_) => bigint_to_base(&mag, 8),
-    };
+    let digits = int_to_base_digits(&i, 8);
     Ok(Value::Str(PyString::new(format!(
         "{}0o{}",
         if neg { "-" } else { "" },
@@ -2630,11 +2622,7 @@ pub fn builtin_oct(args: &[Value]) -> BResult {
 pub fn builtin_bin(args: &[Value]) -> BResult {
     let i = int_arg(args, "bin")?;
     let neg = i.is_negative();
-    let mag = i.abs().to_string_raw().trim_start_matches('-').to_string();
-    let digits = match mag.parse::<u128>() {
-        Ok(v) => format!("{v:b}"),
-        Err(_) => bigint_to_base(&mag, 2),
-    };
+    let digits = int_to_base_digits(&i, 2);
     Ok(Value::Str(PyString::new(format!(
         "{}0b{}",
         if neg { "-" } else { "" },
@@ -2655,7 +2643,67 @@ fn int_arg(args: &[Value], name: &str) -> Result<Int, Flow> {
     })
 }
 
+/// O(n) limb-based base-2/8/16 digit extraction (ppfix-int perf fix 3) —
+/// CPython `long_format_binary` shape: bit-pluck u32 limbs, NO division and
+/// NO decimal round-trip (the old path re-parsed the decimal string into a
+/// BigUint and did repeated div_rem by the base = O(d²)).
+fn int_to_base_digits(i: &ap_obj::Int, base: u32) -> String {
+    use num_bigint::BigUint;
+    use num_traits::Zero;
+    let mag: BigUint = match i {
+        ap_obj::Int::Smi(v) => BigUint::from(v.unsigned_abs()),
+        ap_obj::Int::Big(b) => b.magnitude().clone(),
+    };
+    if mag.is_zero() {
+        return "0".to_string();
+    }
+    // bits per output digit: base 2 -> 1, 8 -> 3, 16 -> 4
+    let bits = match base {
+        16 => 4usize,
+        8 => 3usize,
+        _ => 1usize,
+    };
+    let total_bits = mag.bits() as usize;
+    let ndigits = total_bits.div_ceil(bits);
+    let mut out = vec![b'0'; ndigits];
+    // Materialize the limbs once and index per output digit: digit d lives at
+    // global bits [d*bits, d*bits+bits), so extraction is O(1) per digit and
+    // O(n) overall. (Do NOT iterate limbs and scatter — digits straddle limb
+    // boundaries whenever bits does not divide 32, e.g. octal, which is where
+    // the first cut went wrong; and do NOT call .nth(k) on the forward-only
+    // limb iterator per step — that re-walks from the start, O(n^2).)
+    let limbs = mag.to_u32_digits();
+    let nlimbs = limbs.len();
+    let limb_at = |idx: usize| -> u32 {
+        if idx < nlimbs {
+            limbs[idx]
+        } else {
+            0
+        }
+    };
+    for d in 0..ndigits {
+        let bit_lo = d * bits;
+        let lb = bit_lo / 32;
+        let off = bit_lo % 32;
+        let digit_val: u32 = if off + bits <= 32 {
+            (limb_at(lb) >> off) & (base - 1)
+        } else {
+            // straddles this limb's top edge: low part here, high part from
+            // the next limb's bottom bits
+            let take = 32 - off;
+            let low = limb_at(lb) >> off;
+            let high = (limb_at(lb + 1) & ((1u32 << (bits - take)) - 1)) << take;
+            (low | high) & (base - 1)
+        };
+        out[ndigits - 1 - d] = std::char::from_digit(digit_val, base).unwrap_or('0') as u8;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| "0".to_string())
+}
+
 /// Decimal digit-string → base-N digit string (beyond u128 fallback).
+/// Legacy O(d²) helper — retained for any non-power-of-two caller; hex/oct/bin
+/// now use `int_to_base_digits` (ppfix-int).
+#[allow(dead_code)]
 fn bigint_to_base(dec: &str, base: u32) -> String {
     use num_bigint::BigUint;
     use num_traits::Zero;
