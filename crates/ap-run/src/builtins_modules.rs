@@ -7543,6 +7543,12 @@ struct JsonParser<'a> {
     pos: usize,
     parse_float: Option<String>,
     object_pairs_hook: Option<String>,
+    /// ppfix-json: CPython's `_json` scanner memo-dict equivalent —
+    /// object keys recur massively in real documents (one `"name"` key
+    /// per record); re-serving the SAME PyString handle keeps its
+    /// cached_hash warm and dict probes hit the identical-Arc eq fast
+    /// path instead of siphash-per-key.
+    key_memo: std::collections::HashMap<String, Value>,
 }
 
 // ---------------------------------------------------------------------------
@@ -7777,6 +7783,25 @@ impl<'a> JsonParser<'a> {
         let open = self.pos;
         self.expect(b'"', "Expecting property name enclosed in double quotes")?;
         let bytes = self.bytes;
+        // ppfix-json fast path: escape-free string = scan to the closing
+        // quote and return the doc slice directly (zero intermediate
+        // buffer; one alloc when the caller owns it via PyString::new).
+        {
+            let mut p = self.pos;
+            while p < bytes.len() {
+                let b = unsafe { *bytes.get_unchecked(p) };
+                if b == b'"' {
+                    let text = self.doc[self.pos..p].to_string();
+                    self.pos = p + 1;
+                    return Ok(text);
+                }
+                if b == b'\\' || b < 0x20 {
+                    break;
+                }
+                p += 1;
+            }
+        }
+        // slow path: escapes / control chars / unterminated
         let mut out = String::new();
         loop {
             // --- bulk scan for the next significant byte
@@ -7968,8 +7993,22 @@ impl<'a> JsonParser<'a> {
             })?;
             self.expect(b':', "Expecting ':' delimiter")?;
             let v = self.parse_value()?;
-            let _ = d.set(s(key.clone()), v.clone());
-            pairs.push(tuple(vec![s(key), v]));
+            // ppfix-json: memo hit = clone the cached key handle (hash
+            // already cached on the object); miss = mint + remember.
+            // pairs vec only materializes when object_pairs_hook is set
+            // (the default path never reads it).
+            let key_v = match self.key_memo.get(&key) {
+                Some(kv) => kv.clone(),
+                None => {
+                    let kv = s(key.clone());
+                    self.key_memo.insert(key.clone(), kv.clone());
+                    kv
+                }
+            };
+            let _ = d.set(key_v.clone(), v.clone());
+            if self.object_pairs_hook.is_some() {
+                pairs.push(tuple(vec![key_v, v]));
+            }
             self.skip_ws();
             match self.peek() {
                 Some(b',') => {
@@ -8086,6 +8125,7 @@ fn json_loads(v: &Value, kwargs: &[(String, Value)]) -> BResult {
         pos: 0,
         parse_float,
         object_pairs_hook,
+        key_memo: std::collections::HashMap::new(),
     };
     let out = p.parse_value()?;
     p.skip_ws();
@@ -8503,7 +8543,10 @@ fn dump_string(text: &str, ensure_ascii: bool, out: &mut String) {
                 // non-ASCII: \\uXXXX (or surrogate pair for astral)
                 let ch = text[i..].chars().next().unwrap();
                 let cp = ch as u32;
-                if cp > 0xFFFF {
+                if !ensure_ascii {
+                    // ensure_ascii off: raw UTF-8 (pre-ppfix shape)
+                    out.push(ch);
+                } else if cp > 0xFFFF {
                     let s = cp - 0x10000;
                     let hi = 0xD800 + (s >> 10);
                     let lo = 0xDC00 + (s & 0x3FF);
