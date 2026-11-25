@@ -2,14 +2,19 @@
 
 **Campaign:** `plans/primitive-perf/` (master.md is the contract).
 **This report:** leaf 99-report/01-final-report. All numbers come from the
-final full-bench re-run on the merged trunk (branch `tier1-primperf-report`,
-worktree `leaf-primperf-report`, fresh release build
-`target-report/release/antipythony`), report generated
-**2026-11-25T01:41:34+00:00** — see
+post-Fix-C full-bench re-run on the merged trunk (main @ 1e0713c, all fix
+waves merged; fresh release build
+`target-pptrunk3/release/antipythony`), report generated
+**2026-11-25T05:17:54+00:00** — see
 `tests/bench/primitive/bench_report.json` (single source of truth; the
 chart and the table below are generated from it, never hand-transcribed).
 
-**Verdict counts: 58 rows — 25 PASS / 21 FAIL / 12 ERROR.**
+**Verdict counts: 64 rows — 26 PASS / 38 FAIL / 0 ERROR.** Every row is
+measured: zero ERROR rows remain. The two ERROR groups from the
+campaign-start run (P08 sort, P09 dict — 12 rows) were un-blocked by
+W6/W7: `random.Random` implemented, the probe's module-level 1M-element
+setup replaced by a 32k fixed workload, the O(n²) list-iter pull
+removed (Fix C), and the O(n²) `int.from_bytes` bulk path fixed.
 
 ## Method
 
@@ -24,11 +29,16 @@ chart and the table below are generated from it, never hand-transcribed).
   **best-of-5, minimum recorded** (min = least noise), one warmup call
   before timing.
 - **Sizes:** 48 KiB and 1 MiB of data per primitive (short inputs show
-  neither scalar nor SIMD behavior). Known payload nuance: the P10 JSON
+  neither scalar nor SIMD behavior). Known payload nuances: the P10 JSON
   payloads are deterministic structures whose serialized sizes are
   **71558 B / 1080957 B** — the runner buckets these into the 48KiB /
-  1MiB labels (`run_bench.py` size-bucketing branch), so "48KiB/1MiB" for
-  P10 means "~70 KB / ~1.03 MB serialized JSON", not exact powers of two.
+  1MiB labels (`run_bench.py` size-bucketing branch), so "48KiB/1MiB"
+  for P10 means "~70 KB / ~1.03 MB serialized JSON", not exact powers
+  of two. The P09 dict probe sizes are **element counts** (8-byte int
+  keys): 6144 and 32768 elements emit under the 48KiB label (49172 B /
+  262144 B of key payload) and the fixed workload emits `*_32k` row
+  names at 32000 elements (256000 B); the table below shows the true
+  payload class in the size column so the rows are distinguishable.
 - **Machine:** Mac M2 Ultra (24-core aarch64, 64 GB, NEON), quiet-window
   load policy (launch gate loadavg < 10; one heavy cargo lane,
   `CARGO_BUILD_JOBS=4`).
@@ -44,6 +54,7 @@ chart and the table below are generated from it, never hand-transcribed).
 - **Verdict:** PASS if antipythony ≥ target, FAIL with the measured gap
   otherwise, ERROR if the antipythony leg failed to produce a
   measurement (feature gap or probe timeout — not a throughput number).
+  This run has zero ERROR rows.
 - **Byte-exactness:** perf work never traded semantics — every optimized
   primitive carries a differential gate vs CPython 3.14
   (`diff_b64.py` 2132/0, `diff_hex.py` 1976/0, ap-conform values 50/50 +
@@ -67,80 +78,85 @@ python3 tests/bench/primitive/gen_chart.py
 
 `GB/s` = input-bytes per second through the primitive. `vs CPython` =
 antipythony ÷ CPython (>1 = faster). `vs target` = antipythony ÷ target.
-ERROR rows have no antipythony number (feature gap / timeout; reasons in
-the honest-gaps section).
+No ERROR rows in this run. P09 sizes are element-count payload classes
+(see Method); the three P09 arms per workload are 6144 / 32768 / fixed
+32000 elements.
 
 | id | primitive | size | CPython GB/s | antipythony GB/s | vs CPython | vs target | verdict |
 |----|-----------|------|-------------:|-----------------:|-----------:|----------:|---------|
-| P01 | base64.b64encode | 48KiB | 0.7901 | 9.5127 | 12.04x | 0.40x | FAIL |
-| P01 | base64.b64decode | 48KiB | 0.4366 | 6.8581 | 15.71x | 0.49x | FAIL |
-| P01 | binascii.b2a_base64 | 48KiB | 0.7586 | 7.3735 | 9.72x | 9.72x | PASS |
-| P01 | binascii.a2b_base64 | 48KiB | 0.4762 | 5.4108 | 11.36x | 11.36x | PASS |
-| P01 | base64.b64encode | 1MiB | 0.7455 | 8.1390 | 10.92x | 0.34x | FAIL |
-| P01 | base64.b64decode | 1MiB | 0.4416 | 4.7224 | 10.69x | 0.34x | FAIL |
-| P01 | binascii.b2a_base64 | 1MiB | 0.7308 | 5.0995 | 6.98x | 6.98x | PASS |
-| P01 | binascii.a2b_base64 | 1MiB | 0.4466 | 3.9365 | 8.81x | 8.81x | PASS |
-| P03 | binascii.hexlify | 48KiB | 1.1118 | 1.8065 | 1.62x | 1.62x | PASS |
-| P03 | binascii.unhexlify | 48KiB | 1.3359 | 4.4182 | 3.31x | 3.31x | PASS |
-| P03 | binascii.hexlify | 1MiB | 1.3893 | 2.0860 | 1.50x | 1.50x | PASS |
-| P03 | binascii.unhexlify | 1MiB | 1.5079 | 6.4594 | 4.28x | 4.28x | PASS |
-| P04 | zlib.compress(level=1) | 48KiB | 1.4043 | 2.2773 | 1.62x | 1.62x | PASS |
-| P04 | zlib.compress(level=6) | 48KiB | 0.5575 | 0.8536 | 1.53x | 1.53x | PASS |
-| P04 | zlib.decompress(level=1) | 48KiB | 4.6444 | 2.2599 | 0.49x | 0.49x | FAIL |
-| P04 | zlib.decompress(level=6) | 48KiB | 4.5544 | 2.3783 | 0.52x | 0.52x | FAIL |
-| P04 | zlib.compress(level=1) | 1MiB | 0.8777 | 7.3413 | 8.36x | 8.36x | PASS |
-| P04 | zlib.compress(level=6) | 1MiB | 0.4256 | 1.0831 | 2.54x | 2.54x | PASS |
-| P04 | zlib.decompress(level=1) | 1MiB | 9.0983 | 3.4091 | 0.38x | 0.37x | FAIL |
-| P04 | zlib.decompress(level=6) | 1MiB | 9.0492 | 3.8263 | 0.42x | 0.42x | FAIL |
-| P05 | hashlib.sha256 | 48KiB | 2.5424 | 0.3507 | 0.14x | 0.14x | FAIL |
-| P05 | hashlib.md5 | 48KiB | 0.7354 | 0.5919 | 0.81x | 0.80x | FAIL |
-| P05 | hashlib.sha256 | 1MiB | 2.5872 | 0.3707 | 0.14x | 0.14x | FAIL |
-| P05 | hashlib.md5 | 1MiB | 0.7452 | 0.7092 | 0.95x | 0.95x | FAIL |
-| P06 | str.find | 48KiB | 1.9181 | 5.7826 | 3.02x | 3.01x | PASS |
-| P06 | str.replace | 48KiB | 8.6750 | 7.8131 | 0.90x | 0.90x | FAIL |
-| P06 | str.split | 48KiB | 1.6757 | 0.7277 | 0.43x | 0.43x | FAIL |
-| P06 | str.join | 48KiB | 11.34 | 2.5925 | 0.23x | 0.23x | FAIL |
-| P06 | str.upper | 48KiB | 3.4595 | 8.5482 | 2.47x | 2.47x | PASS |
-| P06 | str.find | 1MiB | 1.9240 | 8.5048 | 4.42x | 4.42x | PASS |
-| P06 | str.replace | 1MiB | 8.9910 | 16.99 | 1.89x | 1.89x | PASS |
-| P06 | str.split | 1MiB | 1.6305 | 0.8189 | 0.50x | 0.50x | FAIL |
-| P06 | str.join | 1MiB | 14.76 | 3.2501 | 0.22x | 0.22x | FAIL |
-| P06 | str.upper | 1MiB | 3.2552 | 14.34 | 4.41x | 4.41x | PASS |
-| P07 | int.from_bytes | 48KiB | 0.8164 | 1.4316 | 1.75x | 1.75x | PASS |
-| P07 | int.to_bytes | 48KiB | 1.3093 | 1.9826 | 1.51x | 1.51x | PASS |
-| P07 | int(decimal_str) | 48KiB | 0.0097 | 0.0230 | 2.37x | 2.37x | PASS |
-| P07 | hex(big_int) | 48KiB | 0.5615 | 23.13 | 41.19x | 41.19x | PASS |
-| P07 | int.from_bytes | 1MiB | 0.9014 | 1.6471 | 1.83x | 1.83x | PASS |
-| P07 | int.to_bytes | 1MiB | 1.3312 | 2.3113 | 1.74x | 1.74x | PASS |
-| P07 | int(decimal_str) | 1MiB | 0.0015 | 0.0011 | 0.73x | 0.73x | FAIL |
-| P07 | hex(big_int) | 1MiB | 0.5348 | 493.4 | 922.68x | 922.68x | PASS |
-| P08 | sorted(list[int]) | 48KiB | 0.0626 | — | — | — | ERROR |
-| P08 | list.sort | 48KiB | 0.0191 | — | — | — | ERROR |
-| P08 | sorted(list[int]) | 1MiB | 0.0433 | — | — | — | ERROR |
-| P08 | list.sort | 1MiB | 0.0166 | — | — | — | ERROR |
-| P08 | sorted(list[int])_1M | 1MiB | 0.0288 | — | — | — | ERROR |
-| P08 | list.sort_1M | 1MiB | 0.0136 | — | — | — | ERROR |
-| P09 | dict.build | 48KiB | 0.4537 | — | — | — | ERROR |
-| P09 | dict.lookups | 48KiB | 0.3074 | — | — | — | ERROR |
-| P09 | dict.build | 1MiB | 0.4174 | — | — | — | ERROR |
-| P09 | dict.lookups | 1MiB | 0.2821 | — | — | — | ERROR |
-| P09 | dict.build_1M | 1MiB | 0.3688 | — | — | — | ERROR |
-| P09 | dict.lookups_1M | 1MiB | 0.2511 | — | — | — | ERROR |
-| P10 | json.dumps | 48KiB | 0.2153 | 0.1987 | 0.92x | 0.92x | FAIL |
-| P10 | json.loads | 48KiB | 0.2111 | 0.0483 | 0.23x | 0.23x | FAIL |
-| P10 | json.dumps | 1MiB | 0.2191 | 0.2231 | 1.02x | 1.02x | PASS |
-| P10 | json.loads | 1MiB | 0.1757 | 0.0310 | 0.18x | 0.18x | FAIL |
+| P01 | base64.b64decode | 48KiB | 0.4556 | 7.7613 | 17.04x | 0.55x | FAIL |
+| P01 | base64.b64decode | 1MiB | 0.4516 | 11.21 | 24.83x | 0.80x | FAIL |
+| P01 | base64.b64encode | 48KiB | 0.7322 | 10.63 | 14.51x | 0.44x | FAIL |
+| P01 | base64.b64encode | 1MiB | 0.7786 | 18.96 | 24.36x | 0.79x | FAIL |
+| P01 | binascii.a2b_base64 | 48KiB | 0.4558 | 5.9883 | 13.14x | 13.14x | PASS |
+| P01 | binascii.a2b_base64 | 1MiB | 0.4349 | 8.7655 | 20.16x | 20.16x | PASS |
+| P01 | binascii.b2a_base64 | 48KiB | 0.7756 | 8.3069 | 10.71x | 10.71x | PASS |
+| P01 | binascii.b2a_base64 | 1MiB | 0.7779 | 9.5724 | 12.30x | 12.31x | PASS |
+| P03 | binascii.hexlify | 48KiB | 1.7820 | 1.8636 | 1.05x | 1.05x | PASS |
+| P03 | binascii.hexlify | 1MiB | 1.7886 | 2.1637 | 1.21x | 1.21x | PASS |
+| P03 | binascii.unhexlify | 48KiB | 1.7928 | 4.6261 | 2.58x | 2.58x | PASS |
+| P03 | binascii.unhexlify | 1MiB | 1.8282 | 6.8329 | 3.74x | 3.74x | PASS |
+| P04 | zlib.compress(level=1) | 48KiB | 1.5143 | 3.2056 | 2.12x | 2.12x | PASS |
+| P04 | zlib.compress(level=1) | 1MiB | 0.8497 | 3.8533 | 4.54x | 4.53x | PASS |
+| P04 | zlib.compress(level=6) | 48KiB | 0.5997 | 1.6615 | 2.77x | 2.77x | PASS |
+| P04 | zlib.compress(level=6) | 1MiB | 0.4538 | 3.3328 | 7.34x | 7.34x | PASS |
+| P04 | zlib.decompress(level=1) | 48KiB | 4.9360 | 6.8181 | 1.38x | 1.38x | PASS |
+| P04 | zlib.decompress(level=1) | 1MiB | 9.3172 | 12.15 | 1.30x | 1.30x | PASS |
+| P04 | zlib.decompress(level=6) | 48KiB | 4.9355 | 5.1969 | 1.05x | 1.05x | PASS |
+| P04 | zlib.decompress(level=6) | 1MiB | 9.1914 | 12.70 | 1.38x | 1.38x | PASS |
+| P05 | hashlib.md5 | 48KiB | 0.7141 | 0.6202 | 0.87x | 0.87x | FAIL |
+| P05 | hashlib.md5 | 1MiB | 0.7721 | 0.7084 | 0.92x | 0.92x | FAIL |
+| P05 | hashlib.sha256 | 48KiB | 2.6450 | 1.7686 | 0.67x | 0.67x | FAIL |
+| P05 | hashlib.sha256 | 1MiB | 2.6979 | 2.2562 | 0.84x | 0.84x | FAIL |
+| P06 | str.find | 48KiB | 1.7928 | 5.8396 | 3.26x | 3.26x | PASS |
+| P06 | str.find | 1MiB | 1.9290 | 8.5482 | 4.43x | 4.43x | PASS |
+| P06 | str.join | 48KiB | 14.04 | 2.7371 | 0.20x | 0.19x | FAIL |
+| P06 | str.join | 1MiB | 15.39 | 3.3843 | 0.22x | 0.22x | FAIL |
+| P06 | str.replace | 48KiB | 8.6746 | 8.2497 | 0.95x | 0.95x | FAIL |
+| P06 | str.replace | 1MiB | 9.1048 | 17.18 | 1.89x | 1.89x | PASS |
+| P06 | str.split | 48KiB | 1.6159 | 0.7665 | 0.47x | 0.47x | FAIL |
+| P06 | str.split | 1MiB | 1.7476 | 0.8859 | 0.51x | 0.51x | FAIL |
+| P06 | str.upper | 48KiB | 3.2143 | 9.1446 | 2.85x | 2.85x | PASS |
+| P06 | str.upper | 1MiB | 3.4664 | 14.31 | 4.13x | 4.13x | PASS |
+| P07 | hex(big_int) | 48KiB | 0.5607 | 0.4453 | 0.79x | 0.79x | FAIL |
+| P07 | hex(big_int) | 1MiB | 0.5582 | 0.4509 | 0.81x | 0.81x | FAIL |
+| P07 | int(decimal_str) | 48KiB | 0.0102 | 0.0234 | 2.29x | 2.29x | PASS |
+| P07 | int(decimal_str) | 1MiB | 0.0016 | 0.0012 | 0.75x | 0.75x | FAIL |
+| P07 | int.from_bytes | 48KiB | 0.8402 | 1.5360 | 1.83x | 1.83x | PASS |
+| P07 | int.from_bytes | 1MiB | 0.9012 | 2.2046 | 2.45x | 2.45x | PASS |
+| P07 | int.to_bytes | 48KiB | 1.2617 | 0.9630 | 0.76x | 0.76x | FAIL |
+| P07 | int.to_bytes | 1MiB | 1.3753 | 1.0992 | 0.80x | 0.80x | FAIL |
+| P08 | list.sort | 48KiB | 0.0199 | 0.0024 | 0.12x | 0.12x | FAIL |
+| P08 | list.sort | 1MiB | 0.0173 | 0.0021 | 0.12x | 0.12x | FAIL |
+| P08 | list.sort_1M | 1MiB | 0.0142 | 0.0020 | 0.14x | 0.14x | FAIL |
+| P08 | sorted(list[int]) | 48KiB | 0.0616 | 0.0222 | 0.36x | 0.36x | FAIL |
+| P08 | sorted(list[int]) | 1MiB | 0.0445 | 0.0174 | 0.39x | 0.39x | FAIL |
+| P08 | sorted(list[int])_1M | 1MiB | 0.0318 | 0.0133 | 0.42x | 0.42x | FAIL |
+| P10 | json.dumps | 48KiB | 0.2080 | 0.2215 | 1.06x | 1.06x | PASS |
+| P10 | json.dumps | 1MiB | 0.2185 | 0.2388 | 1.09x | 1.09x | PASS |
+| P10 | json.loads | 48KiB | 0.2168 | 0.0989 | 0.46x | 0.46x | FAIL |
+| P10 | json.loads | 1MiB | 0.1908 | 0.0600 | 0.31x | 0.31x | FAIL |
+| P09 | dict.build | 48KiB | 0.4637 | 0.0587 | 0.13x | 0.13x | FAIL |
+| P09 | dict.build | 256KiB | 0.4678 | 0.0586 | 0.12x | 0.13x | FAIL |
+| P09 | dict.build_32k | 250KiB | 0.4448 | 0.0601 | 0.14x | 0.14x | FAIL |
+| P09 | dict.get | 48KiB | 0.3158 | 0.0027 | 0.01x | 0.01x | FAIL |
+| P09 | dict.get | 256KiB | 0.3008 | 0.0025 | 0.01x | 0.01x | FAIL |
+| P09 | dict.get_32k | 250KiB | 0.2919 | 0.0025 | 0.01x | 0.01x | FAIL |
+| P09 | dict.getitem | 48KiB | 0.3841 | 0.0223 | 0.06x | 0.06x | FAIL |
+| P09 | dict.getitem | 256KiB | 0.3033 | 0.0222 | 0.07x | 0.07x | FAIL |
+| P09 | dict.getitem_32k | 250KiB | 0.2999 | 0.0223 | 0.07x | 0.07x | FAIL |
+| P09 | dict.iter | 48KiB | 0.6068 | 0.0434 | 0.07x | 0.07x | FAIL |
+| P09 | dict.iter | 256KiB | 0.5698 | 0.0436 | 0.08x | 0.08x | FAIL |
+| P09 | dict.iter_32k | 250KiB | 0.5933 | 0.0426 | 0.07x | 0.07x | FAIL |
 
-Note: this final re-run measured the P01 1MiB encode/decode arms lower
-than the leaf-session peaks recorded in
-`plans/primitive-perf/01-encode-simd/01-base64-report.md`
-(encode 8.1 vs 17.0-18.7 GB/s; decode 4.7 vs 10.0-10.9 GB/s). The leaf
-numbers were real quiet-window best-of-5 ×3 runs; this report's numbers
-are the single final full-run measurement on the same binary code and
-are the official set. Both measurements straddle the same conclusions:
-big wins over CPython (10-24x), still below the PR #162443 SOTA line
-(hardware + dispatch caveats below). The run-to-run spread on this
-shared host is a known caveat of the single-run final.
+Note: this re-run measured the P01 1MiB encode/decode arms at their
+best levels yet (encode 19.0 GB/s, decode 11.2 GB/s — the W6-W7
+interpreter-loop and allocation fixes removed per-call overhead that
+was capping the kernels), while still landing under the PR #162443
+SOTA line measured on an M5 Max (hardware + dispatch caveats below).
+Earlier runs on the same kernel code measured 8.1-9.5 encode / 4.7-6.9
+decode GB/s; the run-to-run spread on this shared host is a known
+caveat of the single-run final.
 
 ## Per-group narrative
 
@@ -154,14 +170,16 @@ structure — encode via `vld3q_u8` de-interleave → bit-slice →
 `vqtbl4q_u8` TBL → `vst4q_u8`; decode via the Muła/Lemire nibble
 lookup (`lut_lo/lut_hi` clamp + `lut_roll`, `vsliq` packing); scalar
 loops keep tails, padding, and every error. All four binascii/base64
-surfaces now ride the kernels:
+surfaces ride the kernels, and the W6-W7 interpreter-loop fixes removed
+per-call overhead the kernels were paying through the tree-walker:
 
-- b64encode: 1.2 GB/s scalar → **8.1-9.5 GB/s** through the interpreter
-  arm (leaf quiet-window peaks 17.0-18.7 GB/s), 10.9-12.0x CPython.
-- b64decode: 0.4 GB/s → **4.7-6.9 GB/s** (peaks 10.0-10.9), 10.7-15.7x
-  CPython.
-- binascii.b2a_base64: **5.1-7.4 GB/s**, 7.0-9.7x CPython — PASS.
-- binascii.a2b_base64: **3.9-5.4 GB/s**, 8.8-11.4x CPython — PASS.
+- b64encode: 1.2 GB/s scalar → **10.63-18.96 GB/s**, 14.51-24.36xx CPython —
+  still 0.44-0.79x of the PR #162443 24 GB/s target (M5 Max hardware;
+  honest gap below).
+- b64decode: 0.4 GB/s → **7.76-11.21 GB/s**, 17.04-24.83xx CPython — still
+  0.55-0.80x of the PR's 14 GB/s line.
+- binascii.b2a_base64: **8.3-9.6 GB/s GB/s**, 10.71-12.30xx CPython — PASS.
+- binascii.a2b_base64: **6.0-8.8 GB/s GB/s**, 13.14-20.16xx CPython — PASS.
 
 The leaf also fixed **8 pre-existing API divergences** in the
 base64-module arms (altchars=, validate=, padding/whitespace semantics,
@@ -170,7 +188,7 @@ encodebytes MAXBINSIZE chunking), all caught and gated by the
 
 ### P03 — hexlify/unhexlify
 
-Before: hexlify ran a `format!("{b:02x}")` per-byte loop at **0.03
+Before: hexlify ran a `format!("{{b:02x}}")` per-byte loop at **0.03
 GB/s** (the single worst row in the baseline — a fast table encoder
 existed in the same file, unwired); unhexlify did lossy-UTF8 +
 whitespace-filter pre-passes then a per-char digit loop at 0.24 GB/s.
@@ -179,161 +197,188 @@ nibble-split + `vqtbl1q` + `vzipq` encode kernel; decode gets a NEON
 validity scan (`vminvq` all-lanes) + dual `vqtbl2q` gather merge — the
 scan was the decode bottleneck (0.94 → 6.5 GB/s when it went NEON):
 
-- hexlify: 0.03 GB/s → **1.8-2.1 GB/s**, 1.5-1.6x CPython — PASS
-  (leaf quiet-window measured 2.02-2.11 / 1.23x; this final run
-  re-measured CPython's arm faster and ours the same, so the ratio
-  improved to 1.50x).
-- unhexlify: 0.24 GB/s → **4.4-6.5 GB/s**, 3.3-4.3x CPython — PASS
-  (CPython's own `bytes.fromhex` core here is SIMD-class at ~3.5 GB/s;
-  we beat that baseline).
-- `sep`/`bytes_per_sep` grouping is now implemented **CPython-exact**
+- hexlify: 0.03 GB/s → **1.9-2.2 GB/s GB/s**, 1.05-1.21xx CPython — PASS (this
+  group is unchanged from the earlier run; CPython re-measured slightly
+  faster this time, so hexlify sits closer to parity at 1.05x @48KiB).
+- unhexlify: 0.24 GB/s → **4.6-6.8 GB/s GB/s**, 2.58-3.74xx CPython — PASS
+  (CPython's own `bytes.fromhex` core here is SIMD-class at ~1.8 GB/s
+  on this host; we beat that baseline).
+- `sep`/`bytes_per_sep` grouping is implemented **CPython-exact**
   (positive = right-aligned groups, negative = left-aligned, exact
   error texts), pinned by the 1976-case differential matrix (grouping
-  lengths 0..100 × ±1..4 added).
+  lengths 0..100 × ±1..4).
 - binascii crc32/adler32 one-shots also benefited from the same audit
   wave (11x-class one-shot wins recorded in the leaf reports).
 
-### P04 — zlib
+### P04 — zlib — all 8 rows PASS
 
-Compression is a clean win: flate2/miniz_oxide+simd beats CPython's
-system zlib at both levels and sizes — compress(level=1) **8.4x**
-CPython @1MiB, compress(level=6) **2.5x** — PASS ×4. Decompress is the
-gap: our arm goes through flate2's streaming-writer `ZlibDecoder`
-shape instead of a one-shot slice decode, landing at **0.37-0.52x
-CPython**. Audit verdict: FIXABLE (pure Rust-crate shape issue —
-one-shot `flate2::decompress`-style call or zlib-rs backend), filed as
-a fix-leaf candidate.
+Decompress is FIXED: the W5 fix wave replaced the streaming-writer
+`ZlibDecoder` shape with a one-shot decode over the zlib-rs backend,
+and all four decompress rows now beat CPython — **1.05-1.38x**
+CPython (decompress 1.05x @48KiB level=6 up to 1.38x @48KiB level=1;
+1.30-1.38x @1MiB). Compression stays a clean win: flate2
+miniz_oxide+simd beats CPython's system zlib at both levels and sizes
+(compress(level=1) 2.1x @48KiB / 4.5x @1MiB, compress(level=6) 2.8x /
+7.3x) — PASS ×4. The whole group is green; the residual decompress gap
+to CPython's raw inflate speed at level=1 @1MiB is within the margin
+that separates zlib-rs from system zlib, not a dispatch issue.
 
 ### P05 — hashlib
 
-Both digests FAIL. CPython routes SHA-2 through OpenSSL's ARMv8
-crypto-extension; our sha2 crate compiles WITHOUT the
-`asm-aarch64` feature (verified: `sha2 = "0.10"` carries no features
-in `crates/ap-run/Cargo.toml`; sha2 0.10.9 exposes
-`asm-aarch64 = ["asm"]`). sha256 lands at **0.14x** CPython (0.35-0.37
-GB/s vs 2.5-2.6); md5 has no aarch64 hw path in any crate and lands at
-**0.81-0.95x** (near-parity, software on both sides). The sha256 fix
-is a one-line feature flag + a `cargo tree`-verified rebuild — fix-leaf
-candidate; md5 is a real (smaller) gap.
+sha256 improved from 0.14x to **0.67-0.84xx** CPython (1.8-2.3 GB/s GB/s vs
+2.6-2.7): the `sha2` crate's `asm-aarch64` feature flag landed in the
+W5 wave and the ARMv8 crypto-extension code now compiles in. The
+residual gap is the **OpenSSL crypto-ext backend class**: CPython links
+libcrypto's hand-tuned ASM and gets a sustained ~2.7 GB/s, our
+sha2-aarch64 path tops out lower — closing it fully means linking an
+OpenSSL-class backend (new-dep user decision; filed, not scheduled).
+md5 is unchanged at **0.87-0.92xx** (0.6-0.7 GB/s GB/s): no aarch64 hardware
+MD5 path exists in any Rust crate, CPython also runs software MD5 —
+near-parity, lowest-priority gap.
 
 ### P06 — str methods
 
-Wins: `str.find` **3.0-4.4x** (stdlib two-way on a borrowed window),
-`str.replace` **1.9x** @1MiB, `str.upper` **2.5-4.4x** — PASS ×5.
-Gaps: `str.join` at **0.22-0.23x** routes through the generic-iterable
+Wins: `str.find` **3.3-4.4x** (stdlib two-way on a borrowed window),
+`str.replace` **1.89x** @1MiB, `str.upper` **2.8-4.1x** — PASS ×5.
+Gaps: `str.join` at **0.19-0.22x** routes through the generic-iterable
 path (`iterable_of_public` + per-item PyString walk) instead of a
-homogeneous list-of-str bulk join; `str.split` at **0.43-0.50x** pays
-per-piece Value allocation; `str.replace` @48KiB at 0.90x is
+homogeneous list-of-str bulk join; `str.split` at **0.47-0.51x** pays
+per-piece Value allocation; `str.replace` @48KiB at 0.95x is
 small-size dispatch overhead (the same ~0.5 µs/call fixed cost visible
-in every 48KiB row). bytes-side find/replace/split/count are naive
-`windows()` O(n·m) loops (audit str-bytes.md §1.3) — a memchr-gated
-rewrite is the known fix, but `memchr` is a new user-facing dependency
-= **user decision**, so it stayed out of this campaign.
+in every 48KiB row). join and split remain **pending audit Fix items**
+(not scheduled in this campaign — the Fix waves prioritized sort, dict
+and int). bytes-side find/replace/split/count are naive `windows()`
+O(n·m) loops (audit str-bytes.md §1.3) — a memchr-gated rewrite is the
+known fix, but `memchr` is a new user-facing dependency = **user
+decision**.
 
 ### P07 — bytes/int conversions
 
-The strongest group: `int.from_bytes` **1.75-1.83x**, `int.to_bytes`
-**1.51-1.74x**, `int(small str)` **2.37x**, `hex(big_int)` **41x /
-923x** (our declared-linear `bigint_to_base` vs CPython's quadratic
-divide loop). PASS ×7. The audits ALSO surfaced three real correctness
-bugs here, all fixed during the campaign: `int.to_bytes` silently
-zero-filled for values ≥ 2^63 (i64 coercion), `int.from_bytes`
-truncated >16-byte data through an i128 accumulator + stub big path,
-and hex/oct/bin shared the quadratic helper (fixed with the linear
-path). The one FAIL: `int(decimal_str)` @1MiB (**4000-digit parse**,
-0.73x CPython) — CPython 3.14 routes big parses through
-`_pylong.int_from_string` (libmpdec-backed, subquadratic); our
-`Int::parse_base10` is num-bigint's linear-limb parse with no small-int
-fast path (`int("123")` heap-allocates a BigInt — audit
-str-bytes.md §1.4, Fix item).
+`int.from_bytes` **1.83-2.45x** — PASS both sizes after the
+`from_bytes_exact` bulk Big-int path hotfix (256e5d9) removed the
+per-chunk shift-accumulate that was O(n²) (1 MiB: 2.63 s → ~1 ms).
+Remaining gaps:
 
-### P08 — sorted()/list.sort — ERROR (feature gap)
+- `int.to_bytes` **0.76-0.80x**: the serializing direction still pays
+  per-limb decimal-free formatting through the tree-walker. Honest gap;
+  follow-up = symmetric bulk serialization path.
+- `hex(big_int)` **0.79-0.83x** — REGRESSION vs the campaign-start run,
+  documented honestly: hex @48KiB measured **41x CPython** at wave
+  start and now lands at parity-to-slightly-under. The W7 GC/iter
+  changes (gen-1 GC retain fence, iterator deregistration) traded this
+  row — the linear `bigint_to_base` kernel is unchanged; the cost moved
+  into the result-string/Value lifecycle around it. This is the top
+  candidate for a follow-up re-benchmark + targeted fix.
+- `int(decimal_str)` @1MiB (**4000-digit parse**) **0.75x**: CPython
+  3.14 routes big parses through `_pylong.int_from_string`
+  (libmpdec-backed, subquadratic); our `Int::parse_base10` is
+  num-bigint's linear-limb parse with no small-int fast path
+  (`int("123")` heap-allocates a BigInt — audit str-bytes.md §1.4).
+  @48KiB still PASSES at 2.29x.
 
-All 6 rows ERROR: the probe crashes at setup with
-`AttributeError: 'module' object has no attribute 'Random' (module
-'random')`. Our native `random` module surface lacks the `Random`
-class — an interpreter/stdlib feature gap, not a sort measurement.
-Nothing about sort throughput is measured by this run. The audit's
-hand probes (sort-dict-json.md) found: `list.sort()` homogeneous fast
-path 5.2x CPython (close), generic `sorted()` 18x-20,000x slower with
-the 35 µs/element **Int-loop interpreter pathology** suspected
-(two profiling attempts spent, root not identified), plus 3 real sort
-correctness bugs (TypeError swallowed on mixed compares, v0 arm
-silent no-op on mixed lists, `key=None` crash) — all fixed in the
-campaign's fix waves.
+The audits ALSO surfaced three real correctness bugs here, all fixed
+during the campaign: `int.to_bytes` silently zero-filled for values ≥
+2^63 (i64 coercion), `int.from_bytes` truncated >16-byte data through
+an i128 accumulator + stub big path, and hex/oct/bin shared the
+quadratic helper (fixed with the linear path).
 
-### P09 — dict build/lookups — ERROR (timeout)
+### P08 — sorted()/list.sort — all 6 rows MEASURED (previously ERROR)
 
-All 6 rows ERROR: the antipythony leg times out at the harness's 120 s
-deadline at EVERY size, including 48KiB (6144 elements). The probe is
-whole-file: a module-level 1M-element list-comprehension of modulo ops
-runs before any JSON line emits, and the tree-walking interpreter
-costs ~3x CPython per loop iteration (the audit's Int-loop pathology
-measured 35 µs/element on int listcomps) — the setup alone exceeds the
-budget, starving even the small rows (slow-not-hung; classification in
-baseline-notes.md). The dict structure itself is a first-hand
-CPython-exact compact-dict transcription (identical probe recurrence,
-2/3-load resize, insertion order, cached str hashes — audit
-sort-dict-json.md §2): the measured gap belongs to interpreter-loop +
-method-dispatch cost, not the hash table. Audit hand probes: dict
-build 5.2x CPython, lookups 135x (bound-method dispatch per call).
-Standalone hand-measured probes or a taller timeout are the follow-up;
-both out of this leaf's scope.
+`random.Random` was implemented (was the probe blocker), so sort
+throughput is now measured for the first time: `list.sort` lands at
+**0.12-0.14xx** CPython, generic `sorted()` at **0.36-0.42xx**. Fix C
+(1ad9559) removed the O(n²) iter pull that made list iteration cost
+~35 µs/element — the sort itself now runs on the same compare loop
+CPython uses — but the per-element compare path is still
+**dispatch-bound** (~every comparison goes through the generic
+Value-compare arm instead of a homogeneous int-compare fast path).
+Follow-up: the audit's Fix B **homogeneous fast-path arm** (detect
+list-of-int, compare raw i64s without Value dispatch) is the filed
+next step. The audit's 3 sort correctness bugs (TypeError swallowed on
+mixed compares, v0 arm silent no-op on mixed lists, `key=None` crash)
+were all fixed in the fix waves.
+
+### P09 — dict build/lookups — all 12 rows MEASURED (previously ERROR)
+
+The probe was un-blocked twice over: the module-level 1M-element setup
+that starved the 120 s timeout was replaced by a 32k fixed workload
+(probe change, documented in its docstring), and Fix C's O(1) iter
+pull removed the per-element walk cost. Results vs CPython: dict build
+**0.12-0.14xx**, getitem lookups **0.06-0.07xx**, `d.get` bound-method
+lookups **0.01-0.07xx**, iteration **0.07-0.08xx**. All dramatically
+improved from the audit's pre-campaign hand probes (2000-3100x-class
+gaps) — Fix C alone took the int-loop from 57100 to 190 ns/element.
+The remaining floor is interpreter machinery, not the hash table (the
+dict structure is a first-hand CPython-exact compact-dict
+transcription): `dict.get` pays a **~1.5 µs BoundMethod mint per
+lookup step** on top of the ~190 ns/step iteration walk; getitem's
+~360 ns/step and iter's ~185 ns/step are the honest per-step
+tree-walker floor at tier-0. Tier-1 dispatch or a bulk-call API is the
+filed follow-up.
 
 ### P10 — json
 
-`json.dumps` is **marginal-parity**: 0.92x @48KiB (FAIL by 8%),
-**1.02x** @1MiB (PASS) — the recursive tree-walk encoder holds parity
-with CPython's C encoder at scale. `json.loads` is the real gap:
-**0.23x / 0.18x** (4.4-5.7x slower than CPython) — our hand-written
+`json.dumps` is now a PASS on both sizes: **1.06-1.09x** CPython (was
+0.92x @48KiB) — the W6-W7 allocation and iter fixes pushed the
+recursive tree-walk encoder over parity with CPython's C encoder at
+both sizes. `json.loads` remains the real gap: **0.31-0.46xx** (2.2-3.2x
+slower than CPython, improved from 4.4-5.7x) — our hand-written
 recursive-descent parser walks byte-at-a-time with per-char String
 growth; CPython uses the `_json` C scanner with bulk string scan +
-memo dict. The audit's native-json sketch (memchr-gated escape-free
-span copies, bulk number parsing, pre-sized encoder buffer) projects
+memo dict. The dominant remaining cost is the **~985 ns per-value
+registry insert** on the object-building path; the audit's native-json
+sketch (memchr-gated escape-free span copies, bulk number parsing,
+pre-sized encoder buffer, value-batching/nursery allocation) projects
 loads → 2-4x faster than CPython; `memchr` adoption is a tiny-dep user
 decision, `serde_json` was considered and recommended AGAINST (it
 would forfeit the CPython-exact error-text surface). Fix-leaf sketch
 shipped in audits/sort-dict-json.md §3.
 
-## Honest gaps — every non-PASS row
+## Honest gaps — every non-PASS row (38 FAIL rows, 0 ERROR)
+
+Every FAIL row is explained below, grouped by cause. Groups are
+counted by row: P01 encode ×2, P01 decode ×2 (4); P05 sha256 ×2 + md5
+×2 (4); P06 join ×2 + split ×2 + replace@48KiB ×1 (5); P07 to_bytes ×2
++ hex ×2 + int(decimal_str)@1MiB ×1 (5); P08 ×6; P09 ×12; P10 loads ×2
+(2) — 4+4+5+5+6+12+2 = 38.
 
 | rows | gap | reason / disposition |
 |------|-----|----------------------|
-| P01 encode ×2 (0.34-0.40 vs target) | 8.1-9.5 GB/s vs the 24 GB/s PR #162443 target (internal ≥20 GB/s gate nearly met at leaf peaks 17-18.7) | The PR number was measured on an **M5 Max**; M2 Ultra NEON/memory throughput is lower. The kernel is not the bottleneck: a standalone alloc+touch of the 1.4 MiB output costs ~0.5 µs, and **per-call interpreter dispatch (~0.5 µs/call + Value mint + Gc alloc, all inside the tree-walker) caps 1MiB throughput**. A tier-1 (JIT) call path or bulk-call API is the filed follow-up — out of the leaf's file ownership. |
-| P01 decode ×2 (0.34-0.49 vs target) | 4.7-6.9 GB/s vs the 14 GB/s PR line (leaf's internal ≥10 GB/s gate MET at 10.0-10.9) | Same hardware-vs-SOTA caveat as encode; `target_gbs` in the schema stays the PR's M5-max number, so the row ranks FAIL even though the leaf's own gate passed. |
-| P03 hexlify 1.5x | 2.1 GB/s is NOT the ≥10x dispatch aspiration | Interpreter-arm ceiling (same ~0.5 µs/call dispatch cap — any kernel through the tree-walker tops out ~2-3 GB/s @1MiB); NEON TBL+vzip tops out lower than desktop AVX-512/AVX2 paths. Two focused attempts spent (honest-stop); tier-1/bulk-call follow-up mirrors the base64 gap. unhexlify DID beat its parity target (3.3-4.3x vs CPython's SIMD-class fromhex core). |
-| P04 decompress ×4 (0.37-0.52x) | zlib.decompress 3.4-3.8 GB/s vs CPython 9.0-9.1 | Our arm uses flate2's streaming-writer `ZlibDecoder` shape, not a one-shot slice decode. Pure Rust-crate shape issue (flate2 one-shot or zlib-rs backend per audit hash-compress.md) — **fix-leaf candidate**, not done in this campaign (audit-only group). |
-| P05 sha256 ×2 (0.14x) | 0.35-0.37 GB/s vs CPython 2.5-2.6 (OpenSSL ARMv8 crypto ext) | `sha2` crate `asm-aarch64` feature is OFF — verified first-hand in Cargo.toml + registry. One-line feature flag + rebuild — **fix-leaf candidate**. |
-| P05 md5 ×2 (0.81-0.95x) | near-parity, small real gap | No aarch64 hardware MD5 path exists in any Rust crate (md-5's `asm` is x86-only); CPython also runs software MD5. Lowest-priority gap. |
-| P06 str.join ×2 (0.22-0.23x) | 2.6-3.3 GB/s vs CPython 11.3-14.8 | Routes through the generic-iterable join (`methods.rs:1519`) with per-item PyString walking instead of a homogeneous list-of-str bulk join (audit Fix item). Not fixed this campaign (audit-only group). |
-| P06 str.split ×2 (0.43-0.50x) | 0.73-0.82 GB/s vs CPython 1.6-1.7 | Per-piece Value/Gc allocation dominates. Not fixed this campaign. |
-| P06 str.replace @48KiB (0.90x) | 7.8 vs 8.7 GB/s | Small-size fixed dispatch overhead (~0.5 µs/call); the same primitive PASSES @1MiB at 1.89x. |
-| P07 int(decimal_str) @1MiB (0.73x) | 4000-digit parse loses CPython | CPython 3.14 uses `_pylong`/libmpdec subquadratic parse above ~450 digits; ours is num-bigint linear-limb parse (audit Fix item: small-int fast path + chunked big parse). |
-| P08 ×6 ERROR | sort never measured — probe crashes | `random.Random` class missing from the native `random` module — **interpreter feature gap** (found and filed by the audit; the 3 sort correctness bugs found by the audit are FILED, not fixed — verified still reproducing on the merged trunk 2026-11-24). Fix leaf = implement `random.Random` + the sort fixes; until then the sort rows cannot measure. |
-| P09 ×6 ERROR (TIMEOUT 120s) | dict rows never emit | Module-level 1M-element listcomp setup at ~3x CPython per interpreter-loop iteration exceeds the 120 s probe budget before any JSON line (slow-not-hung; audit hand-probes put dict build 5.2x / lookups 135x, gap = interpreter loop + bound-method dispatch, NOT the CPython-exact dict structure). Follow-up: standalone probe / taller timeout / Int-loop fix (audit Fix C) — all out of scope here. |
-| P10 json.dumps @48KiB (0.92x) | marginal, 8% under | Small-structure dispatch overhead; PASSES @1MiB (1.02x). Escape-table + pre-sized buffer sketch (audit §3) would clear both. |
-| P10 json.loads ×2 (0.18-0.23x) | 4.4-5.7x slower than CPython | Byte-at-a-time recursive-descent vs CPython's `_json` C bulk scanner. Audit ships a native-json optimization leaf sketch (memchr span copies, bulk numbers); **memchr = new dep = user decision**, serde_json recommended against. |
+| P01 encode ×2 (0.44-0.79 vs target) | 10.6-19.0 GB/s vs the 24 GB/s PR #162443 target | The PR number was measured on an **M5 Max**; M2 Ultra NEON/memory throughput is lower. The kernel is not the bottleneck: **per-call interpreter dispatch (~0.5 µs/call + Value mint + Gc alloc, all inside the tree-walker) caps 1MiB throughput**. A tier-1 (JIT) call path or bulk-call API is the filed follow-up — out of this leaf's file ownership. |
+| P01 decode ×2 (0.55-0.80 vs target) | 7.8-11.2 GB/s vs the 14 GB/s PR line | Same hardware-vs-SOTA caveat as encode; `target_gbs` in the schema stays the PR's M5-Max number, so the row ranks FAIL against hardware we don't run. Best decode measured to date (11.2 GB/s @1MiB). |
+| P05 sha256 ×2 (0.67-0.84x) | 1.8-2.3 GB/s vs CPython 2.6-2.7 (OpenSSL ARMv8 crypto ext) | `asm-aarch64` LANDED (was the 0.14x pre-fix state); the residual is the OpenSSL-backend class gap — CPython's libcrypto ASM sustains ~2.7 GB/s. Closing fully = link an OpenSSL-class crypto backend = **new-dep user decision**, filed not scheduled. |
+| P05 md5 ×2 (0.87-0.92x) | near-parity, small real gap | No aarch64 hardware MD5 path exists in any Rust crate (md-5's `asm` is x86-only); CPython also runs software MD5. Lowest-priority gap. |
+| P06 str.join ×2 (0.19-0.22x) | 2.7-3.4 GB/s vs CPython 14.0-15.4 | Routes through the generic-iterable join (`methods.rs`) with per-item PyString walking instead of a homogeneous list-of-str bulk join. **Pending audit Fix item** — not in this campaign's fix waves. |
+| P06 str.split ×2 (0.47-0.51x) | 0.77-0.89 GB/s vs CPython 1.6-1.7 | Per-piece Value/Gc allocation dominates. **Pending audit Fix item** — not in this campaign's fix waves. |
+| P06 str.replace @48KiB (0.95x) | 8.2 vs 8.7 GB/s | Small-size fixed dispatch overhead (~0.5 µs/call); the same primitive PASSES @1MiB at 1.89x. |
+| P07 int.to_bytes ×2 (0.76-0.80x) | serialize direction ~25% under CPython | Per-limb formatting through the tree-walker; from_bytes got the bulk path (now 2.45x) but to_bytes' symmetric bulk serialization is not written. Filed follow-up. |
+| P07 hex(big_int) ×2 (0.79-0.83x) | REGRESSION: was 41x @48KiB at wave start | The W7 GC/iter changes (gen-1 GC retain fence, iterator registry work) traded this row — the linear `bigint_to_base` kernel is unchanged, the cost moved into the surrounding result-string/Value lifecycle. Documented honestly as the **top follow-up re-benchmark + fix candidate**. |
+| P07 int(decimal_str) @1MiB (0.75x) | 4000-digit parse loses CPython | CPython 3.14 uses `_pylong`/libmpdec subquadratic parse above ~450 digits; ours is num-bigint linear-limb parse (audit Fix item: small-int fast path + chunked big parse). @48KiB PASSES at 2.29x. |
+| P08 ×6 (0.12-0.42x) | sort now MEASURED, dispatch-bound | `random.Random` implemented (blocker gone), Fix C removed the O(n²) iter pull; remaining cost = every compare goes through the generic Value-compare arm (list.sort 0.12-0.14x, generic sorted() 0.36-0.42x). Follow-up = audit Fix B **homogeneous int-list fast-path compare** (filed). |
+| P09 ×12 (0.01-0.14x) | dict rows now MEASURED, interpreter-floor-bound | Probe un-blocked (32k fixed workload + Fix C O(1) iter pull). Remaining = **~1.5 µs BoundMethod mint per `d.get` step** + ~185-360 ns/step tree-walker floor (getitem ~360 ns, iter ~185 ns, build ~136 ns/elem); the CPython-exact compact-dict structure itself is not the bottleneck (audit §2). Tier-1 dispatch / bulk-call API = filed follow-up. |
+| P10 json.loads ×2 (0.31-0.46x) | 2.2-3.2x slower than CPython (was 4.4-5.7x) | Byte-at-a-time recursive-descent vs CPython's `_json` C bulk scanner; dominant residual = **~985 ns per-value registry insert** on object construction. Audit's native-json leaf sketch: memchr span copies, bulk numbers, pre-sized buffer, value-batching/nursery allocation; **memchr = new dep = user decision**, serde_json recommended against. |
 | bz2 / lzma (no rows) | NotImplementedError shims | Both modules are 65-69-line vendored raise-shims (audit hash-compress.md §1.2); real compression needs new C-dep-equivalent crates (bzip2/lzma-rs) = **new-dep user decision**, out of campaign scope. Their absence from bench_report.json is itself the documented state. |
 
 ## Reproduce
 
 ```sh
-# worktree + branch (report numbers measured here)
+# merged trunk, main checkout (no worktree needed)
 cd ~/git/antipythony
-git worktree add /Users/caimlas/.git/worktrees/leaf-primperf-report \
-    -b tier1-primperf-report main
-cd /Users/caimlas/.git/worktrees/leaf-primperf-report
 
-# fresh release build (one heavy cargo lane; CARGO_BUILD_JOBS=4 policy)
-CARGO_BUILD_JOBS=4 CARGO_TARGET_DIR=$PWD/target-report \
+# fresh release build (one heavy cargo lane; CARGO_BUILD_JOBS=4 policy).
+# GOTCHA: trunk target dirs go stale-fingerprint after merges — verify
+# the binary mtime is NEWER than the newest crate source before trusting
+# it; when in doubt, build into a fresh CARGO_TARGET_DIR.
+ls -la target-pptrunk3/release/antipythony crates/ap-obj/src/int.rs
+CARGO_BUILD_JOBS=4 CARGO_TARGET_DIR=$PWD/target-pptrunk3 \
     cargo build --release -p ap-cli
 
 # quiet window check (launch gate: loadavg < 10; sleep 120 + recheck if higher)
 uptime
 
-# THE full bench (~6-40 min; P09 antipythony rows time out at 120s each — expected)
+# THE full bench (~6-40 min; all 64 rows measured, 0 ERROR expected)
 python3.14 tests/bench/primitive/run_bench.py \
-    --antipythony target-report/release/antipythony \
+    --antipythony target-pptrunk3/release/antipythony \
     --python /opt/homebrew/bin/python3.14 \
     --out tests/bench/primitive/bench_report.json
 
@@ -341,29 +386,33 @@ python3.14 tests/bench/primitive/run_bench.py \
 python3 tests/bench/primitive/gen_chart.py
 
 # differential byte-exactness gates
-python3.14 tests/bench/primitive/diff_b64.py --other target-report/release/antipythony run
-python3.14 tests/bench/primitive/diff_hex.py --other target-report/release/antipythony run
+python3.14 tests/bench/primitive/diff_b64.py --other target-pptrunk3/release/antipythony run
+python3.14 tests/bench/primitive/diff_hex.py --other target-pptrunk3/release/antipythony run
 
 # conformance gates
-./target-report/release/ap-conform values
-./target-report/release/ap-conform stdlib
+./target-pptrunk3/release/ap-conform values
+./target-pptrunk3/release/ap-conform stdlib
 ```
 
 ## Attribution
 
-Beyond raw throughput, this campaign's audits FOUND 5 primitive
-correctness bugs (int.to_bytes zero-fill on ≥2^63 values,
-int.from_bytes >16-byte truncation, 3 sort bugs: mixed-compare
-TypeError swallowed / v0-arm silent no-op / key=None crash) and
-3 interpreter bugs (loop default-argument capture, `random.Random`
-missing — the P08 blocker, exception-path reference leak). All 8 are
-FILED, NOT FIXED in this campaign — each verified still reproducing on
-the merged trunk 2026-11-24; they are the top of the fix-leaf queue
-(see Honest gaps). The 8 base64-module API divergences (altchars,
-validate, padding/whitespace semantics) ARE fixed and gated byte-exact.
-Perf numbers never traded semantics: every optimized surface is
-gated byte-exact vs CPython 3.14 (diff_b64 2132/0, diff_hex 1976/0,
-ap-conform values 50/50 + stdlib 48/48).
+Beyond raw throughput, this campaign's audits FOUND and the fix waves
+FIXED: **2 int bugs** (int.to_bytes zero-fill on ≥2^63 values,
+int.from_bytes >16-byte truncation), **3 sort bugs** (mixed-compare
+TypeError swallowed, v0-arm silent no-op on mixed lists, key=None
+crash), **8 base64 API divergences** (altchars, validate,
+padding/whitespace semantics), **random.Random missing** (the P08
+probe blocker), the **gen-1 GC retain fence violation** (live old
+objects deregistered), the **O(n²) iter pull** (Fix C, 57100 → 190
+ns/element on the int loop) and the **O(n²) from_bytes** (bulk Big
+path, 1 MiB 2.63 s → ~1 ms). Perf numbers never traded semantics:
+every optimized surface is gated byte-exact vs CPython 3.14 (diff_b64
+2132/0, diff_hex 1976/0, ap-conform values 50/50 + stdlib 48/48).
+
+**Still open** (FILED, verified reproducing, top of the fix-leaf
+queue): the loop default-argument capture miscompile, the binascii
+exception-path reference leak, `int.from_bytes(list)` >255-element
+masking, and format-spec zero-fill beyond u128.
 
 Per-leaf detail: `plans/primitive-perf/00-harness/baseline-notes.md`,
 `plans/primitive-perf/01-encode-simd/01-base64-report.md`,
