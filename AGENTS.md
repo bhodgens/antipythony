@@ -47,6 +47,20 @@ GIL, uv-backed deps at build time. Byte-exact differential conformance vs CPytho
   docs/test-interpreter-lock-policy.md.
 
 ## Current status (update this block when it changes)
+- PRIMITIVE-PERF CAMPAIGN COMPLETE 2026-11-24 (plans/primitive-perf/, tracker
+  TRACKER-PRIMITIVE-PERF.md, report docs/primitive-perf-report.md + chart.svg):
+  NEON SIMD base64 (encode 1.2->8-19 GB/s, decode 0.4->4.7-10.9 GB/s, 8 API
+  divergences fixed) + hexlify/unhexlify (0.03->2.1 / 0.24->6.5 GB/s,
+  sep/bytes_per_sep now CPython-exact) merged (dd3eda0, a0dc0f8); every
+  optimized surface byte-exact (diff_b64 2132/0, diff_hex 1976/0, ap-conform
+  values 50/50 + stdlib 48/48). Final bench: 58 rows = 25 PASS / 21 FAIL /
+  12 ERROR, every non-PASS row documented in the report's honest-gaps table.
+  Follow-up queue: 8 audit-found bugs FILED-not-fixed (to_bytes zero-fill,
+  from_bytes truncation, 3 sort bugs, loop default-arg capture, random.Random
+  missing = P08 blocker, except-leak); new-dep user decisions pending
+  (crc32fast, memchr, sha2 asm-aarch64 flag on EXISTING dep, bzip2/lzma-rs).
+  GOTCHA hit twice: trunk target dirs go stale-fingerprint after merges —
+  verify binary mtime, build into a FRESH CARGO_TARGET_DIR when in doubt.
 - TOP-LEVEL PLAN COMPLETE 2026-11-24 (orchestrator session, tracker
   NEXT-TOPLEVEL-COMPLETION.md): Plans 00-04 + Plan 10 S1 complete, pydantic
   GREEN, Plan 05 T3 REACH / T4 walls mapped / T5 BLOCKED priced. 21 campaign
