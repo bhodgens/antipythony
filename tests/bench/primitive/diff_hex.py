@@ -23,9 +23,9 @@ Env notes (honest, not papered over):
   `lambda d=data:` there); (kind, payload) tuples + dispatcher instead.
 
 Known antipythony divergences this gate flags (gate failures BY DESIGN
-until fixed): hexlify(data, sep, bytes_per_sep) ignores sep/bps;
-hexlify(str) wrongly accepted; unhexlify(bytearray) wrongly rejected;
-bytes.fromhex underscore error position off-by-one (after vs at).
+until fixed): bytes.fromhex underscore error position off-by-one (after
+vs at). sep/bytes_per_sep grouping + unhexlify arity/type surfaces were
+IMPLEMENTED in leaf 02 (matrix F below compares vs CPython exactly).
 
 Exit 0 = green, 1 = mismatch(es). Prints one JSON summary line.
 """
@@ -118,6 +118,38 @@ def build_matrix(full):
         ("E.fromhex.bad5", "fromhex", "68 65_11"),
         ("E.hexlify.big", "hexlen_big", b""),
     ]
+
+    # --- F: hexlify sep/bytes_per_sep grouping (leaf 02) — lengths around
+    # group boundaries, both signs, sep kwarg, plus the error surfaces.
+    group_hexstrs = [
+        (b"", b":", 0), (b"", b":", 2), (b"", b":", -2),
+        (b"a", b":", 1), (b"a", b":", 2), (b"ab", b":", 1),
+        (b"abcde", b":", 2), (b"abcdef", b":", 2),
+        (b"abcde", b":", -2), (b"abcdef", b":", -2),
+        (b"abcde", b":", 1), (b"abcde", b":", -1),
+        (b"abcde", b":", 3), (b"abcde", b":", -3),
+        (b"abcde", b":", 4), (b"abcde", b":", 5), (b"abcde", b":", 6),
+        (b"abcde", b":", -6), (b"abcdef0123456789", b"-", 4),
+        (b"abcdef0123456789", b"-", -4), (b"abcdef0123456789", b" ", 3),
+        (b"abcdef0123456789", b" ", -3), (b"abc", b"00", 1),
+        (b"abc", 1, 1),
+        (b"ab", b":", 0),
+    ]
+    for i, (data, sep, bps) in enumerate(group_hexstrs):
+        if bps == 0 or (isinstance(sep, int) and sep == 1):
+            continue  # int sep / bps=0 data-only covered elsewhere
+        cases.append((f"F.grp.{i}", "hexgroup", (data, sep, bps)))
+    cases += [
+        ("F.kw", "hexkw", (b"abcdef", b":", 2)),
+        ("F.b2a", "b2ahex", (b"abcdef", b":", 2)),
+        ("F.unhex.ba", "unhex_ba", b"6865"),
+        ("F.unhex.2args", "unhex2", (b"68656c6c6f", b" ")),
+        ("F.unhex.kw", "unhexkw", b"68656c6c6f"),
+    ]
+    for n in (0, 1, 7, 8, 15, 16, 31, 32, 33, 63, 64, 65, 100):
+        data = bytes((i * 7 + n) & 0xFF for i in range(n))
+        for bps in (1, 2, 3, 4, -1, -2, -3, -4, n if n else 1):
+            cases.append((f"F.len{n}.{bps}", "hexbps", (data, b":", bps)))
     return cases
 
 
@@ -140,6 +172,25 @@ def dispatch(kind, payload):
         return payload.hex().upper()
     if kind == "hexlen_big":
         return len(binascii.hexlify(bytes(range(256)) * 40))
+    if kind == "hexgroup":
+        data, sep, bps = payload
+        return binascii.hexlify(data, sep, bps)
+    if kind == "hexkw":
+        data, sep, bps = payload
+        return binascii.hexlify(data, sep=sep, bytes_per_sep=bps)
+    if kind == "b2ahex":
+        data, sep, bps = payload
+        return binascii.b2a_hex(data, sep, bps)
+    if kind == "hexbps":
+        data, sep, bps = payload
+        return binascii.hexlify(data, sep, bps)
+    if kind == "unhex_ba":
+        return binascii.unhexlify(bytearray(payload))
+    if kind == "unhex2":
+        data, sep = payload
+        return binascii.unhexlify(data, sep)
+    if kind == "unhexkw":
+        return binascii.unhexlify(payload, sep=b" ")
     raise AssertionError("unknown kind " + kind)
 
 
