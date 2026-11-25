@@ -69,7 +69,7 @@ const SHA_H0: [u32; 8] = [
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
 ];
 
-fn sha256_hex(data: &[u8]) -> String {
+pub(crate) fn sha256_hex(data: &[u8]) -> String {
     let bitlen = (data.len() as u64).wrapping_mul(8);
     let mut msg = Vec::with_capacity(data.len() + 72);
     msg.extend_from_slice(data);

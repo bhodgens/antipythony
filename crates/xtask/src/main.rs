@@ -17,6 +17,7 @@ use cargo_metadata::{MetadataCommand, Package};
 
 mod cli_docs;
 mod license_fallbacks;
+mod pins;
 mod stdlib_provenance;
 
 const NOTICES_PATH: &str = "THIRD_PARTY_NOTICES";
@@ -317,6 +318,9 @@ fn main() {
     }
     if verb.map(String::as_str) == Some("cli-docs") {
         cli_docs::run(args.iter().any(|a| a == "--check"));
+    }
+    if verb.map(String::as_str) == Some("pins") {
+        pins::run(&args[1..], &root);
     }
 
     let check = args.iter().any(|a| a == "--check");

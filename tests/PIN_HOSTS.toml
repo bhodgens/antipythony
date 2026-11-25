@@ -1,0 +1,118 @@
+# Host-adaptive pin manifest (GitHub issue #17; xtask pins --check/--fix).
+#
+# One [[case]] per pin-bearing corpus case whose bytes are host-relevant.
+#   name               case stem under tests/corpus/<family>/expected/
+#                      (or repo-relative path for non-corpus pin files)
+#   family             corpus family dir name under tests/corpus/
+#                      (omit for explicit-path cases)
+#   hosts              per-host recorded pins: '<key>' or '<key>:<sha256>'
+#                      (key = <os>-<arch>, e.g. darwin-aarch64)
+#   host_independent   true = bytes verified identical on every listed host
+#   host_dependent     true = bytes carry host ABI dialect (errno numbers,
+#                      select surface, libm ulp, interpreter paths) — every
+#                      such case MUST list `hosts` covering each host that
+#                      runs the suite; a missing entry is
+#                      `PIN MISSING FOR HOST <key>` under --check.
+#   source             repo-relative script --fix re-runs under the live
+#                      reference interpreter (corpus triples only)
+#   note               provenance / classification pointer (free text)
+#
+# known_hosts restricts which hosts --check polices at all: while the linux
+# sibling pins are being recorded family-by-family, the list is the honest
+# statement of coverage. Remove it to police every host.
+#
+# Gate: `cargo run -p xtask -- pins --check` fails on hash drift, malformed
+# or unknown cases, and PIN MISSING FOR HOST. `--survey` is read-only.
+# Do not hand-edit `pin_sha256` values; they are recorded by --survey.
+
+known_hosts = ["darwin-aarch64"]
+
+# --- ABI-LEGIT host dialect: bytes embed the recording host; every other
+# --- host that runs these suites needs a sibling pin (docs/host-adaptive-
+# --- pins.md §1 classification table).
+[[case]]
+name = "T109-exception-in-thread"
+family = "threading"
+hosts = ["darwin-aarch64:3a8e650cce8f8f398ea17d77aff88be9a61b5c020b1ed9a31c33977eca102c48"]
+host_dependent = true
+source = "tests/corpus/threading/T109-exception-in-thread.py"
+note = "stderr traceback embeds the reference interpreter's OWN stdlib install path (/opt/homebrew/Cellar/python@3.14/... on this box; /usr/lib/python3.14/... on Ubuntu CI). _mask_root only collapses tests/corpus/ prefixes, not the threading.py frame. Needs a linux-x86_64 sibling pin."
+
+[[case]]
+name = "s006_math_basics"
+family = "stdlib"
+hosts = ["darwin-aarch64:a13e2f8d4477c613e010699241ee496d534d4117da8ed72d72aa16b90a56bf52"]
+host_dependent = true
+source = "tests/corpus/stdlib/s006_math_basics.py"
+note = "libm 1-ulp dialect: repr tails of lgamma/erf/expm1 rows (b849c9c: glibc log@GLIBC_2.29 vs darwin libm; fused-mul_add shifts lgamma(5)). CPython itself differs per host -> ABI-LEGIT; linux sibling pin pending."
+
+[[case]]
+name = "s007_math_edges_errors"
+family = "stdlib"
+hosts = ["darwin-aarch64:bcd3970aab555629d062c2bc4553f327a20b5e355234e2d29715d5af92ef09f4"]
+host_dependent = true
+source = "tests/corpus/stdlib/s007_math_edges_errors.py"
+note = "same libm dialect class as s006 (nextafter/ulp rows); linux sibling pin pending."
+
+[[case]]
+name = "expected_t04"
+expected_dir = "tests/t04_ir_verify/fixtures"
+hosts = ["darwin-aarch64:8cf25534299204c0b6b248924561f4c6ca756836bdc4c272f9356731510e6f36"]
+host_dependent = true
+source = "tests/t04_ir_verify/gen_expectations.py"
+note = "header line records the darwin reference identity (Clang build string + /opt/homebrew path); TSV rows themselves are host-independent. Re-record via gen_expectations.py on linux to clear the header dialect."
+
+# --- HOST-INDEPENDENT given harness masking (checkout-absolute corpus
+# --- paths collapse to <ROOT>/tests/corpus/... by _mask_root in every
+# --- consumer suite: t11, t08, fstrings, t10, t09). Declared here so the
+# --- hash identity is policed on BOTH hosts and no sibling pin is needed.
+[[case]]
+name = "s016_collections_abc_isinstance"
+family = "stdlib"
+hosts = ["darwin-aarch64:64baf1b0d6635e4367de2757ee84a47a2beb54a1313983f75bf4701d45addd29"]
+host_independent = true
+source = "tests/corpus/stdlib/s016_collections_abc_isinstance.py"
+note = ".err embeds the absolute recording checkout path; t11 _mask_root normalizes it to <ROOT>/ on both sides of the diff -> host-independent post-mask."
+
+[[case]]
+name = "s023_ast_parse_dump_unparse"
+family = "stdlib"
+hosts = ["darwin-aarch64:f19b374337138388e0c7354d9b7d36adf081c3e370580a83871d9d24e3f127b4"]
+host_independent = true
+source = "tests/corpus/stdlib/s023_ast_parse_dump_unparse.py"
+note = "same masking class as s016 (DeprecationWarning file paths)."
+
+[[case]]
+name = "f33_bytes_adjacent_error"
+family = "fstrings"
+hosts = ["darwin-aarch64:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"]
+host_independent = true
+note = ".err is a SyntaxError traceback with an absolute path; fstrings _mask_root handles it. .out is empty (the sha is the empty-string hash by design)."
+
+[[case]]
+name = "containers_cpython314_stdout"
+expected_dir = "tests/ce-s1/expected"
+hosts = ["darwin-aarch64:d9c3966a09ec481b3acea9328cdc411ac628c23ea642d797443d9037f6b38e5d"]
+host_independent = true
+note = "Plan 10 S1 containers-band differential (live-CPython compared at runtime by crates/ap-ce/tests/ce_s1_containers_units.rs; this file is the CPython-side oracle the test RE-DERIVES, and the values are pure-Python semantics)."
+
+[[case]]
+name = "longgc_cpython314_stdout"
+expected_dir = "tests/ce-s1/expected"
+hosts = ["darwin-aarch64:606c6cb756cdbaee33dab98717dfc76ccbc8edfe328bb74e1bcc39f4215c6aae"]
+host_independent = true
+note = "object-protocol/GC-band C-API results; no host dialect in the values."
+
+[[case]]
+name = "methodmem_cpython314_stdout"
+expected_dir = "tests/ce-s1/expected"
+hosts = ["darwin-aarch64:7a9d1af316801999d9451c472a8456179bcc8e8a558f0c6632416272a0ae8d52"]
+host_independent = true
+note = "bound-method identity/mutation rows; value-only."
+
+[[case]]
+name = "pydantic_diff_cpython314_stdout"
+expected_dir = "tests/ce-s1/expected"
+hosts = ["darwin-aarch64:39bc5119e0222e575c42502d586836dfa0523f43aaffe58c2dc7abd896fccca2"]
+host_independent = true
+note = "pydantic-core differential summary (M* rows, counts); the 15 documented divergences live in NEXT-PYDIFF.md, none are host-dialect."

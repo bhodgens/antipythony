@@ -140,8 +140,15 @@ fn check_exits_one_when_notices_stale() {
 
     assert!(run_xtask(&root, &["notices"]).status.success());
     // Inject staleness in the fixture only — never the repo file.
+    // 2026-11-25 (issue #17 leaf): the sentinel must be a CANONICAL-visible
+    // line — `notices --check` (since 4f8868e) compares the (name, version,
+    // license) inventory, i.e. lines starting with "License: " or containing
+    // " v"; the old "STALE INJECTED ENTRY (fixture drift)" text matched
+    // neither, so the injected drift was filtered out and the gate exited 0
+    // (pre-existing failure of THIS test on the untouched tree). Simulate a
+    // phantom dependency row instead, which is exactly what the gate is for.
     let mut stale = fs::read_to_string(&notices).expect("xtask_gates.rs:143");
-    stale.push_str("\nSTALE INJECTED ENTRY (fixture drift)\n");
+    stale.push_str("\nsample v9.9.9 (fixture drift)\n");
     fs::write(&notices, stale).expect("xtask_gates.rs:145");
 
     let check = run_xtask(&root, &["notices", "--check"]);
