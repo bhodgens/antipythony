@@ -97,6 +97,61 @@ Unboxed integer lists halve per-element memory (16B -> 8B).
 Full synthesis with sources and measurement conditions:
 `docs/benefits-vs-cpython.md`. Headlines (all byte-exact-gated):
 
+#### Primitive builtin throughput (primitive-perf campaign, 2026-11-24)
+
+Native builtin speed vs CPython 3.14.7, same machine (Mac M2 Ultra,
+release tier-0 tree-walker, best-of-5 min, 48 KiB + 1 MiB workloads,
+GB/s throughput). Source of truth: `docs/primitive-perf-report.md` +
+`tests/bench/primitive/bench_report.json` (64 rows); chart:
+`docs/primitive-perf-chart.svg`. Every optimized surface is gated
+byte-exact vs CPython (stdout AND exception text).
+
+**Antipythony faster than CPython:**
+
+| primitive | antipythony vs CPython |
+|---|---|
+| binascii.a2b_base64 | **13-20x faster** |
+| base64.b64encode | **14-24x faster** |
+| base64.b64decode | **17-25x faster** |
+| binascii.b2a_base64 | **11-12x faster** |
+| zlib.compress | **1.5-7.3x faster** |
+| str.find | **3.3-4.4x faster** |
+| str.upper | **2.9-4.1x faster** |
+| int.from_bytes | **1.8-2.5x faster** |
+| int(str), short decimal strings | **2.3x faster** |
+| zlib.decompress | **1.05-1.4x faster** |
+| binascii.unhexlify | **2.6-3.7x faster** |
+| binascii.hexlify | **1.05-1.2x faster** |
+| json.dumps | **1.06-1.09x faster** |
+| str.replace (1 MiB) | **1.9x faster** |
+
+Structural wins from the same campaign: building a 100k-element int
+list dropped from 17.6s to 8.2ms (2100x — an O(n²) iterator pull and a
+GC-registry bug); dict build/lookup on 32k int keys dropped from
+~2000-3100x slower to 11-74x slower.
+
+**Still slower than CPython (honest, with filed levers):**
+
+| primitive | vs CPython | known lever |
+|---|---|---|
+| dict.get (bound method) | 0.008-0.009x | BoundMethod mint ~1.5µs — lazy-attrs filed |
+| dict.build / getitem / iter (int keys) | 0.06-0.14x | tier-0 walk floor 190ns/step (tier-1 = Plan 02.05 territory) |
+| list.sort / sorted | 0.12-0.42x | homogeneous fast-path arm (audit Fix B, filed) |
+| str.join | 0.20-0.22x | homogeneous list-of-str bulk join (filed) |
+| json.loads | 0.31-0.46x | kernels already 1.4-2.2x faster; residual = GC registry insert ~985ns/container — batching/nursery filed |
+| str.split | 0.47-0.51x | per-piece allocation |
+| int.to_bytes | 0.76-0.80x | bulk limb emit (mirror of the from_bytes fix) |
+| int(str) at 4000 digits | 0.75x | CPython uses libmpdec subquadratic parse; chunked parse filed |
+| hex()/oct()/bin() | 0.79-0.83x | emit cost after O(n) limb fix |
+| hashlib.sha256 | 0.67-0.84x | OpenSSL crypto-extension backend class |
+| hashlib.md5 | 0.87-0.92x | no aarch64 hw path exists in any Rust crate |
+| str.replace (48 KiB) | 0.95x | small-size dispatch overhead |
+
+(b64 encode/decode FAIL rows in the JSON are vs the upstream NEON PR
+#162443 line of 24/14 GB/s — measured on M5 Max hardware; on this M2
+Ultra antipythony is 14-25x faster than CPython-as-shipped.)
+
+
 - Tier-1 JIT: 2.07x conservative geomean over tier-0 (floor 1.5x);
   int-sum loop 3.20x, int-mul 2.65x (release builds, best-of methodology).
 - No-GIL threading: profile-pinned re-baseline (2026-11-20): release
