@@ -36,11 +36,11 @@ main via the orchestrator after first-hand gate re-runs.
 | W1 | release build of ap-cli in leaf worktree | target-primperf | DONE (ap-cli + ap-conform release, smoke-verified) | proc_196de983a269 |
 | W2 | 00-harness/02-baseline-survey.md | bench_report.json + baseline-notes.md | DONE — orchestrator-verified (50 rows, 17P/25F/8E, ranking consistent, cites read) | deleg_6a6a9f3c |
 | W3 | 01-encode-simd/01-base64-simd.md | builtins_modules.rs b64 arms + simd_encode.rs | MERGED to main (dd3eda0) — gates re-verified on trunk: diff_b64 2132/2132, diff_hex 1832/1832, values 50/50, stdlib 48/48, cargo release green. encode 16.8-18.7 GB/s (target 24 = honest gap: dispatch overhead + M2-vs-M5 hardware), decode 10.0-10.9 GB/s (target 14, gate >=10 MET) | deleg_58d14553 |
-| W4 | 01-encode-simd/02-hexlify-simd.md | binascii hex arms + simd_encode.rs | IN FLIGHT (worktree leaf-primperf-hex) | pending |
-| W3 | 02-parity-audit/01-hash-and-compress.md | audits/hash-compress.md ONLY | QUEUED (needs W2; dispatch parallel with W3) | - |
-| W3 | 02-parity-audit/02-str-and-bytes.md | audits/str-bytes.md ONLY | QUEUED (needs W2) | - |
-| W3 | 02-parity-audit/03-sort-dict-json.md | audits/sort-dict-json.md ONLY | QUEUED (needs W2) | - |
-| W5 | 99-report/01-final-report.md | docs/primitive-perf-report.md + chart.svg | QUEUED (needs W3+W4 merged) | - |
+| W4 | 01-encode-simd/02-hexlify-simd.md | binascii hex arms + simd_encode.rs | MERGED to main (a0dc0f8) — gates re-verified on fresh trunk binary: diff_hex 1976/1976, diff_b64 2132/2132. hexlify 2.06 GB/s PASS (1.23x cpy), unhexlify 6.53 GB/s PASS (3.81x cpy); 10x aspiration = interpreter-arm ceiling honest gap | deleg_8e87fec8 |
+| W3 | 02-parity-audit/01-hash-and-compress.md | audits/hash-compress.md ONLY | DONE — merged (3cb3a55); headline fixes: sha2 asm-aarch64 flag (existing dep, est 4-8x), crc32fast (in lock, est 10-30x); bz2/lzma = NotImplementedError shims (new-dep user decisions) | deleg_43751b52 |
+| W3 | 02-parity-audit/02-str-and-bytes.md | audits/str-bytes.md ONLY | DONE — merged (3cb3a55); 2 correctness bugs (to_bytes zero-fill, from_bytes truncation >16B), int(str) no small-int fast path, memchr = user dep decision | deleg_43751b52 |
+| W3 | 02-parity-audit/03-sort-dict-json.md | audits/sort-dict-json.md ONLY | DONE — merged (3cb3a55); json is NATIVE (dumps 0.97x, loads 0.17-0.24x w/ opt leaf sketch); dict ALREADY-PARITY; 3 sort correctness bugs; int-loop pathology ~35us/elem filed (explains P09 timeouts) | deleg_43751b52 |
+| W5 | 99-report/01-final-report.md | docs/primitive-perf-report.md + chart.svg | IN FLIGHT (worktree leaf-primperf-report) | deleg_838ea88d |
 
 ## Dispatch waves
 
