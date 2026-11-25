@@ -60,6 +60,12 @@ main via the orchestrator after first-hand gate re-runs.
 
 ## Merge gates (verify-before-merge, every implementation leaf)
 
+- Build the full gate dependency set before running gates:
+  `cargo build --release -p ap-cli -p ap-host -p ap-aot-crt
+  -p ap-aot-crt-hybrid` + debug probe bins in the leaf's target dir.
+  The hybrid gate needs ap-host + BOTH CRT staticlibs; CI never built
+  the release probe, so a leaf that skips this reports false reds.
+
 - Differential byte-exactness gate FIRST (leaf's diff_*.py), then perf.
 - ap-conform values + base64/hex stdlib corpus slices green.
 - `cargo test -p ap-run --release` green in the leaf's target dir.
