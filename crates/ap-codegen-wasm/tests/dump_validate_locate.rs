@@ -1,5 +1,6 @@
 // Validate + locate: run wasmparser validation on DIAG_SRC and print the
 // exact wat lines around the failing offset (drives the 03.04c emit-fix loop).
+#[ignore = "developer scratch tool: reads a local scratch wasm file ($DIAG_SRC/$DIAG_FILE)"]
 #[test]
 fn dump_validate_locate() {
     use std::io;

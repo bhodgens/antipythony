@@ -1,5 +1,6 @@
 // Validate a dumped module (DIAG_SRC=/tmp/min.wasm) with wasmparser — the
 // 03.04c validator probe (min_validate pattern, but on the dumped file).
+#[ignore = "developer scratch tool: reads a local scratch wasm file ($DIAG_SRC/$DIAG_FILE)"]
 #[test]
 fn dump_validate() {
     let path = std::env::var("DIAG_SRC").unwrap_or("/tmp/min.wasm".into());

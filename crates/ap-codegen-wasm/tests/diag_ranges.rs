@@ -1,4 +1,5 @@
 // List all function byte ranges in the module.
+#[ignore = "developer scratch tool: reads a local scratch wasm file ($DIAG_SRC/$DIAG_FILE)"]
 #[test]
 fn diag_ranges() {
     let path = std::env::var("DIAG_FILE").unwrap_or("/tmp/min.wasm".into());

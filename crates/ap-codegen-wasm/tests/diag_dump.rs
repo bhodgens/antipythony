@@ -1,5 +1,10 @@
 // Throwaway diagnostic: dump a function of a pre-lowered module file.
+// #[ignore]: reads a developer-scratch wasm path (/tmp/dbg3.wasm or
+// $DIAG_FILE) that only exists on the debugging machine — the CI runner
+// has no such file and must not fail on it. Run manually:
+//   DIAG_FILE=/tmp/dbg3.wasm cargo test -p ap-codegen-wasm --test diag_dump -- --ignored
 #[test]
+#[ignore = "developer scratch tool: needs a local wasm file ($DIAG_FILE)"]
 fn diag_dump_file() {
     let bytes = std::fs::read(std::env::var("DIAG_FILE").unwrap_or("/tmp/dbg3.wasm".into()))
         .expect("read wasm");

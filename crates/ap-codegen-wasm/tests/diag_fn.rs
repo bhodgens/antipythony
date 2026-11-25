@@ -1,5 +1,6 @@
 //! Dump a single wasm function's operators (DIAG_FN=abs fn idx, DIAG_SRC=src
 //! file; default fn 69, /tmp/min.wasm) — the 03.04c emit-fix tool.
+#[ignore = "developer scratch tool: reads a local scratch wasm file ($DIAG_SRC/$DIAG_FILE)"]
 #[test]
 fn diag_fn() {
     let path = std::env::var("DIAG_SRC").unwrap_or("/tmp/min.wasm".into());

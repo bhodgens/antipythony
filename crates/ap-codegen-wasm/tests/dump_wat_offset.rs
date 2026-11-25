@@ -1,5 +1,6 @@
 // Print the wat with per-line @offset prefixes — the 03.04b tooling recipe
 // (PROGRESS 312-317), wasmprinter 0.263 Print trait (write_str/newline API).
+#[ignore = "developer scratch tool: reads a local scratch wasm file ($DIAG_SRC/$DIAG_FILE)"]
 #[test]
 fn dump_wat_offset() {
     use std::io;

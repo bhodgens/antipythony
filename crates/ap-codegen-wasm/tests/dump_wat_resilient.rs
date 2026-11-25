@@ -1,5 +1,6 @@
 // Full wat dump with @offset prefixes to a file (survives printer errors:
 // prints as much as wasmprinter can). DIAG_SRC=/tmp/x.wasm WAT_OUT=/tmp/x.wat
+#[ignore = "developer scratch tool: reads a local scratch wasm file ($DIAG_SRC/$DIAG_FILE)"]
 #[test]
 fn dump_wat_resilient() {
     use std::io;

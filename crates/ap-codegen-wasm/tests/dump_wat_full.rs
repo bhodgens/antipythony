@@ -1,4 +1,5 @@
 // Full wat dump of DIAG_SRC to /tmp/full.wat (offsets prefixed).
+#[ignore = "developer scratch tool: reads a local scratch wasm file ($DIAG_SRC/$DIAG_FILE)"]
 #[test]
 fn dump_wat_full() {
     use std::io;

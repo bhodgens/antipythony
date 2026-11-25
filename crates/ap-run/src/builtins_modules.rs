@@ -3901,14 +3901,25 @@ fn m_lgamma(x: f64) -> f64 {
     }
     let absx = x.abs();
     if absx < 1e-20 {
-        return -absx.ln();
+        return -ln_f64(absx);
     }
-    let mut r = lanczos_sum(absx).ln() - LANCZOS_G;
-    // CPython is compiled with -ffp-contract=on: `r += a * b` fuses. Rust has
-    // no cross-statement contraction, so make it explicit (byte-parity).
-    r = (absx - 0.5).mul_add((absx + LANCZOS_G - 0.5).ln() - 1.0, r);
+    let mut r = ln_f64(lanczos_sum(absx)) - LANCZOS_G;
+    // CPython fuses this step ONLY where the build has FMA: darwin/arm64
+    // yes (libSystem build, mul_add matches); x86_64-linux-gnu CI builds
+    // CPython at plain -O2 WITHOUT -mfma, so `r += a * b` rounds the
+    // product separately (1-ulp shift in lgamma(5): ...945 vs the fused
+    // ...9444). Non-fused here, fused elsewhere (CI stdlib differential,
+    // 2026-11-25).
+    #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
+    {
+        r = r + (absx - 0.5) * (ln_f64(absx + LANCZOS_G - 0.5) - 1.0);
+    }
+    #[cfg(not(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")))]
+    {
+        r = (absx - 0.5).mul_add(ln_f64(absx + LANCZOS_G - 0.5) - 1.0, r);
+    }
     if x < 0.0 {
-        r = LOG_PI - m_sinpi(absx).abs().ln() - absx.ln() - r;
+        r = LOG_PI - ln_f64(m_sinpi(absx).abs()) - ln_f64(absx) - r;
     }
     r
 }
@@ -3917,6 +3928,19 @@ mod sysmath {
     extern "C" {
         pub fn erf(x: f64) -> f64;
         pub fn erfc(x: f64) -> f64;
+        // NOT plain `cbrt`: the link pulls a LOCAL `cbrt` symbol (pow
+        // (x,1/3) semantics -> cbrt(27)==3.0 exactly) which wins static-
+        // link resolution over glibc's true cbrt (3.0000000000000004) and
+        // silently diverged from the linux reference CPython's math.cbrt
+        // (CI stdlib differential, 2026-11-25). The single-@ versioned
+        // link_name binds glibc's implementation directly (verified on the
+        // x86_64-gnu probe; gated to that triple because symbol versions
+        // are arch/glibc-specific — aarch64 says @GLIBC_2.17, and
+        // darwin/musl have no versioned symbols at all).
+        #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
+        #[link_name = "cbrt@GLIBC_2.2.5"]
+        pub fn cbrt(x: f64) -> f64;
+        #[cfg(not(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")))]
         pub fn cbrt(x: f64) -> f64;
     }
 }
@@ -3927,6 +3951,38 @@ fn erf(x: f64) -> f64 {
 
 fn lgamma(x: f64) -> f64 {
     m_lgamma(x)
+}
+
+// Host-libm routing for the CPython-pure m_lgamma port: CPython's C code
+// calls the HOST libm log() inside m_lgamma, so its result is
+// host-dependent (3.1780538303479444 on darwin libSystem, 3.178053830347945
+// on x86_64 glibc). Rust f64::ln() binds compiler_builtins (musl-derived)
+// and diverges from glibc by 1 ulp on x86_64 (CI stdlib differential
+// math_basics, 2026-11-25). Route ln through the host libm on that target
+// so m_lgamma rounds exactly like the reference CPython per host. musl
+// (our linux release target) shares compiler_builtins' lineage — no
+// redirect needed there; darwin libSystem matches today.
+#[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
+#[inline]
+fn ln_f64(x: f64) -> f64 {
+    unsafe { sysmath_ln::log(x) }
+}
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")))]
+#[inline]
+fn ln_f64(x: f64) -> f64 {
+    x.ln()
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
+mod sysmath_ln {
+    extern "C" {
+        // Single-@ versioned name binds glibc's log directly (bypasses any
+        // local compiler_builtins copy in the link). @2.29 is the current
+        // default log CPython's m_lgamma resolves to on glibc >= 2.29
+        // (@2.2.5 is the old slow path — verified distinct on x86_64).
+        #[link_name = "log@GLIBC_2.29"]
+        pub fn log(x: f64) -> f64;
+    }
 }
 
 fn gamma_checked(x: f64) -> BResult {
@@ -10878,8 +10934,152 @@ fn build_errno(_i: &crate::frame::Interpreter) -> Value {
         ("EQFULL", 106),
         ("ENOTCAPABLE", 107),
     ];
+    // linux (glibc) errno table: the asm-generic values differ from darwin
+    // from EAGAIN up (EAGAIN=11 vs 35, EWOULDBLOCK==EAGAIN, ENOTRECOVERABLE
+    // 131 not 104, no ENOTCAPABLE/EILSEQ=84...). Reference CPython builds
+    // this table from C errno.h per platform, so the linux differential
+    // needs the linux values (stdlib_modules_differential errno_full_table).
+    #[cfg(not(target_os = "macos"))]
+    static ERRNO_CODES_LINUX: &[(&str, i64)] = &[
+        ("EDOM", 33),
+        ("ERANGE", 34),
+        ("EWOULDBLOCK", 11),
+        ("EAGAIN", 11),
+        ("EACCES", 13),
+        ("EADDRINUSE", 98),
+        ("EADDRNOTAVAIL", 99),
+        ("EADV", 68),
+        ("EAFNOSUPPORT", 97),
+        ("EALREADY", 114),
+        ("EBADE", 52),
+        ("EBADF", 9),
+        ("EBADFD", 77),
+        ("EBADMSG", 74),
+        ("EBADR", 53),
+        ("EBADRQC", 56),
+        ("EBADSLT", 57),
+        ("EBFONT", 59),
+        ("EBUSY", 16),
+        ("ECANCELED", 125),
+        ("ECHILD", 10),
+        ("ECHRNG", 44),
+        ("ECOMM", 70),
+        ("ECONNABORTED", 103),
+        ("ECONNREFUSED", 111),
+        ("ECONNRESET", 104),
+        ("EDEADLK", 35),
+        ("EDEADLOCK", 35),
+        ("EDESTADDRREQ", 89),
+        ("EDOTDOT", 73),
+        ("EDQUOT", 122),
+        ("EEXIST", 17),
+        ("EFAULT", 14),
+        ("EFBIG", 27),
+        ("EHOSTDOWN", 112),
+        ("EHOSTUNREACH", 113),
+        ("EIDRM", 43),
+        ("EILSEQ", 84),
+        ("EINPROGRESS", 115),
+        ("EINTR", 4),
+        ("EINVAL", 22),
+        ("EIO", 5),
+        ("EISCONN", 106),
+        ("EISDIR", 21),
+        ("EISNAM", 120),
+        ("EKEYEXPIRED", 127),
+        ("EKEYREJECTED", 129),
+        ("EKEYREVOKED", 128),
+        ("EL2HLT", 51),
+        ("EL2NSYNC", 45),
+        ("EL3HLT", 46),
+        ("EL3RST", 47),
+        ("ELIBACC", 79),
+        ("ELIBBAD", 80),
+        ("ELIBEXEC", 83),
+        ("ELIBMAX", 82),
+        ("ELIBSCN", 81),
+        ("ELNRNG", 48),
+        ("ELOOP", 40),
+        ("EMEDIUMTYPE", 124),
+        ("EMFILE", 24),
+        ("EMLINK", 31),
+        ("EMSGSIZE", 90),
+        ("EMULTIHOP", 72),
+        ("ENAMETOOLONG", 36),
+        ("ENAVAIL", 119),
+        ("ENETDOWN", 100),
+        ("ENETRESET", 102),
+        ("ENETUNREACH", 101),
+        ("ENFILE", 23),
+        ("ENOANO", 55),
+        ("ENOBUFS", 105),
+        ("ENOCSI", 50),
+        ("ENODATA", 61),
+        ("ENODEV", 19),
+        ("ENOENT", 2),
+        ("ENOEXEC", 8),
+        ("ENOKEY", 126),
+        ("ENOLCK", 37),
+        ("ENOLINK", 67),
+        ("ENOMEDIUM", 123),
+        ("ENOMEM", 12),
+        ("ENOMSG", 42),
+        ("ENONET", 64),
+        ("ENOPKG", 65),
+        ("ENOPROTOOPT", 92),
+        ("ENOSPC", 28),
+        ("ENOSR", 63),
+        ("ENOSTR", 60),
+        ("ENOSYS", 38),
+        ("ENOTBLK", 15),
+        ("ENOTCONN", 107),
+        ("ENOTDIR", 20),
+        ("ENOTEMPTY", 39),
+        ("ENOTNAM", 118),
+        ("ENOTRECOVERABLE", 131),
+        ("ENOTSOCK", 88),
+        ("ENOTSUP", 95),
+        ("ENOTTY", 25),
+        ("ENOTUNIQ", 76),
+        ("ENXIO", 6),
+        ("EOPNOTSUPP", 95),
+        ("EOVERFLOW", 75),
+        ("EOWNERDEAD", 130),
+        ("EPERM", 1),
+        ("EPFNOSUPPORT", 96),
+        ("EPIPE", 32),
+        ("EPROTO", 71),
+        ("EPROTONOSUPPORT", 93),
+        ("EPROTOTYPE", 91),
+        ("EREMCHG", 78),
+        ("EREMOTE", 66),
+        ("EREMOTEIO", 121),
+        ("ERESTART", 85),
+        ("ERFKILL", 132),
+        ("EROFS", 30),
+        ("ESHUTDOWN", 108),
+        ("ESOCKTNOSUPPORT", 94),
+        ("ESPIPE", 29),
+        ("ESRCH", 3),
+        ("ESRMNT", 69),
+        ("ESTALE", 116),
+        ("ESTRPIPE", 86),
+        ("ETIME", 62),
+        ("ETIMEDOUT", 110),
+        ("ETOOMANYREFS", 109),
+        ("ETXTBSY", 26),
+        ("EUCLEAN", 117),
+        ("EUNATCH", 49),
+        ("EUSERS", 87),
+        ("EXDEV", 18),
+        ("EXFULL", 54),
+    ];
+    #[cfg(not(target_os = "macos"))]
+    let table: &[(&str, i64)] = ERRNO_CODES_LINUX;
+    #[cfg(target_os = "macos")]
+    let table: &[(&str, i64)] = ERRNO_CODES;
     let ec = PyDict::new();
-    for (k, v) in ERRNO_CODES {
+    for (k, v) in table {
         ns_const(&ns, k, i(*v));
         let _ = ec.set(i(*v), s(*k));
     }
@@ -13297,7 +13497,39 @@ fn build_select(_i: &crate::frame::Interpreter) -> Value {
         ("POLLERR", 8),
         ("POLLHUP", 16),
         ("POLLNVAL", 32),
-        // kqueue constants (selectors.py probes the names at import).
+    ] {
+        ns_const(&ns, k, i(v));
+    }
+    // linux (CPython builds select.c with HAS_EPOLL): EPOLL* constants +
+    // the select.epoll object exist. Constants here (asm-generic values);
+    // the epoll OBJECT (create/ctl with EPOLL_CLOEXEC etc.) is a filed
+    // follow-up — selectors.EpollSelector is not exercised by the T-track
+    // corpus yet (poll(2) works, which is what scrapy/twisted use).
+    #[cfg(not(target_os = "macos"))]
+    for (k, v) in [
+        ("EPOLLIN", 1),
+        ("EPOLLPRI", 2),
+        ("EPOLLOUT", 4),
+        ("EPOLLERR", 8),
+        ("EPOLLHUP", 16),
+        ("EPOLLRDNORM", 64),
+        ("EPOLLRDBAND", 128),
+        ("EPOLLWRNORM", 256),
+        ("EPOLLWRBAND", 512),
+        ("EPOLLMSG", 1024),
+        ("EPOLLRDHUP", 8192),
+        ("EPOLLEXCLUSIVE", 268435456),
+        ("EPOLLWAKEUP", 536870912),
+        ("EPOLLONESHOT", 1073741824),
+        ("EPOLLET", 2147483648),
+        ("EPOLL_CLOEXEC", 524288),
+    ] {
+        ns_const(&ns, k, i(v));
+    }
+    // kqueue constants: darwin only (selectors.py probes the names at import;
+    // linux CPython's select module ships none of these).
+    #[cfg(target_os = "macos")]
+    for (k, v) in [
         ("KQ_FILTER_READ", -1),
         ("KQ_FILTER_WRITE", -2),
         ("KQ_EV_ADD", 1),
@@ -13308,10 +13540,18 @@ fn build_select(_i: &crate::frame::Interpreter) -> Value {
         ("KQ_NOTE_DELETE", 1),
         ("KQ_NOTE_WRITE", 2),
     ] {
-        ns_const(&ns, k, i(v));
+        ns_const(&ns, k, i(*&v));
     }
     fn1(&ns, "select", "select");
     fn1(&ns, "select", "poll");
+    // linux: CPython's select.epoll is a real object type. The attribute
+    // must EXIST (selectors/probes check hasattr) — a raising placeholder
+    // makes hasattr True; the full epoll object (create/ctl/close) is a
+    // filed follow-up (no T-track corpus path uses EpollSelector today;
+    // scrapy/twisted go through poll(2), which works).
+    #[cfg(not(target_os = "macos"))]
+    fn1(&ns, "select", "epoll");
+    #[cfg(target_os = "macos")]
     fn1(&ns, "select", "kqueue");
     // select.error IS OSError in CPython (identity probed on 3.14.7).
     if let Some(ev) = current_interp().and_then(|interp| {
