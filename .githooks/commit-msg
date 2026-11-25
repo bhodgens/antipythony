@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# commit-msg: enforce the unsafe-gate bypass contract (issue #15).
+# Only acts when the pre-commit hook stamped an unsafe situation in this
+# repo's git dir. Consumes (deletes) the stamp so it never leaks to a
+# later commit. Portable macOS+Linux bash.
+set -u
+
+GITDIR="$(git rev-parse --git-dir)"
+STAMP="$GITDIR/UNSAFE_GATE_ADDED"
+[ -f "$STAMP" ] || exit 0
+MODE="$(cat "$STAMP" 2>/dev/null)"
+rm -f "$STAMP" 2>/dev/null || true
+
+# 'blocked' would not normally reach here (pre-commit exited 1); handle anyway.
+if [ "$MODE" = "blocked" ]; then
+  echo "commit-msg: unsafe gate is active and no bypass was requested." >&2
+  echo "Re-commit with ALLOW_UNSAFE_COMMIT=1 and a [unsafe-ok: reason] tag." >&2
+  exit 1
+fi
+
+# 'bypass': the message must carry the accountability tag.
+if grep -qE '\[unsafe-ok: +[^]]+\]' "$1"; then
+  exit 0
+fi
+
+echo "commit-msg: unsafe gate bypassed at pre-commit, but the commit message" >&2
+echo "lacks the required accountability tag:" >&2
+echo "  [unsafe-ok: <short reason>]" >&2
+echo "(policy: no new unsafe Rust without review — issue #15)" >&2
+exit 1

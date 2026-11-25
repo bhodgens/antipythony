@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Opt-in enablement of the repo's .githooks (unsafe gate — issue #15).
+# Deliberately NOT auto-enabled: this repo is shared with active fleet
+# sessions and enabling hooks mid-campaign would gate every sibling's commits.
+# Run this yourself when ready. Portable macOS+Linux bash.
+set -eu
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+git config core.hooksPath .githooks
+echo "enabled: core.hooksPath=.githooks in $ROOT"
+echo "gate: NEW 'unsafe' in staged .rs files blocks the commit (docs/git-unsafe-gate.md)."
+
+GLOBAL_HP="$(git config --global --get core.hooksPath 2>/dev/null || true)"
+if [ -n "$GLOBAL_HP" ] && [ -d "$GLOBAL_HP" ]; then
+  echo ""
+  echo "LFS caveat: this machine's GLOBAL core.hooksPath is $GLOBAL_HP (LFS hooks)."
+  echo "A repo-local hooksPath overrides it for commits IN THIS REPO — but"
+  echo ".githooks/pre-commit chains that global LFS hook itself, so LFS staging"
+  echo "keeps working while the gate is on. Non-commit lifecycle hooks"
+  echo "(post-checkout/post-merge/post-commit/pre-push) will NOT run their LFS"
+  echo "steps for this repo while enabled; use scripts/disable-git-hooks to"
+  echo "restore them."
+fi
