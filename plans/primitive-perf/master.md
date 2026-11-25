@@ -108,10 +108,10 @@ plans/primitive-perf/
 
 | node | status |
 |---|---|
-| 00-harness | PENDING |
-| 01-encode-simd | PENDING |
-| 02-parity-audit | PENDING |
-| 99-report | PENDING |
+| 00-harness | COMPLETE (harness + baseline + diff gates, all verified) |
+| 01-encode-simd | COMPLETE (base64 + hexlify NEON, merged dd3eda0/a0dc0f8, byte-exact gates green) |
+| 02-parity-audit | COMPLETE (3 audit docs merged 3cb3a55; fix leaves = follow-up queue) |
+| 99-report | COMPLETE (docs/primitive-perf-report.md + chart.svg merged 1e25df5) |
 
 ## Exit gate
 
