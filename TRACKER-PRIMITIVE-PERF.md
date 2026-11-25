@@ -41,6 +41,10 @@ main via the orchestrator after first-hand gate re-runs.
 | W3 | 02-parity-audit/02-str-and-bytes.md | audits/str-bytes.md ONLY | DONE — merged (3cb3a55); 2 correctness bugs (to_bytes zero-fill, from_bytes truncation >16B), int(str) no small-int fast path, memchr = user dep decision | deleg_43751b52 |
 | W3 | 02-parity-audit/03-sort-dict-json.md | audits/sort-dict-json.md ONLY | DONE — merged (3cb3a55); json is NATIVE (dumps 0.97x, loads 0.17-0.24x w/ opt leaf sketch); dict ALREADY-PARITY; 3 sort correctness bugs; int-loop pathology ~35us/elem filed (explains P09 timeouts) | deleg_43751b52 |
 | W5 | 99-report/01-final-report.md | docs/primitive-perf-report.md + chart.svg | MERGED to main (1e25df5; branch commits 9a47546/72e912d) — chart==JSON verified; orchestrator corrected attribution: the 8 audit-found bugs are FILED-not-fixed (verified reproducing on trunk) | deleg_838ea88d |
+| W6 | ppfix-perf: sha2 asm-aarch64 + zlib one-shot decompress | ap-run Cargo.toml features + zlib decomp/hashlib arms | IN FLIGHT (worktree leaf-ppfix-perf) | deleg_ac90809e |
+| W6 | ppfix-int: to_bytes/from_bytes bugs + hex limb path | builtins_modules.rs int arms + builtins.rs hex/oct/bin | IN FLIGHT (worktree leaf-ppfix-int) | deleg_ac90809e |
+| W6 | ppfix-sort: 3 mixed-type/key=None sort bugs | builtins.rs sorted + methods.rs/builtins_modules.rs sort arms | IN FLIGHT (worktree leaf-ppfix-sort) | deleg_ac90809e |
+| W6 | ppfix-random: implement random.Random class | native random module surface | IN FLIGHT (worktree leaf-ppfix-random) | deleg_ac90809e |
 
 ## Dispatch waves
 
