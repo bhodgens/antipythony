@@ -610,12 +610,7 @@ fn hex_decode_bulk(input: &[u8]) -> (usize, Vec<u8>) {
 /// tail + scalar grouping. `bps` is |bytes_per_sep| (> 0), `sign` -1/1.
 /// CPython 3.14.7 groups from the LEFT for BOTH signs of bytes_per_sep
 /// (measured: `hexlify(b'abcde', b':', -2) == b'61:62:63:64:65'`).
-pub(crate) fn hexlify_impl(
-    data: &[u8],
-    sep: Option<u8>,
-    bps: usize,
-    sign: i64,
-) -> Vec<u8> {
+pub(crate) fn hexlify_impl(data: &[u8], sep: Option<u8>, bps: usize, sign: i64) -> Vec<u8> {
     if sep.is_none() || bps == 0 || data.is_empty() || bps >= data.len() {
         // Plain bulk: NEON prefix + scalar tail, no grouping pass.
         let mut out: Vec<u8> = Vec::with_capacity(data.len() * 2);
