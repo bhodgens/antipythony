@@ -309,7 +309,7 @@ shipped in audits/sort-dict-json.md §3.
 | P06 str.split ×2 (0.43-0.50x) | 0.73-0.82 GB/s vs CPython 1.6-1.7 | Per-piece Value/Gc allocation dominates. Not fixed this campaign. |
 | P06 str.replace @48KiB (0.90x) | 7.8 vs 8.7 GB/s | Small-size fixed dispatch overhead (~0.5 µs/call); the same primitive PASSES @1MiB at 1.89x. |
 | P07 int(decimal_str) @1MiB (0.73x) | 4000-digit parse loses CPython | CPython 3.14 uses `_pylong`/libmpdec subquadratic parse above ~450 digits; ours is num-bigint linear-limb parse (audit Fix item: small-int fast path + chunked big parse). |
-| P08 ×6 ERROR | sort never measured — probe crashes | `random.Random` class missing from the native `random` module — **interpreter feature gap** (found and filed by the audit; the campaign separately fixed 3 real sort correctness bugs). Fix leaf = implement `random.Random`; until then the sort rows cannot measure. |
+| P08 ×6 ERROR | sort never measured — probe crashes | `random.Random` class missing from the native `random` module — **interpreter feature gap** (found and filed by the audit; the 3 sort correctness bugs found by the audit are FILED, not fixed — verified still reproducing on the merged trunk 2026-11-24). Fix leaf = implement `random.Random` + the sort fixes; until then the sort rows cannot measure. |
 | P09 ×6 ERROR (TIMEOUT 120s) | dict rows never emit | Module-level 1M-element listcomp setup at ~3x CPython per interpreter-loop iteration exceeds the 120 s probe budget before any JSON line (slow-not-hung; audit hand-probes put dict build 5.2x / lookups 135x, gap = interpreter loop + bound-method dispatch, NOT the CPython-exact dict structure). Follow-up: standalone probe / taller timeout / Int-loop fix (audit Fix C) — all out of scope here. |
 | P10 json.dumps @48KiB (0.92x) | marginal, 8% under | Small-structure dispatch overhead; PASSES @1MiB (1.02x). Escape-table + pre-sized buffer sketch (audit §3) would clear both. |
 | P10 json.loads ×2 (0.18-0.23x) | 4.4-5.7x slower than CPython | Byte-at-a-time recursive-descent vs CPython's `_json` C bulk scanner. Audit ships a native-json optimization leaf sketch (memchr span copies, bulk numbers); **memchr = new dep = user decision**, serde_json recommended against. |
@@ -351,13 +351,17 @@ python3.14 tests/bench/primitive/diff_hex.py --other target-report/release/antip
 
 ## Attribution
 
-Beyond raw throughput, this campaign's audits found and the fix waves
-landed **5 primitive correctness bugs** (int.to_bytes zero-fill on
-≥2^63 values, int.from_bytes >16-byte truncation, 3 sort bugs: mixed
-compare TypeError swallowed / v0-arm silent no-op / key=None crash)
-and **3 interpreter bugs** (loop default-argument capture,
-`random.Random` missing — the P08 blocker, exception-path reference
-leak). Perf numbers never traded semantics: every optimized surface is
+Beyond raw throughput, this campaign's audits FOUND 5 primitive
+correctness bugs (int.to_bytes zero-fill on ≥2^63 values,
+int.from_bytes >16-byte truncation, 3 sort bugs: mixed-compare
+TypeError swallowed / v0-arm silent no-op / key=None crash) and
+3 interpreter bugs (loop default-argument capture, `random.Random`
+missing — the P08 blocker, exception-path reference leak). All 8 are
+FILED, NOT FIXED in this campaign — each verified still reproducing on
+the merged trunk 2026-11-24; they are the top of the fix-leaf queue
+(see Honest gaps). The 8 base64-module API divergences (altchars,
+validate, padding/whitespace semantics) ARE fixed and gated byte-exact.
+Perf numbers never traded semantics: every optimized surface is
 gated byte-exact vs CPython 3.14 (diff_b64 2132/0, diff_hex 1976/0,
 ap-conform values 50/50 + stdlib 48/48).
 
