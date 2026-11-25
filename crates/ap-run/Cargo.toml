@@ -71,3 +71,13 @@ workspace = true  # robustness-ci 02.01 - see root Cargo.toml [workspace.lints]
 # compare out-of-process binaries, so proptest's fork-based panic recovery
 # (rusty-fork) is dead weight and a macOS fork hazard; std is all we need.
 proptest = { version = "1", default-features = false, features = ["std"] }
+
+# pp2-bz2: real bz2 one-shot surface (compress/decompress + BZ2Compressor/
+# BZ2Decompressor). bzip2 >= 0.6 defaults to libbz2-rs-sys — a 100% Rust
+# (c2rust-translated, audited) implementation of the same C code CPython
+# links — so output/decode are libbz2-exact with NO C dependency.
+bzip2 = "0.6"
+# pp2-bz2: lzma one-shot surface (FORMAT_XZ/ALONE/RAW). Pure-Rust LZMA/LZMA2/xz
+# codecs (MIT/Apache). Encoder output may differ byte-wise from liblzma;
+# DECODE of CPython-produced bytes is exact (the hard-exact contract).
+lzma-rs = { version = "0.3", features = ["raw_decoder"] }
