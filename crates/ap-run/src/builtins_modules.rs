@@ -175,7 +175,27 @@ pub(crate) fn py_lt(a: &Value, b: &Value) -> Result<bool, Flow> {
         }
         return Ok(x.0.len() < y.0.len());
     }
-    ap_obj::ops::lt(a, b).map_err(Flow::from_py)
+    ap_obj::ops::lt(a, b).map_err(|exc| {
+        // ppfix-sort: user-instance operands must print the CLASS name in
+        // the TypeError (values_cmp prints the static 'object'; c027
+        // pinned the class-name text for the eval_compare path — the
+        // sort path goes through values_cmp directly, so re-wrap here).
+        let has_user = |v: &Value| {
+            matches!(v, Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance)
+        };
+        if has_user(a) || has_user(b) {
+            Flow::from_py(ap_obj::exc::PyException::new(
+                "TypeError",
+                format!(
+                    "'<' not supported between instances of '{}' and '{}'",
+                    crate::classes::display_type_name(a),
+                    crate::classes::display_type_name(b)
+                ),
+            ))
+        } else {
+            Flow::from_py(exc)
+        }
+    })
 }
 
 /// s013: public bridge for builtin_sorted — the sort path used raw
@@ -18336,10 +18356,23 @@ pub fn call_builtin_values(
                         }
                     }
                     let keyf = match kw(kwargs, "key") {
+                        // ppfix-sort: CPython treats key=None as NO key
+                        // (listobject.c; never reaches the callable check).
+                        Some(Value::None) => None,
                         Some(kv) => Some(callable_name(kv)?),
                         None => None,
                     };
                     let reverse = kw(kwargs, "reverse").map(truthy).unwrap_or(false);
+                    // ppfix-sort: CPython's exact bad-kwarg text
+                    // (typeobject.c list_sort kwlist rejection).
+                    for (k, _) in kwargs {
+                        if k != "key" && k != "reverse" {
+                            return Err(raise(
+                                "TypeError",
+                                format!("sort() got an unexpected keyword argument '{k}'"),
+                            ));
+                        }
+                    }
                     let mut keyed: Vec<(Value, Value)> = Vec::with_capacity(items.len());
                     for x in items {
                         let k = match &keyf {
@@ -18348,26 +18381,58 @@ pub fn call_builtin_values(
                         };
                         keyed.push((k, x));
                     }
+                    // ppfix-sort: comparator Err PROPAGATES — the old
+                    // unwrap_or(false)/py_eq fallback turned a mixed-type
+                    // '<' TypeError into silent Equal (input order out).
+                    // Two-arg py_lt mirrors the CPython listsort
+                    // comparator (obj < obj, err -> raise); ties hit the
+                    // same py_lt twice, which is Equal both ways.
+                    let mut cmp_err: Option<Flow> = None;
                     keyed.sort_by(|a, b| {
-                        let ord = if py_lt(&a.0, &b.0).unwrap_or(false) {
-                            std::cmp::Ordering::Less
-                        } else if py_eq(&a.0, &b.0) {
-                            std::cmp::Ordering::Equal
-                        } else {
-                            std::cmp::Ordering::Greater
-                        };
-                        if reverse {
-                            ord.reverse()
-                        } else {
-                            ord
+                        if cmp_err.is_some() {
+                            return std::cmp::Ordering::Equal;
+                        }
+                        match py_lt(&a.0, &b.0) {
+                            Ok(true) => std::cmp::Ordering::Less,
+                            Ok(false) => std::cmp::Ordering::Greater,
+                            Err(f) => {
+                                cmp_err = Some(f);
+                                std::cmp::Ordering::Equal
+                            }
                         }
                     });
-                    keyed.reverse();
+                    if let Some(f) = cmp_err {
+                        return Err(f);
+                    }
+                    // ppfix-sort: reverse=True must NOT flip tie groups
+                    // (CPython reverses the keys array pre-merge; equal
+                    // keys keep input order). Decorate-reverse the keys
+                    // only, sort, then reverse the whole array — equal
+                    // keys come out in input order, descending overall.
+                    if reverse {
+                        keyed.reverse();
+                        keyed.sort_by(|a, b| {
+                            if cmp_err.is_some() {
+                                return std::cmp::Ordering::Equal;
+                            }
+                            match py_lt(&a.0, &b.0) {
+                                Ok(true) => std::cmp::Ordering::Less,
+                                Ok(false) => std::cmp::Ordering::Greater,
+                                Err(f) => {
+                                    cmp_err = Some(f);
+                                    std::cmp::Ordering::Equal
+                                }
+                            }
+                        });
+                        if let Some(f) = cmp_err {
+                            return Err(f);
+                        }
+                        keyed.reverse();
+                    }
                     l.clear();
-                    // D2/F1-adjacent (memperf audit 2026-11-06): reverse the
-                    // keyed vec once and pop from the tail — appends land in
-                    // order without a second items Vec. Same ordering bytes.
-                    for (_, v) in keyed.into_iter().rev() {
+                    // ppfix-sort: keyed is now in FINAL order (reverse
+                    // applied above when requested) — append in order.
+                    for (_, v) in keyed.into_iter() {
                         l.append(v);
                     }
                     return Ok(Value::None);

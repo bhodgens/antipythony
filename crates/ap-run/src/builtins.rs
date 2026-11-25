@@ -2921,8 +2921,22 @@ pub fn builtin_sorted(interp: &Interpreter, args: &[Value], kwargs: &[(String, V
     for (k, val) in kwargs {
         match k.as_str() {
             "reverse" => reverse = val.is_truthy(),
-            "key" => key_fn = Some(val.clone()),
-            _ => return Err(raise("TypeError", f_format_invalid_kw(k))),
+            // ppfix-sort: CPython treats key=None as NO key (listobject.c
+            // sorts keys = NULL when the kwarg is None; passing None never
+            // reaches the "must be callable" check).
+            "key" => {
+                if !matches!(val, Value::None) {
+                    key_fn = Some(val.clone());
+                }
+            }
+            // ppfix-sort: CPython-exact bad-kwarg text (typeobject.c
+            // list_sort kwlist rejection).
+            _ => {
+                return Err(raise(
+                    "TypeError",
+                    format!("sort() got an unexpected keyword argument '{k}'"),
+                ))
+            }
         }
     }
     if let Some(f) = key_fn {
@@ -2948,59 +2962,87 @@ pub fn builtin_sorted(interp: &Interpreter, args: &[Value], kwargs: &[(String, V
             // groups in reversed input order (Counter.most_common tie
             // ordering diverged from CPython).
             if reverse {
-                decorated.sort_by(
-                    |a, b| match crate::builtins_modules::py_lt_public(&b.0, &a.0) {
+                // ppfix-sort: CPython's reverse=True REVERSES THE KEYS
+                // ARRAY pre-merge, so equal keys keep INPUT order while
+                // the overall order descends (2RESID-B semantics,
+                // generalized: the old flip-comparator scheme put
+                // equal-key groups in reversed input order).
+                let mut cmp_err: Option<Flow> = None;
+                decorated.reverse();
+                decorated.sort_by(|a, b| {
+                    if cmp_err.is_some() {
+                        return std::cmp::Ordering::Equal;
+                    }
+                    match crate::builtins_modules::py_lt_public(&a.0, &b.0) {
                         Ok(true) => std::cmp::Ordering::Less,
-                        Ok(false) => match crate::builtins_modules::py_lt_public(&a.0, &b.0) {
-                            Ok(true) => std::cmp::Ordering::Greater,
-                            _ => std::cmp::Ordering::Equal,
-                        },
-                        Err(_) => std::cmp::Ordering::Equal,
-                    },
-                );
+                        Ok(false) => std::cmp::Ordering::Greater,
+                        Err(f) => {
+                            cmp_err = Some(f);
+                            std::cmp::Ordering::Equal
+                        }
+                    }
+                });
+                if let Some(f) = cmp_err {
+                    return Err(f);
+                }
+                decorated.reverse();
             } else {
-                decorated.sort_by(
-                    |a, b| match crate::builtins_modules::py_lt_public(&a.0, &b.0) {
+                // ppfix-sort: comparator Err PROPAGATES (CPython raises
+                // the '<' not supported TypeError out of the sort); the
+                // old Err => Equal arm silently returned input order.
+                let mut cmp_err: Option<Flow> = None;
+                decorated.sort_by(|a, b| {
+                    if cmp_err.is_some() {
+                        return std::cmp::Ordering::Equal;
+                    }
+                    match crate::builtins_modules::py_lt_public(&a.0, &b.0) {
                         Ok(true) => std::cmp::Ordering::Less,
-                        Ok(false) => match crate::builtins_modules::py_lt_public(&b.0, &a.0) {
-                            Ok(true) => std::cmp::Ordering::Greater,
-                            _ => std::cmp::Ordering::Equal,
-                        },
-                        Err(_) => std::cmp::Ordering::Equal,
-                    },
-                );
+                        Ok(false) => std::cmp::Ordering::Greater,
+                        Err(f) => {
+                            cmp_err = Some(f);
+                            std::cmp::Ordering::Equal
+                        }
+                    }
+                });
+                if let Some(f) = cmp_err {
+                    return Err(f);
+                }
             }
             items = decorated.into_iter().map(|(_, v)| v).collect();
         }
     } else {
-        // s013: no-key path — same user-__lt__-first discipline; reverse
-        // flips the comparator for the same tie-stability reason.
+        // s013: no-key path — same user-__lt__-first discipline.
+        // ppfix-sort: reverse=True via decorate-reverse-sort-reverse
+        // (ties keep input order); Err propagates (see above).
         if reverse {
-            items.sort_by(|a, b| match crate::builtins_modules::py_lt_public(b, a) {
+            items.reverse();
+        }
+        let mut cmp_err: Option<Flow> = None;
+        items.sort_by(|a, b| {
+            if cmp_err.is_some() {
+                return std::cmp::Ordering::Equal;
+            }
+            match crate::builtins_modules::py_lt_public(a, b) {
                 Ok(true) => std::cmp::Ordering::Less,
-                Ok(false) => match crate::builtins_modules::py_lt_public(a, b) {
-                    Ok(true) => std::cmp::Ordering::Greater,
-                    _ => std::cmp::Ordering::Equal,
-                },
-                Err(_) => std::cmp::Ordering::Equal,
-            });
-        } else {
-            items.sort_by(|a, b| match crate::builtins_modules::py_lt_public(a, b) {
-                Ok(true) => std::cmp::Ordering::Less,
-                Ok(false) => match crate::builtins_modules::py_lt_public(b, a) {
-                    Ok(true) => std::cmp::Ordering::Greater,
-                    _ => std::cmp::Ordering::Equal,
-                },
-                Err(_) => std::cmp::Ordering::Equal,
-            });
+                Ok(false) => std::cmp::Ordering::Greater,
+                Err(f) => {
+                    cmp_err = Some(f);
+                    std::cmp::Ordering::Equal
+                }
+            }
+        });
+        if let Some(f) = cmp_err {
+            return Err(f);
+        }
+        if reverse {
+            items.reverse();
         }
     }
     Ok(Value::List(PyList::from_vec(items)))
 }
 
-fn f_format_invalid_kw(k: &str) -> String {
-    format!("'{k}' is an invalid keyword argument for sorted()")
-}
+// ppfix-sort: superseded — sorted() now raises CPython's exact
+// "sort() got an unexpected keyword argument" text inline.
 
 pub fn builtin_format(args: &[Value]) -> BResult {
     let v = one(args, "format")?;
