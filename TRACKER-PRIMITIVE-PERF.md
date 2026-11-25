@@ -46,7 +46,7 @@ main via the orchestrator after first-hand gate re-runs.
 | W6 | ppfix-sort: 3 mixed-type/key=None sort bugs | builtins.rs sorted + methods.rs/builtins_modules.rs sort arms | IN FLIGHT (worktree leaf-ppfix-sort) | deleg_ac90809e |
 | W6 | ppfix-random: implement random.Random class | native random module surface | IN FLIGHT (worktree leaf-ppfix-random) | deleg_ac90809e |
 | W6b | ppfix-json: json.loads/dumps bulk scan + escape tables | json region of builtins_modules.rs (~:7361-7843, region-disjoint from W6) | IN FLIGHT (worktree leaf-ppfix-json) | deleg_cd8e6817 |
-| W6b | ppfix-dictprobe: p09 probe restructure + per-op dict ratios | tests/bench/primitive/probes/p09_dict.py + report ONLY | IN FLIGHT (worktree leaf-ppfix-dictprobe) | deleg_cd8e6817 |
+| W6b | ppfix-dictprobe: p09 probe restructure + per-op dict ratios | tests/bench/primitive/probes/p09_dict.py + report ONLY | MERGED to main (2b205cd) — 6 P09 ERROR rows unblocked (12 real rows, zero ERROR); KEY FINDING: Int interpreter-loop pathology is ~97% of every dict row (loop alone ~4500x CPython, d[k] only 13.5x, d.get bound-method dispatch +5.2us/call); wave-2 target = Fix C (Int loop), NOT dict structure (ALREADY-PARITY confirmed) | deleg_cd8e6817 |
 
 ## Dispatch waves
 
