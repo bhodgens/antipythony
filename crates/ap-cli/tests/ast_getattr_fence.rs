@@ -122,10 +122,12 @@ fn run_fenced(
 
     let target_root = match std::env::var("CARGO_TARGET_DIR") {
         Ok(d) => std::path::PathBuf::from(d),
-        // No CARGO_TARGET_DIR: the cargo-default <workspace>/target (the
-        // worktree convention matches — this file lives two levels below
-        // the workspace root).
-        Err(_) => std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target"),
+        // No CARGO_TARGET_DIR: the workspace's .cargo/config.toml redirects
+        // every build into <workspace>/target-0304c — resolve THAT, not the
+        // cargo-default target/ (CI failed here with NotFound: the probe
+        // binary never exists under a target/ dir this workspace never
+        // writes).
+        Err(_) => std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target-0304c"),
     };
     let bin = target_root.join("release/ap-run-probe");
     let bin = if bin.exists() {
