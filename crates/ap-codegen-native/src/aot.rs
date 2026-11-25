@@ -253,13 +253,31 @@ pub fn link_binary_extra_objs(
     let (mut cmd, mut args): (std::process::Command, Vec<String>) = match target {
         AotTarget::MacosNative => {
             let c = std::process::Command::new("cc");
-            let a = vec![
+            // Dead-strip is darwin-ld syntax. When this arm runs on a LINUX
+            // host (CI: `build`/`build --hybrid` default to MacosNative but
+            // the system linker is GNU ld/bfd), GNU ld REJECTS the darwin
+            // spelling outright ("unable to disambiguate: -dead_strip") —
+            // use the GNU equivalent --gc-sections there (CI hybrid-gate
+            // failures 2026-11-25; same ld-flavor split as the ap-cli
+            // build.rs --export-dynamic gotcha).
+            let strip_flag = if cfg!(target_os = "macos") {
+                "-Wl,-dead_strip"
+            } else {
+                "-Wl,--gc-sections"
+            };
+            let mut a = vec![
                 "-o".into(),
                 out_s.clone(),
                 obj_s.clone(),
                 crt_s,
-                "-Wl,-dead_strip".into(),
+                strip_flag.into(),
             ];
+            // macOS folds libm into libSystem; glibc does NOT — the CRT's
+            // static rust std references pow/expf etc. and GNU ld needs
+            // -lm AFTER the archive (linux CI hybrid link, 2026-11-25).
+            if !cfg!(target_os = "macos") {
+                a.push("-lm".into());
+            }
             (c, a)
         }
         AotTarget::LinuxMusl => {
