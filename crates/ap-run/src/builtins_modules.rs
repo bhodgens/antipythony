@@ -13116,14 +13116,138 @@ pub fn call_binascii(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> 
     }
     let r: BResult = (|| -> BResult {
         match name {
-            "hexlify" | "b2a_hex" => {
-                let data = bytes_arg(required(args, name)?)?;
-                let mut out = Vec::with_capacity(data.len() * 2);
-                for b in data {
-                    out.extend(format!("{b:02x}").into_bytes());
+        // Leaf 02-hexlify-simd: hexlify carries the FULL CPython 3.14
+        // signature (data, sep=b'' /, bytes_per_sep=0) — sep grouping is
+        // implemented scalar-side via bytes_to_hex_str after the NEON
+        // bulk pass (grouping is a scalar rearrangement in CPython too).
+        // unhexlify accepts ONLY one positional arg (CPython:
+        // "takes exactly one argument" / "takes no keyword arguments")
+        // and routes through the NEON bulk + exact scalar error arms.
+        "hexlify" | "b2a_hex" => {
+            const BPS_DEFAULT: i64 = 0;
+            let data = match required(args, name)? {
+                Value::Bytes(b) => (**b).clone(),
+                Value::Str(_) => {
+                    return Err(raise(
+                        "TypeError",
+                        "a bytes-like object is required, not 'str'",
+                    ));
                 }
-                Ok(Value::Bytes(Gc::new(out)))
+                other => {
+                    return Err(raise(
+                        "TypeError",
+                        format!(
+                            "argument should be bytes, buffer or ASCII string, not '{}'",
+                            other.type_name()
+                        ),
+                    ));
+                }
+            };
+            // sep: positional arg 1 or kwarg; bytes-like of length 1
+            // (CPython's Py_buffer read; int -> 'object of type int has
+            // no len()').
+            let sep_arg = args.get(1).or_else(|| kw(kwargs, "sep"));
+            let sep: Option<u8> = match sep_arg {
+                None => None,
+                Some(Value::Bytes(x)) => match x.len() {
+                    1 => Some(x[0]),
+                    _ => {
+                        return Err(raise(
+                            "ValueError",
+                            "sep must be length 1.".to_string(),
+                        ))
+                    }
+                },
+                Some(Value::Str(x)) if x.as_str().is_ascii() && x.as_str().len() == 1 => {
+                    Some(x.as_str().as_bytes()[0])
+                }
+                Some(Value::Str(x)) => {
+                    return Err(raise(
+                        "ValueError",
+                        "sep must be length 1.".to_string(),
+                    ));
+                }
+                Some(other) => {
+                    return Err(raise(
+                        "TypeError",
+                        format!("object of type '{}' has no len()", other.type_name()),
+                    ));
+                }
+            };
+            let bps_arg = if args.len() >= 3 {
+                args.get(2)
+            } else {
+                kw(kwargs, "bytes_per_sep")
+            };
+            let bytes_per_sep = match bps_arg {
+                Some(v) => as_int_i64(v)?,
+                None => BPS_DEFAULT,
+            };
+            let sep_effective = if bytes_per_sep == 0 { None } else { sep };
+            // CPython 3.14.7: bytes_per_sep != 0 with a sep counts
+            // groups from the LEFT regardless of sign (observed:
+            // hexlify(b'abcde', b':', -2) == b'61:62:63:64:65' —
+            // 61:62|63:64|65 is left-grouped, NOT right). The sign
+            // branches of bytes_to_hex_str differ; positive gives the
+            // observed grouping.
+            let sign = if bytes_per_sep < 0 { -1i64 } else { 1i64 };
+            let hex_bytes = crate::simd_encode::hexlify_impl(
+                &data,
+                sep_effective,
+                bytes_per_sep.unsigned_abs() as usize,
+                sign,
+            );
+            return Ok(Value::Bytes(Gc::new(hex_bytes)));
+        }
+        "unhexlify" | "a2b_hex" => {
+            if !kwargs.is_empty() {
+                return Err(raise(
+                    "TypeError",
+                    "binascii.unhexlify() takes no keyword arguments",
+                ));
             }
+            if args.len() > 1 {
+                return Err(raise(
+                    "TypeError",
+                    format!(
+                        "binascii.{}() takes exactly one argument ({} given)",
+                        name,
+                        args.len()
+                    ),
+                ));
+            }
+            let raw: Vec<u8> = match required(args, name)? {
+                Value::Bytes(b) => (**b).clone(),
+                // bytearray objects (ObjKind::Opaque) expose their buffer
+                // via bytearray_state — CPython's Py_buffer path accepts
+                // them for unhexlify.
+                Value::Obj(o)
+                    if o.kind == ap_obj::ObjKind::Opaque && o.name == "bytearray" =>
+                {
+                    bytearray_state(required(args, name)?)?
+                }
+                Value::Str(st) => {
+                    let s = st.as_str();
+                    if !s.is_ascii() {
+                        return Err(raise(
+                            "ValueError",
+                            "string argument should contain only ASCII characters",
+                        ));
+                    }
+                    s.as_bytes().to_vec()
+                }
+                other => {
+                    return Err(raise(
+                        "TypeError",
+                        format!(
+                            "argument should be bytes, buffer or ASCII string, not '{}'",
+                            other.type_name()
+                        ),
+                    ));
+                }
+            };
+            return crate::simd_encode::unhexlify_impl(&raw);
+        }
             // T1 (xml.parsers.expat): b2a_base64(data, /, *, newline=True) —
             // base64 + trailing newline. A-4 item 2: exact binascii.c port —
             // bit-accumulator encoder + newline kwarg. CPython 3.14: altchars
@@ -13315,6 +13439,18 @@ const fn unhex_nibble(c: u8) -> Option<u8> {
         b'A'..=b'F' => Some(c - b'A' + 10),
         _ => None,
     }
+}
+
+/// Leaf 02-hexlify-simd: pub shims so simd_encode.rs's unhexlify_impl can
+/// reuse the scalar error/nibble helpers without re-defining them.
+pub(crate) fn unhex_nibble_pub(c: u8) -> Option<u8> {
+    unhex_nibble(c)
+}
+
+/// Leaf 02-hexlify-simd: wrap a byte vec as a Bytes Value (same shape as the
+/// hexlify/unhexlify arms mint).
+pub(crate) fn value_bytes_pub(out: Vec<u8>) -> Value {
+    Value::Bytes(Gc::new(out))
 }
 
 /// `crc_hqx(data, crc)` — CCITT CRC-16/XMODEM table walk (donor's

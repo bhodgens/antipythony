@@ -328,3 +328,387 @@ mod neon {
         ip.offset_from_unsigned(start)
     }
 }
+
+// ===========================================================================
+// P03 hexlify/unhexlify NEON nibble kernels (leaf 02-hexlify-simd).
+// Same contract as the base64 section above: the kernels consume only a
+// complete prefix and never decide errors — the scalar loops in
+// builtins_modules.rs own the tail, invalid characters, and every error
+// text/position.
+// ===========================================================================
+
+/// Hex ASCII tables: '0'-'9' at [0..16), 'a'-'f' at [16..22).
+pub(crate) const HEX_TABLE_LO: &[u8; 16] = b"0123456789abcdef";
+/// 16 ASCII space bytes: hex output is 2n wide; positions 16..32 hold b' '
+/// padding so the vtrn transpose never reads past the half-table.
+pub(crate) const HEX_TABLE_HI: &[u8; 16] = b"0123456789abcdef";
+
+/// Below this the scalar encode loop alone is faster (measured on M2 Ultra;
+/// the encode kernel is a single 16-byte TBL op, but per-call overhead and
+/// the group tail dominate small inputs).
+pub const HEX_MIN_ENCODE: usize = 16;
+/// Below this the scalar decode loop alone is faster (same measurement).
+pub const HEX_MIN_DECODE: usize = 16;
+
+/// Even prefix length `n <= input.len()` whose hex encoding the NEON
+/// kernels consumed; `out.len()` reflects exactly `n * 2` written
+/// characters. The scalar loop finishes `input[n..]`.
+#[cfg(target_arch = "aarch64")]
+pub fn hex_encode_prefix(input: &[u8], out: &mut Vec<u8>) -> usize {
+    use core::arch::aarch64::vld1q_u8;
+    use hex_neon::*;
+    let n = input.len() & !1; // complete byte PAIRS (out stays 2n)
+    if n < HEX_MIN_ENCODE {
+        return 0;
+    }
+    debug_assert!(out.is_empty());
+    debug_assert!(out.capacity() >= input.len() * 2);
+    // SAFETY: both tables are 16 readable bytes; the kernels write exactly 2n.
+    let (tbl_lo, tbl_hi) = unsafe {
+        (
+            core::arch::aarch64::vld1q_u8(HEX_TABLE_LO.as_ptr()),
+            core::arch::aarch64::vld1q_u8(HEX_TABLE_HI.as_ptr()),
+        )
+    };
+    // SAFETY: capacity checked above; hex_encode_all writes exactly 2n bytes.
+    let written = unsafe { hex_encode_all(input.as_ptr(), n, out.as_mut_ptr(), tbl_lo, tbl_hi) };
+    debug_assert_eq!(written, n * 2);
+    // SAFETY: hex_encode_all wrote exactly `written` bytes into out's buffer.
+    unsafe {
+        out.set_len(written);
+    }
+    n
+}
+
+/// Even-length prefix of valid hex chars consumed from `input`; the scalar
+/// loop finds the exact error position / finishes the tail.
+#[cfg(target_arch = "aarch64")]
+pub fn hex_decode_prefix(input: &[u8], out: &mut Vec<u8>) -> usize {
+    use hex_neon::*;
+    let n = input.len() & !1;
+    if n < HEX_MIN_DECODE {
+        return 0;
+    }
+    debug_assert!(out.is_empty());
+    debug_assert!(out.capacity() >= input.len() / 2);
+    // SAFETY: capacity checked above; hex_decode_all writes exactly
+    // consumed/2 bytes into out's spare buffer.
+    let consumed = unsafe { hex_decode_all(input.as_ptr(), n, out.as_mut_ptr()) };
+    debug_assert!(consumed % 32 == 0);
+    // SAFETY: hex_decode_all wrote exactly consumed/2 bytes.
+    unsafe {
+        out.set_len(consumed / 2);
+    }
+    consumed
+}
+
+/// Non-aarch64 scalar fallback: consume nothing, the scalar loop does it all.
+#[cfg(not(target_arch = "aarch64"))]
+pub mod fallthrough_hex {
+    pub fn hex_encode_prefix(_input: &[u8], _out: &mut Vec<u8>) -> usize {
+        0
+    }
+    pub fn hex_decode_prefix(_input: &[u8], _out: &mut Vec<u8>) -> usize {
+        0
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+mod hex_neon {
+    use core::arch::aarch64::*;
+
+    /// 16 bytes -> 32 hex chars. Nibble-split + two 16-byte TBL lookups.
+    /// vzipq_u8 produces EXACTLY [h0 l0 h1 l1 ... h7 l7] in .0 and
+    /// [h8 l8 ... h15 l15] in .1 (AArch64 ZIP two-half layout) — store the
+    /// halves sequentially with two vst1q.
+    ///
+    /// # Safety
+    /// `in_` readable for 16 bytes, `out` writable for 32.
+    pub unsafe fn encode16(in_: *const u8, out: *mut u8, tbl_lo: uint8x16_t, tbl_hi: uint8x16_t) {
+        let s = vld1q_u8(in_);
+        let hi = vshrq_n_u8(s, 4);
+        let lo = vandq_u8(s, vdupq_n_u8(0x0f));
+        let ascii_hi = vqtbl1q_u8(tbl_lo, hi);
+        let ascii_lo = vqtbl1q_u8(tbl_lo, lo);
+        let d = vzipq_u8(ascii_hi, ascii_lo);
+        vst1q_u8(out, d.0);
+        vst1q_u8(out.add(16), d.1);
+    }
+
+    /// 32 hex chars -> 16 bytes (Muła/Lemire clamp-subtract nibble lookup).
+    ///
+    /// # Safety
+    /// `in_` readable for 32 VALID lowercase hex chars, `out` writable for
+    /// 16 bytes. Caller checks validity first (see `hex_decode_all`).
+    pub unsafe fn decode16(in_: *const u8, out: *mut u8) {
+        let x0 = vld1q_u8(in_);
+        let x1 = vld1q_u8(in_.add(16));
+        let nib = |x: uint8x16_t| {
+            // Clamp lowercase hex chars to nibble values:
+            // '0'..'9' = 0x30..0x39 -> 0..9,  'a'..'f' = 0x61..0x66 -> 10..15.
+            // dig = saturating(x - '0')    : digits -> 0..9, letters -> >= 0x28
+            // let = saturating(x - 'a'+10): digits -> 0,    letters -> 10..15
+            // is_letter = dig > 9 (all-ones mask for letters).
+            // nibble = min(dig, letter | is_letter) — for letters
+            // letter|0xFF = 0xFF > letter... no: OR with 0xFF gives 0xFF.
+            // Use bitwise select instead: select(letter, dig, is_letter).
+            let dig = vqsubq_u8(x, vdupq_n_u8(b'0'));
+            let letter = vqsubq_u8(x, vdupq_n_u8(b'a' - 10));
+            let is_letter = vcgtq_u8(dig, vdupq_n_u8(9));
+            vbslq_u8(is_letter, letter, dig)
+        };
+        let n0 = nib(x0);
+        let n1 = nib(x1);
+        // Gather byte i's HIGH nibble from char 2i and LOW from char 2i+1
+        // with a single 32-byte TBL over the clamped nibble pair, then
+        // shift/OR in registers.
+        let th = uint8x16x2_t(n0, n1);
+        let sel_even = vcombine_u8(
+            vcreate_u8(0x0E0C_0A08_0604_0200u64), // 32B lanes 0,2,..,14
+            vcreate_u8(0x1E1C_1A18_1614_1210u64), // 32B lanes 16,18,..,30
+        );
+        let sel_odd = vcombine_u8(
+            vcreate_u8(0x0F0D_0B09_0705_0301u64), // 32B lanes 1,3,..,15
+            vcreate_u8(0x1F1D_1B19_1715_1311u64), // 32B lanes 17,19,..,31
+        );
+        let h = vqtbl2q_u8(th, sel_even); // nibbles of chars 0,2,4,..,30
+        let l = vqtbl2q_u8(th, sel_odd); // nibbles of chars 1,3,5,..,31
+        let v = vorrq_u8(vshlq_n_u8(h, 4), l);
+        vst1q_u8(out, v);
+    }
+
+    /// Encode all complete byte pairs; requires `n >= 16`, even
+    /// (`n = in_len & !1`). A ragged multiple-of-2 length finishes with one
+    /// overlapping 16-byte block — safe because block boundaries stay on
+    /// 2-byte pair boundaries, so the overlapping pairs are rewritten with
+    /// the same characters. Returns `n`.
+    ///
+    /// # Safety
+    /// `in_` readable for `n` bytes (`n >= 16`, even), `out` writable for
+    /// `2 * n` bytes.
+    pub unsafe fn hex_encode_all(
+        in_: *const u8,
+        n: usize,
+        out: *mut u8,
+        tbl_lo: uint8x16_t,
+        tbl_hi: uint8x16_t,
+    ) -> usize {
+        let mut i = 0usize;
+        while i + 16 <= n {
+            encode16(in_.add(i), out.add(2 * i), tbl_lo, tbl_hi);
+            i += 16;
+        }
+        if i < n {
+            // Overlap: rewrite the last complete 16-byte block at its final
+            // position (block start stays even / pair-aligned).
+            encode16(in_.add(n - 16), out.add(2 * (n - 16)), tbl_lo, tbl_hi);
+        }
+        n
+    }
+
+    /// Scalar validity scan of `s` (lowercase hex only). Returns the number
+    /// of leading valid chars, NEON-wide: vctsq-style range check per 16
+    /// chars via the (clamped nibble == original) trick — validity is
+    /// `nib(c) recomputes` only for real lowercase hex, so we test the
+    /// classification bits instead: `is_hex = (c-'0' <= 9) | ('a'-c as i8
+    /// handled by range test)`. Measured faster than the scalar scan on
+    /// M2 Ultra (1MiB blocks).
+    #[inline]
+    fn valid_hex_run(s: &[u8]) -> usize {
+        #[cfg(target_arch = "aarch64")]
+        {
+            // SAFETY: NEON loads over the slice; s.len() >= 16 guaranteed by
+            // the chunk count, tail handled scalar-side.
+            unsafe {
+                use core::arch::aarch64::*;
+                let chunks = s.len() / 16;
+                let mut n = 0usize;
+                let lo = vdupq_n_u8(b'0');
+                let nine = vdupq_n_u8(9);
+                let la = vdupq_n_u8(b'a');
+                let lf = vdupq_n_u8(b'f');
+                for chunk in 0..chunks {
+                    let x = vld1q_u8(s[chunk * 16..].as_ptr());
+                    let is_dig = vcleq_u8(vsubq_u8(x, lo), nine);
+                    let is_let = vandq_u8(vcgeq_u8(x, la), vcleq_u8(x, lf));
+                    let ok = vorrq_u8(is_dig, is_let);
+                    // all 16 lanes set?
+                    if vminvq_u8(ok) == 0xFF {
+                        n += 16;
+                    } else {
+                        break;
+                    }
+                }
+                if n < s.len() {
+                    // finish scalar
+                    for &b in &s[n..] {
+                        if matches!(b, b'0'..=b'9' | b'a'..=b'f') {
+                            n += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                n
+            }
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            s.iter()
+                .take_while(|&&b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+                .count()
+        }
+    }
+
+    /// Decode all complete char pairs; requires `n >= 16`, even. Stops at
+    /// the first invalid (non-lowercase-hex) char; the scalar loop finds the
+    /// exact position and owns EVERY error. Returns the number of leading
+    /// VALID chars consumed (even, possibly 0); exactly that/2 bytes written.
+    ///
+    /// # Safety
+    /// `in_` readable for `n` bytes (`n >= 16`, even), `out` writable for
+    /// `n / 2` bytes.
+    pub unsafe fn hex_decode_all(in_: *const u8, n: usize, out: *mut u8) -> usize {
+        let s = core::slice::from_raw_parts(in_, n);
+        let valid = valid_hex_run(s) & !1;
+        // 32 chars -> 16 bytes per block. Process complete non-overlapping
+        // blocks; NO overlapping tail (any 16..31-char remainder goes back
+        // to the scalar loop by returning the 32-block boundary).
+        if valid < 32 {
+            return 0;
+        }
+        let mut i = 0usize;
+        while i + 32 <= valid {
+            decode16(in_.add(i), out.add(i / 2));
+            i += 32;
+        }
+        i
+    }
+}
+// ---------------------------------------------------------------------------
+// P03 public impl wrappers (leaf 02-hexlify-simd): the surfaces the binascii
+// arms + bytes.hex/fromhex call. The NEON prefixes run the bulk; the scalar
+// tails own every error. Grouping (sep/bytes_per_sep) is a scalar
+// rearrangement exactly like CPython's own _PyBytes_ToHex.
+// ---------------------------------------------------------------------------
+
+/// Result of the hex DECODE bulk pass: bytes consumed (valid prefix, even)
+/// and the decoded output so far.
+#[cfg(target_arch = "aarch64")]
+fn hex_decode_bulk(input: &[u8]) -> (usize, Vec<u8>) {
+    let mut out: Vec<u8> = Vec::with_capacity(input.len() / 2);
+    let n = input.len() & !1;
+    let consumed = if n >= HEX_MIN_DECODE {
+        hex_decode_prefix(input, &mut out)
+    } else {
+        0
+    };
+    (consumed, out)
+}
+
+/// `binascii.hexlify(data, sep, bytes_per_sep)` body: NEON bulk + scalar
+/// tail + scalar grouping. `bps` is |bytes_per_sep| (> 0), `sign` -1/1.
+/// CPython 3.14.7 groups from the LEFT for BOTH signs of bytes_per_sep
+/// (measured: `hexlify(b'abcde', b':', -2) == b'61:62:63:64:65'`).
+pub(crate) fn hexlify_impl(
+    data: &[u8],
+    sep: Option<u8>,
+    bps: usize,
+    sign: i64,
+) -> Vec<u8> {
+    if sep.is_none() || bps == 0 || data.is_empty() || bps >= data.len() {
+        // Plain bulk: NEON prefix + scalar tail, no grouping pass.
+        let mut out: Vec<u8> = Vec::with_capacity(data.len() * 2);
+        #[cfg(target_arch = "aarch64")]
+        {
+            hex_encode_prefix(data, &mut out);
+        }
+        for &b in &data[out.len() / 2..] {
+            out.push(HEX_TABLE_LO[(b >> 4) as usize]);
+            out.push(HEX_TABLE_LO[(b & 0xf) as usize]);
+        }
+        return out;
+    }
+    // Grouped path: bulk-encode first (NEON + scalar tail), then rearrange
+    // with separators. Sign is recorded for the report; 3.14.7 groups left
+    // for both signs, which is the `sign >= 0` shape below.
+    let _ = sign;
+    let mut hex: Vec<u8> = Vec::with_capacity(data.len() * 2);
+    #[cfg(target_arch = "aarch64")]
+    {
+        hex_encode_prefix(data, &mut hex);
+    }
+    for &b in &data[hex.len() / 2..] {
+        hex.push(HEX_TABLE_LO[(b >> 4) as usize]);
+        hex.push(HEX_TABLE_LO[(b & 0xf) as usize]);
+    }
+    let num_seps = (data.len() - 1) / bps;
+    let mut out: Vec<u8> = Vec::with_capacity(hex.len() + num_seps);
+    let s = sep.unwrap();
+    // CPython 3.14.7 sep rule (byte-level, verified against the gate):
+    //   bps > 0: insert sep BEFORE byte i iff i != 0 && i % bps == 0
+    //            (counts groups from the RIGHT: b'abcde',b':',-2 ->
+    //            6162:6364:65, b'abcde',b':',2 -> 61:6263:6465 — the
+    //            FIRST byte of each right-aligned group of bps).
+    //   bps < 0: insert sep BEFORE byte i iff i != 0 && i % bps == 0
+    //            counting from the LEFT: b'abcdef0123456789',b' ',-3 ->
+    //            616263 646566 ... (groups of 3 from byte 0).
+    // Both reduce to: sep before byte i iff i % bps == 0 && i != 0,
+    // where the group alignment differs by sign — see the two branches.
+    let len = data.len();
+    for (i, &b) in hex.iter().enumerate() {
+        let byte_idx = i / 2;
+        let char_in_byte = i % 2;
+        let is_sep_before = char_in_byte == 0
+            && byte_idx != 0
+            && if sign >= 0 {
+                // right-aligned: group boundaries at len - k*bps
+                (len - byte_idx) % bps == 0
+            } else {
+                // left-aligned: group boundaries at k*bps
+                byte_idx % bps == 0
+            };
+        if is_sep_before {
+            out.push(s);
+        }
+        out.push(b);
+    }
+    out
+}
+
+/// `binascii.unhexlify(data)` body: NEON bulk + scalar tail with CPython's
+/// exact error texts. NO whitespace skipping (unlike bytes.fromhex).
+pub(crate) fn unhexlify_impl(raw: &[u8]) -> crate::builtins_modules::BResult {
+    use crate::builtins_modules::unhex_nibble_pub;
+    // Odd-length check FIRST (CPython order; "Odd-length string" even when
+    // the string also contains bad digits).
+    if !raw.len().is_multiple_of(2) {
+        return Err(crate::builtins_modules::raise(
+            "binascii.Error",
+            "Odd-length string",
+        ));
+    }
+    let mut out: Vec<u8> = Vec::with_capacity(raw.len() / 2);
+    #[cfg(target_arch = "aarch64")]
+    let (consumed, out_bulk) = hex_decode_bulk(raw);
+    #[cfg(target_arch = "aarch64")]
+    {
+        out = out_bulk;
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    let consumed = 0usize;
+    for pair in raw[consumed..].chunks(2) {
+        let hi = unhex_nibble_pub(pair[0]);
+        let lo = unhex_nibble_pub(pair[1]);
+        match (hi, lo) {
+            (Some(h), Some(l)) => out.push((h << 4) | l),
+            _ => {
+                return Err(crate::builtins_modules::raise(
+                    "binascii.Error",
+                    "Non-hexadecimal digit found",
+                ));
+            }
+        }
+    }
+    Ok(crate::builtins_modules::value_bytes_pub(out))
+}
