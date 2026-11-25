@@ -249,7 +249,13 @@ pub fn fenced_output(cmd: &mut std::process::Command) -> std::process::Output {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .unwrap_or_else(|e| panic!("spawn fenced cmd: {e}"));
+        .unwrap_or_else(|e| {
+            panic!(
+                "spawn fenced cmd: {e} — program={:?} cwd={:?}",
+                cmd.get_program(),
+                cmd.get_current_dir()
+            )
+        });
 
     let timeout_secs: u64 = std::env::var("AP_PROBE_TIMEOUT_SECS")
         .ok()

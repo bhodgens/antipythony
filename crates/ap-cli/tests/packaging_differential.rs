@@ -32,7 +32,11 @@ fn bin_path(name: &str) -> String {
     let p = match std::env::var("CARGO_TARGET_DIR") {
         Ok(d) => std::path::Path::new(&d).join("debug").join(name),
         Err(_) => std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../target/debug")
+            // The workspace .cargo/config.toml redirects every build into
+            // target-0304c (NOT the cargo-default target/). The old
+            // hardcoded target/debug fallback made every spawn ENOENT on
+            // CI (build --workspace writes target-0304c/debug/*).
+            .join("../../target-0304c/debug")
             .join(name),
     };
     p.to_string_lossy().into_owned()

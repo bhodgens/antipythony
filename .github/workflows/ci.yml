@@ -112,6 +112,8 @@ jobs:
         run: cargo build --workspace
       - name: cargo build --release -p ap-run --bin ap-run-probe (ast_getattr_fence prefers the release probe; debug needs >10 min, over its 600s fence deadline)
         run: cargo build --release -p ap-run --bin ap-run-probe
+      - name: install uv (packaging_differential native-wheel gate shells out to uv; its absence fails the C-10 diagnostic test)
+        uses: astral-sh/setup-uv@v5
       - name: cargo test
         run: cargo test --workspace
       - name: cargo doc -D warnings (robustness-ci 05.03)
