@@ -5910,9 +5910,18 @@ fn call_value_inner_impl(
                                         | "statvfs_result"
                                         | "struct_time"
                                         | "bytearray"
+                                        // ppfix-random: Random instances
+                                        // report "Random" (the class value
+                                        // is the dotted marker).
+                                        | "random.Random"
                                 )
                             {
-                                return Ok(builtins::interned_type(interp, &so.name));
+                                let tname = if so.name == "random.Random" {
+                                    "Random"
+                                } else {
+                                    so.name.as_str()
+                                };
+                                return Ok(builtins::interned_type(interp, tname));
                             }
                         }
                     }
@@ -8494,12 +8503,22 @@ fn call_value_inner_impl(
                                                                 | "statvfs_result"
                                                                 | "struct_time"
                                                                 | "bytearray"
+                                                                // ppfix-random: Random
+                                                                // instances report
+                                                                // "Random" (the class
+                                                                // value is the dotted
+                                                                // module marker).
+                                                                | "random.Random"
                                                         ))
                                                 {
                                                     // Named native iterators and
                                                     // opaque result structs report
                                                     // their own name (s012/A-3 item 5).
-                                                    o.name.as_str().to_string()
+                                                    if o.name == "random.Random" {
+                                                        "Random".to_string()
+                                                    } else {
+                                                        o.name.as_str().to_string()
+                                                    }
                                                 } else if o.kind == ap_obj::ObjKind::Function
                                                     && o.attrs
                                                         .lock()
@@ -9035,6 +9054,15 @@ fn call_type_ctor(
     args: &[Value],
     kwargs: &[(String, Value)],
 ) -> EResult {
+    // ppfix-random: random.Random(seed) — the native MT19937-backed class.
+    // The module ns carries a marker("random.Random") BuiltinFn; instance
+    // methods dispatch via native_attr "random.Random" arms.Construction
+    // routes here from the Opaque-type ctor path AND from a direct call of
+    // the dotted marker.
+    if name == "random.Random" {
+        return crate::builtins_modules::call_native("random", "Random", args, kwargs)
+            .unwrap_or_else(|| Err(raise("TypeError", "random.Random construction failed")));
+    }
     // T2 (pytest Scope.from_user): `@classmethod` in a class body calls the
     // interned 'classmethod'/'staticmethod' Type — produce a REAL
     // descriptor payload (make_descr) so _is_descriptor sees __get__ and
@@ -12866,6 +12894,11 @@ fn class_protocol_builtin(
             // static type name (named native iterators → "count" etc).
             if let Some(vv) = args.first() {
                 if let Value::Obj(o) = vv {
+                    // ppfix-random: type(Random()) is <class 'Random'> —
+                    // check BEFORE the generic fallthroughs.
+                    if o.kind == ap_obj::ObjKind::Opaque && o.name == "random.Random" {
+                        return Some(Ok(crate::builtins::interned_type(interp, "Random")));
+                    }
                     if o.kind == ap_obj::ObjKind::Iterator {
                         let t = crate::builtins::interned_type(interp, &o.name);
                         return Some(Ok(t));
@@ -13015,6 +13048,8 @@ fn class_protocol_builtin(
                             | "statvfs_result"
                             | "struct_time"
                             | "bytearray"
+                            // ppfix-random: Random instances report "Random".
+                            | "random.Random"
                             // s016: dict views report dict_keys/values/items —
                             // the interned types carry the protocol dicts the
                             // collections.abc KeysView/ItemsView/ValuesView
@@ -13024,7 +13059,14 @@ fn class_protocol_builtin(
                             | "dict_items"
                     )
                 {
-                    let t = crate::builtins::interned_type(interp, &o.name);
+                    // ppfix-random: the class value is the dotted marker; the
+                    // INSTANCE reports the bare CPython __name__.
+                    let tname = if o.name == "random.Random" {
+                        "Random"
+                    } else {
+                        o.name.as_str()
+                    };
+                    let t = crate::builtins::interned_type(interp, tname);
                     return Some(Ok(t));
                 }
             }
@@ -14496,6 +14538,8 @@ fn attr_get(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                             // s015: native deque instances are Opaque("deque")
                             // — CPython reports collections.deque.__name__.
                             | "deque"
+                            // ppfix-random: Random instances report "Random".
+                            | "random.Random"
                             // s016: dict views report dict_keys/values/items —
                             // the interned types carry the protocol dicts the
                             // collections.abc KeysView/ItemsView/ValuesView
@@ -14505,7 +14549,13 @@ fn attr_get(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                             | "dict_items"
                     ) =>
             {
-                o.name.as_str()
+                // ppfix-random: the class value is the dotted marker; the
+                // INSTANCE reports the bare CPython __name__.
+                if o.name == "random.Random" {
+                    "Random"
+                } else {
+                    o.name.as_str()
+                }
             }
             // 02.08 (s029): operator.itemgetter/methodcaller markers
             // report their CPython class names via __class__.

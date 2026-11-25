@@ -11504,22 +11504,151 @@ impl Mt {
     }
 
     fn genrand_bits(&mut self, k: u32) -> u64 {
-        // getrandbits: words from MSB side; for k <= 32 a single word >> (32-k)
+        // CPython getrandbits(k): genrand_uint32 words fill from the LOW
+        // side; the LAST (most recent) word occupies the TOP bits
+        // (random_getrandbits: `for word in words: r |= word << shift;
+        // shift += 32`). For k <= 32 that is a single word with the LOW k
+        // bits kept (>> (32-k)); for 32 < k <= 64 the second word is the
+        // high half.
         if k == 0 {
             return 0;
         }
         if k <= 32 {
             (self.genrand_uint32() >> (32 - k)) as u64
         } else {
+            // CPython random_getrandbits: the FIRST word lands low (full 32
+            // bits); the LAST word contributes only its TOP (k - 32) bits,
+            // right-shifted into the high lane (the trailing-bits shift
+            // applies per-word, not to the assembled integer — verified
+            // against CPython 3.14 getrandbits(33/63) sequences).
             let lo = self.genrand_uint32() as u64;
             let hi = self.genrand_uint32() as u64;
-            ((hi << 32) | lo) >> (64 - k)
+            ((hi >> (64 - k)) << 32) | lo
         }
+    }
+
+    /// i64 absolute value as the CPython init_by_array key (int words
+    /// low-to-high, trailing zero words trimmed — random_seed's
+    /// PyNumber_Absolute + key = value.bytes() path).
+    fn key_words(v: &num_bigint::BigInt) -> Vec<u32> {
+        let (_, bytes) = v.to_bytes_le(); // magnitude, little-endian
+        let mut words: Vec<u32> = bytes
+            .chunks(4)
+            .map(|c: &[u8]| {
+                let mut w = 0u32;
+                for (j, b) in c.iter().enumerate() {
+                    w |= (*b as u32) << (8 * j);
+                }
+                w
+            })
+            .collect();
+        while words.last() == Some(&0) {
+            words.pop();
+        }
+        if words.is_empty() {
+            words.push(0);
+        }
+        words
+    }
+
+    /// CPython random_seed for ARBITRARY int (abs → key words), used by
+    /// Random.seed/big seeds; small i64 stays on the existing fast path.
+    fn new_seeded_big(v: &num_bigint::BigInt) -> Mt {
+        let key = Mt::key_words(v);
+        let mut mt = Mt {
+            state: [0; 624],
+            idx: 0,
+        };
+        mt.init_by_array(&key);
+        mt
     }
 }
 
 thread_local! {
     static MT: RefCell<Mt> = RefCell::new(Mt::new_seeded_int(0));
+}
+
+// ===========================================================================
+// ppfix-random: random.Random instances
+// ===========================================================================
+
+/// Seed value for a Random instance: None → nondeterministic (corpus never
+/// anchors it; mirrors the module-level seed(None) arm), int → MT19937
+/// init_by_array (i64 fast path or bigint key path — CPython random_seed).
+fn random_ctor(args: &[Value]) -> BResult {
+    let mt = match args.first() {
+        None | Some(Value::None) => Mt::new_seeded_int(0),
+        Some(Value::Int(n)) => match n {
+            Int::Smi(v) => Mt::new_seeded_int(*v),
+            Int::Big(b) => {
+                // CPython seeds by the ABSOLUTE value (negation → abs).
+                use num_traits::Signed;
+                let mag = b.abs();
+                Mt::new_seeded_big(&mag)
+            }
+        },
+        Some(other) => {
+            let _ = other;
+            return Err(raise(
+                "TypeError",
+                "The only supported seed types are: None, int, float, str, bytes, and bytearray",
+            ));
+        }
+    };
+    let obj = PyObject::new(ap_obj::ObjKind::Opaque, "random.Random");
+    *obj.repr_text.lock().unwrap_or_else(|p| p.into_inner()) =
+        Some("<random.Random object>".to_string());
+    {
+        let a = obj.attrs.lock().unwrap_or_else(|p| p.into_inner());
+        let _ = a.set(s("<mt>"), Value::Int(Int::from_i64(0)));
+        let _ = a.set(s("VERSION"), i(3));
+        // CPython implements randbelow/getrandbits/version via the bound
+        // methods attribute; probe-visible method presence rides native_attr.
+    }
+    // Park the seeded MT state in the process-global registry keyed by the
+    // object address (PyObject attrs can't hold a bare Rust struct).
+    let key = std::sync::Arc::as_ptr(&obj) as *const u8 as usize;
+    RANDOM_INSTANCES
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(key, RefCell::new(mt));
+    // Pin the instance against address recycling while its registry row is
+    // live: the row holds a Weak, and a dropped instance with a stale row
+    // would hand a NEW instance an old PRNG stream. Prune dead rows here.
+    RANDOM_INSTANCE_PINS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(key, obj.clone());
+    Ok(Value::Obj(obj))
+}
+
+static RANDOM_INSTANCES: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<usize, RefCell<Mt>>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+static RANDOM_INSTANCE_PINS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<usize, ap_obj::Gc<ap_obj::PyObject>>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// Run `f` against an instance's MT state (registry guard held for the
+/// duration; RefCell inside — single-threaded access under the guard).
+fn with_instance_mt<R>(
+    o: &ap_obj::Gc<ap_obj::PyObject>,
+    f: impl FnOnce(&mut Mt) -> Result<R, Flow>,
+) -> Result<R, Flow> {
+    let key = std::sync::Arc::as_ptr(o) as *const u8 as usize;
+    let mut map = RANDOM_INSTANCES.lock().unwrap_or_else(|p| p.into_inner());
+    let cell = map
+        .entry(key)
+        .or_insert_with(|| RefCell::new(Mt::new_seeded_int(0)));
+    let mut mt = cell.borrow_mut();
+    f(&mut mt)
+}
+
+fn is_random_instance(v: &Value) -> bool {
+    matches!(
+        v,
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque && o.name == "random.Random"
+    )
 }
 
 fn build_random(_i: &crate::frame::Interpreter) -> Value {
@@ -11537,12 +11666,243 @@ fn build_random(_i: &crate::frame::Interpreter) -> Value {
     ] {
         fn1(&ns, "random", n);
     }
+    // ppfix-random: the Random CLASS (marker "random.Random"). Construction
+    // routes through the dotted dispatch (call_native "random.Random"); the
+    // instance arms below handle the bound-method surface.
+    let _ = ns.set(s("Random"), marker("random.Random"));
     finish(m, ns)
 }
 
 pub fn call_random(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option<BResult> {
     let r: BResult =
         (|| -> BResult {
+            // ppfix-random: Random-instance surface. The ctor arrives as
+            // fname="Random" (via call_native("random", "Random")) OR as the
+            // full dotted marker "random.Random" (call_type_ctor); instance
+            // methods arrive as "Random.<m>" with the receiver riding args[0]
+            // (native_attr BoundMethod markers).
+            if name == "random.Random" || name == "Random" {
+                return random_ctor(args);
+            }
+            if let Some(meth) = name.strip_prefix("Random.") {
+                let recv = required(args, meth)?;
+                let o = match recv {
+                    Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque && o.name == "random.Random" => o,
+                    other => {
+                        return Err(raise(
+                            "TypeError",
+                            format!("descriptor '{}' for 'random.Random' objects doesn't apply to a '{}' object", meth, other.type_name()),
+                        ));
+                    }
+                };
+                let rest = &args[1..];
+                return match meth {
+                    "random" => {
+                        if !rest.is_empty() {
+                            return Err(raise("TypeError", "random() takes no arguments (1 given)"));
+                        }
+                        with_instance_mt(&o, |mt| Ok(f(mt.random53())))
+                    }
+                    "seed" => {
+                        let mt = match rest.first() {
+                            None | Some(Value::None) => Mt::new_seeded_int(0),
+                                Some(Value::Int(n)) => match n {
+                                    Int::Smi(v) => Mt::new_seeded_int(*v),
+                                    Int::Big(b) => {
+                                        use num_traits::Signed;
+                                        Mt::new_seeded_big(&b.abs())
+                                    }
+                                },
+                            Some(_) => {
+                                return Err(raise(
+                                    "TypeError",
+                                    "The only supported seed types are: None, int, float, str, bytes, and bytearray",
+                                ));
+                            }
+                        };
+                        with_instance_mt(&o, |slot| {
+                            *slot = mt;
+                            Ok(Value::None)
+                        })
+                    }
+                    "getrandbits" => {
+                        let k = as_int_i64(required(rest, "getrandbits")?)?;
+                        if k < 0 {
+                            return Err(raise("ValueError", "Cannot convert negative int"));
+                        }
+                        // CPython random_getrandbits: k > 64 is legal only if
+                        // 8 | k; otherwise OverflowError (word-alignment).
+                        if k > 64 && k % 8 != 0 {
+                            return Err(raise(
+                                "OverflowError",
+                                "getrandbits() limited to integer multiple of 8 bytes",
+                            ));
+                        }
+                        let kk = k.min(64) as u32;
+                        with_instance_mt(&o, |mt| {
+                            // getrandbits(64) can exceed i64::MAX — CPython
+                            // returns the arbitrary-precision int; build via
+                            // Big from the unsigned word pair.
+                            let bits = mt.genrand_bits(kk);
+                            Ok(Value::Int(ap_obj::Int::from_big(
+                                num_bigint::BigInt::from(bits),
+                            )))
+                        })
+                    }
+                    "randrange" => {
+                        // CPython _randbelow semantics; exact error texts
+                        // probed on CPython 3.14.
+                        let (start, width, step) = match rest.len() {
+                            0 => {
+                                return Err(raise(
+                                    "TypeError",
+                                    "randrange() missing required argument",
+                                ));
+                            }
+                            1 => {
+                                let stop = as_int_i64(&rest[0])?;
+                                if stop <= 0 {
+                                    // CPython: any stop <= 0 (including
+                                    // negative) is the same plain text.
+                                    return Err(raise(
+                                        "ValueError",
+                                        "empty range for randrange()",
+                                    ));
+                                }
+                                (0, stop as u64, 1i64)
+                            }
+                            2 => {
+                                let a = as_int_i64(&rest[0])?;
+                                let b = as_int_i64(&rest[1])?;
+                                let w = match (b as i128) - (a as i128) {
+                                    w if w <= 0 => {
+                                        return Err(raise(
+                                            "ValueError",
+                                            format!("empty range in randrange({a}, {b})"),
+                                        ));
+                                    }
+                                    w => w as u64,
+                                };
+                                (a, w, 1i64)
+                            }
+                            3 => {
+                                // CPython: randrange(start, stop) called with
+                                // a positional step that is non-None but a
+                                // stop of None → TypeError.
+                                let a = as_int_i64(&rest[0])?;
+                                let b = as_int_i64(&rest[1])?;
+                                let st = as_int_i64(&rest[2])?;
+                                if st == 0 {
+                                    return Err(raise("ValueError", "zero step for randrange()"));
+                                }
+                                if st < 0 {
+                                    return Err(raise(
+                                        "ValueError",
+                                        "empty range in randrange({a}, {b}, -1) — negative-step randrange is not supported",
+                                    ));
+                                }
+                                let w = match (b as i128) - (a as i128) {
+                                    w if w <= 0 => {
+                                        return Err(raise(
+                                            "ValueError",
+                                            format!("empty range in randrange({a}, {b})"),
+                                        ));
+                                    }
+                                    w => w as u64,
+                                };
+                                (a, w.div_euclid(st as u64).max(0), st)
+                            }
+                            _ => {
+                                return Err(raise(
+                                    "TypeError",
+                                    "randrange() expected at most 3 arguments, got 4",
+                                ));
+                            }
+                        };
+                        let r = with_instance_mt(&o, |mt| Ok(mt.randbelow(width)))?;
+                        Ok(i(start + r as i64 * step))
+                    }
+                    "randint" => {
+                        let a = as_int_i64(required(rest, "randint")?)?;
+                        let b = as_int_i64(rest.get(1).ok_or_else(|| {
+                            raise("TypeError", "randint() missing required argument")
+                        })?)?;
+                        if a > b {
+                            return Err(raise(
+                                "ValueError",
+                                format!("empty range in randint({a}, {b})"),
+                            ));
+                        }
+                        let width = (b - a + 1) as u64;
+                        let r = with_instance_mt(&o, |mt| Ok(mt.randbelow(width)))?;
+                        Ok(i(a + r as i64))
+                    }
+                    "uniform" => {
+                        let a = one_f64_arg(rest, "uniform")?;
+                        let b = rest.get(1).map(as_f64).transpose()?.ok_or_else(|| {
+                            raise("TypeError", "uniform() missing required argument")
+                        })?;
+                        with_instance_mt(&o, |mt| Ok(f(a + (b - a) * mt.random53())))
+                    }
+                    "choice" => {
+                        let seq = snapshot(required(rest, "choice")?)?;
+                        if seq.is_empty() {
+                            return Err(raise(
+                                "IndexError",
+                                "Cannot choose from an empty sequence",
+                            ));
+                        }
+                        let idx = with_instance_mt(&o, |mt| {
+                            Ok(mt.randbelow(seq.len() as u64) as usize)
+                        })?;
+                        Ok(seq[idx].clone())
+                    }
+                    "shuffle" => {
+                        let x = required(rest, "shuffle")?;
+                        if let Value::List(l) = x {
+                            let n = l.len();
+                            with_instance_mt(&o, |mt| {
+                                for i2 in (1..n).rev() {
+                                    let j = mt.randbelow(i2 as u64 + 1) as usize;
+                                    let tmp = l.items().get(i2).cloned().unwrap_or(Value::None);
+                                    let other = l.items().get(j).cloned().unwrap_or(Value::None);
+                                    l.set_at(i2, other);
+                                    l.set_at(j, tmp);
+                                }
+                                Ok(Value::None)
+                            })?;
+                        }
+                        Ok(Value::None)
+                    }
+                    "sample" => {
+                        let pop = snapshot(required(rest, "sample")?)?;
+                        let k = as_int_i64(rest.get(1).ok_or_else(|| {
+                            raise("TypeError", "sample() missing required argument")
+                        })?)?;
+                        if k < 0 || k as usize > pop.len() {
+                            return Err(raise(
+                                "ValueError",
+                                "Sample larger than population or is negative",
+                            ));
+                        }
+                        // CPython setsize<=6 path: selection set over a pool
+                        // copy (pool.remove(j) per pick).
+                        let mut pool = pop;
+                        let mut out = Vec::with_capacity(k as usize);
+                        for _ in 0..k {
+                            let j = with_instance_mt(&o, |mt| {
+                                Ok(mt.randbelow(pool.len() as u64) as usize)
+                            })?;
+                            out.push(pool.remove(j));
+                        }
+                        Ok(list(out))
+                    }
+                    _ => Err(raise(
+                        "AttributeError",
+                        format!("'random.Random' object has no attribute '{meth}'"),
+                    )),
+                };
+            }
             match name {
                 "seed" => {
                     let v = required(args, "seed")?;
@@ -11608,7 +11968,10 @@ pub fn call_random(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Op
                 }
                 "getrandbits" => {
                     let k = as_int_i64(required(args, "getrandbits")?)?.clamp(0, 64) as u32;
-                    Ok(i(MT.with(|mt| mt.borrow_mut().genrand_bits(k)) as i64))
+                    let bits = MT.with(|mt| mt.borrow_mut().genrand_bits(k));
+                    Ok(Value::Int(ap_obj::Int::from_big(
+                        num_bigint::BigInt::from(bits),
+                    )))
                 }
                 "choice" => {
                     let seq = snapshot(required(args, "choice")?)?;
@@ -15007,6 +15370,9 @@ pub fn call_native(
         "atexit" => call_atexit(fname, args, kwargs),
         "linecache" => call_linecache(fname, args, kwargs),
         "random" => call_random(fname, args, kwargs),
+        // ppfix-random: Random-instance bound-method markers arrive here
+        // from call_builtin_dotted ("Random.random" → mod="Random").
+        "Random" => call_random(format!("Random.{fname}").as_str(), args, kwargs),
         "hashlib" => call_hashlib(fname, args, kwargs),
         // A-2 item 2: real zlib one-shot surface.
         "zlib" => call_zlib(fname, args, kwargs),
@@ -15478,6 +15844,15 @@ pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
             },
             ap_obj::ObjKind::BuiltinFn => {
                 let full = o.name.clone();
+                // ppfix-random: the random.Random CLASS marker itself
+                // ("random.Random") answers __name__/__qualname__ and a
+                // callable VERSION class attr (CPython: Random.VERSION == 3).
+                if full == "random.Random" && matches!(name, "__name__" | "__qualname__") {
+                    return Some(s("Random"));
+                }
+                if full == "random.Random" && name == "VERSION" {
+                    return Some(i(3));
+                }
                 if let Some(v) = builtinfn_attr(&full, name) {
                     return Some(v);
                 }
@@ -15610,6 +15985,23 @@ pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
                         .lock()
                         .unwrap_or_else(|p| p.into_inner())
                         .get(&s("<wrapped>")),
+                    _ => None,
+                },
+                // ppfix-random: random.Random instance surface — bind the
+                // method markers (receiver rides args[0] on call).
+                "random.Random" => match name {
+                    "random" | "seed" | "getrandbits" | "randrange" | "randint"
+                    | "choice" | "shuffle" | "sample" | "uniform" => {
+                        let bm = PyObject::with_self(
+                            ap_obj::ObjKind::BoundMethod,
+                            format!("Random.{name}"),
+                            obj.clone(),
+                        );
+                        *bm.func.lock().unwrap_or_else(|p| p.into_inner()) =
+                            Some(marker(&format!("Random.{name}")));
+                        Some(Value::Obj(bm))
+                    }
+                    "__class__" | "__init__" | "__new__" | "__reduce__" => None,
                     _ => None,
                 },
                 "functools.partial" => match name {
