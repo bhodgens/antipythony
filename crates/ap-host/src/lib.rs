@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)] // issue #15 ratchet: measured zero-unsafe crate
 //! wasmtime host runner, WASI imports, embedding API (Plan 03).
 //!
 //! Runs a module emitted by [`ap_codegen_wasm::lower_module`] under

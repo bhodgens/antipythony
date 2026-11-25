@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)] // issue #15 ratchet: measured zero-unsafe crate
 //! Packaging subsystem (leaves 04.01 + 04.02).
 //!
 //! Layout:

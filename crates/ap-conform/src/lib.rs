@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)] // issue #15 ratchet: measured zero-unsafe crate
 #![warn(missing_docs)] // robustness-ci 05.03: public surface is fully documented
 //! Differential conformance runner (spawns CPython).
 //!

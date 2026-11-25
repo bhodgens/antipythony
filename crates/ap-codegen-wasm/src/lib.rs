@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)] // issue #15 ratchet: measured zero-unsafe crate
 //! ap-ir to WasmGC module (Plan 03 skeleton — leaf 03.01/03.02 land the
 //! GC representation proper; see docs/03-wasm-representation-design.md).
 //!

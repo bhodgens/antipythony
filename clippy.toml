@@ -9,3 +9,15 @@
 # Reference for available keys: https://doc.rust-lang.org/clippy/configuration.html
 # Deliberately minimal - add e.g. too-many-lines-threshold only when a leaf
 # actually needs it.
+#
+# Issue #15 unsafe policy (docs/unsafe-inventory.md):
+#   - undocumented_unsafe_blocks is set to "warn" in root Cargo.toml
+#     [workspace.lints.clippy]. Every unsafe block in a non-forbidden crate
+#     needs a `// SAFETY: ...` comment directly above it; the lint checks for
+#     that. Burn-down goal: flip warn -> deny once the existing backlog
+#     (measured per-crate in docs/unsafe-inventory.md) is documented.
+#   - Zero-unsafe crates are pinned with #![forbid(unsafe_code)] at the lib.rs
+#     first line: ap-pack, ap-host, ap-conform, ap-codegen-wasm (plus
+#     ap-cli/xtask deferred - sibling-owned). scripts/unsafe_report.sh is the
+#     ratchet: baseline in docs/unsafe-baseline.txt, --diff mode blocks new
+#     unsafe occurrences in changed files.
