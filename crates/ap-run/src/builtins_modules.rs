@@ -12676,7 +12676,11 @@ pub fn call_zlib(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opt
             }
             // donor zlib.rs decompress: container detected from wbits;
             // failures map to CPython's zlib.error texts (-3 header,
-            // -5 truncated).
+            // -5 truncated). ppfix-perf: one-shot slice decode via
+            // flate2::Decompress::decompress_vec (no streaming-writer
+            // IoWriter layers) — the decompress arm was 0.38-0.52x CPython
+            // with the write::ZlibDecoder shape; CPython one-shots at
+            // multi-GB/s. Grow-capacity loop keeps -5 (truncated) exact.
             "decompress" => {
                 let data = bytes_arg(required(args, "decompress")?)?;
                 let wbits = match args.get(1) {
@@ -12684,26 +12688,17 @@ pub fn call_zlib(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opt
                     None => 15,
                 };
                 let out: Result<Vec<u8>, String> = match wbits {
-                    9..=15 => {
-                        let mut d = flate2::write::ZlibDecoder::new(Vec::new());
-                        d.write_all(&data)
-                            .and_then(|_| d.finish())
-                            .map_err(zlib_decomp_err)
-                    }
-                    -15..=-9 => {
-                        let mut d = flate2::write::DeflateDecoder::new(Vec::new());
-                        d.write_all(&data)
-                            .and_then(|_| d.finish())
-                            .map_err(zlib_decomp_err)
-                    }
-                    25..=47 => {
-                        // gzip / auto-detect (flate2 MultiGzDecoder).
-                        let mut d = flate2::write::MultiGzDecoder::new(Vec::new());
-                        d.write_all(&data)
-                            .and_then(|_| d.finish())
-                            .map_err(zlib_decomp_err)
-                    }
-                    _ => Err("Bad value for wbits parameter".to_string()),
+                    0 => one_shot_zlib(&data, wbits), // CPython: wbits=0 = default 15
+                    9..=15 => one_shot_zlib(&data, wbits),
+                    -15..=-9 => one_shot_raw(&data),
+                    25..=47 => one_shot_gzip(&data),
+                    // CPython maps out-of-range wbits to inflate_init's
+                    // -2 "inconsistent stream state" (probed 3.14: 1, 48,
+                    // -1, -16 -> -2; 8/-8 raise -3 from inflate itself).
+                    _ => Err(
+                        "Error -2 while preparing to decompress data: inconsistent stream state"
+                            .to_string(),
+                    ),
                 };
                 let out = out.map_err(zlib_error)?;
                 Ok(Value::Bytes(Gc::new(out)))
@@ -12726,16 +12721,163 @@ pub fn call_zlib(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Opt
 fn zlib_decomp_err(e: std::io::Error) -> String {
     // CPython texts: bad header -> "Error -3 while decompressing data:
     // incorrect header check"; truncated -> "Error -5 while decompressing
-    // data: incomplete or truncated stream".
-    match e.kind() {
-        std::io::ErrorKind::UnexpectedEof => {
-            "Error -5 while decompressing data: incomplete or truncated stream".to_string()
-        }
-        _ if e.to_string().contains("corrupt") || e.to_string().contains("header") => {
-            "Error -3 while decompressing data: incorrect header check".to_string()
-        }
-        _ => format!("Error -3 while decompressing data: {}", e),
+    // data: incomplete or truncated stream"; corrupted deflate payload or
+    // failed data check -> "-3 ... <reason>" where <reason> is zlib's own
+    // message ("incorrect data check", "invalid distance code", ...).
+    let raw = e.to_string();
+    // zlib-rs messages look like "deflate decompression error: <reason>" —
+    // strip our prefix so the reason lands in CPython's slot.
+    let reason = raw
+        .strip_prefix("deflate decompression error: ")
+        .unwrap_or(&raw)
+        .to_string();
+    if raw.contains("header") {
+        "Error -3 while decompressing data: incorrect header check".to_string()
+    } else if raw.contains("incorrect data check") {
+        "Error -3 while decompressing data: incorrect data check".to_string()
+    } else if raw.contains("invalid distance") || raw.contains("invalid block") {
+        format!("Error -3 while decompressing data: {}", reason)
+    } else if raw.contains("deflate decompression error") {
+        format!("Error -3 while decompressing data: {}", reason)
+    } else if raw.contains("truncated") || raw.contains("unexpected end") {
+        "Error -5 while decompressing data: incomplete or truncated stream".to_string()
+    } else {
+        format!("Error -3 while decompressing data: {}", reason)
     }
+}
+
+// ===========================================================================
+// ppfix-perf: one-shot slice decode for the zlib.decompress arm.
+//
+// The old arm drove flate2's write::{Zlib,Deflate,MultiGz}Decoder (IoWriter
+// layers + finish()); the P04 decompress rows measured 0.38-0.52x CPython.
+// These helpers drive flate2::Decompress::decompress_vec directly on the
+// input slice with a grow-or-fail capacity loop, preserving the exact
+// error mapping (bad header -> -3, truncation -> -5, data corruption ->
+// -3 "incorrect data check" / CPython's inflate texts).
+//
+// Error fidelity notes (flate2 slice-API vs the old write-API):
+// - reset(true) per attempt keeps the window/dictionary state fresh, so a
+//   corrupt mid-stream byte surfaces as a real inflate error (mapped to
+//   CPython's -3 family), not silent garbage output.
+// - A stream that ends without Z_STREAM_END while input remains unmapped
+//   (total_in < data.len()) is truncated -> -5, matching the write-API's
+//   UnexpectedEof mapping.
+// ===========================================================================
+
+fn one_shot_decode(data: &[u8], zlib_header: bool) -> Result<Vec<u8>, String> {
+    // Single-pass decode: drive ONE decoder repeatedly, slicing the input by
+    // total_in() (decompress_vec restarts its input cursor at slice start on
+    // every call) and growing the Vec whenever the output saturates.
+    // FlushDecompress::None is required for multi-call resume — Finish on a
+    // mid-stream call makes miniz_oxide error out. StreamEnd is still
+    // reported when the final block is processed, flush mode aside.
+    let mut out = Vec::with_capacity((data.len() * 8).max(1 << 16));
+    let mut d = flate2::Decompress::new(zlib_header);
+    loop {
+        let rest = &data[(d.total_in() as usize).min(data.len())..];
+        if rest.is_empty() {
+            // All input consumed without reaching StreamEnd: truncated.
+            return Err(
+                "Error -5 while decompressing data: incomplete or truncated stream".to_string(),
+            );
+        }
+        let before_out = d.total_out();
+        let res = d
+            .decompress_vec(rest, &mut out, flate2::FlushDecompress::None)
+            .map_err(|e| {
+                zlib_decomp_err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    e.to_string(),
+                ))
+            })?;
+        if res == flate2::Status::StreamEnd {
+            return Ok(out);
+        }
+        let produced = d.total_out() - before_out;
+        if out.capacity() == out.len() {
+            // Output saturated mid-stream: grow 4x and continue (few
+            // reallocs matters: each realloc copies the whole prefix).
+            out.reserve(out.capacity() * 3 + 1);
+        } else if produced == 0 && rest.len() < data.len() {
+            // No output progress with input remaining and buffer not full:
+            // miniz needs a bigger window visibility — grow defensively.
+            out.reserve((out.len() / 2).max(4096));
+        }
+    }
+}
+
+fn one_shot_zlib(data: &[u8], wbits: i32) -> Result<Vec<u8>, String> {
+    let _ = wbits; // miniz_oxide Inflate::make ignores window size in wbits arm
+    one_shot_decode(data, true)
+}
+
+fn one_shot_raw(data: &[u8]) -> Result<Vec<u8>, String> {
+    one_shot_decode(data, false)
+}
+
+fn one_shot_gzip(data: &[u8]) -> Result<Vec<u8>, String> {
+    // miniz_oxide has no gzip-header inflate in the mem API; the write-API
+    // MultiGzDecoder was a header-stripping wrapper. Parse the gzip member
+    // header (RFC 1952) here and inflate the deflate payload one-shot.
+    // NOTE: the trailer lives at the tail of `data`, NOT of `payload`.
+    let payload_start = gzip_payload(data)
+        .ok_or_else(|| "Error -3 while decompressing data: incorrect header check".to_string())?;
+    let body = one_shot_decode(payload_start, false)?;
+    // Trailer: CRC32 + ISIZE after the deflate stream (last 8 bytes).
+    if data.len() < 18 {
+        return Err(
+            "Error -5 while decompressing data: incomplete or truncated stream".to_string(),
+        );
+    }
+    let trailer = &data[data.len() - 8..];
+    let crc32 = u32::from_le_bytes([trailer[0], trailer[1], trailer[2], trailer[3]]);
+    let isize_ = u32::from_le_bytes([trailer[4], trailer[5], trailer[6], trailer[7]]);
+    let crc_got = crc32_walk(0xFFFF_FFFF, &body) ^ 0xFFFF_FFFF;
+    if crc_got != crc32 || body.len() != isize_ as usize {
+        return Err("Error -3 while decompressing data: incorrect data check".to_string());
+    }
+    Ok(body)
+}
+
+/// Parse an RFC 1952 gzip member; return the deflate payload slice (excluding
+/// the 8-byte trailer). None = not a gzip header / malformed member.
+fn gzip_payload(data: &[u8]) -> Option<&[u8]> {
+    // Magic 1f 8b, method 8 (deflate), no reserved flag bits.
+    if data.len() < 18 || data[0] != 0x1F || data[1] != 0x8B || data[2] != 8 {
+        return None;
+    }
+    let flg = data[3];
+    if flg & 0xE0 != 0 {
+        return None;
+    }
+    let mut off = 10usize;
+    // FEXTRA
+    if flg & 0x04 != 0 {
+        if data.len() < off + 2 {
+            return None;
+        }
+        let xlen = u16::from_le_bytes([data[off], data[off + 1]]) as usize;
+        off += 2 + xlen;
+    }
+    // FNAME
+    if flg & 0x08 != 0 {
+        let end = data[off..].iter().position(|&b| b == 0)? + off;
+        off = end + 1;
+    }
+    // FCOMMENT
+    if flg & 0x10 != 0 {
+        let end = data[off..].iter().position(|&b| b == 0)? + off;
+        off = end + 1;
+    }
+    // FHCRC
+    if flg & 0x02 != 0 {
+        off += 2;
+    }
+    if data.len() < off + 8 {
+        return None;
+    }
+    Some(&data[off..data.len() - 8])
 }
 
 fn crc32_walk(mut crc: u32, data: &[u8]) -> u32 {
