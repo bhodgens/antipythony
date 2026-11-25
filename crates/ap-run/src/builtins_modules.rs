@@ -180,9 +180,8 @@ pub(crate) fn py_lt(a: &Value, b: &Value) -> Result<bool, Flow> {
         // the TypeError (values_cmp prints the static 'object'; c027
         // pinned the class-name text for the eval_compare path — the
         // sort path goes through values_cmp directly, so re-wrap here).
-        let has_user = |v: &Value| {
-            matches!(v, Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance)
-        };
+        let has_user =
+            |v: &Value| matches!(v, Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance);
         if has_user(a) || has_user(b) {
             Flow::from_py(ap_obj::exc::PyException::new(
                 "TypeError",
@@ -12139,332 +12138,204 @@ fn build_random(_i: &crate::frame::Interpreter) -> Value {
 }
 
 pub fn call_random(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option<BResult> {
-    let r: BResult =
-        (|| -> BResult {
-            // ppfix-random: Random-instance surface. The ctor arrives as
-            // fname="Random" (via call_native("random", "Random")) OR as the
-            // full dotted marker "random.Random" (call_type_ctor); instance
-            // methods arrive as "Random.<m>" with the receiver riding args[0]
-            // (native_attr BoundMethod markers).
-            if name == "random.Random" || name == "Random" {
-                return random_ctor(args);
-            }
-            if let Some(meth) = name.strip_prefix("Random.") {
-                let recv = required(args, meth)?;
-                let o = match recv {
-                    Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque && o.name == "random.Random" => o,
-                    other => {
-                        return Err(raise(
+    let r: BResult = (|| -> BResult {
+        // ppfix-random: Random-instance surface. The ctor arrives as
+        // fname="Random" (via call_native("random", "Random")) OR as the
+        // full dotted marker "random.Random" (call_type_ctor); instance
+        // methods arrive as "Random.<m>" with the receiver riding args[0]
+        // (native_attr BoundMethod markers).
+        if name == "random.Random" || name == "Random" {
+            return random_ctor(args);
+        }
+        if let Some(meth) = name.strip_prefix("Random.") {
+            let recv = required(args, meth)?;
+            let o = match recv {
+                Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque && o.name == "random.Random" => {
+                    o
+                }
+                other => {
+                    return Err(raise(
                             "TypeError",
                             format!("descriptor '{}' for 'random.Random' objects doesn't apply to a '{}' object", meth, other.type_name()),
                         ));
+                }
+            };
+            let rest = &args[1..];
+            return match meth {
+                "random" => {
+                    if !rest.is_empty() {
+                        return Err(raise("TypeError", "random() takes no arguments (1 given)"));
                     }
-                };
-                let rest = &args[1..];
-                return match meth {
-                    "random" => {
-                        if !rest.is_empty() {
-                            return Err(raise("TypeError", "random() takes no arguments (1 given)"));
-                        }
-                        with_instance_mt(&o, |mt| Ok(f(mt.random53())))
-                    }
-                    "seed" => {
-                        let mt = match rest.first() {
-                            None | Some(Value::None) => Mt::new_seeded_int(0),
-                                Some(Value::Int(n)) => match n {
-                                    Int::Smi(v) => Mt::new_seeded_int(*v),
-                                    Int::Big(b) => {
-                                        use num_traits::Signed;
-                                        Mt::new_seeded_big(&b.abs())
-                                    }
-                                },
-                            Some(_) => {
-                                return Err(raise(
+                    with_instance_mt(&o, |mt| Ok(f(mt.random53())))
+                }
+                "seed" => {
+                    let mt = match rest.first() {
+                        None | Some(Value::None) => Mt::new_seeded_int(0),
+                        Some(Value::Int(n)) => match n {
+                            Int::Smi(v) => Mt::new_seeded_int(*v),
+                            Int::Big(b) => {
+                                use num_traits::Signed;
+                                Mt::new_seeded_big(&b.abs())
+                            }
+                        },
+                        Some(_) => {
+                            return Err(raise(
                                     "TypeError",
                                     "The only supported seed types are: None, int, float, str, bytes, and bytearray",
                                 ));
-                            }
-                        };
-                        with_instance_mt(&o, |slot| {
-                            *slot = mt;
-                            Ok(Value::None)
-                        })
-                    }
-                    "getrandbits" => {
-                        let k = as_int_i64(required(rest, "getrandbits")?)?;
-                        if k < 0 {
-                            return Err(raise("ValueError", "Cannot convert negative int"));
                         }
-                        // CPython random_getrandbits: k > 64 is legal only if
-                        // 8 | k; otherwise OverflowError (word-alignment).
-                        if k > 64 && k % 8 != 0 {
+                    };
+                    with_instance_mt(&o, |slot| {
+                        *slot = mt;
+                        Ok(Value::None)
+                    })
+                }
+                "getrandbits" => {
+                    let k = as_int_i64(required(rest, "getrandbits")?)?;
+                    if k < 0 {
+                        return Err(raise("ValueError", "Cannot convert negative int"));
+                    }
+                    // CPython random_getrandbits: k > 64 is legal only if
+                    // 8 | k; otherwise OverflowError (word-alignment).
+                    if k > 64 && k % 8 != 0 {
+                        return Err(raise(
+                            "OverflowError",
+                            "getrandbits() limited to integer multiple of 8 bytes",
+                        ));
+                    }
+                    let kk = k.min(64) as u32;
+                    with_instance_mt(&o, |mt| {
+                        // getrandbits(64) can exceed i64::MAX — CPython
+                        // returns the arbitrary-precision int; build via
+                        // Big from the unsigned word pair.
+                        let bits = mt.genrand_bits(kk);
+                        Ok(Value::Int(ap_obj::Int::from_big(num_bigint::BigInt::from(
+                            bits,
+                        ))))
+                    })
+                }
+                "randrange" => {
+                    // CPython _randbelow semantics; exact error texts
+                    // probed on CPython 3.14.
+                    let (start, width, step) = match rest.len() {
+                        0 => {
                             return Err(raise(
-                                "OverflowError",
-                                "getrandbits() limited to integer multiple of 8 bytes",
+                                "TypeError",
+                                "randrange() missing required argument",
                             ));
                         }
-                        let kk = k.min(64) as u32;
-                        with_instance_mt(&o, |mt| {
-                            // getrandbits(64) can exceed i64::MAX — CPython
-                            // returns the arbitrary-precision int; build via
-                            // Big from the unsigned word pair.
-                            let bits = mt.genrand_bits(kk);
-                            Ok(Value::Int(ap_obj::Int::from_big(
-                                num_bigint::BigInt::from(bits),
-                            )))
-                        })
-                    }
-                    "randrange" => {
-                        // CPython _randbelow semantics; exact error texts
-                        // probed on CPython 3.14.
-                        let (start, width, step) = match rest.len() {
-                            0 => {
-                                return Err(raise(
-                                    "TypeError",
-                                    "randrange() missing required argument",
-                                ));
+                        1 => {
+                            let stop = as_int_i64(&rest[0])?;
+                            if stop <= 0 {
+                                // CPython: any stop <= 0 (including
+                                // negative) is the same plain text.
+                                return Err(raise("ValueError", "empty range for randrange()"));
                             }
-                            1 => {
-                                let stop = as_int_i64(&rest[0])?;
-                                if stop <= 0 {
-                                    // CPython: any stop <= 0 (including
-                                    // negative) is the same plain text.
+                            (0, stop as u64, 1i64)
+                        }
+                        2 => {
+                            let a = as_int_i64(&rest[0])?;
+                            let b = as_int_i64(&rest[1])?;
+                            let w = match (b as i128) - (a as i128) {
+                                w if w <= 0 => {
                                     return Err(raise(
                                         "ValueError",
-                                        "empty range for randrange()",
+                                        format!("empty range in randrange({a}, {b})"),
                                     ));
                                 }
-                                (0, stop as u64, 1i64)
+                                w => w as u64,
+                            };
+                            (a, w, 1i64)
+                        }
+                        3 => {
+                            // CPython: randrange(start, stop) called with
+                            // a positional step that is non-None but a
+                            // stop of None → TypeError.
+                            let a = as_int_i64(&rest[0])?;
+                            let b = as_int_i64(&rest[1])?;
+                            let st = as_int_i64(&rest[2])?;
+                            if st == 0 {
+                                return Err(raise("ValueError", "zero step for randrange()"));
                             }
-                            2 => {
-                                let a = as_int_i64(&rest[0])?;
-                                let b = as_int_i64(&rest[1])?;
-                                let w = match (b as i128) - (a as i128) {
-                                    w if w <= 0 => {
-                                        return Err(raise(
-                                            "ValueError",
-                                            format!("empty range in randrange({a}, {b})"),
-                                        ));
-                                    }
-                                    w => w as u64,
-                                };
-                                (a, w, 1i64)
-                            }
-                            3 => {
-                                // CPython: randrange(start, stop) called with
-                                // a positional step that is non-None but a
-                                // stop of None → TypeError.
-                                let a = as_int_i64(&rest[0])?;
-                                let b = as_int_i64(&rest[1])?;
-                                let st = as_int_i64(&rest[2])?;
-                                if st == 0 {
-                                    return Err(raise("ValueError", "zero step for randrange()"));
-                                }
-                                if st < 0 {
-                                    return Err(raise(
+                            if st < 0 {
+                                return Err(raise(
                                         "ValueError",
                                         "empty range in randrange({a}, {b}, -1) — negative-step randrange is not supported",
                                     ));
-                                }
-                                let w = match (b as i128) - (a as i128) {
-                                    w if w <= 0 => {
-                                        return Err(raise(
-                                            "ValueError",
-                                            format!("empty range in randrange({a}, {b})"),
-                                        ));
-                                    }
-                                    w => w as u64,
-                                };
-                                (a, w.div_euclid(st as u64).max(0), st)
                             }
-                            _ => {
-                                return Err(raise(
-                                    "TypeError",
-                                    "randrange() expected at most 3 arguments, got 4",
-                                ));
-                            }
-                        };
-                        let r = with_instance_mt(&o, |mt| Ok(mt.randbelow(width)))?;
-                        Ok(i(start + r as i64 * step))
-                    }
-                    "randint" => {
-                        let a = as_int_i64(required(rest, "randint")?)?;
-                        let b = as_int_i64(rest.get(1).ok_or_else(|| {
-                            raise("TypeError", "randint() missing required argument")
-                        })?)?;
-                        if a > b {
-                            return Err(raise(
-                                "ValueError",
-                                format!("empty range in randint({a}, {b})"),
-                            ));
-                        }
-                        let width = (b - a + 1) as u64;
-                        let r = with_instance_mt(&o, |mt| Ok(mt.randbelow(width)))?;
-                        Ok(i(a + r as i64))
-                    }
-                    "uniform" => {
-                        let a = one_f64_arg(rest, "uniform")?;
-                        let b = rest.get(1).map(as_f64).transpose()?.ok_or_else(|| {
-                            raise("TypeError", "uniform() missing required argument")
-                        })?;
-                        with_instance_mt(&o, |mt| Ok(f(a + (b - a) * mt.random53())))
-                    }
-                    "choice" => {
-                        let seq = snapshot(required(rest, "choice")?)?;
-                        if seq.is_empty() {
-                            return Err(raise(
-                                "IndexError",
-                                "Cannot choose from an empty sequence",
-                            ));
-                        }
-                        let idx = with_instance_mt(&o, |mt| {
-                            Ok(mt.randbelow(seq.len() as u64) as usize)
-                        })?;
-                        Ok(seq[idx].clone())
-                    }
-                    "shuffle" => {
-                        let x = required(rest, "shuffle")?;
-                        if let Value::List(l) = x {
-                            let n = l.len();
-                            with_instance_mt(&o, |mt| {
-                                for i2 in (1..n).rev() {
-                                    let j = mt.randbelow(i2 as u64 + 1) as usize;
-                                    let tmp = l.items().get(i2).cloned().unwrap_or(Value::None);
-                                    let other = l.items().get(j).cloned().unwrap_or(Value::None);
-                                    l.set_at(i2, other);
-                                    l.set_at(j, tmp);
+                            let w = match (b as i128) - (a as i128) {
+                                w if w <= 0 => {
+                                    return Err(raise(
+                                        "ValueError",
+                                        format!("empty range in randrange({a}, {b})"),
+                                    ));
                                 }
-                                Ok(Value::None)
-                            })?;
+                                w => w as u64,
+                            };
+                            (a, w.div_euclid(st as u64).max(0), st)
                         }
-                        Ok(Value::None)
-                    }
-                    "sample" => {
-                        let pop = snapshot(required(rest, "sample")?)?;
-                        let k = as_int_i64(rest.get(1).ok_or_else(|| {
-                            raise("TypeError", "sample() missing required argument")
-                        })?)?;
-                        if k < 0 || k as usize > pop.len() {
+                        _ => {
                             return Err(raise(
-                                "ValueError",
-                                "Sample larger than population or is negative",
+                                "TypeError",
+                                "randrange() expected at most 3 arguments, got 4",
                             ));
                         }
-                        // CPython setsize<=6 path: selection set over a pool
-                        // copy (pool.remove(j) per pick).
-                        let mut pool = pop;
-                        let mut out = Vec::with_capacity(k as usize);
-                        for _ in 0..k {
-                            let j = with_instance_mt(&o, |mt| {
-                                Ok(mt.randbelow(pool.len() as u64) as usize)
-                            })?;
-                            out.push(pool.remove(j));
-                        }
-                        Ok(list(out))
-                    }
-                    _ => Err(raise(
-                        "AttributeError",
-                        format!("'random.Random' object has no attribute '{meth}'"),
-                    )),
-                };
-            }
-            match name {
-                "seed" => {
-                    let v = required(args, "seed")?;
-                    match v {
-                        Value::None => {
-                            // nondeterministic seed; corpus never anchors it
-                            MT.with(|mt| *mt.borrow_mut() = Mt::new_seeded_int(0));
-                        }
-                        other => {
-                            let n = as_int_i64(other)?;
-                            MT.with(|mt| *mt.borrow_mut() = Mt::new_seeded_int(n));
-                        }
-                    }
-                    Ok(Value::None)
-                }
-                "random" => Ok(f(MT.with(|mt| mt.borrow_mut().random53()))),
-                "uniform" => {
-                    let a = one_f64_arg(args, "uniform")?;
-                    let b =
-                        args.get(1).map(as_f64).transpose()?.ok_or_else(|| {
-                            raise("TypeError", "uniform() missing required argument")
-                        })?;
-                    Ok(f(a + (b - a) * MT.with(|mt| mt.borrow_mut().random53())))
+                    };
+                    let r = with_instance_mt(&o, |mt| Ok(mt.randbelow(width)))?;
+                    Ok(i(start + r as i64 * step))
                 }
                 "randint" => {
-                    let a = as_int_i64(required(args, "randint")?)?;
-                    let b =
-                        args.get(1).map(as_int_i64).transpose()?.ok_or_else(|| {
-                            raise("TypeError", "randint() missing required argument")
-                        })?;
+                    let a = as_int_i64(required(rest, "randint")?)?;
+                    let b = as_int_i64(rest.get(1).ok_or_else(|| {
+                        raise("TypeError", "randint() missing required argument")
+                    })?)?;
                     if a > b {
                         return Err(raise(
                             "ValueError",
-                            format!("empty range for randint() ({a}, {b})"),
+                            format!("empty range in randint({a}, {b})"),
                         ));
                     }
                     let width = (b - a + 1) as u64;
-                    let r = MT.with(|mt| mt.borrow_mut().randbelow(width));
+                    let r = with_instance_mt(&o, |mt| Ok(mt.randbelow(width)))?;
                     Ok(i(a + r as i64))
                 }
-                "randrange" => {
-                    let (start, stop, step) = match args.len() {
-                        1 => (0, as_int_i64(&args[0])?, 1),
-                        2 => (as_int_i64(&args[0])?, as_int_i64(&args[1])?, 1),
-                        _ => (
-                            as_int_i64(&args[0])?,
-                            as_int_i64(&args[1])?,
-                            args.get(2).map(as_int_i64).transpose()?.unwrap_or(1),
-                        ),
-                    };
-                    if step == 0 {
-                        return Err(raise("ValueError", "randrange() arg 3 must not be zero"));
-                    }
-                    let width = (stop - start).div_euclid(step);
-                    if width <= 0 {
-                        return Err(raise(
-                            "ValueError",
-                            "empty range for randrange()".to_string(),
-                        ));
-                    }
-                    let r = MT.with(|mt| mt.borrow_mut().randbelow(width as u64));
-                    Ok(i(start + r as i64 * step))
-                }
-                "getrandbits" => {
-                    let k = as_int_i64(required(args, "getrandbits")?)?.clamp(0, 64) as u32;
-                    let bits = MT.with(|mt| mt.borrow_mut().genrand_bits(k));
-                    Ok(Value::Int(ap_obj::Int::from_big(
-                        num_bigint::BigInt::from(bits),
-                    )))
+                "uniform" => {
+                    let a = one_f64_arg(rest, "uniform")?;
+                    let b =
+                        rest.get(1).map(as_f64).transpose()?.ok_or_else(|| {
+                            raise("TypeError", "uniform() missing required argument")
+                        })?;
+                    with_instance_mt(&o, |mt| Ok(f(a + (b - a) * mt.random53())))
                 }
                 "choice" => {
-                    let seq = snapshot(required(args, "choice")?)?;
+                    let seq = snapshot(required(rest, "choice")?)?;
                     if seq.is_empty() {
                         return Err(raise("IndexError", "Cannot choose from an empty sequence"));
                     }
-                    let idx = MT.with(|mt| mt.borrow_mut().randbelow(seq.len() as u64));
-                    Ok(seq[idx as usize].clone())
+                    let idx =
+                        with_instance_mt(&o, |mt| Ok(mt.randbelow(seq.len() as u64) as usize))?;
+                    Ok(seq[idx].clone())
                 }
                 "shuffle" => {
-                    let x = required(args, "shuffle")?;
+                    let x = required(rest, "shuffle")?;
                     if let Value::List(l) = x {
-                        let mut items = l.items().to_vec();
-                        let n = items.len();
-                        for i2 in (1..n).rev() {
-                            let j = MT.with(|mt| mt.borrow_mut().randbelow(i2 as u64 + 1)) as usize;
-                            items.swap(i2, j);
-                        }
-                        l.clear();
-                        for v in items {
-                            l.append(v);
-                        }
+                        let n = l.len();
+                        with_instance_mt(&o, |mt| {
+                            for i2 in (1..n).rev() {
+                                let j = mt.randbelow(i2 as u64 + 1) as usize;
+                                let tmp = l.items().get(i2).cloned().unwrap_or(Value::None);
+                                let other = l.items().get(j).cloned().unwrap_or(Value::None);
+                                l.set_at(i2, other);
+                                l.set_at(j, tmp);
+                            }
+                            Ok(Value::None)
+                        })?;
                     }
                     Ok(Value::None)
                 }
                 "sample" => {
-                    let pop = snapshot(required(args, "sample")?)?;
-                    let k = as_int_i64(args.get(1).ok_or_else(|| {
+                    let pop = snapshot(required(rest, "sample")?)?;
+                    let k = as_int_i64(rest.get(1).ok_or_else(|| {
                         raise("TypeError", "sample() missing required argument")
                     })?)?;
                     if k < 0 || k as usize > pop.len() {
@@ -12473,18 +12344,146 @@ pub fn call_random(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Op
                             "Sample larger than population or is negative",
                         ));
                     }
-                    // selection-set algorithm (CPython's path for small k)
+                    // CPython setsize<=6 path: selection set over a pool
+                    // copy (pool.remove(j) per pick).
                     let mut pool = pop;
                     let mut out = Vec::with_capacity(k as usize);
                     for _ in 0..k {
-                        let j = MT.with(|mt| mt.borrow_mut().randbelow(pool.len() as u64)) as usize;
+                        let j =
+                            with_instance_mt(
+                                &o,
+                                |mt| Ok(mt.randbelow(pool.len() as u64) as usize),
+                            )?;
                         out.push(pool.remove(j));
                     }
                     Ok(list(out))
                 }
-                _ => Err(raise("SystemError", format!("random fn {name} unbound"))),
+                _ => Err(raise(
+                    "AttributeError",
+                    format!("'random.Random' object has no attribute '{meth}'"),
+                )),
+            };
+        }
+        match name {
+            "seed" => {
+                let v = required(args, "seed")?;
+                match v {
+                    Value::None => {
+                        // nondeterministic seed; corpus never anchors it
+                        MT.with(|mt| *mt.borrow_mut() = Mt::new_seeded_int(0));
+                    }
+                    other => {
+                        let n = as_int_i64(other)?;
+                        MT.with(|mt| *mt.borrow_mut() = Mt::new_seeded_int(n));
+                    }
+                }
+                Ok(Value::None)
             }
-        })();
+            "random" => Ok(f(MT.with(|mt| mt.borrow_mut().random53()))),
+            "uniform" => {
+                let a = one_f64_arg(args, "uniform")?;
+                let b = args
+                    .get(1)
+                    .map(as_f64)
+                    .transpose()?
+                    .ok_or_else(|| raise("TypeError", "uniform() missing required argument"))?;
+                Ok(f(a + (b - a) * MT.with(|mt| mt.borrow_mut().random53())))
+            }
+            "randint" => {
+                let a = as_int_i64(required(args, "randint")?)?;
+                let b = args
+                    .get(1)
+                    .map(as_int_i64)
+                    .transpose()?
+                    .ok_or_else(|| raise("TypeError", "randint() missing required argument"))?;
+                if a > b {
+                    return Err(raise(
+                        "ValueError",
+                        format!("empty range for randint() ({a}, {b})"),
+                    ));
+                }
+                let width = (b - a + 1) as u64;
+                let r = MT.with(|mt| mt.borrow_mut().randbelow(width));
+                Ok(i(a + r as i64))
+            }
+            "randrange" => {
+                let (start, stop, step) = match args.len() {
+                    1 => (0, as_int_i64(&args[0])?, 1),
+                    2 => (as_int_i64(&args[0])?, as_int_i64(&args[1])?, 1),
+                    _ => (
+                        as_int_i64(&args[0])?,
+                        as_int_i64(&args[1])?,
+                        args.get(2).map(as_int_i64).transpose()?.unwrap_or(1),
+                    ),
+                };
+                if step == 0 {
+                    return Err(raise("ValueError", "randrange() arg 3 must not be zero"));
+                }
+                let width = (stop - start).div_euclid(step);
+                if width <= 0 {
+                    return Err(raise(
+                        "ValueError",
+                        "empty range for randrange()".to_string(),
+                    ));
+                }
+                let r = MT.with(|mt| mt.borrow_mut().randbelow(width as u64));
+                Ok(i(start + r as i64 * step))
+            }
+            "getrandbits" => {
+                let k = as_int_i64(required(args, "getrandbits")?)?.clamp(0, 64) as u32;
+                let bits = MT.with(|mt| mt.borrow_mut().genrand_bits(k));
+                Ok(Value::Int(ap_obj::Int::from_big(num_bigint::BigInt::from(
+                    bits,
+                ))))
+            }
+            "choice" => {
+                let seq = snapshot(required(args, "choice")?)?;
+                if seq.is_empty() {
+                    return Err(raise("IndexError", "Cannot choose from an empty sequence"));
+                }
+                let idx = MT.with(|mt| mt.borrow_mut().randbelow(seq.len() as u64));
+                Ok(seq[idx as usize].clone())
+            }
+            "shuffle" => {
+                let x = required(args, "shuffle")?;
+                if let Value::List(l) = x {
+                    let mut items = l.items().to_vec();
+                    let n = items.len();
+                    for i2 in (1..n).rev() {
+                        let j = MT.with(|mt| mt.borrow_mut().randbelow(i2 as u64 + 1)) as usize;
+                        items.swap(i2, j);
+                    }
+                    l.clear();
+                    for v in items {
+                        l.append(v);
+                    }
+                }
+                Ok(Value::None)
+            }
+            "sample" => {
+                let pop = snapshot(required(args, "sample")?)?;
+                let k =
+                    as_int_i64(args.get(1).ok_or_else(|| {
+                        raise("TypeError", "sample() missing required argument")
+                    })?)?;
+                if k < 0 || k as usize > pop.len() {
+                    return Err(raise(
+                        "ValueError",
+                        "Sample larger than population or is negative",
+                    ));
+                }
+                // selection-set algorithm (CPython's path for small k)
+                let mut pool = pop;
+                let mut out = Vec::with_capacity(k as usize);
+                for _ in 0..k {
+                    let j = MT.with(|mt| mt.borrow_mut().randbelow(pool.len() as u64)) as usize;
+                    out.push(pool.remove(j));
+                }
+                Ok(list(out))
+            }
+            _ => Err(raise("SystemError", format!("random fn {name} unbound"))),
+        }
+    })();
     let _ = kwargs;
     Some(r)
 }
@@ -16597,8 +16596,8 @@ pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
                 // ppfix-random: random.Random instance surface — bind the
                 // method markers (receiver rides args[0] on call).
                 "random.Random" => match name {
-                    "random" | "seed" | "getrandbits" | "randrange" | "randint"
-                    | "choice" | "shuffle" | "sample" | "uniform" => {
+                    "random" | "seed" | "getrandbits" | "randrange" | "randint" | "choice"
+                    | "shuffle" | "sample" | "uniform" => {
                         let bm = PyObject::with_self(
                             ap_obj::ObjKind::BoundMethod,
                             format!("Random.{name}"),
