@@ -45,6 +45,8 @@ main via the orchestrator after first-hand gate re-runs.
 | W6 | ppfix-int: to_bytes/from_bytes bugs + hex limb path | builtins_modules.rs int arms + builtins.rs hex/oct/bin | IN FLIGHT (worktree leaf-ppfix-int) | deleg_ac90809e |
 | W6 | ppfix-sort: 3 mixed-type/key=None sort bugs | builtins.rs sorted + methods.rs/builtins_modules.rs sort arms | IN FLIGHT (worktree leaf-ppfix-sort) | deleg_ac90809e |
 | W6 | ppfix-random: implement random.Random class | native random module surface | IN FLIGHT (worktree leaf-ppfix-random) | deleg_ac90809e |
+| W6b | ppfix-json: json.loads/dumps bulk scan + escape tables | json region of builtins_modules.rs (~:7361-7843, region-disjoint from W6) | IN FLIGHT (worktree leaf-ppfix-json) | deleg_cd8e6817 |
+| W6b | ppfix-dictprobe: p09 probe restructure + per-op dict ratios | tests/bench/primitive/probes/p09_dict.py + report ONLY | IN FLIGHT (worktree leaf-ppfix-dictprobe) | deleg_cd8e6817 |
 
 ## Dispatch waves
 
