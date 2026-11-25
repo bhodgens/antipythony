@@ -1,7 +1,11 @@
 // Throwaway diagnostic: dump type-section func entries (DIAG_TY=N..N+6)
 // of the pre-lowered module at /tmp/dbg3.wasm, via a local re-walk that
 // avoids the iterator/count API mismatch.
+// #[ignore]: reads a developer-scratch wasm (/tmp/dbg3.wasm) no CI step
+// ever writes (CI failure 2026-11-25: NotFound on cargo test). Run
+// manually: DIAG_TY=48 cargo test -p ap-codegen-wasm --test diag_types -- --ignored
 #[test]
+#[ignore = "developer scratch tool: reads /tmp/dbg3.wasm"]
 fn diag_types() {
     let bytes = std::fs::read("/tmp/dbg3.wasm").expect("read /tmp/dbg3.wasm");
     let want: u32 = std::env::var("DIAG_TY")
