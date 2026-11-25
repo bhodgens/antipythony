@@ -138,6 +138,29 @@ impl PyDict {
         d
     }
 
+    /// Fix-C: an UNREGISTERED empty payload for direct embedding in another
+    /// object's field (`PyObject.dunders`). The historical constructor
+    /// expression `(*PyDict::new()).clone()` allocated a REGISTERED dict,
+    /// deep-cloned it (2nd allocation), and dropped the registered original —
+    /// ~600ns of pure waste on EVERY PyObject mint (bound methods minted per
+    /// attribute read made this the dominant per-step cost of `l.append(i)`
+    /// loops). The payload keeps dunders' existing (unregistered) fence
+    /// status: the parent PyObject is the registered container, and `edges_of`
+    /// walks `dunders` under the parent's own lock — no registry entry of the
+    /// payload's own is consulted, so nothing changes for the collector.
+    pub fn new_unregistered() -> PyDict {
+        PyDict {
+            state: Mutex::new(DictState {
+                entries: Vec::new(),
+                indices: vec![DKIX_EMPTY; 8],
+                mask: 7,
+                used: 0,
+                dummies: 0,
+            }),
+            epoch: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.state.lock().unwrap_or_else(|p| p.into_inner()).used
     }

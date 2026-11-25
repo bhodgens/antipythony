@@ -257,15 +257,23 @@ impl PyIterator {
             // The borrow is dropped before returning — a re-entrant
             // mutation from a generator/worker step cannot double-borrow.
             IterState::SharedList(l, cur) => {
-                let items = l.items();
-                if *cur < items.len() {
-                    let v = items[*cur].clone();
-                    drop(items);
+                // Fix-C perf: the old body called `l.items()` here — for an
+                // unboxed (Smi-storage) list that MATERIALIZES a full boxed
+                // snapshot of the whole container on EVERY pull, making any
+                // for/listcomp over an N-element int list O(n²) (measured:
+                // 32k int list 1.79s vs range 6ms; knee ~20k, matching the
+                // sort/dict/json audit datasets). `PyList::get` is a bounded
+                // O(1) read on both storage arms (box: slice index; Smi:
+                // inline re-box of one element). Semantics are identical:
+                // an index >= len yields None (exhaustion), and every read
+                // sees the container's current contents — mutation during
+                // iteration behaves exactly as the per-step items() view
+                // did (append extends, shrink truncates the cursor space).
+                let v = l.get(*cur);
+                if v.is_some() {
                     *cur += 1;
-                    Some(v)
-                } else {
-                    None
                 }
+                v
             }
             IterState::SharedTuple(t, cur) => {
                 if *cur < t.0.len() {

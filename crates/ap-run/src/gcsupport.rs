@@ -1968,3 +1968,14 @@ fn install_capture_mirror() {
         crate::jit_hook::set_capture_mirror(slot);
     }
 }
+
+/// Fix-C diagnostic: install the raw registration hook without the full
+/// interpreter runtime wiring (probe bin only — real entry uses `install`).
+pub fn install_hook_public() {
+    ap_obj::gc_gate::set_hook(gc_register_routed);
+}
+
+/// Fix-C diagnostic: the routed register fn as a public handle (probe bin).
+pub fn gc_register_pub_routed(v: &Value) {
+    gc_register_routed(v)
+}

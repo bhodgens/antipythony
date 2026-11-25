@@ -11,6 +11,9 @@ path = "src/lib.rs"
 [dependencies]
 ap-pack = { path = "../ap-pack" }
 ap-run = { path = "../ap-run" }
+# ap-gc-eval diagnostic bin: raw Gc::new/gc_register mint cost probe (Fix-C).
+ap-obj = { path = "../ap-obj" }
+ap-gc = { path = "../ap-gc" }
 # 02.06: the AoT build pipeline (cfg lowering + cranelift-object + link).
 ap-codegen-native = { path = "../ap-codegen-native" }
 # 04.04: the wasm build shape + the `host` verb (embedded ap-host runner).
