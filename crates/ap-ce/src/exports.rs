@@ -193,7 +193,18 @@ pub unsafe extern "C" fn PyUnicode_AsUTF8AndSize(
                 if !size_out.is_null() {
                     *size_out = s.len() as isize;
                 }
-                s.as_ptr() as *const c_char
+                // CPython ABI: the returned pointer is NUL-terminated and
+                // stays valid for the object's lifetime — extensions
+                // strlen() it (spike.c snprintf(buf,..) did; CI linux
+                // 2026-11-25 read past the payload into adjacent heap and
+                // returned garbage suffixes). Rust String::as_ptr() does
+                // NOT carry a trailing NUL, so hand out a leaked
+                // NUL-terminated copy instead (the file's ownership model
+                // never frees; per-call leak bounded by call count).
+                let mut term = s.clone().into_bytes();
+                term.push(0);
+                let leaked = term.leak().as_ptr() as *const c_char;
+                leaked
             }
             _ => {
                 let tn = type_name_of(h);
