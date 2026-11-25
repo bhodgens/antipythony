@@ -17129,14 +17129,49 @@ pub fn call_builtin_values(
                 Ok(Value::Bool(r))
             }
             ("pyint", "to_bytes") => {
-                let len = a(1)
-                    .and_then(|v| v.as_int())
-                    .and_then(|i| i.to_i64())
-                    .unwrap_or(0)
-                    .max(0) as usize;
+                // int.to_bytes(length, byteorder, *, signed=False).
+                // Limb-based via Int::to_bytes_exact — the old i64-cast path
+                // silently zero-filled bigints >= 2^63 (ppfix-int audit bug 1).
+                let len_arg = match a(1) {
+                    Some(v) => v,
+                    None => {
+                        return Err(raise(
+                            "TypeError",
+                            "'missing' object cannot be interpreted as an integer",
+                        ))
+                    }
+                };
+                let len = len_arg.as_int().and_then(|i| i.to_i64()).ok_or_else(|| {
+                    raise(
+                        "TypeError",
+                        format!(
+                            "'{}' object cannot be interpreted as an integer",
+                            len_arg.type_name()
+                        ),
+                    )
+                })?;
+                if len < 0 {
+                    return Err(raise("ValueError", "length argument must be non-negative"));
+                }
+                let len = len as usize;
                 let order = sa(2, "byteorder").unwrap_or_else(|_| "big".to_string());
-                let i64v = match &recv {
-                    Value::Int(n) => n.to_i64().unwrap_or(0),
+                let little = match order.as_str() {
+                    "big" => false,
+                    "little" => true,
+                    other => {
+                        let _ = other;
+                        return Err(raise(
+                            "ValueError",
+                            "byteorder must be either 'little' or 'big'",
+                        ));
+                    }
+                };
+                let signed = match a(3) {
+                    Some(v) => truthy(&v),
+                    None => kw(kwargs, "signed").map(truthy).unwrap_or(false),
+                };
+                let out = match &recv {
+                    Value::Int(n) => n.to_bytes_exact(len, little, signed),
                     _ => {
                         return Err(raise(
                             "SystemError",
@@ -17145,22 +17180,10 @@ pub fn call_builtin_values(
                                 fname,
                                 recv.type_name()
                             ),
-                        ));
-                    }
-                };
-                let mut out = Vec::with_capacity(len);
-                match order.as_str() {
-                    "little" => {
-                        for i in 0..len {
-                            out.push(((i64v >> (8 * i)) & 0xff) as u8);
-                        }
-                    }
-                    _ => {
-                        for i in (0..len).rev() {
-                            out.push(((i64v >> (8 * i)) & 0xff) as u8);
-                        }
+                        ))
                     }
                 }
+                .map_err(|msg| raise("OverflowError", &msg))?;
                 Ok(Value::Bytes(Gc::new(out)))
             }
             ("pyint", "bit_length") => {
@@ -19462,24 +19485,24 @@ pub fn call_builtin_values(
                         .filter_map(|v| v.as_int().and_then(|i| i.to_i64()).map(|i| i as u8))
                         .collect(),
                 };
-                let mut acc: i128 = 0;
-                match order.as_str() {
-                    "little" => {
-                        for (i2, b2) in bytes.iter().enumerate() {
-                            acc |= (*b2 as i128) << (8 * i2);
-                        }
+                // Limb-based conversion via Int::from_bytes_exact — the old
+                // i128 accumulator truncated past 16 bytes and big_or_int's
+                // Big arm re-cast to i64 (ppfix-int audit bug 2). Byteorder
+                // validation matches CPython ValueError text.
+                let little = match order.as_str() {
+                    "big" => false,
+                    "little" => true,
+                    other => {
+                        let _ = other;
+                        return Err(raise(
+                            "ValueError",
+                            "byteorder must be either 'little' or 'big'",
+                        ));
                     }
-                    _ => {
-                        for b2 in &bytes {
-                            acc = (acc << 8) | (*b2 as i128);
-                        }
-                    }
-                }
-                let n = bytes.len();
-                if signed && n > 0 && (acc >> (8 * n - 1)) & 1 == 1 {
-                    acc -= 1i128 << (8 * n);
-                }
-                Ok(big_or_int(acc))
+                };
+                Ok(Value::Int(ap_obj::Int::from_bytes_exact(
+                    &bytes, little, signed,
+                )))
             }
             ("pyint", "bit_count") => {
                 if let Value::Int(n) = &recv {
@@ -19893,14 +19916,13 @@ fn make_dict_view_of(kind: &str, payload: Vec<Value>, live: Option<Value>) -> Va
     Value::Obj(obj)
 }
 
-/// i128 -> Int (smi when it fits, Big otherwise).
+/// i128 -> Int (smi when it fits, Big otherwise). Big path is exact
+/// (ppfix-int: the old arm re-cast to i64, truncating above i64::MAX).
 fn big_or_int(v: i128) -> Value {
     if v >= i64::MIN as i128 && v <= i64::MAX as i128 {
         Value::Int(ap_obj::Int::from_i64(v as i64))
     } else {
-        // Big path via digit string parse is exact enough for the ratio
-        // surfaces the corpus exercises (f64 mantissa <= 2^53).
-        Value::Int(ap_obj::Int::from_i64(v as i64))
+        Value::Int(ap_obj::Int::from_big(num_bigint::BigInt::from(v)))
     }
 }
 

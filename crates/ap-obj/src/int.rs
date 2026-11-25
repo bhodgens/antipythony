@@ -553,6 +553,153 @@ impl Int {
         }
     }
 
+    // -- bytes conversion (int.to_bytes / int.from_bytes) ------------------
+
+    /// CPython-exact `int.to_bytes(length, byteorder, *, signed=False)`.
+    /// Limb-based O(n) extraction — no i64 truncation (audit bug #1: the old
+    /// path did `to_i64().unwrap_or(0)` and silently zero-filled bigints).
+    /// Semantics: overflow raises `Err(msg)` with the exact CPython
+    /// OverflowError message; empty output only when length == 0 and the
+    /// value is in the two's-complement representable range (CPython allows
+    /// to_bytes(0) only for 0 / -1-with-signed, else OverflowError).
+    pub fn to_bytes_exact(
+        &self,
+        length: usize,
+        little: bool,
+        signed: bool,
+    ) -> Result<Vec<u8>, String> {
+        // Two's complement range check, mirroring CPython
+        // Objects/longobject.c:_PyLong_AsByteArray overflow logic.
+        // signed && length==0: CPython accepts only value 0 (signed 0 fits;
+        // signed -1 does NOT fit in 0 bytes since -1 < -2^0).
+        if length == 0 {
+            if !self.is_zero() {
+                // CPython 3.14 ground truth: the ONLY two messages on this
+                // surface are "can't convert negative int to unsigned"
+                // (unsigned && negative) and "int too big to convert"
+                // (everything else — signed direction does NOT flip the text,
+                // -(2^63).to_bytes(7, signed) says "int too big").
+                return Err(if !signed && self.is_negative() {
+                    "can't convert negative int to unsigned".to_string()
+                } else {
+                    "int too big to convert".to_string()
+                });
+            }
+            return Ok(Vec::new());
+        }
+        let as_big = self.to_big();
+        let neg = as_big.is_negative();
+        let (mag_limbs, ok) = match signed {
+            true => {
+                // Compute the two's-complement magnitude window.
+                if neg {
+                    // -value in [1, 2^(8L-1)] => value in [-2^(8L-1), -1]
+                    let m = -as_big.clone();
+                    let lim = Big::one() << (length as u64 * 8 - 1);
+                    let fits = m <= lim;
+                    (m, fits)
+                } else {
+                    let lim = (Big::one() << (length as u64 * 8 - 1)) - Big::one();
+                    let fits = as_big <= lim;
+                    (as_big.clone(), fits)
+                }
+            }
+            false => {
+                if neg {
+                    // Unsigned: negative never fits (CPython raises
+                    // OverflowError "can't convert negative int to unsigned").
+                    (Big::zero(), false)
+                } else {
+                    let lim = (Big::one() << (length as u64 * 8)) - Big::one();
+                    let fits = as_big <= lim;
+                    (as_big.clone(), fits)
+                }
+            }
+        };
+        if !ok {
+            // CPython 3.14 ground truth: unsigned && negative ->
+            // "can't convert negative int to unsigned"; everything else
+            // (signed overflow either direction, unsigned positive
+            // overflow) -> "int too big to convert".
+            return Err(if !signed && neg {
+                "can't convert negative int to unsigned".to_string()
+            } else {
+                "int too big to convert".to_string()
+            });
+        }
+        // Emit little-endian bytes from the (non-negative) magnitude, then
+        // for signed negatives take the two's complement over the full
+        // width. magnitude bytes are exact since magnitude fits in `length`
+        // bytes.
+        let mut out = vec![0u8; length];
+        // Fill from magnitude (little-endian), truncated to `length` (safe:
+        // magnitude <= bound ensures no truncation loses bits).
+        let mag_bytes = mag_limbs.iter_u32_digits().flat_map(|d| d.to_le_bytes());
+        let is_neg_val = neg;
+        for (i, b) in mag_bytes.take(length).enumerate() {
+            out[i] = b;
+        }
+        if is_neg_val {
+            // two's complement: invert + 1 over `length` bytes
+            let mut carry = 1u16;
+            for b in out.iter_mut() {
+                let v = (!*b) as u16 + carry;
+                *b = v as u8;
+                carry = v >> 8;
+            }
+        }
+        if !little {
+            out.reverse();
+        }
+        Ok(out)
+    }
+
+    /// CPython-exact `int.from_bytes(bytes, byteorder, *, signed=False)`.
+    /// Limb-based O(n) accumulation — no i128 truncation (audit bug #2:
+    /// the old path accumulated into an i128 and truncated past 16 bytes,
+    /// and `big_or_int`'s Big arm re-cast to i64).
+    pub fn from_bytes_exact(bytes: &[u8], little: bool, signed: bool) -> Int {
+        // Strip leading (big-endian sense) padding zeros.
+        let eff: &[u8] = if little {
+            let mut s = bytes;
+            while let Some((&last, rest)) = s.split_last() {
+                if last == 0 {
+                    s = rest;
+                } else {
+                    break;
+                }
+            }
+            s
+        } else {
+            let start = bytes.iter().position(|&b| b != 0).unwrap_or(bytes.len());
+            &bytes[start..]
+        };
+        if eff.is_empty() {
+            return Int::from_i64(0);
+        }
+        // Pad to u32-limb boundary and accumulate in big-endian limb order.
+        let pad = (4 - eff.len() % 4) % 4;
+        let mut be: Vec<u8> = if little {
+            eff.iter().rev().copied().collect()
+        } else {
+            eff.to_vec()
+        };
+        let mut full = vec![0u8; pad];
+        full.append(&mut be);
+        let mut mag = Big::zero();
+        for chunk in full.chunks_exact(4) {
+            let limb = u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+            mag = (mag << 32) | Big::from(limb);
+        }
+        let val = if signed && (bytes[if little { bytes.len() - 1 } else { 0 }] & 0x80) != 0 {
+            // two's complement: value = mag - 2^(8*len)
+            mag - (Big::one() << (bytes.len() as u64 * 8))
+        } else {
+            mag
+        };
+        Int::from_big(val)
+    }
+
     // -- private helpers ---------------------------------------------------
 
     fn to_big(&self) -> Big {
