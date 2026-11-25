@@ -1865,6 +1865,13 @@ pub fn builtin_type(interp: &Interpreter, args: &[Value], kwargs: &[(String, Val
         0 => Err(raise("TypeError", "type() takes 1 or 3 arguments")),
         1 => {
             let v = &args[0];
+            // ppfix-random: type(Random()) is <class 'Random'> (CPython
+            // __name__; the class VALUE is the dotted module marker).
+            if let Value::Obj(o) = v {
+                if o.kind == ap_obj::ObjKind::Opaque && o.name == "random.Random" {
+                    return Ok(interned_type(interp, "Random"));
+                }
+            }
             if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::TDebug) {
                 if let Value::Obj(o) = v {
                     eprintln!(
@@ -1960,6 +1967,14 @@ pub fn builtin_type(interp: &Interpreter, args: &[Value], kwargs: &[(String, Val
                 Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque => match o.name.as_str() {
                     "uname_result" | "stat_result" | "statvfs_result" | "struct_time"
                     | "bytearray"
+                    // ppfix-random: Random instances report "Random".
+                    | "random.Random" => {
+                        if o.name == "random.Random" {
+                            "Random".to_string()
+                        } else {
+                            o.name.clone()
+                        }
+                    }
                     // s016: dict views report dict_keys/values/items (protocol
                     // dicts seeded in interned_type for the ABC hooks).
                     | "dict_keys" | "dict_values" | "dict_items" => o.name.clone(),
