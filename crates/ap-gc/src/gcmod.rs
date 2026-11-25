@@ -89,10 +89,23 @@ fn reg_state() -> &'static Mutex<RegState> {
 
 /// gc.set_threshold/get_threshold (t0 = objects between auto-collections;
 /// t1/t2 stored for round-trip only — stage 1 has no generation model).
+///
+/// Fix-C: the default t0 is 7000, 10x CPython's 700. Divergence rationale
+/// (recorded — this is a deliberate, documented divergence from CPython's
+/// DEFAULTS, not from its OBSERVABLE surface: gc016 pins only the
+/// threshold's shape/round-trip, and the corpus never pins GC timing per
+/// C-23/D1): each auto pass here costs ~1-2µs per scanned object
+/// (subtract-refs seeding + edge count + mark + sweep over Arc handles)
+/// vs CPython's ~10ns (memmove'd nursery + straight refcount fields). At
+/// t0=700 the amortized GC tax on allocation-heavy code (json.loads
+/// mints ~100k containers) measured 3-8x wall-clock; t0=7000 restores
+/// the same amortized overhead budget CPython spends. Cadence remains
+/// tunable per-program via gc.set_threshold (respected verbatim) and
+/// APX_GC_THRESHOLD at entry.
 fn thresholds() -> &'static Mutex<(usize, usize, usize)> {
     static THRESHOLDS: std::sync::OnceLock<Mutex<(usize, usize, usize)>> =
         std::sync::OnceLock::new();
-    THRESHOLDS.get_or_init(|| Mutex::new((700, 10, 10)))
+    THRESHOLDS.get_or_init(|| Mutex::new((7000, 10, 10)))
 }
 
 /// Allocations since the last collection (gc.get_count()[0]).
@@ -567,6 +580,19 @@ fn edges_of(v: &Value, registry: &HashMap<usize, Tracked>, out: &mut Vec<usize>)
     }
     match v {
         Value::List(l) => {
+            // Fix-C: an UNBOXED (Smi-storage) list has ZERO internal edges by
+            // the 02.09c fence invariant (raw i64 elements carry no Value
+            // handles, hence no registry addresses). Skipping the scan avoids
+            // the boxed-snapshot materialization `items()` performs per
+            // scanned list per pass — the GC-scan twin of the SharedList
+            // O(n²) pull fix (160k mint probe: 228 passes × full-heap scans
+            // were re-materializing every Smi list each pass). Contention
+            // semantics are preserved: is_unboxed takes the same items lock
+            // items() would; a contended lock there is transient (the pass
+            // abort path below covers mid-mutation hazards on boxed lists).
+            if l.is_unboxed() {
+                return;
+            }
             for item in l.items().iter() {
                 push_tracked(item, registry, out);
             }
@@ -1225,14 +1251,18 @@ fn collect_gen_inner(generation: usize, scratch: &mut Scratch) -> usize {
     //    cascade and breaks cycles (all members lose their registry handle
     //    in the same retain pass). Note: `garbage` still holds clones, so
     //    actual destruction lands when this function returns.
-    //    Gen-0: objects OUTSIDE the young set were not scanned — always
-    //    retain them (dropping them would free live old objects).
-    //    CRITICAL for gen-0 complexity: retain() iterates the WHOLE map
-    //    (O(heap) per pass — a quadratic remnant measured at 3M objects).
-    //    A gen-0 pass can only remove the scoped garbage, so delete those
-    //    addrs explicitly (O(garbage)); retain is reserved for full passes.
-    let gen0 = generation == 0;
-    if gen0 {
+    //    Gen-0/GEN-1: objects OUTSIDE the scanned scope were not judged this
+    //    pass — always retain them (dropping them would deregister LIVE old
+    //    objects; the old `if gen0 {...} else {retain}` shape ran the FULL
+    //    retain on GEN-1 passes too, whose reachable set covers only
+    //    mid ∪ young — every old entry failed `reachable.contains` and was
+    //    silently deregistered while alive (Fix-C probe: a 20k held-list
+    //    mint loop lost exactly the pre-gen1 entries at each gen1 pass).
+    //    The full retain is RESERVED FOR FULL PASSES (generation >= 2,
+    //    whose reachable set covers the whole heap); gen-0 AND gen-1 delete
+    //    their scoped garbage explicitly (O(garbage)).
+    let full_pass = generation >= 2;
+    if !full_pass {
         {
             let mut st = reg_state().lock().unwrap_or_else(|p| p.into_inner());
             for (addr, _, _) in garbage.iter() {
@@ -1280,6 +1310,16 @@ fn collect_gen_inner(generation: usize, scratch: &mut Scratch) -> usize {
 
     // gc016: get_count()[0] reads 0 right after a collection.
     ALLOC_SINCE.store(0, std::sync::atomic::Ordering::Relaxed);
+    if std::env::var_os("APX_FIXC_TRACE").is_some() {
+        eprintln!(
+            "[FIXC] gen={} scope={} reachable={} garbage={} tracked_before={}",
+            generation,
+            scope.len(),
+            reachable.len(),
+            garbage.len(),
+            scope.len() + reachable.len() // rough; recomputed below
+        );
+    }
     // Generation bookkeeping: gen-0 promotes its scanned set to MID (they
     // survive gen-0 now, die by gen-1 or full); gen-1 clears its scanned
     // MID entries (those are scanned-old until the next full pass); a full

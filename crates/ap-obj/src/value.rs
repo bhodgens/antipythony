@@ -675,6 +675,22 @@ impl PyList {
         ItemsRef::new(self.items.lock().unwrap_or_else(|p| p.into_inner()))
     }
 
+    /// Fix-C: does this list hold UNBOXED (raw-i64 Smi) storage?
+    ///
+    /// Under the 02.09c fence invariant an unboxed list holds NO `Value`
+    /// refs — its internal-element edges are zero by construction (Smi
+    /// elements have no registry address). The GC's edge scan uses this to
+    /// skip the boxed-snapshot materialization `items()` would perform per
+    /// scanned list per pass (the scan-time twin of the SharedList::next
+    /// O(n²) fix: same ItemsRef full-snapshot cost, paid at every collection
+    /// instead of every loop step).
+    pub fn is_unboxed(&self) -> bool {
+        matches!(
+            &*self.items.lock().unwrap_or_else(|p| p.into_inner()),
+            ListStorage::Smi(_)
+        )
+    }
+
     /// CPython's over-allocation formula (listobject.c list_resize):
     /// `new_allocated = (newsize + newsize>>3 + 6) & !3` — replicated for
     /// capacity discipline; `Vec` does the actual (re)allocation.
