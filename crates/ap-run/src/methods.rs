@@ -6,6 +6,7 @@
 use crate::exc_hier::ExceptionValue;
 use crate::frame::Interpreter;
 use crate::Flow;
+
 use ap_obj::int::{Gc, Int};
 use ap_obj::value::{PyList, PyString, Tuple, Value};
 
@@ -1935,8 +1936,17 @@ pub fn call_method(
             Some(Ok(Value::None))
         }
         (Value::List(l), "sort") => {
-            // v0: homogeneous int/str sort; other item types left as-is
-            // (full __lt__ dispatch arrives with the cmp pass).
+            // v0: homogeneous int/str sort with RAW i64/str comparators
+            // (CPython's unsafe_long_compare/unsafe_string_compare
+            // strategy). ppfix-sort: a MIXED list now raises the
+            // CPython-exact TypeError from the generic arm (the old v0
+            // arm silently left mixed lists unsorted); non-homogeneous
+            // orderable families (float, and int/float/bool mixes) sort
+            // through the same generic path as list.sort(key=...) in
+            // builtins_modules. `sort` is on builtin_method_routed, so
+            // kwargs reach this dispatch (ppfix-sort fixes the old
+            // silent no-kwargs arm): key=None = no key, reverse= honored,
+            // unknown kwargs raise CPython's exact text.
             let all_int = l
                 .items()
                 .iter()
@@ -1955,8 +1965,19 @@ pub fn call_method(
                 for it in items {
                     l.append(it);
                 }
+                return Some(Ok(Value::None));
             }
-            Some(Ok(Value::None))
+            // ppfix-sort: a MIXED list is NOT routed by this v0 arm —
+            // returning None lets the caller fall through to the dotted
+            // route (interp.rs BoundMethod: name.contains('.') is false
+            // for "sort", so the attr-get path's BoundMethod has no func
+            // and the call reaches call_named_kw → the pylist "sort"
+            // generic arm in builtins_modules with the REAL kwargs:
+            // key=None = no-key, unknown kwargs raise CPython's exact
+            // text, comparator TypeErrors propagate). This kills both
+            // the silent no-op (bug 2) and the NoneType-not-callable
+            // crash (bug 3) for l.sort().
+            None
         }
         (Value::List(l), "insert") => {
             if args.len() >= 2 {
