@@ -23,7 +23,7 @@ ap-run-eval 0.1.0
 Help (`ap-run-eval --help`):
 
 ```text
-Parse -> lower -> tier-0 execute a single .py file (T-05/T-06 testability seam)
+Parse -> lower -> execute a single .py file (T-05/T-06 testability seam)
 
 Usage: ap-run-eval [OPTIONS] <FILE>
 
@@ -31,7 +31,7 @@ Arguments:
   <FILE>  Python source file to execute
 
 Options:
-      --tier <MODE>  Execution tier mode; this bin is the tier-0 executor, so only `0` is honored
+      --tier <MODE>  Execution tier mode: `0` (tree-walker) or `adaptive` (02.05a JIT seam)
   -h, --help         Print help
   -V, --version      Print version
 ```
@@ -65,103 +65,23 @@ Options:
 
 Binary path: `target/debug/ap-ir-dump`
 
-Version (`ap-ir-dump --version`):
-
-```text
-ap-ir-dump 0.1.0
-```
-
-Help (`ap-ir-dump --help`):
-
-```text
-Parse + lower a Python file and dump its IR (T-02/T-03/T-04 seam)
-
-Usage: ap-ir-dump [OPTIONS] <FILE>
-
-Arguments:
-  <FILE>  Python source file to dump
-
-Options:
-      --tree     T-02 tree form (one node-kind line per IR node). Default
-      --golden   Golden formatter (dump_module) for checked-in *.ir byte-equality
-      --verify   Verify mode: diagnostics to stderr, exit 3 on semantic refusals
-  -h, --help     Print help
-  -V, --version  Print version
-```
+NOT BUILT at generation time: run `cargo build -p ap-parse --bins` and regenerate. This section is a placeholder; the CI drift gate regenerates against the current tree.
 
 ## `ap-verify-dump` (crate `ap-parse`)
 
 Binary path: `target/debug/ap-verify-dump`
 
-Version (`ap-verify-dump --version`):
-
-```text
-ap-verify-dump 0.1.0
-```
-
-Help (`ap-verify-dump --help`):
-
-```text
-Parse + lower + verify a Python file; one C-10 diagnostic per stdout line
-
-Usage: ap-verify-dump <FILE>
-
-Arguments:
-  <FILE>  Python source file to verify
-
-Options:
-  -h, --help     Print help
-  -V, --version  Print version
-```
+NOT BUILT at generation time: run `cargo build -p ap-parse --bins` and regenerate. This section is a placeholder; the CI drift gate regenerates against the current tree.
 
 ## `ap-parse-check` (crate `ap-parse`)
 
 Binary path: `target/debug/ap-parse-check`
 
-Version (`ap-parse-check --version`):
-
-```text
-ap-parse-check 0.1.0
-```
-
-Help (`ap-parse-check --help`):
-
-```text
-Parse a Python file and report the first parse diagnostic (T-01 seam)
-
-Usage: ap-parse-check <FILE>
-
-Arguments:
-  <FILE>  Python source file to parse-check
-
-Options:
-  -h, --help     Print help
-  -V, --version  Print version
-```
+NOT BUILT at generation time: run `cargo build -p ap-parse --bins` and regenerate. This section is a placeholder; the CI drift gate regenerates against the current tree.
 
 ## `ap-conform` (crate `ap-conform`)
 
 Binary path: `target/debug/ap-conform`
 
-Version (`ap-conform --version`):
-
-```text
-ap-conform 0.1.0
-```
-
-Help (`ap-conform --help`):
-
-```text
-Differential conformance runner: compare an implementation against CPython
-
-Usage: ap-conform <COMMAND>
-
-Commands:
-  run   Run the corpus against an implementation
-  help  Print this message or the help of the given subcommand(s)
-
-Options:
-  -h, --help     Print help
-  -V, --version  Print version
-```
+NOT BUILT at generation time: run `cargo build -p ap-conform --bins` and regenerate. This section is a placeholder; the CI drift gate regenerates against the current tree.
 
