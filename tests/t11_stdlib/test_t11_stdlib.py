@@ -110,7 +110,7 @@ def _impl_cmd(mode):
     """
     if os.environ.get("APX_IMPL"):
         return shlex.split(os.environ["APX_IMPL"])
-    runner = REPO_ROOT / "target" / "debug" / "antipythony"
+    runner = REPO_ROOT / "target-0304c" / "debug" / "antipythony"  # .cargo/config.toml redirect (CI ENOENT fix 2026-11-26)
     if not runner.is_file():
         runner = Path(shutil.which("antipythony") or "")
     if runner.is_file():
@@ -403,7 +403,7 @@ def test_binary_mode_matches_expected(case):
     # triple (C-31: AoT binary invisible vs interpreter modes). Binary seam
     # per leaf 04 build verb as exercised by T-09; no ap-conform seam for
     # built artifacts is documented, so this asserts directly on the triple.
-    runner = REPO_ROOT / "target" / "debug" / "antipythony"
+    runner = REPO_ROOT / "target-0304c" / "debug" / "antipythony"  # .cargo/config.toml redirect (CI ENOENT fix 2026-11-26)
     if not runner.is_file():
         runner = shutil.which("antipythony")
     if not runner:
@@ -460,7 +460,7 @@ def test_out_module_build_fails_loud_with_token(mod):
     # APX-NOV1 for scope-excluded — plus the module name and file:line:col.
     cls, _cite = scope_table.OUT_MODULES[mod]
     token = "APX-CEXT" if cls == "cext" else "APX-NOV1"
-    runner = REPO_ROOT / "target" / "debug" / "antipythony"
+    runner = REPO_ROOT / "target-0304c" / "debug" / "antipythony"  # .cargo/config.toml redirect (CI ENOENT fix 2026-11-26)
     if not runner.is_file():
         runner = shutil.which("antipythony")
     if not runner:
@@ -527,7 +527,7 @@ def test_partial_row_enforcement_on_antipythony(row):
         want = None  # refusal-only: build must fail with the token
     if want is None:
         token = "APX-NOV1"
-        runner = REPO_ROOT / "target" / "debug" / "antipythony"
+        runner = REPO_ROOT / "target-0304c" / "debug" / "antipythony"  # .cargo/config.toml redirect (CI ENOENT fix 2026-11-26)
         if not runner.is_file():
             pytest.skip("no antipythony build seam")
         probe = Path("/tmp") / f"apx_t11_part_{row['mod']}_{row['name']}.py"

@@ -68,6 +68,23 @@ def _mask_root(data: bytes) -> bytes:
     """
     return re.sub(rb"/[^\s\"',;()]*?(tests/corpus/[^\s\"',;()]*)",
                   rb"<ROOT>/\1", data)
+
+
+def _mask_ref_stdlib(data: bytes) -> bytes:
+    """Normalize the reference interpreter's own stdlib paths in pins.
+
+    T109's thread-excepthook traceback embeds the reference's threading.py
+    frames with absolute install paths (/opt/homebrew/Cellar/... on the
+    pinned dev box, /opt/hostedtoolcache/... on CI linux). Same class as
+    _mask_root: host-conditional bytes in a darwin-authored pin; mask the
+    prefix up to lib/python3.14/ and keep line numbers + message (issue #17;
+    CI run 45812388868/45875642580, 2026-11-26). Applied to reference
+    self-checks only; the differential gate stays unmasked (C-33).
+    """
+    return re.sub(rb"/[^\s\"',;()]*?lib/python3\.14/([^\s\"',;()]*)",
+                  rb"<REF>/lib/python3.14/\1", data)
+
+
 CORPUS_DIR = REPO_ROOT / "tests" / "corpus" / "threading"
 EXPECTED_DIR = CORPUS_DIR / "expected"
 # Reference discovery: unified env+PATH ladder (robustness-ci 01.01).
@@ -167,8 +184,8 @@ def test_expected_bytes_stable(case):
     assert proc.stdout == exp_out, (
         f"{stem}: stdout drift\n got={proc.stdout!r}\nwant={exp_out!r}"
     )
-    assert _mask_root(proc.stderr) == _mask_root(exp_err), (
-        f"{stem}: stderr drift\n got={_mask_root(proc.stderr)!r}\nwant={_mask_root(exp_err)!r}"
+    assert _mask_ref_stdlib(_mask_root(proc.stderr)) == _mask_ref_stdlib(_mask_root(exp_err)), (
+        f"{stem}: stderr drift\n got={_mask_ref_stdlib(_mask_root(proc.stderr))!r}\nwant={_mask_ref_stdlib(_mask_root(exp_err))!r}"
     )
     assert proc.returncode == exp_rc, (
         f"{stem}: exit drift got {proc.returncode} want {exp_rc}"

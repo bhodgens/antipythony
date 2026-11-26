@@ -13,6 +13,8 @@ Pins (differential vs live CPython 3.14 where noted):
 import subprocess
 import shutil
 import os.path as _osp
+import sys
+from pathlib import Path
 import pytest
 
 
@@ -49,8 +51,12 @@ def _cpython(src: str, timeout: int = 60):
     p = os.path.join(d, "probe.py")
     with open(p, "w") as f:
         f.write(src)
+    # Reference interpreter via the shared seam (hardcoded /opt/homebrew path
+    # ENOENT'd on linux CI — run 45875642580, 2026-11-26).
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+    from _ref_python import reference_or_skip
     return subprocess.run(
-        ["/opt/homebrew/bin/python3.14", p], capture_output=True, text=True, timeout=timeout
+        [reference_or_skip(), p], capture_output=True, text=True, timeout=timeout
     )
 
 

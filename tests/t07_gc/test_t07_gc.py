@@ -335,13 +335,16 @@ def test_10k_projection_reference_calibration():
     # artifact. This test needs no implementation — it lives in Half 1's
     # spirit but runs the probe, so it sits here without the xfail mark.
     proc = subprocess.run(
-        ["/usr/bin/time", "-l", reference_or_skip(), str(PROBES / "heap_probe_10k.py")],
+        # BSD time (darwin): -l prints 'maximum resident set size';
+        # GNU time (linux): -v prints 'Maximum resident set size'.
+        ["/usr/bin/time", "-l" if sys.platform == "darwin" else "-v",
+         reference_or_skip(), str(PROBES / "heap_probe_10k.py")],
         capture_output=True, env=_scrubbed_env(), cwd=REPO_ROOT, timeout=600,
     )
     assert proc.returncode == 0
     assert "fired: 10000" in proc.stdout.decode()
     assert "complete: True" in proc.stdout.decode()
-    m = re.search(r"maximum resident set size:\s*([0-9]+)|([0-9]+)\s+peak memory footprint", proc.stderr.decode(errors="replace"))
+    m = re.search(r"maximum resident set size:\s*([0-9]+)|([0-9]+)\s+peak memory footprint", proc.stderr.decode(errors="replace"), re.IGNORECASE)
     rss = int(m.group(1) or m.group(2)) if m else None
     assert rss is not None, f"no RSS line from /usr/bin/time -l:\n{proc.stderr.decode(errors='replace')}"
     assert rss < 1024 * 1024 * 1024, f"reference itself exceeds the bound: RSS {rss} B"
@@ -365,7 +368,7 @@ def test_10k_iteration_bounded_heap():
     assert proc.returncode == 0, f"impl heap probe run failed: {proc.stderr.decode(errors='replace')[-2000:]}"
     assert "fired: 10000" in proc.stdout.decode(), "C-21 eventually-run guarantee violated"
     assert "complete: True" in proc.stdout.decode(), "double/lost finalization detected"
-    m = re.search(r"maximum resident set size:\s*([0-9]+)|([0-9]+)\s+peak memory footprint", proc.stderr.decode(errors="replace"))
+    m = re.search(r"maximum resident set size:\s*([0-9]+)|([0-9]+)\s+peak memory footprint", proc.stderr.decode(errors="replace"), re.IGNORECASE)
     assert m, "no RSS line from /usr/bin/time -l"
     rss_bytes = int(m.group(1) or m.group(2))
     assert rss_bytes < 1024 * 1024 * 1024, f"heap NOT bounded across 10k iterations: RSS {rss_bytes} B"
