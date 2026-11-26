@@ -252,8 +252,11 @@ jobs:
           # does not export the redirect, so the seam env vars must name it
           # (target/debug here ENOENT'd on the first-ever pytest CI leg —
           # 163 ENOENT-derived failures, run 45812388868, 2026-11-26).
-          APX_IMPL: "target-0304c/debug/ap-run-eval"
-          APX_CLI: "target-0304c/debug/antipythony run"
+          # ABSOLUTE paths: several suites spawn these with cwd=scratch dirs
+          # (t14 _run_cli cwd=home/proj), so a relative seam path ENOENTs
+          # (CI 45895467048: t14 new/build ENOENT with cwd-relative path).
+          APX_IMPL: "${{ github.workspace }}/target-0304c/debug/ap-run-eval"
+          APX_CLI: "${{ github.workspace }}/target-0304c/debug/antipythony run"
         run: |
           set -o pipefail
           python -m pytest tests/ -q --no-header -rX \
