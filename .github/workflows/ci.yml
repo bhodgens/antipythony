@@ -140,8 +140,15 @@ jobs:
         run: cargo doc --no-deps -p ap-obj -p ap-ir -p ap-parse -p ap-conform
       - name: cli-docs drift gate (robustness-ci 05.04)
         # docs/testability-clis.md must equal the live --help of the
-        # built bins; drift exits 1.
-        run: cargo run -p xtask -- cli-docs --check
+        # built bins; drift exits 1. All six documented bins must exist
+        # BEFORE the check — cargo build --workspace (step above) builds
+        # ap-cli/ap-conform bins but NOT the three ap-parse bins
+        # (ap-ir-dump/ap-verify-dump/ap-parse-check), and a missing bin
+        # renders a "NOT BUILT" placeholder section that then reads as
+        # committed-doc drift (CI 45773257321 false red, 2026-11-26).
+        run: |
+          cargo build -p ap-parse --bins
+          cargo run -p xtask -- cli-docs --check
 
   deny:
     name: cargo deny (master.md:45; finding #2)
