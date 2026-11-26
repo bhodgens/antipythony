@@ -71,6 +71,14 @@ deviated_sha256 = "b826e312be1c21c280d79f181f4a414d1dfcf853e351dc6d23be69d1f5a68
 note = "antipythony shim: native bridge module (class hierarchy + from_native dict→AST converter consumed by compile(PyCF_ONLY_AST)). W114: adds AST._field_types (ASDL list-typed fields) and per-class _optional_fields (ASDL `?` fields) so ast.dump matches CPython omit semantics; no CPython Lib/_ast.py counterpart to hash."
 
 [[file]]
+path = "_ast_unparse.py"
+upstream_path = "_ast_unparse.py"
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "d13f71f55587db8acdd97f1c08f71bb21eb18ee5f0b4da24676a756d5135b5fa"
+note = "s023 ast.unparse surface (NEXT-0208f/02resid-b): unparse output byte-exact vs CPython 3.14.7 with our AST shapes; drift documented, byte-exactness gate lives in the stdlib slice"
+
+[[file]]
 path = "_collections_abc.py"
 upstream_path = "_collections_abc.py"
 status = "deviated"
@@ -779,8 +787,8 @@ path = "bz2.py"
 upstream_path = "bz2.py"
 status = "deviated"
 upstream_sha256 = "368b9ee55f0b6dbfc81b15e1a17c51cccddb009389eae8e9a7acf2402ca4109a"
-deviated_sha256 = "dd9b55431257fa30ec4785190f8e62c21ca0a95972e9ea0ee05e09a307d5099b"
-note = "antipythony copy of CPython bz2 rewritten as a minimal stdlib-compatible surface (65 lines vs 352): BZ2 for feedexport postprocessing (test data); imports always succeed, ops raise when the bzip2 CLI is unavailable."
+deviated_sha256 = "e3c9a03497f8ee8c7bf8f058242c6a78d7b1917454533a2b43e4064b5d55452e"
+note = "antipythony copy of CPython bz2 rewritten as a fallback face (pp2-bz2): the native module registry overrides compress/decompress with the pure-Rust bzip2 crate (CPython-byte-exact); this file keeps the excluded streaming objects (BZ2File/BZ2Compressor/BZ2Decompressor) raising lazily."
 
 [[file]]
 path = "calendar.py"
@@ -3075,8 +3083,8 @@ path = "lzma.py"
 upstream_path = "lzma.py"
 status = "deviated"
 upstream_sha256 = "b01a78a04c6a9ba6c645758cace78ed53a53871ea3ff88744e23f6263613d507"
-deviated_sha256 = "eb9b8a8a99914dc780c40ec8def46da467908af34880cba80411ea592bf04b1a"
-note = "antipythony copy of CPython lzma rewritten as a minimal stdlib-compatible surface (69 lines vs 364): LZMA/xz for feedexport postprocessing (test data); imports succeed, compression ops raise (same contract as the bz2 shim)."
+deviated_sha256 = "e69862ad241f6db97ebca90a85c1d9a0c4f3771251bec60167862cb7bfe42c58"
+note = "antipythony copy of CPython lzma rewritten as a fallback face (pp2-bz2): the native module registry overrides compress/decompress (FORMAT_XZ/ALONE/RAW) with pure-Rust lzma-rs (decode-exact vs CPython); this file keeps the excluded streaming objects raising lazily."
 
 [[file]]
 path = "mimetypes.py"
@@ -3213,6 +3221,14 @@ status = "pristine"
 upstream_sha256 = "8a5bc2b6674e76efe0f507b873a41d746beba466a191153ed18a7580ef6e08e1"
 deviated_sha256 = "8a5bc2b6674e76efe0f507b873a41d746beba466a191153ed18a7580ef6e08e1"
 note = ""
+
+[[file]]
+path = "pprint.py"
+upstream_path = "pprint.py"
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "a93bb1fca86ecba27b159ecea749754ae42ff4ec4f474199928d6c8279438d4c"
+note = "02.08 audit surface gap: pprint repr paths needed local fixes to pass the stdlib slice (NEXT-0208f); formatting contract unchanged"
 
 [[file]]
 path = "pydoc.py"
@@ -3501,6 +3517,14 @@ status = "pristine"
 upstream_sha256 = "61d4270311099c8a0c0b2e45fb363fd1c4e347a720bcc25f682b63dc28c34234"
 deviated_sha256 = "61d4270311099c8a0c0b2e45fb363fd1c4e347a720bcc25f682b63dc28c34234"
 note = ""
+
+[[file]]
+path = "tokenize.py"
+upstream_path = "tokenize.py"
+status = "deviated"
+upstream_sha256 = ""
+deviated_sha256 = "c462e157d99357c47b04fcfc539bb1e0af663803b04e74e0f435d67a254d38a1"
+note = "inspect.getsource chain (T2 pytest, NEXT-T2 waves): tokenize needed local fixes for our reader shapes; upstream bytes do not serve the vendored runtime"
 
 [[file]]
 path = "traceback.py"
@@ -4037,31 +4061,3 @@ status = "deviated"
 upstream_sha256 = ""
 deviated_sha256 = "235ac04794e6237d9b32aba5571776867adeda06dffe419d794374b91faa2e91"
 note = "antipythony shim with no CPython counterpart (zope.interface is third-party): minimal InterfaceClass/SpecificationBase token surface backing the advisory-only zope shim (4b228b8)."
-
-# FINISHER-SWAVE additions (2026-11-24): s016c/s016 family + s023 ast.unparse
-# work deviated these files from pristine 3.14.7 bytes; each fix has a named
-# session record under plans/.
-
-[[file]]
-path = "_ast_unparse.py"
-upstream_path = "_ast_unparse.py"
-status = "deviated"
-upstream_sha256 = ""
-deviated_sha256 = "d13f71f55587db8acdd97f1c08f71bb21eb18ee5f0b4da24676a756d5135b5fa"
-note = "s023 ast.unparse surface (NEXT-0208f/02resid-b): unparse output byte-exact vs CPython 3.14.7 with our AST shapes; drift documented, byte-exactness gate lives in the stdlib slice"
-
-[[file]]
-path = "pprint.py"
-upstream_path = "pprint.py"
-status = "deviated"
-upstream_sha256 = ""
-deviated_sha256 = "a93bb1fca86ecba27b159ecea749754ae42ff4ec4f474199928d6c8279438d4c"
-note = "02.08 audit surface gap: pprint repr paths needed local fixes to pass the stdlib slice (NEXT-0208f); formatting contract unchanged"
-
-[[file]]
-path = "tokenize.py"
-upstream_path = "tokenize.py"
-status = "deviated"
-upstream_sha256 = ""
-deviated_sha256 = "c462e157d99357c47b04fcfc539bb1e0af663803b04e74e0f435d67a254d38a1"
-note = "inspect.getsource chain (T2 pytest, NEXT-T2 waves): tokenize needed local fixes for our reader shapes; upstream bytes do not serve the vendored runtime"

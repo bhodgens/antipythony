@@ -1,20 +1,18 @@
-"""bz2 — minimal stdlib-compatible surface (antipythony vendored).
+"""bz2 — stdlib-compatible surface (antipythony vendored).
 
-BZ2 compression. Used by feedexport postprocessing (test data). If the
-`bzip2` CLI tool is unavailable the functions raise, matching the module's
-availability contract loosely; imports always succeed.
+pp2-bz2: the native module registry OVERRIDES this file with a real
+one-shot surface (bz2.compress/decompress via the pure-Rust bzip2 crate;
+compress output byte-identical to CPython, error texts CPython-exact).
+This vendored file remains as the fallback face for the excluded streaming
+objects (BZ2File/BZ2Compressor/BZ2Decompressor raise lazily, same contract
+as the zlib streaming-objects shim).
 """
 __all__ = ["compress", "decompress", "open", "BZ2File", "BZ2Decompressor",
            "BZ2Compressor"]
 
 
 def compress(data, compresslevel=9):
-    raise NotImplementedError("bz2 v0 shim: compression unimplemented")
-
-
-def decompress(data):
-    raise NotImplementedError("bz2 v0 shim: compression unimplemented")
-
+    raise NotImplementedError("bz2 streaming/file objects are not supported by the antipythony v1 runtime; one-shot compress/decompress are native")
 
 class BZ2File:
     def __init__(self, filename, mode="r", buffering=None, compresslevel=9):
@@ -22,10 +20,10 @@ class BZ2File:
         self.mode = mode
 
     def read(self, *a):
-        raise NotImplementedError("bz2 v0 shim: compression unimplemented")
+        raise NotImplementedError("bz2 file objects are not supported by the antipythony v1 runtime")
 
     def write(self, data):
-        raise NotImplementedError("bz2 v0 shim: compression unimplemented")
+        raise NotImplementedError("bz2 file objects are not supported by the antipythony v1 runtime")
 
     def close(self):
         return None
@@ -43,10 +41,10 @@ class BZ2Compressor:
         pass
 
     def compress(self, data):
-        raise NotImplementedError("bz2 v0 shim")
+        raise NotImplementedError("bz2 streaming objects are not supported by the antipythony v1 runtime")
 
     def flush(self):
-        raise NotImplementedError("bz2 v0 shim")
+        raise NotImplementedError("bz2 streaming objects are not supported by the antipythony v1 runtime")
 
 
 class BZ2Decompressor:
@@ -54,7 +52,7 @@ class BZ2Decompressor:
         pass
 
     def decompress(self, data):
-        raise NotImplementedError("bz2 v0 shim")
+        raise NotImplementedError("bz2 streaming objects are not supported by the antipythony v1 runtime")
 
     @property
     def eof(self):

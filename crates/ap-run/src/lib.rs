@@ -19,6 +19,8 @@ pub mod aot_runtime;
 pub mod ast_bridge;
 pub mod builtins;
 pub mod builtins_modules;
+// pp2-bz2: real bz2/lzma one-shot surfaces (replaces the raise-shims).
+pub mod bz2_lzma;
 pub mod ce_bridge;
 pub mod ce_objproto;
 pub mod cell_slot;
