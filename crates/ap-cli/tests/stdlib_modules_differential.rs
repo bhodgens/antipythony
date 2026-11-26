@@ -982,6 +982,52 @@ os.close(pr)
 os.close(pw)
 os.close(pr2)
 os.close(pw2)
+# Issue #16: the real select.epoll object on linux (absent on darwin —
+# the prints above already cover hasattr False there). Gated inside the
+# probe so BOTH platforms run one byte-exact script.
+if hasattr(select, "epoll"):
+    ep = select.epoll()
+    er, ew = os.pipe()
+    ep.register(er, select.EPOLLIN)
+    print(ep.poll(0))
+    # double register -> FileExistsError [Errno 17]
+    print(exc(ep.register, er, select.EPOLLIN))
+    # modify unknown fd -> FileNotFoundError [Errno 2]
+    print(exc(ep.modify, 99999, select.EPOLLIN))
+    # unregister unknown fd -> FileNotFoundError [Errno 2]
+    print(exc(ep.unregister, 99999))
+    # roundtrip: data wakes poll with (fd, EPOLLIN)
+    os.write(ew, b"x")
+    ev = ep.poll(1.0)
+    print(ev == [(er, select.EPOLLIN)])
+    ep.unregister(er)
+    print(ep.poll(0))
+    # fileno() is a real control fd; close is idempotent; ops after
+    # close raise ValueError
+    print(type(ep.fileno()) is int, ep.closed)
+    ep.close()
+    print(ep.closed)
+    ep.close()
+    print(exc(ep.poll, 0.1))
+    try:
+        ep.fileno()
+    except ValueError as e:
+        print("VE:", e)
+    os.close(er)
+    os.close(ew)
+    # context manager form + register() default mask (EPOLLIN|EPOLLPRI|EPOLLOUT)
+    r2, w2 = os.pipe()
+    with select.epoll() as ep2:
+        ep2.register(w2)
+        got = ep2.poll(1.0)
+        print(got == [(w2, select.EPOLLIN | select.EPOLLOUT | select.EPOLLPRI)])
+        # maxevents caps the returned list (w2 stays writable, level-trig)
+        print(len(ep2.poll(1.0, maxevents=1)) == 1)
+        # modify() switches the mask; unregister then poll is empty
+        ep2.modify(w2, select.EPOLLIN)
+        print(ep2.poll(0))
+    os.close(r2)
+    os.close(w2)
 "#,
     );
 }
