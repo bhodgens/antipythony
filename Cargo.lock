@@ -110,6 +110,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ap-bytecode"
+version = "0.1.0"
+dependencies = [
+ "ap-ir",
+ "ap-obj",
+]
+
+[[package]]
 name = "ap-ce"
 version = "0.1.0"
 dependencies = [

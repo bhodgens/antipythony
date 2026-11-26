@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/ap-parse",
     "crates/ap-ir",
+    "crates/ap-bytecode",
     "crates/ap-obj",
     "crates/ap-ce",
     "crates/ap-gc",

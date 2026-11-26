@@ -1,0 +1,16 @@
+[package]
+name = "ap-bytecode"
+description = "flat bytecode: Instr set, ap-ir->bytecode lowerer, const pool, line table, site table"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+ap-ir = { path = "../ap-ir" }
+ap-obj = { path = "../ap-obj" }
+
+[lints]
+workspace = true  # robustness-ci 02.01 - see root Cargo.toml [workspace.lints]
