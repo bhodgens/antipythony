@@ -8,7 +8,7 @@
 use crate::code::CodeObject;
 use crate::instr::{BinKind, CompareOp, Instr, UnaryKind, OPCODE_NAMES};
 use crate::linetable::LineTable;
-use crate::lower::{lower_fn, lowers_cleanly, LowerOutcome};
+use crate::lower::{lower_fn, lowers_cleanly, LowerOutcome, Unsupported};
 use crate::pool::{Const, ConstPool};
 use crate::sites::{SiteKind, SiteTable};
 use ap_ir::expr::{CompClause, DictItem, LambdaSig};
@@ -314,16 +314,27 @@ fn call_positional() {
 
 #[test]
 fn call_with_kw_star_args_falls_back() {
-    for args in [
-        vec![Arg::Kw("x".into(), lit(1))],
-        vec![Arg::Star(lit(1))],
-        vec![Arg::KwStar(lit(1))],
-    ] {
+    // Leaf fp-calls: Kw lowers (CallFunctionKw); Star/KwStar call-site
+    // unpack stays a fallback.
+    {
+        let call = Expr::Call(
+            Box::new(name("f")),
+            vec![Arg::Kw("x".into(), lit(1))],
+            1,
+        );
+        let f = fn_def("f", &[], vec![ret(call)]);
+        let code = must_lower(&f);
+        assert!(
+            code.instrs.iter().any(|i| matches!(i, Instr::CallFunctionKw { .. })),
+            "kw call lowers to CallFunctionKw"
+        );
+    }
+    for args in [vec![Arg::Star(lit(1))], vec![Arg::KwStar(lit(1))]] {
         let call = Expr::Call(Box::new(name("f")), args, 1);
         let f = fn_def("f", &[], vec![ret(call)]);
         assert!(
             !lowers_cleanly(&f),
-            "kw/star call shapes must fall back this leaf"
+            "star call shapes must fall back this leaf"
         );
     }
 }
@@ -473,40 +484,9 @@ fn unsupported_expr_variants_fall_back_whole_function() {
             "lambda",
             Expr::Lambda(Box::new(LambdaSig { params: vec![] }), Box::new(lit(1))),
         ),
-        (
-            "listcomp",
-            Expr::ListComp(
-                Box::new(name("x")),
-                vec![CompClause {
-                    target: name("x"),
-                    iter: name("xs"),
-                    ifs: vec![],
-                }],
-            ),
-        ),
-        (
-            "setcomp",
-            Expr::SetComp(
-                Box::new(name("x")),
-                vec![CompClause {
-                    target: name("x"),
-                    iter: name("xs"),
-                    ifs: vec![],
-                }],
-            ),
-        ),
-        (
-            "dictcomp",
-            Expr::DictComp(
-                Box::new(name("k")),
-                Box::new(name("v")),
-                vec![CompClause {
-                    target: name("k"),
-                    iter: name("ks"),
-                    ifs: vec![],
-                }],
-            ),
-        ),
+        // Leaf fp-calls: listcomp/setcomp/dictcomp LOWER now (inline loop
+        // shape) — moved to comprehension_lowering tests below. genexpr
+        // stays a fallback (fiber machinery, master.md).
         (
             "genexpr",
             Expr::Generator(
@@ -662,13 +642,8 @@ fn other_unsupported_statements_fall_back() {
                 id: ap_ir::DefId(0),
             }))],
         ),
-        (
-            "attribute store",
-            vec![Stmt::Assign(
-                vec![Target::Attribute(Box::new(name("o")), "p".into())],
-                lit(1),
-            )],
-        ),
+        // Leaf fp-calls: attribute store LOWERS now (StoreAttr) — moved to
+        // attribute_store_lowers_storeattr below.
         (
             "tuple unpack assign",
             vec![Stmt::Assign(
@@ -705,15 +680,239 @@ fn generator_and_async_fall_back() {
     assert_eq!(must_fallback(&a), "async def");
 }
 
+// ---------------------------------------------------------------------------
+// Leaf fp-calls: comprehension lowering, attr stores, kw calls
+// ---------------------------------------------------------------------------
+
 #[test]
-fn vararg_and_default_params_fall_back() {
+fn comprehension_lowering_list_shape() {
+    // [x * 2 for x in xs] — inline loop: GetIter/ForNext/append/PopTop,
+    // NO separate frame, no fallback.
+    let comp = Expr::ListComp(
+        Box::new(b(BinOp::Mul, name("x"), lit(2))),
+        vec![CompClause {
+            target: name("x"),
+            iter: name("xs"),
+            ifs: vec![],
+        }],
+    );
+    let f = fn_def("f", &["xs"], vec![ret(comp)]);
+    let c = must_lower(&f);
+    let has = |p: &dyn Fn(&Instr) -> bool| c.instrs.iter().any(p);
+    assert!(has(&|i| matches!(i, Instr::GetIter)), "GetIter emitted");
+    assert!(has(&|i| matches!(i, Instr::ForNext(_))), "ForNext emitted");
+    assert!(has(&|i| matches!(i, Instr::BuildList(0))), "fresh accumulator");
+    assert!(
+        has(&|i| matches!(
+            i,
+            Instr::LoadAttrCall { .. } // acc.append
+        )),
+        "append via fused opcode"
+    );
+    // Hidden slot: n_locals exceeds visible names (xs + acc).
+    assert!(c.n_locals > c.local_names.len(), "hidden comp slots exist");
+    assert!(
+        !c.local_names.iter().any(|n| n == "x"),
+        "clause target stays hidden (no scope leak)"
+    );
+}
+
+#[test]
+fn comprehension_lowering_dict_shape() {
+    // {k: v for k, ... } — single-name target + key/value store shape.
+    let comp = Expr::DictComp(
+        Box::new(name("k")),
+        Box::new(name("v")),
+        vec![CompClause {
+            target: name("k"),
+            iter: name("ks"),
+            ifs: vec![],
+        }],
+    );
+    let f = fn_def("f", &["ks", "v"], vec![ret(comp)]);
+    let c = must_lower(&f);
+    assert!(c.instrs.iter().any(|i| matches!(i, Instr::BuildDict(0))));
+    assert!(c.instrs.iter().any(|i| matches!(i, Instr::StoreSubscript)));
+}
+
+#[test]
+fn comprehension_filter_jumps_to_clause_fornext() {
+    // [x for x in xs if x > 1 if x < 5] — both filters JumpIfFalse back to
+    // the clause's ForNext (continue point).
+    let comp = Expr::ListComp(
+        Box::new(name("x")),
+        vec![CompClause {
+            target: name("x"),
+            iter: name("xs"),
+            ifs: vec![b(BinOp::Add, name("x"), lit(1)), lit(7)],
+        }],
+    );
+    let f = fn_def("f", &["xs"], vec![ret(comp)]);
+    let c = must_lower(&f);
+    let fornext_idx = c
+        .instrs
+        .iter()
+        .position(|i| matches!(i, Instr::ForNext(_)))
+        .expect("ForNext");
+    let jumps: Vec<u32> = c
+        .instrs
+        .iter()
+        .filter_map(|i| match i {
+            Instr::JumpIfFalse(t) => Some(*t),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        jumps.iter().all(|&t| t == fornext_idx as u32),
+        "filters continue at the clause ForNext: {jumps:?}"
+    );
+}
+
+#[test]
+fn genexpr_still_falls_back() {
+    let comp = Expr::Generator(
+        Box::new(name("x")),
+        vec![CompClause {
+            target: name("x"),
+            iter: name("xs"),
+            ifs: vec![],
+        }],
+    );
+    let f = fn_def("f", &["xs"], vec![ret(comp)]);
+    assert!(matches!(
+        lower_fn(&f),
+        LowerOutcome::Fallback(Unsupported("generator expression"))
+    ));
+}
+
+#[test]
+fn attribute_store_lowers_storeattr() {
+    // self.x = 1 — StoreAttr opcode, value under obj.
+    let stmt = Stmt::Assign(
+        vec![Target::Attribute(Box::new(name("s")), "x".into())],
+        lit(1),
+    );
+    let f = fn_def("f", &["s"], vec![stmt, Stmt::Return(None)]);
+    let c = must_lower(&f);
+    assert!(
+        c.instrs.iter().any(|i| matches!(i, Instr::StoreAttr { .. })),
+        "attr store lowers to StoreAttr"
+    );
+    // Aug target reads too: s.x += 1
+    let aug = Stmt::AugAssign(
+        Target::Attribute(Box::new(name("s")), "x".into()),
+        BinOp::Add,
+        lit(1),
+    );
+    let f2 = fn_def("f", &["s"], vec![aug, Stmt::Return(None)]);
+    let c2 = must_lower(&f2);
+    assert!(c2.instrs.iter().any(|i| matches!(i, Instr::LoadAttr { .. })));
+}
+
+#[test]
+fn kw_call_marshals_name_slice() {
+    // f(a, x=1, y=2) — names x,y interned contiguously; values follow
+    // positionals in the same order.
+    let call = Expr::Call(
+        Box::new(name("f")),
+        vec![
+            Arg::Pos(name("a")),
+            Arg::Kw("x".into(), lit(1)),
+            Arg::Kw("y".into(), lit(2)),
+        ],
+        1,
+    );
+    let f = fn_def("f", &["a"], vec![ret(call)]);
+    let c = must_lower(&f);
+    let kw_idx = c
+        .instrs
+        .iter()
+        .position(|i| matches!(i, Instr::CallFunctionKw { .. }))
+        .expect("CallFunctionKw emitted");
+    match c.instrs[kw_idx] {
+        Instr::CallFunctionKw {
+            argc,
+            kw_first,
+            n_kw,
+            ..
+        } => {
+            assert_eq!(argc, 1);
+            assert_eq!(n_kw, 2);
+            assert_eq!(&c.names[kw_first as usize], "x");
+            assert_eq!(&c.names[kw_first as usize + 1], "y");
+        }
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn comp_targets_shadow_enclosing_locals() {
+    // x = 0; [x for x in xs] — the comp's x must NOT store into the
+    // enclosing x slot (S-02-2): the target allocates a hidden slot.
+    let comp = Expr::ListComp(
+        Box::new(name("x")),
+        vec![CompClause {
+            target: name("x"),
+            iter: name("xs"),
+            ifs: vec![],
+        }],
+    );
+    let f = fn_def(
+        "f",
+        &["xs"],
+        vec![
+            Stmt::Assign(vec![Target::Name("x".into())], lit(0)),
+            Stmt::ExprStmt(comp),
+            ret(name("x")),
+        ],
+    );
+    let c = must_lower(&f);
+    // x's visible slot is 1 (xs=0, x=1). The comp's StoreFast targets must
+    // all be >= 2 (hidden region).
+    let stores: Vec<u16> = c
+        .instrs
+        .iter()
+        .filter_map(|i| match i {
+            Instr::StoreFast(s) => Some(*s),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        stores.iter().any(|&s| s >= 2),
+        "clause target allocates a hidden slot: {stores:?}"
+    );
+}
+
+#[test]
+fn opcode_names_table_in_sync_leaf_fpcalls() {
+    // StoreAttr + CallFunctionKw ride the same table discipline.
+    let names: Vec<&str> = OPCODE_NAMES.to_vec();
+    assert_eq!(names.len(), 35);
+    assert_eq!(names[32], "StoreAttr");
+    assert_eq!(names[33], "CallFunctionKw");
+    let sa = Instr::StoreAttr { idx: 0 };
+    let ck = Instr::CallFunctionKw {
+        argc: 0,
+        kw_first: 0,
+        n_kw: 0,
+        site: 0,
+    };
+    assert_eq!(sa.site_id(), None, "StoreAttr carries no site");
+    assert_eq!(ck.site_id(), Some(0), "CallFunctionKw carries its site");
+}
+
+#[test]
+fn vararg_and_default_params_lower() {
+    // Leaf fp-calls: vararg/kwarg/kw-only params + defaults bind in the
+    // call boundary (the tree-walker's binder) — the lowerer lifts its
+    // old refusals; prefill is by NAME so all kinds work.
     let mut f = fn_def("f", &["a"], vec![ret(name("a"))]);
     f.params[0].kind = ParamKind::VarArg;
-    assert_eq!(must_fallback(&f), "non-positional param");
+    assert!(lowers_cleanly(&f), "vararg param lowers");
 
     let mut d = fn_def("d", &["a"], vec![ret(name("a"))]);
     d.params[0].default = Some(lit(1));
-    assert_eq!(must_fallback(&d), "param default");
+    assert!(lowers_cleanly(&d), "param default lowers");
 }
 
 // ---------------------------------------------------------------------------
@@ -844,6 +1043,13 @@ fn opcode_names_table_in_sync() {
             sym: "+",
         },
         Instr::LoadAttrCall { idx: 0, argc: 1 },
+        Instr::StoreAttr { idx: 0 },
+        Instr::CallFunctionKw {
+            argc: 0,
+            kw_first: 0,
+            n_kw: 0,
+            site: 0,
+        },
         Instr::FallbackToTreeWalk,
     ];
     assert_eq!(samples.len(), OPCODE_NAMES.len());
@@ -853,7 +1059,7 @@ fn opcode_names_table_in_sync() {
         assert!(!name.is_empty());
         assert!(seen.insert(name), "duplicate opcode name {name}");
     }
-    assert_eq!(all.len(), 33);
+    assert_eq!(all.len(), 35);
 }
 
 #[test]
@@ -1296,3 +1502,6 @@ fn try_inside_loop_still_falls_back() {
     );
     assert_eq!(must_fallback(&f), "try statement");
 }
+
+
+

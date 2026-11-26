@@ -289,6 +289,23 @@ fn fast_bound_mint(obj: &Value, name: &str) -> Option<Value> {
                 | "issubset" | "issuperset" | "symmetric_difference"
                 | "symmetric_difference_update" | "add"
         ),
+        // Leaf fp-calls: str/bytes/int/float/tuple surfaces — the same
+        // (tag, name) table native_attr's mint arm consults. A hit means
+        // the deep walk would answer with the dotted-marker mint below;
+        // answering HERE skips ~1.2k lines of sequential checks.
+        Value::Str(_) => crate::builtins_modules::builtin_value_method_exists_pub("pystr", name),
+        Value::Bytes(_) => {
+            crate::builtins_modules::builtin_value_method_exists_pub("pybytes", name)
+        }
+        Value::Int(_) | Value::Bool(_) => {
+            crate::builtins_modules::builtin_value_method_exists_pub("pyint", name)
+        }
+        Value::Float(_) => {
+            crate::builtins_modules::builtin_value_method_exists_pub("pyfloat", name)
+        }
+        Value::Tuple(_) => {
+            crate::builtins_modules::builtin_value_method_exists_pub("pytuple", name)
+        }
         _ => false,
     };
     if !family_ok {
@@ -296,7 +313,20 @@ fn fast_bound_mint(obj: &Value, name: &str) -> Option<Value> {
     }
     // CPython identity pin: a fresh BoundMethod per read (d.get is d.get
     // is False) — never memoize. Same mint site as the walk's arm.
-    let m = ap_obj::PyObject::with_self(ap_obj::ObjKind::BoundMethod, name, obj.clone());
+    // Mint name: the walk's arm answers the value-table families with the
+    // DOTTED marker ("pystr.startswith" — native_attr's exact mint; the
+    // BoundMethod call route dispatches dotted markers through
+    // call_named_kw -> call_builtin_values). list/dict/set families keep
+    // the BARE name (methods::call_method's own arms answer those).
+    let mint_name = match obj {
+        Value::Str(_) => format!("pystr.{name}"),
+        Value::Bytes(_) => format!("pybytes.{name}"),
+        Value::Int(_) | Value::Bool(_) => format!("pyint.{name}"),
+        Value::Float(_) => format!("pyfloat.{name}"),
+        Value::Tuple(_) => format!("pytuple.{name}"),
+        _ => name.to_string(),
+    };
+    let m = ap_obj::PyObject::with_self(ap_obj::ObjKind::BoundMethod, mint_name, obj.clone());
     Some(Value::Obj(m))
 }
 
@@ -344,6 +374,28 @@ fn run_frame(
                 None => None,
             };
             locals[i] = v;
+        }
+    }
+    // Defaults / kw-only / *args / **kwargs: the call boundary's binder
+    // filled EVERY param name into the frame's locals map (defaults via
+    // eval_default, VarArg as a tuple, KwArg as a dict) BEFORE dispatch.
+    // The loop above only prefills the first N slots (source order); bind
+    // any param that landed at a later slot or under a different name
+    // position by NAME — the compile-time slot table is authoritative.
+    {
+        let fl = frame.locals.borrow();
+        for p in &entry.def.params {
+            if let (Some(slot), Some(v)) = (code.visible_slot_of(&p.name), fl.get(&p.name)) {
+                if locals.len() > slot as usize && locals[slot as usize].is_none() {
+                    let lv = match v {
+                        Loc::Slot(s) => s.borrow().clone(),
+                        Loc::CellSlot(cell) => cell.borrow().clone(),
+                    };
+                    if lv.is_some() {
+                        locals[slot as usize] = lv;
+                    }
+                }
+            }
         }
     }
 
@@ -399,12 +451,19 @@ fn run_frame(
         }
         let ins = code.instrs[pc];
         // Line bookkeeping: the LOCAL cur_line drives every error/exit sync
-        // (sync_frame_line). The BC_LINE TLS cell is written at frame exit
-        // only — the per-INSTRUCTION TLS store cost ~15ns/step and had NO
-        // reader anywhere in the crate (audited 01-core/01: the s016
-        // machinery reads frame.last_line, synced at the instrument ops and
-        // at the error exit, which is preserved).
+        // (sync_frame_line). Leaf fp-calls FIX: cur_line now follows the
+        // dense line table (one Vec index per instruction, ~1ns) — the
+        // pre-leaf code initialized it once at frame start and NEVER
+        // advanced it, so every error exit / instrument sync reported the
+        // def-line region (exposed by the leaf's unbound-probe: a NameError
+        // at `return x + missing` reported the `x = 1` line). s016
+        // attribution reads frame.last_line (synced at instrument ops +
+        // error exit) — now with the CORRECT per-instruction line.
 
+        cur_line = *c
+            .dense_lines
+            .get(pc)
+            .unwrap_or_else(|| c.dense_lines.first().unwrap_or(&1));
         match ins {
             // ---- constants -------------------------------------------------
             Instr::LoadConst(idx) => {
@@ -680,6 +739,22 @@ fn run_frame(
                 hop!(crate::methods::subscript_set(&obj, &key, value));
                 pc += 1;
             }
+            Instr::StoreAttr { idx } => {
+                // `obj.attr = v` (leaf 02-calls): Assign pushed the VALUE
+                // first, then the obj expr — TOS=obj, TOS-1=value. The
+                // tree-walker's exact route (classes::attr_set_protocol —
+                // user __setattr__ / descriptor / cell semantics).
+                sync_frame_line(frame, cur_line);
+                let obj = pop!();
+                let value = pop!();
+                let name = code
+                    .names
+                    .get(idx as usize)
+                    .map(|n| n.as_str())
+                    .unwrap_or("<attr>");
+                hop!(crate::classes::attr_set_protocol(interp, &obj, name, value));
+                pc += 1;
+            }
 
             // ---- calls (correct-but-slow: through call_value, like the
             // tree-walker; the frame line is the CALL instrument's line for
@@ -706,6 +781,57 @@ fn run_frame(
                     &callee,
                     &args,
                     &[]
+                ));
+                stack.push(v);
+                pc += 1;
+            }
+
+            Instr::CallFunctionKw {
+                argc,
+                kw_first,
+                n_kw,
+                ..
+            } => {
+                // Kwarg'd call (leaf 02-calls): the binding is call_value's
+                // kwargs slice — the tree-walker's exact machinery
+                // (defaults/kw-only/**kwargs binding all live there). Stack:
+                // callee, argc positionals, n_kw kwarg VALUES (in
+                // names[kw_first..] order), callee on top.
+                sync_frame_line(frame, cur_line);
+                let argc = argc as usize;
+                let n_kw = n_kw as usize;
+                if stack.len() < argc + n_kw + 1 {
+                    break Err((
+                        cur_line,
+                        raise_flow("SystemError", "bytecode call stack underflow"),
+                    ));
+                }
+                // Pop the n_kw VALUES first (top-down = LAST kwarg first),
+                // reverse to push order, THEN zip with names[kw_first..] —
+                // pairing during the pops would hand the LAST value to the
+                // FIRST name.
+                let mut kvals: Vec<Value> = Vec::with_capacity(n_kw);
+                for _ in 0..n_kw {
+                    kvals.push(stack.pop().expect("kwarg value checked above"));
+                }
+                kvals.reverse();
+                let mut kwargs: Vec<(String, Value)> = Vec::with_capacity(n_kw);
+                for (i, v) in kvals.into_iter().enumerate() {
+                    let name = code
+                        .names
+                        .get(kw_first as usize + i)
+                        .cloned()
+                        .unwrap_or_else(|| "<kw>".to_string());
+                    kwargs.push((name, v));
+                }
+                let args = stack.split_off(stack.len() - argc);
+                let callee = pop!();
+                let v = hop!(crate::interp::call_value_frame_pub(
+                    interp,
+                    frame,
+                    &callee,
+                    &args,
+                    &kwargs
                 ));
                 stack.push(v);
                 pc += 1;
@@ -758,6 +884,93 @@ fn run_frame(
                             continue;
                         }
                         Err(f) => break Err((cur_line, f)),
+                    }
+                }
+                // PRIMITIVE-RECEIVER DIRECT DISPATCH (leaf fp-calls): str/
+                // bytes/int/float/tuple/list/dict/set receivers whose method
+                // is in the native value surface ride call_builtin_values
+                // DIRECTLY (receiver as args[0]) — skipping the attr walk +
+                // fresh BoundMethod mint (~1.5us) the generic route pays per
+                // call. The (tag, name) existence gate is the SAME table the
+                // mint path consults, and call_builtin_values is the exact
+                // dispatcher the minted dotted marker routes to — semantics
+                // single-sourced, only the mint intermediate is bypassed.
+                // Uncovered shapes (user receivers, dunders, module attrs)
+                // fall to the mint route below unchanged.
+                let tag = match &recv {
+                    Value::Str(_) => Some("pystr"),
+                    Value::Dict(_) => Some("pydict"),
+                    Value::List(_) => Some("pylist"),
+                    Value::Bytes(_) => Some("pybytes"),
+                    Value::Int(_) | Value::Bool(_) => Some("pyint"),
+                    Value::Set(_) | Value::Frozen(_) => Some("pyset"),
+                    Value::Tuple(_) => Some("pytuple"),
+                    Value::Float(_) => Some("pyfloat"),
+                    _ => None,
+                };
+                if let Some(tag) = tag {
+                    // str.upper/lower/join/format/partition/encode and
+                    // bytes.translate have DIRECT arms in methods::call_method
+                    // (not the call_builtin_values table) — try that FIRST
+                    // (the exact dispatcher the BoundMethod route uses).
+                    let via_call_method = matches!(
+                        name,
+                        "upper"
+                            | "lower"
+                            | "join"
+                            | "format"
+                            | "partition"
+                            | "encode"
+                            | "translate"
+                            | "__len__"
+                    );
+                    if via_call_method {
+                        let r = match crate::builtins_modules::current_interp() {
+                            Some(i) => crate::methods::call_method(&i, &recv, name, &args),
+                            None => None,
+                        };
+                        match r {
+                            Some(Ok(v)) => {
+                                stack.push(v);
+                                pc += 1;
+                                continue;
+                            }
+                            Some(Err(f)) => break Err((cur_line, f)),
+                            // call_method answered None = name unknown on
+                            // this receiver. NOT always an AttributeError:
+                            // e.g. dict.set_int_max_str_digits-style marker
+                            // arms return None for shape mismatches. Fall
+                            // through to the generic mint route, whose
+                            // attr_get owns the full AttributeError/None
+                            // semantics.
+                            None => {}
+                        }
+                    } else if crate::builtins_modules::builtin_value_method_exists_pub(tag, name) {
+                        // The call_builtin_values table (pystr.startswith,
+                        // pybytes.split, pyint.bit_length, ...). Receiver
+                        // first — call_builtin_values treats args[0] as recv.
+                        let Some(i) = crate::builtins_modules::current_interp() else {
+                            break Err((
+                                cur_line,
+                                raise_flow("RuntimeError", "no interpreter on this thread"),
+                            ));
+                        };
+                        let _ = &i;
+                        let mut a2: Vec<Value> = Vec::with_capacity(argc + 1);
+                        a2.push(recv.clone());
+                        a2.extend_from_slice(&args);
+                        match crate::builtins_modules::call_builtin_values(tag, name, &a2, &[]) {
+                            Some(Ok(v)) => {
+                                stack.push(v);
+                                pc += 1;
+                                continue;
+                            }
+                            Some(Err(f)) => break Err((cur_line, f)),
+                            // Table claims the name but no arm answered
+                            // (marker/subclass shapes) — fall to the generic
+                            // route, identical semantics.
+                            None => {}
+                        }
                     }
                 }
                 // FALLBACK: mint through the walk + call (two-opcode shape).

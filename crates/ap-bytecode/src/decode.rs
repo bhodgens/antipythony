@@ -42,6 +42,16 @@ pub fn render_instr(code: &CodeObject, idx: usize) -> String {
             format!("{base}{idx}  # {name} site={site}")
         }
         Instr::CallFunction { argc, site } => format!("{base}{argc}  site={site}"),
+        Instr::CallFunctionKw {
+            argc,
+            kw_first,
+            n_kw,
+            site,
+        } => format!("{base}{argc}+{n_kw}kw  site={site} kw@{kw_first}"),
+        Instr::StoreAttr { idx } => {
+            let name = code.names.get(idx as usize).cloned().unwrap_or_default();
+            format!("{base}{idx}  # {name}")
+        }
         Instr::Jump(t)
         | Instr::JumpIfFalse(t)
         | Instr::JumpIfTrue(t)

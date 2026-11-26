@@ -216,6 +216,26 @@ pub enum Instr {
     /// DISPATCHER falls back to mint+call_value for any receiver the fast
     /// arms don't cover (identical semantics, slower route).
     LoadAttrCall { idx: u32, argc: u16 },
+    /// `obj.attr = v` — value under obj on the stack (value pushed first by
+    /// the Assign arm, obj second): TOS=obj, TOS-1=value. Pops both. Routed
+    /// to classes::attr_set_protocol — the tree-walker's exact store arm
+    /// (user __setattr__ / descriptor / cell semantics single-sourced).
+    /// `idx` names the attribute in the shared name table.
+    StoreAttr { idx: u32 },
+    /// Call TOS-callee with `argc` positional args followed by `n_kw`
+    /// keyword-arg VALUES (in `kw_first..kw_first+n_kw` name-table order)
+    /// pushed below it (callee on top). The interpreter zips values with
+    /// `code.names[kw_first..]` and routes through call_value's kwargs
+    /// slice — the identical binding machinery the tree-walker uses
+    /// (defaults/kw-only/**kwargs binding live in the call boundary).
+    /// *args/**kwargs CALL-SITE shapes (`f(*xs)` / `f(**ks)`) still fall
+    /// back this leaf (runtime unpack opcodes unowned here).
+    CallFunctionKw {
+        argc: u16,
+        kw_first: u32,
+        n_kw: u16,
+        site: u32,
+    },
     /// Pseudo-instruction: this function's body is a tree-walk job
     /// (unsupported shape at lowering time). Never executed by the
     /// dispatch loop — entry (leaf 02) routes on it.
@@ -256,7 +276,9 @@ impl Instr {
     /// instr_idx identifies the LoadGlobal instruction.
     pub fn site_id(self) -> Option<u32> {
         match self {
-            Self::LoadAttr { site, .. } | Self::CallFunction { site, .. } => Some(site),
+            Self::LoadAttr { site, .. }
+            | Self::CallFunction { site, .. }
+            | Self::CallFunctionKw { site, .. } => Some(site),
             _ => None,
         }
     }
@@ -301,14 +323,16 @@ impl Instr {
             Self::ReturnNone => 29,
             Self::AugOp { .. } => 30,
             Self::LoadAttrCall { .. } => 31,
-            Self::FallbackToTreeWalk => 32,
+            Self::StoreAttr { .. } => 32,
+            Self::CallFunctionKw { .. } => 33,
+            Self::FallbackToTreeWalk => 34,
         }
     }
 }
 
 /// One name per opcode, discriminant order (kept in sync with
 /// `Instr::opcode_index`; `decode::disassemble` and tests rely on it).
-pub const OPCODE_NAMES: [&str; 33] = [
+pub const OPCODE_NAMES: [&str; 35] = [
     "LoadConst",
     "LoadFast",
     "LoadGlobal",
@@ -341,5 +365,7 @@ pub const OPCODE_NAMES: [&str; 33] = [
     "ReturnNone",
     "AugOp",
     "LoadAttrCall",
+    "StoreAttr",
+    "CallFunctionKw",
     "FallbackToTreeWalk",
 ];

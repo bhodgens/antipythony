@@ -17844,6 +17844,13 @@ pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
 }
 
 fn builtin_value_method_exists(tag: &str, name: &str) -> bool {
+    builtin_value_method_exists_pub(tag, name)
+}
+
+/// Public seam (leaf fp-calls): the bytecode dispatcher's fused method-call
+/// fast route consults the SAME (tag, name) existence table the attr mint
+/// path uses — one table, two callers, no duplicated family lists.
+pub fn builtin_value_method_exists_pub(tag: &str, name: &str) -> bool {
     matches!(
         (tag, name),
         ("pyint", "to_bytes")
