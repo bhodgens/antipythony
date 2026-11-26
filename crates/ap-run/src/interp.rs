@@ -7548,6 +7548,60 @@ fn call_value_inner_impl(
                             .ok_or_else(|| raise("SystemError", "class without payload"))?;
                         return crate::classes::instantiate(interp, &cls_v, &t, args, kwargs);
                     }
+                    // Issue #20 (T3 S2.5): type.__instancecheck__ /
+                    // type.__subclasscheck__ slot-wrapper calls (the dict
+                    // entries seeded in classes.rs type_class). args =
+                    // (cls, subject) / (cls, candidate). CPython slot
+                    // semantics: the STRUCTURAL answer — identity, then the
+                    // MRO walk — with NO metaclass-hook re-entry (the user
+                    // hooks delegate INTO these; re-entering them would
+                    // recurse). value_isinstance's internal metaclass arms
+                    // are reached only from the isinstance builtin; the
+                    // value-level walk here answers the pure structural
+                    // question. For a non-class first arg CPython raises
+                    // TypeError ("isinstance() arg 2 must be a type" family
+                    // — actually the slot ignores subject shape and the
+                    // ARG-2 shape); arg-1 must be a class: raise TypeError
+                    // "issubclass() arg 1 must be a class" parity via the
+                    // None-payload miss.
+                    if o.name == "type.__instancecheck__" || o.name == "type.__subclasscheck__" {
+                        let cls = args.first().cloned().ok_or_else(|| {
+                            raise(
+                                "TypeError",
+                                "descriptor '__instancecheck__' of 'type' object needs an argument",
+                            )
+                        })?;
+                        let subject = args.get(1).cloned().unwrap_or(Value::None);
+                        let tcls = crate::classes::base_type_ref(interp, &cls)
+                            .ok()
+                            .flatten()
+                            .ok_or_else(|| {
+                                raise(
+                                    "TypeError",
+                                    if o.name == "type.__subclasscheck__" {
+                                        "issubclass() arg 1 must be a class"
+                                    } else {
+                                        "isinstance() arg 2 must be a type, a tuple of types, or a union"
+                                    },
+                                )
+                            })?;
+                        let cls_v = crate::classes::class_value_for_public(&tcls);
+                        return if o.name == "type.__instancecheck__" {
+                            // Structural instance answer: subject's class
+                            // (or the subject itself for class subjects) in
+                            // the target MRO. Reuse value_isinstance but
+                            // bypass its metaclass-hook arm by passing the
+                            // CLASS VALUE with no user hook — value_isinstance
+                            // consults hooks only for UserInstance subjects;
+                            // hook chains (Protocol/ABC) call this marker
+                            // precisely to get the BASE answer.
+                            crate::classes::value_isinstance(interp, &subject, &cls_v)
+                                .map(Value::Bool)
+                        } else {
+                            crate::classes::value_issubclass(interp, &subject, &cls_v)
+                                .map(Value::Bool)
+                        };
+                    }
                     // T2 (pluggy _static_hook_attr): function.__get__(inst,
                     // owner) BINDS the parked function to inst (method
                     // descriptor protocol). Unbound (None) returns the func.

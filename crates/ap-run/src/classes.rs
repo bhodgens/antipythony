@@ -1980,6 +1980,33 @@ pub fn type_class(interp: &Interpreter) -> Arc<TypeRef> {
             "type.__new__",
         )),
     );
+    // Issue #20 (T3 S2.5): type.__instancecheck__ / type.__subclasscheck__
+    // are slot wrappers ON `type` in CPython (type.__dict__ carries them;
+    // `type.__instancecheck__(cls, obj)` is the documented super()-chain
+    // escape hatch). pydantic's chain hits this exactly: typing_extensions
+    // _ProtocolMeta.__instancecheck__ calls
+    // `type.__instancecheck__(cls, instance)` for the non-protocol root,
+    // and pydantic._internal._model_construction builds ModelMetaclass over
+    // ABCMeta whose hooks walk back into the type-level slots. The interned
+    // `type` type-class dict lacked both names -> AttributeError
+    // "'type' object has no attribute '__instancecheck__'".
+    // The markers dispatch in interp.rs call_value_inner_impl to the native
+    // check (CPython slot-wrapper semantics: identity/MRO walk, no user-MRO
+    // re-entry).
+    let _ = dict.set(
+        Value::Str(PyString::new("__instancecheck__")),
+        Value::Obj(ap_obj::PyObject::new(
+            ap_obj::ObjKind::BuiltinFn,
+            "type.__instancecheck__",
+        )),
+    );
+    let _ = dict.set(
+        Value::Str(PyString::new("__subclasscheck__")),
+        Value::Obj(ap_obj::PyObject::new(
+            ap_obj::ObjKind::BuiltinFn,
+            "type.__subclasscheck__",
+        )),
+    );
     let t = TypeObject::create(
         "type".to_string(),
         "type".to_string(),
