@@ -285,7 +285,6 @@ def _pinned_env() -> dict:
     return env
 
 
-@pytest.mark.parametrize("case", ALL_CASES, ids=CASE_IDS)
 # Host-conditional corpus cases (issue #17): pins authored on darwin
 # 3.14.7 whose live linux CPython reference differs by libm dialect
 # (cbrt/lgamma 1-ulp) — the impl matches the HOST reference on both hosts
@@ -294,6 +293,7 @@ def _pinned_env() -> dict:
 HOST_CONDITIONAL = frozenset({"s006_math_basics"})
 
 
+@pytest.mark.parametrize("case", ALL_CASES, ids=CASE_IDS)
 def test_expected_bytes_stable(case):
     # Re-run the reference (plain and -S) and byte-compare stdout/rc (S-06-1
     # no-normalization; site-independence per S-05-1 -S parity). A failure
