@@ -13922,7 +13922,10 @@ fn epoll_fd_arg(v: &Value) -> Result<i32, Flow> {
                     Ok(n as i32)
                 }
                 Err(Flow::Raise(ev))
-                    if matches!(ev.class.as_str(), "AttributeError" | "io.UnsupportedOperation") =>
+                    if matches!(
+                        ev.class.as_str(),
+                        "AttributeError" | "io.UnsupportedOperation"
+                    ) =>
                 {
                     Err(raise(
                         "TypeError",
@@ -14117,7 +14120,10 @@ fn select_epoll_method(m: &str, args: &[Value], kwargs: &[(String, Value)]) -> O
             };
             // Pre-2.6.9 kernels want a non-NULL event ptr for DEL; CPython
             // passes one (stack garbage harmless). Zero it deterministically.
-            let mut ev = libc::epoll_event { events: 0u32, u64: 0u64 };
+            let mut ev = libc::epoll_event {
+                events: 0u32,
+                u64: 0u64,
+            };
             let rc = unsafe { libc::epoll_ctl(epfd, libc::EPOLL_CTL_DEL, fd, &mut ev) };
             if rc < 0 {
                 return Some(Err(io_flow(std::io::Error::last_os_error())));
@@ -14250,10 +14256,7 @@ fn select_epoll_method(m: &str, args: &[Value], kwargs: &[(String, Value)]) -> O
             }
         }
         "__exit__" => select_epoll_method("close", args, &[]),
-        _ => Some(Err(raise(
-            "SystemError",
-            format!("epoll fn {m} unbound"),
-        ))),
+        _ => Some(Err(raise("SystemError", format!("epoll fn {m} unbound")))),
     }
 }
 
@@ -16982,8 +16985,7 @@ pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
             && matches!(name, "__enter__" | "__exit__")
         {
             let mname = format!("select.epoll.{name}");
-            let bm =
-                PyObject::with_self(ap_obj::ObjKind::BoundMethod, mname.clone(), obj.clone());
+            let bm = PyObject::with_self(ap_obj::ObjKind::BoundMethod, mname.clone(), obj.clone());
             *bm.func.lock().unwrap_or_else(|p| p.into_inner()) = Some(marker(&mname));
             return Some(Value::Obj(bm));
         }
