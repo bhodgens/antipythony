@@ -19,28 +19,42 @@ use crate::value::{PyList, PyString, Tuple};
 // the -1 => -2 CPython-parity normalization keeps the 0-sentinel domain
 // clean; both same-value races, benign by construction). Sync is actually
 // PROVEN for this type, not just staged.
+// SAFETY: interior state is two atomic idempotent caches (hash normalized -1=>-2 and the converted-entry cache) whose same-value races are benign by construction — Sync is proven for this type, not just staged (module docs / 02.09a P4 audit).
 unsafe impl Send for PyString {}
+// SAFETY: interior state is two atomic idempotent caches (hash normalized -1=>-2 and the converted-entry cache) whose same-value races are benign by construction — Sync is proven for this type, not just staged (module docs / 02.09a P4 audit).
 unsafe impl Sync for PyString {}
 
 // Tuple: immutable payload (Vec<Value> fixed at construction; audit entry
 // 30 — "first candidate for unsafe impl Sync once the refcount story
 // lands"). The Vec is never mutated; only the Arc counts move.
+// SAFETY: the payload Vec<Value> is fixed at construction and never mutated afterward, so cross-thread shared access is read-only over immutable data (audit entry 30).
 unsafe impl Send for Tuple {}
+// SAFETY: the payload Vec<Value> is fixed at construction and never mutated afterward, so cross-thread shared access is read-only over immutable data (audit entry 30).
 unsafe impl Sync for Tuple {}
 
 // Staged (RefCell/Mutex interiors — sound under the GIL/mutex protocol):
 // PyObject (18 RefCell fields), PyDict (state + epoch), PySet (state),
 // PyList (items + allocated), TypeObject (mro[Mutex, write-once frozen in
 // 02.09a P4]/dict/metaclass/class_value).
+// SAFETY: all interior mutability lives in RefCell/Mutex fields that the no-GIL worker-serialization protocol keeps from concurrent borrows (02.09a P4/P5 staged markers).
 unsafe impl Send for PyObject {}
+// SAFETY: all interior mutability lives in RefCell/Mutex fields that the no-GIL worker-serialization protocol keeps from concurrent borrows (02.09a P4/P5 staged markers).
 unsafe impl Sync for PyObject {}
+// SAFETY: interior state (state + epoch cells) is only mutated under the no-GIL worker-serialization protocol (02.09a P4/P5 staged markers).
 unsafe impl Send for PyDict {}
+// SAFETY: interior state (state + epoch cells) is only mutated under the no-GIL worker-serialization protocol (02.09a P4/P5 staged markers).
 unsafe impl Sync for PyDict {}
+// SAFETY: interior state (state cell) is only mutated under the no-GIL worker-serialization protocol (02.09a P4/P5 staged markers).
 unsafe impl Send for PySet {}
+// SAFETY: interior state (state cell) is only mutated under the no-GIL worker-serialization protocol (02.09a P4/P5 staged markers).
 unsafe impl Sync for PySet {}
+// SAFETY: interior state (items + allocated flag) is only mutated under the no-GIL worker-serialization protocol (02.09a P4/P5 staged markers).
 unsafe impl Send for PyList {}
+// SAFETY: interior state (items + allocated flag) is only mutated under the no-GIL worker-serialization protocol (02.09a P4/P5 staged markers).
 unsafe impl Sync for PyList {}
+// SAFETY: interior state (mro Mutex write-once frozen per 02.09a P4, plus dict/metaclass/class_value) is only mutated under the no-GIL worker-serialization protocol.
 unsafe impl Send for TypeObject {}
+// SAFETY: interior state (mro Mutex write-once frozen per 02.09a P4, plus dict/metaclass/class_value) is only mutated under the no-GIL worker-serialization protocol.
 unsafe impl Sync for TypeObject {}
 
 // The non-Gc Value payloads are plain data (Send+Sync by construction).

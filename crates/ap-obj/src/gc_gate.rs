@@ -36,6 +36,11 @@ pub fn hook_installed() -> bool {
 pub fn gc_register_pub(v: &Value) {
     let f = HOOK.load(Ordering::Acquire);
     if f != 0 {
+        // SAFETY: `f` was stored by `set_hook` from a `fn(&Value)` coerced to
+        // usize, so transmuting it back to the identical `fn(&Value)` type is a
+        // lossless round-trip; HOOK is write-once (only set_hook stores a real
+        // fn ptr) and the Acquire load pairs with its Release store, so `f != 0`
+        // guarantees the pointer is the live hook, not a torn or reclaimed value.
         let f: fn(&Value) = unsafe { std::mem::transmute(f) };
         f(v);
     }

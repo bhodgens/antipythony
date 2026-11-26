@@ -916,6 +916,14 @@ fn mark_reachable_scoped(
                     // The slot holds a `Value` (16-byte enum): the Rc
                     // payload pointer is the first word. Probe it as the
                     // registry key (the same shape value_addr derives).
+                    // SAFETY: slot_addr = frame_fp + slot.fp_offset is an
+                    // interior stack address named by the safepoint map compiled
+                    // for this JIT frame; mapped_frames_from resolved it against
+                    // a live captured fp chain, so the frame is on-stack and live
+                    // for the whole walk. Stack slots hold 16-byte `Value`s whose
+                    // first word is the heap payload pointer (the same shape
+                    // value_addr derives), so reading one usize from the aligned
+                    // slot cannot fault or misinterpret memory.
                     let payload = unsafe { *(slot_addr as *const usize) };
                     if payload != 0 && registry.contains_key(&payload) && in_scope(payload) {
                         queue.push(payload);
@@ -941,6 +949,14 @@ fn mark_reachable_scoped(
             for slot in &entry.roots {
                 if slot.fp_offset >= 0 {
                     let slot_addr = frame_fp.wrapping_add(slot.fp_offset as usize);
+                    // SAFETY: slot_addr = frame_fp + slot.fp_offset is an
+                    // interior stack address named by the safepoint map compiled
+                    // for this JIT frame; mapped_frames_from resolved it against
+                    // a live captured fp chain, so the frame is on-stack and live
+                    // for the whole walk. Stack slots hold 16-byte `Value`s whose
+                    // first word is the heap payload pointer (the same shape
+                    // value_addr derives), so reading one usize from the aligned
+                    // slot cannot fault or misinterpret memory.
                     let payload = unsafe { *(slot_addr as *const usize) };
                     if payload != 0 && registry.contains_key(&payload) && in_scope(payload) {
                         queue.push(payload);
