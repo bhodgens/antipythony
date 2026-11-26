@@ -285,18 +285,70 @@ pub fn set_host_contains(f: HostContains) {
     }
 }
 
+/// Static ordering arms (the pre-seam h_compare body) — the unwired
+/// (unit-test) fallback; production routes via COMPARE_FULL_FN.
+fn static_compare(
+    a: &ap_obj::value::Value,
+    op: i64,
+    b: &ap_obj::value::Value,
+) -> Result<ap_obj::value::Value, PyException> {
+    let r = match op {
+        CMP_LT => ap_obj::ops::lt(a, b),
+        CMP_LTE => ap_obj::ops::lt(b, a).map(|gt| !gt),
+        CMP_GT => ap_obj::ops::lt(b, a),
+        CMP_GTE => ap_obj::ops::lt(a, b).map(|lt| !lt),
+        _ => unreachable!("static_compare: non-ordering op"),
+    };
+    r.map(|v| ap_obj::value::Value::Bool(v))
+}
 #[export_name = "apjit_h_compare"]
 pub extern "C" fn h_compare(ctx: &mut ExecCtx, op: i64, a: u32, b: u32, dst: u32) -> HelperStatus {
     use ap_obj::value::Value;
     let a = ctx.slots[a as usize].clone();
     let b = ctx.slots[b as usize].clone();
+    // pp2-tier1 (s023 finding): Eq/NotEq are fine via ops::eq, but the
+    // ORDERING ops need the FULL protocol (user_compare → __lt__/__gt__)
+    // which lives in ap-run, not ap_obj::ops. Route ordering ops through
+    // the host seam when wired; values_cmp stays the unwired fallback.
+    let ordering_via_host = |op: i64| -> Option<Result<bool, String>> {
+        if !matches!(op, CMP_LT | CMP_LTE | CMP_GT | CMP_GTE) {
+            return None;
+        }
+        let f = COMPARE_FULL_FN.read().ok().and_then(|g| *g)?;
+        Some(f(&a, op, &b))
+    };
     let r = match op {
         CMP_EQ => Ok(Value::Bool(ap_obj::ops::eq(&a, &b))),
         CMP_NOTEQ => Ok(Value::Bool(!ap_obj::ops::eq(&a, &b))),
-        CMP_LT => ap_obj::ops::lt(&a, &b).map(Value::Bool),
-        CMP_LTE => ap_obj::ops::lt(&b, &a).map(|gt| Value::Bool(!gt)),
-        CMP_GT => ap_obj::ops::lt(&b, &a).map(Value::Bool),
-        CMP_GTE => ap_obj::ops::lt(&a, &b).map(|lt| Value::Bool(!lt)),
+        CMP_LT | CMP_LTE | CMP_GT | CMP_GTE => match ordering_via_host(op) {
+            Some(Ok(v)) => Ok(Value::Bool(v)),
+            Some(Err(class_msg)) => {
+                let (class, msg) = match class_msg.split_once(": ") {
+                    Some((c, m)) => (c.to_string(), m.to_string()),
+                    None => ("TypeError".to_string(), class_msg),
+                };
+                let class: &'static str = {
+                    thread_local! {
+                        static INTERNED: std::cell::RefCell<
+                            std::collections::HashMap<String, &'static str>,
+                        > = std::cell::RefCell::new(std::collections::HashMap::new());
+                    }
+                    INTERNED.with(|m| {
+                        let mut m = m.borrow_mut();
+                        if let Some(s) = m.get(&class) {
+                            return *s;
+                        }
+                        let leaked: &'static str = Box::leak(class.clone().into_boxed_str());
+                        m.insert(class.clone(), leaked);
+                        leaked
+                    })
+                };
+                let exc = PyException::new(class, msg);
+                return park_exc(ctx, exc);
+            }
+            // Unwired (tests): fall through to the static values_cmp arms.
+            None => static_compare(&a, op, &b),
+        },
         CMP_IS | CMP_ISNOT => {
             // Identity: same object or same singleton value.
             let same = a_ptr_eq(&a, &b);
@@ -894,6 +946,86 @@ static SUBSCRIPT_GET_FN: std::sync::RwLock<Option<HostSubscriptGet>> = std::sync
 pub fn set_host_subscript_get(f: HostSubscriptGet) {
     if let Ok(mut g) = SUBSCRIPT_GET_FN.write() {
         *g = Some(f);
+    }
+}
+
+/// pp2-tier1: host subscript WRITER (`obj[key] = v`), the same
+/// inverted-seam pattern — ap-run owns methods::subscript_set; the JIT
+/// seam calls through this pointer. None = unwired (tests) → fail-closed
+/// HelperStatus error (never a silent dropped store).
+type HostSubscriptSet =
+    fn(&ap_obj::value::Value, &ap_obj::value::Value, &ap_obj::value::Value) -> Result<(), String>;
+
+static SUBSCRIPT_SET_FN: std::sync::RwLock<Option<HostSubscriptSet>> = std::sync::RwLock::new(None);
+
+/// pp2-tier1 (s023 finding): host FULL compare protocol — the JIT'd
+/// h_compare used ap_obj::ops::lt (values_cmp), which has NO user-Obj
+/// richcompare dispatch: any `a < b` over user-class instances or IntEnum
+/// members inside a JIT'd body raised "TypeError: '<' not supported
+/// between instances of 'object' and 'object'" where tier-0 (which routes
+/// interp::compare_values_pub → user_compare → __lt__) succeeded — a
+/// SILENT adaptive-mode divergence (found via the s023 ast.unparse corpus
+/// case). The seam hands the compare to ap-run, which owns the protocol.
+type HostCompare = fn(&ap_obj::value::Value, i64, &ap_obj::value::Value) -> Result<bool, String>;
+
+static COMPARE_FULL_FN: std::sync::RwLock<Option<HostCompare>> = std::sync::RwLock::new(None);
+
+/// Install the host compare (ap-run calls once at JIT init).
+pub fn set_compare_full_fn(f: Option<HostCompare>) {
+    if let Ok(mut g) = COMPARE_FULL_FN.write() {
+        *g = f;
+    }
+}
+
+/// Install the host subscript writer (ap-run calls once at JIT init).
+pub fn set_subscript_set_fn(f: Option<HostSubscriptSet>) {
+    if let Ok(mut g) = SUBSCRIPT_SET_FN.write() {
+        *g = f;
+    }
+}
+
+/// `obj[key] = v` — boxed protocol store (dict.build loop shape).
+#[export_name = "apjit_h_set_subscript"]
+pub extern "C" fn h_set_subscript(ctx: &mut ExecCtx, obj: u32, idx: u32, v: u32) -> HelperStatus {
+    let o = ctx.slots[obj as usize].clone();
+    let k = ctx.slots[idx as usize].clone();
+    let val = ctx.slots[v as usize].clone();
+    let f = SUBSCRIPT_SET_FN.read().ok().and_then(|g| *g);
+    match f {
+        Some(f) => match f(&o, &k, &val) {
+            Ok(()) => 0,
+            Err(class_msg) => {
+                // class_msg is "Class: message" (the Flow::Raise rendering
+                // convention — same as h_subscript's reader). Class-name
+                // interning: the same leak-intern pattern jit_hook uses.
+                fn intern_class(class: &str) -> &'static str {
+                    thread_local! {
+                        static INTERNED: std::cell::RefCell<
+                            std::collections::HashMap<String, &'static str>,
+                        > = std::cell::RefCell::new(std::collections::HashMap::new());
+                    }
+                    INTERNED.with(|m| {
+                        let mut m = m.borrow_mut();
+                        if let Some(s) = m.get(class) {
+                            return *s;
+                        }
+                        let leaked: &'static str = Box::leak(class.to_string().into_boxed_str());
+                        m.insert(class.to_string(), leaked);
+                        leaked
+                    })
+                }
+                let (class, message) = match class_msg.split_once(": ") {
+                    Some((c, m)) => (c, m.to_string()),
+                    None => ("TypeError", class_msg),
+                };
+                let exc = PyException::new(intern_class(class), message);
+                park_exc(ctx, exc)
+            }
+        },
+        None => {
+            let exc = PyException::new("SystemError", "set_subscript: host fn not installed");
+            park_exc(ctx, exc)
+        }
     }
 }
 

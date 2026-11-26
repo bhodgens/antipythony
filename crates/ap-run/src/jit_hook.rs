@@ -169,6 +169,53 @@ pub fn init_tier(explicit: Option<&str>) {
         }
         Err(_) => Err("SystemError: non-raise Flow in JIT contains".to_string()),
     });
+    // pp2-tier1: the subscript WRITE seam (`d[k] = v`) — the dict.build
+    // loop shape's assign_target lowers to StoreSubscript; route through
+    // the exact tree-walker surface (methods::subscript_set), same
+    // (class, msg) flattening as the reader above.
+    ap_codegen_native::runtime::set_subscript_set_fn(Some(|o, k, v| {
+        match crate::methods::subscript_set(o, k, v.clone()) {
+            Ok(()) => Ok(()),
+            Err(crate::Flow::Raise(ev)) => {
+                let class = intern_class(&ev.class);
+                let probe = crate::exc_hier::ExceptionValue::new(class, ev.args.clone());
+                Err(format!(
+                    "{}: {}",
+                    ev.class,
+                    probe.py_str().unwrap_or_default()
+                ))
+            }
+            Err(_) => Err("SystemError: non-raise Flow in JIT subscript store".to_string()),
+        }
+    }));
+    // pp2-tier1 (s023 finding): the FULL compare protocol seam — the
+    // JIT'd h_compare routes ordering ops through compare_values_pub
+    // (user_compare → __lt__/__gt__ dunders), fixing the silent
+    // "TypeError: '<' not supported between 'object' and 'object'"
+    // divergence for user-class / IntEnum operands inside JIT'd bodies.
+    ap_codegen_native::runtime::set_compare_full_fn(Some(|a, op, b| {
+        let cop = match op {
+            ap_codegen_native::runtime::CMP_LT => ap_ir::expr::CmpOp::Lt,
+            ap_codegen_native::runtime::CMP_LTE => ap_ir::expr::CmpOp::LtE,
+            ap_codegen_native::runtime::CMP_GT => ap_ir::expr::CmpOp::Gt,
+            ap_codegen_native::runtime::CMP_GTE => ap_ir::expr::CmpOp::GtE,
+            _ => return Err("TypeError: unknown JIT compare op".to_string()),
+        };
+        let interp = crate::interp::current_interp_for_bindings_pub();
+        match crate::interp::compare_values_pub(&interp, a, cop, b) {
+            Ok(v) => Ok(v),
+            Err(crate::Flow::Raise(ev)) => {
+                let class = intern_class(&ev.class);
+                let probe = crate::exc_hier::ExceptionValue::new(class, ev.args.clone());
+                Err(format!(
+                    "{}: {}",
+                    ev.class,
+                    probe.py_str().unwrap_or_default()
+                ))
+            }
+            Err(_) => Err("SystemError: non-raise Flow in JIT compare".to_string()),
+        }
+    }));
     // 02.05f: the boxed OSR registry seam — the tier-0 back-edge poll
     // probes THIS function (installed once per process; the lookup is
     // pure over the registry + the JIT cache, no interpreter state).

@@ -281,6 +281,7 @@ fn reads_of(i: &Inst) -> Vec<TempId> {
         | Inst::UnaryOp(_, _, d) => vec![*d],
         Inst::StoreLocal(s, _) => vec![*s],
         Inst::StoreAttr(o, _, v) => vec![*o, *v],
+        Inst::StoreSubscript(o, k, v) => vec![*o, *k, *v],
         Inst::BinOp(_, a, b, d) | Inst::Compare(_, a, b, d) => vec![*a, *b, *d],
         Inst::Call(f, args, d) => {
             let mut r = vec![*f, *d];

@@ -585,6 +585,7 @@ fn extra_params(name: &'static str) -> &'static [usize] {
         "apjit_h_const_bool" | "apjit_h_const_int" | "apjit_h_const_float" => &[0, 0],
         "apjit_h_const_str" => &[0, 0, 0],
         "apjit_h_subscript" => &[0, 0, 0],
+        "apjit_h_set_subscript" => &[0, 0, 0],
         "apjit_h_stage_arg" => &[0, 0],
         "apjit_h_truthy_bit" => &[0],
         // 02.05c typed-region helpers (extra-arg counts AFTER ctx; a
@@ -643,6 +644,10 @@ fn helper_symbols() -> Vec<(&'static str, *const u8)> {
         ("apjit_h_const_float", h_const_float as *const u8),
         ("apjit_h_const_str", h_const_str as *const u8),
         ("apjit_h_subscript", h_subscript as *const u8),
+        (
+            "apjit_h_set_subscript",
+            crate::runtime::h_set_subscript as *const u8,
+        ),
         ("apjit_h_stage_arg", h_stage_arg as *const u8),
         ("apjit_h_truthy_bit", h_truthy_bit as *const u8),
         // 02.05c typed-region helpers.
@@ -1094,6 +1099,18 @@ fn emit_cfg_with_osr<M: Module>(
                     let r = fb.ins().call(f, &[ctx_ptr, a1, a2, a3]);
                     check_status(fb, r, raise_target);
                 }
+                Inst::StoreSubscript(obj, idx, v) => {
+                    // pp2-tier1: d[i] = v — boxed protocol store (the
+                    // dict.build loop shape). Region-ineligible by the
+                    // finder (Subscript traffic is unboxable); baseline
+                    // twin + tree-walker parity is the goal.
+                    let f = helpers["apjit_h_set_subscript"];
+                    let a1 = iconst!(fb, temp_slot(*obj));
+                    let a2 = iconst!(fb, temp_slot(*idx));
+                    let a3 = iconst!(fb, temp_slot(*v));
+                    let r = fb.ins().call(f, &[ctx_ptr, a1, a2, a3]);
+                    check_status(fb, r, raise_target);
+                }
                 Inst::PushExcInfo(region) => {
                     let f = helpers["apjit_h_push_exc"];
                     let a1 = iconst!(fb, region.0 as i64);
@@ -1158,6 +1175,29 @@ fn emit_cfg_with_osr<M: Module>(
                         if *osr_header_cursor < headers.len() {
                             let osr_header = headers[*osr_header_cursor];
                             *osr_header_cursor += 1;
+                            // ELIGIBILITY FIRST (pp2-tier1 fix): check the
+                            // header's OSR live-set BEFORE emitting any of
+                            // the poll's block structure. An ineligible
+                            // header degrades the poll to a NO-OP (one
+                            // registry probe, no branch) — never an
+                            // early-return: the old path emitted
+                            // brif(has_entry, osr_b, ..) FIRST and then
+                            // bailed with `return Ok(())` when the plan
+                            // didn't resolve, leaving the CURRENT block
+                            // terminated by the brif while its successors
+                            // (referenced handles) were never defined →
+                            // Cranelift "invalid block reference blockN"
+                            // at verify, and the whole body silently fell
+                            // back to the tree-walker (the dict-get loop
+                            // shape: c = c + D.get(ks[i]), 17 > 16 live).
+                            if crate::osr::osr_plan_resolved(func, osr_header).is_none() {
+                                let f = helpers["apjit_h_osr_poll"];
+                                let a1 = iconst!(fb, osr_fn_key as i64);
+                                let a2 = iconst!(fb, osr_header.0 as i64);
+                                let call = fb.ins().call(f, &[ctx_ptr, a1, a2]);
+                                let _ = fb.inst_results(call)[0];
+                                continue;
+                            }
                             let entry_v = {
                                 let f = helpers["apjit_h_osr_poll"];
                                 let a1 = iconst!(fb, osr_fn_key as i64);
@@ -1180,108 +1220,111 @@ fn emit_cfg_with_osr<M: Module>(
                             // closed by terminating the frame (the host
                             // reads it as a helper-failure SystemError),
                             // never a mis-transfer.
-                            let plan = match crate::osr::osr_plan_resolved(func, osr_header) {
-                                Some(p) => p,
-                                None => {
-                                    let one = fb.ins().iconst(i32_t, 1);
-                                    fb.ins().return_(&[one]);
-                                    return Ok(());
+                            // INELIGIBLE HEADER: the poll degrades to a
+                            // NO-OP (same discipline as the osr_fn_key == 0
+                            // arm and the cursor-overflow arm below) — never
+                            // an early-return (a block's terminator belongs
+                            // to the TERMINATOR match, and an early return
+                            // left this block unterminated while predecessors
+                            // had already branched to its successors →
+                            // "invalid block reference blockN" at verify).
+                            if let Some(plan) = crate::osr::osr_plan_resolved(func, osr_header) {
+                                let buf_size =
+                                    std::mem::size_of::<crate::osr::OsrTransferBuffer>() as u32;
+                                let slot = fb.create_sized_stack_slot(
+                                    cranelift::codegen::ir::StackSlotData::new(
+                                        cranelift::codegen::ir::StackSlotKind::ExplicitSlot,
+                                        buf_size,
+                                        0, // natural alignment (align_shift)
+                                    ),
+                                );
+                                let buf_addr = fb.ins().stack_addr(i64_t, slot, 0);
+                                // Header + live_count: one combined i64
+                                // store at offset 0 — repr(C) puts the two
+                                // u32 fields (header, live_count) at bytes
+                                // 0..4 / 4..8, which is exactly the
+                                // little-endian i64 layout
+                                // (header | count << 32). Two separate
+                                // i64 stores would stomp bytes 4..12 (the
+                                // second store's high half lands INSIDE
+                                // slots[0]'s Value — the smoke-probe
+                                // corruption).
+                                let flags = cranelift::codegen::ir::MemFlagsData::new();
+                                let hdr_cnt = iconst!(
+                                    fb,
+                                    (osr_header.0 as i64) | ((plan.live_count() as i64) << 32)
+                                );
+                                fb.ins().store(flags, hdr_cnt, buf_addr, 0);
+                                // ZERO the slot array before any fill: the
+                                // Explicit stack slot starts UNINITIALIZED,
+                                // and the conservative GC scan (osr frames
+                                // are deliberately ON that path — pon
+                                // discipline) reads the whole native stack
+                                // region including this buffer. Garbage
+                                // bytes misread as Gc pointers = crash on
+                                // the first allocation inside the fill
+                                // stream (observed live). Two zero words
+                                // per slot covers the 16-byte Value.
+                                for k in 0..crate::osr::OSR_MAX_LIVE {
+                                    let zero = iconst!(fb, 0);
+                                    fb.ins().store(flags, zero, buf_addr, (8 + k * 16) as i32);
+                                    fb.ins().store(flags, zero, buf_addr, (16 + k * 16) as i32);
                                 }
-                            };
-                            let buf_size =
-                                std::mem::size_of::<crate::osr::OsrTransferBuffer>() as u32;
-                            let slot = fb.create_sized_stack_slot(
-                                cranelift::codegen::ir::StackSlotData::new(
-                                    cranelift::codegen::ir::StackSlotKind::ExplicitSlot,
-                                    buf_size,
-                                    0, // natural alignment (align_shift)
-                                ),
-                            );
-                            let buf_addr = fb.ins().stack_addr(i64_t, slot, 0);
-                            // Header + live_count: one combined i64
-                            // store at offset 0 — repr(C) puts the two
-                            // u32 fields (header, live_count) at bytes
-                            // 0..4 / 4..8, which is exactly the
-                            // little-endian i64 layout
-                            // (header | count << 32). Two separate
-                            // i64 stores would stomp bytes 4..12 (the
-                            // second store's high half lands INSIDE
-                            // slots[0]'s Value — the smoke-probe
-                            // corruption).
-                            let flags = cranelift::codegen::ir::MemFlagsData::new();
-                            let hdr_cnt = iconst!(
-                                fb,
-                                (osr_header.0 as i64) | ((plan.live_count() as i64) << 32)
-                            );
-                            fb.ins().store(flags, hdr_cnt, buf_addr, 0);
-                            // ZERO the slot array before any fill: the
-                            // Explicit stack slot starts UNINITIALIZED,
-                            // and the conservative GC scan (osr frames
-                            // are deliberately ON that path — pon
-                            // discipline) reads the whole native stack
-                            // region including this buffer. Garbage
-                            // bytes misread as Gc pointers = crash on
-                            // the first allocation inside the fill
-                            // stream (observed live). Two zero words
-                            // per slot covers the 16-byte Value.
-                            for k in 0..crate::osr::OSR_MAX_LIVE {
-                                let zero = iconst!(fb, 0);
-                                fb.ins().store(flags, zero, buf_addr, (8 + k * 16) as i32);
-                                fb.ins().store(flags, zero, buf_addr, (16 + k * 16) as i32);
-                            }
-                            // Fill the slots through the canonical table:
-                            // locals first (LocalId order), then live-ins
-                            // (ascending TempId). Each fill is a Rust-side
-                            // 16-byte Value clone from ctx.slots[src] into
-                            // buf.slots[idx] (h_osr_fill — the Value layout
-                            // is shared by construction, both sides Rust).
-                            let mut idx = 0usize;
-                            for l in &plan.locals {
-                                let f = helpers["apjit_h_osr_fill"];
-                                let a1 = buf_addr;
-                                let a2 = iconst!(fb, local_slot(*l));
-                                let a3 = iconst!(fb, idx as i64);
-                                fb.ins().call(f, &[ctx_ptr, a1, a2, a3]);
-                                idx += 1;
-                            }
-                            for t in &plan.live_in {
-                                let f = helpers["apjit_h_osr_fill"];
-                                let a1 = buf_addr;
-                                let a2 = iconst!(fb, temp_slot(*t));
-                                let a3 = iconst!(fb, idx as i64);
-                                fb.ins().call(f, &[ctx_ptr, a1, a2, a3]);
-                                idx += 1;
-                            }
-                            // OSR-BY-CALL: entry ABI `(ctx, buf) -> i32`,
-                            // indirect through the poll's returned pointer.
-                            let mut sig =
-                                cranelift::codegen::ir::Signature::new(fb.func.signature.call_conv);
-                            sig.params
-                                .push(cranelift::codegen::ir::AbiParam::new(i64_t));
-                            sig.params
-                                .push(cranelift::codegen::ir::AbiParam::new(i64_t));
-                            sig.returns
-                                .push(cranelift::codegen::ir::AbiParam::new(i32_t));
-                            let sigref = fb.import_signature(sig);
-                            let r = fb
-                                .ins()
-                                .call_indirect(sigref, entry_v, &[ctx_ptr, buf_addr]);
-                            let status = fb.inst_results(r)[0];
-                            // Forward 0/1 as our own exit; anything else is
-                            // fail-closed to the exception exit.
-                            let ok = fb
-                                .ins()
-                                .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, status, 1);
-                            let ok_b = fb.create_block();
-                            let bad_b = fb.create_block();
-                            fb.ins().brif(ok, ok_b, &[], bad_b, &[]);
-                            fb.switch_to_block(bad_b);
-                            let one = fb.ins().iconst(i32_t, 1);
-                            fb.ins().return_(&[one]);
-                            fb.switch_to_block(ok_b);
-                            fb.ins().return_(&[status]);
-                            // --- continue the loop in tier-0 ---
-                            fb.switch_to_block(cont_b);
+                                // Fill the slots through the canonical table:
+                                // locals first (LocalId order), then live-ins
+                                // (ascending TempId). Each fill is a Rust-side
+                                // 16-byte Value clone from ctx.slots[src] into
+                                // buf.slots[idx] (h_osr_fill — the Value layout
+                                // is shared by construction, both sides Rust).
+                                let mut idx = 0usize;
+                                for l in &plan.locals {
+                                    let f = helpers["apjit_h_osr_fill"];
+                                    let a1 = buf_addr;
+                                    let a2 = iconst!(fb, local_slot(*l));
+                                    let a3 = iconst!(fb, idx as i64);
+                                    fb.ins().call(f, &[ctx_ptr, a1, a2, a3]);
+                                    idx += 1;
+                                }
+                                for t in &plan.live_in {
+                                    let f = helpers["apjit_h_osr_fill"];
+                                    let a1 = buf_addr;
+                                    let a2 = iconst!(fb, temp_slot(*t));
+                                    let a3 = iconst!(fb, idx as i64);
+                                    fb.ins().call(f, &[ctx_ptr, a1, a2, a3]);
+                                    idx += 1;
+                                }
+                                // OSR-BY-CALL: entry ABI `(ctx, buf) -> i32`,
+                                // indirect through the poll's returned pointer.
+                                let mut sig = cranelift::codegen::ir::Signature::new(
+                                    fb.func.signature.call_conv,
+                                );
+                                sig.params
+                                    .push(cranelift::codegen::ir::AbiParam::new(i64_t));
+                                sig.params
+                                    .push(cranelift::codegen::ir::AbiParam::new(i64_t));
+                                sig.returns
+                                    .push(cranelift::codegen::ir::AbiParam::new(i32_t));
+                                let sigref = fb.import_signature(sig);
+                                let r =
+                                    fb.ins()
+                                        .call_indirect(sigref, entry_v, &[ctx_ptr, buf_addr]);
+                                let status = fb.inst_results(r)[0];
+                                // Forward 0/1 as our own exit; anything else is
+                                // fail-closed to the exception exit.
+                                let ok =
+                                    fb.ins()
+                                        .icmp_imm_s(IntCC::UnsignedLessThanOrEqual, status, 1);
+                                let ok_b = fb.create_block();
+                                let bad_b = fb.create_block();
+                                fb.ins().brif(ok, ok_b, &[], bad_b, &[]);
+                                fb.switch_to_block(bad_b);
+                                let one = fb.ins().iconst(i32_t, 1);
+                                fb.ins().return_(&[one]);
+                                fb.switch_to_block(ok_b);
+                                fb.ins().return_(&[status]);
+                                // --- continue the loop in tier-0 ---
+                                fb.switch_to_block(cont_b);
+                            } // if let Some(plan) — ineligible header: poll no-ops
                         }
                     }
                 }

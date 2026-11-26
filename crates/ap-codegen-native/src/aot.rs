@@ -155,6 +155,7 @@ fn temp_of_inst(i: &crate::cfg::Inst) -> crate::cfg::TempId {
             m
         }
         Inst::StoreAttr(_, _, v) => *v,
+        Inst::StoreSubscript(_, _, v) => *v,
         Inst::MatchExc(_, _, dst) => *dst,
         Inst::Print(v) => *v,
         _ => crate::cfg::TempId(0),

@@ -1,0 +1,57 @@
+{
+  "probe": "pp2_tier1_dispatch.py",
+  "repeats": 7,
+  "tier1_installed_fns": [
+    "str_find"
+  ],
+  "rows": {
+    "int_acc": {
+      "tier0_med_ms": 13.313,
+      "adaptive_med_ms": 6.373,
+      "speedup": 2.09,
+      "tier0_ns_per_iter": 406.3,
+      "adaptive_ns_per_iter": 194.5,
+      "results_identical_across_modes": true
+    },
+    "dict_get": {
+      "tier0_med_ms": 14.075,
+      "adaptive_med_ms": 13.976,
+      "speedup": 1.01,
+      "tier0_ns_per_iter": 429.5,
+      "adaptive_ns_per_iter": 426.5,
+      "results_identical_across_modes": true
+    },
+    "dict_getitem": {
+      "tier0_med_ms": 9.784,
+      "adaptive_med_ms": 9.928,
+      "speedup": 0.99,
+      "tier0_ns_per_iter": 298.6,
+      "adaptive_ns_per_iter": 303.0,
+      "results_identical_across_modes": true
+    },
+    "dict_build": {
+      "tier0_med_ms": 12.986,
+      "adaptive_med_ms": 7.151,
+      "speedup": 1.82,
+      "tier0_ns_per_iter": 396.3,
+      "adaptive_ns_per_iter": 218.2,
+      "results_identical_across_modes": true
+    },
+    "str_find": {
+      "tier0_med_ms": 0.96,
+      "adaptive_med_ms": 0.89,
+      "speedup": 1.08,
+      "tier0_ns_per_iter": 29.3,
+      "adaptive_ns_per_iter": 27.1,
+      "results_identical_across_modes": true
+    },
+    "str_concat": {
+      "tier0_med_ms": 1.311,
+      "adaptive_med_ms": 0.795,
+      "speedup": 1.65,
+      "tier0_ns_per_iter": 40.0,
+      "adaptive_ns_per_iter": 24.3,
+      "results_identical_across_modes": true
+    }
+  }
+}
