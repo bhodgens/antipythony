@@ -362,7 +362,9 @@ def test_10k_iteration_bounded_heap():
     # unfinalized-object leak grows the heap linearly with rounds.
     impl = _impl_cmd()
     probe = str(PROBES / "heap_probe_10k.py")
-    measure = ["/usr/bin/time", "-l"] + impl + [probe]
+    # GNU time (linux) needs -v; BSD time (darwin) needs -l.
+    time_flag = "-l" if sys.platform == "darwin" else "-v"
+    measure = ["/usr/bin/time", time_flag] + impl + [probe]
     proc = subprocess.run(measure, capture_output=True, env=_scrubbed_env(),
                           cwd=REPO_ROOT, timeout=600)
     assert proc.returncode == 0, f"impl heap probe run failed: {proc.stderr.decode(errors='replace')[-2000:]}"
