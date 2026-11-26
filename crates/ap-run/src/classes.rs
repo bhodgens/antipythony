@@ -3446,6 +3446,23 @@ pub fn attr_get_opt(
         // and a class-receiver read (self mis-bound to the class in
         // wrapper teardown) must find them.
         Value::Obj(o) => {
+            // 02.08 gap re-verify (issue #19): typing._GenericAlias aliases
+            // answer __module__ from the ORIGIN's module (CPython
+            // _GenericAlias.__init__ seeds __module__ = origin.__module__).
+            if o.kind == ap_obj::ObjKind::Opaque && o.name == "typing._GenericAlias" {
+                let hit = o
+                    .attrs
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .get(&Value::Str(PyString::new("__origin__")))
+                    .map(|v| v.clone());
+                if let Some(origin) = hit {
+                    if let Ok(Some(m)) = attr_get_opt(interp, &origin, "__module__") {
+                        return Ok(Some(m));
+                    }
+                }
+                return Ok(Some(Value::Str(PyString::new("typing"))));
+            }
             if let Some(v) = o
                 .attrs
                 .lock()
@@ -3838,7 +3855,15 @@ fn class_attr_get(
     // type's own slots resolve FIRST (S-03-12: __name__, __bases__,
     // __mro__, __qualname__, __dict__ ...).
     match name {
-        "__name__" => return Ok(Value::Str(PyString::new(t.name.clone()))),
+        "__name__" => {
+            // 02.08 gap re-verify (issue #19): type(C[int]).__name__ is the
+            // BARE class name (_GenericAlias); the interned Type payload
+            // carries the module-qualified marker ("typing._GenericAlias").
+            if t.name == "typing._GenericAlias" {
+                return Ok(Value::Str(PyString::new("_GenericAlias")));
+            }
+            return Ok(Value::Str(PyString::new(t.name.clone())));
+        }
         "__qualname__" => return Ok(Value::Str(PyString::new(t.qualname.clone()))),
         // 02.08f (s026): CPython 3.14 classes carry __type_params__ (PEP 695,
         // () for non-generic classes); typing.get_type_hints reads it
@@ -3865,6 +3890,12 @@ fn class_attr_get(
             return Ok(Value::Dict(PyDict::new()));
         }
         "__module__" => {
+            // 02.08 gap re-verify (issue #19): typing._GenericAlias reports
+            // its home module (CPython: the class lives in typing; other
+            // interned types keep the builtins fallback below).
+            if t.name == "typing._GenericAlias" {
+                return Ok(Value::Str(PyString::new("typing")));
+            }
             // 02.08-full p2: stdlib-exception classes report their home
             // module (re.error.__module__ == 're', json.JSONDecodeError 'json').
             const STDLIB_EXC_MODULES: &[(&str, &str)] = &[("PatternError", "re")];

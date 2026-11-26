@@ -204,3 +204,120 @@ print(format(123456, '08,'), format(1, '08,'))
 "#,
     );
 }
+
+#[test]
+fn io19_typing_generic_alias_repr_origin() {
+    common::interpreter_gate();
+    // 02.08 surface gap re-verify: repr(C[int]) renders `__main__.C[int]`
+    // (was the object-at-0x placeholder form); type(C[int]) is
+    // typing._GenericAlias with bare __name__; alias __module__/__name__
+    // resolve from the origin; repr(typing.Any) is "typing.Any".
+    assert_differential(
+        r#"import typing
+T = typing.TypeVar("T")
+class C(typing.Generic[T]):
+    pass
+a = C[int]
+print(repr(a))
+print(type(a).__name__)
+print(type(a).__module__)
+print(a.__name__)
+print(a.__module__)
+print(a.__origin__ is C, a.__args__)
+print(repr(typing.List[int]))
+print(repr(typing.Dict[str, int]))
+print(repr(typing.Any), repr(typing.NoReturn))
+"#,
+    );
+}
+
+#[test]
+fn io19_counter_cacheinfo_enum_warnings_argparse() {
+    common::interpreter_gate();
+    // 02.08 surface gap re-verify: Counter repr/most_common ordering,
+    // functools lru wrapper type + CacheInfo repr, enum member str/repr
+    // chains, warnings attribution (module + stacklevel + formatwarning),
+    // argparse Namespace repr/error text + subparsers.
+    assert_differential(
+        r#"import sys
+from collections import Counter
+c = Counter("abracadabra")
+print(repr(c))
+print(c.most_common(3))
+print(repr(Counter()))
+print(Counter("aabbcc").most_common())
+import functools
+@functools.lru_cache(maxsize=128)
+def f(x):
+    return x * 2
+print(type(f).__name__)
+f(1)
+f(2)
+f(1)
+print(f.cache_info())
+print(f.cache_parameters())
+from enum import Enum, IntEnum, Flag, auto
+class E(Enum):
+    A = 1
+    B = "bee"
+class IE(IntEnum):
+    X = 3
+class F(Flag):
+    P = auto()
+    Q = auto()
+print(str(E.A), repr(E.A), repr(E.B))
+print(str(IE.X), repr(IE.X), f"{IE.X}")
+print(str(F.P | F.Q), repr(F.P | F.Q))
+import warnings
+with warnings.catch_warnings(record=True) as w:
+    warnings.simplefilter("always")
+    warnings.warn("hi there")
+print(len(w), w[0].category.__name__, w[0].lineno, str(w[0].message))
+def deep():
+    warnings.warn("from deep", UserWarning, stacklevel=2)
+with warnings.catch_warnings(record=True) as w2:
+    warnings.simplefilter("always")
+    deep()
+print(len(w2), w2[0].lineno)
+import argparse
+p = argparse.ArgumentParser(prog="apx3")
+p.add_argument("--foo")
+p.add_argument("bar", nargs="?")
+ns = p.parse_args(["--foo", "1", "bval"])
+print(ns)
+print(repr(ns))
+sp = argparse.ArgumentParser(prog="sp")
+sub = sp.add_subparsers(dest="cmd")
+sp1 = sub.add_parser("run")
+sp1.add_argument("name")
+ns2 = sp.parse_args(["run", "x"])
+print(ns2.cmd, ns2.name)
+"#,
+    );
+}
+
+#[test]
+fn io19_ast_unparse_and_pprint() {
+    common::interpreter_gate();
+    // 02.08 surface gap re-verify: ast.unparse round-trips, dump, literal_eval
+    // error text; pprint sort_dicts default, pformat width wrap, PrettyPrinter.
+    assert_differential(
+        r#"import ast
+tree = ast.parse("def g(x):\n    return x + 1")
+print(ast.unparse(tree))
+print(ast.unparse(ast.parse("x = [i for i in range(3) if i % 2]")))
+print(ast.dump(ast.parse("a.b(1)"), annotate_fields=False))
+try:
+    ast.literal_eval("hello")
+except Exception as e:
+    print(type(e).__name__, e)
+import pprint
+pprint.pprint({"b": 1, "a": 2, "c": [1, 2, 3]})
+print(pprint.pformat({"x": "a" * 30, "y": ["long", "list", "of", "items", "here", "ok"]}, width=40))
+pp = pprint.PrettyPrinter(width=30)
+pp.pprint([1, "two", {"nested": True}])
+pprint.pprint({"b": 1, "a": 2}, sort_dicts=False)
+"#,
+    );
+}
+
