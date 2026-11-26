@@ -220,6 +220,66 @@ pub fn init_tier(explicit: Option<&str>) {
     // probes THIS function (installed once per process; the lookup is
     // pure over the registry + the JIT cache, no interpreter state).
     ap_codegen_native::runtime::set_host_osr_poll(osr_registry_lookup);
+    // hp-forloop: the iterator-protocol seams (S-02-17). The JIT'd
+    // for-loop desugaring lowers `for x in it:` to iter() once + next()
+    // per step through these pointers. The host side routes through the
+    // EXACT tree-walker surfaces:
+    // - iter:  interp::iterable_of_public (PyIterator::of over the
+    //   runtime iterator table — list/tuple/str/range/dict/generator
+    //   unified) + register_shared_iter_pub (live-table handle with a
+    //   gen_id, the same shape builtin_iter hands back; needed because
+    //   next() and iter() re-entry resolve the handle by gen_id).
+    // - next:  resolve the handle's registered id by gen_id, then
+    //   pull_iter_pub — the generator-aware pull (odd ids route through
+    //   gen_pull; StopIteration answers None → the loop's exit edge).
+    //   UserInstance __iter__/__next__ protocol objects resolve through
+    //   builtin_iter/builtin_next surfaces on the build side (iterable_of
+    //   handles containers; special_lookup objects go via the same
+    //   register_iter path the tree-walker's Stmt::For uses — exposed
+    //   below as register_iter_pub).
+    ap_codegen_native::runtime::set_iter_new_fn(Some(|o| {
+        let interp = crate::interp::current_interp_for_bindings_pub();
+        // register_iter_pub is the tree-walker's Stmt::For entry point:
+        // it handles Iterator/Generator handles (re-uses their id),
+        // UserInstance __iter__ (generator-function interception), and
+        // the generic iterable_of path — so JIT'd loops iterate exactly
+        // what tier-0 loops iterate.
+        let id = match crate::interp::register_iter_pub(&interp, o) {
+            Ok(id) => id,
+            Err(crate::Flow::Raise(ev)) => {
+                let class = intern_class(&ev.class);
+                let probe = crate::exc_hier::ExceptionValue::new(class, ev.args.clone());
+                return Err(format!(
+                    "{}: {}",
+                    ev.class,
+                    probe.py_str().unwrap_or_default()
+                ));
+            }
+            Err(_) => return Err("SystemError: non-raise Flow in JIT iter".to_string()),
+        };
+        let obj = ap_obj::PyObject::new(ap_obj::ObjKind::Iterator, "iterator");
+        *obj.gen_id.lock().unwrap_or_else(|p| p.into_inner()) = Some(id);
+        Ok(ap_obj::value::Value::Obj(obj))
+    }));
+    ap_codegen_native::runtime::set_iter_next_fn(Some(|h| {
+        let Some(id) = (match h {
+            ap_obj::value::Value::Obj(o) => *o.gen_id.lock().unwrap_or_else(|p| p.into_inner()),
+            _ => None,
+        }) else {
+            return Err("TypeError: 'NoneType' object is not an iterator".to_string());
+        };
+        let interp = crate::interp::current_interp_for_bindings_pub();
+        match crate::interp::pull_iter_pub(&interp, id) {
+            Ok(Some(v)) => Ok(Some(v)),
+            Ok(None) => Ok(None), // StopIteration → the loop's exit edge
+            Err(crate::Flow::Raise(ev)) => Err(format!("{}: {}", ev.class, {
+                let class = intern_class(&ev.class);
+                let probe = crate::exc_hier::ExceptionValue::new(class, ev.args.clone());
+                probe.py_str().unwrap_or_default()
+            })),
+            Err(_) => Err("SystemError: non-raise Flow in JIT iter-next".to_string()),
+        }
+    }));
 }
 
 fn parse_tier(m: &str) -> Option<TierMode> {
@@ -281,6 +341,12 @@ thread_local! {
 /// Only the process-global driver runs here; when the driver was never
 /// started (tier-0 runs, unit tests) the registry stays empty.
 fn osr_registry_lookup(fn_key: u64, header: u32) -> *const u8 {
+    // hp-forloop A/B debug knob: APX_OSR_OFF=1 disables all OSR entries
+    // (the poll fast path only) — used to isolate suspected OSR-body
+    // bugs from desugar semantics. Never set in production runs.
+    if std::env::var("APX_OSR_OFF").map(|v| v == "1").unwrap_or(false) {
+        return std::ptr::null();
+    }
     let installed = OSR_ENTRIES.with(|m| {
         *m.borrow()
             .get(&(fn_key, header))
@@ -953,9 +1019,29 @@ pub fn jit_call_body(
         }
         (other, _) => other,
     };
-    let call_r = match fast_for_call {
-        Some(fast_ptr) => unsafe { tierup::call_fast(fast_ptr, &je.jit, &mut ctx) },
-        None => unsafe { je.jit.call(&mut ctx) },
+    // hp-forloop (s031 gate): use the raw outcome. The Raised arm (status 1
+    // + empty pending_exc) is the h_raise terminator's exit — ret carries
+    // the raised exception INSTANCE; convert through the same interpreter
+    // surface the AoT boundary uses (aot_runtime::call_body's 0206-embed
+    // arm). The tier-1 fast path keeps its own call (its status contract
+    // 0/2 hand-off is unchanged); the twin's outcome rides call_status.
+    let call_outcome = match fast_for_call {
+        Some(fast_ptr) => {
+            match unsafe { tierup::call_fast(fast_ptr, &je.jit, &mut ctx) } {
+                Ok(()) => ap_codegen_native::clif::CallOutcome::Completed,
+                Err(e) => ap_codegen_native::clif::CallOutcome::Parked(e),
+            }
+        }
+        None => unsafe { je.jit.call_status(&mut ctx) },
+    };
+    let call_r = match &call_outcome {
+        ap_codegen_native::clif::CallOutcome::Completed => Ok(()),
+        ap_codegen_native::clif::CallOutcome::Raised => Ok(()), // ret = raise
+        ap_codegen_native::clif::CallOutcome::Parked(e) => Err(e.clone()),
+        ap_codegen_native::clif::CallOutcome::Malformed => Err(ap_obj::PyException::new(
+            "SystemError",
+            "JIT helper failed without parking an exception",
+        )),
     };
     // 02.05c twin-start hygiene: the tier-1 hand-off parks the twin start
     // block; both call paths consume it. Reset so an independent later
@@ -977,7 +1063,27 @@ pub fn jit_call_body(
 
     match call_r {
         Ok(()) => {
+            // hp-forloop (s031 gate): the Raised outcome (status 1 + empty
+            // pending_exc) is the h_raise terminator's exit — ret carries
+            // the raised exception INSTANCE. Convert through the same
+            // interpreter surface the AoT boundary uses (aot_runtime
+            // call_body's 0206-embed arm). On the COMPLETED outcome ret is
+            // the return value — never converted (a normal return of a
+            // user object must not become a raise; the conversion only
+            // fires for CallOutcome::Raised).
             let r = std::mem::replace(&mut ctx.ret, Value::None);
+            if matches!(
+                call_outcome,
+                ap_codegen_native::clif::CallOutcome::Raised
+            ) {
+                match crate::interp::exception_value_of_instance_pub(&r) {
+                    Ok(mut ev) => {
+                        ev.raise_line = frame.last_line.get();
+                        return Err(crate::Flow::Raise(ev));
+                    }
+                    Err(other) => return Err(other),
+                }
+            }
             Ok(Some(r))
         }
         Err(py) => Err(crate::Flow::Raise(rebuild(py))),

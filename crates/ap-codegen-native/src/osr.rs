@@ -83,11 +83,15 @@ pub enum OsrEligibility {
 
 /// Compute the OSR slot plan for `header` from CFG liveness.
 ///
-/// Liveness is plain backward dataflow over the CFG (pon
-/// `osr_live_values` analogue). The v0 liveness is CONSERVATIVE: a temp is
-/// live-in at the header if any path from the header reads it before
-/// definition (computed by a simple forward scan; refined to true
-/// backward dataflow when the typed-OSR extension lands).
+/// hp-forloop: the v0 CONSERVATIVE forward scan is replaced with TRUE
+/// backward dataflow (pon `osr_live_values` discipline — iterate to the
+/// fixed point over the CFG's use/def sets). A temp is live-in at `header`
+/// iff some path from `header` READS it before any redefinition; the
+/// forward scan over-approximated this (every read-anywhere temp counted),
+/// which pushed for-loop bodies (iterator handle + exhausted-flag temps)
+/// past OSR_MAX_LIVE and silently killed OSR eligibility for exactly the
+/// shapes this leaf gates. Locals-only refinement stays as-is: cells are
+/// excluded by construction (the v0 slice has no cell locals).
 pub fn osr_plan(func: &Func, header: BlockId) -> OsrEligibility {
     let locals: Vec<LocalId> = (0..func.num_locals).map(LocalId).collect();
     let live_in = live_in_at(func, header);
@@ -101,40 +105,130 @@ pub fn osr_plan(func: &Func, header: BlockId) -> OsrEligibility {
     OsrEligibility::Eligible { locals, live_in }
 }
 
-/// Temps read on some path from `header` before being redefined (v0
-/// conservative forward scan; fixed-point over the reachable subset).
+/// True backward liveness over temps at one block entry (the worklist
+/// fixed-point of `live_out(b) = ∪ live_in(succ)` / `live_in(b) =
+/// use(b) ∪ (live_out(b) − def(b))`). Temps are block-local in the
+/// statement-tree lowering EXCEPT values carried across back-edges (the
+/// iterator handle, loop-carried phis), which is exactly what this pass
+/// recovers: the fixed point propagates the reads at the loop's exit/join
+/// blocks back around the back-edge to the header.
 fn live_in_at(func: &Func, header: BlockId) -> Vec<TempId> {
-    // defined-then-read tracking: a temp is live-in if read on a path
-    // where the last def before the read is outside the region.
-    let mut live = std::collections::BTreeSet::new();
-    let mut defined = std::collections::BTreeSet::new();
-    let mut stack = vec![header];
-    let mut visited = std::collections::BTreeSet::new();
-    while let Some(b) = stack.pop() {
-        if !visited.insert(b) {
-            continue;
+    let n = func.blocks.len();
+    // Per-block use (read before any def in-block) and def sets. NOTE: the
+    // shared reads_of() lists an inst's DESTINATION as a read (deliberately
+    // conservative for the old forward scan); true liveness needs the
+    // precise form — an inst's dst is a DEF, its operands are USES.
+    fn true_reads_writes(i: &Inst) -> (Vec<TempId>, Vec<TempId>) {
+        match i {
+            Inst::LoadLocal(_, d)
+            | Inst::Const(_, d)
+            | Inst::LoadGlobal(_, d)
+            | Inst::Truthy(_, d)
+            | Inst::UnaryOp(_, _, d)
+            | Inst::MatchExc(_, _, d) => (vec![], vec![*d]),
+            Inst::LoadAttr(o, _, d) | Inst::Subscript(o, _, d) => (vec![*o], vec![*d]),
+            Inst::StoreLocal(s, _) => (vec![*s], vec![]),
+            Inst::StoreAttr(o, _, v) => (vec![*o, *v], vec![]),
+            Inst::StoreSubscript(o, k, v) => (vec![*o, *k, *v], vec![]),
+            Inst::BinOp(_, a, b, d) | Inst::Compare(_, a, b, d) => (vec![*a, *b], vec![*d]),
+            Inst::Call(f, args, d) => {
+                let mut r = vec![*f];
+                r.extend(args.iter().copied());
+                (r, vec![*d])
+            }
+            Inst::Print(s) => (vec![*s], vec![]),
+            Inst::IterNew(src, d) => (vec![*src], vec![*d]),
+            Inst::IterNext(it, d, st) => (vec![*it], vec![*d, *st]),
+            Inst::PushExcInfo(_)
+            | Inst::PopExcInfo(_)
+            | Inst::Reraise
+            | Inst::SuspendMarker
+            | Inst::OsrPoll => (vec![], vec![]),
         }
-        let block = &func.blocks[b.0 as usize];
+    }
+    let mut use_sets: Vec<std::collections::BTreeSet<u32>> =
+        vec![std::collections::BTreeSet::new(); n];
+    let mut def_sets: Vec<std::collections::BTreeSet<u32>> =
+        vec![std::collections::BTreeSet::new(); n];
+    for (bi, block) in func.blocks.iter().enumerate() {
+        let (u, d) = (&mut use_sets[bi], &mut def_sets[bi]);
         for inst in &block.insts {
-            for read in reads_of(inst) {
-                if !defined.contains(&read) {
-                    live.insert(read);
+            let (reads, writes) = true_reads_writes(inst);
+            for r in reads {
+                if !d.contains(&r.0) {
+                    u.insert(r.0);
                 }
             }
-            for w in writes_of(inst) {
-                defined.insert(w);
+            for w in writes {
+                d.insert(w.0);
             }
         }
+        // A branch condition / return / raise operand is a READ at the
+        // block's end (after every inst's defs).
+        let term_read = |t: &TempId, u: &mut std::collections::BTreeSet<u32>| {
+            if !d.contains(&t.0) {
+                u.insert(t.0);
+            }
+        };
         match &block.term {
-            Some(crate::cfg::Terminator::Goto(t)) => stack.push(*t),
+            Some(crate::cfg::Terminator::Branch(c, _, _)) => term_read(c, u),
+            Some(crate::cfg::Terminator::Return(v) | crate::cfg::Terminator::Raise(v, _)) => {
+                term_read(v, u)
+            }
+            Some(crate::cfg::Terminator::Suspend(v, _, _)) => term_read(v, u),
+            _ => {}
+        }
+    }
+    // Successor lists.
+    let mut succs: Vec<Vec<u32>> = vec![Vec::new(); n];
+    for (bi, b) in func.blocks.iter().enumerate() {
+        let push = |t: u32, v: &mut Vec<u32>| {
+            if !v.contains(&t) {
+                v.push(t);
+            }
+        };
+        match &b.term {
+            Some(crate::cfg::Terminator::Goto(t)) => push(t.0, &mut succs[bi]),
             Some(crate::cfg::Terminator::Branch(_, t, f)) => {
-                stack.push(*t);
-                stack.push(*f);
+                push(t.0, &mut succs[bi]);
+                push(f.0, &mut succs[bi]);
             }
             _ => {}
         }
     }
-    live.into_iter().collect()
+    // Backward fixed point: live_in(b) = use(b) ∪ (live_out(b) − def(b)).
+    let mut live_in: Vec<std::collections::BTreeSet<u32>> =
+        vec![std::collections::BTreeSet::new(); n];
+    let mut live_out: Vec<std::collections::BTreeSet<u32>> =
+        vec![std::collections::BTreeSet::new(); n];
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for bi in (0..n).rev() {
+            let mut out = std::collections::BTreeSet::new();
+            for s in &succs[bi] {
+                out.extend(live_in[*s as usize].iter().copied());
+            }
+            if out != live_out[bi] {
+                live_out[bi] = out;
+                changed = true;
+            }
+            let mut inn = use_sets[bi].clone();
+            for t in &live_out[bi] {
+                if !def_sets[bi].contains(t) {
+                    inn.insert(*t);
+                }
+            }
+            if inn != live_in[bi] {
+                live_in[bi] = inn;
+                changed = true;
+            }
+        }
+    }
+    live_in[header.0 as usize]
+        .iter()
+        .map(|&t| TempId(t))
+        .collect()
 }
 
 /// A canonical OSR slot plan (the shared constant table the split's Risk
@@ -219,19 +313,24 @@ pub fn loop_headers(func: &Func) -> Vec<BlockId> {
                 _ => {}
             }
         }
-        // The header is the predecessor that itself reaches the poll block
-        // again through the loop (the back-edge source). For the while
-        // shape the cfg emits, the body block's in-loop predecessor is the
-        // condition re-evaluation edge from the body's end — the header is
-        // the CONDITION block: the unique predecessor reachable FROM the
-        // poll block. Walk successors of the poll block; whichever
-        // predecessor lies on that forward path is the header.
-        let header = preds.iter().copied().find(|&p| {
-            // p must be able to reach `pi` forward (it re-enters the loop)
-            reaches(func, p, pi as u32)
-        });
-        if let Some(h) = header {
-            headers.push(BlockId(h));
+        // hp-forloop FIX: the header is THE POLL BLOCK ITSELF. Both loop
+        // desugars place the poll at the TOP of the head block (while:
+        // cond block; for: the IterNext head) — the head is the iteration
+        // boundary, so the OSR body must enter THERE. Entering at any
+        // other predecessor re-runs pre-head state: for the for-shape the
+        // pre-head holds IterNew, and a naive "first predecessor that
+        // reaches the poll" heuristic picked it, re-running iter() with a
+        // FRESH iterator (cursor reset) — the OSR body re-processed
+        // already-consumed items (the s023 double-unparse: exactly one
+        // duplicate subtree per transfer). Validate the loop: the poll
+        // block must be reachable from one of its own predecessors (a
+        // real back-edge) — a poll outside any loop resolves no header
+        // and stays OSR-ineligible (reported, never silent).
+        let on_cycle = preds
+            .iter()
+            .any(|&p| reaches(func, pi as u32, p) && p != pi as u32);
+        if on_cycle {
+            headers.push(BlockId(pi as u32));
         }
     }
     headers.sort_unstable();
@@ -288,6 +387,13 @@ fn reads_of(i: &Inst) -> Vec<TempId> {
             r.extend(args.iter().copied());
             r
         }
+        // hp-forloop: IterNew reads the iterable (dst is the fresh handle);
+        // IterNext reads the iterator handle and WRITES both dst (the
+        // value) and st (the exhausted flag) — the st temp is the branch
+        // condition of the loop exit, so it is a WRITE here (reads_of
+        // only reports values defined BEFORE this inst).
+        Inst::IterNew(src, _) => vec![*src],
+        Inst::IterNext(it, _, _) => vec![*it],
         Inst::MatchExc(_, _, d) => vec![*d],
         Inst::Print(s) => vec![*s],
         Inst::PushExcInfo(_)
@@ -311,6 +417,9 @@ fn writes_of(i: &Inst) -> Vec<TempId> {
         | Inst::Compare(_, _, _, d)
         | Inst::Call(_, _, d)
         | Inst::MatchExc(_, _, d) => vec![*d],
+        // hp-forloop: both results are fresh defs (value + exhausted flag).
+        Inst::IterNew(_, d) => vec![*d],
+        Inst::IterNext(_, d, st) => vec![*d, *st],
         _ => vec![],
     }
 }

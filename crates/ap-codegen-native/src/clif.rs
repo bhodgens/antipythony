@@ -112,16 +112,59 @@ impl JitFunc {
     /// The code blob is alive as long as `self` is; `ctx` is
     /// exclusively borrowed for the call duration.
     pub unsafe fn call(&self, ctx: &mut rt::ExecCtx) -> Result<(), ap_obj::PyException> {
+        match self.call_status(ctx) {
+            CallOutcome::Completed => Ok(()),
+            CallOutcome::Raised => Ok(()), // ret carries the raise; host reads it
+            CallOutcome::Parked(e) => Err(e),
+            CallOutcome::Malformed => Err(ap_obj::PyException::new(
+                "SystemError",
+                "JIT helper failed without parking an exception",
+            )),
+        }
+    }
+}
+
+/// What [`JitFunc::call_status`] observed at the compiled boundary.
+pub enum CallOutcome {
+    /// Status 0: ret carries the return value.
+    Completed,
+    /// Status 1 with empty pending_exc: the h_raise terminator's exit —
+    /// ret carries the raised exception INSTANCE (not a return value).
+    /// hp-forloop (s031 gate): the host boundary (jit_call_body) converts
+    /// it through the interpreter's exception-instance surface — the old
+    /// behavior turned EVERY propagated JIT'd raise into a SystemError
+    /// "JIT helper failed without parking an exception" (raise ValueError
+    /// in a JIT'd fn caught at module level; the AoT boundary already
+    /// handled this arm, jit_call_body never did).
+    Raised,
+    /// Status 1 with a helper-parked exception (the normal helper raise
+    /// path — binop TypeError, call failure, ...).
+    Parked(ap_obj::PyException),
+    /// Status 1 with NEITHER: a helper failed fail-closed. Never a silent
+    /// continue.
+    Malformed,
+}
+
+impl JitFunc {
+    /// Call with the raw outcome (see [`CallOutcome`]).
+    ///
+    /// # Safety
+    ///
+    /// Same contract as [`JitFunc::call`].
+    pub unsafe fn call_status(&self, ctx: &mut rt::ExecCtx) -> CallOutcome {
         let f: extern "C" fn(*mut rt::ExecCtx) -> i32 = std::mem::transmute(self.code_ptr);
         let status = f(ctx as *mut rt::ExecCtx);
         match status {
-            0 => Ok(()),
+            0 => CallOutcome::Completed,
             _ => match ctx.pending_exc.take() {
-                Some(e) => Err(e),
-                None => Err(ap_obj::PyException::new(
-                    "SystemError",
-                    "JIT helper failed without parking an exception",
-                )),
+                Some(e) => CallOutcome::Parked(e),
+                None => {
+                    if matches!(ctx.ret, ap_obj::value::Value::None) {
+                        CallOutcome::Malformed
+                    } else {
+                        CallOutcome::Raised
+                    }
+                }
             },
         }
     }
@@ -615,6 +658,9 @@ fn extra_params(name: &'static str) -> &'static [usize] {
         "apjit_h_raise" => &[0],
         "apjit_h_suspend" => &[0, 0],
         "apjit_h_reraise" => &[],
+        // hp-forloop: iter_new(ctx, obj, dst); iter_next(ctx, it, dst, st).
+        "apjit_h_iter_new" => &[0, 0],
+        "apjit_h_iter_next" => &[0, 0, 0],
         _ => &[],
     }
 }
@@ -665,6 +711,12 @@ fn helper_symbols() -> Vec<(&'static str, *const u8)> {
         ("apjit_h_osr_poll", h_osr_poll as *const u8),
         ("apjit_h_osr_fill", h_osr_fill as *const u8),
         ("apjit_h_osr_load", h_osr_load as *const u8),
+        // hp-forloop iterator protocol (S-02-17 desugaring).
+        ("apjit_h_iter_new", crate::runtime::h_iter_new as *const u8),
+        (
+            "apjit_h_iter_next",
+            crate::runtime::h_iter_next as *const u8,
+        ),
     ]
 }
 
@@ -1108,6 +1160,30 @@ fn emit_cfg_with_osr<M: Module>(
                     let a1 = iconst!(fb, temp_slot(*obj));
                     let a2 = iconst!(fb, temp_slot(*idx));
                     let a3 = iconst!(fb, temp_slot(*v));
+                    let r = fb.ins().call(f, &[ctx_ptr, a1, a2, a3]);
+                    check_status(fb, r, raise_target);
+                }
+                Inst::IterNew(obj, dst) => {
+                    // hp-forloop: iter(obj) — boxed protocol build. The
+                    // host iterator table unifies list/tuple/str/range/
+                    // dict/generator; a TypeError parks on the raise edge.
+                    let f = helpers["apjit_h_iter_new"];
+                    let a1 = iconst!(fb, temp_slot(*obj));
+                    let a2 = iconst!(fb, temp_slot(*dst));
+                    let r = fb.ins().call(f, &[ctx_ptr, a1, a2]);
+                    check_status(fb, r, raise_target);
+                }
+                Inst::IterNext(it, dst, st) => {
+                    // hp-forloop: next(it) — one protocol step. The helper
+                    // writes BOTH the value (dst) and the exhausted flag
+                    // (st, boxed bool); status 0 covers produced AND
+                    // exhausted (the branch on st is the loop's exit
+                    // edge), status 1 = a real exception on the raise
+                    // edge.
+                    let f = helpers["apjit_h_iter_next"];
+                    let a1 = iconst!(fb, temp_slot(*it));
+                    let a2 = iconst!(fb, temp_slot(*dst));
+                    let a3 = iconst!(fb, temp_slot(*st));
                     let r = fb.ins().call(f, &[ctx_ptr, a1, a2, a3]);
                     check_status(fb, r, raise_target);
                 }

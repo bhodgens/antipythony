@@ -391,14 +391,24 @@ mod tests {
     }
 
     #[test]
-    fn lowering_reject_falls_to_tree_walk_list() {
-        // `for` at module-level-def scope is outside the cfg stage's
-        // statement coverage — the fn drops to the tree-walk list.
-        let src = "def f(n):\n    for i in range(n):\n        print(i)\n\nf(2)\n";
-        let module = probe_module(src);
+    fn lowering_accepts_for_and_still_fails_closed_on_unsupported() {
+        // hp-forloop FLIP: `for` at module-level-def scope NOW lowers (the
+        // iterator-protocol desugaring) — the old tree-walk drop is gone.
+        // The fail-closed contract survives on genuinely unsupported
+        // statement kinds (AugAssign), which still land on the list.
+        let for_src = "def f(n):\n    for i in range(n):\n        print(i)\n\nf(2)\n";
+        let module = probe_module(for_src);
         let (fns, tree_walk) = lower_module_functions(&module).expect("lower");
-        assert!(fns.is_empty());
-        assert_eq!(tree_walk, vec!["f".to_string()]);
+        assert!(
+            fns.len() == 1 && tree_walk.is_empty(),
+            "for-loop body must lower now (fns={} fn(s), tree_walk={tree_walk:?})",
+            fns.len()
+        );
+        let aug_src = "def g(n):\n    x = 0\n    x += n\n    return x\n\nprint(g(1))\n";
+        let module2 = probe_module(aug_src);
+        let (fns2, tree_walk2) = lower_module_functions(&module2).expect("lower");
+        assert!(fns2.is_empty());
+        assert_eq!(tree_walk2, vec!["g".to_string()]);
     }
 
     #[test]

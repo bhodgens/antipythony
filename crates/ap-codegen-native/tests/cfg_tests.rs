@@ -73,24 +73,39 @@ fn every_block_terminated_after_lowering() {
 }
 
 #[test]
-fn unsupported_constructs_fail_closed() {
-    // For statement: explicit Unsupported, never silent wrong-code.
+fn for_loop_lowens_via_iter_protocol_and_break_still_fails_closed() {
+    // hp-forloop FLIP: For lowers as the boxed iterator desugaring
+    // (IterNew once at entry; IterNext + exit branch at the head) — the
+    // old expectation pinned Unsupported("For"). The fail-closed
+    // contract survives on break/continue OUTSIDE any loop (a
+    // SyntaxError in CPython).
     let f = fn_def(vec![ap_ir::item::Stmt::For(
         ap_ir::item::Target::Name("i".to_string()),
-        Expr::Name("range".to_string()),
+        Expr::Name("xs".to_string()),
         vec![],
         vec![],
     )]);
-    let err = lower_fn(&f).expect_err("cfg_tests.rs:83");
+    let cfg = lower_fn(&f).expect("for lowers since hp-forloop");
+    assert!(
+        cfg.blocks.iter().any(|b| b
+            .insts
+            .iter()
+            .any(|i| matches!(i, ap_codegen_native::cfg::Inst::IterNew(..)))),
+        "for-loop entry must build the iterator handle"
+    );
+    assert!(
+        cfg.blocks.iter().any(|b| b
+            .insts
+            .iter()
+            .any(|i| matches!(i, ap_codegen_native::cfg::Inst::IterNext(..)))),
+        "for-loop head must step the iterator"
+    );
+    // Break outside a loop: fail-closed (Unsupported), never a dangling edge.
+    let f = fn_def(vec![ap_ir::item::Stmt::Break]);
+    let err = lower_fn(&f).expect_err("break outside loop must fail closed");
     assert!(matches!(
         err,
-        ap_codegen_native::CodegenError::Unsupported("For")
-    ));
-    // Break likewise.
-    let f = fn_def(vec![ap_ir::item::Stmt::Break]);
-    assert!(matches!(
-        lower_fn(&f).expect_err("cfg_tests.rs:91"),
-        ap_codegen_native::CodegenError::Unsupported("Break/Continue")
+        ap_codegen_native::CodegenError::Unsupported("Break outside loop")
     ));
     // Subscript store: SUPPORTED since pp2-tier1 (StoreSubscript — the
     // dict.build loop shape `d[i] = i` reaches the baseline twin now).

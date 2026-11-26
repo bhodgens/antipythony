@@ -110,6 +110,21 @@ pub enum Inst {
     /// OSR poll at a loop back-edge (leaf scope item 6; emitted by the
     /// final lowering, see clif.rs).
     OsrPoll,
+    /// hp-forloop: `iter = __iter__(obj)` — build an iterator handle from
+    /// an iterable, once at for-loop entry (S-02-17 "iter once"). The
+    /// handle is a boxed Value (the host iterator table's registered
+    /// shape); routing through ONE host seam keeps the iterator protocol
+    /// OUT of the JIT (the runtime's table already unifies
+    /// list/tuple/str/range/dict/generator iterators).
+    IterNew(TempId, TempId),
+    /// hp-forloop: `x = __next__(iter)` — one protocol step (S-02-17).
+    /// Status-model (NOT an exception park): the helper writes the value
+    /// into `dst` and the STEP STATUS into `st` (boxed bool: True =
+    /// StopIteration/exhausted, False = value produced); status "real
+    /// exception" parks pending_exc and takes the raise edge like any
+    /// helper. The CLIF emits the exit branch on `st` — the loop's
+    /// StopIteration edge is control flow, not an error.
+    IterNext(TempId, TempId, TempId),
 }
 
 /// Literal constants carried in the CFG (boxed at CLIF lowering).
@@ -269,6 +284,21 @@ struct Lowerer<'a> {
     regions: Vec<(ExceptionRegionId, BlockId)>,
     /// Raise terminators awaiting redirect (RaiseTerm-emit-then-redirect).
     pending_raises: Vec<BlockId>,
+    /// hp-forloop: open loop contexts (innermost last) — the break/continue
+    /// jump targets. `cont` is the block the continue edge jumps to (the
+    /// loop's step/head block); `brk` is the block the break edge jumps to
+    /// (the loop's exit; a while/for ELSE clause jumps AROUND this block on
+    /// normal exhaustion, so `brk` IS the else-guard block for loops with
+    /// an else: the break edge skips the else body, the exhaustion edge
+    /// falls into it — S-02-16/S-02-17).
+    loops: Vec<LoopCtx>,
+}
+
+/// One open loop's break/continue landing blocks.
+#[derive(Debug, Clone, Copy)]
+struct LoopCtx {
+    cont: BlockId,
+    brk: BlockId,
 }
 
 impl<'a> Lowerer<'a> {
@@ -281,6 +311,7 @@ impl<'a> Lowerer<'a> {
             cur: BlockId(u32::MAX), // set by lower_body's entry block
             regions: Vec::new(),
             pending_raises: Vec::new(),
+            loops: Vec::new(),
         }
     }
 
@@ -429,32 +460,140 @@ impl<'a> Lowerer<'a> {
                 self.cur = join_b;
                 self.func.blocks[join_b.0 as usize].region = self.cur_region();
             }
-            Stmt::While(cond, body, _orelse) => {
-                // Leaf v0 slice: else-on-normal-exit unsupported (explicit).
-                if !_orelse.is_empty() {
-                    return Err(CodegenError::Unsupported("While else"));
-                }
-                let c = self.lower_expr(cond)?;
+            Stmt::While(cond, body, orelse) => {
+                // hp-forloop: while gained break/continue + else (S-02-16).
+                // Shape: cond_b (head) branches body_b / else-chain entry.
+                // The body's back-edge re-lowers `cond` into its own block
+                // (cond2_b) and branches back to cond_b — the poll sits at
+                // the top of the body block (one per back-edge path, same
+                // position as the pre-existing while lowering).
+                let cond_b = self.func.new_block();
                 let body_b = self.func.new_block();
-                let exit_b = self.func.new_block();
-                self.set_term(Terminator::Branch(c, body_b, exit_b));
+                // Break lands in brk_b; normal exhaustion falls into the
+                // else chain (brk_b is the JOIN — the else body lower
+                // chains into it, and the break edge skips the chain by
+                // jumping brk_b directly when orelse is empty).
+                let brk_b = self.func.new_block();
+                self.set_term(Terminator::Goto(cond_b));
+                self.cur = cond_b;
+                self.func.blocks[cond_b.0 as usize].region = self.cur_region();
+                let c = self.lower_expr(cond)?;
+                let else_entry = self.func.new_block();
+                self.set_term(Terminator::Branch(c, body_b, else_entry));
+                self.cur = cond_b;
+                self.func.blocks[cond_b.0 as usize].region = self.cur_region();
+                // hp-forloop: the poll lives at the TOP OF THE HEAD (the
+                // cond block), not the body — the same position the for
+                // desugar uses, so loop_headers resolves the OSR entry
+                // point as the head block for BOTH loop kinds (the OSR
+                // body re-enters at the iteration boundary: poll →
+                // cond-eval / IterNext → body; the item/cond state the
+                // back-edge carries is in the locals the transfer
+                // buffer already owns).
+                self.push_inst(Inst::OsrPoll);
                 self.cur = body_b;
                 self.func.blocks[body_b.0 as usize].region = self.cur_region();
-                self.push_inst(Inst::OsrPoll); // back-edge poll (leaf item 6)
+                self.loops.push(LoopCtx {
+                    cont: cond_b,
+                    brk: brk_b,
+                });
                 self.lower_stmts(body)?;
+                self.loops.pop();
                 if self.func.blocks[self.cur.0 as usize].term.is_none() {
                     // Re-evaluate cond at the loop head: re-lowering the
                     // condition into the current block branches back.
                     let c2 = self.lower_expr(cond)?;
-                    self.set_term(Terminator::Branch(c2, body_b, exit_b));
+                    self.set_term(Terminator::Branch(c2, body_b, else_entry));
                 }
-                self.cur = exit_b;
-                self.func.blocks[exit_b.0 as usize].region = self.cur_region();
+                // Else chain: runs on normal exhaustion (the false arm of
+                // the head branch); a break edge jumped straight to brk_b,
+                // skipping it (S-02-16 else-on-normal-exit).
+                self.cur = else_entry;
+                self.func.blocks[else_entry.0 as usize].region = self.cur_region();
+                self.lower_stmts(orelse)?;
+                if self.func.blocks[self.cur.0 as usize].term.is_none() {
+                    self.set_term(Terminator::Goto(brk_b));
+                }
+                self.cur = brk_b;
+                self.func.blocks[brk_b.0 as usize].region = self.cur_region();
             }
             Stmt::Break | Stmt::Continue => {
-                return Err(CodegenError::Unsupported("Break/Continue"));
+                // hp-forloop: structured break/continue via the open-loop
+                // stack (pon control.rs analogue). A break/continue with no
+                // open loop is a compile-time error (SyntaxError in
+                // CPython — fail-closed here, never a dangling edge).
+                let Some(ctx) = self.loops.last().copied() else {
+                    return Err(CodegenError::Unsupported(if matches!(stmt, Stmt::Break) {
+                        "Break outside loop"
+                    } else {
+                        "Continue outside loop"
+                    }));
+                };
+                let target = if matches!(stmt, Stmt::Break) {
+                    ctx.brk
+                } else {
+                    ctx.cont
+                };
+                self.set_term(Terminator::Goto(target));
+                let b = self.func.new_block();
+                self.cur = b;
+                self.func.blocks[b.0 as usize].region = self.cur_region();
             }
-            Stmt::For(_, _, _, _) => return Err(CodegenError::Unsupported("For")),
+            Stmt::For(target, iter, body, orelse) => {
+                // hp-forloop: THE gate leaf — for-loops lower as the boxed
+                // iterator protocol (S-02-17): iter once, next until
+                // StopIteration, else on normal exhaustion, break/continue
+                // via the loop stack. Desugared shape (phi-free):
+                //
+                //   it_t = IterNew(iterable)          # iter() once
+                // head:
+                //   OsrPoll                           # back-edge poll
+                //   v_t, st = IterNext(it_t)          # st: 0 val / 1 stop
+                //   brif st==1 -> else_entry / body_b
+                // body_b: assign target; body; -> head
+                //
+                // The StopIteration exit edge is the branch, NOT an
+                // exception: h_iter_next distinguishes exhaustion (status
+                // 1) from real errors (status 2 → raise edge), so a
+                // `raise StopIteration` inside the body still routes
+                // through the exception machinery (byte-identical with
+                // the tree-walker).
+                let it_t = self.temp();
+                let iterable_t = self.lower_expr(iter)?;
+                self.push_inst(Inst::IterNew(iterable_t, it_t));
+                let head_b = self.func.new_block();
+                self.set_term(Terminator::Goto(head_b));
+                let body_b = self.func.new_block();
+                let brk_b = self.func.new_block();
+                let else_entry = self.func.new_block();
+                self.cur = head_b;
+                self.func.blocks[head_b.0 as usize].region = self.cur_region();
+                self.push_inst(Inst::OsrPoll); // back-edge poll
+                let val_t = self.temp();
+                let st_t = self.temp();
+                self.push_inst(Inst::IterNext(it_t, val_t, st_t));
+                self.set_term(Terminator::Branch(st_t, else_entry, body_b));
+                self.cur = body_b;
+                self.func.blocks[body_b.0 as usize].region = self.cur_region();
+                self.assign_target(target, val_t)?;
+                self.loops.push(LoopCtx {
+                    cont: head_b,
+                    brk: brk_b,
+                });
+                self.lower_stmts(body)?;
+                self.loops.pop();
+                if self.func.blocks[self.cur.0 as usize].term.is_none() {
+                    self.set_term(Terminator::Goto(head_b));
+                }
+                self.cur = else_entry;
+                self.func.blocks[else_entry.0 as usize].region = self.cur_region();
+                self.lower_stmts(orelse)?;
+                if self.func.blocks[self.cur.0 as usize].term.is_none() {
+                    self.set_term(Terminator::Goto(brk_b));
+                }
+                self.cur = brk_b;
+                self.func.blocks[brk_b.0 as usize].region = self.cur_region();
+            }
             Stmt::Try(try_stmt) => self.lower_try(try_stmt)?,
             Stmt::Raise(exc, cause) => {
                 if cause.is_some() {
@@ -748,6 +887,66 @@ impl<'a> Lowerer<'a> {
                 let l = self.temp();
                 self.push_inst(Inst::LoadGlobal("dict".to_string(), f));
                 self.push_inst(Inst::Call(f, vec![], l));
+                Ok(l)
+            }
+            Expr::List(items) => {
+                // hp-forloop: `[a, b, c]` literal — `list()` then one
+                // boxed append Call per element IN SOURCE ORDER (S-01-12
+                // evaluation order; list(1, 2, 3) is not a valid Python
+                // construction, so the builtin-call desugar must go
+                // through append). All insts are the existing boxed
+                // Call/LoadAttr protocol.
+                let f = self.temp();
+                let l = self.temp();
+                self.push_inst(Inst::LoadGlobal("list".to_string(), f));
+                self.push_inst(Inst::Call(f, vec![], l));
+                for it in items {
+                    let tv = self.lower_expr(it)?;
+                    let m = self.temp();
+                    let ig = self.temp();
+                    self.push_inst(Inst::LoadAttr(l, "append".to_string(), m));
+                    self.push_inst(Inst::Call(m, vec![tv], ig));
+                }
+                Ok(l)
+            }
+            Expr::Tuple(items) => {
+                // hp-forloop: `(a, b, c)` literal — build the element list
+                // exactly as the List arm does, then `tuple(l)` (tuple()
+                // over an iterable IS the valid construction; the extra
+                // copy is bounded by the literal's arity).
+                let f = self.temp();
+                let l = self.temp();
+                self.push_inst(Inst::LoadGlobal("list".to_string(), f));
+                self.push_inst(Inst::Call(f, vec![], l));
+                for it in items {
+                    let tv = self.lower_expr(it)?;
+                    let m = self.temp();
+                    let ig = self.temp();
+                    self.push_inst(Inst::LoadAttr(l, "append".to_string(), m));
+                    self.push_inst(Inst::Call(m, vec![tv], ig));
+                }
+                let tf = self.temp();
+                let t = self.temp();
+                self.push_inst(Inst::LoadGlobal("tuple".to_string(), tf));
+                self.push_inst(Inst::Call(tf, vec![l], t));
+                Ok(t)
+            }
+            Expr::Dict(items) => {
+                // hp-forloop: non-empty `{k: v, ...}` — dict() then one
+                // StoreSubscript per pair IN SOURCE ORDER (S-01-12;
+                // duplicate-later-key-wins is dict.__setitem__'s own
+                // semantics, reached through the same boxed seam the
+                // dict.build loop uses). `{**m}` (DictExpand) is a
+                // separate IR node and stays fail-closed.
+                let f = self.temp();
+                let l = self.temp();
+                self.push_inst(Inst::LoadGlobal("dict".to_string(), f));
+                self.push_inst(Inst::Call(f, vec![], l));
+                for item in items {
+                    let tk = self.lower_expr(&item.key)?;
+                    let tv = self.lower_expr(&item.value)?;
+                    self.push_inst(Inst::StoreSubscript(l, tk, tv));
+                }
                 Ok(l)
             }
             Expr::BoolOp(BoolOp::And, terms) | Expr::BoolOp(BoolOp::Or, terms) => {
