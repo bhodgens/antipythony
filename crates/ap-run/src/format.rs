@@ -29,7 +29,23 @@ pub fn format_value(value: &Value, spec: &str) -> Result<String, ap_obj::exc::Py
         Value::Str(s) => format_str(s.as_str(), &p),
         Value::Int(_) | Value::Bool(_) => {
             let i = value.as_int().unwrap();
-            format_int(&i, &p)
+            // CPython (3.12+): int accepts the float presentation codes
+            // ('f','F','e','E','g','G','%') by coercing to float first
+            // (OverflowError when the int exceeds the f64 range).
+            if matches!(
+                p.type_char,
+                Some('f') | Some('F') | Some('e') | Some('E') | Some('g') | Some('G') | Some('%')
+            ) {
+                let x = i.to_f64().ok_or_else(|| {
+                    ap_obj::exc::PyException::new(
+                        "OverflowError",
+                        "int too large to convert to float",
+                    )
+                })?;
+                format_float(x, &p)
+            } else {
+                format_int(&i, &p)
+            }
         }
         Value::Float(f) => format_float(*f, &p),
         other => {
@@ -256,20 +272,64 @@ fn format_int(i: &Int, p: &Spec) -> Result<String, ap_obj::exc::PyException> {
             let digits = apply_grouping(&mag_clean, p.grouping, 3);
             (digits, "", t.is_none() || t == Some('d'))
         }
-        Some('x') => (format!("{:x}", to_u128_or_panic(&mag_clean)), "", true),
-        Some('X') => (format!("{:X}", to_u128_or_panic(&mag_clean)), "", true),
-        Some('o') => (format!("{:o}", to_u128_or_panic(&mag_clean)), "", true),
-        Some('b') => (format!("{:b}", to_u128_or_panic(&mag_clean)), "", true),
+        Some('x') => (
+            match mag_clean.parse::<u128>() {
+                Ok(v) => format!("{v:x}"),
+                Err(_) => big_radix_digits(&mag, 16),
+            },
+            "",
+            true,
+        ),
+        Some('X') => (
+            match mag_clean.parse::<u128>() {
+                Ok(v) => format!("{v:X}"),
+                Err(_) => big_radix_digits(&mag, 16).to_uppercase(),
+            },
+            "",
+            true,
+        ),
+        Some('o') => (
+            match mag_clean.parse::<u128>() {
+                Ok(v) => format!("{v:o}"),
+                Err(_) => big_radix_digits(&mag, 8),
+            },
+            "",
+            true,
+        ),
+        Some('b') => (
+            match mag_clean.parse::<u128>() {
+                Ok(v) => format!("{v:b}"),
+                Err(_) => big_radix_digits(&mag, 2),
+            },
+            "",
+            true,
+        ),
         Some('c') => {
-            // chr form: single character from code point
-            let cp = mag.to_i64().unwrap_or(-1);
+            // CPython error taxonomy: an int that doesn't fit C long raises
+            // OverflowError("Python int too large to convert to C long")
+            // (checked FIRST — even for negatives); one that fits but is
+            // outside the code-point range raises
+            // OverflowError("%c arg not in range(0x110000)").
+            let cp_raw = mag.to_i64().ok_or_else(|| {
+                ap_obj::exc::PyException::new(
+                    "OverflowError",
+                    "Python int too large to convert to C long",
+                )
+            })?;
+            if neg || cp_raw >= 0x110000 {
+                return Err(ap_obj::exc::PyException::new(
+                    "OverflowError",
+                    "%c arg not in range(0x110000)",
+                ));
+            }
+            let cp = cp_raw;
             let ch = u32::try_from(cp)
                 .ok()
                 .and_then(char::from_u32)
                 .ok_or_else(|| {
                     ap_obj::exc::PyException::new(
                         "OverflowError",
-                        format!("{cp} is not in range(0x110000)"),
+                        "%c arg not in range(0x110000)",
                     )
                 })?;
             (ch.to_string(), "", true)
@@ -304,6 +364,35 @@ fn format_int(i: &Int, p: &Spec) -> Result<String, ap_obj::exc::PyException> {
         out.push_str(prefix);
         push_fill(&mut out, '0', pad);
         out.push_str(&digits);
+        // CPython: with ',' grouping the WIDTH counts commas. Compute how
+        // many commas the final string needs (width must hold sign+prefix+
+        // zero-filled digits+commas), then regroup so the raw digit count
+        // is width minus the comma budget (format(255,'010,') ==
+        // '00,000,255': 8 digits + 2 commas).
+        if p.grouping == Some(',') {
+            // CPython zero-fill with ',' grouping: grow the DIGIT count (in
+            // whole 3-digit groups) until the grouped string reaches the
+            // width — grouped_len(D) = D + (D-1)//3 >= width. `digits` may
+            // already carry separators ('d' groups early); use the raw
+            // mag_clean for the budget.
+            let head_len = sign_len + prefix.len();
+            let room = width.saturating_sub(head_len);
+            let raw_len = mag_clean.chars().count();
+            let mut d = raw_len.max(1);
+            while d < room && d + (d - 1) / 3 < room {
+                d += 1;
+            }
+            if d > raw_len {
+                let zeros = "0".repeat(d - raw_len);
+                let all = zeros + &mag_clean;
+                let mut regrouped: String = out.chars().take(head_len).collect();
+                regrouped.push_str(&apply_grouping(&all, Some(','), 3));
+                return Ok(regrouped);
+            }
+            let mut regrouped: String = out.chars().take(head_len).collect();
+            regrouped.push_str(&digits);
+            return Ok(regrouped);
+        }
         return Ok(out);
     }
 
@@ -359,6 +448,16 @@ fn to_u128_or_panic(digits: &str) -> u128 {
         // arbitrary size; our v0 corpus doesn't. Format via bigint digits.
         0
     })
+}
+
+/// Arbitrary-precision radix digits for x/X/o/b on ints beyond u128 (the
+/// old `to_u128_or_panic` saturating fallback zeroed them: issue #19 item 2).
+/// num_bigint's to_str_radix supports 2..=36 — covers x/X(16)/o(8)/b(2).
+fn big_radix_digits(i: &Int, radix: u32) -> String {
+    match i.as_big() {
+        Some(b) => b.to_str_radix(radix),
+        None => i.to_string_raw(),
+    }
 }
 
 /// Insert `sep` every `group` digits counting from the right.
