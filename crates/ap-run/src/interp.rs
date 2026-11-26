@@ -5089,6 +5089,30 @@ pub fn make_union_pub(kind: ap_obj::ObjKind, name: &str, args: Vec<Value>) -> Va
     Value::Obj(u)
 }
 
+/// Live key list of a dict_keys VIEW object (the Opaque view minted by
+/// methods.rs (Value::Dict, "keys")). Live `<dict>` back-pointer wins over
+/// the creation snapshot — same resolution native_iter's dict_keys arm
+/// uses. Issue #20 follow-up (T3 S2.5): set ops over dict views.
+fn view_keys(view: &Gc<ap_obj::PyObject>) -> Vec<Value> {
+    let live = view
+        .attrs
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(&Value::Str(PyString::new("<dict>")));
+    if let Some(Value::Dict(d)) = live {
+        return d.keys();
+    }
+    match view
+        .attrs
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(&Value::Str(PyString::new("<payload>")))
+    {
+        Some(Value::List(l)) => l.items().iter().cloned().collect(),
+        _ => Vec::new(),
+    }
+}
+
 pub(crate) fn eval_binop(a: &Value, op: BinOp, b: &Value) -> EResult {
     use ap_obj::ops::BinOp as OB;
     // W112: Python-loc capture for int - NoneType failures.
@@ -5418,6 +5442,150 @@ pub(crate) fn eval_binop(a: &Value, op: BinOp, b: &Value) -> EResult {
             for e in x.iter() {
                 if !y.contains(&e).unwrap_or(false) {
                     let _ = out.add(e);
+                }
+            }
+            return Ok(Value::Set(out));
+        }
+        // Issue #20 follow-up (T3 S2.5): set ops over dict_keys views —
+        // pydantic's _config does `V2_REMOVED_KEYS & config_dict.keys()`
+        // (set & dict_keys). CPython: dict views are set-like; & | - ^
+        // across set/frozenset and a KeysView answer elementwise, result
+        // is a SET when either side is a set. Our dict_keys view is the
+        // Opaque view object; read its live payload.
+        (Value::Set(x) | Value::Frozen(x), BinOp::BitAnd, Value::Obj(bo))
+            if bo.kind == ap_obj::ObjKind::Opaque && bo.name == "dict_keys" =>
+        {
+            let out = ap_obj::PySet::new();
+            let keys = view_keys(bo);
+            for e in x.iter() {
+                let mut hit = false;
+                for k in keys.iter() {
+                    let kv = k.clone();
+                    if eval_compare(&e, CmpOp::Eq, &kv)? {
+                        hit = true;
+                        break;
+                    }
+                }
+                if hit {
+                    let _ = out.add(e);
+                }
+            }
+            return Ok(Value::Set(out));
+        }
+        (Value::Obj(ao), BinOp::BitAnd, Value::Set(y) | Value::Frozen(y))
+            if ao.kind == ap_obj::ObjKind::Opaque && ao.name == "dict_keys" =>
+        {
+            let out = ap_obj::PySet::new();
+            for k in view_keys(ao) {
+                if y.contains(&k).unwrap_or(false) {
+                    let _ = out.add(k);
+                }
+            }
+            return Ok(Value::Set(out));
+        }
+        (Value::Set(x) | Value::Frozen(x), BinOp::BitOr, Value::Obj(bo))
+            if bo.kind == ap_obj::ObjKind::Opaque && bo.name == "dict_keys" =>
+        {
+            let out = ap_obj::PySet::new();
+            for e in x.iter() {
+                let _ = out.add(e);
+            }
+            for k in view_keys(bo) {
+                let _ = out.add(k);
+            }
+            return Ok(Value::Set(out));
+        }
+        (Value::Obj(ao), BinOp::BitOr, Value::Set(y) | Value::Frozen(y))
+            if ao.kind == ap_obj::ObjKind::Opaque && ao.name == "dict_keys" =>
+        {
+            let out = ap_obj::PySet::new();
+            for k in view_keys(ao) {
+                let _ = out.add(k);
+            }
+            for e in y.iter() {
+                let _ = out.add(e);
+            }
+            return Ok(Value::Set(out));
+        }
+        (Value::Set(x) | Value::Frozen(x), BinOp::Sub, Value::Obj(bo))
+            if bo.kind == ap_obj::ObjKind::Opaque && bo.name == "dict_keys" =>
+        {
+            let out = ap_obj::PySet::new();
+            let keys = view_keys(bo);
+            for e in x.iter() {
+                let mut hit = false;
+                for k in keys.iter() {
+                    let kv = k.clone();
+                    if eval_compare(&e, CmpOp::Eq, &kv)? {
+                        hit = true;
+                        break;
+                    }
+                }
+                if !hit {
+                    let _ = out.add(e);
+                }
+            }
+            return Ok(Value::Set(out));
+        }
+        (Value::Obj(ao), BinOp::BitAnd, Value::Obj(bvo))
+            if ao.kind == ap_obj::ObjKind::Opaque
+                && ao.name == "dict_keys"
+                && bvo.kind == ap_obj::ObjKind::Opaque
+                && bvo.name == "dict_keys" =>
+        {
+            let out = ap_obj::PySet::new();
+            let keys = view_keys(ao);
+            let other = view_keys(bvo);
+            for k in keys.into_iter() {
+                let mut hit = false;
+                for k2 in other.iter() {
+                    let kv = k2.clone();
+                    if eval_compare(&k, CmpOp::Eq, &kv)? {
+                        hit = true;
+                        break;
+                    }
+                }
+                if hit {
+                    let _ = out.add(k);
+                }
+            }
+            return Ok(Value::Set(out));
+        }
+        (Value::Obj(ao), BinOp::BitOr, Value::Obj(bvo))
+            if ao.kind == ap_obj::ObjKind::Opaque
+                && ao.name == "dict_keys"
+                && bvo.kind == ap_obj::ObjKind::Opaque
+                && bvo.name == "dict_keys" =>
+        {
+            let out = ap_obj::PySet::new();
+            for k in view_keys(ao) {
+                let _ = out.add(k);
+            }
+            for k in view_keys(bvo) {
+                let _ = out.add(k);
+            }
+            return Ok(Value::Set(out));
+        }
+        (Value::Obj(ao), BinOp::Sub, Value::Obj(bvo))
+            if ao.kind == ap_obj::ObjKind::Opaque
+                && ao.name == "dict_keys"
+                && bvo.kind == ap_obj::ObjKind::Opaque
+                && bvo.name == "dict_keys" =>
+        {
+            let out = ap_obj::PySet::new();
+            let keys = view_keys(ao);
+            let other = view_keys(bvo);
+            for k in keys.into_iter() {
+                let mut hit = false;
+                for k2 in other.iter() {
+                    let kv = k2.clone();
+                    if eval_compare(&k, CmpOp::Eq, &kv)? {
+                        hit = true;
+                        break;
+                    }
+                }
+                if !hit {
+                    let _ = out.add(k);
                 }
             }
             return Ok(Value::Set(out));
@@ -8113,9 +8281,13 @@ fn call_value_inner_impl(
                                 }
                                 let interp2 = crate::builtins_modules::current_interp()
                                     .unwrap_or_else(interp_rc);
-                                return match crate::classes::attr_get_protocol(
-                                    &interp2, &subject, &attr,
-                                ) {
+                                // Issue #20 follow-up: object.__getattribute__ is the
+                                // SLOT read — it must not re-enter __getattr__.
+                                getattribute_no_hook_push();
+                                let r =
+                                    crate::classes::attr_get_protocol(&interp2, &subject, &attr);
+                                getattribute_no_hook_pop();
+                                return match r {
                                     Ok(v) => Ok(v),
                                     // fix_bytes: native-type receivers
                                     // (bytes/str/int) resolve their method
@@ -12309,6 +12481,36 @@ fn user_truthiness(interp: &Arc<Interpreter>, v: &Value) -> Result<Option<bool>,
                 .unwrap_or(0);
             return Ok(Some(n != 0));
         }
+        // Issue #20 follow-up (T3 S2.5): dict VIEW objects (dict_keys /
+        // dict_values / dict_items) size truthiness from the live payload —
+        // CPython views are sized containers (`if serializers:` over an
+        // empty values() view must be False; pydantic's
+        // _apply_model_serializers gates on it). The Opaque view fell to
+        // default-true, so the empty branch took list(empty)[-1] ->
+        // IndexError inside model class completion.
+        if o.kind == ap_obj::ObjKind::Opaque
+            && matches!(o.name.as_str(), "dict_keys" | "dict_values" | "dict_items")
+        {
+            let live = o
+                .attrs
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(&Value::Str(PyString::new("<dict>")));
+            let n = match live {
+                Some(Value::Dict(d)) => d.len(),
+                _ => o
+                    .attrs
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .get(&Value::Str(PyString::new("<payload>")))
+                    .map(|v| match v {
+                        Value::List(l) => l.len(),
+                        _ => 0,
+                    })
+                    .unwrap_or(0),
+            };
+            return Ok(Some(n != 0));
+        }
     }
     if let Some((f, _)) = crate::classes::special_lookup(interp, v, "__bool__") {
         let r = call_value(
@@ -14038,6 +14240,26 @@ pub fn supercall_flag_take() -> bool {
     SUPERCALL_SKIP.with(|f| std::mem::replace(&mut f.get(), false))
 }
 
+// Issue #20 follow-up (T3 S2.5): object.__getattribute__(obj, name) must
+// NOT re-enter __getattr__ (CPython: tp_getattro = the slot; __getattr__
+// runs only when the slot RAISES). pydantic's BaseModel.__getattr__ does
+// `object.__getattribute__(self, '__pydantic_extra__')` inside __getattr__
+// — our slot arm fell back to the full walk (incl. the __getattr__ step)
+// and looped. Reentrancy-counter: the getattribute marker call arm sets
+// it, instance_attr/class_attr_get's __getattr__ steps observe+clear it.
+thread_local! {
+    static GETATTR_NO_HOOK: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+pub fn getattribute_no_hook_push() {
+    GETATTR_NO_HOOK.with(|c| c.set(c.get().saturating_add(1)));
+}
+pub fn getattribute_no_hook_pop() {
+    GETATTR_NO_HOOK.with(|c| c.set(c.get().saturating_sub(1)));
+}
+pub fn getattribute_no_hook_active() -> bool {
+    GETATTR_NO_HOOK.with(|c| c.get() > 0)
+}
+
 fn builtin_super(
     interp: &Arc<Interpreter>,
     args: &[Value],
@@ -14530,10 +14752,18 @@ fn attr_get(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Option
         }
         // set/frozenset dunder surface (the deep walk's SCOPE-guarded arm —
         // same excluded copy-protocol/wrapped names).
+        // Issue #20 follow-up (T3 S2.5): __isabstractmethod__ MUST fall to
+        // the default here — abc's abstract collection does
+        // getattr(value, "__isabstractmethod__", False) over every namespace
+        // entry (pydantic puts plain sets/dicts in the model namespace) and
+        // the truthy virtual marker marked everything abstract
+        // ("Can't instantiate abstract class ChatMessage without an
+        // implementation for abstract method '__class_vars__'").
         if matches!(obj, Value::Set(_) | Value::Frozen(_))
             && name.starts_with("__")
             && name.ends_with("__")
             && name.len() > 4
+            && name != "__isabstractmethod__"
             && !matches!(
                 name,
                 "__class__" | "__dict__" | "__doc__" | "__deepcopy__" | "__copy__" | "__wrapped__"
@@ -17711,6 +17941,12 @@ fn attr_get(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 && name.starts_with("__")
                 && name.ends_with("__")
                 && name.len() > 4
+                // Issue #20 follow-up (T3 S2.5): __isabstractmethod__ must
+                // fall to the default (abc abstract collection runs
+                // getattr(value, "__isabstractmethod__", False) over model
+                // namespace entries; the truthy marker marked plain sets
+                // abstract).
+                && name != "__isabstractmethod__"
                 && !matches!(
                     name,
                     "__class__" | "__dict__" | "__doc__" | "__deepcopy__" | "__copy__"
