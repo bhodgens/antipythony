@@ -32,6 +32,10 @@ license = "Apache-2.0 WITH LLVM-exception"
 unwrap_used = "warn"
 dbg_macro = "deny"
 todo = "warn"
+# issue #15: every remaining unsafe block must carry a SAFETY: comment.
+# warn now; flip to deny once the undocumented backlog (see
+# docs/unsafe-inventory.md) is burned down.
+undocumented_unsafe_blocks = "warn"
 
 # Doc-link policy (robustness-ci 05.03): broken intra-doc links warn in every
 # crate that opts into workspace lints. The CI gate escalates ALL rustdoc
