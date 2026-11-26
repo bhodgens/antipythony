@@ -111,9 +111,9 @@ block + this tracker updated at close-out.
 
 | leaf | surface | status |
 |---|---|---|
-| hp-nursery | ap-gc ledger + dying-young flush + 3 re-entrancy/deadlock fixes | MERGED (3d3cd61) — mint-floor work; honest gap vs 100ns target in report |
-| hp-lazydunders | unregistered attrs payload + bound-method mint fast path | MERGED (2b19e4c) |
-| hp-forloop | Stmt::For JIT lowering (5 iterator kinds) + OSR header + liveness | MERGED (f8352db) — int-accum for 2.16x |
+| hp-nursery | ap-gc ledger + dying-young flush + 3 re-entrancy/deadlock fixes | MERGED (3d3cd61) — final report: mint 1119-1193ns -> 756ns die-young (-23%); <=100ns target NOT met (fallback promote-at-flush shape; remaining = subtract-refs walk ~25ns/obj + 3-map critical section ~200ns, not batching-removable); json.loads now parity (32.5 vs 31.1 MB/s); 3 REAL bugs fixed en route incl. mid-collect ladder self-deadlock (gc014 hang, sample-proven) |
+| hp-lazydunders | unregistered attrs payload + bound-method mint fast path | MERGED (2b19e4c) — final report: method mint 3488 -> 2400ns (raw floor ~841ns; residual = Gc alloc + 15 locks); repeat attr read ~558ns flat (MRO walk — type_version cache filed); 2 byte-exactness regressions from fast-path attempts caught by gates and fixed |
+| hp-forloop | Stmt::For JIT lowering (5 iterator kinds) + OSR header + liveness | MERGED (f8352db) — int-accum 2.16x; 4 JIT boundary bugs fixed (OSR header re-ran iter() doubling subtrees, JIT'd raise -> SystemError, metaclass classmethod raw descriptor, NotImplemented is-check inverted). Honest: typed regions still don't form for for-loop bodies (block-0 IterNew rooting) — region-finder widening is the follow-up |
 | pp2-int | to_bytes bulk emit + small-int parse + D&C big parse | MERGED (97d2e45) |
 | pp2-sort | Fix B hoist + homogeneous raw arms | MERGED (871be30) |
 | pp2-memchr | SALVAGE: fix_bytes gate only (integration not landed) | MERGED (4621d5c) |
