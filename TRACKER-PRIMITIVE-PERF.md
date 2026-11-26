@@ -146,5 +146,7 @@ fp-frame MERGED (41bf0e0 — BytecodeInterp 927-line dispatch loop,
 thread-local line bookkeeping, --tier bytecode toggle, fix_bytecode
 three-way gate 8/8, both conform slices green both toggles, 242 cargo
 tests green). Gate caught 2 bugs: unbound-vs-None locals sentinel,
-StoreSubscript operand scramble. Next: 01-core (control flow first).
+StoreSubscript operand scramble. Next: 01-core control-flow IN FLIGHT (deleg: While/For lowering +
+Jump/ForNext/BoolOp execution + gate loop coverage; targets: 1M loop
+build >=5x vs tree-walk, while-counter within 3x of CPython).
 Tree-walker default unchanged until parity proven.
