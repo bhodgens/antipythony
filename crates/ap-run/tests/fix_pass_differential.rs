@@ -43,14 +43,18 @@ fn assert_differential(src: &str) {
         Some(py) => py,
         None => return, // no reference + AP_REQUIRE_REFERENCE unset: skip
     };
-    let tmp = std::env::temp_dir().join(format!(
-        "ap_fixpass_{}_{}.py",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("fix_pass_differential.rs:49")
-            .as_nanos()
-    ));
+    // Stamp = pid + (nanos XOR per-process counter). macOS clock granularity
+    // (~1us) can hand two parallel test threads the SAME nanos; without the
+    // counter one thread's remove_file deletes the other's case mid-run
+    // ('cannot read ap_fixpass_*.py: No such file') — same root cause the
+    // import_differential gate hit (workspace-gate flake 2026-11-05).
+    static CASE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("fix_pass_differential.rs:49")
+        .as_nanos() as u64;
+    let stamp = nanos ^ CASE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = std::env::temp_dir().join(format!("ap_fixpass_{}_{}.py", std::process::id(), stamp));
     std::fs::write(&tmp, src).expect("write temp case");
     let expected = Command::new(py)
         .arg(&tmp)
