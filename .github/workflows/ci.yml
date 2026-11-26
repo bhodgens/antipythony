@@ -235,8 +235,12 @@ jobs:
         # Relative paths are safe: suites run subprocesses with
         # cwd=REPO_ROOT and pytest itself runs from the checkout root.
         env:
-          APX_IMPL: "target/debug/ap-run-eval"
-          APX_CLI: "target/debug/antipythony run"
+          # .cargo/config.toml redirects ALL builds to target-0304c; cargo
+          # does not export the redirect, so the seam env vars must name it
+          # (target/debug here ENOENT'd on the first-ever pytest CI leg —
+          # 163 ENOENT-derived failures, run 45812388868, 2026-11-26).
+          APX_IMPL: "target-0304c/debug/ap-run-eval"
+          APX_CLI: "target-0304c/debug/antipythony run"
         run: |
           set -o pipefail
           python -m pytest tests/ -q --no-header -rX \

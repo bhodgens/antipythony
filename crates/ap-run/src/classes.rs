@@ -3464,6 +3464,23 @@ pub fn attr_get_opt(
             }
             Ok(None)
         }
+        Value::Bytes(_) | Value::Str(_) | Value::Int(_) | Value::Bool(_)
+            if name == "__getattribute__" =>
+        {
+            // fix_bytes gate: native-type receivers mint a
+            // __object_virtual___getattribute____ marker whose call arm
+            // resolves the attr on the parked receiver. Bind it here.
+            let f = ap_obj::PyObject::new(
+                ap_obj::ObjKind::BuiltinFn,
+                "__object_virtual___getattribute____",
+            );
+            {
+                let mut sp = f.slice_parts.lock().unwrap_or_else(|p| p.into_inner());
+                sp.clear();
+                sp.push(obj.clone());
+            }
+            Ok(Some(Value::Obj(f)))
+        }
         _ => Ok(None),
     }
 }

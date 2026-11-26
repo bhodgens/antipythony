@@ -20535,14 +20535,42 @@ pub fn call_builtin_values(
                 if let Value::Bytes(b) = &recv {
                     // D9 (memperf audit 2026-11-06): borrow the needle.
                     let sub_v = a(1);
-                    let sub: &[u8] = match &sub_v {
-                        Some(Value::Bytes(p)) => p,
+                    // CPython semantics: an int needle searches for the
+                    // single byte with that value (range-checked 0..256,
+                    // ValueError "byte must be in range(0, 256)"); a
+                    // bytes-like needle is searched as a subsequence;
+                    // anything else is TypeError.
+                    let (sub, single): (Option<&[u8]>, Option<u8>) = match &sub_v {
+                        Some(Value::Bytes(p)) => (Some(p.as_slice()), None),
+                        Some(Value::Int(n)) => {
+                            let v = n.to_i64().unwrap_or(-1);
+                            if !(0..=255).contains(&v) {
+                                return Err(raise(
+                                    "ValueError",
+                                    "byte must be in range(0, 256)",
+                                ));
+                            }
+                            (None, Some(v as u8))
+                        }
                         _ => return Err(raise("TypeError", "expected a bytes argument")),
                     };
-                    let pos = if fname.starts_with("r") {
-                        b.windows(sub.len().max(1)).rposition(|w| w == sub)
-                    } else {
-                        b.windows(sub.len().max(1)).position(|w| w == sub)
+                    let pos = match (sub, single) {
+                        (Some(sub), _) => {
+                            if fname.starts_with("r") {
+                                b.windows(sub.len().max(1)).rposition(|w| w == sub)
+                            } else {
+                                b.windows(sub.len().max(1)).position(|w| w == sub)
+                            }
+                        }
+                        (None, Some(byte)) => {
+                            let r = if fname.starts_with("r") {
+                                b.iter().rposition(|&c| c == byte)
+                            } else {
+                                b.iter().position(|&c| c == byte)
+                            };
+                            r.map(|p| p as usize)
+                        }
+                        (None, None) => unreachable!("needle coercion produced neither"),
                     };
                     return match pos {
                         Some(p) => Ok(i(p as i64)),
@@ -20568,14 +20596,37 @@ pub fn call_builtin_values(
                 if let Value::Bytes(b) = &recv {
                     // D9 (memperf audit 2026-11-06): borrow the needle.
                     let sub_v = a(1);
-                    let sub: &[u8] = match &sub_v {
-                        Some(Value::Bytes(p)) => p,
+                    // CPython semantics: int needle = single byte count
+                    // (range-checked); bytes-like = subsequence count.
+                    let (sub, single): (Option<&[u8]>, Option<u8>) = match &sub_v {
+                        Some(Value::Bytes(p)) => (Some(p.as_slice()), None),
+                        Some(Value::Int(n)) => {
+                            let v = n.to_i64().unwrap_or(-1);
+                            if !(0..=255).contains(&v) {
+                                return Err(raise(
+                                    "ValueError",
+                                    "byte must be in range(0, 256)",
+                                ));
+                            }
+                            (None, Some(v as u8))
+                        }
                         _ => return Err(raise("TypeError", "expected a bytes argument")),
                     };
-                    if sub.is_empty() {
-                        return Ok(i(b.len() as i64 + 1));
-                    }
-                    return Ok(i(b.windows(sub.len()).filter(|w| *w == sub).count() as i64));
+                    return match (sub, single) {
+                        (Some(sub), _) => {
+                            if sub.is_empty() {
+                                Ok(i(b.len() as i64 + 1))
+                            } else {
+                                Ok(i(
+                                    b.windows(sub.len()).filter(|w| *w == sub).count() as i64,
+                                ))
+                            }
+                        }
+                        (None, Some(byte)) => {
+                            Ok(i(b.iter().filter(|&&c| c == byte).count() as i64))
+                        }
+                        (None, None) => unreachable!("needle coercion produced neither"),
+                    };
                 }
                 Err(raise(
                     "SystemError",
