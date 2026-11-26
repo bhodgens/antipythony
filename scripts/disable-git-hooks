@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Undo scripts/enable-git-hooks: remove the repo-local hooksPath so the
+# global (e.g. LFS) hooks apply again. Portable macOS+Linux bash.
+set -eu
+
+git config --unset core.hooksPath
+echo "disabled: repo-local core.hooksPath unset — global hooksPath (if any) applies again."

@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# pre-commit: block NEW `unsafe` Rust usage (issue #15 policy).
+# Opt-in: scripts/enable-git-hooks. No cargo — staged-diff grep only, <0.5s.
+# Portable macOS+Linux bash (grep -E / sed -E; no GNU-only flags).
+set -u
+
+# (a) explicit skip
+[ "${SKIP_UNSAFE_GATE:-0}" = "1" ] && exit 0
+
+ROOT="$(git rev-parse --show-toplevel)"
+GITDIR="$(git rev-parse --git-dir)"
+
+# (b) LFS chaining. A repo-local core.hooksPath overrides the GLOBAL hooksPath,
+# which on this machine (~/.githooks) holds the LFS hooks (AGENTS.md). Chain the
+# global LFS pre-commit so large-file staging keeps working while the gate is on.
+GLOBAL_HP="$(git config --global --get core.hooksPath 2>/dev/null || true)"
+if [ -n "$GLOBAL_HP" ] && [ -f "$GLOBAL_HP/pre-commit" ] \
+   && grep -q 'git lfs' "$GLOBAL_HP/pre-commit" 2>/dev/null; then
+  sh "$GLOBAL_HP/pre-commit" "$@" || exit 1
+elif command -v git-lfs >/dev/null 2>&1 && [ -f "$ROOT/.gitattributes" ] \
+   && grep -qE 'filter=lfs' "$ROOT/.gitattributes" 2>/dev/null; then
+  git lfs pre-commit "$@" || exit 1
+fi
+
+# (c) core gate: '+' lines of staged .rs diffs only (diff '+++' headers stripped).
+# Deletion-only diffs have no '+' content lines, so removing unsafe is always fine.
+ADDED="$(git diff --cached -U0 -- '*.rs' | grep '^+' | grep -v '^+++' | grep -E '\bunsafe\b' || true)"
+if [ -z "$ADDED" ]; then
+  rm -f "$GITDIR/UNSAFE_GATE_ADDED" 2>/dev/null || true
+  exit 0
+fi
+
+N=$(printf '%s\n' "$ADDED" | sed -n '$=')
+echo "pre-commit: $N newly-added unsafe line(s) in staged Rust:" >&2
+git diff --cached --name-only --diff-filter=ACMR -- '*.rs' | while IFS= read -r f; do
+  git show ":$f" 2>/dev/null | grep -nE '\bunsafe\b' | head -3 | sed "s|^|  $f:|" >&2
+done
+echo >&2
+echo "NEW unsafe added — policy: no new unsafe Rust without review (issue #15)." >&2
+echo "Bypass: ALLOW_UNSAFE_COMMIT=1 with a commit-message tag [unsafe-ok: reason]" >&2
+
+# (d) stamp for the companion commit-msg hook. 'blocked' = we already failed.
+# 'bypass' = user asked to proceed; commit-msg then demands the tag.
+if [ "${ALLOW_UNSAFE_COMMIT:-0}" = "1" ]; then
+  printf 'bypass\n' > "$GITDIR/UNSAFE_GATE_ADDED"
+  echo "pre-commit: bypass requested — commit-msg requires [unsafe-ok: reason]." >&2
+  exit 0
+fi
+printf 'blocked\n' > "$GITDIR/UNSAFE_GATE_ADDED"
+exit 1
