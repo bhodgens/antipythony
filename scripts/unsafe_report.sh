@@ -8,6 +8,17 @@
 #   scripts/unsafe_report.sh --diff   fail (exit 1) if ADDED lines in staged or
 #                                     worktree-changed .rs files contain unsafe.
 #                                     Bypass: ALLOW_UNSAFE=1 scripts/unsafe_report.sh --diff
+#   scripts/unsafe_report.sh --clippy run cargo clippy across the workspace's
+#                                     lib/bin targets and fail (exit 1) if the
+#                                     undocumented_unsafe_blocks warning count
+#                                     exceeds the baseline recorded in
+#                                     docs/unsafe-inventory.md (issue #18 wave 3
+#                                     ratchet; run informational first in CI).
+#                                     BASELINE_CLIPPY_UNDOCUMENTED env or the
+#                                     "baseline:" line in docs/unsafe-inventory.md
+#                                     overrides; CLIPPY_PACKAGES overrides the
+#                                     default -p list.
+#                                     Bypass: ALLOW_UNSAFE=1 (exit 0, count printed)
 #
 # Committed baseline lives in docs/unsafe-baseline.txt. Regenerate with:
 #   scripts/unsafe_report.sh > docs/unsafe-baseline.txt   (header line included by the script)
@@ -15,6 +26,48 @@ set -u
 
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "not a git repo" >&2; exit 2; }
 cd "$ROOT" || exit 2
+
+# ---- --clippy mode: undocumented_unsafe_blocks ratchet vs the recorded baseline ----
+if [ "${1:-}" = "--clippy" ]; then
+  PACKAGES="${CLIPPY_PACKAGES:-ap-cli xtask ap-ir ap-run ap-gc ap-obj ap-parse ap-ce ap-codegen-native ap-codegen-wasm ap-conform ap-host ap-pack}"
+  # Baseline: env override wins, else parse the "baseline:" marker line from
+  # docs/unsafe-inventory.md (wave 3 records: baseline: 0).
+  BASELINE="${BASELINE_CLIPPY_UNDOCUMENTED:-}"
+  if [ -z "$BASELINE" ]; then
+    BASELINE="$(sed -n 's/^.*baseline:[[:space:]]*\([0-9][0-9]*\).*$/\1/p' docs/unsafe-inventory.md | head -1)"
+  fi
+  if [ -z "$BASELINE" ]; then
+    echo "clippy ratchet: no baseline found (BASELINE_CLIPPY_UNDOCUMENTED or 'baseline: N' in docs/unsafe-inventory.md)" >&2
+    exit 2
+  fi
+  if [ "${ALLOW_UNSAFE:-0}" = "1" ]; then
+    echo "clippy ratchet: ALLOW_UNSAFE=1 — bypassing (baseline $BASELINE, gate skipped)"
+    exit 0
+  fi
+  set -- $PACKAGES
+  pargs=()
+  for p in "$@"; do pargs+=(-p "$p"); done
+  log="$(mktemp "${TMPDIR:-/tmp}/ug-clippy.XXXXXX")"
+  # Some deny-lint pre-existing errors (e.g. ap-ce not_unsafe_ptr_arg_deref)
+  # make clippy exit nonzero; we only ratchet the undocumented_unsafe_blocks
+  # count, so capture warnings regardless of exit code.
+  cargo clippy "${pargs[@]}" --no-deps >"$log" 2>&1
+  clippy_rc=$?
+  count="$(grep -c 'unsafe block without a safety comment' "$log" || true)"
+  rm -f "$log"
+  echo "clippy ratchet: undocumented_unsafe_blocks count = $count (baseline $BASELINE)"
+  if [ "$count" -gt "$BASELINE" ]; then
+    echo "clippy ratchet: GROWTH vs baseline — new undocumented unsafe block(s) (issue #18 wave 3)."
+    echo "Add a '// SAFETY: <invariant>' comment above each new unsafe block, or regenerate the"
+    echo "baseline in docs/unsafe-inventory.md consciously in the same commit."
+    exit 1
+  fi
+  if [ "$clippy_rc" -ne 0 ]; then
+    echo "clippy ratchet: note — clippy exited $clippy_rc on non-ratchet lints (count gate still green)"
+  fi
+  echo "clippy ratchet: pass (count <= baseline)"
+  exit 0
+fi
 
 # Category greps (line counts within each crate's src/):
 #   blocks   : 'unsafe {' blocks
