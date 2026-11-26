@@ -508,9 +508,9 @@ def stores_none_reads():
 print(stores_none_reads())
 '''
 
-PROBE_FALLBACK = r'''# DELIBERATE FALLBACK probe: For/While/Try/AugAssign bodies route to the
-# tree-walker even with --tier bytecode; the whole file must still be
-# three-way byte-identical (fallback = byte-exact by construction).
+PROBE_FALLBACK = r'''# DELIBERATE FALLBACK probe: Try bodies route to the tree-walker even
+# with --tier bytecode; the whole file must still be three-way
+# byte-identical (fallback = byte-exact by construction).
 def loop_sum():
     total = 0
     for i in range(10):
@@ -541,6 +541,223 @@ print(try_catch())
 print(aug_aliasing())
 '''
 
+PROBE_LOOPS = r'''# Leaf 01-core/01 loop coverage: for/while over list/tuple/str/range/dict,
+# nested loops, break/continue/else, boolop value semantics + short-circuit
+# side-effect ordering, empty containers, while True/break, loop-variable
+# scoping (CPython: the loop var leaks to function scope).
+def for_list():
+    total = 0
+    for x in [1, 2, 3, 4]:
+        total += x
+    return total
+
+def for_tuple():
+    names = ("a", "b")
+    out = []
+    for n in names:
+        out.append(n)
+    return out
+
+def for_str():
+    rev = ""
+    for c in "abc":
+        rev = c + rev
+    return rev
+
+def for_range_step():
+    out = []
+    for i in range(10, 0, -2):
+        out.append(i)
+    return out
+
+def for_dict():
+    d = {"a": 1, "b": 2}
+    keys = []
+    acc = 0
+    for k in d:
+        keys.append(k)
+        acc += d[k]
+    return (sorted(keys), acc)
+
+def for_dict_items():
+    d = {"x": 1, "y": 2}
+    total = 0
+    for k, v in d.items():
+        total += v
+    return total
+
+def nested_loops():
+    out = []
+    for i in range(3):
+        for j in range(3):
+            if j == 2:
+                break
+            out.append((i, j))
+    return out
+
+def continue_skip():
+    total = 0
+    for i in range(10):
+        if i % 2 == 0:
+            continue
+        total += i
+    return total
+
+def break_at():
+    hit = None
+    for i in [7, 8, 9]:
+        if i == 8:
+            hit = i
+            break
+    return hit
+
+def for_else_nobreak():
+    found = False
+    for i in [1, 2, 3]:
+        if i == 99:
+            found = True
+            break
+    else:
+        return "else-ran"
+    return "broke"
+
+def for_else_break():
+    for i in [1, 2, 3]:
+        break
+    else:
+        return "else-ran"
+    return "broke"
+
+def while_else():
+    n = 0
+    while n < 3:
+        n += 1
+    else:
+        return ("done", n)
+    return "broke"
+
+def while_counter():
+    n = 0
+    while n < 5:
+        n += 1
+    return n
+
+def while_true_break():
+    n = 0
+    while True:
+        n += 1
+        if n >= 4:
+            break
+    return n
+
+def boolop_values():
+    return (0 or "from-a", 1 or "from-b", 0 and "x", 2 and "y",
+            "" or [], [1] and [2], None or False)
+
+def boolop_short_circuit_order():
+    # No nested def (that would fall back): each call records its tag via
+    # list.append INSIDE an index expression, so the evaluation order is
+    # directly observable through the bytecode-routed BoolOp chain.
+    calls = []
+    r1 = (calls.append("a1"), 0)[1] or (calls.append("b1"), 7)[1]    # b1 runs
+    r2 = (calls.append("a2"), 3)[1] and (calls.append("b2"), 0)[1]   # b2 runs
+    r3 = (calls.append("a3"), 0)[1] and (calls.append("b3"), 9)[1]   # b3 skipped
+    r4 = (calls.append("a4"), 5)[1] or (calls.append("b4"), 9)[1]    # b4 skipped
+    return (r1, r2, r3, r4, calls)
+
+def boolop_in_loop_cond():
+    out = []
+    for i in range(6):
+        if i > 1 and i < 4:
+            out.append(i)
+        if i == 0 or i == 5:
+            out.append(-i)
+    return out
+
+def empty_containers():
+    hits = 0
+    for x in []:
+        hits += 1
+    for x in ():
+        hits += 1
+    for x in "":
+        hits += 1
+    for x in {}:
+        hits += 1
+    while False:
+        hits += 1
+    return hits
+
+def loop_var_leaks():
+    # CPython: the loop variable leaks to the enclosing function scope.
+    # (The never-iterated variant — reading a loop var after an EMPTY loop —
+    # is the filed tree-walker UnboundLocal divergence, deliberately NOT
+    # probed here: this gate's probes must be three-way GREEN.)
+    leak = None
+    for leak in [10, 20]:
+        pass
+    return leak
+
+def loop_var_leaks_value():
+    v = "sentinel"
+    for v in [1, 2]:
+        pass
+    return v
+
+def aug_in_loop():
+    total = 0
+    for i in range(5):
+        total += i * 2
+    return total
+
+def while_with_break_else():
+    n = 0
+    while n < 10:
+        n += 1
+        if n == 2:
+            break
+    else:
+        return "else-ran"
+    return ("broke", n)
+
+def deep_nesting():
+    acc = 0
+    for a in range(2):
+        for b in range(2):
+            for c in range(2):
+                for d in range(2):
+                    if d == 1:
+                        continue
+                    if c == 1:
+                        break
+                    acc += 1
+    return acc
+
+print(for_list())
+print(for_tuple())
+print(for_str())
+print(for_range_step())
+print(for_dict())
+print(for_dict_items())
+print(nested_loops())
+print(continue_skip())
+print(break_at())
+print(for_else_nobreak())
+print(for_else_break())
+print(while_else())
+print(while_counter())
+print(while_true_break())
+print(boolop_values())
+print(boolop_short_circuit_order())
+print(boolop_in_loop_cond())
+print(empty_containers())
+print(loop_var_leaks())
+print(loop_var_leaks_value())
+print(aug_in_loop())
+print(while_with_break_else())
+print(deep_nesting())
+'''
+
 PROBES = [
     ("arith", PROBE_ARITH),
     ("strings", PROBE_STRINGS),
@@ -550,6 +767,7 @@ PROBES = [
     ("displays", PROBE_DISPLAYS),
     ("unbound", PROBE_UNBOUND),
     ("fallback", PROBE_FALLBACK),
+    ("loops", PROBE_LOOPS),
 ]
 
 

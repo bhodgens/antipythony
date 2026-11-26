@@ -420,8 +420,14 @@ fn augassign_and_annassign() {
         ],
     );
     let c = must_lower(&f);
-    // x=0: LC0 SF0 | x+=1: LF0 LC1 BinOp SF0 | y: LC2 SF1 | ret: LF0 RetVal | RN
-    assert_eq!(c.instrs[4], Instr::BinOp(BinKind::Add));
+    // x=0: LC0 SF0 | x+=1: LF0 LC1 AugOp SF0 | y: LC2 SF1 | ret: LF0 RetVal | RN
+    assert_eq!(
+        c.instrs[4],
+        Instr::AugOp {
+            kind: BinKind::Add,
+            sym: "+=",
+        }
+    );
     assert_eq!(c.instrs[5], Instr::StoreFast(0));
     assert_eq!(c.n_locals, 2);
     assert_eq!(c.local_names, vec!["x".to_string(), "y".to_string()]);
@@ -449,7 +455,6 @@ fn unsupported_expr_variants_fall_back_whole_function() {
     let cases: Vec<(&str, Expr)> = vec![
         ("complex literal", Expr::LitComplex(1.0, 2.0)),
         ("ellipsis literal", Expr::LitEllipsis),
-        ("boolop", Expr::BoolOp(BoolOp::And, vec![lit(1), lit(2)])),
         (
             "chained comparison",
             Expr::Compare(vec![CmpOp::Lt, CmpOp::Lt], vec![lit(1), lit(2), lit(3)], 1),
@@ -548,7 +553,9 @@ fn unsupported_expr_variants_fall_back_whole_function() {
 
 #[test]
 fn for_and_try_functions_fall_back() {
-    // for x in xs: pass   (enum carries ForNext; lowerer rejects)
+    // for x in xs: pass — LOWERS since leaf 01-core/01 (this is the leaf's
+    // deliverable). The loop shape must now produce ForNext code that
+    // validates.
     let f = fn_def(
         "f",
         &["xs"],
@@ -559,9 +566,15 @@ fn for_and_try_functions_fall_back() {
             vec![],
         )],
     );
-    assert_eq!(must_fallback(&f), "for statement");
+    let c = must_lower(&f);
+    // iter; ForNext -> exit; StoreFast; back-edge; RN
+    assert!(
+        c.instrs.iter().any(|i| matches!(i, Instr::ForNext(_))),
+        "ForNext present: {:?}",
+        c.instrs
+    );
 
-    // try/except
+    // try/except still falls back (01-core/03 owns exceptions).
     let t = fn_def(
         "t",
         &[],
@@ -583,14 +596,6 @@ fn for_and_try_functions_fall_back() {
 fn other_unsupported_statements_fall_back() {
     let mk = |body: Vec<Stmt>| fn_def("f", &[], body);
     let cases: Vec<(&str, Vec<Stmt>)> = vec![
-        (
-            "if statement",
-            vec![Stmt::If(lit(1), vec![Stmt::Pass], vec![])],
-        ),
-        (
-            "while statement",
-            vec![Stmt::While(lit(1), vec![Stmt::Pass], vec![])],
-        ),
         (
             "with statement",
             vec![Stmt::With(
@@ -634,6 +639,8 @@ fn other_unsupported_statements_fall_back() {
             "del statement",
             vec![Stmt::Del(vec![Target::Name("x".into())])],
         ),
+        // break/continue WITHOUT an enclosing loop are still compile-time
+        // rejections (SyntaxError in CPython).
         ("break", vec![Stmt::Break]),
         ("continue", vec![Stmt::Continue]),
         (
@@ -832,6 +839,11 @@ fn opcode_names_table_in_sync() {
         Instr::BuildSet(0),
         Instr::ReturnValue,
         Instr::ReturnNone,
+        Instr::AugOp {
+            kind: BinKind::Add,
+            sym: "+",
+        },
+        Instr::LoadAttrCall { idx: 0, argc: 1 },
         Instr::FallbackToTreeWalk,
     ];
     assert_eq!(samples.len(), OPCODE_NAMES.len());
@@ -841,7 +853,7 @@ fn opcode_names_table_in_sync() {
         assert!(!name.is_empty());
         assert!(seen.insert(name), "duplicate opcode name {name}");
     }
-    assert_eq!(all.len(), 31);
+    assert_eq!(all.len(), 33);
 }
 
 #[test]
@@ -859,19 +871,24 @@ fn decode_disassembles_and_renders() {
 
 #[test]
 fn decode_fallback_shape() {
+    // Try-containing bodies still fall back wholesale (01-core/03).
     let f = fn_def(
         "f",
         &[],
-        vec![Stmt::For(
-            Target::Name("x".into()),
-            name("xs"),
-            vec![Stmt::Pass],
-            vec![],
-        )],
+        vec![Stmt::Try(TryStmt {
+            body: vec![Stmt::Pass],
+            handlers: vec![ExceptHandler {
+                ty: None,
+                name: None,
+                body: vec![Stmt::Pass],
+            }],
+            orelse: vec![],
+            finalbody: vec![],
+        })],
     );
     match lower_fn(&f) {
         LowerOutcome::Fallback(_) => {}
-        LowerOutcome::Code(_) => panic!("For must not lower this leaf"),
+        LowerOutcome::Code(_) => panic!("Try must not lower until 01-core/03"),
     }
 }
 
@@ -922,4 +939,360 @@ fn lower_module_fn_dispatches() {
         }))
         .is_none()
     );
+}
+
+// ---------------------------------------------------------------------------
+// Leaf 01-core/01: control-flow lowering (If/While/For/BoolOp/Break/Continue)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn while_loop_lowering_shape() {
+    // def f():
+    //     n = 0
+    //     while n < 3:
+    //         n = n + 1
+    //     return n
+    let f = fn_def(
+        "f",
+        &[],
+        vec![
+            Stmt::Assign(vec![Target::Name("n".into())], lit(0)),
+            Stmt::While(
+                Expr::Compare(vec![CmpOp::Lt], vec![name("n"), lit(3)], 1),
+                vec![Stmt::Assign(
+                    vec![Target::Name("n".into())],
+                    b(BinOp::Add, name("n"), lit(1)),
+                )],
+                vec![],
+            ),
+            ret(name("n")),
+        ],
+    );
+    let c = must_lower(&f);
+    // n=0: LC SF | LOOP: LF0 LC3 Compare JumpIfFalse->EXIT | LF0 LC1 BinOp SF0 | Jump->LOOP | EXIT: LF0 RetVal | RN
+    let mut iffalse_idx = None;
+    let mut back_idx = None;
+    for (i, ins) in c.instrs.iter().enumerate() {
+        if let Instr::JumpIfFalse(t) = ins {
+            iffalse_idx = Some((i, *t as usize));
+        }
+        if let Instr::Jump(t) = ins {
+            back_idx = Some((i, *t as usize));
+        }
+    }
+    let (ii, it) = iffalse_idx.expect("JumpIfFalse present");
+    let (bi, bt) = back_idx.expect("back-edge Jump present");
+    assert!(
+        bt < bi,
+        "back-edge is a BACK edge (target {bt} < instr {bi})"
+    );
+    assert!(it > ii && it > bi, "cond-false exits past the body");
+    assert_eq!(c.instrs.last(), Some(&Instr::ReturnNone));
+}
+
+#[test]
+fn for_loop_lowering_shape() {
+    // def f(xs):
+    //     s = 0
+    //     for x in xs:
+    //         s = s + x
+    //     return s
+    let f = fn_def(
+        "f",
+        &["xs"],
+        vec![
+            Stmt::Assign(vec![Target::Name("s".into())], lit(0)),
+            Stmt::For(
+                Target::Name("x".into()),
+                name("xs"),
+                vec![Stmt::Assign(
+                    vec![Target::Name("s".into())],
+                    b(BinOp::Add, name("s"), name("x")),
+                )],
+                vec![],
+            ),
+            ret(name("s")),
+        ],
+    );
+    let c = must_lower(&f);
+    // s=0: LC SF (0..1); LoadFast(xs) GetIter ForNext->EXIT StoreFast(x) body Jump->LOOP
+    assert_eq!(c.instrs[2], Instr::LoadFast(0));
+    assert_eq!(c.instrs[3], Instr::GetIter);
+    let fornext = c.instrs[4];
+    assert!(matches!(fornext, Instr::ForNext(_)));
+    assert_eq!(c.instrs[5], Instr::StoreFast(2)); // slots: xs=0, s=1, x=2
+                                                  // ForNext target = the exit arc after the back-edge jump.
+    let t = match fornext {
+        Instr::ForNext(t) => t as usize,
+        _ => unreachable!(),
+    };
+    assert!(t > 7, "ForNext exits past the loop body (t={t})");
+}
+
+#[test]
+fn for_loop_else_and_break_targets() {
+    // def f(xs):
+    //     for x in xs:
+    //         if x == 0:
+    //             break
+    //     else:
+    //         return 1
+    //     return 2
+    let f = fn_def(
+        "f",
+        &["xs"],
+        vec![
+            Stmt::For(
+                Target::Name("x".into()),
+                name("xs"),
+                vec![Stmt::If(
+                    Expr::Compare(vec![CmpOp::Eq], vec![name("x"), lit(0)], 1),
+                    vec![Stmt::Break],
+                    vec![],
+                )],
+                vec![ret(lit(1))],
+            ),
+            ret(lit(2)),
+        ],
+    );
+    let c = must_lower(&f);
+    c.validate()
+        .expect("all break/continue/exit targets patched");
+    // Two plain Jumps exist past the loop setup: the BREAK and the loop's
+    // BACK EDGE. The back edge targets the loop HEAD (lower idx); the break
+    // targets the exit arc AFTER the else block's ReturnValue (highest
+    // target in the stream).
+    let jumps: Vec<(usize, usize)> = c
+        .instrs
+        .iter()
+        .enumerate()
+        .filter_map(|(i, ins)| match ins {
+            Instr::Jump(t) if i > 6 => Some((i, *t as usize)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(jumps.len(), 2, "break + back-edge: {jumps:?}");
+    // The break (max target) must land exactly on the post-else exit arc:
+    // the else block's ReturnValue sits immediately BEFORE it.
+    let break_target = jumps.iter().map(|(_, t)| *t).max().unwrap();
+    assert_eq!(
+        c.instrs[break_target - 1],
+        Instr::ReturnValue,
+        "break lands just past the loop-else ReturnValue"
+    );
+    // And the back-edge (min target) is the loop head.
+    let back_target = jumps.iter().map(|(_, t)| *t).min().unwrap();
+    let fornext_at = c
+        .instrs
+        .iter()
+        .position(|i| matches!(i, Instr::ForNext(_)))
+        .unwrap();
+    assert!(
+        back_target <= fornext_at,
+        "back-edge returns to the loop head (t={back_target} <= ForNext@{fornext_at})"
+    );
+    // Return 1 (else) exists.
+    let mut probe_pool = ConstPool::new();
+    assert!(c
+        .instrs
+        .contains(&Instr::LoadConst(probe_pool.intern(Const::Int(1)))));
+}
+
+#[test]
+fn continue_targets_the_fornext_in_for() {
+    // def f(xs):
+    //     out = 0
+    //     for x in xs:
+    //         if x:
+    //             continue
+    //         out = out + x
+    //     return out
+    let f = fn_def(
+        "f",
+        &["xs"],
+        vec![
+            Stmt::Assign(vec![Target::Name("out".into())], lit(0)),
+            Stmt::For(
+                Target::Name("x".into()),
+                name("xs"),
+                vec![
+                    Stmt::If(name("x"), vec![Stmt::Continue], vec![]),
+                    Stmt::Assign(
+                        vec![Target::Name("out".into())],
+                        b(BinOp::Add, name("out"), name("x")),
+                    ),
+                ],
+                vec![],
+            ),
+            ret(name("out")),
+        ],
+    );
+    let c = must_lower(&f);
+    let fornext_at = c
+        .instrs
+        .iter()
+        .position(|i| matches!(i, Instr::ForNext(_)))
+        .expect("ForNext");
+    // The continue's Jump target IS the ForNext instruction index.
+    let continue_target = c
+        .instrs
+        .iter()
+        .enumerate()
+        .filter_map(|(i, ins)| match ins {
+            // JumpIfFalse exits the if; plain Jump after it is the continue.
+            Instr::Jump(t) if i > fornext_at => Some(*t as usize),
+            _ => None,
+        })
+        .find(|&t| t == fornext_at)
+        .expect("continue jumps to the ForNext");
+    assert_eq!(continue_target, fornext_at);
+}
+
+#[test]
+fn boolop_value_and_short_circuit_shape() {
+    // def f(a, b):
+    //     return a or b
+    let f = fn_def(
+        "f",
+        &["a", "b"],
+        vec![ret(Expr::BoolOp(BoolOp::Or, vec![name("a"), name("b")]))],
+    );
+    let c = must_lower(&f);
+    // LF0 JumpIfTrueOrPop->DONE LF1 DONE RetVal RN
+    assert_eq!(c.instrs[0], Instr::LoadFast(0));
+    assert!(matches!(c.instrs[1], Instr::JumpIfTrueOrPop(_)));
+    assert_eq!(c.instrs[2], Instr::LoadFast(1));
+    assert_eq!(c.instrs[3], Instr::ReturnValue);
+    let t = match c.instrs[1] {
+        Instr::JumpIfTrueOrPop(t) => t as usize,
+        _ => unreachable!(),
+    };
+    assert_eq!(t, 3, "short-circuit lands directly on ReturnValue");
+
+    // `a and b`: JumpIfFalseOrPop.
+    let g = fn_def(
+        "g",
+        &["a", "b"],
+        vec![ret(Expr::BoolOp(BoolOp::And, vec![name("a"), name("b")]))],
+    );
+    let c2 = must_lower(&g);
+    assert!(matches!(c2.instrs[1], Instr::JumpIfFalseOrPop(_)));
+
+    // 3-operand chain: two jumps, both targeting the same DONE.
+    let h = fn_def(
+        "h",
+        &["a", "b", "c"],
+        vec![ret(Expr::BoolOp(
+            BoolOp::Or,
+            vec![name("a"), name("b"), name("c")],
+        ))],
+    );
+    let c3 = must_lower(&h);
+    let jumps: Vec<usize> = c3
+        .instrs
+        .iter()
+        .enumerate()
+        .filter_map(|(i, ins)| match ins {
+            Instr::JumpIfTrueOrPop(t) => Some(*t as usize),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(jumps.len(), 2);
+    assert_eq!(jumps[0], jumps[1], "both land on DONE");
+}
+
+#[test]
+fn boolop_in_loop_condition_lowers() {
+    // while a and b: pass  -> the condition is a jump chain, not a fallback.
+    let f = fn_def(
+        "f",
+        &["a", "b"],
+        vec![Stmt::While(
+            Expr::BoolOp(BoolOp::And, vec![name("a"), name("b")]),
+            vec![Stmt::Pass],
+            vec![],
+        )],
+    );
+    let c = must_lower(&f);
+    c.validate().expect("loop+boolop validates");
+    assert!(c
+        .instrs
+        .iter()
+        .any(|i| matches!(i, Instr::JumpIfFalseOrPop(_))));
+    assert!(c.instrs.iter().any(|i| matches!(i, Instr::JumpIfFalse(_))));
+}
+
+#[test]
+fn nested_loops_keep_separate_break_frames() {
+    // Inner break must NOT patch the outer loop's exit; both loops validate.
+    let f = fn_def(
+        "f",
+        &["xs"],
+        vec![Stmt::For(
+            Target::Name("x".into()),
+            name("xs"),
+            vec![Stmt::For(
+                Target::Name("y".into()),
+                name("xs"),
+                vec![Stmt::Break],
+                vec![],
+            )],
+            vec![],
+        )],
+    );
+    let c = must_lower(&f);
+    c.validate().expect("nested breaks patched correctly");
+    assert_eq!(
+        c.instrs
+            .iter()
+            .filter(|i| matches!(i, Instr::ForNext(_)))
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn loop_var_scoping_leaks_to_function_scope() {
+    // for x in xs: pass; return x  — x is a compile-time local even though
+    // assigned only by the loop (CPython leak rule).
+    let f = fn_def(
+        "f",
+        &["xs"],
+        vec![
+            Stmt::For(
+                Target::Name("x".into()),
+                name("xs"),
+                vec![Stmt::Pass],
+                vec![],
+            ),
+            ret(name("x")),
+        ],
+    );
+    let c = must_lower(&f);
+    assert!(
+        c.local_names.contains(&"x".to_string()),
+        "loop var gets a slot: {:?}",
+        c.local_names
+    );
+}
+
+#[test]
+fn try_inside_loop_still_falls_back() {
+    // The loop body's Try rejects the WHOLE function (01-core/03).
+    let f = fn_def(
+        "f",
+        &["xs"],
+        vec![Stmt::For(
+            Target::Name("x".into()),
+            name("xs"),
+            vec![Stmt::Try(TryStmt {
+                body: vec![Stmt::Pass],
+                handlers: vec![],
+                orelse: vec![],
+                finalbody: vec![],
+            })],
+            vec![],
+        )],
+    );
+    assert_eq!(must_fallback(&f), "try statement");
 }

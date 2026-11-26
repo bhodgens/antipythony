@@ -29,6 +29,6 @@ battery in both toggle states.
 
 | leaf | status |
 |---|---|
-| 01-control-flow.md | PENDING |
-| 02-calls-and-attrs.md | PENDING |
-| 03-exceptions.md | PENDING |
+| 01-control-flow.md | DONE on branch tier1-fp-controlflow (session record NEXT-FP-CONTROLFLOW.md; gates green both toggles; merge pending orchestrator review) |
+| 02-calls-and-attrs.md | PENDING (partially pre-empted: LoadAttrCall fused opcode + AugOp landed with 01) |
+| 03-exceptions.md | PENDING (Try-in-loop still falls back wholesale per 01's contract) |
