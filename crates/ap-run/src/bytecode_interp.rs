@@ -61,8 +61,8 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use ap_bytecode::code::CodeObject;
 use ap_bytecode::instr::{BinKind, CompareOp, Instr, UnaryKind};
@@ -71,9 +71,9 @@ use ap_ir::expr::{BinOp, CmpOp, UnaryOp};
 use ap_obj::int::{Gc, Int};
 use ap_obj::value::{PyList, PyString, Tuple, Value};
 
-use crate::Flow;
 use crate::exc_hier::ExceptionValue;
 use crate::frame::{FnEntry, Frame, Interpreter, Loc};
+use crate::Flow;
 
 // ===========================================================================
 // Compile cache (per-thread, keyed by the def Arc pointer — same lifetime
@@ -679,10 +679,9 @@ fn run_frame(
                 let dict = ap_obj::dict::PyDict::new();
                 // Items are in push order: key, value, key, value, ...
                 for pair in items.chunks(2) {
-                    hop!(
-                        dict.set(pair[0].clone(), pair[1].clone())
-                            .map_err(Flow::from_py)
-                    );
+                    hop!(dict
+                        .set(pair[0].clone(), pair[1].clone())
+                        .map_err(Flow::from_py));
                 }
                 stack.push(Value::Dict(dict));
                 pc += 1;
