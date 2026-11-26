@@ -20620,10 +20620,7 @@ pub fn call_builtin_values(
                         Some(Value::Int(n)) => {
                             let v = n.to_i64().unwrap_or(-1);
                             if !(0..=255).contains(&v) {
-                                return Err(raise(
-                                    "ValueError",
-                                    "byte must be in range(0, 256)",
-                                ));
+                                return Err(raise("ValueError", "byte must be in range(0, 256)"));
                             }
                             (None, Some(v as u8))
                         }
@@ -20647,17 +20644,24 @@ pub fn call_builtin_values(
                     let clamp_v = |v: i64| -> usize {
                         if v < 0 {
                             let nv = (b.len() as i64) + v;
-                            if nv < 0 { 0 } else { nv as usize }
+                            if nv < 0 {
+                                0
+                            } else {
+                                nv as usize
+                            }
                         } else {
                             (v as usize).min(b.len())
                         }
                     };
                     let (st, en) = match (a(2), a(3)) {
-                        (Some(Value::Int(s)), Some(Value::Int(e))) => {
-                            (clamp_v(s.to_i64().unwrap_or(0)), clamp_v(e.to_i64().unwrap_or(b.len() as i64)))
-                        }
+                        (Some(Value::Int(s)), Some(Value::Int(e))) => (
+                            clamp_v(s.to_i64().unwrap_or(0)),
+                            clamp_v(e.to_i64().unwrap_or(b.len() as i64)),
+                        ),
                         (Some(Value::Int(s)), None) => (clamp_v(s.to_i64().unwrap_or(0)), b.len()),
-                        (None, Some(Value::Int(e))) => (0, clamp_v(e.to_i64().unwrap_or(b.len() as i64))),
+                        (None, Some(Value::Int(e))) => {
+                            (0, clamp_v(e.to_i64().unwrap_or(b.len() as i64)))
+                        }
                         _ => (0, b.len()),
                     };
                     let st = st.min(en);
@@ -20677,9 +20681,15 @@ pub fn call_builtin_values(
                             } else if raw_start_gt_len {
                                 None
                             } else if fname.starts_with("r") {
-                                window.windows(sub.len()).rposition(|w| w == sub).map(|p| p + offset)
+                                window
+                                    .windows(sub.len())
+                                    .rposition(|w| w == sub)
+                                    .map(|p| p + offset)
                             } else {
-                                window.windows(sub.len()).position(|w| w == sub).map(|p| p + offset)
+                                window
+                                    .windows(sub.len())
+                                    .position(|w| w == sub)
+                                    .map(|p| p + offset)
                             }
                         }
                         (None, Some(byte)) => {
@@ -20723,10 +20733,7 @@ pub fn call_builtin_values(
                         Some(Value::Int(n)) => {
                             let v = n.to_i64().unwrap_or(-1);
                             if !(0..=255).contains(&v) {
-                                return Err(raise(
-                                    "ValueError",
-                                    "byte must be in range(0, 256)",
-                                ));
+                                return Err(raise("ValueError", "byte must be in range(0, 256)"));
                             }
                             (None, Some(v as u8))
                         }
@@ -20755,17 +20762,24 @@ pub fn call_builtin_values(
                     let clamp_v = |v: i64| -> usize {
                         if v < 0 {
                             let nv = (b.len() as i64) + v;
-                            if nv < 0 { 0 } else { nv as usize }
+                            if nv < 0 {
+                                0
+                            } else {
+                                nv as usize
+                            }
                         } else {
                             (v as usize).min(b.len())
                         }
                     };
                     let (st, en) = match (a(2), a(3)) {
-                        (Some(Value::Int(s)), Some(Value::Int(e))) => {
-                            (clamp_v(s.to_i64().unwrap_or(0)), clamp_v(e.to_i64().unwrap_or(b.len() as i64)))
-                        }
+                        (Some(Value::Int(s)), Some(Value::Int(e))) => (
+                            clamp_v(s.to_i64().unwrap_or(0)),
+                            clamp_v(e.to_i64().unwrap_or(b.len() as i64)),
+                        ),
                         (Some(Value::Int(s)), None) => (clamp_v(s.to_i64().unwrap_or(0)), b.len()),
-                        (None, Some(Value::Int(e))) => (0, clamp_v(e.to_i64().unwrap_or(b.len() as i64))),
+                        (None, Some(Value::Int(e))) => {
+                            (0, clamp_v(e.to_i64().unwrap_or(b.len() as i64)))
+                        }
                         _ => (0, b.len()),
                     };
                     let st = st.min(en);
@@ -20788,9 +20802,7 @@ pub fn call_builtin_values(
                                 c
                             }
                         }
-                        (None, Some(byte)) => {
-                            window.iter().filter(|&&c| c == byte).count()
-                        }
+                        (None, Some(byte)) => window.iter().filter(|&&c| c == byte).count(),
                         (None, None) => unreachable!("needle coercion produced neither"),
                     };
                     return Ok(i(n as i64));
@@ -20806,44 +20818,43 @@ pub fn call_builtin_values(
             }
             ("pybytes", "startswith") | ("pybytes", "endswith") => {
                 if let Value::Bytes(b) = &recv {
-                    let hit = match a(1) {
-                        Some(Value::Bytes(p)) => {
-                            if fname == "startswith" {
-                                b.starts_with(&p[..])
-                            } else {
-                                b.ends_with(&p[..])
-                            }
-                        }
-                        Some(Value::Tuple(t)) => t.0.iter().any(|p| match p {
-                            Value::Bytes(x) => {
+                    let hit =
+                        match a(1) {
+                            Some(Value::Bytes(p)) => {
                                 if fname == "startswith" {
-                                    b.starts_with(&x[..])
+                                    b.starts_with(&p[..])
                                 } else {
-                                    b.ends_with(&x[..])
+                                    b.ends_with(&p[..])
                                 }
                             }
-                            _ => false,
-                        }),
-                        Some(Value::Int(_)) => {
-                            return Err(raise(
+                            Some(Value::Tuple(t)) => t.0.iter().any(|p| match p {
+                                Value::Bytes(x) => {
+                                    if fname == "startswith" {
+                                        b.starts_with(&x[..])
+                                    } else {
+                                        b.ends_with(&x[..])
+                                    }
+                                }
+                                _ => false,
+                            }),
+                            Some(Value::Int(_)) => return Err(raise(
                                 "TypeError",
                                 "startswith first arg must be bytes or a tuple of bytes, not int",
-                            ))
-                        }
-                        Some(Value::Str(_)) => {
-                            return Err(raise(
-                                "TypeError",
-                                "argument should be integer or bytes-like object, not 'str'",
-                            ));
-                        }
-                        Some(Value::Float(_)) => {
-                            return Err(raise(
-                                "TypeError",
-                                "argument should be integer or bytes-like object, not 'float'",
-                            ));
-                        }
-                        _ => return Err(raise("TypeError", "expected a bytes argument")),
-                    };
+                            )),
+                            Some(Value::Str(_)) => {
+                                return Err(raise(
+                                    "TypeError",
+                                    "argument should be integer or bytes-like object, not 'str'",
+                                ));
+                            }
+                            Some(Value::Float(_)) => {
+                                return Err(raise(
+                                    "TypeError",
+                                    "argument should be integer or bytes-like object, not 'float'",
+                                ));
+                            }
+                            _ => return Err(raise("TypeError", "expected a bytes argument")),
+                        };
                     return Ok(Value::Bool(hit));
                 }
                 Err(raise(

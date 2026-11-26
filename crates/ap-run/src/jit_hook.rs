@@ -344,7 +344,10 @@ fn osr_registry_lookup(fn_key: u64, header: u32) -> *const u8 {
     // hp-forloop A/B debug knob: APX_OSR_OFF=1 disables all OSR entries
     // (the poll fast path only) — used to isolate suspected OSR-body
     // bugs from desugar semantics. Never set in production runs.
-    if std::env::var("APX_OSR_OFF").map(|v| v == "1").unwrap_or(false) {
+    if std::env::var("APX_OSR_OFF")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
         return std::ptr::null();
     }
     let installed = OSR_ENTRIES.with(|m| {
@@ -1026,12 +1029,10 @@ pub fn jit_call_body(
     // arm). The tier-1 fast path keeps its own call (its status contract
     // 0/2 hand-off is unchanged); the twin's outcome rides call_status.
     let call_outcome = match fast_for_call {
-        Some(fast_ptr) => {
-            match unsafe { tierup::call_fast(fast_ptr, &je.jit, &mut ctx) } {
-                Ok(()) => ap_codegen_native::clif::CallOutcome::Completed,
-                Err(e) => ap_codegen_native::clif::CallOutcome::Parked(e),
-            }
-        }
+        Some(fast_ptr) => match unsafe { tierup::call_fast(fast_ptr, &je.jit, &mut ctx) } {
+            Ok(()) => ap_codegen_native::clif::CallOutcome::Completed,
+            Err(e) => ap_codegen_native::clif::CallOutcome::Parked(e),
+        },
         None => unsafe { je.jit.call_status(&mut ctx) },
     };
     let call_r = match &call_outcome {
@@ -1072,10 +1073,7 @@ pub fn jit_call_body(
             // user object must not become a raise; the conversion only
             // fires for CallOutcome::Raised).
             let r = std::mem::replace(&mut ctx.ret, Value::None);
-            if matches!(
-                call_outcome,
-                ap_codegen_native::clif::CallOutcome::Raised
-            ) {
+            if matches!(call_outcome, ap_codegen_native::clif::CallOutcome::Raised) {
                 match crate::interp::exception_value_of_instance_pub(&r) {
                     Ok(mut ev) => {
                         ev.raise_line = frame.last_line.get();

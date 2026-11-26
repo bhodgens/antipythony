@@ -8071,9 +8071,8 @@ fn call_value_inner_impl(
                                     // native_attr fallback on both None
                                     // result AND AttributeError.
                                     Err(Flow::Raise(e)) if e.class == "AttributeError" => {
-                                        match crate::builtins_modules::native_attr(
-                                            &subject, &attr,
-                                        ) {
+                                        match crate::builtins_modules::native_attr(&subject, &attr)
+                                        {
                                             Some(v) => Ok(v),
                                             None => Ok(Value::None),
                                         }

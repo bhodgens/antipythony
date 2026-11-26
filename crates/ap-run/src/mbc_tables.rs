@@ -153736,9 +153736,6 @@ pub static MAP_GBK: &[(&str, u32)] = &[
     ("fe4f", 0xFA29),
 ];
 
-// MAP_HZ has no in-tree consumer today (codec table registry candidate);
-// kept for the issue-#13 tooling that regenerates these tables.
-#[allow(dead_code)]
 pub static MAP_HZ: &[(&str, u32)] = &[
     ("00", 0x0000),
     ("01", 0x0001),

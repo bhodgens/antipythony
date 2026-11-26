@@ -5390,6 +5390,49 @@ pub fn call_builtin(
             {
                 return r;
             }
+            // fix_bytes: pybytes.<method> markers call as m(args...) where
+            // the RECEIVER is parked in the marker's slice_parts (minted by
+            // native_attr on bytes receivers). Route by marker NAME here —
+            // call_native_marker_impl above keys on the dotted call name
+            // (e.g. "pybytes.count" only when the call name itself is
+            // dotted), which a bound-method call m(98) never is.
+            // fix_bytes: bound getattribute marker m = b.__getattribute__
+            // — call shape m(attr_name, ...) with the receiver parked in
+            // the marker's slice_parts. Route: resolve attr on subject via
+            // native_attr (pybytes markers) / call_builtin_values.
+            if name == "__getattribute__" {
+                if let Some(Value::Obj(o)) = args.first() {
+                    if o.kind == ap_obj::ObjKind::BuiltinFn
+                        && o.name == "__object_virtual___getattribute____"
+                    {
+                        let subject = o
+                            .slice_parts
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .first()
+                            .cloned()
+                            .unwrap_or(Value::None);
+                        let attr = match args.get(1) {
+                            Some(Value::Str(s)) => s.as_str().to_string(),
+                            _ => String::new(),
+                        };
+                        let mut a2: Vec<Value> = vec![subject];
+                        a2.extend_from_slice(&args[2..]);
+                        if let Some(r) = crate::builtins_modules::call_native_marker_impl(
+                            &attr,
+                            Some(o.clone()),
+                            &a2,
+                        ) {
+                            return r;
+                        }
+                        if let Some(r) = crate::builtins_modules::call_builtin_values(
+                            "pybytes", &attr, &a2, kwargs,
+                        ) {
+                            return r;
+                        }
+                    }
+                }
+            }
         }
         if let Some(r) = crate::builtins_modules::call_native_marker_obj(name, args, kwargs) {
             return r;
@@ -5936,6 +5979,52 @@ pub fn call_builtin(
         "__ap_typevar_has_default__" => Ok(Value::Bool(false)),
         "__ap_typing_idfunc__" | "_typing._idfunc" => {
             Ok(args.first().cloned().unwrap_or(Value::None))
+        }
+        "__object_virtual___getattribute____" => {
+            // fix_bytes: the native-receiver __getattribute__ marker
+            // (receiver parked in slice_parts). Resolve the requested attr
+            // on the parked receiver; AttributeError propagates exactly as
+            // CPython's object.__getattribute__ would.
+            let (subject, attr) = {
+                // call_builtin's dotted dispatch: args = (recv_parked? no —
+                // the marker was minted by attr_get with the receiver in
+                // slice_parts; call_value_inner reaches this arm via the
+                // Obj BuiltinFn match where o IS the marker, so slice_parts
+                // on the callee carries the receiver. The callee handle is
+                // lost here, but the marker name is unique: use the
+                // interp-free protocol read on args[0] (the attr NAME arg
+                // comes second). Fallback shape: (subject=args[0] is
+                // actually the NAME string for m(name) calls — so instead
+                // read the receiver from the THREAD-LOCAL parked by the
+                // mint (park_getattribute_recv) if present, else treat
+                // args[0] as the receiver for unbound
+                // object.__getattribute__(obj, name) calls.
+                let parked = crate::builtins_modules::take_getattribute_recv();
+                if parked.is_none() {
+                    (
+                        args.first().cloned().unwrap_or(Value::None),
+                        match args.get(1) {
+                            Some(Value::Str(s)) => s.as_str().to_string(),
+                            _ => String::new(),
+                        },
+                    )
+                } else {
+                    (
+                        parked.unwrap_or(Value::None),
+                        match args.first() {
+                            Some(Value::Str(s)) => s.as_str().to_string(),
+                            _ => String::new(),
+                        },
+                    )
+                }
+            };
+            let interp2 = crate::builtins_modules::current_interp()
+                .ok_or_else(|| raise("RuntimeError", "no interpreter"))?;
+            return match crate::classes::attr_get_protocol(&interp2, &subject, &attr) {
+                Ok(v) => Ok(v),
+                Err(Flow::Raise(e)) if e.class == "AttributeError" => Err(Flow::Raise(e)),
+                Err(other) => Err(other),
+            };
         }
         "__object_virtual___get____" => {
             // T1-d: descriptor-__get__ marker call (attr/_make.py):
