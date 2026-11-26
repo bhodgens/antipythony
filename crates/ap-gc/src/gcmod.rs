@@ -379,16 +379,22 @@ fn pending_value_by_addr(addr: usize) -> Option<Value> {
 /// outer flush drained the ledger before invoking the collect, so there is
 /// nothing left to flush — mirroring drain_worker_registrations' DRAINING.
 fn flush_all_pending() {
-    if FLUSHING.with(|f| f.get()) {
-        return;
-    }
+    let e = std::env::var_os("APX_FLUSH_TRACE").is_some();
+    // NO pre-set of FLUSHING here: the gate lives inside flush_pending
+    // (a pre-set flag would make flush_pending classify THIS call as the
+    // re-entrant inner and skip every flush — the registry-empty bug).
     let batch = PENDING.with(|p| std::mem::take(&mut *p.borrow_mut()));
+    if e {
+        eprintln!("[FAP] batch={}", batch.len());
+    }
     if batch.is_empty() {
         return;
     }
-    FLUSHING.with(|f| f.set(true));
     flush_pending(&batch);
-    FLUSHING.with(|f| f.set(false));
+    // A re-entrant inner flush (from a `__del__` mint inside the collect
+    // ladder) returns without touching the flag; if the OUTER flush ran,
+    // it cleared it. Nothing to restore here.
+    let _ = e;
 }
 
 /// Pending-row count (gc_tracked_len's ledger arm).
@@ -396,90 +402,133 @@ fn pending_len() -> usize {
     PENDING.with(|p| p.borrow().len())
 }
 
+/// hp-nursery: TEST/probe-visible flush of this thread's ledger. Not part
+/// of the collector's public surface (doc-hidden): unit tests and probe
+/// bins need to force the batch boundary to observe registry state between
+/// mints; the interpreter path flushes at the collect seam.
+#[doc(hidden)]
+pub fn flush_test() {
+    flush_all_pending();
+}
+
 /// The batch-ladder counters: the OLD ALLOC_SINCE ladder fired the collect
 /// check per REGISTRATION; the ledger fires it per FLUSH with the same
 /// allocation-count cadence (PENDING_BATCH rows ≈ PENDING_BATCH allocs), so
 /// the pass cadence is unchanged.
 fn flush_pending(batch: &[PendingRow]) {
-    // The re-entrancy gate lives HERE (not at the callers): flush ->
-    // collect ladder -> collect_gen -> flush_all_pending re-entry is a
-    // no-op (the C10/DRAINING pattern). A mid-sweep batch (a `__del__`
-    // that allocates) skips registration entirely: the rows' objects are
-    // seen by the NEXT pass — the pre-existing suppress_registration rule.
-    if FLUSHING.with(|f| f.replace(false)) {
-        FLUSHING.with(|f| f.set(true));
+    // The re-entrancy gate lives HERE and is the ONLY recursion guard:
+    // flush -> ladder -> collect_gen -> `__del__` -> gc_register ->
+    // flush_pending MUST be a no-op, or the inner flush's ladder calls
+    // collect_gen again while the outer collect_gen holds COLLECT —
+    // self-deadlock (observed: gc014 hung at 1569+ mints; sample showed
+    // collect_gen -> bridge_del -> attr_get -> PyObject::new ->
+    // gc_register -> flush_pending -> collect_gen -> COLLECT.lock wait).
+    // A mid-sweep batch skips registration entirely: the rows' objects
+    // are seen by the NEXT pass — the pre-existing suppress_registration
+    // rule. Plain get() (never replace(false): the owner below holds the
+    // flag for the whole flush).
+    if FLUSHING.with(|f| f.get()) {
         return;
     }
     FLUSHING.with(|f| f.set(true));
-    if weakbridge::suppress_registration() {
-        FLUSHING.with(|f| f.set(false));
-        return;
-    }
     let run_start = PENDING_SEQ.fetch_add(batch.len() as u64, std::sync::atomic::Ordering::Relaxed);
     let mut young_new: Vec<usize> = Vec::new();
     let mut inserted: usize = 0;
-    {
-        let mut st = reg_state().lock().unwrap_or_else(|p| p.into_inner());
-        for (i, row) in batch.iter().enumerate() {
-            if row.addr == 0 || st.registry.contains_key(&row.addr) {
-                continue;
+    let suppress = weakbridge::suppress_registration();
+    if std::env::var_os("APX_FLUSH_TRACE").is_some() {
+        eprintln!(
+            "[FLUSH] batch={} suppress={suppress} flushing={}",
+            batch.len(),
+            FLUSHING.with(|f| f.get())
+        );
+    }
+    let mut st = reg_state().lock().unwrap_or_else(|p| p.into_inner());
+    if std::env::var_os("APX_FLUSH_TRACE").is_some() {
+        eprintln!("[FLUSH-LOOP] rows={} suppress={suppress}", batch.len());
+    }
+    for (i, row) in batch.iter().enumerate() {
+        if suppress || row.addr == 0 || st.registry.contains_key(&row.addr) {
+            if std::env::var_os("APX_FLUSH_TRACE").is_some() {
+                eprintln!("[ROW-SKIP] i={i} addr={:x} suppress={suppress}", row.addr);
             }
-            // hp-nursery DYING-YOUNG SHORTCUT (the nursery's promotion
-            // boundary, Arc-shaped): a plain container whose ONLY live
-            // reference at flush time is this ledger row (strong_count == 1)
-            // is provably unreachable — no inbound edges of any kind (a
-            // cycle member always carries >=1 internal inbound edge, so
-            // sc >= 2; a cross-thread or stack-held clone reads sc >= 2).
-            // It never enters the registry: the row drops here and the Arc
-            // cascade frees the object — no registry insert, no young-set
-            // entry, no pass ever scans it. This is the bulk-registration
-            // nursery's dead-object fast path (CPython's nursery frees
-            // dead-young objects by resetting the arena top; the same
-            // objects here cost one row instead of a registration + a
-            // scanned pass entry).
-            //
-            // Fence analysis (load-bearing):
-            // - restricted to List/Dict/Set/Frozen: these have NO __del__
-            //   surface (has_del is Obj-only), so skipping cannot skip a
-            //   finalizer (gc001/gc002/gc009/gc014 stay exact — Obj
-            //   instances ALWAYS register below).
-            // - not weakrefable as builtins (gc005 matrix: list/dict NO);
-            //   a Set with a weakref entry: the entry's target never gains
-            //   a registry row, and sweep_weakrefs' `!contains_key` arm
-            //   flips it dead at the same collect it would have flipped
-            //   anyway (the pre-ledger path also reported it at the NEXT
-            //   pass — timing identical).
-            // - is_tracked/get_objects: a dead-at-flush object is
-            //   unobservable by Python (no reference exists); omitting it
-            //   from the projection matches CPython (dead objects are not
-            //   in gc.get_objects()).
-            if strong_count_of(&row.value) == 1
-                && matches!(
-                    row.value,
-                    Value::List(_) | Value::Dict(_) | Value::Set(_) | Value::Frozen(_)
-                )
-            {
-                continue;
-            }
-            let n = run_start + i as u64 + 1;
-            st.seq = st.seq.max(n);
-            st.seq_of.insert(row.addr, n);
-            st.registry.insert(
-                row.addr,
-                Tracked {
-                    value: row.value.clone(),
-                },
-            );
-            st.young.insert(row.addr);
-            young_new.push(row.addr);
-            inserted += 1;
+            continue;
         }
+        // hp-nursery DYING-YOUNG SHORTCUT (the nursery's promotion
+        // boundary, Arc-shaped): a plain container whose ONLY live
+        // reference at flush time is this ledger row (strong_count == 1)
+        // is provably unreachable — no inbound edges of any kind (a
+        // cycle member always carries >=1 internal inbound edge, so
+        // sc >= 2; a cross-thread or stack-held clone reads sc >= 2).
+        // It never enters the registry: the row drops here and the Arc
+        // cascade frees the object — no registry insert, no young-set
+        // entry, no pass ever scans it. This is the bulk-registration
+        // nursery's dead-object fast path (CPython's nursery frees
+        // dead-young objects by resetting the arena top; the same
+        // objects here cost one row instead of a registration + a
+        // scanned pass entry).
+        //
+        // Fence analysis (load-bearing):
+        // - restricted to List/Dict/Set/Frozen: these have NO __del__
+        //   surface (has_del is Obj-only), so skipping cannot skip a
+        //   finalizer (gc001/gc002/gc009/gc014 stay exact — Obj
+        //   instances ALWAYS register below).
+        // - not weakrefable as builtins (gc005 matrix: list/dict NO);
+        //   a Set with a weakref entry: the entry's target never gains
+        //   a registry row, and sweep_weakrefs' `!contains_key` arm
+        //   flips it dead at the same collect it would have flipped
+        //   anyway (the pre-ledger path also reported it at the NEXT
+        //   pass — timing identical).
+        // - is_tracked/get_objects: a dead-at-flush object is
+        //   unobservable by Python (no reference exists); omitting it
+        //   from the projection matches CPython (dead objects are not
+        //   in gc.get_objects()).
+        if strong_count_of(&row.value) == 1
+            && matches!(
+                row.value,
+                Value::List(_) | Value::Dict(_) | Value::Set(_) | Value::Frozen(_)
+            )
+        {
+            if std::env::var_os("APX_FLUSH_TRACE").is_some() {
+                eprintln!("[SHORTCUT] addr={:x} skipped (dead at flush)", row.addr);
+            }
+            continue;
+        }
+        let n = run_start + i as u64 + 1;
+        st.seq = st.seq.max(n);
+        st.seq_of.insert(row.addr, n);
+        st.registry.insert(
+            row.addr,
+            Tracked {
+                value: row.value.clone(),
+            },
+        );
+        st.young.insert(row.addr);
+        young_new.push(row.addr);
+        inserted += 1;
     }
     let _ = inserted;
     // The ladder (verbatim cadence from the old gc_register; ALLOC_SINCE
     // counts ROWS = allocations).
     let n = ALLOC_SINCE.fetch_add(batch.len(), std::sync::atomic::Ordering::Relaxed) + batch.len();
+    drop(st);
+    // MID-COLLECT FLUSH: when a `__del__` mint flushes during a running
+    // pass, the rows were suppressed (suppress=true skipped the inserts)
+    // and the LADDER MUST NOT RUN — its collect_gen would block on COLLECT
+    // (held by the outer pass): self-deadlock (gc014 hang, sample-proven:
+    // collect_gen -> bridge_del -> gc_register -> flush_pending -> ladder
+    // -> collect_gen -> COLLECT.lock wait). The rows ledger on; the next
+    // collect after the pass sees them.
+    if suppress {
+        FLUSHING.with(|f| f.set(false));
+        return;
+    }
     let (t0, t1, t2) = *thresholds().lock().unwrap_or_else(|p| p.into_inner());
+    if std::env::var_os("APX_FLUSH_TRACE").is_some() {
+        eprintln!(
+            "[FLUSH-END] inserted={inserted} alloc_total={n} enabled={} t0={t0}",
+            ENABLED.load(std::sync::atomic::Ordering::Relaxed)
+        );
+    }
     if !ENABLED.load(std::sync::atomic::Ordering::Relaxed) || t0 == 0 || n < t0 {
         FLUSHING.with(|f| f.set(false));
         return;
@@ -741,7 +790,16 @@ fn edges_of(v: &Value, registry: &HashMap<usize, Tracked>, out: &mut Vec<usize>)
     #[inline]
     fn push_tracked(val: &Value, registry: &HashMap<usize, Tracked>, out: &mut Vec<usize>) {
         let a = value_addr(val);
-        if a != 0 && registry.contains_key(&a) {
+        if a == 0 {
+            return;
+        }
+        // hp-nursery: ledger-resident fresh containers are graph members
+        // too — an edge into a pending row is an internal edge (the row is
+        // one of the two strong clones pending_contains consults). Without
+        // this arm, a cycle built from fresh objects whose attrs rows are
+        // still ledger-resident reads sc=3/internal=0 and seeds reachable —
+        // never reclaimed (caught by gc_differential gc-cycle-count).
+        if registry.contains_key(&a) || pending_contains(a) {
             out.push(a);
         }
     }
@@ -1954,6 +2012,12 @@ mod unit_tests {
             st.mid.clear();
             st.seq = 0;
         }
+        // hp-nursery: the ledger is part of the fresh-heap precondition —
+        // rows left by a prior test would leak values into this test's
+        // first flush (the registry-clear alone no longer resets the
+        // registration state).
+        PENDING.with(|p| p.borrow_mut().clear());
+        PENDING_SEQ.store(0, std::sync::atomic::Ordering::Relaxed);
         finalized_addrs()
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -2152,10 +2216,12 @@ mod unit_tests {
         let obj = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "contended");
         let ov = Value::Obj(obj.clone());
         gc_register(&ov);
+        flush_test();
         let victim = list_val();
         gc_register(&victim.clone()); // registry clone only... plus victim!
                                       // Keep ONLY the registry holding the victim so it would die if the
                                       // pass ran: move our handle into a temp that we drop below.
+        flush_test();
         let victim_addr = value_addr(&victim);
         drop(victim);
 
@@ -2195,14 +2261,27 @@ mod unit_tests {
         // INVARIANT (corpus gc016 / C-23-safe): gc.get_count()[0] reads 0
         // right after a collection; registrations increment it monotonically
         // between collections.
+        // hp-nursery: the ladder counts at FLUSH granularity — rows mint
+        // into the ledger first, so the counter moves only when the batch
+        // boundary (or an explicit collect's flush) processes them. The
+        // observable PROJECTION (0 right after collect; monotonic between)
+        // is preserved by flushing before the reads.
         set_threshold(0, 10, 10);
         collect();
         assert_eq!(get_count().0, 0);
-        gc_register(&list_val());
-        gc_register(&list_val());
+        let l1 = list_val();
+        gc_register(&l1);
+        let l2 = list_val();
+        gc_register(&l2);
+        // hp-nursery: keep the values alive across the flush — a dead row
+        // (sc==1) takes the dying-young shortcut and ALLOC_SINCE counts the
+        // batch EITHER way, but the flush must see live rows here for the
+        // registry-membership assertions below.
+        flush_test();
         assert_eq!(get_count().0, 2);
         collect();
         assert_eq!(get_count().0, 0);
+        let _ = (l1, l2);
     }
 
     #[test]
@@ -2225,6 +2304,9 @@ mod unit_tests {
             let v = list_val();
             held.push(v.clone());
             gc_register(&v);
+            // hp-nursery: flush drives the ladder (auto-collect fires at
+            // the flush boundary now).
+            flush_test();
         }
         assert_eq!(
             stats().collections,
@@ -2235,6 +2317,7 @@ mod unit_tests {
         set_threshold(0, 10, 10);
         let d = list_val();
         gc_register(&d);
+        flush_test();
         assert_eq!(
             stats().collections,
             base_collections + 1,
@@ -2246,6 +2329,7 @@ mod unit_tests {
         assert!(!is_enabled());
         let e = list_val();
         gc_register(&e);
+        flush_test();
         assert_eq!(
             stats().collections,
             base_collections + 1,
@@ -2254,6 +2338,7 @@ mod unit_tests {
         enable();
         let f = list_val();
         gc_register(&f);
+        flush_test();
         assert_eq!(
             stats().collections,
             base_collections + 2,
@@ -2274,6 +2359,7 @@ mod unit_tests {
         let v = list_val();
         let addr = value_addr(&v);
         gc_register(&v.clone());
+        flush_test();
         drop(v);
         freeze();
         assert_eq!(collect(), 0, "everything live is frozen => nothing swept");
@@ -2305,6 +2391,12 @@ mod unit_tests {
             let _g = weakbridge::CollectGuard::new();
             assert!(weakbridge::suppress_registration());
             gc_register(&v.clone());
+            // hp-nursery: the suppressed mint still LEDGERS a row (the
+            // ledger is pre-registration queueing); the FLUSH is the
+            // suppression point — a mid-collect flush drops rows, so
+            // forcing one here exercises the same rule the old test
+            // pinned at gc_register time.
+            flush_test();
             assert!(
                 !reg_state()
                     .lock()
@@ -2316,6 +2408,7 @@ mod unit_tests {
         }
         assert!(!weakbridge::suppress_registration());
         gc_register(&v.clone());
+        flush_test();
         assert!(reg_state()
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -2405,6 +2498,7 @@ mod unit_tests {
         // Register so the child is in the graph, externally held ONLY by
         // the root dict (sc = root clone + registry clone = 2, internal 0).
         gc_register(&child.clone());
+        flush_test();
         drop(child); // registry + root keep it alive
         assert_eq!(collect(), 0, "root-held child must survive");
         // Second pass hits the replay fast path — same verdict.
@@ -2415,6 +2509,7 @@ mod unit_tests {
         root.set(Value::Str(ap_obj::value::PyString::new("k2")), kid2.clone())
             .expect("gcmod.rs:1813");
         gc_register(&kid2.clone());
+        flush_test();
         drop(kid2);
         assert_eq!(collect(), 0);
         assert!(reg_state()
@@ -2470,6 +2565,7 @@ mod unit_tests {
         b.append(Value::List(a.clone()));
         gc_register(&Value::List(a.clone()));
         gc_register(&Value::List(b.clone()));
+        flush_test();
         drop(a);
         drop(b);
         let n = collect();
@@ -2536,8 +2632,11 @@ mod unit_tests {
         // the same discipline as gc016. The hook-installed path registers
         // in the constructor regardless of arm; gc007's corpus bytes pin
         // that surface.)
+        // hp-nursery: gc_register LEDGERS the row; flush_test promotes it
+        // into the registry (the unit-test equivalent of the batch seam).
         let unboxed_addr = value_addr(&unboxed_v);
         gc_register(&unboxed_v.clone());
+        flush_test();
         assert!(
             reg_state()
                 .lock()
