@@ -327,10 +327,7 @@ fn format_int(i: &Int, p: &Spec) -> Result<String, ap_obj::exc::PyException> {
                 .ok()
                 .and_then(char::from_u32)
                 .ok_or_else(|| {
-                    ap_obj::exc::PyException::new(
-                        "OverflowError",
-                        "%c arg not in range(0x110000)",
-                    )
+                    ap_obj::exc::PyException::new("OverflowError", "%c arg not in range(0x110000)")
                 })?;
             (ch.to_string(), "", true)
         }
