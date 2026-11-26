@@ -2013,6 +2013,21 @@ pub fn builtin_type(interp: &Interpreter, args: &[Value], kwargs: &[(String, Val
                 {
                     "_GenericAlias".to_string()
                 }
+                // 02.08 (s029) re-verify: type(mc).__name__ == "methodcaller"
+                // / "itemgetter" (bare class names; the qualified form is
+                // only the repr).
+                Value::Obj(o)
+                    if o.kind == ap_obj::ObjKind::BuiltinFn
+                        && o.name.starts_with("<methodcaller:") =>
+                {
+                    "methodcaller".to_string()
+                }
+                Value::Obj(o)
+                    if o.kind == ap_obj::ObjKind::BuiltinFn
+                        && o.name.starts_with("<itemgetter:") =>
+                {
+                    "itemgetter".to_string()
+                }
                 Value::Obj(o) => o.type_name(),
                 other => other.type_name().to_string(),
             };

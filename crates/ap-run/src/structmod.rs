@@ -136,8 +136,25 @@ pub(crate) fn call_struct(name: &str, args: &[Value]) -> Option<crate::builtins_
                     _ => 0,
                 };
                 let data = buffer_bytes(buf)?;
+                // 02.08 gap re-verify (issue #19): CPython unpack_from
+                // accepts any buffer with AT LEAST struct.size bytes past
+                // the offset — the old call passed the whole tail to
+                // unpack() (== check) so bytearray(8) with "<I" raised
+                // 'unpack requires a buffer of 4 bytes'. Slice to exactly
+                // the struct size (extra data beyond the first record is
+                // CPython-ignored by unpack_from).
+                let size = match calcsize(&fmt)? {
+                    Value::Int(n) => n.to_i64().unwrap_or(0).max(0) as usize,
+                    _ => 0,
+                };
                 let sub = &data[off.min(data.len())..];
-                unpack_bytes(&fmt, sub)
+                if sub.len() < size {
+                    return Err(raise(
+                        "struct.error",
+                        format!("unpack_from requires a buffer of at least {size} bytes"),
+                    ));
+                }
+                unpack_bytes(&fmt, &sub[..size])
             }
             // s036: iter_unpack(fmt, buffer) — repeated unpack over the whole
             // buffer; size must divide evenly.

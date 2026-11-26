@@ -8082,9 +8082,8 @@ fn call_value_inner_impl(
                                     // native_attr fallback on both None
                                     // result AND AttributeError.
                                     Err(Flow::Raise(e)) if e.class == "AttributeError" => {
-                                        match crate::builtins_modules::native_attr(
-                                            &subject, &attr,
-                                        ) {
+                                        match crate::builtins_modules::native_attr(&subject, &attr)
+                                        {
                                             Some(v) => Ok(v),
                                             None => Ok(Value::None),
                                         }
@@ -8433,6 +8432,19 @@ fn call_value_inner_impl(
                                             tn
                                         };
                                         return Ok(builtins::interned_type(interp, &tn));
+                                    }
+                                    // 02.08 (s029) re-verify (issue #19):
+                                    // type(mc).__name__ == "methodcaller"/
+                                    // "itemgetter" (bare class names).
+                                    if so.kind == ap_obj::ObjKind::BuiltinFn
+                                        && so.name.starts_with("<methodcaller:")
+                                    {
+                                        return Ok(builtins::interned_type(interp, "methodcaller"));
+                                    }
+                                    if so.kind == ap_obj::ObjKind::BuiltinFn
+                                        && so.name.starts_with("<itemgetter:")
+                                    {
+                                        return Ok(builtins::interned_type(interp, "itemgetter"));
                                     }
                                     if so.kind == ap_obj::ObjKind::Opaque && so.name == "super" {
                                         return Ok(builtins::interned_type(interp, "super"));
@@ -13006,6 +13018,18 @@ fn class_protocol_builtin(
                         let t = crate::builtins::interned_type(interp, "_lru_cache_wrapper");
                         return Some(Ok(t));
                     }
+                    // 02.08 (s029) re-verify (issue #19): type(mc).__name__ is
+                    // the BARE class name ("methodcaller"/"itemgetter"; the
+                    // qualified form is only the repr).
+                    if o.kind == ap_obj::ObjKind::BuiltinFn && o.name.starts_with("<methodcaller:")
+                    {
+                        let t = crate::builtins::interned_type(interp, "methodcaller");
+                        return Some(Ok(t));
+                    }
+                    if o.kind == ap_obj::ObjKind::BuiltinFn && o.name.starts_with("<itemgetter:") {
+                        let t = crate::builtins::interned_type(interp, "itemgetter");
+                        return Some(Ok(t));
+                    }
                     // 02.07: threading objects report their <class> attr
                     // (type(me).__name__ == "_MainThread" — T108).
                     if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::TDebug) {
@@ -13067,7 +13091,9 @@ fn class_protocol_builtin(
                     return Some(Ok(Value::Str(PyString::new("itemgetter"))));
                 }
                 if o.kind == ap_obj::ObjKind::BuiltinFn && o.name.starts_with("<methodcaller:") {
-                    return Some(Ok(Value::Str(PyString::new("operator.methodcaller"))));
+                    // 02.08 gap re-verify (issue #19): type(mc).__name__ is the
+                    // BARE class name (the qualified form is only the repr).
+                    return Some(Ok(Value::Str(PyString::new("methodcaller"))));
                 }
                 // 02.08-full p2: re.Pattern / re.Match report their Python
                 // type names (type(p).__name__ == "Pattern", isinstance gates).
@@ -14806,7 +14832,9 @@ fn attr_get(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Option
             Value::Obj(o)
                 if o.kind == ap_obj::ObjKind::BuiltinFn && o.name.starts_with("<methodcaller:") =>
             {
-                "operator.methodcaller"
+                // 02.08 gap re-verify (issue #19): bare class name (qualified
+                // form is only the repr).
+                "methodcaller"
             }
             other => other.type_name(),
         };
