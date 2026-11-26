@@ -43,6 +43,11 @@ from pathlib import Path
 
 import pytest
 
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parent.parent / "tools"))
+from _target_dir import build_dir as _td_build_dir
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RUN_TIMEOUT = int(os.environ.get("APX_T12_TIMEOUT", "180"))
 
@@ -55,7 +60,7 @@ def _find_run_eval() -> str | None:
     if found:
         return found
     for profile in ("debug", "release"):
-        cand = REPO_ROOT / "target" / profile / "ap-run-eval"
+        cand = _td_build_dir(REPO_ROOT) / profile / "ap-run-eval"
         if cand.is_file():
             return str(cand)
     return None

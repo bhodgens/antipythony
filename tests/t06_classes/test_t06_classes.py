@@ -29,6 +29,11 @@ from pathlib import Path
 
 import pytest
 
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parent.parent / "tools"))
+from _target_dir import build_dir as _td_build_dir
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -116,7 +121,7 @@ def _ap_conform_base() -> list[str]:
     if found:
         return [found]
     for profile in ("debug", "release"):
-        cand = REPO_ROOT / "target" / profile / "ap-conform"
+        cand = _td_build_dir(REPO_ROOT) / profile / "ap-conform"
         if cand.exists():
             return [str(cand)]
     raise FileNotFoundError(

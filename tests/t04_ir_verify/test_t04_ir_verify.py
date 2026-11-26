@@ -41,6 +41,11 @@ from pathlib import Path
 
 import pytest
 
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parent.parent / "tools"))
+from _target_dir import build_dir as _td_build_dir
+
 REPO = Path(__file__).resolve().parents[2]
 SUITE = Path(__file__).resolve().parent
 PROBES = SUITE / "probes"
@@ -140,7 +145,7 @@ def _find_ap_verify_dump() -> Path | None:
     if on_path:
         return Path(on_path)
     for profile in ("debug", "release"):
-        cand = REPO / "target" / profile / "ap-verify-dump"
+        cand = _td_build_dir(REPO) / profile / "ap-verify-dump"
         if cand.is_file():
             return cand
     return None
